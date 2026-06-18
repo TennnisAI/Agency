@@ -12,7 +12,8 @@ pub struct Session {
     pub repo_path: std::path::PathBuf,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TaskInfo {
     pub task_id: String,
     pub branch: String,

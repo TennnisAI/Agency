@@ -1,12 +1,12 @@
-# Maestro — Local Agent Orchestrator (Design)
+# Agency — Local Agent Orchestrator (Design)
 
 **Date:** 2026-06-18
 **Status:** Approved design, pre-implementation
-**Working name:** Maestro (rename anytime)
+**Name:** Agency
 
 ## 1. Summary
 
-Maestro is a **local-only, native desktop app** for running multiple terminal-based
+Agency is a **local-only, native desktop app** for running multiple terminal-based
 coding agents in parallel, each isolated in its own git worktree, with a GUI to watch
 them live, review their changes, and integrate the good ones back to `main`.
 
@@ -51,7 +51,7 @@ Each is a focused, independently testable unit.
 1. **Project registry** — repos under management; each = repo path + defaults (preferred
    agent, model provider). Persisted in local SQLite in the app data dir.
 2. **Worktree manager** — wraps `git worktree add/list/remove`. Each task →
-   `…/.maestro/worktrees/<task-id>` on branch `agent/<task-id>` off a chosen base
+   `…/.agency/worktrees/<task-id>` on branch `agent/<task-id>` off a chosen base
    (default `main`). Handles cleanup on task delete.
 3. **Agent supervisor** — spawns each agent in a real PTY (`portable-pty`) with
    `cwd` = its worktree and env = chosen model provider (e.g. `ANTHROPIC_API_KEY`, or an
@@ -127,6 +127,7 @@ Each is a focused, independently testable unit.
 
 | Decision | Choice |
 |---|---|
+| Name | Agency |
 | Delivery shape | Native desktop app |
 | Framework | Tauri + Rust core, web UI |
 | Multi-project dashboard | Yes (v1) |

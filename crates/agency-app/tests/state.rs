@@ -24,3 +24,102 @@ fn project_crud_roundtrip() {
     state.remove_project(&p.id).unwrap();
     assert_eq!(state.list_projects().unwrap().len(), 0);
 }
+
+use agency_app_lib::TaskInfo;
+use agency_core::profile::AgentProfile;
+use agency_core::supervisor::AgentStatus;
+use std::process::Command;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+fn init_repo(dir: &Path) {
+    let run = |args: &[&str]| {
+        assert!(
+            Command::new("git").args(args).current_dir(dir).status().unwrap().success(),
+            "git {:?}",
+            args
+        );
+    };
+    run(&["init", "-q"]);
+    run(&["config", "user.email", "t@e.com"]);
+    run(&["config", "user.name", "T"]);
+    std::fs::write(dir.join("README.md"), "hi").unwrap();
+    run(&["add", "-A"]);
+    run(&["commit", "-q", "-m", "init"]);
+}
+
+fn fake_agent_command() -> String {
+    // Reuse the Phase 1 fixture from agency-core.
+    let p = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("agency-core")
+        .join("tests")
+        .join("fixtures")
+        .join("fake_agent.sh");
+    p.to_string_lossy().to_string()
+}
+
+fn wait_for(buf: &Arc<Mutex<String>>, needle: &str, timeout: Duration) -> bool {
+    let start = Instant::now();
+    while start.elapsed() < timeout {
+        if buf.lock().unwrap().contains(needle) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    false
+}
+
+#[test]
+fn start_task_spawns_in_worktree_streams_and_stops() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let state = AppState::new(&dir.path().join("agency.db")).unwrap();
+    state.register_profile(AgentProfile {
+        name: "fake".into(),
+        command: fake_agent_command(),
+        args: vec!["{{prompt}}".into()],
+        env: vec![],
+    });
+
+    let project = state.add_project("demo", &repo).unwrap();
+
+    let buf = Arc::new(Mutex::new(String::new()));
+    let buf_cb = buf.clone();
+    let info: TaskInfo = state
+        .start_task(&project.id, "do-the-thing", "fake", "HEAD", move |bytes| {
+            buf_cb.lock().unwrap().push_str(&String::from_utf8_lossy(&bytes));
+        })
+        .unwrap();
+
+    assert_eq!(info.branch, format!("agent/{}", info.task_id));
+
+    // Worktree exists on disk.
+    let wt_path = repo.join(".agency").join("worktrees").join(&info.task_id);
+    assert!(wt_path.exists());
+
+    // Streaming + the rendered prompt arg.
+    assert!(wait_for(&buf, "AGENT_READY", Duration::from_secs(5)));
+    assert!(wait_for(&buf, "PROMPT:do-the-thing", Duration::from_secs(5)));
+
+    // Input injection.
+    state.send_input(&info.task_id, b"ping\n").unwrap();
+    assert!(wait_for(&buf, "GOT:ping", Duration::from_secs(5)));
+
+    // Status reaches Exited(0).
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(5) {
+        if matches!(state.task_status(&info.task_id).unwrap(), AgentStatus::Exited(_)) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(state.task_status(&info.task_id).unwrap(), AgentStatus::Exited(0));
+
+    // Stop removes the worktree.
+    state.stop_task(&info.task_id).unwrap();
+    assert!(!wt_path.exists());
+}

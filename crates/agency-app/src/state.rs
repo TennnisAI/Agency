@@ -1,7 +1,7 @@
 use agency_core::profile::AgentProfile;
 use agency_core::registry::{Project, Registry};
 use agency_core::supervisor::{spawn_agent, AgentHandle, AgentStatus};
-use agency_core::worktree::{Worktree, WorktreeManager};
+use agency_core::worktree::WorktreeManager;
 use anyhow::{anyhow, Result};
 use std::collections::HashMap;
 use std::path::Path;
@@ -9,8 +9,6 @@ use std::sync::Mutex;
 
 pub struct Session {
     pub handle: AgentHandle,
-    pub worktree: Worktree,
-    pub project_id: String,
     pub repo_path: std::path::PathBuf,
 }
 
@@ -127,12 +125,7 @@ impl AppState {
 
         self.sessions.lock().unwrap().insert(
             task_id.clone(),
-            Session {
-                handle,
-                worktree,
-                project_id: project_id.to_string(),
-                repo_path,
-            },
+            Session { handle, repo_path },
         );
 
         Ok(TaskInfo { task_id, branch })
@@ -154,15 +147,6 @@ impl AppState {
         Ok(session.handle.status())
     }
 
-    /// Returns the project ID associated with a running task.
-    pub fn task_project_id(&self, task_id: &str) -> Result<String> {
-        let sessions = self.sessions.lock().unwrap();
-        let session = sessions
-            .get(task_id)
-            .ok_or_else(|| anyhow!("unknown task: {task_id}"))?;
-        Ok(session.project_id.clone())
-    }
-
     pub fn stop_task(&self, task_id: &str) -> Result<()> {
         // Remove (and drop) the session first so the PTY/handle is released.
         let session = self
@@ -172,9 +156,8 @@ impl AppState {
             .remove(task_id)
             .ok_or_else(|| anyhow!("unknown task: {task_id}"))?;
         let repo_path = session.repo_path.clone();
-        let wt_task_id = session.worktree.task_id.clone();
         drop(session); // close PTY before removing the worktree
-        WorktreeManager::new(repo_path).remove(&wt_task_id)?;
+        WorktreeManager::new(repo_path).remove(task_id)?;
         Ok(())
     }
 }

@@ -1,0 +1,100 @@
+use crate::profile::AgentProfile;
+use anyhow::Result;
+use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
+use std::io::{Read, Write};
+use std::path::Path;
+use std::sync::{Arc, Mutex};
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum AgentStatus {
+    Running,
+    Idle,
+    Exited(i32),
+    Crashed,
+}
+
+pub struct AgentHandle {
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    status: Arc<Mutex<AgentStatus>>,
+    // Keep the master alive so the PTY stays open for the lifetime of the handle.
+    _master: Box<dyn MasterPty + Send>,
+}
+
+impl AgentHandle {
+    pub fn write_input(&self, data: &[u8]) -> Result<()> {
+        let mut w = self.writer.lock().unwrap();
+        w.write_all(data)?;
+        w.flush()?;
+        Ok(())
+    }
+
+    pub fn status(&self) -> AgentStatus {
+        self.status.lock().unwrap().clone()
+    }
+}
+
+/// Spawn `profile` in a PTY with working directory `cwd`, injecting `prompt`
+/// into the rendered args. `on_output` is called with raw PTY bytes as they arrive.
+pub fn spawn_agent<F>(
+    profile: &AgentProfile,
+    cwd: &Path,
+    prompt: &str,
+    on_output: F,
+) -> Result<AgentHandle>
+where
+    F: Fn(Vec<u8>) + Send + 'static,
+{
+    let pty_system = native_pty_system();
+    let pair = pty_system.openpty(PtySize {
+        rows: 24,
+        cols: 80,
+        pixel_width: 0,
+        pixel_height: 0,
+    })?;
+
+    let mut cmd = CommandBuilder::new(&profile.command);
+    cmd.args(profile.render_args(prompt));
+    cmd.cwd(cwd);
+    for (k, v) in &profile.env {
+        cmd.env(k, v);
+    }
+
+    let mut child = pair.slave.spawn_command(cmd)?;
+    // The slave handle is no longer needed once the child holds it.
+    drop(pair.slave);
+
+    let mut reader = pair.master.try_clone_reader()?;
+    let writer = pair.master.take_writer()?;
+
+    let status = Arc::new(Mutex::new(AgentStatus::Running));
+
+    // Reader thread: pump PTY output to the callback until EOF.
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => on_output(buf[..n].to_vec()),
+            }
+        }
+    });
+
+    // Wait thread: record the exit code when the child finishes.
+    let status_for_wait = status.clone();
+    std::thread::spawn(move || {
+        let code = match child.wait() {
+            Ok(es) => es.exit_code() as i32,
+            Err(_) => {
+                *status_for_wait.lock().unwrap() = AgentStatus::Crashed;
+                return;
+            }
+        };
+        *status_for_wait.lock().unwrap() = AgentStatus::Exited(code);
+    });
+
+    Ok(AgentHandle {
+        writer: Arc::new(Mutex::new(writer)),
+        status,
+        _master: pair.master,
+    })
+}

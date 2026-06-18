@@ -25,11 +25,12 @@ export default function TerminalPane({ projectId, prompt, onStatus }: Props) {
     let info: TaskInfo | null = null;
     let statusTimer: number | undefined;
     let disposed = false;
+    let onDataDisposable: { dispose(): void } | undefined;
 
     startTask(projectId, prompt, "shell", (bytes) => term.write(bytes)).then((i) => {
       if (disposed) return;
       info = i;
-      term.onData((data) => {
+      onDataDisposable = term.onData((data) => {
         sendInput(i.taskId, data);
       });
       statusTimer = window.setInterval(async () => {
@@ -45,6 +46,7 @@ export default function TerminalPane({ projectId, prompt, onStatus }: Props) {
     return () => {
       disposed = true;
       if (statusTimer) window.clearInterval(statusTimer);
+      onDataDisposable?.dispose();
       term.dispose();
       void info; // session teardown handled by App via stopTask
     };

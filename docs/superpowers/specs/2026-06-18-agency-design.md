@@ -10,10 +10,12 @@ Agency is a **local-only, native desktop app** for running multiple terminal-bas
 coding agents in parallel, each isolated in its own git worktree, with a GUI to watch
 them live, review their changes, and integrate the good ones back to `main`.
 
-It is a self-hosted alternative to Conductor. The defining constraint: **nothing leaves
-the machine** except traffic the user explicitly configures an agent to make (e.g. the
-Anthropic API, or nothing at all when using local models via LM Studio). No account, no
-vendor backend, no telemetry/analytics.
+It is a self-hosted alternative to Conductor. The defining stance: **no analytics, no
+telemetry, no data collection, no account, no vendor backend** — Agency itself never phones
+home. It still talks to the external services the user explicitly configures and initiates:
+model providers (the Anthropic API; or nothing remote at all with local models via LM
+Studio) and git remotes such as GitHub (push, PRs). The distinction is **zero first-party
+data collection**, not zero network.
 
 ## 2. Goals / Non-goals
 
@@ -33,6 +35,8 @@ vendor backend, no telemetry/analytics.
 - Codex / Cursor / other agent providers (the adapter trait keeps this a config change).
 - Cloud or remote agent execution.
 - Live PTY reattach across app restarts (restart marks surviving tasks "Exited, re-run").
+- Remote access / mobile control (a local web server + tunnel, like Maestro's Cloudflare
+  option). Appealing for later — explicitly out of v1.
 - Structured event sidecar (e.g. Claude Code `stream-json`) for richer status/token UI —
   v1.1 enhancement on top of the PTY substrate.
 
@@ -42,8 +46,10 @@ A **Tauri** application:
 - **Rust core** owns all state, process management, and git operations.
 - **Web UI** (React + xterm.js) is the renderer.
 
-Outbound network = only what a configured agent calls. A test asserts no other network
-activity occurs.
+Agency's own code performs no telemetry, analytics, or background network calls. Network
+activity is limited to operations the user explicitly initiates against services they
+configured — agent/provider calls and git-remote operations (e.g. push to GitHub). A test
+asserts the core engine makes no network calls of its own.
 
 ### Rust core modules
 Each is a focused, independently testable unit.
@@ -120,8 +126,9 @@ Each is a focused, independently testable unit.
   hand-built conflict repos.
 - **UI**: component tests for terminal pane + diff view; a few end-to-end happy-path runs
   (create → fake agent → diff → merge) via Tauri's test harness.
-- **Local-only assertion**: test that asserts no network calls occur except to configured
-  provider endpoints.
+- **No-telemetry assertion**: test that the core engine performs no network calls of its own
+  (no analytics/telemetry/background egress). Legitimate provider and git-remote calls are
+  user-initiated and out of the core's scope.
 
 ## 7. Key decisions (resolved during brainstorming)
 
@@ -136,3 +143,55 @@ Each is a focused, independently testable unit.
 | Exec model | PTY terminal panes (universal, interactive) |
 | Git surface | Full per-worktree git panel incl. push |
 | Merge-resolver | Authored skill + configurable backend (default Claude Code) |
+
+## 8. Prior art / positioning
+
+### Maestro (RunMaestro/Maestro)
+
+[Maestro](https://github.com/RunMaestro/Maestro) is the closest existing product to Agency and
+the most relevant prior art. It is a cross-platform desktop "agent orchestration command
+center" that conducts multiple terminal coding agents in parallel, each in its own git
+worktree, with live terminals, diff/PR review, and a markdown task runner. The category
+overlap is substantial — it is **not** a different idea, it is a different *thesis* on the
+same idea.
+
+**What it shares with Agency:** parallel agents in per-task git worktrees; live,
+interjectable agent terminals; pluggable agent backends (it ships Claude Code, Codex,
+OpenCode, Factory Droid, Copilot-CLI beta); markdown/skill-driven task runner ("Playbooks");
+git review + PR/merge integration. It is also more feature-rich than Agency v1 already:
+group chat with a moderator-AI router, message queueing, output regex filtering, a usage
+analytics dashboard, a headless `maestro-cli`, and ~24h unattended runs.
+
+**Where Agency diverges (the differentiation worth protecting):**
+
+| Dimension | **Agency** | **Maestro** |
+|---|---|---|
+| Privacy stance | **Zero first-party data collection** — no analytics, no telemetry, no account, no vendor backend; Agency never phones home. Outbound traffic is only user-initiated provider and git-remote calls. | Local + no account, but ships error telemetry by default (see below). |
+| Stack | Tauri + Rust core, thin web UI | Electron + TypeScript |
+| Local models | First-class peer to Anthropic (LM Studio / OpenAI-compatible) | Provider-agent oriented; local-first models not the pitch |
+| Architecture | Rust core owns all state/process/git; heavily TDD'd headless engine | App-layer orchestration in TS/Electron |
+| v1 scope | Deliberately tight (no group chat, cloud, analytics) | Broad surface already |
+| License | Self-hosted alternative to Conductor | AGPL-3.0 |
+
+**Privacy posture (verified 2026-06-18):** Maestro runs locally and requires **no account,
+login, or sign-up** (AGPL-3.0; session state stays in `MAESTRO_STATE_DIR`; no committed
+long-lived credentials). However, it is **not** a no-egress design:
+- It ships **Sentry client-side error telemetry**. The Sentry DSN is intentionally public
+  ("public secret by design"); the docs do not state that it is opt-in and expose no
+  documented disable toggle. ([SECURITY.md](https://github.com/RunMaestro/Maestro/blob/main/SECURITY.md))
+- It offers **optional remote control** via a built-in local web server with QR access and
+  **remote tunneling over Cloudflare**. ([README](https://github.com/RunMaestro/Maestro))
+
+So "local, no account required" is true for Maestro, but it still ships Sentry error
+telemetry by default. Agency's differentiator is narrower and more honest: **zero
+first-party data collection** — no analytics, no telemetry, Agency never phones home — while
+still connecting to the external services the user configures and initiates (model
+providers, GitHub). It is *not* a claim that no bytes ever leave the machine. Combined with
+the Rust-native core and local-models-as-peer, that is the position.
+
+**Implication for roadmap:** treat Maestro as the bar for power-user features — group chat /
+moderator routing, message queueing, output filtering, headless CLI, and **remote/mobile
+access via a tunnel** (a genuinely nice idea, deferred in §2) — as candidates for the
+deferred list, while keeping the no-data-collection stance non-negotiable. Note that a
+future remote-tunnel feature is compatible with that stance: it would be user-initiated
+access to their own machine, not first-party data collection.

@@ -96,3 +96,25 @@ export const deleteProfile = (name: string) => invoke<void>("delete_profile", { 
 export const getSettings = () => invoke<ProviderSettings>("get_settings");
 export const saveSettings = (settings: ProviderSettings) =>
   invoke<void>("save_settings", { settings });
+
+export type MergeOutcome =
+  | { kind: "clean"; commit: string }
+  | { kind: "conflicts"; files: string[] };
+
+export const mergeTask = (taskId: string) => invoke<MergeOutcome>("merge_task", { taskId });
+export const abortMergeTask = (taskId: string) =>
+  invoke<void>("abort_merge_task", { taskId });
+export const resolverInput = (taskId: string, data: string) =>
+  invoke<void>("resolver_input", { taskId, data });
+export const resolverStatus = (taskId: string) =>
+  invoke<StatusDto>("resolver_status", { taskId });
+
+export function resolveMerge(
+  taskId: string,
+  resolverProfile: string,
+  onBytes: (bytes: Uint8Array) => void,
+): Promise<void> {
+  const onChunk = new Channel<{ b64: string }>();
+  onChunk.onmessage = (msg) => onBytes(b64ToBytes(msg.b64));
+  return invoke<void>("resolve_merge", { taskId, resolverProfile, onChunk });
+}

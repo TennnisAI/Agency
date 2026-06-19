@@ -14,13 +14,30 @@ export default function TerminalPane({ projectId, prompt, onStatus }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const term = new Terminal({ convertEol: true, fontSize: 13 });
+    const container = containerRef.current;
+    if (!container) return;
+
+    const term = new Terminal({ convertEol: true, fontSize: 13, cursorBlink: true });
     const fit = new FitAddon();
     term.loadAddon(fit);
-    if (containerRef.current) {
-      term.open(containerRef.current);
-      fit.fit();
-    }
+    term.open(container);
+
+    // Fit once the flex layout has actually sized the container, then keep
+    // fitting on resize. Fitting synchronously here (before layout) can size
+    // the terminal to ~0 rows/cols and render nothing.
+    const doFit = () => {
+      try {
+        fit.fit();
+      } catch {
+        /* container not laid out yet */
+      }
+    };
+    requestAnimationFrame(() => {
+      doFit();
+      term.focus();
+    });
+    const resizeObserver = new ResizeObserver(doFit);
+    resizeObserver.observe(container);
 
     let info: TaskInfo | null = null;
     let statusTimer: number | undefined;
@@ -46,6 +63,7 @@ export default function TerminalPane({ projectId, prompt, onStatus }: Props) {
     return () => {
       disposed = true;
       if (statusTimer) window.clearInterval(statusTimer);
+      resizeObserver.disconnect();
       onDataDisposable?.dispose();
       term.dispose();
       void info; // session teardown handled by App via stopTask

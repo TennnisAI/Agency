@@ -5,6 +5,7 @@ pub use state::{AppState, TaskInfo};
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             use tauri::Manager;
             let data_dir = app.path().app_data_dir()?;

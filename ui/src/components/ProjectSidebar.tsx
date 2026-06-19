@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { open } from "@tauri-apps/plugin-dialog";
 import { addProject, listProjects, removeProject, Project } from "../api";
 
 interface Props {
@@ -32,6 +33,18 @@ export default function ProjectSidebar({ selectedId, onSelect }: Props) {
     await refresh();
   }
 
+  async function handleBrowse() {
+    const selected = await open({ directory: true, multiple: false });
+    if (typeof selected === "string") {
+      setRepoPath(selected);
+      // Default the project name to the folder name if not set yet.
+      if (!name.trim()) {
+        const base = selected.split("/").filter(Boolean).pop();
+        if (base) setName(base);
+      }
+    }
+  }
+
   return (
     <aside className="sidebar">
       <h2>Projects</h2>
@@ -56,11 +69,16 @@ export default function ProjectSidebar({ selectedId, onSelect }: Props) {
       </ul>
       <div className="add-project">
         <input placeholder="name" value={name} onChange={(e) => setName(e.target.value)} />
-        <input
-          placeholder="/path/to/repo"
-          value={repoPath}
-          onChange={(e) => setRepoPath(e.target.value)}
-        />
+        <div className="repo-row">
+          <input
+            placeholder="/path/to/repo"
+            value={repoPath}
+            onChange={(e) => setRepoPath(e.target.value)}
+          />
+          <button className="browse" onClick={handleBrowse}>
+            Browse…
+          </button>
+        </div>
         <button onClick={handleAdd}>Add project</button>
       </div>
     </aside>

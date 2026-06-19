@@ -11,6 +11,9 @@ body { margin: 0; font-family: ui-sans-serif, system-ui, sans-serif; background:
 .project-list button { background: none; border: none; color: #8893a5; cursor: pointer; }
 .add-project { display: flex; flex-direction: column; gap: 6px; }
 .add-project input, .new-task textarea { background: #1b1f27; border: 1px solid #2a2e36; color: #e6e6e6; border-radius: 6px; padding: 8px; }
+.repo-row { display: flex; gap: 6px; }
+.repo-row input { flex: 1; min-width: 0; }
+.browse { background: #2a2e36; white-space: nowrap; padding: 8px 10px; }
 button { background: #2d6cdf; border: none; color: white; padding: 8px 12px; border-radius: 6px; cursor: pointer; }
 .board { flex: 1; display: flex; flex-direction: column; padding: 16px; gap: 12px; }
 .board.empty { align-items: center; justify-content: center; color: #6b7280; }

@@ -1,3 +1,4 @@
+pub mod git;
 pub mod profile;
 pub mod registry;
 pub mod supervisor;

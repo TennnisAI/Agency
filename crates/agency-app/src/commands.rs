@@ -1,3 +1,4 @@
+use agency_core::git::{self, CommitInfo, FileChange};
 use agency_core::registry::Project;
 use agency_core::supervisor::AgentStatus;
 use base64::engine::general_purpose::STANDARD;
@@ -88,4 +89,59 @@ pub fn task_status(state: State<'_, AppState>, task_id: String) -> Result<Status
 #[tauri::command]
 pub fn stop_task(state: State<'_, AppState>, task_id: String) -> Result<(), String> {
     state.stop_task(&task_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn git_status(state: State<'_, AppState>, task_id: String) -> Result<Vec<FileChange>, String> {
+    let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
+    git::status(&wt).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn git_diff(
+    state: State<'_, AppState>,
+    task_id: String,
+    path: String,
+    staged: bool,
+) -> Result<String, String> {
+    let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
+    git::diff(&wt, &path, staged).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn git_log(state: State<'_, AppState>, task_id: String) -> Result<Vec<CommitInfo>, String> {
+    let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
+    git::log(&wt, 100).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn git_stage(state: State<'_, AppState>, task_id: String, path: String) -> Result<(), String> {
+    let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
+    git::stage(&wt, &path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn git_unstage(
+    state: State<'_, AppState>,
+    task_id: String,
+    path: String,
+) -> Result<(), String> {
+    let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
+    git::unstage(&wt, &path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn git_commit(
+    state: State<'_, AppState>,
+    task_id: String,
+    message: String,
+) -> Result<(), String> {
+    let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
+    git::commit(&wt, &message).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn git_push(state: State<'_, AppState>, task_id: String) -> Result<(), String> {
+    let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
+    git::push(&wt).map_err(|e| e.to_string())
 }

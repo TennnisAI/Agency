@@ -123,3 +123,29 @@ fn start_task_spawns_in_worktree_streams_and_stops() {
     state.stop_task(&info.task_id).unwrap();
     assert!(!wt_path.exists());
 }
+
+#[test]
+fn worktree_path_resolves_for_active_task() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo); // helper already defined earlier in this test file
+
+    let state = AppState::new(&dir.path().join("agency.db")).unwrap();
+    state.register_profile(AgentProfile {
+        name: "fake".into(),
+        command: fake_agent_command(),
+        args: vec!["{{prompt}}".into()],
+        env: vec![],
+    });
+    let project = state.add_project("demo", &repo).unwrap();
+    let info = state
+        .start_task(&project.id, "p", "fake", "HEAD", |_| {})
+        .unwrap();
+
+    let wt = state.worktree_path(&info.task_id).unwrap();
+    assert!(wt.ends_with(format!(".agency/worktrees/{}", info.task_id)));
+    assert!(wt.exists());
+
+    assert!(state.worktree_path("does-not-exist").is_err());
+}

@@ -148,6 +148,18 @@ impl AppState {
         Ok(session.handle.status())
     }
 
+    pub fn worktree_path(&self, task_id: &str) -> anyhow::Result<std::path::PathBuf> {
+        let sessions = self.sessions.lock().unwrap();
+        let session = sessions
+            .get(task_id)
+            .ok_or_else(|| anyhow::anyhow!("unknown task: {task_id}"))?;
+        Ok(session
+            .repo_path
+            .join(".agency")
+            .join("worktrees")
+            .join(task_id))
+    }
+
     pub fn stop_task(&self, task_id: &str) -> Result<()> {
         // Remove (and drop) the session first so the PTY/handle is released.
         let session = self

@@ -46,3 +46,33 @@ export function startTask(
   onChunk.onmessage = (msg) => onBytes(b64ToBytes(msg.b64));
   return invoke<TaskInfo>("start_task", { projectId, prompt, profile, onChunk });
 }
+
+export interface FileChange {
+  path: string;
+  index: string; // staged status code
+  worktree: string; // unstaged status code
+}
+
+export interface CommitInfo {
+  hash: string;
+  summary: string;
+}
+
+export const gitStatus = (taskId: string) =>
+  invoke<FileChange[]>("git_status", { taskId });
+
+export const gitDiff = (taskId: string, path: string, staged: boolean) =>
+  invoke<string>("git_diff", { taskId, path, staged });
+
+export const gitLog = (taskId: string) => invoke<CommitInfo[]>("git_log", { taskId });
+
+export const gitStage = (taskId: string, path: string) =>
+  invoke<void>("git_stage", { taskId, path });
+
+export const gitUnstage = (taskId: string, path: string) =>
+  invoke<void>("git_unstage", { taskId, path });
+
+export const gitCommit = (taskId: string, message: string) =>
+  invoke<void>("git_commit", { taskId, message });
+
+export const gitPush = (taskId: string) => invoke<void>("git_push", { taskId });

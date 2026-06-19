@@ -8,9 +8,10 @@ interface Props {
   projectId: string;
   prompt: string;
   onStatus: (label: string) => void;
+  onStarted?: (taskId: string) => void;
 }
 
-export default function TerminalPane({ projectId, prompt, onStatus }: Props) {
+export default function TerminalPane({ projectId, prompt, onStatus, onStarted }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -47,6 +48,7 @@ export default function TerminalPane({ projectId, prompt, onStatus }: Props) {
     startTask(projectId, prompt, "shell", (bytes) => term.write(bytes)).then((i) => {
       if (disposed) return;
       info = i;
+      onStarted?.(i.taskId);
       onDataDisposable = term.onData((data) => {
         sendInput(i.taskId, data);
       });
@@ -68,7 +70,7 @@ export default function TerminalPane({ projectId, prompt, onStatus }: Props) {
       term.dispose();
       void info; // session teardown handled by App via stopTask
     };
-  }, [projectId, prompt, onStatus]);
+  }, [projectId, prompt, onStatus, onStarted]);
 
   return <div className="terminal" ref={containerRef} />;
 }

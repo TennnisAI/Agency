@@ -1,4 +1,5 @@
 pub mod git;
+pub mod merge;
 pub mod profile;
 pub mod registry;
 pub mod supervisor;

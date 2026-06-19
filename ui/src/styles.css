@@ -23,3 +23,22 @@ button { background: #2d6cdf; border: none; color: white; padding: 8px 12px; bor
 .task-running { display: flex; flex-direction: column; gap: 8px; flex: 1; }
 .task-status { color: #9aa3b2; font-size: 13px; }
 .terminal { flex: 1; min-height: 320px; background: #000; border-radius: 8px; padding: 6px; overflow: hidden; }
+.task-split { display: flex; gap: 12px; flex: 1; min-height: 0; }
+.task-split .terminal { flex: 2; }
+.git-panel { flex: 1; min-width: 280px; max-width: 420px; overflow: auto; background: #1b1f27; border: 1px solid #2a2e36; border-radius: 8px; padding: 10px; display: flex; flex-direction: column; gap: 10px; }
+.git-header { display: flex; justify-content: space-between; align-items: center; }
+.git-header h3 { margin: 0; font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: #9aa3b2; }
+.git-section h4 { margin: 4px 0; font-size: 12px; color: #8893a5; }
+.git-empty { color: #5b6472; font-size: 12px; }
+.git-file { display: flex; align-items: center; gap: 6px; font-size: 13px; padding: 2px 0; }
+.git-status { width: 14px; color: #d8a657; font-family: ui-monospace, monospace; }
+.git-path { flex: 1; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.git-path:hover { text-decoration: underline; }
+.git-file button { padding: 0 8px; }
+.git-commit { display: flex; flex-direction: column; gap: 6px; }
+.git-commit textarea { background: #14161a; border: 1px solid #2a2e36; color: #e6e6e6; border-radius: 6px; padding: 6px; min-height: 56px; resize: vertical; }
+.git-actions { display: flex; gap: 6px; }
+.git-error { color: #e06c75; font-size: 12px; white-space: pre-wrap; }
+.git-diff pre { background: #0e1014; border-radius: 6px; padding: 8px; overflow: auto; max-height: 240px; font-size: 12px; }
+.git-commit-row { font-size: 12px; padding: 1px 0; }
+.git-commit-row code { color: #7da3c9; }

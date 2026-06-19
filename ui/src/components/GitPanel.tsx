@@ -39,7 +39,8 @@ export default function GitPanel({ taskId }: { taskId: string }) {
       const staged = file.index !== " " && file.index !== "?";
       setDiff(await gitDiff(taskId, file.path, staged));
     } catch (e) {
-      setDiff(String(e));
+      setError(String(e));
+      setDiff("");
     }
   }
 

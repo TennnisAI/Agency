@@ -1,6 +1,40 @@
 :root { color-scheme: dark; }
-* { box-sizing: border-box; }
-body { margin: 0; font-family: ui-sans-serif, system-ui, sans-serif; background: #14161a; color: #e6e6e6; }
+/* App shell */
+.shell { display: flex; flex-direction: column; height: 100%; }
+.titlebar {
+  height: var(--titlebar-h, 40px);
+  min-height: var(--titlebar-h, 40px);
+  display: flex; align-items: center; gap: 4px;
+  padding: 0 8px;
+  background: var(--mantle, #181825);
+  border-bottom: 1px solid var(--line, #25253a);
+  -webkit-app-region: drag;
+}
+.titlebar-icon {
+  -webkit-app-region: no-drag;
+  background: none; border: none; color: var(--sub0, #a6adc8); cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; border-radius: 6px; padding: 0;
+}
+.titlebar-icon:hover { background: var(--s0, #313244); color: var(--text, #cdd6f4); }
+.titlebar-mark {
+  font-size: 13px; font-weight: 600; letter-spacing: 0.02em;
+  color: var(--text, #cdd6f4); user-select: none; margin-left: 4px;
+}
+.titlebar-spacer { flex: 1; }
+.content { display: flex; flex: 1; min-height: 0; }
+.statusbar {
+  height: var(--statusbar-h, 27px);
+  min-height: var(--statusbar-h, 27px);
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 10px;
+  background: var(--mantle, #181825);
+  border-top: 1px solid var(--line, #25253a);
+  font-size: 11px; color: var(--o1, #7f849c);
+}
+.statusbar-project { font-weight: 500; color: var(--sub0, #a6adc8); }
+.statusbar-hints { opacity: 0.7; }
+/* Legacy compat */
 .app { display: flex; height: 100vh; }
 .sidebar { width: 260px; border-right: 1px solid #2a2e36; padding: 12px; display: flex; flex-direction: column; gap: 12px; }
 .sidebar h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 0.08em; color: #9aa3b2; }

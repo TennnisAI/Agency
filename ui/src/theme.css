@@ -1,0 +1,22 @@
+:root {
+  --base:#1e1e2e; --mantle:#181825; --crust:#11111b;
+  --s0:#313244; --s1:#45475a; --s2:#585b70;
+  --o0:#6c7086; --o1:#7f849c; --o2:#9399b2;
+  --text:#cdd6f4; --sub1:#bac2de; --sub0:#a6adc8;
+  --blue:#89b4fa; --lav:#b4befe; --mauve:#cba6f7; --pink:#f5c2e7;
+  --green:#a6e3a1; --teal:#94e2d5; --yellow:#f9e2af; --peach:#fab387; --red:#f38ba8;
+  --line:#25253a;
+  --sans:'Geist',ui-sans-serif,system-ui,-apple-system,'Segoe UI',sans-serif;
+  --mono:'JetBrains Mono',ui-monospace,'SF Mono',Menlo,monospace;
+  /* semantic */
+  --running:var(--green); --awaiting:var(--yellow); --review:var(--blue);
+  --exited:var(--o0); --crashed:var(--red);
+  --agent-claude:var(--peach); --agent-pi:var(--teal); --agent-hermes:var(--mauve);
+  /* dims (handoff §06) */
+  --titlebar-h:40px; --statusbar-h:27px; --sidebar-w:266px;
+}
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; }
+body { margin: 0; background: var(--base); color: var(--text);
+  font-family: var(--sans); -webkit-font-smoothing: antialiased; line-height: 1.5; }
+code, .mono { font-family: var(--mono); }

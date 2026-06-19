@@ -40,7 +40,7 @@ fn init_repo(dir: &Path) {
             args
         );
     };
-    run(&["init", "-q"]);
+    run(&["init", "-q", "-b", "main"]);
     run(&["config", "user.email", "t@e.com"]);
     run(&["config", "user.name", "T"]);
     std::fs::write(dir.join("README.md"), "hi").unwrap();
@@ -215,4 +215,35 @@ fn start_task_injects_provider_env() {
     assert!(out.contains("KEY=sk-secret"), "got: {out}");
     assert!(out.contains("BASE=http://localhost:1234/v1"), "got: {out}");
     let _ = info;
+}
+
+use agency_core::merge::MergeOutcome;
+
+#[test]
+fn merge_task_clean_merges_branch_into_base() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo); // existing helper: inits repo on default branch with a commit
+
+    let state = AppState::new(&dir.path().join("agency.db")).unwrap();
+    state.register_profile(AgentProfile {
+        name: "fake".into(),
+        command: fake_agent_command(),
+        args: vec!["{{prompt}}".into()],
+        env: vec![],
+    }).unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+
+    // Start a task → worktree on agent/<id>; make a non-conflicting commit in it.
+    let info = state.start_task(&project.id, "p", "fake", "HEAD", |_| {}).unwrap();
+    let wt = state.worktree_path(&info.task_id).unwrap();
+    std::fs::write(wt.join("feature.txt"), "x\n").unwrap();
+    std::process::Command::new("git").args(["add","-A"]).current_dir(&wt).status().unwrap();
+    std::process::Command::new("git").args(["commit","-qm","feat"]).current_dir(&wt).status().unwrap();
+
+    let outcome = state.merge_task(&info.task_id).unwrap();
+    assert!(matches!(outcome, MergeOutcome::Clean { .. }));
+    // feature.txt now on the repo's base branch working tree.
+    assert!(repo.join("feature.txt").exists());
 }

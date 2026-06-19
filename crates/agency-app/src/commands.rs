@@ -1,4 +1,5 @@
 use agency_core::git::{self, CommitInfo, FileChange};
+use agency_core::merge::MergeOutcome;
 use agency_core::profile::AgentProfile;
 use agency_core::registry::Project;
 use agency_core::supervisor::AgentStatus;
@@ -170,4 +171,14 @@ pub fn get_settings(state: State<'_, AppState>) -> Result<ProviderSettings, Stri
 #[tauri::command]
 pub fn save_settings(state: State<'_, AppState>, settings: ProviderSettings) -> Result<(), String> {
     state.save_settings(&settings).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn merge_task(state: State<'_, AppState>, task_id: String) -> Result<MergeOutcome, String> {
+    state.merge_task(&task_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn abort_merge_task(state: State<'_, AppState>, task_id: String) -> Result<(), String> {
+    state.abort_merge_task(&task_id).map_err(|e| e.to_string())
 }

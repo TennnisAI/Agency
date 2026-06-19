@@ -227,4 +227,24 @@ impl AppState {
         WorktreeManager::new(repo_path).remove(task_id)?;
         Ok(())
     }
+
+    fn repo_path_for(&self, task_id: &str) -> anyhow::Result<std::path::PathBuf> {
+        let sessions = self.sessions.lock().unwrap();
+        let session = sessions
+            .get(task_id)
+            .ok_or_else(|| anyhow::anyhow!("unknown task: {task_id}"))?;
+        Ok(session.repo_path.clone())
+    }
+
+    pub fn merge_task(&self, task_id: &str) -> anyhow::Result<agency_core::merge::MergeOutcome> {
+        let repo = self.repo_path_for(task_id)?;
+        let base = agency_core::merge::detect_base(&repo)?;
+        let branch = format!("agent/{task_id}");
+        agency_core::merge::merge(&repo, &branch, &base)
+    }
+
+    pub fn abort_merge_task(&self, task_id: &str) -> anyhow::Result<()> {
+        let repo = self.repo_path_for(task_id)?;
+        agency_core::merge::abort_merge(&repo)
+    }
 }

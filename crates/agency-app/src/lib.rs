@@ -34,6 +34,8 @@ pub fn run() {
             commands::delete_profile,
             commands::get_settings,
             commands::save_settings,
+            commands::merge_task,
+            commands::abort_merge_task,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Agency");

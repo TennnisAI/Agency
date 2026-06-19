@@ -76,3 +76,23 @@ export const gitCommit = (taskId: string, message: string) =>
   invoke<void>("git_commit", { taskId, message });
 
 export const gitPush = (taskId: string) => invoke<void>("git_push", { taskId });
+
+export interface AgentProfile {
+  name: string;
+  command: string;
+  args: string[];
+  env: [string, string][];
+}
+
+export interface ProviderSettings {
+  anthropicApiKey: string;
+  lmStudioBaseUrl: string;
+}
+
+export const listProfiles = () => invoke<AgentProfile[]>("list_profiles");
+export const saveProfile = (profile: AgentProfile) =>
+  invoke<void>("save_profile", { profile });
+export const deleteProfile = (name: string) => invoke<void>("delete_profile", { name });
+export const getSettings = () => invoke<ProviderSettings>("get_settings");
+export const saveSettings = (settings: ProviderSettings) =>
+  invoke<void>("save_settings", { settings });

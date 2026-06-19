@@ -270,8 +270,14 @@ fn save_settings_rejects_bad_provider_url() {
         lm_studio_base_url: "http://evil.example.com/v1".into(),
     };
     assert!(state.save_settings(&bad).is_err());
-    // localhost http and https are allowed
-    for ok in ["http://localhost:1234/v1", "https://api.example.com/v1", ""] {
+    // embedded credentials are rejected
+    let creds = agency_app_lib::ProviderSettings {
+        anthropic_api_key: "".into(),
+        lm_studio_base_url: "http://user:pass@localhost:1234/v1".into(),
+    };
+    assert!(state.save_settings(&creds).is_err());
+    // localhost, IPv6 loopback http, and https are allowed
+    for ok in ["http://localhost:1234/v1", "http://[::1]:1234/v1", "https://api.example.com/v1", ""] {
         let s = agency_app_lib::ProviderSettings {
             anthropic_api_key: "".into(),
             lm_studio_base_url: ok.into(),

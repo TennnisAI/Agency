@@ -41,7 +41,7 @@ fn validate_provider_url(raw: &str) -> Result<()> {
         "https" => {}
         "http" => {
             let host = url.host_str().unwrap_or("");
-            if host != "localhost" && host != "127.0.0.1" {
+            if host != "localhost" && host != "127.0.0.1" && host != "[::1]" {
                 bail!("http is only allowed for localhost; use https for remote hosts");
             }
         }

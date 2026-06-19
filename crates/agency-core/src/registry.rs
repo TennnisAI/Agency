@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
+use crate::profile::AgentProfile;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Project {
     pub id: String,
@@ -31,6 +33,16 @@ impl Registry {
                 repo_path TEXT NOT NULL,
                 default_agent TEXT,
                 default_provider TEXT
+            );
+            CREATE TABLE IF NOT EXISTS profiles (
+                name TEXT PRIMARY KEY,
+                command TEXT NOT NULL,
+                args TEXT NOT NULL,
+                env TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
             );",
         )?;
         Ok(Registry { conn })
@@ -88,6 +100,77 @@ impl Registry {
             .execute("DELETE FROM projects WHERE id = ?1", [id])?;
         Ok(())
     }
+
+    pub fn upsert_profile(&self, p: &AgentProfile) -> Result<()> {
+        let args = serde_json::to_string(&p.args)?;
+        let env = serde_json::to_string(&p.env)?;
+        self.conn.execute(
+            "INSERT INTO profiles (name, command, args, env) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(name) DO UPDATE SET command = ?2, args = ?3, env = ?4",
+            rusqlite::params![p.name, p.command, args, env],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_profile(&self, name: &str) -> Result<Option<AgentProfile>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT name, command, args, env FROM profiles WHERE name = ?1")?;
+        let mut rows = stmt.query([name])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(row_to_profile(row)?)),
+            None => Ok(None),
+        }
+    }
+
+    pub fn list_profiles(&self) -> Result<Vec<AgentProfile>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT name, command, args, env FROM profiles ORDER BY name")?;
+        let rows = stmt.query_map([], |row| Ok(row_to_profile(row)))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r??);
+        }
+        Ok(out)
+    }
+
+    pub fn delete_profile(&self, name: &str) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM profiles WHERE name = ?1", [name])?;
+        Ok(())
+    }
+
+    pub fn get_setting(&self, key: &str) -> Result<Option<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT value FROM settings WHERE key = ?1")?;
+        let mut rows = stmt.query([key])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(row.get(0)?)),
+            None => Ok(None),
+        }
+    }
+
+    pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = ?2",
+            rusqlite::params![key, value],
+        )?;
+        Ok(())
+    }
+}
+
+fn row_to_profile(row: &rusqlite::Row) -> Result<AgentProfile> {
+    let args: String = row.get(2)?;
+    let env: String = row.get(3)?;
+    Ok(AgentProfile {
+        name: row.get(0)?,
+        command: row.get(1)?,
+        args: serde_json::from_str(&args)?,
+        env: serde_json::from_str(&env)?,
+    })
 }
 
 fn row_to_project(row: &rusqlite::Row) -> Result<Project> {

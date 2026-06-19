@@ -1,3 +1,4 @@
+use agency_core::profile::AgentProfile;
 use agency_core::registry::Registry;
 use std::path::Path;
 
@@ -43,4 +44,43 @@ fn data_persists_across_reopen() {
 
     let reg2 = Registry::open(&db).unwrap();
     assert!(reg2.get_project(&id).unwrap().is_some());
+}
+
+#[test]
+fn profiles_persist_and_roundtrip() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("agency.db");
+    let p = AgentProfile {
+        name: "claude".into(),
+        command: "claude".into(),
+        args: vec!["{{prompt}}".into()],
+        env: vec![("FOO".into(), "bar".into())],
+    };
+    {
+        let reg = Registry::open(&db).unwrap();
+        reg.upsert_profile(&p).unwrap();
+    }
+    let reg = Registry::open(&db).unwrap();
+    assert_eq!(reg.get_profile("claude").unwrap().unwrap(), p);
+    assert_eq!(reg.list_profiles().unwrap(), vec![p.clone()]);
+
+    // upsert replaces by name
+    let p2 = AgentProfile { command: "claude2".into(), ..p.clone() };
+    reg.upsert_profile(&p2).unwrap();
+    assert_eq!(reg.get_profile("claude").unwrap().unwrap().command, "claude2");
+    assert_eq!(reg.list_profiles().unwrap().len(), 1);
+
+    reg.delete_profile("claude").unwrap();
+    assert!(reg.get_profile("claude").unwrap().is_none());
+}
+
+#[test]
+fn settings_persist_and_upsert() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("agency.db");
+    let reg = Registry::open(&db).unwrap();
+    assert!(reg.get_setting("anthropic_api_key").unwrap().is_none());
+    reg.set_setting("anthropic_api_key", "sk-test").unwrap();
+    reg.set_setting("anthropic_api_key", "sk-updated").unwrap();
+    assert_eq!(reg.get_setting("anthropic_api_key").unwrap().unwrap(), "sk-updated");
 }

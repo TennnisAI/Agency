@@ -7,11 +7,12 @@ import { sendInput, startTask, taskStatus, TaskInfo } from "../api";
 interface Props {
   projectId: string;
   prompt: string;
+  profile: string;
   onStatus: (label: string) => void;
   onStarted?: (taskId: string) => void;
 }
 
-export default function TerminalPane({ projectId, prompt, onStatus, onStarted }: Props) {
+export default function TerminalPane({ projectId, prompt, profile, onStatus, onStarted }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -45,7 +46,7 @@ export default function TerminalPane({ projectId, prompt, onStatus, onStarted }:
     let disposed = false;
     let onDataDisposable: { dispose(): void } | undefined;
 
-    startTask(projectId, prompt, "shell", (bytes) => term.write(bytes)).then((i) => {
+    startTask(projectId, prompt, profile, (bytes) => term.write(bytes)).then((i) => {
       if (disposed) return;
       info = i;
       onStarted?.(i.taskId);
@@ -70,7 +71,7 @@ export default function TerminalPane({ projectId, prompt, onStatus, onStarted }:
       term.dispose();
       void info; // session teardown handled by App via stopTask
     };
-  }, [projectId, prompt, onStatus, onStarted]);
+  }, [projectId, prompt, profile, onStatus, onStarted]);
 
   return <div className="terminal" ref={containerRef} />;
 }

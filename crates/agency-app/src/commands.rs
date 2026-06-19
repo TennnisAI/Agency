@@ -1,4 +1,5 @@
 use agency_core::git::{self, CommitInfo, FileChange};
+use agency_core::profile::AgentProfile;
 use agency_core::registry::Project;
 use agency_core::supervisor::AgentStatus;
 use base64::engine::general_purpose::STANDARD;
@@ -7,7 +8,7 @@ use serde::Serialize;
 use tauri::ipc::Channel;
 use tauri::State;
 
-use crate::state::{AppState, TaskInfo};
+use crate::state::{AppState, ProviderSettings, TaskInfo};
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -144,4 +145,29 @@ pub fn git_commit(
 pub fn git_push(state: State<'_, AppState>, task_id: String) -> Result<(), String> {
     let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
     git::push(&wt).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_profiles(state: State<'_, AppState>) -> Result<Vec<AgentProfile>, String> {
+    state.list_profiles().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn save_profile(state: State<'_, AppState>, profile: AgentProfile) -> Result<(), String> {
+    state.register_profile(profile).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_profile(state: State<'_, AppState>, name: String) -> Result<(), String> {
+    state.delete_profile(&name).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_settings(state: State<'_, AppState>) -> Result<ProviderSettings, String> {
+    state.get_settings().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn save_settings(state: State<'_, AppState>, settings: ProviderSettings) -> Result<(), String> {
+    state.save_settings(&settings).map_err(|e| e.to_string())
 }

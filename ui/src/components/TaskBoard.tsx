@@ -10,7 +10,8 @@ interface Props {
 function statusDotClass(status: string): string {
   const s = status.toLowerCase();
   if (s === "running") return "running";
-  if (s === "awaiting" || s === "idle") return "awaiting";
+  if (s === "idle") return "review";
+  if (s === "awaiting") return "awaiting";
   if (s === "review") return "review";
   if (s === "exited") return "exited";
   if (s === "crashed") return "crashed";

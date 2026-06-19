@@ -112,42 +112,61 @@ button:hover { background: var(--lav); }
 .terminal { flex: 1; min-height: 320px; background: var(--crust); border-radius: 8px; padding: 6px; overflow: hidden; }
 .task-split { display: flex; gap: 12px; flex: 1; min-height: 0; }
 .task-split .terminal { flex: 2; }
+/* Git panel chrome */
 .git-panel { flex: 1; min-width: 280px; max-width: 420px; overflow: auto; background: var(--mantle); border: 1px solid var(--line); border-radius: 8px; padding: 10px; display: flex; flex-direction: column; gap: 10px; }
-.git-header { display: flex; justify-content: space-between; align-items: center; }
+.git-header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--line); padding-bottom: 8px; }
 .git-header h3 { margin: 0; font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--o1); }
-.git-section h4 { margin: 4px 0; font-size: 12px; color: var(--o0); }
-.git-empty { color: var(--s2); font-size: 12px; }
-.git-file { display: flex; align-items: center; gap: 6px; font-size: 13px; padding: 2px 0; }
-.git-status { width: 14px; color: var(--yellow); font-family: var(--mono); }
-.git-path { flex: 1; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.git-path:hover { text-decoration: underline; }
-.git-file button { padding: 0 8px; }
-.git-commit { display: flex; flex-direction: column; gap: 6px; }
-.git-commit textarea { background: var(--crust); border: 1px solid var(--line); color: var(--text); border-radius: 6px; padding: 6px; min-height: 56px; resize: vertical; }
-.git-actions { display: flex; gap: 6px; }
-.git-error { color: var(--red); font-size: 12px; white-space: pre-wrap; }
-.git-diff pre { background: var(--crust); border-radius: 6px; padding: 8px; overflow: auto; max-height: 240px; font-size: 12px; }
-.git-commit-row { font-size: 12px; padding: 1px 0; }
-.git-commit-row code { color: var(--blue); }
-.settings-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 10; }
-.settings { background: var(--crust); border: 1px solid var(--line); border-radius: 10px; padding: 16px; width: 560px; max-height: 86vh; overflow: auto; display: flex; flex-direction: column; gap: 14px; }
+.git-section { display: flex; flex-direction: column; gap: 2px; }
+.git-section h4 { margin: 4px 0; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--o0); }
+.git-empty { color: var(--s2); font-size: 12px; padding: 2px 0; }
+.git-file { display: flex; align-items: center; gap: 6px; font-size: 13px; padding: 3px 4px; border-radius: 4px; }
+.git-file:hover { background: var(--s0); }
+.git-status { width: 14px; font-family: var(--mono); font-size: 12px; font-weight: 600; flex-shrink: 0; }
+.git-status-add { color: var(--green); }
+.git-status-mod { color: var(--yellow); }
+.git-status-del { color: var(--red); }
+.git-status-untracked { color: var(--o0); }
+.git-path { flex: 1; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--sub1); }
+.git-path:hover { color: var(--text); text-decoration: underline; }
+.git-file button { padding: 0 8px; font-size: 14px; line-height: 1; }
+.git-commit { display: flex; flex-direction: column; gap: 6px; padding-top: 4px; border-top: 1px solid var(--line); }
+.git-commit textarea { background: var(--crust); border: 1px solid var(--s1); color: var(--text); border-radius: 6px; padding: 6px; min-height: 56px; resize: vertical; font-family: var(--sans); font-size: 13px; }
+.git-commit textarea:focus { outline: none; border-color: var(--blue); }
+.git-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.git-error { color: var(--red); font-size: 12px; white-space: pre-wrap; background: rgba(243,139,168,.08); border-radius: 4px; padding: 4px 6px; }
+/* Diff viewer */
+.git-diff h4 { margin: 0 0 4px; font-size: 12px; color: var(--o1); font-family: var(--mono); }
+.git-diff .diff-pre { background: var(--crust); border-radius: 6px; padding: 8px; overflow: auto; max-height: 240px; font-size: 12px; font-family: var(--mono); white-space: pre; line-height: 1.5; margin: 0; border: 1px solid var(--line); }
+.diff-add { color: var(--green); background: rgba(166,227,161,.10); display: block; }
+.diff-del { color: var(--red); background: rgba(243,139,168,.10); display: block; }
+.diff-hunk { color: var(--blue); background: rgba(137,180,250,.07); display: block; }
+.diff-ctx { color: var(--o1); display: block; }
+.git-commit-row { font-size: 12px; padding: 2px 4px; border-radius: 3px; }
+.git-commit-row:hover { background: var(--s0); }
+.git-commit-row code { color: var(--blue); font-size: 11px; }
+/* Settings overlay + modal */
+.settings-overlay { position: fixed; inset: 0; background: rgba(17,17,27,.66); backdrop-filter: blur(6px); display: flex; align-items: center; justify-content: center; z-index: 10; }
+.settings { background: var(--crust); border: 1px solid var(--s1); border-radius: 15px; padding: 20px; width: 580px; max-height: 86vh; overflow: auto; display: flex; flex-direction: column; gap: 14px; box-shadow: 0 24px 64px rgba(0,0,0,.5); }
 .settings-head { display: flex; justify-content: space-between; align-items: center; }
+.settings-head h2 { margin: 0; font-size: 15px; font-weight: 600; color: var(--text); }
 .settings section { display: flex; flex-direction: column; gap: 6px; }
-.settings h3 { margin: 0; font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--o1); }
+.settings h3 { margin: 0; font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--o1); }
 .settings label { font-size: 12px; color: var(--o0); }
-.settings input, .settings textarea { background: var(--mantle); border: 1px solid var(--s1); color: var(--text); border-radius: 6px; padding: 8px; width: 100%; }
+.settings input, .settings textarea { background: var(--mantle); border: 1px solid var(--s1); color: var(--text); border-radius: 6px; padding: 8px; width: 100%; font-family: var(--sans); font-size: 13px; }
+.settings input:focus, .settings textarea:focus { outline: none; border-color: var(--blue); }
 .settings textarea { min-height: 64px; resize: vertical; }
 .profile-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
-.profile-list li { display: flex; align-items: center; gap: 8px; }
-.profile-name { cursor: pointer; min-width: 90px; }
-.profile-name:hover { text-decoration: underline; }
+.profile-list li { display: flex; align-items: center; gap: 8px; padding: 4px; border-radius: 4px; }
+.profile-list li:hover { background: var(--s0); }
+.profile-name { cursor: pointer; min-width: 90px; color: var(--sub1); }
+.profile-name:hover { color: var(--text); text-decoration: underline; }
 .profile-list code { color: var(--o0); flex: 1; font-size: 12px; }
 .profile-form { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
 .sidebar-wrap { display: flex; flex-direction: column; }
 .settings-btn { margin: 8px; background: var(--s0); color: var(--text); font-weight: 400; }
 .settings-btn:hover { background: var(--s1); }
 /* Merge modal */
-.merge-modal { background: var(--crust); border: 1px solid var(--line); border-radius: 12px; padding: 16px; width: 620px; max-height: 86vh; overflow: auto; display: flex; flex-direction: column; gap: 12px; }
+.merge-modal { background: var(--crust); border: 1px solid var(--s1); border-radius: 15px; padding: 20px; width: 720px; max-height: 86vh; overflow: auto; display: flex; flex-direction: column; gap: 12px; box-shadow: 0 24px 64px rgba(0,0,0,.5); }
 .merge-ok { color: var(--green); }
 .merge-warn { color: var(--yellow); }
 .merge-term { min-height: 280px; }

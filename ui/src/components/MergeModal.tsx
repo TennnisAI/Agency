@@ -16,6 +16,8 @@ export default function MergeModal({ taskId, onClose }: { taskId: string; onClos
   const [resolving, setResolving] = useState(false);
   const [resolverDone, setResolverDone] = useState(false);
   const termRef = useRef<HTMLDivElement>(null);
+  const termInstanceRef = useRef<Terminal | null>(null);
+  const timerRef = useRef<ReturnType<typeof window.setInterval> | null>(null);
 
   async function attempt() {
     setError("");
@@ -35,6 +37,7 @@ export default function MergeModal({ taskId, onClose }: { taskId: string; onClos
     setResolving(true);
     setResolverDone(false);
     const term = new Terminal({ convertEol: true, fontSize: 12 });
+    termInstanceRef.current = term;
     const fit = new FitAddon();
     term.loadAddon(fit);
     if (termRef.current) {
@@ -56,12 +59,21 @@ export default function MergeModal({ taskId, onClose }: { taskId: string; onClos
         if (s.state === "exited" || s.state === "crashed") {
           setResolverDone(true);
           window.clearInterval(timer);
+          timerRef.current = null;
         }
       } catch {
         /* not started yet */
       }
     }, 1000);
+    timerRef.current = timer;
   }
+
+  useEffect(() => {
+    return () => {
+      if (timerRef.current !== null) window.clearInterval(timerRef.current);
+      termInstanceRef.current?.dispose();
+    };
+  }, []);
 
   return (
     <div className="settings-overlay">

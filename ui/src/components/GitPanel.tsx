@@ -10,6 +10,7 @@ import {
   gitStatus,
   gitUnstage,
 } from "../api";
+import MergeModal from "./MergeModal";
 
 export default function GitPanel({ taskId }: { taskId: string }) {
   const [changes, setChanges] = useState<FileChange[]>([]);
@@ -18,6 +19,7 @@ export default function GitPanel({ taskId }: { taskId: string }) {
   const [diff, setDiff] = useState("");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [showMerge, setShowMerge] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -111,6 +113,7 @@ export default function GitPanel({ taskId }: { taskId: string }) {
             Commit
           </button>
           <button onClick={() => act(() => gitPush(taskId))}>Push</button>
+          <button onClick={() => setShowMerge(true)}>Approve &amp; merge</button>
         </div>
       </div>
 
@@ -129,6 +132,8 @@ export default function GitPanel({ taskId }: { taskId: string }) {
           </div>
         ))}
       </div>
+
+      {showMerge && <MergeModal taskId={taskId} onClose={() => setShowMerge(false)} />}
     </div>
   );
 }

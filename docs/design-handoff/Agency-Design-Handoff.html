@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agency — Design Handoff</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --base:#1e1e2e; --mantle:#181825; --crust:#11111b;
+    --s0:#313244; --s1:#45475a; --s2:#585b70;
+    --o0:#6c7086; --o1:#7f849c; --o2:#9399b2;
+    --text:#cdd6f4; --sub1:#bac2de; --sub0:#a6adc8;
+    --blue:#89b4fa; --lav:#b4befe; --mauve:#cba6f7; --pink:#f5c2e7;
+    --green:#a6e3a1; --teal:#94e2d5; --yellow:#f9e2af; --peach:#fab387; --red:#f38ba8;
+    --line:#25253a;
+    --sans:'Geist',ui-sans-serif,system-ui,-apple-system,'Segoe UI',sans-serif;
+    --mono:'JetBrains Mono',ui-monospace,'SF Mono',Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:#0c0c14;color:var(--text);font-family:var(--sans);-webkit-font-smoothing:antialiased;line-height:1.6}
+  .page{max-width:880px;margin:0 auto;padding:64px 56px}
+  h1,h2,h3,h4{line-height:1.2;margin:0;font-weight:600;letter-spacing:-.01em}
+  h1{font-size:40px}
+  h2{font-size:24px;margin:0 0 6px}
+  h3{font-size:16px;margin:0 0 4px}
+  p{margin:0 0 12px;color:var(--sub0)}
+  a{color:var(--blue);text-decoration:none}
+  code,.mono{font-family:var(--mono)}
+  code{font-size:.86em;background:var(--crust);border:1px solid var(--s0);border-radius:5px;padding:1px 6px;color:var(--sub1)}
+  hr{border:none;border-top:1px solid var(--line);margin:0}
+  .eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--o0);font-weight:600}
+  section{margin-top:52px}
+  .lead{font-size:16px;color:var(--sub1);max-width:62ch}
+  .sec-head{display:flex;align-items:baseline;gap:12px;border-bottom:1px solid var(--line);padding-bottom:12px;margin-bottom:22px}
+  .sec-head .n{font-family:var(--mono);font-size:13px;color:var(--blue);font-weight:600}
+  .card{background:var(--mantle);border:1px solid var(--s0);border-radius:12px;padding:20px 22px}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
+  ul{margin:0 0 12px;padding-left:18px;color:var(--sub0)}
+  li{margin:4px 0}
+  li::marker{color:var(--o0)}
+  table{width:100%;border-collapse:collapse;font-size:13.5px}
+  th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--o0);font-weight:600}
+  td{color:var(--sub1)}
+  td.mono,th.mono{font-family:var(--mono)}
+  /* swatches */
+  .swrow{display:flex;flex-wrap:wrap;gap:10px}
+  .sw{width:128px;border:1px solid var(--s0);border-radius:9px;overflow:hidden;background:var(--crust)}
+  .sw .chip{height:46px}
+  .sw .meta{padding:7px 9px;font-family:var(--mono);font-size:10.5px;line-height:1.5}
+  .sw .meta .nm{color:var(--text)}
+  .sw .meta .hx{color:var(--o0)}
+  .pill{display:inline-flex;align-items:center;gap:7px;font-family:var(--mono);font-size:11.5px;background:var(--crust);border:1px solid var(--s0);border-radius:7px;padding:4px 9px;color:var(--sub0)}
+  .dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+  .note{background:rgba(137,180,250,.06);border:1px solid rgba(137,180,250,.28);border-radius:10px;padding:14px 16px;color:var(--sub1);font-size:13.5px}
+  .note b{color:var(--text)}
+  .twocol{display:grid;grid-template-columns:170px 1fr;gap:8px 18px;font-size:13.5px}
+  .twocol .k{font-family:var(--mono);color:var(--o0)}
+  .twocol .v{color:var(--sub1)}
+  .filelist{display:flex;flex-direction:column;gap:8px}
+  .file{display:flex;align-items:center;gap:12px;background:var(--mantle);border:1px solid var(--s0);border-radius:10px;padding:12px 15px}
+  .file .ic{width:30px;height:30px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-weight:700;font-size:12px;color:var(--crust);flex-shrink:0}
+  .file .nm{font-family:var(--mono);font-size:13.5px;color:var(--text)}
+  .file .ds{font-size:12.5px;color:var(--o0)}
+  .tag{font-family:var(--mono);font-size:10px;letter-spacing:.04em;border-radius:5px;padding:2px 7px}
+  .meterbar{display:flex;align-items:center;gap:10px;margin:5px 0;font-family:var(--mono);font-size:12px}
+  .meterbar .box{height:14px;border-radius:3px;flex-shrink:0}
+  .footer{margin-top:64px;border-top:1px solid var(--line);padding-top:18px;color:var(--o0);font-size:12px;font-family:var(--mono);display:flex;justify-content:space-between}
+  @media print{
+    html,body{background:#fff;color:#11111b}
+    .page{max-width:none;padding:0}
+    section{break-inside:avoid}
+    .card,.file,.note,.sw{break-inside:avoid}
+    a{color:#1e40af}
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header>
+    <div class="eyebrow">Design Handoff · v0.3.1 · 2026-06-19</div>
+    <h1 style="margin-top:14px">Agency</h1>
+    <p class="lead" style="margin-top:14px">Local desktop app for running multiple terminal coding agents in parallel — each isolated in its own git worktree — with live terminals, a full git review surface, and an approve→merge flow. This document hands off the high-fidelity UI mockups to engineering and specifies the design system, screens, components, states, and interactions needed to build them.</p>
+    <div class="swrow" style="margin-top:18px">
+      <span class="pill"><span class="dot" style="background:var(--green)"></span>Tauri + Rust core + web UI</span>
+      <span class="pill">Catppuccin Mocha</span>
+      <span class="pill">Geist · JetBrains&nbsp;Mono</span>
+      <span class="pill">Cross-platform · macOS / Windows / Linux</span>
+    </div>
+  </header>
+
+  <!-- ============ 1. DELIVERABLES ============ -->
+  <section>
+    <div class="sec-head"><span class="n">01</span><h2>What's in this package</h2></div>
+    <div class="filelist">
+      <div class="file">
+        <div class="ic" style="background:var(--blue)">V2</div>
+        <div style="flex:1">
+          <div class="nm">Agency v2.dc.html</div>
+          <div class="ds">Recommended build. Adds the git Review side-panel in the Agents view, a collapsible sidebar &amp; focus agent-list, a foldable project tree (expand a project to see its agents), and project-switchable git history.</div>
+        </div>
+        <span class="tag" style="background:rgba(166,227,161,.14);color:var(--green)">primary</span>
+      </div>
+      <div class="file">
+        <div class="ic" style="background:var(--mauve)">V1</div>
+        <div style="flex:1">
+          <div class="nm">Agency.dc.html</div>
+          <div class="ds">Original build, kept for comparison. Same screens without the v2 panel/collapse/tree additions.</div>
+        </div>
+        <span class="tag" style="background:rgba(108,112,134,.18);color:var(--o2)">reference</span>
+      </div>
+      <div class="file">
+        <div class="ic" style="background:var(--s1)">JS</div>
+        <div style="flex:1">
+          <div class="nm">support.js</div>
+          <div class="ds">Runtime that renders the <code>.dc.html</code> mockups. Keep it next to the HTML files so they open in any browser, offline.</div>
+        </div>
+        <span class="tag" style="background:rgba(108,112,134,.18);color:var(--o2)">runtime</span>
+      </div>
+      <div class="file">
+        <div class="ic" style="background:var(--peach)">DOC</div>
+        <div style="flex:1">
+          <div class="nm">Agency-Design-Handoff.html</div>
+          <div class="ds">This document. Self-contained; print to PDF via your browser if you need a shareable copy.</div>
+        </div>
+        <span class="tag" style="background:rgba(108,112,134,.18);color:var(--o2)">this file</span>
+      </div>
+    </div>
+    <div class="note" style="margin-top:16px">These are <b>visual + interaction mockups</b>, not production code — clickable so you can feel the flows. Terminal output, diffs, commit hashes, and agent runs are realistic placeholders. The mockups define look, layout, states, and behavior; the engine itself follows the approved architecture (Rust core + web renderer).</div>
+  </section>
+
+  <!-- ============ 2. ARCHITECTURE CONTEXT ============ -->
+  <section>
+    <div class="sec-head"><span class="n">02</span><h2>Product &amp; architecture context</h2></div>
+    <p>Agency is a Tauri application: a <b style="color:var(--text)">Rust core</b> owns all state, process management, and git operations; the <b style="color:var(--text)">web UI</b> (React + xterm.js) is the renderer. The mockups map to these UI surfaces:</p>
+    <div class="twocol" style="margin-top:8px">
+      <span class="k">Project sidebar</span><span class="v">Multi-project dashboard; foldable tree of projects → their agent runs (worktrees).</span>
+      <span class="k">Task board</span><span class="v">Per-project cards / list of agent runs with live status dots — the Agents view (Grid &amp; Focus).</span>
+      <span class="k">Live terminal</span><span class="v">xterm.js pane bound to the selected task's PTY. Watch, interject, send feedback.</span>
+      <span class="k">Git panel</span><span class="v">Per-worktree source control: file tree + diff + stage/commit/push + approve/discard.</span>
+      <span class="k">Settings</span><span class="v">Agent profiles (Claude Code, Pi, Hermes), model providers (Anthropic, LM Studio).</span>
+    </div>
+    <p style="margin-top:14px">Each agent run lives on branch <code>agent/&lt;task-id&gt;</code> in a worktree under <code>&lt;repo&gt;/.agency/worktrees/&lt;task-id&gt;</code>, branched off a chosen base (default <code>main</code>).</p>
+  </section>
+
+  <!-- ============ 3. SCREENS ============ -->
+  <section>
+    <div class="sec-head"><span class="n">03</span><h2>Screens &amp; information architecture</h2></div>
+    <div class="grid2">
+      <div class="card">
+        <h3>Agents · Grid</h3>
+        <p style="font-size:13.5px">Tiling grid of agent terminals — every run visible at once. Each tile = status dot · title · agent badge · branch · diff stat · live terminal preview (fades at the bottom) · status + contextual action footer. Click a tile header to open it in Focus.</p>
+      </div>
+      <div class="card">
+        <h3>Agents · Focus</h3>
+        <p style="font-size:13.5px">One large terminal for the selected run, with an agent list rail on the left. Header carries title, agent, branch, status, and Stop / Send feedback / Approve actions. An input line at the bottom represents PTY interjection.</p>
+      </div>
+      <div class="card">
+        <h3>Source Control</h3>
+        <p style="font-size:13.5px">VSCode-style: commit message box, staged vs. unstaged file lists with per-file stage/unstage, history graph, and a unified diff viewer with <b style="color:var(--text)">per-hunk Stage</b> buttons. Selecting a file swaps the diff.</p>
+      </div>
+      <div class="card">
+        <h3>Settings</h3>
+        <p style="font-size:13.5px">Agent Profiles (command / args / env per agent), Model Providers (Anthropic API key, LM Studio base URL with detect), and General (default base branch, worktree location, theme).</p>
+      </div>
+      <div class="card">
+        <h3>New Task (modal)</h3>
+        <p style="font-size:13.5px">Prompt, project, base branch, agent profile, and model provider — with a live preview of the worktree path and <code>agent/&lt;id&gt;</code> branch that will be created.</p>
+      </div>
+      <div class="card">
+        <h3>Merge resolver (modal)</h3>
+        <p style="font-size:13.5px">The approve→merge flow: checkout → rebase → resolve → summary timeline, the resolver agent's terminal, per-conflict resolution status, and a plain-language summary. Footer: Discard / Keep worktree / Confirm merge.</p>
+      </div>
+    </div>
+    <h3 style="margin:26px 0 10px">v2 additions</h3>
+    <ul>
+      <li><b style="color:var(--text)">Git Review side-panel</b> in the Agents view (toggle in the header) — branch, diff stat, commit box, Commit/Push, staged &amp; changed files, and "Open in Source Control →". Works in both Grid and Focus.</li>
+      <li><b style="color:var(--text)">Collapsible sidebar</b> via the left-panel icon in the title bar; main content reflows to full width.</li>
+      <li><b style="color:var(--text)">Collapsible focus agent-list</b> (« / ») that tucks to a slim rail so the terminal expands.</li>
+      <li><b style="color:var(--text)">Foldable project tree</b> — expand a project to reveal its agents/worktrees; clicking one opens that agent in Focus.</li>
+      <li><b style="color:var(--text)">Project-switchable git history</b> — A/W/M/D pills in the History section swap which project's commit log is shown.</li>
+    </ul>
+  </section>
+
+  <!-- ============ 4. COLOR ============ -->
+  <section>
+    <div class="sec-head"><span class="n">04</span><h2>Color — Catppuccin Mocha</h2></div>
+    <p>Near-black neutral base with a small, consistent accent set. Theme is named in Settings, so build tokens to allow swapping palettes later.</p>
+
+    <h3 style="margin:22px 0 10px">Surfaces &amp; text</h3>
+    <div class="swrow">
+      <div class="sw"><div class="chip" style="background:#11111b"></div><div class="meta"><div class="nm">crust</div><div class="hx">#11111b</div></div></div>
+      <div class="sw"><div class="chip" style="background:#181825"></div><div class="meta"><div class="nm">mantle</div><div class="hx">#181825</div></div></div>
+      <div class="sw"><div class="chip" style="background:#1e1e2e"></div><div class="meta"><div class="nm">base</div><div class="hx">#1e1e2e</div></div></div>
+      <div class="sw"><div class="chip" style="background:#25253a"></div><div class="meta"><div class="nm">line/border</div><div class="hx">#25253a</div></div></div>
+      <div class="sw"><div class="chip" style="background:#313244"></div><div class="meta"><div class="nm">surface0</div><div class="hx">#313244</div></div></div>
+      <div class="sw"><div class="chip" style="background:#45475a"></div><div class="meta"><div class="nm">surface1</div><div class="hx">#45475a</div></div></div>
+      <div class="sw"><div class="chip" style="background:#6c7086"></div><div class="meta"><div class="nm">overlay0</div><div class="hx">#6c7086</div></div></div>
+      <div class="sw"><div class="chip" style="background:#a6adc8"></div><div class="meta"><div class="nm">subtext0</div><div class="hx">#a6adc8</div></div></div>
+      <div class="sw"><div class="chip" style="background:#cdd6f4"></div><div class="meta"><div class="nm">text</div><div class="hx">#cdd6f4</div></div></div>
+    </div>
+
+    <h3 style="margin:24px 0 10px">Accents</h3>
+    <div class="swrow">
+      <div class="sw"><div class="chip" style="background:#89b4fa"></div><div class="meta"><div class="nm">blue</div><div class="hx">#89b4fa</div></div></div>
+      <div class="sw"><div class="chip" style="background:#b4befe"></div><div class="meta"><div class="nm">lavender</div><div class="hx">#b4befe</div></div></div>
+      <div class="sw"><div class="chip" style="background:#cba6f7"></div><div class="meta"><div class="nm">mauve</div><div class="hx">#cba6f7</div></div></div>
+      <div class="sw"><div class="chip" style="background:#94e2d5"></div><div class="meta"><div class="nm">teal</div><div class="hx">#94e2d5</div></div></div>
+      <div class="sw"><div class="chip" style="background:#a6e3a1"></div><div class="meta"><div class="nm">green</div><div class="hx">#a6e3a1</div></div></div>
+      <div class="sw"><div class="chip" style="background:#f9e2af"></div><div class="meta"><div class="nm">yellow</div><div class="hx">#f9e2af</div></div></div>
+      <div class="sw"><div class="chip" style="background:#fab387"></div><div class="meta"><div class="nm">peach</div><div class="hx">#fab387</div></div></div>
+      <div class="sw"><div class="chip" style="background:#f38ba8"></div><div class="meta"><div class="nm">red</div><div class="hx">#f38ba8</div></div></div>
+    </div>
+
+    <h3 style="margin:26px 0 10px">Semantic mapping</h3>
+    <table>
+      <thead><tr><th>Token</th><th>Color</th><th>Used for</th></tr></thead>
+      <tbody>
+        <tr><td><span class="pill"><span class="dot" style="background:var(--green)"></span>Running</span></td><td class="mono">green #a6e3a1</td><td>active agent (status dot pulses + glows); primary "Approve / Commit" success accents; additions in diffs.</td></tr>
+        <tr><td><span class="pill"><span class="dot" style="background:var(--yellow)"></span>Awaiting input</span></td><td class="mono">yellow #f9e2af</td><td>agent is blocked on a prompt; tile gets a subtle yellow ring; "Reply" action.</td></tr>
+        <tr><td><span class="pill"><span class="dot" style="background:var(--blue)"></span>Idle / review</span></td><td class="mono">blue #89b4fa</td><td>done, needs review; also the primary interactive accent (selection, links, New task).</td></tr>
+        <tr><td><span class="pill"><span class="dot" style="background:var(--o0)"></span>Exited (0)</span></td><td class="mono">overlay0 #6c7086</td><td>finished/stopped; tile dimmed to ~82% opacity.</td></tr>
+        <tr><td><span class="pill"><span class="dot" style="background:var(--red)"></span>Crashed</span></td><td class="mono">red #f38ba8</td><td>error/crash; red border; deletions in diffs; destructive actions (discard, force-push).</td></tr>
+      </tbody>
+    </table>
+
+    <h3 style="margin:26px 0 10px">Agent badge colors</h3>
+    <div class="swrow">
+      <span class="pill"><span class="dot" style="background:var(--peach)"></span>Claude Code — peach #fab387</span>
+      <span class="pill"><span class="dot" style="background:var(--teal)"></span>Pi — teal #94e2d5</span>
+      <span class="pill"><span class="dot" style="background:var(--mauve)"></span>Hermes — mauve #cba6f7</span>
+    </div>
+  </section>
+
+  <!-- ============ 5. TYPE ============ -->
+  <section>
+    <div class="sec-head"><span class="n">05</span><h2>Typography</h2></div>
+    <div class="grid2">
+      <div class="card">
+        <div class="eyebrow">UI · sans</div>
+        <div style="font-family:var(--sans);font-size:30px;font-weight:600;margin:10px 0 4px">Geist</div>
+        <p style="font-size:13px;margin:0">All interface chrome: titles, labels, buttons, body. Weights 400 / 500 / 600. Tight tracking on headings (<code>-0.01em</code>).</p>
+      </div>
+      <div class="card">
+        <div class="eyebrow">Code · mono</div>
+        <div style="font-family:var(--mono);font-size:28px;font-weight:600;margin:10px 0 4px">JetBrains&nbsp;Mono</div>
+        <p style="font-size:13px;margin:0">Terminals, diffs, branches, paths, commit hashes, keyboard hints, status bar.</p>
+      </div>
+    </div>
+    <h3 style="margin:24px 0 10px">Scale (px)</h3>
+    <table>
+      <thead><tr><th>Role</th><th>Size / weight</th><th>Family</th></tr></thead>
+      <tbody>
+        <tr><td>Screen title (e.g. project name)</td><td class="mono">15 / 600</td><td>Geist</td></tr>
+        <tr><td>Section / card heading</td><td class="mono">13.5–14 / 600</td><td>Geist</td></tr>
+        <tr><td>Body &amp; list items</td><td class="mono">12.5–13 / 400–500</td><td>Geist</td></tr>
+        <tr><td>Terminal body</td><td class="mono">12.5–13 / 400</td><td>JetBrains Mono</td></tr>
+        <tr><td>Diff lines</td><td class="mono">12.5 / 400</td><td>JetBrains Mono</td></tr>
+        <tr><td>Eyebrow / section labels</td><td class="mono">10.5–11 / 600 · .13em</td><td>Geist</td></tr>
+        <tr><td>Badges / meta / status bar</td><td class="mono">10–11.5 / 400–600</td><td>JetBrains Mono</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ============ 6. SPACING / SHAPE ============ -->
+  <section>
+    <div class="sec-head"><span class="n">06</span><h2>Spacing, radius &amp; elevation</h2></div>
+    <div class="grid2">
+      <div class="card">
+        <h3>Radius</h3>
+        <div class="meterbar"><span class="box" style="width:20px;background:var(--s1);border-radius:5px"></span> 5–6px — pills, badges, small controls</div>
+        <div class="meterbar"><span class="box" style="width:28px;background:var(--s1);border-radius:7px"></span> 7–8px — buttons, inputs, file rows</div>
+        <div class="meterbar"><span class="box" style="width:38px;background:var(--s1);border-radius:11px"></span> 10–12px — cards, tiles, panels</div>
+        <div class="meterbar"><span class="box" style="width:46px;background:var(--s1);border-radius:15px"></span> 14–15px — modals</div>
+      </div>
+      <div class="card">
+        <h3>Key dimensions</h3>
+        <div class="twocol" style="grid-template-columns:1fr auto;gap:6px 14px">
+          <span class="k">Title bar</span><span class="v">40px</span>
+          <span class="k">Status bar</span><span class="v">27px</span>
+          <span class="k">Content header</span><span class="v">54px</span>
+          <span class="k">Project sidebar</span><span class="v">266px</span>
+          <span class="k">Focus agent rail</span><span class="v">312px</span>
+          <span class="k">Source changes pane</span><span class="v">336px</span>
+          <span class="k">Git review panel</span><span class="v">360px</span>
+          <span class="k">Grid tile min / row</span><span class="v">340px / 262px</span>
+        </div>
+      </div>
+    </div>
+    <div class="note" style="margin-top:14px">Spacing rhythm is tight (power-user density): <b>6–8px</b> inside controls, <b>12–18px</b> inside cards/panels, <b>14px</b> grid gaps. Borders are a single hairline <code>#25253a</code>; cards sit on <code>#181825</code> over a <code>#1e1e2e</code> canvas. Elevation is reserved for modals only (<code>0 24px 64px rgba(0,0,0,.5)</code>) — the rest of the UI is flat and separated by surface tone + hairlines.</p></div>
+  </section>
+
+  <!-- ============ 7. COMPONENTS ============ -->
+  <section>
+    <div class="sec-head"><span class="n">07</span><h2>Components</h2></div>
+    <table>
+      <thead><tr><th>Component</th><th>Spec</th></tr></thead>
+      <tbody>
+        <tr><td><b style="color:var(--text)">Button · primary</b></td><td>bg <code>#89b4fa</code>, text <code>#11111b</code>, weight 600, radius 8, pad 8×13. Hover → lavender <code>#b4befe</code>. Success variant uses green; destructive uses red outline.</td></tr>
+        <tr><td><b style="color:var(--text)">Button · secondary</b></td><td>bg <code>#1e1e2e</code>, 1px <code>#45475a</code>, text <code>#cdd6f4</code>. Ghost: transparent + 1px <code>#313244</code>, text <code>#a6adc8</code>, hover fills <code>#313244</code>.</td></tr>
+        <tr><td><b style="color:var(--text)">Segmented control</b></td><td>track <code>#11111b</code> + 1px <code>#25253a</code>, radius 8–9, 3px pad. Active segment <code>#313244/#45475a</code>; inactive text <code>#7f849c</code>. Used for Agents/Source nav, Grid/Focus, Unified/Split, history pills.</td></tr>
+        <tr><td><b style="color:var(--text)">Status dot</b></td><td>8–9px circle in the status color. Running adds <code>box-shadow:0 0 8px</code> + pulse (1.6s). </td></tr>
+        <tr><td><b style="color:var(--text)">Agent badge</b></td><td>mono 10.5px, agent color on <code>#1e1e2e/#11111b</code>, radius 5, pad 2×7, <code>nowrap</code>.</td></tr>
+        <tr><td><b style="color:var(--text)">Agent tile</b></td><td>card with header (dot · title · badge), meta row (branch · +adds −dels · files), terminal preview with bottom fade, footer (status + actions). Border reflects state (default <code>#313244</code>, awaiting = yellow ring, crashed = red).</td></tr>
+        <tr><td><b style="color:var(--text)">Terminal</b></td><td>bg <code>#11111b</code>, JetBrains Mono 12.5–13, line-height 1.7–1.85. Tokens colored by role (prompt <code>#6c7086</code>, success green, warn yellow, error red, paths blue, identifiers teal, agent accent). Blinking block cursor.</td></tr>
+        <tr><td><b style="color:var(--text)">Diff line</b></td><td>monospace, <code>white-space:pre</code>. Add: green text on <code>rgba(166,227,161,.10)</code>, prefix <code>+</code>. Del: red on <code>rgba(243,139,168,.10)</code>, prefix <code>−</code>. Context: <code>#7f849c</code>. Hunk header: blue on <code>rgba(137,180,250,.07)</code> with a per-hunk <b>Stage hunk</b> button.</td></tr>
+        <tr><td><b style="color:var(--text)">File row</b></td><td>status letter (A/M/D) in semantic color · name · dim path · <code>+adds −dels</code> · stage/unstage affordance on hover.</td></tr>
+        <tr><td><b style="color:var(--text)">Modal</b></td><td>centered card, 1px <code>#45475a</code>, radius 15, big shadow, over a <code>rgba(17,17,27,.66)</code> + blur backdrop. Header (title + ✕), body, footer with actions. New task 580px; merge resolver 720px.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ============ 8. INTERACTIONS / STATES ============ -->
+  <section>
+    <div class="sec-head"><span class="n">08</span><h2>Interactions &amp; states</h2></div>
+    <ul>
+      <li><b style="color:var(--text)">Agent status heuristics</b> — Running / Awaiting input / Idle (review) / Exited(code) / Crashed. Ambiguous resolves to "Idle — review needed"; never a false "done." Each drives dot color, footer action, and tile border.</li>
+      <li><b style="color:var(--text)">Title bar</b> is custom (borderless, consistent across OSes): left-panel toggle · app mark · global search (⌘K) · window controls. Close glyph hovers red.</li>
+      <li><b style="color:var(--text)">Collapse</b> — left-panel icon hides the whole project sidebar; « / » collapses the focus agent rail to a 38px labeled stub. Both reflow neighbors.</li>
+      <li><b style="color:var(--text)">Project tree</b> — chevron expands a project to its agent runs; clicking an agent navigates to Focus for that run.</li>
+      <li><b style="color:var(--text)">Git Review panel</b> — toggled from the Agents header; scoped to the focused agent's worktree. "Open in Source Control →" deep-links to the full diff.</li>
+      <li><b style="color:var(--text)">History</b> — A/W/M/D pills switch the project whose commit log + ahead/behind is displayed.</li>
+      <li><b style="color:var(--text)">Destructive ops</b> (discard branch, remove worktree, force-push) must be confirmed — surfaced in red.</li>
+      <li><b style="color:var(--text)">Keyboard</b> — status bar advertises ⌘N new · ⌘G source · ⌘↵ approve; wire these plus ⌘K search.</li>
+    </ul>
+  </section>
+
+  <!-- ============ 9. IMPLEMENTATION NOTES ============ -->
+  <section>
+    <div class="sec-head"><span class="n">09</span><h2>Notes for implementation</h2></div>
+    <ul>
+      <li>Terminals are <b style="color:var(--text)">xterm.js</b> bound to each task's PTY (the mockups use static text). Match the token palette above for the agents' ANSI theme.</li>
+      <li>Diffs render add/del/hunk styling as specified; the <b style="color:var(--text)">Stage hunk / Stage all</b> affordances map to the core's stage-by-hunk service.</li>
+      <li>Selection, active nav, collapse, and history-project are simple view state; everything authoritative (projects, tasks, worktrees, diffs) comes from the Rust core.</li>
+      <li>Fonts: Geist + JetBrains Mono. Bundle them with the app for offline use rather than relying on a CDN.</li>
+      <li>Build color + spacing as <b style="color:var(--text)">tokens</b> (the Theme setting implies palette swapping).</li>
+      <li>The mockups carry <b>no</b> first-party telemetry/analytics messaging in the UI by design — keep the chrome free of it.</li>
+    </ul>
+    <div class="note" style="margin-top:14px">To view the mockups: open <code>Agency v2.dc.html</code> in a modern browser with <code>support.js</code> in the same folder. Everything is clickable — switch Grid/Focus, open Source Control, expand a project, toggle the panels, and open the New task / Merge modals.</div>
+  </section>
+
+  <div class="footer">
+    <span>Agency — Design Handoff</span>
+    <span>v0.3.1 · Catppuccin Mocha · 2026-06-19</span>
+  </div>
+
+</div>
+</body>
+</html>

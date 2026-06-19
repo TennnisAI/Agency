@@ -2,3 +2,5 @@
 ui/node_modules
 ui/dist
 crates/agency-app/gen
+
+.DS_Store

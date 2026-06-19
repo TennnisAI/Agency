@@ -1,0 +1,828 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;height:100%;background:#181825}
+  ::-webkit-scrollbar{width:9px;height:9px}
+  ::-webkit-scrollbar-thumb{background:#313244;border-radius:6px}
+  ::-webkit-scrollbar-thumb:hover{background:#45475a}
+  ::-webkit-scrollbar-track{background:transparent}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+  @keyframes blink{0%,49%{opacity:1}50%,100%{opacity:0}}
+  .tl{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+</style>
+</helmet>
+
+<div style="height:100vh;width:100%;display:flex;flex-direction:column;background:#1e1e2e;color:#cdd6f4;font-family:'Geist',ui-sans-serif,system-ui,-apple-system,'Segoe UI',sans-serif;overflow:hidden;font-size:13px;-webkit-font-smoothing:antialiased">
+
+  <!-- ===== TOP CHROME ===== -->
+  <div style="height:40px;flex-shrink:0;display:flex;align-items:center;padding:0 12px;background:#11111b;border-bottom:1px solid #25253a;gap:12px">
+    <div style="display:flex;align-items:center;gap:9px;flex:1;min-width:0">
+      <div style="width:15px;height:15px;background:#89b4fa;border-radius:4px;transform:rotate(45deg)"></div>
+      <span style="font-weight:600;font-size:13px;letter-spacing:.01em;color:#cdd6f4">Agency</span>
+      <span style="font-size:10.5px;font-family:'JetBrains Mono',monospace;color:#6c7086;border:1px solid #313244;border-radius:5px;padding:2px 6px;letter-spacing:.02em">local · offline</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;width:380px;height:26px;padding:0 10px;background:#181825;border:1px solid #313244;border-radius:8px;color:#6c7086;font-size:12px">
+      <span style="font-size:12px">⌕</span>
+      <span style="flex:1">Search projects, tasks, files…</span>
+      <span style="font-family:'JetBrains Mono',monospace;font-size:10.5px;background:#11111b;border:1px solid #313244;border-radius:4px;padding:1px 5px">⌘K</span>
+    </div>
+    <div style="flex:1;display:flex;align-items:center;justify-content:flex-end;gap:4px">
+      <button style="width:26px;height:24px;display:flex;align-items:center;justify-content:center;background:transparent;border:none;border-radius:6px;color:#7f849c;cursor:pointer;font-size:13px" style-hover="background:#313244;color:#cdd6f4">—</button>
+      <button style="width:26px;height:24px;display:flex;align-items:center;justify-content:center;background:transparent;border:none;border-radius:6px;color:#7f849c;cursor:pointer;font-size:10px" style-hover="background:#313244;color:#cdd6f4">▢</button>
+      <button style="width:26px;height:24px;display:flex;align-items:center;justify-content:center;background:transparent;border:none;border-radius:6px;color:#7f849c;cursor:pointer;font-size:12px" style-hover="background:#f38ba8;color:#11111b">✕</button>
+    </div>
+  </div>
+
+  <!-- ===== BODY ===== -->
+  <div style="flex:1;display:flex;min-height:0">
+
+    <!-- SIDEBAR -->
+    <div style="width:266px;flex-shrink:0;background:#181825;border-right:1px solid #25253a;display:flex;flex-direction:column;min-height:0">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 16px 8px">
+        <span style="font-size:10.5px;font-weight:600;letter-spacing:.13em;color:#6c7086">PROJECTS</span>
+        <button style="width:22px;height:22px;display:flex;align-items:center;justify-content:center;background:#1e1e2e;border:1px solid #313244;border-radius:6px;color:#a6adc8;cursor:pointer;font-size:14px" style-hover="background:#313244;color:#cdd6f4">+</button>
+      </div>
+      <div style="flex:1;overflow-y:auto;padding:0 10px 10px">
+        <sc-for list="{{ projects }}" as="p" hint-placeholder-count="4">
+          <button onClick="{{ p.onClick }}" style="{{ p.rowStyle }}">
+            <span style="width:26px;height:26px;flex-shrink:0;border-radius:7px;display:flex;align-items:center;justify-content:center;font-weight:600;font-size:12px;color:#11111b;background:{{ p.color }}">{{ p.initial }}</span>
+            <span style="flex:1;min-width:0;display:flex;flex-direction:column;gap:2px">
+              <span class="tl" style="font-size:13px;font-weight:500;color:#cdd6f4">{{ p.name }}</span>
+              <span class="tl" style="font-size:11px;font-family:'JetBrains Mono',monospace;color:#6c7086">{{ p.path }}</span>
+            </span>
+            <span style="display:flex;gap:3px;flex-shrink:0">
+              <sc-for list="{{ p.dots }}" as="d" hint-placeholder-count="3">
+                <span style="width:6px;height:6px;border-radius:50%;background:{{ d }}"></span>
+              </sc-for>
+            </span>
+          </button>
+        </sc-for>
+      </div>
+      <div style="border-top:1px solid #25253a;padding:10px;display:flex;flex-direction:column;gap:2px">
+        <button onClick="{{ goSettings }}" style="{{ navSettings }}">
+          <span style="font-size:14px">⚙</span> Settings
+        </button>
+        <div style="display:flex;align-items:center;gap:9px;padding:8px 12px;margin-top:2px">
+          <span style="width:24px;height:24px;border-radius:50%;background:#45475a;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:600;color:#cdd6f4">yo</span>
+          <span style="flex:1;font-size:12.5px;color:#a6adc8">you@localhost</span>
+          <span style="display:flex;align-items:center;gap:5px;font-size:10px;font-family:'JetBrains Mono',monospace;color:#a6e3a1"><span style="width:6px;height:6px;border-radius:50%;background:#a6e3a1"></span>no telemetry</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- MAIN -->
+    <div style="flex:1;display:flex;flex-direction:column;min-width:0;position:relative">
+
+      <!-- HEADER (hidden in settings) -->
+      <sc-if value="{{ notSettings }}" hint-placeholder-val="{{ true }}">
+      <div style="height:54px;flex-shrink:0;display:flex;align-items:center;gap:14px;padding:0 18px;background:#181825;border-bottom:1px solid #25253a">
+        <div style="display:flex;align-items:center;gap:9px">
+          <span style="font-size:15px;font-weight:600;color:#cdd6f4">agency</span>
+          <span style="font-family:'JetBrains Mono',monospace;font-size:11.5px;color:#a6adc8;background:#1e1e2e;border:1px solid #313244;border-radius:6px;padding:3px 8px">⎇ main</span>
+        </div>
+        <div style="display:flex;gap:3px;background:#11111b;border:1px solid #25253a;border-radius:9px;padding:3px">
+          <button onClick="{{ goAgents }}" style="{{ navAgents }}"><span style="font-size:13px">▦</span> Agents</button>
+          <button onClick="{{ goSource }}" style="{{ navSource }}"><span style="font-size:13px">⎇</span> Source Control</button>
+        </div>
+        <div style="flex:1"></div>
+        <sc-if value="{{ isAgents }}" hint-placeholder-val="{{ true }}">
+          <div style="display:flex;gap:3px;background:#11111b;border:1px solid #25253a;border-radius:8px;padding:3px">
+            <button onClick="{{ setGrid }}" style="{{ tglGrid }}"><span style="font-size:12px">▦</span> Grid</button>
+            <button onClick="{{ setFocus }}" style="{{ tglFocus }}"><span style="font-size:12px">▭</span> Focus</button>
+          </div>
+        </sc-if>
+        <button onClick="{{ openNew }}" style="display:inline-flex;align-items:center;gap:7px;padding:8px 13px;border-radius:8px;border:none;background:#89b4fa;color:#11111b;font:600 12.5px/1 'Geist',sans-serif;cursor:pointer;white-space:nowrap" style-hover="background:#b4befe">+ New task <span style="font-family:'JetBrains Mono',monospace;font-size:10px;opacity:.6">⌘N</span></button>
+      </div>
+      </sc-if>
+
+      <!-- ===== AGENTS: GRID ===== -->
+      <sc-if value="{{ showGrid }}" hint-placeholder-val="{{ true }}">
+      <div style="flex:1;overflow-y:auto;padding:16px;display:grid;grid-template-columns:repeat(auto-fill,minmax(400px,1fr));grid-auto-rows:262px;gap:14px;align-content:start">
+
+        <!-- tile t1 -->
+        <div style="display:flex;flex-direction:column;background:#181825;border:1px solid #313244;border-radius:11px;overflow:hidden">
+          <div onClick="{{ openFocusMap.t1 }}" style="cursor:pointer">
+            <div style="display:flex;align-items:center;gap:8px;padding:11px 13px 7px">
+              <span style="width:9px;height:9px;border-radius:50%;background:#a6e3a1;box-shadow:0 0 8px #a6e3a1;animation:pulse 1.6s infinite;flex-shrink:0"></span>
+              <span class="tl" style="flex:1;min-width:0;font-size:13px;font-weight:500">Add hunk-level staging to git panel</span>
+              <span style="font-size:10.5px;font-family:'JetBrains Mono',monospace;color:#fab387;background:#1e1e2e;border-radius:5px;padding:2px 7px;white-space:nowrap">Claude Code</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:7px;padding:0 13px 9px;font-family:'JetBrains Mono',monospace;font-size:10.5px;color:#6c7086">
+              <span class="tl" style="color:#7f849c;flex:1">agent/hunk-staging</span><span style="color:#a6e3a1">+84</span><span style="color:#f38ba8">−12</span><span>· 3 files</span>
+            </div>
+          </div>
+          <div style="flex:1;position:relative;background:#11111b;margin:0 1px;overflow:hidden">
+            <div style="padding:12px 14px;font-family:'JetBrains Mono',monospace;font-size:11.5px;line-height:1.7;color:#a6adc8">
+              <div><span style="color:#6c7086">$</span> claude --print "hunk staging"</div>
+              <div><span style="color:#a6e3a1">●</span> Reading <span style="color:#89b4fa">git/diff_service.rs</span></div>
+              <div><span style="color:#a6e3a1">●</span> Adding <span style="color:#94e2d5">stage_hunk()</span></div>
+              <div><span style="color:#cba6f7">✻</span> cargo test git::stage</div>
+              <div>&nbsp;&nbsp;&nbsp;test <span style="color:#a6e3a1">stages_single_hunk … ok</span></div>
+              <div><span style="color:#f9e2af">▌</span> writing unstage tests…<span style="display:inline-block;width:7px;height:13px;background:#a6e3a1;vertical-align:-2px;animation:blink 1s steps(1) infinite"></span></div>
+            </div>
+            <div style="position:absolute;left:0;right:0;bottom:0;height:34px;background:linear-gradient(transparent,#11111b)"></div>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;border-top:1px solid #25253a">
+            <span style="font-size:11.5px;color:#a6e3a1;font-weight:500">Running</span><span style="flex:1"></span>
+            <button style="font-size:11.5px;padding:4px 10px;border-radius:6px;border:1px solid #313244;background:transparent;color:#a6adc8;cursor:pointer" style-hover="background:#313244;color:#cdd6f4">Open ↗</button>
+          </div>
+        </div>
+
+        <!-- tile t2 -->
+        <div style="display:flex;flex-direction:column;background:#181825;border:1px solid #45475a;border-radius:11px;overflow:hidden;box-shadow:0 0 0 1px rgba(249,226,175,.12)">
+          <div onClick="{{ openFocusMap.t2 }}" style="cursor:pointer">
+            <div style="display:flex;align-items:center;gap:8px;padding:11px 13px 7px">
+              <span style="width:9px;height:9px;border-radius:50%;background:#f9e2af;flex-shrink:0"></span>
+              <span class="tl" style="flex:1;min-width:0;font-size:13px;font-weight:500">Fix PTY reattach on restart</span>
+              <span style="font-size:10.5px;font-family:'JetBrains Mono',monospace;color:#cba6f7;background:#1e1e2e;border-radius:5px;padding:2px 7px;white-space:nowrap">Hermes</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:7px;padding:0 13px 9px;font-family:'JetBrains Mono',monospace;font-size:10.5px;color:#6c7086">
+              <span class="tl" style="color:#7f849c;flex:1">agent/pty-reattach</span><span style="color:#a6e3a1">+18</span><span style="color:#f38ba8">−6</span><span>· 1 file</span>
+            </div>
+          </div>
+          <div style="flex:1;position:relative;background:#11111b;margin:0 1px;overflow:hidden">
+            <div style="padding:12px 14px;font-family:'JetBrains Mono',monospace;font-size:11.5px;line-height:1.7;color:#a6adc8">
+              <div><span style="color:#cba6f7">hermes ›</span> investigating reattach</div>
+              <div>&nbsp;&nbsp;<span style="color:#6c7086">read</span> agent/supervisor.rs</div>
+              <div>&nbsp;&nbsp;<span style="color:#6c7086">note</span> PTY handle not persisted</div>
+              <div>&nbsp;&nbsp;<span style="color:#6c7086">plan</span> mark surviving "re-run"</div>
+              <div><span style="color:#f9e2af">?</span> Proceed with v1 caveat? (y/n) <span style="display:inline-block;width:7px;height:13px;background:#f9e2af;vertical-align:-2px;animation:blink 1s steps(1) infinite"></span></div>
+            </div>
+            <div style="position:absolute;left:0;right:0;bottom:0;height:34px;background:linear-gradient(transparent,#11111b)"></div>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;border-top:1px solid #25253a">
+            <span style="font-size:11.5px;color:#f9e2af;font-weight:500">Awaiting input</span><span style="flex:1"></span>
+            <button onClick="{{ openFocusMap.t2 }}" style="font-size:11.5px;padding:4px 10px;border-radius:6px;border:none;background:#f9e2af;color:#11111b;cursor:pointer;font-weight:600">Reply</button>
+          </div>
+        </div>
+
+        <!-- tile t3 -->
+        <div style="display:flex;flex-direction:column;background:#181825;border:1px solid #313244;border-radius:11px;overflow:hidden">
+          <div onClick="{{ openFocusMap.t3 }}" style="cursor:pointer">
+            <div style="display:flex;align-items:center;gap:8px;padding:11px 13px 7px">
+              <span style="width:9px;height:9px;border-radius:50%;background:#89b4fa;flex-shrink:0"></span>
+              <span class="tl" style="flex:1;min-width:0;font-size:13px;font-weight:500">Write merge-resolver skill tests</span>
+              <span style="font-size:10.5px;font-family:'JetBrains Mono',monospace;color:#94e2d5;background:#1e1e2e;border-radius:5px;padding:2px 7px;white-space:nowrap">Pi</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:7px;padding:0 13px 9px;font-family:'JetBrains Mono',monospace;font-size:10.5px;color:#6c7086">
+              <span class="tl" style="color:#7f849c;flex:1">agent/merge-tests</span><span style="color:#a6e3a1">+140</span><span>· 5 files</span>
+            </div>
+          </div>
+          <div style="flex:1;position:relative;background:#11111b;margin:0 1px;overflow:hidden">
+            <div style="padding:12px 14px;font-family:'JetBrains Mono',monospace;font-size:11.5px;line-height:1.7;color:#a6adc8">
+              <div><span style="color:#94e2d5">pi:</span> added tests/merge_resolver/</div>
+              <div>&nbsp;&nbsp;<span style="color:#a6e3a1">✓</span> resolves_trivial_conflict</div>
+              <div>&nbsp;&nbsp;<span style="color:#a6e3a1">✓</span> leaves_unresolved_on_ambiguous</div>
+              <div>&nbsp;&nbsp;<span style="color:#a6e3a1">✓</span> writes_plain_summary</div>
+              <div><span style="color:#a6e3a1">3 passed</span> in 4.2s</div>
+              <div><span style="color:#a6e3a1">✓</span> committed <span style="color:#89b4fa">a1f9c2e</span></div>
+            </div>
+            <div style="position:absolute;left:0;right:0;bottom:0;height:34px;background:linear-gradient(transparent,#11111b)"></div>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;border-top:1px solid #25253a">
+            <span style="font-size:11.5px;color:#89b4fa;font-weight:500">Idle — review needed</span><span style="flex:1"></span>
+            <button style="font-size:11.5px;padding:4px 10px;border-radius:6px;border:1px solid #313244;background:transparent;color:#a6adc8;cursor:pointer" style-hover="background:#313244;color:#cdd6f4">Diff</button>
+            <button onClick="{{ openMerge }}" style="font-size:11.5px;padding:4px 10px;border-radius:6px;border:none;background:#a6e3a1;color:#11111b;cursor:pointer;font-weight:600">Approve →</button>
+          </div>
+        </div>
+
+        <!-- tile t4 -->
+        <div style="display:flex;flex-direction:column;background:#181825;border:1px solid #313244;border-radius:11px;overflow:hidden">
+          <div onClick="{{ openFocusMap.t4 }}" style="cursor:pointer">
+            <div style="display:flex;align-items:center;gap:8px;padding:11px 13px 7px">
+              <span style="width:9px;height:9px;border-radius:50%;background:#a6e3a1;box-shadow:0 0 8px #a6e3a1;animation:pulse 1.6s infinite;flex-shrink:0"></span>
+              <span class="tl" style="flex:1;min-width:0;font-size:13px;font-weight:500">Refactor worktree cleanup</span>
+              <span style="font-size:10.5px;font-family:'JetBrains Mono',monospace;color:#fab387;background:#1e1e2e;border-radius:5px;padding:2px 7px;white-space:nowrap">Claude Code</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:7px;padding:0 13px 9px;font-family:'JetBrains Mono',monospace;font-size:10.5px;color:#6c7086">
+              <span class="tl" style="color:#7f849c;flex:1">agent/wt-cleanup</span><span style="color:#a6e3a1">+31</span><span style="color:#f38ba8">−22</span><span>· 2 files</span>
+            </div>
+          </div>
+          <div style="flex:1;position:relative;background:#11111b;margin:0 1px;overflow:hidden">
+            <div style="padding:12px 14px;font-family:'JetBrains Mono',monospace;font-size:11.5px;line-height:1.7;color:#a6adc8">
+              <div><span style="color:#a6e3a1">●</span> git worktree list</div>
+              <div><span style="color:#a6e3a1">●</span> Removing stale t-093</div>
+              <div><span style="color:#cba6f7">✻</span> Editing <span style="color:#89b4fa">worktree_manager.rs</span></div>
+              <div>&nbsp;&nbsp;~ fn <span style="color:#94e2d5">cleanup_orphaned()</span></div>
+              <div><span style="color:#a6e3a1">●</span> cargo build … <span style="color:#a6adc8">Compiling</span></div>
+              <div><span style="color:#f9e2af">▌</span> verifying no leaks…<span style="display:inline-block;width:7px;height:13px;background:#a6e3a1;vertical-align:-2px;animation:blink 1s steps(1) infinite"></span></div>
+            </div>
+            <div style="position:absolute;left:0;right:0;bottom:0;height:34px;background:linear-gradient(transparent,#11111b)"></div>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;border-top:1px solid #25253a">
+            <span style="font-size:11.5px;color:#a6e3a1;font-weight:500">Running</span><span style="flex:1"></span>
+            <button style="font-size:11.5px;padding:4px 10px;border-radius:6px;border:1px solid #313244;background:transparent;color:#a6adc8;cursor:pointer" style-hover="background:#313244;color:#cdd6f4">Open ↗</button>
+          </div>
+        </div>
+
+        <!-- tile t5 -->
+        <div style="display:flex;flex-direction:column;background:#181825;border:1px solid #25253a;border-radius:11px;overflow:hidden;opacity:.82">
+          <div onClick="{{ openFocusMap.t5 }}" style="cursor:pointer">
+            <div style="display:flex;align-items:center;gap:8px;padding:11px 13px 7px">
+              <span style="width:9px;height:9px;border-radius:50%;background:#6c7086;flex-shrink:0"></span>
+              <span class="tl" style="flex:1;min-width:0;font-size:13px;font-weight:500;color:#a6adc8">Settings provider validation</span>
+              <span style="font-size:10.5px;font-family:'JetBrains Mono',monospace;color:#94e2d5;background:#1e1e2e;border-radius:5px;padding:2px 7px;white-space:nowrap">Pi</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:7px;padding:0 13px 9px;font-family:'JetBrains Mono',monospace;font-size:10.5px;color:#6c7086">
+              <span class="tl" style="color:#7f849c;flex:1">agent/settings-valid</span><span style="color:#a6e3a1">+12</span><span style="color:#f38ba8">−3</span><span>· 1 file</span>
+            </div>
+          </div>
+          <div style="flex:1;position:relative;background:#11111b;margin:0 1px;overflow:hidden">
+            <div style="padding:12px 14px;font-family:'JetBrains Mono',monospace;font-size:11.5px;line-height:1.7;color:#7f849c">
+              <div><span style="color:#94e2d5">pi:</span> validate provider config</div>
+              <div>&nbsp;&nbsp;<span style="color:#a6e3a1">✓</span> anthropic key format</div>
+              <div>&nbsp;&nbsp;<span style="color:#a6e3a1">✓</span> lm studio base url</div>
+              <div><span style="color:#a6e3a1">✓</span> committed <span style="color:#89b4fa">7c0b1a4</span></div>
+              <div><span style="color:#6c7086">process exited (code 0)</span></div>
+            </div>
+            <div style="position:absolute;left:0;right:0;bottom:0;height:34px;background:linear-gradient(transparent,#11111b)"></div>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;border-top:1px solid #25253a">
+            <span style="font-size:11.5px;color:#6c7086;font-weight:500">Exited (0)</span><span style="flex:1"></span>
+            <button style="font-size:11.5px;padding:4px 10px;border-radius:6px;border:1px solid #313244;background:transparent;color:#a6adc8;cursor:pointer" style-hover="background:#313244;color:#cdd6f4">Diff</button>
+            <button style="font-size:11.5px;padding:4px 10px;border-radius:6px;border:1px solid #313244;background:transparent;color:#a6adc8;cursor:pointer" style-hover="background:#313244;color:#cdd6f4">Re-run</button>
+          </div>
+        </div>
+
+        <!-- tile t6 -->
+        <div style="display:flex;flex-direction:column;background:#181825;border:1px solid rgba(243,139,168,.35);border-radius:11px;overflow:hidden">
+          <div onClick="{{ openFocusMap.t6 }}" style="cursor:pointer">
+            <div style="display:flex;align-items:center;gap:8px;padding:11px 13px 7px">
+              <span style="width:9px;height:9px;border-radius:50%;background:#f38ba8;flex-shrink:0"></span>
+              <span class="tl" style="flex:1;min-width:0;font-size:13px;font-weight:500">LM Studio base URL detection</span>
+              <span style="font-size:10.5px;font-family:'JetBrains Mono',monospace;color:#cba6f7;background:#1e1e2e;border-radius:5px;padding:2px 7px;white-space:nowrap">Hermes</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:7px;padding:0 13px 9px;font-family:'JetBrains Mono',monospace;font-size:10.5px;color:#6c7086">
+              <span class="tl" style="color:#7f849c;flex:1">agent/lmstudio-detect</span><span>no changes</span>
+            </div>
+          </div>
+          <div style="flex:1;position:relative;background:#11111b;margin:0 1px;overflow:hidden">
+            <div style="padding:12px 14px;font-family:'JetBrains Mono',monospace;font-size:11.5px;line-height:1.7;color:#a6adc8">
+              <div><span style="color:#cba6f7">hermes ›</span> probing :1234/v1</div>
+              <div>&nbsp;&nbsp;GET /models → <span style="color:#f38ba8">ECONNREFUSED</span></div>
+              <div>&nbsp;&nbsp;retry 1/3 … <span style="color:#f38ba8">ECONNREFUSED</span></div>
+              <div><span style="color:#f38ba8">error:</span> LM Studio unreachable</div>
+              <div><span style="color:#f38ba8">✗ crashed (code 1)</span></div>
+            </div>
+            <div style="position:absolute;left:0;right:0;bottom:0;height:34px;background:linear-gradient(transparent,#11111b)"></div>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;border-top:1px solid #25253a">
+            <span class="tl" style="font-size:11.5px;color:#f38ba8;font-weight:500">Crashed · start LM Studio</span><span style="flex:1"></span>
+            <button style="font-size:11.5px;padding:4px 10px;border-radius:6px;border:none;background:#f38ba8;color:#11111b;cursor:pointer;font-weight:600">Re-run</button>
+          </div>
+        </div>
+
+      </div>
+      </sc-if>
+
+      <!-- ===== AGENTS: FOCUS ===== -->
+      <sc-if value="{{ showFocus }}" hint-placeholder-val="{{ true }}">
+      <div style="flex:1;display:flex;min-height:0">
+        <!-- agent list -->
+        <div style="width:312px;flex-shrink:0;background:#181825;border-right:1px solid #25253a;display:flex;flex-direction:column;min-height:0">
+          <div style="padding:12px 14px 8px;font-size:10.5px;font-weight:600;letter-spacing:.13em;color:#6c7086">AGENTS · 6</div>
+          <div style="flex:1;overflow-y:auto">
+            <sc-for list="{{ tasks }}" as="t" hint-placeholder-count="6">
+              <button onClick="{{ t.onClick }}" style="{{ t.rowStyle }}">
+                <div style="display:flex;align-items:center;gap:8px">
+                  <span style="width:8px;height:8px;border-radius:50%;flex-shrink:0;background:{{ t.statusColor }}"></span>
+                  <span class="tl" style="flex:1;min-width:0;font-size:12.5px;font-weight:500;color:#cdd6f4">{{ t.title }}</span>
+                  <span style="font-size:9.5px;font-family:'JetBrains Mono',monospace;color:{{ t.agentColor }};background:#11111b;border-radius:4px;padding:2px 5px;white-space:nowrap">{{ t.agent }}</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:7px;font-family:'JetBrains Mono',monospace;font-size:10px;color:#6c7086;padding-left:16px">
+                  <span style="color:{{ t.statusColor }}">{{ t.status }}</span><span style="flex:1"></span><span class="tl" style="color:#7f849c">{{ t.branch }}</span>
+                </div>
+              </button>
+            </sc-for>
+          </div>
+        </div>
+
+        <!-- terminal -->
+        <div style="flex:1;display:flex;flex-direction:column;min-width:0;background:#11111b">
+          <div style="height:54px;flex-shrink:0;display:flex;align-items:center;gap:11px;padding:0 16px;background:#181825;border-bottom:1px solid #25253a">
+            <span style="{{ selDotStyle }}"></span>
+            <span class="tl" style="font-size:14px;font-weight:600;color:#cdd6f4;max-width:340px">{{ selTitle }}</span>
+            <span style="font-size:10.5px;font-family:'JetBrains Mono',monospace;color:{{ selAgentColor }};background:#11111b;border:1px solid #313244;border-radius:5px;padding:2px 7px;white-space:nowrap">{{ selAgent }}</span>
+            <span style="font-size:11px;font-family:'JetBrains Mono',monospace;color:#a6adc8;background:#1e1e2e;border:1px solid #313244;border-radius:5px;padding:2px 8px;white-space:nowrap">⎇ {{ selBranch }}</span>
+            <span style="font-size:11.5px;color:{{ selStatusColor }};font-weight:500;white-space:nowrap">{{ selStatus }}</span>
+            <span style="flex:1"></span>
+            <button style="font-size:11.5px;padding:6px 11px;border-radius:7px;border:1px solid #313244;background:transparent;color:#a6adc8;cursor:pointer;white-space:nowrap" style-hover="background:#313244;color:#cdd6f4">■ Stop</button>
+            <button style="font-size:11.5px;padding:6px 11px;border-radius:7px;border:1px solid #313244;background:transparent;color:#a6adc8;cursor:pointer;white-space:nowrap" style-hover="background:#313244;color:#cdd6f4">⤴ Feedback</button>
+            <button onClick="{{ openMerge }}" style="font-size:11.5px;padding:6px 12px;border-radius:7px;border:none;background:#a6e3a1;color:#11111b;cursor:pointer;font-weight:600;white-space:nowrap" style-hover="background:#94e2d5">Approve →</button>
+          </div>
+
+          <div style="flex:1;overflow-y:auto;padding:18px 22px;font-family:'JetBrains Mono',monospace;font-size:13px;line-height:1.85;color:#bac2de">
+            <sc-if value="{{ isTermClaude }}" hint-placeholder-val="{{ true }}"><div>
+              <div><span style="color:#6c7086">~/.agency/worktrees/hunk-staging</span> <span style="color:#a6e3a1">⎇ agent/hunk-staging</span></div>
+              <div><span style="color:#6c7086">$</span> claude --print "implement hunk-level staging in the git panel"</div>
+              <div>&nbsp;</div>
+              <div><span style="color:#a6e3a1">●</span> Reading <span style="color:#89b4fa">src-tauri/src/git/diff_service.rs</span></div>
+              <div><span style="color:#a6e3a1">●</span> Found <span style="color:#94e2d5">stage_file()</span>; designing <span style="color:#94e2d5">stage_hunk(path, index)</span></div>
+              <div><span style="color:#cba6f7">✻</span> Patching 3 files</div>
+              <div>&nbsp;&nbsp;<span style="color:#a6e3a1">+</span> src-tauri/src/git/stage.rs</div>
+              <div>&nbsp;&nbsp;<span style="color:#f9e2af">~</span> src/components/DiffView.tsx</div>
+              <div>&nbsp;&nbsp;<span style="color:#f9e2af">~</span> src/components/ChangesList.tsx</div>
+              <div><span style="color:#a6e3a1">●</span> Running <span style="color:#cdd6f4">cargo test git::stage</span></div>
+              <div>&nbsp;&nbsp;&nbsp;<span style="color:#6c7086">Compiling agency-core v0.3.1</span></div>
+              <div>&nbsp;&nbsp;&nbsp;test git::stage::stages_single_hunk … <span style="color:#a6e3a1">ok</span></div>
+              <div>&nbsp;&nbsp;&nbsp;test git::stage::unstages_single_hunk … <span style="color:#a6e3a1">ok</span></div>
+              <div><span style="color:#f9e2af">▌</span> writing tests for partial-hunk selection…<span style="display:inline-block;width:8px;height:15px;background:#a6e3a1;vertical-align:-3px;animation:blink 1s steps(1) infinite"></span></div>
+            </div></sc-if>
+            <sc-if value="{{ isTermHermes }}" hint-placeholder-val="{{ true }}"><div>
+              <div><span style="color:#6c7086">~/.agency/worktrees/pty-reattach</span> <span style="color:#f9e2af">⎇ agent/pty-reattach</span></div>
+              <div><span style="color:#cba6f7">hermes ›</span> investigating portable-pty reattach across restarts</div>
+              <div>&nbsp;</div>
+              <div>&nbsp;&nbsp;<span style="color:#6c7086">read</span>&nbsp;&nbsp;src-tauri/src/agent/supervisor.rs</div>
+              <div>&nbsp;&nbsp;<span style="color:#6c7086">note</span>&nbsp;&nbsp;PTY handle is not persisted across app exit</div>
+              <div>&nbsp;&nbsp;<span style="color:#6c7086">note</span>&nbsp;&nbsp;child processes die with the parent</div>
+              <div>&nbsp;&nbsp;<span style="color:#6c7086">plan</span>&nbsp;&nbsp;on restart, mark surviving tasks "Exited, re-run"</div>
+              <div>&nbsp;</div>
+              <div><span style="color:#f9e2af">?</span> This changes restart semantics. Proceed with the</div>
+              <div>&nbsp;&nbsp;documented v1 caveat (no live reattach)? <span style="color:#a6adc8">(y/n)</span> <span style="display:inline-block;width:8px;height:15px;background:#f9e2af;vertical-align:-3px;animation:blink 1s steps(1) infinite"></span></div>
+            </div></sc-if>
+            <sc-if value="{{ isTermPi }}" hint-placeholder-val="{{ true }}"><div>
+              <div><span style="color:#6c7086">~/.agency/worktrees/merge-tests</span> <span style="color:#89b4fa">⎇ agent/merge-tests</span></div>
+              <div><span style="color:#94e2d5">pi:</span> authored tests/merge_resolver/</div>
+              <div>&nbsp;</div>
+              <div>&nbsp;&nbsp;<span style="color:#a6e3a1">✓</span> resolves_trivial_conflict</div>
+              <div>&nbsp;&nbsp;<span style="color:#a6e3a1">✓</span> leaves_unresolved_on_ambiguous</div>
+              <div>&nbsp;&nbsp;<span style="color:#a6e3a1">✓</span> writes_plain_language_summary</div>
+              <div>&nbsp;&nbsp;<span style="color:#a6e3a1">✓</span> reuses_supervisor_pty_plumbing</div>
+              <div>&nbsp;&nbsp;<span style="color:#a6e3a1">✓</span> stub_backend_scripted_merge</div>
+              <div>&nbsp;</div>
+              <div><span style="color:#a6e3a1">5 passed</span>, 0 failed in 4.2s</div>
+              <div><span style="color:#a6e3a1">✓</span> committed <span style="color:#89b4fa">a1f9c2e</span>  test: merge-resolver coverage</div>
+              <div>&nbsp;</div>
+              <div><span style="color:#89b4fa">done — idle, review needed.</span> Branch is 5 commits ahead of main.</div>
+            </div></sc-if>
+            <sc-if value="{{ isTermClaude2 }}" hint-placeholder-val="{{ true }}"><div>
+              <div><span style="color:#6c7086">~/.agency/worktrees/wt-cleanup</span> <span style="color:#a6e3a1">⎇ agent/wt-cleanup</span></div>
+              <div><span style="color:#a6e3a1">●</span> git worktree list --porcelain</div>
+              <div><span style="color:#a6e3a1">●</span> Found stale worktree: <span style="color:#f9e2af">.agency/worktrees/t-093</span></div>
+              <div><span style="color:#cba6f7">✻</span> Editing <span style="color:#89b4fa">worktree_manager.rs</span></div>
+              <div>&nbsp;&nbsp;~ fn <span style="color:#94e2d5">cleanup_orphaned()</span> — prune dirs without a branch</div>
+              <div>&nbsp;&nbsp;~ fn <span style="color:#94e2d5">remove_task()</span> — confirm before destructive remove</div>
+              <div><span style="color:#a6e3a1">●</span> cargo build</div>
+              <div>&nbsp;&nbsp;&nbsp;<span style="color:#6c7086">Compiling agency-core v0.3.1</span></div>
+              <div><span style="color:#f9e2af">▌</span> verifying no leaked worktrees remain…<span style="display:inline-block;width:8px;height:15px;background:#a6e3a1;vertical-align:-3px;animation:blink 1s steps(1) infinite"></span></div>
+            </div></sc-if>
+            <sc-if value="{{ isTermPi2 }}" hint-placeholder-val="{{ true }}"><div>
+              <div><span style="color:#6c7086">~/.agency/worktrees/settings-valid</span> <span style="color:#89b4fa">⎇ agent/settings-valid</span></div>
+              <div><span style="color:#94e2d5">pi:</span> validate provider configuration on save</div>
+              <div>&nbsp;</div>
+              <div>&nbsp;&nbsp;<span style="color:#a6e3a1">✓</span> anthropic key format (sk-ant-…)</div>
+              <div>&nbsp;&nbsp;<span style="color:#a6e3a1">✓</span> lm studio base url reachable</div>
+              <div>&nbsp;&nbsp;<span style="color:#a6e3a1">✓</span> surfaces actionable error on failure</div>
+              <div>&nbsp;</div>
+              <div><span style="color:#a6e3a1">✓</span> committed <span style="color:#89b4fa">7c0b1a4</span>  feat: validate providers</div>
+              <div><span style="color:#6c7086">process exited (code 0)</span></div>
+            </div></sc-if>
+            <sc-if value="{{ isTermHermes2 }}" hint-placeholder-val="{{ true }}"><div>
+              <div><span style="color:#6c7086">~/.agency/worktrees/lmstudio-detect</span> <span style="color:#f38ba8">⎇ agent/lmstudio-detect</span></div>
+              <div><span style="color:#cba6f7">hermes ›</span> probing <span style="color:#89b4fa">http://localhost:1234/v1</span></div>
+              <div>&nbsp;</div>
+              <div>&nbsp;&nbsp;GET /models → <span style="color:#f38ba8">ECONNREFUSED</span></div>
+              <div>&nbsp;&nbsp;retry 1/3 … <span style="color:#f38ba8">ECONNREFUSED</span></div>
+              <div>&nbsp;&nbsp;retry 2/3 … <span style="color:#f38ba8">ECONNREFUSED</span></div>
+              <div>&nbsp;</div>
+              <div><span style="color:#f38ba8">error:</span> LM Studio unreachable at base URL</div>
+              <div><span style="color:#f38ba8">✗ process crashed (code 1)</span></div>
+              <div><span style="color:#f9e2af">hint:</span> open LM Studio → Developer → Start Server, then re-run.</div>
+            </div></sc-if>
+          </div>
+
+          <div style="flex-shrink:0;display:flex;align-items:center;gap:10px;padding:11px 16px;background:#181825;border-top:1px solid #25253a">
+            <span style="color:#a6e3a1;font-family:'JetBrains Mono',monospace;font-size:14px">›</span>
+            <span class="tl" style="flex:1;font-family:'JetBrains Mono',monospace;font-size:12.5px;color:#6c7086">Type to interject in the live terminal, or ⌥↵ to send structured feedback…</span>
+            <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#6c7086;border:1px solid #313244;border-radius:4px;padding:2px 6px;white-space:nowrap">⌥↵ feedback</span>
+          </div>
+        </div>
+      </div>
+      </sc-if>
+
+      <!-- ===== SOURCE CONTROL ===== -->
+      <sc-if value="{{ isSource }}" hint-placeholder-val="{{ true }}">
+      <div style="flex:1;display:flex;min-height:0">
+        <!-- changes panel -->
+        <div style="width:336px;flex-shrink:0;background:#181825;border-right:1px solid #25253a;display:flex;flex-direction:column;min-height:0">
+          <div style="padding:13px 14px 10px;border-bottom:1px solid #25253a">
+            <div style="font-size:10.5px;font-weight:600;letter-spacing:.13em;color:#6c7086;margin-bottom:9px">COMMIT · agent/hunk-staging</div>
+            <div style="background:#11111b;border:1px solid #313244;border-radius:8px;padding:9px 11px;font-size:12.5px;color:#cdd6f4;min-height:54px;line-height:1.5">feat(git): hunk-level staging in diff view<span style="display:inline-block;width:7px;height:14px;background:#cdd6f4;vertical-align:-2px;margin-left:1px;animation:blink 1s steps(1) infinite"></span></div>
+            <div style="display:flex;gap:8px;margin-top:9px">
+              <button style="flex:1;display:flex;align-items:center;justify-content:center;gap:6px;padding:8px;border-radius:7px;border:none;background:#89b4fa;color:#11111b;font:600 12px/1 'Geist',sans-serif;cursor:pointer" style-hover="background:#b4befe">✓ Commit</button>
+              <button style="display:flex;align-items:center;justify-content:center;gap:6px;padding:8px 12px;border-radius:7px;border:1px solid #45475a;background:#1e1e2e;color:#cdd6f4;font:600 12px/1 'Geist',sans-serif;cursor:pointer" style-hover="background:#313244">↑ Push</button>
+            </div>
+          </div>
+          <div style="flex:1;overflow-y:auto;padding:8px">
+            <div style="display:flex;align-items:center;gap:7px;padding:6px 8px 4px;font-size:10.5px;font-weight:600;letter-spacing:.1em;color:#6c7086">STAGED CHANGES<span style="background:#313244;color:#a6adc8;border-radius:10px;padding:1px 7px;font-size:10px;letter-spacing:0">1</span></div>
+            <sc-for list="{{ stagedFiles }}" as="f" hint-placeholder-count="1">
+              <div onClick="{{ f.onClick }}" style="{{ f.rowStyle }}">
+                <span style="width:16px;text-align:center;font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:700;color:{{ f.badgeColor }}">{{ f.badge }}</span>
+                <span style="font-size:12.5px;color:#cdd6f4;white-space:nowrap">{{ f.name }}</span>
+                <span class="tl" style="font-size:11px;font-family:'JetBrains Mono',monospace;color:#6c7086;flex:1">{{ f.path }}</span>
+                <span style="font-family:'JetBrains Mono',monospace;font-size:10.5px;color:#a6e3a1">+{{ f.add }}</span>
+                <span style="width:18px;height:18px;display:flex;align-items:center;justify-content:center;border-radius:5px;color:#7f849c;font-size:13px" style-hover="background:#45475a;color:#cdd6f4">−</span>
+              </div>
+            </sc-for>
+            <div style="display:flex;align-items:center;gap:7px;padding:12px 8px 4px;font-size:10.5px;font-weight:600;letter-spacing:.1em;color:#6c7086">CHANGES<span style="background:#313244;color:#a6adc8;border-radius:10px;padding:1px 7px;font-size:10px;letter-spacing:0">3</span></div>
+            <sc-for list="{{ changedFiles }}" as="f" hint-placeholder-count="3">
+              <div onClick="{{ f.onClick }}" style="{{ f.rowStyle }}">
+                <span style="width:16px;text-align:center;font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:700;color:{{ f.badgeColor }}">{{ f.badge }}</span>
+                <span style="font-size:12.5px;color:#cdd6f4;white-space:nowrap">{{ f.name }}</span>
+                <span class="tl" style="font-size:11px;font-family:'JetBrains Mono',monospace;color:#6c7086;flex:1">{{ f.path }}</span>
+                <span style="font-family:'JetBrains Mono',monospace;font-size:10.5px;color:#a6e3a1">+{{ f.add }}</span>
+                <span style="font-family:'JetBrains Mono',monospace;font-size:10.5px;color:#f38ba8">−{{ f.del }}</span>
+                <span style="width:18px;height:18px;display:flex;align-items:center;justify-content:center;border-radius:5px;color:#7f849c;font-size:13px" style-hover="background:#45475a;color:#cdd6f4">+</span>
+              </div>
+            </sc-for>
+            <div style="padding:14px 8px 4px;font-size:10.5px;font-weight:600;letter-spacing:.1em;color:#6c7086">HISTORY</div>
+            <div style="padding:2px 10px;font-family:'JetBrains Mono',monospace;font-size:11.5px;line-height:1.95;color:#a6adc8">
+              <div style="display:flex;gap:9px"><span style="color:#a6e3a1">●</span><span style="color:#89b4fa">a1f9c2e</span><span class="tl" style="flex:1;color:#cdd6f4">test: merge-resolver coverage</span><span style="color:#6c7086">2m</span></div>
+              <div style="display:flex;gap:9px"><span style="color:#585b70">│</span><span style="color:#89b4fa">7c0b1a4</span><span class="tl" style="flex:1;color:#cdd6f4">feat: validate providers</span><span style="color:#6c7086">11m</span></div>
+              <div style="display:flex;gap:9px"><span style="color:#585b70">│</span><span style="color:#89b4fa">e3d77a0</span><span class="tl" style="flex:1;color:#cdd6f4">chore: worktree cleanup</span><span style="color:#6c7086">1h</span></div>
+              <div style="display:flex;gap:9px"><span style="color:#fab387">◆</span><span style="color:#fab387">main</span><span style="flex:1;color:#6c7086">↑ 3 ahead · ↓ 0 behind</span></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- diff viewer -->
+        <div style="flex:1;display:flex;flex-direction:column;min-width:0;background:#11111b">
+          <div style="height:46px;flex-shrink:0;display:flex;align-items:center;gap:10px;padding:0 16px;background:#181825;border-bottom:1px solid #25253a">
+            <sc-if value="{{ isStageFile }}" hint-placeholder-val="{{ true }}"><span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:#a6adc8"><span style="color:#6c7086">src-tauri/src/git/</span>stage.rs</span></sc-if>
+            <sc-if value="{{ isDiffview }}" hint-placeholder-val="{{ true }}"><span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:#a6adc8"><span style="color:#6c7086">src/components/</span>DiffView.tsx</span></sc-if>
+            <sc-if value="{{ isChanges }}" hint-placeholder-val="{{ true }}"><span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:#a6adc8"><span style="color:#6c7086">src/components/</span>ChangesList.tsx</span></sc-if>
+            <sc-if value="{{ isMod }}" hint-placeholder-val="{{ true }}"><span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:#a6adc8"><span style="color:#6c7086">src-tauri/src/git/</span>mod.rs</span></sc-if>
+            <span style="flex:1"></span>
+            <div style="display:flex;gap:3px;background:#11111b;border:1px solid #25253a;border-radius:7px;padding:2px">
+              <span style="font-size:11px;padding:4px 9px;border-radius:5px;background:#45475a;color:#cdd6f4;cursor:pointer">Unified</span>
+              <span style="font-size:11px;padding:4px 9px;border-radius:5px;color:#7f849c;cursor:pointer">Split</span>
+            </div>
+            <button style="font-size:11.5px;padding:6px 11px;border-radius:7px;border:1px solid #313244;background:transparent;color:#a6adc8;cursor:pointer;white-space:nowrap" style-hover="background:#313244;color:#cdd6f4">+ Stage all</button>
+          </div>
+          <div style="flex:1;overflow:auto;font-family:'JetBrains Mono',monospace;font-size:12.5px;line-height:1.7">
+            <sc-for list="{{ selectedDiff.hunks }}" as="h" hint-placeholder-count="2">
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:7px 16px;background:rgba(137,180,250,.07);color:#89b4fa;border-top:1px solid #25253a;border-bottom:1px solid #25253a;white-space:pre"><span>{{ h.header }}</span><button style="font-size:10.5px;padding:3px 9px;border-radius:5px;border:1px solid #45475a;background:#1e1e2e;color:#a6e3a1;cursor:pointer;white-space:nowrap" style-hover="background:#313244">+ Stage hunk</button></div>
+              <sc-for list="{{ h.lines }}" as="ln" hint-placeholder-count="5">
+                <div style="{{ ln.style }}">{{ ln.text }}</div>
+              </sc-for>
+            </sc-for>
+          </div>
+        </div>
+      </div>
+      </sc-if>
+
+      <!-- ===== SETTINGS ===== -->
+      <sc-if value="{{ isSettings }}" hint-placeholder-val="{{ true }}">
+      <div style="flex:1;overflow-y:auto">
+        <div style="max-width:780px;margin:0 auto;padding:34px 28px 60px">
+          <div style="display:flex;align-items:center;gap:12px;margin-bottom:6px">
+            <button onClick="{{ goAgents }}" style="font-size:12px;color:#7f849c;background:transparent;border:none;cursor:pointer;padding:0">← Back</button>
+          </div>
+          <h1 style="font-size:24px;font-weight:600;margin:0 0 26px;color:#cdd6f4">Settings</h1>
+
+          <div style="background:rgba(166,227,161,.05);border:1px solid rgba(166,227,161,.28);border-radius:12px;padding:18px 20px;margin-bottom:24px">
+            <div style="display:flex;align-items:center;gap:9px;margin-bottom:8px">
+              <span style="width:9px;height:9px;border-radius:50%;background:#a6e3a1;box-shadow:0 0 8px #a6e3a1"></span>
+              <span style="font-size:14.5px;font-weight:600;color:#cdd6f4;white-space:nowrap">Zero first-party data collection</span>
+            </div>
+            <p style="margin:0 0 14px;font-size:12.5px;line-height:1.6;color:#a6adc8">Agency never phones home — no analytics, no telemetry, no account, no vendor backend. The only outbound traffic is to the providers and git remotes <span style="color:#bac2de">you</span> configure and initiate.</p>
+            <div style="display:flex;gap:10px;flex-wrap:wrap">
+              <span style="display:flex;align-items:center;gap:7px;font-size:11.5px;font-family:'JetBrains Mono',monospace;color:#a6adc8;background:#11111b;border:1px solid #313244;border-radius:7px;padding:6px 10px">Analytics <span style="color:#6c7086">— off, no toggle exists</span></span>
+              <span style="display:flex;align-items:center;gap:7px;font-size:11.5px;font-family:'JetBrains Mono',monospace;color:#a6adc8;background:#11111b;border:1px solid #313244;border-radius:7px;padding:6px 10px">Telemetry <span style="color:#6c7086">— off</span></span>
+              <span style="display:flex;align-items:center;gap:7px;font-size:11.5px;font-family:'JetBrains Mono',monospace;color:#a6adc8;background:#11111b;border:1px solid #313244;border-radius:7px;padding:6px 10px">Crash reports <span style="color:#6c7086">— off</span></span>
+            </div>
+          </div>
+
+          <div style="font-size:11px;font-weight:600;letter-spacing:.12em;color:#6c7086;margin:0 0 12px">AGENT PROFILES</div>
+          <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:28px">
+            <div style="background:#181825;border:1px solid #313244;border-radius:11px;padding:15px 17px">
+              <div style="display:flex;align-items:center;gap:9px;margin-bottom:11px">
+                <span style="width:8px;height:8px;border-radius:50%;background:#fab387"></span>
+                <span style="font-size:13.5px;font-weight:600;color:#cdd6f4;white-space:nowrap">Claude Code</span>
+                <span style="font-size:10px;font-family:'JetBrains Mono',monospace;color:#a6e3a1;background:rgba(166,227,161,.1);border-radius:5px;padding:2px 7px">default</span>
+                <span style="flex:1"></span>
+                <button style="font-size:11.5px;padding:5px 11px;border-radius:7px;border:1px solid #313244;background:transparent;color:#a6adc8;cursor:pointer" style-hover="background:#313244;color:#cdd6f4">Edit</button>
+              </div>
+              <div style="display:grid;grid-template-columns:78px 1fr;gap:7px 12px;font-family:'JetBrains Mono',monospace;font-size:11.5px">
+                <span style="color:#6c7086">command</span><span style="color:#bac2de">claude</span>
+                <span style="color:#6c7086">args</span><span style="color:#bac2de">--print {prompt} --permission-mode acceptEdits</span>
+                <span style="color:#6c7086">env</span><span style="color:#bac2de">ANTHROPIC_API_KEY, ANTHROPIC_BASE_URL</span>
+              </div>
+            </div>
+            <div style="background:#181825;border:1px solid #313244;border-radius:11px;padding:15px 17px">
+              <div style="display:flex;align-items:center;gap:9px;margin-bottom:11px">
+                <span style="width:8px;height:8px;border-radius:50%;background:#94e2d5"></span>
+                <span style="font-size:13.5px;font-weight:600;color:#cdd6f4">Pi</span>
+                <span style="flex:1"></span>
+                <button style="font-size:11.5px;padding:5px 11px;border-radius:7px;border:1px solid #313244;background:transparent;color:#a6adc8;cursor:pointer" style-hover="background:#313244;color:#cdd6f4">Edit</button>
+              </div>
+              <div style="display:grid;grid-template-columns:78px 1fr;gap:7px 12px;font-family:'JetBrains Mono',monospace;font-size:11.5px">
+                <span style="color:#6c7086">command</span><span style="color:#bac2de">pi</span>
+                <span style="color:#6c7086">args</span><span style="color:#bac2de">run --task {prompt} --yolo</span>
+                <span style="color:#6c7086">env</span><span style="color:#bac2de">OPENAI_BASE_URL, OPENAI_API_KEY</span>
+              </div>
+            </div>
+            <div style="background:#181825;border:1px solid #313244;border-radius:11px;padding:15px 17px">
+              <div style="display:flex;align-items:center;gap:9px;margin-bottom:11px">
+                <span style="width:8px;height:8px;border-radius:50%;background:#cba6f7"></span>
+                <span style="font-size:13.5px;font-weight:600;color:#cdd6f4">Hermes</span>
+                <span style="flex:1"></span>
+                <button style="font-size:11.5px;padding:5px 11px;border-radius:7px;border:1px solid #313244;background:transparent;color:#a6adc8;cursor:pointer" style-hover="background:#313244;color:#cdd6f4">Edit</button>
+              </div>
+              <div style="display:grid;grid-template-columns:78px 1fr;gap:7px 12px;font-family:'JetBrains Mono',monospace;font-size:11.5px">
+                <span style="color:#6c7086">command</span><span style="color:#bac2de">hermes</span>
+                <span style="color:#6c7086">args</span><span style="color:#bac2de">--headless --prompt {prompt}</span>
+                <span style="color:#6c7086">env</span><span style="color:#bac2de">ANTHROPIC_API_KEY</span>
+              </div>
+            </div>
+            <button style="align-self:flex-start;font-size:12px;padding:8px 13px;border-radius:8px;border:1px dashed #45475a;background:transparent;color:#a6adc8;cursor:pointer" style-hover="background:#1e1e2e;color:#cdd6f4">+ Add agent profile</button>
+          </div>
+
+          <div style="font-size:11px;font-weight:600;letter-spacing:.12em;color:#6c7086;margin:0 0 12px">MODEL PROVIDERS</div>
+          <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:28px">
+            <div style="background:#181825;border:1px solid #313244;border-radius:11px;padding:15px 17px;display:flex;align-items:center;gap:14px">
+              <div style="flex:1;min-width:0">
+                <div style="font-size:13.5px;font-weight:600;color:#cdd6f4;margin-bottom:6px">Anthropic <span style="font-weight:400;color:#6c7086;font-size:12px">· Claude</span></div>
+                <div style="display:flex;align-items:center;gap:8px;font-family:'JetBrains Mono',monospace;font-size:11.5px"><span style="color:#6c7086">API key</span><span class="tl" style="background:#11111b;border:1px solid #313244;border-radius:6px;padding:4px 9px;color:#bac2de">sk-ant-•••••••••••••••3f9c</span></div>
+              </div>
+              <span style="display:flex;align-items:center;gap:6px;font-size:11.5px;color:#a6e3a1;white-space:nowrap"><span style="width:7px;height:7px;border-radius:50%;background:#a6e3a1"></span>Connected</span>
+            </div>
+            <div style="background:#181825;border:1px solid #313244;border-radius:11px;padding:15px 17px;display:flex;align-items:center;gap:14px">
+              <div style="flex:1;min-width:0">
+                <div style="font-size:13.5px;font-weight:600;color:#cdd6f4;margin-bottom:6px">LM Studio <span style="font-weight:400;color:#6c7086;font-size:12px">· local, OpenAI-compatible</span></div>
+                <div style="display:flex;align-items:center;gap:8px;font-family:'JetBrains Mono',monospace;font-size:11.5px"><span style="color:#6c7086">base URL</span><span style="background:#11111b;border:1px solid #313244;border-radius:6px;padding:4px 9px;color:#bac2de">http://localhost:1234/v1</span></div>
+              </div>
+              <button style="font-size:11.5px;padding:6px 11px;border-radius:7px;border:1px solid #45475a;background:#1e1e2e;color:#cdd6f4;cursor:pointer;white-space:nowrap" style-hover="background:#313244">Detect</button>
+            </div>
+          </div>
+
+          <div style="font-size:11px;font-weight:600;letter-spacing:.12em;color:#6c7086;margin:0 0 12px">GENERAL</div>
+          <div style="background:#181825;border:1px solid #313244;border-radius:11px;overflow:hidden">
+            <div style="display:flex;align-items:center;gap:14px;padding:13px 17px;border-bottom:1px solid #25253a"><span style="flex:1;font-size:13px;color:#cdd6f4">Default base branch</span><span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:#a6adc8;background:#11111b;border:1px solid #313244;border-radius:6px;padding:4px 10px">main ▾</span></div>
+            <div style="display:flex;align-items:center;gap:14px;padding:13px 17px;border-bottom:1px solid #25253a"><span style="flex:1;font-size:13px;color:#cdd6f4">Worktree location</span><span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:#a6adc8">&lt;repo&gt;/.agency/worktrees/</span></div>
+            <div style="display:flex;align-items:center;gap:14px;padding:13px 17px"><span style="flex:1;font-size:13px;color:#cdd6f4">Theme</span><span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:#a6adc8;background:#11111b;border:1px solid #313244;border-radius:6px;padding:4px 10px">Catppuccin Mocha ▾</span></div>
+          </div>
+        </div>
+      </div>
+      </sc-if>
+
+      <!-- ===== NEW TASK MODAL ===== -->
+      <sc-if value="{{ showNew }}" hint-placeholder-val="{{ true }}">
+      <div onClick="{{ closeModal }}" style="position:absolute;inset:0;background:rgba(17,17,27,.66);backdrop-filter:blur(3px);display:flex;align-items:center;justify-content:center;z-index:20">
+        <div onClick="{{ stop }}" style="width:580px;max-width:92%;background:#181825;border:1px solid #45475a;border-radius:15px;box-shadow:0 24px 64px rgba(0,0,0,.5);overflow:hidden">
+          <div style="display:flex;align-items:center;padding:16px 18px;border-bottom:1px solid #25253a">
+            <span style="font-size:15px;font-weight:600;color:#cdd6f4">New task</span><span style="flex:1"></span>
+            <button onClick="{{ closeModal }}" style="width:26px;height:26px;display:flex;align-items:center;justify-content:center;background:transparent;border:none;border-radius:6px;color:#7f849c;cursor:pointer;font-size:14px" style-hover="background:#313244;color:#cdd6f4">✕</button>
+          </div>
+          <div style="padding:18px">
+            <label style="display:block;font-size:11px;font-weight:600;letter-spacing:.06em;color:#6c7086;margin-bottom:7px">TASK PROMPT</label>
+            <div style="background:#11111b;border:1px solid #313244;border-radius:9px;padding:11px 13px;font-size:13px;line-height:1.55;color:#cdd6f4;min-height:80px">Add hunk-level staging to the git panel — let me stage and unstage individual hunks in the diff view, with cargo tests for the new paths.<span style="display:inline-block;width:7px;height:15px;background:#89b4fa;vertical-align:-2px;margin-left:1px;animation:blink 1s steps(1) infinite"></span></div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:14px">
+              <div>
+                <label style="display:block;font-size:11px;font-weight:600;letter-spacing:.06em;color:#6c7086;margin-bottom:7px">PROJECT</label>
+                <div style="display:flex;align-items:center;gap:8px;background:#11111b;border:1px solid #313244;border-radius:8px;padding:9px 11px;font-size:12.5px;color:#cdd6f4"><span style="width:16px;height:16px;border-radius:4px;background:#89b4fa;color:#11111b;font-size:9px;font-weight:700;display:flex;align-items:center;justify-content:center">A</span>agency<span style="flex:1"></span><span style="color:#6c7086">▾</span></div>
+              </div>
+              <div>
+                <label style="display:block;font-size:11px;font-weight:600;letter-spacing:.06em;color:#6c7086;margin-bottom:7px">BASE BRANCH</label>
+                <div style="display:flex;align-items:center;gap:8px;background:#11111b;border:1px solid #313244;border-radius:8px;padding:9px 11px;font-family:'JetBrains Mono',monospace;font-size:12px;color:#cdd6f4">⎇ main<span style="flex:1"></span><span style="color:#6c7086">▾</span></div>
+              </div>
+            </div>
+            <label style="display:block;font-size:11px;font-weight:600;letter-spacing:.06em;color:#6c7086;margin:14px 0 7px">AGENT</label>
+            <div style="display:flex;gap:8px">
+              <div style="flex:1;display:flex;align-items:center;justify-content:center;gap:7px;padding:9px;border-radius:8px;border:1px solid #89b4fa;background:rgba(137,180,250,.12);font-size:12.5px;color:#cdd6f4;cursor:pointer"><span style="width:7px;height:7px;border-radius:50%;background:#fab387"></span>Claude Code</div>
+              <div style="flex:1;display:flex;align-items:center;justify-content:center;gap:7px;padding:9px;border-radius:8px;border:1px solid #313244;background:#11111b;font-size:12.5px;color:#a6adc8;cursor:pointer"><span style="width:7px;height:7px;border-radius:50%;background:#94e2d5"></span>Pi</div>
+              <div style="flex:1;display:flex;align-items:center;justify-content:center;gap:7px;padding:9px;border-radius:8px;border:1px solid #313244;background:#11111b;font-size:12.5px;color:#a6adc8;cursor:pointer"><span style="width:7px;height:7px;border-radius:50%;background:#cba6f7"></span>Hermes</div>
+            </div>
+            <label style="display:block;font-size:11px;font-weight:600;letter-spacing:.06em;color:#6c7086;margin:14px 0 7px">MODEL PROVIDER</label>
+            <div style="display:flex;gap:8px">
+              <div style="flex:1;display:flex;align-items:center;justify-content:center;gap:7px;padding:9px;border-radius:8px;border:1px solid #89b4fa;background:rgba(137,180,250,.12);font-size:12.5px;color:#cdd6f4;cursor:pointer">Anthropic · Claude</div>
+              <div style="flex:1;display:flex;align-items:center;justify-content:center;gap:7px;padding:9px;border-radius:8px;border:1px solid #313244;background:#11111b;font-size:12.5px;color:#a6adc8;cursor:pointer">LM Studio · local</div>
+            </div>
+            <div style="margin-top:16px;padding:10px 12px;background:#11111b;border:1px solid #25253a;border-radius:8px;font-family:'JetBrains Mono',monospace;font-size:11px;color:#6c7086;line-height:1.6">worktree <span style="color:#a6adc8">.agency/worktrees/t-104</span> on branch <span style="color:#a6e3a1">agent/t-104</span> off <span style="color:#fab387">main</span></div>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;padding:14px 18px;border-top:1px solid #25253a;background:#11111b">
+            <span style="flex:1"></span>
+            <button onClick="{{ closeModal }}" style="font-size:12.5px;padding:9px 15px;border-radius:8px;border:1px solid #313244;background:transparent;color:#a6adc8;cursor:pointer" style-hover="background:#313244;color:#cdd6f4">Cancel</button>
+            <button onClick="{{ closeModal }}" style="font-size:12.5px;font-weight:600;padding:9px 17px;border-radius:8px;border:none;background:#89b4fa;color:#11111b;cursor:pointer" style-hover="background:#b4befe">Create task ⌘↵</button>
+          </div>
+        </div>
+      </div>
+      </sc-if>
+
+      <!-- ===== MERGE RESOLVER MODAL ===== -->
+      <sc-if value="{{ showMerge }}" hint-placeholder-val="{{ true }}">
+      <div onClick="{{ closeModal }}" style="position:absolute;inset:0;background:rgba(17,17,27,.66);backdrop-filter:blur(3px);display:flex;align-items:center;justify-content:center;z-index:20">
+        <div onClick="{{ stop }}" style="width:720px;max-width:94%;background:#181825;border:1px solid #45475a;border-radius:15px;box-shadow:0 24px 64px rgba(0,0,0,.5);overflow:hidden">
+          <div style="display:flex;align-items:center;gap:10px;padding:16px 18px;border-bottom:1px solid #25253a">
+            <span style="font-size:15px;font-weight:600;color:#cdd6f4">Approve &amp; merge → main</span>
+            <span style="font-size:11px;font-family:'JetBrains Mono',monospace;color:#a6e3a1;background:#11111b;border:1px solid #313244;border-radius:5px;padding:2px 8px;white-space:nowrap">⎇ agent/merge-tests</span>
+            <span style="flex:1"></span>
+            <button onClick="{{ closeModal }}" style="width:26px;height:26px;display:flex;align-items:center;justify-content:center;background:transparent;border:none;border-radius:6px;color:#7f849c;cursor:pointer;font-size:14px" style-hover="background:#313244;color:#cdd6f4">✕</button>
+          </div>
+          <div style="padding:18px">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:15px;font-size:11.5px;font-family:'JetBrains Mono',monospace;flex-wrap:wrap">
+              <span style="display:flex;align-items:center;gap:6px;color:#a6e3a1"><span style="width:16px;height:16px;border-radius:50%;background:rgba(166,227,161,.15);display:flex;align-items:center;justify-content:center">✓</span>Checkout main</span>
+              <span style="color:#45475a">──</span>
+              <span style="display:flex;align-items:center;gap:6px;color:#a6e3a1"><span style="width:16px;height:16px;border-radius:50%;background:rgba(166,227,161,.15);display:flex;align-items:center;justify-content:center">✓</span>Rebase</span>
+              <span style="color:#45475a">──</span>
+              <span style="display:flex;align-items:center;gap:6px;color:#a6e3a1"><span style="width:16px;height:16px;border-radius:50%;background:rgba(166,227,161,.15);display:flex;align-items:center;justify-content:center">✓</span>Resolve (1)</span>
+              <span style="color:#45475a">──</span>
+              <span style="display:flex;align-items:center;gap:6px;color:#cdd6f4"><span style="width:16px;height:16px;border-radius:50%;background:#89b4fa;color:#11111b;display:flex;align-items:center;justify-content:center;font-weight:700">4</span>Summary</span>
+            </div>
+            <div style="background:#11111b;border:1px solid #25253a;border-radius:9px;padding:13px 15px;font-family:'JetBrains Mono',monospace;font-size:12px;line-height:1.85;color:#a6adc8">
+              <div><span style="color:#cba6f7">merge-resolver ›</span> backend: <span style="color:#fab387">Claude Code</span></div>
+              <div><span style="color:#a6e3a1">●</span> git checkout main &amp;&amp; git merge agent/merge-tests</div>
+              <div><span style="color:#f9e2af">⚠ CONFLICT</span> (content): <span style="color:#89b4fa">src/components/DiffView.tsx</span></div>
+              <div><span style="color:#a6e3a1">●</span> Reading both sides of the conflict…</div>
+              <div><span style="color:#cba6f7">✻</span> Reconciling: keep new <span style="color:#94e2d5">stageHunk</span> API + upstream prop rename</div>
+              <div>&nbsp;&nbsp;<span style="color:#a6e3a1">✓</span> resolved DiffView.tsx</div>
+              <div><span style="color:#a6e3a1">●</span> git commit -m "merge: hunk-level staging into main"</div>
+            </div>
+            <div style="display:flex;align-items:center;gap:9px;margin-top:12px;padding:9px 12px;background:rgba(166,227,161,.06);border:1px solid rgba(166,227,161,.22);border-radius:8px;font-size:12px">
+              <span style="font-family:'JetBrains Mono',monospace;color:#a6e3a1">✓</span>
+              <span style="font-family:'JetBrains Mono',monospace;color:#cdd6f4">src/components/DiffView.tsx</span>
+              <span style="color:#a6e3a1">conflict resolved</span><span style="flex:1"></span>
+              <span style="color:#7f849c;font-size:11px">1 of 1</span>
+            </div>
+            <div style="margin-top:14px;padding:13px 15px;background:#1e1e2e;border:1px solid #313244;border-radius:9px">
+              <div style="font-size:11px;font-weight:600;letter-spacing:.08em;color:#6c7086;margin-bottom:7px">PLAIN-LANGUAGE SUMMARY</div>
+              <p style="margin:0;font-size:12.5px;line-height:1.6;color:#bac2de">Merged hunk-level staging into <span style="color:#fab387;font-family:'JetBrains Mono',monospace">main</span>. One conflict in <span style="font-family:'JetBrains Mono',monospace;color:#cdd6f4">DiffView.tsx</span> — both branches edited the same hook. Kept the new stage/unstage-hunk API and applied upstream's <span style="color:#cdd6f4">prop rename</span>. All tests pass.</p>
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;padding:14px 18px;border-top:1px solid #25253a;background:#11111b">
+            <button onClick="{{ closeModal }}" style="font-size:12.5px;padding:9px 15px;border-radius:8px;border:1px solid rgba(243,139,168,.4);background:transparent;color:#f38ba8;cursor:pointer" style-hover="background:rgba(243,139,168,.12)">Discard branch</button>
+            <span style="flex:1"></span>
+            <button onClick="{{ closeModal }}" style="font-size:12.5px;padding:9px 15px;border-radius:8px;border:1px solid #313244;background:transparent;color:#a6adc8;cursor:pointer" style-hover="background:#313244;color:#cdd6f4">Keep worktree</button>
+            <button onClick="{{ closeModal }}" style="font-size:12.5px;font-weight:600;padding:9px 17px;border-radius:8px;border:none;background:#a6e3a1;color:#11111b;cursor:pointer" style-hover="background:#94e2d5">Confirm merge</button>
+          </div>
+        </div>
+      </div>
+      </sc-if>
+
+    </div>
+  </div>
+
+  <!-- ===== STATUS BAR ===== -->
+  <div style="height:27px;flex-shrink:0;display:flex;align-items:center;gap:16px;padding:0 14px;background:#11111b;border-top:1px solid #25253a;font-family:'JetBrains Mono',monospace;font-size:11px;color:#6c7086">
+    <span style="color:#a6adc8">⎇ main</span>
+    <span>agency</span>
+    <span><span style="color:#a6e3a1">2 running</span> · 1 awaiting · 1 idle · 2 stopped</span>
+    <span style="flex:1"></span>
+    <span style="color:#7f849c">⌘N new · ⌘G source · ⌘↵ approve</span>
+    <span style="display:flex;align-items:center;gap:6px;color:#a6e3a1"><span style="width:6px;height:6px;border-radius:50%;background:#a6e3a1"></span>no telemetry</span>
+    <span>v0.3.1</span>
+  </div>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  state = { project:'agency', nav:'agents', layout:'grid', task:'t1', file:'diffview', modal:null };
+
+  renderVals(){
+    const s = this.state;
+
+    const navBase='display:inline-flex;align-items:center;gap:7px;padding:6px 12px;border-radius:7px;border:none;cursor:pointer;font:500 12.5px/1 \'Geist\',system-ui,sans-serif;transition:all .12s;white-space:nowrap;';
+    const navStyle=(k)=> navBase + (s.nav===k?'background:#313244;color:#cdd6f4;':'background:transparent;color:#7f849c;');
+    const settingsNav='display:flex;align-items:center;gap:9px;width:100%;padding:8px 12px;border-radius:8px;border:none;cursor:pointer;text-align:left;font:500 13px/1 \'Geist\',system-ui,sans-serif;' + (s.nav==='settings'?'background:#313244;color:#cdd6f4;':'background:transparent;color:#a6adc8;');
+
+    const tglBase='display:inline-flex;align-items:center;gap:6px;padding:5px 11px;border-radius:6px;border:none;cursor:pointer;font:500 12px/1 \'Geist\',system-ui,sans-serif;transition:all .12s;white-space:nowrap;';
+    const tglStyle=(k)=> tglBase + (s.layout===k?'background:#45475a;color:#cdd6f4;':'background:transparent;color:#7f849c;');
+
+    const projData=[
+      {id:'agency', name:'agency', path:'~/code/agency', initial:'A', color:'#89b4fa', dots:['#a6e3a1','#f9e2af','#89b4fa','#a6e3a1','#6c7086','#f38ba8']},
+      {id:'web', name:'web-platform', path:'~/code/web-platform', initial:'W', color:'#cba6f7', dots:['#a6e3a1','#6c7086']},
+      {id:'ml', name:'ml-pipeline', path:'~/work/ml-pipeline', initial:'M', color:'#94e2d5', dots:['#6c7086']},
+      {id:'docs', name:'docs-site', path:'~/code/docs-site', initial:'D', color:'#fab387', dots:['#a6e3a1','#a6e3a1','#a6e3a1']},
+    ];
+    const projRowBase='display:flex;align-items:center;gap:10px;width:100%;padding:8px 10px;margin-bottom:2px;border-radius:9px;border:none;cursor:pointer;text-align:left;transition:background .12s;';
+    const projects=projData.map(p=>({...p, onClick:()=>this.setState({project:p.id}), rowStyle: projRowBase + (s.project===p.id?'background:#313244;box-shadow:inset 2px 0 0 '+p.color+';':'background:transparent;')}));
+
+    const taskData=[
+      {id:'t1', title:'Add hunk-level staging to git panel', agent:'Claude Code', agentColor:'#fab387', term:'claude',  branch:'agent/hunk-staging',   status:'Running',        statusColor:'#a6e3a1'},
+      {id:'t2', title:'Fix PTY reattach on restart',         agent:'Hermes',      agentColor:'#cba6f7', term:'hermes',  branch:'agent/pty-reattach',  status:'Awaiting input',  statusColor:'#f9e2af'},
+      {id:'t3', title:'Write merge-resolver skill tests',    agent:'Pi',          agentColor:'#94e2d5', term:'pi',      branch:'agent/merge-tests',   status:'Idle — review',   statusColor:'#89b4fa'},
+      {id:'t4', title:'Refactor worktree cleanup',           agent:'Claude Code', agentColor:'#fab387', term:'claude2', branch:'agent/wt-cleanup',    status:'Running',        statusColor:'#a6e3a1'},
+      {id:'t5', title:'Settings provider validation',        agent:'Pi',          agentColor:'#94e2d5', term:'pi2',     branch:'agent/settings-valid',status:'Exited (0)',      statusColor:'#6c7086'},
+      {id:'t6', title:'LM Studio base URL detection',        agent:'Hermes',      agentColor:'#cba6f7', term:'hermes2', branch:'agent/lmstudio-detect',status:'Crashed',        statusColor:'#f38ba8'},
+    ];
+    const taskRowBase='display:flex;flex-direction:column;gap:5px;width:100%;padding:10px 14px;border:none;border-left:2px solid transparent;cursor:pointer;text-align:left;transition:background .12s;';
+    const tasks=taskData.map(t=>({...t, onClick:()=>this.setState({task:t.id}), rowStyle: taskRowBase + (s.task===t.id?'background:#11111b;border-left-color:'+t.statusColor+';':'background:transparent;')}));
+    const selectedTask = tasks.find(t=>t.id===s.task) || tasks[0];
+
+    const stagedData=[{id:'stage',name:'stage.rs',path:'src-tauri/src/git/',badge:'A',badgeColor:'#a6e3a1',add:84,del:0}];
+    const changedData=[
+      {id:'diffview',name:'DiffView.tsx',path:'src/components/',badge:'M',badgeColor:'#f9e2af',add:37,del:12},
+      {id:'changes',name:'ChangesList.tsx',path:'src/components/',badge:'M',badgeColor:'#f9e2af',add:21,del:4},
+      {id:'mod',name:'mod.rs',path:'src-tauri/src/git/',badge:'M',badgeColor:'#f9e2af',add:6,del:1},
+    ];
+    const fileRowBase='display:flex;align-items:center;gap:9px;width:100%;padding:6px 9px;border-radius:7px;border:none;cursor:pointer;text-align:left;transition:background .12s;';
+    const mkFiles=(arr)=>arr.map(f=>({...f, onClick:()=>this.setState({file:f.id, nav:'source'}), rowStyle: fileRowBase + (s.file===f.id?'background:#313244;':'background:transparent;')}));
+
+    const dstyle={
+      ctx:'padding:0 16px;white-space:pre;color:#7f849c;',
+      add:'padding:0 16px;white-space:pre;background:rgba(166,227,161,.10);color:#a6e3a1;',
+      del:'padding:0 16px;white-space:pre;background:rgba(243,139,168,.10);color:#f38ba8;',
+    };
+    const L=(t,x)=>({style:dstyle[t], text:x});
+    const diffs={
+      diffview:{hunks:[
+        {header:'@@ -18,7 +18,9 @@ export function DiffView(props)', lines:[
+          L('ctx','  const [hunks, setHunks] = useState([])'),
+          L('del','- const stage = () => stageFile(file.path)'),
+          L('add','+ const stageHunk = (i) => stageHunkAt(file.path, i)'),
+          L('add','+ const unstageHunk = (i) => unstageHunkAt(file.path, i)'),
+          L('ctx','  return ('),
+        ]},
+        {header:'@@ -41,6 +43,8 @@ render hunks', lines:[
+          L('ctx','  {hunks.map((h, i) => ('),
+          L('ctx','    <Hunk key={i} data={h}>'),
+          L('add','+     <button onClick={() => stageHunk(i)}>Stage hunk</button>'),
+          L('add','+     <button onClick={() => unstageHunk(i)}>Unstage</button>'),
+          L('ctx','    </Hunk>'),
+          L('ctx','  ))}'),
+        ]},
+      ]},
+      stage:{hunks:[
+        {header:'@@ -0,0 +1,84 @@ new file src-tauri/src/git/stage.rs', lines:[
+          L('add','+ use crate::git::Repo;'),
+          L('add','+'),
+          L('add','+ pub fn stage_hunk(repo: &Repo, path: &str, index: usize) -> Result<()> {'),
+          L('add','+     let patch = repo.hunk_patch(path, index)?;'),
+          L('add','+     repo.apply_cached(&patch)'),
+          L('add','+ }'),
+          L('add','+'),
+          L('add','+ pub fn unstage_hunk(repo: &Repo, path: &str, index: usize) -> Result<()> {'),
+          L('add','+     let patch = repo.hunk_patch(path, index)?;'),
+          L('add','+     repo.apply_cached_reverse(&patch)'),
+          L('add','+ }'),
+        ]},
+      ]},
+      changes:{hunks:[
+        {header:'@@ -12,5 +12,9 @@ ChangesList row actions', lines:[
+          L('ctx','  const file = props.file'),
+          L('del','-   <button onClick={stageFile}>Stage</button>'),
+          L('add','+   <StageMenu file={file} onHunk={stageHunk} />'),
+          L('add','+   <DiffStat add={file.add} del={file.del} />'),
+          L('ctx','  </Row>'),
+        ]},
+      ]},
+      mod:{hunks:[
+        {header:'@@ -3,2 +3,3 @@ git module exports', lines:[
+          L('ctx','  pub mod diff_service;'),
+          L('add','+ pub mod stage;'),
+        ]},
+      ]},
+    };
+    const selectedDiff = diffs[s.file] || diffs.diffview;
+
+    return {
+      isAgents:s.nav==='agents', isSource:s.nav==='source', isSettings:s.nav==='settings', notSettings:s.nav!=='settings',
+      showGrid: s.nav==='agents' && s.layout==='grid',
+      showFocus: s.nav==='agents' && s.layout==='focus',
+      showNew:s.modal==='newtask', showMerge:s.modal==='merge',
+      navAgents:navStyle('agents'), navSource:navStyle('source'), navSettings:settingsNav,
+      tglGrid:tglStyle('grid'), tglFocus:tglStyle('focus'),
+      projects, tasks, selectedTask,
+      selTitle:selectedTask.title, selBranch:selectedTask.branch, selAgent:selectedTask.agent,
+      selAgentColor:selectedTask.agentColor, selStatus:selectedTask.status, selStatusColor:selectedTask.statusColor,
+      selDotStyle:'width:9px;height:9px;border-radius:50%;flex-shrink:0;background:'+selectedTask.statusColor,
+      isTermClaude:selectedTask.term==='claude', isTermHermes:selectedTask.term==='hermes', isTermPi:selectedTask.term==='pi',
+      isTermClaude2:selectedTask.term==='claude2', isTermPi2:selectedTask.term==='pi2', isTermHermes2:selectedTask.term==='hermes2',
+      stagedFiles:mkFiles(stagedData), changedFiles:mkFiles(changedData), selectedDiff,
+      isStageFile:s.file==='stage', isDiffview:s.file==='diffview', isChanges:s.file==='changes', isMod:s.file==='mod',
+      goAgents:()=>this.setState({nav:'agents',modal:null}),
+      goSource:()=>this.setState({nav:'source',modal:null}),
+      goSettings:()=>this.setState({nav:'settings',modal:null}),
+      setGrid:()=>this.setState({layout:'grid'}),
+      setFocus:()=>this.setState({layout:'focus'}),
+      openNew:()=>this.setState({modal:'newtask'}),
+      openMerge:()=>this.setState({modal:'merge'}),
+      closeModal:()=>this.setState({modal:null}),
+      stop:(e)=>{ e.stopPropagation(); },
+      openFocusMap:{
+        t1:()=>this.setState({nav:'agents',layout:'focus',task:'t1'}),
+        t2:()=>this.setState({nav:'agents',layout:'focus',task:'t2'}),
+        t3:()=>this.setState({nav:'agents',layout:'focus',task:'t3'}),
+        t4:()=>this.setState({nav:'agents',layout:'focus',task:'t4'}),
+        t5:()=>this.setState({nav:'agents',layout:'focus',task:'t5'}),
+        t6:()=>this.setState({nav:'agents',layout:'focus',task:'t6'}),
+      },
+    };
+  }
+}
+</script>
+</body>
+</html>

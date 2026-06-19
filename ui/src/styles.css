@@ -42,3 +42,20 @@ button { background: #2d6cdf; border: none; color: white; padding: 8px 12px; bor
 .git-diff pre { background: #0e1014; border-radius: 6px; padding: 8px; overflow: auto; max-height: 240px; font-size: 12px; }
 .git-commit-row { font-size: 12px; padding: 1px 0; }
 .git-commit-row code { color: #7da3c9; }
+.settings-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 10; }
+.settings { background: #14161a; border: 1px solid #2a2e36; border-radius: 10px; padding: 16px; width: 560px; max-height: 86vh; overflow: auto; display: flex; flex-direction: column; gap: 14px; }
+.settings-head { display: flex; justify-content: space-between; align-items: center; }
+.settings section { display: flex; flex-direction: column; gap: 6px; }
+.settings h3 { margin: 0; font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: #9aa3b2; }
+.settings label { font-size: 12px; color: #8893a5; }
+.settings input, .settings textarea { background: #1b1f27; border: 1px solid #2a2e36; color: #e6e6e6; border-radius: 6px; padding: 8px; }
+.settings textarea { min-height: 64px; resize: vertical; }
+.profile-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.profile-list li { display: flex; align-items: center; gap: 8px; }
+.profile-name { cursor: pointer; min-width: 90px; }
+.profile-name:hover { text-decoration: underline; }
+.profile-list code { color: #8893a5; flex: 1; font-size: 12px; }
+.profile-form { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.sidebar-wrap { display: flex; flex-direction: column; }
+.settings-btn { margin: 8px; background: #2a2e36; }
+.new-task select { background: #1b1f27; border: 1px solid #2a2e36; color: #e6e6e6; border-radius: 6px; padding: 8px; max-width: 200px; }

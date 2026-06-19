@@ -84,3 +84,27 @@ pub fn log(worktree: &Path, limit: usize) -> Result<Vec<CommitInfo>> {
     }
     Ok(commits)
 }
+
+pub fn stage(worktree: &Path, path: &str) -> Result<()> {
+    git(worktree, &["add", "--", path])?;
+    Ok(())
+}
+
+pub fn unstage(worktree: &Path, path: &str) -> Result<()> {
+    // `restore --staged` requires git >= 2.23; available on all supported setups.
+    git(worktree, &["restore", "--staged", "--", path])?;
+    Ok(())
+}
+
+pub fn commit(worktree: &Path, message: &str) -> Result<()> {
+    git(worktree, &["commit", "-m", message])?;
+    Ok(())
+}
+
+pub fn push(worktree: &Path) -> Result<()> {
+    let branch = git(worktree, &["rev-parse", "--abbrev-ref", "HEAD"])?
+        .trim()
+        .to_string();
+    git(worktree, &["push", "-u", "origin", &branch])?;
+    Ok(())
+}

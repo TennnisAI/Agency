@@ -52,3 +52,49 @@ fn log_lists_recent_commits() {
     assert_eq!(commits[0].summary, "initial");
     assert!(!commits[0].hash.is_empty());
 }
+
+#[test]
+fn stage_commit_then_log_and_push_to_local_remote() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    // Make a change, stage it, commit it.
+    std::fs::write(repo.join("tracked.txt"), "one\ntwo\n").unwrap();
+    git::stage(&repo, "tracked.txt").unwrap();
+
+    let staged = git::status(&repo).unwrap();
+    let entry = staged.iter().find(|c| c.path == "tracked.txt").unwrap();
+    assert_eq!(entry.index, "M"); // staged modification
+
+    git::unstage(&repo, "tracked.txt").unwrap();
+    let unstaged = git::status(&repo).unwrap();
+    let entry = unstaged.iter().find(|c| c.path == "tracked.txt").unwrap();
+    assert_eq!(entry.index, " "); // no longer staged
+    assert_eq!(entry.worktree, "M");
+
+    git::stage(&repo, "tracked.txt").unwrap();
+    git::commit(&repo, "add two").unwrap();
+    let commits = git::log(&repo, 10).unwrap();
+    assert_eq!(commits[0].summary, "add two");
+
+    // Set up a bare remote and push to it.
+    let remote = dir.path().join("remote.git");
+    assert!(std::process::Command::new("git")
+        .args(["init", "--bare", "-q", remote.to_str().unwrap()])
+        .status()
+        .unwrap()
+        .success());
+    run(&repo, &["remote", "add", "origin", remote.to_str().unwrap()]);
+
+    git::push(&repo).unwrap();
+
+    // The remote now has our branch with the commit.
+    let ls = std::process::Command::new("git")
+        .args(["log", "--format=%s", "-n1", "--all"])
+        .current_dir(&remote)
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&ls.stdout).contains("add two"));
+}

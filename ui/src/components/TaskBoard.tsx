@@ -7,6 +7,25 @@ interface Props {
   project: Project;
 }
 
+function statusDotClass(status: string): string {
+  const s = status.toLowerCase();
+  if (s === "running") return "running";
+  if (s === "idle") return "review";
+  if (s === "awaiting") return "awaiting";
+  if (s === "review") return "review";
+  if (s === "exited") return "exited";
+  if (s === "crashed") return "crashed";
+  return "awaiting";
+}
+
+function agentBadgeClass(profileName: string): string {
+  const n = profileName.toLowerCase();
+  if (n === "claude") return "claude";
+  if (n === "pi") return "pi";
+  if (n === "hermes") return "hermes";
+  return "";
+}
+
 export default function TaskBoard({ project }: Props) {
   const [prompt, setPrompt] = useState("");
   const [activePrompt, setActivePrompt] = useState<string | null>(null);
@@ -59,7 +78,9 @@ export default function TaskBoard({ project }: Props) {
       ) : (
         <div className="task-running">
           <div className="task-status">
-            status: {status || "starting…"} · agent: {activeProfile}
+            <span className={`dot ${statusDotClass(status || "awaiting")}`} />
+            <span>{status || "starting…"}</span>
+            <span className={`badge ${agentBadgeClass(activeProfile)}`}>{activeProfile}</span>
           </div>
           <div className="task-split">
             <TerminalPane

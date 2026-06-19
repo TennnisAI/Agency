@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import {
   CommitInfo,
   FileChange,
@@ -11,6 +11,30 @@ import {
   gitUnstage,
 } from "../api";
 import MergeModal from "./MergeModal";
+
+function statusColorClass(code: string): string {
+  if (code === "A") return "git-status-add";
+  if (code === "M" || code === "m") return "git-status-mod";
+  if (code === "D") return "git-status-del";
+  if (code === "?") return "git-status-untracked";
+  return "";
+}
+
+function renderDiff(diff: string): React.ReactNode {
+  if (!diff) return <span className="diff-ctx">(no diff)</span>;
+  return diff.split("\n").map((line, i) => {
+    let cls = "diff-ctx";
+    if (line.startsWith("+")) cls = "diff-add";
+    else if (line.startsWith("-")) cls = "diff-del";
+    else if (line.startsWith("@")) cls = "diff-hunk";
+    return (
+      <span key={i} className={cls}>
+        {line}
+        {"\n"}
+      </span>
+    );
+  });
+}
 
 export default function GitPanel({ taskId }: { taskId: string }) {
   const [changes, setChanges] = useState<FileChange[]>([]);
@@ -72,7 +96,7 @@ export default function GitPanel({ taskId }: { taskId: string }) {
         {staged.length === 0 && <div className="git-empty">none</div>}
         {staged.map((c) => (
           <div key={c.path} className="git-file">
-            <span className="git-status">{c.index}</span>
+            <span className={`git-status ${statusColorClass(c.index)}`}>{c.index}</span>
             <span className="git-path" onClick={() => showDiff(c)}>
               {c.path}
             </span>
@@ -86,7 +110,9 @@ export default function GitPanel({ taskId }: { taskId: string }) {
         {unstaged.length === 0 && <div className="git-empty">none</div>}
         {unstaged.map((c) => (
           <div key={c.path} className="git-file">
-            <span className="git-status">{c.index === "?" ? "?" : c.worktree}</span>
+            <span className={`git-status ${statusColorClass(c.index === "?" ? "?" : c.worktree)}`}>
+              {c.index === "?" ? "?" : c.worktree}
+            </span>
             <span className="git-path" onClick={() => showDiff(c)}>
               {c.path}
             </span>
@@ -120,7 +146,7 @@ export default function GitPanel({ taskId }: { taskId: string }) {
       {selected && (
         <div className="git-diff">
           <h4>{selected}</h4>
-          <pre>{diff || "(no diff)"}</pre>
+          <pre className="diff-pre">{renderDiff(diff)}</pre>
         </div>
       )}
 

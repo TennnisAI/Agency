@@ -3,6 +3,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { sendInput, startTask, taskStatus, TaskInfo } from "../api";
+import { xtermTheme } from "../lib/xtermTheme";
 
 interface Props {
   projectId: string;
@@ -19,7 +20,7 @@ export default function TerminalPane({ projectId, prompt, profile, onStatus, onS
     const container = containerRef.current;
     if (!container) return;
 
-    const term = new Terminal({ convertEol: true, fontSize: 13, cursorBlink: true });
+    const term = new Terminal({ convertEol: true, fontSize: 13, cursorBlink: true, theme: xtermTheme });
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(container);

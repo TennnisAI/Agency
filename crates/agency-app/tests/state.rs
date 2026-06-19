@@ -261,6 +261,32 @@ fn resolve_merge_spawns_resolver_in_repo_and_streams() {
 }
 
 #[test]
+fn save_settings_rejects_bad_provider_url() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = AppState::new(&dir.path().join("agency.db")).unwrap();
+    // remote http (non-localhost) is rejected
+    let bad = agency_app_lib::ProviderSettings {
+        anthropic_api_key: "".into(),
+        lm_studio_base_url: "http://evil.example.com/v1".into(),
+    };
+    assert!(state.save_settings(&bad).is_err());
+    // embedded credentials are rejected
+    let creds = agency_app_lib::ProviderSettings {
+        anthropic_api_key: "".into(),
+        lm_studio_base_url: "http://user:pass@localhost:1234/v1".into(),
+    };
+    assert!(state.save_settings(&creds).is_err());
+    // localhost, IPv6 loopback http, and https are allowed
+    for ok in ["http://localhost:1234/v1", "http://[::1]:1234/v1", "https://api.example.com/v1", ""] {
+        let s = agency_app_lib::ProviderSettings {
+            anthropic_api_key: "".into(),
+            lm_studio_base_url: ok.into(),
+        };
+        assert!(state.save_settings(&s).is_ok(), "should accept {ok}");
+    }
+}
+
+#[test]
 fn merge_task_clean_merges_branch_into_base() {
     let dir = tempfile::tempdir().unwrap();
     let repo = dir.path().join("repo");

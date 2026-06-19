@@ -52,6 +52,10 @@ fn unmerged_files(repo: &Path) -> Result<Vec<String>> {
 }
 
 pub fn merge(repo: &Path, branch: &str, base: &str) -> Result<MergeOutcome> {
+    let dirty = git_ok(repo, &["status", "--porcelain"])?;
+    if !dirty.trim().is_empty() {
+        bail!("repository has uncommitted changes; commit or stash them before merging");
+    }
     git_ok(repo, &["checkout", base])?;
     let out = git(repo, &["merge", "--no-ff", branch])?;
     if out.status.success() {

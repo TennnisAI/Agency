@@ -2,7 +2,7 @@ use agency_core::profile::AgentProfile;
 use agency_core::registry::{Project, Registry};
 use agency_core::supervisor::{spawn_agent, AgentHandle, AgentStatus};
 use agency_core::worktree::WorktreeManager;
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Mutex;
@@ -30,6 +30,27 @@ pub struct Session {
 pub struct TaskInfo {
     pub task_id: String,
     pub branch: String,
+}
+
+fn validate_provider_url(raw: &str) -> Result<()> {
+    if raw.is_empty() {
+        return Ok(());
+    }
+    let url = url::Url::parse(raw).map_err(|e| anyhow!("invalid URL: {e}"))?;
+    match url.scheme() {
+        "https" => {}
+        "http" => {
+            let host = url.host_str().unwrap_or("");
+            if host != "localhost" && host != "127.0.0.1" && host != "[::1]" {
+                bail!("http is only allowed for localhost; use https for remote hosts");
+            }
+        }
+        other => bail!("unsupported URL scheme: {other}"),
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        bail!("URL must not contain embedded credentials");
+    }
+    Ok(())
 }
 
 fn new_task_id() -> String {
@@ -79,6 +100,17 @@ impl AppState {
         })
     }
 
+    fn provider_env(&self) -> Result<Vec<(String, String)>> {
+        let s = self.get_settings()?;
+        let mut env = Vec::new();
+        if !s.anthropic_api_key.is_empty() {
+            env.push(("ANTHROPIC_API_KEY".into(), s.anthropic_api_key));
+        }
+        env.push(("OPENAI_BASE_URL".into(), s.lm_studio_base_url));
+        env.push(("OPENAI_API_KEY".into(), "lm-studio".into()));
+        Ok(env)
+    }
+
     pub fn register_profile(&self, profile: AgentProfile) -> Result<()> {
         self.registry.lock().unwrap().upsert_profile(&profile)
     }
@@ -113,6 +145,7 @@ impl AppState {
     }
 
     pub fn save_settings(&self, s: &ProviderSettings) -> Result<()> {
+        validate_provider_url(&s.lm_studio_base_url)?;
         let reg = self.registry.lock().unwrap();
         reg.set_setting(SETTING_ANTHROPIC_KEY, &s.anthropic_api_key)?;
         reg.set_setting(SETTING_LM_STUDIO_URL, &s.lm_studio_base_url)?;
@@ -151,27 +184,14 @@ impl AppState {
         };
 
         // Resolve the profile and provider settings; build the effective env.
-        let (mut profile, settings) = {
+        let mut profile = {
             let reg = self.registry.lock().unwrap();
-            let profile = reg
-                .get_profile(profile_name)?
-                .ok_or_else(|| anyhow!("unknown profile: {profile_name}"))?;
-            let settings = ProviderSettings {
-                anthropic_api_key: reg.get_setting(SETTING_ANTHROPIC_KEY)?.unwrap_or_default(),
-                lm_studio_base_url: reg
-                    .get_setting(SETTING_LM_STUDIO_URL)?
-                    .unwrap_or_else(|| DEFAULT_LM_STUDIO_URL.to_string()),
-            };
-            (profile, settings)
+            reg.get_profile(profile_name)?
+                .ok_or_else(|| anyhow!("unknown profile: {profile_name}"))?
         };
 
         // Provider env first, then the profile's own env on top.
-        let mut env: Vec<(String, String)> = Vec::new();
-        if !settings.anthropic_api_key.is_empty() {
-            env.push(("ANTHROPIC_API_KEY".into(), settings.anthropic_api_key.clone()));
-        }
-        env.push(("OPENAI_BASE_URL".into(), settings.lm_studio_base_url.clone()));
-        env.push(("OPENAI_API_KEY".into(), "lm-studio".into()));
+        let mut env = self.provider_env()?;
         env.extend(profile.env.iter().cloned());
         profile.env = env;
 
@@ -279,13 +299,16 @@ impl AppState {
             files = if conflicts.is_empty() { "(detect with `git status`)".to_string() } else { conflicts.join(", ") },
         );
 
-        let profile = {
+        let mut profile = {
             let reg = self.registry.lock().unwrap();
             reg.get_profile(resolver_profile)?
                 .ok_or_else(|| anyhow!("unknown resolver profile: {resolver_profile}"))?
         };
 
-        // TODO(phase6): inject provider env into resolver (like start_task does).
+        let mut env = self.provider_env()?;
+        env.extend(profile.env.iter().cloned());
+        profile.env = env;
+
         let handle = spawn_agent(&profile, &repo, &prompt, on_output)?;
         self.resolvers.lock().unwrap().insert(task_id.to_string(), handle);
         Ok(())

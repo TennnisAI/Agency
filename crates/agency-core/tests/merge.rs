@@ -72,3 +72,19 @@ fn detect_base_finds_main() {
     init_repo(dir.path());
     assert_eq!(merge::detect_base(dir.path()).unwrap(), "main");
 }
+
+#[test]
+fn merge_refuses_dirty_working_tree() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    run(dir.path(), &["checkout", "-q", "-b", "agent/z"]);
+    std::fs::write(dir.path().join("new.txt"), "x\n").unwrap();
+    run(dir.path(), &["add", "-A"]);
+    run(dir.path(), &["commit", "-q", "-m", "feat"]);
+    run(dir.path(), &["checkout", "-q", "main"]);
+    // Dirty the main working tree.
+    std::fs::write(dir.path().join("f.txt"), "dirty\n").unwrap();
+
+    let err = merge::merge(dir.path(), "agent/z", "main").unwrap_err();
+    assert!(err.to_string().contains("uncommitted changes"), "got: {err}");
+}

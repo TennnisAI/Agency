@@ -59,3 +59,7 @@ button { background: #2d6cdf; border: none; color: white; padding: 8px 12px; bor
 .sidebar-wrap { display: flex; flex-direction: column; }
 .settings-btn { margin: 8px; background: #2a2e36; }
 .new-task select { background: #1b1f27; border: 1px solid #2a2e36; color: #e6e6e6; border-radius: 6px; padding: 8px; max-width: 200px; }
+.merge-modal { background: #14161a; border: 1px solid #2a2e36; border-radius: 12px; padding: 16px; width: 620px; max-height: 86vh; overflow: auto; display: flex; flex-direction: column; gap: 12px; }
+.merge-ok { color: #a6e3a1; }
+.merge-warn { color: #f9e2af; }
+.merge-term { min-height: 280px; }

@@ -52,6 +52,14 @@ A new `agency_core::tmux` module replaces the direct portable-pty path for agent
 **tmux session `agency-<task-id>` is the durable unit**; portable-pty is used only as the
 transport for a live *attach*.
 
+**Self-contained / bundled tmux:** the module resolves the tmux binary via a configurable
+path — in the packaged app it points at a tmux binary bundled inside the `.app` (Tauri
+`externalBin` sidecar); in dev it falls back to `tmux` on `PATH` (the developer's 3.6b).
+`TmuxBackend::new(tmux_bin: PathBuf)` takes the path; a resolver picks bundled-if-present
+else `"tmux"`. **Actually bundling + signing the per-arch tmux binary is a packaging-phase
+task** (alongside icons/notarization) — 7a builds and tests against system tmux. Net: the
+shipped app requires no user install.
+
 - `start_session(name, cwd, command, args, env) -> Result<()>` —
   `tmux new-session -d -s <name> -c <cwd> -e K=V… -- <command> <args…>`; then
   `tmux set-option -t <name> remain-on-exit on`.
@@ -158,7 +166,7 @@ re-pointed at a tmux session too (the resolver becomes `agency-resolver-<id>` in
 | Session backing | **tmux** sessions per run (durable, reattachable, external-attach) |
 | Grid preview | `tmux capture-pane` snapshots (not live xterm-per-tile) |
 | Focus terminal | live `tmux attach` in a portable-pty → xterm |
-| tmux dependency | Required; macOS target for 7a; clear error if absent |
+| tmux distribution | **Bundled inside the app** (Tauri `externalBin` sidecar); module takes a configurable binary path; dev uses system tmux; binary bundling/signing is a packaging-phase task → self-contained shipped app |
 
 ## 8. Migration / risk notes
 - Removing the direct-PTY `supervisor` touches `start_task`, `resolve_merge`, and their

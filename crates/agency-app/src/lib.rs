@@ -22,6 +22,13 @@ pub fn run() {
             commands::send_input,
             commands::task_status,
             commands::stop_task,
+            commands::git_status,
+            commands::git_diff,
+            commands::git_log,
+            commands::git_stage,
+            commands::git_unstage,
+            commands::git_commit,
+            commands::git_push,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Agency");

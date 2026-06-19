@@ -1,7 +1,7 @@
 mod commands;
 mod state;
 
-pub use state::{AppState, TaskInfo};
+pub use state::{AppState, ProviderSettings, TaskInfo};
 
 pub fn run() {
     tauri::Builder::default()

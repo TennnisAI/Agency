@@ -6,7 +6,7 @@ fn new_seeds_default_shell_profile_and_version_holds() {
     let dir = tempfile::tempdir().unwrap();
     let state = AppState::new(&dir.path().join("agency.db")).unwrap();
     assert_eq!(AppState::version(), "0.1.0");
-    assert!(state.profile_names().contains(&"shell".to_string()));
+    assert!(state.profile_names().unwrap().contains(&"shell".to_string()));
 }
 
 #[test]
@@ -83,7 +83,7 @@ fn start_task_spawns_in_worktree_streams_and_stops() {
         command: fake_agent_command(),
         args: vec!["{{prompt}}".into()],
         env: vec![],
-    });
+    }).unwrap();
 
     let project = state.add_project("demo", &repo).unwrap();
 
@@ -137,7 +137,7 @@ fn worktree_path_resolves_for_active_task() {
         command: fake_agent_command(),
         args: vec!["{{prompt}}".into()],
         env: vec![],
-    });
+    }).unwrap();
     let project = state.add_project("demo", &repo).unwrap();
     let info = state
         .start_task(&project.id, "p", "fake", "HEAD", |_| {})
@@ -148,4 +148,71 @@ fn worktree_path_resolves_for_active_task() {
     assert!(wt.exists());
 
     assert!(state.worktree_path("does-not-exist").is_err());
+}
+
+#[test]
+fn new_seeds_shell_and_claude_when_empty() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = AppState::new(&dir.path().join("agency.db")).unwrap();
+    let names = state.profile_names().unwrap();
+    assert!(names.contains(&"shell".to_string()));
+    assert!(names.contains(&"claude".to_string()));
+}
+
+#[test]
+fn settings_default_and_roundtrip() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = AppState::new(&dir.path().join("agency.db")).unwrap();
+    let s = state.get_settings().unwrap();
+    assert_eq!(s.lm_studio_base_url, "http://localhost:1234/v1");
+    assert_eq!(s.anthropic_api_key, "");
+
+    state
+        .save_settings(&agency_app_lib::ProviderSettings {
+            anthropic_api_key: "sk-x".into(),
+            lm_studio_base_url: "http://localhost:9999/v1".into(),
+        })
+        .unwrap();
+    let s2 = state.get_settings().unwrap();
+    assert_eq!(s2.anthropic_api_key, "sk-x");
+    assert_eq!(s2.lm_studio_base_url, "http://localhost:9999/v1");
+}
+
+#[test]
+fn start_task_injects_provider_env() {
+    // Use a fake agent that echoes an env var so we can prove injection.
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let state = AppState::new(&dir.path().join("agency.db")).unwrap();
+    state.save_settings(&agency_app_lib::ProviderSettings {
+        anthropic_api_key: "sk-secret".into(),
+        lm_studio_base_url: "http://localhost:1234/v1".into(),
+    }).unwrap();
+    // Profile prints $ANTHROPIC_API_KEY via a shell command.
+    state.register_profile(AgentProfile {
+        name: "envcheck".into(),
+        command: "/bin/sh".into(),
+        args: vec!["-c".into(), "echo KEY=$ANTHROPIC_API_KEY; echo BASE=$OPENAI_BASE_URL".into()],
+        env: vec![],
+    }).unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+
+    let buf = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let b = buf.clone();
+    let info = state.start_task(&project.id, "p", "envcheck", "HEAD", move |bytes| {
+        b.lock().unwrap().push_str(&String::from_utf8_lossy(&bytes));
+    }).unwrap();
+
+    let start = std::time::Instant::now();
+    while start.elapsed() < std::time::Duration::from_secs(5) {
+        if buf.lock().unwrap().contains("KEY=sk-secret") { break; }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let out = buf.lock().unwrap().clone();
+    assert!(out.contains("KEY=sk-secret"), "got: {out}");
+    assert!(out.contains("BASE=http://localhost:1234/v1"), "got: {out}");
+    let _ = info;
 }

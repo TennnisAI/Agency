@@ -7,6 +7,17 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Mutex;
 
+const SETTING_ANTHROPIC_KEY: &str = "anthropic_api_key";
+const SETTING_LM_STUDIO_URL: &str = "lm_studio_base_url";
+const DEFAULT_LM_STUDIO_URL: &str = "http://localhost:1234/v1";
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderSettings {
+    pub anthropic_api_key: String,
+    pub lm_studio_base_url: String,
+}
+
 pub struct Session {
     pub handle: AgentHandle,
     pub repo_path: std::path::PathBuf,
@@ -34,7 +45,6 @@ fn new_task_id() -> String {
 pub struct AppState {
     registry: Mutex<Registry>,
     sessions: Mutex<HashMap<String, Session>>,
-    profiles: Mutex<Vec<AgentProfile>>,
 }
 
 impl AppState {
@@ -44,36 +54,65 @@ impl AppState {
 
     pub fn new(db_path: &Path) -> Result<AppState> {
         let registry = Registry::open(db_path)?;
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
-        let default_profile = AgentProfile {
-            name: "shell".to_string(),
-            command: shell,
-            args: vec!["-l".to_string()],
-            env: vec![],
-        };
+        if registry.list_profiles()?.is_empty() {
+            let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+            registry.upsert_profile(&AgentProfile {
+                name: "shell".to_string(),
+                command: shell,
+                args: vec!["-l".to_string()],
+                env: vec![],
+            })?;
+            registry.upsert_profile(&AgentProfile {
+                name: "claude".to_string(),
+                command: "claude".to_string(),
+                args: vec!["{{prompt}}".to_string()],
+                env: vec![],
+            })?;
+        }
         Ok(AppState {
             registry: Mutex::new(registry),
             sessions: Mutex::new(HashMap::new()),
-            profiles: Mutex::new(vec![default_profile]),
         })
     }
 
-    pub fn register_profile(&self, profile: AgentProfile) {
-        let mut profiles = self.profiles.lock().unwrap();
-        if let Some(slot) = profiles.iter_mut().find(|p| p.name == profile.name) {
-            *slot = profile;
-        } else {
-            profiles.push(profile);
-        }
+    pub fn register_profile(&self, profile: AgentProfile) -> Result<()> {
+        self.registry.lock().unwrap().upsert_profile(&profile)
     }
 
-    pub fn profile_names(&self) -> Vec<String> {
-        self.profiles
+    pub fn profile_names(&self) -> Result<Vec<String>> {
+        Ok(self
+            .registry
             .lock()
             .unwrap()
-            .iter()
-            .map(|p| p.name.clone())
-            .collect()
+            .list_profiles()?
+            .into_iter()
+            .map(|p| p.name)
+            .collect())
+    }
+
+    pub fn list_profiles(&self) -> Result<Vec<AgentProfile>> {
+        self.registry.lock().unwrap().list_profiles()
+    }
+
+    pub fn delete_profile(&self, name: &str) -> Result<()> {
+        self.registry.lock().unwrap().delete_profile(name)
+    }
+
+    pub fn get_settings(&self) -> Result<ProviderSettings> {
+        let reg = self.registry.lock().unwrap();
+        Ok(ProviderSettings {
+            anthropic_api_key: reg.get_setting(SETTING_ANTHROPIC_KEY)?.unwrap_or_default(),
+            lm_studio_base_url: reg
+                .get_setting(SETTING_LM_STUDIO_URL)?
+                .unwrap_or_else(|| DEFAULT_LM_STUDIO_URL.to_string()),
+        })
+    }
+
+    pub fn save_settings(&self, s: &ProviderSettings) -> Result<()> {
+        let reg = self.registry.lock().unwrap();
+        reg.set_setting(SETTING_ANTHROPIC_KEY, &s.anthropic_api_key)?;
+        reg.set_setting(SETTING_LM_STUDIO_URL, &s.lm_studio_base_url)?;
+        Ok(())
     }
 
     pub fn add_project(&self, name: &str, repo_path: &Path) -> Result<Project> {
@@ -99,7 +138,7 @@ impl AppState {
     where
         F: Fn(Vec<u8>) + Send + 'static,
     {
-        // Resolve project repo path (lock released before spawning).
+        // Resolve project repo path.
         let repo_path = {
             let reg = self.registry.lock().unwrap();
             reg.get_project(project_id)?
@@ -107,15 +146,30 @@ impl AppState {
                 .repo_path
         };
 
-        // Resolve the profile (clone so we don't hold the lock during spawn).
-        let profile = {
-            let profiles = self.profiles.lock().unwrap();
-            profiles
-                .iter()
-                .find(|p| p.name == profile_name)
-                .cloned()
-                .ok_or_else(|| anyhow!("unknown profile: {profile_name}"))?
+        // Resolve the profile and provider settings; build the effective env.
+        let (mut profile, settings) = {
+            let reg = self.registry.lock().unwrap();
+            let profile = reg
+                .get_profile(profile_name)?
+                .ok_or_else(|| anyhow!("unknown profile: {profile_name}"))?;
+            let settings = ProviderSettings {
+                anthropic_api_key: reg.get_setting(SETTING_ANTHROPIC_KEY)?.unwrap_or_default(),
+                lm_studio_base_url: reg
+                    .get_setting(SETTING_LM_STUDIO_URL)?
+                    .unwrap_or_else(|| DEFAULT_LM_STUDIO_URL.to_string()),
+            };
+            (profile, settings)
         };
+
+        // Provider env first, then the profile's own env on top.
+        let mut env: Vec<(String, String)> = Vec::new();
+        if !settings.anthropic_api_key.is_empty() {
+            env.push(("ANTHROPIC_API_KEY".into(), settings.anthropic_api_key.clone()));
+        }
+        env.push(("OPENAI_BASE_URL".into(), settings.lm_studio_base_url.clone()));
+        env.push(("OPENAI_API_KEY".into(), "lm-studio".into()));
+        env.extend(profile.env.iter().cloned());
+        profile.env = env;
 
         let task_id = new_task_id();
         let manager = WorktreeManager::new(repo_path.clone());

@@ -182,3 +182,27 @@ pub fn merge_task(state: State<'_, AppState>, task_id: String) -> Result<MergeOu
 pub fn abort_merge_task(state: State<'_, AppState>, task_id: String) -> Result<(), String> {
     state.abort_merge_task(&task_id).map_err(|e| e.to_string())
 }
+
+#[tauri::command]
+pub fn resolve_merge(
+    state: State<'_, AppState>,
+    task_id: String,
+    resolver_profile: String,
+    on_chunk: Channel<TerminalChunk>,
+) -> Result<(), String> {
+    state
+        .resolve_merge(&task_id, &resolver_profile, move |bytes| {
+            let _ = on_chunk.send(TerminalChunk { b64: STANDARD.encode(&bytes) });
+        })
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn resolver_input(state: State<'_, AppState>, task_id: String, data: String) -> Result<(), String> {
+    state.resolver_input(&task_id, data.as_bytes()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn resolver_status(state: State<'_, AppState>, task_id: String) -> Result<StatusDto, String> {
+    state.resolver_status(&task_id).map(status_dto).map_err(|e| e.to_string())
+}

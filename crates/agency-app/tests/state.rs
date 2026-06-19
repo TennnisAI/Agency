@@ -220,6 +220,47 @@ fn start_task_injects_provider_env() {
 use agency_core::merge::MergeOutcome;
 
 #[test]
+fn resolve_merge_spawns_resolver_in_repo_and_streams() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let state = AppState::new(&dir.path().join("agency.db")).unwrap();
+    // Worker + a resolver profile that just echoes its cwd marker file and the prompt.
+    state.register_profile(AgentProfile {
+        name: "fake".into(),
+        command: fake_agent_command(),
+        args: vec!["{{prompt}}".into()],
+        env: vec![],
+    }).unwrap();
+    state.register_profile(AgentProfile {
+        name: "fakeresolver".into(),
+        command: "/bin/sh".into(),
+        args: vec!["-c".into(), "echo RESOLVING; pwd; echo DONE".into()],
+        env: vec![],
+    }).unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+    let info = state.start_task(&project.id, "p", "fake", "HEAD", |_| {}).unwrap();
+
+    let buf = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let b = buf.clone();
+    state.resolve_merge(&info.task_id, "fakeresolver", move |bytes| {
+        b.lock().unwrap().push_str(&String::from_utf8_lossy(&bytes));
+    }).unwrap();
+
+    let start = std::time::Instant::now();
+    while start.elapsed() < std::time::Duration::from_secs(5) {
+        if buf.lock().unwrap().contains("DONE") { break; }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let out = buf.lock().unwrap().clone();
+    assert!(out.contains("RESOLVING"), "got: {out}");
+    // The resolver ran with cwd = repo root (its `pwd` contains the repo dir name).
+    assert!(out.contains("repo"), "expected repo cwd in: {out}");
+}
+
+#[test]
 fn merge_task_clean_merges_branch_into_base() {
     let dir = tempfile::tempdir().unwrap();
     let repo = dir.path().join("repo");

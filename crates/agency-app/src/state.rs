@@ -11,6 +11,8 @@ const SETTING_ANTHROPIC_KEY: &str = "anthropic_api_key";
 const SETTING_LM_STUDIO_URL: &str = "lm_studio_base_url";
 const DEFAULT_LM_STUDIO_URL: &str = "http://localhost:1234/v1";
 
+const MERGE_RESOLVER_SKILL: &str = include_str!("../../../skills/merge-resolver/SKILL.md");
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderSettings {
@@ -45,6 +47,7 @@ fn new_task_id() -> String {
 pub struct AppState {
     registry: Mutex<Registry>,
     sessions: Mutex<HashMap<String, Session>>,
+    resolvers: Mutex<HashMap<String, AgentHandle>>,
 }
 
 impl AppState {
@@ -72,6 +75,7 @@ impl AppState {
         Ok(AppState {
             registry: Mutex::new(registry),
             sessions: Mutex::new(HashMap::new()),
+            resolvers: Mutex::new(HashMap::new()),
         })
     }
 
@@ -246,5 +250,60 @@ impl AppState {
     pub fn abort_merge_task(&self, task_id: &str) -> anyhow::Result<()> {
         let repo = self.repo_path_for(task_id)?;
         agency_core::merge::abort_merge(&repo)
+    }
+
+    pub fn resolve_merge<F>(
+        &self,
+        task_id: &str,
+        resolver_profile: &str,
+        on_output: F,
+    ) -> anyhow::Result<()>
+    where
+        F: Fn(Vec<u8>) + Send + 'static,
+    {
+        let repo = self.repo_path_for(task_id)?;
+        let base = agency_core::merge::detect_base(&repo).unwrap_or_else(|_| "main".to_string());
+        let branch = format!("agent/{task_id}");
+        let conflicts = agency_core::git::status(&repo)
+            .map(|cs| {
+                cs.into_iter()
+                    .filter(|c| c.index == "U" || c.worktree == "U")
+                    .map(|c| c.path)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        let prompt = format!(
+            "{skill}\n\n## This merge\n- Base branch: {base}\n- Feature branch: {branch}\n- Conflicted files: {files}\n",
+            skill = MERGE_RESOLVER_SKILL,
+            files = if conflicts.is_empty() { "(detect with `git status`)".to_string() } else { conflicts.join(", ") },
+        );
+
+        let profile = {
+            let reg = self.registry.lock().unwrap();
+            reg.get_profile(resolver_profile)?
+                .ok_or_else(|| anyhow!("unknown resolver profile: {resolver_profile}"))?
+        };
+
+        // TODO(phase6): inject provider env into resolver (like start_task does).
+        let handle = spawn_agent(&profile, &repo, &prompt, on_output)?;
+        self.resolvers.lock().unwrap().insert(task_id.to_string(), handle);
+        Ok(())
+    }
+
+    pub fn resolver_input(&self, task_id: &str, data: &[u8]) -> anyhow::Result<()> {
+        let resolvers = self.resolvers.lock().unwrap();
+        let handle = resolvers
+            .get(task_id)
+            .ok_or_else(|| anyhow!("no resolver for task: {task_id}"))?;
+        handle.write_input(data)
+    }
+
+    pub fn resolver_status(&self, task_id: &str) -> anyhow::Result<agency_core::supervisor::AgentStatus> {
+        let resolvers = self.resolvers.lock().unwrap();
+        let handle = resolvers
+            .get(task_id)
+            .ok_or_else(|| anyhow!("no resolver for task: {task_id}"))?;
+        Ok(handle.status())
     }
 }

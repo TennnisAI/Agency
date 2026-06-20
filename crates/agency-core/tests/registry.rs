@@ -1,5 +1,5 @@
 use agency_core::profile::AgentProfile;
-use agency_core::registry::Registry;
+use agency_core::registry::{Registry, Run};
 use std::path::Path;
 
 #[test]
@@ -83,4 +83,44 @@ fn settings_persist_and_upsert() {
     reg.set_setting("anthropic_api_key", "sk-test").unwrap();
     reg.set_setting("anthropic_api_key", "sk-updated").unwrap();
     assert_eq!(reg.get_setting("anthropic_api_key").unwrap().unwrap(), "sk-updated");
+}
+
+#[test]
+fn runs_persist_list_and_delete() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("agency.db");
+    let run = Run {
+        id: "task-1".into(),
+        project_id: "proj-1".into(),
+        agent: "claude".into(),
+        prompt: "do it".into(),
+        base: "main".into(),
+        branch: "agent/task-1".into(),
+        created_at: 1000,
+    };
+    {
+        let reg = Registry::open(&db).unwrap();
+        reg.insert_run(&run).unwrap();
+    }
+    let reg = Registry::open(&db).unwrap();
+    assert_eq!(reg.get_run("task-1").unwrap().unwrap(), run);
+    assert_eq!(reg.list_runs("proj-1").unwrap(), vec![run.clone()]);
+    assert_eq!(reg.list_runs("other").unwrap().len(), 0);
+
+    reg.delete_run("task-1").unwrap();
+    assert!(reg.get_run("task-1").unwrap().is_none());
+}
+
+#[test]
+fn list_runs_newest_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::open(&dir.path().join("agency.db")).unwrap();
+    for (id, ts) in [("a", 1), ("b", 3), ("c", 2)] {
+        reg.insert_run(&Run {
+            id: id.into(), project_id: "p".into(), agent: "shell".into(),
+            prompt: "".into(), base: "main".into(), branch: format!("agent/{id}"), created_at: ts,
+        }).unwrap();
+    }
+    let ids: Vec<String> = reg.list_runs("p").unwrap().into_iter().map(|r| r.id).collect();
+    assert_eq!(ids, vec!["b", "c", "a"]); // created_at desc
 }

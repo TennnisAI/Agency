@@ -1,10 +1,15 @@
 import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Project, RunInfo, addProject, listProjects, listRuns, removeProject } from "../api";
+import { Project, RunInfo, addProject, closeProject, deleteProject, listProjects, listRuns } from "../api";
+import ConfirmDialog from "./ConfirmDialog";
 
 function statusClass(s: RunInfo["status"]): string {
   return s.state === "running" ? "running" : "exited";
 }
+
+type Pending =
+  | { kind: "close" | "remove"; project: Project }
+  | null;
 
 export default function ProjectTree({
   selectedId,
@@ -15,15 +20,12 @@ export default function ProjectTree({
 }) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [expanded, setExpanded] = useState<Record<string, RunInfo[] | undefined>>({});
-  const [name, setName] = useState("");
-  const [repoPath, setRepoPath] = useState("");
+  const [pending, setPending] = useState<Pending>(null);
 
   async function refresh() {
     setProjects(await listProjects());
   }
-  useEffect(() => {
-    refresh();
-  }, []);
+  useEffect(() => { refresh(); }, []);
 
   async function toggle(p: Project) {
     setExpanded((e) => ({ ...e, [p.id]: e[p.id] ? undefined : [] }));
@@ -31,30 +33,33 @@ export default function ProjectTree({
       try {
         const runs = await listRuns(p.id);
         setExpanded((e) => ({ ...e, [p.id]: runs }));
-      } catch {
-        /* ignore */
-      }
+      } catch { /* ignore */ }
     }
   }
 
-  async function handleBrowse() {
-    const sel = await open({ directory: true, multiple: false });
-    if (typeof sel === "string") {
-      setRepoPath(sel);
-      if (!name.trim()) setName(sel.split("/").filter(Boolean).pop() ?? "");
-    }
-  }
   async function handleAdd() {
-    if (!name.trim() || !repoPath.trim()) return;
-    await addProject(name.trim(), repoPath.trim());
-    setName("");
-    setRepoPath("");
+    const sel = await open({ directory: true, multiple: false });
+    if (typeof sel !== "string") return;
+    const name = sel.split("/").filter(Boolean).pop() ?? sel;
+    await addProject(name, sel);
+    await refresh();
+  }
+
+  async function confirmPending() {
+    if (!pending) return;
+    const { kind, project } = pending;
+    if (kind === "close") await closeProject(project.id);
+    else await deleteProject(project.id);
+    setPending(null);
     await refresh();
   }
 
   return (
     <aside className="tree">
-      <h2 className="tree-head">Projects</h2>
+      <div className="tree-head">
+        <span className="eyebrow">PROJECTS</span>
+        <button className="icon-add" title="Add project" onClick={handleAdd}>+</button>
+      </div>
       <ul className="tree-list">
         {projects.map((p) => (
           <li key={p.id}>
@@ -62,15 +67,17 @@ export default function ProjectTree({
               <span className="chev" onClick={(e) => { e.stopPropagation(); toggle(p); }}>
                 {expanded[p.id] !== undefined ? "▾" : "▸"}
               </span>
-              <span className="tree-name">{p.name}</span>
-              <button className="ghost-x" onClick={(e) => { e.stopPropagation(); removeProject(p.id).then(refresh); }}>×</button>
+              <span className="proj-icon" aria-hidden>{p.name.slice(0, 1).toUpperCase()}</span>
+              <span className="tree-name tl">{p.name}</span>
+              <button className="row-act" title="Close project" onClick={(e) => { e.stopPropagation(); setPending({ kind: "close", project: p }); }}>⏻</button>
+              <button className="row-act danger" title="Remove project" onClick={(e) => { e.stopPropagation(); setPending({ kind: "remove", project: p }); }}>×</button>
             </div>
             {expanded[p.id] !== undefined && (
               <ul className="tree-children">
                 {(expanded[p.id] ?? []).map((r) => (
                   <li key={r.id} className="tree-child">
                     <span className={`dot ${statusClass(r.status)}`} />
-                    <span className="tree-child-name">{r.agent}: {r.prompt || r.branch}</span>
+                    <span className="tree-child-name tl">{r.agent}: {r.prompt || r.branch}</span>
                   </li>
                 ))}
               </ul>
@@ -78,14 +85,18 @@ export default function ProjectTree({
           </li>
         ))}
       </ul>
-      <div className="add-project">
-        <input placeholder="name" value={name} onChange={(e) => setName(e.target.value)} />
-        <div className="repo-row">
-          <input placeholder="/path/to/repo" value={repoPath} onChange={(e) => setRepoPath(e.target.value)} />
-          <button className="browse" onClick={handleBrowse}>Browse…</button>
-        </div>
-        <button onClick={handleAdd}>Add project</button>
-      </div>
+      {pending && (
+        <ConfirmDialog
+          title={pending.kind === "close" ? "Close project?" : "Remove project?"}
+          body={pending.kind === "close"
+            ? `Stop all running agents in "${pending.project.name}". Their setup is kept — reopen to re-run them.`
+            : `Permanently remove "${pending.project.name}" and delete all its agents and worktrees. This cannot be undone.`}
+          confirmLabel={pending.kind === "close" ? "Close project" : "Remove project"}
+          danger={pending.kind === "remove"}
+          onConfirm={confirmPending}
+          onCancel={() => setPending(null)}
+        />
+      )}
     </aside>
   );
 }

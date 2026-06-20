@@ -179,8 +179,29 @@ impl AppState {
         self.registry.lock().unwrap().list_projects()
     }
 
-    pub fn remove_project(&self, id: &str) -> Result<()> {
-        self.registry.lock().unwrap().remove_project(id)
+    pub fn close_project(&self, id: &str) -> Result<()> {
+        // Kill live terminals; keep project + run records so reopen can re-run.
+        let runs = self.registry.lock().unwrap().list_runs(id)?;
+        for run in &runs {
+            self.attaches.lock().unwrap().remove(&run.id);
+            self.tmux.kill_session(&session_name(&run.id)).ok();
+        }
+        Ok(())
+    }
+
+    pub fn delete_project(&self, id: &str) -> Result<()> {
+        let runs = self.registry.lock().unwrap().list_runs(id)?;
+        let repo = self.project_repo(id).ok();
+        for run in &runs {
+            self.attaches.lock().unwrap().remove(&run.id);
+            self.tmux.kill_session(&session_name(&run.id)).ok();
+            if let Some(repo) = &repo {
+                let _ = WorktreeManager::new(repo.clone()).remove(&run.id);
+            }
+            self.registry.lock().unwrap().delete_run(&run.id)?;
+        }
+        self.registry.lock().unwrap().remove_project(id)?;
+        Ok(())
     }
 
     pub fn project_repo_path(&self, project_id: &str) -> anyhow::Result<std::path::PathBuf> {

@@ -77,6 +77,10 @@ fn now_secs() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
 
+fn agent_profile(name: &str, command: &str) -> AgentProfile {
+    AgentProfile { name: name.into(), command: command.into(), args: vec![], env: vec![] }
+}
+
 pub struct AppState {
     registry: Mutex<Registry>,
     attaches: Mutex<HashMap<String, AgentHandle>>,
@@ -91,7 +95,8 @@ impl AppState {
 
     pub fn new(db_path: &Path) -> Result<AppState> {
         let registry = Registry::open(db_path)?;
-        if registry.list_profiles()?.is_empty() {
+        // Seed the built-in shell profile once.
+        if registry.get_profile("shell")?.is_none() {
             let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
             registry.upsert_profile(&AgentProfile {
                 name: "shell".to_string(),
@@ -99,12 +104,12 @@ impl AppState {
                 args: vec!["-l".to_string()],
                 env: vec![],
             })?;
-            registry.upsert_profile(&AgentProfile {
-                name: "claude".to_string(),
-                command: "claude".to_string(),
-                args: vec!["{{prompt}}".to_string()],
-                env: vec![],
-            })?;
+        }
+        // Ensure built-in agent profiles exist (added for existing DBs too).
+        for (name, command) in [("claude", "claude"), ("pi", "pi"), ("hermes", "hermes")] {
+            if registry.get_profile(name)?.is_none() {
+                registry.upsert_profile(&agent_profile(name, command))?;
+            }
         }
         Ok(AppState {
             registry: Mutex::new(registry),
@@ -235,7 +240,11 @@ impl AppState {
 
         let mut env = self.provider_env()?;
         env.extend(profile.env.iter().cloned());
-        let args = profile.render_args(prompt);
+        let args: Vec<String> = profile
+            .render_args(prompt)
+            .into_iter()
+            .filter(|a| !a.is_empty())
+            .collect();
 
         self.tmux
             .start_session(&session_name(&id), &worktree.path, &profile.command, &args, &env)?;

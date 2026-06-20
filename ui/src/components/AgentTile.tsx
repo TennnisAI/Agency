@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { RunInfo, runPreview } from "../api";
+import { RunInfo, runPreview, stopRun, discardRun } from "../api";
 import { useRuns } from "../store/runs";
+import ConfirmDialog from "./ConfirmDialog";
 
 function badgeClass(agent: string): string {
   if (agent === "claude") return "badge claude";
@@ -15,8 +16,9 @@ function statusLabel(s: RunInfo["status"]): { cls: string; text: string } {
 }
 
 export default function AgentTile({ run }: { run: RunInfo }) {
-  const { setFocusedRun, setView } = useRuns();
+  const { setFocusedRun, setView, refreshRuns, focusedRunId } = useRuns();
   const [preview, setPreview] = useState("");
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -46,7 +48,26 @@ export default function AgentTile({ run }: { run: RunInfo }) {
         <span className="diffstat"><span className="add">+{run.added}</span> <span className="del">−{run.deleted}</span> · {run.files}f</span>
       </div>
       <pre className="tile-preview">{preview}</pre>
-      <div className="tile-foot">{st.text}</div>
+      <div className="tile-foot">
+        {st.text}
+        <button className="tile-act" title="Stop agent" onClick={async (e) => { e.stopPropagation(); await stopRun(run.id); await refreshRuns(); }}>■ Stop</button>
+        <button className="tile-act danger" title="Discard agent" onClick={(e) => { e.stopPropagation(); setConfirmDiscard(true); }}>✕</button>
+      </div>
+      {confirmDiscard && (
+        <ConfirmDialog
+          title="Discard agent?"
+          body={`Stop "${run.agent}", remove its worktree, and delete the run. This cannot be undone.`}
+          confirmLabel="Discard"
+          danger
+          onConfirm={async () => {
+            await discardRun(run.id);
+            if (focusedRunId === run.id) setFocusedRun(null);
+            setConfirmDiscard(false);
+            await refreshRuns();
+          }}
+          onCancel={() => setConfirmDiscard(false)}
+        />
+      )}
     </div>
   );
 }

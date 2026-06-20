@@ -111,8 +111,13 @@ export const abortMergeTask = (taskId: string) =>
   invoke<void>("abort_merge_task", { taskId });
 export const resolverInput = (taskId: string, data: string) =>
   invoke<void>("resolver_input", { taskId, data });
+export interface StatusDto {
+  state: "running" | "idle" | "exited" | "crashed";
+  code: number | null;
+}
+
 export const resolverStatus = (taskId: string) =>
-  invoke<SessionStatus>("resolver_status", { taskId });
+  invoke<StatusDto>("resolver_status", { taskId });
 
 export function resolveMerge(
   taskId: string,

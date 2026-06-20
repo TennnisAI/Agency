@@ -719,3 +719,12 @@ button:hover { background: var(--lav); }
 .palette-label{color:var(--text)}
 .palette-sub{color:var(--o0);font-family:var(--mono);font-size:11px;margin-left:auto}
 .palette-empty{color:var(--o0);padding:10px}
+
+/* ── New-task preview (Task 7c-4) ──────────────────────────────── */
+.nt-preview{font-size:12px;color:var(--o0);background:var(--crust);border:1px solid var(--s1);border-radius:6px;padding:8px 10px;display:flex;flex-direction:column;gap:4px}
+.nt-preview code{color:var(--blue);font-family:var(--mono);font-size:11px}
+
+/* ── Merge step timeline (Task 7c-4) ───────────────────────────── */
+.merge-timeline{display:flex;gap:8px;align-items:center;padding:8px 14px;border-bottom:1px solid var(--line)}
+.mt-step{color:var(--o0);font-size:12px}
+.mt-step.on{color:var(--blue);font-weight:600}

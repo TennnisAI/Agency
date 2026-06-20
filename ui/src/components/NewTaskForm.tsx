@@ -7,6 +7,7 @@ export default function NewTaskForm({ project, onDone }: { project: Project; onD
   const [profiles, setProfiles] = useState<AgentProfile[]>([]);
   const [agent, setAgent] = useState("claude");
   const [prompt, setPrompt] = useState("");
+  const [base, setBase] = useState("HEAD");
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -18,7 +19,7 @@ export default function NewTaskForm({ project, onDone }: { project: Project; onD
 
   async function start() {
     try {
-      await createRun(project.id, prompt, agent, "HEAD");
+      await createRun(project.id, prompt, agent, base);
       await refreshRuns();
       onDone();
     } catch (e) {
@@ -36,6 +37,12 @@ export default function NewTaskForm({ project, onDone }: { project: Project; onD
       </select>
       <label>Prompt</label>
       <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="What should this agent do?" />
+      <label>Base branch</label>
+      <input value={base} onChange={(e) => setBase(e.target.value)} />
+      <div className="nt-preview">
+        <div>worktree: <code>{project.repo_path.split("/").filter(Boolean).pop()}/.agency/worktrees/&lt;new&gt;</code></div>
+        <div>branch: <code>agent/&lt;new&gt;</code></div>
+      </div>
       <div className="row-actions">
         <button onClick={start}>Start agent</button>
         <button className="ghost" onClick={onDone}>Cancel</button>

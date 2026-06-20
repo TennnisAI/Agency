@@ -4,13 +4,12 @@ import { useRuns } from "../store/runs";
 import AgentTile from "./AgentTile";
 import AgentFocus from "./AgentFocus";
 import NewTaskForm from "./NewTaskForm";
+import MergeModal from "./MergeModal";
 import SourceControl from "./SourceControl";
 import GitReviewPanel from "./GitReviewPanel";
 
 export default function AgentsView({ project }: { project: Project }) {
-  const { runs, view, setView, focusedRunId } = useRuns();
-  const [tab, setTab] = useState<"agents" | "source">("agents");
-  const [newOpen, setNewOpen] = useState(false);
+  const { runs, view, setView, focusedRunId, tab, setTab, openNewTask, setOpenNewTask, approveRunId, setApproveRun } = useRuns();
   const [review, setReview] = useState(false);
 
   return (
@@ -30,7 +29,7 @@ export default function AgentsView({ project }: { project: Project }) {
         {tab === "agents" && (
           <button className={review ? "on" : ""} onClick={() => setReview((r) => !r)}>Review</button>
         )}
-        {tab === "agents" && <button onClick={() => setNewOpen(true)}>+ New task</button>}
+        {tab === "agents" && <button onClick={() => setOpenNewTask(true)}>+ New task</button>}
       </div>
 
       {tab === "source" && (
@@ -56,7 +55,10 @@ export default function AgentsView({ project }: { project: Project }) {
         </div>
       )}
 
-      {newOpen && <div className="settings-overlay"><NewTaskForm project={project} onDone={() => setNewOpen(false)} /></div>}
+      {openNewTask && <div className="settings-overlay"><NewTaskForm project={project} onDone={() => setOpenNewTask(false)} /></div>}
+      {approveRunId && approveRunId === focusedRunId && (
+        <MergeModal taskId={approveRunId} onClose={() => setApproveRun(null)} />
+      )}
     </main>
   );
 }

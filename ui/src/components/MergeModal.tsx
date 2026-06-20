@@ -76,12 +76,33 @@ export default function MergeModal({ taskId, onClose }: { taskId: string; onClos
     };
   }, []);
 
+  const step = !outcome
+    ? "rebase"
+    : outcome.kind === "conflicts"
+      ? resolverDone
+        ? "summary"
+        : resolving
+          ? "resolve"
+          : "rebase"
+      : "summary";
+  const steps: { key: string; label: string }[] = [
+    { key: "checkout", label: "Checkout" },
+    { key: "rebase", label: "Rebase" },
+    { key: "resolve", label: "Resolve" },
+    { key: "summary", label: "Summary" },
+  ];
+
   return (
     <div className="settings-overlay">
       <div className="merge-modal">
         <div className="settings-head">
           <h2>Approve &amp; merge</h2>
           <button onClick={onClose}>Close</button>
+        </div>
+        <div className="merge-timeline">
+          {steps.map((s) => (
+            <span key={s.key} className={`mt-step ${s.key === step ? "on" : ""}`}>{s.label}</span>
+          ))}
         </div>
         {error && <div className="git-error">{error}</div>}
 

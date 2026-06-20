@@ -77,6 +77,10 @@ fn now_secs() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
 
+fn agent_profile(name: &str, command: &str) -> AgentProfile {
+    AgentProfile { name: name.into(), command: command.into(), args: vec![], env: vec![] }
+}
+
 pub struct AppState {
     registry: Mutex<Registry>,
     attaches: Mutex<HashMap<String, AgentHandle>>,
@@ -91,7 +95,8 @@ impl AppState {
 
     pub fn new(db_path: &Path) -> Result<AppState> {
         let registry = Registry::open(db_path)?;
-        if registry.list_profiles()?.is_empty() {
+        // Seed the built-in shell profile once.
+        if registry.get_profile("shell")?.is_none() {
             let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
             registry.upsert_profile(&AgentProfile {
                 name: "shell".to_string(),
@@ -99,12 +104,12 @@ impl AppState {
                 args: vec!["-l".to_string()],
                 env: vec![],
             })?;
-            registry.upsert_profile(&AgentProfile {
-                name: "claude".to_string(),
-                command: "claude".to_string(),
-                args: vec!["{{prompt}}".to_string()],
-                env: vec![],
-            })?;
+        }
+        // Ensure built-in agent profiles exist (added for existing DBs too).
+        for (name, command) in [("claude", "claude"), ("pi", "pi"), ("hermes", "hermes")] {
+            if registry.get_profile(name)?.is_none() {
+                registry.upsert_profile(&agent_profile(name, command))?;
+            }
         }
         Ok(AppState {
             registry: Mutex::new(registry),
@@ -174,8 +179,29 @@ impl AppState {
         self.registry.lock().unwrap().list_projects()
     }
 
-    pub fn remove_project(&self, id: &str) -> Result<()> {
-        self.registry.lock().unwrap().remove_project(id)
+    pub fn close_project(&self, id: &str) -> Result<()> {
+        // Kill live terminals; keep project + run records so reopen can re-run.
+        let runs = self.registry.lock().unwrap().list_runs(id)?;
+        for run in &runs {
+            self.attaches.lock().unwrap().remove(&run.id);
+            self.tmux.kill_session(&session_name(&run.id)).ok();
+        }
+        Ok(())
+    }
+
+    pub fn delete_project(&self, id: &str) -> Result<()> {
+        let runs = self.registry.lock().unwrap().list_runs(id)?;
+        let repo = self.project_repo(id).ok();
+        for run in &runs {
+            self.attaches.lock().unwrap().remove(&run.id);
+            self.tmux.kill_session(&session_name(&run.id)).ok();
+            if let Some(repo) = &repo {
+                let _ = WorktreeManager::new(repo.clone()).remove(&run.id);
+            }
+            self.registry.lock().unwrap().delete_run(&run.id)?;
+        }
+        self.registry.lock().unwrap().remove_project(id)?;
+        Ok(())
     }
 
     pub fn project_repo_path(&self, project_id: &str) -> anyhow::Result<std::path::PathBuf> {
@@ -235,7 +261,11 @@ impl AppState {
 
         let mut env = self.provider_env()?;
         env.extend(profile.env.iter().cloned());
-        let args = profile.render_args(prompt);
+        let args: Vec<String> = profile
+            .render_args(prompt)
+            .into_iter()
+            .filter(|a| !a.is_empty())
+            .collect();
 
         self.tmux
             .start_session(&session_name(&id), &worktree.path, &profile.command, &args, &env)?;
@@ -293,6 +323,12 @@ impl AppState {
             let _ = WorktreeManager::new(repo).remove(id);
         }
         self.registry.lock().unwrap().delete_run(id)?;
+        Ok(())
+    }
+
+    pub fn stop_run(&self, id: &str) -> Result<()> {
+        self.attaches.lock().unwrap().remove(id);
+        self.tmux.kill_session(&session_name(id)).ok();
         Ok(())
     }
 

@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
-import { RunInfo, listRuns } from "../api";
+import { RunInfo, createRun, listRuns } from "../api";
 
 type View = "grid" | "focus";
 type Tab = "agents" | "source";
@@ -15,8 +15,7 @@ interface RunStore {
   refreshRuns: () => Promise<void>;
   tab: Tab;
   setTab: (t: Tab) => void;
-  openNewTask: boolean;
-  setOpenNewTask: (b: boolean) => void;
+  createAgent: (agentId: string) => Promise<void>;
   approveRunId: string | null;
   setApproveRun: (id: string | null) => void;
 }
@@ -29,7 +28,6 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
   const [view, setView] = useState<View>("grid");
   const [focusedRunId, setFocusedRun] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("agents");
-  const [openNewTask, setOpenNewTask] = useState(false);
   const [approveRunId, setApproveRun] = useState<string | null>(null);
   const projectRef = useRef<string | null>(null);
   projectRef.current = selectedProjectId;
@@ -47,6 +45,15 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  const createAgent = useCallback(async (agentId: string) => {
+    const pid = projectRef.current;
+    if (!pid) return;
+    const run = await createRun(pid, "", agentId, "HEAD");
+    await refreshRuns();
+    setFocusedRun(run.id);
+    setView("focus");
+  }, [refreshRuns]);
+
   function setSelectedProject(id: string | null) {
     setSelectedProjectId(id);
     setView("grid");
@@ -62,7 +69,7 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <Ctx.Provider
-      value={{ runs, selectedProjectId, setSelectedProject, view, setView, focusedRunId, setFocusedRun, refreshRuns, tab, setTab, openNewTask, setOpenNewTask, approveRunId, setApproveRun }}
+      value={{ runs, selectedProjectId, setSelectedProject, view, setView, focusedRunId, setFocusedRun, refreshRuns, tab, setTab, createAgent, approveRunId, setApproveRun }}
     >
       {children}
     </Ctx.Provider>

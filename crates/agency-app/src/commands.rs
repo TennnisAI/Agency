@@ -51,8 +51,13 @@ pub fn add_project(
 }
 
 #[tauri::command]
-pub fn remove_project(state: State<'_, AppState>, id: String) -> Result<(), String> {
-    state.remove_project(&id).map_err(|e| e.to_string())
+pub fn close_project(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    state.close_project(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_project(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    state.delete_project(&id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -76,6 +81,11 @@ pub fn list_runs(state: State<'_, AppState>, project_id: String) -> Result<Vec<R
 #[tauri::command]
 pub fn discard_run(state: State<'_, AppState>, id: String) -> Result<(), String> {
     state.discard_run(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn stop_run(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    state.stop_run(&id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

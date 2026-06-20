@@ -6,18 +6,21 @@ import ProjectTree from "./components/ProjectTree";
 import AgentsView from "./components/AgentsView";
 import Settings from "./components/Settings";
 import CommandPalette from "./components/CommandPalette";
+import Resizer from "./components/Resizer";
 import { useShortcuts } from "./hooks/useShortcuts";
+import { usePaneWidth } from "./hooks/usePaneWidth";
 import { Project } from "./api";
 
 function Shell() {
-  const { selectedProjectId, setSelectedProject, setOpenNewTask, setTab, focusedRunId, setApproveRun } = useRuns();
+  const { selectedProjectId, setSelectedProject, createAgent, setTab, focusedRunId, setApproveRun } = useRuns();
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [project, setProject] = useState<Project | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [showSettings, setShowSettings] = useState(false);
+  const sidebar = usePaneWidth("sidebar", 266, 200, 460);
 
   useShortcuts({
-    onNewTask: () => setOpenNewTask(true),
+    onNewTask: () => createAgent("claude"),
     onSource: () => setTab("source"),
     onApprove: () => { if (focusedRunId) setApproveRun(focusedRunId); },
     onPalette: () => setPaletteOpen(true),
@@ -32,7 +35,14 @@ function Shell() {
     <div className="shell">
       <TitleBar onToggleSidebar={() => setSidebarOpen((s) => !s)} onOpenSettings={() => setShowSettings(true)} onOpenPalette={() => setPaletteOpen(true)} />
       <div className="body">
-        {sidebarOpen && <ProjectTree selectedId={selectedProjectId} onSelect={selectProject} />}
+        {sidebarOpen && (
+          <>
+            <div style={{ width: sidebar.width, flexShrink: 0, display: "flex", minHeight: 0 }}>
+              <ProjectTree selectedId={selectedProjectId} onSelect={selectProject} />
+            </div>
+            <Resizer width={sidebar.width} min={200} max={460} onChange={sidebar.setWidth} side="left" />
+          </>
+        )}
         {project ? <AgentsView project={project} /> : <main className="board empty">Select or add a project to begin.</main>}
       </div>
       <StatusBar projectName={project?.name ?? null} />

@@ -17,7 +17,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::list_projects,
             commands::add_project,
-            commands::remove_project,
+            commands::close_project,
+            commands::delete_project,
             commands::create_run,
             commands::list_runs,
             commands::run_preview,
@@ -26,6 +27,7 @@ pub fn run() {
             commands::run_input,
             commands::run_status,
             commands::discard_run,
+            commands::stop_run,
             commands::rerun,
             commands::git_status,
             commands::git_diff,

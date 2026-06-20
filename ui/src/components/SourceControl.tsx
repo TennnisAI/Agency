@@ -12,12 +12,15 @@ import {
   projectLog,
 } from "../api";
 import DiffView from "./DiffView";
+import Resizer from "./Resizer";
+import { usePaneWidth } from "../hooks/usePaneWidth";
 
 function isStaged(c: FileChange): boolean {
   return c.index !== " " && c.index !== "?";
 }
 
 export default function SourceControl({ taskId }: { taskId: string }) {
+  const scLeft = usePaneWidth("scLeft", 336, 260, 560);
   const [changes, setChanges] = useState<FileChange[]>([]);
   const [selected, setSelected] = useState<{ path: string; staged: boolean } | null>(null);
   const [message, setMessage] = useState("");
@@ -59,7 +62,7 @@ export default function SourceControl({ taskId }: { taskId: string }) {
 
   return (
     <div className="source-control">
-      <div className="sc-left">
+      <div className="sc-left" style={{ width: scLeft.width, minWidth: scLeft.width }}>
         <div className="sc-commit">
           <textarea
             placeholder="Commit message"
@@ -115,6 +118,7 @@ export default function SourceControl({ taskId }: { taskId: string }) {
         ))}
       </div>
 
+      <Resizer width={scLeft.width} min={260} max={560} onChange={scLeft.setWidth} side="left" />
       <div className="sc-right">
         {selected ? (
           <DiffView taskId={taskId} path={selected.path} staged={selected.staged} onChanged={refresh} />

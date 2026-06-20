@@ -84,6 +84,48 @@ button:hover { background: var(--lav); }
   font-weight: 400;
 }
 .project-list button:hover { background: var(--s0); color: var(--text); }
+
+/* Button variants (Task 9) */
+.btn-primary { background: var(--blue); color: var(--crust); font-weight: 600; border: none; border-radius: 8px; padding: 8px 13px; cursor: pointer; font-family: var(--sans); font-size: 12.5px; }
+.btn-primary:hover { background: var(--lav); }
+.btn-secondary { background: var(--base); border: 1px solid var(--s1); color: var(--text); border-radius: 8px; padding: 8px 13px; cursor: pointer; font-family: var(--sans); font-size: 12.5px; }
+.btn-secondary:hover { background: var(--s0); }
+.btn-danger { background: transparent; border: 1px solid rgba(243,139,168,.4); color: var(--red); border-radius: 8px; padding: 8px 13px; cursor: pointer; font-family: var(--sans); font-size: 12.5px; }
+.btn-danger:hover { background: rgba(243,139,168,.12); }
+
+/* ConfirmDialog (Task 9) */
+.modal-backdrop { position: absolute; inset: 0; background: rgba(17,17,27,.66); backdrop-filter: blur(3px); z-index: 30; display: flex; align-items: center; justify-content: center; }
+.modal { width: 580px; max-width: 92%; background: var(--mantle); border: 1px solid var(--s1); border-radius: 15px; box-shadow: 0 24px 64px rgba(0,0,0,.5); }
+.modal.confirm { width: 440px; }
+.modal-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 18px; border-bottom: 1px solid var(--line); }
+.modal-head h3 { margin: 0; font-size: 15px; font-weight: 600; color: var(--text); }
+.modal-body { padding: 18px; color: var(--sub1); line-height: 1.6; font-size: 13px; }
+.modal-foot { display: flex; gap: 10px; justify-content: flex-end; padding: 14px 18px; border-top: 1px solid var(--line); background: var(--crust); border-radius: 0 0 15px 15px; }
+.modal-x { background: transparent; border: none; color: var(--o0); cursor: pointer; font-size: 14px; }
+.modal-x:hover { color: var(--text); }
+
+/* Projects header + icons (Task 9) */
+.icon-add { width: 22px; height: 22px; border-radius: 6px; background: var(--base); border: 1px solid var(--s0); color: var(--text); cursor: pointer; font-size: 14px; line-height: 1; display: flex; align-items: center; justify-content: center; }
+.icon-add:hover { background: var(--s0); }
+.proj-icon { width: 24px; height: 24px; border-radius: 7px; background: var(--blue); color: var(--crust); font-size: 12px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.row-act { opacity: 0; border: none; background: transparent; color: var(--o0); cursor: pointer; font-size: 13px; padding: 0 2px; }
+.tree-row:hover .row-act { opacity: 1; }
+.row-act:hover { color: var(--text); }
+.row-act.danger:hover { color: var(--red); }
+.tl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Agent add menu (Task 9) */
+.agent-add { position: relative; display: inline-block; }
+.agent-menu { position: absolute; top: calc(100% + 4px); right: 0; z-index: 25; background: var(--mantle); border: 1px solid var(--s1); border-radius: 9px; box-shadow: 0 12px 32px rgba(0,0,0,.4); padding: 5px; min-width: 168px; display: flex; flex-direction: column; }
+.agent-menu button { background: transparent; border: none; color: var(--text); text-align: left; padding: 8px 10px; border-radius: 6px; cursor: pointer; font-family: var(--sans); font-size: 12.5px; }
+.agent-menu button:hover { background: var(--s0); }
+
+/* Tile actions (Task 9) */
+.tile-act { background: var(--base); border: 1px solid var(--s1); color: var(--sub0); border-radius: 6px; padding: 4px 8px; cursor: pointer; font-family: var(--sans); font-size: 11px; }
+.tile-act:hover { background: var(--s0); color: var(--text); }
+.tile-act.danger { color: var(--red); border-color: rgba(243,139,168,.35); }
+.tile-act.danger:hover { background: rgba(243,139,168,.12); }
+
 /* Board */
 .board { flex: 1; display: flex; flex-direction: column; padding: 16px; gap: 12px; }
 .board.empty { align-items: center; justify-content: center; color: var(--o0); }
@@ -258,8 +300,10 @@ textarea.settings-input { min-height: 64px; resize: vertical; }
   overflow: hidden;
 }
 .tree-head {
-  font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
-  color: var(--o1); margin: 0; padding: 12px 12px 6px;
+  display: flex; align-items: center; justify-content: space-between; padding: 12px 12px 8px;
+}
+.tree-head .eyebrow {
+  font-size: 10.5px; font-weight: 600; letter-spacing: .13em; color: var(--o0);
 }
 .tree-list {
   list-style: none; margin: 0; padding: 0 6px;
@@ -760,3 +804,16 @@ textarea.settings-input { min-height: 64px; resize: vertical; }
 .merge-timeline{display:flex;gap:8px;align-items:center;padding:8px 14px;border-bottom:1px solid var(--line)}
 .mt-step{color:var(--o0);font-size:12px}
 .mt-step.on{color:var(--blue);font-weight:600}
+
+/* ── Drag-to-resize handle (Task 8) ────────────────────────── */
+.resizer {
+  width: 5px;
+  flex-shrink: 0;
+  cursor: col-resize;
+  background: transparent;
+  transition: background .12s;
+}
+.resizer:hover { background: #313244; }
+
+/* Ensure tree fills its wrapper div width */
+.tree { width: 100%; }

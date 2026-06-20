@@ -1,3 +1,5 @@
+use crate::profile::AgentProfile;
+use crate::supervisor::{spawn_agent, AgentHandle};
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -128,5 +130,31 @@ impl Tmux {
             self.ok(&["kill-session", "-t", name])?;
         }
         Ok(())
+    }
+
+    /// Attach to an existing tmux session via a PTY, streaming its output through
+    /// `on_output`. Returns an [`AgentHandle`] whose `write_input` sends keystrokes
+    /// into the session. Dropping the handle detaches; the session keeps running.
+    ///
+    /// The attach targets the private `agency` socket (`-L agency`) so it reaches
+    /// the same server that [`start_session`] uses.
+    pub fn attach<F>(&self, name: &str, on_output: F) -> Result<AgentHandle>
+    where
+        F: Fn(Vec<u8>) + Send + 'static,
+    {
+        let profile = AgentProfile {
+            name: "tmux-attach".to_string(),
+            command: self.bin.to_string_lossy().to_string(),
+            args: vec![
+                "-L".to_string(),
+                SOCKET.to_string(),
+                "attach-session".to_string(),
+                "-t".to_string(),
+                name.to_string(),
+            ],
+            env: vec![],
+        };
+        // cwd is irrelevant for an attach; use the temp dir which always exists.
+        spawn_agent(&profile, &std::env::temp_dir(), "", on_output)
     }
 }

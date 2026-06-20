@@ -1,4 +1,5 @@
 use agency_core::tmux::{SessionStatus, Tmux};
+use std::sync::{Arc, Mutex};
 
 fn unique(prefix: &str) -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -72,5 +73,39 @@ fn start_session_runs_in_cwd_with_env() {
     let leaf = dir.path().file_name().unwrap().to_string_lossy().to_string();
     assert!(cap.contains(&leaf), "cap: {cap:?}");
 
+    t.kill_session(&name).unwrap();
+}
+
+#[test]
+fn attach_streams_output_and_input() {
+    let t = Tmux::resolved();
+    let name = unique("agencyattach");
+    let cwd = std::env::temp_dir();
+    // A shell that prints READY, reads a line, echoes it.
+    t.start_session(&name, &cwd, "sh", &["-c".into(), "echo READY; read x; echo GOT:$x; sleep 2".into()], &[])
+        .unwrap();
+
+    let buf = Arc::new(Mutex::new(String::new()));
+    let b = buf.clone();
+    let handle = t.attach(&name, move |bytes| {
+        b.lock().unwrap().push_str(&String::from_utf8_lossy(&bytes));
+    }).unwrap();
+
+    let wait = |needle: &str| {
+        let start = std::time::Instant::now();
+        while start.elapsed() < std::time::Duration::from_secs(5) {
+            if buf.lock().unwrap().contains(needle) { return true; }
+            std::thread::sleep(std::time::Duration::from_millis(30));
+        }
+        false
+    };
+
+    assert!(wait("READY"), "buf: {:?}", buf.lock().unwrap());
+    handle.write_input(b"ping\n").unwrap();
+    assert!(wait("GOT:ping"), "buf: {:?}", buf.lock().unwrap());
+
+    drop(handle); // detach
+    // session still alive right after detach
+    assert!(t.session_exists(&name).unwrap());
     t.kill_session(&name).unwrap();
 }

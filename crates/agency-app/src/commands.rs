@@ -1,4 +1,4 @@
-use agency_core::git::{self, CommitInfo, FileChange};
+use agency_core::git::{self, CommitInfo, FileDiff, FileChange};
 use agency_core::merge::MergeOutcome;
 use agency_core::profile::AgentProfile;
 use agency_core::registry::Project;
@@ -228,4 +228,48 @@ pub fn resolver_input(state: State<'_, AppState>, task_id: String, data: String)
 #[tauri::command]
 pub fn resolver_status(state: State<'_, AppState>, task_id: String) -> Result<StatusDto, String> {
     state.resolver_status(&task_id).map(agent_status_dto).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn git_parse_diff(
+    state: State<'_, AppState>,
+    task_id: String,
+    path: String,
+    staged: bool,
+) -> Result<FileDiff, String> {
+    let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
+    let raw = agency_core::git::diff(&wt, &path, staged).map_err(|e| e.to_string())?;
+    Ok(agency_core::git::parse_diff(&raw))
+}
+
+#[tauri::command]
+pub fn git_stage_hunk(
+    state: State<'_, AppState>,
+    task_id: String,
+    path: String,
+    hunk_index: usize,
+) -> Result<(), String> {
+    let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
+    agency_core::git::stage_hunk(&wt, &path, hunk_index).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn git_unstage_hunk(
+    state: State<'_, AppState>,
+    task_id: String,
+    path: String,
+    hunk_index: usize,
+) -> Result<(), String> {
+    let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
+    agency_core::git::unstage_hunk(&wt, &path, hunk_index).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn project_log(
+    state: State<'_, AppState>,
+    project_id: String,
+    limit: usize,
+) -> Result<Vec<agency_core::git::CommitInfo>, String> {
+    let repo = state.project_repo_path(&project_id).map_err(|e| e.to_string())?;
+    agency_core::git::log(&repo, limit).map_err(|e| e.to_string())
 }

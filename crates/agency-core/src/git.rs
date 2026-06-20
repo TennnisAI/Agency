@@ -1,7 +1,8 @@
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
+use std::io::Write;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FileChange {
@@ -178,4 +179,61 @@ pub fn parse_diff(diff: &str) -> FileDiff {
         s
     };
     FileDiff { header, hunks }
+}
+
+pub fn git_stdin(worktree: &Path, args: &[&str], input: &str) -> Result<()> {
+    let mut child = Command::new("git")
+        .args(args)
+        .current_dir(worktree)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    child
+        .stdin
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("failed to open git stdin"))?
+        .write_all(input.as_bytes())?;
+    let out = child.wait_with_output()?;
+    if !out.status.success() {
+        bail!(
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    Ok(())
+}
+
+fn build_hunk_patch(file_diff: &FileDiff, hunk_index: usize) -> Result<String> {
+    let hunk = file_diff
+        .hunks
+        .get(hunk_index)
+        .ok_or_else(|| anyhow::anyhow!("hunk index {hunk_index} out of range"))?;
+    let mut patch = file_diff.header.clone();
+    patch.push_str(&hunk.header);
+    patch.push('\n');
+    for line in &hunk.lines {
+        patch.push_str(line);
+        patch.push('\n');
+    }
+    Ok(patch)
+}
+
+pub fn stage_hunk(worktree: &Path, path: &str, hunk_index: usize) -> Result<()> {
+    let raw = diff(worktree, path, false)?;
+    let fd = parse_diff(&raw);
+    let patch = build_hunk_patch(&fd, hunk_index)?;
+    git_stdin(worktree, &["apply", "--cached", "--unidiff-zero", "-"], &patch)
+}
+
+pub fn unstage_hunk(worktree: &Path, path: &str, hunk_index: usize) -> Result<()> {
+    let raw = diff(worktree, path, true)?;
+    let fd = parse_diff(&raw);
+    let patch = build_hunk_patch(&fd, hunk_index)?;
+    git_stdin(
+        worktree,
+        &["apply", "--cached", "--reverse", "--unidiff-zero", "-"],
+        &patch,
+    )
 }

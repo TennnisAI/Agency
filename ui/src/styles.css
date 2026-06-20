@@ -135,22 +135,51 @@ button:hover { background: var(--lav); }
 .git-commit-row code { color: var(--blue); font-size: 11px; }
 /* Settings overlay + modal */
 .settings-overlay { position: fixed; inset: 0; background: rgba(17,17,27,.66); backdrop-filter: blur(6px); display: flex; align-items: center; justify-content: center; z-index: 10; }
-.settings { background: var(--crust); border: 1px solid var(--s1); border-radius: 15px; padding: 20px; width: 580px; max-height: 86vh; overflow: auto; display: flex; flex-direction: column; gap: 14px; box-shadow: 0 24px 64px rgba(0,0,0,.5); }
-.settings-head { display: flex; justify-content: space-between; align-items: center; }
-.settings-head h2 { margin: 0; font-size: 15px; font-weight: 600; color: var(--text); }
-.settings section { display: flex; flex-direction: column; gap: 6px; }
-.settings h3 { margin: 0; font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--o1); }
-.settings label { font-size: 12px; color: var(--o0); }
-.settings input, .settings textarea { background: var(--mantle); border: 1px solid var(--s1); color: var(--text); border-radius: 6px; padding: 8px; width: 100%; font-family: var(--sans); font-size: 13px; }
+.settings { background: var(--crust); border: 1px solid var(--s1); border-radius: 15px; padding: 20px; width: 620px; max-height: 88vh; overflow: auto; display: flex; flex-direction: column; gap: 18px; box-shadow: 0 24px 64px rgba(0,0,0,.5); }
+.settings-head { display: flex; justify-content: space-between; align-items: center; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+.settings-head h2 { margin: 0; font-size: 18px; font-weight: 600; color: var(--text); }
+.settings-close { color: var(--o1); }
+/* Section */
+.settings-section { display: flex; flex-direction: column; gap: 10px; }
+.settings-section-label { font-size: 11px; font-weight: 600; letter-spacing: 0.12em; color: var(--o0); text-transform: uppercase; }
+/* Profile cards */
+.settings-card-list { display: flex; flex-direction: column; gap: 8px; }
+.settings-profile-card { background: var(--mantle); border: 1px solid var(--s0); border-radius: 10px; padding: 13px 15px; display: flex; flex-direction: column; gap: 9px; }
+.settings-profile-head { display: flex; align-items: center; gap: 8px; }
+.settings-profile-name { font-size: 13.5px; font-weight: 600; color: var(--text); flex: 1; }
+.settings-ghost-btn { background: transparent; border: 1px solid var(--s1); color: var(--sub0); font-size: 11.5px; font-weight: 400; padding: 4px 10px; border-radius: 6px; }
+.settings-ghost-btn:hover { background: var(--s0); color: var(--text); }
+.settings-del-btn { color: var(--red); border-color: transparent; }
+.settings-del-btn:hover { background: rgba(243,139,168,.10); color: var(--red); }
+.settings-profile-meta { display: grid; grid-template-columns: 72px 1fr; gap: 5px 10px; font-family: var(--mono); font-size: 11.5px; }
+.settings-meta-key { color: var(--o0); }
+.settings-meta-val { color: var(--sub1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Profile form */
+.settings-form-label { font-size: 11px; color: var(--o0); font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; margin-top: 4px; }
+.profile-form { display: flex; flex-direction: column; gap: 6px; padding-top: 4px; }
+.settings-input { background: var(--mantle); border: 1px solid var(--s1); color: var(--text); border-radius: 7px; padding: 8px 10px; width: 100%; font-family: var(--sans); font-size: 13px; }
+.settings-input:focus { outline: none; border-color: var(--blue); }
+textarea.settings-input { min-height: 64px; resize: vertical; }
+/* Legacy selectors kept for compat */
+.settings input, .settings textarea { background: var(--mantle); border: 1px solid var(--s1); color: var(--text); border-radius: 7px; padding: 8px 10px; width: 100%; font-family: var(--sans); font-size: 13px; }
 .settings input:focus, .settings textarea:focus { outline: none; border-color: var(--blue); }
 .settings textarea { min-height: 64px; resize: vertical; }
+/* Provider cards */
+.settings-providers { display: flex; flex-direction: column; gap: 8px; }
+.settings-provider-card { background: var(--mantle); border: 1px solid var(--s0); border-radius: 10px; padding: 13px 15px; display: flex; flex-direction: column; gap: 8px; }
+.settings-provider-title { font-size: 13.5px; font-weight: 600; color: var(--text); }
+.settings-provider-sub { font-weight: 400; font-size: 12px; color: var(--o0); }
+.settings-provider-field { display: flex; align-items: center; gap: 10px; }
+.settings-field-key { font-family: var(--mono); font-size: 11.5px; color: var(--o0); white-space: nowrap; flex-shrink: 0; min-width: 58px; }
+.settings-field-input { background: var(--crust); border: 1px solid var(--s0); color: var(--sub1); border-radius: 6px; padding: 4px 9px; font-family: var(--mono); font-size: 11.5px; flex: 1; min-width: 0; }
+.settings-field-input:focus { outline: none; border-color: var(--blue); }
+/* Legacy */
 .profile-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
 .profile-list li { display: flex; align-items: center; gap: 8px; padding: 4px; border-radius: 4px; }
 .profile-list li:hover { background: var(--s0); }
 .profile-name { cursor: pointer; min-width: 90px; color: var(--sub1); }
 .profile-name:hover { color: var(--text); text-decoration: underline; }
 .profile-list code { color: var(--o0); flex: 1; font-size: 12px; }
-.profile-form { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
 .settings-btn { margin: 8px; background: var(--s0); color: var(--text); font-weight: 400; }
 .settings-btn:hover { background: var(--s1); }
 /* Merge modal */
@@ -524,6 +553,8 @@ button:hover { background: var(--lav); }
 
 .rail-stub {
   width: 36px;
+  min-width: 36px;
+  flex-shrink: 0;
   border-right: 1px solid var(--line);
   border-radius: 0;
   height: 100%;
@@ -533,6 +564,7 @@ button:hover { background: var(--lav); }
 
 .focus-main {
   flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -707,3 +739,24 @@ button:hover { background: var(--lav); }
   letter-spacing: 0.06em;
   color: var(--o0);
 }
+
+/* ── Command Palette (Task 7c-3) ────────────────────────────── */
+.palette-overlay{position:fixed;inset:0;background:rgba(17,17,27,.5);display:flex;justify-content:center;align-items:flex-start;padding-top:12vh;z-index:20}
+.palette{width:560px;background:var(--mantle);border:1px solid var(--s1);border-radius:12px;box-shadow:0 24px 64px rgba(0,0,0,.5);overflow:hidden}
+.palette-input{width:100%;background:var(--crust);border:none;border-bottom:1px solid var(--line);color:var(--text);padding:12px 14px;font-size:14px;outline:none}
+.palette-list{list-style:none;margin:0;padding:6px;max-height:50vh;overflow:auto}
+.palette-row{display:flex;gap:8px;align-items:baseline;padding:7px 9px;border-radius:6px;cursor:pointer}
+.palette-row.on{background:var(--s0)}
+.palette-kind{color:var(--o0)}
+.palette-label{color:var(--text)}
+.palette-sub{color:var(--o0);font-family:var(--mono);font-size:11px;margin-left:auto}
+.palette-empty{color:var(--o0);padding:10px}
+
+/* ── New-task preview (Task 7c-4) ──────────────────────────────── */
+.nt-preview{font-size:12px;color:var(--o0);background:var(--crust);border:1px solid var(--s1);border-radius:6px;padding:8px 10px;display:flex;flex-direction:column;gap:4px}
+.nt-preview code{color:var(--blue);font-family:var(--mono);font-size:11px}
+
+/* ── Merge step timeline (Task 7c-4) ───────────────────────────── */
+.merge-timeline{display:flex;gap:8px;align-items:center;padding:8px 14px;border-bottom:1px solid var(--line)}
+.mt-step{color:var(--o0);font-size:12px}
+.mt-step.on{color:var(--blue);font-weight:600}

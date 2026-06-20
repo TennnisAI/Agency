@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState } f
 import { RunInfo, listRuns } from "../api";
 
 type View = "grid" | "focus";
+type Tab = "agents" | "source";
 
 interface RunStore {
   runs: RunInfo[];
@@ -12,6 +13,12 @@ interface RunStore {
   focusedRunId: string | null;
   setFocusedRun: (id: string | null) => void;
   refreshRuns: () => Promise<void>;
+  tab: Tab;
+  setTab: (t: Tab) => void;
+  openNewTask: boolean;
+  setOpenNewTask: (b: boolean) => void;
+  approveRunId: string | null;
+  setApproveRun: (id: string | null) => void;
 }
 
 const Ctx = createContext<RunStore | null>(null);
@@ -21,6 +28,9 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [view, setView] = useState<View>("grid");
   const [focusedRunId, setFocusedRun] = useState<string | null>(null);
+  const [tab, setTab] = useState<Tab>("agents");
+  const [openNewTask, setOpenNewTask] = useState(false);
+  const [approveRunId, setApproveRun] = useState<string | null>(null);
   const projectRef = useRef<string | null>(null);
   projectRef.current = selectedProjectId;
 
@@ -41,6 +51,7 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
     setSelectedProjectId(id);
     setView("grid");
     setFocusedRun(null);
+    setTab("agents");
   }
 
   useEffect(() => {
@@ -51,7 +62,7 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <Ctx.Provider
-      value={{ runs, selectedProjectId, setSelectedProject, view, setView, focusedRunId, setFocusedRun, refreshRuns }}
+      value={{ runs, selectedProjectId, setSelectedProject, view, setView, focusedRunId, setFocusedRun, refreshRuns, tab, setTab, openNewTask, setOpenNewTask, approveRunId, setApproveRun }}
     >
       {children}
     </Ctx.Provider>

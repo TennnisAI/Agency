@@ -1,9 +1,11 @@
 export default function TitleBar({
   onToggleSidebar,
   onOpenSettings,
+  onOpenPalette,
 }: {
   onToggleSidebar: () => void;
   onOpenSettings: () => void;
+  onOpenPalette: () => void;
 }) {
   return (
     <header className="titlebar">
@@ -14,11 +16,11 @@ export default function TitleBar({
         <span className="logo-mark" />
         <span className="app-name">Agency</span>
       </div>
-      <div className="search-box no-drag" aria-disabled>
+      <button className="search-box no-drag" onClick={onOpenPalette}>
         <span>⌕</span>
         <span className="search-ph">Search projects, tasks, files…</span>
         <span className="kbd">⌘K</span>
-      </div>
+      </button>
       <div className="titlebar-right">
         <button className="icon-btn no-drag" title="Settings" onClick={onOpenSettings}>
           ⚙

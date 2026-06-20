@@ -21,7 +21,7 @@ fn project_crud_roundtrip() {
     assert_eq!(all.len(), 1);
     assert_eq!(all[0].id, p.id);
 
-    state.remove_project(&p.id).unwrap();
+    state.delete_project(&p.id).unwrap();
     assert_eq!(state.list_projects().unwrap().len(), 0);
 }
 

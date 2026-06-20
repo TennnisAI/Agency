@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { FileChange, gitCommit, gitPush, gitStage, gitStatus, gitUnstage } from "../api";
+import Resizer from "./Resizer";
+import { usePaneWidth } from "../hooks/usePaneWidth";
 
 function isStaged(c: FileChange): boolean {
   return c.index !== " " && c.index !== "?";
@@ -12,6 +14,7 @@ export default function GitReviewPanel({
   taskId: string;
   onOpenSource: () => void;
 }) {
+  const review = usePaneWidth("review", 360, 280, 560);
   const [changes, setChanges] = useState<FileChange[]>([]);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -43,7 +46,9 @@ export default function GitReviewPanel({
   const unstaged = changes.filter((c) => !isStaged(c));
 
   return (
-    <aside className="review-panel">
+    <>
+    <Resizer width={review.width} min={280} max={560} onChange={review.setWidth} side="right" />
+    <aside className="review-panel" style={{ width: review.width, minWidth: review.width }}>
       <div className="review-head">
         <h3>Review</h3>
         <button className="ghost" onClick={onOpenSource}>Open in Source Control →</button>
@@ -75,5 +80,6 @@ export default function GitReviewPanel({
         </div>
       ))}
     </aside>
+    </>
   );
 }

@@ -53,7 +53,7 @@ export default function CommandPalette({ onClose }: { onClose: () => void }) {
       onClose();
     } else if (ev.key === "ArrowDown") {
       ev.preventDefault();
-      setHi((h) => Math.min(h + 1, filtered.length - 1));
+      setHi((h) => (filtered.length === 0 ? 0 : Math.min(h + 1, filtered.length - 1)));
     } else if (ev.key === "ArrowUp") {
       ev.preventDefault();
       setHi((h) => Math.max(h - 1, 0));

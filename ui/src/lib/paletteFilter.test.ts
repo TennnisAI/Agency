@@ -1,0 +1,30 @@
+import { describe, expect, it } from "vitest";
+import { filterEntries, PaletteEntry } from "./paletteFilter";
+
+const E: PaletteEntry[] = [
+  { kind: "project", id: "p1", projectId: "p1", label: "Senba", sublabel: "/repo/senba" },
+  { kind: "run", id: "r1", projectId: "p1", label: "claude: fix the bug", sublabel: "agent/r1" },
+  { kind: "run", id: "r2", projectId: "p1", label: "pi: add tests", sublabel: "agent/r2" },
+];
+
+describe("filterEntries", () => {
+  it("returns all when query empty", () => {
+    expect(filterEntries("", E)).toHaveLength(3);
+  });
+  it("matches case-insensitively on label", () => {
+    const r = filterEntries("FIX", E);
+    expect(r.map((e) => e.id)).toEqual(["r1"]);
+  });
+  it("matches on sublabel", () => {
+    const r = filterEntries("senba", E);
+    expect(r.map((e) => e.id)).toContain("p1");
+  });
+  it("orders label-prefix matches before substring matches", () => {
+    const entries: PaletteEntry[] = [
+      { kind: "run", id: "a", projectId: "p", label: "refactor parser", sublabel: "agent/a" },
+      { kind: "run", id: "b", projectId: "p", label: "parser cleanup", sublabel: "agent/b" },
+    ];
+    const r = filterEntries("parser", entries);
+    expect(r.map((e) => e.id)).toEqual(["b", "a"]); // "parser…" prefix first
+  });
+});

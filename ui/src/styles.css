@@ -476,3 +476,93 @@ button:hover { background: var(--lav); }
 }
 .card h3 { margin: 0; font-size: 15px; font-weight: 600; }
 .card label { font-size: 12px; color: var(--o0); }
+
+/* ── Focus view (Task 11) ───────────────────────────────────── */
+.focus {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.rail {
+  width: var(--focus-rail-w, 312px);
+  min-width: var(--focus-rail-w, 312px);
+  border-right: 1px solid var(--line);
+  background: var(--mantle);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.rail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px 8px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--o1);
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+
+.rail-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--line);
+  color: var(--sub1);
+  font-size: 13px;
+  font-weight: 400;
+  cursor: pointer;
+  text-align: left;
+  border-radius: 0;
+  width: 100%;
+  transition: background 0.1s;
+}
+.rail-row:hover { background: var(--s0); color: var(--text); }
+.rail-row.on { background: var(--s1); color: var(--text); }
+
+.rail-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rail-stub {
+  width: 36px;
+  border-right: 1px solid var(--line);
+  border-radius: 0;
+  height: 100%;
+  align-items: flex-start;
+  padding-top: 10px;
+}
+
+.focus-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.focus-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--mantle);
+  flex-shrink: 0;
+}
+.focus-head .spacer { flex: 1; }
+.focus-head code { font-size: 12px; color: var(--blue); }
+
+.focus-term {
+  flex: 1;
+  min-height: 0;
+}

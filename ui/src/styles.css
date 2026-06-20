@@ -23,17 +23,6 @@
 }
 .titlebar-spacer { flex: 1; }
 .content { display: flex; flex: 1; min-height: 0; }
-.statusbar {
-  height: var(--statusbar-h, 27px);
-  min-height: var(--statusbar-h, 27px);
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 0 10px;
-  background: var(--mantle);
-  border-top: 1px solid var(--line);
-  font-size: 11px; color: var(--o1);
-}
-.statusbar-project { font-weight: 500; color: var(--sub0); }
-.statusbar-hints { opacity: 0.7; }
 /* Sidebar */
 .sidebar {
   width: var(--sidebar-w, 266px);
@@ -162,7 +151,6 @@ button:hover { background: var(--lav); }
 .profile-name:hover { color: var(--text); text-decoration: underline; }
 .profile-list code { color: var(--o0); flex: 1; font-size: 12px; }
 .profile-form { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
-.sidebar-wrap { display: flex; flex-direction: column; }
 .settings-btn { margin: 8px; background: var(--s0); color: var(--text); font-weight: 400; }
 .settings-btn:hover { background: var(--s1); }
 /* Merge modal */

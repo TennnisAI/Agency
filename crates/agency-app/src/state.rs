@@ -79,8 +79,8 @@ fn now_secs() -> i64 {
 
 pub struct AppState {
     registry: Mutex<Registry>,
-    pub attaches: Mutex<HashMap<String, AgentHandle>>,
-    pub tmux: Tmux,
+    attaches: Mutex<HashMap<String, AgentHandle>>,
+    tmux: Tmux,
     resolvers: Mutex<HashMap<String, AgentHandle>>,
 }
 
@@ -114,7 +114,7 @@ impl AppState {
         })
     }
 
-    pub fn provider_env(&self) -> Result<Vec<(String, String)>> {
+    fn provider_env(&self) -> Result<Vec<(String, String)>> {
         let s = self.get_settings()?;
         let mut env = Vec::new();
         if !s.anthropic_api_key.is_empty() {
@@ -256,6 +256,10 @@ impl AppState {
 
     pub fn run_status(&self, id: &str) -> Result<SessionStatus> {
         Ok(self.tmux.session_status(&session_name(id)).unwrap_or(SessionStatus::Gone))
+    }
+
+    pub fn capture_session(&self, session_name: &str, lines: usize) -> Result<String> {
+        self.tmux.capture(session_name, lines)
     }
 
     pub fn discard_run(&self, id: &str) -> Result<()> {

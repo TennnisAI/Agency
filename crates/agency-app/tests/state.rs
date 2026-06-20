@@ -178,7 +178,7 @@ fn create_run_injects_provider_env() {
     let mut out = String::new();
     let start = std::time::Instant::now();
     while start.elapsed() < std::time::Duration::from_secs(5) {
-        if let Ok(s) = state.tmux.capture(&session, 20) {
+        if let Ok(s) = state.capture_session(&session, 20) {
             out = s;
             if out.contains("KEY=sk-secret") { break; }
         }

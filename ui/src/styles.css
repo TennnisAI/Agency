@@ -23,17 +23,6 @@
 }
 .titlebar-spacer { flex: 1; }
 .content { display: flex; flex: 1; min-height: 0; }
-.statusbar {
-  height: var(--statusbar-h, 27px);
-  min-height: var(--statusbar-h, 27px);
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 0 10px;
-  background: var(--mantle);
-  border-top: 1px solid var(--line);
-  font-size: 11px; color: var(--o1);
-}
-.statusbar-project { font-weight: 500; color: var(--sub0); }
-.statusbar-hints { opacity: 0.7; }
 /* Sidebar */
 .sidebar {
   width: var(--sidebar-w, 266px);
@@ -162,7 +151,6 @@ button:hover { background: var(--lav); }
 .profile-name:hover { color: var(--text); text-decoration: underline; }
 .profile-list code { color: var(--o0); flex: 1; font-size: 12px; }
 .profile-form { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
-.sidebar-wrap { display: flex; flex-direction: column; }
 .settings-btn { margin: 8px; background: var(--s0); color: var(--text); font-weight: 400; }
 .settings-btn:hover { background: var(--s1); }
 /* Merge modal */
@@ -181,6 +169,110 @@ button:hover { background: var(--lav); }
   0%, 100% { opacity: 1; }
   50% { opacity: 0.45; }
 }
+/* ── Shell (Task 9) ─────────────────────────────────────────── */
+.shell { display: flex; flex-direction: column; height: 100%; }
+.titlebar {
+  height: var(--titlebar-h);
+  min-height: var(--titlebar-h);
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 8px;
+  background: var(--mantle);
+  border-bottom: 1px solid var(--line);
+  -webkit-app-region: drag;
+  user-select: none;
+}
+.titlebar-left { display: flex; align-items: center; gap: 6px; }
+.titlebar-right { display: flex; align-items: center; gap: 6px; }
+.no-drag { -webkit-app-region: no-drag; }
+.icon-btn {
+  -webkit-app-region: no-drag;
+  background: none; border: none; color: var(--sub0); cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; border-radius: 6px; padding: 0;
+  font-size: 16px;
+}
+.icon-btn:hover { background: var(--s0); color: var(--text); }
+.logo-mark {
+  width: 15px; height: 15px;
+  background: var(--blue);
+  border-radius: 4px;
+  transform: rotate(45deg);
+  flex-shrink: 0;
+}
+.app-name {
+  font-size: 13px; font-weight: 600; letter-spacing: 0.02em;
+  color: var(--text);
+}
+.search-box {
+  display: flex; align-items: center; gap: 6px;
+  background: var(--crust); border: 1px solid var(--s1); border-radius: 8px;
+  padding: 4px 10px; cursor: default; opacity: 0.6;
+  font-size: 12px; color: var(--o0);
+  min-width: 220px;
+}
+.search-ph { flex: 1; }
+.kbd {
+  font-family: var(--mono); font-size: 10px;
+  background: var(--s0); border-radius: 4px; padding: 1px 5px;
+  color: var(--o1);
+}
+.kbd-hints { font-size: 11px; color: var(--o0); opacity: 0.75; }
+/* Body */
+.body { flex: 1; display: flex; min-height: 0; }
+/* Project tree sidebar */
+.tree {
+  width: var(--sidebar-w);
+  min-width: var(--sidebar-w);
+  border-right: 1px solid var(--line);
+  display: flex; flex-direction: column;
+  background: var(--mantle);
+  overflow: hidden;
+}
+.tree-head {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--o1); margin: 0; padding: 12px 12px 6px;
+}
+.tree-list {
+  list-style: none; margin: 0; padding: 0 6px;
+  flex: 1; overflow-y: auto;
+}
+.tree-row {
+  display: flex; align-items: center; gap: 4px;
+  padding: 6px 6px; border-radius: 6px; cursor: pointer;
+  font-size: 13px; color: var(--sub1);
+}
+.tree-row:hover { background: var(--s0); color: var(--text); }
+.tree-row.selected { background: var(--s1); color: var(--text); }
+.chev { font-size: 10px; color: var(--o0); width: 14px; flex-shrink: 0; }
+.tree-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ghost-x {
+  background: none; border: none; color: var(--o0); cursor: pointer;
+  padding: 0 4px; font-size: 14px; line-height: 1; border-radius: 4px;
+  opacity: 0; transition: opacity 0.1s;
+}
+.tree-row:hover .ghost-x { opacity: 1; }
+.ghost-x:hover { background: var(--s0); color: var(--red); }
+.tree-children {
+  list-style: none; margin: 0; padding: 0 0 0 24px;
+}
+.tree-child {
+  display: flex; align-items: center; gap: 6px;
+  padding: 3px 6px; font-size: 12px; color: var(--o1);
+}
+.tree-child-name {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* Status bar (Task 9 override — replaces old statusbar rules above) */
+.statusbar {
+  height: var(--statusbar-h);
+  min-height: var(--statusbar-h);
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 10px;
+  background: var(--mantle);
+  border-top: 1px solid var(--line);
+  font-size: 11px; color: var(--o1);
+}
+
 /* Agent badge */
 .badge {
   font-family: var(--mono);
@@ -193,3 +285,272 @@ button:hover { background: var(--lav); }
 .badge.claude { color: var(--agent-claude); }
 .badge.pi { color: var(--agent-pi); }
 .badge.hermes { color: var(--agent-hermes); }
+
+/* ── Agents view (Task 10) ──────────────────────────────────── */
+.agents {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Content header — segmented nav + actions */
+.content-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--mantle);
+  flex-shrink: 0;
+}
+.content-head .spacer { flex: 1; }
+.content-head > button {
+  background: var(--s0);
+  color: var(--text);
+  font-weight: 500;
+  padding: 5px 12px;
+  font-size: 12px;
+  border-radius: 7px;
+}
+.content-head > button:hover { background: var(--s1); }
+
+/* Segmented control */
+.seg {
+  display: flex;
+  background: var(--crust);
+  border: 1px solid var(--s1);
+  border-radius: 8px;
+  padding: 2px;
+  gap: 2px;
+}
+.seg button {
+  background: none;
+  color: var(--o1);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 4px 10px;
+  border-radius: 6px;
+  transition: background 0.1s, color 0.1s;
+}
+.seg button:hover { background: var(--s0); color: var(--text); }
+.seg button.on {
+  background: var(--s1);
+  color: var(--text);
+}
+
+/* Agents grid */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 14px;
+  padding: 16px;
+  overflow-y: auto;
+  flex: 1;
+  align-content: start;
+}
+
+/* Agent tile (card) */
+.tile {
+  background: var(--mantle);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.tile:hover {
+  border-color: var(--s2);
+  background: var(--s0);
+}
+
+.tile-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.tile-title {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tile-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--o1);
+}
+.tile-meta code {
+  font-size: 11px;
+  color: var(--blue);
+}
+
+/* Diff stat */
+.diffstat {
+  font-size: 11.5px;
+  font-family: var(--mono);
+  color: var(--o1);
+}
+.diffstat .add { color: var(--green); }
+.diffstat .del { color: var(--red); }
+
+/* Terminal preview — fades at bottom */
+.tile-preview {
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--sub0);
+  background: var(--crust);
+  border-radius: 6px;
+  padding: 8px;
+  margin: 0;
+  max-height: 120px;
+  overflow: hidden;
+  white-space: pre;
+  -webkit-mask-image: linear-gradient(to bottom, black 60%, transparent 100%);
+  mask-image: linear-gradient(to bottom, black 60%, transparent 100%);
+}
+
+.tile-foot {
+  font-size: 11px;
+  color: var(--o0);
+}
+
+/* Source control wrap */
+.source-wrap {
+  flex: 1;
+  display: flex;
+  padding: 16px;
+  overflow: hidden;
+}
+
+/* Ghost / cancel button */
+.ghost {
+  background: var(--s0);
+  color: var(--text);
+  font-weight: 400;
+}
+.ghost:hover { background: var(--s1); }
+
+/* Row actions (new-task footer) */
+.row-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+/* Card style for new-task overlay */
+.card {
+  background: var(--crust);
+  border: 1px solid var(--s1);
+  border-radius: 15px;
+  padding: 20px;
+  min-width: 460px;
+  max-width: 560px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-shadow: 0 24px 64px rgba(0,0,0,.5);
+}
+.card h3 { margin: 0; font-size: 15px; font-weight: 600; }
+.card label { font-size: 12px; color: var(--o0); }
+
+/* ── Focus view (Task 11) ───────────────────────────────────── */
+.focus {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.rail {
+  width: var(--focus-rail-w, 312px);
+  min-width: var(--focus-rail-w, 312px);
+  border-right: 1px solid var(--line);
+  background: var(--mantle);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.rail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px 8px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--o1);
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+
+.rail-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--line);
+  color: var(--sub1);
+  font-size: 13px;
+  font-weight: 400;
+  cursor: pointer;
+  text-align: left;
+  border-radius: 0;
+  width: 100%;
+  transition: background 0.1s;
+}
+.rail-row:hover { background: var(--s0); color: var(--text); }
+.rail-row.on { background: var(--s1); color: var(--text); }
+
+.rail-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rail-stub {
+  width: 36px;
+  border-right: 1px solid var(--line);
+  border-radius: 0;
+  height: 100%;
+  align-items: flex-start;
+  padding-top: 10px;
+}
+
+.focus-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.focus-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--mantle);
+  flex-shrink: 0;
+}
+.focus-head .spacer { flex: 1; }
+.focus-head code { font-size: 12px; color: var(--blue); }
+
+.focus-term {
+  flex: 1;
+  min-height: 0;
+}

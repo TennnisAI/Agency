@@ -15,6 +15,17 @@ pub struct Project {
     pub default_provider: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Run {
+    pub id: String,
+    pub project_id: String,
+    pub agent: String,
+    pub prompt: String,
+    pub base: String,
+    pub branch: String,
+    pub created_at: i64,
+}
+
 pub struct Registry {
     conn: Connection,
 }
@@ -43,6 +54,15 @@ impl Registry {
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS runs (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                agent TEXT NOT NULL,
+                prompt TEXT NOT NULL,
+                base TEXT NOT NULL,
+                branch TEXT NOT NULL,
+                created_at INTEGER NOT NULL
             );",
         )?;
         Ok(Registry { conn })
@@ -160,6 +180,46 @@ impl Registry {
         )?;
         Ok(())
     }
+
+    pub fn insert_run(&self, run: &Run) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO runs (id, project_id, agent, prompt, base, branch, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![
+                run.id, run.project_id, run.agent, run.prompt, run.base, run.branch, run.created_at
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_run(&self, id: &str) -> Result<Option<Run>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, project_id, agent, prompt, base, branch, created_at FROM runs WHERE id = ?1",
+        )?;
+        let mut rows = stmt.query([id])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(row_to_run(row)?)),
+            None => Ok(None),
+        }
+    }
+
+    pub fn list_runs(&self, project_id: &str) -> Result<Vec<Run>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, project_id, agent, prompt, base, branch, created_at
+             FROM runs WHERE project_id = ?1 ORDER BY created_at DESC",
+        )?;
+        let rows = stmt.query_map([project_id], |row| Ok(row_to_run(row)))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r??);
+        }
+        Ok(out)
+    }
+
+    pub fn delete_run(&self, id: &str) -> Result<()> {
+        self.conn.execute("DELETE FROM runs WHERE id = ?1", [id])?;
+        Ok(())
+    }
 }
 
 fn row_to_profile(row: &rusqlite::Row) -> Result<AgentProfile> {
@@ -181,5 +241,17 @@ fn row_to_project(row: &rusqlite::Row) -> Result<Project> {
         repo_path: PathBuf::from(repo_path),
         default_agent: row.get(3)?,
         default_provider: row.get(4)?,
+    })
+}
+
+fn row_to_run(row: &rusqlite::Row) -> Result<Run> {
+    Ok(Run {
+        id: row.get(0)?,
+        project_id: row.get(1)?,
+        agent: row.get(2)?,
+        prompt: row.get(3)?,
+        base: row.get(4)?,
+        branch: row.get(5)?,
+        created_at: row.get(6)?,
     })
 }

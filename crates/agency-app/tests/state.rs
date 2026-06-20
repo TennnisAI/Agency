@@ -25,12 +25,9 @@ fn project_crud_roundtrip() {
     assert_eq!(state.list_projects().unwrap().len(), 0);
 }
 
-use agency_app_lib::TaskInfo;
 use agency_core::profile::AgentProfile;
-use agency_core::supervisor::AgentStatus;
+use agency_core::tmux::SessionStatus;
 use std::process::Command;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 
 fn init_repo(dir: &Path) {
     let run = |args: &[&str]| {
@@ -48,30 +45,57 @@ fn init_repo(dir: &Path) {
     run(&["commit", "-q", "-m", "init"]);
 }
 
-fn fake_agent_command() -> String {
-    // Reuse the Phase 1 fixture from agency-core.
-    let p = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("agency-core")
-        .join("tests")
-        .join("fixtures")
-        .join("fake_agent.sh");
-    p.to_string_lossy().to_string()
-}
-
-fn wait_for(buf: &Arc<Mutex<String>>, needle: &str, timeout: Duration) -> bool {
-    let start = Instant::now();
-    while start.elapsed() < timeout {
-        if buf.lock().unwrap().contains(needle) {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    false
+fn session_gone_or_cleanup(state: &AppState, id: &str) {
+    // ensure no lingering tmux session after a test
+    let _ = state.discard_run(id);
 }
 
 #[test]
-fn start_task_spawns_in_worktree_streams_and_stops() {
+fn create_run_persists_starts_session_and_lists() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo); // repo on `main` with a commit
+
+    let state = AppState::new(&dir.path().join("agency.db")).unwrap();
+    // a profile that stays alive so the session is Running
+    state.register_profile(AgentProfile {
+        name: "stay".into(),
+        command: "sh".into(),
+        args: vec!["-c".into(), "echo HI; sleep 3".into()],
+        env: vec![],
+    }).unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+
+    let info = state.create_run(&project.id, "do it", "stay", "HEAD").unwrap();
+    assert_eq!(info.agent, "stay");
+    assert_eq!(info.branch, format!("agent/{}", info.id));
+
+    // worktree exists
+    let wt = state.worktree_path(&info.id).unwrap();
+    assert!(wt.exists());
+
+    // listed for the project, status Running
+    let runs = state.list_runs(&project.id).unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].id, info.id);
+    // poll status until Running observed (session just started)
+    let mut ok = false;
+    for _ in 0..50 {
+        if matches!(state.run_status(&info.id).unwrap(), SessionStatus::Running | SessionStatus::Exited{..}) { ok = true; break; }
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    assert!(ok);
+
+    // discard cleans up worktree + record + session
+    state.discard_run(&info.id).unwrap();
+    assert!(!wt.exists());
+    assert_eq!(state.list_runs(&project.id).unwrap().len(), 0);
+    session_gone_or_cleanup(&state, &info.id);
+}
+
+#[test]
+fn worktree_path_resolves_for_active_run() {
     let dir = tempfile::tempdir().unwrap();
     let repo = dir.path().join("repo");
     std::fs::create_dir_all(&repo).unwrap();
@@ -79,75 +103,22 @@ fn start_task_spawns_in_worktree_streams_and_stops() {
 
     let state = AppState::new(&dir.path().join("agency.db")).unwrap();
     state.register_profile(AgentProfile {
-        name: "fake".into(),
-        command: fake_agent_command(),
-        args: vec!["{{prompt}}".into()],
-        env: vec![],
-    }).unwrap();
-
-    let project = state.add_project("demo", &repo).unwrap();
-
-    let buf = Arc::new(Mutex::new(String::new()));
-    let buf_cb = buf.clone();
-    let info: TaskInfo = state
-        .start_task(&project.id, "do-the-thing", "fake", "HEAD", move |bytes| {
-            buf_cb.lock().unwrap().push_str(&String::from_utf8_lossy(&bytes));
-        })
-        .unwrap();
-
-    assert_eq!(info.branch, format!("agent/{}", info.task_id));
-
-    // Worktree exists on disk.
-    let wt_path = repo.join(".agency").join("worktrees").join(&info.task_id);
-    assert!(wt_path.exists());
-
-    // Streaming + the rendered prompt arg.
-    assert!(wait_for(&buf, "AGENT_READY", Duration::from_secs(5)));
-    assert!(wait_for(&buf, "PROMPT:do-the-thing", Duration::from_secs(5)));
-
-    // Input injection.
-    state.send_input(&info.task_id, b"ping\n").unwrap();
-    assert!(wait_for(&buf, "GOT:ping", Duration::from_secs(5)));
-
-    // Status reaches Exited(0).
-    let start = Instant::now();
-    while start.elapsed() < Duration::from_secs(5) {
-        if matches!(state.task_status(&info.task_id).unwrap(), AgentStatus::Exited(_)) {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    assert_eq!(state.task_status(&info.task_id).unwrap(), AgentStatus::Exited(0));
-
-    // Stop removes the worktree.
-    state.stop_task(&info.task_id).unwrap();
-    assert!(!wt_path.exists());
-}
-
-#[test]
-fn worktree_path_resolves_for_active_task() {
-    let dir = tempfile::tempdir().unwrap();
-    let repo = dir.path().join("repo");
-    std::fs::create_dir_all(&repo).unwrap();
-    init_repo(&repo); // helper already defined earlier in this test file
-
-    let state = AppState::new(&dir.path().join("agency.db")).unwrap();
-    state.register_profile(AgentProfile {
-        name: "fake".into(),
-        command: fake_agent_command(),
-        args: vec!["{{prompt}}".into()],
+        name: "noop".into(),
+        command: "sh".into(),
+        args: vec!["-c".into(), "sleep 1".into()],
         env: vec![],
     }).unwrap();
     let project = state.add_project("demo", &repo).unwrap();
-    let info = state
-        .start_task(&project.id, "p", "fake", "HEAD", |_| {})
-        .unwrap();
+    let info = state.create_run(&project.id, "p", "noop", "HEAD").unwrap();
 
-    let wt = state.worktree_path(&info.task_id).unwrap();
-    assert!(wt.ends_with(format!(".agency/worktrees/{}", info.task_id)));
+    let wt = state.worktree_path(&info.id).unwrap();
+    assert!(wt.ends_with(format!(".agency/worktrees/{}", info.id)));
     assert!(wt.exists());
 
     assert!(state.worktree_path("does-not-exist").is_err());
+
+    // cleanup
+    state.discard_run(&info.id).unwrap();
 }
 
 #[test]
@@ -179,8 +150,8 @@ fn settings_default_and_roundtrip() {
 }
 
 #[test]
-fn start_task_injects_provider_env() {
-    // Use a fake agent that echoes an env var so we can prove injection.
+fn create_run_injects_provider_env() {
+    // Use a tmux session that echoes env vars so we can verify injection via capture.
     let dir = tempfile::tempdir().unwrap();
     let repo = dir.path().join("repo");
     std::fs::create_dir_all(&repo).unwrap();
@@ -191,30 +162,32 @@ fn start_task_injects_provider_env() {
         anthropic_api_key: "sk-secret".into(),
         lm_studio_base_url: "http://localhost:1234/v1".into(),
     }).unwrap();
-    // Profile prints $ANTHROPIC_API_KEY via a shell command.
+    // Profile echoes env vars and then sleeps so we can capture output.
     state.register_profile(AgentProfile {
         name: "envcheck".into(),
-        command: "/bin/sh".into(),
-        args: vec!["-c".into(), "echo KEY=$ANTHROPIC_API_KEY; echo BASE=$OPENAI_BASE_URL".into()],
+        command: "sh".into(),
+        args: vec!["-c".into(), "echo KEY=$ANTHROPIC_API_KEY; echo BASE=$OPENAI_BASE_URL; sleep 2".into()],
         env: vec![],
     }).unwrap();
     let project = state.add_project("demo", &repo).unwrap();
 
-    let buf = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
-    let b = buf.clone();
-    let info = state.start_task(&project.id, "p", "envcheck", "HEAD", move |bytes| {
-        b.lock().unwrap().push_str(&String::from_utf8_lossy(&bytes));
-    }).unwrap();
+    let info = state.create_run(&project.id, "p", "envcheck", "HEAD").unwrap();
 
+    // Poll tmux capture until we see the output (up to 5s)
+    let mut out = String::new();
     let start = std::time::Instant::now();
     while start.elapsed() < std::time::Duration::from_secs(5) {
-        if buf.lock().unwrap().contains("KEY=sk-secret") { break; }
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        if let Ok(s) = state.run_preview(&info.id, 20) {
+            out = s;
+            if out.contains("KEY=sk-secret") { break; }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
     }
-    let out = buf.lock().unwrap().clone();
+
     assert!(out.contains("KEY=sk-secret"), "got: {out}");
     assert!(out.contains("BASE=http://localhost:1234/v1"), "got: {out}");
-    let _ = info;
+
+    state.discard_run(&info.id).unwrap();
 }
 
 use agency_core::merge::MergeOutcome;
@@ -227,11 +200,10 @@ fn resolve_merge_spawns_resolver_in_repo_and_streams() {
     init_repo(&repo);
 
     let state = AppState::new(&dir.path().join("agency.db")).unwrap();
-    // Worker + a resolver profile that just echoes its cwd marker file and the prompt.
     state.register_profile(AgentProfile {
-        name: "fake".into(),
-        command: fake_agent_command(),
-        args: vec!["{{prompt}}".into()],
+        name: "noop".into(),
+        command: "sh".into(),
+        args: vec!["-c".into(), "sleep 1".into()],
         env: vec![],
     }).unwrap();
     state.register_profile(AgentProfile {
@@ -241,11 +213,11 @@ fn resolve_merge_spawns_resolver_in_repo_and_streams() {
         env: vec![],
     }).unwrap();
     let project = state.add_project("demo", &repo).unwrap();
-    let info = state.start_task(&project.id, "p", "fake", "HEAD", |_| {}).unwrap();
+    let info = state.create_run(&project.id, "p", "noop", "HEAD").unwrap();
 
     let buf = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
     let b = buf.clone();
-    state.resolve_merge(&info.task_id, "fakeresolver", move |bytes| {
+    state.resolve_merge(&info.id, "fakeresolver", move |bytes| {
         b.lock().unwrap().push_str(&String::from_utf8_lossy(&bytes));
     }).unwrap();
 
@@ -258,6 +230,9 @@ fn resolve_merge_spawns_resolver_in_repo_and_streams() {
     assert!(out.contains("RESOLVING"), "got: {out}");
     // The resolver ran with cwd = repo root (its `pwd` contains the repo dir name).
     assert!(out.contains("repo"), "expected repo cwd in: {out}");
+
+    // cleanup
+    state.discard_run(&info.id).unwrap();
 }
 
 #[test]
@@ -287,30 +262,76 @@ fn save_settings_rejects_bad_provider_url() {
 }
 
 #[test]
+fn attach_streams_and_input_reaches_agent() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let state = AppState::new(&dir.path().join("agency.db")).unwrap();
+    state.register_profile(AgentProfile {
+        name: "echoer".into(),
+        command: "sh".into(),
+        args: vec!["-c".into(), "echo READY; read x; echo GOT:$x; sleep 3".into()],
+        env: vec![],
+    }).unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+    let info = state.create_run(&project.id, "p", "echoer", "HEAD").unwrap();
+
+    let buf = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let b = buf.clone();
+    state.attach_run(&info.id, move |bytes| {
+        b.lock().unwrap().push_str(&String::from_utf8_lossy(&bytes));
+    }).unwrap();
+
+    let wait = |needle: &str| {
+        let start = std::time::Instant::now();
+        while start.elapsed() < std::time::Duration::from_secs(5) {
+            if buf.lock().unwrap().contains(needle) { return true; }
+            std::thread::sleep(std::time::Duration::from_millis(30));
+        }
+        false
+    };
+    assert!(wait("READY"), "buf: {:?}", buf.lock().unwrap());
+    state.run_input(&info.id, b"ping\n").unwrap();
+    assert!(wait("GOT:ping"), "buf: {:?}", buf.lock().unwrap());
+
+    // preview also reflects the pane
+    let prev = state.run_preview(&info.id, 50).unwrap();
+    assert!(prev.contains("READY"));
+
+    state.detach_run(&info.id);
+    state.discard_run(&info.id).unwrap();
+}
+
+#[test]
 fn merge_task_clean_merges_branch_into_base() {
     let dir = tempfile::tempdir().unwrap();
     let repo = dir.path().join("repo");
     std::fs::create_dir_all(&repo).unwrap();
-    init_repo(&repo); // existing helper: inits repo on default branch with a commit
+    init_repo(&repo);
 
     let state = AppState::new(&dir.path().join("agency.db")).unwrap();
     state.register_profile(AgentProfile {
-        name: "fake".into(),
-        command: fake_agent_command(),
-        args: vec!["{{prompt}}".into()],
+        name: "noop".into(),
+        command: "sh".into(),
+        args: vec!["-c".into(), "sleep 1".into()],
         env: vec![],
     }).unwrap();
     let project = state.add_project("demo", &repo).unwrap();
 
-    // Start a task → worktree on agent/<id>; make a non-conflicting commit in it.
-    let info = state.start_task(&project.id, "p", "fake", "HEAD", |_| {}).unwrap();
-    let wt = state.worktree_path(&info.task_id).unwrap();
+    // create_run → worktree on agent/<id>; make a non-conflicting commit in it.
+    let info = state.create_run(&project.id, "p", "noop", "HEAD").unwrap();
+    let wt = state.worktree_path(&info.id).unwrap();
     std::fs::write(wt.join("feature.txt"), "x\n").unwrap();
     std::process::Command::new("git").args(["add","-A"]).current_dir(&wt).status().unwrap();
     std::process::Command::new("git").args(["commit","-qm","feat"]).current_dir(&wt).status().unwrap();
 
-    let outcome = state.merge_task(&info.task_id).unwrap();
+    let outcome = state.merge_task(&info.id).unwrap();
     assert!(matches!(outcome, MergeOutcome::Clean { .. }));
     // feature.txt now on the repo's base branch working tree.
     assert!(repo.join("feature.txt").exists());
+
+    // discard after merge (worktree may already be removed by merge; best-effort)
+    let _ = state.discard_run(&info.id);
 }

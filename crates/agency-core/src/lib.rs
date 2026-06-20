@@ -3,6 +3,7 @@ pub mod merge;
 pub mod profile;
 pub mod registry;
 pub mod supervisor;
+pub mod tmux;
 pub mod worktree;
 
 /// Returns the crate version string.

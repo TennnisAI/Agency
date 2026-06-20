@@ -10,14 +10,21 @@ export interface Project {
   default_provider: string | null;
 }
 
-export interface TaskInfo {
-  taskId: string;
-  branch: string;
-}
+export type SessionStatus =
+  | { state: "running" }
+  | { state: "exited"; code: number }
+  | { state: "gone" };
 
-export interface StatusDto {
-  state: string;
-  code: number | null;
+export interface RunInfo {
+  id: string;
+  projectId: string;
+  agent: string;
+  prompt: string;
+  branch: string;
+  status: SessionStatus;
+  added: number;
+  deleted: number;
+  files: number;
 }
 
 export const listProjects = () => invoke<Project[]>("list_projects");
@@ -28,23 +35,21 @@ export const addProject = (name: string, repoPath: string) =>
 export const removeProject = (id: string) =>
   invoke<void>("remove_project", { id });
 
-export const sendInput = (taskId: string, data: string) =>
-  invoke<void>("send_input", { taskId, data });
+export const createRun = (projectId: string, prompt: string, agent: string, base: string) =>
+  invoke<RunInfo>("create_run", { projectId, prompt, agent, base });
+export const listRuns = (projectId: string) => invoke<RunInfo[]>("list_runs", { projectId });
+export const runPreview = (id: string, lines: number) =>
+  invoke<string>("run_preview", { id, lines });
+export const detachRun = (id: string) => invoke<void>("detach_run", { id });
+export const runInput = (id: string, data: string) => invoke<void>("run_input", { id, data });
+export const runStatus = (id: string) => invoke<SessionStatus>("run_status", { id });
+export const discardRun = (id: string) => invoke<void>("discard_run", { id });
+export const rerun = (id: string) => invoke<RunInfo>("rerun", { id });
 
-export const taskStatus = (taskId: string) =>
-  invoke<StatusDto>("task_status", { taskId });
-
-export const stopTask = (taskId: string) => invoke<void>("stop_task", { taskId });
-
-export function startTask(
-  projectId: string,
-  prompt: string,
-  profile: string,
-  onBytes: (bytes: Uint8Array) => void,
-): Promise<TaskInfo> {
+export function attachRun(id: string, onBytes: (b: Uint8Array) => void): Promise<void> {
   const onChunk = new Channel<{ b64: string }>();
-  onChunk.onmessage = (msg) => onBytes(b64ToBytes(msg.b64));
-  return invoke<TaskInfo>("start_task", { projectId, prompt, profile, onChunk });
+  onChunk.onmessage = (m) => onBytes(b64ToBytes(m.b64));
+  return invoke<void>("attach_run", { id, onChunk });
 }
 
 export interface FileChange {
@@ -106,6 +111,11 @@ export const abortMergeTask = (taskId: string) =>
   invoke<void>("abort_merge_task", { taskId });
 export const resolverInput = (taskId: string, data: string) =>
   invoke<void>("resolver_input", { taskId, data });
+export interface StatusDto {
+  state: "running" | "idle" | "exited" | "crashed";
+  code: number | null;
+}
+
 export const resolverStatus = (taskId: string) =>
   invoke<StatusDto>("resolver_status", { taskId });
 

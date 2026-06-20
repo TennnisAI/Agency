@@ -1,7 +1,7 @@
 mod commands;
 mod state;
 
-pub use state::{AppState, ProviderSettings, TaskInfo};
+pub use state::{AppState, ProviderSettings, RunInfo};
 
 pub fn run() {
     tauri::Builder::default()
@@ -18,10 +18,15 @@ pub fn run() {
             commands::list_projects,
             commands::add_project,
             commands::remove_project,
-            commands::start_task,
-            commands::send_input,
-            commands::task_status,
-            commands::stop_task,
+            commands::create_run,
+            commands::list_runs,
+            commands::run_preview,
+            commands::attach_run,
+            commands::detach_run,
+            commands::run_input,
+            commands::run_status,
+            commands::discard_run,
+            commands::rerun,
             commands::git_status,
             commands::git_diff,
             commands::git_log,

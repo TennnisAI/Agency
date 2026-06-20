@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRuns } from "../store/runs";
 import FocusTerminal from "./FocusTerminal";
 import MergeModal from "./MergeModal";
@@ -10,6 +10,9 @@ function badgeClass(a: string) {
 export default function AgentFocus() {
   const { runs, focusedRunId, setFocusedRun } = useRuns();
   const [showMerge, setShowMerge] = useState(false);
+  useEffect(() => {
+    setShowMerge(false);
+  }, [focusedRunId]);
   const [railOpen, setRailOpen] = useState(true);
   const focused = runs.find((r) => r.id === focusedRunId) ?? null;
 

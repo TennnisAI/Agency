@@ -32,8 +32,8 @@ export const listProjects = () => invoke<Project[]>("list_projects");
 export const addProject = (name: string, repoPath: string) =>
   invoke<Project>("add_project", { name, repoPath });
 
-export const removeProject = (id: string) =>
-  invoke<void>("remove_project", { id });
+export const closeProject = (id: string) => invoke<void>("close_project", { id });
+export const deleteProject = (id: string) => invoke<void>("delete_project", { id });
 
 export const createRun = (projectId: string, prompt: string, agent: string, base: string) =>
   invoke<RunInfo>("create_run", { projectId, prompt, agent, base });
@@ -44,6 +44,7 @@ export const detachRun = (id: string) => invoke<void>("detach_run", { id });
 export const runInput = (id: string, data: string) => invoke<void>("run_input", { id, data });
 export const runStatus = (id: string) => invoke<SessionStatus>("run_status", { id });
 export const discardRun = (id: string) => invoke<void>("discard_run", { id });
+export const stopRun = (id: string) => invoke<void>("stop_run", { id });
 export const rerun = (id: string) => invoke<RunInfo>("rerun", { id });
 
 export function attachRun(id: string, onBytes: (b: Uint8Array) => void): Promise<void> {

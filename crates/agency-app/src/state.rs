@@ -258,8 +258,27 @@ impl AppState {
         Ok(self.tmux.session_status(&session_name(id)).unwrap_or(SessionStatus::Gone))
     }
 
-    pub fn capture_session(&self, session_name: &str, lines: usize) -> Result<String> {
-        self.tmux.capture(session_name, lines)
+    pub fn attach_run<F>(&self, id: &str, on_output: F) -> Result<()>
+    where
+        F: Fn(Vec<u8>) + Send + 'static,
+    {
+        let handle = self.tmux.attach(&session_name(id), on_output)?;
+        self.attaches.lock().unwrap().insert(id.to_string(), handle);
+        Ok(())
+    }
+
+    pub fn detach_run(&self, id: &str) {
+        self.attaches.lock().unwrap().remove(id);
+    }
+
+    pub fn run_input(&self, id: &str, data: &[u8]) -> Result<()> {
+        let attaches = self.attaches.lock().unwrap();
+        let handle = attaches.get(id).ok_or_else(|| anyhow!("run not attached: {id}"))?;
+        handle.write_input(data)
+    }
+
+    pub fn run_preview(&self, id: &str, lines: usize) -> Result<String> {
+        self.tmux.capture(&session_name(id), lines)
     }
 
     pub fn discard_run(&self, id: &str) -> Result<()> {

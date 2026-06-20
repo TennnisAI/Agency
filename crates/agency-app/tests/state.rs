@@ -174,11 +174,10 @@ fn create_run_injects_provider_env() {
     let info = state.create_run(&project.id, "p", "envcheck", "HEAD").unwrap();
 
     // Poll tmux capture until we see the output (up to 5s)
-    let session = format!("agency-{}", info.id);
     let mut out = String::new();
     let start = std::time::Instant::now();
     while start.elapsed() < std::time::Duration::from_secs(5) {
-        if let Ok(s) = state.capture_session(&session, 20) {
+        if let Ok(s) = state.run_preview(&info.id, 20) {
             out = s;
             if out.contains("KEY=sk-secret") { break; }
         }
@@ -260,6 +259,49 @@ fn save_settings_rejects_bad_provider_url() {
         };
         assert!(state.save_settings(&s).is_ok(), "should accept {ok}");
     }
+}
+
+#[test]
+fn attach_streams_and_input_reaches_agent() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let state = AppState::new(&dir.path().join("agency.db")).unwrap();
+    state.register_profile(AgentProfile {
+        name: "echoer".into(),
+        command: "sh".into(),
+        args: vec!["-c".into(), "echo READY; read x; echo GOT:$x; sleep 3".into()],
+        env: vec![],
+    }).unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+    let info = state.create_run(&project.id, "p", "echoer", "HEAD").unwrap();
+
+    let buf = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let b = buf.clone();
+    state.attach_run(&info.id, move |bytes| {
+        b.lock().unwrap().push_str(&String::from_utf8_lossy(&bytes));
+    }).unwrap();
+
+    let wait = |needle: &str| {
+        let start = std::time::Instant::now();
+        while start.elapsed() < std::time::Duration::from_secs(5) {
+            if buf.lock().unwrap().contains(needle) { return true; }
+            std::thread::sleep(std::time::Duration::from_millis(30));
+        }
+        false
+    };
+    assert!(wait("READY"), "buf: {:?}", buf.lock().unwrap());
+    state.run_input(&info.id, b"ping\n").unwrap();
+    assert!(wait("GOT:ping"), "buf: {:?}", buf.lock().unwrap());
+
+    // preview also reflects the pane
+    let prev = state.run_preview(&info.id, 50).unwrap();
+    assert!(prev.contains("READY"));
+
+    state.detach_run(&info.id);
+    state.discard_run(&info.id).unwrap();
 }
 
 #[test]

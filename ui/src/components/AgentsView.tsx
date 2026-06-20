@@ -1,16 +1,22 @@
 import { useState } from "react";
 import { Project } from "../api";
+import { AGENT_TYPES } from "../agents";
 import { useRuns } from "../store/runs";
 import AgentTile from "./AgentTile";
 import AgentFocus from "./AgentFocus";
-import NewTaskForm from "./NewTaskForm";
 import MergeModal from "./MergeModal";
 import SourceControl from "./SourceControl";
 import GitReviewPanel from "./GitReviewPanel";
 
-export default function AgentsView({ project }: { project: Project }) {
-  const { runs, view, setView, focusedRunId, tab, setTab, openNewTask, setOpenNewTask, approveRunId, setApproveRun } = useRuns();
+export default function AgentsView({ project: _project }: { project: Project }) {
+  const { runs, view, setView, focusedRunId, tab, setTab, approveRunId, setApproveRun, createAgent } = useRuns();
   const [review, setReview] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+
+  async function spawn(agentId: string) {
+    setMenuOpen(false);
+    await createAgent(agentId);
+  }
 
   return (
     <main className="agents">
@@ -29,7 +35,18 @@ export default function AgentsView({ project }: { project: Project }) {
         {tab === "agents" && (
           <button className={review ? "on" : ""} onClick={() => setReview((r) => !r)}>Review</button>
         )}
-        {tab === "agents" && <button onClick={() => setOpenNewTask(true)}>+ New task</button>}
+        {tab === "agents" && (
+          <div className="agent-add">
+            <button className="btn-primary" onClick={() => setMenuOpen((o) => !o)}>+ Agent ▾</button>
+            {menuOpen && (
+              <div className="agent-menu" onMouseLeave={() => setMenuOpen(false)}>
+                {AGENT_TYPES.map((a) => (
+                  <button key={a.id} onClick={() => spawn(a.id)}>{a.label}</button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {tab === "source" && (
@@ -43,7 +60,7 @@ export default function AgentsView({ project }: { project: Project }) {
           <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, overflow: "hidden" }}>
             {view === "grid" && (
               <div className="grid">
-                {runs.length === 0 && <div className="board empty">No agents yet — start one with "+ New task".</div>}
+                {runs.length === 0 && <div className="board empty">No agents yet — add one with "+ Agent".</div>}
                 {runs.map((r) => <AgentTile key={r.id} run={r} />)}
               </div>
             )}
@@ -55,7 +72,6 @@ export default function AgentsView({ project }: { project: Project }) {
         </div>
       )}
 
-      {openNewTask && <div className="settings-overlay"><NewTaskForm project={project} onDone={() => setOpenNewTask(false)} /></div>}
       {approveRunId && approveRunId === focusedRunId && (
         <MergeModal taskId={approveRunId} onClose={() => setApproveRun(null)} />
       )}

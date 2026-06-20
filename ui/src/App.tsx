@@ -10,14 +10,14 @@ import { useShortcuts } from "./hooks/useShortcuts";
 import { Project } from "./api";
 
 function Shell() {
-  const { selectedProjectId, setSelectedProject, setOpenNewTask, setTab, focusedRunId, setApproveRun } = useRuns();
+  const { selectedProjectId, setSelectedProject, createAgent, setTab, focusedRunId, setApproveRun } = useRuns();
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [project, setProject] = useState<Project | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [showSettings, setShowSettings] = useState(false);
 
   useShortcuts({
-    onNewTask: () => setOpenNewTask(true),
+    onNewTask: () => createAgent("claude"),
     onSource: () => setTab("source"),
     onApprove: () => { if (focusedRunId) setApproveRun(focusedRunId); },
     onPalette: () => setPaletteOpen(true),

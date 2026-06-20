@@ -554,3 +554,26 @@ button:hover { background: var(--lav); }
   flex: 1;
   min-height: 0;
 }
+
+/* ── DiffView (Task 4) ──────────────────────────────────────── */
+.diffview { display: flex; flex-direction: column; gap: 10px; }
+.hunk { border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.hunk-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 8px;
+  background: var(--mantle);
+  border-bottom: 1px solid var(--line);
+}
+.hunk-body {
+  font-family: var(--mono);
+  white-space: pre;
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 0;
+  padding: 4px 0;
+  background: var(--crust);
+  overflow-x: auto;
+}
+.diff-empty { color: var(--o0); font-size: 12px; padding: 4px 0; }

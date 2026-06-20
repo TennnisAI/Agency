@@ -98,3 +98,22 @@ fn stage_commit_then_log_and_push_to_local_remote() {
         .unwrap();
     assert!(String::from_utf8_lossy(&ls.stdout).contains("add two"));
 }
+
+#[test]
+fn diff_stat_counts_added_deleted_files() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path()); // existing helper: repo on a branch with tracked.txt = "one\n"
+    // Branch off and make changes: modify tracked.txt, add new file.
+    run(dir.path(), &["checkout", "-q", "-b", "feat"]);
+    std::fs::write(dir.path().join("tracked.txt"), "one\ntwo\nthree\n").unwrap();
+    std::fs::write(dir.path().join("new.txt"), "a\nb\n").unwrap();
+    run(dir.path(), &["add", "-A"]);
+    run(dir.path(), &["commit", "-q", "-m", "changes"]);
+
+    let stat = git::diff_stat(dir.path(), "master").unwrap_or_else(|_| {
+        git::diff_stat(dir.path(), "main").unwrap()
+    });
+    assert_eq!(stat.files, 2);
+    assert_eq!(stat.added, 4); // +two +three (tracked) + a + b (new)
+    assert_eq!(stat.deleted, 0);
+}

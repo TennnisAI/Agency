@@ -108,3 +108,26 @@ pub fn push(worktree: &Path) -> Result<()> {
     git(worktree, &["push", "-u", "origin", &branch])?;
     Ok(())
 }
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DiffStat {
+    pub added: u32,
+    pub deleted: u32,
+    pub files: u32,
+}
+
+pub fn diff_stat(worktree: &Path, base: &str) -> Result<DiffStat> {
+    let range = format!("{base}...HEAD");
+    let out = git(worktree, &["diff", "--numstat", &range])?;
+    let mut stat = DiffStat { added: 0, deleted: 0, files: 0 };
+    for line in out.lines() {
+        let mut parts = line.split('\t');
+        let a = parts.next().unwrap_or("0");
+        let d = parts.next().unwrap_or("0");
+        // Binary files show "-" for counts; treat as 0 but still count the file.
+        stat.added += a.parse::<u32>().unwrap_or(0);
+        stat.deleted += d.parse::<u32>().unwrap_or(0);
+        stat.files += 1;
+    }
+    Ok(stat)
+}

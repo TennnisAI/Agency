@@ -84,6 +84,11 @@ pub fn discard_run(state: State<'_, AppState>, id: String) -> Result<(), String>
 }
 
 #[tauri::command]
+pub fn stop_run(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    state.stop_run(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub fn run_preview(state: State<'_, AppState>, id: String, lines: usize) -> Result<String, String> {
     state.run_preview(&id, lines).map_err(|e| e.to_string())
 }

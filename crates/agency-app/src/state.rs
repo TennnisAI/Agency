@@ -326,6 +326,12 @@ impl AppState {
         Ok(())
     }
 
+    pub fn stop_run(&self, id: &str) -> Result<()> {
+        self.attaches.lock().unwrap().remove(id);
+        self.tmux.kill_session(&session_name(id)).ok();
+        Ok(())
+    }
+
     pub fn rerun(&self, id: &str) -> Result<RunInfo> {
         let run = self.run_record(id)?;
         let repo = self.project_repo(&run.project_id)?;

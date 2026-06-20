@@ -27,6 +27,7 @@ pub fn run() {
             commands::run_input,
             commands::run_status,
             commands::discard_run,
+            commands::stop_run,
             commands::rerun,
             commands::git_status,
             commands::git_diff,

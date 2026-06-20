@@ -128,3 +128,21 @@ export function resolveMerge(
   onChunk.onmessage = (msg) => onBytes(b64ToBytes(msg.b64));
   return invoke<void>("resolve_merge", { taskId, resolverProfile, onChunk });
 }
+
+export interface Hunk {
+  header: string;
+  lines: string[];
+}
+export interface FileDiff {
+  header: string;
+  hunks: Hunk[];
+}
+
+export const gitParseDiff = (taskId: string, path: string, staged: boolean) =>
+  invoke<FileDiff>("git_parse_diff", { taskId, path, staged });
+export const gitStageHunk = (taskId: string, path: string, hunkIndex: number) =>
+  invoke<void>("git_stage_hunk", { taskId, path, hunkIndex });
+export const gitUnstageHunk = (taskId: string, path: string, hunkIndex: number) =>
+  invoke<void>("git_unstage_hunk", { taskId, path, hunkIndex });
+export const projectLog = (projectId: string, limit: number) =>
+  invoke<CommitInfo[]>("project_log", { projectId, limit });

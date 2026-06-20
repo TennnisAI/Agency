@@ -44,6 +44,10 @@ pub fn run() {
             commands::resolve_merge,
             commands::resolver_input,
             commands::resolver_status,
+            commands::git_parse_diff,
+            commands::git_stage_hunk,
+            commands::git_unstage_hunk,
+            commands::project_log,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Agency");

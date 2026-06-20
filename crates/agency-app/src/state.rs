@@ -178,6 +178,10 @@ impl AppState {
         self.registry.lock().unwrap().remove_project(id)
     }
 
+    pub fn project_repo_path(&self, project_id: &str) -> anyhow::Result<std::path::PathBuf> {
+        self.project_repo(project_id)
+    }
+
     // ── private helpers ────────────────────────────────────────────────────────
 
     fn project_repo(&self, project_id: &str) -> Result<std::path::PathBuf> {

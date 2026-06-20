@@ -1,7 +1,8 @@
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
+use std::io::Write;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FileChange {
@@ -130,4 +131,109 @@ pub fn diff_stat(worktree: &Path, base: &str) -> Result<DiffStat> {
         stat.files += 1;
     }
     Ok(stat)
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Hunk {
+    pub header: String,
+    pub lines: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FileDiff {
+    pub header: String,
+    pub hunks: Vec<Hunk>,
+}
+
+pub fn parse_diff(diff: &str) -> FileDiff {
+    let mut header_lines: Vec<&str> = Vec::new();
+    let mut hunks: Vec<Hunk> = Vec::new();
+    let mut current: Option<Hunk> = None;
+    let mut seen_hunk = false;
+
+    for line in diff.lines() {
+        if line.starts_with("@@") {
+            seen_hunk = true;
+            if let Some(h) = current.take() {
+                hunks.push(h);
+            }
+            current = Some(Hunk {
+                header: line.to_string(),
+                lines: Vec::new(),
+            });
+        } else if let Some(h) = current.as_mut() {
+            h.lines.push(line.to_string());
+        } else if !seen_hunk {
+            header_lines.push(line);
+        }
+    }
+    if let Some(h) = current.take() {
+        hunks.push(h);
+    }
+
+    let header = if header_lines.is_empty() {
+        String::new()
+    } else {
+        let mut s = header_lines.join("\n");
+        s.push('\n');
+        s
+    };
+    FileDiff { header, hunks }
+}
+
+pub fn git_stdin(worktree: &Path, args: &[&str], input: &str) -> Result<()> {
+    let mut child = Command::new("git")
+        .args(args)
+        .current_dir(worktree)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    child
+        .stdin
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("failed to open git stdin"))?
+        .write_all(input.as_bytes())?;
+    let out = child.wait_with_output()?;
+    if !out.status.success() {
+        bail!(
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    Ok(())
+}
+
+fn build_hunk_patch(file_diff: &FileDiff, hunk_index: usize) -> Result<String> {
+    let hunk = file_diff
+        .hunks
+        .get(hunk_index)
+        .ok_or_else(|| anyhow::anyhow!("hunk index {hunk_index} out of range"))?;
+    let mut patch = file_diff.header.clone();
+    patch.push_str(&hunk.header);
+    patch.push('\n');
+    for line in &hunk.lines {
+        patch.push_str(line);
+        patch.push('\n');
+    }
+    Ok(patch)
+}
+
+pub fn stage_hunk(worktree: &Path, path: &str, hunk_index: usize) -> Result<()> {
+    let raw = diff(worktree, path, false)?;
+    let fd = parse_diff(&raw);
+    let patch = build_hunk_patch(&fd, hunk_index)?;
+    git_stdin(worktree, &["apply", "--cached", "--unidiff-zero", "-"], &patch)
+}
+
+pub fn unstage_hunk(worktree: &Path, path: &str, hunk_index: usize) -> Result<()> {
+    let raw = diff(worktree, path, true)?;
+    let fd = parse_diff(&raw);
+    let patch = build_hunk_patch(&fd, hunk_index)?;
+    git_stdin(
+        worktree,
+        &["apply", "--cached", "--reverse", "--unidiff-zero", "-"],
+        &patch,
+    )
 }

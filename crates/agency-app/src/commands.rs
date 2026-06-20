@@ -3,6 +3,7 @@ use agency_core::merge::MergeOutcome;
 use agency_core::profile::AgentProfile;
 use agency_core::registry::Project;
 use agency_core::supervisor::AgentStatus;
+use agency_core::tmux::SessionStatus;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use serde::Serialize;
@@ -75,6 +76,44 @@ pub fn list_runs(state: State<'_, AppState>, project_id: String) -> Result<Vec<R
 #[tauri::command]
 pub fn discard_run(state: State<'_, AppState>, id: String) -> Result<(), String> {
     state.discard_run(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn run_preview(state: State<'_, AppState>, id: String, lines: usize) -> Result<String, String> {
+    state.run_preview(&id, lines).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn attach_run(
+    state: State<'_, AppState>,
+    id: String,
+    on_chunk: Channel<TerminalChunk>,
+) -> Result<(), String> {
+    state
+        .attach_run(&id, move |bytes| {
+            let _ = on_chunk.send(TerminalChunk { b64: STANDARD.encode(&bytes) });
+        })
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn detach_run(state: State<'_, AppState>, id: String) {
+    state.detach_run(&id);
+}
+
+#[tauri::command]
+pub fn run_input(state: State<'_, AppState>, id: String, data: String) -> Result<(), String> {
+    state.run_input(&id, data.as_bytes()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn run_status(state: State<'_, AppState>, id: String) -> Result<SessionStatus, String> {
+    state.run_status(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn rerun(state: State<'_, AppState>, id: String) -> Result<RunInfo, String> {
+    state.rerun(&id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

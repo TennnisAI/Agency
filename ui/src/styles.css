@@ -707,3 +707,15 @@ button:hover { background: var(--lav); }
   letter-spacing: 0.06em;
   color: var(--o0);
 }
+
+/* ── Command Palette (Task 7c-3) ────────────────────────────── */
+.palette-overlay{position:fixed;inset:0;background:rgba(17,17,27,.5);display:flex;justify-content:center;align-items:flex-start;padding-top:12vh;z-index:20}
+.palette{width:560px;background:var(--mantle);border:1px solid var(--s1);border-radius:12px;box-shadow:0 24px 64px rgba(0,0,0,.5);overflow:hidden}
+.palette-input{width:100%;background:var(--crust);border:none;border-bottom:1px solid var(--line);color:var(--text);padding:12px 14px;font-size:14px;outline:none}
+.palette-list{list-style:none;margin:0;padding:6px;max-height:50vh;overflow:auto}
+.palette-row{display:flex;gap:8px;align-items:baseline;padding:7px 9px;border-radius:6px;cursor:pointer}
+.palette-row.on{background:var(--s0)}
+.palette-kind{color:var(--o0)}
+.palette-label{color:var(--text)}
+.palette-sub{color:var(--o0);font-family:var(--mono);font-size:11px;margin-left:auto}
+.palette-empty{color:var(--o0);padding:10px}

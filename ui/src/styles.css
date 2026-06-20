@@ -181,6 +181,110 @@ button:hover { background: var(--lav); }
   0%, 100% { opacity: 1; }
   50% { opacity: 0.45; }
 }
+/* ── Shell (Task 9) ─────────────────────────────────────────── */
+.shell { display: flex; flex-direction: column; height: 100%; }
+.titlebar {
+  height: var(--titlebar-h);
+  min-height: var(--titlebar-h);
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 8px;
+  background: var(--mantle);
+  border-bottom: 1px solid var(--line);
+  -webkit-app-region: drag;
+  user-select: none;
+}
+.titlebar-left { display: flex; align-items: center; gap: 6px; }
+.titlebar-right { display: flex; align-items: center; gap: 6px; }
+.no-drag { -webkit-app-region: no-drag; }
+.icon-btn {
+  -webkit-app-region: no-drag;
+  background: none; border: none; color: var(--sub0); cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; border-radius: 6px; padding: 0;
+  font-size: 16px;
+}
+.icon-btn:hover { background: var(--s0); color: var(--text); }
+.logo-mark {
+  width: 15px; height: 15px;
+  background: var(--blue);
+  border-radius: 4px;
+  transform: rotate(45deg);
+  flex-shrink: 0;
+}
+.app-name {
+  font-size: 13px; font-weight: 600; letter-spacing: 0.02em;
+  color: var(--text);
+}
+.search-box {
+  display: flex; align-items: center; gap: 6px;
+  background: var(--crust); border: 1px solid var(--s1); border-radius: 8px;
+  padding: 4px 10px; cursor: default; opacity: 0.6;
+  font-size: 12px; color: var(--o0);
+  min-width: 220px;
+}
+.search-ph { flex: 1; }
+.kbd {
+  font-family: var(--mono); font-size: 10px;
+  background: var(--s0); border-radius: 4px; padding: 1px 5px;
+  color: var(--o1);
+}
+.kbd-hints { font-size: 11px; color: var(--o0); opacity: 0.75; }
+/* Body */
+.body { flex: 1; display: flex; min-height: 0; }
+/* Project tree sidebar */
+.tree {
+  width: var(--sidebar-w);
+  min-width: var(--sidebar-w);
+  border-right: 1px solid var(--line);
+  display: flex; flex-direction: column;
+  background: var(--mantle);
+  overflow: hidden;
+}
+.tree-head {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--o1); margin: 0; padding: 12px 12px 6px;
+}
+.tree-list {
+  list-style: none; margin: 0; padding: 0 6px;
+  flex: 1; overflow-y: auto;
+}
+.tree-row {
+  display: flex; align-items: center; gap: 4px;
+  padding: 6px 6px; border-radius: 6px; cursor: pointer;
+  font-size: 13px; color: var(--sub1);
+}
+.tree-row:hover { background: var(--s0); color: var(--text); }
+.tree-row.selected { background: var(--s1); color: var(--text); }
+.chev { font-size: 10px; color: var(--o0); width: 14px; flex-shrink: 0; }
+.tree-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ghost-x {
+  background: none; border: none; color: var(--o0); cursor: pointer;
+  padding: 0 4px; font-size: 14px; line-height: 1; border-radius: 4px;
+  opacity: 0; transition: opacity 0.1s;
+}
+.tree-row:hover .ghost-x { opacity: 1; }
+.ghost-x:hover { background: var(--s0); color: var(--red); }
+.tree-children {
+  list-style: none; margin: 0; padding: 0 0 0 24px;
+}
+.tree-child {
+  display: flex; align-items: center; gap: 6px;
+  padding: 3px 6px; font-size: 12px; color: var(--o1);
+}
+.tree-child-name {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* Status bar (Task 9 override — replaces old statusbar rules above) */
+.statusbar {
+  height: var(--statusbar-h);
+  min-height: var(--statusbar-h);
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 10px;
+  background: var(--mantle);
+  border-top: 1px solid var(--line);
+  font-size: 11px; color: var(--o1);
+}
+
 /* Agent badge */
 .badge {
   font-family: var(--mono);

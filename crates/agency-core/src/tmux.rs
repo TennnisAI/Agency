@@ -3,6 +3,10 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Name of the private tmux server socket used for all agency sessions.
+/// Using a dedicated socket isolates agency from the user's own tmux server.
+const SOCKET: &str = "agency";
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "camelCase")]
 pub enum SessionStatus {
@@ -26,10 +30,13 @@ impl Tmux {
         Tmux::new(PathBuf::from("tmux"))
     }
 
+    /// Run a tmux command against the private `agency` server socket.
     fn cmd(&self, args: &[&str]) -> Result<std::process::Output> {
-        Ok(Command::new(&self.bin).args(args).output()?)
+        let full: Vec<&str> = ["-L", SOCKET].iter().copied().chain(args.iter().copied()).collect();
+        Ok(Command::new(&self.bin).args(&full).output()?)
     }
 
+    /// Like `cmd` but fails if tmux exits non-zero, returning stdout.
     fn ok(&self, args: &[&str]) -> Result<String> {
         let out = self.cmd(args)?;
         if !out.status.success() {
@@ -67,17 +74,16 @@ impl Tmux {
             a.push("-e".into());
             a.push(format!("{k}={v}"));
         }
-        // Terminate options; the rest is the command to run.
+        // `--` terminates tmux option parsing; everything after is the command.
+        a.push("--".into());
         a.push(command.to_string());
         a.extend(args.iter().cloned());
-        // Chain set-option in the same tmux invocation so remain-on-exit is set
-        // before the process can exit and tear down the server.
-        a.push(";".into());
-        a.push("set-option".into());
-        a.push("-t".into());
-        a.push(name.into());
-        a.push("remain-on-exit".into());
-        a.push("on".into());
+        // Set remain-on-exit globally in the same tmux invocation as new-session.
+        // The `;` commands run in tmux's event loop before the child's exit event
+        // can tear down the pane, so the option is guaranteed to be in effect —
+        // no race.  Using `-g` means subsequent sessions on the private server
+        // also inherit the setting automatically.
+        a.extend([";", "set-option", "-g", "remain-on-exit", "on"].map(String::from));
         let aref: Vec<&str> = a.iter().map(|s| s.as_str()).collect();
         self.ok(&aref)?;
         Ok(())

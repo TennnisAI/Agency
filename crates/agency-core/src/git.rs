@@ -131,3 +131,51 @@ pub fn diff_stat(worktree: &Path, base: &str) -> Result<DiffStat> {
     }
     Ok(stat)
 }
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Hunk {
+    pub header: String,
+    pub lines: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FileDiff {
+    pub header: String,
+    pub hunks: Vec<Hunk>,
+}
+
+pub fn parse_diff(diff: &str) -> FileDiff {
+    let mut header_lines: Vec<&str> = Vec::new();
+    let mut hunks: Vec<Hunk> = Vec::new();
+    let mut current: Option<Hunk> = None;
+    let mut seen_hunk = false;
+
+    for line in diff.lines() {
+        if line.starts_with("@@") {
+            seen_hunk = true;
+            if let Some(h) = current.take() {
+                hunks.push(h);
+            }
+            current = Some(Hunk {
+                header: line.to_string(),
+                lines: Vec::new(),
+            });
+        } else if let Some(h) = current.as_mut() {
+            h.lines.push(line.to_string());
+        } else if !seen_hunk {
+            header_lines.push(line);
+        }
+    }
+    if let Some(h) = current.take() {
+        hunks.push(h);
+    }
+
+    let header = if header_lines.is_empty() {
+        String::new()
+    } else {
+        let mut s = header_lines.join("\n");
+        s.push('\n');
+        s
+    };
+    FileDiff { header, hunks }
+}

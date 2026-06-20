@@ -1,4 +1,5 @@
 use agency_core::git;
+use agency_core::git::parse_diff;
 use std::path::Path;
 use std::process::Command;
 
@@ -116,4 +117,55 @@ fn diff_stat_counts_added_deleted_files() {
     assert_eq!(stat.files, 2);
     assert_eq!(stat.added, 4); // +two +three (tracked) + a + b (new)
     assert_eq!(stat.deleted, 0);
+}
+
+#[test]
+fn parse_diff_splits_header_and_hunks() {
+    let dir = tempfile::tempdir().unwrap();
+    // Write enough context lines so top and bottom additions end up in separate hunks.
+    std::fs::write(
+        dir.path().join("tracked.txt"),
+        "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\n",
+    )
+    .unwrap();
+    run(dir.path(), &["init", "-q"]);
+    run(dir.path(), &["config", "user.email", "t@e.com"]);
+    run(dir.path(), &["config", "user.name", "T"]);
+    run(dir.path(), &["add", "-A"]);
+    run(dir.path(), &["commit", "-q", "-m", "initial"]);
+    // Two separated changes → two hunks.
+    std::fs::write(
+        dir.path().join("tracked.txt"),
+        "ADDED-TOP\none\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\nADDED-BOTTOM\n",
+    )
+    .unwrap();
+    let raw = git_raw_diff(dir.path(), "tracked.txt");
+    let fd = parse_diff(&raw);
+
+    // Header captured (the diff --git / --- / +++ lines).
+    assert!(fd.header.contains("diff --git"));
+    assert!(fd.header.contains("+++ b/tracked.txt"));
+    // Two hunks, each starting with @@.
+    assert_eq!(fd.hunks.len(), 2, "hunks: {:#?}", fd.hunks);
+    assert!(fd.hunks[0].header.starts_with("@@"));
+    // First hunk has the top addition, second the bottom.
+    assert!(fd.hunks[0].lines.iter().any(|l| l == "+ADDED-TOP"));
+    assert!(fd.hunks[1].lines.iter().any(|l| l == "+ADDED-BOTTOM"));
+}
+
+#[test]
+fn parse_diff_empty_for_no_changes() {
+    let fd = parse_diff("");
+    assert_eq!(fd.header, "");
+    assert!(fd.hunks.is_empty());
+}
+
+// Helper: raw unstaged diff for a path.
+fn git_raw_diff(dir: &std::path::Path, path: &str) -> String {
+    let out = std::process::Command::new("git")
+        .args(["diff", "--", path])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).to_string()
 }

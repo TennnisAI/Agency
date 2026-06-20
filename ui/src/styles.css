@@ -297,3 +297,182 @@ button:hover { background: var(--lav); }
 .badge.claude { color: var(--agent-claude); }
 .badge.pi { color: var(--agent-pi); }
 .badge.hermes { color: var(--agent-hermes); }
+
+/* ── Agents view (Task 10) ──────────────────────────────────── */
+.agents {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Content header — segmented nav + actions */
+.content-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--mantle);
+  flex-shrink: 0;
+}
+.content-head .spacer { flex: 1; }
+.content-head > button {
+  background: var(--s0);
+  color: var(--text);
+  font-weight: 500;
+  padding: 5px 12px;
+  font-size: 12px;
+  border-radius: 7px;
+}
+.content-head > button:hover { background: var(--s1); }
+
+/* Segmented control */
+.seg {
+  display: flex;
+  background: var(--crust);
+  border: 1px solid var(--s1);
+  border-radius: 8px;
+  padding: 2px;
+  gap: 2px;
+}
+.seg button {
+  background: none;
+  color: var(--o1);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 4px 10px;
+  border-radius: 6px;
+  transition: background 0.1s, color 0.1s;
+}
+.seg button:hover { background: var(--s0); color: var(--text); }
+.seg button.on {
+  background: var(--s1);
+  color: var(--text);
+}
+
+/* Agents grid */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 14px;
+  padding: 16px;
+  overflow-y: auto;
+  flex: 1;
+  align-content: start;
+}
+
+/* Agent tile (card) */
+.tile {
+  background: var(--mantle);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.tile:hover {
+  border-color: var(--s2);
+  background: var(--s0);
+}
+
+.tile-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.tile-title {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tile-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--o1);
+}
+.tile-meta code {
+  font-size: 11px;
+  color: var(--blue);
+}
+
+/* Diff stat */
+.diffstat {
+  font-size: 11.5px;
+  font-family: var(--mono);
+  color: var(--o1);
+}
+.diffstat .add { color: var(--green); }
+.diffstat .del { color: var(--red); }
+
+/* Terminal preview — fades at bottom */
+.tile-preview {
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--sub0);
+  background: var(--crust);
+  border-radius: 6px;
+  padding: 8px;
+  margin: 0;
+  max-height: 120px;
+  overflow: hidden;
+  white-space: pre;
+  -webkit-mask-image: linear-gradient(to bottom, black 60%, transparent 100%);
+  mask-image: linear-gradient(to bottom, black 60%, transparent 100%);
+}
+
+.tile-foot {
+  font-size: 11px;
+  color: var(--o0);
+}
+
+/* Source control wrap */
+.source-wrap {
+  flex: 1;
+  display: flex;
+  padding: 16px;
+  overflow: hidden;
+}
+
+/* Ghost / cancel button */
+.ghost {
+  background: var(--s0);
+  color: var(--text);
+  font-weight: 400;
+}
+.ghost:hover { background: var(--s1); }
+
+/* Row actions (new-task footer) */
+.row-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+/* Card style for new-task overlay */
+.card {
+  background: var(--crust);
+  border: 1px solid var(--s1);
+  border-radius: 15px;
+  padding: 20px;
+  min-width: 460px;
+  max-width: 560px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-shadow: 0 24px 64px rgba(0,0,0,.5);
+}
+.card h3 { margin: 0; font-size: 15px; font-weight: 600; }
+.card label { font-size: 12px; color: var(--o0); }

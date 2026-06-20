@@ -1,6 +1,7 @@
 use agency_core::profile::AgentProfile;
 use agency_core::registry::{Project, Registry};
-use agency_core::supervisor::{spawn_agent, AgentHandle, AgentStatus};
+use agency_core::supervisor::AgentHandle;
+use agency_core::tmux::{SessionStatus, Tmux};
 use agency_core::worktree::WorktreeManager;
 use anyhow::{anyhow, bail, Result};
 use std::collections::HashMap;
@@ -20,16 +21,22 @@ pub struct ProviderSettings {
     pub lm_studio_base_url: String,
 }
 
-pub struct Session {
-    pub handle: AgentHandle,
-    pub repo_path: std::path::PathBuf,
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunInfo {
+    pub id: String,
+    pub project_id: String,
+    pub agent: String,
+    pub prompt: String,
+    pub branch: String,
+    pub status: SessionStatus,
+    pub added: u32,
+    pub deleted: u32,
+    pub files: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TaskInfo {
-    pub task_id: String,
-    pub branch: String,
+fn session_name(id: &str) -> String {
+    format!("agency-{id}")
 }
 
 fn validate_provider_url(raw: &str) -> Result<()> {
@@ -53,7 +60,7 @@ fn validate_provider_url(raw: &str) -> Result<()> {
     Ok(())
 }
 
-fn new_task_id() -> String {
+pub fn new_task_id() -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -65,9 +72,15 @@ fn new_task_id() -> String {
     format!("{:032x}", nanos ^ ((n as u128) << 96))
 }
 
+fn now_secs() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+}
+
 pub struct AppState {
     registry: Mutex<Registry>,
-    sessions: Mutex<HashMap<String, Session>>,
+    pub attaches: Mutex<HashMap<String, AgentHandle>>,
+    pub tmux: Tmux,
     resolvers: Mutex<HashMap<String, AgentHandle>>,
 }
 
@@ -95,12 +108,13 @@ impl AppState {
         }
         Ok(AppState {
             registry: Mutex::new(registry),
-            sessions: Mutex::new(HashMap::new()),
+            attaches: Mutex::new(HashMap::new()),
+            tmux: Tmux::resolved(),
             resolvers: Mutex::new(HashMap::new()),
         })
     }
 
-    fn provider_env(&self) -> Result<Vec<(String, String)>> {
+    pub fn provider_env(&self) -> Result<Vec<(String, String)>> {
         let s = self.get_settings()?;
         let mut env = Vec::new();
         if !s.anthropic_api_key.is_empty() {
@@ -164,126 +178,150 @@ impl AppState {
         self.registry.lock().unwrap().remove_project(id)
     }
 
-    pub fn start_task<F>(
-        &self,
-        project_id: &str,
-        prompt: &str,
-        profile_name: &str,
-        base: &str,
-        on_output: F,
-    ) -> Result<TaskInfo>
-    where
-        F: Fn(Vec<u8>) + Send + 'static,
-    {
-        // Resolve project repo path.
-        let repo_path = {
-            let reg = self.registry.lock().unwrap();
-            reg.get_project(project_id)?
-                .ok_or_else(|| anyhow!("unknown project: {project_id}"))?
-                .repo_path
-        };
+    // ── private helpers ────────────────────────────────────────────────────────
 
-        // Resolve the profile and provider settings; build the effective env.
-        let mut profile = {
-            let reg = self.registry.lock().unwrap();
-            reg.get_profile(profile_name)?
-                .ok_or_else(|| anyhow!("unknown profile: {profile_name}"))?
-        };
+    fn project_repo(&self, project_id: &str) -> Result<std::path::PathBuf> {
+        let reg = self.registry.lock().unwrap();
+        Ok(reg
+            .get_project(project_id)?
+            .ok_or_else(|| anyhow!("unknown project: {project_id}"))?
+            .repo_path)
+    }
 
-        // Provider env first, then the profile's own env on top.
+    fn run_record(&self, id: &str) -> Result<agency_core::registry::Run> {
+        let reg = self.registry.lock().unwrap();
+        reg.get_run(id)?.ok_or_else(|| anyhow!("unknown run: {id}"))
+    }
+
+    fn run_info(&self, run: &agency_core::registry::Run) -> RunInfo {
+        let name = session_name(&run.id);
+        let status = self.tmux.session_status(&name).unwrap_or(SessionStatus::Gone);
+        let wt = self
+            .project_repo(&run.project_id)
+            .ok()
+            .map(|repo| repo.join(".agency").join("worktrees").join(&run.id));
+        let stat = wt
+            .filter(|p| p.exists())
+            .and_then(|p| agency_core::git::diff_stat(&p, &run.base).ok())
+            .unwrap_or(agency_core::git::DiffStat { added: 0, deleted: 0, files: 0 });
+        RunInfo {
+            id: run.id.clone(),
+            project_id: run.project_id.clone(),
+            agent: run.agent.clone(),
+            prompt: run.prompt.clone(),
+            branch: run.branch.clone(),
+            status,
+            added: stat.added,
+            deleted: stat.deleted,
+            files: stat.files,
+        }
+    }
+
+    // ── run lifecycle ──────────────────────────────────────────────────────────
+
+    pub fn create_run(&self, project_id: &str, prompt: &str, agent: &str, base: &str) -> Result<RunInfo> {
+        let repo = self.project_repo(project_id)?;
+        let profile = {
+            let reg = self.registry.lock().unwrap();
+            reg.get_profile(agent)?
+                .ok_or_else(|| anyhow!("unknown agent profile: {agent}"))?
+        };
+        let id = new_task_id();
+        let worktree = WorktreeManager::new(repo).create(&id, base)?;
+
         let mut env = self.provider_env()?;
         env.extend(profile.env.iter().cloned());
-        profile.env = env;
+        let args = profile.render_args(prompt);
 
-        let task_id = new_task_id();
-        let manager = WorktreeManager::new(repo_path.clone());
-        let worktree = manager.create(&task_id, base)?;
+        self.tmux
+            .start_session(&session_name(&id), &worktree.path, &profile.command, &args, &env)?;
 
-        let handle = spawn_agent(&profile, &worktree.path, prompt, on_output)?;
-        let branch = worktree.branch.clone();
-
-        self.sessions.lock().unwrap().insert(
-            task_id.clone(),
-            Session { handle, repo_path },
-        );
-
-        Ok(TaskInfo { task_id, branch })
+        let run = agency_core::registry::Run {
+            id: id.clone(),
+            project_id: project_id.to_string(),
+            agent: agent.to_string(),
+            prompt: prompt.to_string(),
+            base: base.to_string(),
+            branch: worktree.branch.clone(),
+            created_at: now_secs(),
+        };
+        self.registry.lock().unwrap().insert_run(&run)?;
+        Ok(self.run_info(&run))
     }
 
-    pub fn send_input(&self, task_id: &str, data: &[u8]) -> Result<()> {
-        let sessions = self.sessions.lock().unwrap();
-        let session = sessions
-            .get(task_id)
-            .ok_or_else(|| anyhow!("unknown task: {task_id}"))?;
-        session.handle.write_input(data)
+    pub fn list_runs(&self, project_id: &str) -> Result<Vec<RunInfo>> {
+        let runs = self.registry.lock().unwrap().list_runs(project_id)?;
+        Ok(runs.iter().map(|r| self.run_info(r)).collect())
     }
 
-    pub fn task_status(&self, task_id: &str) -> Result<AgentStatus> {
-        let sessions = self.sessions.lock().unwrap();
-        let session = sessions
-            .get(task_id)
-            .ok_or_else(|| anyhow!("unknown task: {task_id}"))?;
-        Ok(session.handle.status())
+    pub fn run_status(&self, id: &str) -> Result<SessionStatus> {
+        Ok(self.tmux.session_status(&session_name(id)).unwrap_or(SessionStatus::Gone))
     }
 
-    pub fn worktree_path(&self, task_id: &str) -> anyhow::Result<std::path::PathBuf> {
-        let sessions = self.sessions.lock().unwrap();
-        let session = sessions
-            .get(task_id)
-            .ok_or_else(|| anyhow::anyhow!("unknown task: {task_id}"))?;
-        Ok(session
-            .repo_path
-            .join(".agency")
-            .join("worktrees")
-            .join(task_id))
-    }
-
-    pub fn stop_task(&self, task_id: &str) -> Result<()> {
-        // Remove (and drop) the session first so the PTY/handle is released.
-        let session = self
-            .sessions
-            .lock()
-            .unwrap()
-            .remove(task_id)
-            .ok_or_else(|| anyhow!("unknown task: {task_id}"))?;
-        let repo_path = session.repo_path.clone();
-        drop(session); // close PTY before removing the worktree
-        WorktreeManager::new(repo_path).remove(task_id)?;
+    pub fn discard_run(&self, id: &str) -> Result<()> {
+        self.attaches.lock().unwrap().remove(id);
+        let run = self.run_record(id)?;
+        self.tmux.kill_session(&session_name(id)).ok();
+        if let Ok(repo) = self.project_repo(&run.project_id) {
+            let _ = WorktreeManager::new(repo).remove(id);
+        }
+        self.registry.lock().unwrap().delete_run(id)?;
         Ok(())
     }
 
-    fn repo_path_for(&self, task_id: &str) -> anyhow::Result<std::path::PathBuf> {
-        let sessions = self.sessions.lock().unwrap();
-        let session = sessions
-            .get(task_id)
-            .ok_or_else(|| anyhow::anyhow!("unknown task: {task_id}"))?;
-        Ok(session.repo_path.clone())
+    pub fn rerun(&self, id: &str) -> Result<RunInfo> {
+        let run = self.run_record(id)?;
+        let repo = self.project_repo(&run.project_id)?;
+        let worktree = repo.join(".agency").join("worktrees").join(&run.id);
+        let profile = {
+            let reg = self.registry.lock().unwrap();
+            reg.get_profile(&run.agent)?
+                .ok_or_else(|| anyhow!("unknown agent profile: {}", run.agent))?
+        };
+        let mut env = self.provider_env()?;
+        env.extend(profile.env.iter().cloned());
+        let args = profile.render_args(&run.prompt);
+        self.tmux.kill_session(&session_name(id)).ok();
+        self.tmux.start_session(&session_name(id), &worktree, &profile.command, &args, &env)?;
+        Ok(self.run_info(&run))
     }
 
-    pub fn merge_task(&self, task_id: &str) -> anyhow::Result<agency_core::merge::MergeOutcome> {
-        let repo = self.repo_path_for(task_id)?;
+    // ── worktree path ──────────────────────────────────────────────────────────
+
+    pub fn worktree_path(&self, id: &str) -> Result<std::path::PathBuf> {
+        let run = self.run_record(id)?;
+        let repo = self.project_repo(&run.project_id)?;
+        Ok(repo.join(".agency").join("worktrees").join(id))
+    }
+
+    // ── merge operations ───────────────────────────────────────────────────────
+
+    pub fn merge_task(&self, id: &str) -> anyhow::Result<agency_core::merge::MergeOutcome> {
+        let run = self.run_record(id)?;
+        let repo = self.project_repo(&run.project_id)?;
         let base = agency_core::merge::detect_base(&repo)?;
-        let branch = format!("agent/{task_id}");
-        agency_core::merge::merge(&repo, &branch, &base)
+        agency_core::merge::merge(&repo, &run.branch, &base)
     }
 
-    pub fn abort_merge_task(&self, task_id: &str) -> anyhow::Result<()> {
-        let repo = self.repo_path_for(task_id)?;
+    pub fn abort_merge_task(&self, id: &str) -> anyhow::Result<()> {
+        let run = self.run_record(id)?;
+        let repo = self.project_repo(&run.project_id)?;
         agency_core::merge::abort_merge(&repo)
     }
 
     pub fn resolve_merge<F>(
         &self,
-        task_id: &str,
+        id: &str,
         resolver_profile: &str,
         on_output: F,
     ) -> anyhow::Result<()>
     where
         F: Fn(Vec<u8>) + Send + 'static,
     {
-        let repo = self.repo_path_for(task_id)?;
+        let run = self.run_record(id)?;
+        let repo = self.project_repo(&run.project_id)?;
         let base = agency_core::merge::detect_base(&repo).unwrap_or_else(|_| "main".to_string());
-        let branch = format!("agent/{task_id}");
+        let branch = run.branch.clone();
         let conflicts = agency_core::git::status(&repo)
             .map(|cs| {
                 cs.into_iter()
@@ -309,24 +347,24 @@ impl AppState {
         env.extend(profile.env.iter().cloned());
         profile.env = env;
 
-        let handle = spawn_agent(&profile, &repo, &prompt, on_output)?;
-        self.resolvers.lock().unwrap().insert(task_id.to_string(), handle);
+        let handle = agency_core::supervisor::spawn_agent(&profile, &repo, &prompt, on_output)?;
+        self.resolvers.lock().unwrap().insert(id.to_string(), handle);
         Ok(())
     }
 
-    pub fn resolver_input(&self, task_id: &str, data: &[u8]) -> anyhow::Result<()> {
+    pub fn resolver_input(&self, id: &str, data: &[u8]) -> anyhow::Result<()> {
         let resolvers = self.resolvers.lock().unwrap();
         let handle = resolvers
-            .get(task_id)
-            .ok_or_else(|| anyhow!("no resolver for task: {task_id}"))?;
+            .get(id)
+            .ok_or_else(|| anyhow!("no resolver for task: {id}"))?;
         handle.write_input(data)
     }
 
-    pub fn resolver_status(&self, task_id: &str) -> anyhow::Result<agency_core::supervisor::AgentStatus> {
+    pub fn resolver_status(&self, id: &str) -> anyhow::Result<agency_core::supervisor::AgentStatus> {
         let resolvers = self.resolvers.lock().unwrap();
         let handle = resolvers
-            .get(task_id)
-            .ok_or_else(|| anyhow!("no resolver for task: {task_id}"))?;
+            .get(id)
+            .ok_or_else(|| anyhow!("no resolver for task: {id}"))?;
         Ok(handle.status())
     }
 }

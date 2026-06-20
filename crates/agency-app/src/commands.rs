@@ -9,7 +9,7 @@ use serde::Serialize;
 use tauri::ipc::Channel;
 use tauri::State;
 
-use crate::state::{AppState, ProviderSettings, TaskInfo};
+use crate::state::{AppState, ProviderSettings, RunInfo};
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -24,7 +24,7 @@ pub struct StatusDto {
     pub code: Option<i32>,
 }
 
-fn status_dto(status: AgentStatus) -> StatusDto {
+fn agent_status_dto(status: AgentStatus) -> StatusDto {
     match status {
         AgentStatus::Running => StatusDto { state: "running".into(), code: None },
         AgentStatus::Idle => StatusDto { state: "idle".into(), code: None },
@@ -55,42 +55,26 @@ pub fn remove_project(state: State<'_, AppState>, id: String) -> Result<(), Stri
 }
 
 #[tauri::command]
-pub fn start_task(
+pub fn create_run(
     state: State<'_, AppState>,
     project_id: String,
     prompt: String,
-    profile: String,
-    on_chunk: Channel<TerminalChunk>,
-) -> Result<TaskInfo, String> {
+    agent: String,
+    base: String,
+) -> Result<RunInfo, String> {
     state
-        .start_task(&project_id, &prompt, &profile, "HEAD", move |bytes| {
-            let _ = on_chunk.send(TerminalChunk { b64: STANDARD.encode(&bytes) });
-        })
+        .create_run(&project_id, &prompt, &agent, &base)
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn send_input(
-    state: State<'_, AppState>,
-    task_id: String,
-    data: String,
-) -> Result<(), String> {
-    state
-        .send_input(&task_id, data.as_bytes())
-        .map_err(|e| e.to_string())
+pub fn list_runs(state: State<'_, AppState>, project_id: String) -> Result<Vec<RunInfo>, String> {
+    state.list_runs(&project_id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn task_status(state: State<'_, AppState>, task_id: String) -> Result<StatusDto, String> {
-    state
-        .task_status(&task_id)
-        .map(status_dto)
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn stop_task(state: State<'_, AppState>, task_id: String) -> Result<(), String> {
-    state.stop_task(&task_id).map_err(|e| e.to_string())
+pub fn discard_run(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    state.discard_run(&id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -204,5 +188,5 @@ pub fn resolver_input(state: State<'_, AppState>, task_id: String, data: String)
 
 #[tauri::command]
 pub fn resolver_status(state: State<'_, AppState>, task_id: String) -> Result<StatusDto, String> {
-    state.resolver_status(&task_id).map(status_dto).map_err(|e| e.to_string())
+    state.resolver_status(&task_id).map(agent_status_dto).map_err(|e| e.to_string())
 }

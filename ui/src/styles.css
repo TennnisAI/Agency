@@ -577,3 +577,133 @@ button:hover { background: var(--lav); }
   overflow-x: auto;
 }
 .diff-empty { color: var(--o0); font-size: 12px; padding: 4px 0; }
+
+/* ── Source Control screen (Task 5) ────────────────────────── */
+.source-control { display: flex; gap: 14px; flex: 1; min-height: 0; overflow: hidden; }
+
+.sc-left {
+  width: 280px;
+  min-width: 280px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  background: var(--mantle);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.sc-right {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+  background: var(--crust);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.sc-commit { display: flex; flex-direction: column; gap: 6px; }
+.sc-commit textarea {
+  background: var(--crust);
+  border: 1px solid var(--s1);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 6px;
+  min-height: 56px;
+  resize: vertical;
+  font-family: var(--sans);
+  font-size: 13px;
+  width: 100%;
+}
+.sc-commit textarea:focus { outline: none; border-color: var(--blue); }
+
+.sc-left h4 {
+  margin: 6px 0 2px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--o0);
+}
+
+.sc-file {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  padding: 3px 4px;
+  border-radius: 4px;
+}
+.sc-file:hover { background: var(--s0); }
+.sc-file .git-path { flex: 1; }
+.sc-file button { padding: 0 8px; font-size: 14px; line-height: 1; }
+
+.hist-pills { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0; }
+
+.pill {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--s0);
+  color: var(--sub1);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.pill:hover { background: var(--s1); color: var(--text); }
+.pill.on { background: var(--blue); color: var(--crust); }
+
+.hist-row {
+  font-size: 12px;
+  padding: 2px 4px;
+  border-radius: 3px;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  overflow: hidden;
+}
+.hist-row:hover { background: var(--s0); }
+.hist-row code { color: var(--blue); font-size: 11px; flex-shrink: 0; }
+.hist-row span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--sub1); }
+
+/* ── Git Review side-panel (Task 5) ────────────────────────── */
+.review-panel {
+  width: 360px;
+  min-width: 360px;
+  border-left: 1px solid var(--line);
+  background: var(--mantle);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  overflow-y: auto;
+  flex-shrink: 0;
+}
+
+.review-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 8px;
+  flex-shrink: 0;
+}
+.review-head h3 {
+  margin: 0;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--o1);
+}
+
+.review-panel h4 {
+  margin: 6px 0 2px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--o0);
+}

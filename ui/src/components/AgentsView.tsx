@@ -4,12 +4,14 @@ import { useRuns } from "../store/runs";
 import AgentTile from "./AgentTile";
 import AgentFocus from "./AgentFocus";
 import NewTaskForm from "./NewTaskForm";
-import GitPanel from "./GitPanel";
+import SourceControl from "./SourceControl";
+import GitReviewPanel from "./GitReviewPanel";
 
 export default function AgentsView({ project }: { project: Project }) {
   const { runs, view, setView, focusedRunId } = useRuns();
   const [tab, setTab] = useState<"agents" | "source">("agents");
   const [newOpen, setNewOpen] = useState(false);
+  const [review, setReview] = useState(false);
 
   return (
     <main className="agents">
@@ -25,18 +27,34 @@ export default function AgentsView({ project }: { project: Project }) {
           </div>
         )}
         <div className="spacer" />
+        {tab === "agents" && (
+          <button className={review ? "on" : ""} onClick={() => setReview((r) => !r)}>Review</button>
+        )}
         {tab === "agents" && <button onClick={() => setNewOpen(true)}>+ New task</button>}
       </div>
 
-      {tab === "source" && <div className="source-wrap">{focusedRunId ? <GitPanel taskId={focusedRunId} /> : <div className="board empty">Open an agent to review its changes.</div>}</div>}
-
-      {tab === "agents" && view === "grid" && (
-        <div className="grid">
-          {runs.length === 0 && <div className="board empty">No agents yet — start one with "+ New task".</div>}
-          {runs.map((r) => <AgentTile key={r.id} run={r} />)}
+      {tab === "source" && (
+        <div className="source-wrap">
+          {focusedRunId ? <SourceControl taskId={focusedRunId} /> : <div className="board empty">Open an agent to review its changes.</div>}
         </div>
       )}
-      {tab === "agents" && view === "focus" && <AgentFocus />}
+
+      {tab === "agents" && (
+        <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, overflow: "hidden" }}>
+            {view === "grid" && (
+              <div className="grid">
+                {runs.length === 0 && <div className="board empty">No agents yet — start one with "+ New task".</div>}
+                {runs.map((r) => <AgentTile key={r.id} run={r} />)}
+              </div>
+            )}
+            {view === "focus" && <AgentFocus />}
+          </div>
+          {review && focusedRunId && (
+            <GitReviewPanel taskId={focusedRunId} onOpenSource={() => setTab("source")} />
+          )}
+        </div>
+      )}
 
       {newOpen && <div className="settings-overlay"><NewTaskForm project={project} onDone={() => setNewOpen(false)} /></div>}
     </main>

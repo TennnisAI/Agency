@@ -37,8 +37,8 @@ importers:
         specifier: ^2
         version: 2.11.2
       '@types/diff':
-        specifier: ^8.0.0
-        version: 8.0.0
+        specifier: ^5.2.3
+        version: 5.2.3
       '@types/react':
         specifier: ^18.3.12
         version: 18.3.31
@@ -709,9 +709,8 @@ packages:
   '@types/babel__traverse@7.28.0':
     resolution: {integrity: sha512-8PvcXf70gTDZBgt9ptxJ8elBeBjcLOAcOtoO/mPJjtji1+CdGbHgm77om1GrsPxsiE+uXIpNSK64UYaIwQXd4Q==}
 
-  '@types/diff@8.0.0':
-    resolution: {integrity: sha512-o7jqJM04gfaYrdCecCVMbZhNdG6T1MHg/oQoRFdERLV+4d+V7FijhiEAbFu0Usww84Yijk9yH58U4Jk4HbtzZw==}
-    deprecated: This is a stub types definition. diff provides its own type definitions, so you do not need this installed.
+  '@types/diff@5.2.3':
+    resolution: {integrity: sha512-K0Oqlrq3kQMaO2RhfrNQX5trmt+XLyom88zS0u84nnIcLvFnRUMRRHmrGny5GSM+kNO9IZLARsdQHDzkhAgmrQ==}
 
   '@types/estree@1.0.9':
     resolution: {integrity: sha512-GhdPgy1el4/ImP05X05Uw4cw2/M93BCUmnEvWZNStlCzEKME4Fkk+YpoA5OiHNQmoS7Cafb8Xa3Pya8m1Qrzeg==}
@@ -1681,9 +1680,7 @@ snapshots:
     dependencies:
       '@babel/types': 7.29.7
 
-  '@types/diff@8.0.0':
-    dependencies:
-      diff: 5.2.2
+  '@types/diff@5.2.3': {}
 
   '@types/estree@1.0.9': {}
 

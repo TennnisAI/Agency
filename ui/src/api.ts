@@ -55,6 +55,8 @@ export const runPreview = (id: string, lines: number) =>
   invoke<string>("run_preview", { id, lines });
 export const detachRun = (id: string) => invoke<void>("detach_run", { id });
 export const runInput = (id: string, data: string) => invoke<void>("run_input", { id, data });
+export const resizeRun = (id: string, cols: number, rows: number) =>
+  invoke<void>("resize_run", { id, cols, rows });
 export const runStatus = (id: string) => invoke<SessionStatus>("run_status", { id });
 export const discardRun = (id: string) => invoke<void>("discard_run", { id });
 export const stopRun = (id: string) => invoke<void>("stop_run", { id });
@@ -90,6 +92,11 @@ export const gitStage = (taskId: string, path: string) =>
 
 export const gitUnstage = (taskId: string, path: string) =>
   invoke<void>("git_unstage", { taskId, path });
+export const gitStageAll = (taskId: string) => invoke<void>("git_stage_all", { taskId });
+export const gitUnstageAll = (taskId: string) => invoke<void>("git_unstage_all", { taskId });
+export const gitDiscard = (taskId: string, path: string, untracked: boolean) =>
+  invoke<void>("git_discard", { taskId, path, untracked });
+export const gitDiscardAll = (taskId: string) => invoke<void>("git_discard_all", { taskId });
 
 export const gitCommit = (taskId: string, message: string) =>
   invoke<void>("git_commit", { taskId, message });
@@ -132,6 +139,8 @@ export interface StatusDto {
 
 export const resolverStatus = (taskId: string) =>
   invoke<StatusDto>("resolver_status", { taskId });
+export const resolverResize = (taskId: string, cols: number, rows: number) =>
+  invoke<void>("resolver_resize", { taskId, cols, rows });
 
 export function resolveMerge(
   taskId: string,

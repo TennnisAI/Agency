@@ -229,6 +229,43 @@ fn stage_hunk_stages_only_that_hunk() {
 }
 
 #[test]
+fn stage_all_stages_everything() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    std::fs::write(dir.path().join("tracked.txt"), "one\ntwo\n").unwrap();
+    std::fs::write(dir.path().join("new.txt"), "hi\n").unwrap();
+    git::stage_all(dir.path()).unwrap();
+    let changes = git::status(dir.path()).unwrap();
+    assert!(changes.iter().all(|c| c.index != " " && c.index != "?"),
+        "all changes staged: {changes:?}");
+}
+
+#[test]
+fn unstage_all_clears_index() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    std::fs::write(dir.path().join("tracked.txt"), "one\ntwo\n").unwrap();
+    git::stage_all(dir.path()).unwrap();
+    git::unstage_all(dir.path()).unwrap();
+    let changes = git::status(dir.path()).unwrap();
+    let m = changes.iter().find(|c| c.path == "tracked.txt").unwrap();
+    assert_eq!(m.worktree, "M");
+    assert_eq!(m.index, " ");
+}
+
+#[test]
+fn discard_reverts_tracked_and_deletes_untracked() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    std::fs::write(dir.path().join("tracked.txt"), "one\nchanged\n").unwrap();
+    std::fs::write(dir.path().join("new.txt"), "hi\n").unwrap();
+    git::discard(dir.path(), "tracked.txt", false).unwrap();
+    git::discard(dir.path(), "new.txt", true).unwrap();
+    assert_eq!(std::fs::read_to_string(dir.path().join("tracked.txt")).unwrap(), "one\n");
+    assert!(!dir.path().join("new.txt").exists());
+}
+
+#[test]
 fn staging_all_hunks_equals_staging_whole_file() {
     let dir = tempfile::tempdir().unwrap();
     init_repo_10(dir.path());

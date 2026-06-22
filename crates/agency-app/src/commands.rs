@@ -134,6 +134,16 @@ pub fn run_input(state: State<'_, AppState>, id: String, data: String) -> Result
 }
 
 #[tauri::command]
+pub fn resize_run(
+    state: State<'_, AppState>,
+    id: String,
+    cols: u16,
+    rows: u16,
+) -> Result<(), String> {
+    state.resize_run(&id, cols, rows).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub fn run_status(state: State<'_, AppState>, id: String) -> Result<SessionStatus, String> {
     state.run_status(&id).map_err(|e| e.to_string())
 }
@@ -180,6 +190,35 @@ pub fn git_unstage(
 ) -> Result<(), String> {
     let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
     git::unstage(&wt, &path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn git_stage_all(state: State<'_, AppState>, task_id: String) -> Result<(), String> {
+    let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
+    agency_core::git::stage_all(&wt).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn git_unstage_all(state: State<'_, AppState>, task_id: String) -> Result<(), String> {
+    let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
+    agency_core::git::unstage_all(&wt).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn git_discard(
+    state: State<'_, AppState>,
+    task_id: String,
+    path: String,
+    untracked: bool,
+) -> Result<(), String> {
+    let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
+    agency_core::git::discard(&wt, &path, untracked).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn git_discard_all(state: State<'_, AppState>, task_id: String) -> Result<(), String> {
+    let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
+    agency_core::git::discard_all(&wt).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -255,6 +294,16 @@ pub fn resolver_input(state: State<'_, AppState>, task_id: String, data: String)
 #[tauri::command]
 pub fn resolver_status(state: State<'_, AppState>, task_id: String) -> Result<StatusDto, String> {
     state.resolver_status(&task_id).map(agent_status_dto).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn resolver_resize(
+    state: State<'_, AppState>,
+    task_id: String,
+    cols: u16,
+    rows: u16,
+) -> Result<(), String> {
+    state.resolver_resize(&task_id, cols, rows).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

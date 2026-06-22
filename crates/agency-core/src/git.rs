@@ -237,3 +237,29 @@ pub fn unstage_hunk(worktree: &Path, path: &str, hunk_index: usize) -> Result<()
         &patch,
     )
 }
+
+pub fn stage_all(worktree: &Path) -> Result<()> {
+    git(worktree, &["add", "-A"])?;
+    Ok(())
+}
+
+pub fn unstage_all(worktree: &Path) -> Result<()> {
+    git(worktree, &["reset", "-q"])?;
+    Ok(())
+}
+
+/// Discard one file's changes. Untracked files are deleted; tracked files are
+/// restored from the index (mirrors VSCode "Discard Changes" on the Changes group).
+pub fn discard(worktree: &Path, path: &str, untracked: bool) -> Result<()> {
+    if untracked {
+        git(worktree, &["clean", "-f", "--", path])?;
+    } else {
+        git(worktree, &["restore", "--", path])?;
+    }
+    Ok(())
+}
+
+pub fn discard_all(worktree: &Path) -> Result<()> {
+    git(worktree, &["restore", "--", "."])?;
+    Ok(())
+}

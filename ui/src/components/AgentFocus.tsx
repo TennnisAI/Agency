@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useRuns } from "../store/runs";
 import { stopRun, discardRun } from "../api";
 import FocusTerminal from "./FocusTerminal";
+import RunPanel from "./RunPanel";
 import MergeModal from "./MergeModal";
 import ConfirmDialog from "./ConfirmDialog";
 import Resizer from "./Resizer";
@@ -15,8 +16,10 @@ export default function AgentFocus() {
   const { runs, focusedRunId, setFocusedRun, refreshRuns } = useRuns();
   const [showMerge, setShowMerge] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
+  const [panel, setPanel] = useState<"agent" | "run">("agent");
   useEffect(() => {
     setShowMerge(false);
+    setPanel("agent");
   }, [focusedRunId]);
   const [railOpen, setRailOpen] = useState(true);
   const rail = usePaneWidth("rail", 312, 220, 520);
@@ -50,12 +53,18 @@ export default function AgentFocus() {
             <div className="focus-head">
               <span className={badgeClass(focused.agent)}>{focused.agent}</span>
               <code>{focused.branch}</code>
+              <div className="focus-tabs">
+                <button className={panel === "agent" ? "on" : ""} onClick={() => setPanel("agent")}>Agent</button>
+                <button className={panel === "run" ? "on" : ""} onClick={() => setPanel("run")}>Run</button>
+              </div>
               <span className="spacer" />
               <button className="tile-act" title="Stop agent" onClick={async () => { await stopRun(focused.id); await refreshRuns(); }}>■ Stop</button>
               <button className="tile-act danger" title="Discard agent" onClick={() => setConfirmDiscard(true)}>✕ Discard</button>
               <button onClick={() => setShowMerge(true)}>Approve →</button>
             </div>
-            <FocusTerminal key={focused.id} runId={focused.id} />
+            {panel === "agent"
+              ? <FocusTerminal key={focused.id} runId={focused.id} />
+              : <RunPanel key={`run-${focused.id}`} run={focused} />}
             {showMerge && <MergeModal taskId={focused.id} onClose={() => setShowMerge(false)} />}
             {confirmDiscard && (
               <ConfirmDialog

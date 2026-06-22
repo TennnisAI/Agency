@@ -62,8 +62,9 @@ export default function DiffViewer({
       for (const r of rows) {
         for (const [side, spans] of [["o", r.oldSpans], ["n", r.newSpans]] as const) {
           const text = spansToText(spans);
-          if (text && out[`${side}:${r.lineIndex}`] === undefined) {
-            out[`${side}:${r.lineIndex}`] = await highlightLine(text, lang);
+          const key = `${side}:${r.lineIndex}`;
+          if (text && out[key] === undefined) {
+            try { out[key] = await highlightLine(text, lang); } catch { /* best-effort: leave key absent, falls back to plain text */ }
           }
         }
       }
@@ -121,11 +122,27 @@ export default function DiffViewer({
         </button>
       </div>
       <div className={`diff-body ${sideBySide ? "sxs" : "inline"}`}>
-        {rows.map((r, idx) => (
-          <DiffLineRow key={idx} row={r} sideBySide={sideBySide} highlighted={highlighted}
-            selected={!!sel && sel.hunk === r.hunkIndex && sel.lines.has(r.lineIndex)}
-            onToggle={() => toggleLine(r.hunkIndex, r.lineIndex)} />
-        ))}
+        {rows.flatMap((r) => {
+          const isInlinePair = !sideBySide && r.oldSpans != null && r.newSpans != null;
+          if (isInlinePair) {
+            const shared = { sideBySide, highlighted, onToggle: () => toggleLine(r.hunkIndex, r.lineIndex) };
+            const isSelected = !!sel && sel.hunk === r.hunkIndex && sel.lines.has(r.lineIndex);
+            return [
+              <DiffLineRow key={`${r.hunkIndex}:${r.lineIndex}:del`}
+                row={{ ...r, newSpans: null, newNo: null, kind: "del" }}
+                selected={isSelected} {...shared} />,
+              <DiffLineRow key={`${r.hunkIndex}:${r.lineIndex}:add`}
+                row={{ ...r, oldSpans: null, oldNo: null, kind: "add" }}
+                selected={isSelected} {...shared} />,
+            ];
+          }
+          return [
+            <DiffLineRow key={`${r.hunkIndex}:${r.lineIndex}:row`}
+              row={r} sideBySide={sideBySide} highlighted={highlighted}
+              selected={!!sel && sel.hunk === r.hunkIndex && sel.lines.has(r.lineIndex)}
+              onToggle={() => toggleLine(r.hunkIndex, r.lineIndex)} />,
+          ];
+        })}
       </div>
       {!readonly && (
         <div className="diff-hunks">

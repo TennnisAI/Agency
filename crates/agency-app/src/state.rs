@@ -33,6 +33,7 @@ pub struct RunInfo {
     pub added: u32,
     pub deleted: u32,
     pub files: u32,
+    pub port: Option<u16>,
 }
 
 fn session_name(id: &str) -> String {
@@ -113,6 +114,19 @@ fn short_suffix() -> String {
         v /= 36;
     }
     String::from_utf8_lossy(&s).into_owned()
+}
+
+/// Lowest free port-block base: the first `base + slot*block_size` (slot = 0,1,2…)
+/// not already in `used`. Returns `None` only if the `u16` space overflows first.
+fn pick_port(used: &std::collections::HashSet<u16>, base: u16, block_size: u16) -> Option<u16> {
+    let mut slot: u16 = 0;
+    loop {
+        let candidate = base.checked_add(slot.checked_mul(block_size)?)?;
+        if !used.contains(&candidate) {
+            return Some(candidate);
+        }
+        slot = slot.checked_add(1)?;
+    }
 }
 
 fn now_secs() -> i64 {
@@ -300,14 +314,22 @@ impl AppState {
             added: stat.added,
             deleted: stat.deleted,
             files: stat.files,
+            port: run.port_base,
         }
     }
 
     // ── run lifecycle ──────────────────────────────────────────────────────────
 
+    fn allocate_port(&self, base: u16, block_size: u16) -> Result<u16> {
+        let used: std::collections::HashSet<u16> =
+            self.registry.lock().unwrap().list_port_bases()?.into_iter().collect();
+        pick_port(&used, base, block_size).ok_or_else(|| anyhow!("no free port block available"))
+    }
+
     pub fn create_run(&self, project_id: &str, prompt: &str, agent: &str, base: &str) -> Result<RunInfo> {
         let repo = self.project_repo(project_id)?;
         let config = agency_core::config::load(&repo);
+        let port = self.allocate_port(config.ports.base, config.ports.block_size)?;
         let profile = {
             let reg = self.registry.lock().unwrap();
             reg.get_profile(agent)?
@@ -318,7 +340,7 @@ impl AppState {
 
         let mut env = self.provider_env()?;
         env.extend(profile.env.iter().cloned());
-        env.extend(agency_core::scripts::script_env(&worktree.path, &repo, &id, None));
+        env.extend(agency_core::scripts::script_env(&worktree.path, &repo, &id, Some(port)));
         let args: Vec<String> = profile
             .render_args(prompt)
             .into_iter()
@@ -338,7 +360,7 @@ impl AppState {
             base: base.to_string(),
             branch: worktree.branch.clone(),
             created_at: now_secs(),
-            port_base: None,
+            port_base: Some(port),
         };
         self.registry.lock().unwrap().insert_run(&run)?;
         Ok(self.run_info(&run))
@@ -416,7 +438,7 @@ impl AppState {
         };
         let mut env = self.provider_env()?;
         env.extend(profile.env.iter().cloned());
-        env.extend(agency_core::scripts::script_env(&worktree, &repo, &run.id, None));
+        env.extend(agency_core::scripts::script_env(&worktree, &repo, &run.id, run.port_base));
         let args = profile.render_args(&run.prompt);
         let (command, args) =
             agency_core::scripts::wrap_setup(config.scripts.setup.as_deref(), &profile.command, &args);
@@ -538,7 +560,8 @@ fn validate_repo(repo_path: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{new_task_id, slugify};
+    use super::{new_task_id, slugify, pick_port};
+    use std::collections::HashSet;
 
     #[test]
     fn slugify_makes_readable_ref_safe_slugs() {
@@ -572,5 +595,23 @@ mod tests {
         let a = new_task_id("same prompt");
         let b = new_task_id("same prompt");
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn pick_port_returns_base_when_unused() {
+        let used = HashSet::new();
+        assert_eq!(pick_port(&used, 5200, 10), Some(5200));
+    }
+
+    #[test]
+    fn pick_port_skips_used_blocks_lowest_first() {
+        let used: HashSet<u16> = [5200, 5210].into_iter().collect();
+        assert_eq!(pick_port(&used, 5200, 10), Some(5220));
+    }
+
+    #[test]
+    fn pick_port_fills_lowest_gap() {
+        let used: HashSet<u16> = [5200, 5220].into_iter().collect();
+        assert_eq!(pick_port(&used, 5200, 10), Some(5210));
     }
 }

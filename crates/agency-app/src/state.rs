@@ -307,24 +307,28 @@ impl AppState {
 
     pub fn create_run(&self, project_id: &str, prompt: &str, agent: &str, base: &str) -> Result<RunInfo> {
         let repo = self.project_repo(project_id)?;
+        let config = agency_core::config::load(&repo);
         let profile = {
             let reg = self.registry.lock().unwrap();
             reg.get_profile(agent)?
                 .ok_or_else(|| anyhow!("unknown agent profile: {agent}"))?
         };
         let id = new_task_id(prompt);
-        let worktree = WorktreeManager::new(repo).create(&id, base)?;
+        let worktree = WorktreeManager::new(repo.clone()).create(&id, base)?;
 
         let mut env = self.provider_env()?;
         env.extend(profile.env.iter().cloned());
+        env.extend(agency_core::scripts::script_env(&worktree.path, &repo, &id, None));
         let args: Vec<String> = profile
             .render_args(prompt)
             .into_iter()
             .filter(|a| !a.is_empty())
             .collect();
+        let (command, args) =
+            agency_core::scripts::wrap_setup(config.scripts.setup.as_deref(), &profile.command, &args);
 
         self.tmux
-            .start_session(&session_name(&id), &worktree.path, &profile.command, &args, &env)?;
+            .start_session(&session_name(&id), &worktree.path, &command, &args, &env)?;
 
         let run = agency_core::registry::Run {
             id: id.clone(),
@@ -402,6 +406,7 @@ impl AppState {
     pub fn rerun(&self, id: &str) -> Result<RunInfo> {
         let run = self.run_record(id)?;
         let repo = self.project_repo(&run.project_id)?;
+        let config = agency_core::config::load(&repo);
         let worktree = repo.join(".agency").join("worktrees").join(&run.id);
         let profile = {
             let reg = self.registry.lock().unwrap();
@@ -410,9 +415,12 @@ impl AppState {
         };
         let mut env = self.provider_env()?;
         env.extend(profile.env.iter().cloned());
+        env.extend(agency_core::scripts::script_env(&worktree, &repo, &run.id, None));
         let args = profile.render_args(&run.prompt);
+        let (command, args) =
+            agency_core::scripts::wrap_setup(config.scripts.setup.as_deref(), &profile.command, &args);
         self.tmux.kill_session(&session_name(id)).ok();
-        self.tmux.start_session(&session_name(id), &worktree, &profile.command, &args, &env)?;
+        self.tmux.start_session(&session_name(id), &worktree, &command, &args, &env)?;
         Ok(self.run_info(&run))
     }
 

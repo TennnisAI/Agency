@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Project } from "../api";
+import { Project, inspectRepo, RepoReadiness } from "../api";
 import { AGENT_TYPES } from "../agents";
 import { useRuns } from "../store/runs";
 import AgentTile from "./AgentTile";
@@ -7,18 +7,25 @@ import AgentFocus from "./AgentFocus";
 import MergeModal from "./MergeModal";
 import SourceControl from "./SourceControl";
 import GitReviewPanel from "./GitReviewPanel";
+import RepoSetupDialog from "./RepoSetupDialog";
 
-export default function AgentsView({ project: _project }: { project: Project }) {
+export default function AgentsView({ project }: { project: Project }) {
   const { runs, view, setView, focusedRunId, tab, setTab, approveRunId, setApproveRun, createAgent } = useRuns();
   const [review, setReview] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [error, setError] = useState("");
+  const [pendingSpawn, setPendingSpawn] = useState<{ agentId: string; readiness: RepoReadiness; repoPath: string } | null>(null);
 
   async function spawn(agentId: string) {
     setMenuOpen(false);
+    setError("");
     try {
-      await createAgent(agentId);
-      setError("");
+      const r = await inspectRepo(project.repo_path);
+      if (r.state === "ready" && !r.dirty) {
+        await createAgent(agentId);
+      } else {
+        setPendingSpawn({ agentId, readiness: r, repoPath: project.repo_path });
+      }
     } catch (e) {
       setError(String(e));
     }
@@ -78,6 +85,24 @@ export default function AgentsView({ project: _project }: { project: Project }) 
             <GitReviewPanel taskId={focusedRunId} onOpenSource={() => setTab("source")} />
           )}
         </div>
+      )}
+
+      {pendingSpawn && (
+        <RepoSetupDialog
+          readiness={pendingSpawn.readiness}
+          context="spawn"
+          repoPath={pendingSpawn.repoPath}
+          onResolved={async () => {
+            const { agentId } = pendingSpawn;
+            setPendingSpawn(null);
+            try {
+              await createAgent(agentId);
+            } catch (e) {
+              setError(String(e));
+            }
+          }}
+          onCancel={() => setPendingSpawn(null)}
+        />
       )}
 
       {approveRunId && approveRunId === focusedRunId && (

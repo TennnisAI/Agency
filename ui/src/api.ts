@@ -32,6 +32,19 @@ export const listProjects = () => invoke<Project[]>("list_projects");
 export const addProject = (name: string, repoPath: string) =>
   invoke<Project>("add_project", { name, repoPath });
 
+export type RepoReadiness = {
+  state: "notARepo" | "noCommits" | "ready";
+  stageable: boolean;
+  dirty: boolean;
+};
+
+export const inspectRepo = (repoPath: string) =>
+  invoke<RepoReadiness>("inspect_repo", { repoPath });
+export const initRepo = (repoPath: string) =>
+  invoke<void>("init_repo", { repoPath });
+export const commitRepo = (repoPath: string, addGitignore: boolean) =>
+  invoke<void>("commit_repo", { repoPath, addGitignore });
+
 export const closeProject = (id: string) => invoke<void>("close_project", { id });
 export const deleteProject = (id: string) => invoke<void>("delete_project", { id });
 

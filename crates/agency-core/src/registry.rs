@@ -25,6 +25,7 @@ pub struct Run {
     pub branch: String,
     pub created_at: i64,
     pub port_base: Option<u16>,
+    pub archived_at: Option<i64>,
 }
 
 pub struct Registry {
@@ -64,12 +65,16 @@ impl Registry {
                 base TEXT NOT NULL,
                 branch TEXT NOT NULL,
                 created_at INTEGER NOT NULL,
-                port_base INTEGER
+                port_base INTEGER,
+                archived_at INTEGER
             );",
         )?;
         // Migrate older DBs whose `runs` table predates `port_base`.
         if !column_exists(&conn, "runs", "port_base")? {
             conn.execute("ALTER TABLE runs ADD COLUMN port_base INTEGER", [])?;
+        }
+        if !column_exists(&conn, "runs", "archived_at")? {
+            conn.execute("ALTER TABLE runs ADD COLUMN archived_at INTEGER", [])?;
         }
         Ok(Registry { conn })
     }
@@ -189,11 +194,11 @@ impl Registry {
 
     pub fn insert_run(&self, run: &Run) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO runs (id, project_id, agent, prompt, base, branch, created_at, port_base)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO runs (id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             rusqlite::params![
                 run.id, run.project_id, run.agent, run.prompt, run.base, run.branch,
-                run.created_at, run.port_base.map(|p| p as i64)
+                run.created_at, run.port_base.map(|p| p as i64), run.archived_at
             ],
         )?;
         Ok(())
@@ -201,7 +206,7 @@ impl Registry {
 
     pub fn get_run(&self, id: &str) -> Result<Option<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base FROM runs WHERE id = ?1",
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at FROM runs WHERE id = ?1",
         )?;
         let mut rows = stmt.query([id])?;
         match rows.next()? {
@@ -212,8 +217,8 @@ impl Registry {
 
     pub fn list_runs(&self, project_id: &str) -> Result<Vec<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base
-             FROM runs WHERE project_id = ?1 ORDER BY created_at DESC",
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at
+             FROM runs WHERE project_id = ?1 AND archived_at IS NULL ORDER BY created_at DESC",
         )?;
         let rows = stmt.query_map([project_id], |row| Ok(row_to_run(row)))?;
         let mut out = Vec::new();
@@ -221,6 +226,27 @@ impl Registry {
             out.push(r??);
         }
         Ok(out)
+    }
+
+    pub fn list_archived_runs(&self, project_id: &str) -> Result<Vec<Run>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at
+             FROM runs WHERE project_id = ?1 AND archived_at IS NOT NULL ORDER BY archived_at DESC",
+        )?;
+        let rows = stmt.query_map([project_id], |row| Ok(row_to_run(row)))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r??);
+        }
+        Ok(out)
+    }
+
+    pub fn set_archived(&self, id: &str, archived_at: Option<i64>) -> Result<()> {
+        self.conn.execute(
+            "UPDATE runs SET archived_at = ?2 WHERE id = ?1",
+            rusqlite::params![id, archived_at],
+        )?;
+        Ok(())
     }
 
     pub fn delete_run(&self, id: &str) -> Result<()> {
@@ -231,7 +257,7 @@ impl Registry {
     pub fn list_port_bases(&self) -> Result<Vec<u16>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT port_base FROM runs WHERE port_base IS NOT NULL")?;
+            .prepare("SELECT port_base FROM runs WHERE port_base IS NOT NULL AND archived_at IS NULL")?;
         let rows = stmt.query_map([], |row| row.get::<_, i64>(0))?;
         let mut out = Vec::new();
         for r in rows {
@@ -274,6 +300,7 @@ fn row_to_run(row: &rusqlite::Row) -> Result<Run> {
         branch: row.get(5)?,
         created_at: row.get(6)?,
         port_base: port_base.map(|p| p as u16),
+        archived_at: row.get(8)?,
     })
 }
 
@@ -305,6 +332,7 @@ mod tests {
             branch: format!("agent/{id}"),
             created_at: 42,
             port_base: port,
+            archived_at: None,
         }
     }
 
@@ -357,5 +385,42 @@ mod tests {
         assert_eq!(got.port_base, None);
         reg.insert_run(&sample_run("new-1", Some(5200))).unwrap();
         assert_eq!(reg.list_port_bases().unwrap(), vec![5200]);
+    }
+
+    #[test]
+    fn archiving_hides_from_list_runs_and_shows_in_archived() {
+        let dir = tempdir().unwrap();
+        let reg = Registry::open(&dir.path().join("a.db")).unwrap();
+        reg.insert_run(&sample_run("x-1", Some(5200))).unwrap();
+        reg.insert_run(&sample_run("x-2", Some(5210))).unwrap();
+        reg.set_archived("x-1", Some(1000)).unwrap();
+
+        let active: Vec<String> = reg.list_runs("proj").unwrap().into_iter().map(|r| r.id).collect();
+        assert_eq!(active, vec!["x-2"]);
+        let archived: Vec<String> = reg.list_archived_runs("proj").unwrap().into_iter().map(|r| r.id).collect();
+        assert_eq!(archived, vec!["x-1"]);
+    }
+
+    #[test]
+    fn archived_run_port_is_not_listed_as_used() {
+        let dir = tempdir().unwrap();
+        let reg = Registry::open(&dir.path().join("a.db")).unwrap();
+        reg.insert_run(&sample_run("x-1", Some(5200))).unwrap();
+        reg.insert_run(&sample_run("x-2", Some(5210))).unwrap();
+        reg.set_archived("x-1", Some(1000)).unwrap();
+        let mut bases = reg.list_port_bases().unwrap();
+        bases.sort();
+        assert_eq!(bases, vec![5210]); // 5200 freed by archiving x-1
+    }
+
+    #[test]
+    fn set_archived_none_restores_to_active() {
+        let dir = tempdir().unwrap();
+        let reg = Registry::open(&dir.path().join("a.db")).unwrap();
+        reg.insert_run(&sample_run("x-1", Some(5200))).unwrap();
+        reg.set_archived("x-1", Some(1000)).unwrap();
+        reg.set_archived("x-1", None).unwrap();
+        let active: Vec<String> = reg.list_runs("proj").unwrap().into_iter().map(|r| r.id).collect();
+        assert_eq!(active, vec!["x-1"]);
     }
 }

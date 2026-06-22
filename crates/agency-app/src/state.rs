@@ -372,6 +372,7 @@ impl AppState {
             branch: worktree.branch.clone(),
             created_at: now_secs(),
             port_base: Some(port),
+            archived_at: None,
         };
         self.registry.lock().unwrap().insert_run(&run)?;
         Ok(self.run_info(&run))

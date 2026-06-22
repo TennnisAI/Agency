@@ -98,6 +98,7 @@ fn runs_persist_list_and_delete() {
         branch: "agent/task-1".into(),
         created_at: 1000,
         port_base: None,
+        archived_at: None,
     };
     {
         let reg = Registry::open(&db).unwrap();
@@ -120,7 +121,7 @@ fn list_runs_newest_first() {
         reg.insert_run(&Run {
             id: id.into(), project_id: "p".into(), agent: "shell".into(),
             prompt: "".into(), base: "main".into(), branch: format!("agent/{id}"), created_at: ts,
-            port_base: None,
+            port_base: None, archived_at: None,
         }).unwrap();
     }
     let ids: Vec<String> = reg.list_runs("p").unwrap().into_iter().map(|r| r.id).collect();

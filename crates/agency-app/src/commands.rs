@@ -440,3 +440,65 @@ pub fn git_revert_lines(
     let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
     agency_core::git::revert_lines(&wt, &path, hunk_index, &lines).map_err(|e| e.to_string())
 }
+
+#[tauri::command]
+pub fn run_script_configured(state: State<'_, AppState>, id: String) -> Result<bool, String> {
+    state.run_script_configured(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn start_run_script(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    state.start_run_script(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn stop_run_script(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    state.stop_run_script(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn run_script_status(state: State<'_, AppState>, id: String) -> Result<SessionStatus, String> {
+    state.run_script_status(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn run_script_preview(
+    state: State<'_, AppState>,
+    id: String,
+    lines: usize,
+) -> Result<String, String> {
+    state.run_script_preview(&id, lines).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn attach_run_script(
+    state: State<'_, AppState>,
+    id: String,
+    on_chunk: Channel<TerminalChunk>,
+) -> Result<(), String> {
+    state
+        .attach_run_script(&id, move |bytes| {
+            let _ = on_chunk.send(TerminalChunk { b64: STANDARD.encode(&bytes) });
+        })
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn detach_run_script(state: State<'_, AppState>, id: String) {
+    state.detach_run_script(&id);
+}
+
+#[tauri::command]
+pub fn run_script_input(state: State<'_, AppState>, id: String, data: String) -> Result<(), String> {
+    state.run_script_input(&id, data.as_bytes()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn resize_run_script(
+    state: State<'_, AppState>,
+    id: String,
+    cols: u16,
+    rows: u16,
+) -> Result<(), String> {
+    state.resize_run_script(&id, cols, rows).map_err(|e| e.to_string())
+}

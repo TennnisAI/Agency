@@ -6,6 +6,7 @@ pub use state::{AppState, ProviderSettings, RunInfo};
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             use tauri::Manager;
             let data_dir = app.path().app_data_dir()?;
@@ -65,6 +66,15 @@ pub fn run() {
             commands::git_stage_lines,
             commands::git_unstage_lines,
             commands::git_revert_lines,
+            commands::run_script_configured,
+            commands::start_run_script,
+            commands::stop_run_script,
+            commands::run_script_status,
+            commands::run_script_preview,
+            commands::attach_run_script,
+            commands::detach_run_script,
+            commands::run_script_input,
+            commands::resize_run_script,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Agency");

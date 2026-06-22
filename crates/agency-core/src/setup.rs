@@ -1,3 +1,4 @@
+use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::process::Command;
@@ -37,4 +38,50 @@ pub fn repo_readiness(path: &Path) -> RepoReadiness {
         _ => false,
     };
     RepoReadiness::Ready { dirty }
+}
+
+const DEFAULT_GITIGNORE: &str = "node_modules/\n.env\ndist/\ntarget/\n.DS_Store\n";
+
+/// Run a git command in `dir`, returning Err with stderr on failure.
+fn git_checked(dir: &Path, args: &[&str]) -> Result<()> {
+    let out = Command::new("git").args(args).current_dir(dir).output()?;
+    if !out.status.success() {
+        bail!("git {:?} failed: {}", args, String::from_utf8_lossy(&out.stderr));
+    }
+    Ok(())
+}
+
+/// `git init` in `path`. Uses the user's configured default branch name.
+pub fn init_repo(path: &Path) -> Result<()> {
+    git_checked(path, &["init"])
+}
+
+/// Write a sensible default `.gitignore`, but never overwrite an existing one.
+pub fn write_default_gitignore(path: &Path) -> Result<()> {
+    let gi = path.join(".gitignore");
+    if !gi.exists() {
+        std::fs::write(&gi, DEFAULT_GITIGNORE)?;
+    }
+    Ok(())
+}
+
+/// Stage everything and make the initial commit. Optionally writes a default
+/// `.gitignore` first. Falls back to `--allow-empty` when nothing is staged
+/// (empty or fully-ignored folder), so the repo still gains a usable `HEAD`.
+pub fn initial_commit(path: &Path, add_gitignore: bool) -> Result<()> {
+    if add_gitignore {
+        write_default_gitignore(path)?;
+    }
+    git_checked(path, &["add", "-A"])?;
+    // Nothing staged → empty commit so HEAD exists and worktrees can branch.
+    let staged = Command::new("git")
+        .args(["diff", "--cached", "--quiet"])
+        .current_dir(path)
+        .status()?;
+    let mut commit_args = vec!["commit", "-m", "Initial commit"];
+    if staged.success() {
+        // exit 0 from --quiet means no staged changes.
+        commit_args.push("--allow-empty");
+    }
+    git_checked(path, &commit_args)
 }

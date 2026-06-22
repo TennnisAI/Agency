@@ -1,4 +1,4 @@
-use agency_core::setup::{repo_readiness, RepoReadiness};
+use agency_core::setup::{repo_readiness, RepoReadiness, init_repo, initial_commit, write_default_gitignore};
 use std::path::Path;
 use std::process::Command;
 
@@ -56,4 +56,57 @@ fn committed_repo_with_changes_is_ready_dirty() {
     git(dir.path(), &["commit", "-q", "-m", "init"]);
     std::fs::write(dir.path().join("b.txt"), "new\n").unwrap();
     assert_eq!(repo_readiness(dir.path()), RepoReadiness::Ready { dirty: true });
+}
+
+#[test]
+fn init_repo_makes_a_repo_with_no_commits() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path()).unwrap();
+    assert!(matches!(repo_readiness(dir.path()), RepoReadiness::NoCommits { .. }));
+}
+
+#[test]
+fn initial_commit_with_files_makes_repo_ready() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path()).unwrap();
+    git(dir.path(), &["config", "user.email", "t@e.com"]);
+    git(dir.path(), &["config", "user.name", "T"]);
+    std::fs::write(dir.path().join("a.txt"), "hi\n").unwrap();
+    initial_commit(dir.path(), false).unwrap();
+    assert_eq!(repo_readiness(dir.path()), RepoReadiness::Ready { dirty: false });
+}
+
+#[test]
+fn initial_commit_on_empty_folder_uses_allow_empty() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path()).unwrap();
+    git(dir.path(), &["config", "user.email", "t@e.com"]);
+    git(dir.path(), &["config", "user.name", "T"]);
+    initial_commit(dir.path(), false).unwrap();
+    assert_eq!(repo_readiness(dir.path()), RepoReadiness::Ready { dirty: false });
+}
+
+#[test]
+fn initial_commit_with_gitignore_writes_and_excludes() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path()).unwrap();
+    git(dir.path(), &["config", "user.email", "t@e.com"]);
+    git(dir.path(), &["config", "user.name", "T"]);
+    std::fs::create_dir(dir.path().join("node_modules")).unwrap();
+    std::fs::write(dir.path().join("node_modules/x.js"), "x\n").unwrap();
+    std::fs::write(dir.path().join("keep.txt"), "k\n").unwrap();
+    initial_commit(dir.path(), true).unwrap();
+
+    let gi = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+    assert!(gi.contains("node_modules/"));
+    // node_modules excluded → tree clean, keep.txt + .gitignore committed.
+    assert_eq!(repo_readiness(dir.path()), RepoReadiness::Ready { dirty: false });
+}
+
+#[test]
+fn write_default_gitignore_does_not_overwrite() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join(".gitignore"), "custom\n").unwrap();
+    write_default_gitignore(dir.path()).unwrap();
+    assert_eq!(std::fs::read_to_string(dir.path().join(".gitignore")).unwrap(), "custom\n");
 }

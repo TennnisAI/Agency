@@ -410,3 +410,39 @@ pub fn commit_repo(
         .commit_repo(std::path::Path::new(&repo_path), add_gitignore)
         .map_err(|e| e.to_string())
 }
+
+#[tauri::command]
+pub fn git_stage_lines(
+    state: State<'_, AppState>,
+    task_id: String,
+    path: String,
+    hunk_index: usize,
+    lines: Vec<usize>,
+) -> Result<(), String> {
+    let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
+    agency_core::git::stage_lines(&wt, &path, hunk_index, &lines).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn git_unstage_lines(
+    state: State<'_, AppState>,
+    task_id: String,
+    path: String,
+    hunk_index: usize,
+    lines: Vec<usize>,
+) -> Result<(), String> {
+    let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
+    agency_core::git::unstage_lines(&wt, &path, hunk_index, &lines).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn git_revert_lines(
+    state: State<'_, AppState>,
+    task_id: String,
+    path: String,
+    hunk_index: usize,
+    lines: Vec<usize>,
+) -> Result<(), String> {
+    let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
+    agency_core::git::revert_lines(&wt, &path, hunk_index, &lines).map_err(|e| e.to_string())
+}

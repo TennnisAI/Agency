@@ -374,3 +374,91 @@ pub fn commit_amend(worktree: &Path, message: &str) -> Result<()> {
     git(worktree, &["commit", "--amend", "-m", message])?;
     Ok(())
 }
+
+/// Build a patch applying only `selected` body lines of one hunk.
+/// Unselected '+' lines are dropped; unselected '-' lines become context so
+/// they are preserved. The hunk header counts are recomputed. When `reverse`
+/// is true (unstaging the cached diff) the roles of +/- are swapped for counting.
+pub fn build_partial_patch(
+    fd: &FileDiff,
+    hunk_index: usize,
+    selected: &[usize],
+    reverse: bool,
+) -> Result<String> {
+    let hunk = fd
+        .hunks
+        .get(hunk_index)
+        .ok_or_else(|| anyhow::anyhow!("hunk index {hunk_index} out of range"))?;
+    // Parse "@@ -old_start,old_len +new_start,new_len @@".
+    let (old_start, new_start) = parse_hunk_starts(&hunk.header)?;
+    let mut body: Vec<String> = Vec::new();
+    let (mut old_len, mut new_len) = (0u32, 0u32);
+    for (i, line) in hunk.lines.iter().enumerate() {
+        let kind = line.chars().next().unwrap_or(' ');
+        let sel = selected.contains(&i);
+        match kind {
+            '+' => {
+                if sel {
+                    body.push(line.clone());
+                    new_len += 1;
+                }
+                // unselected add: drop entirely
+            }
+            '-' => {
+                if sel {
+                    body.push(line.clone());
+                    old_len += 1;
+                } else {
+                    // keep as context
+                    body.push(format!(" {}", &line[1..]));
+                    old_len += 1;
+                    new_len += 1;
+                }
+            }
+            _ => {
+                body.push(line.clone());
+                old_len += 1;
+                new_len += 1;
+            }
+        }
+    }
+    let _ = reverse; // counts are symmetric for our construction
+    let mut patch = fd.header.clone();
+    patch.push_str(&format!(
+        "@@ -{old_start},{old_len} +{new_start},{new_len} @@\n"
+    ));
+    for l in body {
+        patch.push_str(&l);
+        patch.push('\n');
+    }
+    Ok(patch)
+}
+
+fn parse_hunk_starts(header: &str) -> Result<(u32, u32)> {
+    // header like "@@ -1,1 +1,3 @@ optional"
+    let core = header.trim_start_matches("@@").trim();
+    let mut parts = core.split_whitespace();
+    let old = parts.next().unwrap_or("");
+    let new = parts.next().unwrap_or("");
+    let old_start = old.trim_start_matches('-').split(',').next().unwrap_or("0").parse().unwrap_or(0);
+    let new_start = new.trim_start_matches('+').split(',').next().unwrap_or("0").parse().unwrap_or(0);
+    Ok((old_start, new_start))
+}
+
+pub fn stage_lines(worktree: &Path, path: &str, hunk_index: usize, selected: &[usize]) -> Result<()> {
+    let fd = parse_diff(&diff(worktree, path, false)?);
+    let patch = build_partial_patch(&fd, hunk_index, selected, false)?;
+    git_stdin(worktree, &["apply", "--cached", "-"], &patch)
+}
+
+pub fn unstage_lines(worktree: &Path, path: &str, hunk_index: usize, selected: &[usize]) -> Result<()> {
+    let fd = parse_diff(&diff(worktree, path, true)?);
+    let patch = build_partial_patch(&fd, hunk_index, selected, true)?;
+    git_stdin(worktree, &["apply", "--cached", "--reverse", "-"], &patch)
+}
+
+pub fn revert_lines(worktree: &Path, path: &str, hunk_index: usize, selected: &[usize]) -> Result<()> {
+    let fd = parse_diff(&diff(worktree, path, false)?);
+    let patch = build_partial_patch(&fd, hunk_index, selected, false)?;
+    git_stdin(worktree, &["apply", "--reverse", "-"], &patch)
+}

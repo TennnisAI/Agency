@@ -326,6 +326,34 @@ fn commit_diff_shows_file_diff() {
 }
 
 #[test]
+fn build_partial_patch_keeps_selected_add_drops_others() {
+    // Hunk adds two lines after context; select only the first added line (index 1).
+    let fd = parse_diff(
+        "diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -1,1 +1,3 @@\n one\n+two\n+three\n",
+    );
+    let patch = git::build_partial_patch(&fd, 0, &[1], false).unwrap();
+    assert!(patch.contains("+two"));
+    assert!(!patch.contains("+three"), "unselected add dropped: {patch}");
+    assert!(patch.contains("@@ -1,1 +1,2 @@"), "recomputed header: {patch}");
+}
+
+#[test]
+fn stage_lines_stages_only_selection() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    std::fs::write(dir.path().join("tracked.txt"), "one\ntwo\nthree\n").unwrap();
+    // working diff: hunk index 0 adds "two" (idx 1) and "three" (idx 2) after "one".
+    let raw = git::diff(dir.path(), "tracked.txt", false).unwrap();
+    let fd = parse_diff(&raw);
+    // Select the first added body line only.
+    let add_idx = fd.hunks[0].lines.iter().position(|l| l.starts_with("+two")).unwrap();
+    git::stage_lines(dir.path(), "tracked.txt", 0, &[add_idx]).unwrap();
+    let staged = git::diff(dir.path(), "tracked.txt", true).unwrap();
+    assert!(staged.contains("+two"));
+    assert!(!staged.contains("+three"), "only selection staged: {staged}");
+}
+
+#[test]
 fn staging_all_hunks_equals_staging_whole_file() {
     let dir = tempfile::tempdir().unwrap();
     init_repo_10(dir.path());

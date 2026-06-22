@@ -201,3 +201,10 @@ export const gitCommitDiff = (taskId: string, hash: string, path: string) =>
   invoke<string>("git_commit_diff", { taskId, hash, path });
 export const gitCommitAmend = (taskId: string, message: string) =>
   invoke<void>("git_commit_amend", { taskId, message });
+
+export const gitStageLines = (taskId: string, path: string, hunkIndex: number, lines: number[]) =>
+  invoke<void>("git_stage_lines", { taskId, path, hunkIndex, lines });
+export const gitUnstageLines = (taskId: string, path: string, hunkIndex: number, lines: number[]) =>
+  invoke<void>("git_unstage_lines", { taskId, path, hunkIndex, lines });
+export const gitRevertLines = (taskId: string, path: string, hunkIndex: number, lines: number[]) =>
+  invoke<void>("git_revert_lines", { taskId, path, hunkIndex, lines });

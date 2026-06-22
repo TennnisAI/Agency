@@ -63,6 +63,9 @@ pub fn run() {
             commands::git_commit_files,
             commands::git_commit_diff,
             commands::git_commit_amend,
+            commands::git_stage_lines,
+            commands::git_unstage_lines,
+            commands::git_revert_lines,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Agency");

@@ -2,10 +2,30 @@ import { useEffect, useRef } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
-import { attachRun, detachRun, resizeRun, runInput, runPreview } from "../api";
+import { attachRun, detachRun, resizeRun, runInput, runPreview,
+  attachRunScript, detachRunScript, resizeRunScript, runScriptInput, runScriptPreview } from "../api";
 import { xtermTheme } from "../lib/xtermTheme";
 
-export default function FocusTerminal({ runId }: { runId: string }) {
+export interface TerminalStream {
+  attach(id: string, onBytes: (b: Uint8Array) => void): Promise<void>;
+  detach(id: string): void;
+  resize(id: string, cols: number, rows: number): Promise<void>;
+  input(id: string, data: string): Promise<void>;
+  preview(id: string, lines: number): Promise<string>;
+}
+
+export const agentStream: TerminalStream = {
+  attach: attachRun, detach: detachRun, resize: resizeRun, input: runInput, preview: runPreview,
+};
+
+export const runStream: TerminalStream = {
+  attach: attachRunScript, detach: detachRunScript, resize: resizeRunScript,
+  input: runScriptInput, preview: runScriptPreview,
+};
+
+export default function FocusTerminal(
+  { runId, stream = agentStream }: { runId: string; stream?: TerminalStream },
+) {
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -21,7 +41,7 @@ export default function FocusTerminal({ runId }: { runId: string }) {
     const doFit = () => {
       try {
         fit.fit();
-        if (term.cols > 0 && term.rows > 0) resizeRun(runId, term.cols, term.rows).catch(() => {});
+        if (term.cols > 0 && term.rows > 0) stream.resize(runId, term.cols, term.rows).catch(() => {});
       } catch { /* not laid out */ }
     };
     requestAnimationFrame(() => { doFit(); term.focus(); });
@@ -30,10 +50,10 @@ export default function FocusTerminal({ runId }: { runId: string }) {
 
     let disposed = false;
     let onData: { dispose(): void } | undefined;
-    runPreview(runId, 200).then((seed) => { if (!disposed && seed) term.write(seed.endsWith("\n") ? seed : seed + "\n"); });
-    attachRun(runId, (bytes) => term.write(bytes)).then(() => {
+    stream.preview(runId, 200).then((seed) => { if (!disposed && seed) term.write(seed.endsWith("\n") ? seed : seed + "\n"); });
+    stream.attach(runId, (bytes) => term.write(bytes)).then(() => {
       if (disposed) return;
-      onData = term.onData((d) => runInput(runId, d));
+      onData = term.onData((d) => stream.input(runId, d));
       // Re-send the size now that the attach exists, so the first paint matches.
       doFit();
     });
@@ -42,10 +62,10 @@ export default function FocusTerminal({ runId }: { runId: string }) {
       disposed = true;
       ro.disconnect();
       onData?.dispose();
-      detachRun(runId);
+      stream.detach(runId);
       term.dispose();
     };
-  }, [runId]);
+  }, [runId, stream]);
 
   return <div className="terminal focus-term" ref={ref} />;
 }

@@ -25,6 +25,7 @@ export interface RunInfo {
   added: number;
   deleted: number;
   files: number;
+  port: number | null;
 }
 
 export const listProjects = () => invoke<Project[]>("list_projects");
@@ -66,6 +67,26 @@ export function attachRun(id: string, onBytes: (b: Uint8Array) => void): Promise
   const onChunk = new Channel<{ b64: string }>();
   onChunk.onmessage = (m) => onBytes(b64ToBytes(m.b64));
   return invoke<void>("attach_run", { id, onChunk });
+}
+
+export const runScriptConfigured = (id: string) =>
+  invoke<boolean>("run_script_configured", { id });
+export const startRunScript = (id: string) => invoke<void>("start_run_script", { id });
+export const stopRunScript = (id: string) => invoke<void>("stop_run_script", { id });
+export const runScriptStatus = (id: string) =>
+  invoke<SessionStatus>("run_script_status", { id });
+export const runScriptPreview = (id: string, lines: number) =>
+  invoke<string>("run_script_preview", { id, lines });
+export const detachRunScript = (id: string) => invoke<void>("detach_run_script", { id });
+export const runScriptInput = (id: string, data: string) =>
+  invoke<void>("run_script_input", { id, data });
+export const resizeRunScript = (id: string, cols: number, rows: number) =>
+  invoke<void>("resize_run_script", { id, cols, rows });
+
+export function attachRunScript(id: string, onBytes: (b: Uint8Array) => void): Promise<void> {
+  const onChunk = new Channel<{ b64: string }>();
+  onChunk.onmessage = (m) => onBytes(b64ToBytes(m.b64));
+  return invoke<void>("attach_run_script", { id, onChunk });
 }
 
 export interface FileChange {

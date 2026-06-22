@@ -47,20 +47,37 @@ impl WorktreeManager {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
 
-    /// Ensure `.agency/` is excluded so worktrees never show as untracked.
-    fn ensure_excluded(&self) -> Result<()> {
+    /// Ensure agency's local artifacts are git-excluded without ignoring the
+    /// tracked `.agency/agency.toml`. Writes `.agency/worktrees/` and
+    /// `.agency/agency.local.toml`, and migrates away the legacy broad
+    /// `.agency/` entry if present.
+    pub(crate) fn ensure_excluded(&self) -> Result<()> {
         let exclude = self.repo_path.join(".git").join("info").join("exclude");
         let current = std::fs::read_to_string(&exclude).unwrap_or_default();
-        if !current.lines().any(|l| l.trim() == ".agency/") {
+        let wanted = [".agency/worktrees/", ".agency/agency.local.toml"];
+
+        let had_legacy = current.lines().any(|l| l.trim() == ".agency/");
+        let mut lines: Vec<String> = current
+            .lines()
+            .filter(|l| l.trim() != ".agency/")
+            .map(|l| l.to_string())
+            .collect();
+
+        let mut changed = had_legacy;
+        for w in wanted {
+            if !lines.iter().any(|l| l.trim() == w) {
+                lines.push(w.to_string());
+                changed = true;
+            }
+        }
+
+        if changed {
             if let Some(parent) = exclude.parent() {
                 std::fs::create_dir_all(parent).ok();
             }
-            let mut updated = current;
-            if !updated.is_empty() && !updated.ends_with('\n') {
-                updated.push('\n');
-            }
-            updated.push_str(".agency/\n");
-            std::fs::write(&exclude, updated)?;
+            let mut out = lines.join("\n");
+            out.push('\n');
+            std::fs::write(&exclude, out)?;
         }
         Ok(())
     }
@@ -119,5 +136,59 @@ impl WorktreeManager {
         let branch = Self::branch_for(task_id);
         let _ = self.git(&["branch", "-D", &branch]);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    fn exclude_path(repo: &std::path::Path) -> std::path::PathBuf {
+        repo.join(".git").join("info").join("exclude")
+    }
+
+    #[test]
+    fn ensure_excluded_writes_narrow_entries() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path().to_path_buf();
+        fs::create_dir_all(repo.join(".git").join("info")).unwrap();
+        let mgr = WorktreeManager::new(repo.clone());
+        mgr.ensure_excluded().unwrap();
+        let body = fs::read_to_string(exclude_path(&repo)).unwrap();
+        let lines: Vec<&str> = body.lines().map(|l| l.trim()).collect();
+        assert!(lines.contains(&".agency/worktrees/"));
+        assert!(lines.contains(&".agency/agency.local.toml"));
+        assert!(!lines.contains(&".agency/"));
+    }
+
+    #[test]
+    fn ensure_excluded_migrates_legacy_entry() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path().to_path_buf();
+        let info = repo.join(".git").join("info");
+        fs::create_dir_all(&info).unwrap();
+        fs::write(info.join("exclude"), "# existing\n.agency/\n").unwrap();
+        let mgr = WorktreeManager::new(repo.clone());
+        mgr.ensure_excluded().unwrap();
+        let body = fs::read_to_string(exclude_path(&repo)).unwrap();
+        let lines: Vec<&str> = body.lines().map(|l| l.trim()).collect();
+        assert!(lines.contains(&"# existing"), "preserves unrelated lines");
+        assert!(!lines.contains(&".agency/"), "drops legacy broad ignore");
+        assert!(lines.contains(&".agency/worktrees/"));
+    }
+
+    #[test]
+    fn ensure_excluded_is_idempotent() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path().to_path_buf();
+        fs::create_dir_all(repo.join(".git").join("info")).unwrap();
+        let mgr = WorktreeManager::new(repo.clone());
+        mgr.ensure_excluded().unwrap();
+        let first = fs::read_to_string(exclude_path(&repo)).unwrap();
+        mgr.ensure_excluded().unwrap();
+        let second = fs::read_to_string(exclude_path(&repo)).unwrap();
+        assert_eq!(first, second);
     }
 }

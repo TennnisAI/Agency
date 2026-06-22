@@ -60,16 +60,59 @@ fn validate_provider_url(raw: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn new_task_id() -> String {
+/// Build a readable, unique task id from the prompt: a slug derived from the
+/// prompt text plus a short suffix that disambiguates runs sharing a prompt.
+/// The id doubles as the worktree dir, branch (`agent/<id>`) and tmux session
+/// name, so it stays restricted to `[a-z0-9-]`, which is safe for all three.
+pub fn new_task_id(prompt: &str) -> String {
+    format!("{}-{}", slugify(prompt), short_suffix())
+}
+
+/// Lowercase the prompt, keep ASCII alphanumerics, collapse every other run of
+/// characters into a single hyphen, and cap the length so branch names stay
+/// short. Falls back to "agent" when the prompt has no usable characters.
+fn slugify(prompt: &str) -> String {
+    let mut slug = String::new();
+    let mut prev_dash = false;
+    for ch in prompt.chars() {
+        if slug.len() >= 40 {
+            break;
+        }
+        if ch.is_ascii_alphanumeric() {
+            slug.push(ch.to_ascii_lowercase());
+            prev_dash = false;
+        } else if !prev_dash && !slug.is_empty() {
+            slug.push('-');
+            prev_dash = true;
+        }
+    }
+    let slug = slug.trim_matches('-');
+    if slug.is_empty() {
+        "agent".to_string()
+    } else {
+        slug.to_string()
+    }
+}
+
+/// A short base36 suffix derived from the clock and a process-wide counter, so
+/// two runs created from the same prompt (e.g. reruns) get distinct ids.
+fn short_suffix() -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
+        .map(|d| d.as_nanos() as u64)
         .unwrap_or(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!("{:032x}", nanos ^ ((n as u128) << 96))
+    let mut v = nanos.rotate_left(21) ^ n.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    const DIGITS: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+    let mut s = [0u8; 4];
+    for slot in s.iter_mut() {
+        *slot = DIGITS[(v % 36) as usize];
+        v /= 36;
+    }
+    String::from_utf8_lossy(&s).into_owned()
 }
 
 fn now_secs() -> i64 {
@@ -269,7 +312,7 @@ impl AppState {
             reg.get_profile(agent)?
                 .ok_or_else(|| anyhow!("unknown agent profile: {agent}"))?
         };
-        let id = new_task_id();
+        let id = new_task_id(prompt);
         let worktree = WorktreeManager::new(repo).create(&id, base)?;
 
         let mut env = self.provider_env()?;
@@ -322,6 +365,17 @@ impl AppState {
         let attaches = self.attaches.lock().unwrap();
         let handle = attaches.get(id).ok_or_else(|| anyhow!("run not attached: {id}"))?;
         handle.write_input(data)
+    }
+
+    /// Resize the attached PTY so tmux reflows the session to the visible
+    /// terminal. A no-op when the run isn't attached (resize events can race
+    /// ahead of the attach completing).
+    pub fn resize_run(&self, id: &str, cols: u16, rows: u16) -> Result<()> {
+        let attaches = self.attaches.lock().unwrap();
+        if let Some(handle) = attaches.get(id) {
+            handle.resize(rows, cols)?;
+        }
+        Ok(())
     }
 
     pub fn run_preview(&self, id: &str, lines: usize) -> Result<String> {
@@ -443,6 +497,17 @@ impl AppState {
             .ok_or_else(|| anyhow!("no resolver for task: {id}"))?;
         Ok(handle.status())
     }
+
+    /// Resize the resolver PTY so its agent reflows to the visible terminal.
+    /// A no-op when no resolver is running (resize events can arrive before the
+    /// resolver is spawned or after it has exited).
+    pub fn resolver_resize(&self, id: &str, cols: u16, rows: u16) -> anyhow::Result<()> {
+        let resolvers = self.resolvers.lock().unwrap();
+        if let Some(handle) = resolvers.get(id) {
+            handle.resize(rows, cols)?;
+        }
+        Ok(())
+    }
 }
 
 /// A project path is addable as long as it is a git repository. A repo with no
@@ -460,4 +525,43 @@ fn validate_repo(repo_path: &Path) -> Result<()> {
         bail!("{} is not a git repository", repo_path.display());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{new_task_id, slugify};
+
+    #[test]
+    fn slugify_makes_readable_ref_safe_slugs() {
+        assert_eq!(slugify("Fix the tmux resize bug!"), "fix-the-tmux-resize-bug");
+        assert_eq!(slugify("  leading/trailing  "), "leading-trailing");
+        assert_eq!(slugify("multi   space\tand\nnewline"), "multi-space-and-newline");
+    }
+
+    #[test]
+    fn slugify_falls_back_when_no_usable_chars() {
+        assert_eq!(slugify(""), "agent");
+        assert_eq!(slugify("!!! ???"), "agent");
+    }
+
+    #[test]
+    fn slugify_caps_length() {
+        let slug = slugify(&"word ".repeat(40));
+        assert!(slug.len() <= 40, "slug too long: {slug}");
+        assert!(!slug.ends_with('-'));
+    }
+
+    #[test]
+    fn new_task_id_is_slug_plus_suffix_and_ref_safe() {
+        let id = new_task_id("Add a login page");
+        assert!(id.starts_with("add-a-login-page-"), "unexpected id: {id}");
+        assert!(id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'));
+    }
+
+    #[test]
+    fn new_task_id_disambiguates_same_prompt() {
+        let a = new_task_id("same prompt");
+        let b = new_task_id("same prompt");
+        assert_ne!(a, b);
+    }
 }

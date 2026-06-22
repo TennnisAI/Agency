@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
-import { attachRun, detachRun, runInput, runPreview } from "../api";
+import { attachRun, detachRun, resizeRun, runInput, runPreview } from "../api";
 import { xtermTheme } from "../lib/xtermTheme";
 
 export default function FocusTerminal({ runId }: { runId: string }) {
@@ -15,7 +15,15 @@ export default function FocusTerminal({ runId }: { runId: string }) {
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(container);
-    const doFit = () => { try { fit.fit(); } catch { /* not laid out */ } };
+    // Fit xterm to its container, then push the new size to the backend so the
+    // PTY (and thus tmux) reflows to match. resize_run is a no-op until the
+    // attach lands, so it's safe to call before/while attaching.
+    const doFit = () => {
+      try {
+        fit.fit();
+        if (term.cols > 0 && term.rows > 0) resizeRun(runId, term.cols, term.rows).catch(() => {});
+      } catch { /* not laid out */ }
+    };
     requestAnimationFrame(() => { doFit(); term.focus(); });
     const ro = new ResizeObserver(doFit);
     ro.observe(container);
@@ -26,6 +34,8 @@ export default function FocusTerminal({ runId }: { runId: string }) {
     attachRun(runId, (bytes) => term.write(bytes)).then(() => {
       if (disposed) return;
       onData = term.onData((d) => runInput(runId, d));
+      // Re-send the size now that the attach exists, so the first paint matches.
+      doFit();
     });
 
     return () => {

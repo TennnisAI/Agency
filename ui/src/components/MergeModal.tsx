@@ -8,6 +8,7 @@ import {
   abortMergeTask,
   mergeTask,
   resolveMerge,
+  resolverResize,
   resolverStatus,
 } from "../api";
 
@@ -19,6 +20,7 @@ export default function MergeModal({ taskId, onClose }: { taskId: string; onClos
   const termRef = useRef<HTMLDivElement>(null);
   const termInstanceRef = useRef<Terminal | null>(null);
   const timerRef = useRef<ReturnType<typeof window.setInterval> | null>(null);
+  const roRef = useRef<ResizeObserver | null>(null);
 
   async function attempt() {
     setError("");
@@ -41,19 +43,27 @@ export default function MergeModal({ taskId, onClose }: { taskId: string; onClos
     termInstanceRef.current = term;
     const fit = new FitAddon();
     term.loadAddon(fit);
+    // Fit the terminal to its container, then push the size to the resolver PTY
+    // so its agent reflows. resolver_resize is a no-op until the resolver spawns,
+    // so it's safe to call before/while resolveMerge starts it.
+    const doFit = () => {
+      try {
+        fit.fit();
+        if (term.cols > 0 && term.rows > 0) resolverResize(taskId, term.cols, term.rows).catch(() => {});
+      } catch {
+        /* not laid out */
+      }
+    };
     if (termRef.current) {
       term.open(termRef.current);
-      requestAnimationFrame(() => {
-        try {
-          fit.fit();
-        } catch {
-          /* not laid out */
-        }
-      });
+      requestAnimationFrame(doFit);
+      const ro = new ResizeObserver(doFit);
+      ro.observe(termRef.current);
+      roRef.current = ro;
     }
-    resolveMerge(taskId, "claude", (bytes) => term.write(bytes)).catch((e) =>
-      setError(String(e)),
-    );
+    resolveMerge(taskId, "claude", (bytes) => term.write(bytes))
+      .then(doFit)
+      .catch((e) => setError(String(e)));
     const timer = window.setInterval(async () => {
       try {
         const s = await resolverStatus(taskId);
@@ -72,6 +82,7 @@ export default function MergeModal({ taskId, onClose }: { taskId: string; onClos
   useEffect(() => {
     return () => {
       if (timerRef.current !== null) window.clearInterval(timerRef.current);
+      roRef.current?.disconnect();
       termInstanceRef.current?.dispose();
     };
   }, []);

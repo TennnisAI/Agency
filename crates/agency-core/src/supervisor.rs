@@ -17,7 +17,7 @@ pub struct AgentHandle {
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     status: Arc<Mutex<AgentStatus>>,
     // Keep the master alive so the PTY stays open for the lifetime of the handle.
-    _master: Box<dyn MasterPty + Send>,
+    master: Box<dyn MasterPty + Send>,
 }
 
 impl AgentHandle {
@@ -25,6 +25,19 @@ impl AgentHandle {
         let mut w = self.writer.lock().unwrap();
         w.write_all(data)?;
         w.flush()?;
+        Ok(())
+    }
+
+    /// Resize the PTY. This delivers SIGWINCH to the child (the attached tmux
+    /// client), which renegotiates the window size with the tmux server so the
+    /// session reflows to match.
+    pub fn resize(&self, rows: u16, cols: u16) -> Result<()> {
+        self.master.resize(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })?;
         Ok(())
     }
 
@@ -95,6 +108,6 @@ where
     Ok(AgentHandle {
         writer: Arc::new(Mutex::new(writer)),
         status,
-        _master: pair.master,
+        master: pair.master,
     })
 }

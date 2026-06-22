@@ -74,18 +74,11 @@ export interface FileChange {
   worktree: string; // unstaged status code
 }
 
-export interface CommitInfo {
-  hash: string;
-  summary: string;
-}
-
 export const gitStatus = (taskId: string) =>
   invoke<FileChange[]>("git_status", { taskId });
 
 export const gitDiff = (taskId: string, path: string, staged: boolean) =>
   invoke<string>("git_diff", { taskId, path, staged });
-
-export const gitLog = (taskId: string) => invoke<CommitInfo[]>("git_log", { taskId });
 
 export const gitStage = (taskId: string, path: string) =>
   invoke<void>("git_stage", { taskId, path });

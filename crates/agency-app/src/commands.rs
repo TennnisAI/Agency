@@ -1,4 +1,4 @@
-use agency_core::git::{self, CommitFile, CommitInfo, FileDiff, FileChange};
+use agency_core::git::{self, CommitFile, FileDiff, FileChange};
 use agency_core::merge::MergeOutcome;
 use agency_core::profile::AgentProfile;
 use agency_core::registry::Project;
@@ -168,12 +168,6 @@ pub fn git_diff(
 ) -> Result<String, String> {
     let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
     git::diff(&wt, &path, staged).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn git_log(state: State<'_, AppState>, task_id: String) -> Result<Vec<CommitInfo>, String> {
-    let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
-    git::log(&wt, 100).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

@@ -238,6 +238,83 @@ pub fn unstage_hunk(worktree: &Path, path: &str, hunk_index: usize) -> Result<()
     )
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HistoryItem {
+    pub hash: String,
+    pub parents: Vec<String>,
+    pub author: String,
+    pub email: String,
+    pub date: i64,
+    pub subject: String,
+    pub refs: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BranchInfo {
+    pub branch: String,
+    pub upstream: Option<String>,
+    pub ahead: u32,
+    pub behind: u32,
+    pub base: Option<String>,
+}
+
+/// HEAD ancestry, newest first. Fields are unit-separated (\x1f); parents and
+/// refs are space/comma lists. %D yields "HEAD -> main, origin/main, tag: v1".
+pub fn log_graph(worktree: &Path, limit: usize) -> Result<Vec<HistoryItem>> {
+    let limit_arg = format!("-n{limit}");
+    let format = "--format=%H%x1f%P%x1f%an%x1f%ae%x1f%at%x1f%s%x1f%D";
+    let out = git(worktree, &["log", &limit_arg, format])?;
+    let mut items = Vec::new();
+    for line in out.lines() {
+        let f: Vec<&str> = line.split('\u{1f}').collect();
+        if f.len() < 7 {
+            continue;
+        }
+        let parents = f[1].split_whitespace().map(str::to_string).collect();
+        let refs = f[6]
+            .split(',')
+            .map(|r| r.trim().trim_start_matches("HEAD -> ").to_string())
+            .filter(|r| !r.is_empty())
+            .collect();
+        items.push(HistoryItem {
+            hash: f[0].to_string(),
+            parents,
+            author: f[2].to_string(),
+            email: f[3].to_string(),
+            date: f[4].parse().unwrap_or(0),
+            subject: f[5].to_string(),
+            refs,
+        });
+    }
+    Ok(items)
+}
+
+pub fn branch_info(worktree: &Path) -> Result<BranchInfo> {
+    let branch = git(worktree, &["rev-parse", "--abbrev-ref", "HEAD"])?
+        .trim()
+        .to_string();
+    let upstream = git(worktree, &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let (mut ahead, mut behind) = (0, 0);
+    if upstream.is_some() {
+        if let Ok(counts) = git(worktree, &["rev-list", "--left-right", "--count", "@{u}...HEAD"]) {
+            let mut p = counts.split_whitespace();
+            behind = p.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+            ahead = p.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+        }
+    }
+    // Base = merge-base with the first reachable default branch.
+    let base = ["origin/HEAD", "main", "master"].iter().find_map(|cand| {
+        git(worktree, &["merge-base", "HEAD", cand])
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    });
+    Ok(BranchInfo { branch, upstream, ahead, behind, base })
+}
+
 pub fn stage_all(worktree: &Path) -> Result<()> {
     git(worktree, &["add", "-A"])?;
     Ok(())

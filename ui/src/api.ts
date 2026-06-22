@@ -167,5 +167,25 @@ export const gitStageHunk = (taskId: string, path: string, hunkIndex: number) =>
   invoke<void>("git_stage_hunk", { taskId, path, hunkIndex });
 export const gitUnstageHunk = (taskId: string, path: string, hunkIndex: number) =>
   invoke<void>("git_unstage_hunk", { taskId, path, hunkIndex });
-export const projectLog = (projectId: string, limit: number) =>
-  invoke<CommitInfo[]>("project_log", { projectId, limit });
+export interface HistoryItem {
+  hash: string;
+  parents: string[];
+  author: string;
+  email: string;
+  date: number;
+  subject: string;
+  refs: string[];
+}
+
+export interface BranchInfo {
+  branch: string;
+  upstream: string | null;
+  ahead: number;
+  behind: number;
+  base: string | null;
+}
+
+export const gitLogGraph = (taskId: string, limit: number) =>
+  invoke<HistoryItem[]>("git_log_graph", { taskId, limit });
+export const gitBranchInfo = (taskId: string) =>
+  invoke<BranchInfo>("git_branch_info", { taskId });

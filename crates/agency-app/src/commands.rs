@@ -341,13 +341,22 @@ pub fn git_unstage_hunk(
 }
 
 #[tauri::command]
-pub fn project_log(
+pub fn git_log_graph(
     state: State<'_, AppState>,
-    project_id: String,
+    task_id: String,
     limit: usize,
-) -> Result<Vec<agency_core::git::CommitInfo>, String> {
-    let repo = state.project_repo_path(&project_id).map_err(|e| e.to_string())?;
-    agency_core::git::log(&repo, limit).map_err(|e| e.to_string())
+) -> Result<Vec<agency_core::git::HistoryItem>, String> {
+    let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
+    agency_core::git::log_graph(&wt, limit).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn git_branch_info(
+    state: State<'_, AppState>,
+    task_id: String,
+) -> Result<agency_core::git::BranchInfo, String> {
+    let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
+    agency_core::git::branch_info(&wt).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

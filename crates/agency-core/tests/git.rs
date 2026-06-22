@@ -170,6 +170,41 @@ fn git_raw_diff(dir: &std::path::Path, path: &str) -> String {
     String::from_utf8_lossy(&out.stdout).to_string()
 }
 
+#[test]
+fn log_graph_returns_parents_and_subject() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    std::fs::write(dir.path().join("tracked.txt"), "one\ntwo\n").unwrap();
+    run(dir.path(), &["commit", "-aqm", "second commit"]);
+    let items = git::log_graph(dir.path(), 10).unwrap();
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0].subject, "second commit");
+    assert_eq!(items[0].parents.len(), 1, "second has one parent");
+    assert_eq!(items[0].parents[0], items[1].hash);
+    assert!(items[1].parents.is_empty(), "root has no parent");
+    assert_eq!(items[0].author, "T");
+}
+
+#[test]
+fn log_graph_captures_refs() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    let items = git::log_graph(dir.path(), 10).unwrap();
+    assert!(items[0].refs.iter().any(|r| r.contains("HEAD") || r.contains("master") || r.contains("main")),
+        "head commit carries a ref: {:?}", items[0].refs);
+}
+
+#[test]
+fn branch_info_reports_branch_and_no_upstream() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    let info = git::branch_info(dir.path()).unwrap();
+    assert!(info.branch == "master" || info.branch == "main");
+    assert!(info.upstream.is_none());
+    assert_eq!(info.ahead, 0);
+    assert_eq!(info.behind, 0);
+}
+
 use agency_core::git::{stage_hunk, unstage_hunk};
 
 fn staged_diff(dir: &std::path::Path, path: &str) -> String {

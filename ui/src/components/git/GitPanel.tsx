@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { FileChange, BranchInfo, HistoryItem, gitStatus, gitBranchInfo, gitPush } from "../../api";
 import ChangesPanel from "./ChangesPanel";
 import HistoryPanel from "./HistoryPanel";
@@ -17,7 +17,6 @@ export default function GitPanel({ taskId, layout }: { taskId: string; layout: "
   const [error, setError] = useState("");
   const [tab, setTab] = useState<"changes" | "history">("changes");
   const [sel, setSel] = useState<Selection>(null);
-  const visible = useRef(true);
 
   const refresh = useCallback(async () => {
     try {
@@ -28,8 +27,9 @@ export default function GitPanel({ taskId, layout }: { taskId: string; layout: "
   }, [taskId]);
 
   useEffect(() => { refresh(); }, [refresh]);
+  useEffect(() => { setSel(null); }, [taskId]);
   useEffect(() => {
-    const id = setInterval(() => { if (visible.current) refresh(); }, 2000);
+    const id = setInterval(() => refresh(), 2000);
     return () => clearInterval(id);
   }, [refresh]);
 

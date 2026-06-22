@@ -1,3 +1,4 @@
+import { useState } from "react";
 import {
   FileChange, BranchInfo, gitStage, gitUnstage, gitStageAll, gitUnstageAll,
   gitDiscard, gitDiscardAll, gitCommit, gitCommitAmend, gitPush,
@@ -5,6 +6,7 @@ import {
 import { partition } from "./status";
 import ResourceGroup from "./ResourceGroup";
 import CommitBox from "./CommitBox";
+import ConfirmDialog from "../ConfirmDialog";
 
 export default function ChangesPanel({
   taskId, changes, branch, onAct, selectedPath, onSelectFile,
@@ -17,6 +19,10 @@ export default function ChangesPanel({
   onSelectFile: (path: string, group: "index" | "workingTree" | "merge" | "untracked") => void;
 }) {
   const g = partition(changes);
+  // Discard is destructive (git restore / clean -f); confirm before running.
+  const [pending, setPending] = useState<{ body: string; run: () => Promise<unknown> } | null>(null);
+  const confirmDiscard = (body: string, run: () => Promise<unknown>) => setPending({ body, run });
+
   return (
     <div className="git-changes">
       <CommitBox
@@ -40,14 +46,31 @@ export default function ChangesPanel({
       <ResourceGroup id="workingTree" label="Changes" changes={g.workingTree}
         selectedPath={selectedPath} onSelectFile={(c) => onSelectFile(c.path, "workingTree")}
         onFilePrimary={(c) => onAct(() => gitStage(taskId, c.path))}
-        onFileDiscard={(c) => onAct(() => gitDiscard(taskId, c.path, false))}
+        onFileDiscard={(c) => confirmDiscard(
+          `Discard changes to ${c.path}? This cannot be undone.`,
+          () => gitDiscard(taskId, c.path, false))}
         onStageAll={() => onAct(() => gitStageAll(taskId))}
-        onDiscardAll={() => onAct(() => gitDiscardAll(taskId))} />
+        onDiscardAll={() => confirmDiscard(
+          "Discard all changes to tracked files? This cannot be undone.",
+          () => gitDiscardAll(taskId))} />
       <ResourceGroup id="untracked" label="Untracked Changes" changes={g.untracked}
         selectedPath={selectedPath} onSelectFile={(c) => onSelectFile(c.path, "untracked")}
         onFilePrimary={(c) => onAct(() => gitStage(taskId, c.path))}
-        onFileDiscard={(c) => onAct(() => gitDiscard(taskId, c.path, true))}
+        onFileDiscard={(c) => confirmDiscard(
+          `Delete untracked file ${c.path}? This cannot be undone.`,
+          () => gitDiscard(taskId, c.path, true))}
         onStageAll={() => onAct(() => gitStageAll(taskId))} />
+
+      {pending && (
+        <ConfirmDialog
+          title="Discard changes"
+          body={pending.body}
+          confirmLabel="Discard"
+          danger
+          onConfirm={() => { onAct(pending.run); setPending(null); }}
+          onCancel={() => setPending(null)}
+        />
+      )}
     </div>
   );
 }

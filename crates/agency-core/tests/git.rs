@@ -45,16 +45,6 @@ fn diff_shows_unstaged_changes() {
 }
 
 #[test]
-fn log_lists_recent_commits() {
-    let dir = tempfile::tempdir().unwrap();
-    init_repo(dir.path());
-    let commits = git::log(dir.path(), 10).unwrap();
-    assert_eq!(commits.len(), 1);
-    assert_eq!(commits[0].summary, "initial");
-    assert!(!commits[0].hash.is_empty());
-}
-
-#[test]
 fn stage_commit_then_log_and_push_to_local_remote() {
     let dir = tempfile::tempdir().unwrap();
     let repo = dir.path().join("repo");
@@ -77,8 +67,8 @@ fn stage_commit_then_log_and_push_to_local_remote() {
 
     git::stage(&repo, "tracked.txt").unwrap();
     git::commit(&repo, "add two").unwrap();
-    let commits = git::log(&repo, 10).unwrap();
-    assert_eq!(commits[0].summary, "add two");
+    let commits = git::log_graph(&repo, 10).unwrap();
+    assert_eq!(commits[0].subject, "add two");
 
     // Set up a bare remote and push to it.
     let remote = dir.path().join("remote.git");
@@ -374,4 +364,32 @@ fn staging_all_hunks_equals_staging_whole_file() {
         .output()
         .unwrap();
     assert!(String::from_utf8_lossy(&out.stdout).trim().is_empty());
+}
+
+#[test]
+fn unstage_lines_unstages_only_selection() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    std::fs::write(dir.path().join("tracked.txt"), "one\ntwo\nthree\n").unwrap();
+    git::stage_all(dir.path()).unwrap();
+    // Cached diff adds "two" and "three"; unstage only "two".
+    let fd = parse_diff(&git::diff(dir.path(), "tracked.txt", true).unwrap());
+    let idx = fd.hunks[0].lines.iter().position(|l| l.starts_with("+two")).unwrap();
+    git::unstage_lines(dir.path(), "tracked.txt", 0, &[idx]).unwrap();
+    let staged = git::diff(dir.path(), "tracked.txt", true).unwrap();
+    assert!(staged.contains("+three"), "three still staged: {staged}");
+    assert!(!staged.contains("+two"), "two should be unstaged: {staged}");
+}
+
+#[test]
+fn revert_lines_reverts_only_selection() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    std::fs::write(dir.path().join("tracked.txt"), "one\ntwo\nthree\n").unwrap();
+    // Working diff adds "two" and "three"; revert only "two".
+    let fd = parse_diff(&git::diff(dir.path(), "tracked.txt", false).unwrap());
+    let idx = fd.hunks[0].lines.iter().position(|l| l.starts_with("+two")).unwrap();
+    git::revert_lines(dir.path(), "tracked.txt", 0, &[idx]).unwrap();
+    let content = std::fs::read_to_string(dir.path().join("tracked.txt")).unwrap();
+    assert_eq!(content, "one\nthree\n", "only 'two' should be reverted");
 }

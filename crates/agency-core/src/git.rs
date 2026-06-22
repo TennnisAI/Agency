@@ -13,12 +13,6 @@ pub struct FileChange {
     pub worktree: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct CommitInfo {
-    pub hash: String,
-    pub summary: String,
-}
-
 /// Run a git command in `worktree`, returning stdout on success.
 fn git(worktree: &Path, args: &[&str]) -> Result<String> {
     let output = Command::new("git")
@@ -65,25 +59,6 @@ pub fn diff(worktree: &Path, path: &str, staged: bool) -> Result<String> {
     } else {
         git(worktree, &["diff", "--", path])
     }
-}
-
-pub fn log(worktree: &Path, limit: usize) -> Result<Vec<CommitInfo>> {
-    let limit_arg = format!("-n{limit}");
-    // Tab-separated hash\tsummary, one commit per line.
-    let out = git(
-        worktree,
-        &["log", &limit_arg, "--format=%H%x09%s"],
-    )?;
-    let mut commits = Vec::new();
-    for line in out.lines() {
-        if let Some((hash, summary)) = line.split_once('\t') {
-            commits.push(CommitInfo {
-                hash: hash.to_string(),
-                summary: summary.to_string(),
-            });
-        }
-    }
-    Ok(commits)
 }
 
 pub fn stage(worktree: &Path, path: &str) -> Result<()> {
@@ -393,6 +368,11 @@ pub fn build_partial_patch(
     let (old_start, new_start) = parse_hunk_starts(&hunk.header)?;
     let mut body: Vec<String> = Vec::new();
     let (mut old_len, mut new_len) = (0u32, 0u32);
+    // The patch is applied forward (stage, file == old side) or reversed
+    // (unstage/revert, file == new side). An unselected change must be turned
+    // into context on whichever side matches the file being patched, and
+    // dropped from the other; otherwise that side won't match and the apply
+    // is rejected.
     for (i, line) in hunk.lines.iter().enumerate() {
         let kind = line.chars().next().unwrap_or(' ');
         let sel = selected.contains(&i);
@@ -401,19 +381,27 @@ pub fn build_partial_patch(
                 if sel {
                     body.push(line.clone());
                     new_len += 1;
+                } else if reverse {
+                    // Already present on the new side (the file we reverse onto):
+                    // keep as context so it survives.
+                    body.push(format!(" {}", &line[1..]));
+                    old_len += 1;
+                    new_len += 1;
                 }
-                // unselected add: drop entirely
+                // forward + unselected add: drop entirely
             }
             '-' => {
                 if sel {
                     body.push(line.clone());
                     old_len += 1;
-                } else {
-                    // keep as context
+                } else if !reverse {
+                    // Present on the old side (the file we apply onto): keep as
+                    // context so it survives.
                     body.push(format!(" {}", &line[1..]));
                     old_len += 1;
                     new_len += 1;
                 }
+                // reverse + unselected delete: drop entirely
             }
             _ => {
                 body.push(line.clone());
@@ -422,7 +410,6 @@ pub fn build_partial_patch(
             }
         }
     }
-    let _ = reverse; // counts are symmetric for our construction
     let mut patch = fd.header.clone();
     patch.push_str(&format!(
         "@@ -{old_start},{old_len} +{new_start},{new_len} @@\n"
@@ -459,6 +446,7 @@ pub fn unstage_lines(worktree: &Path, path: &str, hunk_index: usize, selected: &
 
 pub fn revert_lines(worktree: &Path, path: &str, hunk_index: usize, selected: &[usize]) -> Result<()> {
     let fd = parse_diff(&diff(worktree, path, false)?);
-    let patch = build_partial_patch(&fd, hunk_index, selected, false)?;
+    // Reverse-applied onto the working tree (the new side), so use reverse framing.
+    let patch = build_partial_patch(&fd, hunk_index, selected, true)?;
     git_stdin(worktree, &["apply", "--reverse", "-"], &patch)
 }

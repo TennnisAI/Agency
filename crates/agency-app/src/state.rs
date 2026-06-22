@@ -40,6 +40,10 @@ fn session_name(id: &str) -> String {
     format!("agency-{id}")
 }
 
+fn run_session_name(id: &str) -> String {
+    format!("agency-run-{id}")
+}
+
 fn validate_provider_url(raw: &str) -> Result<()> {
     if raw.is_empty() {
         return Ok(());
@@ -141,6 +145,7 @@ fn agent_profile(name: &str, command: &str) -> AgentProfile {
 pub struct AppState {
     registry: Mutex<Registry>,
     attaches: Mutex<HashMap<String, AgentHandle>>,
+    run_attaches: Mutex<HashMap<String, AgentHandle>>,
     tmux: Tmux,
     resolvers: Mutex<HashMap<String, AgentHandle>>,
 }
@@ -171,6 +176,7 @@ impl AppState {
         Ok(AppState {
             registry: Mutex::new(registry),
             attaches: Mutex::new(HashMap::new()),
+            run_attaches: Mutex::new(HashMap::new()),
             tmux: Tmux::resolved(),
             resolvers: Mutex::new(HashMap::new()),
         })
@@ -255,6 +261,8 @@ impl AppState {
         for run in &runs {
             self.attaches.lock().unwrap().remove(&run.id);
             self.tmux.kill_session(&session_name(&run.id)).ok();
+            self.run_attaches.lock().unwrap().remove(&run.id);
+            self.tmux.kill_session(&run_session_name(&run.id)).ok();
         }
         Ok(())
     }
@@ -265,6 +273,8 @@ impl AppState {
         for run in &runs {
             self.attaches.lock().unwrap().remove(&run.id);
             self.tmux.kill_session(&session_name(&run.id)).ok();
+            self.run_attaches.lock().unwrap().remove(&run.id);
+            self.tmux.kill_session(&run_session_name(&run.id)).ok();
             if let Some(repo) = &repo {
                 let _ = WorktreeManager::new(repo.clone()).remove(&run.id);
             }
@@ -413,6 +423,8 @@ impl AppState {
         self.attaches.lock().unwrap().remove(id);
         let run = self.run_record(id)?;
         self.tmux.kill_session(&session_name(id)).ok();
+        self.run_attaches.lock().unwrap().remove(id);
+        self.tmux.kill_session(&run_session_name(id)).ok();
         if let Ok(repo) = self.project_repo(&run.project_id) {
             let _ = WorktreeManager::new(repo).remove(id);
         }
@@ -423,6 +435,96 @@ impl AppState {
     pub fn stop_run(&self, id: &str) -> Result<()> {
         self.attaches.lock().unwrap().remove(id);
         self.tmux.kill_session(&session_name(id)).ok();
+        self.run_attaches.lock().unwrap().remove(id);
+        self.tmux.kill_session(&run_session_name(id)).ok();
+        Ok(())
+    }
+
+    pub fn run_script_configured(&self, id: &str) -> Result<bool> {
+        let run = self.run_record(id)?;
+        let repo = self.project_repo(&run.project_id)?;
+        Ok(agency_core::config::load(&repo).scripts.run.is_some())
+    }
+
+    pub fn start_run_script(&self, id: &str) -> Result<()> {
+        let run = self.run_record(id)?;
+        let repo = self.project_repo(&run.project_id)?;
+        let config = agency_core::config::load(&repo);
+        let run_cmd = config
+            .scripts
+            .run
+            .clone()
+            .ok_or_else(|| anyhow!("no run script configured in .agency/agency.toml"))?;
+        let worktree = repo.join(".agency").join("worktrees").join(&run.id);
+
+        // nonconcurrent: stop every other run-script session first.
+        if config.scripts.run_mode == agency_core::config::RunMode::Nonconcurrent {
+            let others = self.registry.lock().unwrap().list_runs(&run.project_id)?;
+            for other in others {
+                if other.id != run.id {
+                    self.run_attaches.lock().unwrap().remove(&other.id);
+                    self.tmux.kill_session(&run_session_name(&other.id)).ok();
+                }
+            }
+        }
+
+        let mut env = self.provider_env()?;
+        env.extend(agency_core::scripts::script_env(&worktree, &repo, &run.id, run.port_base));
+
+        // Restart cleanly if a previous run session is still around.
+        self.tmux.kill_session(&run_session_name(id)).ok();
+        self.tmux.start_session(
+            &run_session_name(id),
+            &worktree,
+            "sh",
+            &["-lc".to_string(), run_cmd],
+            &env,
+        )
+    }
+
+    pub fn stop_run_script(&self, id: &str) -> Result<()> {
+        self.run_attaches.lock().unwrap().remove(id);
+        self.tmux.kill_session(&run_session_name(id)).ok();
+        Ok(())
+    }
+
+    pub fn run_script_status(&self, id: &str) -> Result<SessionStatus> {
+        Ok(self
+            .tmux
+            .session_status(&run_session_name(id))
+            .unwrap_or(SessionStatus::Gone))
+    }
+
+    pub fn run_script_preview(&self, id: &str, lines: usize) -> Result<String> {
+        self.tmux.capture(&run_session_name(id), lines)
+    }
+
+    pub fn attach_run_script<F>(&self, id: &str, on_output: F) -> Result<()>
+    where
+        F: Fn(Vec<u8>) + Send + 'static,
+    {
+        let handle = self.tmux.attach(&run_session_name(id), on_output)?;
+        self.run_attaches.lock().unwrap().insert(id.to_string(), handle);
+        Ok(())
+    }
+
+    pub fn detach_run_script(&self, id: &str) {
+        self.run_attaches.lock().unwrap().remove(id);
+    }
+
+    pub fn run_script_input(&self, id: &str, data: &[u8]) -> Result<()> {
+        let attaches = self.run_attaches.lock().unwrap();
+        let handle = attaches
+            .get(id)
+            .ok_or_else(|| anyhow!("run script not attached: {id}"))?;
+        handle.write_input(data)
+    }
+
+    pub fn resize_run_script(&self, id: &str, cols: u16, rows: u16) -> Result<()> {
+        let attaches = self.run_attaches.lock().unwrap();
+        if let Some(handle) = attaches.get(id) {
+            handle.resize(rows, cols)?;
+        }
         Ok(())
     }
 
@@ -613,5 +715,10 @@ mod tests {
     fn pick_port_fills_lowest_gap() {
         let used: HashSet<u16> = [5200, 5220].into_iter().collect();
         assert_eq!(pick_port(&used, 5200, 10), Some(5210));
+    }
+
+    #[test]
+    fn run_session_name_is_namespaced() {
+        assert_eq!(super::run_session_name("fix-login-a3k2"), "agency-run-fix-login-a3k2");
     }
 }

@@ -21,6 +21,7 @@ export default function ProjectTree({
   const [projects, setProjects] = useState<Project[]>([]);
   const [expanded, setExpanded] = useState<Record<string, RunInfo[] | undefined>>({});
   const [pending, setPending] = useState<Pending>(null);
+  const [error, setError] = useState("");
 
   async function refresh() {
     setProjects(await listProjects());
@@ -41,8 +42,13 @@ export default function ProjectTree({
     const sel = await open({ directory: true, multiple: false });
     if (typeof sel !== "string") return;
     const name = sel.split("/").filter(Boolean).pop() ?? sel;
-    await addProject(name, sel);
-    await refresh();
+    try {
+      await addProject(name, sel);
+      setError("");
+      await refresh();
+    } catch (e) {
+      setError(String(e));
+    }
   }
 
   async function confirmPending() {
@@ -60,6 +66,7 @@ export default function ProjectTree({
         <span className="eyebrow">PROJECTS</span>
         <button className="icon-add" title="Add project" onClick={handleAdd}>+</button>
       </div>
+      {error && <div className="git-error">{error}</div>}
       <ul className="tree-list">
         {projects.map((p) => (
           <li key={p.id}>

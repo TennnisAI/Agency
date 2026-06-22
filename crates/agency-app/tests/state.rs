@@ -14,7 +14,11 @@ fn project_crud_roundtrip() {
     let dir = tempfile::tempdir().unwrap();
     let state = AppState::new(&dir.path().join("agency.db")).unwrap();
 
-    let p = state.add_project("demo", Path::new("/tmp/demo-repo")).unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let p = state.add_project("demo", &repo).unwrap();
     assert_eq!(p.name, "demo");
 
     let all = state.list_projects().unwrap();
@@ -22,6 +26,39 @@ fn project_crud_roundtrip() {
     assert_eq!(all[0].id, p.id);
 
     state.delete_project(&p.id).unwrap();
+    assert_eq!(state.list_projects().unwrap().len(), 0);
+}
+
+#[test]
+fn add_project_rejects_non_git_folder() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = AppState::new(&dir.path().join("agency.db")).unwrap();
+
+    let plain = dir.path().join("plain");
+    std::fs::create_dir_all(&plain).unwrap();
+
+    let err = state.add_project("plain", &plain).unwrap_err().to_string();
+    assert!(err.contains("git repository"), "unexpected error: {err}");
+    // nothing persisted
+    assert_eq!(state.list_projects().unwrap().len(), 0);
+}
+
+#[test]
+fn add_project_rejects_repo_without_commits() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = AppState::new(&dir.path().join("agency.db")).unwrap();
+
+    let repo = dir.path().join("empty");
+    std::fs::create_dir_all(&repo).unwrap();
+    assert!(Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(&repo)
+        .status()
+        .unwrap()
+        .success());
+
+    let err = state.add_project("empty", &repo).unwrap_err().to_string();
+    assert!(err.contains("commit"), "unexpected error: {err}");
     assert_eq!(state.list_projects().unwrap().len(), 0);
 }
 

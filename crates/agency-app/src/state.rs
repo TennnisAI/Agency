@@ -172,6 +172,7 @@ impl AppState {
     }
 
     pub fn add_project(&self, name: &str, repo_path: &Path) -> Result<Project> {
+        validate_repo(repo_path)?;
         self.registry.lock().unwrap().add_project(name, repo_path)
     }
 
@@ -430,4 +431,35 @@ impl AppState {
             .ok_or_else(|| anyhow!("no resolver for task: {id}"))?;
         Ok(handle.status())
     }
+}
+
+/// Ensure a project path is usable before we store it: every agent runs in a
+/// worktree branched from `HEAD`, so the path must be a git repository with at
+/// least one commit. Without this, agent creation fails later with an opaque
+/// `git worktree add` error and no obvious cause.
+fn validate_repo(repo_path: &Path) -> Result<()> {
+    if !repo_path.exists() {
+        bail!("{} does not exist", repo_path.display());
+    }
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(repo_path)
+            .output()
+    };
+    let inside = git(&["rev-parse", "--is-inside-work-tree"])?;
+    if !inside.status.success() {
+        bail!(
+            "{} is not a git repository — run `git init` there first",
+            repo_path.display()
+        );
+    }
+    let head = git(&["rev-parse", "--verify", "HEAD"])?;
+    if !head.status.success() {
+        bail!(
+            "{} has no commits yet — make an initial commit before adding it",
+            repo_path.display()
+        );
+    }
+    Ok(())
 }

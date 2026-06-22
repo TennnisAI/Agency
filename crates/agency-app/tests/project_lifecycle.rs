@@ -5,8 +5,14 @@ fn close_keeps_records_delete_removes_them() {
     let dir = tempfile::tempdir().unwrap();
     let repo = dir.path().join("repo");
     std::fs::create_dir_all(&repo).unwrap();
-    // init a git repo so project ops are valid
-    std::process::Command::new("git").arg("init").current_dir(&repo).output().unwrap();
+    // init a git repo with one commit so project ops are valid
+    let git = |args: &[&str]| {
+        std::process::Command::new("git").args(args).current_dir(&repo).output().unwrap()
+    };
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "t@e.com"]);
+    git(&["config", "user.name", "T"]);
+    git(&["commit", "-q", "--allow-empty", "-m", "init"]);
 
     let state = AppState::new(&dir.path().join("agency.db")).unwrap();
     let project = state.add_project("repo", &repo).unwrap();

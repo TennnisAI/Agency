@@ -12,10 +12,16 @@ export default function AgentsView({ project: _project }: { project: Project }) 
   const { runs, view, setView, focusedRunId, tab, setTab, approveRunId, setApproveRun, createAgent } = useRuns();
   const [review, setReview] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [error, setError] = useState("");
 
   async function spawn(agentId: string) {
     setMenuOpen(false);
-    await createAgent(agentId);
+    try {
+      await createAgent(agentId);
+      setError("");
+    } catch (e) {
+      setError(String(e));
+    }
   }
 
   return (
@@ -48,6 +54,8 @@ export default function AgentsView({ project: _project }: { project: Project }) 
           </div>
         )}
       </div>
+
+      {error && <div className="git-error">{error}</div>}
 
       {tab === "source" && (
         <div className="source-wrap">

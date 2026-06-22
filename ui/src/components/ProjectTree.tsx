@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Project, RunInfo, addProject, closeProject, deleteProject, listProjects, listRuns } from "../api";
+import { Project, RunInfo, RepoReadiness, addProject, closeProject, deleteProject, inspectRepo, listProjects, listRuns } from "../api";
 import ConfirmDialog from "./ConfirmDialog";
+import RepoSetupDialog from "./RepoSetupDialog";
 
 function statusClass(s: RunInfo["status"]): string {
   return s.state === "running" ? "running" : "exited";
@@ -22,9 +23,16 @@ export default function ProjectTree({
   const [expanded, setExpanded] = useState<Record<string, RunInfo[] | undefined>>({});
   const [pending, setPending] = useState<Pending>(null);
   const [error, setError] = useState("");
+  const [setup, setSetup] = useState<{ path: string; name: string; readiness: RepoReadiness; existing: boolean } | null>(null);
+  const [readiness, setReadiness] = useState<Record<string, RepoReadiness>>({});
 
   async function refresh() {
-    setProjects(await listProjects());
+    const ps = await listProjects();
+    setProjects(ps);
+    const entries = await Promise.all(
+      ps.map(async (p) => [p.id, await inspectRepo(p.repo_path).catch(() => null)] as const),
+    );
+    setReadiness(Object.fromEntries(entries.filter(([, r]) => r) as [string, RepoReadiness][]));
   }
   useEffect(() => { refresh(); }, []);
 
@@ -42,13 +50,30 @@ export default function ProjectTree({
     const sel = await open({ directory: true, multiple: false });
     if (typeof sel !== "string") return;
     const name = sel.split("/").filter(Boolean).pop() ?? sel;
+    setError("");
     try {
-      await addProject(name, sel);
-      setError("");
+      const r = await inspectRepo(sel);
+      if (r.state === "ready" && !r.dirty) {
+        await addProject(name, sel);
+        await refresh();
+      } else {
+        setSetup({ path: sel, name, readiness: r, existing: false });
+      }
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  async function finishSetup() {
+    if (!setup) return;
+    try {
+      // Only create the record for the add flow; the badge flow's project already exists.
+      if (!setup.existing) await addProject(setup.name, setup.path);
       await refresh();
     } catch (e) {
       setError(String(e));
     }
+    setSetup(null);
   }
 
   async function confirmPending() {
@@ -76,6 +101,13 @@ export default function ProjectTree({
               </span>
               <span className="proj-icon" aria-hidden>{p.name.slice(0, 1).toUpperCase()}</span>
               <span className="tree-name tl">{p.name}</span>
+              {readiness[p.id]?.state === "noCommits" && (
+                <button
+                  className="row-badge warn"
+                  title="Needs a commit before agents can run"
+                  onClick={(e) => { e.stopPropagation(); setSetup({ path: p.repo_path, name: p.name, readiness: readiness[p.id]!, existing: true }); }}
+                >⚠ commit</button>
+              )}
               <button className="row-act" title="Close project" onClick={(e) => { e.stopPropagation(); setPending({ kind: "close", project: p }); }}>⏻</button>
               <button className="row-act danger" title="Remove project" onClick={(e) => { e.stopPropagation(); setPending({ kind: "remove", project: p }); }}>×</button>
             </div>
@@ -92,6 +124,15 @@ export default function ProjectTree({
           </li>
         ))}
       </ul>
+      {setup && (
+        <RepoSetupDialog
+          readiness={setup.readiness}
+          context="add"
+          repoPath={setup.path}
+          onResolved={finishSetup}
+          onCancel={() => setSetup(null)}
+        />
+      )}
       {pending && (
         <ConfirmDialog
           title={pending.kind === "close" ? "Close project?" : "Remove project?"}

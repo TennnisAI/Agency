@@ -2,6 +2,7 @@ pub mod git;
 pub mod merge;
 pub mod profile;
 pub mod registry;
+pub mod setup;
 pub mod supervisor;
 pub mod tmux;
 pub mod worktree;

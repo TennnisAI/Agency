@@ -1,4 +1,21 @@
+use anyhow::{bail, Result};
 use std::path::Path;
+use std::process::Command;
+
+/// Run a one-off lifecycle script (`sh -lc <script>`) to completion in `cwd`
+/// with the given env. Returns an error if the script exits non-zero.
+pub fn run_blocking(script: &str, cwd: &Path, env: &[(String, String)]) -> Result<()> {
+    let mut cmd = Command::new("sh");
+    cmd.arg("-lc").arg(script).current_dir(cwd);
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let status = cmd.status()?;
+    if !status.success() {
+        bail!("archive script exited with {status}");
+    }
+    Ok(())
+}
 
 /// Environment variables made available to every lifecycle script and to the
 /// agent process. `port` is `None` until the port allocator lands (Plan 2).
@@ -115,6 +132,22 @@ mod tests {
         assert_eq!(shell_quote("it's"), "'it'\\''s'");
         assert_eq!(shell_quote("plain"), "plain");
         assert_eq!(shell_quote(""), "''");
+    }
+
+    #[test]
+    fn run_blocking_runs_script_with_env_and_reports_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        run_blocking(
+            "echo $AGENCY_WORKSPACE_NAME > marker.txt",
+            dir.path(),
+            &[("AGENCY_WORKSPACE_NAME".to_string(), "fix-login".to_string())],
+        )
+        .unwrap();
+        let body = std::fs::read_to_string(dir.path().join("marker.txt")).unwrap();
+        assert_eq!(body.trim(), "fix-login");
+
+        // Non-zero exit surfaces as an error.
+        assert!(run_blocking("exit 3", dir.path(), &[]).is_err());
     }
 
     // keep PathBuf import used

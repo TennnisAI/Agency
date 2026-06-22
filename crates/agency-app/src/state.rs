@@ -434,6 +434,50 @@ impl AppState {
         Ok(())
     }
 
+    /// Archive a run: stop its sessions, run the optional archive cleanup script,
+    /// remove the worktree but KEEP the branch, and stamp `archived_at`. The run
+    /// record is kept so it can be restored.
+    pub fn archive_run(&self, id: &str) -> Result<()> {
+        let run = self.run_record(id)?;
+        let repo = self.project_repo(&run.project_id)?;
+
+        // Stop both sessions and drop attach handles.
+        self.attaches.lock().unwrap().remove(id);
+        self.tmux.kill_session(&session_name(id)).ok();
+        self.run_attaches.lock().unwrap().remove(id);
+        self.tmux.kill_session(&run_session_name(id)).ok();
+
+        // Best-effort archive cleanup script, before the worktree disappears.
+        let config = agency_core::config::load(&repo);
+        if let Some(script) = config.scripts.archive.as_deref() {
+            let worktree = repo.join(".agency").join("worktrees").join(&run.id);
+            if worktree.exists() {
+                let env = agency_core::scripts::script_env(&worktree, &repo, &run.id, run.port_base);
+                let _ = agency_core::scripts::run_blocking(script, &worktree, &env);
+            }
+        }
+
+        WorktreeManager::new(repo).remove_keep_branch(id).ok();
+        self.registry.lock().unwrap().set_archived(id, Some(now_secs()))?;
+        Ok(())
+    }
+
+    /// Restore an archived run: re-create its worktree on the kept branch and
+    /// clear `archived_at`. The agent is not auto-started.
+    pub fn restore_run(&self, id: &str) -> Result<RunInfo> {
+        let run = self.run_record(id)?;
+        let repo = self.project_repo(&run.project_id)?;
+        WorktreeManager::new(repo).restore(id)?;
+        self.registry.lock().unwrap().set_archived(id, None)?;
+        let refreshed = self.run_record(id)?;
+        Ok(self.run_info(&refreshed))
+    }
+
+    pub fn list_archived_runs(&self, project_id: &str) -> Result<Vec<RunInfo>> {
+        let runs = self.registry.lock().unwrap().list_archived_runs(project_id)?;
+        Ok(runs.iter().map(|r| self.run_info(r)).collect())
+    }
+
     pub fn stop_run(&self, id: &str) -> Result<()> {
         self.attaches.lock().unwrap().remove(id);
         self.tmux.kill_session(&session_name(id)).ok();

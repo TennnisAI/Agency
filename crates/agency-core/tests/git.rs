@@ -170,6 +170,41 @@ fn git_raw_diff(dir: &std::path::Path, path: &str) -> String {
     String::from_utf8_lossy(&out.stdout).to_string()
 }
 
+#[test]
+fn log_graph_returns_parents_and_subject() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    std::fs::write(dir.path().join("tracked.txt"), "one\ntwo\n").unwrap();
+    run(dir.path(), &["commit", "-aqm", "second commit"]);
+    let items = git::log_graph(dir.path(), 10).unwrap();
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0].subject, "second commit");
+    assert_eq!(items[0].parents.len(), 1, "second has one parent");
+    assert_eq!(items[0].parents[0], items[1].hash);
+    assert!(items[1].parents.is_empty(), "root has no parent");
+    assert_eq!(items[0].author, "T");
+}
+
+#[test]
+fn log_graph_captures_refs() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    let items = git::log_graph(dir.path(), 10).unwrap();
+    assert!(items[0].refs.iter().any(|r| r.contains("HEAD") || r.contains("master") || r.contains("main")),
+        "head commit carries a ref: {:?}", items[0].refs);
+}
+
+#[test]
+fn branch_info_reports_branch_and_no_upstream() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    let info = git::branch_info(dir.path()).unwrap();
+    assert!(info.branch == "master" || info.branch == "main");
+    assert!(info.upstream.is_none());
+    assert_eq!(info.ahead, 0);
+    assert_eq!(info.behind, 0);
+}
+
 use agency_core::git::{stage_hunk, unstage_hunk};
 
 fn staged_diff(dir: &std::path::Path, path: &str) -> String {
@@ -226,6 +261,96 @@ fn stage_hunk_stages_only_that_hunk() {
     unstage_hunk(dir.path(), "tracked.txt", 0).unwrap();
     let staged2 = staged_diff(dir.path(), "tracked.txt");
     assert!(!staged2.contains("+ADDED-TOP"), "staged2: {staged2}");
+}
+
+#[test]
+fn stage_all_stages_everything() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    std::fs::write(dir.path().join("tracked.txt"), "one\ntwo\n").unwrap();
+    std::fs::write(dir.path().join("new.txt"), "hi\n").unwrap();
+    git::stage_all(dir.path()).unwrap();
+    let changes = git::status(dir.path()).unwrap();
+    assert!(changes.iter().all(|c| c.index != " " && c.index != "?"),
+        "all changes staged: {changes:?}");
+}
+
+#[test]
+fn unstage_all_clears_index() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    std::fs::write(dir.path().join("tracked.txt"), "one\ntwo\n").unwrap();
+    git::stage_all(dir.path()).unwrap();
+    git::unstage_all(dir.path()).unwrap();
+    let changes = git::status(dir.path()).unwrap();
+    let m = changes.iter().find(|c| c.path == "tracked.txt").unwrap();
+    assert_eq!(m.worktree, "M");
+    assert_eq!(m.index, " ");
+}
+
+#[test]
+fn discard_reverts_tracked_and_deletes_untracked() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    std::fs::write(dir.path().join("tracked.txt"), "one\nchanged\n").unwrap();
+    std::fs::write(dir.path().join("new.txt"), "hi\n").unwrap();
+    git::discard(dir.path(), "tracked.txt", false).unwrap();
+    git::discard(dir.path(), "new.txt", true).unwrap();
+    assert_eq!(std::fs::read_to_string(dir.path().join("tracked.txt")).unwrap(), "one\n");
+    assert!(!dir.path().join("new.txt").exists());
+}
+
+#[test]
+fn commit_files_lists_changed_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    std::fs::write(dir.path().join("tracked.txt"), "one\ntwo\n").unwrap();
+    std::fs::write(dir.path().join("added.txt"), "x\n").unwrap();
+    run(dir.path(), &["add", "-A"]);
+    run(dir.path(), &["commit", "-qm", "c2"]);
+    let head = git::log_graph(dir.path(), 1).unwrap()[0].hash.clone();
+    let files = git::commit_files(dir.path(), &head).unwrap();
+    assert!(files.iter().any(|f| f.path == "tracked.txt" && f.status == "M"));
+    assert!(files.iter().any(|f| f.path == "added.txt" && f.status == "A"));
+}
+
+#[test]
+fn commit_diff_shows_file_diff() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    std::fs::write(dir.path().join("tracked.txt"), "one\ntwo\n").unwrap();
+    run(dir.path(), &["commit", "-aqm", "c2"]);
+    let head = git::log_graph(dir.path(), 1).unwrap()[0].hash.clone();
+    let diff = git::commit_diff(dir.path(), &head, "tracked.txt").unwrap();
+    assert!(diff.contains("+two"), "diff shows added line: {diff}");
+}
+
+#[test]
+fn build_partial_patch_keeps_selected_add_drops_others() {
+    // Hunk adds two lines after context; select only the first added line (index 1).
+    let fd = parse_diff(
+        "diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -1,1 +1,3 @@\n one\n+two\n+three\n",
+    );
+    let patch = git::build_partial_patch(&fd, 0, &[1], false).unwrap();
+    assert!(patch.contains("+two"));
+    assert!(!patch.contains("+three"), "unselected add dropped: {patch}");
+    assert!(patch.contains("@@ -1,1 +1,2 @@"), "recomputed header: {patch}");
+}
+
+#[test]
+fn stage_lines_stages_only_selection() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    std::fs::write(dir.path().join("tracked.txt"), "one\ntwo\nthree\n").unwrap();
+    // working diff: hunk index 0 adds "two" (idx 1) and "three" (idx 2) after "one".
+    let raw = git::diff(dir.path(), "tracked.txt", false).unwrap();
+    let fd = parse_diff(&raw);
+    // Select the first added body line only.
+    let add_idx = fd.hunks[0].lines.iter().position(|l| l.starts_with("+two")).unwrap();
+    git::stage_lines(dir.path(), "tracked.txt", 0, &[add_idx]).unwrap();
+    let staged = git::diff(dir.path(), "tracked.txt", true).unwrap();
+    assert!(staged.contains("+two"));
+    assert!(!staged.contains("+three"), "only selection staged: {staged}");
 }
 
 #[test]

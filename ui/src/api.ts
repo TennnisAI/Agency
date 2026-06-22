@@ -55,6 +55,8 @@ export const runPreview = (id: string, lines: number) =>
   invoke<string>("run_preview", { id, lines });
 export const detachRun = (id: string) => invoke<void>("detach_run", { id });
 export const runInput = (id: string, data: string) => invoke<void>("run_input", { id, data });
+export const resizeRun = (id: string, cols: number, rows: number) =>
+  invoke<void>("resize_run", { id, cols, rows });
 export const runStatus = (id: string) => invoke<SessionStatus>("run_status", { id });
 export const discardRun = (id: string) => invoke<void>("discard_run", { id });
 export const stopRun = (id: string) => invoke<void>("stop_run", { id });
@@ -90,6 +92,11 @@ export const gitStage = (taskId: string, path: string) =>
 
 export const gitUnstage = (taskId: string, path: string) =>
   invoke<void>("git_unstage", { taskId, path });
+export const gitStageAll = (taskId: string) => invoke<void>("git_stage_all", { taskId });
+export const gitUnstageAll = (taskId: string) => invoke<void>("git_unstage_all", { taskId });
+export const gitDiscard = (taskId: string, path: string, untracked: boolean) =>
+  invoke<void>("git_discard", { taskId, path, untracked });
+export const gitDiscardAll = (taskId: string) => invoke<void>("git_discard_all", { taskId });
 
 export const gitCommit = (taskId: string, message: string) =>
   invoke<void>("git_commit", { taskId, message });
@@ -132,6 +139,8 @@ export interface StatusDto {
 
 export const resolverStatus = (taskId: string) =>
   invoke<StatusDto>("resolver_status", { taskId });
+export const resolverResize = (taskId: string, cols: number, rows: number) =>
+  invoke<void>("resolver_resize", { taskId, cols, rows });
 
 export function resolveMerge(
   taskId: string,
@@ -158,5 +167,44 @@ export const gitStageHunk = (taskId: string, path: string, hunkIndex: number) =>
   invoke<void>("git_stage_hunk", { taskId, path, hunkIndex });
 export const gitUnstageHunk = (taskId: string, path: string, hunkIndex: number) =>
   invoke<void>("git_unstage_hunk", { taskId, path, hunkIndex });
-export const projectLog = (projectId: string, limit: number) =>
-  invoke<CommitInfo[]>("project_log", { projectId, limit });
+export interface HistoryItem {
+  hash: string;
+  parents: string[];
+  author: string;
+  email: string;
+  date: number;
+  subject: string;
+  refs: string[];
+}
+
+export interface BranchInfo {
+  branch: string;
+  upstream: string | null;
+  ahead: number;
+  behind: number;
+  base: string | null;
+}
+
+export const gitLogGraph = (taskId: string, limit: number) =>
+  invoke<HistoryItem[]>("git_log_graph", { taskId, limit });
+export const gitBranchInfo = (taskId: string) =>
+  invoke<BranchInfo>("git_branch_info", { taskId });
+
+export interface CommitFile {
+  path: string;
+  status: string;
+}
+
+export const gitCommitFiles = (taskId: string, hash: string) =>
+  invoke<CommitFile[]>("git_commit_files", { taskId, hash });
+export const gitCommitDiff = (taskId: string, hash: string, path: string) =>
+  invoke<string>("git_commit_diff", { taskId, hash, path });
+export const gitCommitAmend = (taskId: string, message: string) =>
+  invoke<void>("git_commit_amend", { taskId, message });
+
+export const gitStageLines = (taskId: string, path: string, hunkIndex: number, lines: number[]) =>
+  invoke<void>("git_stage_lines", { taskId, path, hunkIndex, lines });
+export const gitUnstageLines = (taskId: string, path: string, hunkIndex: number, lines: number[]) =>
+  invoke<void>("git_unstage_lines", { taskId, path, hunkIndex, lines });
+export const gitRevertLines = (taskId: string, path: string, hunkIndex: number, lines: number[]) =>
+  invoke<void>("git_revert_lines", { taskId, path, hunkIndex, lines });

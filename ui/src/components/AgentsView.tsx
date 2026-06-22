@@ -5,8 +5,7 @@ import { useRuns } from "../store/runs";
 import AgentTile from "./AgentTile";
 import AgentFocus from "./AgentFocus";
 import MergeModal from "./MergeModal";
-import SourceControl from "./SourceControl";
-import GitReviewPanel from "./GitReviewPanel";
+import GitPanel from "./git/GitPanel";
 import RepoSetupDialog from "./RepoSetupDialog";
 
 export default function AgentsView({ project }: { project: Project }) {
@@ -66,7 +65,7 @@ export default function AgentsView({ project }: { project: Project }) {
 
       {tab === "source" && (
         <div className="source-wrap">
-          {focusedRunId ? <SourceControl taskId={focusedRunId} /> : <div className="board empty">Open an agent to review its changes.</div>}
+          {focusedRunId ? <GitPanel taskId={focusedRunId} layout="full" /> : <div className="board empty">Open an agent to review its changes.</div>}
         </div>
       )}
 
@@ -82,7 +81,7 @@ export default function AgentsView({ project }: { project: Project }) {
             {view === "focus" && <AgentFocus />}
           </div>
           {review && focusedRunId && (
-            <GitReviewPanel taskId={focusedRunId} onOpenSource={() => setTab("source")} />
+            <GitPanel taskId={focusedRunId} layout="compact" />
           )}
         </div>
       )}

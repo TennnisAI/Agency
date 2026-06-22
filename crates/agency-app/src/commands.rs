@@ -1,4 +1,4 @@
-use agency_core::git::{self, CommitInfo, FileDiff, FileChange};
+use agency_core::git::{self, CommitFile, CommitInfo, FileDiff, FileChange};
 use agency_core::merge::MergeOutcome;
 use agency_core::profile::AgentProfile;
 use agency_core::registry::Project;
@@ -134,6 +134,16 @@ pub fn run_input(state: State<'_, AppState>, id: String, data: String) -> Result
 }
 
 #[tauri::command]
+pub fn resize_run(
+    state: State<'_, AppState>,
+    id: String,
+    cols: u16,
+    rows: u16,
+) -> Result<(), String> {
+    state.resize_run(&id, cols, rows).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub fn run_status(state: State<'_, AppState>, id: String) -> Result<SessionStatus, String> {
     state.run_status(&id).map_err(|e| e.to_string())
 }
@@ -180,6 +190,35 @@ pub fn git_unstage(
 ) -> Result<(), String> {
     let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
     git::unstage(&wt, &path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn git_stage_all(state: State<'_, AppState>, task_id: String) -> Result<(), String> {
+    let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
+    agency_core::git::stage_all(&wt).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn git_unstage_all(state: State<'_, AppState>, task_id: String) -> Result<(), String> {
+    let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
+    agency_core::git::unstage_all(&wt).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn git_discard(
+    state: State<'_, AppState>,
+    task_id: String,
+    path: String,
+    untracked: bool,
+) -> Result<(), String> {
+    let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
+    agency_core::git::discard(&wt, &path, untracked).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn git_discard_all(state: State<'_, AppState>, task_id: String) -> Result<(), String> {
+    let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
+    agency_core::git::discard_all(&wt).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -258,6 +297,16 @@ pub fn resolver_status(state: State<'_, AppState>, task_id: String) -> Result<St
 }
 
 #[tauri::command]
+pub fn resolver_resize(
+    state: State<'_, AppState>,
+    task_id: String,
+    cols: u16,
+    rows: u16,
+) -> Result<(), String> {
+    state.resolver_resize(&task_id, cols, rows).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub fn git_parse_diff(
     state: State<'_, AppState>,
     task_id: String,
@@ -292,13 +341,22 @@ pub fn git_unstage_hunk(
 }
 
 #[tauri::command]
-pub fn project_log(
+pub fn git_log_graph(
     state: State<'_, AppState>,
-    project_id: String,
+    task_id: String,
     limit: usize,
-) -> Result<Vec<agency_core::git::CommitInfo>, String> {
-    let repo = state.project_repo_path(&project_id).map_err(|e| e.to_string())?;
-    agency_core::git::log(&repo, limit).map_err(|e| e.to_string())
+) -> Result<Vec<agency_core::git::HistoryItem>, String> {
+    let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
+    agency_core::git::log_graph(&wt, limit).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn git_branch_info(
+    state: State<'_, AppState>,
+    task_id: String,
+) -> Result<agency_core::git::BranchInfo, String> {
+    let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
+    agency_core::git::branch_info(&wt).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -312,6 +370,37 @@ pub fn init_repo(state: State<'_, AppState>, repo_path: String) -> Result<(), St
 }
 
 #[tauri::command]
+pub fn git_commit_files(
+    state: State<'_, AppState>,
+    task_id: String,
+    hash: String,
+) -> Result<Vec<CommitFile>, String> {
+    let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
+    agency_core::git::commit_files(&wt, &hash).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn git_commit_diff(
+    state: State<'_, AppState>,
+    task_id: String,
+    hash: String,
+    path: String,
+) -> Result<String, String> {
+    let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
+    agency_core::git::commit_diff(&wt, &hash, &path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn git_commit_amend(
+    state: State<'_, AppState>,
+    task_id: String,
+    message: String,
+) -> Result<(), String> {
+    let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
+    agency_core::git::commit_amend(&wt, &message).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub fn commit_repo(
     state: State<'_, AppState>,
     repo_path: String,
@@ -320,4 +409,40 @@ pub fn commit_repo(
     state
         .commit_repo(std::path::Path::new(&repo_path), add_gitignore)
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn git_stage_lines(
+    state: State<'_, AppState>,
+    task_id: String,
+    path: String,
+    hunk_index: usize,
+    lines: Vec<usize>,
+) -> Result<(), String> {
+    let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
+    agency_core::git::stage_lines(&wt, &path, hunk_index, &lines).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn git_unstage_lines(
+    state: State<'_, AppState>,
+    task_id: String,
+    path: String,
+    hunk_index: usize,
+    lines: Vec<usize>,
+) -> Result<(), String> {
+    let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
+    agency_core::git::unstage_lines(&wt, &path, hunk_index, &lines).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn git_revert_lines(
+    state: State<'_, AppState>,
+    task_id: String,
+    path: String,
+    hunk_index: usize,
+    lines: Vec<usize>,
+) -> Result<(), String> {
+    let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
+    agency_core::git::revert_lines(&wt, &path, hunk_index, &lines).map_err(|e| e.to_string())
 }

@@ -86,6 +86,9 @@ impl Tmux {
         // no race.  Using `-g` means subsequent sessions on the private server
         // also inherit the setting automatically.
         a.extend([";", "set-option", "-g", "remain-on-exit", "on"].map(String::from));
+        // Make tmux size each window to the most recently attached client, so the
+        // session reflows when our attach PTY is resized to match the UI terminal.
+        a.extend([";", "set-option", "-g", "window-size", "latest"].map(String::from));
         let aref: Vec<&str> = a.iter().map(|s| s.as_str()).collect();
         self.ok(&aref)?;
         Ok(())

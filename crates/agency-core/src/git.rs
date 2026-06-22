@@ -237,3 +237,228 @@ pub fn unstage_hunk(worktree: &Path, path: &str, hunk_index: usize) -> Result<()
         &patch,
     )
 }
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HistoryItem {
+    pub hash: String,
+    pub parents: Vec<String>,
+    pub author: String,
+    pub email: String,
+    pub date: i64,
+    pub subject: String,
+    pub refs: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BranchInfo {
+    pub branch: String,
+    pub upstream: Option<String>,
+    pub ahead: u32,
+    pub behind: u32,
+    pub base: Option<String>,
+}
+
+/// HEAD ancestry, newest first. Fields are unit-separated (\x1f); parents and
+/// refs are space/comma lists. %D yields "HEAD -> main, origin/main, tag: v1".
+pub fn log_graph(worktree: &Path, limit: usize) -> Result<Vec<HistoryItem>> {
+    let limit_arg = format!("-n{limit}");
+    let format = "--format=%H%x1f%P%x1f%an%x1f%ae%x1f%at%x1f%s%x1f%D";
+    let out = git(worktree, &["log", &limit_arg, format])?;
+    let mut items = Vec::new();
+    for line in out.lines() {
+        let f: Vec<&str> = line.split('\u{1f}').collect();
+        if f.len() < 7 {
+            continue;
+        }
+        let parents = f[1].split_whitespace().map(str::to_string).collect();
+        let refs = f[6]
+            .split(',')
+            .map(|r| r.trim().trim_start_matches("HEAD -> ").to_string())
+            .filter(|r| !r.is_empty())
+            .collect();
+        items.push(HistoryItem {
+            hash: f[0].to_string(),
+            parents,
+            author: f[2].to_string(),
+            email: f[3].to_string(),
+            date: f[4].parse().unwrap_or(0),
+            subject: f[5].to_string(),
+            refs,
+        });
+    }
+    Ok(items)
+}
+
+pub fn branch_info(worktree: &Path) -> Result<BranchInfo> {
+    let branch = git(worktree, &["rev-parse", "--abbrev-ref", "HEAD"])?
+        .trim()
+        .to_string();
+    let upstream = git(worktree, &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let (mut ahead, mut behind) = (0, 0);
+    if upstream.is_some() {
+        if let Ok(counts) = git(worktree, &["rev-list", "--left-right", "--count", "@{u}...HEAD"]) {
+            let mut p = counts.split_whitespace();
+            behind = p.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+            ahead = p.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+        }
+    }
+    // Base = merge-base with the first reachable default branch.
+    let base = ["origin/HEAD", "main", "master"].iter().find_map(|cand| {
+        git(worktree, &["merge-base", "HEAD", cand])
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    });
+    Ok(BranchInfo { branch, upstream, ahead, behind, base })
+}
+
+pub fn stage_all(worktree: &Path) -> Result<()> {
+    git(worktree, &["add", "-A"])?;
+    Ok(())
+}
+
+pub fn unstage_all(worktree: &Path) -> Result<()> {
+    git(worktree, &["reset", "-q"])?;
+    Ok(())
+}
+
+/// Discard one file's changes. Untracked files are deleted; tracked files are
+/// restored from the index (mirrors VSCode "Discard Changes" on the Changes group).
+pub fn discard(worktree: &Path, path: &str, untracked: bool) -> Result<()> {
+    if untracked {
+        git(worktree, &["clean", "-f", "--", path])?;
+    } else {
+        git(worktree, &["restore", "--", path])?;
+    }
+    Ok(())
+}
+
+pub fn discard_all(worktree: &Path) -> Result<()> {
+    git(worktree, &["restore", "--", "."])?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CommitFile {
+    pub path: String,
+    pub status: String,
+}
+
+pub fn commit_files(worktree: &Path, hash: &str) -> Result<Vec<CommitFile>> {
+    // --format= strips commit metadata; root commits are handled by `show`.
+    let out = git(worktree, &["show", "--name-status", "--format=", hash])?;
+    let mut files = Vec::new();
+    for line in out.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let mut parts = line.split('\t');
+        let status = parts.next().unwrap_or("").chars().next().unwrap_or(' ').to_string();
+        // Renames have two paths "R100 old new"; keep the last.
+        let path = parts.last().unwrap_or("").to_string();
+        if !path.is_empty() {
+            files.push(CommitFile { path, status });
+        }
+    }
+    Ok(files)
+}
+
+pub fn commit_diff(worktree: &Path, hash: &str, path: &str) -> Result<String> {
+    git(worktree, &["show", "--format=", hash, "--", path])
+}
+
+pub fn commit_amend(worktree: &Path, message: &str) -> Result<()> {
+    git(worktree, &["commit", "--amend", "-m", message])?;
+    Ok(())
+}
+
+/// Build a patch applying only `selected` body lines of one hunk.
+/// Unselected '+' lines are dropped; unselected '-' lines become context so
+/// they are preserved. The hunk header counts are recomputed. When `reverse`
+/// is true (unstaging the cached diff) the roles of +/- are swapped for counting.
+pub fn build_partial_patch(
+    fd: &FileDiff,
+    hunk_index: usize,
+    selected: &[usize],
+    reverse: bool,
+) -> Result<String> {
+    let hunk = fd
+        .hunks
+        .get(hunk_index)
+        .ok_or_else(|| anyhow::anyhow!("hunk index {hunk_index} out of range"))?;
+    // Parse "@@ -old_start,old_len +new_start,new_len @@".
+    let (old_start, new_start) = parse_hunk_starts(&hunk.header)?;
+    let mut body: Vec<String> = Vec::new();
+    let (mut old_len, mut new_len) = (0u32, 0u32);
+    for (i, line) in hunk.lines.iter().enumerate() {
+        let kind = line.chars().next().unwrap_or(' ');
+        let sel = selected.contains(&i);
+        match kind {
+            '+' => {
+                if sel {
+                    body.push(line.clone());
+                    new_len += 1;
+                }
+                // unselected add: drop entirely
+            }
+            '-' => {
+                if sel {
+                    body.push(line.clone());
+                    old_len += 1;
+                } else {
+                    // keep as context
+                    body.push(format!(" {}", &line[1..]));
+                    old_len += 1;
+                    new_len += 1;
+                }
+            }
+            _ => {
+                body.push(line.clone());
+                old_len += 1;
+                new_len += 1;
+            }
+        }
+    }
+    let _ = reverse; // counts are symmetric for our construction
+    let mut patch = fd.header.clone();
+    patch.push_str(&format!(
+        "@@ -{old_start},{old_len} +{new_start},{new_len} @@\n"
+    ));
+    for l in body {
+        patch.push_str(&l);
+        patch.push('\n');
+    }
+    Ok(patch)
+}
+
+fn parse_hunk_starts(header: &str) -> Result<(u32, u32)> {
+    // header like "@@ -1,1 +1,3 @@ optional"
+    let core = header.trim_start_matches("@@").trim();
+    let mut parts = core.split_whitespace();
+    let old = parts.next().unwrap_or("");
+    let new = parts.next().unwrap_or("");
+    let old_start = old.trim_start_matches('-').split(',').next().unwrap_or("0").parse().unwrap_or(0);
+    let new_start = new.trim_start_matches('+').split(',').next().unwrap_or("0").parse().unwrap_or(0);
+    Ok((old_start, new_start))
+}
+
+pub fn stage_lines(worktree: &Path, path: &str, hunk_index: usize, selected: &[usize]) -> Result<()> {
+    let fd = parse_diff(&diff(worktree, path, false)?);
+    let patch = build_partial_patch(&fd, hunk_index, selected, false)?;
+    git_stdin(worktree, &["apply", "--cached", "-"], &patch)
+}
+
+pub fn unstage_lines(worktree: &Path, path: &str, hunk_index: usize, selected: &[usize]) -> Result<()> {
+    let fd = parse_diff(&diff(worktree, path, true)?);
+    let patch = build_partial_patch(&fd, hunk_index, selected, true)?;
+    git_stdin(worktree, &["apply", "--cached", "--reverse", "-"], &patch)
+}
+
+pub fn revert_lines(worktree: &Path, path: &str, hunk_index: usize, selected: &[usize]) -> Result<()> {
+    let fd = parse_diff(&diff(worktree, path, false)?);
+    let patch = build_partial_patch(&fd, hunk_index, selected, false)?;
+    git_stdin(worktree, &["apply", "--reverse", "-"], &patch)
+}

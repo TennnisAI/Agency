@@ -123,6 +123,7 @@ fn short_suffix() -> String {
 /// Lowest free port-block base: the first `base + slot*block_size` (slot = 0,1,2…)
 /// not already in `used`. Returns `None` only if the `u16` space overflows first.
 fn pick_port(used: &std::collections::HashSet<u16>, base: u16, block_size: u16) -> Option<u16> {
+    let block_size = block_size.max(1);
     let mut slot: u16 = 0;
     loop {
         let candidate = base.checked_add(slot.checked_mul(block_size)?)?;
@@ -715,6 +716,13 @@ mod tests {
     fn pick_port_fills_lowest_gap() {
         let used: HashSet<u16> = [5200, 5220].into_iter().collect();
         assert_eq!(pick_port(&used, 5200, 10), Some(5210));
+    }
+
+    #[test]
+    fn pick_port_treats_zero_block_size_as_one() {
+        let used: HashSet<u16> = [5200].into_iter().collect();
+        // block_size 0 must not hang; it falls back to a stride of 1.
+        assert_eq!(pick_port(&used, 5200, 0), Some(5201));
     }
 
     #[test]

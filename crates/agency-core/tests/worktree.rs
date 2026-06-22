@@ -58,3 +58,38 @@ fn remove_after_keep_branch_deletes_the_branch_without_error() {
     mgr.remove("task-2").unwrap();
     assert!(!branch_exists(repo.path(), "agent/task-2"), "branch deleted on discard");
 }
+
+#[test]
+fn create_makes_worktree_and_branch() {
+    let repo = init_repo();
+    let mgr = WorktreeManager::new(repo.path().to_path_buf());
+    let wt = mgr.create("task-1", "HEAD").unwrap();
+    assert_eq!(wt.task_id, "task-1");
+    assert_eq!(wt.branch, "agent/task-1");
+    assert!(wt.path.ends_with(".agency/worktrees/task-1"));
+    assert!(wt.path.join("README.md").exists());
+    // The exclude file keeps agency artifacts untracked-invisible.
+    let exclude = std::fs::read_to_string(repo.path().join(".git/info/exclude")).unwrap();
+    assert!(exclude.contains(".agency/"));
+}
+
+#[test]
+fn list_returns_created_worktrees() {
+    let repo = init_repo();
+    let mgr = WorktreeManager::new(repo.path().to_path_buf());
+    mgr.create("task-1", "HEAD").unwrap();
+    mgr.create("task-2", "HEAD").unwrap();
+    let mut ids: Vec<String> = mgr.list().unwrap().into_iter().map(|w| w.task_id).collect();
+    ids.sort();
+    assert_eq!(ids, vec!["task-1".to_string(), "task-2".to_string()]);
+}
+
+#[test]
+fn remove_deletes_worktree() {
+    let repo = init_repo();
+    let mgr = WorktreeManager::new(repo.path().to_path_buf());
+    let wt = mgr.create("task-1", "HEAD").unwrap();
+    mgr.remove("task-1").unwrap();
+    assert!(!wt.path.exists());
+    assert!(mgr.list().unwrap().is_empty());
+}

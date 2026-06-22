@@ -1,6 +1,25 @@
 use agency_app_lib::AppState;
 
 #[test]
+fn add_project_allows_repo_without_commits() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    // A git repo with NO commits — previously rejected, now must be addable (gated).
+    std::process::Command::new("git").args(["init", "-q"]).current_dir(&repo).output().unwrap();
+
+    let state = AppState::new(&dir.path().join("agency.db")).unwrap();
+    let p = state.add_project("repo", &repo).unwrap();
+    assert_eq!(p.name, "repo");
+
+    // Inspection reports it as not-ready (no commits yet).
+    assert!(matches!(
+        state.inspect_repo(&repo),
+        agency_core::setup::RepoReadiness::NoCommits { .. }
+    ));
+}
+
+#[test]
 fn close_keeps_records_delete_removes_them() {
     let dir = tempfile::tempdir().unwrap();
     let repo = dir.path().join("repo");

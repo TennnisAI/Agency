@@ -50,6 +50,9 @@ pub fn run() {
             commands::git_stage_hunk,
             commands::git_unstage_hunk,
             commands::project_log,
+            commands::inspect_repo,
+            commands::init_repo,
+            commands::commit_repo,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Agency");

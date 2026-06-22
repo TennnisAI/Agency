@@ -25,6 +25,23 @@ pub struct StatusDto {
     pub code: Option<i32>,
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadinessDto {
+    pub state: String,
+    pub stageable: bool,
+    pub dirty: bool,
+}
+
+fn readiness_dto(r: agency_core::setup::RepoReadiness) -> ReadinessDto {
+    use agency_core::setup::RepoReadiness::*;
+    match r {
+        NotARepo => ReadinessDto { state: "notARepo".into(), stageable: false, dirty: false },
+        NoCommits { stageable } => ReadinessDto { state: "noCommits".into(), stageable, dirty: false },
+        Ready { dirty } => ReadinessDto { state: "ready".into(), stageable: false, dirty },
+    }
+}
+
 fn agent_status_dto(status: AgentStatus) -> StatusDto {
     match status {
         AgentStatus::Running => StatusDto { state: "running".into(), code: None },
@@ -282,4 +299,25 @@ pub fn project_log(
 ) -> Result<Vec<agency_core::git::CommitInfo>, String> {
     let repo = state.project_repo_path(&project_id).map_err(|e| e.to_string())?;
     agency_core::git::log(&repo, limit).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn inspect_repo(state: State<'_, AppState>, repo_path: String) -> Result<ReadinessDto, String> {
+    Ok(readiness_dto(state.inspect_repo(std::path::Path::new(&repo_path))))
+}
+
+#[tauri::command]
+pub fn init_repo(state: State<'_, AppState>, repo_path: String) -> Result<(), String> {
+    state.init_repo(std::path::Path::new(&repo_path)).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn commit_repo(
+    state: State<'_, AppState>,
+    repo_path: String,
+    add_gitignore: bool,
+) -> Result<(), String> {
+    state
+        .commit_repo(std::path::Path::new(&repo_path), add_gitignore)
+        .map_err(|e| e.to_string())
 }

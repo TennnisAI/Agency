@@ -43,24 +43,6 @@ fn add_project_rejects_non_git_folder() {
     assert_eq!(state.list_projects().unwrap().len(), 0);
 }
 
-#[test]
-fn add_project_rejects_repo_without_commits() {
-    let dir = tempfile::tempdir().unwrap();
-    let state = AppState::new(&dir.path().join("agency.db")).unwrap();
-
-    let repo = dir.path().join("empty");
-    std::fs::create_dir_all(&repo).unwrap();
-    assert!(Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(&repo)
-        .status()
-        .unwrap()
-        .success());
-
-    let err = state.add_project("empty", &repo).unwrap_err().to_string();
-    assert!(err.contains("commit"), "unexpected error: {err}");
-    assert_eq!(state.list_projects().unwrap().len(), 0);
-}
 
 use agency_core::profile::AgentProfile;
 use agency_core::tmux::SessionStatus;

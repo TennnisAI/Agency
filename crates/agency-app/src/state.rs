@@ -176,6 +176,18 @@ impl AppState {
         self.registry.lock().unwrap().add_project(name, repo_path)
     }
 
+    pub fn inspect_repo(&self, repo_path: &Path) -> agency_core::setup::RepoReadiness {
+        agency_core::setup::repo_readiness(repo_path)
+    }
+
+    pub fn init_repo(&self, repo_path: &Path) -> Result<()> {
+        agency_core::setup::init_repo(repo_path)
+    }
+
+    pub fn commit_repo(&self, repo_path: &Path, add_gitignore: bool) -> Result<()> {
+        agency_core::setup::initial_commit(repo_path, add_gitignore)
+    }
+
     pub fn list_projects(&self) -> Result<Vec<Project>> {
         self.registry.lock().unwrap().list_projects()
     }
@@ -433,33 +445,19 @@ impl AppState {
     }
 }
 
-/// Ensure a project path is usable before we store it: every agent runs in a
-/// worktree branched from `HEAD`, so the path must be a git repository with at
-/// least one commit. Without this, agent creation fails later with an opaque
-/// `git worktree add` error and no obvious cause.
+/// A project path is addable as long as it is a git repository. A repo with no
+/// commits is allowed (it lands "gated": the UI walks the user through the
+/// first commit before any agent can spawn). Non-repos are rejected because the
+/// UI runs `init_repo` *before* calling `add_project`.
 fn validate_repo(repo_path: &Path) -> Result<()> {
     if !repo_path.exists() {
         bail!("{} does not exist", repo_path.display());
     }
-    let git = |args: &[&str]| {
-        std::process::Command::new("git")
-            .args(args)
-            .current_dir(repo_path)
-            .output()
-    };
-    let inside = git(&["rev-parse", "--is-inside-work-tree"])?;
-    if !inside.status.success() {
-        bail!(
-            "{} is not a git repository — run `git init` there first",
-            repo_path.display()
-        );
-    }
-    let head = git(&["rev-parse", "--verify", "HEAD"])?;
-    if !head.status.success() {
-        bail!(
-            "{} has no commits yet — make an initial commit before adding it",
-            repo_path.display()
-        );
+    if matches!(
+        agency_core::setup::repo_readiness(repo_path),
+        agency_core::setup::RepoReadiness::NotARepo
+    ) {
+        bail!("{} is not a git repository", repo_path.display());
     }
     Ok(())
 }

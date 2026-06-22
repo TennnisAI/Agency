@@ -128,14 +128,36 @@ impl WorktreeManager {
         Ok(worktrees)
     }
 
+    /// Remove the worktree and delete its branch. Tolerant: each git step is
+    /// best-effort so it works whether or not the worktree still exists (e.g.
+    /// discarding an already-archived run), and still deletes the branch.
     pub fn remove(&self, task_id: &str) -> Result<()> {
         let path = self.worktrees_root().join(task_id);
         let path_str = path.to_string_lossy().to_string();
-        self.git(&["worktree", "remove", &path_str, "--force"])?;
-        // Branch deletion is best-effort; ignore failure (e.g. already merged/gone).
+        let _ = self.git(&["worktree", "remove", &path_str, "--force"]);
+        let _ = self.git(&["worktree", "prune"]);
         let branch = Self::branch_for(task_id);
         let _ = self.git(&["branch", "-D", &branch]);
         Ok(())
+    }
+
+    /// Remove the worktree but KEEP the branch, so the work can be restored.
+    pub fn remove_keep_branch(&self, task_id: &str) -> Result<()> {
+        let path = self.worktrees_root().join(task_id);
+        let path_str = path.to_string_lossy().to_string();
+        self.git(&["worktree", "remove", &path_str, "--force"])?;
+        self.git(&["worktree", "prune"])?;
+        Ok(())
+    }
+
+    /// Re-create a worktree for `task_id` on its existing branch `agent/<id>`.
+    pub fn restore(&self, task_id: &str) -> Result<Worktree> {
+        self.ensure_excluded()?;
+        let path = self.worktrees_root().join(task_id);
+        let branch = Self::branch_for(task_id);
+        let path_str = path.to_string_lossy().to_string();
+        self.git(&["worktree", "add", &path_str, &branch])?;
+        Ok(Worktree { task_id: task_id.to_string(), path, branch })
     }
 }
 

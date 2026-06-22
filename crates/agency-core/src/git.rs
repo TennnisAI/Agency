@@ -340,3 +340,37 @@ pub fn discard_all(worktree: &Path) -> Result<()> {
     git(worktree, &["restore", "--", "."])?;
     Ok(())
 }
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CommitFile {
+    pub path: String,
+    pub status: String,
+}
+
+pub fn commit_files(worktree: &Path, hash: &str) -> Result<Vec<CommitFile>> {
+    // --format= strips commit metadata; root commits are handled by `show`.
+    let out = git(worktree, &["show", "--name-status", "--format=", hash])?;
+    let mut files = Vec::new();
+    for line in out.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let mut parts = line.split('\t');
+        let status = parts.next().unwrap_or("").chars().next().unwrap_or(' ').to_string();
+        // Renames have two paths "R100 old new"; keep the last.
+        let path = parts.last().unwrap_or("").to_string();
+        if !path.is_empty() {
+            files.push(CommitFile { path, status });
+        }
+    }
+    Ok(files)
+}
+
+pub fn commit_diff(worktree: &Path, hash: &str, path: &str) -> Result<String> {
+    git(worktree, &["show", "--format=", hash, "--", path])
+}
+
+pub fn commit_amend(worktree: &Path, message: &str) -> Result<()> {
+    git(worktree, &["commit", "--amend", "-m", message])?;
+    Ok(())
+}

@@ -301,6 +301,31 @@ fn discard_reverts_tracked_and_deletes_untracked() {
 }
 
 #[test]
+fn commit_files_lists_changed_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    std::fs::write(dir.path().join("tracked.txt"), "one\ntwo\n").unwrap();
+    std::fs::write(dir.path().join("added.txt"), "x\n").unwrap();
+    run(dir.path(), &["add", "-A"]);
+    run(dir.path(), &["commit", "-qm", "c2"]);
+    let head = git::log_graph(dir.path(), 1).unwrap()[0].hash.clone();
+    let files = git::commit_files(dir.path(), &head).unwrap();
+    assert!(files.iter().any(|f| f.path == "tracked.txt" && f.status == "M"));
+    assert!(files.iter().any(|f| f.path == "added.txt" && f.status == "A"));
+}
+
+#[test]
+fn commit_diff_shows_file_diff() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    std::fs::write(dir.path().join("tracked.txt"), "one\ntwo\n").unwrap();
+    run(dir.path(), &["commit", "-aqm", "c2"]);
+    let head = git::log_graph(dir.path(), 1).unwrap()[0].hash.clone();
+    let diff = git::commit_diff(dir.path(), &head, "tracked.txt").unwrap();
+    assert!(diff.contains("+two"), "diff shows added line: {diff}");
+}
+
+#[test]
 fn staging_all_hunks_equals_staging_whole_file() {
     let dir = tempfile::tempdir().unwrap();
     init_repo_10(dir.path());

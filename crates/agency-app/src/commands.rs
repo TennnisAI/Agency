@@ -1,4 +1,4 @@
-use agency_core::git::{self, CommitInfo, FileDiff, FileChange};
+use agency_core::git::{self, CommitFile, CommitInfo, FileDiff, FileChange};
 use agency_core::merge::MergeOutcome;
 use agency_core::profile::AgentProfile;
 use agency_core::registry::Project;
@@ -367,6 +367,37 @@ pub fn inspect_repo(state: State<'_, AppState>, repo_path: String) -> Result<Rea
 #[tauri::command]
 pub fn init_repo(state: State<'_, AppState>, repo_path: String) -> Result<(), String> {
     state.init_repo(std::path::Path::new(&repo_path)).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn git_commit_files(
+    state: State<'_, AppState>,
+    task_id: String,
+    hash: String,
+) -> Result<Vec<CommitFile>, String> {
+    let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
+    agency_core::git::commit_files(&wt, &hash).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn git_commit_diff(
+    state: State<'_, AppState>,
+    task_id: String,
+    hash: String,
+    path: String,
+) -> Result<String, String> {
+    let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
+    agency_core::git::commit_diff(&wt, &hash, &path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn git_commit_amend(
+    state: State<'_, AppState>,
+    task_id: String,
+    message: String,
+) -> Result<(), String> {
+    let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
+    agency_core::git::commit_amend(&wt, &message).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

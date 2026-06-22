@@ -189,3 +189,15 @@ export const gitLogGraph = (taskId: string, limit: number) =>
   invoke<HistoryItem[]>("git_log_graph", { taskId, limit });
 export const gitBranchInfo = (taskId: string) =>
   invoke<BranchInfo>("git_branch_info", { taskId });
+
+export interface CommitFile {
+  path: string;
+  status: string;
+}
+
+export const gitCommitFiles = (taskId: string, hash: string) =>
+  invoke<CommitFile[]>("git_commit_files", { taskId, hash });
+export const gitCommitDiff = (taskId: string, hash: string, path: string) =>
+  invoke<string>("git_commit_diff", { taskId, hash, path });
+export const gitCommitAmend = (taskId: string, message: string) =>
+  invoke<void>("git_commit_amend", { taskId, message });

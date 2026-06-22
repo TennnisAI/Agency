@@ -24,6 +24,7 @@ pub struct Run {
     pub base: String,
     pub branch: String,
     pub created_at: i64,
+    pub port_base: Option<u16>,
 }
 
 pub struct Registry {
@@ -62,9 +63,14 @@ impl Registry {
                 prompt TEXT NOT NULL,
                 base TEXT NOT NULL,
                 branch TEXT NOT NULL,
-                created_at INTEGER NOT NULL
+                created_at INTEGER NOT NULL,
+                port_base INTEGER
             );",
         )?;
+        // Migrate older DBs whose `runs` table predates `port_base`.
+        if !column_exists(&conn, "runs", "port_base")? {
+            conn.execute("ALTER TABLE runs ADD COLUMN port_base INTEGER", [])?;
+        }
         Ok(Registry { conn })
     }
 
@@ -183,10 +189,11 @@ impl Registry {
 
     pub fn insert_run(&self, run: &Run) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO runs (id, project_id, agent, prompt, base, branch, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO runs (id, project_id, agent, prompt, base, branch, created_at, port_base)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             rusqlite::params![
-                run.id, run.project_id, run.agent, run.prompt, run.base, run.branch, run.created_at
+                run.id, run.project_id, run.agent, run.prompt, run.base, run.branch,
+                run.created_at, run.port_base.map(|p| p as i64)
             ],
         )?;
         Ok(())
@@ -194,7 +201,7 @@ impl Registry {
 
     pub fn get_run(&self, id: &str) -> Result<Option<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at FROM runs WHERE id = ?1",
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base FROM runs WHERE id = ?1",
         )?;
         let mut rows = stmt.query([id])?;
         match rows.next()? {
@@ -205,7 +212,7 @@ impl Registry {
 
     pub fn list_runs(&self, project_id: &str) -> Result<Vec<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base
              FROM runs WHERE project_id = ?1 ORDER BY created_at DESC",
         )?;
         let rows = stmt.query_map([project_id], |row| Ok(row_to_run(row)))?;
@@ -219,6 +226,18 @@ impl Registry {
     pub fn delete_run(&self, id: &str) -> Result<()> {
         self.conn.execute("DELETE FROM runs WHERE id = ?1", [id])?;
         Ok(())
+    }
+
+    pub fn list_port_bases(&self) -> Result<Vec<u16>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT port_base FROM runs WHERE port_base IS NOT NULL")?;
+        let rows = stmt.query_map([], |row| row.get::<_, i64>(0))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r? as u16);
+        }
+        Ok(out)
     }
 }
 
@@ -245,6 +264,7 @@ fn row_to_project(row: &rusqlite::Row) -> Result<Project> {
 }
 
 fn row_to_run(row: &rusqlite::Row) -> Result<Run> {
+    let port_base: Option<i64> = row.get(7)?;
     Ok(Run {
         id: row.get(0)?,
         project_id: row.get(1)?,
@@ -253,5 +273,89 @@ fn row_to_run(row: &rusqlite::Row) -> Result<Run> {
         base: row.get(4)?,
         branch: row.get(5)?,
         created_at: row.get(6)?,
+        port_base: port_base.map(|p| p as u16),
     })
+}
+
+fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        let name: String = row.get(1)?;
+        if name == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::Connection;
+    use tempfile::tempdir;
+
+    fn sample_run(id: &str, port: Option<u16>) -> Run {
+        Run {
+            id: id.to_string(),
+            project_id: "proj".to_string(),
+            agent: "claude".to_string(),
+            prompt: "do a thing".to_string(),
+            base: "HEAD".to_string(),
+            branch: format!("agent/{id}"),
+            created_at: 42,
+            port_base: port,
+        }
+    }
+
+    #[test]
+    fn run_roundtrips_port_base() {
+        let dir = tempdir().unwrap();
+        let reg = Registry::open(&dir.path().join("a.db")).unwrap();
+        reg.insert_run(&sample_run("x-1", Some(5200))).unwrap();
+        let got = reg.get_run("x-1").unwrap().unwrap();
+        assert_eq!(got.port_base, Some(5200));
+    }
+
+    #[test]
+    fn list_port_bases_returns_only_assigned() {
+        let dir = tempdir().unwrap();
+        let reg = Registry::open(&dir.path().join("a.db")).unwrap();
+        reg.insert_run(&sample_run("x-1", Some(5200))).unwrap();
+        reg.insert_run(&sample_run("x-2", None)).unwrap();
+        reg.insert_run(&sample_run("x-3", Some(5210))).unwrap();
+        let mut bases = reg.list_port_bases().unwrap();
+        bases.sort();
+        assert_eq!(bases, vec![5200, 5210]);
+    }
+
+    #[test]
+    fn migrates_legacy_runs_table_without_port_base() {
+        let dir = tempdir().unwrap();
+        let db = dir.path().join("legacy.db");
+        // Create a runs table WITHOUT port_base, as older builds did.
+        {
+            let conn = Connection::open(&db).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE runs (
+                    id TEXT PRIMARY KEY, project_id TEXT NOT NULL, agent TEXT NOT NULL,
+                    prompt TEXT NOT NULL, base TEXT NOT NULL, branch TEXT NOT NULL,
+                    created_at INTEGER NOT NULL
+                );",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO runs (id, project_id, agent, prompt, base, branch, created_at)
+                 VALUES ('old-1','proj','claude','p','HEAD','agent/old-1',1)",
+                [],
+            )
+            .unwrap();
+        }
+        // Opening through Registry must add the column and preserve the row.
+        let reg = Registry::open(&db).unwrap();
+        let got = reg.get_run("old-1").unwrap().unwrap();
+        assert_eq!(got.port_base, None);
+        reg.insert_run(&sample_run("new-1", Some(5200))).unwrap();
+        assert_eq!(reg.list_port_bases().unwrap(), vec![5200]);
+    }
 }

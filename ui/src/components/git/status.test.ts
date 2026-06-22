@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { decorate, groupOf, partition } from "./status";
+import { decorate, partition } from "./status";
 import type { FileChange } from "../../api";
 
 const fc = (index: string, worktree: string, path = "f"): FileChange => ({ path, index, worktree });

@@ -151,6 +151,9 @@ fn llm_title(settings: &ProviderSettings, first_prompt: &str) -> Option<String> 
             }))
             .send()
             .ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
         let body: serde_json::Value = resp.json().ok()?;
         let text = body["content"][0]["text"].as_str()?;
         let title = sanitize_title(text);
@@ -168,6 +171,9 @@ fn llm_title(settings: &ProviderSettings, first_prompt: &str) -> Option<String> 
             }))
             .send()
             .ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
         let body: serde_json::Value = resp.json().ok()?;
         let text = body["choices"][0]["message"]["content"].as_str()?;
         let title = sanitize_title(text);

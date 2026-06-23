@@ -1,10 +1,10 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Project, inspectRepo, RepoReadiness } from "../api";
 import { useRuns } from "../store/runs";
 import AgentTile from "./AgentTile";
 import AgentFocus from "./AgentFocus";
 import MergeModal from "./MergeModal";
-import GitPanel from "./git/GitPanel";
+import GitPanel, { GitSelection } from "./git/GitPanel";
 import RepoSetupDialog from "./RepoSetupDialog";
 import AgentAddMenu from "./AgentAddMenu";
 
@@ -13,6 +13,8 @@ export default function AgentsView({ project }: { project: Project }) {
   const [review, setReview] = useState(false);
   const [error, setError] = useState("");
   const [pendingSpawn, setPendingSpawn] = useState<{ agentId: string; readiness: RepoReadiness; repoPath: string } | null>(null);
+  const [gitSel, setGitSel] = useState<GitSelection>(null);
+  useEffect(() => { setGitSel(null); }, [focusedRunId]);
 
   async function spawn(agentId: string) {
     setError("");
@@ -54,7 +56,9 @@ export default function AgentsView({ project }: { project: Project }) {
 
       {tab === "source" && (
         <div className="source-wrap">
-          {focusedRunId ? <GitPanel taskId={focusedRunId} layout="full" /> : <div className="board empty">Open an agent to review its changes.</div>}
+          {focusedRunId
+            ? <GitPanel taskId={focusedRunId} layout="full" selection={gitSel} onSelect={setGitSel} />
+            : <div className="board empty">Open an agent to review its changes.</div>}
         </div>
       )}
 
@@ -70,7 +74,12 @@ export default function AgentsView({ project }: { project: Project }) {
             {view === "focus" && <AgentFocus />}
           </div>
           {review && focusedRunId && (
-            <GitPanel taskId={focusedRunId} layout="compact" />
+            <GitPanel
+              taskId={focusedRunId}
+              layout="compact"
+              selection={gitSel}
+              onSelect={(sel) => { setGitSel(sel); if (sel) setTab("source"); }}
+            />
           )}
         </div>
       )}

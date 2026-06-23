@@ -8,16 +8,25 @@ import ReviewComments from "./ReviewComments";
 import BranchBar from "./BranchBar";
 import GitSections from "./GitSections";
 
-type Selection =
+export type GitSelection =
   | { kind: "file"; path: string; group: "index" | "workingTree" | "merge" | "untracked" }
   | { kind: "commit"; item: HistoryItem }
   | null;
 
-export default function GitPanel({ taskId, layout }: { taskId: string; layout: "compact" | "full" }) {
+export default function GitPanel({
+  taskId,
+  layout,
+  selection,
+  onSelect,
+}: {
+  taskId: string;
+  layout: "compact" | "full";
+  selection: GitSelection;
+  onSelect: (sel: GitSelection) => void;
+}) {
   const [changes, setChanges] = useState<FileChange[]>([]);
   const [branch, setBranch] = useState<BranchInfo | null>(null);
   const [error, setError] = useState("");
-  const [sel, setSel] = useState<Selection>(null);
   const [commentsKey, setCommentsKey] = useState(0);
 
   const refresh = useCallback(async () => {
@@ -29,7 +38,6 @@ export default function GitPanel({ taskId, layout }: { taskId: string; layout: "
   }, [taskId]);
 
   useEffect(() => { refresh(); }, [refresh]);
-  useEffect(() => { setSel(null); }, [taskId]);
   useEffect(() => {
     const id = setInterval(() => refresh(), 2000);
     return () => clearInterval(id);
@@ -43,19 +51,19 @@ export default function GitPanel({ taskId, layout }: { taskId: string; layout: "
   }, [refresh]);
 
   const onSelectFile = (path: string, group: "index" | "workingTree" | "merge" | "untracked") =>
-    setSel({ kind: "file", path, group });
+    onSelect({ kind: "file", path, group });
 
   const diffMode = (group: string): "working-unstaged" | "working-staged" =>
     group === "index" ? "working-staged" : "working-unstaged";
 
   const changesPanel = (
     <ChangesPanel taskId={taskId} changes={changes} branch={branch} onAct={act}
-      selectedPath={sel?.kind === "file" ? sel.path : null} onSelectFile={onSelectFile} />
+      selectedPath={selection?.kind === "file" ? selection.path : null} onSelectFile={onSelectFile} />
   );
   const historyPanel = (
     <HistoryPanel taskId={taskId} base={branch?.base ?? null}
-      selectedHash={sel?.kind === "commit" ? sel.item.hash : null}
-      onSelectCommit={(item) => setSel({ kind: "commit", item })} />
+      selectedHash={selection?.kind === "commit" ? selection.item.hash : null}
+      onSelectCommit={(item) => onSelect({ kind: "commit", item })} />
   );
   const sections = <GitSections changesPanel={changesPanel} historyPanel={historyPanel} />;
 
@@ -65,12 +73,6 @@ export default function GitPanel({ taskId, layout }: { taskId: string; layout: "
         {error && <div className="git-error">{error}</div>}
         {sections}
         <ReviewComments key={commentsKey} taskId={taskId} />
-        {sel?.kind === "file" && (
-          <div className="git-compact-diff">
-            <DiffViewer taskId={taskId} path={sel.path} mode={diffMode(sel.group)} onChanged={refresh} onCommentAdded={() => setCommentsKey((k) => k + 1)} />
-          </div>
-        )}
-        {sel?.kind === "commit" && <div className="git-compact-diff"><CommitDetail taskId={taskId} item={sel.item} /></div>}
       </aside>
     );
   }
@@ -85,9 +87,9 @@ export default function GitPanel({ taskId, layout }: { taskId: string; layout: "
           <ReviewComments key={commentsKey} taskId={taskId} />
         </div>
         <div className="git-full-right">
-          {sel?.kind === "file" && <DiffViewer taskId={taskId} path={sel.path} mode={diffMode(sel.group)} onChanged={refresh} onCommentAdded={() => setCommentsKey((k) => k + 1)} />}
-          {sel?.kind === "commit" && <CommitDetail taskId={taskId} item={sel.item} />}
-          {!sel && <div className="diff-empty">Select a file or commit.</div>}
+          {selection?.kind === "file" && <DiffViewer taskId={taskId} path={selection.path} mode={diffMode(selection.group)} onChanged={refresh} onCommentAdded={() => setCommentsKey((k) => k + 1)} />}
+          {selection?.kind === "commit" && <CommitDetail taskId={taskId} item={selection.item} />}
+          {!selection && <div className="diff-empty">Select a file or commit.</div>}
         </div>
       </div>
     </div>

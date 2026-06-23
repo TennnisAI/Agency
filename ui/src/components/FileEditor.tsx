@@ -39,7 +39,7 @@ export default function FileEditor({ root, path }: { root: FileRoot; path: strin
       if (fc.binary) { setStatus("binary"); return; }
       setStatus("ready");
       const host = hostRef.current;
-      if (!host) return;
+      if (!host) { setStatus("error"); setErrorMsg("Editor failed to mount."); return; }
       viewRef.current?.destroy();
       const state = EditorState.create({
         doc: fc.text,

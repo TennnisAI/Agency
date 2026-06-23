@@ -146,3 +146,9 @@ export function applyTheme(id: string): void {
 export function currentXtermTheme(): ITheme {
   return xtermThemeFor(resolveTheme(active));
 }
+
+/** The active theme's light/dark scheme — used to pick matching syntax-highlight
+ *  and other canvas-rendered colors that can't read CSS vars. */
+export function currentScheme(): "dark" | "light" {
+  return resolveTheme(active).scheme;
+}

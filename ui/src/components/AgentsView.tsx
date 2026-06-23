@@ -12,6 +12,7 @@ import { usePaneWidth } from "../hooks/usePaneWidth";
 
 export default function AgentsView({ project }: { project: Project }) {
   const { runs, view, setView, focusedRunId, tab, setTab, approveRunId, setApproveRun, createAgent } = useRuns();
+  const focused = runs.find((r) => r.id === focusedRunId) ?? null;
   const [review, setReview] = useState(false);
   const [error, setError] = useState("");
   const [pendingSpawn, setPendingSpawn] = useState<{ agentId: string; readiness: RepoReadiness; repoPath: string } | null>(null);
@@ -47,7 +48,7 @@ export default function AgentsView({ project }: { project: Project }) {
           </div>
         )}
         <div className="spacer" />
-        {tab === "agents" && (
+        {tab === "agents" && focused?.kind === "agent" && (
           <button className={review ? "on" : ""} onClick={() => setReview((r) => !r)}>Review</button>
         )}
         {tab === "agents" && (
@@ -59,9 +60,9 @@ export default function AgentsView({ project }: { project: Project }) {
 
       {tab === "source" && (
         <div className="source-wrap">
-          {focusedRunId
+          {focusedRunId && focused?.kind === "agent"
             ? <GitPanel taskId={focusedRunId} layout="full" selection={gitSel} onSelect={setGitSel} />
-            : <div className="board empty">Open an agent to review its changes.</div>}
+            : <div className="board empty">{focused?.kind === "terminal" ? "Terminals have no source control." : "Open an agent to review its changes."}</div>}
         </div>
       )}
 
@@ -76,7 +77,7 @@ export default function AgentsView({ project }: { project: Project }) {
             )}
             {view === "focus" && <AgentFocus />}
           </div>
-          {review && focusedRunId && (
+          {review && focusedRunId && focused?.kind === "agent" && (
             <>
               <Resizer size={reviewPane.width} min={280} max={640} onChange={reviewPane.setWidth} side="right" />
               <GitPanel

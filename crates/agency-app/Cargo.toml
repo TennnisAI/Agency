@@ -19,6 +19,7 @@ url = "2"
 base64 = "0.22"
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
+tauri-plugin-notification = "2"
 agency-core = { path = "../agency-core" }
 
 [dev-dependencies]

@@ -8,12 +8,55 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             use tauri::Manager;
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
             let state = AppState::new(&data_dir.join("agency.db"))?;
             app.manage(state);
+            let handle = app.handle().clone();
+            std::thread::spawn(move || {
+                use std::collections::{HashMap, HashSet};
+                use tauri::Manager;
+                use tauri_plugin_notification::NotificationExt;
+
+                let poll_secs: u64 = 2;
+                let mut watches: HashMap<String, crate::notifier::RunWatch> = HashMap::new();
+                let mut tick: u64 = 0;
+                loop {
+                    std::thread::sleep(std::time::Duration::from_secs(poll_secs));
+                    tick += 1;
+                    let state = handle.state::<AppState>();
+                    let settings = state.notif_settings().unwrap_or_default();
+                    let (focused, active) = state.ui_snapshot();
+                    let snaps = match state.watch_snapshot() {
+                        Ok(s) => s,
+                        Err(_) => continue,
+                    };
+                    let mut seen: HashSet<String> = HashSet::new();
+                    for snap in &snaps {
+                        seen.insert(snap.id.clone());
+                        let (watch, events) =
+                            crate::notifier::step(watches.get(&snap.id), snap, tick, poll_secs, settings.idle_secs);
+                        for ev in &events {
+                            let enabled = match ev {
+                                crate::notifier::NotifyKind::Finished => settings.agent_finished,
+                                crate::notifier::NotifyKind::RunCrashed => settings.run_crashed,
+                                crate::notifier::NotifyKind::Idle => settings.agent_idle,
+                            };
+                            let suppressed = (settings.only_when_unfocused && focused)
+                                || active.as_deref() == Some(snap.id.as_str());
+                            if enabled && !suppressed {
+                                let (title, body) = crate::notifier::message(ev, &snap.label);
+                                let _ = handle.notification().builder().title(title).body(body).show();
+                            }
+                        }
+                        watches.insert(snap.id.clone(), watch);
+                    }
+                    watches.retain(|id, _| seen.contains(id));
+                }
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -79,6 +122,9 @@ pub fn run() {
             commands::archive_run,
             commands::restore_run,
             commands::list_archived_runs,
+            commands::set_ui_state,
+            commands::get_notif_settings,
+            commands::save_notif_settings,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Agency");

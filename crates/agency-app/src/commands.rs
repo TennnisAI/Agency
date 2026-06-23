@@ -520,3 +520,20 @@ pub fn list_archived_runs(
 ) -> Result<Vec<RunInfo>, String> {
     state.list_archived_runs(&project_id).map_err(|e| e.to_string())
 }
+
+use crate::notifier::NotifSettings;
+
+#[tauri::command]
+pub fn set_ui_state(state: State<'_, AppState>, focused: bool, active_run: Option<String>) {
+    state.set_ui_state(focused, active_run);
+}
+
+#[tauri::command]
+pub fn get_notif_settings(state: State<'_, AppState>) -> Result<NotifSettings, String> {
+    state.notif_settings().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn save_notif_settings(state: State<'_, AppState>, settings: NotifSettings) -> Result<(), String> {
+    state.save_notif_settings(&settings).map_err(|e| e.to_string())
+}

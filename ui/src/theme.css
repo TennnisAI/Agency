@@ -14,6 +14,8 @@
   --agent-claude:var(--peach); --agent-pi:var(--teal); --agent-hermes:var(--mauve);
   /* dims (handoff §06) */
   --titlebar-h:40px; --statusbar-h:27px; --sidebar-w:266px; --focus-rail-w:312px;
+  /* legacy aliases (keep old var(--x, #fallback) usages theme-aware) */
+  --muted:var(--sub0); --panel:var(--mantle); --fg:var(--text); --border:var(--s0);
 }
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; }

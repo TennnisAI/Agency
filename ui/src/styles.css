@@ -653,7 +653,7 @@ textarea.settings-input { min-height: 64px; resize: vertical; }
   background: transparent;
   transition: background .12s;
 }
-.resizer:hover { background: #313244; }
+.resizer:hover { background: var(--s0); }
 .resizer.horizontal { width: auto; height: 5px; cursor: row-resize; }
 
 /* Ensure tree fills its wrapper div width */
@@ -771,7 +771,7 @@ textarea.settings-input { min-height: 64px; resize: vertical; }
 .run-panel.empty code { margin: 0 3px; }
 .run-controls { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-bottom: 1px solid var(--border, #2a2d36); }
 .run-url { color: var(--muted, #9aa); }
-.run-error { color: #e06c75; font-size: 12px; }
+.run-error { color: var(--red); font-size: 12px; }
 .run-body { flex: 1; display: flex; min-height: 0; }
 .run-term { flex: 1; min-width: 0; display: flex; }
 .run-preview { flex: 1; min-width: 0; border: 0; border-left: 1px solid var(--border, #2a2d36); background: #fff; }

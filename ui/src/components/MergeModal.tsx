@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
-import { xtermTheme } from "../lib/xtermTheme";
+import { currentXtermTheme } from "../lib/themes";
 import {
   MergeOutcome,
   abortMergeTask,
@@ -39,7 +39,7 @@ export default function MergeModal({ taskId, onClose }: { taskId: string; onClos
   function startResolver() {
     setResolving(true);
     setResolverDone(false);
-    const term = new Terminal({ convertEol: true, fontSize: 12, theme: xtermTheme });
+    const term = new Terminal({ convertEol: true, fontSize: 12, theme: currentXtermTheme() });
     termInstanceRef.current = term;
     const fit = new FitAddon();
     term.loadAddon(fit);

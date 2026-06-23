@@ -10,6 +10,8 @@ use serde::Serialize;
 use tauri::ipc::Channel;
 use tauri::State;
 
+use agency_core::title::{fallback_title, sanitize_title};
+use tauri::Manager;
 use crate::state::{AppState, ProviderSettings, RunInfo};
 
 #[derive(Clone, Serialize)]
@@ -88,6 +90,91 @@ pub fn create_run(
     state
         .create_run(&project_id, &prompt, &agent, &base)
         .map_err(|e| e.to_string())
+}
+
+const TITLE_MODEL_ANTHROPIC: &str = "claude-haiku-4-5-20251001";
+
+/// Generate a short title for a run from its first prompt, off the UI thread.
+/// No-ops if the run already has a title. Falls back to the first words of the
+/// prompt when no provider is configured or the request fails.
+#[tauri::command]
+pub fn set_run_title(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+    first_prompt: String,
+) -> Result<(), String> {
+    // Cheap guard on the calling thread: skip if already titled.
+    if let Ok(Some(existing)) = state.run_title(&id) {
+        if !existing.is_empty() {
+            return Ok(());
+        }
+    }
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        let st = handle.state::<AppState>();
+        // Re-check under the worker to avoid a race with a concurrent call.
+        if matches!(st.run_title(&id), Ok(Some(t)) if !t.is_empty()) {
+            return;
+        }
+        let settings = st.get_settings().unwrap_or(ProviderSettings {
+            anthropic_api_key: String::new(),
+            lm_studio_base_url: String::new(),
+        });
+        let title = llm_title(&settings, &first_prompt).unwrap_or_else(|| fallback_title(&first_prompt));
+        if !title.is_empty() {
+            let _ = st.store_run_title(&id, &title);
+        }
+    });
+    Ok(())
+}
+
+fn llm_title(settings: &ProviderSettings, first_prompt: &str) -> Option<String> {
+    let instruction = format!(
+        "Generate a concise 3-5 word title for a coding task described by this first instruction. \
+         Reply with only the title, no quotes and no trailing punctuation.\n\nInstruction: {first_prompt}",
+    );
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .ok()?;
+
+    if !settings.anthropic_api_key.is_empty() {
+        let resp = client
+            .post("https://api.anthropic.com/v1/messages")
+            .header("x-api-key", &settings.anthropic_api_key)
+            .header("anthropic-version", "2023-06-01")
+            .json(&serde_json::json!({
+                "model": TITLE_MODEL_ANTHROPIC,
+                "max_tokens": 32,
+                "messages": [{ "role": "user", "content": instruction }],
+            }))
+            .send()
+            .ok()?;
+        let body: serde_json::Value = resp.json().ok()?;
+        let text = body["content"][0]["text"].as_str()?;
+        let title = sanitize_title(text);
+        return (!title.is_empty()).then_some(title);
+    }
+
+    if !settings.lm_studio_base_url.is_empty() {
+        let url = format!("{}/chat/completions", settings.lm_studio_base_url.trim_end_matches('/'));
+        let resp = client
+            .post(url)
+            .json(&serde_json::json!({
+                "model": "local-model",
+                "max_tokens": 32,
+                "messages": [{ "role": "user", "content": instruction }],
+            }))
+            .send()
+            .ok()?;
+        let body: serde_json::Value = resp.json().ok()?;
+        let text = body["choices"][0]["message"]["content"].as_str()?;
+        let title = sanitize_title(text);
+        return (!title.is_empty()).then_some(title);
+    }
+
+    None
 }
 
 #[tauri::command]

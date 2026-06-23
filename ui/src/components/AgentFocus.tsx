@@ -35,8 +35,8 @@ export default function AgentFocus() {
           <div className="rail" style={{ width: rail.width, minWidth: rail.width }}>
             <div className="rail-head">
               <span>Agents</span>
-              <span className="spacer" />
               <AgentAddMenu variant="icon" onSpawn={createAgent} />
+              <span className="spacer" />
               <button className="icon-btn" onClick={() => setRailOpen(false)}>«</button>
             </div>
             {runs.map((r) => (

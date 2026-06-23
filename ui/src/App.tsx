@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { RunStoreProvider, useRuns } from "./store/runs";
 import TitleBar from "./components/TitleBar";
 import StatusBar from "./components/StatusBar";
@@ -9,7 +9,7 @@ import CommandPalette from "./components/CommandPalette";
 import Resizer from "./components/Resizer";
 import { useShortcuts } from "./hooks/useShortcuts";
 import { usePaneWidth } from "./hooks/usePaneWidth";
-import { Project } from "./api";
+import { Project, setUiState } from "./api";
 
 function Shell() {
   const { selectedProjectId, setSelectedProject, createAgent, setTab, focusedRunId, setApproveRun } = useRuns();
@@ -25,6 +25,17 @@ function Shell() {
     onApprove: () => { if (focusedRunId) setApproveRun(focusedRunId); },
     onPalette: () => setPaletteOpen(true),
   });
+
+  useEffect(() => {
+    const report = () => setUiState(document.hasFocus(), focusedRunId).catch(() => {});
+    report();
+    window.addEventListener("focus", report);
+    window.addEventListener("blur", report);
+    return () => {
+      window.removeEventListener("focus", report);
+      window.removeEventListener("blur", report);
+    };
+  }, [focusedRunId]);
 
   function selectProject(p: Project) {
     setProject(p);

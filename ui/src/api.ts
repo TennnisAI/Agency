@@ -227,3 +227,18 @@ export const gitUnstageLines = (taskId: string, path: string, hunkIndex: number,
   invoke<void>("git_unstage_lines", { taskId, path, hunkIndex, lines });
 export const gitRevertLines = (taskId: string, path: string, hunkIndex: number, lines: number[]) =>
   invoke<void>("git_revert_lines", { taskId, path, hunkIndex, lines });
+
+export interface NotifSettings {
+  agentFinished: boolean;
+  agentIdle: boolean;
+  runCrashed: boolean;
+  mergeAttention: boolean;
+  onlyWhenUnfocused: boolean;
+  idleSecs: number;
+}
+
+export const setUiState = (focused: boolean, activeRun: string | null) =>
+  invoke<void>("set_ui_state", { focused, activeRun });
+export const getNotifSettings = () => invoke<NotifSettings>("get_notif_settings");
+export const saveNotifSettings = (settings: NotifSettings) =>
+  invoke<void>("save_notif_settings", { settings });

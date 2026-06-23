@@ -751,3 +751,7 @@ textarea.settings-input { min-height: 64px; resize: vertical; }
 .archived-row { display: flex; align-items: center; gap: 4px; padding: 2px 8px; }
 .archived-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted, #9aa); font-size: 12px; }
 .archived-empty { padding: 4px 8px; color: var(--muted, #9aa); font-size: 12px; }
+
+.settings-notif { display: flex; flex-direction: column; gap: 6px; }
+.settings-notif-row { display: flex; align-items: center; gap: 8px; color: var(--fg, #e6e6e6); }
+.settings-notif-secs { width: 80px; }

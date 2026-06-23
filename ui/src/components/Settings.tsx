@@ -2,11 +2,14 @@ import { useEffect, useState } from "react";
 import {
   AgentProfile,
   ProviderSettings,
+  NotifSettings,
   deleteProfile,
   getSettings,
+  getNotifSettings,
   listProfiles,
   saveProfile,
   saveSettings,
+  saveNotifSettings,
 } from "../api";
 
 export default function Settings({ onClose }: { onClose: () => void }) {
@@ -17,11 +20,20 @@ export default function Settings({ onClose }: { onClose: () => void }) {
   const [profiles, setProfiles] = useState<AgentProfile[]>([]);
   const [draft, setDraft] = useState({ name: "", command: "", args: "", env: "" });
   const [error, setError] = useState("");
+  const [notif, setNotif] = useState<NotifSettings>({
+    agentFinished: true,
+    agentIdle: true,
+    runCrashed: true,
+    mergeAttention: true,
+    onlyWhenUnfocused: true,
+    idleSecs: 30,
+  });
 
   async function refresh() {
     try {
       setSettings(await getSettings());
       setProfiles(await listProfiles());
+      setNotif(await getNotifSettings());
       setError("");
     } catch (e) {
       setError(String(e));
@@ -35,6 +47,16 @@ export default function Settings({ onClose }: { onClose: () => void }) {
   async function persistSettings() {
     try {
       await saveSettings(settings);
+      setError("");
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  async function persistNotif(next: NotifSettings) {
+    setNotif(next);
+    try {
+      await saveNotifSettings(next);
       setError("");
     } catch (e) {
       setError(String(e));
@@ -172,6 +194,38 @@ export default function Settings({ onClose }: { onClose: () => void }) {
             </div>
           </div>
           <button onClick={persistSettings}>Save providers</button>
+        </section>
+
+        <section className="settings-section">
+          <div className="settings-section-label">Notifications</div>
+          <div className="settings-notif">
+            {([
+              ["agentFinished", "Agent finished"],
+              ["agentIdle", "Agent needs input / idle"],
+              ["runCrashed", "Run script crashed"],
+              ["mergeAttention", "Merge needs attention"],
+              ["onlyWhenUnfocused", "Only when app is not focused"],
+            ] as [keyof NotifSettings, string][]).map(([key, label]) => (
+              <label key={key} className="settings-notif-row">
+                <input
+                  type="checkbox"
+                  checked={notif[key] as boolean}
+                  onChange={(e) => persistNotif({ ...notif, [key]: e.target.checked })}
+                />
+                {label}
+              </label>
+            ))}
+            <label className="settings-notif-row">
+              Idle after (seconds)
+              <input
+                className="settings-input settings-notif-secs"
+                type="number"
+                min={5}
+                value={notif.idleSecs}
+                onChange={(e) => persistNotif({ ...notif, idleSecs: Number(e.target.value) || 30 })}
+              />
+            </label>
+          </div>
         </section>
       </div>
     </div>

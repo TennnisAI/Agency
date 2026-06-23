@@ -12,7 +12,7 @@ pub fn run_blocking(script: &str, cwd: &Path, env: &[(String, String)]) -> Resul
     }
     let status = cmd.status()?;
     if !status.success() {
-        bail!("archive script exited with {status}");
+        bail!("script exited with {status}");
     }
     Ok(())
 }

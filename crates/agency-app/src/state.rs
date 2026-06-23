@@ -457,7 +457,7 @@ impl AppState {
             }
         }
 
-        WorktreeManager::new(repo).remove_keep_branch(id).ok();
+        WorktreeManager::new(repo).remove_keep_branch(id)?;
         self.registry.lock().unwrap().set_archived(id, Some(now_secs()))?;
         Ok(())
     }

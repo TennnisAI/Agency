@@ -26,6 +26,7 @@ export interface RunInfo {
   deleted: number;
   files: number;
   port: number | null;
+  archivedAt: number | null;
 }
 
 export const listProjects = () => invoke<Project[]>("list_projects");
@@ -62,6 +63,10 @@ export const runStatus = (id: string) => invoke<SessionStatus>("run_status", { i
 export const discardRun = (id: string) => invoke<void>("discard_run", { id });
 export const stopRun = (id: string) => invoke<void>("stop_run", { id });
 export const rerun = (id: string) => invoke<RunInfo>("rerun", { id });
+export const archiveRun = (id: string) => invoke<void>("archive_run", { id });
+export const restoreRun = (id: string) => invoke<RunInfo>("restore_run", { id });
+export const listArchivedRuns = (projectId: string) =>
+  invoke<RunInfo[]>("list_archived_runs", { projectId });
 
 export function attachRun(id: string, onBytes: (b: Uint8Array) => void): Promise<void> {
   const onChunk = new Channel<{ b64: string }>();

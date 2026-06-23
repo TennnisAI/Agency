@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
 import { useRuns } from "../store/runs";
-import { stopRun, discardRun } from "../api";
+import { stopRun, discardRun, archiveRun } from "../api";
 import FocusTerminal from "./FocusTerminal";
 import RunPanel from "./RunPanel";
 import MergeModal from "./MergeModal";
 import ConfirmDialog from "./ConfirmDialog";
 import Resizer from "./Resizer";
+import ArchivedSection from "./ArchivedSection";
 import { usePaneWidth } from "../hooks/usePaneWidth";
 
 function badgeClass(a: string) {
@@ -40,6 +41,7 @@ export default function AgentFocus() {
                 <span className="rail-name">{r.agent}: {r.prompt || r.branch}</span>
               </button>
             ))}
+            <ArchivedSection />
           </div>
           <Resizer width={rail.width} min={220} max={520} onChange={rail.setWidth} side="left" />
         </>
@@ -60,6 +62,12 @@ export default function AgentFocus() {
               <span className="spacer" />
               <button className="tile-act" title="Stop agent" onClick={async () => { await stopRun(focused.id); await refreshRuns(); }}>■ Stop</button>
               <button className="tile-act danger" title="Discard agent" onClick={() => setConfirmDiscard(true)}>✕ Discard</button>
+              <button className="tile-act" title="Archive agent" onClick={async () => {
+                const id = focused.id;
+                await archiveRun(id);
+                setFocusedRun(null);
+                await refreshRuns();
+              }}>⌂ Archive</button>
               <button onClick={() => setShowMerge(true)}>Approve →</button>
             </div>
             {panel === "agent"

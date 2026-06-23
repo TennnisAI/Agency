@@ -28,6 +28,19 @@ pub struct Run {
     pub archived_at: Option<i64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewComment {
+    pub id: String,
+    pub run_id: String,
+    pub path: String,
+    pub line_start: u32,
+    pub line_end: u32,
+    pub body: String,
+    pub sent: bool,
+    pub created_at: i64,
+}
+
 pub struct Registry {
     conn: Connection,
 }
@@ -67,6 +80,16 @@ impl Registry {
                 created_at INTEGER NOT NULL,
                 port_base INTEGER,
                 archived_at INTEGER
+            );
+            CREATE TABLE IF NOT EXISTS review_comments (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                path TEXT NOT NULL,
+                line_start INTEGER NOT NULL,
+                line_end INTEGER NOT NULL,
+                body TEXT NOT NULL,
+                sent INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL
             );",
         )?;
         // Migrate older DBs whose `runs` table predates `port_base`.
@@ -265,6 +288,67 @@ impl Registry {
         }
         Ok(out)
     }
+
+    pub fn insert_review_comment(&self, c: &ReviewComment) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO review_comments (id, run_id, path, line_start, line_end, body, sent, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            rusqlite::params![
+                c.id, c.run_id, c.path, c.line_start, c.line_end, c.body, c.sent as i64, c.created_at
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_review_comments(&self, run_id: &str) -> Result<Vec<ReviewComment>> {
+        self.query_review_comments(
+            "SELECT id, run_id, path, line_start, line_end, body, sent, created_at
+             FROM review_comments WHERE run_id = ?1 ORDER BY created_at",
+            run_id,
+        )
+    }
+
+    pub fn list_unsent_review_comments(&self, run_id: &str) -> Result<Vec<ReviewComment>> {
+        self.query_review_comments(
+            "SELECT id, run_id, path, line_start, line_end, body, sent, created_at
+             FROM review_comments WHERE run_id = ?1 AND sent = 0 ORDER BY created_at",
+            run_id,
+        )
+    }
+
+    fn query_review_comments(&self, sql: &str, run_id: &str) -> Result<Vec<ReviewComment>> {
+        let mut stmt = self.conn.prepare(sql)?;
+        let rows = stmt.query_map([run_id], |row| {
+            Ok(ReviewComment {
+                id: row.get(0)?,
+                run_id: row.get(1)?,
+                path: row.get(2)?,
+                line_start: row.get(3)?,
+                line_end: row.get(4)?,
+                body: row.get(5)?,
+                sent: row.get::<_, i64>(6)? != 0,
+                created_at: row.get(7)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    pub fn delete_review_comment(&self, id: &str) -> Result<()> {
+        self.conn.execute("DELETE FROM review_comments WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    pub fn mark_review_comments_sent(&self, run_id: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE review_comments SET sent = 1 WHERE run_id = ?1 AND sent = 0",
+            [run_id],
+        )?;
+        Ok(())
+    }
 }
 
 fn row_to_profile(row: &rusqlite::Row) -> Result<AgentProfile> {
@@ -333,6 +417,19 @@ mod tests {
             created_at: 42,
             port_base: port,
             archived_at: None,
+        }
+    }
+
+    fn sample_comment(id: &str, run_id: &str, sent: bool) -> ReviewComment {
+        ReviewComment {
+            id: id.to_string(),
+            run_id: run_id.to_string(),
+            path: "src/main.rs".to_string(),
+            line_start: 10,
+            line_end: 12,
+            body: "fix this".to_string(),
+            sent,
+            created_at: 5,
         }
     }
 
@@ -422,5 +519,39 @@ mod tests {
         reg.set_archived("x-1", None).unwrap();
         let active: Vec<String> = reg.list_runs("proj").unwrap().into_iter().map(|r| r.id).collect();
         assert_eq!(active, vec!["x-1"]);
+    }
+
+    #[test]
+    fn review_comments_crud_and_filter() {
+        let dir = tempdir().unwrap();
+        let reg = Registry::open(&dir.path().join("a.db")).unwrap();
+        reg.insert_review_comment(&sample_comment("c1", "run-1", false)).unwrap();
+        reg.insert_review_comment(&sample_comment("c2", "run-1", true)).unwrap();
+        reg.insert_review_comment(&sample_comment("c3", "run-2", false)).unwrap();
+
+        let all: Vec<String> = reg.list_review_comments("run-1").unwrap().into_iter().map(|c| c.id).collect();
+        assert_eq!(all, vec!["c1", "c2"]);
+        let unsent: Vec<String> = reg.list_unsent_review_comments("run-1").unwrap().into_iter().map(|c| c.id).collect();
+        assert_eq!(unsent, vec!["c1"]);
+
+        let got = reg.list_review_comments("run-1").unwrap();
+        assert_eq!(got[0].line_start, 10);
+        assert_eq!(got[0].line_end, 12);
+        assert_eq!(got[0].sent, false);
+        assert_eq!(got[1].sent, true);
+    }
+
+    #[test]
+    fn mark_sent_and_delete() {
+        let dir = tempdir().unwrap();
+        let reg = Registry::open(&dir.path().join("a.db")).unwrap();
+        reg.insert_review_comment(&sample_comment("c1", "run-1", false)).unwrap();
+        reg.insert_review_comment(&sample_comment("c2", "run-1", false)).unwrap();
+        reg.mark_review_comments_sent("run-1").unwrap();
+        assert!(reg.list_unsent_review_comments("run-1").unwrap().is_empty());
+
+        reg.delete_review_comment("c1").unwrap();
+        let ids: Vec<String> = reg.list_review_comments("run-1").unwrap().into_iter().map(|c| c.id).collect();
+        assert_eq!(ids, vec!["c2"]);
     }
 }

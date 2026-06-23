@@ -1,4 +1,5 @@
 mod commands;
+mod notifier;
 mod state;
 
 pub use state::{AppState, ProviderSettings, RunInfo};

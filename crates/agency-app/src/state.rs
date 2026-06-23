@@ -50,7 +50,8 @@ fn compose_feedback(comments: &[agency_core::registry::ReviewComment]) -> String
             } else {
                 format!("{}:{}", c.path, c.line_start)
             };
-            format!("[{}] {}", loc, c.body)
+            let body = c.body.replace(['\n', '\r'], " ");
+            format!("[{}] {}", loc, body)
         })
         .collect();
     format!("Please address these review comments: {}", parts.join(" | "))
@@ -915,5 +916,13 @@ mod tests {
         assert!(!msg.contains("src/b.rs:5-5"), "equal start/end shows one number");
         assert!(msg.contains("rename this"));
         assert!(msg.contains("remove dead code"));
+    }
+
+    #[test]
+    fn compose_feedback_strips_newlines_in_body() {
+        let msg = compose_feedback(&[rc("src/a.rs", 1, 1, "line one\nline two\r\nthree")]);
+        assert!(!msg.contains('\n'), "no raw newlines");
+        assert!(!msg.contains('\r'), "no carriage returns");
+        assert!(msg.contains("line one line two"));
     }
 }

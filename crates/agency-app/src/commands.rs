@@ -502,3 +502,21 @@ pub fn resize_run_script(
 ) -> Result<(), String> {
     state.resize_run_script(&id, cols, rows).map_err(|e| e.to_string())
 }
+
+#[tauri::command]
+pub fn archive_run(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    state.archive_run(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn restore_run(state: State<'_, AppState>, id: String) -> Result<RunInfo, String> {
+    state.restore_run(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_archived_runs(
+    state: State<'_, AppState>,
+    project_id: String,
+) -> Result<Vec<RunInfo>, String> {
+    state.list_archived_runs(&project_id).map_err(|e| e.to_string())
+}

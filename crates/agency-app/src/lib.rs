@@ -75,6 +75,9 @@ pub fn run() {
             commands::detach_run_script,
             commands::run_script_input,
             commands::resize_run_script,
+            commands::archive_run,
+            commands::restore_run,
+            commands::list_archived_runs,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Agency");

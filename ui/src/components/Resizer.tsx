@@ -12,6 +12,10 @@ export function axisCoord(
   return orientation === "horizontal" ? clientY : clientX;
 }
 
+export function resizerCursor(orientation: "vertical" | "horizontal"): string {
+  return orientation === "horizontal" ? "row-resize" : "col-resize";
+}
+
 export default function Resizer({
   width,
   min,
@@ -30,7 +34,6 @@ export default function Resizer({
   const onPointerDown = useCallback(
     (e: React.PointerEvent) => {
       e.preventDefault();
-      const horizontal = orientation === "horizontal";
       const start = axisCoord(orientation, e.clientX, e.clientY);
       const startW = width;
       const move = (ev: PointerEvent) => {
@@ -45,7 +48,7 @@ export default function Resizer({
       };
       window.addEventListener("pointermove", move);
       window.addEventListener("pointerup", up);
-      document.body.style.cursor = horizontal ? "row-resize" : "col-resize";
+      document.body.style.cursor = resizerCursor(orientation);
     },
     [width, min, max, onChange, side, orientation],
   );

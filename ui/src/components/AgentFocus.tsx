@@ -8,13 +8,14 @@ import ConfirmDialog from "./ConfirmDialog";
 import Resizer from "./Resizer";
 import ArchivedSection from "./ArchivedSection";
 import { usePaneWidth } from "../hooks/usePaneWidth";
+import AgentAddMenu from "./AgentAddMenu";
 
 function badgeClass(a: string) {
   return ["claude", "pi", "hermes"].includes(a) ? `badge ${a}` : "badge";
 }
 
 export default function AgentFocus() {
-  const { runs, focusedRunId, setFocusedRun, refreshRuns } = useRuns();
+  const { runs, focusedRunId, setFocusedRun, refreshRuns, createAgent } = useRuns();
   const [showMerge, setShowMerge] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [panel, setPanel] = useState<"agent" | "run">("agent");
@@ -33,6 +34,8 @@ export default function AgentFocus() {
           <div className="rail" style={{ width: rail.width, minWidth: rail.width }}>
             <div className="rail-head">
               <span>Agents</span>
+              <span className="spacer" />
+              <AgentAddMenu variant="icon" onSpawn={createAgent} />
               <button className="icon-btn" onClick={() => setRailOpen(false)}>«</button>
             </div>
             {runs.map((r) => (
@@ -46,7 +49,10 @@ export default function AgentFocus() {
           <Resizer width={rail.width} min={220} max={520} onChange={rail.setWidth} side="left" />
         </>
       ) : (
-        <button className="rail-stub icon-btn" onClick={() => setRailOpen(true)}>»</button>
+        <div className="rail-stub">
+          <button className="icon-btn" onClick={() => setRailOpen(true)}>»</button>
+          <span className="rail-spine">AGENTS · {runs.length}</span>
+        </div>
       )}
 
       <div className="focus-main">

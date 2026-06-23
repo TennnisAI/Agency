@@ -27,6 +27,7 @@ pub struct Run {
     pub port_base: Option<u16>,
     pub archived_at: Option<i64>,
     pub title: Option<String>,
+    pub kind: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -81,7 +82,8 @@ impl Registry {
                 created_at INTEGER NOT NULL,
                 port_base INTEGER,
                 archived_at INTEGER,
-                title TEXT
+                title TEXT,
+                kind TEXT NOT NULL DEFAULT 'agent'
             );
             CREATE TABLE IF NOT EXISTS review_comments (
                 id TEXT PRIMARY KEY,
@@ -103,6 +105,9 @@ impl Registry {
         }
         if !column_exists(&conn, "runs", "title")? {
             conn.execute("ALTER TABLE runs ADD COLUMN title TEXT", [])?;
+        }
+        if !column_exists(&conn, "runs", "kind")? {
+            conn.execute("ALTER TABLE runs ADD COLUMN kind TEXT NOT NULL DEFAULT 'agent'", [])?;
         }
         Ok(Registry { conn })
     }
@@ -222,11 +227,11 @@ impl Registry {
 
     pub fn insert_run(&self, run: &Run) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO runs (id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            "INSERT INTO runs (id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             rusqlite::params![
                 run.id, run.project_id, run.agent, run.prompt, run.base, run.branch,
-                run.created_at, run.port_base.map(|p| p as i64), run.archived_at, run.title
+                run.created_at, run.port_base.map(|p| p as i64), run.archived_at, run.title, run.kind
             ],
         )?;
         Ok(())
@@ -234,7 +239,7 @@ impl Registry {
 
     pub fn get_run(&self, id: &str) -> Result<Option<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title FROM runs WHERE id = ?1",
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind FROM runs WHERE id = ?1",
         )?;
         let mut rows = stmt.query([id])?;
         match rows.next()? {
@@ -245,7 +250,7 @@ impl Registry {
 
     pub fn list_runs(&self, project_id: &str) -> Result<Vec<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind
              FROM runs WHERE project_id = ?1 AND archived_at IS NULL ORDER BY created_at DESC",
         )?;
         let rows = stmt.query_map([project_id], |row| Ok(row_to_run(row)))?;
@@ -258,7 +263,7 @@ impl Registry {
 
     pub fn list_archived_runs(&self, project_id: &str) -> Result<Vec<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind
              FROM runs WHERE project_id = ?1 AND archived_at IS NOT NULL ORDER BY archived_at DESC",
         )?;
         let rows = stmt.query_map([project_id], |row| Ok(row_to_run(row)))?;
@@ -399,6 +404,7 @@ fn row_to_run(row: &rusqlite::Row) -> Result<Run> {
         port_base: port_base.map(|p| p as u16),
         archived_at: row.get(8)?,
         title: row.get(9)?,
+        kind: row.get(10)?,
     })
 }
 
@@ -432,6 +438,7 @@ mod tests {
             port_base: port,
             archived_at: None,
             title: None,
+            kind: "agent".to_string(),
         }
     }
 
@@ -594,6 +601,19 @@ mod tests {
         assert_eq!(reg.get_run("old-1").unwrap().unwrap().title, None);
         reg.set_run_title("old-1", "Recovered").unwrap();
         assert_eq!(reg.get_run("old-1").unwrap().unwrap().title.as_deref(), Some("Recovered"));
+    }
+
+    #[test]
+    fn run_kind_defaults_to_agent_and_roundtrips() {
+        let dir = tempdir().unwrap();
+        let reg = Registry::open(&dir.path().join("kind.db")).unwrap();
+        reg.insert_run(&sample_run("a-1", None)).unwrap();
+        assert_eq!(reg.get_run("a-1").unwrap().unwrap().kind, "agent");
+
+        let mut term = sample_run("t-1", None);
+        term.kind = "terminal".to_string();
+        reg.insert_run(&term).unwrap();
+        assert_eq!(reg.get_run("t-1").unwrap().unwrap().kind, "terminal");
     }
 
     #[test]

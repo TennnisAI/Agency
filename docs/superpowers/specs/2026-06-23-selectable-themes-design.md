@@ -5,7 +5,7 @@
 
 ## Goal
 
-Let users pick a UI theme from a new **Appearance** section in Settings. Ship four
+Let users pick a UI theme from a new **Appearance** section in Settings. Ship five
 new themes derived (as inspiration, not literal copies) from these palettes, alongside
 the existing Catppuccin Mocha default:
 
@@ -13,6 +13,7 @@ the existing Catppuccin Mocha default:
 - Twilight-5 — https://lospec.com/palette-list/twilight-5
 - Paperback-2 — https://lospec.com/palette-list/paperback-2
 - Nicole Punk 82 — https://lospec.com/palette-list/nicole-punk-82
+- CherryMelon — https://lospec.com/palette-list/cherrymelon
 
 ## Decisions (from brainstorming)
 
@@ -134,6 +135,17 @@ green #4f6a45 teal #437067    yellow #9a7825 peach #a4633a  red #97402f
 line #a7b1a5
 ```
 `scheme: 'light'`.
+
+### CherryMelon (dark) — dark-teal watermelon rind; cherry-red + melon-green, pale-pink text
+```
+base #012824  mantle #012420  crust #011d1a
+s0 #0e3a32    s1 #1a4a3e      s2 #265935
+o0 #4a7a5e    o1 #6f9a7e      o2 #9bbfa3
+text #fcdeea  sub1 #f0c4d4    sub0 #d99fb4
+blue #4f9ec0  lav #9fcabd     mauve #d98fc4  pink #ff8fb0
+green #3fa85f teal #44b0a2    yellow #e6cf6a peach #ff8fa3  red #ff4d6d
+line #0e3a32
+```
 
 ### Nicole Punk (dark) — near-black + cream; burnt-orange/amber/acid-green
 ```

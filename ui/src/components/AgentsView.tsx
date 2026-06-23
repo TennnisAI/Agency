@@ -9,6 +9,8 @@ import RepoSetupDialog from "./RepoSetupDialog";
 import AgentAddMenu from "./AgentAddMenu";
 import Resizer from "./Resizer";
 import { usePaneWidth } from "../hooks/usePaneWidth";
+import FilesView from "./FilesView";
+import { FileRoot } from "../api";
 
 export default function AgentsView({ project }: { project: Project }) {
   const { runs, view, setView, focusedRunId, tab, setTab, approveRunId, setApproveRun, createAgent } = useRuns();
@@ -40,6 +42,7 @@ export default function AgentsView({ project }: { project: Project }) {
         <div className="seg">
           <button className={tab === "agents" ? "on" : ""} onClick={() => setTab("agents")}>▦ Agents</button>
           <button className={tab === "source" ? "on" : ""} onClick={() => setTab("source")}>⎇ Source Control</button>
+          <button className={tab === "files" ? "on" : ""} onClick={() => setTab("files")}>▤ Files</button>
         </div>
         {tab === "agents" && (
           <div className="seg">
@@ -63,6 +66,19 @@ export default function AgentsView({ project }: { project: Project }) {
           {focusedRunId && focused?.kind === "agent"
             ? <GitPanel taskId={focusedRunId} layout="full" selection={gitSel} onSelect={setGitSel} />
             : <div className="board empty">{focused?.kind === "terminal" ? "Terminals have no source control." : "Open an agent to review its changes."}</div>}
+        </div>
+      )}
+
+      {tab === "files" && (
+        <div className="source-wrap">
+          <FilesView
+            root={
+              focusedRunId
+                ? ({ kind: "run", id: focusedRunId } as FileRoot)
+                : ({ kind: "project", id: project.id } as FileRoot)
+            }
+            projectName={project.name}
+          />
         </div>
       )}
 

@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState } f
 import { RunInfo, createRun, createTerminal as createTerminalApi, listRuns } from "../api";
 
 type View = "grid" | "focus";
-type Tab = "agents" | "source";
+type Tab = "agents" | "source" | "files";
 
 interface RunStore {
   runs: RunInfo[];

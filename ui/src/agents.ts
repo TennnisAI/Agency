@@ -18,3 +18,10 @@ const COLORS: Record<string, string> = {
 export function agentColor(name: string): string {
   return COLORS[name] ?? "#a6adc8";
 }
+
+import type { RunInfo } from "./api";
+
+// Display name precedence: generated title, else the original prompt, else branch.
+export function runName(run: Pick<RunInfo, "title" | "prompt" | "branch">): string {
+  return run.title || run.prompt || run.branch;
+}

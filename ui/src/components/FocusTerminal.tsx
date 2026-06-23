@@ -5,6 +5,7 @@ import "@xterm/xterm/css/xterm.css";
 import { attachRun, detachRun, resizeRun, runInput, runPreview,
   attachRunScript, detachRunScript, resizeRunScript, runScriptInput, runScriptPreview } from "../api";
 import { xtermTheme } from "../lib/xtermTheme";
+import { initialCapture, feed } from "../lib/firstPrompt";
 
 export interface TerminalStream {
   attach(id: string, onBytes: (b: Uint8Array) => void): Promise<void>;
@@ -24,9 +25,12 @@ export const runStream: TerminalStream = {
 };
 
 export default function FocusTerminal(
-  { runId, stream = agentStream }: { runId: string; stream?: TerminalStream },
+  { runId, stream = agentStream, onFirstPrompt }: { runId: string; stream?: TerminalStream; onFirstPrompt?: (line: string) => void },
 ) {
   const ref = useRef<HTMLDivElement>(null);
+  const onFirstPromptRef = useRef(onFirstPrompt);
+  onFirstPromptRef.current = onFirstPrompt;
+  const captureRef = useRef(initialCapture());
 
   useEffect(() => {
     const container = ref.current;
@@ -53,7 +57,15 @@ export default function FocusTerminal(
     stream.preview(runId, 200).then((seed) => { if (!disposed && seed) term.write(seed.endsWith("\n") ? seed : seed + "\n"); });
     stream.attach(runId, (bytes) => term.write(bytes)).then(() => {
       if (disposed) return;
-      onData = term.onData((d) => stream.input(runId, d));
+      onData = term.onData((d) => {
+        stream.input(runId, d);
+        const cb = onFirstPromptRef.current;
+        if (cb && !captureRef.current.done) {
+          const r = feed(captureRef.current, d);
+          captureRef.current = r.state;
+          if (r.line !== null) cb(r.line);
+        }
+      });
       // Re-send the size now that the attach exists, so the first paint matches.
       doFit();
     });
@@ -64,6 +76,7 @@ export default function FocusTerminal(
       onData?.dispose();
       stream.detach(runId);
       term.dispose();
+      captureRef.current = initialCapture();
     };
   }, [runId, stream]);
 

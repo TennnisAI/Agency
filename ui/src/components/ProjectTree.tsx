@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Project, RunInfo, RepoReadiness, addProject, closeProject, deleteProject, inspectRepo, listProjects, listRuns } from "../api";
+import { runName } from "../agents";
 import ConfirmDialog from "./ConfirmDialog";
 import RepoSetupDialog from "./RepoSetupDialog";
 
@@ -116,7 +117,7 @@ export default function ProjectTree({
                 {(expanded[p.id] ?? []).map((r) => (
                   <li key={r.id} className="tree-child">
                     <span className={`dot ${statusClass(r.status)}`} />
-                    <span className="tree-child-name tl">{r.agent}: {r.prompt || r.branch}</span>
+                    <span className="tree-child-name tl">{r.agent}: {runName(r)}</span>
                   </li>
                 ))}
               </ul>

@@ -31,6 +31,7 @@ pub struct RunInfo {
     pub project_id: String,
     pub agent: String,
     pub prompt: String,
+    pub title: Option<String>,
     pub branch: String,
     pub status: SessionStatus,
     pub added: u32,
@@ -264,6 +265,15 @@ impl AppState {
         Ok(())
     }
 
+    pub fn run_title(&self, id: &str) -> Result<Option<String>> {
+        let reg = self.registry.lock().unwrap();
+        Ok(reg.get_run(id)?.and_then(|r| r.title))
+    }
+
+    pub fn store_run_title(&self, id: &str, title: &str) -> Result<()> {
+        self.registry.lock().unwrap().set_run_title(id, title)
+    }
+
     pub fn add_project(&self, name: &str, repo_path: &Path) -> Result<Project> {
         validate_repo(repo_path)?;
         self.registry.lock().unwrap().add_project(name, repo_path)
@@ -349,6 +359,7 @@ impl AppState {
             project_id: run.project_id.clone(),
             agent: run.agent.clone(),
             prompt: run.prompt.clone(),
+            title: run.title.clone(),
             branch: run.branch.clone(),
             status,
             added: stat.added,
@@ -402,6 +413,7 @@ impl AppState {
             created_at: now_secs(),
             port_base: Some(port),
             archived_at: None,
+            title: None,
         };
         self.registry.lock().unwrap().insert_run(&run)?;
         Ok(self.run_info(&run))

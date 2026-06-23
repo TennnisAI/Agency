@@ -105,7 +105,7 @@ button:hover { background: var(--lav); }
 .modal-x:hover { color: var(--text); }
 
 /* Projects header + icons (Task 9) */
-.icon-add { width: 22px; height: 22px; border-radius: 6px; background: var(--base); border: 1px solid var(--s0); color: var(--text); cursor: pointer; font-size: 14px; line-height: 1; display: flex; align-items: center; justify-content: center; }
+.icon-add { width: 22px; height: 22px; border-radius: 6px; background: var(--base); border: 1px solid var(--s0); color: var(--text); cursor: pointer; font-size: 14px; line-height: 1; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .icon-add:hover { background: var(--s0); }
 .proj-icon { width: 24px; height: 24px; border-radius: 7px; background: var(--blue); color: var(--crust); font-size: 12px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .row-act { opacity: 0; border: none; background: transparent; color: var(--o0); cursor: pointer; font-size: 13px; padding: 0 2px; }
@@ -263,7 +263,7 @@ textarea.settings-input { min-height: 64px; resize: vertical; }
 /* Project tree sidebar */
 .tree {
   width: var(--sidebar-w);
-  min-width: var(--sidebar-w);
+  min-width: 0;
   border-right: 1px solid var(--line);
   display: flex; flex-direction: column;
   background: var(--mantle);
@@ -274,6 +274,7 @@ textarea.settings-input { min-height: 64px; resize: vertical; }
 }
 .tree-head .eyebrow {
   font-size: 10.5px; font-weight: 600; letter-spacing: .13em; color: var(--o0);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .tree-list {
   list-style: none; margin: 0; padding: 0 6px;
@@ -573,14 +574,14 @@ textarea.settings-input { min-height: 64px; resize: vertical; }
 }
 
 .rail-stub {
-  width: 36px;
-  min-width: 36px;
-  flex-shrink: 0;
+  width: 38px; flex-shrink: 0; background: var(--mantle);
   border-right: 1px solid var(--line);
-  border-radius: 0;
-  height: 100%;
-  align-items: flex-start;
-  padding-top: 10px;
+  display: flex; flex-direction: column; align-items: center;
+  padding-top: 12px; gap: 12px;
+}
+.rail-spine {
+  writing-mode: vertical-rl; font-size: 10px; font-weight: 600;
+  letter-spacing: .18em; color: var(--o0);
 }
 
 .focus-main {
@@ -640,6 +641,7 @@ textarea.settings-input { min-height: 64px; resize: vertical; }
   transition: background .12s;
 }
 .resizer:hover { background: #313244; }
+.resizer.horizontal { width: auto; height: 5px; cursor: row-resize; }
 
 /* Ensure tree fills its wrapper div width */
 .tree { width: 100%; }
@@ -703,6 +705,23 @@ textarea.settings-input { min-height: 64px; resize: vertical; }
 .diff-hunks { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 10px; border-top: 1px solid var(--line); }
 .diff-sel-actions { display: flex; gap: 4px; }
 
+/* ── Git stacked sections (Changes over History) ─────────────── */
+.git-sections { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
+.git-section { display: flex; flex-direction: column; min-height: 0; }
+.git-section-changes { flex: 1; min-height: 0; }
+.git-section-body { overflow: auto; flex: 1; min-height: 0; }
+.git-section-head {
+  display: flex; align-items: center; gap: 6px; width: 100%;
+  padding: 6px 10px; border-bottom: 1px solid var(--line);
+  background: none; border-left: none; border-right: none; border-top: none;
+  color: var(--o1); font-size: 11px; font-weight: 600; letter-spacing: .08em;
+  text-transform: uppercase; cursor: pointer; text-align: left;
+}
+.git-section-head.static { cursor: default; }
+.git-section-head .chev { font-size: 10px; }
+.git-section-history { border-top: 1px solid var(--line); }
+.git-section-history.folded { flex-shrink: 0; }
+
 /* ── Graph + CommitRow + HistoryPanel + CommitDetail (Task 12) ─── */
 .git-history { overflow: auto; flex: 1; }
 .git-commitrow { display: flex; align-items: center; gap: 8px; padding: 4px 8px; cursor: pointer; }
@@ -727,9 +746,6 @@ textarea.settings-input { min-height: 64px; resize: vertical; }
 .git-full-body { display: flex; flex: 1; min-height: 0; }
 .git-full-left { width: 360px; min-width: 300px; border-right: 1px solid var(--line); display: flex; flex-direction: column; overflow: auto; }
 .git-full-right { flex: 1; display: flex; min-width: 0; min-height: 0; }
-.git-tabs { display: flex; gap: 4px; padding: 6px; border-bottom: 1px solid var(--line); }
-.git-tabs button { background: none; border: none; color: var(--o1); cursor: pointer; padding: 5px 10px; border-radius: 6px; font-size: 12.5px; }
-.git-tabs button.on { background: var(--s0); color: var(--text); }
 .git-changes { overflow: auto; }
 
 /* ── Run tab toggle + RunPanel (Task 6) ────────────────────────── */

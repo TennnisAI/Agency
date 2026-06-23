@@ -26,6 +26,7 @@ pub struct Run {
     pub created_at: i64,
     pub port_base: Option<u16>,
     pub archived_at: Option<i64>,
+    pub title: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -79,7 +80,8 @@ impl Registry {
                 branch TEXT NOT NULL,
                 created_at INTEGER NOT NULL,
                 port_base INTEGER,
-                archived_at INTEGER
+                archived_at INTEGER,
+                title TEXT
             );
             CREATE TABLE IF NOT EXISTS review_comments (
                 id TEXT PRIMARY KEY,
@@ -98,6 +100,9 @@ impl Registry {
         }
         if !column_exists(&conn, "runs", "archived_at")? {
             conn.execute("ALTER TABLE runs ADD COLUMN archived_at INTEGER", [])?;
+        }
+        if !column_exists(&conn, "runs", "title")? {
+            conn.execute("ALTER TABLE runs ADD COLUMN title TEXT", [])?;
         }
         Ok(Registry { conn })
     }
@@ -217,11 +222,11 @@ impl Registry {
 
     pub fn insert_run(&self, run: &Run) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO runs (id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT INTO runs (id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             rusqlite::params![
                 run.id, run.project_id, run.agent, run.prompt, run.base, run.branch,
-                run.created_at, run.port_base.map(|p| p as i64), run.archived_at
+                run.created_at, run.port_base.map(|p| p as i64), run.archived_at, run.title
             ],
         )?;
         Ok(())
@@ -229,7 +234,7 @@ impl Registry {
 
     pub fn get_run(&self, id: &str) -> Result<Option<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at FROM runs WHERE id = ?1",
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title FROM runs WHERE id = ?1",
         )?;
         let mut rows = stmt.query([id])?;
         match rows.next()? {
@@ -240,7 +245,7 @@ impl Registry {
 
     pub fn list_runs(&self, project_id: &str) -> Result<Vec<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title
              FROM runs WHERE project_id = ?1 AND archived_at IS NULL ORDER BY created_at DESC",
         )?;
         let rows = stmt.query_map([project_id], |row| Ok(row_to_run(row)))?;
@@ -253,7 +258,7 @@ impl Registry {
 
     pub fn list_archived_runs(&self, project_id: &str) -> Result<Vec<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title
              FROM runs WHERE project_id = ?1 AND archived_at IS NOT NULL ORDER BY archived_at DESC",
         )?;
         let rows = stmt.query_map([project_id], |row| Ok(row_to_run(row)))?;
@@ -262,6 +267,14 @@ impl Registry {
             out.push(r??);
         }
         Ok(out)
+    }
+
+    pub fn set_run_title(&self, id: &str, title: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE runs SET title = ?2 WHERE id = ?1",
+            rusqlite::params![id, title],
+        )?;
+        Ok(())
     }
 
     pub fn set_archived(&self, id: &str, archived_at: Option<i64>) -> Result<()> {
@@ -385,6 +398,7 @@ fn row_to_run(row: &rusqlite::Row) -> Result<Run> {
         created_at: row.get(6)?,
         port_base: port_base.map(|p| p as u16),
         archived_at: row.get(8)?,
+        title: row.get(9)?,
     })
 }
 
@@ -417,6 +431,7 @@ mod tests {
             created_at: 42,
             port_base: port,
             archived_at: None,
+            title: None,
         }
     }
 
@@ -539,6 +554,46 @@ mod tests {
         assert_eq!(got[0].line_end, 12);
         assert_eq!(got[0].sent, false);
         assert_eq!(got[1].sent, true);
+    }
+
+    #[test]
+    fn run_roundtrips_title() {
+        let dir = tempdir().unwrap();
+        let reg = Registry::open(&dir.path().join("a.db")).unwrap();
+        reg.insert_run(&sample_run("x-1", Some(5200))).unwrap();
+        assert_eq!(reg.get_run("x-1").unwrap().unwrap().title, None);
+        reg.set_run_title("x-1", "Add hunk staging").unwrap();
+        assert_eq!(
+            reg.get_run("x-1").unwrap().unwrap().title.as_deref(),
+            Some("Add hunk staging"),
+        );
+    }
+
+    #[test]
+    fn migrates_legacy_runs_table_without_title() {
+        let dir = tempdir().unwrap();
+        let db = dir.path().join("legacy-title.db");
+        {
+            let conn = Connection::open(&db).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE runs (
+                    id TEXT PRIMARY KEY, project_id TEXT NOT NULL, agent TEXT NOT NULL,
+                    prompt TEXT NOT NULL, base TEXT NOT NULL, branch TEXT NOT NULL,
+                    created_at INTEGER NOT NULL
+                );",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO runs (id, project_id, agent, prompt, base, branch, created_at)
+                 VALUES ('old-1','proj','claude','p','HEAD','agent/old-1',1)",
+                [],
+            )
+            .unwrap();
+        }
+        let reg = Registry::open(&db).unwrap();
+        assert_eq!(reg.get_run("old-1").unwrap().unwrap().title, None);
+        reg.set_run_title("old-1", "Recovered").unwrap();
+        assert_eq!(reg.get_run("old-1").unwrap().unwrap().title.as_deref(), Some("Recovered"));
     }
 
     #[test]

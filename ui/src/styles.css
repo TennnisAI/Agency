@@ -799,3 +799,11 @@ textarea.settings-input { min-height: 64px; resize: vertical; }
 .review-row.sent { opacity: 0.5; }
 .review-loc { color: var(--muted, #9aa); white-space: nowrap; }
 .review-body { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ── Text selection: off on chrome, on where copy matters ───── */
+.shell { user-select: none; -webkit-user-select: none; }
+.diff-body, .diff-cell, .terminal, .xterm, .xterm *,
+input, textarea, code,
+.settings-meta-val, .git-commit-hash, .git-commit-subject, .git-commitdetail-subject {
+  user-select: text; -webkit-user-select: text;
+}

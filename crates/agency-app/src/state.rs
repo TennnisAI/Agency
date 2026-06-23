@@ -4,6 +4,7 @@ use agency_core::supervisor::AgentHandle;
 use agency_core::tmux::{SessionStatus, Tmux};
 use agency_core::worktree::WorktreeManager;
 use anyhow::{anyhow, bail, Result};
+use crate::notifier;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Mutex;
@@ -11,6 +12,7 @@ use std::sync::Mutex;
 const SETTING_ANTHROPIC_KEY: &str = "anthropic_api_key";
 const SETTING_LM_STUDIO_URL: &str = "lm_studio_base_url";
 const DEFAULT_LM_STUDIO_URL: &str = "http://localhost:1234/v1";
+const SETTING_NOTIF: &str = "notification_settings";
 
 const MERGE_RESOLVER_SKILL: &str = include_str!("../../../skills/merge-resolver/SKILL.md");
 
@@ -143,12 +145,19 @@ fn agent_profile(name: &str, command: &str) -> AgentProfile {
     AgentProfile { name: name.into(), command: command.into(), args: vec![], env: vec![] }
 }
 
+#[derive(Default)]
+struct UiState {
+    focused: bool,
+    active_run: Option<String>,
+}
+
 pub struct AppState {
     registry: Mutex<Registry>,
     attaches: Mutex<HashMap<String, AgentHandle>>,
     run_attaches: Mutex<HashMap<String, AgentHandle>>,
     tmux: Tmux,
     resolvers: Mutex<HashMap<String, AgentHandle>>,
+    ui: Mutex<UiState>,
 }
 
 impl AppState {
@@ -180,6 +189,7 @@ impl AppState {
             run_attaches: Mutex::new(HashMap::new()),
             tmux: Tmux::resolved(),
             resolvers: Mutex::new(HashMap::new()),
+            ui: Mutex::new(UiState { focused: true, active_run: None }),
         })
     }
 
@@ -686,6 +696,52 @@ impl AppState {
             handle.resize(rows, cols)?;
         }
         Ok(())
+    }
+
+    pub fn set_ui_state(&self, focused: bool, active_run: Option<String>) {
+        let mut ui = self.ui.lock().unwrap();
+        ui.focused = focused;
+        ui.active_run = active_run;
+    }
+
+    pub fn ui_snapshot(&self) -> (bool, Option<String>) {
+        let ui = self.ui.lock().unwrap();
+        (ui.focused, ui.active_run.clone())
+    }
+
+    pub fn notif_settings(&self) -> Result<notifier::NotifSettings> {
+        let raw = self.registry.lock().unwrap().get_setting(SETTING_NOTIF)?;
+        Ok(raw.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default())
+    }
+
+    pub fn save_notif_settings(&self, s: &notifier::NotifSettings) -> Result<()> {
+        let json = serde_json::to_string(s)?;
+        self.registry.lock().unwrap().set_setting(SETTING_NOTIF, &json)
+    }
+
+    /// Snapshot every non-archived run across all projects for the watcher:
+    /// agent + run-script session status and a hash of the agent pane (for idle).
+    pub fn watch_snapshot(&self) -> Result<Vec<notifier::RunSnapshot>> {
+        let projects = self.registry.lock().unwrap().list_projects()?;
+        let mut out = Vec::new();
+        for proj in projects {
+            let runs = self.registry.lock().unwrap().list_runs(&proj.id)?;
+            for run in runs {
+                let agent = self.tmux.session_status(&session_name(&run.id)).unwrap_or(SessionStatus::Gone);
+                let run_script = self.tmux.session_status(&run_session_name(&run.id)).unwrap_or(SessionStatus::Gone);
+                let pane = self.tmux.capture(&session_name(&run.id), 50).unwrap_or_default();
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                std::hash::Hash::hash(&pane, &mut hasher);
+                let pane_hash = std::hash::Hasher::finish(&hasher);
+                let label = format!(
+                    "{}: {}",
+                    run.agent,
+                    if run.prompt.is_empty() { run.branch.clone() } else { run.prompt.clone() }
+                );
+                out.push(notifier::RunSnapshot { id: run.id, label, agent, run_script, pane_hash });
+            }
+        }
+        Ok(out)
     }
 }
 

@@ -1,4 +1,5 @@
 pub mod config;
+pub mod files;
 pub mod git;
 pub mod merge;
 pub mod profile;

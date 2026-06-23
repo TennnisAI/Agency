@@ -125,6 +125,10 @@ pub fn run() {
             commands::set_ui_state,
             commands::get_notif_settings,
             commands::save_notif_settings,
+            commands::add_review_comment,
+            commands::list_review_comments,
+            commands::delete_review_comment,
+            commands::send_review_comments,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Agency");

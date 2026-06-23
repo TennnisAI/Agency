@@ -1,7 +1,7 @@
 use agency_core::git::{self, CommitFile, FileDiff, FileChange};
 use agency_core::merge::MergeOutcome;
 use agency_core::profile::AgentProfile;
-use agency_core::registry::Project;
+use agency_core::registry::{Project, ReviewComment};
 use agency_core::supervisor::AgentStatus;
 use agency_core::tmux::SessionStatus;
 use base64::engine::general_purpose::STANDARD;
@@ -554,4 +554,36 @@ pub fn get_notif_settings(state: State<'_, AppState>) -> Result<NotifSettings, S
 #[tauri::command]
 pub fn save_notif_settings(state: State<'_, AppState>, settings: NotifSettings) -> Result<(), String> {
     state.save_notif_settings(&settings).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn add_review_comment(
+    state: State<'_, AppState>,
+    run_id: String,
+    path: String,
+    line_start: u32,
+    line_end: u32,
+    body: String,
+) -> Result<ReviewComment, String> {
+    state
+        .add_review_comment(&run_id, &path, line_start, line_end, &body)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_review_comments(
+    state: State<'_, AppState>,
+    run_id: String,
+) -> Result<Vec<ReviewComment>, String> {
+    state.list_review_comments(&run_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_review_comment(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    state.delete_review_comment(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn send_review_comments(state: State<'_, AppState>, run_id: String) -> Result<(), String> {
+    state.send_review_comments(&run_id).map_err(|e| e.to_string())
 }

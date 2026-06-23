@@ -18,11 +18,13 @@ export default function GitPanel({
   layout,
   selection,
   onSelect,
+  width,
 }: {
   taskId: string;
   layout: "compact" | "full";
   selection: GitSelection;
   onSelect: (sel: GitSelection) => void;
+  width?: number;
 }) {
   const [changes, setChanges] = useState<FileChange[]>([]);
   const [branch, setBranch] = useState<BranchInfo | null>(null);
@@ -69,7 +71,7 @@ export default function GitPanel({
 
   if (layout === "compact") {
     return (
-      <aside className="git-panel compact">
+      <aside className="git-panel compact" style={width ? { width, minWidth: width } : undefined}>
         {error && <div className="git-error">{error}</div>}
         {sections}
         <ReviewComments key={commentsKey} taskId={taskId} />

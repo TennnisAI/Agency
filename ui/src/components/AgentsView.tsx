@@ -7,6 +7,8 @@ import MergeModal from "./MergeModal";
 import GitPanel, { GitSelection } from "./git/GitPanel";
 import RepoSetupDialog from "./RepoSetupDialog";
 import AgentAddMenu from "./AgentAddMenu";
+import Resizer from "./Resizer";
+import { usePaneWidth } from "../hooks/usePaneWidth";
 
 export default function AgentsView({ project }: { project: Project }) {
   const { runs, view, setView, focusedRunId, tab, setTab, approveRunId, setApproveRun, createAgent } = useRuns();
@@ -15,6 +17,7 @@ export default function AgentsView({ project }: { project: Project }) {
   const [pendingSpawn, setPendingSpawn] = useState<{ agentId: string; readiness: RepoReadiness; repoPath: string } | null>(null);
   const [gitSel, setGitSel] = useState<GitSelection>(null);
   useEffect(() => { setGitSel(null); }, [focusedRunId]);
+  const reviewPane = usePaneWidth("review", 360, 280, 640);
 
   async function spawn(agentId: string) {
     setError("");
@@ -74,12 +77,16 @@ export default function AgentsView({ project }: { project: Project }) {
             {view === "focus" && <AgentFocus />}
           </div>
           {review && focusedRunId && (
-            <GitPanel
-              taskId={focusedRunId}
-              layout="compact"
-              selection={gitSel}
-              onSelect={(sel) => { setGitSel(sel); if (sel) setTab("source"); }}
-            />
+            <>
+              <Resizer size={reviewPane.width} min={280} max={640} onChange={reviewPane.setWidth} side="right" />
+              <GitPanel
+                taskId={focusedRunId}
+                layout="compact"
+                width={reviewPane.width}
+                selection={gitSel}
+                onSelect={(sel) => { setGitSel(sel); if (sel) setTab("source"); }}
+              />
+            </>
           )}
         </div>
       )}

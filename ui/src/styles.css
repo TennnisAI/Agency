@@ -740,7 +740,7 @@ textarea.settings-input { min-height: 64px; resize: vertical; }
 .git-commitdetail-body { display: flex; min-height: 0; flex: 1; }
 .git-commitdetail-files { width: 240px; border-right: 1px solid var(--line); overflow: auto; padding: 6px 0; }
 .git-commitdetail-diff { flex: 1; display: flex; min-width: 0; }
-.git-panel.compact { display: flex; flex-direction: column; width: 360px; min-width: 360px; border-left: 1px solid var(--line); background: var(--mantle); overflow: hidden; }
+.git-panel.compact { display: flex; flex-direction: column; width: 360px; min-width: 280px; flex-shrink: 0; border-left: 1px solid var(--line); background: var(--mantle); overflow: hidden; }
 .git-panel.compact .git-compact-diff { border-top: 1px solid var(--line); min-height: 200px; display: flex; overflow: hidden; }
 .git-panel.full { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .git-full-body { display: flex; flex: 1; min-height: 0; }

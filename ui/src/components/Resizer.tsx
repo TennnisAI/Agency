@@ -6,20 +6,24 @@ export default function Resizer({
   max,
   onChange,
   side = "left",
+  orientation = "vertical",
 }: {
   width: number;
   min: number;
   max: number;
   onChange: (n: number) => void;
   side?: "left" | "right";
+  orientation?: "vertical" | "horizontal";
 }) {
   const onPointerDown = useCallback(
     (e: React.PointerEvent) => {
       e.preventDefault();
-      const startX = e.clientX;
+      const horizontal = orientation === "horizontal";
+      const start = horizontal ? e.clientY : e.clientX;
       const startW = width;
       const move = (ev: PointerEvent) => {
-        const delta = ev.clientX - startX;
+        const pos = horizontal ? ev.clientY : ev.clientX;
+        const delta = pos - start;
         onChange(side === "left" ? startW + delta : startW - delta);
       };
       const up = () => {
@@ -29,17 +33,17 @@ export default function Resizer({
       };
       window.addEventListener("pointermove", move);
       window.addEventListener("pointerup", up);
-      document.body.style.cursor = "col-resize";
+      document.body.style.cursor = horizontal ? "row-resize" : "col-resize";
     },
-    [width, min, max, onChange, side],
+    [width, min, max, onChange, side, orientation],
   );
 
   return (
     <div
-      className="resizer"
+      className={`resizer${orientation === "horizontal" ? " horizontal" : ""}`}
       onPointerDown={onPointerDown}
       role="separator"
-      aria-orientation="vertical"
+      aria-orientation={orientation}
     />
   );
 }

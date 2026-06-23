@@ -1,5 +1,17 @@
 import { useCallback } from "react";
 
+export function resizerClass(orientation: "vertical" | "horizontal"): string {
+  return orientation === "horizontal" ? "resizer horizontal" : "resizer";
+}
+
+export function axisCoord(
+  orientation: "vertical" | "horizontal",
+  clientX: number,
+  clientY: number,
+): number {
+  return orientation === "horizontal" ? clientY : clientX;
+}
+
 export default function Resizer({
   width,
   min,
@@ -19,10 +31,10 @@ export default function Resizer({
     (e: React.PointerEvent) => {
       e.preventDefault();
       const horizontal = orientation === "horizontal";
-      const start = horizontal ? e.clientY : e.clientX;
+      const start = axisCoord(orientation, e.clientX, e.clientY);
       const startW = width;
       const move = (ev: PointerEvent) => {
-        const pos = horizontal ? ev.clientY : ev.clientX;
+        const pos = axisCoord(orientation, ev.clientX, ev.clientY);
         const delta = pos - start;
         onChange(side === "left" ? startW + delta : startW - delta);
       };
@@ -40,7 +52,7 @@ export default function Resizer({
 
   return (
     <div
-      className={`resizer${orientation === "horizontal" ? " horizontal" : ""}`}
+      className={resizerClass(orientation)}
       onPointerDown={onPointerDown}
       role="separator"
       aria-orientation={orientation}

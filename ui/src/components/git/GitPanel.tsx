@@ -7,6 +7,8 @@ import DiffViewer from "./DiffViewer";
 import ReviewComments from "./ReviewComments";
 import BranchBar from "./BranchBar";
 import GitSections from "./GitSections";
+import Resizer from "../Resizer";
+import { usePaneWidth } from "../../hooks/usePaneWidth";
 
 export type GitSelection =
   | { kind: "file"; path: string; group: "index" | "workingTree" | "merge" | "untracked" }
@@ -30,6 +32,7 @@ export default function GitPanel({
   const [branch, setBranch] = useState<BranchInfo | null>(null);
   const [error, setError] = useState("");
   const [commentsKey, setCommentsKey] = useState(0);
+  const leftPane = usePaneWidth("git-full-left", 360, 300, 720);
 
   const refresh = useCallback(async () => {
     try {
@@ -84,10 +87,11 @@ export default function GitPanel({
       <BranchBar info={branch} onSync={() => act(() => gitPush(taskId))} onRefresh={refresh} />
       {error && <div className="git-error">{error}</div>}
       <div className="git-full-body">
-        <div className="git-full-left">
+        <div className="git-full-left" style={{ width: leftPane.width }}>
           {sections}
           <ReviewComments key={commentsKey} taskId={taskId} />
         </div>
+        <Resizer size={leftPane.width} min={300} max={720} onChange={leftPane.setWidth} />
         <div className="git-full-right">
           {selection?.kind === "file" && <DiffViewer taskId={taskId} path={selection.path} mode={diffMode(selection.group)} onChanged={refresh} onCommentAdded={() => setCommentsKey((k) => k + 1)} />}
           {selection?.kind === "commit" && <CommitDetail taskId={taskId} item={selection.item} />}

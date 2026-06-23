@@ -768,9 +768,27 @@ textarea.settings-input { min-height: 64px; resize: vertical; }
 .archived-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted, #9aa); font-size: 12px; }
 .archived-empty { padding: 4px 8px; color: var(--muted, #9aa); font-size: 12px; }
 
-.settings-notif { display: flex; flex-direction: column; gap: 6px; }
-.settings-notif-row { display: flex; align-items: center; gap: 8px; color: var(--fg, #e6e6e6); }
-.settings-notif-secs { width: 80px; }
+.settings-notif { display: flex; flex-direction: column; gap: 4px; }
+.settings-notif-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; padding: 7px 2px; color: var(--text); font-size: 13px;
+}
+.settings-notif-label { flex: 1; min-width: 0; }
+.settings-notif-secs { width: 90px; flex: 0 0 auto; }
+
+/* Sleek toggle switch */
+.toggle { position: relative; display: inline-flex; flex-shrink: 0; cursor: pointer; }
+.toggle input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; }
+.toggle-track {
+  width: 36px; height: 20px; border-radius: 999px; background: var(--s1);
+  transition: background 0.15s ease; display: inline-flex; align-items: center; padding: 2px;
+}
+.toggle-thumb {
+  width: 16px; height: 16px; border-radius: 50%; background: var(--text);
+  transition: transform 0.15s ease; transform: translateX(0);
+}
+.toggle.on .toggle-track { background: var(--green); }
+.toggle.on .toggle-thumb { transform: translateX(16px); background: var(--crust); }
 
 .diff-comment-box { display: flex; flex-direction: column; gap: 6px; padding: 6px 8px; border-bottom: 1px solid var(--border, #2a2d36); }
 .diff-comment-box textarea { min-height: 52px; }

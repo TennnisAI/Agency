@@ -11,6 +11,7 @@ import {
   saveSettings,
   saveNotifSettings,
 } from "../api";
+import Toggle from "./Toggle";
 
 export default function Settings({ onClose }: { onClose: () => void }) {
   const [settings, setSettings] = useState<ProviderSettings>({
@@ -206,17 +207,16 @@ export default function Settings({ onClose }: { onClose: () => void }) {
               ["mergeAttention", "Merge needs attention"],
               ["onlyWhenUnfocused", "Only when app is not focused"],
             ] as [keyof NotifSettings, string][]).map(([key, label]) => (
-              <label key={key} className="settings-notif-row">
-                <input
-                  type="checkbox"
+              <div key={key} className="settings-notif-row">
+                <span className="settings-notif-label">{label}</span>
+                <Toggle
                   checked={notif[key] as boolean}
-                  onChange={(e) => persistNotif({ ...notif, [key]: e.target.checked })}
+                  onChange={(next) => persistNotif({ ...notif, [key]: next })}
                 />
-                {label}
-              </label>
+              </div>
             ))}
-            <label className="settings-notif-row">
-              Idle after (seconds)
+            <div className="settings-notif-row">
+              <span className="settings-notif-label">Idle after (seconds)</span>
               <input
                 className="settings-input settings-notif-secs"
                 type="number"
@@ -224,7 +224,7 @@ export default function Settings({ onClose }: { onClose: () => void }) {
                 value={notif.idleSecs}
                 onChange={(e) => persistNotif({ ...notif, idleSecs: Number(e.target.value) || 30 })}
               />
-            </label>
+            </div>
           </div>
         </section>
       </div>

@@ -135,6 +135,17 @@ impl Tmux {
         Ok(())
     }
 
+    /// Type literal `text` into the session followed by Enter. Errors if the
+    /// session does not exist.
+    pub fn send_text(&self, name: &str, text: &str) -> Result<()> {
+        if !self.session_exists(name)? {
+            bail!("session {name} is not running");
+        }
+        self.ok(&["send-keys", "-t", name, "-l", text])?;
+        self.ok(&["send-keys", "-t", name, "Enter"])?;
+        Ok(())
+    }
+
     /// Attach to an existing tmux session via a PTY, streaming its output through
     /// `on_output`. Returns an [`AgentHandle`] whose `write_input` sends keystrokes
     /// into the session. Dropping the handle detaches; the session keeps running.

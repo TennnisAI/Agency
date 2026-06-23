@@ -8,6 +8,7 @@ use crate::notifier;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Mutex;
+use uuid;
 
 const SETTING_ANTHROPIC_KEY: &str = "anthropic_api_key";
 const SETTING_LM_STUDIO_URL: &str = "lm_studio_base_url";
@@ -36,6 +37,23 @@ pub struct RunInfo {
     pub deleted: u32,
     pub files: u32,
     pub port: Option<u16>,
+}
+
+/// Compose a single-line review-feedback message for the agent. Single-line so
+/// TUI agents don't submit early on embedded newlines.
+fn compose_feedback(comments: &[agency_core::registry::ReviewComment]) -> String {
+    let parts: Vec<String> = comments
+        .iter()
+        .map(|c| {
+            let loc = if c.line_end != c.line_start {
+                format!("{}:{}-{}", c.path, c.line_start, c.line_end)
+            } else {
+                format!("{}:{}", c.path, c.line_start)
+            };
+            format!("[{}] {}", loc, c.body)
+        })
+        .collect();
+    format!("Please address these review comments: {}", parts.join(" | "))
 }
 
 fn session_name(id: &str) -> String {
@@ -709,6 +727,48 @@ impl AppState {
         (ui.focused, ui.active_run.clone())
     }
 
+    pub fn add_review_comment(
+        &self,
+        run_id: &str,
+        path: &str,
+        line_start: u32,
+        line_end: u32,
+        body: &str,
+    ) -> Result<agency_core::registry::ReviewComment> {
+        let comment = agency_core::registry::ReviewComment {
+            id: uuid::Uuid::new_v4().to_string(),
+            run_id: run_id.to_string(),
+            path: path.to_string(),
+            line_start,
+            line_end,
+            body: body.to_string(),
+            sent: false,
+            created_at: now_secs(),
+        };
+        self.registry.lock().unwrap().insert_review_comment(&comment)?;
+        Ok(comment)
+    }
+
+    pub fn list_review_comments(&self, run_id: &str) -> Result<Vec<agency_core::registry::ReviewComment>> {
+        self.registry.lock().unwrap().list_review_comments(run_id)
+    }
+
+    pub fn delete_review_comment(&self, id: &str) -> Result<()> {
+        self.registry.lock().unwrap().delete_review_comment(id)
+    }
+
+    /// Type the unsent comments into the agent's live session and mark them sent.
+    pub fn send_review_comments(&self, run_id: &str) -> Result<()> {
+        let unsent = self.registry.lock().unwrap().list_unsent_review_comments(run_id)?;
+        if unsent.is_empty() {
+            bail!("no unsent review comments");
+        }
+        let message = compose_feedback(&unsent);
+        self.tmux.send_text(&session_name(run_id), &message)?;
+        self.registry.lock().unwrap().mark_review_comments_sent(run_id)?;
+        Ok(())
+    }
+
     pub fn notif_settings(&self) -> Result<notifier::NotifSettings> {
         let raw = self.registry.lock().unwrap().get_setting(SETTING_NOTIF)?;
         Ok(raw.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default())
@@ -831,5 +891,29 @@ mod tests {
     #[test]
     fn run_session_name_is_namespaced() {
         assert_eq!(super::run_session_name("fix-login-a3k2"), "agency-run-fix-login-a3k2");
+    }
+
+    use super::compose_feedback;
+    use agency_core::registry::ReviewComment;
+
+    fn rc(path: &str, a: u32, b: u32, body: &str) -> ReviewComment {
+        ReviewComment {
+            id: "x".into(), run_id: "r".into(), path: path.into(),
+            line_start: a, line_end: b, body: body.into(), sent: false, created_at: 0,
+        }
+    }
+
+    #[test]
+    fn compose_feedback_is_single_line_with_locations() {
+        let msg = compose_feedback(&[
+            rc("src/a.rs", 10, 12, "rename this"),
+            rc("src/b.rs", 5, 5, "remove dead code"),
+        ]);
+        assert!(!msg.contains('\n'), "must be single-line");
+        assert!(msg.contains("src/a.rs:10-12"));
+        assert!(msg.contains("src/b.rs:5"));
+        assert!(!msg.contains("src/b.rs:5-5"), "equal start/end shows one number");
+        assert!(msg.contains("rename this"));
+        assert!(msg.contains("remove dead code"));
     }
 }

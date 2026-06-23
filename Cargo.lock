@@ -24,6 +24,7 @@ dependencies = [
  "tauri-plugin-opener",
  "tempfile",
  "url",
+ "uuid",
 ]
 
 [[package]]

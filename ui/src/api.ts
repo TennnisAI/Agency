@@ -27,6 +27,7 @@ export interface RunInfo {
   deleted: number;
   files: number;
   port: number | null;
+  kind: "agent" | "terminal";
   archivedAt: number | null;
 }
 
@@ -53,6 +54,8 @@ export const deleteProject = (id: string) => invoke<void>("delete_project", { id
 
 export const createRun = (projectId: string, prompt: string, agent: string, base: string) =>
   invoke<RunInfo>("create_run", { projectId, prompt, agent, base });
+export const createTerminal = (projectId: string) =>
+  invoke<RunInfo>("create_terminal", { projectId });
 export const setRunTitle = (id: string, firstPrompt: string) =>
   invoke<void>("set_run_title", { id, firstPrompt });
 export const listRuns = (projectId: string) => invoke<RunInfo[]>("list_runs", { projectId });

@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
-import { RunInfo, createRun, listRuns } from "../api";
+import { RunInfo, createRun, createTerminal as createTerminalApi, listRuns } from "../api";
 
 type View = "grid" | "focus";
 type Tab = "agents" | "source";
@@ -16,6 +16,7 @@ interface RunStore {
   tab: Tab;
   setTab: (t: Tab) => void;
   createAgent: (agentId: string) => Promise<void>;
+  createTerminal: () => Promise<void>;
   approveRunId: string | null;
   setApproveRun: (id: string | null) => void;
 }
@@ -54,6 +55,15 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
     setView("focus");
   }, [refreshRuns]);
 
+  const createTerminal = useCallback(async () => {
+    const pid = projectRef.current;
+    if (!pid) return;
+    const run = await createTerminalApi(pid);
+    await refreshRuns();
+    setFocusedRun(run.id);
+    setView("focus");
+  }, [refreshRuns]);
+
   function setSelectedProject(id: string | null) {
     setSelectedProjectId(id);
     setView("grid");
@@ -69,7 +79,7 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <Ctx.Provider
-      value={{ runs, selectedProjectId, setSelectedProject, view, setView, focusedRunId, setFocusedRun, refreshRuns, tab, setTab, createAgent, approveRunId, setApproveRun }}
+      value={{ runs, selectedProjectId, setSelectedProject, view, setView, focusedRunId, setFocusedRun, refreshRuns, tab, setTab, createAgent, createTerminal, approveRunId, setApproveRun }}
     >
       {children}
     </Ctx.Provider>

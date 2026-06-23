@@ -715,7 +715,9 @@ impl AppState {
     }
 
     pub fn save_notif_settings(&self, s: &notifier::NotifSettings) -> Result<()> {
-        let json = serde_json::to_string(s)?;
+        let mut s = s.clone();
+        s.idle_secs = s.idle_secs.max(5);
+        let json = serde_json::to_string(&s)?;
         self.registry.lock().unwrap().set_setting(SETTING_NOTIF, &json)
     }
 

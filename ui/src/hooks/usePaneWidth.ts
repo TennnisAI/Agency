@@ -27,6 +27,25 @@ export function saveWidth(
   return clamped;
 }
 
+export function loadFold(
+  storage: Pick<Storage, "getItem">,
+  key: string,
+  def: boolean,
+): boolean {
+  const raw = storage.getItem("pane:" + key);
+  if (raw === "1") return true;
+  if (raw === "0") return false;
+  return def;
+}
+
+export function saveFold(
+  storage: Pick<Storage, "setItem">,
+  key: string,
+  folded: boolean,
+): void {
+  storage.setItem("pane:" + key, folded ? "1" : "0");
+}
+
 export function usePaneWidth(key: string, def: number, min: number, max: number) {
   const [width, setWidthState] = useState<number>(() => {
     if (typeof localStorage === "undefined") return def;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { clampWidth, loadWidth, saveWidth } from "./usePaneWidth";
+import { clampWidth, loadWidth, saveWidth, loadFold, saveFold } from "./usePaneWidth";
 
 // Minimal in-memory storage for testing without a DOM
 function makeStorage(): Pick<Storage, "getItem" | "setItem"> {
@@ -67,5 +67,33 @@ describe("saveWidth", () => {
     const result = saveWidth(storage, "rail", 312, 220, 520);
     expect(result).toBe(312);
     expect(storage.getItem("pane:rail")).toBe("312");
+  });
+});
+
+describe("fold state", () => {
+  it("returns the default when nothing is stored", () => {
+    const storage = makeStorage();
+    expect(loadFold(storage, "git-history-folded", false)).toBe(false);
+    expect(loadFold(storage, "git-history-folded", true)).toBe(true);
+  });
+
+  it("round-trips a saved folded value", () => {
+    const storage = makeStorage();
+    saveFold(storage, "git-history-folded", true);
+    expect(storage.getItem("pane:git-history-folded")).toBe("1");
+    expect(loadFold(storage, "git-history-folded", false)).toBe(true);
+  });
+
+  it("round-trips a saved expanded value", () => {
+    const storage = makeStorage();
+    saveFold(storage, "git-history-folded", false);
+    expect(storage.getItem("pane:git-history-folded")).toBe("0");
+    expect(loadFold(storage, "git-history-folded", true)).toBe(false);
+  });
+
+  it("falls back to default for an unrecognized stored value", () => {
+    const storage = makeStorage();
+    storage.setItem("pane:git-history-folded", "weird");
+    expect(loadFold(storage, "git-history-folded", true)).toBe(true);
   });
 });

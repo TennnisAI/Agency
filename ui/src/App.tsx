@@ -51,7 +51,7 @@ function Shell() {
             <div style={{ width: sidebar.width, flexShrink: 0, display: "flex", minHeight: 0 }}>
               <ProjectTree selectedId={selectedProjectId} onSelect={selectProject} />
             </div>
-            <Resizer width={sidebar.width} min={200} max={460} onChange={sidebar.setWidth} side="left" />
+            <Resizer size={sidebar.width} min={200} max={460} onChange={sidebar.setWidth} side="left" />
           </>
         )}
         {project ? <AgentsView project={project} /> : <main className="board empty">Select or add a project to begin.</main>}

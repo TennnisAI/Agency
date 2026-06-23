@@ -134,7 +134,12 @@ fn llm_title(settings: &ProviderSettings, first_prompt: &str) -> Option<String> 
         "Generate a concise 3-5 word title for a coding task described by this first instruction. \
          Reply with only the title, no quotes and no trailing punctuation.\n\nInstruction: {first_prompt}",
     );
+    // connect_timeout keeps a hung or unreachable endpoint from stalling the
+    // whole 15s budget — relevant when no provider is configured and the
+    // default localhost LM Studio URL isn't actually listening. The longer
+    // overall timeout still gives a real provider time to generate.
     let client = reqwest::blocking::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(3))
         .timeout(std::time::Duration::from_secs(15))
         .build()
         .ok()?;

@@ -47,7 +47,7 @@ export default function AgentFocus() {
             ))}
             <ArchivedSection />
           </div>
-          <Resizer width={rail.width} min={220} max={520} onChange={rail.setWidth} side="left" />
+          <Resizer size={rail.width} min={220} max={520} onChange={rail.setWidth} side="left" />
         </>
       ) : (
         <div className="rail-stub">

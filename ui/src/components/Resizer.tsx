@@ -17,14 +17,15 @@ export function resizerCursor(orientation: "vertical" | "horizontal"): string {
 }
 
 export default function Resizer({
-  width,
+  size,
   min,
   max,
   onChange,
   side = "left",
   orientation = "vertical",
 }: {
-  width: number;
+  // Current pane extent along the drag axis: width for vertical, height for horizontal.
+  size: number;
   min: number;
   max: number;
   onChange: (n: number) => void;
@@ -35,11 +36,11 @@ export default function Resizer({
     (e: React.PointerEvent) => {
       e.preventDefault();
       const start = axisCoord(orientation, e.clientX, e.clientY);
-      const startW = width;
+      const startSize = size;
       const move = (ev: PointerEvent) => {
         const pos = axisCoord(orientation, ev.clientX, ev.clientY);
         const delta = pos - start;
-        onChange(side === "left" ? startW + delta : startW - delta);
+        onChange(side === "left" ? startSize + delta : startSize - delta);
       };
       const up = () => {
         window.removeEventListener("pointermove", move);
@@ -50,7 +51,7 @@ export default function Resizer({
       window.addEventListener("pointerup", up);
       document.body.style.cursor = resizerCursor(orientation);
     },
-    [width, min, max, onChange, side, orientation],
+    [size, min, max, onChange, side, orientation],
   );
 
   return (

@@ -100,13 +100,23 @@ restarts (localStorage), matching the existing History-pane behavior.
 - A **third top-level mode** alongside Agents and Source Control. The `Tab`
   type in `ui/src/store/runs.tsx` (currently `"agents" | "source"`) gains
   `"files"`. The tab buttons live in `ui/src/components/AgentsView.tsx`.
-- Keyed to the **focused agent's worktree**: the mode reads `focusedRunId`
-  from the run store and passes it as `task_id` to the backend. The backend
-  resolves the directory via the existing `state.worktree_path(task_id)`
-  (the same resolution Source Control uses).
-- **Empty state:** when `focusedRunId` is null, the Files mode shows a prompt
-  to select/focus an agent rather than an empty tree.
-- Switching the focused agent re-roots the tree to that agent's worktree.
+- The tree root is selected by context, with a fallback:
+  - If an agent is **focused** (`focusedRunId != null`) → root is that
+    agent's **worktree**, resolved via the existing
+    `state.worktree_path(task_id)` (same resolution Source Control uses).
+  - Else if a **project is selected** (`selectedProjectId != null`) → root is
+    the **project's main repo working tree** (i.e. the main branch checkout),
+    resolved via the existing `state.project_repo_path(project_id)`.
+  - Else (no project) → empty state prompting the user to open/select a
+    project.
+- Switching the focused agent (or clearing focus back to the project) re-roots
+  the tree accordingly. A small header in the Files mode shows which root is
+  active (agent worktree vs. project main) so the user knows what they're
+  editing.
+- Because either a run worktree or the project main checkout can be the root,
+  the backend file commands take a **root selector** rather than assuming a
+  `task_id` (see Backend below). Editing a main-repo file writes directly to
+  the main checkout; editing a worktree file writes to that agent's worktree.
 
 ### Tree contents
 Show **everything** under the worktree root, unfiltered (including
@@ -117,20 +127,30 @@ eagerly.
 
 ### Backend (new Tauri commands)
 Added to `crates/agency-app/src/commands.rs` and registered in the
-`generate_handler!` list in `crates/agency-app/src/lib.rs`. All resolve the
-root via `state.worktree_path(&task_id)` and **validate that the resolved path
-stays inside the worktree** (reject any `..` traversal or absolute escape).
+`generate_handler!` list in `crates/agency-app/src/lib.rs`.
 
-- `list_dir(task_id, rel_path) -> Vec<DirEntry>` where
+Each command takes a **root selector** so it can target either an agent
+worktree or a project main checkout. Represented as a serde-tagged enum, e.g.:
+
+```
+enum FileRoot { Run { id: String }, Project { id: String } }
+```
+
+The command resolves it to a base directory via the existing
+`state.worktree_path(id)` (Run) or `state.project_repo_path(id)` (Project),
+then **validates that the resolved target path stays inside that base**
+(reject any `..` traversal or absolute escape).
+
+- `list_dir(root, rel_path) -> Vec<DirEntry>` where
   `DirEntry { name: String, is_dir: bool }`. Lists a single directory level
-  (the worktree root when `rel_path` is empty). Entries sorted
-  directories-first, then by name.
-- `read_file(task_id, rel_path) -> FileContents` where `FileContents` carries
+  (the root when `rel_path` is empty). Entries sorted directories-first, then
+  by name.
+- `read_file(root, rel_path) -> FileContents` where `FileContents` carries
   the text plus flags for binary / too-large content so the UI can show a
   placeholder instead of rendering garbage. (Exact size threshold and binary
   detection chosen during implementation.)
-- `write_file(task_id, rel_path, contents) -> ()`. Writes the buffer back to
-  disk within the worktree.
+- `write_file(root, rel_path, contents) -> ()`. Writes the buffer back to disk
+  within the resolved base.
 
 Corresponding typed wrappers are added to `ui/src/api.ts`.
 
@@ -138,8 +158,8 @@ Corresponding typed wrappers are added to `ui/src/api.ts`.
 A new `FilesView` component (mode container) composed of:
 
 - **`FileTree`** (left pane): renders lazily-expanding nodes from `list_dir`.
-  Tracks expanded folders and the selected file. Re-roots when `focusedRunId`
-  changes.
+  Tracks expanded folders and the selected file. Re-roots when the active root
+  changes (focused agent worktree ↔ project main checkout).
 - **Editor pane** (right): a **CodeMirror 6** editor instance. On file select,
   loads contents via `read_file` into an editable buffer with syntax
   highlighting (language inferred from file extension; the existing
@@ -166,8 +186,10 @@ scroll-sync / line-number / perf issues for real editing).
 
 ### Acceptance
 - A Files tab appears next to Agents and Source Control.
-- With an agent focused, its worktree tree renders; folders expand lazily;
-  `node_modules` does not freeze the UI on load.
+- With an agent focused, its worktree tree renders. With no agent focused but a
+  project selected, the project's main checkout renders. With no project, an
+  empty state prompts the user to open one. A header indicates the active root.
+- Folders expand lazily; `node_modules` does not freeze the UI on load.
 - Clicking a text file opens it in an editable, syntax-highlighted editor;
   edits can be saved with Cmd+S and persist to the worktree on disk.
 - Binary/oversized files show a placeholder, not garbage.

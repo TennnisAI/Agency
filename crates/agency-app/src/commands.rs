@@ -257,8 +257,26 @@ pub fn save_settings(state: State<'_, AppState>, settings: ProviderSettings) -> 
 }
 
 #[tauri::command]
-pub fn merge_task(state: State<'_, AppState>, task_id: String) -> Result<MergeOutcome, String> {
-    state.merge_task(&task_id).map_err(|e| e.to_string())
+pub fn merge_task(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    task_id: String,
+) -> Result<MergeOutcome, String> {
+    let outcome = state.merge_task(&task_id).map_err(|e| e.to_string())?;
+    if let MergeOutcome::Conflicts { files } = &outcome {
+        let settings = state.notif_settings().unwrap_or_default();
+        let (focused, _active) = state.ui_snapshot();
+        if settings.merge_attention && !(settings.only_when_unfocused && focused) {
+            use tauri_plugin_notification::NotificationExt;
+            let _ = app
+                .notification()
+                .builder()
+                .title("Merge needs attention")
+                .body(format!("{} file(s) conflict", files.len()))
+                .show();
+        }
+    }
+    Ok(outcome)
 }
 
 #[tauri::command]

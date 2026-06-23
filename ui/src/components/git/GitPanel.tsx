@@ -6,6 +6,7 @@ import CommitDetail from "./CommitDetail";
 import DiffViewer from "./DiffViewer";
 import ReviewComments from "./ReviewComments";
 import BranchBar from "./BranchBar";
+import GitSections from "./GitSections";
 
 type Selection =
   | { kind: "file"; path: string; group: "index" | "workingTree" | "merge" | "untracked" }
@@ -16,7 +17,6 @@ export default function GitPanel({ taskId, layout }: { taskId: string; layout: "
   const [changes, setChanges] = useState<FileChange[]>([]);
   const [branch, setBranch] = useState<BranchInfo | null>(null);
   const [error, setError] = useState("");
-  const [tab, setTab] = useState<"changes" | "history">("changes");
   const [sel, setSel] = useState<Selection>(null);
   const [commentsKey, setCommentsKey] = useState(0);
 
@@ -57,16 +57,13 @@ export default function GitPanel({ taskId, layout }: { taskId: string; layout: "
       selectedHash={sel?.kind === "commit" ? sel.item.hash : null}
       onSelectCommit={(item) => setSel({ kind: "commit", item })} />
   );
+  const sections = <GitSections changesPanel={changesPanel} historyPanel={historyPanel} />;
 
   if (layout === "compact") {
     return (
       <aside className="git-panel compact">
         {error && <div className="git-error">{error}</div>}
-        <div className="git-tabs">
-          <button className={tab === "changes" ? "on" : ""} onClick={() => setTab("changes")}>Changes</button>
-          <button className={tab === "history" ? "on" : ""} onClick={() => setTab("history")}>History</button>
-        </div>
-        {tab === "changes" ? changesPanel : historyPanel}
+        {sections}
         <ReviewComments key={commentsKey} taskId={taskId} />
         {sel?.kind === "file" && (
           <div className="git-compact-diff">
@@ -84,11 +81,7 @@ export default function GitPanel({ taskId, layout }: { taskId: string; layout: "
       {error && <div className="git-error">{error}</div>}
       <div className="git-full-body">
         <div className="git-full-left">
-          <div className="git-tabs">
-            <button className={tab === "changes" ? "on" : ""} onClick={() => setTab("changes")}>Changes</button>
-            <button className={tab === "history" ? "on" : ""} onClick={() => setTab("history")}>History</button>
-          </div>
-          {tab === "changes" ? changesPanel : historyPanel}
+          {sections}
           <ReviewComments key={commentsKey} taskId={taskId} />
         </div>
         <div className="git-full-right">

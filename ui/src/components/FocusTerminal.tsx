@@ -4,7 +4,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { attachRun, detachRun, resizeRun, runInput, runPreview,
   attachRunScript, detachRunScript, resizeRunScript, runScriptInput, runScriptPreview } from "../api";
-import { xtermTheme } from "../lib/xtermTheme";
+import { currentXtermTheme } from "../lib/themes";
 import { initialCapture, feed } from "../lib/firstPrompt";
 
 export interface TerminalStream {
@@ -35,7 +35,7 @@ export default function FocusTerminal(
   useEffect(() => {
     const container = ref.current;
     if (!container) return;
-    const term = new Terminal({ convertEol: true, fontSize: 13, cursorBlink: true, theme: xtermTheme });
+    const term = new Terminal({ convertEol: true, fontSize: 13, cursorBlink: true, theme: currentXtermTheme() });
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(container);
@@ -51,6 +51,9 @@ export default function FocusTerminal(
     requestAnimationFrame(() => { doFit(); term.focus(); });
     const ro = new ResizeObserver(doFit);
     ro.observe(container);
+
+    const onThemeChange = () => { term.options.theme = currentXtermTheme(); };
+    window.addEventListener("themechange", onThemeChange);
 
     let disposed = false;
     let onData: { dispose(): void } | undefined;
@@ -73,6 +76,7 @@ export default function FocusTerminal(
     return () => {
       disposed = true;
       ro.disconnect();
+      window.removeEventListener("themechange", onThemeChange);
       onData?.dispose();
       stream.detach(runId);
       term.dispose();

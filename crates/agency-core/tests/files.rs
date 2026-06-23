@@ -63,3 +63,44 @@ fn rejects_absolute_path() {
     let dir = fixture();
     assert!(files::read_file(dir.path(), "/etc/passwd").is_err());
 }
+
+#[test]
+fn read_file_flags_invalid_utf8_as_binary() {
+    let dir = fixture();
+    // 0xFF/0xFE are never valid UTF-8 lead bytes, and there is no NUL byte —
+    // so this must be caught by the UTF-8 check, not the NUL check.
+    fs::write(dir.path().join("bad.txt"), [0xFFu8, 0xFE, 0x41, 0x42]).unwrap();
+    let fc = files::read_file(dir.path(), "bad.txt").unwrap();
+    assert!(fc.binary, "invalid non-NUL UTF-8 should be flagged binary");
+    assert_eq!(fc.text, "");
+}
+
+#[cfg(unix)]
+#[test]
+fn rejects_symlink_escape() {
+    use std::os::unix::fs::symlink;
+    let root = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    fs::write(outside.path().join("secret.txt"), "secret\n").unwrap();
+    // A symlink that lives inside root but points at a directory outside it.
+    symlink(outside.path(), root.path().join("link")).unwrap();
+
+    // Reading or listing through the escaping symlink must be rejected even
+    // though the path is lexically clean (no `..`, not absolute).
+    assert!(files::read_file(root.path(), "link/secret.txt").is_err());
+    assert!(files::list_dir(root.path(), "link").is_err());
+    // Writing through it must be rejected too.
+    assert!(files::write_file(root.path(), "link/planted.txt", "no").is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn allows_symlink_within_root() {
+    use std::os::unix::fs::symlink;
+    let root = tempfile::tempdir().unwrap();
+    fs::write(root.path().join("real.txt"), "hi\n").unwrap();
+    // A symlink that stays inside root resolves and is allowed.
+    symlink(root.path().join("real.txt"), root.path().join("alias.txt")).unwrap();
+    let fc = files::read_file(root.path(), "alias.txt").unwrap();
+    assert_eq!(fc.text, "hi\n");
+}

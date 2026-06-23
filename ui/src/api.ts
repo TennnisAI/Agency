@@ -269,3 +269,25 @@ export const deleteReviewComment = (id: string) =>
   invoke<void>("delete_review_comment", { id });
 export const sendReviewComments = (runId: string) =>
   invoke<void>("send_review_comments", { runId });
+
+export type FileRoot = { kind: "run"; id: string } | { kind: "project"; id: string };
+
+export interface DirEntry {
+  name: string;
+  isDir: boolean;
+}
+
+export interface FileContents {
+  text: string;
+  binary: boolean;
+  tooLarge: boolean;
+}
+
+export const listDir = (root: FileRoot, relPath: string) =>
+  invoke<DirEntry[]>("list_dir", { root, relPath });
+
+export const readFile = (root: FileRoot, relPath: string) =>
+  invoke<FileContents>("read_file", { root, relPath });
+
+export const writeFile = (root: FileRoot, relPath: string, contents: string) =>
+  invoke<void>("write_file", { root, relPath, contents });

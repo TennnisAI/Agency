@@ -131,6 +131,9 @@ pub fn run() {
             commands::list_review_comments,
             commands::delete_review_comment,
             commands::send_review_comments,
+            commands::list_dir,
+            commands::read_file,
+            commands::write_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Agency");

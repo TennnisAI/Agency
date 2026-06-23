@@ -6,7 +6,7 @@ use agency_core::supervisor::AgentStatus;
 use agency_core::tmux::SessionStatus;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
 use tauri::State;
 
@@ -692,4 +692,51 @@ pub fn delete_review_comment(state: State<'_, AppState>, id: String) -> Result<(
 #[tauri::command]
 pub fn send_review_comments(state: State<'_, AppState>, run_id: String) -> Result<(), String> {
     state.send_review_comments(&run_id).map_err(|e| e.to_string())
+}
+
+/// Selects which directory the file commands operate on: a run's worktree or a
+/// project's main checkout.
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum FileRoot {
+    Run { id: String },
+    Project { id: String },
+}
+
+fn resolve_root(state: &AppState, root: &FileRoot) -> Result<std::path::PathBuf, String> {
+    match root {
+        FileRoot::Run { id } => state.worktree_path(id).map_err(|e| e.to_string()),
+        FileRoot::Project { id } => state.project_repo_path(id).map_err(|e| e.to_string()),
+    }
+}
+
+#[tauri::command]
+pub fn list_dir(
+    state: State<'_, AppState>,
+    root: FileRoot,
+    rel_path: String,
+) -> Result<Vec<agency_core::files::DirEntry>, String> {
+    let base = resolve_root(&state, &root)?;
+    agency_core::files::list_dir(&base, &rel_path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn read_file(
+    state: State<'_, AppState>,
+    root: FileRoot,
+    rel_path: String,
+) -> Result<agency_core::files::FileContents, String> {
+    let base = resolve_root(&state, &root)?;
+    agency_core::files::read_file(&base, &rel_path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn write_file(
+    state: State<'_, AppState>,
+    root: FileRoot,
+    rel_path: String,
+    contents: String,
+) -> Result<(), String> {
+    let base = resolve_root(&state, &root)?;
+    agency_core::files::write_file(&base, &rel_path, &contents).map_err(|e| e.to_string())
 }

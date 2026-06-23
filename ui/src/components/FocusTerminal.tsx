@@ -54,7 +54,15 @@ export default function FocusTerminal(
 
     let disposed = false;
     let onData: { dispose(): void } | undefined;
-    stream.preview(runId, 200).then((seed) => { if (!disposed && seed) term.write(seed.endsWith("\n") ? seed : seed + "\n"); });
+    stream.preview(runId, 200).then((seed) => {
+      if (disposed || !seed) return;
+      // tmux capture-pane pads the snapshot with blank lines up to the pane height;
+      // we also used to force a trailing newline. Both rendered as a block of empty
+      // lines on every open. Trim trailing whitespace/newlines — the live attach
+      // stream is authoritative for the current screen.
+      const trimmed = seed.replace(/\s+$/, "");
+      if (trimmed) term.write(trimmed);
+    });
     stream.attach(runId, (bytes) => term.write(bytes)).then(() => {
       if (disposed) return;
       onData = term.onData((d) => {

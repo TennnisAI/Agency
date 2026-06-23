@@ -1,22 +1,20 @@
 import { useState } from "react";
 import { Project, inspectRepo, RepoReadiness } from "../api";
-import { AGENT_TYPES } from "../agents";
 import { useRuns } from "../store/runs";
 import AgentTile from "./AgentTile";
 import AgentFocus from "./AgentFocus";
 import MergeModal from "./MergeModal";
 import GitPanel from "./git/GitPanel";
 import RepoSetupDialog from "./RepoSetupDialog";
+import AgentAddMenu from "./AgentAddMenu";
 
 export default function AgentsView({ project }: { project: Project }) {
   const { runs, view, setView, focusedRunId, tab, setTab, approveRunId, setApproveRun, createAgent } = useRuns();
   const [review, setReview] = useState(false);
-  const [menuOpen, setMenuOpen] = useState(false);
   const [error, setError] = useState("");
   const [pendingSpawn, setPendingSpawn] = useState<{ agentId: string; readiness: RepoReadiness; repoPath: string } | null>(null);
 
   async function spawn(agentId: string) {
-    setMenuOpen(false);
     setError("");
     try {
       const r = await inspectRepo(project.repo_path);
@@ -48,16 +46,7 @@ export default function AgentsView({ project }: { project: Project }) {
           <button className={review ? "on" : ""} onClick={() => setReview((r) => !r)}>Review</button>
         )}
         {tab === "agents" && (
-          <div className="agent-add">
-            <button className="btn-primary" onClick={() => setMenuOpen((o) => !o)}>+ Agent ▾</button>
-            {menuOpen && (
-              <div className="agent-menu" onMouseLeave={() => setMenuOpen(false)}>
-                {AGENT_TYPES.map((a) => (
-                  <button key={a.id} onClick={() => spawn(a.id)}>{a.label}</button>
-                ))}
-              </div>
-            )}
-          </div>
+          <AgentAddMenu onSpawn={spawn} />
         )}
       </div>
 

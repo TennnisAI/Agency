@@ -37,28 +37,31 @@ export default function AgentTile({ run }: { run: RunInfo }) {
   }, [run.id]);
 
   const st = statusLabel(run.status);
+  const isTerminal = run.kind === "terminal";
   return (
     <div className="tile" onClick={() => { setFocusedRun(run.id); setView("focus"); }}>
       <div className="tile-head">
         <span className={`dot ${st.cls}`} />
         <span className="tile-title">{runName(run)}</span>
-        <span className={badgeClass(run.agent)}>{run.agent}</span>
+        <span className={isTerminal ? "badge" : badgeClass(run.agent)}>{isTerminal ? "terminal" : run.agent}</span>
       </div>
-      <div className="tile-meta">
-        <code>{run.branch}</code>
-        <span className="diffstat"><span className="add">+{run.added}</span> <span className="del">−{run.deleted}</span> · {run.files}f</span>
-      </div>
+      {!isTerminal && (
+        <div className="tile-meta">
+          <code>{run.branch}</code>
+          <span className="diffstat"><span className="add">+{run.added}</span> <span className="del">−{run.deleted}</span> · {run.files}f</span>
+        </div>
+      )}
       <pre className="tile-preview">{preview}</pre>
       <div className="tile-foot">
         {st.text}
-        <button className="tile-act" title="Stop agent" onClick={async (e) => { e.stopPropagation(); await stopRun(run.id); await refreshRuns(); }}>■ Stop</button>
-        <button className="tile-act danger" title="Discard agent" onClick={(e) => { e.stopPropagation(); setConfirmDiscard(true); }}>✕</button>
+        <button className="tile-act" title={isTerminal ? "Stop shell" : "Stop agent"} onClick={async (e) => { e.stopPropagation(); await stopRun(run.id); await refreshRuns(); }}>■ Stop</button>
+        <button className="tile-act danger" title={isTerminal ? "Close terminal" : "Discard agent"} onClick={(e) => { e.stopPropagation(); setConfirmDiscard(true); }}>✕</button>
       </div>
       {confirmDiscard && (
         <ConfirmDialog
-          title="Discard agent?"
-          body={`Stop "${run.agent}", remove its worktree, and delete the run. This cannot be undone.`}
-          confirmLabel="Discard"
+          title={isTerminal ? "Close terminal?" : "Discard agent?"}
+          body={isTerminal ? "Stop the shell and remove this terminal session." : `Stop "${run.agent}", remove its worktree, and delete the run. This cannot be undone.`}
+          confirmLabel={isTerminal ? "Close" : "Discard"}
           danger
           onConfirm={async () => {
             await discardRun(run.id);

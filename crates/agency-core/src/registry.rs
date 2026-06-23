@@ -599,6 +599,7 @@ mod tests {
         }
         let reg = Registry::open(&db).unwrap();
         assert_eq!(reg.get_run("old-1").unwrap().unwrap().title, None);
+        assert_eq!(reg.get_run("old-1").unwrap().unwrap().kind, "agent");
         reg.set_run_title("old-1", "Recovered").unwrap();
         assert_eq!(reg.get_run("old-1").unwrap().unwrap().title.as_deref(), Some("Recovered"));
     }

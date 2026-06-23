@@ -38,6 +38,7 @@ pub struct RunInfo {
     pub deleted: u32,
     pub files: u32,
     pub port: Option<u16>,
+    pub kind: String,
 }
 
 /// Compose a single-line review-feedback message for the agent. Single-line so
@@ -366,6 +367,7 @@ impl AppState {
             deleted: stat.deleted,
             files: stat.files,
             port: run.port_base,
+            kind: run.kind.clone(),
         }
     }
 
@@ -414,6 +416,36 @@ impl AppState {
             port_base: Some(port),
             archived_at: None,
             title: None,
+            kind: "agent".to_string(),
+        };
+        self.registry.lock().unwrap().insert_run(&run)?;
+        Ok(self.run_info(&run))
+    }
+
+    /// Create a standalone shell terminal session in the project repo root.
+    /// Unlike `create_run` it has no worktree, branch, or agent profile — it just
+    /// runs the user's login shell, reusing the tmux/attach/resize pipeline.
+    pub fn create_terminal(&self, project_id: &str) -> Result<RunInfo> {
+        let repo = self.project_repo(project_id)?;
+        let id = new_task_id("terminal");
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+        // Login shell so the user's prompt/profile loads.
+        let args = vec!["-l".to_string()];
+        self.tmux
+            .start_session(&session_name(&id), &repo, &shell, &args, &[])?;
+
+        let run = agency_core::registry::Run {
+            id: id.clone(),
+            project_id: project_id.to_string(),
+            agent: "terminal".to_string(),
+            prompt: String::new(),
+            base: String::new(),
+            branch: String::new(),
+            created_at: now_secs(),
+            port_base: None,
+            archived_at: None,
+            title: Some("terminal".to_string()),
+            kind: "terminal".to_string(),
         };
         self.registry.lock().unwrap().insert_run(&run)?;
         Ok(self.run_info(&run))
@@ -468,8 +500,10 @@ impl AppState {
         self.tmux.kill_session(&session_name(id)).ok();
         self.run_attaches.lock().unwrap().remove(id);
         self.tmux.kill_session(&run_session_name(id)).ok();
-        if let Ok(repo) = self.project_repo(&run.project_id) {
-            let _ = WorktreeManager::new(repo).remove(id);
+        if run.kind == "agent" {
+            if let Ok(repo) = self.project_repo(&run.project_id) {
+                let _ = WorktreeManager::new(repo).remove(id);
+            }
         }
         self.registry.lock().unwrap().delete_run(id)?;
         Ok(())
@@ -936,5 +970,28 @@ mod tests {
         assert!(!msg.contains('\n'), "no raw newlines");
         assert!(!msg.contains('\r'), "no carriage returns");
         assert!(msg.contains("line one line two"));
+    }
+
+    #[test]
+    fn terminal_run_record_has_no_branch_and_terminal_kind() {
+        // Shape check independent of tmux: a terminal Run carries kind="terminal",
+        // an empty branch, and no port — the invariants discard_run/run_info rely on.
+        let run = agency_core::registry::Run {
+            id: new_task_id("terminal"),
+            project_id: "proj".to_string(),
+            agent: "terminal".to_string(),
+            prompt: String::new(),
+            base: String::new(),
+            branch: String::new(),
+            created_at: 0,
+            port_base: None,
+            archived_at: None,
+            title: Some("terminal".to_string()),
+            kind: "terminal".to_string(),
+        };
+        assert_eq!(run.kind, "terminal");
+        assert!(run.branch.is_empty());
+        assert!(run.port_base.is_none());
+        assert!(run.id.starts_with("terminal-"));
     }
 }

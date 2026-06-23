@@ -65,6 +65,7 @@ pub fn run() {
             commands::close_project,
             commands::delete_project,
             commands::create_run,
+            commands::create_terminal,
             commands::set_run_title,
             commands::list_runs,
             commands::run_preview,

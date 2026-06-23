@@ -92,6 +92,14 @@ pub fn create_run(
         .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+pub fn create_terminal(
+    state: State<'_, AppState>,
+    project_id: String,
+) -> Result<RunInfo, String> {
+    state.create_terminal(&project_id).map_err(|e| e.to_string())
+}
+
 const TITLE_MODEL_ANTHROPIC: &str = "claude-haiku-4-5-20251001";
 
 /// Generate a short title for a run from its first prompt, off the UI thread.

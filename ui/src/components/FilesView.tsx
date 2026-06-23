@@ -3,6 +3,7 @@ import { FileRoot } from "../api";
 import Resizer from "./Resizer";
 import { usePaneWidth } from "../hooks/usePaneWidth";
 import FileTree from "./FileTree";
+import FileEditor from "./FileEditor";
 
 export default function FilesView({ root, projectName }: { root: FileRoot | null; projectName: string }) {
   const treePane = usePaneWidth("files-tree", 280, 180, 560);
@@ -24,8 +25,7 @@ export default function FilesView({ root, projectName }: { root: FileRoot | null
       </div>
       <Resizer size={treePane.width} min={180} max={560} onChange={treePane.setWidth} />
       <div className="files-editor">
-        {/* FileEditor added in Task 7 */}
-        {selected ? <div>editor: {selected}</div> : <div className="diff-empty">Select a file to view.</div>}
+        {selected ? <FileEditor root={root} path={selected} /> : <div className="diff-empty">Select a file to view.</div>}
       </div>
     </div>
   );

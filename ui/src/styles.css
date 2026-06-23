@@ -823,3 +823,10 @@ input, textarea, code,
 .review-body, .review-loc {
   user-select: text; -webkit-user-select: text;
 }
+
+/* ── File editor (CodeMirror) ────────────────────────────────── */
+.file-editor-wrap { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.file-editor-bar { display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-bottom: 1px solid var(--line); font-size: 12px; }
+.file-editor-path { opacity: 0.85; }
+.file-editor-host { flex: 1; min-height: 0; overflow: auto; }
+.file-editor-host .cm-editor { height: 100%; }

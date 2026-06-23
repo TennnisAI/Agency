@@ -74,6 +74,7 @@ export default function FileTree({
     setEntries(null);
     setError("");
     listDir(root, "").then(setEntries).catch((e) => setError(String(e)));
+    // Re-fetch only when the root identity (kind+id) changes, not on every new root object reference.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rootKey]);
 

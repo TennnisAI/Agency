@@ -23,6 +23,8 @@ pub struct FileContents {
 /// Join `rel` onto `root`, rejecting any component that could escape `root`
 /// (parent dirs, absolute paths, drive prefixes). Does not require the target
 /// to exist, so it is safe for writing new files.
+/// Note: this is a lexical check; it does not resolve symlinks, so a symlink
+/// already inside `root` could still point outside it.
 fn resolve_within(root: &Path, rel: &str) -> Result<PathBuf> {
     let mut normalized = PathBuf::new();
     for comp in Path::new(rel).components() {

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { FileRoot } from "../api";
 import Resizer from "./Resizer";
 import { usePaneWidth } from "../hooks/usePaneWidth";
@@ -8,6 +8,8 @@ import FileEditor from "./FileEditor";
 export default function FilesView({ root, projectName }: { root: FileRoot | null; projectName: string }) {
   const treePane = usePaneWidth("files-tree", 280, 180, 560);
   const [selected, setSelected] = useState<string | null>(null);
+
+  useEffect(() => { setSelected(null); }, [root?.kind, root?.id]);
 
   if (!root) {
     return <div className="board empty">Open a project to browse its files.</div>;

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Project, inspectRepo, RepoReadiness } from "../api";
+import { Project, inspectRepo, RepoReadiness, FileRoot } from "../api";
 import { useRuns } from "../store/runs";
 import AgentTile from "./AgentTile";
 import AgentFocus from "./AgentFocus";
@@ -10,7 +10,6 @@ import AgentAddMenu from "./AgentAddMenu";
 import Resizer from "./Resizer";
 import { usePaneWidth } from "../hooks/usePaneWidth";
 import FilesView from "./FilesView";
-import { FileRoot } from "../api";
 
 export default function AgentsView({ project }: { project: Project }) {
   const { runs, view, setView, focusedRunId, tab, setTab, approveRunId, setApproveRun, createAgent } = useRuns();

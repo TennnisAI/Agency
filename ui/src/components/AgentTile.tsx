@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { RunInfo, runPreview, stopRun, discardRun } from "../api";
 import { useRuns } from "../store/runs";
+import { runName } from "../agents";
 import ConfirmDialog from "./ConfirmDialog";
 
 function badgeClass(agent: string): string {
@@ -40,7 +41,7 @@ export default function AgentTile({ run }: { run: RunInfo }) {
     <div className="tile" onClick={() => { setFocusedRun(run.id); setView("focus"); }}>
       <div className="tile-head">
         <span className={`dot ${st.cls}`} />
-        <span className="tile-title">{run.prompt || run.branch}</span>
+        <span className="tile-title">{runName(run)}</span>
         <span className={badgeClass(run.agent)}>{run.agent}</span>
       </div>
       <div className="tile-meta">

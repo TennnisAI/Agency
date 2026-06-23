@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useRuns } from "../store/runs";
-import { stopRun, discardRun, archiveRun } from "../api";
+import { stopRun, discardRun, archiveRun, setRunTitle } from "../api";
+import { runName } from "../agents";
 import FocusTerminal from "./FocusTerminal";
 import RunPanel from "./RunPanel";
 import MergeModal from "./MergeModal";
@@ -41,7 +42,7 @@ export default function AgentFocus() {
             {runs.map((r) => (
               <button key={r.id} className={`rail-row ${r.id === focusedRunId ? "on" : ""}`} onClick={() => setFocusedRun(r.id)}>
                 <span className={`dot ${r.status.state === "running" ? "running" : "exited"}`} />
-                <span className="rail-name">{r.agent}: {r.prompt || r.branch}</span>
+                <span className="rail-name">{r.agent}: {runName(r)}</span>
               </button>
             ))}
             <ArchivedSection />
@@ -77,7 +78,8 @@ export default function AgentFocus() {
               <button onClick={() => setShowMerge(true)}>Approve →</button>
             </div>
             {panel === "agent"
-              ? <FocusTerminal key={focused.id} runId={focused.id} />
+              ? <FocusTerminal key={focused.id} runId={focused.id}
+                  onFirstPrompt={focused.title ? undefined : (line) => { setRunTitle(focused.id, line).catch(() => {}); }} />
               : <RunPanel key={`run-${focused.id}`} run={focused} />}
             {showMerge && <MergeModal taskId={focused.id} onClose={() => setShowMerge(false)} />}
             {confirmDiscard && (

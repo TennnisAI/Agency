@@ -12,6 +12,7 @@ import {
   saveNotifSettings,
 } from "../api";
 import Toggle from "./Toggle";
+import { THEMES, ThemeId, applyTheme, getStoredTheme } from "../lib/themes";
 
 export default function Settings({ onClose }: { onClose: () => void }) {
   const [settings, setSettings] = useState<ProviderSettings>({
@@ -29,6 +30,12 @@ export default function Settings({ onClose }: { onClose: () => void }) {
     onlyWhenUnfocused: true,
     idleSecs: 30,
   });
+  const [themeId, setThemeId] = useState<ThemeId>(getStoredTheme());
+
+  function pickTheme(id: ThemeId) {
+    setThemeId(id);
+    applyTheme(id);
+  }
 
   async function refresh() {
     try {
@@ -102,6 +109,30 @@ export default function Settings({ onClose }: { onClose: () => void }) {
           <button className="icon-btn settings-close" onClick={onClose}>✕</button>
         </div>
         {error && <div className="git-error">{error}</div>}
+
+        <section className="settings-section">
+          <div className="settings-section-label">Appearance</div>
+          <div className="settings-theme-grid">
+            {THEMES.map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                className="settings-theme-card"
+                data-active={t.id === themeId}
+                onClick={() => pickTheme(t.id)}
+              >
+                <span className="settings-theme-name">{t.label}</span>
+                <span className="settings-theme-swatches">
+                  {([t.vars.base, t.vars.s1, t.vars.text, t.vars.green, t.vars.yellow, t.vars.red] as const).map(
+                    (c, i) => (
+                      <span key={i} className="settings-theme-dot" style={{ background: c }} />
+                    ),
+                  )}
+                </span>
+              </button>
+            ))}
+          </div>
+        </section>
 
         <section className="settings-section">
           <div className="settings-section-label">Agent profiles</div>

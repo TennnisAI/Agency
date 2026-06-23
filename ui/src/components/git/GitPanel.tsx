@@ -4,6 +4,7 @@ import ChangesPanel from "./ChangesPanel";
 import HistoryPanel from "./HistoryPanel";
 import CommitDetail from "./CommitDetail";
 import DiffViewer from "./DiffViewer";
+import ReviewComments from "./ReviewComments";
 import BranchBar from "./BranchBar";
 
 type Selection =
@@ -17,6 +18,7 @@ export default function GitPanel({ taskId, layout }: { taskId: string; layout: "
   const [error, setError] = useState("");
   const [tab, setTab] = useState<"changes" | "history">("changes");
   const [sel, setSel] = useState<Selection>(null);
+  const [commentsKey, setCommentsKey] = useState(0);
 
   const refresh = useCallback(async () => {
     try {
@@ -65,9 +67,10 @@ export default function GitPanel({ taskId, layout }: { taskId: string; layout: "
           <button className={tab === "history" ? "on" : ""} onClick={() => setTab("history")}>History</button>
         </div>
         {tab === "changes" ? changesPanel : historyPanel}
+        <ReviewComments key={commentsKey} taskId={taskId} />
         {sel?.kind === "file" && (
           <div className="git-compact-diff">
-            <DiffViewer taskId={taskId} path={sel.path} mode={diffMode(sel.group)} onChanged={refresh} />
+            <DiffViewer taskId={taskId} path={sel.path} mode={diffMode(sel.group)} onChanged={refresh} onCommentAdded={() => setCommentsKey((k) => k + 1)} />
           </div>
         )}
         {sel?.kind === "commit" && <div className="git-compact-diff"><CommitDetail taskId={taskId} item={sel.item} /></div>}
@@ -86,9 +89,10 @@ export default function GitPanel({ taskId, layout }: { taskId: string; layout: "
             <button className={tab === "history" ? "on" : ""} onClick={() => setTab("history")}>History</button>
           </div>
           {tab === "changes" ? changesPanel : historyPanel}
+          <ReviewComments key={commentsKey} taskId={taskId} />
         </div>
         <div className="git-full-right">
-          {sel?.kind === "file" && <DiffViewer taskId={taskId} path={sel.path} mode={diffMode(sel.group)} onChanged={refresh} />}
+          {sel?.kind === "file" && <DiffViewer taskId={taskId} path={sel.path} mode={diffMode(sel.group)} onChanged={refresh} onCommentAdded={() => setCommentsKey((k) => k + 1)} />}
           {sel?.kind === "commit" && <CommitDetail taskId={taskId} item={sel.item} />}
           {!sel && <div className="diff-empty">Select a file or commit.</div>}
         </div>

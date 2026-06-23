@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   FileDiff, gitParseDiff, gitCommitDiff, gitStageHunk, gitUnstageHunk,
-  gitStageLines, gitUnstageLines, gitRevertLines,
+  gitStageLines, gitUnstageLines, gitRevertLines, addReviewComment,
 } from "../../api";
 import { buildRows, type DiffRow, type Span } from "./diffModel";
 import { highlightLine, langForPath } from "./highlight";
@@ -13,13 +13,14 @@ function spansToText(spans: Span[] | null): string {
 }
 
 export default function DiffViewer({
-  taskId, path, mode, hash, onChanged,
+  taskId, path, mode, hash, onChanged, onCommentAdded,
 }: {
   taskId: string;
   path: string;
   mode: Mode;
   hash?: string;
   onChanged: () => void;
+  onCommentAdded?: () => void;
 }) {
   const [fd, setFd] = useState<FileDiff | null>(null);
   const [rows, setRows] = useState<DiffRow[]>([]);
@@ -27,6 +28,8 @@ export default function DiffViewer({
   const [error, setError] = useState("");
   const [sideBySide, setSideBySide] = useState(true);
   const [sel, setSel] = useState<{ hunk: number; lines: Set<number> } | null>(null);
+  const [commenting, setCommenting] = useState(false);
+  const [draft, setDraft] = useState("");
   const wrapRef = useRef<HTMLDivElement>(null);
   const staged = mode === "working-staged";
   const readonly = mode === "commit";
@@ -92,6 +95,28 @@ export default function DiffViewer({
     } catch (e) { setError(String(e)); }
   }
 
+  function selectedRange(): { start: number; end: number } | null {
+    if (!sel || sel.lines.size === 0) return null;
+    const nums = rows
+      .filter((r) => r.hunkIndex === sel.hunk && sel.lines.has(r.lineIndex))
+      .map((r) => r.newNo ?? r.oldNo)
+      .filter((n): n is number => n != null);
+    if (nums.length === 0) return null;
+    return { start: Math.min(...nums), end: Math.max(...nums) };
+  }
+
+  async function saveComment() {
+    const range = selectedRange();
+    if (!range || !draft.trim()) return;
+    try {
+      await addReviewComment(taskId, path, range.start, range.end, draft.trim());
+      setDraft("");
+      setCommenting(false);
+      setSel(null);
+      onCommentAdded?.();
+    } catch (e) { setError(String(e)); }
+  }
+
   function toggleLine(hunk: number, lineIndex: number) {
     if (readonly) return;
     setSel((prev) => {
@@ -115,12 +140,28 @@ export default function DiffViewer({
             {!staged && <button className="git-iconbtn" onClick={() => applySelection("stage")}>Stage selection</button>}
             {staged && <button className="git-iconbtn" onClick={() => applySelection("unstage")}>Unstage selection</button>}
             {!staged && <button className="git-iconbtn" onClick={() => applySelection("revert")}>Revert selection</button>}
+            <button className="git-iconbtn" onClick={() => setCommenting(true)}>Comment</button>
           </span>
         )}
         <button className="git-iconbtn" onClick={() => setSideBySide((s) => !s)}>
           {sideBySide ? "Inline" : "Side by side"}
         </button>
       </div>
+      {commenting && sel && sel.lines.size > 0 && (
+        <div className="diff-comment-box">
+          <textarea
+            className="settings-input"
+            placeholder="Comment for the agent on the selected lines…"
+            value={draft}
+            autoFocus
+            onChange={(e) => setDraft(e.target.value)}
+          />
+          <div className="diff-comment-actions">
+            <button className="git-iconbtn" onClick={saveComment}>Add comment</button>
+            <button className="git-iconbtn" onClick={() => { setCommenting(false); setDraft(""); }}>Cancel</button>
+          </div>
+        </div>
+      )}
       <div className={`diff-body ${sideBySide ? "sxs" : "inline"}`}>
         {rows.flatMap((r) => {
           const isInlinePair = !sideBySide && r.oldSpans != null && r.newSpans != null;

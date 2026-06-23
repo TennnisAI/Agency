@@ -242,3 +242,24 @@ export const setUiState = (focused: boolean, activeRun: string | null) =>
 export const getNotifSettings = () => invoke<NotifSettings>("get_notif_settings");
 export const saveNotifSettings = (settings: NotifSettings) =>
   invoke<void>("save_notif_settings", { settings });
+
+export interface ReviewComment {
+  id: string;
+  runId: string;
+  path: string;
+  lineStart: number;
+  lineEnd: number;
+  body: string;
+  sent: boolean;
+  createdAt: number;
+}
+
+export const addReviewComment = (
+  runId: string, path: string, lineStart: number, lineEnd: number, body: string,
+) => invoke<ReviewComment>("add_review_comment", { runId, path, lineStart, lineEnd, body });
+export const listReviewComments = (runId: string) =>
+  invoke<ReviewComment[]>("list_review_comments", { runId });
+export const deleteReviewComment = (id: string) =>
+  invoke<void>("delete_review_comment", { id });
+export const sendReviewComments = (runId: string) =>
+  invoke<void>("send_review_comments", { runId });

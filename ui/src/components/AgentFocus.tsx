@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useRuns } from "../store/runs";
-import { stopRun, discardRun, archiveRun, setRunTitle } from "../api";
+import { discardRun, archiveRun, setRunTitle } from "../api";
 import { runName } from "../agents";
 import FocusTerminal from "./FocusTerminal";
 import RunPanel from "./RunPanel";
@@ -65,7 +65,6 @@ export default function AgentFocus() {
               <div className="focus-head">
                 <span className="badge">terminal</span>
                 <span className="spacer" />
-                <button className="tile-act" title="Stop shell" onClick={async () => { await stopRun(focused.id); await refreshRuns(); }}>■ Stop</button>
                 <button className="tile-act danger" title="Close terminal" onClick={() => setConfirmDiscard(true)}>✕ Close</button>
               </div>
               <FocusTerminal key={focused.id} runId={focused.id} />
@@ -96,7 +95,6 @@ export default function AgentFocus() {
                   <button className={panel === "run" ? "on" : ""} onClick={() => setPanel("run")}>Run</button>
                 </div>
                 <span className="spacer" />
-                <button className="tile-act" title="Stop agent" onClick={async () => { await stopRun(focused.id); await refreshRuns(); }}>■ Stop</button>
                 <button className="tile-act danger" title="Discard agent" onClick={() => setConfirmDiscard(true)}>✕ Discard</button>
                 <button className="tile-act" title="Archive agent" onClick={async () => {
                   const id = focused.id;

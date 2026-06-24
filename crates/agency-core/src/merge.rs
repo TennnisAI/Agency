@@ -41,6 +41,16 @@ pub fn is_merging(repo: &Path) -> Result<bool> {
     Ok(ref_exists(repo, "MERGE_HEAD"))
 }
 
+/// Number of commits on `branch` that are not yet on `base` (i.e. what a merge
+/// would actually integrate). Zero means the branch carries no new work and a
+/// merge would be a no-op — surfaced in the UI as "nothing to merge" so a clean
+/// no-op isn't mistaken for a successful integration.
+pub fn commits_ahead(repo: &Path, branch: &str, base: &str) -> Result<usize> {
+    let range = format!("{base}..{branch}");
+    let out = git_ok(repo, &["rev-list", "--count", &range])?;
+    Ok(out.trim().parse().unwrap_or(0))
+}
+
 pub fn abort_merge(repo: &Path) -> Result<()> {
     git_ok(repo, &["merge", "--abort"])?;
     Ok(())

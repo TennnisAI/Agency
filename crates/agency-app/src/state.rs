@@ -41,6 +41,20 @@ pub struct RunInfo {
     pub kind: String,
 }
 
+/// What an "Approve & merge" would do, computed before running it so the UI can
+/// explain the outcome instead of silently merging. `commits_ahead == 0` means
+/// the branch has no new commits (merge is a no-op); `worktree_dirty` flags
+/// uncommitted agent work that a branch merge would leave behind.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MergePreview {
+    pub base: String,
+    pub branch: String,
+    pub commits_ahead: usize,
+    pub worktree_dirty: bool,
+    pub dirty_files: Vec<String>,
+}
+
 /// Compose a single-line review-feedback message for the agent. Single-line so
 /// TUI agents don't submit early on embedded newlines.
 fn compose_feedback(comments: &[agency_core::registry::ReviewComment]) -> String {
@@ -679,6 +693,31 @@ impl AppState {
     }
 
     // ── merge operations ───────────────────────────────────────────────────────
+
+    /// Inspect what merging this run's branch would do, without touching the
+    /// repo: which base it targets, how many commits the branch is ahead, and
+    /// whether the agent's worktree still has uncommitted changes.
+    pub fn merge_preview(&self, id: &str) -> anyhow::Result<MergePreview> {
+        let run = self.run_record(id)?;
+        let repo = self.project_repo(&run.project_id)?;
+        let base = agency_core::merge::detect_base(&repo)?;
+        let commits_ahead = agency_core::merge::commits_ahead(&repo, &run.branch, &base)?;
+        let worktree = repo.join(".agency").join("worktrees").join(&run.id);
+        let dirty_files: Vec<String> = if worktree.exists() {
+            agency_core::git::status(&worktree)
+                .map(|cs| cs.into_iter().map(|c| c.path).collect())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        Ok(MergePreview {
+            base,
+            branch: run.branch,
+            commits_ahead,
+            worktree_dirty: !dirty_files.is_empty(),
+            dirty_files,
+        })
+    }
 
     pub fn merge_task(&self, id: &str) -> anyhow::Result<agency_core::merge::MergeOutcome> {
         let run = self.run_record(id)?;

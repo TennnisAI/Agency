@@ -15,10 +15,14 @@ type Pending =
 
 export default function ProjectTree({
   selectedId,
+  focusedRunId,
   onSelect,
+  onSelectRun,
 }: {
   selectedId: string | null;
+  focusedRunId: string | null;
   onSelect: (p: Project) => void;
+  onSelectRun: (p: Project, run: RunInfo) => void;
 }) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [expanded, setExpanded] = useState<Record<string, RunInfo[] | undefined>>({});
@@ -96,7 +100,10 @@ export default function ProjectTree({
       <ul className="tree-list">
         {projects.map((p) => (
           <li key={p.id}>
-            <div className={`tree-row ${p.id === selectedId ? "selected" : ""}`} onClick={() => onSelect(p)}>
+            <div
+              className={`tree-row ${p.id === selectedId ? (focusedRunId ? "selected ancestor" : "selected") : ""}`}
+              onClick={() => onSelect(p)}
+            >
               <span className="chev" onClick={(e) => { e.stopPropagation(); toggle(p); }}>
                 {expanded[p.id] !== undefined ? "▾" : "▸"}
               </span>
@@ -115,7 +122,12 @@ export default function ProjectTree({
             {expanded[p.id] !== undefined && (
               <ul className="tree-children">
                 {(expanded[p.id] ?? []).map((r) => (
-                  <li key={r.id} className="tree-child">
+                  <li
+                    key={r.id}
+                    className={`tree-child ${r.id === focusedRunId ? "active" : ""}`}
+                    title={`Open ${r.agent}: ${runName(r)}`}
+                    onClick={(e) => { e.stopPropagation(); onSelectRun(p, r); }}
+                  >
                     <span className={`dot ${statusClass(r.status)}`} />
                     <span className="tree-child-name tl">{r.agent}: {runName(r)}</span>
                   </li>

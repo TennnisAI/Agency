@@ -37,7 +37,7 @@ export default function GitSections({
         <div className="git-section-body">{changesPanel}</div>
       </div>
 
-      {!folded && <Resizer size={history.width} min={HISTORY_MIN} max={HISTORY_MAX} onChange={history.setWidth} orientation="horizontal" />}
+      {!folded && <Resizer size={history.width} min={HISTORY_MIN} max={HISTORY_MAX} onChange={history.setWidth} orientation="horizontal" side="right" />}
 
       <div
         className={`git-section git-section-history ${folded ? "folded" : ""}`}

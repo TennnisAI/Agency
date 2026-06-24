@@ -13,6 +13,7 @@ import {
 } from "../api";
 import Toggle from "./Toggle";
 import { THEMES, ThemeId, applyTheme, getStoredTheme } from "../lib/themes";
+import { getWordWrap, setWordWrap } from "../lib/editorPrefs";
 
 export default function Settings({ onClose }: { onClose: () => void }) {
   const [settings, setSettings] = useState<ProviderSettings>({
@@ -31,6 +32,12 @@ export default function Settings({ onClose }: { onClose: () => void }) {
     idleSecs: 30,
   });
   const [themeId, setThemeId] = useState<ThemeId>(getStoredTheme());
+  const [wordWrap, setWrap] = useState<boolean>(getWordWrap());
+
+  function pickWordWrap(on: boolean) {
+    setWrap(on);
+    setWordWrap(on);
+  }
 
   function pickTheme(id: ThemeId) {
     setThemeId(id);
@@ -131,6 +138,16 @@ export default function Settings({ onClose }: { onClose: () => void }) {
                 </span>
               </button>
             ))}
+          </div>
+        </section>
+
+        <section className="settings-section">
+          <div className="settings-section-label">Editor</div>
+          <div className="settings-notif">
+            <div className="settings-notif-row">
+              <span className="settings-notif-label">Word wrap in file viewer</span>
+              <Toggle checked={wordWrap} onChange={pickWordWrap} />
+            </div>
           </div>
         </section>
 

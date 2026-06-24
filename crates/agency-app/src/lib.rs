@@ -92,6 +92,7 @@ pub fn run() {
             commands::delete_profile,
             commands::get_settings,
             commands::save_settings,
+            commands::merge_preview,
             commands::merge_task,
             commands::abort_merge_task,
             commands::resolve_merge,

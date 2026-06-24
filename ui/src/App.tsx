@@ -9,10 +9,10 @@ import CommandPalette from "./components/CommandPalette";
 import Resizer from "./components/Resizer";
 import { useShortcuts } from "./hooks/useShortcuts";
 import { usePaneWidth } from "./hooks/usePaneWidth";
-import { Project, setUiState } from "./api";
+import { Project, RunInfo, setUiState } from "./api";
 
 function Shell() {
-  const { selectedProjectId, setSelectedProject, createAgent, setTab, focusedRunId, setApproveRun } = useRuns();
+  const { selectedProjectId, setSelectedProject, createAgent, setTab, focusedRunId, setApproveRun, setFocusedRun, setView } = useRuns();
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [project, setProject] = useState<Project | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -42,6 +42,16 @@ function Shell() {
     setSelectedProject(p.id);
   }
 
+  // Open a specific agent straight into its focus view. setSelectedProject
+  // resets view/focus, so the focus + view calls must follow it; React batches
+  // them in this handler, leaving the run focused.
+  function selectRun(p: Project, run: RunInfo) {
+    setProject(p);
+    setSelectedProject(p.id);
+    setFocusedRun(run.id);
+    setView("focus");
+  }
+
   return (
     <div className="shell">
       <TitleBar onToggleSidebar={() => setSidebarOpen((s) => !s)} onOpenSettings={() => setShowSettings(true)} onOpenPalette={() => setPaletteOpen(true)} />
@@ -49,7 +59,7 @@ function Shell() {
         {sidebarOpen && (
           <>
             <div style={{ width: sidebar.width, flexShrink: 0, display: "flex", minHeight: 0 }}>
-              <ProjectTree selectedId={selectedProjectId} onSelect={selectProject} />
+              <ProjectTree selectedId={selectedProjectId} focusedRunId={focusedRunId} onSelect={selectProject} onSelectRun={selectRun} />
             </div>
             <Resizer size={sidebar.width} min={200} max={460} onChange={sidebar.setWidth} side="left" />
           </>

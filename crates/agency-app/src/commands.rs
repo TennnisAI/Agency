@@ -12,7 +12,7 @@ use tauri::State;
 
 use agency_core::title::{fallback_title, sanitize_title};
 use tauri::Manager;
-use crate::state::{AppState, ProviderSettings, RunInfo};
+use crate::state::{AppState, MergePreview, ProviderSettings, RunInfo};
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -360,6 +360,11 @@ pub fn get_settings(state: State<'_, AppState>) -> Result<ProviderSettings, Stri
 #[tauri::command]
 pub fn save_settings(state: State<'_, AppState>, settings: ProviderSettings) -> Result<(), String> {
     state.save_settings(&settings).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn merge_preview(state: State<'_, AppState>, task_id: String) -> Result<MergePreview, String> {
+    state.merge_preview(&task_id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

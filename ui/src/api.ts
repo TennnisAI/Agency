@@ -152,6 +152,16 @@ export type MergeOutcome =
   | { kind: "clean"; commit: string }
   | { kind: "conflicts"; files: string[] };
 
+export interface MergePreview {
+  base: string;
+  branch: string;
+  commitsAhead: number;
+  worktreeDirty: boolean;
+  dirtyFiles: string[];
+}
+
+export const mergePreview = (taskId: string) =>
+  invoke<MergePreview>("merge_preview", { taskId });
 export const mergeTask = (taskId: string) => invoke<MergeOutcome>("merge_task", { taskId });
 export const abortMergeTask = (taskId: string) =>
   invoke<void>("abort_merge_task", { taskId });

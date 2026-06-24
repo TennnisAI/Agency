@@ -1,6 +1,6 @@
 use crate::profile::AgentProfile;
 use anyhow::Result;
-use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -16,8 +16,20 @@ pub enum AgentStatus {
 pub struct AgentHandle {
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     status: Arc<Mutex<AgentStatus>>,
+    // Kills the spawned child when the handle is dropped. The reader thread holds
+    // a cloned PTY reader, so simply dropping `master` does NOT close the PTY or
+    // unblock that read — the child (e.g. a `tmux attach-session` client) would
+    // linger forever, leaking a process on every attach/detach cycle. Killing it
+    // closes the slave, the reader hits EOF, and the thread exits.
+    killer: Box<dyn ChildKiller + Send + Sync>,
     // Keep the master alive so the PTY stays open for the lifetime of the handle.
     master: Box<dyn MasterPty + Send>,
+}
+
+impl Drop for AgentHandle {
+    fn drop(&mut self) {
+        let _ = self.killer.kill();
+    }
 }
 
 impl AgentHandle {
@@ -76,6 +88,7 @@ where
     // The slave handle is no longer needed once the child holds it.
     drop(pair.slave);
 
+    let killer = child.clone_killer();
     let mut reader = pair.master.try_clone_reader()?;
     let writer = pair.master.take_writer()?;
 
@@ -108,6 +121,7 @@ where
     Ok(AgentHandle {
         writer: Arc::new(Mutex::new(writer)),
         status,
+        killer,
         master: pair.master,
     })
 }

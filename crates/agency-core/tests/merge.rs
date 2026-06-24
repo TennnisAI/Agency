@@ -67,6 +67,23 @@ fn conflicting_merge_detected_and_abortable() {
 }
 
 #[test]
+fn commits_ahead_counts_new_branch_work() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    // A fresh branch off main carries no new commits.
+    run(dir.path(), &["checkout", "-q", "-b", "agent/a"]);
+    assert_eq!(merge::commits_ahead(dir.path(), "agent/a", "main").unwrap(), 0);
+    // Two commits on the branch put it two ahead of main.
+    std::fs::write(dir.path().join("one.txt"), "1\n").unwrap();
+    run(dir.path(), &["add", "-A"]);
+    run(dir.path(), &["commit", "-q", "-m", "one"]);
+    std::fs::write(dir.path().join("two.txt"), "2\n").unwrap();
+    run(dir.path(), &["add", "-A"]);
+    run(dir.path(), &["commit", "-q", "-m", "two"]);
+    assert_eq!(merge::commits_ahead(dir.path(), "agent/a", "main").unwrap(), 2);
+}
+
+#[test]
 fn detect_base_finds_main() {
     let dir = tempfile::tempdir().unwrap();
     init_repo(dir.path());

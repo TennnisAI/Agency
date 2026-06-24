@@ -56,17 +56,21 @@ export default function FocusTerminal(
     window.addEventListener("themechange", onThemeChange);
 
     let disposed = false;
+    let liveStarted = false;
     let onData: { dispose(): void } | undefined;
     stream.preview(runId, 200).then((seed) => {
-      if (disposed || !seed) return;
+      // Only seed before the live stream lands. Once attach is streaming, tmux has
+      // switched the terminal into its alternate screen and repainted; writing the
+      // (now stale) snapshot on top of that corrupts the live screen — e.g. an
+      // extra line above the prompt. The live attach is authoritative.
+      if (disposed || liveStarted || !seed) return;
       // tmux capture-pane pads the snapshot with blank lines up to the pane height;
       // we also used to force a trailing newline. Both rendered as a block of empty
-      // lines on every open. Trim trailing blank lines — the live attach
-      // stream is authoritative for the current screen.
+      // lines on every open. Trim trailing blank lines.
       const trimmed = seed.replace(/[\r\n]+$/, "");
       if (trimmed) term.write(trimmed);
     });
-    stream.attach(runId, (bytes) => term.write(bytes)).then(() => {
+    stream.attach(runId, (bytes) => { liveStarted = true; term.write(bytes); }).then(() => {
       if (disposed) return;
       onData = term.onData((d) => {
         stream.input(runId, d);

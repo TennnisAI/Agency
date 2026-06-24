@@ -1,15 +1,18 @@
 import { useEffect, useRef, useState } from "react";
-import { EditorState } from "@codemirror/state";
+import { Compartment, EditorState } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { basicSetup } from "codemirror";
 import { defaultKeymap } from "@codemirror/commands";
-import { oneDark } from "@codemirror/theme-one-dark";
 import { FileRoot, readFile, writeFile } from "../api";
 import { languageExtension } from "../lib/cmLanguage";
+import { editorChromeTheme, editorHighlight } from "../lib/cmTheme";
+import { getWordWrap } from "../lib/editorPrefs";
 
 export default function FileEditor({ root, path }: { root: FileRoot; path: string }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
+  // Compartment so the word-wrap toggle reconfigures the live editor in place.
+  const wrapRef = useRef(new Compartment());
   const [status, setStatus] = useState<"loading" | "binary" | "tooLarge" | "ready" | "error">("loading");
   const [dirty, setDirty] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
@@ -45,7 +48,9 @@ export default function FileEditor({ root, path }: { root: FileRoot; path: strin
         doc: fc.text,
         extensions: [
           basicSetup,
-          oneDark,
+          editorChromeTheme,
+          editorHighlight,
+          wrapRef.current.of(getWordWrap() ? EditorView.lineWrapping : []),
           ...languageExtension(path),
           keymap.of([
             { key: "Mod-s", preventDefault: true, run: () => { void save.current(); return true; } },
@@ -67,6 +72,18 @@ export default function FileEditor({ root, path }: { root: FileRoot; path: strin
       viewRef.current = null;
     };
   }, [root.kind, root.id, path]);
+
+  // Apply word-wrap toggles to the open editor without reloading the file.
+  useEffect(() => {
+    const onWrap = (e: Event) => {
+      const on = (e as CustomEvent<boolean>).detail;
+      viewRef.current?.dispatch({
+        effects: wrapRef.current.reconfigure(on ? EditorView.lineWrapping : []),
+      });
+    };
+    window.addEventListener("wordwrapchange", onWrap);
+    return () => window.removeEventListener("wordwrapchange", onWrap);
+  }, []);
 
   return (
     <div className="file-editor-wrap">

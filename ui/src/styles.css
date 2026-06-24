@@ -115,8 +115,9 @@ button:hover { background: var(--lav); }
 .tl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* Agent add menu (Task 9) */
-.agent-add { position: relative; display: inline-block; }
-.agent-menu { position: absolute; top: calc(100% + 4px); right: 0; z-index: 25; background: var(--mantle); border: 1px solid var(--s1); border-radius: 9px; box-shadow: 0 12px 32px rgba(0,0,0,.4); padding: 5px; min-width: 168px; display: flex; flex-direction: column; }
+.agent-add { position: relative; display: inline-flex; }
+.agent-menu-backdrop { position: fixed; inset: 0; z-index: 40; }
+.agent-menu { z-index: 41; background: var(--mantle); border: 1px solid var(--s1); border-radius: 9px; box-shadow: 0 12px 32px rgba(0,0,0,.4); padding: 5px; min-width: 168px; display: flex; flex-direction: column; }
 .agent-menu button { background: transparent; border: none; color: var(--text); text-align: left; padding: 8px 10px; border-radius: 6px; cursor: pointer; font-family: var(--sans); font-size: 12.5px; }
 .agent-menu button:hover { background: var(--s0); }
 .agent-menu-sep { height: 1px; background: var(--line); margin: 4px 2px; }
@@ -211,6 +212,9 @@ textarea.settings-input { min-height: 64px; resize: vertical; }
 .merge-modal { background: var(--crust); border: 1px solid var(--s1); border-radius: 15px; padding: 20px; width: 720px; max-height: 86vh; overflow: auto; display: flex; flex-direction: column; gap: 12px; box-shadow: 0 24px 64px rgba(0,0,0,.5); }
 .merge-ok { color: var(--green); }
 .merge-warn { color: var(--yellow); }
+.merge-note { color: var(--sub0); }
+.merge-review { display: flex; flex-direction: column; gap: 8px; }
+.merge-summary { color: var(--text); font-weight: 600; }
 .merge-term { min-height: 280px; }
 /* Status dot */
 .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
@@ -260,10 +264,13 @@ textarea.settings-input { min-height: 64px; resize: vertical; }
 .search-box {
   display: flex; align-items: center; gap: 6px;
   background: var(--crust); border: 1px solid var(--s1); border-radius: 8px;
-  padding: 4px 10px; cursor: default; opacity: 0.6;
-  font-size: 12px; color: var(--o0);
+  padding: 4px 10px; cursor: text;
+  font-size: 12px; color: var(--sub0); font-weight: 400;
   min-width: 220px;
 }
+/* Override the global button:hover (var(--lav)) which made the placeholder text
+   unreadable against a saturated fill; keep it reading like a search input. */
+.search-box:hover { background: var(--s0); border-color: var(--s2); color: var(--text); }
 .search-ph { flex: 1; }
 .kbd {
   font-family: var(--mono); font-size: 10px;
@@ -315,7 +322,18 @@ textarea.settings-input { min-height: 64px; resize: vertical; }
 .tree-child {
   display: flex; align-items: center; gap: 6px;
   padding: 3px 6px; font-size: 12px; color: var(--o1);
+  cursor: pointer; border-radius: 4px;
 }
+.tree-child:hover { background: var(--s0); color: var(--text); }
+/* The agent you're focused on is the strongest mark in the tree: solid fill +
+   a blue lineage bar. Its parent project drops to a subtler "ancestor" tint so
+   the two don't compete for attention. */
+.tree-child.active {
+  background: var(--s1); color: var(--text);
+  box-shadow: inset 2px 0 0 var(--blue);
+}
+.tree-row.selected.ancestor { background: var(--s0); }
+.tree-row.selected.ancestor .tree-name { color: var(--sub1); }
 .tree-child-name {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
@@ -549,7 +567,7 @@ textarea.settings-input { min-height: 64px; resize: vertical; }
 .rail-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 8px;
   padding: 10px 12px 8px;
   font-size: 11px;
   text-transform: uppercase;
@@ -558,6 +576,7 @@ textarea.settings-input { min-height: 64px; resize: vertical; }
   border-bottom: 1px solid var(--line);
   flex-shrink: 0;
 }
+.rail-head .spacer { flex: 1; }
 
 .rail-row {
   display: flex;
@@ -828,6 +847,10 @@ textarea.settings-input { min-height: 64px; resize: vertical; }
 .tree-icon { display: inline-block; width: 1em; opacity: 0.7; }
 
 /* ── Text selection: off on chrome, on where copy matters ───── */
+/* Placeholders default to a very faint browser color; pin them to a muted-but-
+   legible theme tone so field hints are readable on light themes too. */
+input::placeholder, textarea::placeholder { color: var(--sub0); opacity: 0.75; }
+
 .shell { user-select: none; -webkit-user-select: none; }
 .diff-body, .diff-cell, .terminal, .xterm, .xterm *,
 input, textarea, code,
@@ -840,5 +863,8 @@ input, textarea, code,
 .file-editor-wrap { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .file-editor-bar { display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-bottom: 1px solid var(--line); font-size: 12px; }
 .file-editor-path { opacity: 0.85; }
-.file-editor-host { flex: 1; min-height: 0; overflow: auto; }
+/* CodeMirror owns its own scrolling (incl. horizontal when word-wrap is off);
+   keeping the host non-scrolling avoids a redundant outer scrollbar. */
+.file-editor-host { flex: 1; min-height: 0; overflow: hidden; }
 .file-editor-host .cm-editor { height: 100%; }
+.file-editor-host .cm-scroller { overflow: auto; }

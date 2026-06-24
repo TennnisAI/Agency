@@ -64,7 +64,7 @@ export const THEMES: Theme[] = [
     vars: {
       base: "#c9d0c7", mantle: "#bfc7bd", crust: "#b3bcb2",
       s0: "#a7b1a6", s1: "#97a296", s2: "#889486",
-      o0: "#6f6358", o1: "#5a4f46", o2: "#483d36",
+      o0: "#574c43", o1: "#4a4039", o2: "#3b322c",
       text: "#382b26", sub1: "#4a3d35", sub0: "#5c4f45",
       blue: "#3f6175", lav: "#5f6c84", mauve: "#6f5570", pink: "#9c5f64",
       green: "#4f6a45", teal: "#437067", yellow: "#9a7825", peach: "#a4633a", red: "#97402f",
@@ -151,4 +151,11 @@ export function currentXtermTheme(): ITheme {
  *  and other canvas-rendered colors that can't read CSS vars. */
 export function currentScheme(): "dark" | "light" {
   return resolveTheme(active).scheme;
+}
+
+/** The active theme's id — used to pick the matching Shiki highlight theme so
+ *  diff colors are drawn from the same palette (and the same background-tuned
+ *  contrast) as the rest of the UI. */
+export function currentThemeId(): ThemeId {
+  return active;
 }

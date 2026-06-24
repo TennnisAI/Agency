@@ -5,7 +5,9 @@ import "@xterm/xterm/css/xterm.css";
 import { currentXtermTheme } from "../lib/themes";
 import {
   MergeOutcome,
+  MergePreview,
   abortMergeTask,
+  mergePreview,
   mergeTask,
   resolveMerge,
   resolverResize,
@@ -13,7 +15,9 @@ import {
 } from "../api";
 
 export default function MergeModal({ taskId, onClose }: { taskId: string; onClose: () => void }) {
+  const [preview, setPreview] = useState<MergePreview | null>(null);
   const [outcome, setOutcome] = useState<MergeOutcome | null>(null);
+  const [merging, setMerging] = useState(false);
   const [error, setError] = useState("");
   const [resolving, setResolving] = useState(false);
   const [resolverDone, setResolverDone] = useState(false);
@@ -22,19 +26,23 @@ export default function MergeModal({ taskId, onClose }: { taskId: string; onClos
   const timerRef = useRef<ReturnType<typeof window.setInterval> | null>(null);
   const roRef = useRef<ResizeObserver | null>(null);
 
+  // Load the preview first so we can explain what a merge would do instead of
+  // silently running it the moment the modal opens.
+  useEffect(() => {
+    mergePreview(taskId).then(setPreview).catch((e) => setError(String(e)));
+  }, [taskId]);
+
   async function attempt() {
     setError("");
+    setMerging(true);
     try {
       setOutcome(await mergeTask(taskId));
     } catch (e) {
       setError(String(e));
+    } finally {
+      setMerging(false);
     }
   }
-
-  useEffect(() => {
-    attempt();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   function startResolver() {
     setResolving(true);
@@ -87,21 +95,22 @@ export default function MergeModal({ taskId, onClose }: { taskId: string; onClos
     };
   }, []);
 
-  const step = !outcome
-    ? "rebase"
-    : outcome.kind === "conflicts"
-      ? resolverDone
-        ? "summary"
-        : resolving
-          ? "resolve"
-          : "rebase"
-      : "summary";
+  const conflicts = outcome?.kind === "conflicts";
+  const step = outcome?.kind === "clean"
+    ? "done"
+    : conflicts
+      ? (resolverDone ? "done" : resolving ? "resolve" : "merge")
+      : merging
+        ? "merge"
+        : "review";
   const steps: { key: string; label: string }[] = [
-    { key: "checkout", label: "Checkout" },
-    { key: "rebase", label: "Rebase" },
+    { key: "review", label: "Review" },
+    { key: "merge", label: "Merge" },
     { key: "resolve", label: "Resolve" },
-    { key: "summary", label: "Summary" },
+    { key: "done", label: "Done" },
   ];
+
+  const nothingToMerge = !!preview && preview.commitsAhead === 0;
 
   return (
     <div className="settings-overlay">
@@ -117,11 +126,46 @@ export default function MergeModal({ taskId, onClose }: { taskId: string; onClos
         </div>
         {error && <div className="git-error">{error}</div>}
 
-        {!outcome && !error && <p>Merging…</p>}
+        {/* Review: explain what will happen before merging. */}
+        {!outcome && !merging && (
+          !preview && !error ? (
+            <p>Checking…</p>
+          ) : preview ? (
+            <div className="merge-review">
+              <p className="merge-summary">
+                Merge <code>{preview.branch}</code> → <code>{preview.base}</code>
+              </p>
+              {nothingToMerge ? (
+                <p className="merge-warn">
+                  Nothing to merge — this agent has no committed changes on top of <code>{preview.base}</code>.
+                </p>
+              ) : (
+                <p className="merge-note">
+                  {preview.commitsAhead} commit{preview.commitsAhead === 1 ? "" : "s"} ahead of <code>{preview.base}</code>.
+                </p>
+              )}
+              {preview.worktreeDirty && (
+                <p className="merge-warn">
+                  {preview.dirtyFiles.length} uncommitted change{preview.dirtyFiles.length === 1 ? "" : "s"} in this
+                  agent's worktree {nothingToMerge ? "exist but aren't committed" : "won't be included"} — only committed
+                  work is merged. Commit them in Source Control first to include them.
+                </p>
+              )}
+              {!nothingToMerge && (
+                <div className="git-actions">
+                  <button onClick={attempt}>Merge into {preview.base}</button>
+                  <button onClick={onClose}>Cancel</button>
+                </div>
+              )}
+            </div>
+          ) : null
+        )}
+
+        {merging && <p>Merging…</p>}
 
         {outcome?.kind === "clean" && (
           <div>
-            <p className="merge-ok">✓ Merged cleanly.</p>
+            <p className="merge-ok">✓ Merged cleanly into {preview?.base ?? "main"}.</p>
             <code>{outcome.commit.slice(0, 10)}</code>
             <div className="git-actions">
               <button onClick={onClose}>Done</button>

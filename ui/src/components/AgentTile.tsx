@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { RunInfo, runPreview, stopRun, discardRun } from "../api";
+import { RunInfo, runPreview, discardRun } from "../api";
 import { useRuns } from "../store/runs";
 import { runName } from "../agents";
 import ConfirmDialog from "./ConfirmDialog";
@@ -54,7 +54,6 @@ export default function AgentTile({ run }: { run: RunInfo }) {
       <pre className="tile-preview">{preview}</pre>
       <div className="tile-foot">
         {st.text}
-        <button className="tile-act" title={isTerminal ? "Stop shell" : "Stop agent"} onClick={async (e) => { e.stopPropagation(); await stopRun(run.id); await refreshRuns(); }}>■ Stop</button>
         <button className="tile-act danger" title={isTerminal ? "Close terminal" : "Discard agent"} onClick={(e) => { e.stopPropagation(); setConfirmDiscard(true); }}>✕</button>
       </div>
       {confirmDiscard && (

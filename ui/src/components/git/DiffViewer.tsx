@@ -25,6 +25,7 @@ export default function DiffViewer({
   const [fd, setFd] = useState<FileDiff | null>(null);
   const [rows, setRows] = useState<DiffRow[]>([]);
   const [highlighted, setHighlighted] = useState<Record<string, string>>({});
+  const [themeTick, setThemeTick] = useState(0);
   const [error, setError] = useState("");
   const [sideBySide, setSideBySide] = useState(true);
   const [sel, setSel] = useState<{ hunk: number; lines: Set<number> } | null>(null);
@@ -56,6 +57,13 @@ export default function DiffViewer({
     return () => ro.disconnect();
   }, []);
 
+  // re-highlight when the app theme changes (dark/light Shiki theme swap)
+  useEffect(() => {
+    const onTheme = () => setThemeTick((t) => t + 1);
+    window.addEventListener("themechange", onTheme);
+    return () => window.removeEventListener("themechange", onTheme);
+  }, []);
+
   // syntax highlight (async, best-effort)
   useEffect(() => {
     let cancelled = false;
@@ -74,7 +82,7 @@ export default function DiffViewer({
       if (!cancelled) setHighlighted(out);
     })();
     return () => { cancelled = true; };
-  }, [rows, path]);
+  }, [rows, path, themeTick]);
 
   async function hunkAction(hunkIndex: number) {
     try {

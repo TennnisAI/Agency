@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  THEMES, DEFAULT_THEME, resolveTheme, getStoredTheme, themeVars, xtermThemeFor,
+  THEMES, DEFAULT_THEME, resolveTheme, getStoredTheme, themeVars, xtermThemeFor, currentScheme,
 } from "./themes";
 
 function makeStorage(seed?: Record<string, string>): Pick<Storage, "getItem"> {
@@ -72,5 +72,12 @@ describe("xtermThemeFor", () => {
     expect(x.magenta).toBe(t.vars.mauve);
     expect(x.cyan).toBe(t.vars.teal);
     expect(x.brightBlack).toBe(t.vars.o0);
+  });
+});
+
+describe("currentScheme", () => {
+  it("defaults to the default theme's scheme (dark) before any applyTheme", () => {
+    expect(currentScheme()).toBe(resolveTheme(DEFAULT_THEME).scheme);
+    expect(currentScheme()).toBe("dark");
   });
 });

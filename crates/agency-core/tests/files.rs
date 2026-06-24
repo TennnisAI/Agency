@@ -95,6 +95,26 @@ fn rejects_symlink_escape() {
 
 #[cfg(unix)]
 #[test]
+fn rejects_write_through_dangling_symlink() {
+    use std::os::unix::fs::symlink;
+    let root = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    // A dangling symlink inside root whose target does not exist yet. fs::write
+    // would follow it and CREATE the target outside root — a write-anywhere
+    // primitive that canonicalize() can't catch (a dangling link won't resolve).
+    let target = outside.path().join("evil.txt");
+    symlink(&target, root.path().join("link")).unwrap();
+    assert!(!target.exists());
+
+    assert!(
+        files::write_file(root.path(), "link", "pwned").is_err(),
+        "writing through a dangling symlink must be rejected"
+    );
+    assert!(!target.exists(), "must not have written outside root");
+}
+
+#[cfg(unix)]
+#[test]
 fn allows_symlink_within_root() {
     use std::os::unix::fs::symlink;
     let root = tempfile::tempdir().unwrap();

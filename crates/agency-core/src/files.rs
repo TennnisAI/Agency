@@ -22,13 +22,16 @@ pub struct FileContents {
 
 /// Join `rel` onto `root` and return a path guaranteed to stay inside `root`.
 ///
-/// Two layers of defense:
+/// Three layers of defense:
 ///  1. Lexical: reject parent-dir (`..`), absolute, and drive-prefix components.
-///  2. Symlink-aware: canonicalize `root` and the deepest existing ancestor of
-///     the target, and require the latter to remain within the former — so a
-///     symlink that lives inside `root` but points outside it cannot be used to
-///     escape. The target itself need not exist (so new files can be written);
-///     in that case the nearest existing ancestor is checked.
+///  2. If the target already resolves on disk, canonicalize it (following every
+///     symlink) and require it to stay within the canonicalized root — so an
+///     existing symlink pointing outside `root` cannot be read or overwritten.
+///  3. If the target does not resolve (a new file to create, or a dangling
+///     symlink), canonicalize its parent directory and require *that* to stay
+///     within the root, then reject when the final component is itself a symlink.
+///     Without this, `fs::write` would follow a dangling symlink and create the
+///     file at its out-of-root target — a write-anywhere primitive.
 fn resolve_within(root: &Path, rel: &str) -> Result<PathBuf> {
     let mut normalized = PathBuf::new();
     for comp in Path::new(rel).components() {
@@ -45,24 +48,37 @@ fn resolve_within(root: &Path, rel: &str) -> Result<PathBuf> {
         .canonicalize()
         .map_err(|e| anyhow!("cannot resolve root {}: {e}", root.display()))?;
 
-    // Walk up to the closest path that exists on disk (the candidate may be a
-    // file we are about to create), canonicalize it to resolve every symlink,
-    // and confirm it is still under the real root.
-    let mut probe = candidate.as_path();
-    let resolved = loop {
-        match probe.canonicalize() {
-            Ok(p) => break p,
-            Err(_) => match probe.parent() {
-                Some(parent) => probe = parent,
-                // Exhausted all ancestors (e.g. a dangling symlink): fall back to
-                // the root itself. This is allowed — the subsequent I/O call will
-                // fail naturally — and cannot escape, since nothing resolved out.
-                None => break real_root.clone(),
-            },
+    // Case 2: the candidate exists (file, dir, or non-dangling symlink). Resolve
+    // it fully and require containment.
+    if let Ok(resolved) = candidate.canonicalize() {
+        if !resolved.starts_with(&real_root) {
+            bail!("path escapes root via symlink: {rel}");
         }
-    };
-    if !resolved.starts_with(&real_root) {
+        return Ok(candidate);
+    }
+
+    // Case 3: the candidate does not resolve. Its parent must exist and stay
+    // within the root once symlinks are resolved...
+    let parent = candidate
+        .parent()
+        .ok_or_else(|| anyhow!("path has no parent: {rel}"))?;
+    let real_parent = parent
+        .canonicalize()
+        .map_err(|e| anyhow!("cannot resolve parent of {rel}: {e}"))?;
+    if !real_parent.starts_with(&real_root) {
         bail!("path escapes root via symlink: {rel}");
+    }
+    // ...and the final component must not itself be a symlink, which `fs::write`
+    // would follow out of the root (e.g. a dangling symlink pointing outside).
+    // This is deliberately conservative: a symlink whose target merely doesn't
+    // exist yet is rejected even if it points within root — safe over permissive,
+    // and the editor never needs to write through an unresolved symlink.
+    if candidate
+        .symlink_metadata()
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false)
+    {
+        bail!("path is a symlink that does not resolve within root: {rel}");
     }
     Ok(candidate)
 }

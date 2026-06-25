@@ -4,3 +4,6 @@ ui/dist
 crates/agency-app/gen
 
 .DS_Store
+
+# Claude Code harness worktrees / local state
+.claude/

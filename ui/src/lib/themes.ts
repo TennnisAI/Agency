@@ -153,6 +153,17 @@ export function currentScheme(): "dark" | "light" {
   return resolveTheme(active).scheme;
 }
 
+/** Minimum contrast ratio to enforce on terminal text for the active theme.
+ *  Light themes sit on a pale background where dim/faint ANSI text — and the
+ *  light accent colors TUIs emit assuming a dark background (e.g. pi's cyan
+ *  command hints) — wash out to near-invisibility. Telling xterm a minimum
+ *  ratio makes it lift any sub-contrast foreground to a readable level against
+ *  the background; xterm leaves already-readable colors untouched. Dark themes
+ *  separate cleanly, so we disable the adjustment there (1 = no change). */
+export function minContrastRatio(): number {
+  return currentScheme() === "light" ? 4.5 : 1;
+}
+
 /** The active theme's id — used to pick the matching Shiki highlight theme so
  *  diff colors are drawn from the same palette (and the same background-tuned
  *  contrast) as the rest of the UI. */

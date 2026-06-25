@@ -34,8 +34,7 @@ export default function AgentFocus() {
         <>
           <div className="rail" style={{ width: rail.width, minWidth: rail.width }}>
             <div className="rail-head">
-              <span>Agents</span>
-              <AgentAddMenu variant="icon" onSpawn={createAgent} onTerminal={createTerminal} />
+              <AgentAddMenu variant="header" onSpawn={createAgent} onTerminal={createTerminal} />
               <span className="spacer" />
               <button className="icon-btn" onClick={() => setRailOpen(false)}>«</button>
             </div>
@@ -65,7 +64,7 @@ export default function AgentFocus() {
               <div className="focus-head">
                 <span className="badge">terminal</span>
                 <span className="spacer" />
-                <button className="tile-act danger" title="Close terminal" onClick={() => setConfirmDiscard(true)}>✕ Close</button>
+                <button className="tile-act danger icon-only" title="Close terminal" onClick={() => setConfirmDiscard(true)}>✕</button>
               </div>
               <FocusTerminal key={focused.id} runId={focused.id} />
               {confirmDiscard && (

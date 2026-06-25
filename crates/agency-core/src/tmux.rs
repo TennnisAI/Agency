@@ -135,6 +135,17 @@ impl Tmux {
         Ok(())
     }
 
+    /// Gracefully detach every client attached to `name`. Call this before
+    /// dropping our [`AgentHandle`], whose `Drop` SIGKILLs the `tmux attach`
+    /// client process: abruptly killing the client can take the session's pane
+    /// process down with it (the shell exits 0 on a stray EOF), whereas a clean
+    /// `detach-client` lets the client leave without disturbing the pane. The
+    /// client then exits on its own, so the handle's kill becomes a harmless
+    /// fallback. Best-effort — a missing session or no clients is not an error.
+    pub fn detach_clients(&self, name: &str) {
+        let _ = self.cmd(&["detach-client", "-s", name]);
+    }
+
     /// Type literal `text` into the session followed by Enter. Errors if the
     /// session does not exist.
     pub fn send_text(&self, name: &str, text: &str) -> Result<()> {

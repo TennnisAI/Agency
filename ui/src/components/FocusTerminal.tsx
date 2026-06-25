@@ -4,7 +4,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { attachRun, detachRun, resizeRun, runInput, runPreview,
   attachRunScript, detachRunScript, resizeRunScript, runScriptInput, runScriptPreview } from "../api";
-import { currentXtermTheme } from "../lib/themes";
+import { currentXtermTheme, minContrastRatio } from "../lib/themes";
 import { initialCapture, feed } from "../lib/firstPrompt";
 
 export interface TerminalStream {
@@ -35,7 +35,7 @@ export default function FocusTerminal(
   useEffect(() => {
     const container = ref.current;
     if (!container) return;
-    const term = new Terminal({ convertEol: true, fontSize: 13, cursorBlink: true, theme: currentXtermTheme() });
+    const term = new Terminal({ convertEol: true, fontSize: 13, cursorBlink: true, theme: currentXtermTheme(), minimumContrastRatio: minContrastRatio() });
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(container);
@@ -52,11 +52,15 @@ export default function FocusTerminal(
     const ro = new ResizeObserver(doFit);
     ro.observe(container);
 
-    const onThemeChange = () => { term.options.theme = currentXtermTheme(); };
+    const onThemeChange = () => {
+      term.options.theme = currentXtermTheme();
+      term.options.minimumContrastRatio = minContrastRatio();
+    };
     window.addEventListener("themechange", onThemeChange);
 
     let disposed = false;
     let liveStarted = false;
+    let seeded = false;
     let onData: { dispose(): void } | undefined;
     stream.preview(runId, 200).then((seed) => {
       // Only seed before the live stream lands. Once attach is streaming, tmux has
@@ -68,9 +72,21 @@ export default function FocusTerminal(
       // we also used to force a trailing newline. Both rendered as a block of empty
       // lines on every open. Trim trailing blank lines.
       const trimmed = seed.replace(/[\r\n]+$/, "");
-      if (trimmed) term.write(trimmed);
+      if (trimmed) { term.write(trimmed); seeded = true; }
     });
-    stream.attach(runId, (bytes) => { liveStarted = true; term.write(bytes); }).then(() => {
+    stream.attach(runId, (bytes) => {
+      if (!liveStarted) {
+        liveStarted = true;
+        // The live attach is authoritative: tmux sends a full repaint on attach.
+        // If we already painted a preview seed, the seed and the repaint overlap
+        // (the snapshot is positioned relative to the old screen, the repaint to a
+        // fresh one) and leave artifacts — e.g. a stale blank line above the prompt.
+        // Resetting first lets the repaint own a clean screen. The guard above also
+        // skips the seed when attach wins the race, so this only fires when needed.
+        if (seeded) term.reset();
+      }
+      term.write(bytes);
+    }).then(() => {
       if (disposed) return;
       onData = term.onData((d) => {
         stream.input(runId, d);

@@ -40,6 +40,11 @@ pub struct RunSnapshot {
     pub agent: SessionStatus,
     pub run_script: SessionStatus,
     pub pane_hash: u64,
+    /// True when the user has sent input to this run since the last "waiting for
+    /// input" notification. Gates the idle notification so we only nudge after a
+    /// turn the user actually started — never for a fresh agent sitting at its
+    /// opening prompt, and never more than once per turn.
+    pub user_input_pending: bool,
 }
 
 #[derive(Clone)]
@@ -96,7 +101,11 @@ pub fn step(
     if !agent_running || pane_changed {
         idle_fired = false;
     }
-    if agent_running && !idle_fired {
+    // Idle only fires once the user has given this run input — a fresh agent
+    // sitting at its opening prompt has `user_input_pending == false`, so it is
+    // never flagged as "waiting for input". The flag is cleared by the caller
+    // when the notification fires, so each turn nudges at most once.
+    if agent_running && !idle_fired && snap.user_input_pending {
         let quiet_ticks = now_tick.saturating_sub(quiet_since_tick);
         if quiet_ticks.saturating_mul(poll_secs) >= idle_secs {
             events.push(NotifyKind::Idle);
@@ -128,7 +137,12 @@ mod tests {
     use super::*;
 
     fn snap(agent: SessionStatus, run_script: SessionStatus, pane_hash: u64) -> RunSnapshot {
-        RunSnapshot { id: "x".into(), label: "claude: fix".into(), agent, run_script, pane_hash }
+        // Default to "input given" so the idle-path tests exercise the timing;
+        // the gating itself is covered by `idle_requires_user_input`.
+        snap_input(agent, run_script, pane_hash, true)
+    }
+    fn snap_input(agent: SessionStatus, run_script: SessionStatus, pane_hash: u64, user_input_pending: bool) -> RunSnapshot {
+        RunSnapshot { id: "x".into(), label: "claude: fix".into(), agent, run_script, pane_hash, user_input_pending }
     }
     fn running() -> SessionStatus { SessionStatus::Running }
     fn exited(code: i32) -> SessionStatus { SessionStatus::Exited { code } }
@@ -191,6 +205,18 @@ mod tests {
         assert!(ev3.is_empty());
         assert!(!w3.idle_fired);
         assert_eq!(w3.quiet_since_tick, 17);
+    }
+
+    #[test]
+    fn idle_requires_user_input() {
+        // A running agent that has never received input (fresh prompt) must not
+        // fire idle no matter how long its pane stays quiet.
+        let (mut w, _) = step(None, &snap_input(running(), SessionStatus::Gone, 1, false), 0, 2, 30);
+        for t in 1..=30 {
+            let (nw, ev) = step(Some(&w), &snap_input(running(), SessionStatus::Gone, 1, false), t, 2, 30);
+            w = nw;
+            assert!(!ev.contains(&NotifyKind::Idle), "fired idle without input at tick {t}");
+        }
     }
 
     #[test]

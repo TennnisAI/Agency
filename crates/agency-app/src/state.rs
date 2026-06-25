@@ -5,7 +5,7 @@ use agency_core::tmux::{SessionStatus, Tmux};
 use agency_core::worktree::WorktreeManager;
 use anyhow::{anyhow, bail, Result};
 use crate::notifier;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Mutex;
 use uuid;
@@ -176,6 +176,40 @@ fn now_secs() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
 
+fn now_millis() -> u128 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)
+}
+
+/// Diagnostic logging for the PTY/terminal pipeline, gated behind the
+/// `AGENCY_DEBUG_PTY` env var (empty/unset = disabled, so it's a single env read
+/// on the hot path otherwise). Set it to `1` to log to
+/// `<tmpdir>/agency-pty-debug.log`, or to an absolute path to log there. Used to
+/// trace what input reaches a terminal session on navigate-away/back, since the
+/// shell exits 0 on a stray EOF that nothing in tmux/the backend is known to send.
+fn pty_debug(msg: &str) {
+    use std::io::Write;
+    let val = match std::env::var("AGENCY_DEBUG_PTY") {
+        Ok(v) if !v.is_empty() => v,
+        _ => return,
+    };
+    let path = if val.contains('/') {
+        std::path::PathBuf::from(val)
+    } else {
+        std::env::temp_dir().join("agency-pty-debug.log")
+    };
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = writeln!(f, "{} {}", now_millis(), msg);
+    }
+}
+
+/// Render bytes for the debug log: space-separated hex plus a human-readable
+/// escaped form, so a lone `\x04` (EOF) or `\r`/`\n` jumps out.
+fn fmt_bytes(data: &[u8]) -> String {
+    let hex: Vec<String> = data.iter().map(|b| format!("{b:02x}")).collect();
+    format!("[{}] {:?}", hex.join(" "), String::from_utf8_lossy(data))
+}
+
 fn agent_profile(name: &str, command: &str) -> AgentProfile {
     AgentProfile { name: name.into(), command: command.into(), args: vec![], env: vec![] }
 }
@@ -193,6 +227,9 @@ pub struct AppState {
     tmux: Tmux,
     resolvers: Mutex<HashMap<String, AgentHandle>>,
     ui: Mutex<UiState>,
+    /// Run ids that have received user input since their last "waiting for input"
+    /// notification. Drives idle-notification gating (see `notifier::step`).
+    input_seen: Mutex<HashSet<String>>,
 }
 
 impl AppState {
@@ -225,6 +262,7 @@ impl AppState {
             tmux: Tmux::resolved(),
             resolvers: Mutex::new(HashMap::new()),
             ui: Mutex::new(UiState { focused: true, active_run: None }),
+            input_seen: Mutex::new(HashSet::new()),
         })
     }
 
@@ -445,6 +483,7 @@ impl AppState {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
         // Login shell so the user's prompt/profile loads.
         let args = vec!["-l".to_string()];
+        pty_debug(&format!("create_terminal id={id} shell={shell} args={args:?}"));
         self.tmux
             .start_session(&session_name(&id), &repo, &shell, &args, &[])?;
 
@@ -478,19 +517,43 @@ impl AppState {
     where
         F: Fn(Vec<u8>) + Send + 'static,
     {
+        pty_debug(&format!("attach_run id={id}"));
         let handle = self.tmux.attach(&session_name(id), on_output)?;
         self.attaches.lock().unwrap().insert(id.to_string(), handle);
         Ok(())
     }
 
     pub fn detach_run(&self, id: &str) {
+        pty_debug(&format!("detach_run id={id}"));
+        // Detach the tmux client *gracefully* before dropping the handle (whose
+        // Drop SIGKILLs the `tmux attach` process). Killing the client outright can
+        // take the session's shell down with it — it exits 0 on a stray EOF, which
+        // surfaces as "Pane is dead, status 0" on navigate-away/back. See
+        // Tmux::detach_clients.
+        self.tmux.detach_clients(&session_name(id));
         self.attaches.lock().unwrap().remove(id);
     }
 
     pub fn run_input(&self, id: &str, data: &[u8]) -> Result<()> {
+        pty_debug(&format!("run_input id={id} len={} {}", data.len(), fmt_bytes(data)));
         let attaches = self.attaches.lock().unwrap();
         let handle = attaches.get(id).ok_or_else(|| anyhow!("run not attached: {id}"))?;
-        handle.write_input(data)
+        handle.write_input(data)?;
+        // Arm the idle ("waiting for input") notification for this run: it only
+        // fires after the user has driven a turn, and at most once per turn.
+        self.input_seen.lock().unwrap().insert(id.to_string());
+        Ok(())
+    }
+
+    /// Whether the run has unconsumed user input for idle-notification gating.
+    pub fn has_input_pending(&self, id: &str) -> bool {
+        self.input_seen.lock().unwrap().contains(id)
+    }
+
+    /// Consume the idle gate after a "waiting for input" notification fires so the
+    /// run stays quiet until the user drives another turn.
+    pub fn clear_input_seen(&self, id: &str) {
+        self.input_seen.lock().unwrap().remove(id);
     }
 
     /// Resize the attached PTY so tmux reflows the session to the visible
@@ -510,6 +573,7 @@ impl AppState {
 
     pub fn discard_run(&self, id: &str) -> Result<()> {
         self.attaches.lock().unwrap().remove(id);
+        self.input_seen.lock().unwrap().remove(id);
         let run = self.run_record(id)?;
         self.tmux.kill_session(&session_name(id)).ok();
         self.run_attaches.lock().unwrap().remove(id);
@@ -644,6 +708,9 @@ impl AppState {
     }
 
     pub fn detach_run_script(&self, id: &str) {
+        // Graceful detach before the handle's Drop SIGKills the attach client; see
+        // detach_run / Tmux::detach_clients.
+        self.tmux.detach_clients(&run_session_name(id));
         self.run_attaches.lock().unwrap().remove(id);
     }
 
@@ -886,7 +953,8 @@ impl AppState {
                     run.agent,
                     if run.prompt.is_empty() { run.branch.clone() } else { run.prompt.clone() }
                 );
-                out.push(notifier::RunSnapshot { id: run.id, label, agent, run_script, pane_hash });
+                let user_input_pending = self.input_seen.lock().unwrap().contains(&run.id);
+                out.push(notifier::RunSnapshot { id: run.id, label, agent, run_script, pane_hash, user_input_pending });
             }
         }
         Ok(out)

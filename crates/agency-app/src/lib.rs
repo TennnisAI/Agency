@@ -40,6 +40,12 @@ pub fn run() {
                         let (watch, events) =
                             crate::notifier::step(watches.get(&snap.id), snap, tick, poll_secs, settings.idle_secs);
                         for ev in &events {
+                            // Consume the idle gate at the edge (whether or not the
+                            // notification is shown) so the run won't nudge again
+                            // until the user drives another turn.
+                            if matches!(ev, crate::notifier::NotifyKind::Idle) {
+                                state.clear_input_seen(&snap.id);
+                            }
                             let enabled = match ev {
                                 crate::notifier::NotifyKind::Finished => settings.agent_finished,
                                 crate::notifier::NotifyKind::RunCrashed => settings.run_crashed,

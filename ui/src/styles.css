@@ -127,6 +127,7 @@ button:hover { background: var(--lav); }
 .tile-act:hover { background: var(--s0); color: var(--text); }
 .tile-act.danger { color: var(--red); border-color: rgba(243,139,168,.35); }
 .tile-act.danger:hover { background: rgba(243,139,168,.12); }
+.tile-act.icon-only { padding: 4px 7px; line-height: 1; }
 
 /* Board */
 .board { flex: 1; display: flex; flex-direction: column; padding: 16px; gap: 12px; }
@@ -577,6 +578,27 @@ textarea.settings-input { min-height: 64px; resize: vertical; }
   flex-shrink: 0;
 }
 .rail-head .spacer { flex: 1; }
+.rail-head-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: inherit;
+  text-transform: inherit;
+  letter-spacing: inherit;
+  color: var(--o1);
+}
+.rail-head-add:hover { color: var(--text); }
+.rail-head-plus {
+  font-size: 13px;
+  line-height: 1;
+  color: var(--sub0);
+}
+.rail-head-add:hover .rail-head-plus { color: var(--text); }
 
 .rail-row {
   display: flex;
@@ -806,7 +828,9 @@ textarea.settings-input { min-height: 64px; resize: vertical; }
   gap: 12px; padding: 7px 2px; color: var(--text); font-size: 13px;
 }
 .settings-notif-label { flex: 1; min-width: 0; }
-.settings-notif-secs { width: 90px; flex: 0 0 auto; }
+/* `input.` prefix outweighs the base `.settings-input { width: 100% }` rule so the
+   stepper stays a fixed 90px and the label keeps its space instead of wrapping. */
+input.settings-notif-secs { width: 90px; flex: 0 0 auto; }
 
 /* Sleek toggle switch */
 .toggle { position: relative; display: inline-flex; flex-shrink: 0; cursor: pointer; }

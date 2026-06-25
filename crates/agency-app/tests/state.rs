@@ -324,6 +324,56 @@ fn attach_streams_and_input_reaches_agent() {
 }
 
 #[test]
+fn terminal_survives_attach_detach_reattach() {
+    // Navigating away from a focused terminal and back drives attach → detach →
+    // attach on the same tmux session. The detach drops the AgentHandle (killing
+    // only the `tmux attach` *client*); the session's shell must stay alive across
+    // the whole cycle so the pane never shows "Pane is dead". Regression guard for
+    // the terminal-death report.
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let state = AppState::new(&dir.path().join("agency.db")).unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+    let info = state.create_terminal(&project.id).unwrap();
+    assert_eq!(info.kind, "terminal");
+
+    let wait_running = |state: &AppState, id: &str| {
+        let start = std::time::Instant::now();
+        while start.elapsed() < std::time::Duration::from_secs(5) {
+            if matches!(state.run_status(id).unwrap(), SessionStatus::Running) {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(40));
+        }
+        false
+    };
+    assert!(wait_running(&state, &info.id), "shell should be running after create");
+
+    // First attach (view the terminal).
+    state.attach_run(&info.id, |_bytes| {}).unwrap();
+    assert!(wait_running(&state, &info.id), "running after first attach");
+
+    // Navigate away: detach (drops the handle, SIGKILLs the attach client).
+    state.detach_run(&info.id);
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    assert!(
+        matches!(state.run_status(&info.id).unwrap(), SessionStatus::Running),
+        "shell must survive detach"
+    );
+
+    // Navigate back: re-attach to the same session.
+    state.attach_run(&info.id, |_bytes| {}).unwrap();
+    assert!(wait_running(&state, &info.id), "running after re-attach");
+
+    state.detach_run(&info.id);
+    state.discard_run(&info.id).unwrap();
+    assert_eq!(state.list_runs(&project.id).unwrap().len(), 0);
+}
+
+#[test]
 fn merge_task_clean_merges_branch_into_base() {
     let dir = tempfile::tempdir().unwrap();
     let repo = dir.path().join("repo");

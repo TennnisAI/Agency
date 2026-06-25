@@ -12,7 +12,7 @@ import { usePaneWidth } from "../hooks/usePaneWidth";
 import FilesView from "./FilesView";
 
 export default function AgentsView({ project }: { project: Project }) {
-  const { runs, view, setView, focusedRunId, tab, setTab, approveRunId, setApproveRun, createAgent } = useRuns();
+  const { runs, view, setView, focusedRunId, tab, setTab, approveRunId, setApproveRun, createAgent, createTerminal } = useRuns();
   const focused = runs.find((r) => r.id === focusedRunId) ?? null;
   const [review, setReview] = useState(false);
   const [error, setError] = useState("");
@@ -54,7 +54,7 @@ export default function AgentsView({ project }: { project: Project }) {
           <button className={review ? "on" : ""} onClick={() => setReview((r) => !r)}>Review</button>
         )}
         {tab === "agents" && (
-          <AgentAddMenu onSpawn={spawn} />
+          <AgentAddMenu onSpawn={spawn} onTerminal={createTerminal} />
         )}
       </div>
 

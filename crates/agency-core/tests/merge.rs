@@ -131,4 +131,14 @@ fn resolve_target_prefers_explicit_then_falls_back() {
         agency_core::merge::resolve_target(None, repo).unwrap(),
         "main"
     );
+    // Empty string is treated as "no target" → falls back to detect_base.
+    assert_eq!(
+        agency_core::merge::resolve_target(Some(""), repo).unwrap(),
+        "main"
+    );
+    // Whitespace-only likewise.
+    assert_eq!(
+        agency_core::merge::resolve_target(Some("  "), repo).unwrap(),
+        "main"
+    );
 }

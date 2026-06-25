@@ -104,6 +104,7 @@ pub fn run() {
             commands::git_unstage_hunk,
             commands::git_log_graph,
             commands::git_branch_info,
+            commands::list_project_branches,
             commands::inspect_repo,
             commands::init_repo,
             commands::commit_repo,

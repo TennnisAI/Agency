@@ -86,7 +86,7 @@ fn create_run_persists_starts_session_and_lists() {
     }).unwrap();
     let project = state.add_project("demo", &repo).unwrap();
 
-    let info = state.create_run(&project.id, "do it", "stay", "HEAD").unwrap();
+    let info = state.create_run(&project.id, "do it", "stay", "HEAD", None).unwrap();
     assert_eq!(info.agent, "stay");
     assert_eq!(info.branch, format!("agent/{}", info.id));
 
@@ -128,7 +128,7 @@ fn worktree_path_resolves_for_active_run() {
         env: vec![],
     }).unwrap();
     let project = state.add_project("demo", &repo).unwrap();
-    let info = state.create_run(&project.id, "p", "noop", "HEAD").unwrap();
+    let info = state.create_run(&project.id, "p", "noop", "HEAD", None).unwrap();
 
     let wt = state.worktree_path(&info.id).unwrap();
     assert!(wt.ends_with(format!(".agency/worktrees/{}", info.id)));
@@ -190,7 +190,7 @@ fn create_run_injects_provider_env() {
     }).unwrap();
     let project = state.add_project("demo", &repo).unwrap();
 
-    let info = state.create_run(&project.id, "p", "envcheck", "HEAD").unwrap();
+    let info = state.create_run(&project.id, "p", "envcheck", "HEAD", None).unwrap();
 
     // Poll tmux capture until we see the output (up to 5s)
     let mut out = String::new();
@@ -232,7 +232,7 @@ fn resolve_merge_spawns_resolver_in_repo_and_streams() {
         env: vec![],
     }).unwrap();
     let project = state.add_project("demo", &repo).unwrap();
-    let info = state.create_run(&project.id, "p", "noop", "HEAD").unwrap();
+    let info = state.create_run(&project.id, "p", "noop", "HEAD", None).unwrap();
 
     let buf = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
     let b = buf.clone();
@@ -295,7 +295,7 @@ fn attach_streams_and_input_reaches_agent() {
         env: vec![],
     }).unwrap();
     let project = state.add_project("demo", &repo).unwrap();
-    let info = state.create_run(&project.id, "p", "echoer", "HEAD").unwrap();
+    let info = state.create_run(&project.id, "p", "echoer", "HEAD", None).unwrap();
 
     let buf = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
     let b = buf.clone();
@@ -340,7 +340,7 @@ fn merge_task_clean_merges_branch_into_base() {
     let project = state.add_project("demo", &repo).unwrap();
 
     // create_run → worktree on agent/<id>; make a non-conflicting commit in it.
-    let info = state.create_run(&project.id, "p", "noop", "HEAD").unwrap();
+    let info = state.create_run(&project.id, "p", "noop", "HEAD", None).unwrap();
     let wt = state.worktree_path(&info.id).unwrap();
     std::fs::write(wt.join("feature.txt"), "x\n").unwrap();
     std::process::Command::new("git").args(["add","-A"]).current_dir(&wt).status().unwrap();

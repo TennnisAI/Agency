@@ -750,7 +750,8 @@ impl AppState {
     {
         let run = self.run_record(id)?;
         let repo = self.project_repo(&run.project_id)?;
-        let base = agency_core::merge::detect_base(&repo).unwrap_or_else(|_| "main".to_string());
+        let base = agency_core::merge::resolve_target(run.merge_target.as_deref(), &repo)
+            .unwrap_or_else(|_| "main".to_string());
         let branch = run.branch.clone();
         let conflicts = agency_core::git::status(&repo)
             .map(|cs| {
@@ -1034,6 +1035,7 @@ mod tests {
             archived_at: None,
             title: Some("terminal".to_string()),
             kind: "terminal".to_string(),
+            merge_target: None,
         };
         assert_eq!(run.kind, "terminal");
         assert!(run.branch.is_empty());

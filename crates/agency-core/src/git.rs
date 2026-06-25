@@ -304,7 +304,7 @@ pub fn list_branches(repo: &Path) -> Result<ProjectBranches> {
         .trim()
         .to_string();
     let raw = git(repo, &["for-each-ref", "--format=%(refname:short)", "refs/heads"])?;
-    let mut branches: Vec<String> = raw.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
+    let mut branches: Vec<String> = raw.lines().filter(|l| !l.is_empty()).map(str::to_string).collect();
     // Put the current branch first so the UI can preselect it.
     if let Some(pos) = branches.iter().position(|b| b == &current) {
         branches.remove(pos);
@@ -499,6 +499,7 @@ mod branch_tests {
 
         let pb = list_branches(repo).unwrap();
         assert_eq!(pb.current, "main");
+        assert_eq!(pb.branches[0], "main", "current branch must be first");
         assert!(pb.branches.contains(&"main".to_string()));
         assert!(pb.branches.contains(&"develop".to_string()));
     }

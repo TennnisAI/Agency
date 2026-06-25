@@ -28,6 +28,8 @@ pub struct Run {
     pub archived_at: Option<i64>,
     pub title: Option<String>,
     pub kind: String,
+    /// Branch this run's work merges into. `None` = auto-detect (main/master) at merge time.
+    pub merge_target: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -108,6 +110,9 @@ impl Registry {
         }
         if !column_exists(&conn, "runs", "kind")? {
             conn.execute("ALTER TABLE runs ADD COLUMN kind TEXT NOT NULL DEFAULT 'agent'", [])?;
+        }
+        if !column_exists(&conn, "runs", "merge_target")? {
+            conn.execute("ALTER TABLE runs ADD COLUMN merge_target TEXT", [])?;
         }
         Ok(Registry { conn })
     }
@@ -227,11 +232,12 @@ impl Registry {
 
     pub fn insert_run(&self, run: &Run) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO runs (id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            "INSERT INTO runs (id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             rusqlite::params![
                 run.id, run.project_id, run.agent, run.prompt, run.base, run.branch,
-                run.created_at, run.port_base.map(|p| p as i64), run.archived_at, run.title, run.kind
+                run.created_at, run.port_base.map(|p| p as i64), run.archived_at, run.title, run.kind,
+                run.merge_target
             ],
         )?;
         Ok(())
@@ -239,7 +245,7 @@ impl Registry {
 
     pub fn get_run(&self, id: &str) -> Result<Option<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind FROM runs WHERE id = ?1",
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target FROM runs WHERE id = ?1",
         )?;
         let mut rows = stmt.query([id])?;
         match rows.next()? {
@@ -250,7 +256,7 @@ impl Registry {
 
     pub fn list_runs(&self, project_id: &str) -> Result<Vec<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target
              FROM runs WHERE project_id = ?1 AND archived_at IS NULL ORDER BY created_at DESC",
         )?;
         let rows = stmt.query_map([project_id], |row| Ok(row_to_run(row)))?;
@@ -263,7 +269,7 @@ impl Registry {
 
     pub fn list_archived_runs(&self, project_id: &str) -> Result<Vec<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target
              FROM runs WHERE project_id = ?1 AND archived_at IS NOT NULL ORDER BY archived_at DESC",
         )?;
         let rows = stmt.query_map([project_id], |row| Ok(row_to_run(row)))?;
@@ -405,6 +411,7 @@ fn row_to_run(row: &rusqlite::Row) -> Result<Run> {
         archived_at: row.get(8)?,
         title: row.get(9)?,
         kind: row.get(10)?,
+        merge_target: row.get(11)?,
     })
 }
 
@@ -439,6 +446,7 @@ mod tests {
             archived_at: None,
             title: None,
             kind: "agent".to_string(),
+            merge_target: None,
         }
     }
 
@@ -629,5 +637,29 @@ mod tests {
         reg.delete_review_comment("c1").unwrap();
         let ids: Vec<String> = reg.list_review_comments("run-1").unwrap().into_iter().map(|c| c.id).collect();
         assert_eq!(ids, vec!["c2"]);
+    }
+
+    #[test]
+    fn run_merge_target_round_trips() {
+        let dir = tempdir().unwrap();
+        let reg = Registry::open(&dir.path().join("merge-target.db")).unwrap();
+        let project = reg.add_project("p", std::path::Path::new("/tmp/p")).unwrap();
+        let run = Run {
+            id: "t1".into(),
+            project_id: project.id.clone(),
+            agent: "claude".into(),
+            prompt: "hi".into(),
+            base: "main".into(),
+            branch: "agent/t1".into(),
+            created_at: 1,
+            port_base: None,
+            archived_at: None,
+            title: None,
+            kind: "agent".into(),
+            merge_target: Some("develop".into()),
+        };
+        reg.insert_run(&run).unwrap();
+        let got = reg.get_run("t1").unwrap().unwrap();
+        assert_eq!(got.merge_target.as_deref(), Some("develop"));
     }
 }

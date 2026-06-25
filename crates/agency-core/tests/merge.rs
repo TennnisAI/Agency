@@ -105,3 +105,30 @@ fn merge_refuses_dirty_working_tree() {
     let err = merge::merge(dir.path(), "agent/z", "main").unwrap_err();
     assert!(err.to_string().contains("uncommitted changes"), "got: {err}");
 }
+
+#[test]
+fn resolve_target_prefers_explicit_then_falls_back() {
+    use std::process::Command;
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    let run = |args: &[&str]| {
+        assert!(Command::new("git").args(args).current_dir(repo).status().unwrap().success());
+    };
+    run(&["init", "-q", "-b", "main"]);
+    run(&["config", "user.email", "t@t"]);
+    run(&["config", "user.name", "t"]);
+    std::fs::write(repo.join("f"), "x").unwrap();
+    run(&["add", "."]);
+    run(&["commit", "-qm", "init"]);
+
+    // Explicit wins.
+    assert_eq!(
+        agency_core::merge::resolve_target(Some("develop"), repo).unwrap(),
+        "develop"
+    );
+    // None falls back to detect_base → "main".
+    assert_eq!(
+        agency_core::merge::resolve_target(None, repo).unwrap(),
+        "main"
+    );
+}

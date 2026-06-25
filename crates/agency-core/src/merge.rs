@@ -37,6 +37,16 @@ pub fn detect_base(repo: &Path) -> Result<String> {
     bail!("no main/master branch found in repo")
 }
 
+/// The branch a run should merge into: the explicitly chosen target if set,
+/// otherwise the auto-detected main/master. Centralizes the fallback so
+/// `merge_preview` and `merge_task` stay in agreement.
+pub fn resolve_target(explicit: Option<&str>, repo: &Path) -> Result<String> {
+    match explicit {
+        Some(t) if !t.trim().is_empty() => Ok(t.to_string()),
+        _ => detect_base(repo),
+    }
+}
+
 pub fn is_merging(repo: &Path) -> Result<bool> {
     Ok(ref_exists(repo, "MERGE_HEAD"))
 }

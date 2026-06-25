@@ -290,6 +290,29 @@ pub fn branch_info(worktree: &Path) -> Result<BranchInfo> {
     Ok(BranchInfo { branch, upstream, ahead, behind, base })
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectBranches {
+    /// The branch currently checked out in the primary worktree (or "HEAD" if detached).
+    pub current: String,
+    /// All local branch names, with `current` first.
+    pub branches: Vec<String>,
+}
+
+pub fn list_branches(repo: &Path) -> Result<ProjectBranches> {
+    let current = git(repo, &["rev-parse", "--abbrev-ref", "HEAD"])?
+        .trim()
+        .to_string();
+    let raw = git(repo, &["for-each-ref", "--format=%(refname:short)", "refs/heads"])?;
+    let mut branches: Vec<String> = raw.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
+    // Put the current branch first so the UI can preselect it.
+    if let Some(pos) = branches.iter().position(|b| b == &current) {
+        branches.remove(pos);
+        branches.insert(0, current.clone());
+    }
+    Ok(ProjectBranches { current, branches })
+}
+
 pub fn stage_all(worktree: &Path) -> Result<()> {
     git(worktree, &["add", "-A"])?;
     Ok(())
@@ -449,4 +472,34 @@ pub fn revert_lines(worktree: &Path, path: &str, hunk_index: usize, selected: &[
     // Reverse-applied onto the working tree (the new side), so use reverse framing.
     let patch = build_partial_patch(&fd, hunk_index, selected, true)?;
     git_stdin(worktree, &["apply", "--reverse", "-"], &patch)
+}
+
+#[cfg(test)]
+mod branch_tests {
+    use super::*;
+    use std::process::Command;
+    use tempfile::tempdir;
+
+    fn run(dir: &std::path::Path, args: &[&str]) {
+        let ok = Command::new("git").args(args).current_dir(dir).status().unwrap().success();
+        assert!(ok, "git {args:?} failed");
+    }
+
+    #[test]
+    fn list_branches_returns_current_first_and_all_locals() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path();
+        run(repo, &["init", "-q", "-b", "main"]);
+        run(repo, &["config", "user.email", "t@t"]);
+        run(repo, &["config", "user.name", "t"]);
+        std::fs::write(repo.join("f"), "x").unwrap();
+        run(repo, &["add", "."]);
+        run(repo, &["commit", "-qm", "init"]);
+        run(repo, &["branch", "develop"]);
+
+        let pb = list_branches(repo).unwrap();
+        assert_eq!(pb.current, "main");
+        assert!(pb.branches.contains(&"main".to_string()));
+        assert!(pb.branches.contains(&"develop".to_string()));
+    }
 }

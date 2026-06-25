@@ -117,7 +117,7 @@ button:hover { background: var(--lav); }
 /* Agent add menu (Task 9) */
 .agent-add { position: relative; display: inline-flex; }
 .agent-menu-backdrop { position: fixed; inset: 0; z-index: 40; }
-.agent-menu { z-index: 41; background: var(--mantle); border: 1px solid var(--s1); border-radius: 9px; box-shadow: 0 12px 32px rgba(0,0,0,.4); padding: 5px; min-width: 168px; display: flex; flex-direction: column; }
+.agent-menu { z-index: 41; background: var(--mantle); border: 1px solid var(--s1); border-radius: 9px; box-shadow: 0 12px 32px rgba(0,0,0,.4); padding: 5px; min-width: 220px; display: flex; flex-direction: column; }
 .agent-menu button { background: transparent; border: none; color: var(--text); text-align: left; padding: 8px 10px; border-radius: 6px; cursor: pointer; font-family: var(--sans); font-size: 12.5px; }
 .agent-menu button:hover { background: var(--s0); }
 .agent-menu-sep { height: 1px; background: var(--line); margin: 4px 2px; }
@@ -892,3 +892,24 @@ input, textarea, code,
 .file-editor-host { flex: 1; min-height: 0; overflow: hidden; }
 .file-editor-host .cm-editor { height: 100%; }
 .file-editor-host .cm-scroller { overflow: auto; }
+
+/* ── Branch pickers in the Agent menu (Task 8) ───────────────── */
+.agent-menu .branch-picker { display: flex; flex-direction: column; gap: 4px; padding: 4px 6px 2px; }
+.agent-menu .branch-row { display: flex; align-items: center; gap: 8px; }
+.agent-menu .branch-row > span { color: var(--o1); font-size: 11px; width: 30px; text-transform: lowercase; }
+.agent-menu .branch-row select {
+  flex: 1;
+  background: var(--crust);
+  border: 1px solid var(--s1);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 4px 6px;
+  font-family: var(--sans);
+  font-size: 12px;
+}
+.agent-menu .branch-row select:focus { outline: none; border-color: var(--blue); }
+.agent-menu .branch-reset {
+  background: transparent; border: none; color: var(--o1);
+  cursor: pointer; padding: 0 2px; font-size: 13px;
+}
+.agent-menu .branch-reset:hover { color: var(--text); }

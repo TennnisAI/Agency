@@ -86,10 +86,19 @@ pub fn create_run(
     prompt: String,
     agent: String,
     base: String,
+    merge_target: Option<String>,
 ) -> Result<RunInfo, String> {
     state
-        .create_run(&project_id, &prompt, &agent, &base)
+        .create_run(&project_id, &prompt, &agent, &base, merge_target.as_deref())
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_project_branches(
+    state: State<'_, AppState>,
+    project_id: String,
+) -> Result<agency_core::git::ProjectBranches, String> {
+    state.list_project_branches(&project_id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

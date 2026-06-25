@@ -52,8 +52,8 @@ export const commitRepo = (repoPath: string, addGitignore: boolean) =>
 export const closeProject = (id: string) => invoke<void>("close_project", { id });
 export const deleteProject = (id: string) => invoke<void>("delete_project", { id });
 
-export const createRun = (projectId: string, prompt: string, agent: string, base: string) =>
-  invoke<RunInfo>("create_run", { projectId, prompt, agent, base });
+export const createRun = (projectId: string, prompt: string, agent: string, base: string, mergeTarget?: string | null) =>
+  invoke<RunInfo>("create_run", { projectId, prompt, agent, base, mergeTarget: mergeTarget ?? null });
 export const createTerminal = (projectId: string) =>
   invoke<RunInfo>("create_terminal", { projectId });
 export const setRunTitle = (id: string, firstPrompt: string) =>
@@ -224,6 +224,14 @@ export const gitLogGraph = (taskId: string, limit: number) =>
   invoke<HistoryItem[]>("git_log_graph", { taskId, limit });
 export const gitBranchInfo = (taskId: string) =>
   invoke<BranchInfo>("git_branch_info", { taskId });
+
+export interface ProjectBranches {
+  current: string;
+  branches: string[];
+}
+
+export const listProjectBranches = (projectId: string) =>
+  invoke<ProjectBranches>("list_project_branches", { projectId });
 
 export interface CommitFile {
   path: string;

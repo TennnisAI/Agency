@@ -16,19 +16,19 @@ export default function AgentsView({ project }: { project: Project }) {
   const focused = runs.find((r) => r.id === focusedRunId) ?? null;
   const [review, setReview] = useState(false);
   const [error, setError] = useState("");
-  const [pendingSpawn, setPendingSpawn] = useState<{ agentId: string; readiness: RepoReadiness; repoPath: string } | null>(null);
+  const [pendingSpawn, setPendingSpawn] = useState<{ agentId: string; readiness: RepoReadiness; repoPath: string; opts?: { base: string; mergeTarget: string } } | null>(null);
   const [gitSel, setGitSel] = useState<GitSelection>(null);
   useEffect(() => { setGitSel(null); }, [focusedRunId]);
   const reviewPane = usePaneWidth("review", 360, 280, 640);
 
-  async function spawn(agentId: string) {
+  async function spawn(agentId: string, opts?: { base: string; mergeTarget: string }) {
     setError("");
     try {
       const r = await inspectRepo(project.repo_path);
       if (r.state === "ready" && !r.dirty) {
-        await createAgent(agentId);
+        await createAgent(agentId, opts);
       } else {
-        setPendingSpawn({ agentId, readiness: r, repoPath: project.repo_path });
+        setPendingSpawn({ agentId, readiness: r, repoPath: project.repo_path, opts });
       }
     } catch (e) {
       setError(String(e));
@@ -54,7 +54,7 @@ export default function AgentsView({ project }: { project: Project }) {
           <button className={review ? "on" : ""} onClick={() => setReview((r) => !r)}>Review</button>
         )}
         {tab === "agents" && (
-          <AgentAddMenu onSpawn={spawn} onTerminal={createTerminal} />
+          <AgentAddMenu projectId={project.id} onSpawn={spawn} onTerminal={createTerminal} />
         )}
       </div>
 
@@ -113,10 +113,10 @@ export default function AgentsView({ project }: { project: Project }) {
           context="spawn"
           repoPath={pendingSpawn.repoPath}
           onResolved={async () => {
-            const { agentId } = pendingSpawn;
+            const { agentId, opts } = pendingSpawn;
             setPendingSpawn(null);
             try {
-              await createAgent(agentId);
+              await createAgent(agentId, opts);
             } catch (e) {
               setError(String(e));
             }

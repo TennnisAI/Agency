@@ -431,7 +431,7 @@ impl AppState {
         pick_port(&used, base, block_size).ok_or_else(|| anyhow!("no free port block available"))
     }
 
-    pub fn create_run(&self, project_id: &str, prompt: &str, agent: &str, base: &str) -> Result<RunInfo> {
+    pub fn create_run(&self, project_id: &str, prompt: &str, agent: &str, base: &str, merge_target: Option<&str>) -> Result<RunInfo> {
         let repo = self.project_repo(project_id)?;
         let config = agency_core::config::load(&repo);
         let port = self.allocate_port(config.ports.base, config.ports.block_size)?;
@@ -469,9 +469,15 @@ impl AppState {
             archived_at: None,
             title: None,
             kind: "agent".to_string(),
+            merge_target: merge_target.map(|s| s.to_string()),
         };
         self.registry.lock().unwrap().insert_run(&run)?;
         Ok(self.run_info(&run))
+    }
+
+    pub fn list_project_branches(&self, project_id: &str) -> Result<agency_core::git::ProjectBranches> {
+        let repo = self.project_repo(project_id)?;
+        agency_core::git::list_branches(&repo)
     }
 
     /// Create a standalone shell terminal session in the project repo root.
@@ -499,6 +505,7 @@ impl AppState {
             archived_at: None,
             title: Some("terminal".to_string()),
             kind: "terminal".to_string(),
+            merge_target: None,
         };
         self.registry.lock().unwrap().insert_run(&run)?;
         Ok(self.run_info(&run))
@@ -767,7 +774,7 @@ impl AppState {
     pub fn merge_preview(&self, id: &str) -> anyhow::Result<MergePreview> {
         let run = self.run_record(id)?;
         let repo = self.project_repo(&run.project_id)?;
-        let base = agency_core::merge::detect_base(&repo)?;
+        let base = agency_core::merge::resolve_target(run.merge_target.as_deref(), &repo)?;
         let commits_ahead = agency_core::merge::commits_ahead(&repo, &run.branch, &base)?;
         let worktree = repo.join(".agency").join("worktrees").join(&run.id);
         let dirty_files: Vec<String> = if worktree.exists() {
@@ -789,7 +796,7 @@ impl AppState {
     pub fn merge_task(&self, id: &str) -> anyhow::Result<agency_core::merge::MergeOutcome> {
         let run = self.run_record(id)?;
         let repo = self.project_repo(&run.project_id)?;
-        let base = agency_core::merge::detect_base(&repo)?;
+        let base = agency_core::merge::resolve_target(run.merge_target.as_deref(), &repo)?;
         agency_core::merge::merge(&repo, &run.branch, &base)
     }
 
@@ -810,7 +817,8 @@ impl AppState {
     {
         let run = self.run_record(id)?;
         let repo = self.project_repo(&run.project_id)?;
-        let base = agency_core::merge::detect_base(&repo).unwrap_or_else(|_| "main".to_string());
+        let base = agency_core::merge::resolve_target(run.merge_target.as_deref(), &repo)
+            .unwrap_or_else(|_| "main".to_string());
         let branch = run.branch.clone();
         let conflicts = agency_core::git::status(&repo)
             .map(|cs| {
@@ -1095,6 +1103,7 @@ mod tests {
             archived_at: None,
             title: Some("terminal".to_string()),
             kind: "terminal".to_string(),
+            merge_target: None,
         };
         assert_eq!(run.kind, "terminal");
         assert!(run.branch.is_empty());

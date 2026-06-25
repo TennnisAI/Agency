@@ -15,7 +15,7 @@ interface RunStore {
   refreshRuns: () => Promise<void>;
   tab: Tab;
   setTab: (t: Tab) => void;
-  createAgent: (agentId: string) => Promise<void>;
+  createAgent: (agentId: string, opts?: { base: string; mergeTarget: string }) => Promise<void>;
   createTerminal: () => Promise<void>;
   approveRunId: string | null;
   setApproveRun: (id: string | null) => void;
@@ -46,10 +46,12 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  const createAgent = useCallback(async (agentId: string) => {
+  const createAgent = useCallback(async (agentId: string, opts?: { base: string; mergeTarget: string }) => {
     const pid = projectRef.current;
     if (!pid) return;
-    const run = await createRun(pid, "", agentId, "HEAD");
+    const base = opts?.base ?? "HEAD";
+    const mergeTarget = opts?.mergeTarget ?? null;
+    const run = await createRun(pid, "", agentId, base, mergeTarget);
     await refreshRuns();
     setFocusedRun(run.id);
     setView("focus");

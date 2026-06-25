@@ -13,7 +13,7 @@ function spansToText(spans: Span[] | null): string {
 }
 
 export default function DiffViewer({
-  taskId, path, mode, hash, onChanged, onCommentAdded,
+  taskId, path, mode, hash, onChanged, onCommentAdded, allowComments = true,
 }: {
   taskId: string;
   path: string;
@@ -21,6 +21,7 @@ export default function DiffViewer({
   hash?: string;
   onChanged: () => void;
   onCommentAdded?: () => void;
+  allowComments?: boolean;
 }) {
   const [fd, setFd] = useState<FileDiff | null>(null);
   const [rows, setRows] = useState<DiffRow[]>([]);
@@ -148,14 +149,14 @@ export default function DiffViewer({
             {!staged && <button className="git-iconbtn" onClick={() => applySelection("stage")}>Stage selection</button>}
             {staged && <button className="git-iconbtn" onClick={() => applySelection("unstage")}>Unstage selection</button>}
             {!staged && <button className="git-iconbtn" onClick={() => applySelection("revert")}>Revert selection</button>}
-            <button className="git-iconbtn" onClick={() => setCommenting(true)}>Comment</button>
+            {allowComments && <button className="git-iconbtn" onClick={() => setCommenting(true)}>Comment</button>}
           </span>
         )}
         <button className="git-iconbtn" onClick={() => setSideBySide((s) => !s)}>
           {sideBySide ? "Inline" : "Side by side"}
         </button>
       </div>
-      {commenting && sel && sel.lines.size > 0 && (
+      {allowComments && commenting && sel && sel.lines.size > 0 && (
         <div className="diff-comment-box">
           <textarea
             className="settings-input"

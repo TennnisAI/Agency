@@ -11,7 +11,7 @@
   },
   "app": {
     "windows": [
-      { "title": "Agency", "width": 1280, "height": 832 }
+      { "title": "Agency", "width": 1280, "height": 832, "titleBarStyle": "Overlay", "hiddenTitle": true }
     ],
     "security": { "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'" }
   },

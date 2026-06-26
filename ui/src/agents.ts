@@ -21,6 +21,22 @@ export function agentColor(name: string): string {
   return COLORS[name] ?? "#a6adc8";
 }
 
+// Palette of theme accent vars used to give each project a distinct, stable
+// color. Drawing from CSS vars (rather than fixed hex) keeps project colors in
+// step with the active theme.
+const PROJECT_PALETTE = [
+  "--blue", "--mauve", "--green", "--peach", "--teal",
+  "--pink", "--yellow", "--lav", "--red",
+] as const;
+
+// Deterministic accent for a project, derived from its id so the color is
+// stable across reloads and distinct between adjacent projects.
+export function projectColor(id: string): string {
+  let h = 0;
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
+  return `var(${PROJECT_PALETTE[h % PROJECT_PALETTE.length]})`;
+}
+
 // Friendly label for an agent profile name. Built-ins get a nicer display name;
 // custom profiles (e.g. "cursor") fall back to the raw name the user defined.
 export function agentLabel(name: string): string {

@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Project, RunInfo, RepoReadiness, addProject, closeProject, deleteProject, inspectRepo, listProjects, listRuns } from "../api";
-import { runName } from "../agents";
+import { projectColor, runName } from "../agents";
+import { useRuns } from "../store/runs";
 import ConfirmDialog from "./ConfirmDialog";
 import RepoSetupDialog from "./RepoSetupDialog";
 
@@ -24,8 +25,10 @@ export default function ProjectTree({
   onSelect: (p: Project) => void;
   onSelectRun: (p: Project, run: RunInfo) => void;
 }) {
+  const { runs } = useRuns();
   const [projects, setProjects] = useState<Project[]>([]);
-  const [expanded, setExpanded] = useState<Record<string, RunInfo[] | undefined>>({});
+  const [openIds, setOpenIds] = useState<Set<string>>(() => new Set());
+  const [childRuns, setChildRuns] = useState<Record<string, RunInfo[]>>({});
   const [pending, setPending] = useState<Pending>(null);
   const [error, setError] = useState("");
   const [setup, setSetup] = useState<{ path: string; name: string; readiness: RepoReadiness; existing: boolean } | null>(null);
@@ -41,14 +44,28 @@ export default function ProjectTree({
   }
   useEffect(() => { refresh(); }, []);
 
-  async function toggle(p: Project) {
-    setExpanded((e) => ({ ...e, [p.id]: e[p.id] ? undefined : [] }));
-    if (!expanded[p.id]) {
-      try {
-        const runs = await listRuns(p.id);
-        setExpanded((e) => ({ ...e, [p.id]: runs }));
-      } catch { /* ignore */ }
-    }
+  // Keep the agents shown under each expanded project in sync with the shared
+  // run store. Re-fetching whenever a project is opened or the global `runs`
+  // change (discard, spawn, or the store's poll) means the tree can't keep
+  // showing an agent the Agents rail has already dropped.
+  useEffect(() => {
+    let cancelled = false;
+    const ids = [...openIds];
+    if (ids.length === 0) { setChildRuns({}); return; }
+    (async () => {
+      const lists = await Promise.all(ids.map((id) => listRuns(id).catch(() => [])));
+      if (cancelled) return;
+      setChildRuns(Object.fromEntries(ids.map((id, i) => [id, lists[i]])));
+    })();
+    return () => { cancelled = true; };
+  }, [openIds, runs]);
+
+  function toggle(p: Project) {
+    setOpenIds((s) => {
+      const n = new Set(s);
+      if (n.has(p.id)) n.delete(p.id); else n.add(p.id);
+      return n;
+    });
   }
 
   async function handleAdd() {
@@ -105,9 +122,9 @@ export default function ProjectTree({
               onClick={() => onSelect(p)}
             >
               <span className="chev" onClick={(e) => { e.stopPropagation(); toggle(p); }}>
-                {expanded[p.id] !== undefined ? "▾" : "▸"}
+                {openIds.has(p.id) ? "▾" : "▸"}
               </span>
-              <span className="proj-icon" aria-hidden>{p.name.slice(0, 1).toUpperCase()}</span>
+              <span className="proj-icon" aria-hidden style={{ background: projectColor(p.id) }}>{p.name.slice(0, 1).toUpperCase()}</span>
               <span className="tree-name tl">{p.name}</span>
               {readiness[p.id]?.state === "noCommits" && (
                 <button
@@ -119,9 +136,9 @@ export default function ProjectTree({
               <button className="row-act" title="Close project" onClick={(e) => { e.stopPropagation(); setPending({ kind: "close", project: p }); }}>⏻</button>
               <button className="row-act danger" title="Remove project" onClick={(e) => { e.stopPropagation(); setPending({ kind: "remove", project: p }); }}>×</button>
             </div>
-            {expanded[p.id] !== undefined && (
+            {openIds.has(p.id) && (
               <ul className="tree-children">
-                {(expanded[p.id] ?? []).map((r) => (
+                {(childRuns[p.id] ?? []).map((r) => (
                   <li
                     key={r.id}
                     className={`tree-child ${r.id === focusedRunId ? "active" : ""}`}

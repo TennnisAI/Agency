@@ -107,6 +107,7 @@ button:hover { background: var(--lav); }
 /* Projects header + icons (Task 9) */
 .icon-add { width: 22px; height: 22px; border-radius: 6px; background: var(--base); border: 1px solid var(--s0); color: var(--text); cursor: pointer; font-size: 14px; line-height: 1; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .icon-add:hover { background: var(--s0); }
+/* Background is set per-project inline via projectColor(); var(--blue) is just a fallback. */
 .proj-icon { width: 24px; height: 24px; border-radius: 7px; background: var(--blue); color: var(--crust); font-size: 12px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .row-act { opacity: 0; border: none; background: transparent; color: var(--o0); cursor: pointer; font-size: 13px; padding: 0 2px; }
 .tree-row:hover .row-act { opacity: 1; }
@@ -234,7 +235,9 @@ textarea.settings-input { min-height: 64px; resize: vertical; }
   height: var(--titlebar-h);
   min-height: var(--titlebar-h);
   display: flex; align-items: center; justify-content: space-between;
-  padding: 0 8px;
+  /* Left inset clears the native macOS traffic lights, which now overlay this
+     row (titleBarStyle: Transparent) instead of sitting in a separate bar. */
+  padding: 0 8px 0 78px;
   background: var(--mantle);
   border-bottom: 1px solid var(--line);
   -webkit-app-region: drag;

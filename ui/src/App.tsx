@@ -12,7 +12,7 @@ import { usePaneWidth } from "./hooks/usePaneWidth";
 import { Project, RunInfo, setUiState } from "./api";
 
 function Shell() {
-  const { selectedProjectId, setSelectedProject, createAgent, setTab, focusedRunId, setApproveRun, setFocusedRun, setView } = useRuns();
+  const { selectedProjectId, setSelectedProject, createAgent, setTab, focusedRunId, setApproveRun, setFocusedRun, setView, runs } = useRuns();
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [project, setProject] = useState<Project | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -22,7 +22,11 @@ function Shell() {
   useShortcuts({
     onNewTask: () => createAgent("claude"),
     onSource: () => setTab("source"),
-    onApprove: () => { if (focusedRunId) setApproveRun(focusedRunId); },
+    onApprove: () => {
+      // Approve/merge is an agent-only workflow; terminals have no branch to merge.
+      const focused = runs.find((r) => r.id === focusedRunId);
+      if (focused?.kind === "agent") setApproveRun(focused.id);
+    },
     onPalette: () => setPaletteOpen(true),
   });
 

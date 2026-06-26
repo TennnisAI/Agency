@@ -125,7 +125,7 @@ export default function AgentsView({ project }: { project: Project }) {
         />
       )}
 
-      {approveRunId && approveRunId === focusedRunId && (
+      {approveRunId && approveRunId === focusedRunId && focused?.kind === "agent" && (
         <MergeModal taskId={approveRunId} onClose={() => setApproveRun(null)} />
       )}
     </main>

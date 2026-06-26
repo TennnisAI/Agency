@@ -21,12 +21,14 @@ export default function GitPanel({
   selection,
   onSelect,
   width,
+  allowComments = true,
 }: {
   taskId: string;
   layout: "compact" | "full";
   selection: GitSelection;
   onSelect: (sel: GitSelection) => void;
   width?: number;
+  allowComments?: boolean;
 }) {
   const [changes, setChanges] = useState<FileChange[]>([]);
   const [branch, setBranch] = useState<BranchInfo | null>(null);
@@ -77,7 +79,7 @@ export default function GitPanel({
       <aside className="git-panel compact" style={width ? { width, minWidth: width } : undefined}>
         {error && <div className="git-error">{error}</div>}
         {sections}
-        <ReviewComments key={commentsKey} taskId={taskId} />
+        {allowComments && <ReviewComments key={commentsKey} taskId={taskId} />}
       </aside>
     );
   }
@@ -89,11 +91,11 @@ export default function GitPanel({
       <div className="git-full-body">
         <div className="git-full-left" style={{ width: leftPane.width }}>
           {sections}
-          <ReviewComments key={commentsKey} taskId={taskId} />
+          {allowComments && <ReviewComments key={commentsKey} taskId={taskId} />}
         </div>
         <Resizer size={leftPane.width} min={300} max={720} onChange={leftPane.setWidth} />
         <div className="git-full-right">
-          {selection?.kind === "file" && <DiffViewer taskId={taskId} path={selection.path} mode={diffMode(selection.group)} onChanged={refresh} onCommentAdded={() => setCommentsKey((k) => k + 1)} />}
+          {selection?.kind === "file" && <DiffViewer taskId={taskId} path={selection.path} mode={diffMode(selection.group)} onChanged={refresh} onCommentAdded={() => setCommentsKey((k) => k + 1)} allowComments={allowComments} />}
           {selection?.kind === "commit" && <CommitDetail taskId={taskId} item={selection.item} />}
           {!selection && <div className="diff-empty">Select a file or commit.</div>}
         </div>

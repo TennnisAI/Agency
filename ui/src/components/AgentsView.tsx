@@ -62,9 +62,9 @@ export default function AgentsView({ project }: { project: Project }) {
 
       {tab === "source" && (
         <div className="source-wrap">
-          {focusedRunId && focused?.kind === "agent"
-            ? <GitPanel taskId={focusedRunId} layout="full" selection={gitSel} onSelect={setGitSel} />
-            : <div className="board empty">{focused?.kind === "terminal" ? "Terminals have no source control." : "Open an agent to review its changes."}</div>}
+          {focusedRunId && focused
+            ? <GitPanel taskId={focusedRunId} layout="full" selection={gitSel} onSelect={setGitSel} allowComments={focused.kind === "agent"} />
+            : <div className="board empty">Open an agent or terminal to view its source control.</div>}
         </div>
       )}
 

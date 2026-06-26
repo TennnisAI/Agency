@@ -760,9 +760,18 @@ impl AppState {
 
     // ── worktree path ──────────────────────────────────────────────────────────
 
+    /// The working directory the run's git/file commands operate on.
+    ///
+    /// For agents this is the run's isolated worktree
+    /// (`<repo>/.agency/worktrees/<id>`). For terminals — which have no worktree
+    /// and run the user's shell in the project's main checkout — it is the
+    /// project repo root, so Source Control / Files act on the live branch.
     pub fn worktree_path(&self, id: &str) -> Result<std::path::PathBuf> {
         let run = self.run_record(id)?;
         let repo = self.project_repo(&run.project_id)?;
+        if run.kind == "terminal" {
+            return Ok(repo);
+        }
         Ok(repo.join(".agency").join("worktrees").join(id))
     }
 

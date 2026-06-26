@@ -141,6 +141,38 @@ fn worktree_path_resolves_for_active_run() {
 }
 
 #[test]
+fn worktree_path_resolves_to_repo_root_for_terminal() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let state = AppState::new(&dir.path().join("agency.db")).unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+
+    // Agent run: still resolves under .agency/worktrees/<id>.
+    state.register_profile(AgentProfile {
+        name: "noop".into(),
+        command: "sh".into(),
+        args: vec!["-c".into(), "sleep 1".into()],
+        env: vec![],
+    }).unwrap();
+    let agent = state.create_run(&project.id, "p", "noop", "HEAD", None).unwrap();
+    let agent_wt = state.worktree_path(&agent.id).unwrap();
+    assert!(agent_wt.ends_with(format!(".agency/worktrees/{}", agent.id)));
+
+    // Terminal run: resolves to the project repo root, NOT a worktrees subdir.
+    let term = state.create_terminal(&project.id).unwrap();
+    let term_dir = state.worktree_path(&term.id).unwrap();
+    assert_eq!(term_dir, state.project_repo_path(&project.id).unwrap());
+    assert!(!term_dir.to_string_lossy().contains("worktrees"));
+
+    // Cleanup sessions/records.
+    state.discard_run(&agent.id).unwrap();
+    state.discard_run(&term.id).unwrap();
+}
+
+#[test]
 fn new_seeds_shell_and_claude_when_empty() {
     let dir = tempfile::tempdir().unwrap();
     let state = AppState::new(&dir.path().join("agency.db")).unwrap();

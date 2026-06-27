@@ -128,6 +128,16 @@ export const gitCommit = (taskId: string, message: string) =>
 
 export const gitPush = (taskId: string) => invoke<void>("git_push", { taskId });
 
+export const gitSetRemote = (taskId: string, url: string) =>
+  invoke<void>("git_set_remote", { taskId, url });
+
+export interface RunBranches {
+  branch: string;
+  base: string;
+}
+export const runBranches = (taskId: string) =>
+  invoke<RunBranches>("run_branches", { taskId });
+
 export interface AgentProfile {
   name: string;
   command: string;
@@ -218,6 +228,7 @@ export interface BranchInfo {
   ahead: number;
   behind: number;
   base: string | null;
+  hasRemote: boolean;
 }
 
 export const gitLogGraph = (taskId: string, limit: number) =>

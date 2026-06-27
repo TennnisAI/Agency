@@ -1,7 +1,7 @@
 import { useState } from "react";
 import {
   FileChange, BranchInfo, gitStage, gitUnstage, gitStageAll, gitUnstageAll,
-  gitDiscard, gitDiscardAll, gitCommit, gitCommitAmend, gitPush,
+  gitDiscard, gitDiscardAll, gitCommit, gitCommitAmend, gitPush, gitSetRemote,
 } from "../../api";
 import { partition } from "./status";
 import ResourceGroup from "./ResourceGroup";
@@ -28,6 +28,7 @@ export default function ChangesPanel({
       <CommitBox
         branch={branch?.branch ?? "?"}
         hasUpstream={!!branch?.upstream}
+        hasRemote={!!branch?.hasRemote}
         ahead={branch?.ahead ?? 0}
         behind={branch?.behind ?? 0}
         onCommit={(m) => onAct(() => gitCommit(taskId, m))}
@@ -35,6 +36,7 @@ export default function ChangesPanel({
         onAmend={(m) => onAct(() => gitCommitAmend(taskId, m))}
         onSync={() => onAct(() => gitPush(taskId))}
         onPublish={() => onAct(() => gitPush(taskId))}
+        onPublishRemote={(url) => onAct(async () => { await gitSetRemote(taskId, url); await gitPush(taskId); })}
       />
       <ResourceGroup id="merge" label="Merge Changes" changes={g.merge}
         selectedPath={selectedPath} onSelectFile={(c) => onSelectFile(c.path, "merge")}

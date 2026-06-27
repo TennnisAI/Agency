@@ -58,7 +58,7 @@ function Shell() {
 
   return (
     <div className="shell">
-      <TitleBar onToggleSidebar={() => setSidebarOpen((s) => !s)} onOpenSettings={() => setShowSettings(true)} onOpenPalette={() => setPaletteOpen(true)} />
+      <TitleBar sidebarOpen={sidebarOpen} onToggleSidebar={() => setSidebarOpen((s) => !s)} onOpenSettings={() => setShowSettings(true)} onOpenPalette={() => setPaletteOpen(true)} />
       <div className="body">
         {sidebarOpen && (
           <>
@@ -70,7 +70,7 @@ function Shell() {
         )}
         {project ? <AgentsView project={project} /> : <main className="board empty">Select or add a project to begin.</main>}
       </div>
-      <StatusBar projectName={project?.name ?? null} />
+      <StatusBar projectName={project?.name ?? null} focusedRunId={focusedRunId} />
       {showSettings && <Settings onClose={() => setShowSettings(false)} />}
       {paletteOpen && <CommandPalette onClose={() => setPaletteOpen(false)} />}
     </div>

@@ -775,6 +775,21 @@ impl AppState {
         Ok(repo.join(".agency").join("worktrees").join(id))
     }
 
+    /// Source and destination branch names for a run, for the status bar.
+    /// `branch` is the worktree's live current branch (for terminals, which
+    /// share the project checkout, this is whatever is checked out there);
+    /// `base` is the resolved merge target.
+    pub fn run_branches(&self, id: &str) -> anyhow::Result<(String, String)> {
+        let run = self.run_record(id)?;
+        let repo = self.project_repo(&run.project_id)?;
+        let base = agency_core::merge::resolve_target(run.merge_target.as_deref(), &repo)?;
+        let wt = self.worktree_path(id)?;
+        let branch = agency_core::git::branch_info(&wt)
+            .map(|b| b.branch)
+            .unwrap_or_default();
+        Ok((branch, base))
+    }
+
     // ── merge operations ───────────────────────────────────────────────────────
 
     /// Inspect what merging this run's branch would do, without touching the

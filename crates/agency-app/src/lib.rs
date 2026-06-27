@@ -93,6 +93,8 @@ pub fn run() {
             commands::git_discard_all,
             commands::git_commit,
             commands::git_push,
+            commands::git_set_remote,
+            commands::run_branches,
             commands::list_profiles,
             commands::save_profile,
             commands::delete_profile,

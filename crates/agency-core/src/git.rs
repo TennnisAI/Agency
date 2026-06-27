@@ -85,6 +85,20 @@ pub fn push(worktree: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Point `origin` at `url`, adding the remote or updating it if it already
+/// exists. Lets the UI publish a branch from a repo that has no remote yet.
+pub fn set_origin(worktree: &Path, url: &str) -> Result<()> {
+    let exists = git(worktree, &["remote"])
+        .map(|out| out.lines().any(|r| r.trim() == "origin"))
+        .unwrap_or(false);
+    if exists {
+        git(worktree, &["remote", "set-url", "origin", url])?;
+    } else {
+        git(worktree, &["remote", "add", "origin", url])?;
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DiffStat {
     pub added: u32,
@@ -225,12 +239,16 @@ pub struct HistoryItem {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BranchInfo {
     pub branch: String,
     pub upstream: Option<String>,
     pub ahead: u32,
     pub behind: u32,
     pub base: Option<String>,
+    /// Whether an `origin` remote is configured — i.e. whether publishing is
+    /// even possible. `push` targets `origin`, so without it Publish can't work.
+    pub has_remote: bool,
 }
 
 /// HEAD ancestry, newest first. Fields are unit-separated (\x1f); parents and
@@ -272,14 +290,6 @@ pub fn branch_info(worktree: &Path) -> Result<BranchInfo> {
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
-    let (mut ahead, mut behind) = (0, 0);
-    if upstream.is_some() {
-        if let Ok(counts) = git(worktree, &["rev-list", "--left-right", "--count", "@{u}...HEAD"]) {
-            let mut p = counts.split_whitespace();
-            behind = p.next().and_then(|s| s.parse().ok()).unwrap_or(0);
-            ahead = p.next().and_then(|s| s.parse().ok()).unwrap_or(0);
-        }
-    }
     // Base = merge-base with the first reachable default branch.
     let base = ["origin/HEAD", "main", "master"].iter().find_map(|cand| {
         git(worktree, &["merge-base", "HEAD", cand])
@@ -287,7 +297,25 @@ pub fn branch_info(worktree: &Path) -> Result<BranchInfo> {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
     });
-    Ok(BranchInfo { branch, upstream, ahead, behind, base })
+    let (mut ahead, mut behind) = (0, 0);
+    if upstream.is_some() {
+        if let Ok(counts) = git(worktree, &["rev-list", "--left-right", "--count", "@{u}...HEAD"]) {
+            let mut p = counts.split_whitespace();
+            behind = p.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+            ahead = p.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+        }
+    } else if let Some(base) = &base {
+        // No upstream yet: "ahead" means local commits not on the base branch —
+        // i.e. the commits Publish would push. Lets the UI hide Publish when
+        // there is nothing to publish.
+        if let Ok(count) = git(worktree, &["rev-list", "--count", &format!("{base}..HEAD")]) {
+            ahead = count.trim().parse().unwrap_or(0);
+        }
+    }
+    let has_remote = git(worktree, &["remote"])
+        .map(|out| out.lines().any(|r| r.trim() == "origin"))
+        .unwrap_or(false);
+    Ok(BranchInfo { branch, upstream, ahead, behind, base, has_remote })
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -32,7 +32,11 @@ export default function GitPanel({
 }) {
   const [changes, setChanges] = useState<FileChange[]>([]);
   const [branch, setBranch] = useState<BranchInfo | null>(null);
+  // `error` is the transient status-refresh error (re-evaluated every poll).
+  // `actionError` is sticky: it survives the follow-up refresh so a failed
+  // commit/push/publish stays readable until the next action.
   const [error, setError] = useState("");
+  const [actionError, setActionError] = useState("");
   const [commentsKey, setCommentsKey] = useState(0);
   const leftPane = usePaneWidth("git-full-left", 360, 300, 720);
 
@@ -52,7 +56,8 @@ export default function GitPanel({
 
   const act = useCallback((fn: () => Promise<unknown>) => {
     (async () => {
-      try { await fn(); setError(""); } catch (e) { setError(String(e)); }
+      setActionError("");
+      try { await fn(); } catch (e) { setActionError(String(e)); }
       await refresh();
     })();
   }, [refresh]);
@@ -77,7 +82,7 @@ export default function GitPanel({
   if (layout === "compact") {
     return (
       <aside className="git-panel compact" style={width ? { width, minWidth: width } : undefined}>
-        {error && <div className="git-error">{error}</div>}
+        {(actionError || error) && <div className="git-error">{actionError || error}</div>}
         {sections}
         {allowComments && <ReviewComments key={commentsKey} taskId={taskId} />}
       </aside>
@@ -87,7 +92,7 @@ export default function GitPanel({
   return (
     <div className="git-panel full">
       <BranchBar info={branch} onSync={() => act(() => gitPush(taskId))} onRefresh={refresh} />
-      {error && <div className="git-error">{error}</div>}
+      {(actionError || error) && <div className="git-error">{actionError || error}</div>}
       <div className="git-full-body">
         <div className="git-full-left" style={{ width: leftPane.width }}>
           {sections}

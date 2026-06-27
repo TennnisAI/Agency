@@ -1,10 +1,11 @@
 import { useState } from "react";
 
 export default function CommitBox({
-  branch, hasUpstream, ahead, behind, onCommit, onCommitPush, onAmend, onSync, onPublish,
+  branch, hasUpstream, hasRemote, ahead, behind, onCommit, onCommitPush, onAmend, onSync, onPublish, onPublishRemote,
 }: {
   branch: string;
   hasUpstream: boolean;
+  hasRemote: boolean;
   ahead: number;
   behind: number;
   onCommit: (m: string) => void;
@@ -12,10 +13,20 @@ export default function CommitBox({
   onAmend: (m: string) => void;
   onSync: () => void;
   onPublish: () => void;
+  onPublishRemote: (url: string) => void;
 }) {
   const [message, setMessage] = useState("");
   const [menu, setMenu] = useState(false);
+  const [addingRemote, setAddingRemote] = useState(false);
+  const [remoteUrl, setRemoteUrl] = useState("");
   const send = (fn: (m: string) => void) => { fn(message); setMessage(""); setMenu(false); };
+  const submitRemote = () => {
+    const url = remoteUrl.trim();
+    if (!url) return;
+    onPublishRemote(url);
+    setRemoteUrl("");
+    setAddingRemote(false);
+  };
   return (
     <div className="git-commit">
       <textarea className="git-commit-input" placeholder={`Message (commit on ${branch})`}
@@ -31,11 +42,25 @@ export default function CommitBox({
             </div>
           )}
         </div>
-        {!hasUpstream
-          ? <button className="git-secondary" onClick={onPublish}>☁ Publish Branch</button>
-          : (ahead > 0 || behind > 0) &&
-            <button className="git-secondary" onClick={onSync}>⟳ Sync {behind ? `↓${behind}` : ""} {ahead ? `↑${ahead}` : ""}</button>}
+        {hasUpstream
+          ? (ahead > 0 || behind > 0) &&
+            <button className="git-secondary" onClick={onSync}>⟳ Sync {behind ? `↓${behind}` : ""} {ahead ? `↑${ahead}` : ""}</button>
+          // No upstream: only offer Publish when there are commits to push.
+          : ahead > 0 && (hasRemote
+            ? <button className="git-secondary" onClick={onPublish}>☁ Publish Branch ↑{ahead}</button>
+            : <button className="git-secondary" onClick={() => setAddingRemote((o) => !o)}
+                title="No 'origin' remote configured — add one to publish">☁ Add Remote &amp; Publish…</button>)}
       </div>
+      {addingRemote && !hasRemote && (
+        <div className="git-remote-row">
+          <input className="git-remote-input" placeholder="origin URL (e.g. git@github.com:user/repo.git)"
+            value={remoteUrl} autoFocus
+            onChange={(e) => setRemoteUrl(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") submitRemote(); if (e.key === "Escape") setAddingRemote(false); }} />
+          <button className="git-secondary" disabled={!remoteUrl.trim()} onClick={submitRemote}>Publish ↑{ahead}</button>
+          <button className="git-secondary" onClick={() => setAddingRemote(false)}>Cancel</button>
+        </div>
+      )}
     </div>
   );
 }

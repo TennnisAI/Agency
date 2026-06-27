@@ -347,6 +347,27 @@ pub fn git_push(state: State<'_, AppState>, task_id: String) -> Result<(), Strin
 }
 
 #[tauri::command]
+pub fn git_set_remote(state: State<'_, AppState>, task_id: String, url: String) -> Result<(), String> {
+    let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
+    git::set_origin(&wt, url.trim()).map_err(|e| e.to_string())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunBranches {
+    /// Live current branch of the run's worktree (the "source").
+    pub branch: String,
+    /// Resolved merge target branch name (the "destination").
+    pub base: String,
+}
+
+#[tauri::command]
+pub fn run_branches(state: State<'_, AppState>, task_id: String) -> Result<RunBranches, String> {
+    let (branch, base) = state.run_branches(&task_id).map_err(|e| e.to_string())?;
+    Ok(RunBranches { branch, base })
+}
+
+#[tauri::command]
 pub fn list_profiles(state: State<'_, AppState>) -> Result<Vec<AgentProfile>, String> {
     state.list_profiles().map_err(|e| e.to_string())
 }

@@ -240,14 +240,13 @@ textarea.settings-input { min-height: 64px; resize: vertical; }
   padding: 0 8px 0 78px;
   background: var(--mantle);
   border-bottom: 1px solid var(--line);
-  -webkit-app-region: drag;
+  /* Window dragging is handled by data-tauri-drag-region on the header, not
+     by Electron's -webkit-app-region (which Tauri's WKWebView ignores). */
   user-select: none;
 }
 .titlebar-left { display: flex; align-items: center; gap: 6px; }
 .titlebar-right { display: flex; align-items: center; gap: 6px; }
-.no-drag { -webkit-app-region: no-drag; }
 .icon-btn {
-  -webkit-app-region: no-drag;
   background: none; border: none; color: var(--sub0); cursor: pointer;
   display: flex; align-items: center; justify-content: center;
   width: 28px; height: 28px; border-radius: 6px; padding: 0;
@@ -282,6 +281,8 @@ textarea.settings-input { min-height: 64px; resize: vertical; }
   color: var(--o1);
 }
 .kbd-hints { font-size: 11px; color: var(--o0); opacity: 0.75; }
+.statusbar-left { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.statusbar-branch { font-family: var(--mono); font-size: 10.5px; color: var(--o0); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* Body */
 .body { flex: 1; display: flex; min-height: 0; }
 /* Project tree sidebar */
@@ -727,6 +728,9 @@ textarea.settings-input { min-height: 64px; resize: vertical; }
 .git-commit-input { background: var(--crust); border: 1px solid var(--s1); color: var(--text); border-radius: 6px; padding: 7px; min-height: 54px; resize: vertical; font-family: var(--sans); font-size: 13px; }
 .git-commit-input:focus { outline: none; border-color: var(--blue); }
 .git-commit-bar { display: flex; gap: 6px; align-items: center; }
+.git-remote-row { display: flex; gap: 6px; align-items: center; }
+.git-remote-input { flex: 1; min-width: 0; background: var(--crust); border: 1px solid var(--s1); color: var(--text); border-radius: 6px; padding: 6px 8px; font-family: var(--mono); font-size: 12px; }
+.git-remote-input:focus { outline: none; border-color: var(--blue); }
 .git-split { position: relative; display: flex; }
 .git-primary { background: var(--blue); color: var(--crust); border: none; font-weight: 600; padding: 6px 12px; cursor: pointer; font-size: 12.5px; }
 .git-primary:hover { background: var(--lav); }
@@ -803,7 +807,10 @@ textarea.settings-input { min-height: 64px; resize: vertical; }
 .git-full-body { display: flex; flex: 1; min-height: 0; }
 .git-full-left { min-width: 300px; flex-shrink: 0; border-right: 1px solid var(--line); display: flex; flex-direction: column; overflow: auto; }
 .git-full-right { flex: 1; display: flex; min-width: 0; min-height: 0; }
-.git-changes { overflow: auto; }
+/* No own scroll/clip: the parent .git-section-body scrolls. A local overflow
+   here collapses to the commit box height when there are no changes and clips
+   the commit dropdown menu (making it look empty). */
+.git-changes { overflow: visible; }
 
 /* ── Run tab toggle + RunPanel (Task 6) ────────────────────────── */
 .focus-tabs { display: flex; gap: 4px; margin-left: 8px; }

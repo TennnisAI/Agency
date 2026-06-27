@@ -1,10 +1,14 @@
 mod commands;
 mod notifier;
+mod pathenv;
 mod state;
 
 pub use state::{AppState, ProviderSettings, RunInfo};
 
 pub fn run() {
+    // Repair PATH first: a Finder-launched .app inherits launchd's minimal PATH,
+    // which omits Homebrew etc., so spawning `tmux`/agent CLIs fails with ENOENT.
+    pathenv::repair();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())

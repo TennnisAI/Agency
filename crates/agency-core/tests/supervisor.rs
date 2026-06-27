@@ -24,6 +24,34 @@ fn wait_for(buf: &Arc<Mutex<String>>, needle: &str, timeout: Duration) -> bool {
     false
 }
 
+/// A PTY child must see TERM=xterm-256color (what the frontend xterm.js speaks),
+/// even when the parent process has a different/absent TERM. Otherwise a Finder-
+/// launched bundle (no TERM from launchd) makes `tmux attach` fail with
+/// "open terminal failed: terminal does not support clear".
+#[test]
+fn pty_child_gets_xterm_term() {
+    // Force a wrong parent TERM so the assertion proves spawn_agent overrode it,
+    // not that we merely inherited a good value from the test environment.
+    std::env::set_var("TERM", "dumb-sentinel");
+    let profile = AgentProfile {
+        name: "term-probe".into(),
+        command: "sh".into(),
+        args: vec!["-c".into(), "echo TERM=$TERM; sleep 0.1".into()],
+        env: vec![],
+    };
+
+    let buf = Arc::new(Mutex::new(String::new()));
+    let buf_cb = buf.clone();
+    let handle = spawn_agent(&profile, &std::env::temp_dir(), "", move |bytes| {
+        buf_cb.lock().unwrap().push_str(&String::from_utf8_lossy(&bytes));
+    })
+    .unwrap();
+
+    let ok = wait_for(&buf, "TERM=xterm-256color", Duration::from_secs(5));
+    drop(handle);
+    assert!(ok, "PTY child TERM was: {:?}", buf.lock().unwrap());
+}
+
 #[test]
 fn spawns_streams_input_and_exits() {
     let profile = AgentProfile {

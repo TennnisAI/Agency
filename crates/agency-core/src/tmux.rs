@@ -72,6 +72,16 @@ impl Tmux {
             "-y".into(),
             "50".into(),
         ];
+        // Advertise 24-bit color to the program. Apps like Claude Code render
+        // their logo/banner with truecolor; without COLORTERM they fall back to a
+        // degraded form (the logo blocks render black). A Finder-launched bundle
+        // inherits no COLORTERM, so default it here unless the caller set one. Must
+        // be passed on `new-session` itself so it's in the program's environment at
+        // spawn time.
+        if !env.iter().any(|(k, _)| k == "COLORTERM") {
+            a.push("-e".into());
+            a.push("COLORTERM=truecolor".into());
+        }
         for (k, v) in env {
             a.push("-e".into());
             a.push(format!("{k}={v}"));
@@ -89,6 +99,14 @@ impl Tmux {
         // Make tmux size each window to the most recently attached client, so the
         // session reflows when our attach PTY is resized to match the UI terminal.
         a.extend([";", "set-option", "-g", "window-size", "latest"].map(String::from));
+        // The session is rendered as a single embedded pane in our own UI, so tmux's
+        // own status bar is just chrome leaking into the view — hide it.
+        a.extend([";", "set-option", "-g", "status", "off"].map(String::from));
+        // Tell tmux the attach client (xterm.js, TERM=xterm-256color) supports
+        // 24-bit color so it passes truecolor sequences through instead of
+        // down-converting them. Pairs with COLORTERM above to make the agent's
+        // truecolor output render correctly.
+        a.extend([";", "set-option", "-ga", "terminal-overrides", ",xterm-256color:RGB"].map(String::from));
         let aref: Vec<&str> = a.iter().map(|s| s.as_str()).collect();
         self.ok(&aref)?;
         Ok(())

@@ -80,6 +80,12 @@ where
     let mut cmd = CommandBuilder::new(&profile.command);
     cmd.args(profile.render_args(prompt));
     cmd.cwd(cwd);
+    // Every PTY we open is rendered by the frontend xterm.js terminal, which speaks
+    // xterm-256color. A Finder-launched .app inherits no TERM from launchd, so a
+    // `tmux attach` child would have no terminal type and fail with "open terminal
+    // failed: terminal does not support clear". Default TERM here; a profile may
+    // still override it via its own env below.
+    cmd.env("TERM", "xterm-256color");
     for (k, v) in &profile.env {
         cmd.env(k, v);
     }

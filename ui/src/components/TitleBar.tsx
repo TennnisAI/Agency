@@ -22,8 +22,6 @@ export default function TitleBar({
         >
           <SidebarIcon filled={!sidebarOpen} />
         </button>
-        <span className="logo-mark" />
-        <span className="app-name">Agency</span>
       </div>
       <button className="search-box" onClick={onOpenPalette}>
         <span>⌕</span>

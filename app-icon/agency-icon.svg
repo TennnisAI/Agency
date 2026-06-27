@@ -1,0 +1,21 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="tile" x1="512" y1="0" x2="512" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#21212f"></stop>
+      <stop offset="1" stop-color="#14141d"></stop>
+    </linearGradient>
+    <radialGradient id="glow" cx="512" cy="470" r="600" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#89b4fa" stop-opacity="0.16"></stop>
+      <stop offset="1" stop-color="#89b4fa" stop-opacity="0"></stop>
+    </radialGradient>
+  </defs>
+  <rect x="0" y="0" width="1024" height="1024" rx="224" fill="url(#tile)"></rect>
+  <rect x="0" y="0" width="1024" height="1024" rx="224" fill="url(#glow)"></rect>
+  <rect x="2" y="2" width="1020" height="1020" rx="222" fill="none" stroke="#ffffff" stroke-opacity="0.05" stroke-width="2"></rect>
+  <g transform="translate(2,-11) scale(10.2)">
+    <path d="M22 84 L50 24 L78 84" stroke="#89b4fa" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"></path>
+    <rect x="36" y="55" width="20" height="7.5" rx="3.75" fill="#89b4fa" fill-opacity="0.55"></rect>
+    <rect x="44" y="67" width="20" height="7.5" rx="3.75" fill="#89b4fa"></rect>
+    <circle cx="50" cy="22" r="7.5" fill="#1a1a27" stroke="#89b4fa" stroke-width="3.4"></circle>
+  </g>
+</svg>

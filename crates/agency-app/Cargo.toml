@@ -7,6 +7,12 @@ edition = "2021"
 name = "agency_app_lib"
 crate-type = ["lib", "cdylib", "staticlib"]
 
+# Name the binary "Agency" so macOS shows "Agency" (not "agency-app") in the
+# dock/taskbar hover during `tauri dev`. Bundled builds already use productName.
+[[bin]]
+name = "Agency"
+path = "src/main.rs"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

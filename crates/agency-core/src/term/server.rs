@@ -152,3 +152,60 @@ fn dispatch(frame: ClientFrame, client_id: u64, registry: &Arc<Registry>, out: &
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::net::UnixStream;
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
+
+    #[test]
+    fn connection_accounting() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sock = dir.path().join("test.sock");
+
+        let registry = Registry::new();
+        let clients = Arc::new(AtomicUsize::new(0));
+
+        let sock_clone = sock.clone();
+        let registry_clone = registry.clone();
+        let clients_clone = clients.clone();
+        std::thread::spawn(move || {
+            let _ = run_with_registry(&sock_clone, registry_clone, clients_clone);
+        });
+
+        // Wait for the socket to appear (up to ~1 s).
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while !sock.exists() {
+            assert!(std::time::Instant::now() < deadline, "socket never appeared");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+
+        // Connect — clients counter must reach 1.
+        let _stream = UnixStream::connect(&sock).expect("connect");
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        loop {
+            if clients.load(Ordering::SeqCst) == 1 {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "clients never reached 1");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(clients.load(Ordering::SeqCst), 1, "expected 1 live client");
+
+        // Drop the connection — clients counter must return to 0.
+        drop(_stream);
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        loop {
+            if clients.load(Ordering::SeqCst) == 0 {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "clients never returned to 0");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(clients.load(Ordering::SeqCst), 0, "expected 0 live clients after disconnect");
+    }
+}

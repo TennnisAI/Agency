@@ -1,4 +1,5 @@
 mod commands;
+mod lifecycle;
 mod notifier;
 mod pathenv;
 mod state;
@@ -13,8 +14,40 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                // Don't quit — retreat to the menu bar. Quit happens only via the
+                // tray "Quit Agency" item (Task 13).
+                api.prevent_close();
+                let _ = window.hide();
+            }
+        })
         .setup(|app| {
             use tauri::Manager;
+            use tauri::menu::{MenuBuilder, MenuItemBuilder};
+            use tauri::tray::TrayIconBuilder;
+
+            let open = MenuItemBuilder::with_id("open", "Open Agency").build(app)?;
+            let quit = MenuItemBuilder::with_id("quit", "Quit Agency").build(app)?;
+            let menu = MenuBuilder::new(app).items(&[&open, &quit]).build()?;
+
+            let _tray = TrayIconBuilder::new()
+                .icon(app.default_window_icon().unwrap().clone())
+                .menu(&menu)
+                .on_menu_event(|app, event| match event.id().as_ref() {
+                    "open" => {
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.show();
+                            let _ = w.set_focus();
+                        }
+                    }
+                    "quit" => {
+                        crate::lifecycle::request_quit(app);
+                    }
+                    _ => {}
+                })
+                .build(app)?;
+
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
             let state = AppState::new(&data_dir.join("agency.db"), &data_dir)?;

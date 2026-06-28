@@ -978,6 +978,24 @@ impl AppState {
         Ok(())
     }
 
+    /// Count of all sessions currently tracked by the daemon (used for the quit
+    /// confirmation message). Returns 0 on any error.
+    pub(crate) fn session_count(&self) -> usize {
+        self.term.list().map(|s| s.len()).unwrap_or(0)
+    }
+
+    /// Kill every daemon session, then tell the daemon to shut down.
+    /// Called from the quit confirmation flow; errors are swallowed because we
+    /// are about to exit anyway.
+    pub(crate) fn kill_all_and_shutdown(&self) {
+        if let Ok(sessions) = self.term.list() {
+            for (id, _) in sessions {
+                let _ = self.term.kill(&id);
+            }
+        }
+        let _ = self.term.shutdown();
+    }
+
     pub fn notif_settings(&self) -> Result<notifier::NotifSettings> {
         let raw = self.registry.lock().unwrap().get_setting(SETTING_NOTIF)?;
         Ok(raw.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default())

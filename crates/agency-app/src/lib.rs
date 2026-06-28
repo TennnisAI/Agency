@@ -31,7 +31,12 @@ pub fn run() {
             let quit = MenuItemBuilder::with_id("quit", "Quit Agency").build(app)?;
             let menu = MenuBuilder::new(app).items(&[&open, &quit]).build()?;
 
-            let _tray = TrayIconBuilder::new()
+            // Build the tray icon and move the handle into managed state so it
+            // is not dropped at the end of this setup closure. In Tauri 2 the
+            // underlying icon is reference-counted and is removed from the menu
+            // bar when the last handle is dropped — keeping it in managed state
+            // ties its lifetime to the app itself.
+            let tray = TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
                 .menu(&menu)
                 .on_menu_event(|app, event| match event.id().as_ref() {
@@ -47,6 +52,7 @@ pub fn run() {
                     _ => {}
                 })
                 .build(app)?;
+            app.manage(tray);
 
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
@@ -182,6 +188,18 @@ pub fn run() {
             commands::read_file,
             commands::write_file,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Agency");
+        .build(tauri::generate_context!())
+        .expect("error while running Agency")
+        .run(|app, event| {
+            // Intercept OS-level quit (Cmd+Q, dock menu, etc.) so it routes
+            // through our confirmation dialog instead of exiting immediately.
+            // Once the user confirms, QUIT_CONFIRMED is set to true and we let
+            // the subsequent exit triggered by app.exit(0) proceed unimpeded.
+            if let tauri::RunEvent::ExitRequested { api, .. } = event {
+                if !crate::lifecycle::QUIT_CONFIRMED.load(std::sync::atomic::Ordering::Relaxed) {
+                    api.prevent_exit();
+                    crate::lifecycle::request_quit(app);
+                }
+            }
+        });
 }

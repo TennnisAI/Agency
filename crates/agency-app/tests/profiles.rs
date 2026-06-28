@@ -3,7 +3,7 @@ use agency_app_lib::AppState;
 #[test]
 fn seeds_three_agent_profiles_with_bare_commands() {
     let dir = tempfile::tempdir().unwrap();
-    let state = AppState::new(&dir.path().join("agency.db")).unwrap();
+    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
     let profiles = state.list_profiles().unwrap();
     let by_name = |n: &str| profiles.iter().find(|p| p.name == n).cloned();
 

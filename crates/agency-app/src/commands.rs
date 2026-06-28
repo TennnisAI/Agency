@@ -3,7 +3,7 @@ use agency_core::merge::MergeOutcome;
 use agency_core::profile::AgentProfile;
 use agency_core::registry::{Project, ReviewComment};
 use agency_core::supervisor::AgentStatus;
-use agency_core::tmux::SessionStatus;
+use agency_core::term::SessionStatus;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
@@ -232,7 +232,9 @@ pub fn attach_run(
     on_chunk: Channel<TerminalChunk>,
 ) -> Result<(), String> {
     state
-        .attach_run(&id, move |bytes| {
+        // The frontend immediately follows attach with a resize to its real
+        // FitAddon dims; 220x50 is the placeholder initial size until then.
+        .attach_run(&id, 220, 50, move |bytes| {
             let _ = on_chunk.send(TerminalChunk { b64: STANDARD.encode(&bytes) });
         })
         .map_err(|e| e.to_string())
@@ -636,7 +638,8 @@ pub fn attach_run_script(
     on_chunk: Channel<TerminalChunk>,
 ) -> Result<(), String> {
     state
-        .attach_run_script(&id, move |bytes| {
+        // See attach_run: real dims arrive via the follow-up resize command.
+        .attach_run_script(&id, 220, 50, move |bytes| {
             let _ = on_chunk.send(TerminalChunk { b64: STANDARD.encode(&bytes) });
         })
         .map_err(|e| e.to_string())

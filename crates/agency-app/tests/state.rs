@@ -4,7 +4,7 @@ use std::path::Path;
 #[test]
 fn new_seeds_default_shell_profile_and_version_holds() {
     let dir = tempfile::tempdir().unwrap();
-    let state = AppState::new(&dir.path().join("agency.db")).unwrap();
+    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
     assert_eq!(AppState::version(), "0.1.0");
     assert!(state.profile_names().unwrap().contains(&"shell".to_string()));
 }
@@ -12,7 +12,7 @@ fn new_seeds_default_shell_profile_and_version_holds() {
 #[test]
 fn project_crud_roundtrip() {
     let dir = tempfile::tempdir().unwrap();
-    let state = AppState::new(&dir.path().join("agency.db")).unwrap();
+    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
 
     let repo = dir.path().join("repo");
     std::fs::create_dir_all(&repo).unwrap();
@@ -32,7 +32,7 @@ fn project_crud_roundtrip() {
 #[test]
 fn add_project_rejects_non_git_folder() {
     let dir = tempfile::tempdir().unwrap();
-    let state = AppState::new(&dir.path().join("agency.db")).unwrap();
+    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
 
     let plain = dir.path().join("plain");
     std::fs::create_dir_all(&plain).unwrap();
@@ -45,7 +45,7 @@ fn add_project_rejects_non_git_folder() {
 
 
 use agency_core::profile::AgentProfile;
-use agency_core::tmux::SessionStatus;
+use agency_core::term::SessionStatus;
 use std::process::Command;
 
 fn init_repo(dir: &Path) {
@@ -76,7 +76,7 @@ fn create_run_persists_starts_session_and_lists() {
     std::fs::create_dir_all(&repo).unwrap();
     init_repo(&repo); // repo on `main` with a commit
 
-    let state = AppState::new(&dir.path().join("agency.db")).unwrap();
+    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
     // a profile that stays alive so the session is Running
     state.register_profile(AgentProfile {
         name: "stay".into(),
@@ -120,7 +120,7 @@ fn worktree_path_resolves_for_active_run() {
     std::fs::create_dir_all(&repo).unwrap();
     init_repo(&repo);
 
-    let state = AppState::new(&dir.path().join("agency.db")).unwrap();
+    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
     state.register_profile(AgentProfile {
         name: "noop".into(),
         command: "sh".into(),
@@ -147,7 +147,7 @@ fn worktree_path_resolves_to_repo_root_for_terminal() {
     std::fs::create_dir_all(&repo).unwrap();
     init_repo(&repo);
 
-    let state = AppState::new(&dir.path().join("agency.db")).unwrap();
+    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
     let project = state.add_project("demo", &repo).unwrap();
 
     // Agent run: still resolves under .agency/worktrees/<id>.
@@ -175,7 +175,7 @@ fn worktree_path_resolves_to_repo_root_for_terminal() {
 #[test]
 fn new_seeds_shell_and_claude_when_empty() {
     let dir = tempfile::tempdir().unwrap();
-    let state = AppState::new(&dir.path().join("agency.db")).unwrap();
+    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
     let names = state.profile_names().unwrap();
     assert!(names.contains(&"shell".to_string()));
     assert!(names.contains(&"claude".to_string()));
@@ -184,7 +184,7 @@ fn new_seeds_shell_and_claude_when_empty() {
 #[test]
 fn settings_default_and_roundtrip() {
     let dir = tempfile::tempdir().unwrap();
-    let state = AppState::new(&dir.path().join("agency.db")).unwrap();
+    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
     let s = state.get_settings().unwrap();
     assert_eq!(s.lm_studio_base_url, "http://localhost:1234/v1");
     assert_eq!(s.anthropic_api_key, "");
@@ -208,7 +208,7 @@ fn create_run_injects_provider_env() {
     std::fs::create_dir_all(&repo).unwrap();
     init_repo(&repo);
 
-    let state = AppState::new(&dir.path().join("agency.db")).unwrap();
+    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
     state.save_settings(&agency_app_lib::ProviderSettings {
         anthropic_api_key: "sk-secret".into(),
         lm_studio_base_url: "http://localhost:1234/v1".into(),
@@ -250,7 +250,7 @@ fn resolve_merge_spawns_resolver_in_repo_and_streams() {
     std::fs::create_dir_all(&repo).unwrap();
     init_repo(&repo);
 
-    let state = AppState::new(&dir.path().join("agency.db")).unwrap();
+    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
     state.register_profile(AgentProfile {
         name: "noop".into(),
         command: "sh".into(),
@@ -289,7 +289,7 @@ fn resolve_merge_spawns_resolver_in_repo_and_streams() {
 #[test]
 fn save_settings_rejects_bad_provider_url() {
     let dir = tempfile::tempdir().unwrap();
-    let state = AppState::new(&dir.path().join("agency.db")).unwrap();
+    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
     // remote http (non-localhost) is rejected
     let bad = agency_app_lib::ProviderSettings {
         anthropic_api_key: "".into(),
@@ -319,7 +319,7 @@ fn attach_streams_and_input_reaches_agent() {
     std::fs::create_dir_all(&repo).unwrap();
     init_repo(&repo);
 
-    let state = AppState::new(&dir.path().join("agency.db")).unwrap();
+    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
     state.register_profile(AgentProfile {
         name: "echoer".into(),
         command: "sh".into(),
@@ -331,7 +331,7 @@ fn attach_streams_and_input_reaches_agent() {
 
     let buf = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
     let b = buf.clone();
-    state.attach_run(&info.id, move |bytes| {
+    state.attach_run(&info.id, 220, 50, move |bytes| {
         b.lock().unwrap().push_str(&String::from_utf8_lossy(&bytes));
     }).unwrap();
 
@@ -367,7 +367,7 @@ fn terminal_survives_attach_detach_reattach() {
     std::fs::create_dir_all(&repo).unwrap();
     init_repo(&repo);
 
-    let state = AppState::new(&dir.path().join("agency.db")).unwrap();
+    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
     let project = state.add_project("demo", &repo).unwrap();
     let info = state.create_terminal(&project.id).unwrap();
     assert_eq!(info.kind, "terminal");
@@ -385,7 +385,7 @@ fn terminal_survives_attach_detach_reattach() {
     assert!(wait_running(&state, &info.id), "shell should be running after create");
 
     // First attach (view the terminal).
-    state.attach_run(&info.id, |_bytes| {}).unwrap();
+    state.attach_run(&info.id, 220, 50, |_bytes| {}).unwrap();
     assert!(wait_running(&state, &info.id), "running after first attach");
 
     // Navigate away: detach (drops the handle, SIGKILLs the attach client).
@@ -397,7 +397,7 @@ fn terminal_survives_attach_detach_reattach() {
     );
 
     // Navigate back: re-attach to the same session.
-    state.attach_run(&info.id, |_bytes| {}).unwrap();
+    state.attach_run(&info.id, 220, 50, |_bytes| {}).unwrap();
     assert!(wait_running(&state, &info.id), "running after re-attach");
 
     state.detach_run(&info.id);
@@ -412,7 +412,7 @@ fn merge_task_clean_merges_branch_into_base() {
     std::fs::create_dir_all(&repo).unwrap();
     init_repo(&repo);
 
-    let state = AppState::new(&dir.path().join("agency.db")).unwrap();
+    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
     state.register_profile(AgentProfile {
         name: "noop".into(),
         command: "sh".into(),

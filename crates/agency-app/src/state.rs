@@ -1,7 +1,8 @@
 use agency_core::profile::AgentProfile;
 use agency_core::registry::{Project, Registry};
 use agency_core::supervisor::AgentHandle;
-use agency_core::tmux::{SessionStatus, Tmux};
+use agency_core::term::client::{Subscription, TermClient};
+use agency_core::term::SessionStatus;
 use agency_core::worktree::WorktreeManager;
 use anyhow::{anyhow, bail, Result};
 use crate::notifier;
@@ -71,6 +72,35 @@ fn compose_feedback(comments: &[agency_core::registry::ReviewComment]) -> String
         })
         .collect();
     format!("Please address these review comments: {}", parts.join(" | "))
+}
+
+/// Socket the terminal daemon listens on, derived from the app data dir.
+fn termd_socket(data_dir: &Path) -> std::path::PathBuf {
+    data_dir.join("termd.sock")
+}
+
+/// Path to the terminal daemon binary. In a bundled/release build it ships next
+/// to the app executable (Tauri externalBin sidecar). Under `cargo test` the
+/// current exe is a test binary in `target/<profile>/deps/`, while the daemon is
+/// built one level up in `target/<profile>/`, so we also probe the parent dir.
+/// Falls back to a bare name for `$PATH` resolution.
+fn termd_bin() -> std::path::PathBuf {
+    let exe = std::env::current_exe().ok();
+    let dir = exe.as_ref().and_then(|p| p.parent());
+    // Sibling of the executable (bundled app / `cargo run`).
+    let sibling = dir.map(|d| d.join("agency-termd"));
+    if let Some(p) = sibling.as_ref() {
+        if p.exists() {
+            return p.clone();
+        }
+    }
+    // One level up (cargo's `deps/` test/bench layout points here).
+    if let Some(p) = dir.and_then(|d| d.parent()).map(|d| d.join("agency-termd")) {
+        if p.exists() {
+            return p;
+        }
+    }
+    sibling.unwrap_or_else(|| std::path::PathBuf::from("agency-termd"))
 }
 
 fn session_name(id: &str) -> String {
@@ -222,9 +252,9 @@ struct UiState {
 
 pub struct AppState {
     registry: Mutex<Registry>,
-    attaches: Mutex<HashMap<String, AgentHandle>>,
-    run_attaches: Mutex<HashMap<String, AgentHandle>>,
-    tmux: Tmux,
+    attaches: Mutex<HashMap<String, Subscription>>,
+    run_attaches: Mutex<HashMap<String, Subscription>>,
+    term: TermClient,
     resolvers: Mutex<HashMap<String, AgentHandle>>,
     ui: Mutex<UiState>,
     /// Run ids that have received user input since their last "waiting for input"
@@ -237,7 +267,7 @@ impl AppState {
         env!("CARGO_PKG_VERSION")
     }
 
-    pub fn new(db_path: &Path) -> Result<AppState> {
+    pub fn new(db_path: &Path, data_dir: &Path) -> Result<AppState> {
         let registry = Registry::open(db_path)?;
         // Seed the built-in shell profile once.
         if registry.get_profile("shell")?.is_none() {
@@ -255,15 +285,22 @@ impl AppState {
                 registry.upsert_profile(&agent_profile(name, command))?;
             }
         }
-        Ok(AppState {
+        let state = AppState {
             registry: Mutex::new(registry),
             attaches: Mutex::new(HashMap::new()),
             run_attaches: Mutex::new(HashMap::new()),
-            tmux: Tmux::resolved(),
+            term: TermClient::connect_or_spawn(termd_socket(data_dir), termd_bin())?,
             resolvers: Mutex::new(HashMap::new()),
             ui: Mutex::new(UiState { focused: true, active_run: None }),
             input_seen: Mutex::new(HashSet::new()),
-        })
+        };
+        // Rehydrate: any run the daemon still hosts is adopted as-is; the watch
+        // loop (watch_snapshot) then reports live status. Nothing to spawn here —
+        // surviving sessions are already running in the daemon.
+        if let Ok(sessions) = state.term.list() {
+            log::info!("termd: adopted {} surviving session(s)", sessions.len());
+        }
+        Ok(state)
     }
 
     fn provider_env(&self) -> Result<Vec<(String, String)>> {
@@ -353,9 +390,9 @@ impl AppState {
         let runs = self.registry.lock().unwrap().list_runs(id)?;
         for run in &runs {
             self.attaches.lock().unwrap().remove(&run.id);
-            self.tmux.kill_session(&session_name(&run.id)).ok();
+            let _ = self.term.kill(&session_name(&run.id));
             self.run_attaches.lock().unwrap().remove(&run.id);
-            self.tmux.kill_session(&run_session_name(&run.id)).ok();
+            let _ = self.term.kill(&run_session_name(&run.id));
         }
         Ok(())
     }
@@ -365,9 +402,9 @@ impl AppState {
         let repo = self.project_repo(id).ok();
         for run in &runs {
             self.attaches.lock().unwrap().remove(&run.id);
-            self.tmux.kill_session(&session_name(&run.id)).ok();
+            let _ = self.term.kill(&session_name(&run.id));
             self.run_attaches.lock().unwrap().remove(&run.id);
-            self.tmux.kill_session(&run_session_name(&run.id)).ok();
+            let _ = self.term.kill(&run_session_name(&run.id));
             if let Some(repo) = &repo {
                 let _ = WorktreeManager::new(repo.clone()).remove(&run.id);
             }
@@ -398,7 +435,7 @@ impl AppState {
 
     fn run_info(&self, run: &agency_core::registry::Run) -> RunInfo {
         let name = session_name(&run.id);
-        let status = self.tmux.session_status(&name).unwrap_or(SessionStatus::Gone);
+        let status = self.term.status(&name).unwrap_or(SessionStatus::Gone);
         let wt = self
             .project_repo(&run.project_id)
             .ok()
@@ -454,8 +491,8 @@ impl AppState {
         let (command, args) =
             agency_core::scripts::wrap_setup(config.scripts.setup.as_deref(), &profile.command, &args);
 
-        self.tmux
-            .start_session(&session_name(&id), &worktree.path, &command, &args, &env)?;
+        self.term
+            .start_session(&session_name(&id), &worktree.path, &command, &args, &env, 220, 50)?;
 
         let run = agency_core::registry::Run {
             id: id.clone(),
@@ -490,8 +527,8 @@ impl AppState {
         // Login shell so the user's prompt/profile loads.
         let args = vec!["-l".to_string()];
         pty_debug(&format!("create_terminal id={id} shell={shell} args={args:?}"));
-        self.tmux
-            .start_session(&session_name(&id), &repo, &shell, &args, &[])?;
+        self.term
+            .start_session(&session_name(&id), &repo, &shell, &args, &[], 220, 50)?;
 
         let run = agency_core::registry::Run {
             id: id.clone(),
@@ -517,35 +554,30 @@ impl AppState {
     }
 
     pub fn run_status(&self, id: &str) -> Result<SessionStatus> {
-        Ok(self.tmux.session_status(&session_name(id)).unwrap_or(SessionStatus::Gone))
+        Ok(self.term.status(&session_name(id)).unwrap_or(SessionStatus::Gone))
     }
 
-    pub fn attach_run<F>(&self, id: &str, on_output: F) -> Result<()>
+    pub fn attach_run<F>(&self, id: &str, cols: u16, rows: u16, on_output: F) -> Result<()>
     where
-        F: Fn(Vec<u8>) + Send + 'static,
+        F: Fn(Vec<u8>) + Send + Sync + 'static,
     {
         pty_debug(&format!("attach_run id={id}"));
-        let handle = self.tmux.attach(&session_name(id), on_output)?;
-        self.attaches.lock().unwrap().insert(id.to_string(), handle);
+        let sub = self.term.subscribe(&session_name(id), cols, rows, on_output)?;
+        self.attaches.lock().unwrap().insert(id.to_string(), sub);
         Ok(())
     }
 
     pub fn detach_run(&self, id: &str) {
         pty_debug(&format!("detach_run id={id}"));
-        // Detach the tmux client *gracefully* before dropping the handle (whose
-        // Drop SIGKILLs the `tmux attach` process). Killing the client outright can
-        // take the session's shell down with it — it exits 0 on a stray EOF, which
-        // surfaces as "Pane is dead, status 0" on navigate-away/back. See
-        // Tmux::detach_clients.
-        self.tmux.detach_clients(&session_name(id));
+        // Dropping the Subscription sends Unsubscribe to the daemon; the session
+        // itself keeps running server-side, so navigating away/back no longer
+        // risks taking the shell down with the client.
         self.attaches.lock().unwrap().remove(id);
     }
 
     pub fn run_input(&self, id: &str, data: &[u8]) -> Result<()> {
         pty_debug(&format!("run_input id={id} len={} {}", data.len(), fmt_bytes(data)));
-        let attaches = self.attaches.lock().unwrap();
-        let handle = attaches.get(id).ok_or_else(|| anyhow!("run not attached: {id}"))?;
-        handle.write_input(data)?;
+        self.term.input(&session_name(id), data)?;
         // Arm the idle ("waiting for input") notification for this run: it only
         // fires after the user has driven a turn, and at most once per turn.
         self.input_seen.lock().unwrap().insert(id.to_string());
@@ -563,28 +595,24 @@ impl AppState {
         self.input_seen.lock().unwrap().remove(id);
     }
 
-    /// Resize the attached PTY so tmux reflows the session to the visible
-    /// terminal. A no-op when the run isn't attached (resize events can race
-    /// ahead of the attach completing).
+    /// Resize the session's PTY so the emulator reflows to the visible terminal.
+    /// Sent straight to the daemon by id; harmless if the session isn't live yet
+    /// (resize events can race ahead of the session coming up).
     pub fn resize_run(&self, id: &str, cols: u16, rows: u16) -> Result<()> {
-        let attaches = self.attaches.lock().unwrap();
-        if let Some(handle) = attaches.get(id) {
-            handle.resize(rows, cols)?;
-        }
-        Ok(())
+        self.term.resize(&session_name(id), cols, rows)
     }
 
     pub fn run_preview(&self, id: &str, lines: usize) -> Result<String> {
-        self.tmux.capture(&session_name(id), lines)
+        Ok(self.term.capture(&session_name(id), lines).unwrap_or_default())
     }
 
     pub fn discard_run(&self, id: &str) -> Result<()> {
         self.attaches.lock().unwrap().remove(id);
         self.input_seen.lock().unwrap().remove(id);
         let run = self.run_record(id)?;
-        self.tmux.kill_session(&session_name(id)).ok();
+        let _ = self.term.kill(&session_name(id));
         self.run_attaches.lock().unwrap().remove(id);
-        self.tmux.kill_session(&run_session_name(id)).ok();
+        let _ = self.term.kill(&run_session_name(id));
         if run.kind == "agent" {
             if let Ok(repo) = self.project_repo(&run.project_id) {
                 let _ = WorktreeManager::new(repo).remove(id);
@@ -603,9 +631,9 @@ impl AppState {
 
         // Stop both sessions and drop attach handles.
         self.attaches.lock().unwrap().remove(id);
-        self.tmux.kill_session(&session_name(id)).ok();
+        let _ = self.term.kill(&session_name(id));
         self.run_attaches.lock().unwrap().remove(id);
-        self.tmux.kill_session(&run_session_name(id)).ok();
+        let _ = self.term.kill(&run_session_name(id));
 
         // Best-effort archive cleanup script, before the worktree disappears.
         let config = agency_core::config::load(&repo);
@@ -640,9 +668,9 @@ impl AppState {
 
     pub fn stop_run(&self, id: &str) -> Result<()> {
         self.attaches.lock().unwrap().remove(id);
-        self.tmux.kill_session(&session_name(id)).ok();
+        let _ = self.term.kill(&session_name(id));
         self.run_attaches.lock().unwrap().remove(id);
-        self.tmux.kill_session(&run_session_name(id)).ok();
+        let _ = self.term.kill(&run_session_name(id));
         Ok(())
     }
 
@@ -669,7 +697,7 @@ impl AppState {
             for other in others {
                 if other.id != run.id {
                     self.run_attaches.lock().unwrap().remove(&other.id);
-                    self.tmux.kill_session(&run_session_name(&other.id)).ok();
+                    let _ = self.term.kill(&run_session_name(&other.id));
                 }
             }
         }
@@ -678,63 +706,56 @@ impl AppState {
         env.extend(agency_core::scripts::script_env(&worktree, &repo, &run.id, run.port_base));
 
         // Restart cleanly if a previous run session is still around.
-        self.tmux.kill_session(&run_session_name(id)).ok();
-        self.tmux.start_session(
+        let _ = self.term.kill(&run_session_name(id));
+        self.term.start_session(
             &run_session_name(id),
             &worktree,
             "sh",
             &["-lc".to_string(), run_cmd],
             &env,
+            220,
+            50,
         )
     }
 
     pub fn stop_run_script(&self, id: &str) -> Result<()> {
         self.run_attaches.lock().unwrap().remove(id);
-        self.tmux.kill_session(&run_session_name(id)).ok();
+        let _ = self.term.kill(&run_session_name(id));
         Ok(())
     }
 
     pub fn run_script_status(&self, id: &str) -> Result<SessionStatus> {
         Ok(self
-            .tmux
-            .session_status(&run_session_name(id))
+            .term
+            .status(&run_session_name(id))
             .unwrap_or(SessionStatus::Gone))
     }
 
     pub fn run_script_preview(&self, id: &str, lines: usize) -> Result<String> {
-        self.tmux.capture(&run_session_name(id), lines)
+        Ok(self.term.capture(&run_session_name(id), lines).unwrap_or_default())
     }
 
-    pub fn attach_run_script<F>(&self, id: &str, on_output: F) -> Result<()>
+    pub fn attach_run_script<F>(&self, id: &str, cols: u16, rows: u16, on_output: F) -> Result<()>
     where
-        F: Fn(Vec<u8>) + Send + 'static,
+        F: Fn(Vec<u8>) + Send + Sync + 'static,
     {
-        let handle = self.tmux.attach(&run_session_name(id), on_output)?;
-        self.run_attaches.lock().unwrap().insert(id.to_string(), handle);
+        let sub = self.term.subscribe(&run_session_name(id), cols, rows, on_output)?;
+        self.run_attaches.lock().unwrap().insert(id.to_string(), sub);
         Ok(())
     }
 
     pub fn detach_run_script(&self, id: &str) {
-        // Graceful detach before the handle's Drop SIGKills the attach client; see
-        // detach_run / Tmux::detach_clients.
-        self.tmux.detach_clients(&run_session_name(id));
+        // Dropping the Subscription sends Unsubscribe; the run-script session keeps
+        // running server-side. See detach_run.
         self.run_attaches.lock().unwrap().remove(id);
     }
 
     pub fn run_script_input(&self, id: &str, data: &[u8]) -> Result<()> {
-        let attaches = self.run_attaches.lock().unwrap();
-        let handle = attaches
-            .get(id)
-            .ok_or_else(|| anyhow!("run script not attached: {id}"))?;
-        handle.write_input(data)
+        self.term.input(&run_session_name(id), data)
     }
 
     pub fn resize_run_script(&self, id: &str, cols: u16, rows: u16) -> Result<()> {
-        let attaches = self.run_attaches.lock().unwrap();
-        if let Some(handle) = attaches.get(id) {
-            handle.resize(rows, cols)?;
-        }
-        Ok(())
+        self.term.resize(&run_session_name(id), cols, rows)
     }
 
     pub fn rerun(&self, id: &str) -> Result<RunInfo> {
@@ -753,8 +774,8 @@ impl AppState {
         let args = profile.render_args(&run.prompt);
         let (command, args) =
             agency_core::scripts::wrap_setup(config.scripts.setup.as_deref(), &profile.command, &args);
-        self.tmux.kill_session(&session_name(id)).ok();
-        self.tmux.start_session(&session_name(id), &worktree, &command, &args, &env)?;
+        let _ = self.term.kill(&session_name(id));
+        self.term.start_session(&session_name(id), &worktree, &command, &args, &env, 220, 50)?;
         Ok(self.run_info(&run))
     }
 
@@ -949,7 +970,7 @@ impl AppState {
             bail!("no unsent review comments");
         }
         let message = compose_feedback(&unsent);
-        self.tmux.send_text(&session_name(run_id), &message)?;
+        self.term.send_text(&session_name(run_id), &message)?;
         self.registry.lock().unwrap().mark_review_comments_sent(run_id)?;
         Ok(())
     }
@@ -974,9 +995,9 @@ impl AppState {
         for proj in projects {
             let runs = self.registry.lock().unwrap().list_runs(&proj.id)?;
             for run in runs {
-                let agent = self.tmux.session_status(&session_name(&run.id)).unwrap_or(SessionStatus::Gone);
-                let run_script = self.tmux.session_status(&run_session_name(&run.id)).unwrap_or(SessionStatus::Gone);
-                let pane = self.tmux.capture(&session_name(&run.id), 50).unwrap_or_default();
+                let agent = self.term.status(&session_name(&run.id)).unwrap_or(SessionStatus::Gone);
+                let run_script = self.term.status(&run_session_name(&run.id)).unwrap_or(SessionStatus::Gone);
+                let pane = self.term.capture(&session_name(&run.id), 50).unwrap_or_default();
                 let mut hasher = std::collections::hash_map::DefaultHasher::new();
                 std::hash::Hash::hash(&pane, &mut hasher);
                 let pane_hash = std::hash::Hasher::finish(&hasher);

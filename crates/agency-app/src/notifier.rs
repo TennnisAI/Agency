@@ -1,4 +1,4 @@
-use agency_core::tmux::SessionStatus;
+use agency_core::term::SessionStatus;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

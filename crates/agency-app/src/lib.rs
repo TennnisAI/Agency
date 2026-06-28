@@ -17,7 +17,7 @@ pub fn run() {
             use tauri::Manager;
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
-            let state = AppState::new(&data_dir.join("agency.db"))?;
+            let state = AppState::new(&data_dir.join("agency.db"), &data_dir)?;
             app.manage(state);
             let handle = app.handle().clone();
             std::thread::spawn(move || {

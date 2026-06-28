@@ -8,6 +8,8 @@ pub mod registry;
 pub mod server;
 pub mod session;
 
+pub use protocol::SessionStatus;
+
 #[cfg(test)]
 mod smoke {
     use alacritty_terminal::event::VoidListener;

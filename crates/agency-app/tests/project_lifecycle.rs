@@ -8,7 +8,7 @@ fn add_project_allows_repo_without_commits() {
     // A git repo with NO commits — previously rejected, now must be addable (gated).
     std::process::Command::new("git").args(["init", "-q"]).current_dir(&repo).output().unwrap();
 
-    let state = AppState::new(&dir.path().join("agency.db")).unwrap();
+    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
     let p = state.add_project("repo", &repo).unwrap();
     assert_eq!(p.name, "repo");
 
@@ -33,7 +33,7 @@ fn close_keeps_records_delete_removes_them() {
     git(&["config", "user.name", "T"]);
     git(&["commit", "-q", "--allow-empty", "-m", "init"]);
 
-    let state = AppState::new(&dir.path().join("agency.db")).unwrap();
+    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
     let project = state.add_project("repo", &repo).unwrap();
 
     // close_project must succeed and keep the project record

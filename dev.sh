@@ -26,5 +26,5 @@ cargo build -p agency-core --bin agency-termd \
 echo "Daemon binary: $REPO_ROOT/target/debug/agency-termd"
 
 echo "Launching tauri dev..."
-cd "$REPO_ROOT/ui"
-exec pnpm tauri dev
+cd "$REPO_ROOT/crates/agency-app"
+exec "$REPO_ROOT/ui/node_modules/.bin/tauri" dev

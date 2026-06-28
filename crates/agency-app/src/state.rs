@@ -969,6 +969,9 @@ impl AppState {
         if unsent.is_empty() {
             bail!("no unsent review comments");
         }
+        if !matches!(self.term.status(&session_name(run_id)), Ok(SessionStatus::Running)) {
+            bail!("agent session {run_id} is not running");
+        }
         let message = compose_feedback(&unsent);
         self.term.send_text(&session_name(run_id), &message)?;
         self.registry.lock().unwrap().mark_review_comments_sent(run_id)?;

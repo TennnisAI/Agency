@@ -436,3 +436,29 @@ fn merge_task_clean_merges_branch_into_base() {
     // discard after merge (worktree may already be removed by merge; best-effort)
     let _ = state.discard_run(&info.id);
 }
+
+#[test]
+fn send_review_comments_errors_when_session_not_running() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
+
+    // Use a fake run_id — no session has ever been started for it.
+    let fake_run_id = "00000000-0000-0000-0000-000000000000";
+
+    // Insert an unsent review comment for the fake run.
+    state
+        .add_review_comment(fake_run_id, "src/main.rs", 1, 3, "looks good")
+        .unwrap();
+
+    // send_review_comments must fail because the session is not running.
+    let err = state.send_review_comments(fake_run_id).unwrap_err().to_string();
+    assert!(
+        err.contains("not running"),
+        "expected 'not running' error, got: {err}"
+    );
+
+    // The comment must NOT have been marked sent.
+    let unsent = state.list_review_comments(fake_run_id).unwrap();
+    assert_eq!(unsent.len(), 1, "comment count should be unchanged");
+    assert!(!unsent[0].sent, "comment must NOT be marked sent after failed send");
+}

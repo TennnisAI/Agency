@@ -4,7 +4,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { attachRun, detachRun, resizeRun, runInput, runPreview,
   attachRunScript, detachRunScript, resizeRunScript, runScriptInput, runScriptPreview } from "../api";
-import { currentXtermTheme, minContrastRatio } from "../lib/themes";
+import { currentXtermTheme, minContrastRatio, TERMINAL_FONT_FAMILY } from "../lib/themes";
 import { initialCapture, feed } from "../lib/firstPrompt";
 
 export interface TerminalStream {
@@ -35,7 +35,7 @@ export default function FocusTerminal(
   useEffect(() => {
     const container = ref.current;
     if (!container) return;
-    const term = new Terminal({ convertEol: true, fontSize: 13, cursorBlink: true, theme: currentXtermTheme(), minimumContrastRatio: minContrastRatio() });
+    const term = new Terminal({ convertEol: true, fontSize: 13, fontFamily: TERMINAL_FONT_FAMILY, cursorBlink: true, theme: currentXtermTheme(), minimumContrastRatio: minContrastRatio() });
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(container);

@@ -48,13 +48,35 @@ fn merge_path(current: &str, extra: &[PathBuf], exists: impl Fn(&Path) -> bool) 
     entries.join(":")
 }
 
-/// Repair the current process PATH so spawned children (tmux, agent CLIs) resolve
-/// even under a Finder-launched bundle's minimal PATH. Idempotent.
+/// Locale env vars to default when a Finder-launched bundle inherits none. Returns
+/// the (key, value) pairs to set, or empty if a locale is already present. Without
+/// a UTF-8 locale the `tmux attach` client negotiates the ASCII charset, so tmux
+/// strips box-drawing/block glyphs (Claude's quadrant-block logo) to blanks before
+/// they reach the webview. Pure for testability; caller checks the environment.
+fn locale_defaults(has_locale: bool) -> Vec<(&'static str, &'static str)> {
+    if has_locale {
+        vec![]
+    } else {
+        vec![("LANG", "en_US.UTF-8"), ("LC_CTYPE", "en_US.UTF-8")]
+    }
+}
+
+/// Repair the current process environment so spawned children (tmux, the `tmux
+/// attach` client, agent CLIs) behave as they do under a normal shell launch.
+/// A Finder-launched bundle inherits launchd's minimal env — no Homebrew PATH and
+/// no locale. Idempotent; children inherit the repaired env.
 pub fn repair() {
     let current = std::env::var("PATH").unwrap_or_default();
     let home = std::env::var("HOME").map(PathBuf::from).unwrap_or_default();
     let merged = merge_path(&current, &common_bin_dirs(&home), |p| p.exists());
     std::env::set_var("PATH", merged);
+
+    let has_locale = ["LC_ALL", "LC_CTYPE", "LANG"]
+        .iter()
+        .any(|k| std::env::var_os(k).is_some_and(|v| !v.is_empty()));
+    for (k, v) in locale_defaults(has_locale) {
+        std::env::set_var(k, v);
+    }
 }
 
 #[cfg(test)]
@@ -91,6 +113,16 @@ mod tests {
             exists_set(&[]), // nothing exists
         );
         assert_eq!(out, "/usr/bin");
+    }
+
+    #[test]
+    fn defaults_utf8_locale_only_when_absent() {
+        assert_eq!(
+            locale_defaults(false),
+            vec![("LANG", "en_US.UTF-8"), ("LC_CTYPE", "en_US.UTF-8")],
+            "a bundle with no locale must get a UTF-8 default so tmux keeps block glyphs"
+        );
+        assert!(locale_defaults(true).is_empty(), "an existing locale is left untouched");
     }
 
     #[test]

@@ -126,6 +126,13 @@ export function xtermThemeFor(theme: Theme): ITheme {
   };
 }
 
+/** Explicit monospace stack for the embedded terminal. xterm's built-in default
+ *  leads with `courier-new`, which lacks the quadrant block elements (U+2596–259F)
+ *  used by TUI logos; pinning Menlo first (full box-drawing/block coverage) avoids
+ *  relying on WebKit's per-glyph font fallback. Defensive — the actual bundle logo
+ *  breakage was a missing UTF-8 locale (see pathenv::repair), not the font. */
+export const TERMINAL_FONT_FAMILY = "Menlo, Monaco, 'Courier New', monospace";
+
 let active: ThemeId = DEFAULT_THEME;
 
 export function applyTheme(id: string): void {

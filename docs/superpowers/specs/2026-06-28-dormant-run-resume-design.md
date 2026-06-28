@@ -81,15 +81,16 @@ set):
 | opencode | `opencode` | `["--continue"]` | cwd-keyed resume |
 | copilot | `copilot` | `["--continue"]` | cwd-keyed resume |
 | cursor | `cursor-agent` | `null` | **fresh** (session id-keyed, not cwd — would resume the wrong global session) |
-| hermes | `hermes` | `null` | **fresh** (id-keyed; recipe also unverified) |
+| hermes | `hermes` | `null` | **fresh** (verified id/name-keyed: `~/.hermes/sessions` is a flat global store filtered by source, not cwd) |
 
 Rationale for cursor/hermes being fresh: their `--continue` resumes the *globally
 most-recent* session rather than the current worktree's, so with multiple
 concurrent runs it could resume the wrong conversation. A fresh start is correct
-and predictable; precise per-run resume for them needs the deferred session-id
-capture (see Out of scope). Resume recipes were sourced from each CLI's local
-`--help` (claude, pi, opencode, cursor) or official docs (codex, copilot); all
-resume interactively in a PTY, matching our spawn model.
+and predictable; precise per-run resume for them needs the deferred per-run
+session-id assignment (see Out of scope). Resume recipes were sourced from each
+CLI's local `--help` (claude, pi, opencode, cursor, hermes — all installed) or
+official docs (codex, copilot); all resume interactively in a PTY, matching our
+spawn model.
 
 ## Backend: `ensure_run_active(id)`
 
@@ -148,10 +149,12 @@ mirroring the existing command style.
 - Resume-on-focus wiring; removal of the dead-blank-pane behavior.
 
 **Out of scope (separate follow-ups)**
-- Session-id capture for precise per-run resume of id-keyed agents (cursor,
-  hermes) — would let those resume the exact run rather than fresh-start.
-- Verifying hermes's CLI (`--help`) and promoting it to a resume recipe if it
-  turns out to be cwd-keyed or id-targetable.
+- Per-run session-id **assignment** for precise resume of id-keyed agents (cursor,
+  hermes): assign the run id as the agent's session id/name at launch where the CLI
+  supports it (hermes `-c <name>` / cursor `create-chat` → `--resume <id>`, and the
+  `--session-id` flags several others expose), then resume by that exact id. This is
+  cleaner than scraping ids from output and would let the currently-fresh agents
+  resume their exact run.
 - The daemon-crash live-terminal-freeze surfacing flagged in the termd final review
   (related but a different code path).
 - Persisting/replaying Agency's own transcript for a frozen pre-resume preview.

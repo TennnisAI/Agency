@@ -1,6 +1,7 @@
 //! Terminal session daemon: PTY + emulator ownership, IPC protocol, client.
 
 pub mod emulator;
+pub mod protocol;
 
 #[cfg(test)]
 mod smoke {

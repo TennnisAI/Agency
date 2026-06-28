@@ -30,6 +30,12 @@ fn server_and_client() -> (tempfile::TempDir, TermClient) {
 }
 
 #[test]
+fn handshake_reports_protocol_version() {
+    let (_dir, client) = server_and_client();
+    assert_eq!(client.daemon_version().unwrap(), agency_core::term::protocol::PROTOCOL_VERSION);
+}
+
+#[test]
 fn start_subscribe_input_capture_kill() {
     let (_dir, client) = server_and_client();
     client

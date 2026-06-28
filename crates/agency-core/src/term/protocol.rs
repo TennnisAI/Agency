@@ -2,6 +2,8 @@
 use serde::{Deserialize, Serialize};
 use std::io::{self, Read, Write};
 
+pub const PROTOCOL_VERSION: u32 = 1;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "camelCase")]
 pub enum SessionStatus {
@@ -12,6 +14,7 @@ pub enum SessionStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ClientMsg {
+    Hello { version: u32 },
     StartSession {
         id: String,
         cwd: String,
@@ -33,6 +36,7 @@ pub enum ClientMsg {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ServerMsg {
+    Hello { version: u32 },
     Started { id: String },
     Captured { id: String, text: String },
     Status { id: String, status: SessionStatus },

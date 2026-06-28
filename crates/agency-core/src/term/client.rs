@@ -71,7 +71,22 @@ impl TermClient {
         });
 
         spawn_reader(read_half, shared.clone(), reply_tx);
-        Ok(TermClient { shared })
+        let client = TermClient { shared };
+        let version = client.daemon_version()?;
+        if version != PROTOCOL_VERSION {
+            return Err(anyhow!(
+                "termd protocol mismatch: app speaks {PROTOCOL_VERSION}, daemon speaks {version}. \
+                 Quit running agents and restart, or relaunch the previous app version."
+            ));
+        }
+        Ok(client)
+    }
+
+    pub fn daemon_version(&self) -> Result<u32> {
+        match self.request(ClientMsg::Hello { version: PROTOCOL_VERSION })? {
+            ServerMsg::Hello { version } => Ok(version),
+            other => Err(anyhow!("unexpected reply: {other:?}")),
+        }
     }
 
     pub fn start_session(

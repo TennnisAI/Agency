@@ -111,6 +111,9 @@ fn dispatch(frame: ClientFrame, client_id: u64, registry: &Arc<Registry>, out: &
         let _ = out.send(encode_json(&m));
     };
     match frame {
+        ClientFrame::Msg(ClientMsg::Hello { .. }) => {
+            reply(ServerMsg::Hello { version: PROTOCOL_VERSION });
+        }
         ClientFrame::Msg(ClientMsg::StartSession { id, cwd, command, args, env, cols, rows }) => {
             match registry.start(id.clone(), Path::new(&cwd), &command, &args, &env, cols, rows) {
                 Ok(()) => reply(ServerMsg::Started { id }),

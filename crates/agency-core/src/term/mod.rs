@@ -1,5 +1,7 @@
 //! Terminal session daemon: PTY + emulator ownership, IPC protocol, client.
 
+pub mod emulator;
+
 #[cfg(test)]
 mod smoke {
     use alacritty_terminal::event::VoidListener;

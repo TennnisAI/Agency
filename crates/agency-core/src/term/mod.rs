@@ -1,5 +1,6 @@
 //! Terminal session daemon: PTY + emulator ownership, IPC protocol, client.
 
+pub mod client;
 pub mod emulator;
 pub mod protocol;
 pub mod pty;

@@ -4,6 +4,7 @@ pub mod emulator;
 pub mod protocol;
 pub mod pty;
 pub mod registry;
+pub mod server;
 pub mod session;
 
 #[cfg(test)]

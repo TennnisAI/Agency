@@ -16,7 +16,8 @@ pub struct PtyProcess {
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     status: Arc<Mutex<ProcStatus>>,
     killer: Box<dyn ChildKiller + Send + Sync>,
-    master: Box<dyn MasterPty + Send>,
+    // Wrapped in Mutex so PtyProcess is Sync (needed for Arc<Session>: Send).
+    master: Mutex<Box<dyn MasterPty + Send>>,
 }
 
 impl Drop for PtyProcess {
@@ -34,7 +35,7 @@ impl PtyProcess {
     }
 
     pub fn resize(&self, rows: u16, cols: u16) -> Result<()> {
-        self.master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })?;
+        self.master.lock().unwrap().resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })?;
         Ok(())
     }
 
@@ -110,7 +111,7 @@ where
         writer: Arc::new(Mutex::new(writer)),
         status,
         killer,
-        master: pair.master,
+        master: Mutex::new(pair.master),
     })
 }
 

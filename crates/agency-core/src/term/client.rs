@@ -4,6 +4,7 @@ use anyhow::{anyhow, Result};
 use std::collections::HashMap;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -15,6 +16,7 @@ struct Shared {
     callbacks: Mutex<HashMap<String, OutputCb>>,
     reply_rx: Mutex<Receiver<ServerMsg>>,
     req: Mutex<()>, // serializes request/reply pairs
+    alive: Arc<AtomicBool>,
 }
 
 pub struct TermClient {
@@ -68,6 +70,7 @@ impl TermClient {
             callbacks: Mutex::new(HashMap::new()),
             reply_rx: Mutex::new(reply_rx),
             req: Mutex::new(()),
+            alive: Arc::new(AtomicBool::new(true)),
         });
 
         spawn_reader(read_half, shared.clone(), reply_tx);
@@ -80,6 +83,10 @@ impl TermClient {
             ));
         }
         Ok(client)
+    }
+
+    pub fn is_alive(&self) -> bool {
+        self.shared.alive.load(Ordering::SeqCst)
     }
 
     pub fn daemon_version(&self) -> Result<u32> {
@@ -192,7 +199,10 @@ fn spawn_reader(mut read_half: UnixStream, shared: Arc<Shared>, reply_tx: Sender
     std::thread::spawn(move || loop {
         let payload = match read_frame(&mut read_half) {
             Ok(p) => p,
-            Err(_) => break, // daemon gone; higher layer surfaces via failed requests
+            Err(_) => {
+                shared.alive.store(false, Ordering::SeqCst);
+                break; // daemon gone; higher layer surfaces via failed requests
+            }
         };
         match decode_server(&payload) {
             Ok(ServerFrame::Output { id, bytes }) => fire(&shared, &id, bytes),
@@ -205,7 +215,10 @@ fn spawn_reader(mut read_half: UnixStream, shared: Arc<Shared>, reply_tx: Sender
             Ok(ServerFrame::Msg(m)) => {
                 let _ = reply_tx.send(m);
             }
-            Err(_) => break,
+            Err(_) => {
+                shared.alive.store(false, Ordering::SeqCst);
+                break;
+            }
         }
     });
 }

@@ -7,8 +7,8 @@ use agency_core::worktree::WorktreeManager;
 use anyhow::{anyhow, bail, Result};
 use crate::notifier;
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
-use std::sync::Mutex;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, RwLock};
 use uuid;
 
 const SETTING_ANTHROPIC_KEY: &str = "anthropic_api_key";
@@ -254,7 +254,8 @@ pub struct AppState {
     registry: Mutex<Registry>,
     attaches: Mutex<HashMap<String, Subscription>>,
     run_attaches: Mutex<HashMap<String, Subscription>>,
-    term: TermClient,
+    term: RwLock<TermClient>,
+    data_dir: PathBuf,
     resolvers: Mutex<HashMap<String, AgentHandle>>,
     ui: Mutex<UiState>,
     /// Run ids that have received user input since their last "waiting for input"
@@ -289,7 +290,8 @@ impl AppState {
             registry: Mutex::new(registry),
             attaches: Mutex::new(HashMap::new()),
             run_attaches: Mutex::new(HashMap::new()),
-            term: TermClient::connect_or_spawn(termd_socket(data_dir), termd_bin())?,
+            term: RwLock::new(TermClient::connect_or_spawn(termd_socket(data_dir), termd_bin())?),
+            data_dir: data_dir.to_path_buf(),
             resolvers: Mutex::new(HashMap::new()),
             ui: Mutex::new(UiState { focused: true, active_run: None }),
             input_seen: Mutex::new(HashSet::new()),
@@ -297,7 +299,7 @@ impl AppState {
         // Rehydrate: any run the daemon still hosts is adopted as-is; the watch
         // loop (watch_snapshot) then reports live status. Nothing to spawn here —
         // surviving sessions are already running in the daemon.
-        if let Ok(sessions) = state.term.list() {
+        if let Ok(sessions) = state.term.read().unwrap().list() {
             log::info!("termd: adopted {} surviving session(s)", sessions.len());
         }
         Ok(state)
@@ -390,9 +392,9 @@ impl AppState {
         let runs = self.registry.lock().unwrap().list_runs(id)?;
         for run in &runs {
             self.attaches.lock().unwrap().remove(&run.id);
-            let _ = self.term.kill(&session_name(&run.id));
+            let _ = self.term.read().unwrap().kill(&session_name(&run.id));
             self.run_attaches.lock().unwrap().remove(&run.id);
-            let _ = self.term.kill(&run_session_name(&run.id));
+            let _ = self.term.read().unwrap().kill(&run_session_name(&run.id));
         }
         Ok(())
     }
@@ -402,9 +404,9 @@ impl AppState {
         let repo = self.project_repo(id).ok();
         for run in &runs {
             self.attaches.lock().unwrap().remove(&run.id);
-            let _ = self.term.kill(&session_name(&run.id));
+            let _ = self.term.read().unwrap().kill(&session_name(&run.id));
             self.run_attaches.lock().unwrap().remove(&run.id);
-            let _ = self.term.kill(&run_session_name(&run.id));
+            let _ = self.term.read().unwrap().kill(&run_session_name(&run.id));
             if let Some(repo) = &repo {
                 let _ = WorktreeManager::new(repo.clone()).remove(&run.id);
             }
@@ -435,7 +437,7 @@ impl AppState {
 
     fn run_info(&self, run: &agency_core::registry::Run) -> RunInfo {
         let name = session_name(&run.id);
-        let status = self.term.status(&name).unwrap_or(SessionStatus::Gone);
+        let status = self.term.read().unwrap().status(&name).unwrap_or(SessionStatus::Gone);
         let wt = self
             .project_repo(&run.project_id)
             .ok()
@@ -492,6 +494,8 @@ impl AppState {
             agency_core::scripts::wrap_setup(config.scripts.setup.as_deref(), &profile.command, &args);
 
         self.term
+            .read()
+            .unwrap()
             .start_session(&session_name(&id), &worktree.path, &command, &args, &env, 220, 50)?;
 
         let run = agency_core::registry::Run {
@@ -528,6 +532,8 @@ impl AppState {
         let args = vec!["-l".to_string()];
         pty_debug(&format!("create_terminal id={id} shell={shell} args={args:?}"));
         self.term
+            .read()
+            .unwrap()
             .start_session(&session_name(&id), &repo, &shell, &args, &[], 220, 50)?;
 
         let run = agency_core::registry::Run {
@@ -554,7 +560,7 @@ impl AppState {
     }
 
     pub fn run_status(&self, id: &str) -> Result<SessionStatus> {
-        Ok(self.term.status(&session_name(id)).unwrap_or(SessionStatus::Gone))
+        Ok(self.term.read().unwrap().status(&session_name(id)).unwrap_or(SessionStatus::Gone))
     }
 
     pub fn attach_run<F>(&self, id: &str, cols: u16, rows: u16, on_output: F) -> Result<()>
@@ -562,7 +568,7 @@ impl AppState {
         F: Fn(Vec<u8>) + Send + Sync + 'static,
     {
         pty_debug(&format!("attach_run id={id}"));
-        let sub = self.term.subscribe(&session_name(id), cols, rows, on_output)?;
+        let sub = self.term.read().unwrap().subscribe(&session_name(id), cols, rows, on_output)?;
         self.attaches.lock().unwrap().insert(id.to_string(), sub);
         Ok(())
     }
@@ -577,7 +583,7 @@ impl AppState {
 
     pub fn run_input(&self, id: &str, data: &[u8]) -> Result<()> {
         pty_debug(&format!("run_input id={id} len={} {}", data.len(), fmt_bytes(data)));
-        self.term.input(&session_name(id), data)?;
+        self.term.read().unwrap().input(&session_name(id), data)?;
         // Arm the idle ("waiting for input") notification for this run: it only
         // fires after the user has driven a turn, and at most once per turn.
         self.input_seen.lock().unwrap().insert(id.to_string());
@@ -599,20 +605,20 @@ impl AppState {
     /// Sent straight to the daemon by id; harmless if the session isn't live yet
     /// (resize events can race ahead of the session coming up).
     pub fn resize_run(&self, id: &str, cols: u16, rows: u16) -> Result<()> {
-        self.term.resize(&session_name(id), cols, rows)
+        self.term.read().unwrap().resize(&session_name(id), cols, rows)
     }
 
     pub fn run_preview(&self, id: &str, lines: usize) -> Result<String> {
-        Ok(self.term.capture(&session_name(id), lines).unwrap_or_default())
+        Ok(self.term.read().unwrap().capture(&session_name(id), lines).unwrap_or_default())
     }
 
     pub fn discard_run(&self, id: &str) -> Result<()> {
         self.attaches.lock().unwrap().remove(id);
         self.input_seen.lock().unwrap().remove(id);
         let run = self.run_record(id)?;
-        let _ = self.term.kill(&session_name(id));
+        let _ = self.term.read().unwrap().kill(&session_name(id));
         self.run_attaches.lock().unwrap().remove(id);
-        let _ = self.term.kill(&run_session_name(id));
+        let _ = self.term.read().unwrap().kill(&run_session_name(id));
         if run.kind == "agent" {
             if let Ok(repo) = self.project_repo(&run.project_id) {
                 let _ = WorktreeManager::new(repo).remove(id);
@@ -631,9 +637,9 @@ impl AppState {
 
         // Stop both sessions and drop attach handles.
         self.attaches.lock().unwrap().remove(id);
-        let _ = self.term.kill(&session_name(id));
+        let _ = self.term.read().unwrap().kill(&session_name(id));
         self.run_attaches.lock().unwrap().remove(id);
-        let _ = self.term.kill(&run_session_name(id));
+        let _ = self.term.read().unwrap().kill(&run_session_name(id));
 
         // Best-effort archive cleanup script, before the worktree disappears.
         let config = agency_core::config::load(&repo);
@@ -668,9 +674,9 @@ impl AppState {
 
     pub fn stop_run(&self, id: &str) -> Result<()> {
         self.attaches.lock().unwrap().remove(id);
-        let _ = self.term.kill(&session_name(id));
+        let _ = self.term.read().unwrap().kill(&session_name(id));
         self.run_attaches.lock().unwrap().remove(id);
-        let _ = self.term.kill(&run_session_name(id));
+        let _ = self.term.read().unwrap().kill(&run_session_name(id));
         Ok(())
     }
 
@@ -697,7 +703,7 @@ impl AppState {
             for other in others {
                 if other.id != run.id {
                     self.run_attaches.lock().unwrap().remove(&other.id);
-                    let _ = self.term.kill(&run_session_name(&other.id));
+                    let _ = self.term.read().unwrap().kill(&run_session_name(&other.id));
                 }
             }
         }
@@ -706,8 +712,8 @@ impl AppState {
         env.extend(agency_core::scripts::script_env(&worktree, &repo, &run.id, run.port_base));
 
         // Restart cleanly if a previous run session is still around.
-        let _ = self.term.kill(&run_session_name(id));
-        self.term.start_session(
+        let _ = self.term.read().unwrap().kill(&run_session_name(id));
+        self.term.read().unwrap().start_session(
             &run_session_name(id),
             &worktree,
             "sh",
@@ -720,26 +726,28 @@ impl AppState {
 
     pub fn stop_run_script(&self, id: &str) -> Result<()> {
         self.run_attaches.lock().unwrap().remove(id);
-        let _ = self.term.kill(&run_session_name(id));
+        let _ = self.term.read().unwrap().kill(&run_session_name(id));
         Ok(())
     }
 
     pub fn run_script_status(&self, id: &str) -> Result<SessionStatus> {
         Ok(self
             .term
+            .read()
+            .unwrap()
             .status(&run_session_name(id))
             .unwrap_or(SessionStatus::Gone))
     }
 
     pub fn run_script_preview(&self, id: &str, lines: usize) -> Result<String> {
-        Ok(self.term.capture(&run_session_name(id), lines).unwrap_or_default())
+        Ok(self.term.read().unwrap().capture(&run_session_name(id), lines).unwrap_or_default())
     }
 
     pub fn attach_run_script<F>(&self, id: &str, cols: u16, rows: u16, on_output: F) -> Result<()>
     where
         F: Fn(Vec<u8>) + Send + Sync + 'static,
     {
-        let sub = self.term.subscribe(&run_session_name(id), cols, rows, on_output)?;
+        let sub = self.term.read().unwrap().subscribe(&run_session_name(id), cols, rows, on_output)?;
         self.run_attaches.lock().unwrap().insert(id.to_string(), sub);
         Ok(())
     }
@@ -751,11 +759,11 @@ impl AppState {
     }
 
     pub fn run_script_input(&self, id: &str, data: &[u8]) -> Result<()> {
-        self.term.input(&run_session_name(id), data)
+        self.term.read().unwrap().input(&run_session_name(id), data)
     }
 
     pub fn resize_run_script(&self, id: &str, cols: u16, rows: u16) -> Result<()> {
-        self.term.resize(&run_session_name(id), cols, rows)
+        self.term.read().unwrap().resize(&run_session_name(id), cols, rows)
     }
 
     pub fn rerun(&self, id: &str) -> Result<RunInfo> {
@@ -774,8 +782,8 @@ impl AppState {
         let args = profile.render_args(&run.prompt);
         let (command, args) =
             agency_core::scripts::wrap_setup(config.scripts.setup.as_deref(), &profile.command, &args);
-        let _ = self.term.kill(&session_name(id));
-        self.term.start_session(&session_name(id), &worktree, &command, &args, &env, 220, 50)?;
+        let _ = self.term.read().unwrap().kill(&session_name(id));
+        self.term.read().unwrap().start_session(&session_name(id), &worktree, &command, &args, &env, 220, 50)?;
         Ok(self.run_info(&run))
     }
 
@@ -969,11 +977,11 @@ impl AppState {
         if unsent.is_empty() {
             bail!("no unsent review comments");
         }
-        if !matches!(self.term.status(&session_name(run_id)), Ok(SessionStatus::Running)) {
+        if !matches!(self.term.read().unwrap().status(&session_name(run_id)), Ok(SessionStatus::Running)) {
             bail!("agent session {run_id} is not running");
         }
         let message = compose_feedback(&unsent);
-        self.term.send_text(&session_name(run_id), &message)?;
+        self.term.read().unwrap().send_text(&session_name(run_id), &message)?;
         self.registry.lock().unwrap().mark_review_comments_sent(run_id)?;
         Ok(())
     }
@@ -981,19 +989,20 @@ impl AppState {
     /// Count of all sessions currently tracked by the daemon (used for the quit
     /// confirmation message). Returns 0 on any error.
     pub(crate) fn session_count(&self) -> usize {
-        self.term.list().map(|s| s.len()).unwrap_or(0)
+        self.term.read().unwrap().list().map(|s| s.len()).unwrap_or(0)
     }
 
     /// Kill every daemon session, then tell the daemon to shut down.
     /// Called from the quit confirmation flow; errors are swallowed because we
     /// are about to exit anyway.
     pub(crate) fn kill_all_and_shutdown(&self) {
-        if let Ok(sessions) = self.term.list() {
+        let sessions = self.term.read().unwrap().list();
+        if let Ok(sessions) = sessions {
             for (id, _) in sessions {
-                let _ = self.term.kill(&id);
+                let _ = self.term.read().unwrap().kill(&id);
             }
         }
-        let _ = self.term.shutdown();
+        let _ = self.term.read().unwrap().shutdown();
     }
 
     pub fn notif_settings(&self) -> Result<notifier::NotifSettings> {
@@ -1011,14 +1020,27 @@ impl AppState {
     /// Snapshot every non-archived run across all projects for the watcher:
     /// agent + run-script session status and a hash of the agent pane (for idle).
     pub fn watch_snapshot(&self) -> Result<Vec<notifier::RunSnapshot>> {
+        // Detect a dropped daemon and attempt a single respawn. The read guard on
+        // `is_alive()` is a temporary that is released at the end of the `if`
+        // condition, so the `write()` swap below cannot deadlock against it.
+        if !self.term.read().unwrap().is_alive() {
+            match TermClient::connect_or_spawn(termd_socket(&self.data_dir), termd_bin()) {
+                Ok(client) => {
+                    let n = client.list().map(|s| s.len()).unwrap_or(0);
+                    log::warn!("termd reconnected; adopted {n} surviving session(s)");
+                    *self.term.write().unwrap() = client;
+                }
+                Err(e) => log::error!("termd unavailable (agents may have stopped): {e}"),
+            }
+        }
         let projects = self.registry.lock().unwrap().list_projects()?;
         let mut out = Vec::new();
         for proj in projects {
             let runs = self.registry.lock().unwrap().list_runs(&proj.id)?;
             for run in runs {
-                let agent = self.term.status(&session_name(&run.id)).unwrap_or(SessionStatus::Gone);
-                let run_script = self.term.status(&run_session_name(&run.id)).unwrap_or(SessionStatus::Gone);
-                let pane = self.term.capture(&session_name(&run.id), 50).unwrap_or_default();
+                let agent = self.term.read().unwrap().status(&session_name(&run.id)).unwrap_or(SessionStatus::Gone);
+                let run_script = self.term.read().unwrap().status(&run_session_name(&run.id)).unwrap_or(SessionStatus::Gone);
+                let pane = self.term.read().unwrap().capture(&session_name(&run.id), 50).unwrap_or_default();
                 let mut hasher = std::collections::hash_map::DefaultHasher::new();
                 std::hash::Hash::hash(&pane, &mut hasher);
                 let pane_hash = std::hash::Hasher::finish(&hasher);

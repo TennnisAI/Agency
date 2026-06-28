@@ -83,10 +83,43 @@ app. Listens on a per-user Unix socket at
 
 On launch the app tries to connect; if nothing answers, it spawns the daemon
 **self-daemonized** (double-fork + `setsid`, fds closed) so the daemon reparents
-away from the app and survives the app quitting or crashing. The daemon
-idle-exits after a grace period with zero sessions, so we never leak a process
-forever. (launchd-managed supervision is a hardening follow-up, out of scope for
-v1.)
+away from the app and survives an app crash or relaunch. The daemon idle-exits
+once it has had zero sessions for a short grace period, so it never lingers
+forever. It does **not** exit merely because the app disconnected — that is what
+preserves agents across a crash. (launchd-managed supervision is a hardening
+follow-up, out of scope for v1.)
+
+The daemon is the **crash-resilience** layer. Normal, visible persistence and
+user control are handled by the menu bar app (next section), so the daemon never
+runs as an invisible ghost in normal use.
+
+## App lifecycle and the menu bar (system tray)
+
+The Agency app behaves as a **menu bar app**, not a window that dies on close:
+
+- **Close the main window** → the app does *not* quit. It retreats to a macOS
+  menu bar status item and keeps running, with the daemon + agents untouched. The
+  status item is the always-visible proof that work is still running — there is no
+  invisible background state in normal operation.
+- **The menu bar menu** shows running-agent count/status (sourced from the daemon
+  via `List`/`Status`) and offers "Open Agency" (re-show the window) and "Quit
+  Agency".
+- **Quit Agency** (from the menu bar, or `Cmd+Q`) → a confirmation dialog warns it
+  will **stop all running agents**. On confirm, the app `Kill`s every session,
+  sends the daemon a `Shutdown`, and exits fully — no orphaned processes.
+- **Reopen / relaunch** → the app reconnects to the (still-running) daemon,
+  `List`s sessions, re-adopts them, and re-shows the status item.
+
+The status item is owned by the **app** (via Tauri's tray API), keeping the
+daemon headless and lightweight. This cleanly separates the two persistence
+layers: the menu bar app is *visible persistence + control*; the daemon is
+*crash resilience*.
+
+**The one bounded ghost window.** After a true crash (not a menu-bar Quit), the
+daemon + agents survive with no status item until the next relaunch re-adopts
+them — this is the crash-survival requirement working as intended, not a leak. It
+is bounded: relaunch reclaims it, and if the user never relaunches, the agents
+finish and the daemon idle-exits on its own.
 
 ## Components
 
@@ -141,6 +174,7 @@ breaking running agents (see Versioning).
 - `Status { id }` — reply `SessionStatus`.
 - `Kill { id }` — terminate the session.
 - `List` — reply with all session ids + statuses (for startup rehydration).
+- `Shutdown` — kill all sessions and exit the daemon (sent by the menu bar "Quit Agency" path).
 
 **Daemon → client**
 
@@ -235,13 +269,19 @@ of scope for v1.
 - Daemon hot-upgrade across breaking protocol changes (manual drain is acceptable).
 - Split panes / multiple windows per session (each session stays one pane, as today).
 - The `vt100` fallback emulator (documented only; default is `alacritty_terminal`).
+- Windows/Linux menu bar parity — the design targets the macOS menu bar status
+  item. The Tauri tray API is cross-platform, so the same code is expected to work
+  as a system-tray icon elsewhere, but only macOS is validated for v1.
 
 ## Sequencing
 
 Big-bang cutover on `feat/termd`: build the daemon, swap all three session types
 (agent, run-script, shell) to `TermClient`, refactor the `state.rs` session layer,
-then delete `tmux.rs` last once the daemon path is green. tmux is removed only at
-the end of the branch.
+add the menu bar status item + window-close-to-tray + Quit-confirmation in the
+Tauri app, then delete `tmux.rs` last once the daemon path is green. tmux is
+removed only at the end of the branch. The menu bar lifecycle work is app-side
+(`agency-app`, Tauri tray API) and independent of the daemon internals, so it can
+land in parallel with the protocol/emulator work.
 
 ## Risks
 
@@ -249,8 +289,11 @@ the end of the branch.
   Mitigated by round-trip tests; `vt100` fallback if needed.
 - **Self-daemonization correctness on macOS bundles** — fd/cwd/session handling
   must be right or the daemon dies with the app (defeating crash survival).
-  Validate explicitly: quit the app with an agent running, confirm the agent
-  process is still alive and reattaches on relaunch.
+  Validate explicitly across all three lifecycle paths: (1) **close window** →
+  agent keeps running, status item present, reopening re-adopts it; (2) **menu bar
+  Quit** → confirmation shown, all agents stopped, daemon exited, no orphaned
+  processes; (3) **hard crash** (`kill -9` the app) → daemon + agent survive,
+  relaunch re-adopts via `List` and re-shows the status item.
 - **Performance of the live path** — fanning raw bytes + feeding the emulator on
   every chunk. Expected fine (one local socket, per-session threads), but verify
   with a high-output agent.

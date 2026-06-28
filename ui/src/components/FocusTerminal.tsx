@@ -1,6 +1,7 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { SearchAddon } from "@xterm/addon-search";
 import "@xterm/xterm/css/xterm.css";
 import { attachRun, detachRun, resizeRun, runInput, runPreview,
   attachRunScript, detachRunScript, resizeRunScript, runScriptInput, runScriptPreview } from "../api";
@@ -31,13 +32,22 @@ export default function FocusTerminal(
   const onFirstPromptRef = useRef(onFirstPrompt);
   onFirstPromptRef.current = onFirstPrompt;
   const captureRef = useRef(initialCapture());
+  const searchAddonRef = useRef<SearchAddon | null>(null);
+  const termRef = useRef<Terminal | null>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const [showSearch, setShowSearch] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
 
   useEffect(() => {
     const container = ref.current;
     if (!container) return;
-    const term = new Terminal({ convertEol: true, fontSize: 13, fontFamily: TERMINAL_FONT_FAMILY, cursorBlink: true, theme: currentXtermTheme(), minimumContrastRatio: minContrastRatio() });
+    const term = new Terminal({ convertEol: true, fontSize: 13, fontFamily: TERMINAL_FONT_FAMILY, cursorBlink: true, theme: currentXtermTheme(), minimumContrastRatio: minContrastRatio(), scrollback: 10000 });
     const fit = new FitAddon();
+    const search = new SearchAddon();
     term.loadAddon(fit);
+    term.loadAddon(search);
+    searchAddonRef.current = search;
+    termRef.current = term;
     term.open(container);
     // Fit xterm to its container, then push the new size to the backend so the
     // PTY (and thus tmux) reflows to match. resize_run is a no-op until the
@@ -109,8 +119,62 @@ export default function FocusTerminal(
       stream.detach(runId);
       term.dispose();
       captureRef.current = initialCapture();
+      searchAddonRef.current = null;
+      termRef.current = null;
     };
   }, [runId, stream]);
 
-  return <div className="terminal focus-term" ref={ref} />;
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "f") {
+        e.preventDefault();
+        setShowSearch(true);
+        requestAnimationFrame(() => searchInputRef.current?.focus());
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
+
+  const onSearch = (q: string, prev = false) => {
+    const addon = searchAddonRef.current;
+    if (!addon || !q) return;
+    prev ? addon.findPrevious(q) : addon.findNext(q);
+  };
+
+  const closeSearch = () => {
+    setShowSearch(false);
+    setSearchQuery("");
+    termRef.current?.focus();
+  };
+
+  const handleSearchKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      onSearch(searchQuery, e.shiftKey);
+    } else if (e.key === "Escape") {
+      closeSearch();
+    }
+  };
+
+  return (
+    <div className="term-search-wrap">
+      <div className="terminal focus-term" ref={ref} />
+      {showSearch && (
+        <div className="term-search-box">
+          <input
+            ref={searchInputRef}
+            className="term-search-input"
+            value={searchQuery}
+            onChange={e => setSearchQuery(e.target.value)}
+            onKeyDown={handleSearchKey}
+            placeholder="Search…"
+          />
+          <button className="term-search-btn" onClick={() => onSearch(searchQuery, false)} title="Next (Enter)">↓</button>
+          <button className="term-search-btn" onClick={() => onSearch(searchQuery, true)} title="Prev (Shift+Enter)">↑</button>
+          <button className="term-search-close" onClick={closeSearch} title="Close (Esc)">✕</button>
+        </div>
+      )}
+    </div>
+  );
 }

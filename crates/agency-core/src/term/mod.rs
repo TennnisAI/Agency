@@ -3,6 +3,7 @@
 pub mod emulator;
 pub mod protocol;
 pub mod pty;
+pub mod session;
 
 #[cfg(test)]
 mod smoke {

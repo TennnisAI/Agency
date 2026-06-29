@@ -240,9 +240,6 @@ fn fmt_bytes(data: &[u8]) -> String {
     format!("[{}] {:?}", hex.join(" "), String::from_utf8_lossy(data))
 }
 
-fn agent_profile(name: &str, command: &str) -> AgentProfile {
-    AgentProfile { name: name.into(), command: command.into(), args: vec![], env: vec![], resume_args: None }
-}
 
 #[derive(Default)]
 struct UiState {
@@ -281,10 +278,31 @@ impl AppState {
                 resume_args: None,
             })?;
         }
-        // Ensure built-in agent profiles exist (added for existing DBs too).
-        for (name, command) in [("claude", "claude"), ("pi", "pi"), ("hermes", "hermes")] {
+        // Built-in agent profiles and their resume recipes. Resume recipes are seeded
+        // for missing profiles and retrofitted onto existing ones only when unset, so a
+        // user's customized command/args/env is never clobbered. cursor/hermes are
+        // id-keyed (not cwd-keyed) so they start fresh rather than risk resuming the
+        // wrong global session.
+        let builtins: [(&str, &str, Option<Vec<String>>); 7] = [
+            ("claude", "claude", Some(vec!["--continue".into()])),
+            ("codex", "codex", Some(vec!["resume".into(), "--last".into()])),
+            ("pi", "pi", Some(vec!["--continue".into()])),
+            ("opencode", "opencode", Some(vec!["--continue".into()])),
+            ("copilot", "copilot", Some(vec!["--continue".into()])),
+            ("cursor", "cursor-agent", None),
+            ("hermes", "hermes", None),
+        ];
+        for (name, command, resume_args) in builtins {
             if registry.get_profile(name)?.is_none() {
-                registry.upsert_profile(&agent_profile(name, command))?;
+                registry.upsert_profile(&AgentProfile {
+                    name: name.to_string(),
+                    command: command.to_string(),
+                    args: vec![],
+                    env: vec![],
+                    resume_args: resume_args.clone(),
+                })?;
+            } else {
+                registry.ensure_profile_resume_args(name, &resume_args)?;
             }
         }
         let state = AppState {

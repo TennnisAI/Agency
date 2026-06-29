@@ -83,6 +83,7 @@ fn create_run_persists_starts_session_and_lists() {
         command: "sh".into(),
         args: vec!["-c".into(), "echo HI; sleep 3".into()],
         env: vec![],
+        resume_args: None,
     }).unwrap();
     let project = state.add_project("demo", &repo).unwrap();
 
@@ -126,6 +127,7 @@ fn worktree_path_resolves_for_active_run() {
         command: "sh".into(),
         args: vec!["-c".into(), "sleep 1".into()],
         env: vec![],
+        resume_args: None,
     }).unwrap();
     let project = state.add_project("demo", &repo).unwrap();
     let info = state.create_run(&project.id, "p", "noop", "HEAD", None).unwrap();
@@ -156,6 +158,7 @@ fn worktree_path_resolves_to_repo_root_for_terminal() {
         command: "sh".into(),
         args: vec!["-c".into(), "sleep 1".into()],
         env: vec![],
+        resume_args: None,
     }).unwrap();
     let agent = state.create_run(&project.id, "p", "noop", "HEAD", None).unwrap();
     let agent_wt = state.worktree_path(&agent.id).unwrap();
@@ -219,6 +222,7 @@ fn create_run_injects_provider_env() {
         command: "sh".into(),
         args: vec!["-c".into(), "echo KEY=$ANTHROPIC_API_KEY; echo BASE=$OPENAI_BASE_URL; sleep 2".into()],
         env: vec![],
+        resume_args: None,
     }).unwrap();
     let project = state.add_project("demo", &repo).unwrap();
 
@@ -256,12 +260,14 @@ fn resolve_merge_spawns_resolver_in_repo_and_streams() {
         command: "sh".into(),
         args: vec!["-c".into(), "sleep 1".into()],
         env: vec![],
+        resume_args: None,
     }).unwrap();
     state.register_profile(AgentProfile {
         name: "fakeresolver".into(),
         command: "/bin/sh".into(),
         args: vec!["-c".into(), "echo RESOLVING; pwd; echo DONE".into()],
         env: vec![],
+        resume_args: None,
     }).unwrap();
     let project = state.add_project("demo", &repo).unwrap();
     let info = state.create_run(&project.id, "p", "noop", "HEAD", None).unwrap();
@@ -325,6 +331,7 @@ fn attach_streams_and_input_reaches_agent() {
         command: "sh".into(),
         args: vec!["-c".into(), "echo READY; read x; echo GOT:$x; sleep 3".into()],
         env: vec![],
+        resume_args: None,
     }).unwrap();
     let project = state.add_project("demo", &repo).unwrap();
     let info = state.create_run(&project.id, "p", "echoer", "HEAD", None).unwrap();
@@ -418,6 +425,7 @@ fn merge_task_clean_merges_branch_into_base() {
         command: "sh".into(),
         args: vec!["-c".into(), "sleep 1".into()],
         env: vec![],
+        resume_args: None,
     }).unwrap();
     let project = state.add_project("demo", &repo).unwrap();
 

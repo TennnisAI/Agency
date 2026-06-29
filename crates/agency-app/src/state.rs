@@ -241,7 +241,7 @@ fn fmt_bytes(data: &[u8]) -> String {
 }
 
 fn agent_profile(name: &str, command: &str) -> AgentProfile {
-    AgentProfile { name: name.into(), command: command.into(), args: vec![], env: vec![] }
+    AgentProfile { name: name.into(), command: command.into(), args: vec![], env: vec![], resume_args: None }
 }
 
 #[derive(Default)]
@@ -278,6 +278,7 @@ impl AppState {
                 command: shell,
                 args: vec!["-l".to_string()],
                 env: vec![],
+                resume_args: None,
             })?;
         }
         // Ensure built-in agent profiles exist (added for existing DBs too).

@@ -836,8 +836,17 @@ impl AppState {
         env.extend(profile.env.iter().cloned());
         env.extend(agency_core::scripts::script_env(&worktree, &repo, &run.id, run.port_base));
         let setup = config.scripts.setup.as_deref();
-        let (command, args) = agent_argv(&profile, &run.prompt, true, setup);
-        let fallback = if profile.resume_args.is_some() {
+        // Decide resume-vs-fresh up front. For claude/pi we can prove whether a
+        // session exists (they don't exit on resume-failure, so the daemon
+        // fallback can't save them); other resume-capable agents fall through to
+        // the resume-with-fallback path (the fallback catches their fast exits).
+        let probe = std::env::var_os("HOME")
+            .map(|h| crate::resume_probe::resume_probe(std::path::Path::new(&h), &profile.command, &worktree))
+            .unwrap_or(crate::resume_probe::ResumeProbe::Unknown);
+        let use_resume =
+            profile.resume_args.is_some() && probe != crate::resume_probe::ResumeProbe::None;
+        let (command, args) = agent_argv(&profile, &run.prompt, use_resume, setup);
+        let fallback = if use_resume {
             let (fresh_cmd, fresh_args) = agent_argv(&profile, &run.prompt, false, setup);
             Some(agency_core::term::protocol::FallbackSpec {
                 command: fresh_cmd,

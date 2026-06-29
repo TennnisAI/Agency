@@ -2,6 +2,7 @@ mod commands;
 mod lifecycle;
 mod notifier;
 mod pathenv;
+mod resume_probe;
 mod state;
 
 pub use state::{AppState, ProviderSettings, RunInfo};

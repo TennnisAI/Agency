@@ -446,6 +446,60 @@ fn merge_task_clean_merges_branch_into_base() {
 }
 
 #[test]
+fn ensure_run_active_respawns_a_stopped_agent_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo); // repo on `main` with a commit
+    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
+    // A fake agent whose command just sleeps, so a respawn is observable as Running.
+    state.register_profile(AgentProfile {
+        name: "sleeper".into(),
+        command: "/bin/sh".into(),
+        args: vec!["-c".into(), "sleep 5".into()],
+        env: vec![],
+        resume_args: None,
+    }).unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+    let info = state.create_run(&project.id, "p", "sleeper", "HEAD", None).unwrap();
+
+    // Stop the run's session (record stays) -> status becomes Gone.
+    state.stop_run(&info.id).unwrap();
+    let mut gone = false;
+    for _ in 0..75 {
+        if matches!(state.run_status(&info.id).unwrap(), SessionStatus::Gone) { gone = true; break; }
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    assert!(gone, "session did not become Gone after stop_run");
+
+    // Reactivate -> a new session comes up (fresh fallback, since resume_args is None).
+    state.ensure_run_active(&info.id).unwrap();
+    let mut back = false;
+    for _ in 0..75 {
+        if !matches!(state.run_status(&info.id).unwrap(), SessionStatus::Gone) { back = true; break; }
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    assert!(back, "ensure_run_active did not respawn the session");
+
+    state.discard_run(&info.id).unwrap();
+}
+
+#[test]
+fn ensure_run_active_is_noop_when_session_present() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+    let info = state.create_terminal(&project.id).unwrap();
+    // Session is live; ensure_run_active must not error or take it down.
+    state.ensure_run_active(&info.id).unwrap();
+    assert!(!matches!(state.run_status(&info.id).unwrap(), SessionStatus::Gone));
+    state.discard_run(&info.id).unwrap();
+}
+
+#[test]
 fn send_review_comments_errors_when_session_not_running() {
     let dir = tempfile::tempdir().unwrap();
     let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();

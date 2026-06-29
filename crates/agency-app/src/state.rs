@@ -107,6 +107,27 @@ fn session_name(id: &str) -> String {
     format!("agency-{id}")
 }
 
+/// Decide the (command, args) to launch for an agent run. With `use_resume` and a
+/// resume recipe present, launch the resume args (no prompt). Otherwise launch a
+/// fresh session from the rendered prompt. The optional setup script wraps the
+/// command in both cases (same as create_run/rerun).
+fn agent_argv(
+    profile: &AgentProfile,
+    prompt: &str,
+    use_resume: bool,
+    setup: Option<&str>,
+) -> (String, Vec<String>) {
+    let base_args: Vec<String> = match (use_resume, &profile.resume_args) {
+        (true, Some(resume)) => resume.clone(),
+        _ => profile
+            .render_args(prompt)
+            .into_iter()
+            .filter(|a| !a.is_empty())
+            .collect(),
+    };
+    agency_core::scripts::wrap_setup(setup, &profile.command, &base_args)
+}
+
 fn run_session_name(id: &str) -> String {
     format!("agency-run-{id}")
 }
@@ -785,6 +806,42 @@ impl AppState {
         self.term.read().unwrap().resize(&run_session_name(id), cols, rows)
     }
 
+    /// Ensure the run has a live daemon session, transparently respawning it if the
+    /// previous session is gone (e.g. after the app was quit). Prefers resuming the
+    /// agent's prior context; falls back to a fresh start; terminals get a fresh
+    /// shell. No-op if a session already exists.
+    pub fn ensure_run_active(&self, id: &str) -> Result<()> {
+        if !matches!(self.run_status(id)?, SessionStatus::Gone) {
+            return Ok(());
+        }
+        let run = self.run_record(id)?;
+        let repo = self.project_repo(&run.project_id)?;
+
+        if run.kind == "terminal" {
+            let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+            self.term.read().unwrap().start_session(
+                &session_name(id), &repo, &shell, &["-l".to_string()], &[], 220, 50,
+            )?;
+            return Ok(());
+        }
+
+        let config = agency_core::config::load(&repo);
+        let worktree = repo.join(".agency").join("worktrees").join(&run.id);
+        let profile = {
+            let reg = self.registry.lock().unwrap();
+            reg.get_profile(&run.agent)?
+                .ok_or_else(|| anyhow!("unknown agent profile: {}", run.agent))?
+        };
+        let mut env = self.provider_env()?;
+        env.extend(profile.env.iter().cloned());
+        env.extend(agency_core::scripts::script_env(&worktree, &repo, &run.id, run.port_base));
+        let (command, args) = agent_argv(&profile, &run.prompt, true, config.scripts.setup.as_deref());
+        self.term.read().unwrap().start_session(
+            &session_name(id), &worktree, &command, &args, &env, 220, 50,
+        )?;
+        Ok(())
+    }
+
     pub fn rerun(&self, id: &str) -> Result<RunInfo> {
         let run = self.run_record(id)?;
         let repo = self.project_repo(&run.project_id)?;
@@ -1095,8 +1152,44 @@ fn validate_repo(repo_path: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{new_task_id, slugify, pick_port};
+    use super::{new_task_id, slugify, pick_port, agent_argv};
+    use agency_core::profile::AgentProfile;
     use std::collections::HashSet;
+
+    #[test]
+    fn agent_argv_uses_resume_args_when_available() {
+        let p = AgentProfile {
+            name: "claude".into(), command: "claude".into(),
+            args: vec!["{{prompt}}".into()], env: vec![],
+            resume_args: Some(vec!["--continue".into()]),
+        };
+        let (cmd, args) = agent_argv(&p, "do the thing", true, None);
+        assert_eq!(cmd, "claude");
+        assert_eq!(args, vec!["--continue".to_string()]);
+    }
+
+    #[test]
+    fn agent_argv_falls_back_to_prompt_without_resume_args() {
+        let p = AgentProfile {
+            name: "cursor".into(), command: "cursor-agent".into(),
+            args: vec!["{{prompt}}".into()], env: vec![],
+            resume_args: None,
+        };
+        let (cmd, args) = agent_argv(&p, "hello", true, None);
+        assert_eq!(cmd, "cursor-agent");
+        assert_eq!(args, vec!["hello".to_string()]);
+    }
+
+    #[test]
+    fn agent_argv_fresh_ignores_resume_args() {
+        let p = AgentProfile {
+            name: "claude".into(), command: "claude".into(),
+            args: vec!["{{prompt}}".into()], env: vec![],
+            resume_args: Some(vec!["--continue".into()]),
+        };
+        let (_cmd, args) = agent_argv(&p, "fresh prompt", false, None);
+        assert_eq!(args, vec!["fresh prompt".to_string()]);
+    }
 
     #[test]
     fn slugify_makes_readable_ref_safe_slugs() {

@@ -835,9 +835,20 @@ impl AppState {
         let mut env = self.provider_env()?;
         env.extend(profile.env.iter().cloned());
         env.extend(agency_core::scripts::script_env(&worktree, &repo, &run.id, run.port_base));
-        let (command, args) = agent_argv(&profile, &run.prompt, true, config.scripts.setup.as_deref());
-        self.term.read().unwrap().start_session(
-            &session_name(id), &worktree, &command, &args, &env, 220, 50,
+        let setup = config.scripts.setup.as_deref();
+        let (command, args) = agent_argv(&profile, &run.prompt, true, setup);
+        let fallback = if profile.resume_args.is_some() {
+            let (fresh_cmd, fresh_args) = agent_argv(&profile, &run.prompt, false, setup);
+            Some(agency_core::term::protocol::FallbackSpec {
+                command: fresh_cmd,
+                args: fresh_args,
+                grace_ms: 3000,
+            })
+        } else {
+            None
+        };
+        self.term.read().unwrap().start_session_with_fallback(
+            &session_name(id), &worktree, &command, &args, &env, 220, 50, fallback,
         )?;
         Ok(())
     }

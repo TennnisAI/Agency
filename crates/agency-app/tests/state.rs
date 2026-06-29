@@ -500,6 +500,46 @@ fn ensure_run_active_is_noop_when_session_present() {
 }
 
 #[test]
+fn ensure_run_active_falls_back_to_fresh_when_resume_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
+    // Fake agent: resume fails fast; fresh (render_args of `args`) prints FRESH and stays.
+    state.register_profile(AgentProfile {
+        name: "flaky".into(),
+        command: "/bin/sh".into(),
+        args: vec!["-c".into(), "printf FRESH; sleep 5".into()],
+        env: vec![],
+        resume_args: Some(vec!["-c".into(), "printf NO-CONV; exit 1".into()]),
+    }).unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+    let info = state.create_run(&project.id, "p", "flaky", "HEAD", None).unwrap();
+
+    state.stop_run(&info.id).unwrap();
+    let mut gone = false;
+    for _ in 0..75 {
+        if matches!(state.run_status(&info.id).unwrap(), SessionStatus::Gone) { gone = true; break; }
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    assert!(gone, "session did not become Gone after stop_run");
+
+    // Reactivate: resume (NO-CONV; exit 1) fails fast -> fallback fresh (FRESH; sleep 5).
+    state.ensure_run_active(&info.id).unwrap();
+    let mut fresh = false;
+    for _ in 0..150 {
+        let cap = state.run_preview(&info.id, 10).unwrap_or_default();
+        if cap.contains("FRESH") && matches!(state.run_status(&info.id).unwrap(), SessionStatus::Running) {
+            fresh = true; break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    assert!(fresh, "fallback fresh session did not come up");
+    state.discard_run(&info.id).unwrap();
+}
+
+#[test]
 fn send_review_comments_errors_when_session_not_running() {
     let dir = tempfile::tempdir().unwrap();
     let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();

@@ -72,3 +72,33 @@ fn start_subscribe_input_capture_kill() {
     client.kill("r1").unwrap();
     assert_eq!(client.list().unwrap().len(), 0);
 }
+
+#[test]
+fn start_session_with_fallback_runs_fresh_on_fast_primary_exit() {
+    let (_dir, client) = server_and_client();
+    client.start_session_with_fallback(
+        "fb",
+        std::env::temp_dir().as_path(),
+        "/bin/sh",
+        &["-c".into(), "printf NOPE; exit 1".into()],
+        &[],
+        80, 24,
+        Some(agency_core::term::protocol::FallbackSpec {
+            command: "/bin/sh".into(),
+            args: vec!["-c".into(), "printf FRESH; sleep 3".into()],
+            grace_ms: 2000,
+        }),
+    ).unwrap();
+
+    let mut cap = String::new();
+    for _ in 0..60 {
+        cap = client.capture("fb", 10).unwrap();
+        if cap.contains("FRESH") { break; }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(cap.contains("FRESH"), "fallback did not run through the daemon: {cap:?}");
+    assert!(matches!(
+        client.status("fb").unwrap(),
+        agency_core::term::SessionStatus::Running
+    ));
+}

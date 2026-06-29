@@ -1,34 +1,95 @@
-//! A single terminal session: one PTY child, one emulator, N subscribers.
+//! A single terminal session: a PTY child (with an optional early-exit
+//! fallback), an emulator, and N subscribers.
 use crate::term::emulator::Emulator;
 use crate::term::protocol::{encode_json, encode_output, encode_snapshot, ServerMsg, SessionStatus};
 use crate::term::pty::{spawn_pty, ProcStatus, PtyProcess};
 use anyhow::Result;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, Weak};
+use std::time::{Duration, Instant};
 
 type Subs = Arc<Mutex<HashMap<u64, Sender<Vec<u8>>>>>;
 
 /// A command to run in the same session if the primary exits within `grace`
-/// before any input. Wired by `ensure_run_active` so a failed resume falls back
-/// to a fresh agent. (Behavior implemented in Task 2; this task only threads it.)
-#[derive(Clone)]
+/// before any input — so a failed resume falls back to a fresh agent.
+#[derive(Clone, Debug)]
 pub struct Fallback {
     pub command: String,
     pub args: Vec<String>,
     pub grace: Duration,
 }
 
-pub struct Session {
+/// Respawn-able shared state. Held strongly by `Session`; the pty `on_exit`
+/// closure holds only a `Weak` of this (see `spawn_into`) to avoid a cycle.
+struct SpawnCtx {
     id: String,
-    pty: PtyProcess,
     emu: Arc<Mutex<Emulator>>,
     subs: Subs,
+    pty: Mutex<Option<PtyProcess>>,
+    cwd: PathBuf,
+    env: Vec<(String, String)>,
+    cols: u16,
+    rows: u16,
+    input_seen: AtomicBool,
+}
+
+pub struct Session {
+    ctx: Arc<SpawnCtx>,
+}
+
+/// Spawn `command` into the session. If `fallback` is set and the process exits
+/// within `fallback.grace` with no input seen, the fallback command is spawned
+/// into the SAME session (same emulator + subscribers), once.
+fn spawn_into(
+    ctx: &Arc<SpawnCtx>,
+    command: String,
+    args: Vec<String>,
+    fallback: Option<Fallback>,
+) -> Result<()> {
+    let spawn_at = Instant::now();
+
+    // on_output holds emu + subs STRONGLY (as before); neither references the
+    // pty, so there is no cycle. Lock order is emu -> subs.
+    let emu_o = ctx.emu.clone();
+    let subs_o = ctx.subs.clone();
+    let id_o = ctx.id.clone();
+    let on_output = move |bytes: Vec<u8>| {
+        let mut e = emu_o.lock().unwrap();
+        e.feed(&bytes);
+        let frame = encode_output(&id_o, &bytes);
+        for tx in subs_o.lock().unwrap().values() {
+            let _ = tx.send(frame.clone());
+        }
+    };
+
+    // on_exit holds a WEAK ctx: a strong ref would form
+    // ctx -> pty slot -> wait-thread -> on_exit -> ctx and defeat kill-on-drop.
+    let weak: Weak<SpawnCtx> = Arc::downgrade(ctx);
+    let on_exit = move |code: i32| {
+        let Some(ctx) = weak.upgrade() else { return };
+        if let Some(fb) = &fallback {
+            if spawn_at.elapsed() < fb.grace && !ctx.input_seen.load(Ordering::SeqCst) {
+                // Primary died fast with no input -> run the fallback once.
+                let _ = spawn_into(&ctx, fb.command.clone(), fb.args.clone(), None);
+                return;
+            }
+        }
+        let frame = encode_json(&ServerMsg::Exited { id: ctx.id.clone(), code });
+        for tx in ctx.subs.lock().unwrap().values() {
+            let _ = tx.send(frame.clone());
+        }
+    };
+
+    let pty = spawn_pty(&command, &args, &ctx.cwd, &ctx.env, ctx.cols, ctx.rows, on_output, on_exit)?;
+    *ctx.pty.lock().unwrap() = Some(pty);
+    Ok(())
 }
 
 impl Session {
+    #[allow(clippy::too_many_arguments)]
     pub fn start(
         id: String,
         cwd: &Path,
@@ -37,57 +98,48 @@ impl Session {
         env: &[(String, String)],
         cols: u16,
         rows: u16,
-        _fallback: Option<Fallback>,
+        fallback: Option<Fallback>,
     ) -> Result<Arc<Session>> {
-        let emu = Arc::new(Mutex::new(Emulator::new(cols, rows)));
-        let subs: Subs = Arc::new(Mutex::new(HashMap::new()));
-
-        // Reader closure: feed the emulator, then fan raw bytes to subscribers.
-        // Lock order is ALWAYS emu -> subs; `subscribe` uses the same order so a
-        // newly-registered subscriber can never receive output before its snapshot.
-        let emu_r = emu.clone();
-        let subs_r = subs.clone();
-        let id_out = id.clone();
-        let on_output = move |bytes: Vec<u8>| {
-            let mut e = emu_r.lock().unwrap();
-            e.feed(&bytes);
-            let frame = encode_output(&id_out, &bytes);
-            for tx in subs_r.lock().unwrap().values() {
-                let _ = tx.send(frame.clone());
-            }
-        };
-
-        let subs_x = subs.clone();
-        let id_exit = id.clone();
-        let on_exit = move |code: i32| {
-            let frame = encode_json(&ServerMsg::Exited { id: id_exit.clone(), code });
-            for tx in subs_x.lock().unwrap().values() {
-                let _ = tx.send(frame.clone());
-            }
-        };
-
-        let pty = spawn_pty(command, args, cwd, env, cols, rows, on_output, on_exit)?;
-        Ok(Arc::new(Session { id, pty, emu, subs }))
+        let ctx = Arc::new(SpawnCtx {
+            id: id.clone(),
+            emu: Arc::new(Mutex::new(Emulator::new(cols, rows))),
+            subs: Arc::new(Mutex::new(HashMap::new())),
+            pty: Mutex::new(None),
+            cwd: cwd.to_path_buf(),
+            env: env.to_vec(),
+            cols,
+            rows,
+            input_seen: AtomicBool::new(false),
+        });
+        spawn_into(&ctx, command.to_string(), args.to_vec(), fallback)?;
+        Ok(Arc::new(Session { ctx }))
     }
 
     pub fn input(&self, bytes: &[u8]) {
-        let _ = self.pty.write_input(bytes);
+        if !bytes.is_empty() {
+            self.ctx.input_seen.store(true, Ordering::SeqCst);
+        }
+        if let Some(p) = self.ctx.pty.lock().unwrap().as_ref() {
+            let _ = p.write_input(bytes);
+        }
     }
 
     pub fn resize(&self, cols: u16, rows: u16) {
-        let _ = self.pty.resize(rows, cols);
-        self.emu.lock().unwrap().resize(cols, rows);
+        if let Some(p) = self.ctx.pty.lock().unwrap().as_ref() {
+            let _ = p.resize(rows, cols);
+        }
+        self.ctx.emu.lock().unwrap().resize(cols, rows);
     }
 
     pub fn capture(&self, lines: usize) -> String {
-        self.emu.lock().unwrap().capture(lines)
+        self.ctx.emu.lock().unwrap().capture(lines)
     }
 
     pub fn status(&self) -> SessionStatus {
-        match self.pty.status() {
-            ProcStatus::Running => SessionStatus::Running,
-            ProcStatus::Exited(code) => SessionStatus::Exited { code },
-            ProcStatus::Crashed => SessionStatus::Exited { code: -1 },
+        match self.ctx.pty.lock().unwrap().as_ref().map(|p| p.status()) {
+            Some(ProcStatus::Running) | None => SessionStatus::Running,
+            Some(ProcStatus::Exited(code)) => SessionStatus::Exited { code },
+            Some(ProcStatus::Crashed) => SessionStatus::Exited { code: -1 },
         }
     }
 
@@ -95,29 +147,30 @@ impl Session {
     /// atomically: the emulator lock is held across snapshot + registration +
     /// snapshot-send so no output frame can jump ahead of the snapshot.
     pub fn subscribe(&self, client_id: u64, out: Sender<Vec<u8>>) {
-        let emu = self.emu.lock().unwrap();
+        let emu = self.ctx.emu.lock().unwrap();
         let snap = emu.snapshot();
-        let frame = encode_snapshot(&self.id, snap.cols, snap.rows, snap.cx, snap.cy, &snap.data);
-        let mut subs = self.subs.lock().unwrap();
+        let frame = encode_snapshot(&self.ctx.id, snap.cols, snap.rows, snap.cx, snap.cy, &snap.data);
+        let mut subs = self.ctx.subs.lock().unwrap();
         let _ = out.send(frame);
         subs.insert(client_id, out);
     }
 
     pub fn unsubscribe(&self, client_id: u64) {
-        self.subs.lock().unwrap().remove(&client_id);
+        self.ctx.subs.lock().unwrap().remove(&client_id);
     }
 
     pub fn kill(&self) {
-        // Dropping the PtyProcess kills the child; sessions are removed from the
-        // registry by the caller. Killing here is the explicit teardown path.
-        let _ = self.pty.write_input(&[]); // no-op flush; real kill is on drop
+        // Real teardown is dropping the Session (SpawnCtx -> pty slot -> child kill).
+        if let Some(p) = self.ctx.pty.lock().unwrap().as_ref() {
+            let _ = p.write_input(&[]);
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::term::protocol::{decode_server, ServerFrame};
+    use crate::term::protocol::{decode_server, ServerFrame, ServerMsg};
     use std::sync::mpsc;
     use std::time::Duration;
 
@@ -184,5 +237,78 @@ mod tests {
             matches!(f, ServerFrame::Output { bytes, .. } if String::from_utf8_lossy(bytes).contains("ping"))
         });
         assert!(s.capture(5).contains("ping"));
+    }
+
+    #[test]
+    fn fallback_runs_in_same_session_when_primary_exits_fast() {
+        let s = Session::start(
+            "fb1".into(),
+            std::env::temp_dir().as_path(),
+            "/bin/sh",
+            &["-c".into(), "printf NOPE; exit 1".into()],
+            &[],
+            80, 24,
+            Some(Fallback {
+                command: "/bin/sh".into(),
+                args: vec!["-c".into(), "printf FRESH; sleep 3".into()],
+                grace: Duration::from_secs(2),
+            }),
+        ).unwrap();
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        let mut cap = String::new();
+        while std::time::Instant::now() < deadline {
+            cap = s.capture(10);
+            if cap.contains("FRESH") { break; }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(cap.contains("NOPE"), "primary output missing: {cap:?}");
+        assert!(cap.contains("FRESH"), "fallback output missing: {cap:?}");
+        assert!(matches!(s.status(), SessionStatus::Running), "fallback should be running");
+    }
+
+    #[test]
+    fn no_fallback_when_primary_keeps_running() {
+        let s = Session::start(
+            "fb2".into(),
+            std::env::temp_dir().as_path(),
+            "/bin/sh",
+            &["-c".into(), "printf ALIVE; sleep 3".into()],
+            &[],
+            80, 24,
+            Some(Fallback {
+                command: "/bin/sh".into(),
+                args: vec!["-c".into(), "printf SHOULD_NOT_RUN; sleep 3".into()],
+                grace: Duration::from_secs(1),
+            }),
+        ).unwrap();
+        std::thread::sleep(Duration::from_millis(800));
+        let cap = s.capture(10);
+        assert!(cap.contains("ALIVE"));
+        assert!(!cap.contains("SHOULD_NOT_RUN"), "fallback should not have run: {cap:?}");
+        assert!(matches!(s.status(), SessionStatus::Running));
+    }
+
+    #[test]
+    fn exit_after_grace_emits_exited_and_no_fallback() {
+        let (tx, rx) = mpsc::channel();
+        let s = Session::start(
+            "fb3".into(),
+            std::env::temp_dir().as_path(),
+            "/bin/sh",
+            // stays alive long enough for subscribe to register, then exits past grace
+            &["-c".into(), "printf BYE; sleep 1; exit 0".into()],
+            &[],
+            80, 24,
+            Some(Fallback {
+                command: "/bin/sh".into(),
+                args: vec!["-c".into(), "printf SHOULD_NOT_RUN".into()],
+                grace: Duration::from_millis(300),
+            }),
+        ).unwrap();
+        s.subscribe(1, tx);
+        let got = drain_until(&rx, |f| matches!(f, ServerFrame::Msg(ServerMsg::Exited { .. })));
+        assert!(matches!(got, ServerFrame::Msg(ServerMsg::Exited { .. })));
+        assert!(!s.capture(10).contains("SHOULD_NOT_RUN"));
     }
 }

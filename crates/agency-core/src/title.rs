@@ -3,10 +3,45 @@
 /// Normalize a model- or user-provided title: first line, trimmed, surrounding
 /// quotes removed, internal whitespace collapsed, capped at 60 chars.
 pub fn sanitize_title(raw: &str) -> String {
-    let line = raw.lines().next().unwrap_or("").trim();
+    let cleaned = strip_ansi_and_controls(raw);
+    let line = cleaned.lines().next().unwrap_or("").trim();
     let line = line.trim_matches(|c| c == '"' || c == '\'').trim();
     let collapsed = line.split_whitespace().collect::<Vec<_>>().join(" ");
     collapsed.chars().take(60).collect()
+}
+
+/// Remove ESC-introduced escape sequences (CSI/OSC/other) and other C0 control
+/// characters, keeping printable text and newlines.
+fn strip_ansi_and_controls(s: &str) -> String {
+    let mut out = String::new();
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            match chars.peek() {
+                Some('[') => {
+                    chars.next();
+                    while let Some(&n) = chars.peek() {
+                        chars.next();
+                        if ('\u{40}'..='\u{7e}').contains(&n) { break; }
+                    }
+                }
+                Some(']') => {
+                    chars.next();
+                    while let Some(&n) = chars.peek() {
+                        chars.next();
+                        if n == '\u{7}' { break; }
+                        if n == '\x1b' { chars.next(); break; } // ST (ESC \)
+                    }
+                }
+                _ => { chars.next(); }
+            }
+            continue;
+        }
+        if c == '\n' { out.push('\n'); continue; }
+        if c.is_control() { continue; }
+        out.push(c);
+    }
+    out
 }
 
 /// Best-effort offline title: the first several words of the first prompt.
@@ -47,5 +82,14 @@ mod tests {
     #[test]
     fn fallback_handles_empty() {
         assert_eq!(fallback_title("   "), "");
+    }
+
+    #[test]
+    fn sanitize_strips_escape_sequences_and_controls() {
+        // An OSC reply + CSI reply with the ESC bytes intact must reduce to clean text.
+        let raw = "\x1b]11;rgb:b3b3/bcbc/b2b2\x1b\\\x1b[?1016;2$yreal title";
+        assert_eq!(sanitize_title(raw), "real title");
+        // Pure escape noise (with ESC) reduces to empty.
+        assert_eq!(sanitize_title("\x1b[?2027;0$y\x1b[?1004;h"), "");
     }
 }

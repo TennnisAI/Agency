@@ -3,7 +3,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import "@xterm/xterm/css/xterm.css";
-import { attachRun, detachRun, resizeRun, runInput, runPreview,
+import { attachRun, detachRun, resizeRun, runInput, runPreview, ensureRunActive,
   attachRunScript, detachRunScript, resizeRunScript, runScriptInput, runScriptPreview } from "../api";
 import { currentXtermTheme, minContrastRatio, TERMINAL_FONT_FAMILY } from "../lib/themes";
 import { initialCapture, feed } from "../lib/firstPrompt";
@@ -14,10 +14,12 @@ export interface TerminalStream {
   resize(id: string, cols: number, rows: number): Promise<void>;
   input(id: string, data: string): Promise<void>;
   preview(id: string, lines: number): Promise<string>;
+  ensureActive?: (id: string) => Promise<void>;
 }
 
 export const agentStream: TerminalStream = {
   attach: attachRun, detach: detachRun, resize: resizeRun, input: runInput, preview: runPreview,
+  ensureActive: ensureRunActive,
 };
 
 export const runStream: TerminalStream = {
@@ -84,32 +86,41 @@ export default function FocusTerminal(
       const trimmed = seed.replace(/[\r\n]+$/, "");
       if (trimmed) { term.write(trimmed); seeded = true; }
     });
-    stream.attach(runId, (bytes) => {
-      if (!liveStarted) {
-        liveStarted = true;
-        // The live attach is authoritative: tmux sends a full repaint on attach.
-        // If we already painted a preview seed, the seed and the repaint overlap
-        // (the snapshot is positioned relative to the old screen, the repaint to a
-        // fresh one) and leave artifacts — e.g. a stale blank line above the prompt.
-        // Resetting first lets the repaint own a clean screen. The guard above also
-        // skips the seed when attach wins the race, so this only fires when needed.
-        if (seeded) term.reset();
+    (async () => {
+      try {
+        await stream.ensureActive?.(runId);
+      } catch (e) {
+        if (!disposed) term.write(`\r\n\x1b[31mCould not resume this run: ${e}\x1b[0m\r\n`);
+        return; // don't attach to a session that failed to come up
       }
-      term.write(bytes);
-    }).then(() => {
       if (disposed) return;
-      onData = term.onData((d) => {
-        stream.input(runId, d);
-        const cb = onFirstPromptRef.current;
-        if (cb && !captureRef.current.done) {
-          const r = feed(captureRef.current, d);
-          captureRef.current = r.state;
-          if (r.line !== null) cb(r.line);
+      stream.attach(runId, (bytes) => {
+        if (!liveStarted) {
+          liveStarted = true;
+          // The live attach is authoritative: tmux sends a full repaint on attach.
+          // If we already painted a preview seed, the seed and the repaint overlap
+          // (the snapshot is positioned relative to the old screen, the repaint to a
+          // fresh one) and leave artifacts — e.g. a stale blank line above the prompt.
+          // Resetting first lets the repaint own a clean screen. The guard above also
+          // skips the seed when attach wins the race, so this only fires when needed.
+          if (seeded) term.reset();
         }
+        term.write(bytes);
+      }).then(() => {
+        if (disposed) return;
+        onData = term.onData((d) => {
+          stream.input(runId, d);
+          const cb = onFirstPromptRef.current;
+          if (cb && !captureRef.current.done) {
+            const r = feed(captureRef.current, d);
+            captureRef.current = r.state;
+            if (r.line !== null) cb(r.line);
+          }
+        });
+        // Re-send the size now that the attach exists, so the first paint matches.
+        doFit();
       });
-      // Re-send the size now that the attach exists, so the first paint matches.
-      doFit();
-    });
+    })();
 
     return () => {
       disposed = true;

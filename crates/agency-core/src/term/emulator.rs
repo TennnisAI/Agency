@@ -115,11 +115,23 @@ impl Emulator {
         // Clear screen + scrollback + home, then emit all lines.
         data.extend_from_slice(b"\x1b[2J\x1b[3J\x1b[H");
 
-        let history = (total - self.rows as usize) as i32;
+        let history = total.saturating_sub(self.rows as usize) as i32;
+        // Start at the first non-blank SCROLLBACK line (the grid reserves the
+        // full scrollback capacity, most of which is blank); always emit the
+        // whole screen (li >= 0) so its layout is preserved.
+        let mut start = 0i32;
+        for li in (-history)..0 {
+            let blank = (0..self.cols as usize)
+                .all(|col| grid[Line(li)][Column(col)].c == ' ');
+            if !blank {
+                start = li;
+                break;
+            }
+        }
         let mut last_flags = Flags::empty();
         let mut last_fg = Color::Named(NamedColor::Foreground);
         let mut last_bg = Color::Named(NamedColor::Background);
-        for li in (-history)..self.rows as i32 {
+        for li in start..self.rows as i32 {
             for col in 0..self.cols as usize {
                 let cell = &grid[Line(li)][Column(col)];
                 if cell.flags != last_flags || cell.fg != last_fg || cell.bg != last_bg {
@@ -226,5 +238,20 @@ mod tests {
         let mut b = Emulator::new(snap.cols, snap.rows);
         b.feed(&snap.data);
         assert_eq!(b.capture(10).trim_end(), a.capture(10).trim_end());
+    }
+
+    #[test]
+    fn snapshot_does_not_emit_blank_scrollback_capacity() {
+        let mut e = Emulator::new(40, 6);
+        e.feed(b"hello");
+        let snap = e.snapshot();
+        // Before the fix this emitted ~SCROLLBACK blank rows; a fresh 6-row screen
+        // must produce at most ~rows lines.
+        let newlines = snap.data.iter().filter(|&&b| b == b'\n').count();
+        assert!(newlines <= 7, "snapshot emitted {newlines} lines (blank-padding bug)");
+        // And it must still reproduce the content.
+        let mut b = Emulator::new(snap.cols, snap.rows);
+        b.feed(&snap.data);
+        assert!(b.capture(10).contains("hello"));
     }
 }

@@ -1,6 +1,6 @@
 //! Owns all live sessions and the idle-exit accounting.
 use crate::term::protocol::SessionStatus;
-use crate::term::session::Session;
+use crate::term::session::{Fallback, Session};
 use anyhow::Result;
 use std::collections::HashMap;
 use std::path::Path;
@@ -25,8 +25,9 @@ impl Registry {
         env: &[(String, String)],
         cols: u16,
         rows: u16,
+        fallback: Option<Fallback>,
     ) -> Result<()> {
-        let session = Session::start(id.clone(), cwd, command, args, env, cols, rows)?;
+        let session = Session::start(id.clone(), cwd, command, args, env, cols, rows, fallback)?;
         self.sessions.lock().unwrap().insert(id, session);
         Ok(())
     }
@@ -76,6 +77,7 @@ mod tests {
             &[],
             80,
             24,
+            None,
         )
         .unwrap();
     }

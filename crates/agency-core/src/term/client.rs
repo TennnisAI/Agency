@@ -106,6 +106,21 @@ impl TermClient {
         cols: u16,
         rows: u16,
     ) -> Result<()> {
+        self.start_session_with_fallback(id, cwd, command, args, env, cols, rows, None)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn start_session_with_fallback(
+        &self,
+        id: &str,
+        cwd: &Path,
+        command: &str,
+        args: &[String],
+        env: &[(String, String)],
+        cols: u16,
+        rows: u16,
+        fallback: Option<FallbackSpec>,
+    ) -> Result<()> {
         self.request(ClientMsg::StartSession {
             id: id.into(),
             cwd: cwd.to_string_lossy().into(),
@@ -114,6 +129,7 @@ impl TermClient {
             env: env.to_vec(),
             cols,
             rows,
+            fallback,
         })
         .map(|_| ())
     }

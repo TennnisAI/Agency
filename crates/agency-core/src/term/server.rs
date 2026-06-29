@@ -2,6 +2,7 @@
 //! client connection, dispatch into the shared Registry, fan output back.
 use crate::term::protocol::*;
 use crate::term::registry::Registry;
+use crate::term::session::Fallback;
 use anyhow::Result;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
@@ -114,8 +115,13 @@ fn dispatch(frame: ClientFrame, client_id: u64, registry: &Arc<Registry>, out: &
         ClientFrame::Msg(ClientMsg::Hello { .. }) => {
             reply(ServerMsg::Hello { version: PROTOCOL_VERSION });
         }
-        ClientFrame::Msg(ClientMsg::StartSession { id, cwd, command, args, env, cols, rows }) => {
-            match registry.start(id.clone(), Path::new(&cwd), &command, &args, &env, cols, rows) {
+        ClientFrame::Msg(ClientMsg::StartSession { id, cwd, command, args, env, cols, rows, fallback }) => {
+            let fb = fallback.map(|f| Fallback {
+                command: f.command,
+                args: f.args,
+                grace: Duration::from_millis(f.grace_ms),
+            });
+            match registry.start(id.clone(), Path::new(&cwd), &command, &args, &env, cols, rows, fb) {
                 Ok(()) => reply(ServerMsg::Started { id }),
                 Err(e) => reply(ServerMsg::Error { id: Some(id), message: e.to_string() }),
             }

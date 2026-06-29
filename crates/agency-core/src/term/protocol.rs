@@ -13,6 +13,13 @@ pub enum SessionStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FallbackSpec {
+    pub command: String,
+    pub args: Vec<String>,
+    pub grace_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ClientMsg {
     Hello { version: u32 },
     StartSession {
@@ -23,6 +30,8 @@ pub enum ClientMsg {
         env: Vec<(String, String)>,
         cols: u16,
         rows: u16,
+        #[serde(default)]
+        fallback: Option<FallbackSpec>,
     },
     Subscribe { id: String },
     Unsubscribe { id: String },
@@ -203,6 +212,36 @@ mod tests {
                 assert_eq!((id.as_str(), bytes.as_slice()), ("id", b"abc".as_slice()));
             }
             other => panic!("wrong decode: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn start_session_carries_fallback() {
+        let msg = ClientMsg::StartSession {
+            id: "r".into(), cwd: "/tmp".into(), command: "claude".into(),
+            args: vec!["--continue".into()], env: vec![], cols: 80, rows: 24,
+            fallback: Some(FallbackSpec {
+                command: "claude".into(), args: vec![], grace_ms: 3000,
+            }),
+        };
+        let payload = encode_json(&msg);
+        match decode_client(&payload).unwrap() {
+            ClientFrame::Msg(ClientMsg::StartSession { fallback: Some(fb), .. }) => {
+                assert_eq!((fb.command.as_str(), fb.grace_ms), ("claude", 3000));
+            }
+            other => panic!("wrong decode: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn start_session_fallback_defaults_to_none_when_absent() {
+        // A JSON StartSession payload WITHOUT a `fallback` field must decode to None.
+        let json = br#"{"StartSession":{"id":"r","cwd":"/tmp","command":"c","args":[],"env":[],"cols":80,"rows":24}}"#;
+        let mut payload = vec![0u8]; // type 0 = JSON
+        payload.extend_from_slice(json);
+        match decode_client(&payload).unwrap() {
+            ClientFrame::Msg(ClientMsg::StartSession { fallback: None, .. }) => {}
+            other => panic!("expected fallback None, got {other:?}"),
         }
     }
 }

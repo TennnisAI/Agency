@@ -7,8 +7,19 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 type Subs = Arc<Mutex<HashMap<u64, Sender<Vec<u8>>>>>;
+
+/// A command to run in the same session if the primary exits within `grace`
+/// before any input. Wired by `ensure_run_active` so a failed resume falls back
+/// to a fresh agent. (Behavior implemented in Task 2; this task only threads it.)
+#[derive(Clone)]
+pub struct Fallback {
+    pub command: String,
+    pub args: Vec<String>,
+    pub grace: Duration,
+}
 
 pub struct Session {
     id: String,
@@ -26,6 +37,7 @@ impl Session {
         env: &[(String, String)],
         cols: u16,
         rows: u16,
+        _fallback: Option<Fallback>,
     ) -> Result<Arc<Session>> {
         let emu = Arc::new(Mutex::new(Emulator::new(cols, rows)));
         let subs: Subs = Arc::new(Mutex::new(HashMap::new()));
@@ -135,6 +147,7 @@ mod tests {
             &[],
             80,
             24,
+            None,
         )
         .unwrap();
         std::thread::sleep(Duration::from_millis(300));
@@ -161,6 +174,7 @@ mod tests {
             &[],
             80,
             24,
+            None,
         )
         .unwrap();
         let (tx, rx) = mpsc::channel();

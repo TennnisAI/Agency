@@ -271,6 +271,11 @@ pub fn rerun(state: State<'_, AppState>, id: String) -> Result<RunInfo, String> 
 }
 
 #[tauri::command]
+pub fn ensure_run_active(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    state.ensure_run_active(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub fn git_status(state: State<'_, AppState>, task_id: String) -> Result<Vec<FileChange>, String> {
     let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
     git::status(&wt).map_err(|e| e.to_string())

@@ -126,6 +126,7 @@ pub fn run() {
             commands::discard_run,
             commands::stop_run,
             commands::rerun,
+            commands::ensure_run_active,
             commands::git_status,
             commands::git_diff,
             commands::git_stage,

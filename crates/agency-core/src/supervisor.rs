@@ -18,7 +18,7 @@ pub struct AgentHandle {
     status: Arc<Mutex<AgentStatus>>,
     // Kills the spawned child when the handle is dropped. The reader thread holds
     // a cloned PTY reader, so simply dropping `master` does NOT close the PTY or
-    // unblock that read — the child (e.g. a `tmux attach-session` client) would
+    // unblock that read — the child would
     // linger forever, leaking a process on every attach/detach cycle. Killing it
     // closes the slave, the reader hits EOF, and the thread exits.
     killer: Box<dyn ChildKiller + Send + Sync>,
@@ -40,9 +40,8 @@ impl AgentHandle {
         Ok(())
     }
 
-    /// Resize the PTY. This delivers SIGWINCH to the child (the attached tmux
-    /// client), which renegotiates the window size with the tmux server so the
-    /// session reflows to match.
+    /// Resize the PTY. This delivers SIGWINCH to the child so it reflows to
+    /// the new size.
     pub fn resize(&self, rows: u16, cols: u16) -> Result<()> {
         self.master.resize(PtySize {
             rows,
@@ -82,7 +81,7 @@ where
     cmd.cwd(cwd);
     // Every PTY we open is rendered by the frontend xterm.js terminal, which speaks
     // xterm-256color. A Finder-launched .app inherits no TERM from launchd, so a
-    // `tmux attach` child would have no terminal type and fail with "open terminal
+    // child would have no terminal type and fail with "open terminal
     // failed: terminal does not support clear". Default TERM here; a profile may
     // still override it via its own env below.
     cmd.env("TERM", "xterm-256color");

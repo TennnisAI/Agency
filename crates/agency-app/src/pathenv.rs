@@ -3,7 +3,7 @@
 //! When the app is launched from Finder/Dock as a macOS `.app` bundle it inherits
 //! launchd's minimal default PATH (`/usr/bin:/bin:/usr/sbin:/sbin`). That excludes
 //! Homebrew (`/opt/homebrew/bin`, `/usr/local/bin`) and other common locations, so
-//! child processes we spawn — `tmux`, the agent CLIs it launches — fail to resolve
+//! child processes we spawn — the `agency-termd` daemon and agent CLIs — fail to resolve
 //! with a bare `ENOENT` ("No such file or directory (os error 2)"). `git` only
 //! survives because macOS ships it in `/usr/bin`.
 //!
@@ -12,7 +12,7 @@
 
 use std::path::{Path, PathBuf};
 
-/// Directories where CLI tools (tmux, node, agent CLIs, language version managers)
+/// Directories where CLI tools (node, agent CLIs, language version managers)
 /// are commonly installed but which a Finder-launched `.app` does not inherit.
 fn common_bin_dirs(home: &Path) -> Vec<PathBuf> {
     vec![
@@ -50,8 +50,8 @@ fn merge_path(current: &str, extra: &[PathBuf], exists: impl Fn(&Path) -> bool) 
 
 /// Locale env vars to default when a Finder-launched bundle inherits none. Returns
 /// the (key, value) pairs to set, or empty if a locale is already present. Without
-/// a UTF-8 locale the `tmux attach` client negotiates the ASCII charset, so tmux
-/// strips box-drawing/block glyphs (Claude's quadrant-block logo) to blanks before
+/// a UTF-8 locale, terminal programs negotiate the ASCII charset and strip
+/// box-drawing/block glyphs (Claude's quadrant-block logo) to blanks before
 /// they reach the webview. Pure for testability; caller checks the environment.
 fn locale_defaults(has_locale: bool) -> Vec<(&'static str, &'static str)> {
     if has_locale {
@@ -61,8 +61,8 @@ fn locale_defaults(has_locale: bool) -> Vec<(&'static str, &'static str)> {
     }
 }
 
-/// Repair the current process environment so spawned children (tmux, the `tmux
-/// attach` client, agent CLIs) behave as they do under a normal shell launch.
+/// Repair the current process environment so spawned children (the `agency-termd`
+/// daemon and agent CLIs) behave as they do under a normal shell launch.
 /// A Finder-launched bundle inherits launchd's minimal env — no Homebrew PATH and
 /// no locale. Idempotent; children inherit the repaired env.
 pub fn repair() {
@@ -92,7 +92,7 @@ mod tests {
     #[test]
     fn appends_existing_homebrew_dir_under_minimal_launchd_path() {
         // The exact scenario: Finder-launched bundle gets launchd's stripped PATH,
-        // tmux lives in /opt/homebrew/bin.
+        // spawned binaries live in /opt/homebrew/bin.
         let out = merge_path(
             "/usr/bin:/bin:/usr/sbin:/sbin",
             &common_bin_dirs(Path::new("/Users/x")),
@@ -100,7 +100,7 @@ mod tests {
         );
         assert!(
             out.split(':').any(|e| e == "/opt/homebrew/bin"),
-            "homebrew bin must be on PATH so tmux resolves, got: {out}"
+            "homebrew bin must be on PATH so spawned binaries resolve, got: {out}"
         );
         assert!(out.starts_with("/usr/bin:/bin:/usr/sbin:/sbin"), "system dirs keep priority");
     }
@@ -120,7 +120,7 @@ mod tests {
         assert_eq!(
             locale_defaults(false),
             vec![("LANG", "en_US.UTF-8"), ("LC_CTYPE", "en_US.UTF-8")],
-            "a bundle with no locale must get a UTF-8 default so tmux keeps block glyphs"
+            "a bundle with no locale must get a UTF-8 default so terminals keep block glyphs"
         );
         assert!(locale_defaults(true).is_empty(), "an existing locale is left untouched");
     }

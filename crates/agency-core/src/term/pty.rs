@@ -66,7 +66,7 @@ where
     cmd.args(args);
     cmd.cwd(cwd);
     // Finder-launched bundles inherit no TERM/COLORTERM; default them unless the
-    // caller overrides (matches the retired tmux.rs behavior).
+    // caller overrides.
     cmd.env("TERM", "xterm-256color");
     if !env.iter().any(|(k, _)| k == "COLORTERM") {
         cmd.env("COLORTERM", "truecolor");

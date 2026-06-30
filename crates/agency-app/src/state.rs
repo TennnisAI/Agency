@@ -155,7 +155,7 @@ fn validate_provider_url(raw: &str) -> Result<()> {
 
 /// Build a readable, unique task id from the prompt: a slug derived from the
 /// prompt text plus a short suffix that disambiguates runs sharing a prompt.
-/// The id doubles as the worktree dir, branch (`agent/<id>`) and tmux session
+/// The id doubles as the worktree dir, branch (`agent/<id>`) and daemon session
 /// name, so it stays restricted to `[a-z0-9-]`, which is safe for all three.
 pub fn new_task_id(prompt: &str) -> String {
     format!("{}-{}", slugify(prompt), short_suffix())
@@ -237,7 +237,7 @@ fn now_millis() -> u128 {
 /// on the hot path otherwise). Set it to `1` to log to
 /// `<tmpdir>/agency-pty-debug.log`, or to an absolute path to log there. Used to
 /// trace what input reaches a terminal session on navigate-away/back, since the
-/// shell exits 0 on a stray EOF that nothing in tmux/the backend is known to send.
+/// shell exits 0 on a stray EOF that nothing in the backend is known to send.
 fn pty_debug(msg: &str) {
     use std::io::Write;
     let val = match std::env::var("AGENCY_DEBUG_PTY") {
@@ -563,7 +563,7 @@ impl AppState {
 
     /// Create a standalone shell terminal session in the project repo root.
     /// Unlike `create_run` it has no worktree, branch, or agent profile — it just
-    /// runs the user's login shell, reusing the tmux/attach/resize pipeline.
+    /// runs the user's login shell, reusing the daemon attach/resize pipeline.
     pub fn create_terminal(&self, project_id: &str) -> Result<RunInfo> {
         let repo = self.project_repo(project_id)?;
         let id = new_task_id("terminal");
@@ -1309,7 +1309,7 @@ mod tests {
 
     #[test]
     fn terminal_run_record_has_no_branch_and_terminal_kind() {
-        // Shape check independent of tmux: a terminal Run carries kind="terminal",
+        // Shape check independent of the backend: a terminal Run carries kind="terminal",
         // an empty branch, and no port — the invariants discard_run/run_info rely on.
         let run = agency_core::registry::Run {
             id: new_task_id("terminal"),

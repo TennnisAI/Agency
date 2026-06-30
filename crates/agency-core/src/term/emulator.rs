@@ -119,19 +119,31 @@ impl Emulator {
         // Start at the first non-blank SCROLLBACK line (the grid reserves the
         // full scrollback capacity, most of which is blank); always emit the
         // whole screen (li >= 0) so its layout is preserved.
+        let row_blank = |li: i32| {
+            (0..self.cols as usize).all(|col| grid[Line(li)][Column(col)].c == ' ')
+        };
         let mut start = 0i32;
         for li in (-history)..0 {
-            let blank = (0..self.cols as usize)
-                .all(|col| grid[Line(li)][Column(col)].c == ' ');
-            if !blank {
+            if !row_blank(li) {
                 start = li;
+                break;
+            }
+        }
+        // Stop after the last non-blank line: emitting the trailing blank screen
+        // rows (each with `\r\n`) scrolls blank lines into xterm's scrollback, the
+        // blank space seen above non-full-screen agents. `end` is exclusive; an
+        // entirely blank grid emits nothing but the clear + cursor position.
+        let mut end = start;
+        for li in (start..self.rows as i32).rev() {
+            if !row_blank(li) {
+                end = li + 1;
                 break;
             }
         }
         let mut last_flags = Flags::empty();
         let mut last_fg = Color::Named(NamedColor::Foreground);
         let mut last_bg = Color::Named(NamedColor::Background);
-        for li in start..self.rows as i32 {
+        for li in start..end {
             for col in 0..self.cols as usize {
                 let cell = &grid[Line(li)][Column(col)];
                 if cell.flags != last_flags || cell.fg != last_fg || cell.bg != last_bg {
@@ -253,5 +265,21 @@ mod tests {
         let mut b = Emulator::new(snap.cols, snap.rows);
         b.feed(&snap.data);
         assert!(b.capture(10).contains("hello"));
+    }
+
+    #[test]
+    fn snapshot_trims_trailing_blank_screen_rows() {
+        // A part-filled screen (content at top, blank below) must NOT emit the
+        // blank trailing rows: their `\r\n` scroll blank lines into xterm's
+        // scrollback (the cause of blank space above non-full-screen agents).
+        let mut e = Emulator::new(40, 20);
+        e.feed(b"one\r\ntwo");
+        let snap = e.snapshot();
+        let newlines = snap.data.iter().filter(|&&b| b == b'\n').count();
+        assert!(newlines <= 3, "snapshot emitted {newlines} rows for a 2-line screen (trailing blanks)");
+        let mut b = Emulator::new(snap.cols, snap.rows);
+        b.feed(&snap.data);
+        let cap = b.capture(20);
+        assert!(cap.contains("one") && cap.contains("two"), "content lost: {cap:?}");
     }
 }

@@ -1,9 +1,25 @@
 use agency_app_lib::AppState;
 
 #[test]
+fn seeds_builtin_resume_recipes() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
+    let profiles = state.list_profiles().unwrap();
+    let get = |name: &str| profiles.iter().find(|p| p.name == name).cloned().unwrap();
+    assert_eq!(get("claude").resume_args, Some(vec!["--continue".into()]));
+    assert_eq!(get("codex").resume_args, Some(vec!["resume".into(), "--last".into()]));
+    assert_eq!(get("pi").resume_args, Some(vec!["--continue".into()]));
+    assert_eq!(get("opencode").resume_args, Some(vec!["--continue".into()]));
+    assert_eq!(get("copilot").resume_args, Some(vec!["--continue".into()]));
+    assert_eq!(get("cursor").command, "cursor-agent");
+    assert_eq!(get("cursor").resume_args, None);
+    assert_eq!(get("hermes").resume_args, None);
+}
+
+#[test]
 fn seeds_three_agent_profiles_with_bare_commands() {
     let dir = tempfile::tempdir().unwrap();
-    let state = AppState::new(&dir.path().join("agency.db")).unwrap();
+    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
     let profiles = state.list_profiles().unwrap();
     let by_name = |n: &str| profiles.iter().find(|p| p.name == n).cloned();
 

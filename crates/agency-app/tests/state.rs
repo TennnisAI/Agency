@@ -4,7 +4,7 @@ use std::path::Path;
 #[test]
 fn new_seeds_default_shell_profile_and_version_holds() {
     let dir = tempfile::tempdir().unwrap();
-    let state = AppState::new(&dir.path().join("agency.db")).unwrap();
+    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
     assert_eq!(AppState::version(), "0.1.0");
     assert!(state.profile_names().unwrap().contains(&"shell".to_string()));
 }
@@ -12,7 +12,7 @@ fn new_seeds_default_shell_profile_and_version_holds() {
 #[test]
 fn project_crud_roundtrip() {
     let dir = tempfile::tempdir().unwrap();
-    let state = AppState::new(&dir.path().join("agency.db")).unwrap();
+    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
 
     let repo = dir.path().join("repo");
     std::fs::create_dir_all(&repo).unwrap();
@@ -32,7 +32,7 @@ fn project_crud_roundtrip() {
 #[test]
 fn add_project_rejects_non_git_folder() {
     let dir = tempfile::tempdir().unwrap();
-    let state = AppState::new(&dir.path().join("agency.db")).unwrap();
+    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
 
     let plain = dir.path().join("plain");
     std::fs::create_dir_all(&plain).unwrap();
@@ -45,7 +45,7 @@ fn add_project_rejects_non_git_folder() {
 
 
 use agency_core::profile::AgentProfile;
-use agency_core::tmux::SessionStatus;
+use agency_core::term::SessionStatus;
 use std::process::Command;
 
 fn init_repo(dir: &Path) {
@@ -76,13 +76,14 @@ fn create_run_persists_starts_session_and_lists() {
     std::fs::create_dir_all(&repo).unwrap();
     init_repo(&repo); // repo on `main` with a commit
 
-    let state = AppState::new(&dir.path().join("agency.db")).unwrap();
+    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
     // a profile that stays alive so the session is Running
     state.register_profile(AgentProfile {
         name: "stay".into(),
         command: "sh".into(),
         args: vec!["-c".into(), "echo HI; sleep 3".into()],
         env: vec![],
+        resume_args: None,
     }).unwrap();
     let project = state.add_project("demo", &repo).unwrap();
 
@@ -120,12 +121,13 @@ fn worktree_path_resolves_for_active_run() {
     std::fs::create_dir_all(&repo).unwrap();
     init_repo(&repo);
 
-    let state = AppState::new(&dir.path().join("agency.db")).unwrap();
+    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
     state.register_profile(AgentProfile {
         name: "noop".into(),
         command: "sh".into(),
         args: vec!["-c".into(), "sleep 1".into()],
         env: vec![],
+        resume_args: None,
     }).unwrap();
     let project = state.add_project("demo", &repo).unwrap();
     let info = state.create_run(&project.id, "p", "noop", "HEAD", None).unwrap();
@@ -147,7 +149,7 @@ fn worktree_path_resolves_to_repo_root_for_terminal() {
     std::fs::create_dir_all(&repo).unwrap();
     init_repo(&repo);
 
-    let state = AppState::new(&dir.path().join("agency.db")).unwrap();
+    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
     let project = state.add_project("demo", &repo).unwrap();
 
     // Agent run: still resolves under .agency/worktrees/<id>.
@@ -156,6 +158,7 @@ fn worktree_path_resolves_to_repo_root_for_terminal() {
         command: "sh".into(),
         args: vec!["-c".into(), "sleep 1".into()],
         env: vec![],
+        resume_args: None,
     }).unwrap();
     let agent = state.create_run(&project.id, "p", "noop", "HEAD", None).unwrap();
     let agent_wt = state.worktree_path(&agent.id).unwrap();
@@ -175,7 +178,7 @@ fn worktree_path_resolves_to_repo_root_for_terminal() {
 #[test]
 fn new_seeds_shell_and_claude_when_empty() {
     let dir = tempfile::tempdir().unwrap();
-    let state = AppState::new(&dir.path().join("agency.db")).unwrap();
+    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
     let names = state.profile_names().unwrap();
     assert!(names.contains(&"shell".to_string()));
     assert!(names.contains(&"claude".to_string()));
@@ -184,7 +187,7 @@ fn new_seeds_shell_and_claude_when_empty() {
 #[test]
 fn settings_default_and_roundtrip() {
     let dir = tempfile::tempdir().unwrap();
-    let state = AppState::new(&dir.path().join("agency.db")).unwrap();
+    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
     let s = state.get_settings().unwrap();
     assert_eq!(s.lm_studio_base_url, "http://localhost:1234/v1");
     assert_eq!(s.anthropic_api_key, "");
@@ -208,7 +211,7 @@ fn create_run_injects_provider_env() {
     std::fs::create_dir_all(&repo).unwrap();
     init_repo(&repo);
 
-    let state = AppState::new(&dir.path().join("agency.db")).unwrap();
+    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
     state.save_settings(&agency_app_lib::ProviderSettings {
         anthropic_api_key: "sk-secret".into(),
         lm_studio_base_url: "http://localhost:1234/v1".into(),
@@ -219,6 +222,7 @@ fn create_run_injects_provider_env() {
         command: "sh".into(),
         args: vec!["-c".into(), "echo KEY=$ANTHROPIC_API_KEY; echo BASE=$OPENAI_BASE_URL; sleep 2".into()],
         env: vec![],
+        resume_args: None,
     }).unwrap();
     let project = state.add_project("demo", &repo).unwrap();
 
@@ -250,18 +254,20 @@ fn resolve_merge_spawns_resolver_in_repo_and_streams() {
     std::fs::create_dir_all(&repo).unwrap();
     init_repo(&repo);
 
-    let state = AppState::new(&dir.path().join("agency.db")).unwrap();
+    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
     state.register_profile(AgentProfile {
         name: "noop".into(),
         command: "sh".into(),
         args: vec!["-c".into(), "sleep 1".into()],
         env: vec![],
+        resume_args: None,
     }).unwrap();
     state.register_profile(AgentProfile {
         name: "fakeresolver".into(),
         command: "/bin/sh".into(),
         args: vec!["-c".into(), "echo RESOLVING; pwd; echo DONE".into()],
         env: vec![],
+        resume_args: None,
     }).unwrap();
     let project = state.add_project("demo", &repo).unwrap();
     let info = state.create_run(&project.id, "p", "noop", "HEAD", None).unwrap();
@@ -289,7 +295,7 @@ fn resolve_merge_spawns_resolver_in_repo_and_streams() {
 #[test]
 fn save_settings_rejects_bad_provider_url() {
     let dir = tempfile::tempdir().unwrap();
-    let state = AppState::new(&dir.path().join("agency.db")).unwrap();
+    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
     // remote http (non-localhost) is rejected
     let bad = agency_app_lib::ProviderSettings {
         anthropic_api_key: "".into(),
@@ -319,19 +325,20 @@ fn attach_streams_and_input_reaches_agent() {
     std::fs::create_dir_all(&repo).unwrap();
     init_repo(&repo);
 
-    let state = AppState::new(&dir.path().join("agency.db")).unwrap();
+    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
     state.register_profile(AgentProfile {
         name: "echoer".into(),
         command: "sh".into(),
         args: vec!["-c".into(), "echo READY; read x; echo GOT:$x; sleep 3".into()],
         env: vec![],
+        resume_args: None,
     }).unwrap();
     let project = state.add_project("demo", &repo).unwrap();
     let info = state.create_run(&project.id, "p", "echoer", "HEAD", None).unwrap();
 
     let buf = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
     let b = buf.clone();
-    state.attach_run(&info.id, move |bytes| {
+    state.attach_run(&info.id, 220, 50, move |bytes| {
         b.lock().unwrap().push_str(&String::from_utf8_lossy(&bytes));
     }).unwrap();
 
@@ -367,7 +374,7 @@ fn terminal_survives_attach_detach_reattach() {
     std::fs::create_dir_all(&repo).unwrap();
     init_repo(&repo);
 
-    let state = AppState::new(&dir.path().join("agency.db")).unwrap();
+    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
     let project = state.add_project("demo", &repo).unwrap();
     let info = state.create_terminal(&project.id).unwrap();
     assert_eq!(info.kind, "terminal");
@@ -385,7 +392,7 @@ fn terminal_survives_attach_detach_reattach() {
     assert!(wait_running(&state, &info.id), "shell should be running after create");
 
     // First attach (view the terminal).
-    state.attach_run(&info.id, |_bytes| {}).unwrap();
+    state.attach_run(&info.id, 220, 50, |_bytes| {}).unwrap();
     assert!(wait_running(&state, &info.id), "running after first attach");
 
     // Navigate away: detach (drops the handle, SIGKILLs the attach client).
@@ -397,7 +404,7 @@ fn terminal_survives_attach_detach_reattach() {
     );
 
     // Navigate back: re-attach to the same session.
-    state.attach_run(&info.id, |_bytes| {}).unwrap();
+    state.attach_run(&info.id, 220, 50, |_bytes| {}).unwrap();
     assert!(wait_running(&state, &info.id), "running after re-attach");
 
     state.detach_run(&info.id);
@@ -412,12 +419,13 @@ fn merge_task_clean_merges_branch_into_base() {
     std::fs::create_dir_all(&repo).unwrap();
     init_repo(&repo);
 
-    let state = AppState::new(&dir.path().join("agency.db")).unwrap();
+    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
     state.register_profile(AgentProfile {
         name: "noop".into(),
         command: "sh".into(),
         args: vec!["-c".into(), "sleep 1".into()],
         env: vec![],
+        resume_args: None,
     }).unwrap();
     let project = state.add_project("demo", &repo).unwrap();
 
@@ -435,4 +443,124 @@ fn merge_task_clean_merges_branch_into_base() {
 
     // discard after merge (worktree may already be removed by merge; best-effort)
     let _ = state.discard_run(&info.id);
+}
+
+#[test]
+fn ensure_run_active_respawns_a_stopped_agent_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo); // repo on `main` with a commit
+    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
+    // A fake agent whose command just sleeps, so a respawn is observable as Running.
+    state.register_profile(AgentProfile {
+        name: "sleeper".into(),
+        command: "/bin/sh".into(),
+        args: vec!["-c".into(), "sleep 5".into()],
+        env: vec![],
+        resume_args: None,
+    }).unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+    let info = state.create_run(&project.id, "p", "sleeper", "HEAD", None).unwrap();
+
+    // Stop the run's session (record stays) -> status becomes Gone.
+    state.stop_run(&info.id).unwrap();
+    let mut gone = false;
+    for _ in 0..75 {
+        if matches!(state.run_status(&info.id).unwrap(), SessionStatus::Gone) { gone = true; break; }
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    assert!(gone, "session did not become Gone after stop_run");
+
+    // Reactivate -> a new session comes up (fresh fallback, since resume_args is None).
+    state.ensure_run_active(&info.id).unwrap();
+    let mut back = false;
+    for _ in 0..75 {
+        if !matches!(state.run_status(&info.id).unwrap(), SessionStatus::Gone) { back = true; break; }
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    assert!(back, "ensure_run_active did not respawn the session");
+
+    state.discard_run(&info.id).unwrap();
+}
+
+#[test]
+fn ensure_run_active_is_noop_when_session_present() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+    let info = state.create_terminal(&project.id).unwrap();
+    // Session is live; ensure_run_active must not error or take it down.
+    state.ensure_run_active(&info.id).unwrap();
+    assert!(!matches!(state.run_status(&info.id).unwrap(), SessionStatus::Gone));
+    state.discard_run(&info.id).unwrap();
+}
+
+#[test]
+fn ensure_run_active_falls_back_to_fresh_when_resume_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
+    // Fake agent: resume fails fast; fresh (render_args of `args`) prints FRESH and stays.
+    state.register_profile(AgentProfile {
+        name: "flaky".into(),
+        command: "/bin/sh".into(),
+        args: vec!["-c".into(), "printf FRESH; sleep 5".into()],
+        env: vec![],
+        resume_args: Some(vec!["-c".into(), "printf NO-CONV; exit 1".into()]),
+    }).unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+    let info = state.create_run(&project.id, "p", "flaky", "HEAD", None).unwrap();
+
+    state.stop_run(&info.id).unwrap();
+    let mut gone = false;
+    for _ in 0..75 {
+        if matches!(state.run_status(&info.id).unwrap(), SessionStatus::Gone) { gone = true; break; }
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    assert!(gone, "session did not become Gone after stop_run");
+
+    // Reactivate: resume (NO-CONV; exit 1) fails fast -> fallback fresh (FRESH; sleep 5).
+    state.ensure_run_active(&info.id).unwrap();
+    let mut fresh = false;
+    for _ in 0..150 {
+        let cap = state.run_preview(&info.id, 10).unwrap_or_default();
+        if cap.contains("FRESH") && matches!(state.run_status(&info.id).unwrap(), SessionStatus::Running) {
+            fresh = true; break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    assert!(fresh, "fallback fresh session did not come up");
+    state.discard_run(&info.id).unwrap();
+}
+
+#[test]
+fn send_review_comments_errors_when_session_not_running() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
+
+    // Use a fake run_id — no session has ever been started for it.
+    let fake_run_id = "00000000-0000-0000-0000-000000000000";
+
+    // Insert an unsent review comment for the fake run.
+    state
+        .add_review_comment(fake_run_id, "src/main.rs", 1, 3, "looks good")
+        .unwrap();
+
+    // send_review_comments must fail because the session is not running.
+    let err = state.send_review_comments(fake_run_id).unwrap_err().to_string();
+    assert!(
+        err.contains("not running"),
+        "expected 'not running' error, got: {err}"
+    );
+
+    // The comment must NOT have been marked sent.
+    let unsent = state.list_review_comments(fake_run_id).unwrap();
+    assert_eq!(unsent.len(), 1, "comment count should be unchanged");
+    assert!(!unsent[0].sent, "comment must NOT be marked sent after failed send");
 }

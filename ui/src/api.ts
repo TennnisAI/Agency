@@ -69,6 +69,7 @@ export const runStatus = (id: string) => invoke<SessionStatus>("run_status", { i
 export const discardRun = (id: string) => invoke<void>("discard_run", { id });
 export const stopRun = (id: string) => invoke<void>("stop_run", { id });
 export const rerun = (id: string) => invoke<RunInfo>("rerun", { id });
+export const ensureRunActive = (id: string) => invoke<void>("ensure_run_active", { id });
 export const archiveRun = (id: string) => invoke<void>("archive_run", { id });
 export const restoreRun = (id: string) => invoke<RunInfo>("restore_run", { id });
 export const listArchivedRuns = (projectId: string) =>

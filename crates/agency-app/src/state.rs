@@ -1,13 +1,14 @@
 use agency_core::profile::AgentProfile;
 use agency_core::registry::{Project, Registry};
 use agency_core::supervisor::AgentHandle;
-use agency_core::tmux::{SessionStatus, Tmux};
+use agency_core::term::client::{Subscription, TermClient};
+use agency_core::term::SessionStatus;
 use agency_core::worktree::WorktreeManager;
 use anyhow::{anyhow, bail, Result};
 use crate::notifier;
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
-use std::sync::Mutex;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, RwLock};
 use uuid;
 
 const SETTING_ANTHROPIC_KEY: &str = "anthropic_api_key";
@@ -73,8 +74,58 @@ fn compose_feedback(comments: &[agency_core::registry::ReviewComment]) -> String
     format!("Please address these review comments: {}", parts.join(" | "))
 }
 
+/// Socket the terminal daemon listens on, derived from the app data dir.
+fn termd_socket(data_dir: &Path) -> std::path::PathBuf {
+    data_dir.join("termd.sock")
+}
+
+/// Path to the terminal daemon binary. In a bundled/release build it ships next
+/// to the app executable (Tauri externalBin sidecar). Under `cargo test` the
+/// current exe is a test binary in `target/<profile>/deps/`, while the daemon is
+/// built one level up in `target/<profile>/`, so we also probe the parent dir.
+/// Falls back to a bare name for `$PATH` resolution.
+fn termd_bin() -> std::path::PathBuf {
+    let exe = std::env::current_exe().ok();
+    let dir = exe.as_ref().and_then(|p| p.parent());
+    // Sibling of the executable (bundled app / `cargo run`).
+    let sibling = dir.map(|d| d.join("agency-termd"));
+    if let Some(p) = sibling.as_ref() {
+        if p.exists() {
+            return p.clone();
+        }
+    }
+    // One level up (cargo's `deps/` test/bench layout points here).
+    if let Some(p) = dir.and_then(|d| d.parent()).map(|d| d.join("agency-termd")) {
+        if p.exists() {
+            return p;
+        }
+    }
+    sibling.unwrap_or_else(|| std::path::PathBuf::from("agency-termd"))
+}
+
 fn session_name(id: &str) -> String {
     format!("agency-{id}")
+}
+
+/// Decide the (command, args) to launch for an agent run. With `use_resume` and a
+/// resume recipe present, launch the resume args (no prompt). Otherwise launch a
+/// fresh session from the rendered prompt. The optional setup script wraps the
+/// command in both cases (same as create_run/rerun).
+fn agent_argv(
+    profile: &AgentProfile,
+    prompt: &str,
+    use_resume: bool,
+    setup: Option<&str>,
+) -> (String, Vec<String>) {
+    let base_args: Vec<String> = match (use_resume, &profile.resume_args) {
+        (true, Some(resume)) => resume.clone(),
+        _ => profile
+            .render_args(prompt)
+            .into_iter()
+            .filter(|a| !a.is_empty())
+            .collect(),
+    };
+    agency_core::scripts::wrap_setup(setup, &profile.command, &base_args)
 }
 
 fn run_session_name(id: &str) -> String {
@@ -210,9 +261,6 @@ fn fmt_bytes(data: &[u8]) -> String {
     format!("[{}] {:?}", hex.join(" "), String::from_utf8_lossy(data))
 }
 
-fn agent_profile(name: &str, command: &str) -> AgentProfile {
-    AgentProfile { name: name.into(), command: command.into(), args: vec![], env: vec![] }
-}
 
 #[derive(Default)]
 struct UiState {
@@ -222,9 +270,10 @@ struct UiState {
 
 pub struct AppState {
     registry: Mutex<Registry>,
-    attaches: Mutex<HashMap<String, AgentHandle>>,
-    run_attaches: Mutex<HashMap<String, AgentHandle>>,
-    tmux: Tmux,
+    attaches: Mutex<HashMap<String, Subscription>>,
+    run_attaches: Mutex<HashMap<String, Subscription>>,
+    term: RwLock<TermClient>,
+    data_dir: PathBuf,
     resolvers: Mutex<HashMap<String, AgentHandle>>,
     ui: Mutex<UiState>,
     /// Run ids that have received user input since their last "waiting for input"
@@ -237,7 +286,7 @@ impl AppState {
         env!("CARGO_PKG_VERSION")
     }
 
-    pub fn new(db_path: &Path) -> Result<AppState> {
+    pub fn new(db_path: &Path, data_dir: &Path) -> Result<AppState> {
         let registry = Registry::open(db_path)?;
         // Seed the built-in shell profile once.
         if registry.get_profile("shell")?.is_none() {
@@ -247,23 +296,53 @@ impl AppState {
                 command: shell,
                 args: vec!["-l".to_string()],
                 env: vec![],
+                resume_args: None,
             })?;
         }
-        // Ensure built-in agent profiles exist (added for existing DBs too).
-        for (name, command) in [("claude", "claude"), ("pi", "pi"), ("hermes", "hermes")] {
+        // Built-in agent profiles and their resume recipes. Resume recipes are seeded
+        // for missing profiles and retrofitted onto existing ones only when unset, so a
+        // user's customized command/args/env is never clobbered. cursor/hermes are
+        // id-keyed (not cwd-keyed) so they start fresh rather than risk resuming the
+        // wrong global session.
+        let builtins: [(&str, &str, Option<Vec<String>>); 7] = [
+            ("claude", "claude", Some(vec!["--continue".into()])),
+            ("codex", "codex", Some(vec!["resume".into(), "--last".into()])),
+            ("pi", "pi", Some(vec!["--continue".into()])),
+            ("opencode", "opencode", Some(vec!["--continue".into()])),
+            ("copilot", "copilot", Some(vec!["--continue".into()])),
+            ("cursor", "cursor-agent", None),
+            ("hermes", "hermes", None),
+        ];
+        for (name, command, resume_args) in builtins {
             if registry.get_profile(name)?.is_none() {
-                registry.upsert_profile(&agent_profile(name, command))?;
+                registry.upsert_profile(&AgentProfile {
+                    name: name.to_string(),
+                    command: command.to_string(),
+                    args: vec![],
+                    env: vec![],
+                    resume_args: resume_args.clone(),
+                })?;
+            } else {
+                registry.ensure_profile_resume_args(name, &resume_args)?;
             }
         }
-        Ok(AppState {
+        let state = AppState {
             registry: Mutex::new(registry),
             attaches: Mutex::new(HashMap::new()),
             run_attaches: Mutex::new(HashMap::new()),
-            tmux: Tmux::resolved(),
+            term: RwLock::new(TermClient::connect_or_spawn(termd_socket(data_dir), termd_bin())?),
+            data_dir: data_dir.to_path_buf(),
             resolvers: Mutex::new(HashMap::new()),
             ui: Mutex::new(UiState { focused: true, active_run: None }),
             input_seen: Mutex::new(HashSet::new()),
-        })
+        };
+        // Rehydrate: any run the daemon still hosts is adopted as-is; the watch
+        // loop (watch_snapshot) then reports live status. Nothing to spawn here —
+        // surviving sessions are already running in the daemon.
+        if let Ok(sessions) = state.term.read().unwrap().list() {
+            log::info!("termd: adopted {} surviving session(s)", sessions.len());
+        }
+        Ok(state)
     }
 
     fn provider_env(&self) -> Result<Vec<(String, String)>> {
@@ -353,9 +432,9 @@ impl AppState {
         let runs = self.registry.lock().unwrap().list_runs(id)?;
         for run in &runs {
             self.attaches.lock().unwrap().remove(&run.id);
-            self.tmux.kill_session(&session_name(&run.id)).ok();
+            let _ = self.term.read().unwrap().kill(&session_name(&run.id));
             self.run_attaches.lock().unwrap().remove(&run.id);
-            self.tmux.kill_session(&run_session_name(&run.id)).ok();
+            let _ = self.term.read().unwrap().kill(&run_session_name(&run.id));
         }
         Ok(())
     }
@@ -365,9 +444,9 @@ impl AppState {
         let repo = self.project_repo(id).ok();
         for run in &runs {
             self.attaches.lock().unwrap().remove(&run.id);
-            self.tmux.kill_session(&session_name(&run.id)).ok();
+            let _ = self.term.read().unwrap().kill(&session_name(&run.id));
             self.run_attaches.lock().unwrap().remove(&run.id);
-            self.tmux.kill_session(&run_session_name(&run.id)).ok();
+            let _ = self.term.read().unwrap().kill(&run_session_name(&run.id));
             if let Some(repo) = &repo {
                 let _ = WorktreeManager::new(repo.clone()).remove(&run.id);
             }
@@ -398,7 +477,7 @@ impl AppState {
 
     fn run_info(&self, run: &agency_core::registry::Run) -> RunInfo {
         let name = session_name(&run.id);
-        let status = self.tmux.session_status(&name).unwrap_or(SessionStatus::Gone);
+        let status = self.term.read().unwrap().status(&name).unwrap_or(SessionStatus::Gone);
         let wt = self
             .project_repo(&run.project_id)
             .ok()
@@ -454,8 +533,10 @@ impl AppState {
         let (command, args) =
             agency_core::scripts::wrap_setup(config.scripts.setup.as_deref(), &profile.command, &args);
 
-        self.tmux
-            .start_session(&session_name(&id), &worktree.path, &command, &args, &env)?;
+        self.term
+            .read()
+            .unwrap()
+            .start_session(&session_name(&id), &worktree.path, &command, &args, &env, 220, 50)?;
 
         let run = agency_core::registry::Run {
             id: id.clone(),
@@ -490,8 +571,10 @@ impl AppState {
         // Login shell so the user's prompt/profile loads.
         let args = vec!["-l".to_string()];
         pty_debug(&format!("create_terminal id={id} shell={shell} args={args:?}"));
-        self.tmux
-            .start_session(&session_name(&id), &repo, &shell, &args, &[])?;
+        self.term
+            .read()
+            .unwrap()
+            .start_session(&session_name(&id), &repo, &shell, &args, &[], 220, 50)?;
 
         let run = agency_core::registry::Run {
             id: id.clone(),
@@ -517,35 +600,30 @@ impl AppState {
     }
 
     pub fn run_status(&self, id: &str) -> Result<SessionStatus> {
-        Ok(self.tmux.session_status(&session_name(id)).unwrap_or(SessionStatus::Gone))
+        Ok(self.term.read().unwrap().status(&session_name(id)).unwrap_or(SessionStatus::Gone))
     }
 
-    pub fn attach_run<F>(&self, id: &str, on_output: F) -> Result<()>
+    pub fn attach_run<F>(&self, id: &str, cols: u16, rows: u16, on_output: F) -> Result<()>
     where
-        F: Fn(Vec<u8>) + Send + 'static,
+        F: Fn(Vec<u8>) + Send + Sync + 'static,
     {
         pty_debug(&format!("attach_run id={id}"));
-        let handle = self.tmux.attach(&session_name(id), on_output)?;
-        self.attaches.lock().unwrap().insert(id.to_string(), handle);
+        let sub = self.term.read().unwrap().subscribe(&session_name(id), cols, rows, on_output)?;
+        self.attaches.lock().unwrap().insert(id.to_string(), sub);
         Ok(())
     }
 
     pub fn detach_run(&self, id: &str) {
         pty_debug(&format!("detach_run id={id}"));
-        // Detach the tmux client *gracefully* before dropping the handle (whose
-        // Drop SIGKILLs the `tmux attach` process). Killing the client outright can
-        // take the session's shell down with it — it exits 0 on a stray EOF, which
-        // surfaces as "Pane is dead, status 0" on navigate-away/back. See
-        // Tmux::detach_clients.
-        self.tmux.detach_clients(&session_name(id));
+        // Dropping the Subscription sends Unsubscribe to the daemon; the session
+        // itself keeps running server-side, so navigating away/back no longer
+        // risks taking the shell down with the client.
         self.attaches.lock().unwrap().remove(id);
     }
 
     pub fn run_input(&self, id: &str, data: &[u8]) -> Result<()> {
         pty_debug(&format!("run_input id={id} len={} {}", data.len(), fmt_bytes(data)));
-        let attaches = self.attaches.lock().unwrap();
-        let handle = attaches.get(id).ok_or_else(|| anyhow!("run not attached: {id}"))?;
-        handle.write_input(data)?;
+        self.term.read().unwrap().input(&session_name(id), data)?;
         // Arm the idle ("waiting for input") notification for this run: it only
         // fires after the user has driven a turn, and at most once per turn.
         self.input_seen.lock().unwrap().insert(id.to_string());
@@ -563,28 +641,24 @@ impl AppState {
         self.input_seen.lock().unwrap().remove(id);
     }
 
-    /// Resize the attached PTY so tmux reflows the session to the visible
-    /// terminal. A no-op when the run isn't attached (resize events can race
-    /// ahead of the attach completing).
+    /// Resize the session's PTY so the emulator reflows to the visible terminal.
+    /// Sent straight to the daemon by id; harmless if the session isn't live yet
+    /// (resize events can race ahead of the session coming up).
     pub fn resize_run(&self, id: &str, cols: u16, rows: u16) -> Result<()> {
-        let attaches = self.attaches.lock().unwrap();
-        if let Some(handle) = attaches.get(id) {
-            handle.resize(rows, cols)?;
-        }
-        Ok(())
+        self.term.read().unwrap().resize(&session_name(id), cols, rows)
     }
 
     pub fn run_preview(&self, id: &str, lines: usize) -> Result<String> {
-        self.tmux.capture(&session_name(id), lines)
+        Ok(self.term.read().unwrap().capture(&session_name(id), lines).unwrap_or_default())
     }
 
     pub fn discard_run(&self, id: &str) -> Result<()> {
         self.attaches.lock().unwrap().remove(id);
         self.input_seen.lock().unwrap().remove(id);
         let run = self.run_record(id)?;
-        self.tmux.kill_session(&session_name(id)).ok();
+        let _ = self.term.read().unwrap().kill(&session_name(id));
         self.run_attaches.lock().unwrap().remove(id);
-        self.tmux.kill_session(&run_session_name(id)).ok();
+        let _ = self.term.read().unwrap().kill(&run_session_name(id));
         if run.kind == "agent" {
             if let Ok(repo) = self.project_repo(&run.project_id) {
                 let _ = WorktreeManager::new(repo).remove(id);
@@ -603,9 +677,9 @@ impl AppState {
 
         // Stop both sessions and drop attach handles.
         self.attaches.lock().unwrap().remove(id);
-        self.tmux.kill_session(&session_name(id)).ok();
+        let _ = self.term.read().unwrap().kill(&session_name(id));
         self.run_attaches.lock().unwrap().remove(id);
-        self.tmux.kill_session(&run_session_name(id)).ok();
+        let _ = self.term.read().unwrap().kill(&run_session_name(id));
 
         // Best-effort archive cleanup script, before the worktree disappears.
         let config = agency_core::config::load(&repo);
@@ -640,9 +714,9 @@ impl AppState {
 
     pub fn stop_run(&self, id: &str) -> Result<()> {
         self.attaches.lock().unwrap().remove(id);
-        self.tmux.kill_session(&session_name(id)).ok();
+        let _ = self.term.read().unwrap().kill(&session_name(id));
         self.run_attaches.lock().unwrap().remove(id);
-        self.tmux.kill_session(&run_session_name(id)).ok();
+        let _ = self.term.read().unwrap().kill(&run_session_name(id));
         Ok(())
     }
 
@@ -669,7 +743,7 @@ impl AppState {
             for other in others {
                 if other.id != run.id {
                     self.run_attaches.lock().unwrap().remove(&other.id);
-                    self.tmux.kill_session(&run_session_name(&other.id)).ok();
+                    let _ = self.term.read().unwrap().kill(&run_session_name(&other.id));
                 }
             }
         }
@@ -678,62 +752,113 @@ impl AppState {
         env.extend(agency_core::scripts::script_env(&worktree, &repo, &run.id, run.port_base));
 
         // Restart cleanly if a previous run session is still around.
-        self.tmux.kill_session(&run_session_name(id)).ok();
-        self.tmux.start_session(
+        let _ = self.term.read().unwrap().kill(&run_session_name(id));
+        self.term.read().unwrap().start_session(
             &run_session_name(id),
             &worktree,
             "sh",
             &["-lc".to_string(), run_cmd],
             &env,
+            220,
+            50,
         )
     }
 
     pub fn stop_run_script(&self, id: &str) -> Result<()> {
         self.run_attaches.lock().unwrap().remove(id);
-        self.tmux.kill_session(&run_session_name(id)).ok();
+        let _ = self.term.read().unwrap().kill(&run_session_name(id));
         Ok(())
     }
 
     pub fn run_script_status(&self, id: &str) -> Result<SessionStatus> {
         Ok(self
-            .tmux
-            .session_status(&run_session_name(id))
+            .term
+            .read()
+            .unwrap()
+            .status(&run_session_name(id))
             .unwrap_or(SessionStatus::Gone))
     }
 
     pub fn run_script_preview(&self, id: &str, lines: usize) -> Result<String> {
-        self.tmux.capture(&run_session_name(id), lines)
+        Ok(self.term.read().unwrap().capture(&run_session_name(id), lines).unwrap_or_default())
     }
 
-    pub fn attach_run_script<F>(&self, id: &str, on_output: F) -> Result<()>
+    pub fn attach_run_script<F>(&self, id: &str, cols: u16, rows: u16, on_output: F) -> Result<()>
     where
-        F: Fn(Vec<u8>) + Send + 'static,
+        F: Fn(Vec<u8>) + Send + Sync + 'static,
     {
-        let handle = self.tmux.attach(&run_session_name(id), on_output)?;
-        self.run_attaches.lock().unwrap().insert(id.to_string(), handle);
+        let sub = self.term.read().unwrap().subscribe(&run_session_name(id), cols, rows, on_output)?;
+        self.run_attaches.lock().unwrap().insert(id.to_string(), sub);
         Ok(())
     }
 
     pub fn detach_run_script(&self, id: &str) {
-        // Graceful detach before the handle's Drop SIGKills the attach client; see
-        // detach_run / Tmux::detach_clients.
-        self.tmux.detach_clients(&run_session_name(id));
+        // Dropping the Subscription sends Unsubscribe; the run-script session keeps
+        // running server-side. See detach_run.
         self.run_attaches.lock().unwrap().remove(id);
     }
 
     pub fn run_script_input(&self, id: &str, data: &[u8]) -> Result<()> {
-        let attaches = self.run_attaches.lock().unwrap();
-        let handle = attaches
-            .get(id)
-            .ok_or_else(|| anyhow!("run script not attached: {id}"))?;
-        handle.write_input(data)
+        self.term.read().unwrap().input(&run_session_name(id), data)
     }
 
     pub fn resize_run_script(&self, id: &str, cols: u16, rows: u16) -> Result<()> {
-        let attaches = self.run_attaches.lock().unwrap();
-        if let Some(handle) = attaches.get(id) {
-            handle.resize(rows, cols)?;
+        self.term.read().unwrap().resize(&run_session_name(id), cols, rows)
+    }
+
+    /// Ensure the run has a live daemon session, transparently respawning it if the
+    /// previous session is gone (e.g. after the app was quit). Prefers resuming the
+    /// agent's prior context; falls back to a fresh start; terminals get a fresh
+    /// shell. No-op if a session already exists.
+    pub fn ensure_run_active(&self, id: &str) -> Result<()> {
+        if !matches!(self.run_status(id)?, SessionStatus::Gone) {
+            return Ok(());
         }
+        let run = self.run_record(id)?;
+        let repo = self.project_repo(&run.project_id)?;
+
+        if run.kind == "terminal" {
+            let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+            self.term.read().unwrap().start_session(
+                &session_name(id), &repo, &shell, &["-l".to_string()], &[], 220, 50,
+            )?;
+            return Ok(());
+        }
+
+        let config = agency_core::config::load(&repo);
+        let worktree = repo.join(".agency").join("worktrees").join(&run.id);
+        let profile = {
+            let reg = self.registry.lock().unwrap();
+            reg.get_profile(&run.agent)?
+                .ok_or_else(|| anyhow!("unknown agent profile: {}", run.agent))?
+        };
+        let mut env = self.provider_env()?;
+        env.extend(profile.env.iter().cloned());
+        env.extend(agency_core::scripts::script_env(&worktree, &repo, &run.id, run.port_base));
+        let setup = config.scripts.setup.as_deref();
+        // Decide resume-vs-fresh up front. For claude/pi we can prove whether a
+        // session exists (they don't exit on resume-failure, so the daemon
+        // fallback can't save them); other resume-capable agents fall through to
+        // the resume-with-fallback path (the fallback catches their fast exits).
+        let probe = std::env::var_os("HOME")
+            .map(|h| crate::resume_probe::resume_probe(std::path::Path::new(&h), &profile.command, &worktree))
+            .unwrap_or(crate::resume_probe::ResumeProbe::Unknown);
+        let use_resume =
+            profile.resume_args.is_some() && probe != crate::resume_probe::ResumeProbe::None;
+        let (command, args) = agent_argv(&profile, &run.prompt, use_resume, setup);
+        let fallback = if use_resume {
+            let (fresh_cmd, fresh_args) = agent_argv(&profile, &run.prompt, false, setup);
+            Some(agency_core::term::protocol::FallbackSpec {
+                command: fresh_cmd,
+                args: fresh_args,
+                grace_ms: 3000,
+            })
+        } else {
+            None
+        };
+        self.term.read().unwrap().start_session_with_fallback(
+            &session_name(id), &worktree, &command, &args, &env, 220, 50, fallback,
+        )?;
         Ok(())
     }
 
@@ -753,8 +878,8 @@ impl AppState {
         let args = profile.render_args(&run.prompt);
         let (command, args) =
             agency_core::scripts::wrap_setup(config.scripts.setup.as_deref(), &profile.command, &args);
-        self.tmux.kill_session(&session_name(id)).ok();
-        self.tmux.start_session(&session_name(id), &worktree, &command, &args, &env)?;
+        let _ = self.term.read().unwrap().kill(&session_name(id));
+        self.term.read().unwrap().start_session(&session_name(id), &worktree, &command, &args, &env, 220, 50)?;
         Ok(self.run_info(&run))
     }
 
@@ -948,10 +1073,32 @@ impl AppState {
         if unsent.is_empty() {
             bail!("no unsent review comments");
         }
+        if !matches!(self.term.read().unwrap().status(&session_name(run_id)), Ok(SessionStatus::Running)) {
+            bail!("agent session {run_id} is not running");
+        }
         let message = compose_feedback(&unsent);
-        self.tmux.send_text(&session_name(run_id), &message)?;
+        self.term.read().unwrap().send_text(&session_name(run_id), &message)?;
         self.registry.lock().unwrap().mark_review_comments_sent(run_id)?;
         Ok(())
+    }
+
+    /// Count of all sessions currently tracked by the daemon (used for the quit
+    /// confirmation message). Returns 0 on any error.
+    pub(crate) fn session_count(&self) -> usize {
+        self.term.read().unwrap().list().map(|s| s.len()).unwrap_or(0)
+    }
+
+    /// Kill every daemon session, then tell the daemon to shut down.
+    /// Called from the quit confirmation flow; errors are swallowed because we
+    /// are about to exit anyway.
+    pub(crate) fn kill_all_and_shutdown(&self) {
+        let sessions = self.term.read().unwrap().list();
+        if let Ok(sessions) = sessions {
+            for (id, _) in sessions {
+                let _ = self.term.read().unwrap().kill(&id);
+            }
+        }
+        let _ = self.term.read().unwrap().shutdown();
     }
 
     pub fn notif_settings(&self) -> Result<notifier::NotifSettings> {
@@ -969,14 +1116,27 @@ impl AppState {
     /// Snapshot every non-archived run across all projects for the watcher:
     /// agent + run-script session status and a hash of the agent pane (for idle).
     pub fn watch_snapshot(&self) -> Result<Vec<notifier::RunSnapshot>> {
+        // Detect a dropped daemon and attempt a single respawn. The read guard on
+        // `is_alive()` is a temporary that is released at the end of the `if`
+        // condition, so the `write()` swap below cannot deadlock against it.
+        if !self.term.read().unwrap().is_alive() {
+            match TermClient::connect_or_spawn(termd_socket(&self.data_dir), termd_bin()) {
+                Ok(client) => {
+                    let n = client.list().map(|s| s.len()).unwrap_or(0);
+                    log::warn!("termd reconnected; adopted {n} surviving session(s)");
+                    *self.term.write().unwrap() = client;
+                }
+                Err(e) => log::error!("termd unavailable (agents may have stopped): {e}"),
+            }
+        }
         let projects = self.registry.lock().unwrap().list_projects()?;
         let mut out = Vec::new();
         for proj in projects {
             let runs = self.registry.lock().unwrap().list_runs(&proj.id)?;
             for run in runs {
-                let agent = self.tmux.session_status(&session_name(&run.id)).unwrap_or(SessionStatus::Gone);
-                let run_script = self.tmux.session_status(&run_session_name(&run.id)).unwrap_or(SessionStatus::Gone);
-                let pane = self.tmux.capture(&session_name(&run.id), 50).unwrap_or_default();
+                let agent = self.term.read().unwrap().status(&session_name(&run.id)).unwrap_or(SessionStatus::Gone);
+                let run_script = self.term.read().unwrap().status(&run_session_name(&run.id)).unwrap_or(SessionStatus::Gone);
+                let pane = self.term.read().unwrap().capture(&session_name(&run.id), 50).unwrap_or_default();
                 let mut hasher = std::collections::hash_map::DefaultHasher::new();
                 std::hash::Hash::hash(&pane, &mut hasher);
                 let pane_hash = std::hash::Hasher::finish(&hasher);
@@ -1012,8 +1172,44 @@ fn validate_repo(repo_path: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{new_task_id, slugify, pick_port};
+    use super::{new_task_id, slugify, pick_port, agent_argv};
+    use agency_core::profile::AgentProfile;
     use std::collections::HashSet;
+
+    #[test]
+    fn agent_argv_uses_resume_args_when_available() {
+        let p = AgentProfile {
+            name: "claude".into(), command: "claude".into(),
+            args: vec!["{{prompt}}".into()], env: vec![],
+            resume_args: Some(vec!["--continue".into()]),
+        };
+        let (cmd, args) = agent_argv(&p, "do the thing", true, None);
+        assert_eq!(cmd, "claude");
+        assert_eq!(args, vec!["--continue".to_string()]);
+    }
+
+    #[test]
+    fn agent_argv_falls_back_to_prompt_without_resume_args() {
+        let p = AgentProfile {
+            name: "cursor".into(), command: "cursor-agent".into(),
+            args: vec!["{{prompt}}".into()], env: vec![],
+            resume_args: None,
+        };
+        let (cmd, args) = agent_argv(&p, "hello", true, None);
+        assert_eq!(cmd, "cursor-agent");
+        assert_eq!(args, vec!["hello".to_string()]);
+    }
+
+    #[test]
+    fn agent_argv_fresh_ignores_resume_args() {
+        let p = AgentProfile {
+            name: "claude".into(), command: "claude".into(),
+            args: vec!["{{prompt}}".into()], env: vec![],
+            resume_args: Some(vec!["--continue".into()]),
+        };
+        let (_cmd, args) = agent_argv(&p, "fresh prompt", false, None);
+        assert_eq!(args, vec!["fresh prompt".to_string()]);
+    }
 
     #[test]
     fn slugify_makes_readable_ref_safe_slugs() {

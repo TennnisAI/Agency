@@ -38,6 +38,7 @@ fn pty_child_gets_xterm_term() {
         command: "sh".into(),
         args: vec!["-c".into(), "echo TERM=$TERM; sleep 0.1".into()],
         env: vec![],
+        resume_args: None,
     };
 
     let buf = Arc::new(Mutex::new(String::new()));
@@ -59,6 +60,7 @@ fn spawns_streams_input_and_exits() {
         command: fixture_path(),
         args: vec!["{{prompt}}".into()],
         env: vec![],
+        resume_args: None,
     };
 
     let buf = Arc::new(Mutex::new(String::new()));

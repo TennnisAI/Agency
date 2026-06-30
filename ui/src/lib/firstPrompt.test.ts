@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, test } from "vitest";
 import { initialCapture, feed } from "./firstPrompt";
 
 function run(chunks: string[]) {
@@ -44,4 +44,27 @@ describe("firstPrompt capture", () => {
     const { lines } = run(["a\x00\x01b\r"]); // NUL/SOH dropped, letters kept
     expect(lines).toEqual(["ab"]);
   });
+});
+
+test("skips an OSC color-report reply, captures real typing", () => {
+  let s = initialCapture();
+  // xterm.js reply to an OSC 11 query, terminated by ST (ESC \)
+  s = feed(s, "\x1b]11;rgb:b3b3/bcbc/b2b2\x1b\\").state;
+  const r = feed(s, "hi\r");
+  expect(r.line).toBe("hi");
+});
+
+test("skips a CSI DECRQM reply", () => {
+  let s = initialCapture();
+  s = feed(s, "\x1b[?1016;2$y").state;
+  const r = feed(s, "ok\r");
+  expect(r.line).toBe("ok");
+});
+
+test("skips an escape sequence split across chunks", () => {
+  let s = initialCapture();
+  s = feed(s, "\x1b]11;rgb:b3b3").state; // first half of OSC
+  s = feed(s, "/bcbc/b2b2\x07").state;   // rest + BEL terminator
+  const r = feed(s, "go\r");
+  expect(r.line).toBe("go");
 });

@@ -68,7 +68,8 @@ impl Registry {
                 name TEXT PRIMARY KEY,
                 command TEXT NOT NULL,
                 args TEXT NOT NULL,
-                env TEXT NOT NULL
+                env TEXT NOT NULL,
+                resume_args TEXT
             );
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
@@ -113,6 +114,9 @@ impl Registry {
         }
         if !column_exists(&conn, "runs", "merge_target")? {
             conn.execute("ALTER TABLE runs ADD COLUMN merge_target TEXT", [])?;
+        }
+        if !column_exists(&conn, "profiles", "resume_args")? {
+            conn.execute("ALTER TABLE profiles ADD COLUMN resume_args TEXT", [])?;
         }
         Ok(Registry { conn })
     }
@@ -173,10 +177,28 @@ impl Registry {
     pub fn upsert_profile(&self, p: &AgentProfile) -> Result<()> {
         let args = serde_json::to_string(&p.args)?;
         let env = serde_json::to_string(&p.env)?;
+        let resume = match &p.resume_args {
+            Some(r) => Some(serde_json::to_string(r)?),
+            None => None,
+        };
         self.conn.execute(
-            "INSERT INTO profiles (name, command, args, env) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(name) DO UPDATE SET command = ?2, args = ?3, env = ?4",
-            rusqlite::params![p.name, p.command, args, env],
+            "INSERT INTO profiles (name, command, args, env, resume_args) VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(name) DO UPDATE SET command = ?2, args = ?3, env = ?4, resume_args = ?5",
+            rusqlite::params![p.name, p.command, args, env, resume],
+        )?;
+        Ok(())
+    }
+
+    /// Set a profile's resume recipe ONLY if it is currently NULL (so a user's
+    /// customization is never clobbered). No-op if the profile does not exist.
+    pub fn ensure_profile_resume_args(&self, name: &str, resume_args: &Option<Vec<String>>) -> Result<()> {
+        let resume = match resume_args {
+            Some(r) => Some(serde_json::to_string(r)?),
+            None => None,
+        };
+        self.conn.execute(
+            "UPDATE profiles SET resume_args = ?2 WHERE name = ?1 AND resume_args IS NULL",
+            rusqlite::params![name, resume],
         )?;
         Ok(())
     }
@@ -184,7 +206,7 @@ impl Registry {
     pub fn get_profile(&self, name: &str) -> Result<Option<AgentProfile>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT name, command, args, env FROM profiles WHERE name = ?1")?;
+            .prepare("SELECT name, command, args, env, resume_args FROM profiles WHERE name = ?1")?;
         let mut rows = stmt.query([name])?;
         match rows.next()? {
             Some(row) => Ok(Some(row_to_profile(row)?)),
@@ -195,7 +217,7 @@ impl Registry {
     pub fn list_profiles(&self) -> Result<Vec<AgentProfile>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT name, command, args, env FROM profiles ORDER BY name")?;
+            .prepare("SELECT name, command, args, env, resume_args FROM profiles ORDER BY name")?;
         let rows = stmt.query_map([], |row| Ok(row_to_profile(row)))?;
         let mut out = Vec::new();
         for r in rows {
@@ -378,11 +400,16 @@ impl Registry {
 fn row_to_profile(row: &rusqlite::Row) -> Result<AgentProfile> {
     let args: String = row.get(2)?;
     let env: String = row.get(3)?;
+    let resume_args: Option<String> = row.get(4)?;
     Ok(AgentProfile {
         name: row.get(0)?,
         command: row.get(1)?,
         args: serde_json::from_str(&args)?,
         env: serde_json::from_str(&env)?,
+        resume_args: match resume_args {
+            Some(s) => Some(serde_json::from_str(&s)?),
+            None => None,
+        },
     })
 }
 
@@ -637,6 +664,65 @@ mod tests {
         reg.delete_review_comment("c1").unwrap();
         let ids: Vec<String> = reg.list_review_comments("run-1").unwrap().into_iter().map(|c| c.id).collect();
         assert_eq!(ids, vec!["c2"]);
+    }
+
+    #[test]
+    fn profile_resume_args_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let reg = Registry::open(&dir.path().join("a.db")).unwrap();
+        reg.upsert_profile(&AgentProfile {
+            name: "claude".into(),
+            command: "claude".into(),
+            args: vec![],
+            env: vec![],
+            resume_args: Some(vec!["--continue".into()]),
+        })
+        .unwrap();
+        reg.upsert_profile(&AgentProfile {
+            name: "cursor".into(),
+            command: "cursor-agent".into(),
+            args: vec![],
+            env: vec![],
+            resume_args: None,
+        })
+        .unwrap();
+        assert_eq!(
+            reg.get_profile("claude").unwrap().unwrap().resume_args,
+            Some(vec!["--continue".into()])
+        );
+        assert_eq!(reg.get_profile("cursor").unwrap().unwrap().resume_args, None);
+    }
+
+    #[test]
+    fn ensure_profile_resume_args_only_sets_when_unset() {
+        let dir = tempfile::tempdir().unwrap();
+        let reg = Registry::open(&dir.path().join("a.db")).unwrap();
+        reg.upsert_profile(&AgentProfile {
+            name: "claude".into(), command: "claude".into(),
+            args: vec![], env: vec![], resume_args: None,
+        }).unwrap();
+        // Unset -> gets set.
+        reg.ensure_profile_resume_args("claude", &Some(vec!["--continue".into()])).unwrap();
+        assert_eq!(reg.get_profile("claude").unwrap().unwrap().resume_args, Some(vec!["--continue".into()]));
+        // Already set -> not clobbered.
+        reg.ensure_profile_resume_args("claude", &Some(vec!["--other".into()])).unwrap();
+        assert_eq!(reg.get_profile("claude").unwrap().unwrap().resume_args, Some(vec!["--continue".into()]));
+    }
+
+    #[test]
+    fn migrates_legacy_profiles_table_without_resume_args() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("legacy.db");
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE profiles (name TEXT PRIMARY KEY, command TEXT NOT NULL, args TEXT NOT NULL, env TEXT NOT NULL);
+                 INSERT INTO profiles (name, command, args, env) VALUES ('claude','claude','[]','[]');",
+            ).unwrap();
+        }
+        // Opening must add the column and read the legacy row as resume_args = None.
+        let reg = Registry::open(&path).unwrap();
+        assert_eq!(reg.get_profile("claude").unwrap().unwrap().resume_args, None);
     }
 
     #[test]

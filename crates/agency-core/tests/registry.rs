@@ -55,6 +55,7 @@ fn profiles_persist_and_roundtrip() {
         command: "claude".into(),
         args: vec!["{{prompt}}".into()],
         env: vec![("FOO".into(), "bar".into())],
+        resume_args: None,
     };
     {
         let reg = Registry::open(&db).unwrap();

@@ -6,6 +6,8 @@ pub struct AgentProfile {
     pub command: String,
     pub args: Vec<String>,
     pub env: Vec<(String, String)>,
+    #[serde(default)]
+    pub resume_args: Option<Vec<String>>,
 }
 
 impl AgentProfile {

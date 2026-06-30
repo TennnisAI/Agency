@@ -52,7 +52,7 @@ export default function FocusTerminal(
     termRef.current = term;
     term.open(container);
     // Fit xterm to its container, then push the new size to the backend so the
-    // PTY (and thus tmux) reflows to match. resize_run is a no-op until the
+    // PTY (and thus the daemon emulator) reflows to match. resize_run is a no-op until the
     // attach lands, so it's safe to call before/while attaching.
     const doFit = () => {
       try {
@@ -75,12 +75,12 @@ export default function FocusTerminal(
     let seeded = false;
     let onData: { dispose(): void } | undefined;
     stream.preview(runId, 200).then((seed) => {
-      // Only seed before the live stream lands. Once attach is streaming, tmux has
+      // Only seed before the live stream lands. Once attach is streaming, the daemon has
       // switched the terminal into its alternate screen and repainted; writing the
       // (now stale) snapshot on top of that corrupts the live screen — e.g. an
       // extra line above the prompt. The live attach is authoritative.
       if (disposed || liveStarted || !seed) return;
-      // tmux capture-pane pads the snapshot with blank lines up to the pane height;
+      // the daemon snapshot may pad with blank lines up to the pane height;
       // we also used to force a trailing newline. Both rendered as a block of empty
       // lines on every open. Trim trailing blank lines.
       const trimmed = seed.replace(/[\r\n]+$/, "");
@@ -97,7 +97,7 @@ export default function FocusTerminal(
       stream.attach(runId, (bytes) => {
         if (!liveStarted) {
           liveStarted = true;
-          // The live attach is authoritative: tmux sends a full repaint on attach.
+          // The live attach is authoritative: the daemon sends a full snapshot on attach.
           // If we already painted a preview seed, the seed and the repaint overlap
           // (the snapshot is positioned relative to the old screen, the repaint to a
           // fresh one) and leave artifacts — e.g. a stale blank line above the prompt.

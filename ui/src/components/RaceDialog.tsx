@@ -71,7 +71,7 @@ export default function RaceDialog({ onClose }: { onClose: () => void }) {
       <div className="merge-modal race-dialog">
         <div className="settings-head">
           <h2>Race agents</h2>
-          <button onClick={onClose}>Close</button>
+          <button className="icon-btn" title="Close" onClick={onClose}>✕</button>
         </div>
         <p className="merge-note">
           The same prompt is sent to every selected agent, each in its own isolated workspace.
@@ -120,7 +120,7 @@ export default function RaceDialog({ onClose }: { onClose: () => void }) {
           <button disabled={!canStart} onClick={start}>
             {busy ? "Starting…" : `Start race (${picked.size} agents)`}
           </button>
-          <button onClick={onClose}>Cancel</button>
+          <button className="ghost" onClick={onClose}>Cancel</button>
         </div>
       </div>
     </div>

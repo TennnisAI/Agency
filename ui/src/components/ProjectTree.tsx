@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Project, RunInfo, RepoReadiness, addProject, closeProject, deleteProject, inspectRepo, listProjects, listRuns } from "../api";
-import { projectColor, runName } from "../agents";
+import { projectAccent, runName } from "../agents";
 import { useRuns } from "../store/runs";
 import ConfirmDialog from "./ConfirmDialog";
 import RepoSetupDialog from "./RepoSetupDialog";
@@ -135,7 +135,7 @@ export default function ProjectTree({
               <span className="chev" onClick={(e) => { e.stopPropagation(); toggle(p); }}>
                 {openIds.has(p.id) ? "▾" : "▸"}
               </span>
-              <span className="proj-icon" aria-hidden style={{ background: projectColor(p.id) }}>{p.name.slice(0, 1).toUpperCase()}</span>
+              <span className="proj-icon" aria-hidden style={{ background: projectAccent(p) }}>{p.name.slice(0, 1).toUpperCase()}</span>
               <span className="tree-name tl">{p.name}</span>
               {readiness[p.id]?.state === "noCommits" && (
                 <button
@@ -153,7 +153,7 @@ export default function ProjectTree({
                   <li
                     key={r.id}
                     className={`tree-child ${r.id === focusedRunId ? "active" : ""}`}
-                    style={{ "--sel-accent": projectColor(p.id) } as React.CSSProperties}
+                    style={{ "--sel-accent": projectAccent(p) } as React.CSSProperties}
                     title={`Open ${r.agent}: ${runName(r)}`}
                     onClick={(e) => { e.stopPropagation(); onSelectRun(p, r); }}
                   >

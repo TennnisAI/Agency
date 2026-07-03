@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Project, RunInfo, listProjects, listRuns, runPreview } from "../api";
-import { projectColor, runName } from "../agents";
+import { projectAccent, runName } from "../agents";
 
 const FOLD_KEY = "home:folded";
 
@@ -119,7 +119,7 @@ export default function HomeView({
                 {isFolded ? "▸" : "▾"}
               </button>
               <button className="home-group-title" onClick={() => onOpenProject(p)} title={`Open ${p.name}`}>
-                <span className="proj-icon" aria-hidden style={{ background: projectColor(p.id) }}>
+                <span className="proj-icon" aria-hidden style={{ background: projectAccent(p) }}>
                   {p.name.slice(0, 1).toUpperCase()}
                 </span>
                 <span className="home-group-name">{p.name}</span>

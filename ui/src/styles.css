@@ -1119,3 +1119,16 @@ input, textarea, code,
 .gh-pick-list { display: flex; flex-direction: column; gap: 4px; max-height: 260px; overflow-y: auto; }
 .gh-pick-item { display: flex; align-items: baseline; gap: 8px; font-size: 12px; color: var(--text); cursor: pointer; }
 .gh-pick-agent { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--o1); }
+
+/* Modal chrome shared by the merge modal and the race/import dialogs:
+   .settings-overlay dims and centers; .settings-head is the compact card
+   header (title left, ✕ right). */
+.settings-overlay {
+  position: fixed; inset: 0; z-index: 60;
+  background: rgba(0, 0, 0, .38);
+  display: flex; align-items: center; justify-content: center;
+  padding: 32px;
+}
+.settings-head { display: flex; align-items: center; gap: 10px; }
+.settings-head h2 { margin: 0; font-size: 15px; font-weight: 600; flex: 1; }
+.merge-modal.race-dialog { width: 480px; }

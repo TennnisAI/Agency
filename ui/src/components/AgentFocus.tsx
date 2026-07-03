@@ -52,7 +52,7 @@ export default function AgentFocus({
                 <span className="rail-name">
                   {r.kind === "terminal"
                     ? `≳ ${r.title || "terminal"}`
-                    : `${r.raceId ? "⚡ " : ""}${r.agent}: ${runName(r)}`}
+                    : `${r.raceId ? "∥ " : ""}${r.agent}: ${runName(r)}`}
                 </span>
               </button>
             ))}

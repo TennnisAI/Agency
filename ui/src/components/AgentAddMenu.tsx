@@ -106,9 +106,9 @@ export default function AgentAddMenu({
               <button key={a.name} onClick={() => choose(a.name)}>{agentLabel(a.name)}</button>
             ))}
             <div className="agent-menu-sep" />
-            <button onClick={() => { setOpen(false); setRaceOpen(true); }}>⚡ Race agents…</button>
-            <button onClick={() => { setOpen(false); setImportMode("issue"); }}>◈ From GitHub issue…</button>
-            <button onClick={() => { setOpen(false); setImportMode("pr"); }}>⇋ Review GitHub PR…</button>
+            <button onClick={() => { setOpen(false); setRaceOpen(true); }}>∥ Race agents…</button>
+            <button onClick={() => { setOpen(false); setImportMode("issue"); }}>◈ GitHub issue…</button>
+            <button onClick={() => { setOpen(false); setImportMode("pr"); }}>⇋ GitHub PR…</button>
             <div className="agent-menu-sep" />
             <button onClick={chooseTerminal}>≳ New terminal</button>
             {showPicker && branches.length > 0 && (

@@ -157,7 +157,11 @@ export default function FileEditor({ root, path }: { root: FileRoot; path: strin
     if (vk.kind === "text" && vk.preview === "md") {
       setPreviewContent(markdownSrcDoc(marked.parse(doc, { async: false }) as string));
     } else if (vk.kind === "text" && vk.preview === "html") {
-      setPreviewContent(doc);
+      // data: URL, not srcDoc: srcdoc documents inherit the app's strict CSP,
+      // which blocks the page's own scripts — and design-handoff HTML is
+      // usually script-rendered, so it previewed blank. A data: frame (already
+      // allowed by frame-src, same as the PDF path) gets an opaque origin.
+      setPreviewContent(`data:text/html;charset=utf-8,${encodeURIComponent(doc)}`);
     } else if (vk.kind === "text" && vk.preview === "svg") {
       setPreviewContent(`data:image/svg+xml;charset=utf-8,${encodeURIComponent(doc)}`);
     }
@@ -205,10 +209,15 @@ export default function FileEditor({ root, path }: { root: FileRoot; path: strin
           {previewing && status === "ready" && (
             vk.preview === "svg" ? (
               <div className="file-preview-media"><img src={previewContent} alt={path} /></div>
+            ) : vk.preview === "html" ? (
+              // allow-scripts WITHOUT allow-same-origin: the page's own JS runs
+              // (script-rendered HTML previews correctly) but the opaque data:
+              // origin has no same-origin or IPC access to the app.
+              <iframe className="file-preview-frame" title={path} sandbox="allow-scripts" src={previewContent} />
             ) : (
               // sandbox="" (no allow-* tokens) blocks scripts and same-origin
-              // access — repo files are agent-written, so previews must never
-              // execute in the app's IPC-capable context.
+              // access — repo files are agent-written, so markdown previews
+              // never execute in the app's IPC-capable context.
               <iframe className="file-preview-frame" title={path} sandbox="" srcDoc={previewContent} />
             )
           )}

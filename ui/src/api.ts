@@ -8,6 +8,7 @@ export interface Project {
   repo_path: string;
   default_agent: string | null;
   default_provider: string | null;
+  color: string | null;
 }
 
 export type SessionStatus =

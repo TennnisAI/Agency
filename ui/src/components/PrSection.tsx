@@ -4,13 +4,12 @@ import {
   CheckItem,
   GhReadiness,
   PrInfo,
-  createInstallTerminal,
   createPr,
   ghReadiness,
   prStatus,
   sendCheckFeedback,
 } from "../api";
-import { useRuns } from "../store/runs";
+import GhSetupHint from "./GhSetupHint";
 import { toastError } from "../lib/toast";
 
 const BUCKET_ICON: Record<string, string> = {
@@ -35,7 +34,6 @@ export default function PrSection({
   canCreate: boolean;
   onLeave: () => void;
 }) {
-  const { refreshRuns, setFocusedRun, setView } = useRuns();
   const [readiness, setReadiness] = useState<GhReadiness | null>(null);
   const [pr, setPr] = useState<PrInfo | null>(null);
   const [checks, setChecks] = useState<CheckItem[]>([]);
@@ -74,20 +72,6 @@ export default function PrSection({
     return () => window.clearInterval(t);
   }, [pr, refreshStatus]);
 
-  // Fix a readiness gap in an in-app terminal (interactive `gh auth login`
-  // works there), reusing the agent-install terminal flow.
-  async function setupInTerminal(label: string, command: string) {
-    try {
-      const run = await createInstallTerminal(projectId, label, command);
-      await refreshRuns();
-      setFocusedRun(run.id);
-      setView("focus");
-      onLeave();
-    } catch (e) {
-      toastError(e, "Couldn't open setup terminal");
-    }
-  }
-
   async function doCreate() {
     setBusy(true);
     setError("");
@@ -119,32 +103,8 @@ export default function PrSection({
       <div className="pr-section-label">Pull request</div>
       {error && <div className="git-error">{error}</div>}
 
-      {readiness === "notInstalled" && (
-        <div className="pr-setup">
-          <p className="merge-note">
-            PR features use the GitHub CLI (<code>gh</code>), which isn't installed.
-          </p>
-          <button onClick={() => setupInTerminal("gh", "brew install gh")}>
-            Install GitHub CLI…
-          </button>
-        </div>
-      )}
-
-      {readiness === "notAuthenticated" && (
-        <div className="pr-setup">
-          <p className="merge-note">
-            The GitHub CLI isn't signed in yet. <code>gh auth login</code> walks you through it.
-          </p>
-          <button onClick={() => setupInTerminal("gh auth", "gh auth login")}>
-            Sign in to GitHub…
-          </button>
-        </div>
-      )}
-
-      {readiness === "noGithubRemote" && (
-        <p className="merge-note">
-          This repo has no GitHub remote — add one in Source Control (Publish) to open PRs.
-        </p>
+      {readiness !== null && readiness !== "ready" && (
+        <GhSetupHint readiness={readiness} onLeave={onLeave} />
       )}
 
       {readiness === "ready" && !pr && canCreate && (

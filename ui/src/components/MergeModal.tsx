@@ -170,7 +170,7 @@ export default function MergeModal({
       <div className="merge-modal">
         <div className="settings-head">
           <h2>Approve &amp; merge</h2>
-          <button onClick={onClose}>Close</button>
+          <button className="icon-btn" title="Close" onClick={onClose}>✕</button>
         </div>
         <div className="merge-timeline">
           {steps.map((s) => (
@@ -213,7 +213,7 @@ export default function MergeModal({
               {!nothingToMerge && (
                 <div className="git-actions">
                   <button onClick={attempt}>Merge into {preview.base}</button>
-                  <button onClick={onClose}>Cancel</button>
+                  <button className="ghost" onClick={onClose}>Cancel</button>
                 </div>
               )}
               {projectId && (
@@ -251,11 +251,11 @@ export default function MergeModal({
                 </button>
               )}
               {losers.length > 0 && (
-                <button disabled={archiving} onClick={() => archiveWorkspace(false)}>
+                <button className="ghost" disabled={archiving} onClick={() => archiveWorkspace(false)}>
                   Archive, keep losers
                 </button>
               )}
-              <button disabled={archiving} onClick={onClose}>Keep workspace</button>
+              <button className="ghost" disabled={archiving} onClick={onClose}>Keep workspace</button>
             </div>
           </div>
         )}
@@ -285,7 +285,7 @@ export default function MergeModal({
                     ))}
                   </select>
                 )}
-                <button onClick={() => abortMergeTask(taskId).then(onClose)}>Abort merge</button>
+                <button className="ghost" onClick={() => abortMergeTask(taskId).then(onClose)}>Abort merge</button>
               </div>
             ) : (
               <div className="resolver">
@@ -294,7 +294,7 @@ export default function MergeModal({
                   <button disabled={!resolverDone} onClick={attempt}>
                     Re-check merge
                   </button>
-                  <button onClick={() => abortMergeTask(taskId).then(onClose)}>Abort merge</button>
+                  <button className="ghost" onClick={() => abortMergeTask(taskId).then(onClose)}>Abort merge</button>
                 </div>
               </div>
             )}

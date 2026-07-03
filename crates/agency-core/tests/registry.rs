@@ -133,3 +133,21 @@ fn list_runs_newest_first() {
     let ids: Vec<String> = reg.list_runs("p").unwrap().into_iter().map(|r| r.id).collect();
     assert_eq!(ids, vec!["b", "c", "a"]); // created_at desc
 }
+
+#[test]
+fn new_projects_get_distinct_colors_until_palette_exhausts() {
+    let dir = tempfile::tempdir().unwrap();
+    let reg = Registry::open(&dir.path().join("colors.db")).unwrap();
+    let mut colors = Vec::new();
+    for i in 0..9 {
+        let p = reg
+            .add_project(&format!("p{i}"), std::path::Path::new("/tmp/x"))
+            .unwrap();
+        colors.push(p.color.expect("assigned at add time"));
+    }
+    let unique: std::collections::HashSet<_> = colors.iter().collect();
+    assert_eq!(unique.len(), 9, "first nine projects all differ: {colors:?}");
+    // Tenth project cycles back to the least-used color rather than failing.
+    let tenth = reg.add_project("p9", std::path::Path::new("/tmp/x")).unwrap();
+    assert!(tenth.color.is_some());
+}

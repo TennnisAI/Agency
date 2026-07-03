@@ -29,6 +29,7 @@ export interface RunInfo {
   port: number | null;
   kind: "agent" | "terminal";
   archivedAt: number | null;
+  raceId: string | null;
 }
 
 export const listProjects = () => invoke<Project[]>("list_projects");
@@ -217,6 +218,26 @@ export interface PrStatus {
   pr: PrInfo | null;
   checks: CheckItem[];
 }
+
+export interface IssueItem {
+  number: number;
+  title: string;
+}
+
+export const createRace = (
+  projectId: string,
+  prompt: string,
+  agents: string[],
+  base: string,
+  mergeTarget?: string | null,
+) => invoke<RunInfo[]>("create_race", { projectId, prompt, agents, base, mergeTarget: mergeTarget ?? null });
+export const listGhIssues = (projectId: string) =>
+  invoke<IssueItem[]>("list_gh_issues", { projectId });
+export const listGhPrs = (projectId: string) => invoke<PrInfo[]>("list_gh_prs", { projectId });
+export const createRunFromIssue = (projectId: string, number: number, agent: string) =>
+  invoke<RunInfo>("create_run_from_issue", { projectId, number, agent });
+export const createRunFromPr = (projectId: string, number: number, agent: string) =>
+  invoke<RunInfo>("create_run_from_pr", { projectId, number, agent });
 
 export const ghReadiness = (projectId: string) =>
   invoke<GhReadiness>("gh_readiness", { projectId });

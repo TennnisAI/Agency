@@ -160,3 +160,15 @@ fn copy_into_copies_untracked_files_and_dirs_skipping_bad_paths() {
     );
     assert!(!wt.path.join("missing.txt").exists());
 }
+
+#[test]
+fn create_on_branch_checks_out_existing_branch() {
+    let repo = init_repo();
+    git(repo.path(), &["branch", "feat/existing"]);
+    let mgr = WorktreeManager::new(repo.path().to_path_buf());
+    let wt = mgr.create_on_branch("task-pr", "feat/existing").unwrap();
+    assert!(wt.path.exists());
+    assert_eq!(wt.branch, "feat/existing");
+    // No agent/ branch was created for it.
+    assert!(!branch_exists(repo.path(), "agent/task-pr"));
+}

@@ -41,6 +41,22 @@ pub struct RunInfo {
     pub files: u32,
     pub port: Option<u16>,
     pub kind: String,
+    pub race_id: Option<String>,
+}
+
+/// Everything create_run_spec needs to make a workspace + session. The public
+/// entry points (plain create, racing, from-issue, from-PR) differ only in
+/// which fields they fill.
+struct NewRunSpec<'a> {
+    project_id: &'a str,
+    prompt: &'a str,
+    agent: &'a str,
+    base: &'a str,
+    merge_target: Option<&'a str>,
+    race_id: Option<String>,
+    title: Option<String>,
+    /// Check out this existing branch instead of cutting `agent/<id>` off base.
+    existing_branch: Option<String>,
 }
 
 /// What an "Approve & merge" would do, computed before running it so the UI can
@@ -533,6 +549,7 @@ impl AppState {
             files: stat.files,
             port: run.port_base,
             kind: run.kind.clone(),
+            race_id: run.race_id.clone(),
         }
     }
 
@@ -545,32 +562,58 @@ impl AppState {
     }
 
     pub fn create_run(&self, project_id: &str, prompt: &str, agent: &str, base: &str, merge_target: Option<&str>) -> Result<RunInfo> {
-        let repo = self.project_repo(project_id)?;
+        self.create_run_spec(NewRunSpec {
+            project_id,
+            prompt,
+            agent,
+            base,
+            merge_target,
+            race_id: None,
+            title: None,
+            existing_branch: None,
+        })
+    }
+
+    fn create_run_spec(&self, spec: NewRunSpec) -> Result<RunInfo> {
+        let repo = self.project_repo(spec.project_id)?;
         let config = agency_core::config::load(&repo);
         let port = self.allocate_port(config.ports.base, config.ports.block_size)?;
         let profile = {
             let reg = self.registry.lock().unwrap();
-            reg.get_profile(agent)?
-                .ok_or_else(|| anyhow!("unknown agent profile: {agent}"))?
+            reg.get_profile(spec.agent)?
+                .ok_or_else(|| anyhow!("unknown agent profile: {agent}", agent = spec.agent))?
         };
-        let id = new_task_id(prompt);
+        let id = new_task_id(spec.prompt);
         let manager = WorktreeManager::new(repo.clone());
-        let worktree = manager.create(&id, base)?;
+        // Default: cut agent/<id> from the base. PR-review runs instead check
+        // out the PR's existing head branch.
+        let worktree = match &spec.existing_branch {
+            Some(branch) => manager.create_on_branch(&id, branch)?,
+            None => manager.create(&id, spec.base)?,
+        };
         // Untracked essentials (.env etc.) don't come with a worktree; copy the
         // configured list. Best-effort: a bad entry shouldn't block the run.
         if let Err(e) = manager.copy_into(&id, &config.files.copy) {
             log::warn!("copying [files] copy entries into worktree {id}: {e}");
         }
-        self.emit_mcp(agent, &repo, &worktree.path, &config);
+        self.emit_mcp(spec.agent, &repo, &worktree.path, &config);
 
         let mut env = self.provider_env()?;
         env.extend(profile.env.iter().cloned());
         env.extend(agency_core::scripts::script_env(&worktree.path, &repo, &id, Some(port)));
-        let args: Vec<String> = profile
-            .render_args(prompt)
+        let mut args: Vec<String> = profile
+            .render_args(spec.prompt)
             .into_iter()
             .filter(|a| !a.is_empty())
             .collect();
+        // Deliver a non-empty prompt as the agent's initial positional prompt
+        // (claude/codex/cursor-agent/opencode all accept one) unless the
+        // profile places it explicitly with a {{prompt}} token. The default
+        // flow passes "" and behaves exactly as before: the user types into
+        // the live terminal.
+        if !spec.prompt.trim().is_empty() && !profile.args.iter().any(|a| a.contains("{{prompt}}")) {
+            args.push(spec.prompt.to_string());
+        }
         let (command, args) =
             agency_core::scripts::wrap_setup(config.scripts.setup.as_deref(), &profile.command, &args);
 
@@ -579,28 +622,125 @@ impl AppState {
             .unwrap()
             .start_session(&session_name(&id), &worktree.path, &command, &args, &env, 220, 50)?;
 
+        // A run created with a real prompt gets a title immediately (word-based;
+        // no LLM on this path). The promptless flow still titles via the
+        // first-prompt capture.
+        let title = spec.title.clone().or_else(|| {
+            let t = agency_core::title::fallback_title(spec.prompt);
+            (!t.is_empty()).then_some(t)
+        });
+
         let run = agency_core::registry::Run {
             id: id.clone(),
-            project_id: project_id.to_string(),
-            agent: agent.to_string(),
-            prompt: prompt.to_string(),
-            base: base.to_string(),
+            project_id: spec.project_id.to_string(),
+            agent: spec.agent.to_string(),
+            prompt: spec.prompt.to_string(),
+            base: spec.base.to_string(),
             branch: worktree.branch.clone(),
             created_at: now_secs(),
             port_base: Some(port),
             archived_at: None,
-            title: None,
+            title,
             kind: "agent".to_string(),
-            merge_target: merge_target.map(|s| s.to_string()),
+            merge_target: spec.merge_target.map(|s| s.to_string()),
+            race_id: spec.race_id.clone(),
         };
         {
             let reg = self.registry.lock().unwrap();
             reg.insert_run(&run)?;
             // Remember the agent type so new-task shortcuts default to what
             // this project actually uses. Best-effort bookkeeping.
-            let _ = reg.set_project_default_agent(project_id, agent);
+            let _ = reg.set_project_default_agent(spec.project_id, spec.agent);
         }
         Ok(self.run_info(&run))
+    }
+
+    /// Fan one prompt out to several agents in parallel workspaces (racing).
+    /// Each attempt is an ordinary run sharing a race_id; the user compares
+    /// them and merges the winner. Partial failures leave the already-created
+    /// attempts in place (visible and individually discardable).
+    pub fn create_race(
+        &self,
+        project_id: &str,
+        prompt: &str,
+        agents: &[String],
+        base: &str,
+        merge_target: Option<&str>,
+    ) -> Result<Vec<RunInfo>> {
+        if prompt.trim().is_empty() {
+            bail!("racing needs a prompt — it is sent to every agent at launch");
+        }
+        if agents.len() < 2 {
+            bail!("racing needs at least two agents");
+        }
+        let race_id = uuid::Uuid::new_v4().to_string();
+        let mut out = Vec::new();
+        for agent in agents {
+            out.push(self.create_run_spec(NewRunSpec {
+                project_id,
+                prompt,
+                agent,
+                base,
+                merge_target,
+                race_id: Some(race_id.clone()),
+                title: None,
+                existing_branch: None,
+            })?);
+        }
+        Ok(out)
+    }
+
+    /// Spawn a workspace for a GitHub issue: the issue becomes the run's
+    /// prompt (delivered to the agent at launch) and its title.
+    pub fn create_run_from_issue(&self, project_id: &str, number: u64, agent: &str) -> Result<RunInfo> {
+        let repo = self.project_repo(project_id)?;
+        let issue = agency_core::gh::GhCli::default().view_issue(&repo, number)?;
+        let base = agency_core::merge::detect_base(&repo)?;
+        let prompt = format!(
+            "Work on GitHub issue #{number}: {title}\n\n{body}\n\nIssue link: {url}",
+            title = issue.title,
+            body = issue.body,
+            url = issue.url,
+        );
+        self.create_run_spec(NewRunSpec {
+            project_id,
+            prompt: &prompt,
+            agent,
+            base: &base,
+            merge_target: None,
+            race_id: None,
+            title: Some(format!("#{number} {}", issue.title)),
+            existing_branch: None,
+        })
+    }
+
+    /// Check an existing PR's head branch out into a workspace for review.
+    /// The local branch is fast-forwarded from origin first; a diverged local
+    /// branch fails loudly rather than being clobbered.
+    pub fn create_run_from_pr(&self, project_id: &str, number: u64, agent: &str) -> Result<RunInfo> {
+        let repo = self.project_repo(project_id)?;
+        let pr = agency_core::gh::GhCli::default()
+            .view_pr_by_number(&repo, number)?
+            .ok_or_else(|| anyhow!("PR #{number} not found"))?;
+        if pr.head_ref_name.is_empty() {
+            bail!("PR #{number} has no local head branch (cross-fork PRs aren't supported yet)");
+        }
+        agency_core::git::fetch_branch(&repo, &pr.head_ref_name)?;
+        let prompt = format!(
+            "Review GitHub pull request #{number}: {title}. Its branch is checked out in this workspace. PR link: {url}",
+            title = pr.title,
+            url = pr.url,
+        );
+        self.create_run_spec(NewRunSpec {
+            project_id,
+            prompt: &prompt,
+            agent,
+            base: &pr.base_ref_name,
+            merge_target: Some(&pr.base_ref_name),
+            race_id: None,
+            title: Some(format!("PR #{number} {}", pr.title)),
+            existing_branch: Some(pr.head_ref_name.clone()),
+        })
     }
 
     /// Store the first prompt the user typed into the agent terminal as the
@@ -746,6 +886,7 @@ impl AppState {
             title: Some("terminal".to_string()),
             kind: "terminal".to_string(),
             merge_target: None,
+            race_id: None,
         };
         self.registry.lock().unwrap().insert_run(&run)?;
         Ok(self.run_info(&run))
@@ -827,6 +968,7 @@ impl AppState {
             title: Some(format!("install {agent}")),
             kind: "terminal".to_string(),
             merge_target: None,
+            race_id: None,
         };
         self.registry.lock().unwrap().insert_run(&run)?;
         Ok(self.run_info(&run))
@@ -1742,6 +1884,7 @@ mod tests {
             title: Some("terminal".to_string()),
             kind: "terminal".to_string(),
             merge_target: None,
+            race_id: None,
         };
         assert_eq!(run.kind, "terminal");
         assert!(run.branch.is_empty());

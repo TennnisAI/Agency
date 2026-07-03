@@ -500,6 +500,58 @@ pub async fn send_check_feedback(state: State<'_, AppState>, task_id: String) ->
 }
 
 #[tauri::command]
+pub fn create_race(
+    state: State<'_, AppState>,
+    project_id: String,
+    prompt: String,
+    agents: Vec<String>,
+    base: String,
+    merge_target: Option<String>,
+) -> Result<Vec<RunInfo>, String> {
+    state
+        .create_race(&project_id, &prompt, &agents, &base, merge_target.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn list_gh_issues(
+    state: State<'_, AppState>,
+    project_id: String,
+) -> Result<Vec<agency_core::gh::IssueItem>, String> {
+    let repo = state.project_repo_path(&project_id).map_err(|e| e.to_string())?;
+    agency_core::gh::GhCli::default().list_issues(&repo).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn list_gh_prs(
+    state: State<'_, AppState>,
+    project_id: String,
+) -> Result<Vec<agency_core::gh::PrInfo>, String> {
+    let repo = state.project_repo_path(&project_id).map_err(|e| e.to_string())?;
+    agency_core::gh::GhCli::default().list_prs(&repo).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn create_run_from_issue(
+    state: State<'_, AppState>,
+    project_id: String,
+    number: u64,
+    agent: String,
+) -> Result<RunInfo, String> {
+    state.create_run_from_issue(&project_id, number, &agent).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn create_run_from_pr(
+    state: State<'_, AppState>,
+    project_id: String,
+    number: u64,
+    agent: String,
+) -> Result<RunInfo, String> {
+    state.create_run_from_pr(&project_id, number, &agent).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub fn list_mcp_servers(
     state: State<'_, AppState>,
 ) -> Result<Vec<agency_core::mcp::McpServer>, String> {

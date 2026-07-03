@@ -393,3 +393,33 @@ fn revert_lines_reverts_only_selection() {
     let content = std::fs::read_to_string(dir.path().join("tracked.txt")).unwrap();
     assert_eq!(content, "one\nthree\n", "only 'two' should be reverted");
 }
+
+#[test]
+fn fetch_branch_updates_local_from_origin_without_checkout() {
+    let upstream = tempfile::tempdir().unwrap();
+    init_repo(upstream.path());
+    run(upstream.path(), &["branch", "feat/remote-work"]);
+
+    // Clone; the clone's origin is the upstream.
+    let clone_parent = tempfile::tempdir().unwrap();
+    let clone = clone_parent.path().join("clone");
+    let status = std::process::Command::new("git")
+        .args(["clone", "-q", upstream.path().to_str().unwrap(), clone.to_str().unwrap()])
+        .status()
+        .unwrap();
+    assert!(status.success());
+
+    // Advance the branch upstream after the clone.
+    run(upstream.path(), &["checkout", "-q", "feat/remote-work"]);
+    std::fs::write(upstream.path().join("later.txt"), "x").unwrap();
+    run(upstream.path(), &["add", "-A"]);
+    run(upstream.path(), &["commit", "-q", "-m", "later"]);
+
+    agency_core::git::fetch_branch(&clone, "feat/remote-work").unwrap();
+    let out = std::process::Command::new("git")
+        .args(["log", "-1", "--format=%s", "feat/remote-work"])
+        .current_dir(&clone)
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "later");
+}

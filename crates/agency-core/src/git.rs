@@ -94,6 +94,14 @@ pub fn branch_summary(repo: &Path, branch: &str, base: &str) -> Result<String> {
     Ok(body)
 }
 
+/// Update (or create) the local `branch` from origin's copy without checking
+/// it out. Deliberately not forced: a local branch that diverged from origin
+/// fails loudly instead of being clobbered.
+pub fn fetch_branch(repo: &Path, branch: &str) -> Result<()> {
+    git(repo, &["fetch", "origin", &format!("{branch}:{branch}")])?;
+    Ok(())
+}
+
 pub fn push(worktree: &Path) -> Result<()> {
     let branch = git(worktree, &["rev-parse", "--abbrev-ref", "HEAD"])?
         .trim()

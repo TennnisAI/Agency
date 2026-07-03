@@ -30,6 +30,8 @@ pub struct Run {
     pub kind: String,
     /// Branch this run's work merges into. `None` = auto-detect (main/master) at merge time.
     pub merge_target: Option<String>,
+    /// Groups runs spawned together on the same prompt (multi-attempt racing).
+    pub race_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -114,6 +116,9 @@ impl Registry {
         }
         if !column_exists(&conn, "runs", "merge_target")? {
             conn.execute("ALTER TABLE runs ADD COLUMN merge_target TEXT", [])?;
+        }
+        if !column_exists(&conn, "runs", "race_id")? {
+            conn.execute("ALTER TABLE runs ADD COLUMN race_id TEXT", [])?;
         }
         if !column_exists(&conn, "profiles", "resume_args")? {
             conn.execute("ALTER TABLE profiles ADD COLUMN resume_args TEXT", [])?;
@@ -254,12 +259,12 @@ impl Registry {
 
     pub fn insert_run(&self, run: &Run) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO runs (id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            "INSERT INTO runs (id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             rusqlite::params![
                 run.id, run.project_id, run.agent, run.prompt, run.base, run.branch,
                 run.created_at, run.port_base.map(|p| p as i64), run.archived_at, run.title, run.kind,
-                run.merge_target
+                run.merge_target, run.race_id
             ],
         )?;
         Ok(())
@@ -267,7 +272,7 @@ impl Registry {
 
     pub fn get_run(&self, id: &str) -> Result<Option<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target FROM runs WHERE id = ?1",
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id FROM runs WHERE id = ?1",
         )?;
         let mut rows = stmt.query([id])?;
         match rows.next()? {
@@ -278,7 +283,7 @@ impl Registry {
 
     pub fn list_runs(&self, project_id: &str) -> Result<Vec<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id
              FROM runs WHERE project_id = ?1 AND archived_at IS NULL ORDER BY created_at DESC",
         )?;
         let rows = stmt.query_map([project_id], |row| Ok(row_to_run(row)))?;
@@ -291,7 +296,7 @@ impl Registry {
 
     pub fn list_archived_runs(&self, project_id: &str) -> Result<Vec<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id
              FROM runs WHERE project_id = ?1 AND archived_at IS NOT NULL ORDER BY archived_at DESC",
         )?;
         let rows = stmt.query_map([project_id], |row| Ok(row_to_run(row)))?;
@@ -461,6 +466,7 @@ fn row_to_run(row: &rusqlite::Row) -> Result<Run> {
         title: row.get(9)?,
         kind: row.get(10)?,
         merge_target: row.get(11)?,
+        race_id: row.get(12)?,
     })
 }
 
@@ -492,6 +498,7 @@ mod tests {
             branch: format!("agent/{id}"),
             created_at: 42,
             port_base: port,
+            race_id: None,
             archived_at: None,
             title: None,
             kind: "agent".to_string(),
@@ -765,6 +772,7 @@ mod tests {
             title: None,
             kind: "agent".into(),
             merge_target: Some("develop".into()),
+            race_id: None,
         };
         reg.insert_run(&run).unwrap();
         let got = reg.get_run("t1").unwrap().unwrap();

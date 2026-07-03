@@ -200,6 +200,21 @@ impl WorktreeManager {
         Ok(())
     }
 
+    /// Create a worktree for `task_id` on an EXISTING branch (e.g. a PR head
+    /// being reviewed) instead of cutting a fresh `agent/<id>` branch. Fails
+    /// if the branch is already checked out elsewhere — git enforces that.
+    pub fn create_on_branch(&self, task_id: &str, branch: &str) -> Result<Worktree> {
+        self.ensure_excluded()?;
+        let path = self.worktrees_root().join(task_id);
+        let path_str = path.to_string_lossy().to_string();
+        self.git(&["worktree", "add", &path_str, branch])?;
+        Ok(Worktree {
+            task_id: task_id.to_string(),
+            path,
+            branch: branch.to_string(),
+        })
+    }
+
     /// Re-create a worktree for `task_id` on its existing branch `agent/<id>`.
     pub fn restore(&self, task_id: &str) -> Result<Worktree> {
         self.ensure_excluded()?;

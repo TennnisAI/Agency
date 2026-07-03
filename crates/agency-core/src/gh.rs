@@ -55,6 +55,24 @@ pub struct CheckItem {
     pub description: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IssueItem {
+    pub number: u64,
+    pub title: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IssueDetail {
+    pub number: u64,
+    pub title: String,
+    #[serde(default)]
+    pub body: String,
+    #[serde(default)]
+    pub url: String,
+}
+
 pub struct GhCli {
     bin: String,
 }
@@ -122,6 +140,52 @@ impl GhCli {
             bail!("gh pr view failed: {err}");
         }
         Ok(Some(serde_json::from_slice(&out.stdout)?))
+    }
+
+    /// Like `view_pr`, addressed by PR number instead of branch.
+    pub fn view_pr_by_number(&self, repo: &Path, number: u64) -> Result<Option<PrInfo>> {
+        let num = number.to_string();
+        let out = self.run(
+            repo,
+            &[
+                "pr", "view", &num, "--json",
+                "number,url,title,state,isDraft,baseRefName,headRefName",
+            ],
+        )?;
+        if !out.status.success() {
+            let err = String::from_utf8_lossy(&out.stderr);
+            if err.to_lowercase().contains("no pull requests found")
+                || err.to_lowercase().contains("could not find")
+            {
+                return Ok(None);
+            }
+            bail!("gh pr view failed: {err}");
+        }
+        Ok(Some(serde_json::from_slice(&out.stdout)?))
+    }
+
+    /// Open PRs, newest first (capped at 30 for the picker).
+    pub fn list_prs(&self, repo: &Path) -> Result<Vec<PrInfo>> {
+        let out = self.run_ok(
+            repo,
+            &[
+                "pr", "list", "--limit", "30", "--json",
+                "number,url,title,state,isDraft,baseRefName,headRefName",
+            ],
+        )?;
+        Ok(serde_json::from_str(&out)?)
+    }
+
+    /// Open issues, newest first (capped at 30 for the picker).
+    pub fn list_issues(&self, repo: &Path) -> Result<Vec<IssueItem>> {
+        let out = self.run_ok(repo, &["issue", "list", "--limit", "30", "--json", "number,title"])?;
+        Ok(serde_json::from_str(&out)?)
+    }
+
+    pub fn view_issue(&self, repo: &Path, number: u64) -> Result<IssueDetail> {
+        let num = number.to_string();
+        let out = self.run_ok(repo, &["issue", "view", &num, "--json", "number,title,body,url"])?;
+        Ok(serde_json::from_str(&out)?)
     }
 
     pub fn create_pr(
@@ -235,6 +299,28 @@ exit 1
         assert_eq!(checks.len(), 2);
         assert_eq!(checks[0].bucket, "fail");
         assert_eq!(checks[1].name, "lint");
+    }
+
+    #[test]
+    fn issue_and_pr_lists_parse() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = fake_gh(
+            dir.path(),
+            r#"
+case "$1 $2" in
+  "issue list") echo '[{"number":12,"title":"Fix login"}]';;
+  "issue view") echo '{"number":12,"title":"Fix login","body":"It breaks","url":"https://github.com/o/r/issues/12"}';;
+  "pr list") echo '[{"number":3,"url":"u","title":"T","state":"OPEN","isDraft":false,"baseRefName":"main","headRefName":"feat/x"}]';;
+esac
+"#,
+        );
+        let gh = GhCli::with_bin(bin);
+        let issues = gh.list_issues(dir.path()).unwrap();
+        assert_eq!(issues[0].number, 12);
+        let detail = gh.view_issue(dir.path(), 12).unwrap();
+        assert_eq!(detail.body, "It breaks");
+        let prs = gh.list_prs(dir.path()).unwrap();
+        assert_eq!(prs[0].head_ref_name, "feat/x");
     }
 
     #[test]

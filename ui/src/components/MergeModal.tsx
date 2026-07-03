@@ -8,6 +8,7 @@ import {
   MergePreview,
   abortMergeTask,
   archiveRun,
+  discardRun,
   listProfiles,
   mergePreview,
   mergeTask,
@@ -39,7 +40,13 @@ export default function MergeModal({
   const [resolverProfile, setResolverProfile] = useState("claude");
   const [profileNames, setProfileNames] = useState<string[]>([]);
   const { runs } = useRuns();
-  const projectId = runs.find((r) => r.id === taskId)?.projectId ?? null;
+  const me = runs.find((r) => r.id === taskId);
+  const projectId = me?.projectId ?? null;
+  // Losing race attempts: siblings sharing this run's race_id. Offered for
+  // cleanup after the winner merges.
+  const losers = me?.raceId
+    ? runs.filter((r) => r.raceId === me.raceId && r.id !== taskId && r.kind === "agent")
+    : [];
   const termRef = useRef<HTMLDivElement>(null);
   const termInstanceRef = useRef<Terminal | null>(null);
   const timerRef = useRef<ReturnType<typeof window.setInterval> | null>(null);
@@ -61,9 +68,14 @@ export default function MergeModal({
       .catch(() => {});
   }, [taskId]);
 
-  async function archiveWorkspace() {
+  async function archiveWorkspace(discardLosers: boolean) {
     setArchiving(true);
     try {
+      if (discardLosers) {
+        // The merged branch won; the other attempts' work is unwanted by
+        // definition, so a full discard (worktree + branch) is right.
+        for (const l of losers) await discardRun(l.id);
+      }
       await archiveRun(taskId);
       onArchived?.();
       onClose();
@@ -227,9 +239,22 @@ export default function MergeModal({
               archiving stops the agent and removes the worktree (the branch is kept, so it can be restored).
             </p>
             <div className="git-actions">
-              <button disabled={archiving} onClick={archiveWorkspace}>
-                {archiving ? "Archiving…" : "Archive workspace"}
-              </button>
+              {losers.length > 0 ? (
+                <button disabled={archiving} onClick={() => archiveWorkspace(true)}>
+                  {archiving
+                    ? "Cleaning up…"
+                    : `Archive + discard ${losers.length} losing attempt${losers.length === 1 ? "" : "s"}`}
+                </button>
+              ) : (
+                <button disabled={archiving} onClick={() => archiveWorkspace(false)}>
+                  {archiving ? "Archiving…" : "Archive workspace"}
+                </button>
+              )}
+              {losers.length > 0 && (
+                <button disabled={archiving} onClick={() => archiveWorkspace(false)}>
+                  Archive, keep losers
+                </button>
+              )}
               <button disabled={archiving} onClick={onClose}>Keep workspace</button>
             </div>
           </div>

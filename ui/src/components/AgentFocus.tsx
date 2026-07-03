@@ -50,7 +50,9 @@ export default function AgentFocus({
               <button key={r.id} className={`rail-row ${r.id === focusedRunId ? "on" : ""}`} onClick={() => setFocusedRun(r.id)}>
                 <span className={`dot ${r.status.state === "running" ? "running" : "exited"}`} />
                 <span className="rail-name">
-                  {r.kind === "terminal" ? `≳ ${r.title || "terminal"}` : `${r.agent}: ${runName(r)}`}
+                  {r.kind === "terminal"
+                    ? `≳ ${r.title || "terminal"}`
+                    : `${r.raceId ? "⚡ " : ""}${r.agent}: ${runName(r)}`}
                 </span>
               </button>
             ))}

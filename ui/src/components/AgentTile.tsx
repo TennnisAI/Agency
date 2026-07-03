@@ -43,6 +43,7 @@ export default function AgentTile({ run }: { run: RunInfo }) {
       <div className="tile-head">
         <span className={`dot ${st.cls}`} />
         <span className="tile-title">{runName(run)}</span>
+        {run.raceId && <span className="badge race" title="Racing: same prompt, parallel attempts">⚡</span>}
         <span className={isTerminal ? "badge" : badgeClass(run.agent)}>{isTerminal ? "terminal" : run.agent}</span>
       </div>
       {!isTerminal && (

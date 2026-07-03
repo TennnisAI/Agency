@@ -152,6 +152,10 @@ pub fn set_run_title(
     id: String,
     first_prompt: String,
 ) -> Result<(), String> {
+    // The first prompt doubles as the run's stored prompt (runs are created
+    // promptless; the user types into the live agent). Kept even when the
+    // title guard below short-circuits.
+    let _ = state.store_run_prompt(&id, &first_prompt);
     // Cheap guard on the calling thread: skip if already titled.
     if let Ok(Some(existing)) = state.run_title(&id) {
         if !existing.is_empty() {

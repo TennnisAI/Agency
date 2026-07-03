@@ -310,6 +310,28 @@ impl Registry {
         Ok(())
     }
 
+    /// Record the run's prompt after the fact. Runs are created promptless
+    /// (the user types straight into the agent terminal), so the first line
+    /// they type is captured and stored here as the run's prompt. First
+    /// capture wins: an already-set prompt is never overwritten.
+    pub fn set_run_prompt_if_empty(&self, id: &str, prompt: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE runs SET prompt = ?2 WHERE id = ?1 AND prompt = ''",
+            rusqlite::params![id, prompt],
+        )?;
+        Ok(())
+    }
+
+    /// Remember the agent type last used in this project so new-task shortcuts
+    /// can default to it instead of a hardcoded agent.
+    pub fn set_project_default_agent(&self, id: &str, agent: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE projects SET default_agent = ?2 WHERE id = ?1",
+            rusqlite::params![id, agent],
+        )?;
+        Ok(())
+    }
+
     pub fn set_archived(&self, id: &str, archived_at: Option<i64>) -> Result<()> {
         self.conn.execute(
             "UPDATE runs SET archived_at = ?2 WHERE id = ?1",

@@ -144,11 +144,13 @@ export interface RunBranches {
 export const runBranches = (taskId: string) =>
   invoke<RunBranches>("run_branches", { taskId });
 
+// NOTE: field names mirror agency_core's AgentProfile (snake_case serde).
 export interface AgentProfile {
   name: string;
   command: string;
   args: string[];
   env: [string, string][];
+  resume_args: string[] | null;
 }
 
 export interface ProviderSettings {
@@ -172,6 +174,7 @@ export interface MergePreview {
   base: string;
   branch: string;
   commitsAhead: number;
+  commitsBehind: number;
   worktreeDirty: boolean;
   dirtyFiles: string[];
 }

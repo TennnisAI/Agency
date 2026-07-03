@@ -44,14 +44,17 @@ pub struct RunInfo {
 
 /// What an "Approve & merge" would do, computed before running it so the UI can
 /// explain the outcome instead of silently merging. `commits_ahead == 0` means
-/// the branch has no new commits (merge is a no-op); `worktree_dirty` flags
-/// uncommitted agent work that a branch merge would leave behind.
+/// the branch has no new commits (merge is a no-op); `commits_behind > 0` means
+/// the base moved on since the branch was created (stale branch — merge may
+/// conflict); `worktree_dirty` flags uncommitted agent work that a branch merge
+/// would leave behind.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MergePreview {
     pub base: String,
     pub branch: String,
     pub commits_ahead: usize,
+    pub commits_behind: usize,
     pub worktree_dirty: bool,
     pub dirty_files: Vec<String>,
 }
@@ -295,6 +298,11 @@ pub struct AppState {
     /// Run ids that have received user input since their last "waiting for input"
     /// notification. Drives idle-notification gating (see `notifier::step`).
     input_seen: Mutex<HashSet<String>>,
+    /// Serializes merges. The merge sequence (status check → checkout →
+    /// merge) runs in the shared primary checkout and is not atomic, so a
+    /// second concurrent merge (double-click, another run's Approve) must
+    /// fail fast instead of interleaving.
+    merge_gate: Mutex<()>,
 }
 
 impl AppState {
@@ -351,6 +359,7 @@ impl AppState {
             resolvers: Mutex::new(HashMap::new()),
             ui: Mutex::new(UiState { focused: true, active_run: None, pending_open: None }),
             input_seen: Mutex::new(HashSet::new()),
+            merge_gate: Mutex::new(()),
         };
         // Rehydrate: any run the daemon still hosts is adopted as-is; the watch
         // loop (watch_snapshot) then reports live status. Nothing to spawn here —
@@ -536,7 +545,13 @@ impl AppState {
                 .ok_or_else(|| anyhow!("unknown agent profile: {agent}"))?
         };
         let id = new_task_id(prompt);
-        let worktree = WorktreeManager::new(repo.clone()).create(&id, base)?;
+        let manager = WorktreeManager::new(repo.clone());
+        let worktree = manager.create(&id, base)?;
+        // Untracked essentials (.env etc.) don't come with a worktree; copy the
+        // configured list. Best-effort: a bad entry shouldn't block the run.
+        if let Err(e) = manager.copy_into(&id, &config.files.copy) {
+            log::warn!("copying [files] copy entries into worktree {id}: {e}");
+        }
 
         let mut env = self.provider_env()?;
         env.extend(profile.env.iter().cloned());
@@ -568,8 +583,20 @@ impl AppState {
             kind: "agent".to_string(),
             merge_target: merge_target.map(|s| s.to_string()),
         };
-        self.registry.lock().unwrap().insert_run(&run)?;
+        {
+            let reg = self.registry.lock().unwrap();
+            reg.insert_run(&run)?;
+            // Remember the agent type so new-task shortcuts default to what
+            // this project actually uses. Best-effort bookkeeping.
+            let _ = reg.set_project_default_agent(project_id, agent);
+        }
         Ok(self.run_info(&run))
+    }
+
+    /// Store the first prompt the user typed into the agent terminal as the
+    /// run's prompt (runs are created promptless). First capture wins.
+    pub fn store_run_prompt(&self, id: &str, prompt: &str) -> Result<()> {
+        self.registry.lock().unwrap().set_run_prompt_if_empty(id, prompt)
     }
 
     pub fn list_project_branches(&self, project_id: &str) -> Result<agency_core::git::ProjectBranches> {
@@ -778,6 +805,15 @@ impl AppState {
         self.run_attaches.lock().unwrap().remove(id);
         let _ = self.term.read().unwrap().kill(&run_session_name(id));
 
+        // Preserve uncommitted agent work BEFORE the worktree is force-removed:
+        // commit it onto the kept agent branch so restore brings it back. A
+        // failure here must abort the archive — proceeding would destroy work.
+        if run.kind == "agent" {
+            WorktreeManager::new(repo.clone())
+                .commit_all_if_dirty(id, "WIP: uncommitted changes auto-committed by Agency on archive")
+                .map_err(|e| anyhow!("couldn't preserve uncommitted changes before archiving: {e}"))?;
+        }
+
         // Best-effort archive cleanup script, before the worktree disappears.
         let config = agency_core::config::load(&repo);
         if let Some(script) = config.scripts.archive.as_deref() {
@@ -798,7 +834,12 @@ impl AppState {
     pub fn restore_run(&self, id: &str) -> Result<RunInfo> {
         let run = self.run_record(id)?;
         let repo = self.project_repo(&run.project_id)?;
-        WorktreeManager::new(repo).restore(id)?;
+        let manager = WorktreeManager::new(repo.clone());
+        manager.restore(id)?;
+        let config = agency_core::config::load(&repo);
+        if let Err(e) = manager.copy_into(id, &config.files.copy) {
+            log::warn!("copying [files] copy entries into restored worktree {id}: {e}");
+        }
         self.registry.lock().unwrap().set_archived(id, None)?;
         let refreshed = self.run_record(id)?;
         Ok(self.run_info(&refreshed))
@@ -1022,6 +1063,7 @@ impl AppState {
         let repo = self.project_repo(&run.project_id)?;
         let base = agency_core::merge::resolve_target(run.merge_target.as_deref(), &repo)?;
         let commits_ahead = agency_core::merge::commits_ahead(&repo, &run.branch, &base)?;
+        let commits_behind = agency_core::merge::commits_behind(&repo, &run.branch, &base)?;
         let worktree = repo.join(".agency").join("worktrees").join(&run.id);
         let dirty_files: Vec<String> = if worktree.exists() {
             agency_core::git::status(&worktree)
@@ -1034,12 +1076,19 @@ impl AppState {
             base,
             branch: run.branch,
             commits_ahead,
+            commits_behind,
             worktree_dirty: !dirty_files.is_empty(),
             dirty_files,
         })
     }
 
     pub fn merge_task(&self, id: &str) -> anyhow::Result<agency_core::merge::MergeOutcome> {
+        // try_lock, not lock: a second merge racing the first should fail
+        // fast with a clear message, not queue up and re-merge afterwards.
+        let _gate = self
+            .merge_gate
+            .try_lock()
+            .map_err(|_| anyhow!("another merge is already in progress"))?;
         let run = self.run_record(id)?;
         let repo = self.project_repo(&run.project_id)?;
         let base = agency_core::merge::resolve_target(run.merge_target.as_deref(), &repo)?;

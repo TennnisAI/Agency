@@ -7,6 +7,17 @@ pub struct AgencyConfig {
     pub scripts: ScriptsConfig,
     #[serde(default)]
     pub ports: PortsConfig,
+    #[serde(default)]
+    pub files: FilesConfig,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct FilesConfig {
+    /// Repo-root-relative paths copied into every new (or restored) worktree.
+    /// Worktrees only materialize tracked files, so untracked essentials like
+    /// `.env` must be listed here to be present in agent workspaces.
+    #[serde(default)]
+    pub copy: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -128,6 +139,9 @@ mod tests {
                 [ports]
                 base = 4000
                 block_size = 5
+
+                [files]
+                copy = [".env", "config/certs"]
             "#,
         );
         let c = load(dir.path());
@@ -137,6 +151,15 @@ mod tests {
         assert_eq!(c.scripts.run_mode, RunMode::Nonconcurrent);
         assert_eq!(c.ports.base, 4000);
         assert_eq!(c.ports.block_size, 5);
+        assert_eq!(c.files.copy, vec![".env".to_string(), "config/certs".to_string()]);
+    }
+
+    #[test]
+    fn files_copy_defaults_to_empty() {
+        let dir = tempdir().unwrap();
+        write(dir.path(), "agency.toml", "[ports]\nbase = 4000\n");
+        let c = load(dir.path());
+        assert!(c.files.copy.is_empty());
     }
 
     #[test]

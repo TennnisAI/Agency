@@ -93,3 +93,70 @@ fn remove_deletes_worktree() {
     assert!(!wt.path.exists());
     assert!(mgr.list().unwrap().is_empty());
 }
+
+#[test]
+fn commit_all_if_dirty_preserves_work_on_the_branch() {
+    let repo = init_repo();
+    let mgr = WorktreeManager::new(repo.path().to_path_buf());
+    let wt = mgr.create("task-wip", "HEAD").unwrap();
+
+    // Clean worktree: no commit made.
+    assert!(!mgr.commit_all_if_dirty("task-wip", "WIP").unwrap());
+
+    // Dirty worktree (tracked edit + untracked file): committed.
+    std::fs::write(wt.path.join("README.md"), "edited").unwrap();
+    std::fs::write(wt.path.join("untracked.txt"), "new").unwrap();
+    assert!(mgr.commit_all_if_dirty("task-wip", "WIP: archive").unwrap());
+
+    // Worktree is clean afterwards and the commit is on the agent branch.
+    assert!(!mgr.commit_all_if_dirty("task-wip", "WIP").unwrap());
+    let out = Command::new("git")
+        .args(["log", "-1", "--format=%s", "agent/task-wip"])
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "WIP: archive");
+
+    // Archive+restore round-trip brings the work back.
+    mgr.remove_keep_branch("task-wip").unwrap();
+    let restored = mgr.restore("task-wip").unwrap();
+    assert_eq!(std::fs::read_to_string(restored.path.join("untracked.txt")).unwrap(), "new");
+}
+
+#[test]
+fn commit_all_if_dirty_is_noop_for_missing_worktree() {
+    let repo = init_repo();
+    let mgr = WorktreeManager::new(repo.path().to_path_buf());
+    assert!(!mgr.commit_all_if_dirty("no-such-task", "WIP").unwrap());
+}
+
+#[test]
+fn copy_into_copies_untracked_files_and_dirs_skipping_bad_paths() {
+    let repo = init_repo();
+    let mgr = WorktreeManager::new(repo.path().to_path_buf());
+    let wt = mgr.create("task-copy", "HEAD").unwrap();
+
+    std::fs::write(repo.path().join(".env"), "SECRET=1").unwrap();
+    std::fs::create_dir_all(repo.path().join("config/certs")).unwrap();
+    std::fs::write(repo.path().join("config/certs/dev.pem"), "pem").unwrap();
+
+    let copied = mgr
+        .copy_into(
+            "task-copy",
+            &[
+                ".env".to_string(),
+                "config".to_string(),
+                "missing.txt".to_string(),
+                "../escape".to_string(),
+                "/abs/path".to_string(),
+            ],
+        )
+        .unwrap();
+    assert_eq!(copied, vec![".env".to_string(), "config".to_string()]);
+    assert_eq!(std::fs::read_to_string(wt.path.join(".env")).unwrap(), "SECRET=1");
+    assert_eq!(
+        std::fs::read_to_string(wt.path.join("config/certs/dev.pem")).unwrap(),
+        "pem"
+    );
+    assert!(!wt.path.join("missing.txt").exists());
+}

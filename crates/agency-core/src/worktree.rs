@@ -33,10 +33,12 @@ impl WorktreeManager {
 
     /// Run a git command in the repo, returning stdout on success.
     fn git(&self, args: &[&str]) -> Result<String> {
-        let output = Command::new("git")
-            .args(args)
-            .current_dir(&self.repo_path)
-            .output()?;
+        Self::git_at(&self.repo_path, args)
+    }
+
+    /// Run a git command in an arbitrary directory (e.g. inside a worktree).
+    fn git_at(dir: &std::path::Path, args: &[&str]) -> Result<String> {
+        let output = Command::new("git").args(args).current_dir(dir).output()?;
         if !output.status.success() {
             bail!(
                 "git {:?} failed: {}",
@@ -45,6 +47,54 @@ impl WorktreeManager {
             );
         }
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    }
+
+    /// Commit every pending change (tracked and untracked) in the task's
+    /// worktree onto its `agent/<id>` branch. Returns whether a commit was
+    /// created; a clean or missing worktree is a no-op. Called before archive
+    /// so `worktree remove --force` can't destroy uncommitted agent work —
+    /// the branch is kept, so the commit comes back on restore.
+    pub fn commit_all_if_dirty(&self, task_id: &str, message: &str) -> Result<bool> {
+        let path = self.worktrees_root().join(task_id);
+        if !path.exists() {
+            return Ok(false);
+        }
+        let dirty = Self::git_at(&path, &["status", "--porcelain"])?;
+        if dirty.trim().is_empty() {
+            return Ok(false);
+        }
+        Self::git_at(&path, &["add", "-A"])?;
+        Self::git_at(&path, &["commit", "-m", message])?;
+        Ok(true)
+    }
+
+    /// Copy repo-root paths into the task's worktree. `git worktree add` only
+    /// materializes tracked files, so untracked-but-needed ones (`.env` and
+    /// friends, listed under `[files] copy` in `.agency/agency.toml`) must be
+    /// copied over. Relative paths only; entries that are absolute, escape the
+    /// repo via `..`, or don't exist are skipped. Directories copy recursively.
+    /// Returns the entries actually copied.
+    pub fn copy_into(&self, task_id: &str, rel_paths: &[String]) -> Result<Vec<String>> {
+        let dest_root = self.worktrees_root().join(task_id);
+        let mut copied = Vec::new();
+        for rel in rel_paths {
+            let rel_path = std::path::Path::new(rel);
+            if rel_path.is_absolute()
+                || rel_path
+                    .components()
+                    .any(|c| matches!(c, std::path::Component::ParentDir))
+            {
+                continue;
+            }
+            let src = self.repo_path.join(rel_path);
+            if !src.exists() {
+                continue;
+            }
+            let dest = dest_root.join(rel_path);
+            copy_recursive(&src, &dest)?;
+            copied.push(rel.clone());
+        }
+        Ok(copied)
     }
 
     /// Ensure agency's local artifacts are git-excluded without ignoring the
@@ -159,6 +209,22 @@ impl WorktreeManager {
         self.git(&["worktree", "add", &path_str, &branch])?;
         Ok(Worktree { task_id: task_id.to_string(), path, branch })
     }
+}
+
+fn copy_recursive(src: &std::path::Path, dest: &std::path::Path) -> Result<()> {
+    if src.is_dir() {
+        std::fs::create_dir_all(dest)?;
+        for entry in std::fs::read_dir(src)? {
+            let entry = entry?;
+            copy_recursive(&entry.path(), &dest.join(entry.file_name()))?;
+        }
+    } else {
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::copy(src, dest)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

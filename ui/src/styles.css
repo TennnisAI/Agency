@@ -1055,3 +1055,29 @@ input, textarea, code,
 /* Compact segmented control for the Code/Preview toggle in the editor bar. */
 .seg.seg-mini { padding: 1px; }
 .seg.seg-mini button { padding: 2px 9px; font-size: 11px; }
+
+/* Error toasts (lib/toast.ts bus, Toasts.tsx). Above modals/overlays. */
+.toast-stack {
+  position: fixed; right: 14px; bottom: 34px; z-index: 1000;
+  display: flex; flex-direction: column; gap: 8px; max-width: 420px;
+}
+.toast {
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 8px 10px; border-radius: 6px; cursor: default;
+  font-size: 12px; line-height: 1.4;
+  background: var(--mantle); border: 1px solid var(--line);
+  box-shadow: 0 4px 16px rgba(0,0,0,.35);
+}
+.toast-error { border-color: var(--red); }
+.toast-text { color: var(--text); white-space: pre-wrap; word-break: break-word; }
+.toast-close {
+  background: none; border: none; color: var(--sub0); cursor: pointer;
+  padding: 0 2px; font-size: 11px; flex: none;
+}
+
+/* Resolver-profile picker in the merge modal's conflict actions. */
+.merge-resolver-pick {
+  background: var(--s0); color: var(--text); border: 1px solid var(--line);
+  border-radius: 4px; font-size: 12px; padding: 3px 6px; max-width: 140px;
+}
+.merge-resolver-pick:focus { outline: none; border-color: var(--blue); }

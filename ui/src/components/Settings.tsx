@@ -24,7 +24,8 @@ export default function Settings({ onClose }: { onClose: () => void }) {
     lmStudioBaseUrl: "",
   });
   const [profiles, setProfiles] = useState<AgentProfile[]>([]);
-  const [draft, setDraft] = useState({ name: "", command: "", args: "", env: "" });
+  const emptyDraft = { name: "", command: "", args: "", env: "", resume: "" };
+  const [draft, setDraft] = useState(emptyDraft);
   const [formOpen, setFormOpen] = useState(false);
   const [error, setError] = useState("");
   const [notif, setNotif] = useState<NotifSettings>({
@@ -94,9 +95,12 @@ export default function Settings({ onClose }: { onClose: () => void }) {
         return [l.slice(0, i), l.slice(i + 1)] as [string, string];
       })
       .filter(([k]) => k);
+    // Empty resume field = no resume recipe: the agent always starts fresh.
+    const resume = draft.resume.trim();
+    const resume_args = resume ? resume.split(/\s+/) : null;
     try {
-      await saveProfile({ name: draft.name.trim(), command: draft.command.trim(), args, env });
-      setDraft({ name: "", command: "", args: "", env: "" });
+      await saveProfile({ name: draft.name.trim(), command: draft.command.trim(), args, env, resume_args });
+      setDraft(emptyDraft);
       setFormOpen(false);
       await refresh();
     } catch (e) {
@@ -110,6 +114,7 @@ export default function Settings({ onClose }: { onClose: () => void }) {
       command: p.command,
       args: p.args.join(" "),
       env: p.env.map(([k, v]) => `${k}=${v}`).join("\n"),
+      resume: (p.resume_args ?? []).join(" "),
     });
     setFormOpen(true);
   }
@@ -166,6 +171,12 @@ export default function Settings({ onClose }: { onClose: () => void }) {
                       <code className="settings-meta-val">{p.args.join(" ")}</code>
                     </>
                   )}
+                  {(p.resume_args?.length ?? 0) > 0 && (
+                    <>
+                      <span className="settings-meta-key">resume</span>
+                      <code className="settings-meta-val">{p.resume_args?.join(" ")}</code>
+                    </>
+                  )}
                   {p.env.length > 0 && (
                     <>
                       <span className="settings-meta-key">env</span>
@@ -197,6 +208,12 @@ export default function Settings({ onClose }: { onClose: () => void }) {
                 value={draft.args}
                 onChange={(e) => setDraft({ ...draft, args: e.target.value })}
               />
+              <input
+                className="settings-input"
+                placeholder="resume args (e.g. --continue; empty = always start fresh)"
+                value={draft.resume}
+                onChange={(e) => setDraft({ ...draft, resume: e.target.value })}
+              />
               <textarea
                 className="settings-input"
                 placeholder="env, one KEY=VALUE per line"
@@ -205,7 +222,7 @@ export default function Settings({ onClose }: { onClose: () => void }) {
               />
               <div className="row-actions">
                 <button onClick={addProfile}>Save profile</button>
-                <button className="ghost" onClick={() => { setFormOpen(false); setDraft({ name: "", command: "", args: "", env: "" }); }}>Cancel</button>
+                <button className="ghost" onClick={() => { setFormOpen(false); setDraft(emptyDraft); }}>Cancel</button>
               </div>
             </div>
           ) : (

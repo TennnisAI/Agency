@@ -9,6 +9,41 @@ pub struct AgencyConfig {
     pub ports: PortsConfig,
     #[serde(default)]
     pub files: FilesConfig,
+    #[serde(default)]
+    pub mcp: McpConfig,
+    #[serde(default)]
+    pub knowledge: KnowledgeConfig,
+}
+
+/// Project-level MCP servers (`[mcp.servers.<name>]` tables), merged over the
+/// app-global list and emitted per-harness into each worktree (see mcp.rs).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct McpConfig {
+    #[serde(default)]
+    pub servers: std::collections::BTreeMap<String, McpServerDef>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct McpServerDef {
+    pub command: Option<String>,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: std::collections::BTreeMap<String, String>,
+    pub url: Option<String>,
+}
+
+/// Knowledge-graph integration (graphify). When `graph = true`, the serve
+/// command is auto-registered as an MCP server for every agent workspace and
+/// the graph is rebuilt in the background after each clean merge.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct KnowledgeConfig {
+    #[serde(default)]
+    pub graph: bool,
+    /// Override for the MCP serve command. Default: "graphify serve".
+    pub serve_command: Option<String>,
+    /// Override for the rebuild command run after merges. Default: "graphify .".
+    pub build_command: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -160,6 +195,39 @@ mod tests {
         write(dir.path(), "agency.toml", "[ports]\nbase = 4000\n");
         let c = load(dir.path());
         assert!(c.files.copy.is_empty());
+        assert!(c.mcp.servers.is_empty());
+        assert!(!c.knowledge.graph);
+    }
+
+    #[test]
+    fn parses_mcp_servers_and_knowledge() {
+        let dir = tempdir().unwrap();
+        write(
+            dir.path(),
+            "agency.toml",
+            r#"
+                [mcp.servers.context7]
+                command = "npx"
+                args = ["-y", "@upstash/context7-mcp"]
+                env = { API_KEY = "abc" }
+
+                [mcp.servers.linear]
+                url = "https://mcp.linear.app/sse"
+
+                [knowledge]
+                graph = true
+                build_command = "graphify . --skip-html"
+            "#,
+        );
+        let c = load(dir.path());
+        let ctx = &c.mcp.servers["context7"];
+        assert_eq!(ctx.command.as_deref(), Some("npx"));
+        assert_eq!(ctx.args, vec!["-y", "@upstash/context7-mcp"]);
+        assert_eq!(ctx.env["API_KEY"], "abc");
+        assert_eq!(c.mcp.servers["linear"].url.as_deref(), Some("https://mcp.linear.app/sse"));
+        assert!(c.knowledge.graph);
+        assert_eq!(c.knowledge.build_command.as_deref(), Some("graphify . --skip-html"));
+        assert_eq!(c.knowledge.serve_command, None);
     }
 
     #[test]

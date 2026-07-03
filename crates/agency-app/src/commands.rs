@@ -500,6 +500,21 @@ pub async fn send_check_feedback(state: State<'_, AppState>, task_id: String) ->
 }
 
 #[tauri::command]
+pub fn list_mcp_servers(
+    state: State<'_, AppState>,
+) -> Result<Vec<agency_core::mcp::McpServer>, String> {
+    state.list_mcp_servers().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn save_mcp_servers(
+    state: State<'_, AppState>,
+    servers: Vec<agency_core::mcp::McpServer>,
+) -> Result<(), String> {
+    state.save_mcp_servers(&servers).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub fn resolve_merge(
     state: State<'_, AppState>,
     task_id: String,

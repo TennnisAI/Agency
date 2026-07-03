@@ -15,6 +15,7 @@ const SETTING_ANTHROPIC_KEY: &str = "anthropic_api_key";
 const SETTING_LM_STUDIO_URL: &str = "lm_studio_base_url";
 const DEFAULT_LM_STUDIO_URL: &str = "http://localhost:1234/v1";
 const SETTING_NOTIF: &str = "notification_settings";
+const SETTING_MCP: &str = "mcp_servers";
 
 const MERGE_RESOLVER_SKILL: &str = include_str!("../../../skills/merge-resolver/SKILL.md");
 
@@ -560,6 +561,7 @@ impl AppState {
         if let Err(e) = manager.copy_into(&id, &config.files.copy) {
             log::warn!("copying [files] copy entries into worktree {id}: {e}");
         }
+        self.emit_mcp(agent, &repo, &worktree.path, &config);
 
         let mut env = self.provider_env()?;
         env.extend(profile.env.iter().cloned());
@@ -605,6 +607,110 @@ impl AppState {
     /// run's prompt (runs are created promptless). First capture wins.
     pub fn store_run_prompt(&self, id: &str, prompt: &str) -> Result<()> {
         self.registry.lock().unwrap().set_run_prompt_if_empty(id, prompt)
+    }
+
+    // ── MCP servers ────────────────────────────────────────────────────────────
+
+    /// App-global MCP servers, configured in Settings.
+    pub fn list_mcp_servers(&self) -> Result<Vec<agency_core::mcp::McpServer>> {
+        let raw = self.registry.lock().unwrap().get_setting(SETTING_MCP)?;
+        Ok(raw.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default())
+    }
+
+    /// Replace the app-global MCP server list. Every entry must validate.
+    pub fn save_mcp_servers(&self, servers: &[agency_core::mcp::McpServer]) -> Result<()> {
+        for s in servers {
+            s.validate()?;
+        }
+        let json = serde_json::to_string(servers)?;
+        self.registry.lock().unwrap().set_setting(SETTING_MCP, &json)
+    }
+
+    /// The full MCP server list for a workspace: app-global servers, overlaid
+    /// by the project's `[mcp.servers.*]`, plus the graphify knowledge-graph
+    /// server when the project opted in and the tooling is installed.
+    ///
+    /// graphify's MCP server has no console-script entry point — it runs as
+    /// `python -m graphify.serve <graph.json>` inside the uv tool venv, so the
+    /// default goes through `uv tool run --from graphifyy`. The graph.json is
+    /// addressed absolutely in the PRIMARY repo (worktrees don't carry the
+    /// untracked graphify-out/, and the post-merge rebuild runs there).
+    fn merged_mcp_servers(
+        &self,
+        repo: &Path,
+        config: &agency_core::config::AgencyConfig,
+    ) -> Vec<agency_core::mcp::McpServer> {
+        let global = self.list_mcp_servers().unwrap_or_default();
+        let project = agency_core::mcp::from_config(&config.mcp);
+        let mut auto = Vec::new();
+        if config.knowledge.graph {
+            let serve = config.knowledge.serve_command.clone().unwrap_or_else(|| {
+                format!(
+                    "uv tool run --from graphifyy python -m graphify.serve {}",
+                    repo.join("graphify-out").join("graph.json").display()
+                )
+            });
+            let mut parts = serve.split_whitespace().map(str::to_string);
+            if let Some(cmd) = parts.next() {
+                if command_on_path(&cmd) {
+                    auto.push(agency_core::mcp::McpServer {
+                        name: "graphify".to_string(),
+                        command: Some(cmd),
+                        args: parts.collect(),
+                        env: Default::default(),
+                        url: None,
+                    });
+                } else {
+                    log::warn!("knowledge graph enabled but '{cmd}' is not installed; skipping MCP injection");
+                }
+            }
+        }
+        agency_core::mcp::merge(&[global, project, auto])
+    }
+
+    /// Emit MCP config into a workspace in the agent's native format.
+    /// Best-effort: a bad server entry must not block the run.
+    fn emit_mcp(
+        &self,
+        agent: &str,
+        repo: &Path,
+        worktree: &Path,
+        config: &agency_core::config::AgencyConfig,
+    ) {
+        let servers = self.merged_mcp_servers(repo, config);
+        if servers.is_empty() {
+            return;
+        }
+        if let Err(e) = agency_core::mcp::emit_for_agent(agent, worktree, &servers) {
+            log::warn!("emitting MCP config for {agent} into {}: {e}", worktree.display());
+        }
+    }
+
+    /// After a clean merge, rebuild the project's knowledge graph in the
+    /// background so the next agent workspace starts with a fresh graph.
+    fn maybe_rebuild_knowledge_graph(&self, repo: &Path) {
+        let config = agency_core::config::load(repo);
+        if !config.knowledge.graph {
+            return;
+        }
+        let build = config
+            .knowledge
+            .build_command
+            .clone()
+            .unwrap_or_else(|| "graphify .".to_string());
+        if let Some(cmd) = build.split_whitespace().next() {
+            if !command_on_path(cmd) {
+                log::warn!("knowledge graph enabled but '{cmd}' is not installed; skipping rebuild");
+                return;
+            }
+        }
+        log::info!("rebuilding knowledge graph after merge: {build}");
+        let _ = std::process::Command::new("sh")
+            .args(["-lc", &build])
+            .current_dir(repo)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
     }
 
     pub fn list_project_branches(&self, project_id: &str) -> Result<agency_core::git::ProjectBranches> {
@@ -848,6 +954,8 @@ impl AppState {
         if let Err(e) = manager.copy_into(id, &config.files.copy) {
             log::warn!("copying [files] copy entries into restored worktree {id}: {e}");
         }
+        let worktree = repo.join(".agency").join("worktrees").join(id);
+        self.emit_mcp(&run.agent, &repo, &worktree, &config);
         self.registry.lock().unwrap().set_archived(id, None)?;
         let refreshed = self.run_record(id)?;
         Ok(self.run_info(&refreshed))
@@ -1100,7 +1208,11 @@ impl AppState {
         let run = self.run_record(id)?;
         let repo = self.project_repo(&run.project_id)?;
         let base = agency_core::merge::resolve_target(run.merge_target.as_deref(), &repo)?;
-        agency_core::merge::merge(&repo, &run.branch, &base)
+        let outcome = agency_core::merge::merge(&repo, &run.branch, &base)?;
+        if matches!(outcome, agency_core::merge::MergeOutcome::Clean { .. }) {
+            self.maybe_rebuild_knowledge_graph(&repo);
+        }
+        Ok(outcome)
     }
 
     pub fn abort_merge_task(&self, id: &str) -> anyhow::Result<()> {

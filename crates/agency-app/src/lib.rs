@@ -171,6 +171,8 @@ pub fn run() {
             commands::create_pr,
             commands::pr_status,
             commands::send_check_feedback,
+            commands::list_mcp_servers,
+            commands::save_mcp_servers,
             commands::resolve_merge,
             commands::resolver_input,
             commands::resolver_status,

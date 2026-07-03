@@ -3,6 +3,7 @@ pub mod term;
 pub mod files;
 pub mod gh;
 pub mod git;
+pub mod mcp;
 pub mod merge;
 pub mod profile;
 pub mod registry;

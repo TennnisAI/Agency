@@ -158,6 +158,19 @@ export interface ProviderSettings {
   lmStudioBaseUrl: string;
 }
 
+// One MCP server definition: either stdio (command/args/env) or remote (url).
+export interface McpServer {
+  name: string;
+  command: string | null;
+  args: string[];
+  env: Record<string, string>;
+  url: string | null;
+}
+
+export const listMcpServers = () => invoke<McpServer[]>("list_mcp_servers");
+export const saveMcpServers = (servers: McpServer[]) =>
+  invoke<void>("save_mcp_servers", { servers });
+
 export const listProfiles = () => invoke<AgentProfile[]>("list_profiles");
 export const saveProfile = (profile: AgentProfile) =>
   invoke<void>("save_profile", { profile });

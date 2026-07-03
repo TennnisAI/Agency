@@ -77,6 +77,23 @@ pub fn commit(worktree: &Path, message: &str) -> Result<()> {
     Ok(())
 }
 
+/// A markdown summary of what `branch` adds over `base` — commit subjects plus
+/// a diffstat — used as the generated PR description.
+pub fn branch_summary(repo: &Path, branch: &str, base: &str) -> Result<String> {
+    let subjects = git(repo, &["log", "--reverse", "--format=%s", &format!("{base}..{branch}")])?;
+    let stat = git(repo, &["diff", "--stat", &format!("{base}...{branch}")])?;
+    let mut body = String::from("## Summary\n\n");
+    for s in subjects.lines().filter(|l| !l.trim().is_empty()) {
+        body.push_str(&format!("- {s}\n"));
+    }
+    if !stat.trim().is_empty() {
+        body.push_str("\n## Changes\n\n```\n");
+        body.push_str(stat.trim_end());
+        body.push_str("\n```\n");
+    }
+    Ok(body)
+}
+
 pub fn push(worktree: &Path) -> Result<()> {
     let branch = git(worktree, &["rev-parse", "--abbrev-ref", "HEAD"])?
         .trim()

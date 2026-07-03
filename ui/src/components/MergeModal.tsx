@@ -15,6 +15,8 @@ import {
   resolverResize,
   resolverStatus,
 } from "../api";
+import PrSection from "./PrSection";
+import { useRuns } from "../store/runs";
 
 // `onArchived` fires after the post-merge "Archive workspace" action so the
 // host view can drop focus and refresh its rail.
@@ -36,6 +38,8 @@ export default function MergeModal({
   const [archiving, setArchiving] = useState(false);
   const [resolverProfile, setResolverProfile] = useState("claude");
   const [profileNames, setProfileNames] = useState<string[]>([]);
+  const { runs } = useRuns();
+  const projectId = runs.find((r) => r.id === taskId)?.projectId ?? null;
   const termRef = useRef<HTMLDivElement>(null);
   const termInstanceRef = useRef<Terminal | null>(null);
   const timerRef = useRef<ReturnType<typeof window.setInterval> | null>(null);
@@ -199,6 +203,14 @@ export default function MergeModal({
                   <button onClick={attempt}>Merge into {preview.base}</button>
                   <button onClick={onClose}>Cancel</button>
                 </div>
+              )}
+              {projectId && (
+                <PrSection
+                  taskId={taskId}
+                  projectId={projectId}
+                  canCreate={!nothingToMerge}
+                  onLeave={onClose}
+                />
               )}
             </div>
           ) : null

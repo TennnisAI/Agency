@@ -1,6 +1,7 @@
 pub mod config;
 pub mod term;
 pub mod files;
+pub mod gh;
 pub mod git;
 pub mod merge;
 pub mod profile;

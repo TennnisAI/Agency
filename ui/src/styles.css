@@ -1081,3 +1081,24 @@ input, textarea, code,
   border-radius: 4px; font-size: 12px; padding: 3px 6px; max-width: 140px;
 }
 .merge-resolver-pick:focus { outline: none; border-color: var(--blue); }
+
+/* PR section inside the merge modal (PrSection.tsx). */
+.pr-section { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--line); }
+.pr-section-label { color: var(--o1); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; margin-bottom: 6px; }
+.pr-setup { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.pr-info { display: flex; flex-direction: column; gap: 6px; }
+.pr-info-head { display: flex; align-items: center; gap: 8px; }
+.pr-state { font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 4px; letter-spacing: .04em; }
+.pr-state-open { color: var(--green); border: 1px solid var(--green); }
+.pr-state-merged { color: var(--mauve, var(--blue)); border: 1px solid var(--mauve, var(--blue)); }
+.pr-state-closed { color: var(--red); border: 1px solid var(--red); }
+.pr-title { font-size: 12px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pr-checks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.pr-check { display: flex; align-items: baseline; gap: 7px; font-size: 12px; }
+.pr-check-icon { width: 12px; text-align: center; }
+.pr-check-pass .pr-check-icon { color: var(--green); }
+.pr-check-fail .pr-check-icon, .pr-check-cancel .pr-check-icon { color: var(--red); }
+.pr-check-pending .pr-check-icon { color: var(--yellow); }
+.pr-check-skipping .pr-check-icon { color: var(--o1); }
+.pr-check-name { color: var(--text); }
+.pr-check-desc { color: var(--sub0); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

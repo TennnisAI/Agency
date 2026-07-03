@@ -179,6 +179,39 @@ export interface MergePreview {
   dirtyFiles: string[];
 }
 
+// How far the user is from usable PR features; each non-ready state maps to a
+// guided setup step (install gh → gh auth login → add a GitHub remote).
+export type GhReadiness = "notInstalled" | "notAuthenticated" | "noGithubRemote" | "ready";
+
+export interface PrInfo {
+  number: number;
+  url: string;
+  title: string;
+  state: "OPEN" | "CLOSED" | "MERGED";
+  isDraft: boolean;
+  baseRefName: string;
+  headRefName: string;
+}
+
+export interface CheckItem {
+  name: string;
+  bucket: "pass" | "fail" | "pending" | "skipping" | "cancel" | "";
+  link: string;
+  description: string;
+}
+
+export interface PrStatus {
+  pr: PrInfo | null;
+  checks: CheckItem[];
+}
+
+export const ghReadiness = (projectId: string) =>
+  invoke<GhReadiness>("gh_readiness", { projectId });
+export const createPr = (taskId: string) => invoke<PrInfo>("create_pr", { taskId });
+export const prStatus = (taskId: string) => invoke<PrStatus>("pr_status", { taskId });
+export const sendCheckFeedback = (taskId: string) =>
+  invoke<void>("send_check_feedback", { taskId });
+
 export const mergePreview = (taskId: string) =>
   invoke<MergePreview>("merge_preview", { taskId });
 export const mergeTask = (taskId: string) => invoke<MergeOutcome>("merge_task", { taskId });

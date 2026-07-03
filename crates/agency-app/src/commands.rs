@@ -467,6 +467,38 @@ pub fn abort_merge_task(state: State<'_, AppState>, task_id: String) -> Result<(
     state.abort_merge_task(&task_id).map_err(|e| e.to_string())
 }
 
+// PR commands are async: each one shells out to `gh` (network calls that can
+// take seconds) and must not block the main thread.
+
+#[tauri::command]
+pub async fn gh_readiness(
+    state: State<'_, AppState>,
+    project_id: String,
+) -> Result<agency_core::gh::GhReadiness, String> {
+    state.gh_readiness(&project_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn create_pr(
+    state: State<'_, AppState>,
+    task_id: String,
+) -> Result<agency_core::gh::PrInfo, String> {
+    state.create_pr(&task_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn pr_status(
+    state: State<'_, AppState>,
+    task_id: String,
+) -> Result<crate::state::PrStatus, String> {
+    state.pr_status(&task_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn send_check_feedback(state: State<'_, AppState>, task_id: String) -> Result<(), String> {
+    state.send_check_feedback(&task_id).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn resolve_merge(
     state: State<'_, AppState>,

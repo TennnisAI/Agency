@@ -59,6 +59,14 @@ pub struct MergePreview {
     pub dirty_files: Vec<String>,
 }
 
+/// A run's PR plus check rollup, polled by the merge modal.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrStatus {
+    pub pr: Option<agency_core::gh::PrInfo>,
+    pub checks: Vec<agency_core::gh::CheckItem>,
+}
+
 /// Compose a single-line review-feedback message for the agent. Single-line so
 /// TUI agents don't submit early on embedded newlines.
 fn compose_feedback(comments: &[agency_core::registry::ReviewComment]) -> String {
@@ -1099,6 +1107,87 @@ impl AppState {
         let run = self.run_record(id)?;
         let repo = self.project_repo(&run.project_id)?;
         agency_core::merge::abort_merge(&repo)
+    }
+
+    // ── pull requests (gh CLI) ─────────────────────────────────────────────────
+
+    pub fn gh_readiness(&self, project_id: &str) -> Result<agency_core::gh::GhReadiness> {
+        let repo = self.project_repo(project_id)?;
+        Ok(agency_core::gh::GhCli::default().readiness(&repo))
+    }
+
+    /// Push the run's branch and open a PR against its merge target. The PR
+    /// title is the run's title (or branch name) and the body is generated
+    /// from the branch's commits. Idempotent-ish: if a PR already exists for
+    /// the branch, gh fails and the existing PR is returned instead.
+    pub fn create_pr(&self, id: &str) -> Result<agency_core::gh::PrInfo> {
+        let run = self.run_record(id)?;
+        if run.kind != "agent" {
+            bail!("only agent runs have a branch to open a PR for");
+        }
+        let repo = self.project_repo(&run.project_id)?;
+        let worktree = repo.join(".agency").join("worktrees").join(&run.id);
+        if !worktree.exists() {
+            bail!("workspace is archived — restore it before creating a PR");
+        }
+        let gh = agency_core::gh::GhCli::default();
+        agency_core::git::push(&worktree)?;
+        if let Some(existing) = gh.view_pr(&repo, &run.branch)? {
+            return Ok(existing);
+        }
+        let base = agency_core::merge::resolve_target(run.merge_target.as_deref(), &repo)?;
+        let title = run
+            .title
+            .clone()
+            .filter(|t| !t.is_empty())
+            .unwrap_or_else(|| run.branch.clone());
+        let body = agency_core::git::branch_summary(&repo, &run.branch, &base)?;
+        gh.create_pr(&repo, &run.branch, &base, &title, &body)
+    }
+
+    /// The run's PR (if any) plus its check rollup, polled by the UI.
+    pub fn pr_status(&self, id: &str) -> Result<PrStatus> {
+        let run = self.run_record(id)?;
+        let repo = self.project_repo(&run.project_id)?;
+        let gh = agency_core::gh::GhCli::default();
+        let pr = gh.view_pr(&repo, &run.branch)?;
+        let checks = match &pr {
+            Some(_) => gh.pr_checks(&repo, &run.branch).unwrap_or_default(),
+            None => Vec::new(),
+        };
+        Ok(PrStatus { pr, checks })
+    }
+
+    /// Type the PR's failing checks into the agent's live session so it can
+    /// investigate — same delivery path as review comments.
+    pub fn send_check_feedback(&self, id: &str) -> Result<()> {
+        let status = self.pr_status(id)?;
+        let failing: Vec<_> = status
+            .checks
+            .iter()
+            .filter(|c| c.bucket == "fail" || c.bucket == "cancel")
+            .collect();
+        if failing.is_empty() {
+            bail!("no failing checks to send");
+        }
+        if !matches!(self.term.read().unwrap().status(&session_name(id)), Ok(SessionStatus::Running)) {
+            bail!("agent session {id} is not running");
+        }
+        let mut msg = format!("CI feedback: {} check(s) failing on this branch's PR — ", failing.len());
+        let parts: Vec<String> = failing
+            .iter()
+            .map(|c| {
+                if c.link.is_empty() {
+                    c.name.clone()
+                } else {
+                    format!("{} ({})", c.name, c.link)
+                }
+            })
+            .collect();
+        msg.push_str(&parts.join("; "));
+        msg.push_str(". Please investigate the failures, fix them, commit, and push to update the PR.");
+        self.term.read().unwrap().send_text(&session_name(id), &msg)?;
+        Ok(())
     }
 
     pub fn resolve_merge<F>(

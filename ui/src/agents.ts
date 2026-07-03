@@ -7,9 +7,26 @@ export interface AgentType {
 
 export const AGENT_TYPES: AgentType[] = [
   { id: "claude", label: "Claude Code" },
+  { id: "codex", label: "Codex" },
   { id: "pi", label: "Pi" },
+  { id: "opencode", label: "OpenCode" },
+  { id: "copilot", label: "Copilot CLI" },
+  { id: "cursor", label: "Cursor" },
   { id: "hermes", label: "Hermes" },
 ];
+
+// Install one-liners for the preconfigured agents, used when a spawn is
+// attempted and the profile's command isn't on PATH. Agents without an entry
+// (e.g. hermes) get a "configure it in Settings" hint instead of an install
+// offer. Runs in the user's login shell, inside an Agency terminal.
+export const INSTALL_COMMANDS: Record<string, string> = {
+  claude: "npm install -g @anthropic-ai/claude-code",
+  codex: "npm install -g @openai/codex",
+  pi: "npm install -g @mariozechner/pi",
+  opencode: "npm install -g opencode-ai",
+  copilot: "npm install -g @github/copilot",
+  cursor: "curl https://cursor.com/install -fsS | bash",
+};
 
 const COLORS: Record<string, string> = {
   claude: "#fab387",

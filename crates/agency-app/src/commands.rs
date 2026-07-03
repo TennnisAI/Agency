@@ -53,8 +53,15 @@ fn agent_status_dto(status: AgentStatus) -> StatusDto {
     }
 }
 
+// NOTE on async: read-only / polled commands are `async fn` so Tauri runs them
+// on the async runtime instead of the main thread — sync commands execute on
+// the main thread, and these shell out to git or round-trip the terminal
+// daemon, so they stacked up behind the 1-2s polls and stalled anything queued
+// after them (IPC responses, tray, window chrome) for up to a second. Mutating
+// commands stay sync on purpose: the main thread serializes them, which
+// doubles as a lock against concurrent git index writes.
 #[tauri::command]
-pub fn list_projects(state: State<'_, AppState>) -> Result<Vec<Project>, String> {
+pub async fn list_projects(state: State<'_, AppState>) -> Result<Vec<Project>, String> {
     state.list_projects().map_err(|e| e.to_string())
 }
 
@@ -94,7 +101,7 @@ pub fn create_run(
 }
 
 #[tauri::command]
-pub fn list_project_branches(
+pub async fn list_project_branches(
     state: State<'_, AppState>,
     project_id: String,
 ) -> Result<agency_core::git::ProjectBranches, String> {
@@ -107,6 +114,30 @@ pub fn create_terminal(
     project_id: String,
 ) -> Result<RunInfo, String> {
     state.create_terminal(&project_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn agent_installed(state: State<'_, AppState>, agent: String) -> Result<bool, String> {
+    state.agent_installed(&agent).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn create_install_terminal(
+    state: State<'_, AppState>,
+    project_id: String,
+    agent: String,
+    command: String,
+) -> Result<RunInfo, String> {
+    state
+        .create_install_terminal(&project_id, &agent, &command)
+        .map_err(|e| e.to_string())
+}
+
+/// Quit for real: invoked by the frontend once the user confirms the styled
+/// in-app quit dialog (see lifecycle::request_quit).
+#[tauri::command]
+pub fn confirm_quit(app: tauri::AppHandle) {
+    crate::lifecycle::confirm_quit(&app);
 }
 
 const TITLE_MODEL_ANTHROPIC: &str = "claude-haiku-4-5-20251001";
@@ -206,7 +237,7 @@ fn llm_title(settings: &ProviderSettings, first_prompt: &str) -> Option<String> 
 }
 
 #[tauri::command]
-pub fn list_runs(state: State<'_, AppState>, project_id: String) -> Result<Vec<RunInfo>, String> {
+pub async fn list_runs(state: State<'_, AppState>, project_id: String) -> Result<Vec<RunInfo>, String> {
     state.list_runs(&project_id).map_err(|e| e.to_string())
 }
 
@@ -221,7 +252,7 @@ pub fn stop_run(state: State<'_, AppState>, id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn run_preview(state: State<'_, AppState>, id: String, lines: usize) -> Result<String, String> {
+pub async fn run_preview(state: State<'_, AppState>, id: String, lines: usize) -> Result<String, String> {
     state.run_preview(&id, lines).map_err(|e| e.to_string())
 }
 
@@ -261,7 +292,7 @@ pub fn resize_run(
 }
 
 #[tauri::command]
-pub fn run_status(state: State<'_, AppState>, id: String) -> Result<SessionStatus, String> {
+pub async fn run_status(state: State<'_, AppState>, id: String) -> Result<SessionStatus, String> {
     state.run_status(&id).map_err(|e| e.to_string())
 }
 
@@ -276,13 +307,13 @@ pub fn ensure_run_active(state: State<'_, AppState>, id: String) -> Result<(), S
 }
 
 #[tauri::command]
-pub fn git_status(state: State<'_, AppState>, task_id: String) -> Result<Vec<FileChange>, String> {
+pub async fn git_status(state: State<'_, AppState>, task_id: String) -> Result<Vec<FileChange>, String> {
     let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
     git::status(&wt).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn git_diff(
+pub async fn git_diff(
     state: State<'_, AppState>,
     task_id: String,
     path: String,
@@ -369,7 +400,7 @@ pub struct RunBranches {
 }
 
 #[tauri::command]
-pub fn run_branches(state: State<'_, AppState>, task_id: String) -> Result<RunBranches, String> {
+pub async fn run_branches(state: State<'_, AppState>, task_id: String) -> Result<RunBranches, String> {
     let (branch, base) = state.run_branches(&task_id).map_err(|e| e.to_string())?;
     Ok(RunBranches { branch, base })
 }
@@ -400,7 +431,7 @@ pub fn save_settings(state: State<'_, AppState>, settings: ProviderSettings) -> 
 }
 
 #[tauri::command]
-pub fn merge_preview(state: State<'_, AppState>, task_id: String) -> Result<MergePreview, String> {
+pub async fn merge_preview(state: State<'_, AppState>, task_id: String) -> Result<MergePreview, String> {
     state.merge_preview(&task_id).map_err(|e| e.to_string())
 }
 
@@ -467,7 +498,7 @@ pub fn resolver_resize(
 }
 
 #[tauri::command]
-pub fn git_parse_diff(
+pub async fn git_parse_diff(
     state: State<'_, AppState>,
     task_id: String,
     path: String,
@@ -501,7 +532,7 @@ pub fn git_unstage_hunk(
 }
 
 #[tauri::command]
-pub fn git_log_graph(
+pub async fn git_log_graph(
     state: State<'_, AppState>,
     task_id: String,
     limit: usize,
@@ -511,7 +542,7 @@ pub fn git_log_graph(
 }
 
 #[tauri::command]
-pub fn git_branch_info(
+pub async fn git_branch_info(
     state: State<'_, AppState>,
     task_id: String,
 ) -> Result<agency_core::git::BranchInfo, String> {
@@ -520,7 +551,7 @@ pub fn git_branch_info(
 }
 
 #[tauri::command]
-pub fn inspect_repo(state: State<'_, AppState>, repo_path: String) -> Result<ReadinessDto, String> {
+pub async fn inspect_repo(state: State<'_, AppState>, repo_path: String) -> Result<ReadinessDto, String> {
     Ok(readiness_dto(state.inspect_repo(std::path::Path::new(&repo_path))))
 }
 
@@ -530,7 +561,7 @@ pub fn init_repo(state: State<'_, AppState>, repo_path: String) -> Result<(), St
 }
 
 #[tauri::command]
-pub fn git_commit_files(
+pub async fn git_commit_files(
     state: State<'_, AppState>,
     task_id: String,
     hash: String,
@@ -540,7 +571,7 @@ pub fn git_commit_files(
 }
 
 #[tauri::command]
-pub fn git_commit_diff(
+pub async fn git_commit_diff(
     state: State<'_, AppState>,
     task_id: String,
     hash: String,
@@ -608,7 +639,7 @@ pub fn git_revert_lines(
 }
 
 #[tauri::command]
-pub fn run_script_configured(state: State<'_, AppState>, id: String) -> Result<bool, String> {
+pub async fn run_script_configured(state: State<'_, AppState>, id: String) -> Result<bool, String> {
     state.run_script_configured(&id).map_err(|e| e.to_string())
 }
 
@@ -623,12 +654,12 @@ pub fn stop_run_script(state: State<'_, AppState>, id: String) -> Result<(), Str
 }
 
 #[tauri::command]
-pub fn run_script_status(state: State<'_, AppState>, id: String) -> Result<SessionStatus, String> {
+pub async fn run_script_status(state: State<'_, AppState>, id: String) -> Result<SessionStatus, String> {
     state.run_script_status(&id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn run_script_preview(
+pub async fn run_script_preview(
     state: State<'_, AppState>,
     id: String,
     lines: usize,
@@ -681,7 +712,7 @@ pub fn restore_run(state: State<'_, AppState>, id: String) -> Result<RunInfo, St
 }
 
 #[tauri::command]
-pub fn list_archived_runs(
+pub async fn list_archived_runs(
     state: State<'_, AppState>,
     project_id: String,
 ) -> Result<Vec<RunInfo>, String> {
@@ -691,8 +722,19 @@ pub fn list_archived_runs(
 use crate::notifier::NotifSettings;
 
 #[tauri::command]
-pub fn set_ui_state(state: State<'_, AppState>, focused: bool, active_run: Option<String>) {
-    state.set_ui_state(focused, active_run);
+pub fn set_ui_state(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    focused: bool,
+    active_run: Option<String>,
+) {
+    // A fresh focus edge right after a notification means the user (most
+    // likely) clicked it — macOS offers no real click callback, so deep-link
+    // to the notified run via the same event the tray menu uses.
+    if let Some((project_id, run_id)) = state.set_ui_state(focused, active_run) {
+        use tauri::Emitter;
+        let _ = app.emit("tray-open-run", crate::tray::OpenRun { project_id, run_id });
+    }
 }
 
 #[tauri::command]
@@ -754,7 +796,7 @@ fn resolve_root(state: &AppState, root: &FileRoot) -> Result<std::path::PathBuf,
 }
 
 #[tauri::command]
-pub fn list_dir(
+pub async fn list_dir(
     state: State<'_, AppState>,
     root: FileRoot,
     rel_path: String,
@@ -764,7 +806,7 @@ pub fn list_dir(
 }
 
 #[tauri::command]
-pub fn read_file(
+pub async fn read_file(
     state: State<'_, AppState>,
     root: FileRoot,
     rel_path: String,
@@ -782,4 +824,28 @@ pub fn write_file(
 ) -> Result<(), String> {
     let base = resolve_root(&state, &root)?;
     agency_core::files::write_file(&base, &rel_path, &contents).map_err(|e| e.to_string())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BinaryContents {
+    pub b64: String,
+    pub mime: String,
+    pub too_large: bool,
+}
+
+/// Raw file bytes as base64, for the file browser's image/PDF previews.
+#[tauri::command]
+pub async fn read_file_base64(
+    state: State<'_, AppState>,
+    root: FileRoot,
+    rel_path: String,
+) -> Result<BinaryContents, String> {
+    let base = resolve_root(&state, &root)?;
+    let f = agency_core::files::read_file_bytes(&base, &rel_path).map_err(|e| e.to_string())?;
+    Ok(BinaryContents {
+        b64: STANDARD.encode(&f.bytes),
+        mime: f.mime.to_string(),
+        too_large: f.too_large,
+    })
 }

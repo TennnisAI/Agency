@@ -26,6 +26,9 @@ base64 = "0.22"
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-notification = "2"
+# Direct dep on the same backend tauri-plugin-notification uses, only to call
+# set_application() on macOS so notifications carry the Agency icon.
+notify-rust = "4"
 agency-core = { path = "../agency-core" }
 log = "0.4"
 uuid = { version = "1", features = ["v4"] }

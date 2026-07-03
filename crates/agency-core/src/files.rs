@@ -5,6 +5,10 @@ use std::path::{Component, Path, PathBuf};
 /// Files larger than this are reported as `too_large` rather than read.
 const MAX_FILE_BYTES: u64 = 2_000_000;
 
+/// Cap for raw (binary) reads used by previews — images/PDFs run bigger than
+/// source files, but a preview still shouldn't drag hundreds of MB over IPC.
+const MAX_BINARY_BYTES: u64 = 25_000_000;
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DirEntry {
@@ -126,4 +130,46 @@ pub fn write_file(root: &Path, rel: &str, contents: &str) -> Result<()> {
     let path = resolve_within(root, rel)?;
     std::fs::write(&path, contents)?;
     Ok(())
+}
+
+#[derive(Debug, Clone)]
+pub struct BinaryFile {
+    pub bytes: Vec<u8>,
+    pub mime: &'static str,
+    pub too_large: bool,
+}
+
+/// MIME type by extension for the preview formats the UI knows how to render.
+/// Everything else is `application/octet-stream`, which the UI treats as
+/// "no preview".
+pub fn mime_for(rel: &str) -> &'static str {
+    let ext = Path::new(rel)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_default();
+    match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "bmp" => "image/bmp",
+        "ico" => "image/x-icon",
+        "avif" => "image/avif",
+        "svg" => "image/svg+xml",
+        "pdf" => "application/pdf",
+        _ => "application/octet-stream",
+    }
+}
+
+/// Read a file's raw bytes for previewing (images, PDFs). Same containment
+/// rules as `read_file`; oversized files come back empty with `too_large` set.
+pub fn read_file_bytes(root: &Path, rel: &str) -> Result<BinaryFile> {
+    let path = resolve_within(root, rel)?;
+    let mime = mime_for(rel);
+    let meta = std::fs::metadata(&path)?;
+    if meta.len() > MAX_BINARY_BYTES {
+        return Ok(BinaryFile { bytes: Vec::new(), mime, too_large: true });
+    }
+    Ok(BinaryFile { bytes: std::fs::read(&path)?, mime, too_large: false })
 }

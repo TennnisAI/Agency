@@ -5,6 +5,7 @@ import { projectColor, runName } from "../agents";
 import { useRuns } from "../store/runs";
 import ConfirmDialog from "./ConfirmDialog";
 import RepoSetupDialog from "./RepoSetupDialog";
+import SidebarToggle from "./SidebarToggle";
 
 function statusClass(s: RunInfo["status"]): string {
   return s.state === "running" ? "running" : "exited";
@@ -19,11 +20,17 @@ export default function ProjectTree({
   focusedRunId,
   onSelect,
   onSelectRun,
+  onHome,
+  onToggleSidebar,
+  onOpenSettings,
 }: {
   selectedId: string | null;
   focusedRunId: string | null;
   onSelect: (p: Project) => void;
   onSelectRun: (p: Project, run: RunInfo) => void;
+  onHome: () => void;
+  onToggleSidebar: () => void;
+  onOpenSettings: () => void;
 }) {
   const { runs } = useRuns();
   const [projects, setProjects] = useState<Project[]>([]);
@@ -110,7 +117,11 @@ export default function ProjectTree({
   return (
     <aside className="tree">
       <div className="tree-head">
-        <span className="eyebrow">PROJECTS</span>
+        <SidebarToggle open onToggle={onToggleSidebar} />
+        <button className="eyebrow eyebrow-link" title="All projects overview" onClick={onHome}>
+          PROJECTS
+        </button>
+        <span className="spacer" />
         <button className="icon-add" title="Add project" onClick={handleAdd}>+</button>
       </div>
       {error && <div className="git-error">{error}</div>}
@@ -142,6 +153,7 @@ export default function ProjectTree({
                   <li
                     key={r.id}
                     className={`tree-child ${r.id === focusedRunId ? "active" : ""}`}
+                    style={{ "--sel-accent": projectColor(p.id) } as React.CSSProperties}
                     title={`Open ${r.agent}: ${runName(r)}`}
                     onClick={(e) => { e.stopPropagation(); onSelectRun(p, r); }}
                   >
@@ -154,6 +166,11 @@ export default function ProjectTree({
           </li>
         ))}
       </ul>
+      <div className="tree-foot">
+        <button className="tree-settings" onClick={onOpenSettings}>
+          <span className="tree-settings-gear">⚙</span> Settings
+        </button>
+      </div>
       {setup && (
         <RepoSetupDialog
           readiness={setup.readiness}

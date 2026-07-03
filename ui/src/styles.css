@@ -149,12 +149,17 @@ button:hover { background: var(--lav); }
 .task-split .terminal { flex: 2; }
 .git-actions { display: flex; gap: 6px; flex-wrap: wrap; }
 .git-error { color: var(--red); font-size: 12px; white-space: pre-wrap; background: rgba(243,139,168,.08); border-radius: 4px; padding: 4px 6px; }
-/* Settings overlay + modal */
-.settings-overlay { position: fixed; inset: 0; background: rgba(17,17,27,.66); backdrop-filter: blur(6px); display: flex; align-items: center; justify-content: center; z-index: 10; }
-.settings { background: var(--crust); border: 1px solid var(--s1); border-radius: 15px; padding: 20px; width: 620px; max-height: 88vh; overflow: auto; display: flex; flex-direction: column; gap: 18px; box-shadow: 0 24px 64px rgba(0,0,0,.5); }
-.settings-head { display: flex; justify-content: space-between; align-items: center; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
-.settings-head h2 { margin: 0; font-size: 18px; font-weight: 600; color: var(--text); }
-.settings-close { color: var(--o1); }
+/* Settings full view (design handoff: takes over the main area) */
+.settings-page { flex: 1; min-width: 0; overflow-y: auto; background: var(--base); }
+.settings-inner { max-width: 780px; margin: 0 auto; padding: 34px 28px 60px; display: flex; flex-direction: column; gap: 26px; }
+.settings-back { align-self: flex-start; background: transparent; border: none; color: var(--o1); font-size: 12px; font-weight: 400; padding: 0; cursor: pointer; }
+.settings-back:hover { color: var(--text); background: transparent; }
+.settings-title { font-size: 24px; font-weight: 600; margin: -18px 0 0; color: var(--text); }
+.settings-add-profile { align-self: flex-start; font-size: 12px; font-weight: 400; padding: 8px 13px; border-radius: 8px; border: 1px dashed var(--s1); background: transparent; color: var(--sub0); }
+.settings-add-profile:hover { background: var(--mantle); color: var(--text); }
+.settings-save { align-self: flex-start; }
+.agent-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.settings-group-card { background: var(--mantle); border: 1px solid var(--s0); border-radius: 11px; padding: 6px 15px; display: flex; flex-direction: column; }
 /* Section */
 .settings-section { display: flex; flex-direction: column; gap: 10px; }
 .settings-section-label { font-size: 11px; font-weight: 600; letter-spacing: 0.12em; color: var(--o0); text-transform: uppercase; }
@@ -188,10 +193,6 @@ button:hover { background: var(--lav); }
 .settings-input { background: var(--mantle); border: 1px solid var(--s1); color: var(--text); border-radius: 7px; padding: 8px 10px; width: 100%; font-family: var(--sans); font-size: 13px; }
 .settings-input:focus { outline: none; border-color: var(--blue); }
 textarea.settings-input { min-height: 64px; resize: vertical; }
-/* Legacy selectors kept for compat */
-.settings input, .settings textarea { background: var(--mantle); border: 1px solid var(--s1); color: var(--text); border-radius: 7px; padding: 8px 10px; width: 100%; font-family: var(--sans); font-size: 13px; }
-.settings input:focus, .settings textarea:focus { outline: none; border-color: var(--blue); }
-.settings textarea { min-height: 64px; resize: vertical; }
 /* Provider cards */
 .settings-providers { display: flex; flex-direction: column; gap: 8px; }
 .settings-provider-card { background: var(--mantle); border: 1px solid var(--s0); border-radius: 10px; padding: 13px 15px; display: flex; flex-direction: column; gap: 8px; }
@@ -274,6 +275,12 @@ textarea.settings-input { min-height: 64px; resize: vertical; }
 .statusbar-branch { font-family: var(--mono); font-size: 10.5px; color: var(--o0); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* Body */
 .body { flex: 1; display: flex; min-height: 0; }
+/* Sidebar host: mounted at all times, collapsed to width 0 when hidden. The
+   inner .sidebar-fix keeps the tree at its full width so collapsing clips it
+   (no text reflow) instead of squishing it. */
+.sidebar-wrap { flex-shrink: 0; display: flex; min-height: 0; overflow: hidden; }
+.sidebar-wrap.closed { visibility: hidden; }
+.sidebar-fix { display: flex; min-height: 0; flex-shrink: 0; }
 /* Project tree sidebar */
 .tree {
   width: var(--sidebar-w);
@@ -284,12 +291,29 @@ textarea.settings-input { min-height: 64px; resize: vertical; }
   overflow: hidden;
 }
 .tree-head {
-  display: flex; align-items: center; justify-content: space-between; padding: 12px 12px 8px;
+  display: flex; align-items: center; gap: 6px; padding: 8px 10px 6px;
 }
+.tree-head .spacer { flex: 1; }
 .tree-head .eyebrow {
   font-size: 10.5px; font-weight: 600; letter-spacing: .13em; color: var(--o0);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+/* "PROJECTS" doubles as the way back to the all-projects overview. */
+button.eyebrow-link {
+  background: transparent; border: none; cursor: pointer;
+  padding: 4px 6px; border-radius: 6px; font-family: inherit;
+}
+button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
+/* Sidebar footer: settings entry (design handoff §sidebar) */
+.tree-foot { border-top: 1px solid var(--line); padding: 10px; flex-shrink: 0; }
+.tree-settings {
+  display: flex; align-items: center; gap: 9px; width: 100%;
+  padding: 8px 12px; border-radius: 8px; border: none;
+  background: transparent; color: var(--sub0);
+  font-weight: 500; font-size: 13px; text-align: left; cursor: pointer;
+}
+.tree-settings:hover { background: var(--s0); color: var(--text); }
+.tree-settings-gear { font-size: 14px; line-height: 1; }
 .tree-list {
   list-style: none; margin: 0; padding: 0 6px;
   flex: 1; overflow-y: auto;
@@ -319,12 +343,31 @@ textarea.settings-input { min-height: 64px; resize: vertical; }
   cursor: pointer; border-radius: 4px;
 }
 .tree-child:hover { background: var(--s0); color: var(--text); }
-/* The agent you're focused on is the strongest mark in the tree: solid fill +
-   a blue lineage bar. Its parent project drops to a subtler "ancestor" tint so
-   the two don't compete for attention. */
+/* The agent you're focused on is marked with viewfinder corner brackets in the
+   project's accent color (set inline as --sel-accent) over a faint accent
+   tint — a "focus" metaphor. Its parent project drops to a subtler "ancestor"
+   tint so the two don't compete for attention. */
+.tree-child { position: relative; }
 .tree-child.active {
-  background: var(--s1); color: var(--text);
-  box-shadow: inset 2px 0 0 var(--blue);
+  background: color-mix(in srgb, var(--sel-accent, var(--blue)) 9%, transparent);
+  color: var(--text);
+}
+.tree-child.active::before,
+.tree-child.active::after {
+  content: ""; position: absolute; width: 8px; height: 8px;
+  pointer-events: none; opacity: .9;
+}
+.tree-child.active::before {
+  top: 0; left: 0;
+  border-top: 1.5px solid var(--sel-accent, var(--blue));
+  border-left: 1.5px solid var(--sel-accent, var(--blue));
+  border-top-left-radius: 5px;
+}
+.tree-child.active::after {
+  bottom: 0; right: 0;
+  border-bottom: 1.5px solid var(--sel-accent, var(--blue));
+  border-right: 1.5px solid var(--sel-accent, var(--blue));
+  border-bottom-right-radius: 5px;
 }
 .tree-row.selected.ancestor { background: var(--s0); }
 .tree-row.selected.ancestor .tree-name { color: var(--sub1); }
@@ -391,6 +434,10 @@ textarea.settings-input { min-height: 64px; resize: vertical; }
   border-radius: 7px;
 }
 .content-head > button:hover { background: var(--s1); }
+/* The sidebar toggle (shown here only while the sidebar is hidden) keeps its
+   ghost icon-button look despite the chip styling above. */
+.content-head > .icon-btn { background: none; color: var(--sub0); padding: 0; font-size: 16px; border-radius: 6px; }
+.content-head > .icon-btn:hover { background: var(--s0); color: var(--text); }
 
 /* Segmented control */
 .seg {
@@ -922,3 +969,89 @@ input, textarea, code,
   cursor: pointer; padding: 0 2px; font-size: 13px;
 }
 .agent-menu .branch-reset:hover { color: var(--text); }
+
+/* ── Home overview (no project selected) ─────────────────────── */
+.home {
+  flex: 1; min-height: 0; overflow-y: auto;
+  padding: 24px 24px 44px;
+  display: flex; flex-direction: column; gap: 24px;
+}
+.home-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; }
+.home .eyebrow { font-size: 10.5px; font-weight: 600; letter-spacing: .13em; color: var(--o0); }
+.home-title { margin: 3px 0 0; font-size: 22px; font-weight: 600; color: var(--text); }
+.home-stats { display: flex; gap: 16px; align-items: baseline; padding-bottom: 3px; }
+.home-stat { font-size: 12px; color: var(--o1); white-space: nowrap; }
+.home-stat-n { font-family: var(--mono); font-size: 15px; font-weight: 600; color: var(--sub1); }
+.home-stat.accent .home-stat-n { color: var(--running); }
+.home-group { display: flex; flex-direction: column; gap: 10px; }
+.home-group-head { display: flex; align-items: center; gap: 2px; margin: 0 -8px; }
+.home-fold {
+  background: transparent; border: none; border-radius: 6px;
+  color: var(--o0); font-size: 10px; padding: 6px 7px; cursor: pointer;
+  flex-shrink: 0; line-height: 1;
+}
+.home-fold:hover { background: var(--s0); color: var(--text); }
+.home-group-title {
+  flex: 1; min-width: 0;
+  display: flex; align-items: center; gap: 10px;
+  background: transparent; border: none; border-radius: 8px;
+  padding: 5px 8px; cursor: pointer; text-align: left;
+  color: var(--text); font-weight: 400;
+}
+.home-group-title:hover { background: var(--s0); }
+.home-group-name { font-size: 14px; font-weight: 600; color: var(--text); }
+.home-group-meta { font-size: 12px; color: var(--o0); }
+.home-live { color: var(--running); }
+.home-group-open { margin-left: auto; font-size: 11.5px; color: var(--o1); opacity: 0; transition: opacity .12s; }
+.home-group-title:hover .home-group-open { opacity: 1; }
+/* The shared .grid is a scrolling page section; inside .home each group's grid
+   is just a block — the page itself scrolls. */
+.grid.home-grid { padding: 0; overflow: visible; flex: initial; }
+/* First-run hero */
+.home-blank { align-items: center; justify-content: center; }
+.home-hero { display: flex; flex-direction: column; align-items: center; gap: 10px; max-width: 400px; text-align: center; }
+.home-hero-mark {
+  width: 64px; height: 64px; border-radius: 18px;
+  background: linear-gradient(135deg, var(--s0), var(--crust));
+  border: 1px solid var(--s1);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 26px; color: var(--sub0);
+}
+.home-hero h1 { margin: 8px 0 0; font-size: 20px; font-weight: 600; color: var(--text); }
+.home-hero p { margin: 0; font-size: 13px; line-height: 1.65; color: var(--sub0); }
+
+/* ── Install-missing-agent dialog ────────────────────────────── */
+.modal-body p { margin: 0 0 10px; }
+.modal-body p:last-child { margin-bottom: 0; }
+.install-lede code { color: var(--peach); font-size: 12px; }
+.install-cmd {
+  font-family: var(--mono); font-size: 12px; line-height: 1.5; color: var(--text);
+  background: var(--crust); border: 1px solid var(--s0); border-radius: 8px;
+  padding: 10px 12px; margin: 0;
+  white-space: pre-wrap; word-break: break-all;
+  user-select: text; -webkit-user-select: text;
+}
+.btn-primary:disabled { opacity: .55; cursor: default; }
+.btn-primary:disabled:hover { background: var(--blue); }
+
+/* ── File previews (images, PDFs, md/html preview mode) ──────── */
+.file-preview-media {
+  flex: 1; min-height: 0; overflow: auto;
+  display: flex; align-items: center; justify-content: center;
+  padding: 20px; background: var(--crust);
+}
+.file-preview-media img {
+  max-width: 100%; max-height: 100%; object-fit: contain;
+  border-radius: 4px;
+  /* Checker backing so transparent regions read as transparency, not theme. */
+  background:
+    conic-gradient(rgba(255,255,255,.06) 0 25%, transparent 0 50%,
+                   rgba(255,255,255,.06) 0 75%, transparent 0) 0 0 / 16px 16px;
+}
+.file-preview-frame {
+  flex: 1; min-height: 0; width: 100%;
+  border: none; background: var(--base);
+}
+/* Compact segmented control for the Code/Preview toggle in the editor bar. */
+.seg.seg-mini { padding: 1px; }
+.seg.seg-mini button { padding: 2px 9px; font-size: 11px; }

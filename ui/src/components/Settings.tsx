@@ -12,9 +12,12 @@ import {
   saveNotifSettings,
 } from "../api";
 import Toggle from "./Toggle";
+import { agentColor, agentLabel } from "../agents";
 import { THEMES, ThemeId, applyTheme, getStoredTheme } from "../lib/themes";
 import { getWordWrap, setWordWrap } from "../lib/editorPrefs";
 
+// Full-view settings page (design handoff: settings takes over the main area,
+// entered from the ⚙ button at the bottom of the Projects pane).
 export default function Settings({ onClose }: { onClose: () => void }) {
   const [settings, setSettings] = useState<ProviderSettings>({
     anthropicApiKey: "",
@@ -22,6 +25,7 @@ export default function Settings({ onClose }: { onClose: () => void }) {
   });
   const [profiles, setProfiles] = useState<AgentProfile[]>([]);
   const [draft, setDraft] = useState({ name: "", command: "", args: "", env: "" });
+  const [formOpen, setFormOpen] = useState(false);
   const [error, setError] = useState("");
   const [notif, setNotif] = useState<NotifSettings>({
     agentFinished: true,
@@ -93,6 +97,7 @@ export default function Settings({ onClose }: { onClose: () => void }) {
     try {
       await saveProfile({ name: draft.name.trim(), command: draft.command.trim(), args, env });
       setDraft({ name: "", command: "", args: "", env: "" });
+      setFormOpen(false);
       await refresh();
     } catch (e) {
       setError(String(e));
@@ -106,15 +111,14 @@ export default function Settings({ onClose }: { onClose: () => void }) {
       args: p.args.join(" "),
       env: p.env.map(([k, v]) => `${k}=${v}`).join("\n"),
     });
+    setFormOpen(true);
   }
 
   return (
-    <div className="settings-overlay">
-      <div className="settings">
-        <div className="settings-head">
-          <h2>Settings</h2>
-          <button className="icon-btn settings-close" onClick={onClose}>✕</button>
-        </div>
+    <main className="settings-page">
+      <div className="settings-inner">
+        <button className="settings-back" onClick={onClose}>← Back</button>
+        <h1 className="settings-title">Settings</h1>
         {error && <div className="git-error">{error}</div>}
 
         <section className="settings-section">
@@ -142,22 +146,13 @@ export default function Settings({ onClose }: { onClose: () => void }) {
         </section>
 
         <section className="settings-section">
-          <div className="settings-section-label">Editor</div>
-          <div className="settings-notif">
-            <div className="settings-notif-row">
-              <span className="settings-notif-label">Word wrap in file viewer</span>
-              <Toggle checked={wordWrap} onChange={pickWordWrap} />
-            </div>
-          </div>
-        </section>
-
-        <section className="settings-section">
           <div className="settings-section-label">Agent profiles</div>
           <div className="settings-card-list">
             {profiles.map((p) => (
               <div key={p.name} className="settings-profile-card">
                 <div className="settings-profile-head">
-                  <span className="settings-profile-name">{p.name}</span>
+                  <span className="agent-dot" style={{ background: agentColor(p.name) }} />
+                  <span className="settings-profile-name">{agentLabel(p.name)}</span>
                   <span className="spacer" />
                   <button className="settings-ghost-btn" onClick={() => editProfile(p)}>Edit</button>
                   <button className="settings-ghost-btn settings-del-btn" onClick={() => deleteProfile(p.name).then(refresh)}>Delete</button>
@@ -181,34 +176,41 @@ export default function Settings({ onClose }: { onClose: () => void }) {
               </div>
             ))}
           </div>
-          <div className="profile-form">
-            <div className="settings-form-label">Add / edit profile</div>
-            <input
-              className="settings-input"
-              placeholder="name"
-              value={draft.name}
-              onChange={(e) => setDraft({ ...draft, name: e.target.value })}
-            />
-            <input
-              className="settings-input"
-              placeholder="command (e.g. claude)"
-              value={draft.command}
-              onChange={(e) => setDraft({ ...draft, command: e.target.value })}
-            />
-            <input
-              className="settings-input"
-              placeholder="args (space-separated, use {{prompt}})"
-              value={draft.args}
-              onChange={(e) => setDraft({ ...draft, args: e.target.value })}
-            />
-            <textarea
-              className="settings-input"
-              placeholder="env, one KEY=VALUE per line"
-              value={draft.env}
-              onChange={(e) => setDraft({ ...draft, env: e.target.value })}
-            />
-            <button onClick={addProfile}>Save profile</button>
-          </div>
+          {formOpen ? (
+            <div className="profile-form">
+              <div className="settings-form-label">{profiles.some((p) => p.name === draft.name.trim()) ? "Edit profile" : "Add profile"}</div>
+              <input
+                className="settings-input"
+                placeholder="name"
+                value={draft.name}
+                onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+              />
+              <input
+                className="settings-input"
+                placeholder="command (e.g. claude)"
+                value={draft.command}
+                onChange={(e) => setDraft({ ...draft, command: e.target.value })}
+              />
+              <input
+                className="settings-input"
+                placeholder="args (space-separated, use {{prompt}})"
+                value={draft.args}
+                onChange={(e) => setDraft({ ...draft, args: e.target.value })}
+              />
+              <textarea
+                className="settings-input"
+                placeholder="env, one KEY=VALUE per line"
+                value={draft.env}
+                onChange={(e) => setDraft({ ...draft, env: e.target.value })}
+              />
+              <div className="row-actions">
+                <button onClick={addProfile}>Save profile</button>
+                <button className="ghost" onClick={() => { setFormOpen(false); setDraft({ name: "", command: "", args: "", env: "" }); }}>Cancel</button>
+              </div>
+            </div>
+          ) : (
+            <button className="settings-add-profile" onClick={() => setFormOpen(true)}>+ Add agent profile</button>
+          )}
         </section>
 
         <section className="settings-section">
@@ -242,15 +244,25 @@ export default function Settings({ onClose }: { onClose: () => void }) {
               </div>
             </div>
           </div>
-          <button onClick={persistSettings}>Save providers</button>
+          <button className="settings-save" onClick={persistSettings}>Save providers</button>
+        </section>
+
+        <section className="settings-section">
+          <div className="settings-section-label">Editor</div>
+          <div className="settings-group-card">
+            <div className="settings-notif-row">
+              <span className="settings-notif-label">Word wrap in file viewer</span>
+              <Toggle checked={wordWrap} onChange={pickWordWrap} />
+            </div>
+          </div>
         </section>
 
         <section className="settings-section">
           <div className="settings-section-label">Notifications</div>
-          <div className="settings-notif">
+          <div className="settings-group-card">
             {([
-              ["agentFinished", "Agent finished"],
-              ["agentIdle", "Agent needs input / idle"],
+              ["agentIdle", "Agent finished a turn"],
+              ["agentFinished", "Agent exited"],
               ["runCrashed", "Run script crashed"],
               ["mergeAttention", "Merge needs attention"],
               ["onlyWhenUnfocused", "Only when app is not focused"],
@@ -276,6 +288,6 @@ export default function Settings({ onClose }: { onClose: () => void }) {
           </div>
         </section>
       </div>
-    </div>
+    </main>
   );
 }

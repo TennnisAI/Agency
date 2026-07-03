@@ -1,9 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { AGENT_TYPES, agentColor } from "./agents";
+import { AGENT_TYPES, INSTALL_COMMANDS, agentColor } from "./agents";
 
 describe("agents", () => {
-  it("lists the three agent types", () => {
-    expect(AGENT_TYPES.map((a) => a.id)).toEqual(["claude", "pi", "hermes"]);
+  it("lists the preconfigured agent types", () => {
+    expect(AGENT_TYPES.map((a) => a.id)).toEqual([
+      "claude", "codex", "pi", "opencode", "copilot", "cursor", "hermes",
+    ]);
+  });
+  it("has an install command for every preconfigured agent except hermes", () => {
+    const withInstall = AGENT_TYPES.filter((a) => a.id !== "hermes").map((a) => a.id);
+    for (const id of withInstall) expect(INSTALL_COMMANDS[id], id).toBeTruthy();
+    expect(INSTALL_COMMANDS.hermes).toBeUndefined();
   });
   it("maps each type to its badge color", () => {
     expect(agentColor("claude")).toBe("#fab387");

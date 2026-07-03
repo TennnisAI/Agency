@@ -5,6 +5,7 @@ interface Handlers {
   onSource: () => void;
   onApprove: () => void;
   onPalette: () => void;
+  onSettings: () => void;
 }
 
 function inEditable(t: EventTarget | null): boolean {
@@ -22,6 +23,7 @@ export function useShortcuts(h: Handlers): void {
       if (!(e.metaKey || e.ctrlKey)) return;
       const key = e.key.toLowerCase();
       if (key === "k") { e.preventDefault(); ref.current.onPalette(); }
+      else if (key === ",") { e.preventDefault(); ref.current.onSettings(); }
       else if (key === "enter") { e.preventDefault(); ref.current.onApprove(); }
       else if (key === "n" && !inEditable(e.target)) { e.preventDefault(); ref.current.onNewTask(); }
       else if (key === "g" && !inEditable(e.target)) { e.preventDefault(); ref.current.onSource(); }

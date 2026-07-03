@@ -15,7 +15,14 @@ function badgeClass(a: string) {
   return ["claude", "pi", "hermes"].includes(a) ? `badge ${a}` : "badge";
 }
 
-export default function AgentFocus() {
+// `onSpawn` lets the host view wrap agent creation with its pre-flight checks
+// (missing-CLI install offer, repo readiness); without it the rail's add menu
+// falls back to the raw store spawn.
+export default function AgentFocus({
+  onSpawn,
+}: {
+  onSpawn?: (agentId: string, opts?: { base: string; mergeTarget: string }) => void;
+}) {
   const { runs, focusedRunId, setFocusedRun, refreshRuns, createAgent, createTerminal } = useRuns();
   const [showMerge, setShowMerge] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
@@ -34,7 +41,7 @@ export default function AgentFocus() {
         <>
           <div className="rail" style={{ width: rail.width, minWidth: rail.width }}>
             <div className="rail-head">
-              <AgentAddMenu variant="header" onSpawn={createAgent} onTerminal={createTerminal} />
+              <AgentAddMenu variant="header" onSpawn={onSpawn ?? createAgent} onTerminal={createTerminal} />
               <span className="spacer" />
               <button className="icon-btn" onClick={() => setRailOpen(false)}>«</button>
             </div>

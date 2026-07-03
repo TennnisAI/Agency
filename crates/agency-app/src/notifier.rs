@@ -36,14 +36,18 @@ impl Default for NotifSettings {
 
 pub struct RunSnapshot {
     pub id: String,
+    pub project_id: String,
     pub label: String,
+    /// Terminals never notify: a shell exiting isn't an agent finishing, and a
+    /// quiet shell isn't an agent finishing a turn.
+    pub is_terminal: bool,
     pub agent: SessionStatus,
     pub run_script: SessionStatus,
     pub pane_hash: u64,
-    /// True when the user has sent input to this run since the last "waiting for
-    /// input" notification. Gates the idle notification so we only nudge after a
-    /// turn the user actually started — never for a fresh agent sitting at its
-    /// opening prompt, and never more than once per turn.
+    /// True when the user has submitted a turn (pressed Enter) in this run since
+    /// the last turn-finished notification. Gates the idle notification so we
+    /// only nudge after a turn the user actually started — never for a fresh
+    /// agent sitting at its opening prompt, and never more than once per turn.
     pub user_input_pending: bool,
 }
 
@@ -120,15 +124,20 @@ pub fn step(
         quiet_since_tick,
         idle_fired,
     };
+    // Terminals are tracked (so a later promotion to notifying would have
+    // history) but never produce events.
+    if snap.is_terminal {
+        return (watch, Vec::new());
+    }
     (watch, events)
 }
 
 /// Notification (title, body) for an event about the run labelled `label`.
 pub fn message(kind: &NotifyKind, label: &str) -> (String, String) {
     match kind {
-        NotifyKind::Finished => ("Agent finished".to_string(), format!("{label} — done")),
+        NotifyKind::Finished => ("Agent exited".to_string(), format!("{label} — done")),
         NotifyKind::RunCrashed => ("Run script crashed".to_string(), format!("{label} — dev server exited")),
-        NotifyKind::Idle => ("Agent needs you".to_string(), format!("{label} — waiting for input")),
+        NotifyKind::Idle => ("Agent finished a turn".to_string(), format!("{label} — ready for you")),
     }
 }
 
@@ -142,7 +151,10 @@ mod tests {
         snap_input(agent, run_script, pane_hash, true)
     }
     fn snap_input(agent: SessionStatus, run_script: SessionStatus, pane_hash: u64, user_input_pending: bool) -> RunSnapshot {
-        RunSnapshot { id: "x".into(), label: "claude: fix".into(), agent, run_script, pane_hash, user_input_pending }
+        RunSnapshot {
+            id: "x".into(), project_id: "proj".into(), label: "claude: fix".into(),
+            is_terminal: false, agent, run_script, pane_hash, user_input_pending,
+        }
     }
     fn running() -> SessionStatus { SessionStatus::Running }
     fn exited(code: i32) -> SessionStatus { SessionStatus::Exited { code } }
@@ -216,6 +228,26 @@ mod tests {
             let (nw, ev) = step(Some(&w), &snap_input(running(), SessionStatus::Gone, 1, false), t, 2, 30);
             w = nw;
             assert!(!ev.contains(&NotifyKind::Idle), "fired idle without input at tick {t}");
+        }
+    }
+
+    #[test]
+    fn terminals_never_notify() {
+        let term = |agent: SessionStatus, hash: u64| RunSnapshot {
+            id: "t".into(), project_id: "proj".into(), label: "terminal".into(),
+            is_terminal: true, agent, run_script: SessionStatus::Gone,
+            pane_hash: hash, user_input_pending: true,
+        };
+        // Exit edge: running -> exited must stay silent for terminals.
+        let (w, _) = step(None, &term(running(), 1), 0, 2, 30);
+        let (w, ev) = step(Some(&w), &term(exited(0), 1), 1, 2, 30);
+        assert!(ev.is_empty(), "terminal exit must not notify");
+        // Idle: a long-quiet terminal with input pending must stay silent too.
+        let (mut w, _) = step(Some(&w), &term(running(), 2), 2, 2, 30);
+        for t in 3..=40 {
+            let (nw, ev) = step(Some(&w), &term(running(), 2), t, 2, 30);
+            w = nw;
+            assert!(ev.is_empty(), "terminal idle must not notify (tick {t})");
         }
     }
 

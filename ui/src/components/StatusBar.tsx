@@ -32,7 +32,7 @@ export default function StatusBar({
           </span>
         )}
       </span>
-      <span className="kbd-hints">⌘N new · ⌘G source · ⌘↵ approve</span>
+      <span className="kbd-hints">⌘N new · ⌘G source · ⌘↵ approve · ⌘, settings</span>
     </footer>
   );
 }

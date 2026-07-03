@@ -56,6 +56,11 @@ export const createRun = (projectId: string, prompt: string, agent: string, base
   invoke<RunInfo>("create_run", { projectId, prompt, agent, base, mergeTarget: mergeTarget ?? null });
 export const createTerminal = (projectId: string) =>
   invoke<RunInfo>("create_terminal", { projectId });
+export const agentInstalled = (agent: string) =>
+  invoke<boolean>("agent_installed", { agent });
+export const createInstallTerminal = (projectId: string, agent: string, command: string) =>
+  invoke<RunInfo>("create_install_terminal", { projectId, agent, command });
+export const confirmQuit = () => invoke<void>("confirm_quit");
 export const setRunTitle = (id: string, firstPrompt: string) =>
   invoke<void>("set_run_title", { id, firstPrompt });
 export const listRuns = (projectId: string) => invoke<RunInfo[]>("list_runs", { projectId });
@@ -318,6 +323,15 @@ export const listDir = (root: FileRoot, relPath: string) =>
 
 export const readFile = (root: FileRoot, relPath: string) =>
   invoke<FileContents>("read_file", { root, relPath });
+
+export interface BinaryContents {
+  b64: string;
+  mime: string;
+  tooLarge: boolean;
+}
+
+export const readFileBase64 = (root: FileRoot, relPath: string) =>
+  invoke<BinaryContents>("read_file_base64", { root, relPath });
 
 export const writeFile = (root: FileRoot, relPath: string, contents: string) =>
   invoke<void>("write_file", { root, relPath, contents });

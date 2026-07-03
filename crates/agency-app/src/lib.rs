@@ -4,6 +4,7 @@ mod notifier;
 mod pathenv;
 mod resume_probe;
 mod state;
+mod tray;
 
 pub use state::{AppState, ProviderSettings, RunInfo};
 
@@ -25,35 +26,31 @@ pub fn run() {
         })
         .setup(|app| {
             use tauri::Manager;
-            use tauri::menu::{MenuBuilder, MenuItemBuilder};
             use tauri::tray::TrayIconBuilder;
-
-            let open = MenuItemBuilder::with_id("open", "Open Agency").build(app)?;
-            let quit = MenuItemBuilder::with_id("quit", "Quit Agency").build(app)?;
-            let menu = MenuBuilder::new(app).items(&[&open, &quit]).build()?;
 
             // Build the tray icon and move the handle into managed state so it
             // is not dropped at the end of this setup closure. In Tauri 2 the
             // underlying icon is reference-counted and is removed from the menu
             // bar when the last handle is dropped — keeping it in managed state
-            // ties its lifetime to the app itself.
+            // ties its lifetime to the app itself. The menu itself is owned by
+            // tray::refresh, which the watcher thread re-runs as run status
+            // changes; the initial refresh below populates the static items.
             let tray = TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
-                .menu(&menu)
-                .on_menu_event(|app, event| match event.id().as_ref() {
-                    "open" => {
-                        if let Some(w) = app.get_webview_window("main") {
-                            let _ = w.show();
-                            let _ = w.set_focus();
-                        }
-                    }
-                    "quit" => {
-                        crate::lifecycle::request_quit(app);
-                    }
-                    _ => {}
-                })
+                .on_menu_event(|app, event| crate::tray::on_menu_event(app, event))
                 .build(app)?;
             app.manage(tray);
+            crate::tray::refresh(app.handle(), &[])?;
+
+            // macOS attributes notifications to a bundle; an unbundled dev run
+            // defaults to Terminal's identity (hence its icon on every
+            // notification). Point notify-rust at the Agency bundle so they
+            // carry our logo. Best-effort: fails harmlessly when no Agency.app
+            // is installed to attribute to.
+            #[cfg(target_os = "macos")]
+            {
+                let _ = notify_rust::set_application(&app.config().identifier);
+            }
 
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
@@ -68,10 +65,24 @@ pub fn run() {
                 let poll_secs: u64 = 2;
                 let mut watches: HashMap<String, crate::notifier::RunWatch> = HashMap::new();
                 let mut tick: u64 = 0;
+                let mut tray_items: Vec<crate::tray::TrayRun> = Vec::new();
                 loop {
                     std::thread::sleep(std::time::Duration::from_secs(poll_secs));
                     tick += 1;
                     let state = handle.state::<AppState>();
+
+                    // Keep the tray menu in step with live runs; rebuild only on
+                    // change (menu APIs must run on the main thread).
+                    if let Ok(items) = state.tray_runs() {
+                        if items != tray_items {
+                            tray_items = items.clone();
+                            let handle2 = handle.clone();
+                            let _ = handle.run_on_main_thread(move || {
+                                let _ = crate::tray::refresh(&handle2, &items);
+                            });
+                        }
+                    }
+
                     let settings = state.notif_settings().unwrap_or_default();
                     let (focused, active) = state.ui_snapshot();
                     let snaps = match state.watch_snapshot() {
@@ -100,6 +111,14 @@ pub fn run() {
                             if enabled && !suppressed {
                                 let (title, body) = crate::notifier::message(ev, &snap.label);
                                 let _ = handle.notification().builder().title(title).body(body).show();
+                                // Clicking the notification activates the app; the
+                                // focus edge in set_ui_state deep-links to this run.
+                                // Only armed while unfocused — a notification seen
+                                // while already in the app shouldn't cause a jump
+                                // on some later blur/refocus.
+                                if !focused {
+                                    state.note_notification(&snap.project_id, &snap.id);
+                                }
                             }
                         }
                         watches.insert(snap.id.clone(), watch);
@@ -189,6 +208,10 @@ pub fn run() {
             commands::list_dir,
             commands::read_file,
             commands::write_file,
+            commands::read_file_base64,
+            commands::confirm_quit,
+            commands::agent_installed,
+            commands::create_install_terminal,
         ])
         .build(tauri::generate_context!())
         .expect("error while running Agency")

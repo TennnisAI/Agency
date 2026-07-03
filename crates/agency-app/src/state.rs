@@ -262,10 +262,26 @@ fn fmt_bytes(data: &[u8]) -> String {
 }
 
 
+/// The run the most recent notification was about. macOS gives us no
+/// notification-click callback (the plugin's actions API is mobile-only), but
+/// clicking a notification *activates the app* — so we deep-link to this run
+/// on the next unfocused→focused edge instead.
+struct PendingOpen {
+    project_id: String,
+    run_id: String,
+    at: std::time::Instant,
+}
+
+/// How long a notification stays deep-linkable. Long enough to cover reading
+/// the banner and clicking it; short enough that a manual return to the app an
+/// hour later doesn't teleport the user to a stale run.
+const PENDING_OPEN_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+
 #[derive(Default)]
 struct UiState {
     focused: bool,
     active_run: Option<String>,
+    pending_open: Option<PendingOpen>,
 }
 
 pub struct AppState {
@@ -333,7 +349,7 @@ impl AppState {
             term: RwLock::new(TermClient::connect_or_spawn(termd_socket(data_dir), termd_bin())?),
             data_dir: data_dir.to_path_buf(),
             resolvers: Mutex::new(HashMap::new()),
-            ui: Mutex::new(UiState { focused: true, active_run: None }),
+            ui: Mutex::new(UiState { focused: true, active_run: None, pending_open: None }),
             input_seen: Mutex::new(HashSet::new()),
         };
         // Rehydrate: any run the daemon still hosts is adopted as-is; the watch
@@ -599,6 +615,82 @@ impl AppState {
         Ok(runs.iter().map(|r| self.run_info(r)).collect())
     }
 
+    /// Every non-archived run across all projects, grouped by project in
+    /// project order, for the tray menu. Cheap by design: only the session
+    /// status is fetched per run (no diff stats, no pane capture).
+    pub fn tray_runs(&self) -> Result<Vec<crate::tray::TrayRun>> {
+        let projects = self.registry.lock().unwrap().list_projects()?;
+        let mut out = Vec::new();
+        for proj in projects {
+            let runs = self.registry.lock().unwrap().list_runs(&proj.id)?;
+            for run in runs {
+                let status =
+                    self.term.read().unwrap().status(&session_name(&run.id)).unwrap_or(SessionStatus::Gone);
+                let name = run
+                    .title
+                    .clone()
+                    .filter(|t| !t.is_empty())
+                    .unwrap_or_else(|| if run.prompt.is_empty() { run.branch.clone() } else { run.prompt.clone() });
+                out.push(crate::tray::TrayRun {
+                    run_id: run.id,
+                    project_id: proj.id.clone(),
+                    project: proj.name.clone(),
+                    label: format!("{}: {}", run.agent, name),
+                    running: matches!(status, SessionStatus::Running),
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    /// Whether the agent profile's command resolves to something executable —
+    /// an explicit path, or a name found on PATH (which pathenv::repair() has
+    /// already fixed up for Finder launches).
+    pub fn agent_installed(&self, agent: &str) -> Result<bool> {
+        let profile = {
+            let reg = self.registry.lock().unwrap();
+            reg.get_profile(agent)?
+                .ok_or_else(|| anyhow!("unknown agent profile: {agent}"))?
+        };
+        Ok(command_on_path(&profile.command))
+    }
+
+    /// Spawn a terminal session in the project repo that first runs `command`
+    /// (an agent install line), then execs the user's login shell so they can
+    /// verify the result — and immediately use the freshly installed CLI.
+    pub fn create_install_terminal(&self, project_id: &str, agent: &str, command: &str) -> Result<RunInfo> {
+        let repo = self.project_repo(project_id)?;
+        let id = new_task_id(&format!("install {agent}"));
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+        // Login shell (-l) so the user's profile is loaded before the install
+        // runs (npm, brew, curl need their PATH). Falls through to an
+        // interactive login shell whether the install succeeds or fails.
+        let script = format!("{command}\nexec \"$SHELL\" -l");
+        let args = vec!["-lc".to_string(), script];
+        let env = vec![("SHELL".to_string(), shell.clone())];
+        self.term
+            .read()
+            .unwrap()
+            .start_session(&session_name(&id), &repo, &shell, &args, &env, 220, 50)?;
+
+        let run = agency_core::registry::Run {
+            id: id.clone(),
+            project_id: project_id.to_string(),
+            agent: "terminal".to_string(),
+            prompt: String::new(),
+            base: String::new(),
+            branch: String::new(),
+            created_at: now_secs(),
+            port_base: None,
+            archived_at: None,
+            title: Some(format!("install {agent}")),
+            kind: "terminal".to_string(),
+            merge_target: None,
+        };
+        self.registry.lock().unwrap().insert_run(&run)?;
+        Ok(self.run_info(&run))
+    }
+
     pub fn run_status(&self, id: &str) -> Result<SessionStatus> {
         Ok(self.term.read().unwrap().status(&session_name(id)).unwrap_or(SessionStatus::Gone))
     }
@@ -624,9 +716,14 @@ impl AppState {
     pub fn run_input(&self, id: &str, data: &[u8]) -> Result<()> {
         pty_debug(&format!("run_input id={id} len={} {}", data.len(), fmt_bytes(data)));
         self.term.read().unwrap().input(&session_name(id), data)?;
-        // Arm the idle ("waiting for input") notification for this run: it only
-        // fires after the user has driven a turn, and at most once per turn.
-        self.input_seen.lock().unwrap().insert(id.to_string());
+        // Arm the turn-finished notification only on Enter — the signal that the
+        // user actually submitted a turn. This handler also receives xterm
+        // mouse-tracking and focus escape sequences (hovering, scrolling, or
+        // clicking the pane), and arming on those made the notification fire at
+        // seemingly random times for runs the user never prompted.
+        if data.contains(&b'\r') || data.contains(&b'\n') {
+            self.input_seen.lock().unwrap().insert(id.to_string());
+        }
         Ok(())
     }
 
@@ -1026,10 +1123,32 @@ impl AppState {
         Ok(())
     }
 
-    pub fn set_ui_state(&self, focused: bool, active_run: Option<String>) {
+    /// Update focus/active-run state. On an unfocused→focused edge, hand back a
+    /// still-fresh pending notification target (consuming it) so the caller can
+    /// deep-link the UI to the run the user was just notified about.
+    pub fn set_ui_state(&self, focused: bool, active_run: Option<String>) -> Option<(String, String)> {
         let mut ui = self.ui.lock().unwrap();
+        let was_focused = ui.focused;
         ui.focused = focused;
         ui.active_run = active_run;
+        if focused && !was_focused {
+            if let Some(p) = ui.pending_open.take() {
+                if p.at.elapsed() < PENDING_OPEN_TTL {
+                    return Some((p.project_id, p.run_id));
+                }
+            }
+        }
+        None
+    }
+
+    /// Record the run a just-shown notification is about (see [`PendingOpen`]).
+    pub fn note_notification(&self, project_id: &str, run_id: &str) {
+        let mut ui = self.ui.lock().unwrap();
+        ui.pending_open = Some(PendingOpen {
+            project_id: project_id.to_string(),
+            run_id: run_id.to_string(),
+            at: std::time::Instant::now(),
+        });
     }
 
     pub fn ui_snapshot(&self) -> (bool, Option<String>) {
@@ -1080,6 +1199,14 @@ impl AppState {
         self.term.read().unwrap().send_text(&session_name(run_id), &message)?;
         self.registry.lock().unwrap().mark_review_comments_sent(run_id)?;
         Ok(())
+    }
+
+    /// Tell the daemon to shut down without killing sessions first. The daemon
+    /// intentionally outlives the app (sessions survive restarts), which means
+    /// every `AppState::new` in a test would otherwise leak a daemon process —
+    /// tests call this in their teardown.
+    pub fn shutdown_daemon(&self) {
+        let _ = self.term.read().unwrap().shutdown();
     }
 
     /// Count of all sessions currently tracked by the daemon (used for the quit
@@ -1143,14 +1270,47 @@ impl AppState {
                 let label = format!(
                     "{}: {}",
                     run.agent,
-                    if run.prompt.is_empty() { run.branch.clone() } else { run.prompt.clone() }
+                    run.title.clone().filter(|t| !t.is_empty()).unwrap_or_else(|| {
+                        if run.prompt.is_empty() { run.branch.clone() } else { run.prompt.clone() }
+                    })
                 );
                 let user_input_pending = self.input_seen.lock().unwrap().contains(&run.id);
-                out.push(notifier::RunSnapshot { id: run.id, label, agent, run_script, pane_hash, user_input_pending });
+                out.push(notifier::RunSnapshot {
+                    id: run.id,
+                    project_id: proj.id.clone(),
+                    label,
+                    is_terminal: run.kind == "terminal",
+                    agent,
+                    run_script,
+                    pane_hash,
+                    user_input_pending,
+                });
             }
         }
         Ok(out)
     }
+}
+
+/// True when `command` resolves to an executable file: checked directly when it
+/// contains a path separator, otherwise searched across the PATH directories.
+fn command_on_path(command: &str) -> bool {
+    fn executable(p: &Path) -> bool {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            p.is_file() && p.metadata().map(|m| m.permissions().mode() & 0o111 != 0).unwrap_or(false)
+        }
+        #[cfg(not(unix))]
+        {
+            p.is_file()
+        }
+    }
+    if command.contains('/') {
+        return executable(Path::new(command));
+    }
+    std::env::var_os("PATH")
+        .map(|paths| std::env::split_paths(&paths).any(|dir| executable(&dir.join(command))))
+        .unwrap_or(false)
 }
 
 /// A project path is addable as long as it is a git repository. A repo with no
@@ -1172,9 +1332,17 @@ fn validate_repo(repo_path: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{new_task_id, slugify, pick_port, agent_argv};
+    use super::{command_on_path, new_task_id, slugify, pick_port, agent_argv};
     use agency_core::profile::AgentProfile;
     use std::collections::HashSet;
+
+    #[test]
+    fn command_on_path_finds_shell_binaries() {
+        assert!(command_on_path("sh"), "sh must be on PATH");
+        assert!(command_on_path("/bin/sh"), "absolute path to sh");
+        assert!(!command_on_path("definitely-not-a-real-binary-4k2x"));
+        assert!(!command_on_path("/nonexistent/path/to/agent"));
+    }
 
     #[test]
     fn agent_argv_uses_resume_args_when_available() {

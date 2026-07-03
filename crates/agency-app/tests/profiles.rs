@@ -14,6 +14,7 @@ fn seeds_builtin_resume_recipes() {
     assert_eq!(get("cursor").command, "cursor-agent");
     assert_eq!(get("cursor").resume_args, None);
     assert_eq!(get("hermes").resume_args, None);
+    state.shutdown_daemon();
 }
 
 #[test]
@@ -34,4 +35,5 @@ fn seeds_three_agent_profiles_with_bare_commands() {
     let hermes = by_name("hermes").expect("hermes profile");
     assert_eq!(hermes.command, "hermes");
     assert!(hermes.args.is_empty());
+    state.shutdown_daemon();
 }

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useRuns } from "../store/runs";
 import { discardRun, archiveRun, setRunTitle } from "../api";
+import { toastError } from "../lib/toast";
 import { runName } from "../agents";
 import FocusTerminal from "./FocusTerminal";
 import RunPanel from "./RunPanel";
@@ -49,7 +50,9 @@ export default function AgentFocus({
               <button key={r.id} className={`rail-row ${r.id === focusedRunId ? "on" : ""}`} onClick={() => setFocusedRun(r.id)}>
                 <span className={`dot ${r.status.state === "running" ? "running" : "exited"}`} />
                 <span className="rail-name">
-                  {r.kind === "terminal" ? `≳ ${r.title || "terminal"}` : `${r.agent}: ${runName(r)}`}
+                  {r.kind === "terminal"
+                    ? `≳ ${r.title || "terminal"}`
+                    : `${r.raceId ? "∥ " : ""}${r.agent}: ${runName(r)}`}
                 </span>
               </button>
             ))}
@@ -102,11 +105,15 @@ export default function AgentFocus({
                 </div>
                 <span className="spacer" />
                 <button className="tile-act danger" title="Discard agent" onClick={() => setConfirmDiscard(true)}>✕ Discard</button>
-                <button className="tile-act" title="Archive agent" onClick={async () => {
+                <button className="tile-act" title="Archive agent — stops it and removes the worktree; uncommitted work is auto-committed to its branch" onClick={async () => {
                   const id = focused.id;
-                  await archiveRun(id);
-                  setFocusedRun(null);
-                  await refreshRuns();
+                  try {
+                    await archiveRun(id);
+                    setFocusedRun(null);
+                    await refreshRuns();
+                  } catch (e) {
+                    toastError(e, "Archive failed");
+                  }
                 }}>⌂ Archive</button>
                 <button onClick={() => setShowMerge(true)}>Approve →</button>
               </div>
@@ -114,7 +121,16 @@ export default function AgentFocus({
                 ? <FocusTerminal key={focused.id} runId={focused.id}
                     onFirstPrompt={focused.title ? undefined : (line) => { setRunTitle(focused.id, line).catch(() => {}); }} />
                 : <RunPanel key={`run-${focused.id}`} run={focused} />}
-              {showMerge && <MergeModal taskId={focused.id} onClose={() => setShowMerge(false)} />}
+              {showMerge && (
+                <MergeModal
+                  taskId={focused.id}
+                  onClose={() => setShowMerge(false)}
+                  onArchived={() => {
+                    setFocusedRun(null);
+                    refreshRuns();
+                  }}
+                />
+              )}
               {confirmDiscard && (
                 <ConfirmDialog
                   title="Discard agent?"
@@ -124,9 +140,13 @@ export default function AgentFocus({
                   onConfirm={async () => {
                     const id = focused.id;
                     setConfirmDiscard(false);
-                    await discardRun(id);
-                    setFocusedRun(null);
-                    await refreshRuns();
+                    try {
+                      await discardRun(id);
+                      setFocusedRun(null);
+                      await refreshRuns();
+                    } catch (e) {
+                      toastError(e, "Discard failed");
+                    }
                   }}
                   onCancel={() => setConfirmDiscard(false)}
                 />

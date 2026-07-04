@@ -54,6 +54,13 @@ export function projectColor(id: string): string {
   return `var(${PROJECT_PALETTE[h % PROJECT_PALETTE.length]})`;
 }
 
+// Preferred accent: the color assigned at add time (least-used palette entry,
+// so new projects never collide while unused colors remain). The id-hash is
+// only the fallback for rows predating the color column.
+export function projectAccent(p: { id: string; color?: string | null }): string {
+  return p.color ? `var(--${p.color})` : projectColor(p.id);
+}
+
 // Friendly label for an agent profile name. Built-ins get a nicer display name;
 // custom profiles (e.g. "cursor") fall back to the raw name the user defined.
 export function agentLabel(name: string): string {

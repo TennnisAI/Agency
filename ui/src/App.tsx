@@ -9,6 +9,7 @@ import Settings from "./components/Settings";
 import CommandPalette from "./components/CommandPalette";
 import ConfirmDialog from "./components/ConfirmDialog";
 import Resizer from "./components/Resizer";
+import Toasts from "./components/Toasts";
 import { useShortcuts } from "./hooks/useShortcuts";
 import { usePaneWidth } from "./hooks/usePaneWidth";
 import { Project, RunInfo, confirmQuit, listProjects, setUiState } from "./api";
@@ -24,8 +25,18 @@ function Shell() {
   const [quitPrompt, setQuitPrompt] = useState<number | null>(null);
   const sidebar = usePaneWidth("sidebar", 266, 200, 460);
 
+  // New task defaults to the agent this project last used (default_agent is
+  // updated on every run creation), refetched so it isn't stale from the
+  // Project captured at selection time. Falls back to claude.
+  async function newTaskDefaultAgent() {
+    if (!selectedProjectId) return;
+    const projects = await listProjects().catch(() => null);
+    const current = projects?.find((p) => p.id === selectedProjectId);
+    createAgent(current?.default_agent ?? project?.default_agent ?? "claude");
+  }
+
   useShortcuts({
-    onNewTask: () => createAgent("claude"),
+    onNewTask: () => { newTaskDefaultAgent(); },
     onSource: () => setTab("source"),
     onApprove: () => {
       // Approve/merge is an agent-only workflow; terminals have no branch to merge.
@@ -126,6 +137,7 @@ function Shell() {
         )}
       </div>
       <StatusBar projectName={project?.name ?? null} focusedRunId={focusedRunId} />
+      <Toasts />
       {paletteOpen && <CommandPalette onClose={() => setPaletteOpen(false)} />}
       {quitPrompt !== null && (
         <ConfirmDialog

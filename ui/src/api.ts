@@ -8,6 +8,7 @@ export interface Project {
   repo_path: string;
   default_agent: string | null;
   default_provider: string | null;
+  color: string | null;
 }
 
 export type SessionStatus =
@@ -29,6 +30,7 @@ export interface RunInfo {
   port: number | null;
   kind: "agent" | "terminal";
   archivedAt: number | null;
+  raceId: string | null;
 }
 
 export const listProjects = () => invoke<Project[]>("list_projects");
@@ -144,17 +146,32 @@ export interface RunBranches {
 export const runBranches = (taskId: string) =>
   invoke<RunBranches>("run_branches", { taskId });
 
+// NOTE: field names mirror agency_core's AgentProfile (snake_case serde).
 export interface AgentProfile {
   name: string;
   command: string;
   args: string[];
   env: [string, string][];
+  resume_args: string[] | null;
 }
 
 export interface ProviderSettings {
   anthropicApiKey: string;
   lmStudioBaseUrl: string;
 }
+
+// One MCP server definition: either stdio (command/args/env) or remote (url).
+export interface McpServer {
+  name: string;
+  command: string | null;
+  args: string[];
+  env: Record<string, string>;
+  url: string | null;
+}
+
+export const listMcpServers = () => invoke<McpServer[]>("list_mcp_servers");
+export const saveMcpServers = (servers: McpServer[]) =>
+  invoke<void>("save_mcp_servers", { servers });
 
 export const listProfiles = () => invoke<AgentProfile[]>("list_profiles");
 export const saveProfile = (profile: AgentProfile) =>
@@ -172,9 +189,63 @@ export interface MergePreview {
   base: string;
   branch: string;
   commitsAhead: number;
+  commitsBehind: number;
   worktreeDirty: boolean;
   dirtyFiles: string[];
 }
+
+// How far the user is from usable PR features; each non-ready state maps to a
+// guided setup step (install gh → gh auth login → add a GitHub remote).
+export type GhReadiness = "notInstalled" | "notAuthenticated" | "noGithubRemote" | "ready";
+
+export interface PrInfo {
+  number: number;
+  url: string;
+  title: string;
+  state: "OPEN" | "CLOSED" | "MERGED";
+  isDraft: boolean;
+  baseRefName: string;
+  headRefName: string;
+}
+
+export interface CheckItem {
+  name: string;
+  bucket: "pass" | "fail" | "pending" | "skipping" | "cancel" | "";
+  link: string;
+  description: string;
+}
+
+export interface PrStatus {
+  pr: PrInfo | null;
+  checks: CheckItem[];
+}
+
+export interface IssueItem {
+  number: number;
+  title: string;
+}
+
+export const createRace = (
+  projectId: string,
+  prompt: string,
+  agents: string[],
+  base: string,
+  mergeTarget?: string | null,
+) => invoke<RunInfo[]>("create_race", { projectId, prompt, agents, base, mergeTarget: mergeTarget ?? null });
+export const listGhIssues = (projectId: string) =>
+  invoke<IssueItem[]>("list_gh_issues", { projectId });
+export const listGhPrs = (projectId: string) => invoke<PrInfo[]>("list_gh_prs", { projectId });
+export const createRunFromIssue = (projectId: string, number: number, agent: string) =>
+  invoke<RunInfo>("create_run_from_issue", { projectId, number, agent });
+export const createRunFromPr = (projectId: string, number: number, agent: string) =>
+  invoke<RunInfo>("create_run_from_pr", { projectId, number, agent });
+
+export const ghReadiness = (projectId: string) =>
+  invoke<GhReadiness>("gh_readiness", { projectId });
+export const createPr = (taskId: string) => invoke<PrInfo>("create_pr", { taskId });
+export const prStatus = (taskId: string) => invoke<PrStatus>("pr_status", { taskId });
+export const sendCheckFeedback = (taskId: string) =>
+  invoke<void>("send_check_feedback", { taskId });
 
 export const mergePreview = (taskId: string) =>
   invoke<MergePreview>("merge_preview", { taskId });

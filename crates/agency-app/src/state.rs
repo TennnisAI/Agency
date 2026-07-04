@@ -15,6 +15,7 @@ const SETTING_ANTHROPIC_KEY: &str = "anthropic_api_key";
 const SETTING_LM_STUDIO_URL: &str = "lm_studio_base_url";
 const DEFAULT_LM_STUDIO_URL: &str = "http://localhost:1234/v1";
 const SETTING_NOTIF: &str = "notification_settings";
+const SETTING_MCP: &str = "mcp_servers";
 
 const MERGE_RESOLVER_SKILL: &str = include_str!("../../../skills/merge-resolver/SKILL.md");
 
@@ -40,20 +41,47 @@ pub struct RunInfo {
     pub files: u32,
     pub port: Option<u16>,
     pub kind: String,
+    pub race_id: Option<String>,
+}
+
+/// Everything create_run_spec needs to make a workspace + session. The public
+/// entry points (plain create, racing, from-issue, from-PR) differ only in
+/// which fields they fill.
+struct NewRunSpec<'a> {
+    project_id: &'a str,
+    prompt: &'a str,
+    agent: &'a str,
+    base: &'a str,
+    merge_target: Option<&'a str>,
+    race_id: Option<String>,
+    title: Option<String>,
+    /// Check out this existing branch instead of cutting `agent/<id>` off base.
+    existing_branch: Option<String>,
 }
 
 /// What an "Approve & merge" would do, computed before running it so the UI can
 /// explain the outcome instead of silently merging. `commits_ahead == 0` means
-/// the branch has no new commits (merge is a no-op); `worktree_dirty` flags
-/// uncommitted agent work that a branch merge would leave behind.
+/// the branch has no new commits (merge is a no-op); `commits_behind > 0` means
+/// the base moved on since the branch was created (stale branch — merge may
+/// conflict); `worktree_dirty` flags uncommitted agent work that a branch merge
+/// would leave behind.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MergePreview {
     pub base: String,
     pub branch: String,
     pub commits_ahead: usize,
+    pub commits_behind: usize,
     pub worktree_dirty: bool,
     pub dirty_files: Vec<String>,
+}
+
+/// A run's PR plus check rollup, polled by the merge modal.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrStatus {
+    pub pr: Option<agency_core::gh::PrInfo>,
+    pub checks: Vec<agency_core::gh::CheckItem>,
 }
 
 /// Compose a single-line review-feedback message for the agent. Single-line so
@@ -295,6 +323,11 @@ pub struct AppState {
     /// Run ids that have received user input since their last "waiting for input"
     /// notification. Drives idle-notification gating (see `notifier::step`).
     input_seen: Mutex<HashSet<String>>,
+    /// Serializes merges. The merge sequence (status check → checkout →
+    /// merge) runs in the shared primary checkout and is not atomic, so a
+    /// second concurrent merge (double-click, another run's Approve) must
+    /// fail fast instead of interleaving.
+    merge_gate: Mutex<()>,
 }
 
 impl AppState {
@@ -351,6 +384,7 @@ impl AppState {
             resolvers: Mutex::new(HashMap::new()),
             ui: Mutex::new(UiState { focused: true, active_run: None, pending_open: None }),
             input_seen: Mutex::new(HashSet::new()),
+            merge_gate: Mutex::new(()),
         };
         // Rehydrate: any run the daemon still hosts is adopted as-is; the watch
         // loop (watch_snapshot) then reports live status. Nothing to spawn here —
@@ -515,6 +549,7 @@ impl AppState {
             files: stat.files,
             port: run.port_base,
             kind: run.kind.clone(),
+            race_id: run.race_id.clone(),
         }
     }
 
@@ -527,25 +562,58 @@ impl AppState {
     }
 
     pub fn create_run(&self, project_id: &str, prompt: &str, agent: &str, base: &str, merge_target: Option<&str>) -> Result<RunInfo> {
-        let repo = self.project_repo(project_id)?;
+        self.create_run_spec(NewRunSpec {
+            project_id,
+            prompt,
+            agent,
+            base,
+            merge_target,
+            race_id: None,
+            title: None,
+            existing_branch: None,
+        })
+    }
+
+    fn create_run_spec(&self, spec: NewRunSpec) -> Result<RunInfo> {
+        let repo = self.project_repo(spec.project_id)?;
         let config = agency_core::config::load(&repo);
         let port = self.allocate_port(config.ports.base, config.ports.block_size)?;
         let profile = {
             let reg = self.registry.lock().unwrap();
-            reg.get_profile(agent)?
-                .ok_or_else(|| anyhow!("unknown agent profile: {agent}"))?
+            reg.get_profile(spec.agent)?
+                .ok_or_else(|| anyhow!("unknown agent profile: {agent}", agent = spec.agent))?
         };
-        let id = new_task_id(prompt);
-        let worktree = WorktreeManager::new(repo.clone()).create(&id, base)?;
+        let id = new_task_id(spec.prompt);
+        let manager = WorktreeManager::new(repo.clone());
+        // Default: cut agent/<id> from the base. PR-review runs instead check
+        // out the PR's existing head branch.
+        let worktree = match &spec.existing_branch {
+            Some(branch) => manager.create_on_branch(&id, branch)?,
+            None => manager.create(&id, spec.base)?,
+        };
+        // Untracked essentials (.env etc.) don't come with a worktree; copy the
+        // configured list. Best-effort: a bad entry shouldn't block the run.
+        if let Err(e) = manager.copy_into(&id, &config.files.copy) {
+            log::warn!("copying [files] copy entries into worktree {id}: {e}");
+        }
+        self.emit_mcp(spec.agent, &repo, &worktree.path, &config);
 
         let mut env = self.provider_env()?;
         env.extend(profile.env.iter().cloned());
         env.extend(agency_core::scripts::script_env(&worktree.path, &repo, &id, Some(port)));
-        let args: Vec<String> = profile
-            .render_args(prompt)
+        let mut args: Vec<String> = profile
+            .render_args(spec.prompt)
             .into_iter()
             .filter(|a| !a.is_empty())
             .collect();
+        // Deliver a non-empty prompt as the agent's initial positional prompt
+        // (claude/codex/cursor-agent/opencode all accept one) unless the
+        // profile places it explicitly with a {{prompt}} token. The default
+        // flow passes "" and behaves exactly as before: the user types into
+        // the live terminal.
+        if !spec.prompt.trim().is_empty() && !profile.args.iter().any(|a| a.contains("{{prompt}}")) {
+            args.push(spec.prompt.to_string());
+        }
         let (command, args) =
             agency_core::scripts::wrap_setup(config.scripts.setup.as_deref(), &profile.command, &args);
 
@@ -554,22 +622,235 @@ impl AppState {
             .unwrap()
             .start_session(&session_name(&id), &worktree.path, &command, &args, &env, 220, 50)?;
 
+        // A run created with a real prompt gets a title immediately (word-based;
+        // no LLM on this path). The promptless flow still titles via the
+        // first-prompt capture.
+        let title = spec.title.clone().or_else(|| {
+            let t = agency_core::title::fallback_title(spec.prompt);
+            (!t.is_empty()).then_some(t)
+        });
+
         let run = agency_core::registry::Run {
             id: id.clone(),
-            project_id: project_id.to_string(),
-            agent: agent.to_string(),
-            prompt: prompt.to_string(),
-            base: base.to_string(),
+            project_id: spec.project_id.to_string(),
+            agent: spec.agent.to_string(),
+            prompt: spec.prompt.to_string(),
+            base: spec.base.to_string(),
             branch: worktree.branch.clone(),
             created_at: now_secs(),
             port_base: Some(port),
             archived_at: None,
-            title: None,
+            title,
             kind: "agent".to_string(),
-            merge_target: merge_target.map(|s| s.to_string()),
+            merge_target: spec.merge_target.map(|s| s.to_string()),
+            race_id: spec.race_id.clone(),
         };
-        self.registry.lock().unwrap().insert_run(&run)?;
+        {
+            let reg = self.registry.lock().unwrap();
+            reg.insert_run(&run)?;
+            // Remember the agent type so new-task shortcuts default to what
+            // this project actually uses. Best-effort bookkeeping.
+            let _ = reg.set_project_default_agent(spec.project_id, spec.agent);
+        }
         Ok(self.run_info(&run))
+    }
+
+    /// Fan one prompt out to several agents in parallel workspaces (racing).
+    /// Each attempt is an ordinary run sharing a race_id; the user compares
+    /// them and merges the winner. Partial failures leave the already-created
+    /// attempts in place (visible and individually discardable).
+    pub fn create_race(
+        &self,
+        project_id: &str,
+        prompt: &str,
+        agents: &[String],
+        base: &str,
+        merge_target: Option<&str>,
+    ) -> Result<Vec<RunInfo>> {
+        if prompt.trim().is_empty() {
+            bail!("racing needs a prompt — it is sent to every agent at launch");
+        }
+        if agents.len() < 2 {
+            bail!("racing needs at least two agents");
+        }
+        let race_id = uuid::Uuid::new_v4().to_string();
+        let mut out = Vec::new();
+        for agent in agents {
+            out.push(self.create_run_spec(NewRunSpec {
+                project_id,
+                prompt,
+                agent,
+                base,
+                merge_target,
+                race_id: Some(race_id.clone()),
+                title: None,
+                existing_branch: None,
+            })?);
+        }
+        Ok(out)
+    }
+
+    /// Spawn a workspace for a GitHub issue: the issue becomes the run's
+    /// prompt (delivered to the agent at launch) and its title.
+    pub fn create_run_from_issue(&self, project_id: &str, number: u64, agent: &str) -> Result<RunInfo> {
+        let repo = self.project_repo(project_id)?;
+        let issue = agency_core::gh::GhCli::default().view_issue(&repo, number)?;
+        let base = agency_core::merge::detect_base(&repo)?;
+        let prompt = format!(
+            "Work on GitHub issue #{number}: {title}\n\n{body}\n\nIssue link: {url}",
+            title = issue.title,
+            body = issue.body,
+            url = issue.url,
+        );
+        self.create_run_spec(NewRunSpec {
+            project_id,
+            prompt: &prompt,
+            agent,
+            base: &base,
+            merge_target: None,
+            race_id: None,
+            title: Some(format!("#{number} {}", issue.title)),
+            existing_branch: None,
+        })
+    }
+
+    /// Check an existing PR's head branch out into a workspace for review.
+    /// The local branch is fast-forwarded from origin first; a diverged local
+    /// branch fails loudly rather than being clobbered.
+    pub fn create_run_from_pr(&self, project_id: &str, number: u64, agent: &str) -> Result<RunInfo> {
+        let repo = self.project_repo(project_id)?;
+        let pr = agency_core::gh::GhCli::default()
+            .view_pr_by_number(&repo, number)?
+            .ok_or_else(|| anyhow!("PR #{number} not found"))?;
+        if pr.head_ref_name.is_empty() {
+            bail!("PR #{number} has no local head branch (cross-fork PRs aren't supported yet)");
+        }
+        agency_core::git::fetch_branch(&repo, &pr.head_ref_name)?;
+        let prompt = format!(
+            "Review GitHub pull request #{number}: {title}. Its branch is checked out in this workspace. PR link: {url}",
+            title = pr.title,
+            url = pr.url,
+        );
+        self.create_run_spec(NewRunSpec {
+            project_id,
+            prompt: &prompt,
+            agent,
+            base: &pr.base_ref_name,
+            merge_target: Some(&pr.base_ref_name),
+            race_id: None,
+            title: Some(format!("PR #{number} {}", pr.title)),
+            existing_branch: Some(pr.head_ref_name.clone()),
+        })
+    }
+
+    /// Store the first prompt the user typed into the agent terminal as the
+    /// run's prompt (runs are created promptless). First capture wins.
+    pub fn store_run_prompt(&self, id: &str, prompt: &str) -> Result<()> {
+        self.registry.lock().unwrap().set_run_prompt_if_empty(id, prompt)
+    }
+
+    // ── MCP servers ────────────────────────────────────────────────────────────
+
+    /// App-global MCP servers, configured in Settings.
+    pub fn list_mcp_servers(&self) -> Result<Vec<agency_core::mcp::McpServer>> {
+        let raw = self.registry.lock().unwrap().get_setting(SETTING_MCP)?;
+        Ok(raw.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default())
+    }
+
+    /// Replace the app-global MCP server list. Every entry must validate.
+    pub fn save_mcp_servers(&self, servers: &[agency_core::mcp::McpServer]) -> Result<()> {
+        for s in servers {
+            s.validate()?;
+        }
+        let json = serde_json::to_string(servers)?;
+        self.registry.lock().unwrap().set_setting(SETTING_MCP, &json)
+    }
+
+    /// The full MCP server list for a workspace: app-global servers, overlaid
+    /// by the project's `[mcp.servers.*]`, plus the graphify knowledge-graph
+    /// server when the project opted in and the tooling is installed.
+    ///
+    /// graphify's MCP server has no console-script entry point — it runs as
+    /// `python -m graphify.serve <graph.json>` inside the uv tool venv, so the
+    /// default goes through `uv tool run --from graphifyy`. The graph.json is
+    /// addressed absolutely in the PRIMARY repo (worktrees don't carry the
+    /// untracked graphify-out/, and the post-merge rebuild runs there).
+    fn merged_mcp_servers(
+        &self,
+        repo: &Path,
+        config: &agency_core::config::AgencyConfig,
+    ) -> Vec<agency_core::mcp::McpServer> {
+        let global = self.list_mcp_servers().unwrap_or_default();
+        let project = agency_core::mcp::from_config(&config.mcp);
+        let mut auto = Vec::new();
+        if config.knowledge.graph {
+            let serve = config.knowledge.serve_command.clone().unwrap_or_else(|| {
+                format!(
+                    "uv tool run --from graphifyy python -m graphify.serve {}",
+                    repo.join("graphify-out").join("graph.json").display()
+                )
+            });
+            let mut parts = serve.split_whitespace().map(str::to_string);
+            if let Some(cmd) = parts.next() {
+                if command_on_path(&cmd) {
+                    auto.push(agency_core::mcp::McpServer {
+                        name: "graphify".to_string(),
+                        command: Some(cmd),
+                        args: parts.collect(),
+                        env: Default::default(),
+                        url: None,
+                    });
+                } else {
+                    log::warn!("knowledge graph enabled but '{cmd}' is not installed; skipping MCP injection");
+                }
+            }
+        }
+        agency_core::mcp::merge(&[global, project, auto])
+    }
+
+    /// Emit MCP config into a workspace in the agent's native format.
+    /// Best-effort: a bad server entry must not block the run.
+    fn emit_mcp(
+        &self,
+        agent: &str,
+        repo: &Path,
+        worktree: &Path,
+        config: &agency_core::config::AgencyConfig,
+    ) {
+        let servers = self.merged_mcp_servers(repo, config);
+        if servers.is_empty() {
+            return;
+        }
+        if let Err(e) = agency_core::mcp::emit_for_agent(agent, worktree, &servers) {
+            log::warn!("emitting MCP config for {agent} into {}: {e}", worktree.display());
+        }
+    }
+
+    /// After a clean merge, rebuild the project's knowledge graph in the
+    /// background so the next agent workspace starts with a fresh graph.
+    fn maybe_rebuild_knowledge_graph(&self, repo: &Path) {
+        let config = agency_core::config::load(repo);
+        if !config.knowledge.graph {
+            return;
+        }
+        let build = config
+            .knowledge
+            .build_command
+            .clone()
+            .unwrap_or_else(|| "graphify .".to_string());
+        if let Some(cmd) = build.split_whitespace().next() {
+            if !command_on_path(cmd) {
+                log::warn!("knowledge graph enabled but '{cmd}' is not installed; skipping rebuild");
+                return;
+            }
+        }
+        log::info!("rebuilding knowledge graph after merge: {build}");
+        let _ = std::process::Command::new("sh")
+            .args(["-lc", &build])
+            .current_dir(repo)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
     }
 
     pub fn list_project_branches(&self, project_id: &str) -> Result<agency_core::git::ProjectBranches> {
@@ -605,6 +886,7 @@ impl AppState {
             title: Some("terminal".to_string()),
             kind: "terminal".to_string(),
             merge_target: None,
+            race_id: None,
         };
         self.registry.lock().unwrap().insert_run(&run)?;
         Ok(self.run_info(&run))
@@ -686,6 +968,7 @@ impl AppState {
             title: Some(format!("install {agent}")),
             kind: "terminal".to_string(),
             merge_target: None,
+            race_id: None,
         };
         self.registry.lock().unwrap().insert_run(&run)?;
         Ok(self.run_info(&run))
@@ -778,6 +1061,15 @@ impl AppState {
         self.run_attaches.lock().unwrap().remove(id);
         let _ = self.term.read().unwrap().kill(&run_session_name(id));
 
+        // Preserve uncommitted agent work BEFORE the worktree is force-removed:
+        // commit it onto the kept agent branch so restore brings it back. A
+        // failure here must abort the archive — proceeding would destroy work.
+        if run.kind == "agent" {
+            WorktreeManager::new(repo.clone())
+                .commit_all_if_dirty(id, "WIP: uncommitted changes auto-committed by Agency on archive")
+                .map_err(|e| anyhow!("couldn't preserve uncommitted changes before archiving: {e}"))?;
+        }
+
         // Best-effort archive cleanup script, before the worktree disappears.
         let config = agency_core::config::load(&repo);
         if let Some(script) = config.scripts.archive.as_deref() {
@@ -798,7 +1090,14 @@ impl AppState {
     pub fn restore_run(&self, id: &str) -> Result<RunInfo> {
         let run = self.run_record(id)?;
         let repo = self.project_repo(&run.project_id)?;
-        WorktreeManager::new(repo).restore(id)?;
+        let manager = WorktreeManager::new(repo.clone());
+        manager.restore(id)?;
+        let config = agency_core::config::load(&repo);
+        if let Err(e) = manager.copy_into(id, &config.files.copy) {
+            log::warn!("copying [files] copy entries into restored worktree {id}: {e}");
+        }
+        let worktree = repo.join(".agency").join("worktrees").join(id);
+        self.emit_mcp(&run.agent, &repo, &worktree, &config);
         self.registry.lock().unwrap().set_archived(id, None)?;
         let refreshed = self.run_record(id)?;
         Ok(self.run_info(&refreshed))
@@ -1022,6 +1321,7 @@ impl AppState {
         let repo = self.project_repo(&run.project_id)?;
         let base = agency_core::merge::resolve_target(run.merge_target.as_deref(), &repo)?;
         let commits_ahead = agency_core::merge::commits_ahead(&repo, &run.branch, &base)?;
+        let commits_behind = agency_core::merge::commits_behind(&repo, &run.branch, &base)?;
         let worktree = repo.join(".agency").join("worktrees").join(&run.id);
         let dirty_files: Vec<String> = if worktree.exists() {
             agency_core::git::status(&worktree)
@@ -1034,22 +1334,114 @@ impl AppState {
             base,
             branch: run.branch,
             commits_ahead,
+            commits_behind,
             worktree_dirty: !dirty_files.is_empty(),
             dirty_files,
         })
     }
 
     pub fn merge_task(&self, id: &str) -> anyhow::Result<agency_core::merge::MergeOutcome> {
+        // try_lock, not lock: a second merge racing the first should fail
+        // fast with a clear message, not queue up and re-merge afterwards.
+        let _gate = self
+            .merge_gate
+            .try_lock()
+            .map_err(|_| anyhow!("another merge is already in progress"))?;
         let run = self.run_record(id)?;
         let repo = self.project_repo(&run.project_id)?;
         let base = agency_core::merge::resolve_target(run.merge_target.as_deref(), &repo)?;
-        agency_core::merge::merge(&repo, &run.branch, &base)
+        let outcome = agency_core::merge::merge(&repo, &run.branch, &base)?;
+        if matches!(outcome, agency_core::merge::MergeOutcome::Clean { .. }) {
+            self.maybe_rebuild_knowledge_graph(&repo);
+        }
+        Ok(outcome)
     }
 
     pub fn abort_merge_task(&self, id: &str) -> anyhow::Result<()> {
         let run = self.run_record(id)?;
         let repo = self.project_repo(&run.project_id)?;
         agency_core::merge::abort_merge(&repo)
+    }
+
+    // ── pull requests (gh CLI) ─────────────────────────────────────────────────
+
+    pub fn gh_readiness(&self, project_id: &str) -> Result<agency_core::gh::GhReadiness> {
+        let repo = self.project_repo(project_id)?;
+        Ok(agency_core::gh::GhCli::default().readiness(&repo))
+    }
+
+    /// Push the run's branch and open a PR against its merge target. The PR
+    /// title is the run's title (or branch name) and the body is generated
+    /// from the branch's commits. Idempotent-ish: if a PR already exists for
+    /// the branch, gh fails and the existing PR is returned instead.
+    pub fn create_pr(&self, id: &str) -> Result<agency_core::gh::PrInfo> {
+        let run = self.run_record(id)?;
+        if run.kind != "agent" {
+            bail!("only agent runs have a branch to open a PR for");
+        }
+        let repo = self.project_repo(&run.project_id)?;
+        let worktree = repo.join(".agency").join("worktrees").join(&run.id);
+        if !worktree.exists() {
+            bail!("workspace is archived — restore it before creating a PR");
+        }
+        let gh = agency_core::gh::GhCli::default();
+        agency_core::git::push(&worktree)?;
+        if let Some(existing) = gh.view_pr(&repo, &run.branch)? {
+            return Ok(existing);
+        }
+        let base = agency_core::merge::resolve_target(run.merge_target.as_deref(), &repo)?;
+        let title = run
+            .title
+            .clone()
+            .filter(|t| !t.is_empty())
+            .unwrap_or_else(|| run.branch.clone());
+        let body = agency_core::git::branch_summary(&repo, &run.branch, &base)?;
+        gh.create_pr(&repo, &run.branch, &base, &title, &body)
+    }
+
+    /// The run's PR (if any) plus its check rollup, polled by the UI.
+    pub fn pr_status(&self, id: &str) -> Result<PrStatus> {
+        let run = self.run_record(id)?;
+        let repo = self.project_repo(&run.project_id)?;
+        let gh = agency_core::gh::GhCli::default();
+        let pr = gh.view_pr(&repo, &run.branch)?;
+        let checks = match &pr {
+            Some(_) => gh.pr_checks(&repo, &run.branch).unwrap_or_default(),
+            None => Vec::new(),
+        };
+        Ok(PrStatus { pr, checks })
+    }
+
+    /// Type the PR's failing checks into the agent's live session so it can
+    /// investigate — same delivery path as review comments.
+    pub fn send_check_feedback(&self, id: &str) -> Result<()> {
+        let status = self.pr_status(id)?;
+        let failing: Vec<_> = status
+            .checks
+            .iter()
+            .filter(|c| c.bucket == "fail" || c.bucket == "cancel")
+            .collect();
+        if failing.is_empty() {
+            bail!("no failing checks to send");
+        }
+        if !matches!(self.term.read().unwrap().status(&session_name(id)), Ok(SessionStatus::Running)) {
+            bail!("agent session {id} is not running");
+        }
+        let mut msg = format!("CI feedback: {} check(s) failing on this branch's PR — ", failing.len());
+        let parts: Vec<String> = failing
+            .iter()
+            .map(|c| {
+                if c.link.is_empty() {
+                    c.name.clone()
+                } else {
+                    format!("{} ({})", c.name, c.link)
+                }
+            })
+            .collect();
+        msg.push_str(&parts.join("; "));
+        msg.push_str(". Please investigate the failures, fix them, commit, and push to update the PR.");
+        self.term.read().unwrap().send_text(&session_name(id), &msg)?;
+        Ok(())
     }
 
     pub fn resolve_merge<F>(
@@ -1492,6 +1884,7 @@ mod tests {
             title: Some("terminal".to_string()),
             kind: "terminal".to_string(),
             merge_target: None,
+            race_id: None,
         };
         assert_eq!(run.kind, "terminal");
         assert!(run.branch.is_empty());

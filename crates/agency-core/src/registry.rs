@@ -6,6 +6,11 @@ use uuid::Uuid;
 
 use crate::profile::AgentProfile;
 
+/// Theme accent names the UI resolves to CSS vars (`var(--<name>)`). Order is
+/// the assignment preference for new projects.
+const PROJECT_COLORS: [&str; 9] =
+    ["blue", "mauve", "green", "peach", "teal", "pink", "yellow", "lav", "red"];
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Project {
     pub id: String,
@@ -13,6 +18,9 @@ pub struct Project {
     pub repo_path: PathBuf,
     pub default_agent: Option<String>,
     pub default_provider: Option<String>,
+    /// Theme accent name (e.g. "blue") the UI maps to a CSS var. Assigned at
+    /// add time: the least-used palette color, so projects stay distinct.
+    pub color: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -30,6 +38,8 @@ pub struct Run {
     pub kind: String,
     /// Branch this run's work merges into. `None` = auto-detect (main/master) at merge time.
     pub merge_target: Option<String>,
+    /// Groups runs spawned together on the same prompt (multi-attempt racing).
+    pub race_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -115,10 +125,39 @@ impl Registry {
         if !column_exists(&conn, "runs", "merge_target")? {
             conn.execute("ALTER TABLE runs ADD COLUMN merge_target TEXT", [])?;
         }
+        if !column_exists(&conn, "projects", "color")? {
+            conn.execute("ALTER TABLE projects ADD COLUMN color TEXT", [])?;
+        }
+        if !column_exists(&conn, "runs", "race_id")? {
+            conn.execute("ALTER TABLE runs ADD COLUMN race_id TEXT", [])?;
+        }
         if !column_exists(&conn, "profiles", "resume_args")? {
             conn.execute("ALTER TABLE profiles ADD COLUMN resume_args TEXT", [])?;
         }
-        Ok(Registry { conn })
+        let reg = Registry { conn };
+        reg.backfill_project_colors()?;
+        Ok(reg)
+    }
+
+    /// Give color-less projects (rows predating the color column) distinct
+    /// palette colors, in name order, using the same least-used rule as
+    /// `add_project`. Idempotent: no-op once every project has a color.
+    fn backfill_project_colors(&self) -> Result<()> {
+        let ids: Vec<String> = {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT id FROM projects WHERE color IS NULL ORDER BY name")?;
+            let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+            rows.filter_map(|r| r.ok()).collect()
+        };
+        for id in ids {
+            let color = self.pick_project_color()?;
+            self.conn.execute(
+                "UPDATE projects SET color = ?2 WHERE id = ?1",
+                rusqlite::params![id, color],
+            )?;
+        }
+        Ok(())
     }
 
     pub fn add_project(&self, name: &str, repo_path: &Path) -> Result<Project> {
@@ -128,24 +167,41 @@ impl Registry {
             repo_path: repo_path.to_path_buf(),
             default_agent: None,
             default_provider: None,
+            color: Some(self.pick_project_color()?),
         };
         self.conn.execute(
-            "INSERT INTO projects (id, name, repo_path, default_agent, default_provider)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO projects (id, name, repo_path, default_agent, default_provider, color)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             rusqlite::params![
                 project.id,
                 project.name,
                 project.repo_path.to_string_lossy(),
                 project.default_agent,
                 project.default_provider,
+                project.color,
             ],
         )?;
         Ok(project)
     }
 
+    /// The least-used palette color (palette order breaks ties), so every new
+    /// project gets a color no other project has until the palette runs out.
+    fn pick_project_color(&self) -> Result<String> {
+        let mut stmt = self.conn.prepare("SELECT color FROM projects WHERE color IS NOT NULL")?;
+        let used: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        let pick = PROJECT_COLORS
+            .iter()
+            .min_by_key(|c| used.iter().filter(|u| u == *c).count())
+            .unwrap_or(&PROJECT_COLORS[0]);
+        Ok(pick.to_string())
+    }
+
     pub fn get_project(&self, id: &str) -> Result<Option<Project>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, repo_path, default_agent, default_provider
+            "SELECT id, name, repo_path, default_agent, default_provider, color
              FROM projects WHERE id = ?1",
         )?;
         let mut rows = stmt.query([id])?;
@@ -157,7 +213,7 @@ impl Registry {
 
     pub fn list_projects(&self) -> Result<Vec<Project>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, repo_path, default_agent, default_provider
+            "SELECT id, name, repo_path, default_agent, default_provider, color
              FROM projects ORDER BY name",
         )?;
         let rows = stmt.query_map([], |row| Ok(row_to_project(row)))?;
@@ -254,12 +310,12 @@ impl Registry {
 
     pub fn insert_run(&self, run: &Run) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO runs (id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            "INSERT INTO runs (id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             rusqlite::params![
                 run.id, run.project_id, run.agent, run.prompt, run.base, run.branch,
                 run.created_at, run.port_base.map(|p| p as i64), run.archived_at, run.title, run.kind,
-                run.merge_target
+                run.merge_target, run.race_id
             ],
         )?;
         Ok(())
@@ -267,7 +323,7 @@ impl Registry {
 
     pub fn get_run(&self, id: &str) -> Result<Option<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target FROM runs WHERE id = ?1",
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id FROM runs WHERE id = ?1",
         )?;
         let mut rows = stmt.query([id])?;
         match rows.next()? {
@@ -278,7 +334,7 @@ impl Registry {
 
     pub fn list_runs(&self, project_id: &str) -> Result<Vec<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id
              FROM runs WHERE project_id = ?1 AND archived_at IS NULL ORDER BY created_at DESC",
         )?;
         let rows = stmt.query_map([project_id], |row| Ok(row_to_run(row)))?;
@@ -291,7 +347,7 @@ impl Registry {
 
     pub fn list_archived_runs(&self, project_id: &str) -> Result<Vec<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id
              FROM runs WHERE project_id = ?1 AND archived_at IS NOT NULL ORDER BY archived_at DESC",
         )?;
         let rows = stmt.query_map([project_id], |row| Ok(row_to_run(row)))?;
@@ -306,6 +362,28 @@ impl Registry {
         self.conn.execute(
             "UPDATE runs SET title = ?2 WHERE id = ?1",
             rusqlite::params![id, title],
+        )?;
+        Ok(())
+    }
+
+    /// Record the run's prompt after the fact. Runs are created promptless
+    /// (the user types straight into the agent terminal), so the first line
+    /// they type is captured and stored here as the run's prompt. First
+    /// capture wins: an already-set prompt is never overwritten.
+    pub fn set_run_prompt_if_empty(&self, id: &str, prompt: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE runs SET prompt = ?2 WHERE id = ?1 AND prompt = ''",
+            rusqlite::params![id, prompt],
+        )?;
+        Ok(())
+    }
+
+    /// Remember the agent type last used in this project so new-task shortcuts
+    /// can default to it instead of a hardcoded agent.
+    pub fn set_project_default_agent(&self, id: &str, agent: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE projects SET default_agent = ?2 WHERE id = ?1",
+            rusqlite::params![id, agent],
         )?;
         Ok(())
     }
@@ -421,6 +499,7 @@ fn row_to_project(row: &rusqlite::Row) -> Result<Project> {
         repo_path: PathBuf::from(repo_path),
         default_agent: row.get(3)?,
         default_provider: row.get(4)?,
+        color: row.get(5)?,
     })
 }
 
@@ -439,6 +518,7 @@ fn row_to_run(row: &rusqlite::Row) -> Result<Run> {
         title: row.get(9)?,
         kind: row.get(10)?,
         merge_target: row.get(11)?,
+        race_id: row.get(12)?,
     })
 }
 
@@ -470,6 +550,7 @@ mod tests {
             branch: format!("agent/{id}"),
             created_at: 42,
             port_base: port,
+            race_id: None,
             archived_at: None,
             title: None,
             kind: "agent".to_string(),
@@ -743,6 +824,7 @@ mod tests {
             title: None,
             kind: "agent".into(),
             merge_target: Some("develop".into()),
+            race_id: None,
         };
         reg.insert_run(&run).unwrap();
         let got = reg.get_run("t1").unwrap().unwrap();

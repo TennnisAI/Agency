@@ -1,12 +1,15 @@
 import { useEffect, useState } from "react";
 import {
   AgentProfile,
+  McpServer,
   ProviderSettings,
   NotifSettings,
   deleteProfile,
   getSettings,
   getNotifSettings,
+  listMcpServers,
   listProfiles,
+  saveMcpServers,
   saveProfile,
   saveSettings,
   saveNotifSettings,
@@ -24,7 +27,8 @@ export default function Settings({ onClose }: { onClose: () => void }) {
     lmStudioBaseUrl: "",
   });
   const [profiles, setProfiles] = useState<AgentProfile[]>([]);
-  const [draft, setDraft] = useState({ name: "", command: "", args: "", env: "" });
+  const emptyDraft = { name: "", command: "", args: "", env: "", resume: "" };
+  const [draft, setDraft] = useState(emptyDraft);
   const [formOpen, setFormOpen] = useState(false);
   const [error, setError] = useState("");
   const [notif, setNotif] = useState<NotifSettings>({
@@ -37,6 +41,10 @@ export default function Settings({ onClose }: { onClose: () => void }) {
   });
   const [themeId, setThemeId] = useState<ThemeId>(getStoredTheme());
   const [wordWrap, setWrap] = useState<boolean>(getWordWrap());
+  const [mcpServers, setMcpServers] = useState<McpServer[]>([]);
+  const emptyMcpDraft = { name: "", command: "", args: "", env: "", url: "" };
+  const [mcpDraft, setMcpDraft] = useState(emptyMcpDraft);
+  const [mcpFormOpen, setMcpFormOpen] = useState(false);
 
   function pickWordWrap(on: boolean) {
     setWrap(on);
@@ -53,10 +61,58 @@ export default function Settings({ onClose }: { onClose: () => void }) {
       setSettings(await getSettings());
       setProfiles(await listProfiles());
       setNotif(await getNotifSettings());
+      setMcpServers(await listMcpServers());
       setError("");
     } catch (e) {
       setError(String(e));
     }
+  }
+
+  async function persistMcp(next: McpServer[]) {
+    try {
+      await saveMcpServers(next);
+      setMcpServers(next);
+      setError("");
+      return true;
+    } catch (e) {
+      setError(String(e));
+      return false;
+    }
+  }
+
+  async function addMcpServer() {
+    const name = mcpDraft.name.trim();
+    if (!name) return;
+    const url = mcpDraft.url.trim();
+    const command = mcpDraft.command.trim();
+    const env: Record<string, string> = {};
+    for (const line of mcpDraft.env.split("\n").map((l) => l.trim()).filter(Boolean)) {
+      const i = line.indexOf("=");
+      if (i > 0) env[line.slice(0, i)] = line.slice(i + 1);
+    }
+    const server: McpServer = {
+      name,
+      command: command || null,
+      args: mcpDraft.args.trim() ? mcpDraft.args.trim().split(/\s+/) : [],
+      env,
+      url: url || null,
+    };
+    const next = [...mcpServers.filter((s) => s.name !== name), server];
+    if (await persistMcp(next)) {
+      setMcpDraft(emptyMcpDraft);
+      setMcpFormOpen(false);
+    }
+  }
+
+  function editMcpServer(s: McpServer) {
+    setMcpDraft({
+      name: s.name,
+      command: s.command ?? "",
+      args: s.args.join(" "),
+      env: Object.entries(s.env).map(([k, v]) => `${k}=${v}`).join("\n"),
+      url: s.url ?? "",
+    });
+    setMcpFormOpen(true);
   }
 
   useEffect(() => {
@@ -94,9 +150,12 @@ export default function Settings({ onClose }: { onClose: () => void }) {
         return [l.slice(0, i), l.slice(i + 1)] as [string, string];
       })
       .filter(([k]) => k);
+    // Empty resume field = no resume recipe: the agent always starts fresh.
+    const resume = draft.resume.trim();
+    const resume_args = resume ? resume.split(/\s+/) : null;
     try {
-      await saveProfile({ name: draft.name.trim(), command: draft.command.trim(), args, env });
-      setDraft({ name: "", command: "", args: "", env: "" });
+      await saveProfile({ name: draft.name.trim(), command: draft.command.trim(), args, env, resume_args });
+      setDraft(emptyDraft);
       setFormOpen(false);
       await refresh();
     } catch (e) {
@@ -110,6 +169,7 @@ export default function Settings({ onClose }: { onClose: () => void }) {
       command: p.command,
       args: p.args.join(" "),
       env: p.env.map(([k, v]) => `${k}=${v}`).join("\n"),
+      resume: (p.resume_args ?? []).join(" "),
     });
     setFormOpen(true);
   }
@@ -166,6 +226,12 @@ export default function Settings({ onClose }: { onClose: () => void }) {
                       <code className="settings-meta-val">{p.args.join(" ")}</code>
                     </>
                   )}
+                  {(p.resume_args?.length ?? 0) > 0 && (
+                    <>
+                      <span className="settings-meta-key">resume</span>
+                      <code className="settings-meta-val">{p.resume_args?.join(" ")}</code>
+                    </>
+                  )}
                   {p.env.length > 0 && (
                     <>
                       <span className="settings-meta-key">env</span>
@@ -197,6 +263,12 @@ export default function Settings({ onClose }: { onClose: () => void }) {
                 value={draft.args}
                 onChange={(e) => setDraft({ ...draft, args: e.target.value })}
               />
+              <input
+                className="settings-input"
+                placeholder="resume args (e.g. --continue; empty = always start fresh)"
+                value={draft.resume}
+                onChange={(e) => setDraft({ ...draft, resume: e.target.value })}
+              />
               <textarea
                 className="settings-input"
                 placeholder="env, one KEY=VALUE per line"
@@ -205,11 +277,99 @@ export default function Settings({ onClose }: { onClose: () => void }) {
               />
               <div className="row-actions">
                 <button onClick={addProfile}>Save profile</button>
-                <button className="ghost" onClick={() => { setFormOpen(false); setDraft({ name: "", command: "", args: "", env: "" }); }}>Cancel</button>
+                <button className="ghost" onClick={() => { setFormOpen(false); setDraft(emptyDraft); }}>Cancel</button>
               </div>
             </div>
           ) : (
             <button className="settings-add-profile" onClick={() => setFormOpen(true)}>+ Add agent profile</button>
+          )}
+        </section>
+
+        <section className="settings-section">
+          <div className="settings-section-label">MCP servers</div>
+          <p className="settings-section-hint">
+            Available to every agent workspace, in each agent's native config format (Claude, Cursor,
+            OpenCode). Projects can add their own via <code>[mcp.servers]</code> in{" "}
+            <code>.agency/agency.toml</code>; project entries win on name conflicts.
+          </p>
+          <div className="settings-card-list">
+            {mcpServers.map((s) => (
+              <div key={s.name} className="settings-profile-card">
+                <div className="settings-profile-head">
+                  <span className="settings-profile-name">{s.name}</span>
+                  <span className="spacer" />
+                  <button className="settings-ghost-btn" onClick={() => editMcpServer(s)}>Edit</button>
+                  <button
+                    className="settings-ghost-btn settings-del-btn"
+                    onClick={() => persistMcp(mcpServers.filter((x) => x.name !== s.name))}
+                  >
+                    Delete
+                  </button>
+                </div>
+                <div className="settings-profile-meta">
+                  {s.url ? (
+                    <>
+                      <span className="settings-meta-key">url</span>
+                      <code className="settings-meta-val">{s.url}</code>
+                    </>
+                  ) : (
+                    <>
+                      <span className="settings-meta-key">command</span>
+                      <code className="settings-meta-val">{[s.command, ...s.args].filter(Boolean).join(" ")}</code>
+                    </>
+                  )}
+                  {Object.keys(s.env).length > 0 && (
+                    <>
+                      <span className="settings-meta-key">env</span>
+                      <code className="settings-meta-val">{Object.keys(s.env).join(", ")}</code>
+                    </>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+          {mcpFormOpen ? (
+            <div className="profile-form">
+              <div className="settings-form-label">
+                {mcpServers.some((s) => s.name === mcpDraft.name.trim()) ? "Edit MCP server" : "Add MCP server"}
+              </div>
+              <input
+                className="settings-input"
+                placeholder="name"
+                value={mcpDraft.name}
+                onChange={(e) => setMcpDraft({ ...mcpDraft, name: e.target.value })}
+              />
+              <input
+                className="settings-input"
+                placeholder="command (stdio server, e.g. npx)"
+                value={mcpDraft.command}
+                onChange={(e) => setMcpDraft({ ...mcpDraft, command: e.target.value })}
+              />
+              <input
+                className="settings-input"
+                placeholder="args (space-separated)"
+                value={mcpDraft.args}
+                onChange={(e) => setMcpDraft({ ...mcpDraft, args: e.target.value })}
+              />
+              <input
+                className="settings-input"
+                placeholder="url (remote server — leave command empty)"
+                value={mcpDraft.url}
+                onChange={(e) => setMcpDraft({ ...mcpDraft, url: e.target.value })}
+              />
+              <textarea
+                className="settings-input"
+                placeholder="env, one KEY=VALUE per line"
+                value={mcpDraft.env}
+                onChange={(e) => setMcpDraft({ ...mcpDraft, env: e.target.value })}
+              />
+              <div className="row-actions">
+                <button onClick={addMcpServer}>Save server</button>
+                <button className="ghost" onClick={() => { setMcpFormOpen(false); setMcpDraft(emptyMcpDraft); }}>Cancel</button>
+              </div>
+            </div>
+          ) : (
+            <button className="settings-add-profile" onClick={() => setMcpFormOpen(true)}>+ Add MCP server</button>
           )}
         </section>
 

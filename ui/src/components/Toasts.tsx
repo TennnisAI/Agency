@@ -1,0 +1,19 @@
+import { useEffect, useState } from "react";
+import { ToastMsg, dismissToast, subscribeToasts } from "../lib/toast";
+
+/** Error-toast stack, mounted once at the shell root. */
+export default function Toasts() {
+  const [toasts, setToasts] = useState<ToastMsg[]>([]);
+  useEffect(() => subscribeToasts(setToasts), []);
+  if (toasts.length === 0) return null;
+  return (
+    <div className="toast-stack">
+      {toasts.map((t) => (
+        <div key={t.id} className="toast toast-error" onClick={() => dismissToast(t.id)}>
+          <span className="toast-text">{t.text}</span>
+          <button className="toast-close" onClick={() => dismissToast(t.id)}>✕</button>
+        </div>
+      ))}
+    </div>
+  );
+}

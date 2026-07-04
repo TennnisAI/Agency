@@ -142,3 +142,74 @@ fn resolve_target_prefers_explicit_then_falls_back() {
         "main"
     );
 }
+
+#[test]
+fn commits_behind_counts_base_advance() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    run(dir.path(), &["checkout", "-q", "-b", "agent/b"]);
+    // Base moves ahead by two commits after the branch was cut.
+    run(dir.path(), &["checkout", "-q", "main"]);
+    std::fs::write(dir.path().join("m1.txt"), "1\n").unwrap();
+    run(dir.path(), &["add", "-A"]);
+    run(dir.path(), &["commit", "-q", "-m", "m1"]);
+    std::fs::write(dir.path().join("m2.txt"), "2\n").unwrap();
+    run(dir.path(), &["add", "-A"]);
+    run(dir.path(), &["commit", "-q", "-m", "m2"]);
+    assert_eq!(merge::commits_behind(dir.path(), "agent/b", "main").unwrap(), 2);
+    assert_eq!(merge::commits_ahead(dir.path(), "agent/b", "main").unwrap(), 0);
+}
+
+#[test]
+fn clean_merge_restores_original_checkout() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    run(dir.path(), &["checkout", "-q", "-b", "agent/r"]);
+    std::fs::write(dir.path().join("new.txt"), "hi\n").unwrap();
+    run(dir.path(), &["add", "-A"]);
+    run(dir.path(), &["commit", "-q", "-m", "add new"]);
+    // The user is parked on an unrelated branch when the merge runs.
+    run(dir.path(), &["checkout", "-q", "-b", "dev", "main"]);
+
+    let outcome = merge::merge(dir.path(), "agent/r", "main").unwrap();
+    assert!(matches!(outcome, MergeOutcome::Clean { .. }));
+
+    // Merge landed on main…
+    let head_of_main = Command::new("git")
+        .args(["rev-list", "--count", "dev..main"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert_ne!(String::from_utf8_lossy(&head_of_main.stdout).trim(), "0");
+    // …and the checkout is back where the user left it.
+    let head = Command::new("git")
+        .args(["symbolic-ref", "--short", "HEAD"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&head.stdout).trim(), "dev");
+}
+
+#[test]
+fn conflicting_merge_stays_on_base_for_resolution() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    run(dir.path(), &["checkout", "-q", "-b", "agent/c"]);
+    std::fs::write(dir.path().join("f.txt"), "branch-change\n").unwrap();
+    run(dir.path(), &["commit", "-qam", "branch edit"]);
+    run(dir.path(), &["checkout", "-q", "main"]);
+    std::fs::write(dir.path().join("f.txt"), "main-change\n").unwrap();
+    run(dir.path(), &["commit", "-qam", "main edit"]);
+    run(dir.path(), &["checkout", "-q", "-b", "dev"]);
+
+    let outcome = merge::merge(dir.path(), "agent/c", "main").unwrap();
+    assert!(matches!(outcome, MergeOutcome::Conflicts { .. }));
+    // Conflicts keep the checkout on base — that's where resolution happens.
+    let head = Command::new("git")
+        .args(["symbolic-ref", "--short", "HEAD"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&head.stdout).trim(), "main");
+    merge::abort_merge(dir.path()).unwrap();
+}

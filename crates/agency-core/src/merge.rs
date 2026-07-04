@@ -61,6 +61,16 @@ pub fn commits_ahead(repo: &Path, branch: &str, base: &str) -> Result<usize> {
     Ok(out.trim().parse().unwrap_or(0))
 }
 
+/// Number of commits on `base` that `branch` doesn't have — how far the base
+/// has moved on since the branch was created (or last updated). Non-zero means
+/// the branch is stale and the merge lands on a base it has never seen, so the
+/// UI warns before merging instead of letting staleness surface as conflicts.
+pub fn commits_behind(repo: &Path, branch: &str, base: &str) -> Result<usize> {
+    let range = format!("{branch}..{base}");
+    let out = git_ok(repo, &["rev-list", "--count", &range])?;
+    Ok(out.trim().parse().unwrap_or(0))
+}
+
 pub fn abort_merge(repo: &Path) -> Result<()> {
     git_ok(repo, &["merge", "--abort"])?;
     Ok(())
@@ -74,12 +84,26 @@ fn unmerged_files(repo: &Path) -> Result<Vec<String>> {
 pub fn merge(repo: &Path, branch: &str, base: &str) -> Result<MergeOutcome> {
     let dirty = git_ok(repo, &["status", "--porcelain"])?;
     if !dirty.trim().is_empty() {
-        bail!("repository has uncommitted changes; commit or stash them before merging");
+        bail!("the project's main checkout has uncommitted changes; commit or stash them there before merging");
     }
+    // Remember which branch the main checkout was on so a clean merge can put
+    // it back — merging shouldn't hijack the user's checkout as a side effect.
+    // Detached HEAD yields nothing and skips the restore.
+    let original = git(repo, &["symbolic-ref", "--short", "-q", "HEAD"])
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty());
     git_ok(repo, &["checkout", base])?;
     let out = git(repo, &["merge", "--no-ff", branch])?;
     if out.status.success() {
         let commit = git_ok(repo, &["rev-parse", "HEAD"])?.trim().to_string();
+        // Best-effort: a failed restore must not turn a successful merge into
+        // an error. On conflicts we intentionally stay on `base` — resolution
+        // (manual or agent-driven) happens there.
+        if let Some(orig) = original.filter(|o| o != base) {
+            let _ = git(repo, &["checkout", &orig]);
+        }
         return Ok(MergeOutcome::Clean { commit });
     }
     // Distinguish conflicts from other failures.

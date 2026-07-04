@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { AgentProfile, listProfiles, listProjectBranches } from "../api";
 import { agentLabel } from "../agents";
 import { effectiveMergeTarget } from "../lib/branchTargets";
+import RaceDialog from "./RaceDialog";
+import GhImportDialog from "./GhImportDialog";
 
 // The built-in shell profile backs the hardcoded "New terminal" entry, so it is
 // never listed as a spawnable agent.
@@ -24,6 +26,8 @@ export default function AgentAddMenu({
   const [open, setOpen] = useState(false);
   const [coords, setCoords] = useState<{ top: number; left?: number; right?: number }>();
   const [agents, setAgents] = useState<AgentProfile[]>([]);
+  const [raceOpen, setRaceOpen] = useState(false);
+  const [importMode, setImportMode] = useState<"issue" | "pr" | null>(null);
   const btnRef = useRef<HTMLButtonElement>(null);
 
   // Agent options are derived from the defined profiles (not hardcoded) so newly
@@ -102,6 +106,10 @@ export default function AgentAddMenu({
               <button key={a.name} onClick={() => choose(a.name)}>{agentLabel(a.name)}</button>
             ))}
             <div className="agent-menu-sep" />
+            <button onClick={() => { setOpen(false); setRaceOpen(true); }}>∥ Race agents…</button>
+            <button onClick={() => { setOpen(false); setImportMode("issue"); }}>◈ GitHub issue…</button>
+            <button onClick={() => { setOpen(false); setImportMode("pr"); }}>⇋ GitHub PR…</button>
+            <div className="agent-menu-sep" />
             <button onClick={chooseTerminal}>≳ New terminal</button>
             {showPicker && branches.length > 0 && (
               <>
@@ -141,6 +149,8 @@ export default function AgentAddMenu({
           </div>
         </>
       )}
+      {raceOpen && <RaceDialog onClose={() => setRaceOpen(false)} />}
+      {importMode && <GhImportDialog mode={importMode} onClose={() => setImportMode(null)} />}
     </div>
   );
 }

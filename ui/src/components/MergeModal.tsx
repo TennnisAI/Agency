@@ -7,20 +7,46 @@ import {
   MergeOutcome,
   MergePreview,
   abortMergeTask,
+  archiveRun,
+  discardRun,
+  listProfiles,
   mergePreview,
   mergeTask,
   resolveMerge,
   resolverResize,
   resolverStatus,
 } from "../api";
+import PrSection from "./PrSection";
+import { useRuns } from "../store/runs";
 
-export default function MergeModal({ taskId, onClose }: { taskId: string; onClose: () => void }) {
+// `onArchived` fires after the post-merge "Archive workspace" action so the
+// host view can drop focus and refresh its rail.
+export default function MergeModal({
+  taskId,
+  onClose,
+  onArchived,
+}: {
+  taskId: string;
+  onClose: () => void;
+  onArchived?: () => void;
+}) {
   const [preview, setPreview] = useState<MergePreview | null>(null);
   const [outcome, setOutcome] = useState<MergeOutcome | null>(null);
   const [merging, setMerging] = useState(false);
   const [error, setError] = useState("");
   const [resolving, setResolving] = useState(false);
   const [resolverDone, setResolverDone] = useState(false);
+  const [archiving, setArchiving] = useState(false);
+  const [resolverProfile, setResolverProfile] = useState("claude");
+  const [profileNames, setProfileNames] = useState<string[]>([]);
+  const { runs } = useRuns();
+  const me = runs.find((r) => r.id === taskId);
+  const projectId = me?.projectId ?? null;
+  // Losing race attempts: siblings sharing this run's race_id. Offered for
+  // cleanup after the winner merges.
+  const losers = me?.raceId
+    ? runs.filter((r) => r.raceId === me.raceId && r.id !== taskId && r.kind === "agent")
+    : [];
   const termRef = useRef<HTMLDivElement>(null);
   const termInstanceRef = useRef<Terminal | null>(null);
   const timerRef = useRef<ReturnType<typeof window.setInterval> | null>(null);
@@ -30,7 +56,34 @@ export default function MergeModal({ taskId, onClose }: { taskId: string; onClos
   // silently running it the moment the modal opens.
   useEffect(() => {
     mergePreview(taskId).then(setPreview).catch((e) => setError(String(e)));
+    // Conflict-resolver choices: any agent profile except the internal shell.
+    listProfiles()
+      .then((ps) => {
+        const names = ps.map((p) => p.name).filter((n) => n !== "shell");
+        setProfileNames(names);
+        // Default resolver is claude; fall back to whatever exists if the
+        // user deleted that profile.
+        if (!names.includes("claude") && names.length > 0) setResolverProfile(names[0]);
+      })
+      .catch(() => {});
   }, [taskId]);
+
+  async function archiveWorkspace(discardLosers: boolean) {
+    setArchiving(true);
+    try {
+      if (discardLosers) {
+        // The merged branch won; the other attempts' work is unwanted by
+        // definition, so a full discard (worktree + branch) is right.
+        for (const l of losers) await discardRun(l.id);
+      }
+      await archiveRun(taskId);
+      onArchived?.();
+      onClose();
+    } catch (e) {
+      setError(String(e));
+      setArchiving(false);
+    }
+  }
 
   async function attempt() {
     setError("");
@@ -69,7 +122,7 @@ export default function MergeModal({ taskId, onClose }: { taskId: string; onClos
       ro.observe(termRef.current);
       roRef.current = ro;
     }
-    resolveMerge(taskId, "claude", (bytes) => term.write(bytes))
+    resolveMerge(taskId, resolverProfile, (bytes) => term.write(bytes))
       .then(doFit)
       .catch((e) => setError(String(e)));
     const timer = window.setInterval(async () => {
@@ -117,7 +170,7 @@ export default function MergeModal({ taskId, onClose }: { taskId: string; onClos
       <div className="merge-modal">
         <div className="settings-head">
           <h2>Approve &amp; merge</h2>
-          <button onClick={onClose}>Close</button>
+          <button className="icon-btn" title="Close" onClick={onClose}>✕</button>
         </div>
         <div className="merge-timeline">
           {steps.map((s) => (
@@ -144,6 +197,12 @@ export default function MergeModal({ taskId, onClose }: { taskId: string; onClos
                   {preview.commitsAhead} commit{preview.commitsAhead === 1 ? "" : "s"} ahead of <code>{preview.base}</code>.
                 </p>
               )}
+              {!nothingToMerge && preview.commitsBehind > 0 && (
+                <p className="merge-warn">
+                  <code>{preview.base}</code> has moved ahead by {preview.commitsBehind} commit
+                  {preview.commitsBehind === 1 ? "" : "s"} since this agent branched — the merge may hit conflicts.
+                </p>
+              )}
               {preview.worktreeDirty && (
                 <p className="merge-warn">
                   {preview.dirtyFiles.length} uncommitted change{preview.dirtyFiles.length === 1 ? "" : "s"} in this
@@ -154,8 +213,16 @@ export default function MergeModal({ taskId, onClose }: { taskId: string; onClos
               {!nothingToMerge && (
                 <div className="git-actions">
                   <button onClick={attempt}>Merge into {preview.base}</button>
-                  <button onClick={onClose}>Cancel</button>
+                  <button className="ghost" onClick={onClose}>Cancel</button>
                 </div>
+              )}
+              {projectId && (
+                <PrSection
+                  taskId={taskId}
+                  projectId={projectId}
+                  canCreate={!nothingToMerge}
+                  onLeave={onClose}
+                />
               )}
             </div>
           ) : null
@@ -167,8 +234,28 @@ export default function MergeModal({ taskId, onClose }: { taskId: string; onClos
           <div>
             <p className="merge-ok">✓ Merged cleanly into {preview?.base ?? "main"}.</p>
             <code>{outcome.commit.slice(0, 10)}</code>
+            <p className="merge-note">
+              The workspace and its <code>{preview?.branch ?? "agent"}</code> branch are no longer needed —
+              archiving stops the agent and removes the worktree (the branch is kept, so it can be restored).
+            </p>
             <div className="git-actions">
-              <button onClick={onClose}>Done</button>
+              {losers.length > 0 ? (
+                <button disabled={archiving} onClick={() => archiveWorkspace(true)}>
+                  {archiving
+                    ? "Cleaning up…"
+                    : `Archive + discard ${losers.length} losing attempt${losers.length === 1 ? "" : "s"}`}
+                </button>
+              ) : (
+                <button disabled={archiving} onClick={() => archiveWorkspace(false)}>
+                  {archiving ? "Archiving…" : "Archive workspace"}
+                </button>
+              )}
+              {losers.length > 0 && (
+                <button className="ghost" disabled={archiving} onClick={() => archiveWorkspace(false)}>
+                  Archive, keep losers
+                </button>
+              )}
+              <button className="ghost" disabled={archiving} onClick={onClose}>Keep workspace</button>
             </div>
           </div>
         )}
@@ -186,7 +273,19 @@ export default function MergeModal({ taskId, onClose }: { taskId: string; onClos
             {!resolving ? (
               <div className="git-actions">
                 <button onClick={startResolver}>Resolve with agent</button>
-                <button onClick={() => abortMergeTask(taskId).then(onClose)}>Abort merge</button>
+                {profileNames.length > 1 && (
+                  <select
+                    className="merge-resolver-pick"
+                    value={resolverProfile}
+                    onChange={(e) => setResolverProfile(e.target.value)}
+                    title="Agent used to resolve the conflicts"
+                  >
+                    {profileNames.map((n) => (
+                      <option key={n} value={n}>{n}</option>
+                    ))}
+                  </select>
+                )}
+                <button className="ghost" onClick={() => abortMergeTask(taskId).then(onClose)}>Abort merge</button>
               </div>
             ) : (
               <div className="resolver">
@@ -195,7 +294,7 @@ export default function MergeModal({ taskId, onClose }: { taskId: string; onClos
                   <button disabled={!resolverDone} onClick={attempt}>
                     Re-check merge
                   </button>
-                  <button onClick={() => abortMergeTask(taskId).then(onClose)}>Abort merge</button>
+                  <button className="ghost" onClick={() => abortMergeTask(taskId).then(onClose)}>Abort merge</button>
                 </div>
               </div>
             )}

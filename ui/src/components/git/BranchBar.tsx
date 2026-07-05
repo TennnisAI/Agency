@@ -1,7 +1,8 @@
 import { BranchInfo } from "../../api";
 
-export default function BranchBar({ info, onSync, onRefresh }: {
+export default function BranchBar({ info, busy = false, onSync, onRefresh }: {
   info: BranchInfo | null;
+  busy?: boolean;
   onSync: () => void;
   onRefresh: () => void;
 }) {
@@ -15,8 +16,11 @@ export default function BranchBar({ info, onSync, onRefresh }: {
           {info.ahead > 0 && <span title="ahead">↑{info.ahead}</span>}
         </span>
       )}
+      {busy && <span className="spinner" aria-label="working" />}
       <span className="spacer" style={{ flex: 1 }} />
-      {info.upstream && <button className="git-iconbtn" title="Sync" onClick={onSync}>⟳</button>}
+      {info.upstream && (
+        <button className="git-iconbtn" title="Sync" onClick={onSync} disabled={busy}>⟳</button>
+      )}
       <button className="git-iconbtn" title="Refresh" onClick={onRefresh}>⟲</button>
     </div>
   );

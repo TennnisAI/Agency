@@ -9,12 +9,13 @@ import CommitBox from "./CommitBox";
 import ConfirmDialog from "../ConfirmDialog";
 
 export default function ChangesPanel({
-  taskId, changes, branch, onAct, selectedPath, onSelectFile,
+  taskId, changes, branch, onAct, busy = false, selectedPath, onSelectFile,
 }: {
   taskId: string;
   changes: FileChange[];
   branch: BranchInfo | null;
-  onAct: (fn: () => Promise<unknown>) => void;
+  onAct: (fn: () => Promise<unknown>, label?: string) => void;
+  busy?: boolean;
   selectedPath: string | null;
   onSelectFile: (path: string, group: "index" | "workingTree" | "merge" | "untracked") => void;
 }) {
@@ -31,12 +32,13 @@ export default function ChangesPanel({
         hasRemote={!!branch?.hasRemote}
         ahead={branch?.ahead ?? 0}
         behind={branch?.behind ?? 0}
-        onCommit={(m) => onAct(() => gitCommit(taskId, m))}
-        onCommitPush={(m) => onAct(async () => { await gitCommit(taskId, m); await gitPush(taskId); })}
-        onAmend={(m) => onAct(() => gitCommitAmend(taskId, m))}
-        onSync={() => onAct(() => gitPush(taskId))}
-        onPublish={() => onAct(() => gitPush(taskId))}
-        onPublishRemote={(url) => onAct(async () => { await gitSetRemote(taskId, url); await gitPush(taskId); })}
+        busy={busy}
+        onCommit={(m) => onAct(() => gitCommit(taskId, m), "Committed")}
+        onCommitPush={(m) => onAct(async () => { await gitCommit(taskId, m); await gitPush(taskId); }, "Committed & pushed")}
+        onAmend={(m) => onAct(() => gitCommitAmend(taskId, m), "Amended")}
+        onSync={() => onAct(() => gitPush(taskId), "Synced")}
+        onPublish={() => onAct(() => gitPush(taskId), "Branch published")}
+        onPublishRemote={(url) => onAct(async () => { await gitSetRemote(taskId, url); await gitPush(taskId); }, "Branch published")}
       />
       <ResourceGroup id="merge" label="Merge Changes" changes={g.merge}
         selectedPath={selectedPath} onSelectFile={(c) => onSelectFile(c.path, "merge")}

@@ -2,9 +2,12 @@
 // non-component code — store actions, api call sites — can report failures
 // without threading a hook through every caller.
 
+export type ToastKind = "error" | "info" | "success";
+
 export interface ToastMsg {
   id: number;
   text: string;
+  kind: ToastKind;
 }
 
 type Listener = (toasts: ToastMsg[]) => void;
@@ -30,14 +33,28 @@ export function dismissToast(id: number) {
   emit();
 }
 
+function push(text: string, kind: ToastKind, ttl: number) {
+  const id = nextId++;
+  // Collapse duplicates so a polling loop can't stack identical toasts.
+  if (toasts.some((t) => t.text === text && t.kind === kind)) return;
+  toasts = [...toasts, { id, text, kind }];
+  emit();
+  window.setTimeout(() => dismissToast(id), ttl);
+}
+
 /** Surface a failed action to the user instead of swallowing it. */
 export function toastError(err: unknown, context?: string) {
   const raw = err instanceof Error ? err.message : String(err);
   const text = context ? `${context}: ${raw}` : raw;
-  const id = nextId++;
-  // Collapse duplicates so a polling loop can't stack identical toasts.
-  if (toasts.some((t) => t.text === text)) return;
-  toasts = [...toasts, { id, text }];
-  emit();
-  window.setTimeout(() => dismissToast(id), 8000);
+  push(text, "error", 8000);
+}
+
+/** Confirm a completed action (e.g. "Committed", "Pushed"). Auto-dismisses fast. */
+export function toastSuccess(text: string) {
+  push(text, "success", 3500);
+}
+
+/** Neutral, transient status note. */
+export function toastInfo(text: string) {
+  push(text, "info", 3500);
 }

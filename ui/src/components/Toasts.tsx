@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { ToastMsg, dismissToast, subscribeToasts } from "../lib/toast";
 
-/** Error-toast stack, mounted once at the shell root. */
+/** Toast stack (errors, success, info), mounted once at the shell root. */
 export default function Toasts() {
   const [toasts, setToasts] = useState<ToastMsg[]>([]);
   useEffect(() => subscribeToasts(setToasts), []);
@@ -9,7 +9,7 @@ export default function Toasts() {
   return (
     <div className="toast-stack">
       {toasts.map((t) => (
-        <div key={t.id} className="toast toast-error" onClick={() => dismissToast(t.id)}>
+        <div key={t.id} className={`toast toast-${t.kind}`} onClick={() => dismissToast(t.id)}>
           <span className="toast-text">{t.text}</span>
           <button className="toast-close" onClick={() => dismissToast(t.id)}>✕</button>
         </div>

@@ -1,13 +1,14 @@
 import { useState } from "react";
 
 export default function CommitBox({
-  branch, hasUpstream, hasRemote, ahead, behind, onCommit, onCommitPush, onAmend, onSync, onPublish, onPublishRemote,
+  branch, hasUpstream, hasRemote, ahead, behind, busy = false, onCommit, onCommitPush, onAmend, onSync, onPublish, onPublishRemote,
 }: {
   branch: string;
   hasUpstream: boolean;
   hasRemote: boolean;
   ahead: number;
   behind: number;
+  busy?: boolean;
   onCommit: (m: string) => void;
   onCommitPush: (m: string) => void;
   onAmend: (m: string) => void;
@@ -33,8 +34,10 @@ export default function CommitBox({
         value={message} onChange={(e) => setMessage(e.target.value)} />
       <div className="git-commit-bar">
         <div className="git-split">
-          <button className="git-primary" onClick={() => send(onCommit)}>✓ Commit</button>
-          <button className="git-primary git-caret" onClick={() => setMenu((o) => !o)}>▾</button>
+          <button className="git-primary" onClick={() => send(onCommit)} disabled={busy}>
+            {busy ? <span className="spinner" aria-label="working" /> : "✓"} Commit
+          </button>
+          <button className="git-primary git-caret" onClick={() => setMenu((o) => !o)} disabled={busy}>▾</button>
           {menu && (
             <div className="git-menu" onMouseLeave={() => setMenu(false)}>
               <button onClick={() => send(onCommitPush)}>Commit &amp; Push</button>
@@ -44,11 +47,11 @@ export default function CommitBox({
         </div>
         {hasUpstream
           ? (ahead > 0 || behind > 0) &&
-            <button className="git-secondary" onClick={onSync}>⟳ Sync {behind ? `↓${behind}` : ""} {ahead ? `↑${ahead}` : ""}</button>
+            <button className="git-secondary" onClick={onSync} disabled={busy}>⟳ Sync {behind ? `↓${behind}` : ""} {ahead ? `↑${ahead}` : ""}</button>
           // No upstream: only offer Publish when there are commits to push.
           : ahead > 0 && (hasRemote
-            ? <button className="git-secondary" onClick={onPublish}>☁ Publish Branch ↑{ahead}</button>
-            : <button className="git-secondary" onClick={() => setAddingRemote((o) => !o)}
+            ? <button className="git-secondary" onClick={onPublish} disabled={busy}>☁ Publish Branch ↑{ahead}</button>
+            : <button className="git-secondary" onClick={() => setAddingRemote((o) => !o)} disabled={busy}
                 title="No 'origin' remote configured — add one to publish">☁ Add Remote &amp; Publish…</button>)}
       </div>
       {addingRemote && !hasRemote && (

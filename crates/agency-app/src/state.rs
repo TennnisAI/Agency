@@ -158,6 +158,13 @@ fn run_session_name(id: &str) -> String {
     format!("agency-run-{id}")
 }
 
+/// Daemon session for a run's companion shell — an interactive terminal the user
+/// can open alongside the agent, sharing the same worktree. Distinct from both
+/// the agent session (`agency-<id>`) and the run-script session (`agency-run-<id>`).
+fn shell_session_name(id: &str) -> String {
+    format!("agency-shell-{id}")
+}
+
 fn validate_provider_url(raw: &str) -> Result<()> {
     if raw.is_empty() {
         return Ok(());
@@ -314,6 +321,10 @@ pub struct AppState {
     registry: Mutex<Registry>,
     attaches: Mutex<HashMap<String, Subscription>>,
     run_attaches: Mutex<HashMap<String, Subscription>>,
+    /// Attach handles for the per-run companion shell (`agency-shell-<id>`): an
+    /// interactive login shell sharing the run's worktree, independent of the
+    /// agent session and the run-script session. See `start_shell`.
+    shell_attaches: Mutex<HashMap<String, Subscription>>,
     term: RwLock<TermClient>,
     data_dir: PathBuf,
     resolvers: Mutex<HashMap<String, AgentHandle>>,
@@ -377,6 +388,7 @@ impl AppState {
             registry: Mutex::new(registry),
             attaches: Mutex::new(HashMap::new()),
             run_attaches: Mutex::new(HashMap::new()),
+            shell_attaches: Mutex::new(HashMap::new()),
             term: RwLock::new(TermClient::connect_or_spawn(termd_socket(data_dir), termd_bin())?),
             data_dir: data_dir.to_path_buf(),
             resolvers: Mutex::new(HashMap::new()),
@@ -1035,6 +1047,8 @@ impl AppState {
         let _ = self.term.read().unwrap().kill(&session_name(id));
         self.run_attaches.lock().unwrap().remove(id);
         let _ = self.term.read().unwrap().kill(&run_session_name(id));
+        self.shell_attaches.lock().unwrap().remove(id);
+        let _ = self.term.read().unwrap().kill(&shell_session_name(id));
         if run.kind == "agent" {
             if let Ok(repo) = self.project_repo(&run.project_id) {
                 let _ = WorktreeManager::new(repo).remove(id);
@@ -1056,6 +1070,8 @@ impl AppState {
         let _ = self.term.read().unwrap().kill(&session_name(id));
         self.run_attaches.lock().unwrap().remove(id);
         let _ = self.term.read().unwrap().kill(&run_session_name(id));
+        self.shell_attaches.lock().unwrap().remove(id);
+        let _ = self.term.read().unwrap().kill(&shell_session_name(id));
 
         // Preserve uncommitted agent work BEFORE the worktree is force-removed:
         // commit it onto the kept agent branch so restore brings it back. A
@@ -1196,6 +1212,82 @@ impl AppState {
 
     pub fn resize_run_script(&self, id: &str, cols: u16, rows: u16) -> Result<()> {
         self.term.read().unwrap().resize(&run_session_name(id), cols, rows)
+    }
+
+    /// Start (or reuse) the run's companion shell: an interactive login shell
+    /// rooted in the run's worktree. Idempotent — if the session is already
+    /// running it is left untouched so scrollback and any in-flight command
+    /// survive the UI panel being toggled or the terminal remounting.
+    pub fn start_shell(&self, id: &str) -> Result<()> {
+        // Already live? Leave it alone.
+        if matches!(
+            self.term.read().unwrap().status(&shell_session_name(id)),
+            Ok(SessionStatus::Running)
+        ) {
+            return Ok(());
+        }
+        let run = self.run_record(id)?;
+        let repo = self.project_repo(&run.project_id)?;
+        // Agents run in their worktree; terminals map to the repo root.
+        let cwd = self.worktree_path(id)?;
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+        let args = vec!["-l".to_string()];
+        let mut env = self.provider_env()?;
+        env.extend(agency_core::scripts::script_env(&cwd, &repo, &run.id, run.port_base));
+
+        // Restart cleanly if a dead session lingers.
+        let _ = self.term.read().unwrap().kill(&shell_session_name(id));
+        self.term.read().unwrap().start_session(
+            &shell_session_name(id),
+            &cwd,
+            &shell,
+            &args,
+            &env,
+            220,
+            50,
+        )
+    }
+
+    pub fn stop_shell(&self, id: &str) -> Result<()> {
+        self.shell_attaches.lock().unwrap().remove(id);
+        let _ = self.term.read().unwrap().kill(&shell_session_name(id));
+        Ok(())
+    }
+
+    pub fn shell_status(&self, id: &str) -> Result<SessionStatus> {
+        Ok(self
+            .term
+            .read()
+            .unwrap()
+            .status(&shell_session_name(id))
+            .unwrap_or(SessionStatus::Gone))
+    }
+
+    pub fn shell_preview(&self, id: &str, lines: usize) -> Result<String> {
+        Ok(self.term.read().unwrap().capture(&shell_session_name(id), lines).unwrap_or_default())
+    }
+
+    pub fn attach_shell<F>(&self, id: &str, cols: u16, rows: u16, on_output: F) -> Result<()>
+    where
+        F: Fn(Vec<u8>) + Send + Sync + 'static,
+    {
+        let sub = self.term.read().unwrap().subscribe(&shell_session_name(id), cols, rows, on_output)?;
+        self.shell_attaches.lock().unwrap().insert(id.to_string(), sub);
+        Ok(())
+    }
+
+    pub fn detach_shell(&self, id: &str) {
+        // Dropping the Subscription unsubscribes but leaves the shell running
+        // server-side, so re-opening the panel resumes the same session.
+        self.shell_attaches.lock().unwrap().remove(id);
+    }
+
+    pub fn shell_input(&self, id: &str, data: &[u8]) -> Result<()> {
+        self.term.read().unwrap().input(&shell_session_name(id), data)
+    }
+
+    pub fn resize_shell(&self, id: &str, cols: u16, rows: u16) -> Result<()> {
+        self.term.read().unwrap().resize(&shell_session_name(id), cols, rows)
     }
 
     /// Ensure the run has a live daemon session, transparently respawning it if the

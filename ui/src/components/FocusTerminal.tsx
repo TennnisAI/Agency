@@ -4,7 +4,8 @@ import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import "@xterm/xterm/css/xterm.css";
 import { attachRun, detachRun, resizeRun, runInput, runPreview, ensureRunActive,
-  attachRunScript, detachRunScript, resizeRunScript, runScriptInput, runScriptPreview } from "../api";
+  attachRunScript, detachRunScript, resizeRunScript, runScriptInput, runScriptPreview,
+  attachShell, detachShell, resizeShell, shellInput, shellPreview, startShell } from "../api";
 import { currentXtermTheme, minContrastRatio, TERMINAL_FONT_FAMILY } from "../lib/themes";
 import { initialCapture, feed } from "../lib/firstPrompt";
 
@@ -25,6 +26,14 @@ export const agentStream: TerminalStream = {
 export const runStream: TerminalStream = {
   attach: attachRunScript, detach: detachRunScript, resize: resizeRunScript,
   input: runScriptInput, preview: runScriptPreview,
+};
+
+// Companion shell. `ensureActive` lazily starts (or reuses) the worktree shell
+// so the panel can be opened without an explicit "start" step; start_shell is
+// idempotent, so remounting the panel resumes the same session.
+export const shellStream: TerminalStream = {
+  attach: attachShell, detach: detachShell, resize: resizeShell,
+  input: shellInput, preview: shellPreview, ensureActive: startShell,
 };
 
 export default function FocusTerminal(

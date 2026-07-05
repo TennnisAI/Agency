@@ -108,6 +108,25 @@ export function attachRunScript(id: string, onBytes: (b: Uint8Array) => void): P
   return invoke<void>("attach_run_script", { id, onChunk });
 }
 
+// Companion shell: a per-run interactive terminal sharing the run's worktree,
+// independent of the agent and run-script sessions.
+export const startShell = (id: string) => invoke<void>("start_shell", { id });
+export const stopShell = (id: string) => invoke<void>("stop_shell", { id });
+export const shellStatus = (id: string) => invoke<SessionStatus>("shell_status", { id });
+export const shellPreview = (id: string, lines: number) =>
+  invoke<string>("shell_preview", { id, lines });
+export const detachShell = (id: string) => invoke<void>("detach_shell", { id });
+export const shellInput = (id: string, data: string) =>
+  invoke<void>("shell_input", { id, data });
+export const resizeShell = (id: string, cols: number, rows: number) =>
+  invoke<void>("resize_shell", { id, cols, rows });
+
+export function attachShell(id: string, onBytes: (b: Uint8Array) => void): Promise<void> {
+  const onChunk = new Channel<{ b64: string }>();
+  onChunk.onmessage = (m) => onBytes(b64ToBytes(m.b64));
+  return invoke<void>("attach_shell", { id, onChunk });
+}
+
 export interface FileChange {
   path: string;
   index: string; // staged status code

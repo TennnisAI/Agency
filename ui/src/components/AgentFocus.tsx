@@ -3,14 +3,18 @@ import { useRuns } from "../store/runs";
 import { discardRun, archiveRun, setRunTitle } from "../api";
 import { toastError } from "../lib/toast";
 import { runName } from "../agents";
-import FocusTerminal from "./FocusTerminal";
+import FocusTerminal, { shellStream } from "./FocusTerminal";
 import RunPanel from "./RunPanel";
 import MergeModal from "./MergeModal";
 import ConfirmDialog from "./ConfirmDialog";
 import Resizer from "./Resizer";
 import ArchivedSection from "./ArchivedSection";
-import { usePaneWidth } from "../hooks/usePaneWidth";
+import { usePaneWidth, loadFold, saveFold } from "../hooks/usePaneWidth";
 import AgentAddMenu from "./AgentAddMenu";
+
+const SHELL_MIN = 120;
+const SHELL_MAX = 640;
+const SHELL_FOLD_KEY = "focus-shell-open";
 
 function badgeClass(a: string) {
   return ["claude", "pi", "hermes"].includes(a) ? `badge ${a}` : "badge";
@@ -34,6 +38,19 @@ export default function AgentFocus({
   }, [focusedRunId]);
   const [railOpen, setRailOpen] = useState(true);
   const rail = usePaneWidth("rail", 312, 220, 520);
+  // Companion terminal (bottom panel) — shared open-state + height across runs.
+  const shellPane = usePaneWidth("focus-shell-h", 240, SHELL_MIN, SHELL_MAX);
+  const [shellOpen, setShellOpen] = useState<boolean>(() =>
+    typeof localStorage === "undefined" ? false : loadFold(localStorage, SHELL_FOLD_KEY, false),
+  );
+  const toggleShell = () =>
+    setShellOpen((o) => {
+      const next = !o;
+      try {
+        if (typeof localStorage !== "undefined") saveFold(localStorage, SHELL_FOLD_KEY, next);
+      } catch { /* ignore quota / security errors */ }
+      return next;
+    });
   const focused = runs.find((r) => r.id === focusedRunId) ?? null;
 
   return (
@@ -103,6 +120,13 @@ export default function AgentFocus({
                   <button className={panel === "agent" ? "on" : ""} onClick={() => setPanel("agent")}>Agent</button>
                   <button className={panel === "run" ? "on" : ""} onClick={() => setPanel("run")}>Run</button>
                 </div>
+                {panel === "agent" && (
+                  <button
+                    className={`focus-shell-toggle ${shellOpen ? "on" : ""}`}
+                    title="Toggle terminal in this worktree"
+                    onClick={toggleShell}
+                  >≳ Terminal</button>
+                )}
                 <span className="spacer" />
                 <button className="tile-act danger" title="Discard agent" onClick={() => setConfirmDiscard(true)}>✕ Discard</button>
                 <button className="tile-act" title="Archive agent — stops it and removes the worktree; uncommitted work is auto-committed to its branch" onClick={async () => {
@@ -117,10 +141,28 @@ export default function AgentFocus({
                 }}>⌂ Archive</button>
                 <button onClick={() => setShowMerge(true)}>Approve →</button>
               </div>
-              {panel === "agent"
-                ? <FocusTerminal key={focused.id} runId={focused.id}
+              {panel === "agent" ? (
+                <div className="focus-body">
+                  <FocusTerminal key={focused.id} runId={focused.id}
                     onFirstPrompt={focused.title ? undefined : (line) => { setRunTitle(focused.id, line).catch(() => {}); }} />
-                : <RunPanel key={`run-${focused.id}`} run={focused} />}
+                  {shellOpen && (
+                    <>
+                      <Resizer orientation="horizontal" side="right"
+                        size={shellPane.width} min={SHELL_MIN} max={SHELL_MAX} onChange={shellPane.setWidth} />
+                      <div className="focus-shell" style={{ height: shellPane.width, flexShrink: 0 }}>
+                        <div className="focus-shell-head">
+                          <span className="focus-shell-title">≳ terminal · <code>{focused.branch}</code></span>
+                          <span className="spacer" />
+                          <button className="icon-btn" title="Hide terminal" onClick={toggleShell}>✕</button>
+                        </div>
+                        <FocusTerminal key={`shell-${focused.id}`} runId={focused.id} stream={shellStream} />
+                      </div>
+                    </>
+                  )}
+                </div>
+              ) : (
+                <RunPanel key={`run-${focused.id}`} run={focused} />
+              )}
               {showMerge && (
                 <MergeModal
                   taskId={focused.id}

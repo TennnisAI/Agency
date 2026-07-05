@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { FileChange, BranchInfo, HistoryItem, gitStatus, gitBranchInfo, gitPush } from "../../api";
+import { toastSuccess } from "../../lib/toast";
 import ChangesPanel from "./ChangesPanel";
 import HistoryPanel from "./HistoryPanel";
 import CommitDetail from "./CommitDetail";
@@ -38,6 +39,10 @@ export default function GitPanel({
   const [error, setError] = useState("");
   const [actionError, setActionError] = useState("");
   const [commentsKey, setCommentsKey] = useState(0);
+  // `busy` disables action buttons + shows spinners while a git op runs.
+  // `historyKey` bumps after every action so the commit graph reloads.
+  const [busy, setBusy] = useState(false);
+  const [historyKey, setHistoryKey] = useState(0);
   const leftPane = usePaneWidth("git-full-left", 360, 300, 720);
 
   const refresh = useCallback(async () => {
@@ -54,11 +59,22 @@ export default function GitPanel({
     return () => clearInterval(id);
   }, [refresh]);
 
-  const act = useCallback((fn: () => Promise<unknown>) => {
+  // `label`, when given, raises a success toast once the op resolves.
+  const act = useCallback((fn: () => Promise<unknown>, label?: string) => {
     (async () => {
       setActionError("");
-      try { await fn(); } catch (e) { setActionError(String(e)); }
+      setBusy(true);
+      try {
+        await fn();
+        if (label) toastSuccess(label);
+      } catch (e) {
+        setActionError(String(e));
+      } finally {
+        setBusy(false);
+      }
       await refresh();
+      // New/changed commits: reload the history graph (it doesn't poll).
+      setHistoryKey((k) => k + 1);
     })();
   }, [refresh]);
 
@@ -69,11 +85,11 @@ export default function GitPanel({
     group === "index" ? "working-staged" : "working-unstaged";
 
   const changesPanel = (
-    <ChangesPanel taskId={taskId} changes={changes} branch={branch} onAct={act}
+    <ChangesPanel taskId={taskId} changes={changes} branch={branch} onAct={act} busy={busy}
       selectedPath={selection?.kind === "file" ? selection.path : null} onSelectFile={onSelectFile} />
   );
   const historyPanel = (
-    <HistoryPanel taskId={taskId} base={branch?.base ?? null}
+    <HistoryPanel taskId={taskId} base={branch?.base ?? null} reloadKey={historyKey}
       selectedHash={selection?.kind === "commit" ? selection.item.hash : null}
       onSelectCommit={(item) => onSelect({ kind: "commit", item })} />
   );
@@ -82,7 +98,7 @@ export default function GitPanel({
   if (layout === "compact") {
     return (
       <aside className="git-panel compact" style={width ? { width, minWidth: width } : undefined}>
-        <BranchBar info={branch} onSync={() => act(() => gitPush(taskId))} onRefresh={refresh} />
+        <BranchBar info={branch} busy={busy} onSync={() => act(() => gitPush(taskId), "Pushed")} onRefresh={refresh} />
         {(actionError || error) && <div className="git-error">{actionError || error}</div>}
         {sections}
         {allowComments && <ReviewComments key={commentsKey} taskId={taskId} />}
@@ -92,7 +108,7 @@ export default function GitPanel({
 
   return (
     <div className="git-panel full">
-      <BranchBar info={branch} onSync={() => act(() => gitPush(taskId))} onRefresh={refresh} />
+      <BranchBar info={branch} busy={busy} onSync={() => act(() => gitPush(taskId), "Pushed")} onRefresh={refresh} />
       {(actionError || error) && <div className="git-error">{actionError || error}</div>}
       <div className="git-full-body">
         <div className="git-full-left" style={{ width: leftPane.width }}>

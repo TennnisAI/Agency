@@ -728,6 +728,66 @@ pub fn resize_run_script(
     state.resize_run_script(&id, cols, rows).map_err(|e| e.to_string())
 }
 
+// ── Companion shell (per-run interactive terminal in the run's worktree) ──────
+
+#[tauri::command]
+pub fn start_shell(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    state.start_shell(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn stop_shell(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    state.stop_shell(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn shell_status(state: State<'_, AppState>, id: String) -> Result<SessionStatus, String> {
+    state.shell_status(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn shell_preview(
+    state: State<'_, AppState>,
+    id: String,
+    lines: usize,
+) -> Result<String, String> {
+    state.shell_preview(&id, lines).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn attach_shell(
+    state: State<'_, AppState>,
+    id: String,
+    on_chunk: Channel<TerminalChunk>,
+) -> Result<(), String> {
+    state
+        // See attach_run: real dims arrive via the follow-up resize command.
+        .attach_shell(&id, 220, 50, move |bytes| {
+            let _ = on_chunk.send(TerminalChunk { b64: STANDARD.encode(&bytes) });
+        })
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn detach_shell(state: State<'_, AppState>, id: String) {
+    state.detach_shell(&id);
+}
+
+#[tauri::command]
+pub fn shell_input(state: State<'_, AppState>, id: String, data: String) -> Result<(), String> {
+    state.shell_input(&id, data.as_bytes()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn resize_shell(
+    state: State<'_, AppState>,
+    id: String,
+    cols: u16,
+    rows: u16,
+) -> Result<(), String> {
+    state.resize_shell(&id, cols, rows).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn archive_run(state: State<'_, AppState>, id: String) -> Result<(), String> {
     state.archive_run(&id).map_err(|e| e.to_string())

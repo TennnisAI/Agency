@@ -83,8 +83,9 @@ export default function ProjectTree({
     try {
       const r = await inspectRepo(sel);
       if (r.state === "ready" && !r.dirty) {
-        await addProject(name, sel);
+        const created = await addProject(name, sel);
         await refresh();
+        onSelect(created);
       } else {
         setSetup({ path: sel, name, readiness: r, existing: false });
       }
@@ -97,8 +98,11 @@ export default function ProjectTree({
     if (!setup) return;
     try {
       // Only create the record for the add flow; the badge flow's project already exists.
-      if (!setup.existing) await addProject(setup.name, setup.path);
+      const created = setup.existing ? null : await addProject(setup.name, setup.path);
       await refresh();
+      // Auto-open a freshly added project; the badge (commit) flow leaves the
+      // current selection alone.
+      if (created) onSelect(created);
     } catch (e) {
       setError(String(e));
     }

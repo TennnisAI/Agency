@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import {
   AgentProfile,
   McpServer,
@@ -23,13 +23,15 @@ import { getWordWrap, setWordWrap } from "../lib/editorPrefs";
 // entered from the ⚙ button at the bottom of the Projects pane).
 export default function Settings({ onClose }: { onClose: () => void }) {
   const [settings, setSettings] = useState<ProviderSettings>({
-    anthropicApiKey: "",
     lmStudioBaseUrl: "",
   });
   const [profiles, setProfiles] = useState<AgentProfile[]>([]);
   const emptyDraft = { name: "", command: "", args: "", env: "", resume: "" };
   const [draft, setDraft] = useState(emptyDraft);
   const [formOpen, setFormOpen] = useState(false);
+  // Name of the profile being edited, or null when adding a new one. Drives
+  // where the form renders: inline under the edited card, else at the bottom.
+  const [editing, setEditing] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [notif, setNotif] = useState<NotifSettings>({
     agentFinished: true,
@@ -56,9 +58,20 @@ export default function Settings({ onClose }: { onClose: () => void }) {
     applyTheme(id);
   }
 
+  // The local-model base URL is edited into a local form rather than saved on
+  // each change. To honour "settings autosave", we flush it when Settings
+  // unmounts (Back, or navigating to a project/run). `loadedRef` holds the
+  // last-persisted baseline so the flush only writes when something actually
+  // changed and only after the initial load.
+  const settingsRef = useRef(settings);
+  useEffect(() => { settingsRef.current = settings; }, [settings]);
+  const loadedRef = useRef<ProviderSettings | null>(null);
+
   async function refresh() {
     try {
-      setSettings(await getSettings());
+      const loaded = await getSettings();
+      loadedRef.current = loaded;
+      setSettings(loaded);
       setProfiles(await listProfiles());
       setNotif(await getNotifSettings());
       setMcpServers(await listMcpServers());
@@ -119,9 +132,19 @@ export default function Settings({ onClose }: { onClose: () => void }) {
     refresh();
   }, []);
 
+  // Flush unsaved provider edits on the way out, from whatever navigation.
+  useEffect(() => () => {
+    const loaded = loadedRef.current;
+    const cur = settingsRef.current;
+    if (loaded && cur.lmStudioBaseUrl !== loaded.lmStudioBaseUrl) {
+      saveSettings(cur).catch(() => {});
+    }
+  }, []);
+
   async function persistSettings() {
     try {
       await saveSettings(settings);
+      loadedRef.current = settings;
       setError("");
     } catch (e) {
       setError(String(e));
@@ -155,8 +178,7 @@ export default function Settings({ onClose }: { onClose: () => void }) {
     const resume_args = resume ? resume.split(/\s+/) : null;
     try {
       await saveProfile({ name: draft.name.trim(), command: draft.command.trim(), args, env, resume_args });
-      setDraft(emptyDraft);
-      setFormOpen(false);
+      closeForm();
       await refresh();
     } catch (e) {
       setError(String(e));
@@ -171,7 +193,62 @@ export default function Settings({ onClose }: { onClose: () => void }) {
       env: p.env.map(([k, v]) => `${k}=${v}`).join("\n"),
       resume: (p.resume_args ?? []).join(" "),
     });
+    setEditing(p.name);
     setFormOpen(true);
+  }
+
+  function openAddProfile() {
+    setDraft(emptyDraft);
+    setEditing(null);
+    setFormOpen(true);
+  }
+
+  function closeForm() {
+    setDraft(emptyDraft);
+    setEditing(null);
+    setFormOpen(false);
+  }
+
+  function renderProfileForm() {
+    return (
+      <div className="profile-form">
+        <div className="settings-form-label">{editing ? "Edit profile" : "Add profile"}</div>
+        <input
+          className="settings-input"
+          placeholder="name"
+          value={draft.name}
+          onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+        />
+        <input
+          className="settings-input"
+          placeholder="command (e.g. claude)"
+          value={draft.command}
+          onChange={(e) => setDraft({ ...draft, command: e.target.value })}
+        />
+        <input
+          className="settings-input"
+          placeholder="args (space-separated, use {{prompt}})"
+          value={draft.args}
+          onChange={(e) => setDraft({ ...draft, args: e.target.value })}
+        />
+        <input
+          className="settings-input"
+          placeholder="resume args (e.g. --continue; empty = always start fresh)"
+          value={draft.resume}
+          onChange={(e) => setDraft({ ...draft, resume: e.target.value })}
+        />
+        <textarea
+          className="settings-input"
+          placeholder="env, one KEY=VALUE per line"
+          value={draft.env}
+          onChange={(e) => setDraft({ ...draft, env: e.target.value })}
+        />
+        <div className="row-actions">
+          <button onClick={addProfile}>Save profile</button>
+          <button className="ghost" onClick={closeForm}>Cancel</button>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -209,80 +286,47 @@ export default function Settings({ onClose }: { onClose: () => void }) {
           <div className="settings-section-label">Agent profiles</div>
           <div className="settings-card-list">
             {profiles.map((p) => (
-              <div key={p.name} className="settings-profile-card">
-                <div className="settings-profile-head">
-                  <span className="agent-dot" style={{ background: agentColor(p.name) }} />
-                  <span className="settings-profile-name">{agentLabel(p.name)}</span>
-                  <span className="spacer" />
-                  <button className="settings-ghost-btn" onClick={() => editProfile(p)}>Edit</button>
-                  <button className="settings-ghost-btn settings-del-btn" onClick={() => deleteProfile(p.name).then(refresh)}>Delete</button>
+              <Fragment key={p.name}>
+                <div className="settings-profile-card">
+                  <div className="settings-profile-head">
+                    <span className="agent-dot" style={{ background: agentColor(p.name) }} />
+                    <span className="settings-profile-name">{agentLabel(p.name)}</span>
+                    <span className="spacer" />
+                    <button className="settings-ghost-btn" onClick={() => editProfile(p)}>Edit</button>
+                    <button className="settings-ghost-btn settings-del-btn" onClick={() => deleteProfile(p.name).then(refresh)}>Delete</button>
+                  </div>
+                  <div className="settings-profile-meta">
+                    <span className="settings-meta-key">command</span>
+                    <code className="settings-meta-val">{p.command}</code>
+                    {p.args.length > 0 && (
+                      <>
+                        <span className="settings-meta-key">args</span>
+                        <code className="settings-meta-val">{p.args.join(" ")}</code>
+                      </>
+                    )}
+                    {(p.resume_args?.length ?? 0) > 0 && (
+                      <>
+                        <span className="settings-meta-key">resume</span>
+                        <code className="settings-meta-val">{p.resume_args?.join(" ")}</code>
+                      </>
+                    )}
+                    {p.env.length > 0 && (
+                      <>
+                        <span className="settings-meta-key">env</span>
+                        <code className="settings-meta-val">{p.env.map(([k]) => k).join(", ")}</code>
+                      </>
+                    )}
+                  </div>
                 </div>
-                <div className="settings-profile-meta">
-                  <span className="settings-meta-key">command</span>
-                  <code className="settings-meta-val">{p.command}</code>
-                  {p.args.length > 0 && (
-                    <>
-                      <span className="settings-meta-key">args</span>
-                      <code className="settings-meta-val">{p.args.join(" ")}</code>
-                    </>
-                  )}
-                  {(p.resume_args?.length ?? 0) > 0 && (
-                    <>
-                      <span className="settings-meta-key">resume</span>
-                      <code className="settings-meta-val">{p.resume_args?.join(" ")}</code>
-                    </>
-                  )}
-                  {p.env.length > 0 && (
-                    <>
-                      <span className="settings-meta-key">env</span>
-                      <code className="settings-meta-val">{p.env.map(([k]) => k).join(", ")}</code>
-                    </>
-                  )}
-                </div>
-              </div>
+                {formOpen && editing === p.name && renderProfileForm()}
+              </Fragment>
             ))}
           </div>
-          {formOpen ? (
-            <div className="profile-form">
-              <div className="settings-form-label">{profiles.some((p) => p.name === draft.name.trim()) ? "Edit profile" : "Add profile"}</div>
-              <input
-                className="settings-input"
-                placeholder="name"
-                value={draft.name}
-                onChange={(e) => setDraft({ ...draft, name: e.target.value })}
-              />
-              <input
-                className="settings-input"
-                placeholder="command (e.g. claude)"
-                value={draft.command}
-                onChange={(e) => setDraft({ ...draft, command: e.target.value })}
-              />
-              <input
-                className="settings-input"
-                placeholder="args (space-separated, use {{prompt}})"
-                value={draft.args}
-                onChange={(e) => setDraft({ ...draft, args: e.target.value })}
-              />
-              <input
-                className="settings-input"
-                placeholder="resume args (e.g. --continue; empty = always start fresh)"
-                value={draft.resume}
-                onChange={(e) => setDraft({ ...draft, resume: e.target.value })}
-              />
-              <textarea
-                className="settings-input"
-                placeholder="env, one KEY=VALUE per line"
-                value={draft.env}
-                onChange={(e) => setDraft({ ...draft, env: e.target.value })}
-              />
-              <div className="row-actions">
-                <button onClick={addProfile}>Save profile</button>
-                <button className="ghost" onClick={() => { setFormOpen(false); setDraft(emptyDraft); }}>Cancel</button>
-              </div>
-            </div>
-          ) : (
-            <button className="settings-add-profile" onClick={() => setFormOpen(true)}>+ Add agent profile</button>
-          )}
+          {formOpen && editing === null
+            ? renderProfileForm()
+            : !formOpen && (
+                <button className="settings-add-profile" onClick={openAddProfile}>+ Add agent profile</button>
+              )}
         </section>
 
         <section className="settings-section">
@@ -374,22 +418,13 @@ export default function Settings({ onClose }: { onClose: () => void }) {
         </section>
 
         <section className="settings-section">
-          <div className="settings-section-label">Model providers</div>
+          <div className="settings-section-label">Local model (optional)</div>
+          <p className="settings-section-hint">
+            Points OpenAI-compatible agents at a local, OpenAI-protocol server via{" "}
+            <code>OPENAI_BASE_URL</code>. Agents with their own login (Claude, Codex, …) ignore it.
+            Leave blank to disable.
+          </p>
           <div className="settings-providers">
-            <div className="settings-provider-card">
-              <div className="settings-provider-title">
-                Anthropic <span className="settings-provider-sub">· Claude</span>
-              </div>
-              <div className="settings-provider-field">
-                <label className="settings-field-key">API key</label>
-                <input
-                  className="settings-field-input"
-                  type="password"
-                  value={settings.anthropicApiKey}
-                  onChange={(e) => setSettings({ ...settings, anthropicApiKey: e.target.value })}
-                />
-              </div>
-            </div>
             <div className="settings-provider-card">
               <div className="settings-provider-title">
                 LM Studio <span className="settings-provider-sub">· local, OpenAI-compatible</span>
@@ -404,7 +439,7 @@ export default function Settings({ onClose }: { onClose: () => void }) {
               </div>
             </div>
           </div>
-          <button className="settings-save" onClick={persistSettings}>Save providers</button>
+          <button className="settings-save" onClick={persistSettings}>Save</button>
         </section>
 
         <section className="settings-section">

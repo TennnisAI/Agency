@@ -59,6 +59,7 @@ function Shell() {
   }, [focusedRunId]);
 
   function selectProject(p: Project) {
+    setShowSettings(false);
     setProject(p);
     setSelectedProject(p.id);
   }
@@ -74,6 +75,7 @@ function Shell() {
   // resets view/focus, so the focus + view calls must follow it; React batches
   // them in this handler, leaving the run focused.
   function openRun(p: Project, runId: string) {
+    setShowSettings(false);
     setProject(p);
     setSelectedProject(p.id);
     setFocusedRun(runId);

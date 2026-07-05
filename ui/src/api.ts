@@ -156,7 +156,6 @@ export interface AgentProfile {
 }
 
 export interface ProviderSettings {
-  anthropicApiKey: string;
   lmStudioBaseUrl: string;
 }
 

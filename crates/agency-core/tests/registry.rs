@@ -80,10 +80,10 @@ fn settings_persist_and_upsert() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("agency.db");
     let reg = Registry::open(&db).unwrap();
-    assert!(reg.get_setting("anthropic_api_key").unwrap().is_none());
-    reg.set_setting("anthropic_api_key", "sk-test").unwrap();
-    reg.set_setting("anthropic_api_key", "sk-updated").unwrap();
-    assert_eq!(reg.get_setting("anthropic_api_key").unwrap().unwrap(), "sk-updated");
+    assert!(reg.get_setting("some_key").unwrap().is_none());
+    reg.set_setting("some_key", "value-1").unwrap();
+    reg.set_setting("some_key", "value-2").unwrap();
+    assert_eq!(reg.get_setting("some_key").unwrap().unwrap(), "value-2");
 }
 
 #[test]

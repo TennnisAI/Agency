@@ -82,6 +82,7 @@ export default function GitPanel({
   if (layout === "compact") {
     return (
       <aside className="git-panel compact" style={width ? { width, minWidth: width } : undefined}>
+        <BranchBar info={branch} onSync={() => act(() => gitPush(taskId))} onRefresh={refresh} />
         {(actionError || error) && <div className="git-error">{actionError || error}</div>}
         {sections}
         {allowComments && <ReviewComments key={commentsKey} taskId={taskId} />}

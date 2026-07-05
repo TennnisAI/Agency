@@ -11,7 +11,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, RwLock};
 use uuid;
 
-const SETTING_ANTHROPIC_KEY: &str = "anthropic_api_key";
 const SETTING_LM_STUDIO_URL: &str = "lm_studio_base_url";
 const DEFAULT_LM_STUDIO_URL: &str = "http://localhost:1234/v1";
 const SETTING_NOTIF: &str = "notification_settings";
@@ -22,7 +21,6 @@ const MERGE_RESOLVER_SKILL: &str = include_str!("../../../skills/merge-resolver/
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderSettings {
-    pub anthropic_api_key: String,
     pub lm_studio_base_url: String,
 }
 
@@ -396,14 +394,14 @@ impl AppState {
     }
 
     fn provider_env(&self) -> Result<Vec<(String, String)>> {
+        // Point OpenAI-protocol agents at the configured local model (LM Studio
+        // by default). Agents with their own CLI auth (claude, codex, …) ignore
+        // these. No cloud keys are injected — each agent uses its own login.
         let s = self.get_settings()?;
-        let mut env = Vec::new();
-        if !s.anthropic_api_key.is_empty() {
-            env.push(("ANTHROPIC_API_KEY".into(), s.anthropic_api_key));
-        }
-        env.push(("OPENAI_BASE_URL".into(), s.lm_studio_base_url));
-        env.push(("OPENAI_API_KEY".into(), "lm-studio".into()));
-        Ok(env)
+        Ok(vec![
+            ("OPENAI_BASE_URL".into(), s.lm_studio_base_url),
+            ("OPENAI_API_KEY".into(), "lm-studio".into()),
+        ])
     }
 
     pub fn register_profile(&self, profile: AgentProfile) -> Result<()> {
@@ -432,7 +430,6 @@ impl AppState {
     pub fn get_settings(&self) -> Result<ProviderSettings> {
         let reg = self.registry.lock().unwrap();
         Ok(ProviderSettings {
-            anthropic_api_key: reg.get_setting(SETTING_ANTHROPIC_KEY)?.unwrap_or_default(),
             lm_studio_base_url: reg
                 .get_setting(SETTING_LM_STUDIO_URL)?
                 .unwrap_or_else(|| DEFAULT_LM_STUDIO_URL.to_string()),
@@ -442,7 +439,6 @@ impl AppState {
     pub fn save_settings(&self, s: &ProviderSettings) -> Result<()> {
         validate_provider_url(&s.lm_studio_base_url)?;
         let reg = self.registry.lock().unwrap();
-        reg.set_setting(SETTING_ANTHROPIC_KEY, &s.anthropic_api_key)?;
         reg.set_setting(SETTING_LM_STUDIO_URL, &s.lm_studio_base_url)?;
         Ok(())
     }
@@ -1294,6 +1290,18 @@ impl AppState {
             return Ok(repo);
         }
         Ok(repo.join(".agency").join("worktrees").join(id))
+    }
+
+    /// Resolve a git-root token to a working directory. A `project:<id>` token
+    /// targets the project's main checkout (its active branch); any other token
+    /// is a run id resolved via [`worktree_path`] (terminals already map to the
+    /// repo root). Lets the git commands operate at project level, not just per
+    /// run, without changing their IPC signatures.
+    pub fn git_root(&self, token: &str) -> Result<std::path::PathBuf> {
+        if let Some(pid) = token.strip_prefix("project:") {
+            return self.project_repo_path(pid);
+        }
+        self.worktree_path(token)
     }
 
     /// Source and destination branch names for a run, for the status bar.

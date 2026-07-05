@@ -10,8 +10,7 @@ use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
 use tauri::State;
 
-use agency_core::title::{fallback_title, sanitize_title};
-use tauri::Manager;
+use agency_core::title::fallback_title;
 use crate::state::{AppState, MergePreview, ProviderSettings, RunInfo};
 
 #[derive(Clone, Serialize)]
@@ -140,14 +139,10 @@ pub fn confirm_quit(app: tauri::AppHandle) {
     crate::lifecycle::confirm_quit(&app);
 }
 
-const TITLE_MODEL_ANTHROPIC: &str = "claude-haiku-4-5-20251001";
-
-/// Generate a short title for a run from its first prompt, off the UI thread.
-/// No-ops if the run already has a title. Falls back to the first words of the
-/// prompt when no provider is configured or the request fails.
+/// Derive a short title for a run from its first prompt. No-ops if the run is
+/// already titled; otherwise stores the first words of the prompt as the title.
 #[tauri::command]
 pub fn set_run_title(
-    app: tauri::AppHandle,
     state: State<'_, AppState>,
     id: String,
     first_prompt: String,
@@ -156,88 +151,17 @@ pub fn set_run_title(
     // promptless; the user types into the live agent). Kept even when the
     // title guard below short-circuits.
     let _ = state.store_run_prompt(&id, &first_prompt);
-    // Cheap guard on the calling thread: skip if already titled.
+    // Skip if already titled.
     if let Ok(Some(existing)) = state.run_title(&id) {
         if !existing.is_empty() {
             return Ok(());
         }
     }
-    let handle = app.clone();
-    std::thread::spawn(move || {
-        let st = handle.state::<AppState>();
-        // Re-check under the worker to avoid a race with a concurrent call.
-        if matches!(st.run_title(&id), Ok(Some(t)) if !t.is_empty()) {
-            return;
-        }
-        let settings = st.get_settings().unwrap_or(ProviderSettings {
-            anthropic_api_key: String::new(),
-            lm_studio_base_url: String::new(),
-        });
-        let title = llm_title(&settings, &first_prompt).unwrap_or_else(|| fallback_title(&first_prompt));
-        if !title.is_empty() {
-            let _ = st.store_run_title(&id, &title);
-        }
-    });
+    let title = fallback_title(&first_prompt);
+    if !title.is_empty() {
+        let _ = state.store_run_title(&id, &title);
+    }
     Ok(())
-}
-
-fn llm_title(settings: &ProviderSettings, first_prompt: &str) -> Option<String> {
-    let instruction = format!(
-        "Generate a concise 3-5 word title for a coding task described by this first instruction. \
-         Reply with only the title, no quotes and no trailing punctuation.\n\nInstruction: {first_prompt}",
-    );
-    // connect_timeout keeps a hung or unreachable endpoint from stalling the
-    // whole 15s budget — relevant when no provider is configured and the
-    // default localhost LM Studio URL isn't actually listening. The longer
-    // overall timeout still gives a real provider time to generate.
-    let client = reqwest::blocking::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(3))
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
-        .ok()?;
-
-    if !settings.anthropic_api_key.is_empty() {
-        let resp = client
-            .post("https://api.anthropic.com/v1/messages")
-            .header("x-api-key", &settings.anthropic_api_key)
-            .header("anthropic-version", "2023-06-01")
-            .json(&serde_json::json!({
-                "model": TITLE_MODEL_ANTHROPIC,
-                "max_tokens": 32,
-                "messages": [{ "role": "user", "content": instruction }],
-            }))
-            .send()
-            .ok()?;
-        if !resp.status().is_success() {
-            return None;
-        }
-        let body: serde_json::Value = resp.json().ok()?;
-        let text = body["content"][0]["text"].as_str()?;
-        let title = sanitize_title(text);
-        return (!title.is_empty()).then_some(title);
-    }
-
-    if !settings.lm_studio_base_url.is_empty() {
-        let url = format!("{}/chat/completions", settings.lm_studio_base_url.trim_end_matches('/'));
-        let resp = client
-            .post(url)
-            .json(&serde_json::json!({
-                "model": "local-model",
-                "max_tokens": 32,
-                "messages": [{ "role": "user", "content": instruction }],
-            }))
-            .send()
-            .ok()?;
-        if !resp.status().is_success() {
-            return None;
-        }
-        let body: serde_json::Value = resp.json().ok()?;
-        let text = body["choices"][0]["message"]["content"].as_str()?;
-        let title = sanitize_title(text);
-        return (!title.is_empty()).then_some(title);
-    }
-
-    None
 }
 
 #[tauri::command]
@@ -312,7 +236,7 @@ pub fn ensure_run_active(state: State<'_, AppState>, id: String) -> Result<(), S
 
 #[tauri::command]
 pub async fn git_status(state: State<'_, AppState>, task_id: String) -> Result<Vec<FileChange>, String> {
-    let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
+    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
     git::status(&wt).map_err(|e| e.to_string())
 }
 
@@ -323,13 +247,13 @@ pub async fn git_diff(
     path: String,
     staged: bool,
 ) -> Result<String, String> {
-    let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
+    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
     git::diff(&wt, &path, staged).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn git_stage(state: State<'_, AppState>, task_id: String, path: String) -> Result<(), String> {
-    let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
+    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
     git::stage(&wt, &path).map_err(|e| e.to_string())
 }
 
@@ -339,19 +263,19 @@ pub fn git_unstage(
     task_id: String,
     path: String,
 ) -> Result<(), String> {
-    let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
+    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
     git::unstage(&wt, &path).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn git_stage_all(state: State<'_, AppState>, task_id: String) -> Result<(), String> {
-    let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
+    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
     agency_core::git::stage_all(&wt).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn git_unstage_all(state: State<'_, AppState>, task_id: String) -> Result<(), String> {
-    let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
+    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
     agency_core::git::unstage_all(&wt).map_err(|e| e.to_string())
 }
 
@@ -362,13 +286,13 @@ pub fn git_discard(
     path: String,
     untracked: bool,
 ) -> Result<(), String> {
-    let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
+    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
     agency_core::git::discard(&wt, &path, untracked).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn git_discard_all(state: State<'_, AppState>, task_id: String) -> Result<(), String> {
-    let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
+    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
     agency_core::git::discard_all(&wt).map_err(|e| e.to_string())
 }
 
@@ -378,19 +302,19 @@ pub fn git_commit(
     task_id: String,
     message: String,
 ) -> Result<(), String> {
-    let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
+    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
     git::commit(&wt, &message).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn git_push(state: State<'_, AppState>, task_id: String) -> Result<(), String> {
-    let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
+    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
     git::push(&wt).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn git_set_remote(state: State<'_, AppState>, task_id: String, url: String) -> Result<(), String> {
-    let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
+    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
     git::set_origin(&wt, url.trim()).map_err(|e| e.to_string())
 }
 
@@ -607,7 +531,7 @@ pub async fn git_parse_diff(
     path: String,
     staged: bool,
 ) -> Result<FileDiff, String> {
-    let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
+    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
     let raw = agency_core::git::diff(&wt, &path, staged).map_err(|e| e.to_string())?;
     Ok(agency_core::git::parse_diff(&raw))
 }
@@ -619,7 +543,7 @@ pub fn git_stage_hunk(
     path: String,
     hunk_index: usize,
 ) -> Result<(), String> {
-    let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
+    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
     agency_core::git::stage_hunk(&wt, &path, hunk_index).map_err(|e| e.to_string())
 }
 
@@ -630,7 +554,7 @@ pub fn git_unstage_hunk(
     path: String,
     hunk_index: usize,
 ) -> Result<(), String> {
-    let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
+    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
     agency_core::git::unstage_hunk(&wt, &path, hunk_index).map_err(|e| e.to_string())
 }
 
@@ -640,7 +564,7 @@ pub async fn git_log_graph(
     task_id: String,
     limit: usize,
 ) -> Result<Vec<agency_core::git::HistoryItem>, String> {
-    let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
+    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
     agency_core::git::log_graph(&wt, limit).map_err(|e| e.to_string())
 }
 
@@ -649,7 +573,7 @@ pub async fn git_branch_info(
     state: State<'_, AppState>,
     task_id: String,
 ) -> Result<agency_core::git::BranchInfo, String> {
-    let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
+    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
     agency_core::git::branch_info(&wt).map_err(|e| e.to_string())
 }
 
@@ -669,7 +593,7 @@ pub async fn git_commit_files(
     task_id: String,
     hash: String,
 ) -> Result<Vec<CommitFile>, String> {
-    let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
+    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
     agency_core::git::commit_files(&wt, &hash).map_err(|e| e.to_string())
 }
 
@@ -680,7 +604,7 @@ pub async fn git_commit_diff(
     hash: String,
     path: String,
 ) -> Result<String, String> {
-    let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
+    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
     agency_core::git::commit_diff(&wt, &hash, &path).map_err(|e| e.to_string())
 }
 
@@ -690,7 +614,7 @@ pub fn git_commit_amend(
     task_id: String,
     message: String,
 ) -> Result<(), String> {
-    let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
+    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
     agency_core::git::commit_amend(&wt, &message).map_err(|e| e.to_string())
 }
 
@@ -713,7 +637,7 @@ pub fn git_stage_lines(
     hunk_index: usize,
     lines: Vec<usize>,
 ) -> Result<(), String> {
-    let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
+    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
     agency_core::git::stage_lines(&wt, &path, hunk_index, &lines).map_err(|e| e.to_string())
 }
 
@@ -725,7 +649,7 @@ pub fn git_unstage_lines(
     hunk_index: usize,
     lines: Vec<usize>,
 ) -> Result<(), String> {
-    let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
+    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
     agency_core::git::unstage_lines(&wt, &path, hunk_index, &lines).map_err(|e| e.to_string())
 }
 
@@ -737,7 +661,7 @@ pub fn git_revert_lines(
     hunk_index: usize,
     lines: Vec<usize>,
 ) -> Result<(), String> {
-    let wt = state.worktree_path(&task_id).map_err(|e| e.to_string())?;
+    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
     agency_core::git::revert_lines(&wt, &path, hunk_index, &lines).map_err(|e| e.to_string())
 }
 

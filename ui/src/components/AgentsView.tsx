@@ -12,6 +12,7 @@ import { usePaneWidth } from "../hooks/usePaneWidth";
 import FilesView from "./FilesView";
 import HomeView from "./HomeView";
 import SidebarToggle from "./SidebarToggle";
+import RightPanelToggle from "./RightPanelToggle";
 import InstallAgentDialog from "./InstallAgentDialog";
 
 // Main content area. With a project selected this is that project's agents /
@@ -37,8 +38,15 @@ export default function AgentsView({
   const [pendingSpawn, setPendingSpawn] = useState<{ agentId: string; readiness: RepoReadiness; repoPath: string; opts?: { base: string; mergeTarget: string } } | null>(null);
   const [missingAgent, setMissingAgent] = useState<string | null>(null);
   const [gitSel, setGitSel] = useState<GitSelection>(null);
-  useEffect(() => { setGitSel(null); }, [focusedRunId]);
+  useEffect(() => { setGitSel(null); }, [focusedRunId, project?.id]);
   const reviewPane = usePaneWidth("review", 360, 280, 640);
+
+  // Which working tree source control operates on: the focused run's worktree
+  // (terminals share the project checkout) or, with no run selected, the
+  // project's main checkout via a "project:<id>" token. Null only at the
+  // all-projects home screen.
+  const gitRoot = focusedRunId ?? (project ? `project:${project.id}` : null);
+  const allowComments = focused?.kind === "agent";
 
   async function spawn(agentId: string, opts?: { base: string; mergeTarget: string }) {
     if (!project) return;
@@ -78,8 +86,8 @@ export default function AgentsView({
           </div>
         )}
         <div className="spacer" />
-        {project && tab === "agents" && focused?.kind === "agent" && (
-          <button className={review ? "on" : ""} onClick={() => setReview((r) => !r)}>Review</button>
+        {project && tab === "agents" && (
+          <RightPanelToggle open={review} onToggle={() => setReview((r) => !r)} />
         )}
         {project && tab === "agents" && (
           <AgentAddMenu projectId={project.id} onSpawn={spawn} onTerminal={createTerminal} />
@@ -100,11 +108,9 @@ export default function AgentsView({
         )
       ) : (
         <>
-          {tab === "source" && (
+          {tab === "source" && gitRoot && (
             <div className="source-wrap">
-              {focusedRunId && focused
-                ? <GitPanel taskId={focusedRunId} layout="full" selection={gitSel} onSelect={setGitSel} allowComments={focused.kind === "agent"} />
-                : <div className="board empty">Open an agent or terminal to view its source control.</div>}
+              <GitPanel taskId={gitRoot} layout="full" selection={gitSel} onSelect={setGitSel} allowComments={allowComments} />
             </div>
           )}
 
@@ -132,15 +138,16 @@ export default function AgentsView({
                 )}
                 {view === "focus" && <AgentFocus onSpawn={spawn} />}
               </div>
-              {review && focusedRunId && focused?.kind === "agent" && (
+              {review && gitRoot && (
                 <>
                   <Resizer size={reviewPane.width} min={280} max={640} onChange={reviewPane.setWidth} side="right" />
                   <GitPanel
-                    taskId={focusedRunId}
+                    taskId={gitRoot}
                     layout="compact"
                     width={reviewPane.width}
                     selection={gitSel}
                     onSelect={(sel) => { setGitSel(sel); if (sel) setTab("source"); }}
+                    allowComments={allowComments}
                   />
                 </>
               )}

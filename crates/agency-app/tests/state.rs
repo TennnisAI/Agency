@@ -190,16 +190,13 @@ fn settings_default_and_roundtrip() {
     let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
     let s = state.get_settings().unwrap();
     assert_eq!(s.lm_studio_base_url, "http://localhost:1234/v1");
-    assert_eq!(s.anthropic_api_key, "");
 
     state
         .save_settings(&agency_app_lib::ProviderSettings {
-            anthropic_api_key: "sk-x".into(),
             lm_studio_base_url: "http://localhost:9999/v1".into(),
         })
         .unwrap();
     let s2 = state.get_settings().unwrap();
-    assert_eq!(s2.anthropic_api_key, "sk-x");
     assert_eq!(s2.lm_studio_base_url, "http://localhost:9999/v1");
 }
 
@@ -213,14 +210,13 @@ fn create_run_injects_provider_env() {
 
     let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
     state.save_settings(&agency_app_lib::ProviderSettings {
-        anthropic_api_key: "sk-secret".into(),
         lm_studio_base_url: "http://localhost:1234/v1".into(),
     }).unwrap();
     // Profile echoes env vars and then sleeps so we can capture output.
     state.register_profile(AgentProfile {
         name: "envcheck".into(),
         command: "sh".into(),
-        args: vec!["-c".into(), "echo KEY=$ANTHROPIC_API_KEY; echo BASE=$OPENAI_BASE_URL; sleep 2".into()],
+        args: vec!["-c".into(), "echo BASE=$OPENAI_BASE_URL; echo KEYSET=${OPENAI_API_KEY:+yes}; sleep 2".into()],
         env: vec![],
         resume_args: None,
     }).unwrap();
@@ -234,13 +230,13 @@ fn create_run_injects_provider_env() {
     while start.elapsed() < std::time::Duration::from_secs(5) {
         if let Ok(s) = state.run_preview(&info.id, 20) {
             out = s;
-            if out.contains("KEY=sk-secret") { break; }
+            if out.contains("BASE=http://localhost:1234/v1") { break; }
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
 
-    assert!(out.contains("KEY=sk-secret"), "got: {out}");
     assert!(out.contains("BASE=http://localhost:1234/v1"), "got: {out}");
+    assert!(out.contains("KEYSET=yes"), "got: {out}");
 
     state.discard_run(&info.id).unwrap();
 }
@@ -298,20 +294,17 @@ fn save_settings_rejects_bad_provider_url() {
     let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
     // remote http (non-localhost) is rejected
     let bad = agency_app_lib::ProviderSettings {
-        anthropic_api_key: "".into(),
         lm_studio_base_url: "http://evil.example.com/v1".into(),
     };
     assert!(state.save_settings(&bad).is_err());
     // embedded credentials are rejected
     let creds = agency_app_lib::ProviderSettings {
-        anthropic_api_key: "".into(),
         lm_studio_base_url: "http://user:pass@localhost:1234/v1".into(),
     };
     assert!(state.save_settings(&creds).is_err());
     // localhost, IPv6 loopback http, and https are allowed
     for ok in ["http://localhost:1234/v1", "http://[::1]:1234/v1", "https://api.example.com/v1", ""] {
         let s = agency_app_lib::ProviderSettings {
-            anthropic_api_key: "".into(),
             lm_studio_base_url: ok.into(),
         };
         assert!(state.save_settings(&s).is_ok(), "should accept {ok}");

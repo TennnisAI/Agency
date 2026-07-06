@@ -4,6 +4,7 @@ import {
   discardRun, archiveRun, setRunTitle,
   listProfiles, AgentProfile,
   listRunSessions, startRunSession, closeRunSession, RunSessionInfo,
+  RunInfo, stopLoop,
 } from "../api";
 import { toastError } from "../lib/toast";
 import { runName, agentLabel } from "../agents";
@@ -22,6 +23,46 @@ const SHELL_FOLD_KEY = "focus-shell-open";
 
 function badgeClass(a: string) {
   return ["claude", "pi", "hermes"].includes(a) ? `badge ${a}` : "badge";
+}
+
+// Live progress of a looping run: attempt counter, phase, and a stop control
+// while active; the outcome once terminal. State arrives with the run via the
+// store's poll, so this renders fresh data without its own polling.
+function LoopStrip({ run, onChanged }: { run: RunInfo; onChanged: () => void }) {
+  const cfg = run.loopConfig;
+  const st = run.loopState;
+  if (!cfg || !st) return null;
+  const active = st.status === "awaitingAgent" || st.status === "checking";
+  const text =
+    st.status === "awaitingAgent" ? `attempt ${st.attempt}/${cfg.maxAttempts} · running`
+    : st.status === "checking" ? `attempt ${st.attempt}/${cfg.maxAttempts} · checking`
+    : st.status === "complete" ? (cfg.checkCommand
+        ? `complete · checks passed on attempt ${st.attempt}`
+        : `complete · ${st.attempt} attempts`)
+    : st.status === "stalled" ? `stalled · after attempt ${st.attempt}`
+    : "stopped";
+  return (
+    <div className={`loop-strip ${active ? "active" : st.status}`}>
+      <span className="loop-glyph">⟳</span>
+      <span className="loop-text">{text}</span>
+      {cfg.checkCommand && <code className="loop-check-cmd">{cfg.checkCommand}</code>}
+      <span className="spacer" />
+      {active && (
+        <button
+          className="tile-act"
+          title="Stop the loop — the worktree and its commits stay"
+          onClick={async () => {
+            try {
+              await stopLoop(run.id);
+            } catch (e) {
+              toastError(e, "Couldn't stop loop");
+            }
+            onChanged();
+          }}
+        >■ Stop loop</button>
+      )}
+    </div>
+  );
 }
 
 // `onSpawn` lets the host view wrap agent creation with its pre-flight checks
@@ -126,7 +167,7 @@ export default function AgentFocus({
                 <span className="rail-name">
                   {r.kind === "terminal"
                     ? `≳ ${r.title || "terminal"}`
-                    : `${r.raceId ? "∥ " : ""}${r.agent}: ${runName(r)}`}
+                    : `${r.loopConfig ? "⟳ " : r.raceId ? "∥ " : ""}${r.agent}: ${runName(r)}`}
                 </span>
               </button>
             ))}
@@ -194,6 +235,7 @@ export default function AgentFocus({
                 }}>⌂ Archive</button>
                 <button onClick={() => setShowMerge(true)}>Approve →</button>
               </div>
+              <LoopStrip run={focused} onChanged={refreshRuns} />
               <div className="session-tabs">
                 <div className="session-tabs-scroll" ref={tabsScrollRef} onWheel={onTabsWheel}>
                   <button

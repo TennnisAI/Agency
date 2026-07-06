@@ -12,6 +12,10 @@ pub struct NotifSettings {
     pub run_crashed: bool,
     #[serde(default = "d_true")]
     pub merge_attention: bool,
+    /// Loop terminal events (complete/stalled). Per-attempt Finished/Idle
+    /// toasts are always suppressed for looping runs — these are the signal.
+    #[serde(default = "d_true")]
+    pub loop_events: bool,
     #[serde(default = "d_true")]
     pub only_when_unfocused: bool,
     #[serde(default = "d_idle")]
@@ -28,6 +32,7 @@ impl Default for NotifSettings {
             agent_idle: true,
             run_crashed: true,
             merge_attention: true,
+            loop_events: true,
             only_when_unfocused: true,
             idle_secs: 30,
         }
@@ -41,6 +46,10 @@ pub struct RunSnapshot {
     /// Terminals never notify: a shell exiting isn't an agent finishing, and a
     /// quiet shell isn't an agent finishing a turn.
     pub is_terminal: bool,
+    /// Active loops suppress per-attempt Finished/Idle (ten "agent exited"
+    /// toasts are noise; the loop's own complete/stalled events are the
+    /// signal). Run-script crashes still notify.
+    pub is_loop: bool,
     pub agent: SessionStatus,
     pub run_script: SessionStatus,
     pub pane_hash: u64,
@@ -83,8 +92,9 @@ pub fn step(
     let quiet_since_tick = if pane_changed { now_tick } else { prev.unwrap().quiet_since_tick };
 
     if let Some(p) = prev {
-        // Agent finished: running -> exited.
-        if matches!(p.agent, SessionStatus::Running) {
+        // Agent finished: running -> exited. Loop attempts exit by design;
+        // their edges are reported by the loop driver instead.
+        if matches!(p.agent, SessionStatus::Running) && !snap.is_loop {
             if let SessionStatus::Exited { .. } = snap.agent {
                 events.push(NotifyKind::Finished);
             }
@@ -109,7 +119,7 @@ pub fn step(
     // sitting at its opening prompt has `user_input_pending == false`, so it is
     // never flagged as "waiting for input". The flag is cleared by the caller
     // when the notification fires, so each turn nudges at most once.
-    if agent_running && !idle_fired && snap.user_input_pending {
+    if agent_running && !idle_fired && snap.user_input_pending && !snap.is_loop {
         let quiet_ticks = now_tick.saturating_sub(quiet_since_tick);
         if quiet_ticks.saturating_mul(poll_secs) >= idle_secs {
             events.push(NotifyKind::Idle);
@@ -153,7 +163,7 @@ mod tests {
     fn snap_input(agent: SessionStatus, run_script: SessionStatus, pane_hash: u64, user_input_pending: bool) -> RunSnapshot {
         RunSnapshot {
             id: "x".into(), project_id: "proj".into(), label: "claude: fix".into(),
-            is_terminal: false, agent, run_script, pane_hash, user_input_pending,
+            is_terminal: false, is_loop: false, agent, run_script, pane_hash, user_input_pending,
         }
     }
     fn running() -> SessionStatus { SessionStatus::Running }
@@ -235,7 +245,7 @@ mod tests {
     fn terminals_never_notify() {
         let term = |agent: SessionStatus, hash: u64| RunSnapshot {
             id: "t".into(), project_id: "proj".into(), label: "terminal".into(),
-            is_terminal: true, agent, run_script: SessionStatus::Gone,
+            is_terminal: true, is_loop: false, agent, run_script: SessionStatus::Gone,
             pane_hash: hash, user_input_pending: true,
         };
         // Exit edge: running -> exited must stay silent for terminals.
@@ -249,6 +259,29 @@ mod tests {
             w = nw;
             assert!(ev.is_empty(), "terminal idle must not notify (tick {t})");
         }
+    }
+
+    #[test]
+    fn looping_runs_suppress_finished_and_idle_but_not_run_crash() {
+        let lsnap = |agent: SessionStatus, run_script: SessionStatus, hash: u64| RunSnapshot {
+            id: "l".into(), project_id: "proj".into(), label: "claude: loop".into(),
+            is_terminal: false, is_loop: true, agent, run_script,
+            pane_hash: hash, user_input_pending: true,
+        };
+        // Attempt exit (running -> exited) must not toast.
+        let (w, _) = step(None, &lsnap(running(), running(), 1), 0, 2, 30);
+        let (w, ev) = step(Some(&w), &lsnap(exited(0), running(), 1), 1, 2, 30);
+        assert!(ev.is_empty(), "loop attempt exit must not notify");
+        // Long-quiet loop must not fire idle.
+        let (mut w, _) = step(Some(&w), &lsnap(running(), running(), 2), 2, 2, 30);
+        for t in 3..=40 {
+            let (nw, ev) = step(Some(&w), &lsnap(running(), running(), 2), t, 2, 30);
+            w = nw;
+            assert!(!ev.contains(&NotifyKind::Idle), "loop idle must not notify (tick {t})");
+        }
+        // A crashing run script still notifies.
+        let (_w, ev) = step(Some(&w), &lsnap(running(), exited(1), 2), 41, 2, 30);
+        assert_eq!(ev, vec![NotifyKind::RunCrashed]);
     }
 
     #[test]

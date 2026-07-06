@@ -3,6 +3,7 @@ import { AgentProfile, listProfiles, listProjectBranches } from "../api";
 import { agentLabel } from "../agents";
 import { effectiveMergeTarget } from "../lib/branchTargets";
 import RaceDialog from "./RaceDialog";
+import LoopDialog from "./LoopDialog";
 import GhImportDialog from "./GhImportDialog";
 
 // The built-in shell profile backs the hardcoded "New terminal" entry, so it is
@@ -27,6 +28,7 @@ export default function AgentAddMenu({
   const [coords, setCoords] = useState<{ top: number; left?: number; right?: number }>();
   const [agents, setAgents] = useState<AgentProfile[]>([]);
   const [raceOpen, setRaceOpen] = useState(false);
+  const [loopOpen, setLoopOpen] = useState(false);
   const [importMode, setImportMode] = useState<"issue" | "pr" | null>(null);
   const btnRef = useRef<HTMLButtonElement>(null);
 
@@ -107,6 +109,7 @@ export default function AgentAddMenu({
             ))}
             <div className="agent-menu-sep" />
             <button onClick={() => { setOpen(false); setRaceOpen(true); }}>∥ Race agents…</button>
+            <button onClick={() => { setOpen(false); setLoopOpen(true); }}>⟳ Loop agent…</button>
             <button onClick={() => { setOpen(false); setImportMode("issue"); }}>◈ GitHub issue…</button>
             <button onClick={() => { setOpen(false); setImportMode("pr"); }}>⇋ GitHub PR…</button>
             <div className="agent-menu-sep" />
@@ -150,6 +153,7 @@ export default function AgentAddMenu({
         </>
       )}
       {raceOpen && <RaceDialog onClose={() => setRaceOpen(false)} />}
+      {loopOpen && <LoopDialog onClose={() => setLoopOpen(false)} />}
       {importMode && <GhImportDialog mode={importMode} onClose={() => setImportMode(null)} />}
     </div>
   );

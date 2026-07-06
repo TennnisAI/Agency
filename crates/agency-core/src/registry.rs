@@ -40,6 +40,13 @@ pub struct Run {
     pub merge_target: Option<String>,
     /// Groups runs spawned together on the same prompt (multi-attempt racing).
     pub race_id: Option<String>,
+    /// Present = this run is a loop: the agent is re-invoked headless until
+    /// the check command passes or the attempt cap is spent. Written once at
+    /// creation, never mutated.
+    pub loop_config: Option<crate::loops::LoopConfig>,
+    /// Loop progress, persisted on every transition so an app restart resumes
+    /// the loop. Always None for non-loop runs.
+    pub loop_state: Option<crate::loops::LoopState>,
 }
 
 /// An extra agent session inside an existing run's worktree. The run's
@@ -155,6 +162,15 @@ impl Registry {
         if !column_exists(&conn, "profiles", "resume_args")? {
             conn.execute("ALTER TABLE profiles ADD COLUMN resume_args TEXT", [])?;
         }
+        if !column_exists(&conn, "profiles", "loop_args")? {
+            conn.execute("ALTER TABLE profiles ADD COLUMN loop_args TEXT", [])?;
+        }
+        if !column_exists(&conn, "runs", "loop_config")? {
+            conn.execute("ALTER TABLE runs ADD COLUMN loop_config TEXT", [])?;
+        }
+        if !column_exists(&conn, "runs", "loop_state")? {
+            conn.execute("ALTER TABLE runs ADD COLUMN loop_state TEXT", [])?;
+        }
         let reg = Registry { conn };
         reg.backfill_project_colors()?;
         Ok(reg)
@@ -258,10 +274,14 @@ impl Registry {
             Some(r) => Some(serde_json::to_string(r)?),
             None => None,
         };
+        let loop_args = match &p.loop_args {
+            Some(l) => Some(serde_json::to_string(l)?),
+            None => None,
+        };
         self.conn.execute(
-            "INSERT INTO profiles (name, command, args, env, resume_args) VALUES (?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT(name) DO UPDATE SET command = ?2, args = ?3, env = ?4, resume_args = ?5",
-            rusqlite::params![p.name, p.command, args, env, resume],
+            "INSERT INTO profiles (name, command, args, env, resume_args, loop_args) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(name) DO UPDATE SET command = ?2, args = ?3, env = ?4, resume_args = ?5, loop_args = ?6",
+            rusqlite::params![p.name, p.command, args, env, resume, loop_args],
         )?;
         Ok(())
     }
@@ -280,10 +300,24 @@ impl Registry {
         Ok(())
     }
 
+    /// Set a profile's loop (headless one-shot) recipe ONLY if it is currently
+    /// NULL — same never-clobber rule as `ensure_profile_resume_args`.
+    pub fn ensure_profile_loop_args(&self, name: &str, loop_args: &Option<Vec<String>>) -> Result<()> {
+        let l = match loop_args {
+            Some(r) => Some(serde_json::to_string(r)?),
+            None => None,
+        };
+        self.conn.execute(
+            "UPDATE profiles SET loop_args = ?2 WHERE name = ?1 AND loop_args IS NULL",
+            rusqlite::params![name, l],
+        )?;
+        Ok(())
+    }
+
     pub fn get_profile(&self, name: &str) -> Result<Option<AgentProfile>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT name, command, args, env, resume_args FROM profiles WHERE name = ?1")?;
+            .prepare("SELECT name, command, args, env, resume_args, loop_args FROM profiles WHERE name = ?1")?;
         let mut rows = stmt.query([name])?;
         match rows.next()? {
             Some(row) => Ok(Some(row_to_profile(row)?)),
@@ -294,7 +328,7 @@ impl Registry {
     pub fn list_profiles(&self) -> Result<Vec<AgentProfile>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT name, command, args, env, resume_args FROM profiles ORDER BY name")?;
+            .prepare("SELECT name, command, args, env, resume_args, loop_args FROM profiles ORDER BY name")?;
         let rows = stmt.query_map([], |row| Ok(row_to_profile(row)))?;
         let mut out = Vec::new();
         for r in rows {
@@ -330,21 +364,40 @@ impl Registry {
     }
 
     pub fn insert_run(&self, run: &Run) -> Result<()> {
+        let loop_config = match &run.loop_config {
+            Some(c) => Some(serde_json::to_string(c)?),
+            None => None,
+        };
+        let loop_state = match &run.loop_state {
+            Some(s) => Some(serde_json::to_string(s)?),
+            None => None,
+        };
         self.conn.execute(
-            "INSERT INTO runs (id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            "INSERT INTO runs (id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             rusqlite::params![
                 run.id, run.project_id, run.agent, run.prompt, run.base, run.branch,
                 run.created_at, run.port_base.map(|p| p as i64), run.archived_at, run.title, run.kind,
-                run.merge_target, run.race_id
+                run.merge_target, run.race_id, loop_config, loop_state
             ],
+        )?;
+        Ok(())
+    }
+
+    /// Persist a loop's progress. Called on every loop transition so a
+    /// restarted app resumes instead of orphaning the loop.
+    pub fn set_loop_state(&self, id: &str, state: &crate::loops::LoopState) -> Result<()> {
+        let json = serde_json::to_string(state)?;
+        self.conn.execute(
+            "UPDATE runs SET loop_state = ?2 WHERE id = ?1",
+            rusqlite::params![id, json],
         )?;
         Ok(())
     }
 
     pub fn get_run(&self, id: &str) -> Result<Option<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id FROM runs WHERE id = ?1",
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state FROM runs WHERE id = ?1",
         )?;
         let mut rows = stmt.query([id])?;
         match rows.next()? {
@@ -355,7 +408,7 @@ impl Registry {
 
     pub fn list_runs(&self, project_id: &str) -> Result<Vec<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state
              FROM runs WHERE project_id = ?1 AND archived_at IS NULL ORDER BY created_at DESC",
         )?;
         let rows = stmt.query_map([project_id], |row| Ok(row_to_run(row)))?;
@@ -368,7 +421,7 @@ impl Registry {
 
     pub fn list_archived_runs(&self, project_id: &str) -> Result<Vec<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state
              FROM runs WHERE project_id = ?1 AND archived_at IS NOT NULL ORDER BY archived_at DESC",
         )?;
         let rows = stmt.query_map([project_id], |row| Ok(row_to_run(row)))?;
@@ -552,6 +605,10 @@ fn row_to_profile(row: &rusqlite::Row) -> Result<AgentProfile> {
             Some(s) => Some(serde_json::from_str(&s)?),
             None => None,
         },
+        loop_args: match row.get::<_, Option<String>>(5)? {
+            Some(s) => Some(serde_json::from_str(&s)?),
+            None => None,
+        },
     })
 }
 
@@ -583,6 +640,14 @@ fn row_to_run(row: &rusqlite::Row) -> Result<Run> {
         kind: row.get(10)?,
         merge_target: row.get(11)?,
         race_id: row.get(12)?,
+        loop_config: match row.get::<_, Option<String>>(13)? {
+            Some(s) => Some(serde_json::from_str(&s)?),
+            None => None,
+        },
+        loop_state: match row.get::<_, Option<String>>(14)? {
+            Some(s) => Some(serde_json::from_str(&s)?),
+            None => None,
+        },
     })
 }
 
@@ -628,6 +693,8 @@ mod tests {
             title: None,
             kind: "agent".to_string(),
             merge_target: None,
+            loop_config: None,
+            loop_state: None,
         }
     }
 
@@ -857,6 +924,7 @@ mod tests {
             args: vec![],
             env: vec![],
             resume_args: Some(vec!["--continue".into()]),
+            loop_args: None,
         })
         .unwrap();
         reg.upsert_profile(&AgentProfile {
@@ -865,6 +933,7 @@ mod tests {
             args: vec![],
             env: vec![],
             resume_args: None,
+            loop_args: None,
         })
         .unwrap();
         assert_eq!(
@@ -880,7 +949,7 @@ mod tests {
         let reg = Registry::open(&dir.path().join("a.db")).unwrap();
         reg.upsert_profile(&AgentProfile {
             name: "claude".into(), command: "claude".into(),
-            args: vec![], env: vec![], resume_args: None,
+            args: vec![], env: vec![], resume_args: None, loop_args: None,
         }).unwrap();
         // Unset -> gets set.
         reg.ensure_profile_resume_args("claude", &Some(vec!["--continue".into()])).unwrap();
@@ -907,6 +976,63 @@ mod tests {
     }
 
     #[test]
+    fn profile_loop_args_round_trip_and_ensure_only_sets_when_unset() {
+        let dir = tempfile::tempdir().unwrap();
+        let reg = Registry::open(&dir.path().join("a.db")).unwrap();
+        reg.upsert_profile(&AgentProfile {
+            name: "claude".into(), command: "claude".into(),
+            args: vec![], env: vec![], resume_args: None, loop_args: None,
+        }).unwrap();
+        assert_eq!(reg.get_profile("claude").unwrap().unwrap().loop_args, None);
+        // Unset -> gets seeded.
+        reg.ensure_profile_loop_args("claude", &Some(vec!["-p".into(), "{{prompt}}".into()])).unwrap();
+        assert_eq!(
+            reg.get_profile("claude").unwrap().unwrap().loop_args,
+            Some(vec!["-p".into(), "{{prompt}}".into()])
+        );
+        // Already set -> not clobbered.
+        reg.ensure_profile_loop_args("claude", &Some(vec!["--other".into()])).unwrap();
+        assert_eq!(
+            reg.get_profile("claude").unwrap().unwrap().loop_args,
+            Some(vec!["-p".into(), "{{prompt}}".into()])
+        );
+    }
+
+    #[test]
+    fn run_loop_config_and_state_round_trip() {
+        use crate::loops::{LoopConfig, LoopState, LoopStatus};
+        let dir = tempdir().unwrap();
+        let reg = Registry::open(&dir.path().join("loops.db")).unwrap();
+        let mut run = sample_run("l-1", None);
+        run.loop_config = Some(LoopConfig {
+            check_command: "cargo test".into(),
+            max_attempts: 10,
+            check_timeout_secs: 600,
+        });
+        run.loop_state = Some(LoopState::new(7));
+        reg.insert_run(&run).unwrap();
+
+        let got = reg.get_run("l-1").unwrap().unwrap();
+        assert_eq!(got.loop_config.as_ref().unwrap().check_command, "cargo test");
+        assert_eq!(got.loop_state.as_ref().unwrap().status, LoopStatus::AwaitingAgent);
+        assert_eq!(got.loop_state.as_ref().unwrap().attempt, 1);
+
+        // Progress persists via set_loop_state.
+        let mut st = got.loop_state.unwrap();
+        st.attempt = 3;
+        st.status = LoopStatus::Checking;
+        reg.set_loop_state("l-1", &st).unwrap();
+        let again = reg.get_run("l-1").unwrap().unwrap().loop_state.unwrap();
+        assert_eq!(again.attempt, 3);
+        assert_eq!(again.status, LoopStatus::Checking);
+
+        // Non-loop runs stay None.
+        reg.insert_run(&sample_run("plain", None)).unwrap();
+        let plain = reg.get_run("plain").unwrap().unwrap();
+        assert!(plain.loop_config.is_none() && plain.loop_state.is_none());
+    }
+
+    #[test]
     fn run_merge_target_round_trips() {
         let dir = tempdir().unwrap();
         let reg = Registry::open(&dir.path().join("merge-target.db")).unwrap();
@@ -925,6 +1051,8 @@ mod tests {
             kind: "agent".into(),
             merge_target: Some("develop".into()),
             race_id: None,
+            loop_config: None,
+            loop_state: None,
         };
         reg.insert_run(&run).unwrap();
         let got = reg.get_run("t1").unwrap().unwrap();

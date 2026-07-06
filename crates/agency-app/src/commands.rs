@@ -100,6 +100,35 @@ pub fn create_run(
 }
 
 #[tauri::command]
+pub fn create_loop(
+    state: State<'_, AppState>,
+    project_id: String,
+    prompt: String,
+    agent: String,
+    base: String,
+    merge_target: Option<String>,
+    check_command: String,
+    max_attempts: u32,
+) -> Result<RunInfo, String> {
+    state
+        .create_loop(
+            &project_id,
+            &prompt,
+            &agent,
+            &base,
+            merge_target.as_deref(),
+            &check_command,
+            max_attempts,
+        )
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn stop_loop(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    state.stop_loop(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn list_project_branches(
     state: State<'_, AppState>,
     project_id: String,

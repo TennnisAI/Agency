@@ -1,5 +1,6 @@
 mod commands;
 mod lifecycle;
+mod looper;
 mod notifier;
 mod pathenv;
 mod resume_probe;
@@ -85,6 +86,31 @@ pub fn run() {
 
                     let settings = state.notif_settings().unwrap_or_default();
                     let (focused, active) = state.ui_snapshot();
+
+                    // Advance active loops (respawn attempts, run checks) and
+                    // toast their terminal transitions. Same suppression rules
+                    // as run notifications.
+                    if let Ok(notices) = state.drive_loops() {
+                        for n in notices {
+                            let suppressed = !settings.loop_events
+                                || (settings.only_when_unfocused && focused)
+                                || active.as_deref() == Some(n.run_id.as_str());
+                            if suppressed {
+                                continue;
+                            }
+                            let (title, body) = if n.done {
+                                ("Loop complete".to_string(),
+                                 format!("{} — checks passed on attempt {}", n.label, n.attempt))
+                            } else {
+                                ("Loop stalled".to_string(),
+                                 format!("{} — stopped after attempt {}, checks still failing", n.label, n.attempt))
+                            };
+                            let _ = handle.notification().builder().title(title).body(body).show();
+                            if !focused {
+                                state.note_notification(&n.project_id, &n.run_id);
+                            }
+                        }
+                    }
                     let snaps = match state.watch_snapshot() {
                         Ok(s) => s,
                         Err(_) => continue,
@@ -134,6 +160,8 @@ pub fn run() {
             commands::close_project,
             commands::delete_project,
             commands::create_run,
+            commands::create_loop,
+            commands::stop_loop,
             commands::create_terminal,
             commands::set_run_title,
             commands::list_runs,

@@ -16,6 +16,25 @@ export type SessionStatus =
   | { state: "exited"; code: number }
   | { state: "gone" };
 
+// Loop recipe/progress (camelCase serde, see agency_core::loops). A run with
+// loopConfig set is a loop: its agent is re-invoked headless until the check
+// command exits 0 or the attempt cap is spent.
+export interface LoopConfig {
+  checkCommand: string;
+  maxAttempts: number;
+  checkTimeoutSecs: number;
+}
+
+export type LoopStatus = "awaitingAgent" | "checking" | "complete" | "stalled" | "stopped";
+
+export interface LoopState {
+  status: LoopStatus;
+  attempt: number;
+  consecutiveFailures: number;
+  lastCheckExit: number | null;
+  updatedAt: number;
+}
+
 export interface RunInfo {
   id: string;
   projectId: string;
@@ -31,6 +50,8 @@ export interface RunInfo {
   kind: "agent" | "terminal";
   archivedAt: number | null;
   raceId: string | null;
+  loopConfig: LoopConfig | null;
+  loopState: LoopState | null;
 }
 
 export const listProjects = () => invoke<Project[]>("list_projects");
@@ -56,6 +77,19 @@ export const deleteProject = (id: string) => invoke<void>("delete_project", { id
 
 export const createRun = (projectId: string, prompt: string, agent: string, base: string, mergeTarget?: string | null) =>
   invoke<RunInfo>("create_run", { projectId, prompt, agent, base, mergeTarget: mergeTarget ?? null });
+export const createLoop = (
+  projectId: string,
+  prompt: string,
+  agent: string,
+  base: string,
+  mergeTarget: string | null,
+  checkCommand: string,
+  maxAttempts: number,
+) =>
+  invoke<RunInfo>("create_loop", {
+    projectId, prompt, agent, base, mergeTarget, checkCommand, maxAttempts,
+  });
+export const stopLoop = (id: string) => invoke<void>("stop_loop", { id });
 export const createTerminal = (projectId: string) =>
   invoke<RunInfo>("create_terminal", { projectId });
 export const agentInstalled = (agent: string) =>
@@ -188,6 +222,7 @@ export interface AgentProfile {
   args: string[];
   env: [string, string][];
   resume_args: string[] | null;
+  loop_args: string[] | null;
 }
 
 export interface ProviderSettings {
@@ -379,6 +414,7 @@ export interface NotifSettings {
   agentIdle: boolean;
   runCrashed: boolean;
   mergeAttention: boolean;
+  loopEvents: boolean;
   onlyWhenUnfocused: boolean;
   idleSecs: number;
 }

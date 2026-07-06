@@ -8,6 +8,7 @@ fn render_args_substitutes_prompt_token() {
         args: vec!["-p".into(), "{{prompt}}".into()],
         env: vec![],
         resume_args: None,
+        loop_args: None,
     };
 
     let rendered = profile.render_args("fix the bug");
@@ -22,6 +23,7 @@ fn render_args_leaves_other_args_untouched() {
         args: vec!["--flag".into(), "value".into()],
         env: vec![],
         resume_args: None,
+        loop_args: None,
     };
 
     assert_eq!(

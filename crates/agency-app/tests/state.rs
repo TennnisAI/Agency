@@ -84,6 +84,7 @@ fn create_run_persists_starts_session_and_lists() {
         args: vec!["-c".into(), "echo HI; sleep 3".into()],
         env: vec![],
         resume_args: None,
+        loop_args: None,
     }).unwrap();
     let project = state.add_project("demo", &repo).unwrap();
 
@@ -128,6 +129,7 @@ fn worktree_path_resolves_for_active_run() {
         args: vec!["-c".into(), "sleep 1".into()],
         env: vec![],
         resume_args: None,
+        loop_args: None,
     }).unwrap();
     let project = state.add_project("demo", &repo).unwrap();
     let info = state.create_run(&project.id, "p", "noop", "HEAD", None).unwrap();
@@ -159,6 +161,7 @@ fn worktree_path_resolves_to_repo_root_for_terminal() {
         args: vec!["-c".into(), "sleep 1".into()],
         env: vec![],
         resume_args: None,
+        loop_args: None,
     }).unwrap();
     let agent = state.create_run(&project.id, "p", "noop", "HEAD", None).unwrap();
     let agent_wt = state.worktree_path(&agent.id).unwrap();
@@ -219,6 +222,7 @@ fn create_run_injects_provider_env() {
         args: vec!["-c".into(), "echo BASE=$OPENAI_BASE_URL; echo KEYSET=${OPENAI_API_KEY:+yes}; sleep 2".into()],
         env: vec![],
         resume_args: None,
+        loop_args: None,
     }).unwrap();
     let project = state.add_project("demo", &repo).unwrap();
 
@@ -257,6 +261,7 @@ fn resolve_merge_spawns_resolver_in_repo_and_streams() {
         args: vec!["-c".into(), "sleep 1".into()],
         env: vec![],
         resume_args: None,
+        loop_args: None,
     }).unwrap();
     state.register_profile(AgentProfile {
         name: "fakeresolver".into(),
@@ -264,6 +269,7 @@ fn resolve_merge_spawns_resolver_in_repo_and_streams() {
         args: vec!["-c".into(), "echo RESOLVING; pwd; echo DONE".into()],
         env: vec![],
         resume_args: None,
+        loop_args: None,
     }).unwrap();
     let project = state.add_project("demo", &repo).unwrap();
     let info = state.create_run(&project.id, "p", "noop", "HEAD", None).unwrap();
@@ -325,6 +331,7 @@ fn attach_streams_and_input_reaches_agent() {
         args: vec!["-c".into(), "echo READY; read x; echo GOT:$x; sleep 3".into()],
         env: vec![],
         resume_args: None,
+        loop_args: None,
     }).unwrap();
     let project = state.add_project("demo", &repo).unwrap();
     let info = state.create_run(&project.id, "p", "echoer", "HEAD", None).unwrap();
@@ -419,6 +426,7 @@ fn merge_task_clean_merges_branch_into_base() {
         args: vec!["-c".into(), "sleep 1".into()],
         env: vec![],
         resume_args: None,
+        loop_args: None,
     }).unwrap();
     let project = state.add_project("demo", &repo).unwrap();
 
@@ -452,6 +460,7 @@ fn ensure_run_active_respawns_a_stopped_agent_run() {
         args: vec!["-c".into(), "sleep 5".into()],
         env: vec![],
         resume_args: None,
+        loop_args: None,
     }).unwrap();
     let project = state.add_project("demo", &repo).unwrap();
     let info = state.create_run(&project.id, "p", "sleeper", "HEAD", None).unwrap();
@@ -506,6 +515,7 @@ fn ensure_run_active_falls_back_to_fresh_when_resume_fails() {
         args: vec!["-c".into(), "printf FRESH; sleep 5".into()],
         env: vec![],
         resume_args: Some(vec!["-c".into(), "printf NO-CONV; exit 1".into()]),
+        loop_args: None,
     }).unwrap();
     let project = state.add_project("demo", &repo).unwrap();
     let info = state.create_run(&project.id, "p", "flaky", "HEAD", None).unwrap();
@@ -547,6 +557,7 @@ fn extra_session_lifecycle_shares_worktree_and_cascades() {
         args: vec!["-c".into(), "pwd; sleep 5".into()],
         env: vec![],
         resume_args: None,
+        loop_args: None,
     }).unwrap();
     let project = state.add_project("demo", &repo).unwrap();
     let run = state.create_run(&project.id, "p", "pwds", "HEAD", None).unwrap();
@@ -611,6 +622,7 @@ fn ensure_run_active_revives_a_dead_extra_session() {
         args: vec!["-c".into(), "pwd; sleep 5".into()],
         env: vec![],
         resume_args: None,
+        loop_args: None,
     }).unwrap();
     let project = state.add_project("demo", &repo).unwrap();
     let run = state.create_run(&project.id, "p", "pwds", "HEAD", None).unwrap();

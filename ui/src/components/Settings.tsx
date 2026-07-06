@@ -26,7 +26,7 @@ export default function Settings({ onClose }: { onClose: () => void }) {
     lmStudioBaseUrl: "",
   });
   const [profiles, setProfiles] = useState<AgentProfile[]>([]);
-  const emptyDraft = { name: "", command: "", args: "", env: "", resume: "" };
+  const emptyDraft = { name: "", command: "", args: "", env: "", resume: "", loop: "" };
   const [draft, setDraft] = useState(emptyDraft);
   const [formOpen, setFormOpen] = useState(false);
   // Name of the profile being edited, or null when adding a new one. Drives
@@ -38,6 +38,7 @@ export default function Settings({ onClose }: { onClose: () => void }) {
     agentIdle: true,
     runCrashed: true,
     mergeAttention: true,
+    loopEvents: true,
     onlyWhenUnfocused: true,
     idleSecs: 30,
   });
@@ -176,8 +177,11 @@ export default function Settings({ onClose }: { onClose: () => void }) {
     // Empty resume field = no resume recipe: the agent always starts fresh.
     const resume = draft.resume.trim();
     const resume_args = resume ? resume.split(/\s+/) : null;
+    // Empty loop field = no headless one-shot recipe: the agent can't loop.
+    const loop = draft.loop.trim();
+    const loop_args = loop ? loop.split(/\s+/) : null;
     try {
-      await saveProfile({ name: draft.name.trim(), command: draft.command.trim(), args, env, resume_args });
+      await saveProfile({ name: draft.name.trim(), command: draft.command.trim(), args, env, resume_args, loop_args });
       closeForm();
       await refresh();
     } catch (e) {
@@ -192,6 +196,7 @@ export default function Settings({ onClose }: { onClose: () => void }) {
       args: p.args.join(" "),
       env: p.env.map(([k, v]) => `${k}=${v}`).join("\n"),
       resume: (p.resume_args ?? []).join(" "),
+      loop: (p.loop_args ?? []).join(" "),
     });
     setEditing(p.name);
     setFormOpen(true);
@@ -236,6 +241,12 @@ export default function Settings({ onClose }: { onClose: () => void }) {
           placeholder="resume args (e.g. --continue; empty = always start fresh)"
           value={draft.resume}
           onChange={(e) => setDraft({ ...draft, resume: e.target.value })}
+        />
+        <input
+          className="settings-input"
+          placeholder="loop args, headless one-shot (e.g. -p {{prompt}}; empty = can't loop)"
+          value={draft.loop}
+          onChange={(e) => setDraft({ ...draft, loop: e.target.value })}
         />
         <textarea
           className="settings-input"
@@ -308,6 +319,12 @@ export default function Settings({ onClose }: { onClose: () => void }) {
                       <>
                         <span className="settings-meta-key">resume</span>
                         <code className="settings-meta-val">{p.resume_args?.join(" ")}</code>
+                      </>
+                    )}
+                    {(p.loop_args?.length ?? 0) > 0 && (
+                      <>
+                        <span className="settings-meta-key">loop</span>
+                        <code className="settings-meta-val">{p.loop_args?.join(" ")}</code>
                       </>
                     )}
                     {p.env.length > 0 && (
@@ -460,6 +477,7 @@ export default function Settings({ onClose }: { onClose: () => void }) {
               ["agentFinished", "Agent exited"],
               ["runCrashed", "Run script crashed"],
               ["mergeAttention", "Merge needs attention"],
+              ["loopEvents", "Loop complete or stalled"],
               ["onlyWhenUnfocused", "Only when app is not focused"],
             ] as [keyof NotifSettings, string][]).map(([key, label]) => (
               <div key={key} className="settings-notif-row">

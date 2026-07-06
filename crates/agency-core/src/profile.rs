@@ -8,6 +8,10 @@ pub struct AgentProfile {
     pub env: Vec<(String, String)>,
     #[serde(default)]
     pub resume_args: Option<Vec<String>>,
+    /// One-shot (headless) invocation recipe for loop attempts; `{{prompt}}`
+    /// is replaced with the run prompt. None = this agent cannot loop.
+    #[serde(default)]
+    pub loop_args: Option<Vec<String>>,
 }
 
 impl AgentProfile {

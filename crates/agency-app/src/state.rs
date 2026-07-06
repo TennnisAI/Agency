@@ -40,6 +40,8 @@ pub struct RunInfo {
     pub port: Option<u16>,
     pub kind: String,
     pub race_id: Option<String>,
+    pub loop_config: Option<agency_core::loops::LoopConfig>,
+    pub loop_state: Option<agency_core::loops::LoopState>,
 }
 
 /// An extra agent tab sharing a run's worktree, as shown in the UI. `id` is
@@ -68,6 +70,9 @@ struct NewRunSpec<'a> {
     title: Option<String>,
     /// Check out this existing branch instead of cutting `agent/<id>` off base.
     existing_branch: Option<String>,
+    /// Present = create a looping run: spawn the agent headless (profile
+    /// loop_args) and let the loop driver re-run it until checks pass.
+    loop_config: Option<agency_core::loops::LoopConfig>,
 }
 
 /// What an "Approve & merge" would do, computed before running it so the UI can
@@ -179,6 +184,29 @@ fn agent_argv(
             .collect(),
     };
     agency_core::scripts::wrap_setup(setup, &profile.command, &base_args)
+}
+
+/// The (command, args) for one headless loop attempt: the profile's loop
+/// recipe with `{{prompt}}` filled in, wrapped by the optional setup script.
+/// Errors when the profile has no loop recipe — such agents can't loop.
+fn loop_argv(
+    profile: &AgentProfile,
+    prompt: &str,
+    setup: Option<&str>,
+) -> Result<(String, Vec<String>)> {
+    let recipe = profile.loop_args.as_ref().ok_or_else(|| {
+        anyhow!("agent '{}' has no loop recipe — set the profile's loop args first", profile.name)
+    })?;
+    let args: Vec<String> = recipe.iter().map(|a| a.replace("{{prompt}}", prompt)).collect();
+    Ok(agency_core::scripts::wrap_setup(setup, &profile.command, &args))
+}
+
+/// True when the run is a loop that is still driving (non-terminal state) —
+/// its agent session belongs to the loop driver, so interactive spawn paths
+/// (attach-resume, rerun, generic stop) must stand aside or end the loop.
+fn has_active_loop(run: &agency_core::registry::Run) -> bool {
+    run.loop_config.is_some()
+        && run.loop_state.as_ref().map(|s| !s.status.is_terminal()).unwrap_or(false)
 }
 
 fn run_session_name(id: &str) -> String {
@@ -364,6 +392,28 @@ pub struct AppState {
     /// second concurrent merge (double-click, another run's Approve) must
     /// fail fast instead of interleaving.
     merge_gate: Mutex<()>,
+    /// In-flight loop check commands, one slot per looping run id. The check
+    /// runs on its own thread (never on the 2s poll tick); `drive_loops`
+    /// drains finished slots into the looper state machine.
+    checks: Mutex<HashMap<String, std::sync::Arc<Mutex<CheckStatus>>>>,
+}
+
+/// Progress of a loop's check command. `Done(None)` = killed on timeout or
+/// terminated by signal; anything but `Done(Some(0))` counts as "not done yet".
+#[derive(Debug, Clone, Copy)]
+enum CheckStatus {
+    Running,
+    Done(Option<i32>),
+}
+
+/// A loop reaching a terminal state this tick, for the watcher thread to
+/// notify about. `done` distinguishes Complete from Stalled.
+pub struct LoopNotice {
+    pub project_id: String,
+    pub run_id: String,
+    pub label: String,
+    pub done: bool,
+    pub attempt: u32,
 }
 
 impl AppState {
@@ -382,23 +432,46 @@ impl AppState {
                 args: vec!["-l".to_string()],
                 env: vec![],
                 resume_args: None,
+                loop_args: None,
             })?;
         }
-        // Built-in agent profiles and their resume recipes. Resume recipes are seeded
-        // for missing profiles and retrofitted onto existing ones only when unset, so a
-        // user's customized command/args/env is never clobbered. cursor/hermes are
-        // id-keyed (not cwd-keyed) so they start fresh rather than risk resuming the
-        // wrong global session.
-        let builtins: [(&str, &str, Option<Vec<String>>); 7] = [
-            ("claude", "claude", Some(vec!["--continue".into()])),
-            ("codex", "codex", Some(vec!["resume".into(), "--last".into()])),
-            ("pi", "pi", Some(vec!["--continue".into()])),
-            ("opencode", "opencode", Some(vec!["--continue".into()])),
-            ("copilot", "copilot", Some(vec!["--continue".into()])),
-            ("cursor", "cursor-agent", None),
-            ("hermes", "hermes", None),
+        // Built-in agent profiles with their resume and loop recipes. Both are
+        // seeded for missing profiles and retrofitted onto existing ones only
+        // when unset, so a user's customized command/args/env is never
+        // clobbered. cursor/hermes are id-keyed (not cwd-keyed) so they start
+        // fresh rather than risk resuming the wrong global session. Loop
+        // recipes are the agents' headless one-shot modes (the process exits
+        // when the turn ends — the loop driver's attempt boundary); agents
+        // without a known headless mode get None and simply can't loop.
+        // claude gets acceptEdits so unattended attempts don't die on the
+        // first file-edit permission prompt; the worktree bounds the blast
+        // radius.
+        type Recipe = Option<Vec<String>>;
+        let builtins: [(&str, &str, Recipe, Recipe); 7] = [
+            (
+                "claude",
+                "claude",
+                Some(vec!["--continue".into()]),
+                Some(vec!["-p".into(), "{{prompt}}".into(), "--permission-mode".into(), "acceptEdits".into()]),
+            ),
+            (
+                "codex",
+                "codex",
+                Some(vec!["resume".into(), "--last".into()]),
+                Some(vec!["exec".into(), "--full-auto".into(), "{{prompt}}".into()]),
+            ),
+            ("pi", "pi", Some(vec!["--continue".into()]), None),
+            (
+                "opencode",
+                "opencode",
+                Some(vec!["--continue".into()]),
+                Some(vec!["run".into(), "{{prompt}}".into()]),
+            ),
+            ("copilot", "copilot", Some(vec!["--continue".into()]), None),
+            ("cursor", "cursor-agent", None, Some(vec!["-p".into(), "{{prompt}}".into()])),
+            ("hermes", "hermes", None, None),
         ];
-        for (name, command, resume_args) in builtins {
+        for (name, command, resume_args, loop_args) in builtins {
             if registry.get_profile(name)?.is_none() {
                 registry.upsert_profile(&AgentProfile {
                     name: name.to_string(),
@@ -406,9 +479,11 @@ impl AppState {
                     args: vec![],
                     env: vec![],
                     resume_args: resume_args.clone(),
+                    loop_args: loop_args.clone(),
                 })?;
             } else {
                 registry.ensure_profile_resume_args(name, &resume_args)?;
+                registry.ensure_profile_loop_args(name, &loop_args)?;
             }
         }
         let state = AppState {
@@ -422,6 +497,7 @@ impl AppState {
             ui: Mutex::new(UiState { focused: true, active_run: None, pending_open: None }),
             input_seen: Mutex::new(HashSet::new()),
             merge_gate: Mutex::new(()),
+            checks: Mutex::new(HashMap::new()),
         };
         // Rehydrate: any run the daemon still hosts is adopted as-is; the watch
         // loop (watch_snapshot) then reports live status. Nothing to spawn here —
@@ -590,6 +666,8 @@ impl AppState {
             port: run.port_base,
             kind: run.kind.clone(),
             race_id: run.race_id.clone(),
+            loop_config: run.loop_config.clone(),
+            loop_state: run.loop_state.clone(),
         }
     }
 
@@ -611,6 +689,7 @@ impl AppState {
             race_id: None,
             title: None,
             existing_branch: None,
+            loop_config: None,
         })
     }
 
@@ -641,21 +720,26 @@ impl AppState {
         let mut env = self.provider_env()?;
         env.extend(profile.env.iter().cloned());
         env.extend(agency_core::scripts::script_env(&worktree.path, &repo, &id, Some(port)));
-        let mut args: Vec<String> = profile
-            .render_args(spec.prompt)
-            .into_iter()
-            .filter(|a| !a.is_empty())
-            .collect();
-        // Deliver a non-empty prompt as the agent's initial positional prompt
-        // (claude/codex/cursor-agent/opencode all accept one) unless the
-        // profile places it explicitly with a {{prompt}} token. The default
-        // flow passes "" and behaves exactly as before: the user types into
-        // the live terminal.
-        if !spec.prompt.trim().is_empty() && !profile.args.iter().any(|a| a.contains("{{prompt}}")) {
-            args.push(spec.prompt.to_string());
-        }
-        let (command, args) =
-            agency_core::scripts::wrap_setup(config.scripts.setup.as_deref(), &profile.command, &args);
+        let (command, args) = if spec.loop_config.is_some() {
+            // Looping runs launch the agent headless (one-shot): the process
+            // exiting is the loop driver's attempt boundary.
+            loop_argv(&profile, spec.prompt, config.scripts.setup.as_deref())?
+        } else {
+            let mut args: Vec<String> = profile
+                .render_args(spec.prompt)
+                .into_iter()
+                .filter(|a| !a.is_empty())
+                .collect();
+            // Deliver a non-empty prompt as the agent's initial positional prompt
+            // (claude/codex/cursor-agent/opencode all accept one) unless the
+            // profile places it explicitly with a {{prompt}} token. The default
+            // flow passes "" and behaves exactly as before: the user types into
+            // the live terminal.
+            if !spec.prompt.trim().is_empty() && !profile.args.iter().any(|a| a.contains("{{prompt}}")) {
+                args.push(spec.prompt.to_string());
+            }
+            agency_core::scripts::wrap_setup(config.scripts.setup.as_deref(), &profile.command, &args)
+        };
 
         self.term
             .read()
@@ -684,6 +768,11 @@ impl AppState {
             kind: "agent".to_string(),
             merge_target: spec.merge_target.map(|s| s.to_string()),
             race_id: spec.race_id.clone(),
+            loop_state: spec
+                .loop_config
+                .as_ref()
+                .map(|_| agency_core::loops::LoopState::new(now_secs())),
+            loop_config: spec.loop_config.clone(),
         };
         {
             let reg = self.registry.lock().unwrap();
@@ -725,9 +814,45 @@ impl AppState {
                 race_id: Some(race_id.clone()),
                 title: None,
                 existing_branch: None,
+                loop_config: None,
             })?);
         }
         Ok(out)
+    }
+
+    /// Create a looping run: one workspace whose agent is re-invoked headless
+    /// (fresh context every attempt, state on disk) until the check command
+    /// exits 0 or the attempt cap is spent. The loop driver in the watcher
+    /// thread owns the session from here.
+    pub fn create_loop(
+        &self,
+        project_id: &str,
+        prompt: &str,
+        agent: &str,
+        base: &str,
+        merge_target: Option<&str>,
+        check_command: &str,
+        max_attempts: u32,
+    ) -> Result<RunInfo> {
+        if prompt.trim().is_empty() {
+            bail!("a loop needs a prompt — it is re-sent to the agent on every attempt");
+        }
+        let cfg = agency_core::loops::LoopConfig {
+            check_command: check_command.trim().to_string(),
+            max_attempts: max_attempts.clamp(1, 100),
+            check_timeout_secs: 600,
+        };
+        self.create_run_spec(NewRunSpec {
+            project_id,
+            prompt,
+            agent,
+            base,
+            merge_target,
+            race_id: None,
+            title: None,
+            existing_branch: None,
+            loop_config: Some(cfg),
+        })
     }
 
     /// Spawn a workspace for a GitHub issue: the issue becomes the run's
@@ -751,6 +876,7 @@ impl AppState {
             race_id: None,
             title: Some(format!("#{number} {}", issue.title)),
             existing_branch: None,
+            loop_config: None,
         })
     }
 
@@ -780,6 +906,7 @@ impl AppState {
             race_id: None,
             title: Some(format!("PR #{number} {}", pr.title)),
             existing_branch: Some(pr.head_ref_name.clone()),
+            loop_config: None,
         })
     }
 
@@ -927,6 +1054,8 @@ impl AppState {
             kind: "terminal".to_string(),
             merge_target: None,
             race_id: None,
+            loop_config: None,
+            loop_state: None,
         };
         self.registry.lock().unwrap().insert_run(&run)?;
         Ok(self.run_info(&run))
@@ -1009,6 +1138,8 @@ impl AppState {
             kind: "terminal".to_string(),
             merge_target: None,
             race_id: None,
+            loop_config: None,
+            loop_state: None,
         };
         self.registry.lock().unwrap().insert_run(&run)?;
         Ok(self.run_info(&run))
@@ -1159,6 +1290,14 @@ impl AppState {
     }
 
     pub fn stop_run(&self, id: &str) -> Result<()> {
+        // Stopping a looping run ends the loop too, or the driver would just
+        // respawn the session on the next tick. Best-effort: extra-tab ids and
+        // already-deleted runs have no record.
+        if let Ok(run) = self.run_record(id) {
+            if has_active_loop(&run) {
+                self.stop_loop(id)?;
+            }
+        }
         self.attaches.lock().unwrap().remove(id);
         let _ = self.term.read().unwrap().kill(&session_name(id));
         self.run_attaches.lock().unwrap().remove(id);
@@ -1455,6 +1594,12 @@ impl AppState {
         let run = self.run_record(id)?;
         let repo = self.project_repo(&run.project_id)?;
 
+        // The loop driver owns an active loop's session (attach between
+        // attempts must not spawn a rival interactive agent).
+        if has_active_loop(&run) {
+            return Ok(());
+        }
+
         if run.kind == "terminal" {
             let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
             self.term.read().unwrap().start_session(
@@ -1502,6 +1647,9 @@ impl AppState {
 
     pub fn rerun(&self, id: &str) -> Result<RunInfo> {
         let run = self.run_record(id)?;
+        if has_active_loop(&run) {
+            bail!("this run is looping — stop the loop before rerunning it manually");
+        }
         let repo = self.project_repo(&run.project_id)?;
         let config = agency_core::config::load(&repo);
         let worktree = repo.join(".agency").join("worktrees").join(&run.id);
@@ -1519,6 +1667,200 @@ impl AppState {
         let _ = self.term.read().unwrap().kill(&session_name(id));
         self.term.read().unwrap().start_session(&session_name(id), &worktree, &command, &args, &env, 220, 50)?;
         Ok(self.run_info(&run))
+    }
+
+    // ── agentic loops ──────────────────────────────────────────────────────────
+
+    /// Kill any leftover session and launch the next headless attempt in the
+    /// run's existing worktree. Uncommitted changes a previous attempt left
+    /// behind are committed first so every attempt has an auditable boundary
+    /// in `git log` and nothing is invisibly carried or clobbered.
+    fn spawn_loop_attempt(&self, run: &agency_core::registry::Run) -> Result<()> {
+        let repo = self.project_repo(&run.project_id)?;
+        let config = agency_core::config::load(&repo);
+        let worktree = repo.join(".agency").join("worktrees").join(&run.id);
+        let attempt = run.loop_state.as_ref().map(|s| s.attempt).unwrap_or(1);
+        match agency_core::git::status(&worktree) {
+            Ok(changes) if !changes.is_empty() => {
+                agency_core::git::stage_all(&worktree)?;
+                agency_core::git::commit(&worktree, &format!("wip: loop attempt {attempt}"))?;
+            }
+            _ => {}
+        }
+        let profile = {
+            let reg = self.registry.lock().unwrap();
+            reg.get_profile(&run.agent)?
+                .ok_or_else(|| anyhow!("unknown agent profile: {}", run.agent))?
+        };
+        let mut env = self.provider_env()?;
+        env.extend(profile.env.iter().cloned());
+        env.extend(agency_core::scripts::script_env(&worktree, &repo, &run.id, run.port_base));
+        let (command, args) = loop_argv(&profile, &run.prompt, config.scripts.setup.as_deref())?;
+        let _ = self.term.read().unwrap().kill(&session_name(&run.id));
+        self.term
+            .read()
+            .unwrap()
+            .start_session(&session_name(&run.id), &worktree, &command, &args, &env, 220, 50)
+    }
+
+    /// Run the loop's check command in the worktree on its own thread; the
+    /// result lands in the run's check slot for `drive_loops` to drain. The
+    /// child is killed at the config's timeout (counted as a failed check).
+    fn start_loop_check(&self, run: &agency_core::registry::Run, cfg: &agency_core::loops::LoopConfig) -> Result<()> {
+        let repo = self.project_repo(&run.project_id)?;
+        let worktree = repo.join(".agency").join("worktrees").join(&run.id);
+        let slot = std::sync::Arc::new(Mutex::new(CheckStatus::Running));
+        self.checks.lock().unwrap().insert(run.id.clone(), slot.clone());
+        let command = cfg.check_command.clone();
+        let timeout = std::time::Duration::from_secs(cfg.check_timeout_secs.max(1));
+        std::thread::spawn(move || {
+            let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+            let spawned = std::process::Command::new(shell)
+                .arg("-lc")
+                .arg(&command)
+                .current_dir(&worktree)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+            let mut child = match spawned {
+                Ok(c) => c,
+                Err(e) => {
+                    log::warn!("loop check failed to spawn: {e}");
+                    *slot.lock().unwrap() = CheckStatus::Done(Some(127));
+                    return;
+                }
+            };
+            let deadline = std::time::Instant::now() + timeout;
+            let code = loop {
+                match child.try_wait() {
+                    // `code()` is None when the check died on a signal; both
+                    // that and timeout report as None (a failed check).
+                    Ok(Some(status)) => break status.code(),
+                    Ok(None) if std::time::Instant::now() >= deadline => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        break None;
+                    }
+                    Ok(None) => std::thread::sleep(std::time::Duration::from_millis(500)),
+                    Err(e) => {
+                        log::warn!("loop check wait failed: {e}");
+                        break Some(127);
+                    }
+                }
+            };
+            *slot.lock().unwrap() = CheckStatus::Done(code);
+        });
+        Ok(())
+    }
+
+    /// Halt a loop: mark it Stopped (terminal) and kill the live attempt.
+    /// The worktree and its commits stay for the normal finish flow.
+    pub fn stop_loop(&self, id: &str) -> Result<()> {
+        let run = self.run_record(id)?;
+        if let Some(mut st) = run.loop_state {
+            if !st.status.is_terminal() {
+                st.status = agency_core::loops::LoopStatus::Stopped;
+                st.updated_at = now_secs();
+                self.registry.lock().unwrap().set_loop_state(id, &st)?;
+            }
+        }
+        self.checks.lock().unwrap().remove(id);
+        self.attaches.lock().unwrap().remove(id);
+        let _ = self.term.read().unwrap().kill(&session_name(id));
+        Ok(())
+    }
+
+    /// Advance every active loop one step: read the session/check snapshot,
+    /// run the pure `looper::step`, persist the new state, then perform the
+    /// side effects. Called from the watcher thread each poll tick; returns
+    /// the terminal transitions for it to notify about.
+    pub fn drive_loops(&self) -> Result<Vec<LoopNotice>> {
+        let mut notices = Vec::new();
+        let projects = self.registry.lock().unwrap().list_projects()?;
+        for proj in projects {
+            let runs = self.registry.lock().unwrap().list_runs(&proj.id)?;
+            for run in runs {
+                let (Some(cfg), Some(prev)) = (run.loop_config.clone(), run.loop_state.clone()) else {
+                    continue;
+                };
+                if prev.status.is_terminal() {
+                    continue;
+                }
+                let agent = self
+                    .term
+                    .read()
+                    .unwrap()
+                    .status(&session_name(&run.id))
+                    .unwrap_or(SessionStatus::Gone);
+                let (check_in_flight, check) = {
+                    let mut checks = self.checks.lock().unwrap();
+                    match checks.get(&run.id).map(|s| *s.lock().unwrap()) {
+                        Some(CheckStatus::Running) => (true, None),
+                        Some(CheckStatus::Done(code)) => {
+                            checks.remove(&run.id);
+                            (false, Some(crate::looper::CheckResult { exit_code: code }))
+                        }
+                        None => (false, None),
+                    }
+                };
+                let snap = crate::looper::LoopSnapshot { agent, check_in_flight, check };
+                let (next, actions) = crate::looper::step(&cfg, &prev, &snap, now_secs());
+                if next != prev {
+                    self.registry.lock().unwrap().set_loop_state(&run.id, &next)?;
+                }
+                let mut updated = run.clone();
+                updated.loop_state = Some(next.clone());
+                let label = format!(
+                    "{}: {}",
+                    run.agent,
+                    run.title.clone().filter(|t| !t.is_empty()).unwrap_or_else(|| run.prompt.clone())
+                );
+                for action in actions {
+                    match action {
+                        crate::looper::LoopAction::SpawnAttempt => {
+                            if let Err(e) = self.spawn_loop_attempt(&updated) {
+                                // A respawn that can't work (agent gone, git
+                                // broken) would otherwise retry every tick
+                                // forever; stall loudly instead.
+                                log::warn!("loop {}: attempt spawn failed, stalling: {e}", run.id);
+                                let mut stalled = next.clone();
+                                stalled.status = agency_core::loops::LoopStatus::Stalled;
+                                stalled.updated_at = now_secs();
+                                self.registry.lock().unwrap().set_loop_state(&run.id, &stalled)?;
+                                notices.push(LoopNotice {
+                                    project_id: proj.id.clone(),
+                                    run_id: run.id.clone(),
+                                    label: label.clone(),
+                                    done: false,
+                                    attempt: stalled.attempt,
+                                });
+                            }
+                        }
+                        crate::looper::LoopAction::StartCheck => {
+                            if let Err(e) = self.start_loop_check(&updated, &cfg) {
+                                log::warn!("loop {}: check spawn failed: {e}", run.id);
+                            }
+                        }
+                        crate::looper::LoopAction::NotifyComplete => notices.push(LoopNotice {
+                            project_id: proj.id.clone(),
+                            run_id: run.id.clone(),
+                            label: label.clone(),
+                            done: true,
+                            attempt: next.attempt,
+                        }),
+                        crate::looper::LoopAction::NotifyStalled => notices.push(LoopNotice {
+                            project_id: proj.id.clone(),
+                            run_id: run.id.clone(),
+                            label: label.clone(),
+                            done: false,
+                            attempt: next.attempt,
+                        }),
+                    }
+                }
+            }
+        }
+        Ok(notices)
     }
 
     // ── worktree path ──────────────────────────────────────────────────────────
@@ -1921,11 +2263,13 @@ impl AppState {
                     })
                 );
                 let user_input_pending = self.input_seen.lock().unwrap().contains(&run.id);
+                let is_loop = has_active_loop(&run);
                 out.push(notifier::RunSnapshot {
                     id: run.id,
                     project_id: proj.id.clone(),
                     label,
                     is_terminal: run.kind == "terminal",
+                    is_loop,
                     agent,
                     run_script,
                     pane_hash,
@@ -1996,6 +2340,7 @@ mod tests {
             name: "claude".into(), command: "claude".into(),
             args: vec!["{{prompt}}".into()], env: vec![],
             resume_args: Some(vec!["--continue".into()]),
+            loop_args: None,
         };
         let (cmd, args) = agent_argv(&p, "do the thing", true, None);
         assert_eq!(cmd, "claude");
@@ -2008,6 +2353,7 @@ mod tests {
             name: "cursor".into(), command: "cursor-agent".into(),
             args: vec!["{{prompt}}".into()], env: vec![],
             resume_args: None,
+            loop_args: None,
         };
         let (cmd, args) = agent_argv(&p, "hello", true, None);
         assert_eq!(cmd, "cursor-agent");
@@ -2020,9 +2366,26 @@ mod tests {
             name: "claude".into(), command: "claude".into(),
             args: vec!["{{prompt}}".into()], env: vec![],
             resume_args: Some(vec!["--continue".into()]),
+            loop_args: None,
         };
         let (_cmd, args) = agent_argv(&p, "fresh prompt", false, None);
         assert_eq!(args, vec!["fresh prompt".to_string()]);
+    }
+
+    #[test]
+    fn loop_argv_renders_prompt_and_requires_recipe() {
+        let p = AgentProfile {
+            name: "claude".into(), command: "claude".into(),
+            args: vec![], env: vec![],
+            resume_args: None,
+            loop_args: Some(vec!["-p".into(), "{{prompt}}".into(), "--permission-mode".into(), "acceptEdits".into()]),
+        };
+        let (cmd, args) = super::loop_argv(&p, "fix the tests", None).unwrap();
+        assert_eq!(cmd, "claude");
+        assert_eq!(args, vec!["-p", "fix the tests", "--permission-mode", "acceptEdits"]);
+
+        let no_recipe = AgentProfile { loop_args: None, ..p };
+        assert!(super::loop_argv(&no_recipe, "x", None).is_err());
     }
 
     #[test]
@@ -2158,6 +2521,8 @@ mod tests {
             kind: "terminal".to_string(),
             merge_target: None,
             race_id: None,
+            loop_config: None,
+            loop_state: None,
         };
         assert_eq!(run.kind, "terminal");
         assert!(run.branch.is_empty());

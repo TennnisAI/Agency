@@ -42,6 +42,19 @@ pub struct RunInfo {
     pub race_id: Option<String>,
 }
 
+/// An extra agent tab sharing a run's worktree, as shown in the UI. `id` is
+/// the composite session key (`<run_id>--<n>`) accepted by every run-terminal
+/// command (attach/input/resize/preview), so the UI drives these tabs through
+/// the exact same plumbing as the primary agent terminal.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunSessionInfo {
+    pub id: String,
+    pub run_id: String,
+    pub agent: String,
+    pub status: SessionStatus,
+}
+
 /// Everything create_run_spec needs to make a workspace + session. The public
 /// entry points (plain create, racing, from-issue, from-PR) differ only in
 /// which fields they fill.
@@ -131,6 +144,20 @@ fn termd_bin() -> std::path::PathBuf {
 
 fn session_name(id: &str) -> String {
     format!("agency-{id}")
+}
+
+/// Split a session id into (run_id, tab_seq). Extra agent sessions sharing a
+/// run's worktree are keyed `<run_id>--<n>`; a task id can never contain `--`
+/// (slugify collapses every separator run into a single hyphen), so the first
+/// `--` is unambiguous. Plain run ids return (id, None).
+fn split_session_id(id: &str) -> (&str, Option<u32>) {
+    match id.split_once("--") {
+        Some((run, seq)) => match seq.parse::<u32>() {
+            Ok(n) => (run, Some(n)),
+            Err(_) => (id, None),
+        },
+        None => (id, None),
+    }
 }
 
 /// Decide the (command, args) to launch for an agent run. With `use_resume` and a
@@ -486,13 +513,15 @@ impl AppState {
     }
 
     pub fn close_project(&self, id: &str) -> Result<()> {
-        // Kill live terminals; keep project + run records so reopen can re-run.
+        // Kill live terminals; keep project + run records (and extra-session
+        // rows) so reopen can re-run and revive the tabs.
         let runs = self.registry.lock().unwrap().list_runs(id)?;
         for run in &runs {
             self.attaches.lock().unwrap().remove(&run.id);
             let _ = self.term.read().unwrap().kill(&session_name(&run.id));
             self.run_attaches.lock().unwrap().remove(&run.id);
             let _ = self.term.read().unwrap().kill(&run_session_name(&run.id));
+            self.kill_extra_sessions(&run.id);
         }
         Ok(())
     }
@@ -505,10 +534,13 @@ impl AppState {
             let _ = self.term.read().unwrap().kill(&session_name(&run.id));
             self.run_attaches.lock().unwrap().remove(&run.id);
             let _ = self.term.read().unwrap().kill(&run_session_name(&run.id));
+            self.kill_extra_sessions(&run.id);
             if let Some(repo) = &repo {
                 let _ = WorktreeManager::new(repo.clone()).remove(&run.id);
             }
-            self.registry.lock().unwrap().delete_run(&run.id)?;
+            let reg = self.registry.lock().unwrap();
+            reg.delete_run_sessions(&run.id)?;
+            reg.delete_run(&run.id)?;
         }
         self.registry.lock().unwrap().remove_project(id)?;
         Ok(())
@@ -1049,12 +1081,15 @@ impl AppState {
         let _ = self.term.read().unwrap().kill(&run_session_name(id));
         self.shell_attaches.lock().unwrap().remove(id);
         let _ = self.term.read().unwrap().kill(&shell_session_name(id));
+        self.kill_extra_sessions(id);
         if run.kind == "agent" {
             if let Ok(repo) = self.project_repo(&run.project_id) {
                 let _ = WorktreeManager::new(repo).remove(id);
             }
         }
-        self.registry.lock().unwrap().delete_run(id)?;
+        let reg = self.registry.lock().unwrap();
+        reg.delete_run_sessions(id)?;
+        reg.delete_run(id)?;
         Ok(())
     }
 
@@ -1065,13 +1100,16 @@ impl AppState {
         let run = self.run_record(id)?;
         let repo = self.project_repo(&run.project_id)?;
 
-        // Stop both sessions and drop attach handles.
+        // Stop all sessions and drop attach handles. Extra tabs are purged for
+        // good: the worktree they live in is about to disappear.
         self.attaches.lock().unwrap().remove(id);
         let _ = self.term.read().unwrap().kill(&session_name(id));
         self.run_attaches.lock().unwrap().remove(id);
         let _ = self.term.read().unwrap().kill(&run_session_name(id));
         self.shell_attaches.lock().unwrap().remove(id);
         let _ = self.term.read().unwrap().kill(&shell_session_name(id));
+        self.kill_extra_sessions(id);
+        self.registry.lock().unwrap().delete_run_sessions(id)?;
 
         // Preserve uncommitted agent work BEFORE the worktree is force-removed:
         // commit it onto the kept agent branch so restore brings it back. A
@@ -1290,6 +1328,112 @@ impl AppState {
         self.term.read().unwrap().resize(&shell_session_name(id), cols, rows)
     }
 
+    // ── Extra agent sessions (additional agent tabs sharing a run's worktree) ──
+
+    /// Launch (or relaunch) an extra session's agent in the parent run's
+    /// worktree. Always a fresh, promptless launch — resume recipes pick the
+    /// cwd's most recent conversation, which in a shared worktree may belong
+    /// to a sibling tab, so extras never resume.
+    fn launch_run_session(&self, sid: &str, run: &agency_core::registry::Run, agent: &str) -> Result<()> {
+        let repo = self.project_repo(&run.project_id)?;
+        let profile = {
+            let reg = self.registry.lock().unwrap();
+            reg.get_profile(agent)?
+                .ok_or_else(|| anyhow!("unknown agent profile: {agent}"))?
+        };
+        let config = agency_core::config::load(&repo);
+        let worktree = repo.join(".agency").join("worktrees").join(&run.id);
+        // The extra tab may run a different agent than the one the worktree
+        // was created for; make sure MCP config exists in its native format.
+        self.emit_mcp(agent, &repo, &worktree, &config);
+        let mut env = self.provider_env()?;
+        env.extend(profile.env.iter().cloned());
+        // Same env recipe as the run itself, ports included: extra sessions
+        // are collaborators in the same workspace, not new workspaces.
+        env.extend(agency_core::scripts::script_env(&worktree, &repo, &run.id, run.port_base));
+        let (command, args) = agent_argv(&profile, "", false, config.scripts.setup.as_deref());
+        self.term
+            .read()
+            .unwrap()
+            .start_session(&session_name(sid), &worktree, &command, &args, &env, 220, 50)
+    }
+
+    /// Open an additional agent tab in an existing run's worktree. `agent`
+    /// defaults to the run's own agent profile.
+    pub fn start_run_session(&self, run_id: &str, agent: Option<&str>) -> Result<RunSessionInfo> {
+        let run = self.run_record(run_id)?;
+        if run.kind != "agent" {
+            bail!("only agent runs can host extra sessions");
+        }
+        if run.archived_at.is_some() {
+            bail!("run is archived — restore it before adding sessions");
+        }
+        let agent = agent.unwrap_or(&run.agent).to_string();
+        // Next tab number: the primary is implicitly 1, extras start at --2.
+        // Gaps left by closed tabs are fine; only uniqueness matters.
+        let next = {
+            let reg = self.registry.lock().unwrap();
+            reg.list_run_sessions(run_id)?
+                .iter()
+                .filter_map(|s| split_session_id(&s.id).1)
+                .max()
+                .unwrap_or(1)
+                + 1
+        };
+        let session = agency_core::registry::RunSession {
+            id: format!("{run_id}--{next}"),
+            run_id: run_id.to_string(),
+            agent,
+            created_at: now_secs(),
+        };
+        self.launch_run_session(&session.id, &run, &session.agent)?;
+        self.registry.lock().unwrap().insert_run_session(&session)?;
+        Ok(self.run_session_info(&session))
+    }
+
+    pub fn run_sessions(&self, run_id: &str) -> Result<Vec<RunSessionInfo>> {
+        let rows = self.registry.lock().unwrap().list_run_sessions(run_id)?;
+        Ok(rows.iter().map(|s| self.run_session_info(s)).collect())
+    }
+
+    /// Close an extra agent tab: kill its daemon session and forget it. The
+    /// worktree, branch and every sibling session are untouched.
+    pub fn close_run_session(&self, id: &str) -> Result<()> {
+        let (_, seq) = split_session_id(id);
+        if seq.is_none() {
+            bail!("not an extra session id: {id}");
+        }
+        self.attaches.lock().unwrap().remove(id);
+        self.input_seen.lock().unwrap().remove(id);
+        let _ = self.term.read().unwrap().kill(&session_name(id));
+        self.registry.lock().unwrap().delete_run_session(id)?;
+        Ok(())
+    }
+
+    fn run_session_info(&self, s: &agency_core::registry::RunSession) -> RunSessionInfo {
+        let status =
+            self.term.read().unwrap().status(&session_name(&s.id)).unwrap_or(SessionStatus::Gone);
+        RunSessionInfo {
+            id: s.id.clone(),
+            run_id: s.run_id.clone(),
+            agent: s.agent.clone(),
+            status,
+        }
+    }
+
+    /// Kill every extra session of a run and drop their attach handles. The
+    /// registry rows stay unless the caller removes them: discard/archive
+    /// purge them (the worktree is going away), close_project keeps them so
+    /// reopening the project revives the tabs.
+    fn kill_extra_sessions(&self, run_id: &str) {
+        let rows = self.registry.lock().unwrap().list_run_sessions(run_id).unwrap_or_default();
+        for s in rows {
+            self.attaches.lock().unwrap().remove(&s.id);
+            self.input_seen.lock().unwrap().remove(&s.id);
+            let _ = self.term.read().unwrap().kill(&session_name(&s.id));
+        }
+    }
+
     /// Ensure the run has a live daemon session, transparently respawning it if the
     /// previous session is gone (e.g. after the app was quit). Prefers resuming the
     /// agent's prior context; falls back to a fresh start; terminals get a fresh
@@ -1297,6 +1441,16 @@ impl AppState {
     pub fn ensure_run_active(&self, id: &str) -> Result<()> {
         if !matches!(self.run_status(id)?, SessionStatus::Gone) {
             return Ok(());
+        }
+        // Extra tab (`<run>--<n>`): relaunch its agent fresh in the parent
+        // run's worktree (see launch_run_session for why extras never resume).
+        if let (run_id, Some(_)) = split_session_id(id) {
+            let session = {
+                let reg = self.registry.lock().unwrap();
+                reg.get_run_session(id)?.ok_or_else(|| anyhow!("unknown session: {id}"))?
+            };
+            let run = self.run_record(run_id)?;
+            return self.launch_run_session(id, &run, &session.agent);
         }
         let run = self.run_record(id)?;
         let repo = self.project_repo(&run.project_id)?;
@@ -1824,7 +1978,7 @@ fn validate_repo(repo_path: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{command_on_path, new_task_id, slugify, pick_port, agent_argv};
+    use super::{command_on_path, new_task_id, slugify, split_session_id, pick_port, agent_argv};
     use agency_core::profile::AgentProfile;
     use std::collections::HashSet;
 
@@ -1896,6 +2050,25 @@ mod tests {
         let id = new_task_id("Add a login page");
         assert!(id.starts_with("add-a-login-page-"), "unexpected id: {id}");
         assert!(id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'));
+    }
+
+    /// `--` is the extra-session separator, so it must be impossible inside a
+    /// task id — even for prompts full of dashes.
+    #[test]
+    fn task_ids_never_contain_double_hyphen() {
+        for prompt in ["a--b", "-- -- --", "trailing- -leading", "dash - dash -- dash"] {
+            let id = new_task_id(prompt);
+            assert!(!id.contains("--"), "id contains --: {id}");
+        }
+    }
+
+    #[test]
+    fn split_session_id_roundtrips() {
+        assert_eq!(split_session_id("fix-login-a3k2"), ("fix-login-a3k2", None));
+        assert_eq!(split_session_id("fix-login-a3k2--2"), ("fix-login-a3k2", Some(2)));
+        assert_eq!(split_session_id("fix-login-a3k2--12"), ("fix-login-a3k2", Some(12)));
+        // Defensive: a non-numeric tail is not a tab id.
+        assert_eq!(split_session_id("weird--tail"), ("weird--tail", None));
     }
 
     #[test]

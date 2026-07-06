@@ -11,7 +11,7 @@ use tauri::ipc::Channel;
 use tauri::State;
 
 use agency_core::title::fallback_title;
-use crate::state::{AppState, MergePreview, ProviderSettings, RunInfo};
+use crate::state::{AppState, MergePreview, ProviderSettings, RunInfo, RunSessionInfo};
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -786,6 +786,32 @@ pub fn resize_shell(
     rows: u16,
 ) -> Result<(), String> {
     state.resize_shell(&id, cols, rows).map_err(|e| e.to_string())
+}
+
+// ── Extra agent sessions (additional agent tabs sharing a run's worktree) ─────
+// The returned session ids are composite (`<run_id>--<n>`) and are accepted by
+// the ordinary run-terminal commands (attach_run/run_input/resize_run/…).
+
+#[tauri::command]
+pub fn start_run_session(
+    state: State<'_, AppState>,
+    run_id: String,
+    agent: Option<String>,
+) -> Result<RunSessionInfo, String> {
+    state.start_run_session(&run_id, agent.as_deref()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn list_run_sessions(
+    state: State<'_, AppState>,
+    run_id: String,
+) -> Result<Vec<RunSessionInfo>, String> {
+    state.run_sessions(&run_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn close_run_session(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    state.close_run_session(&id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

@@ -42,6 +42,21 @@ pub struct Run {
     pub race_id: Option<String>,
 }
 
+/// An extra agent session inside an existing run's worktree. The run's
+/// primary session is implicit (daemon session named after the run id);
+/// rows here are the additional tabs, keyed `<run_id>--<n>` so the whole
+/// terminal plumbing can address them like ordinary run sessions. Stored so
+/// tabs survive an app restart and dead sessions relaunch with the right
+/// agent profile.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunSession {
+    pub id: String,
+    pub run_id: String,
+    pub agent: String,
+    pub created_at: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReviewComment {
@@ -97,6 +112,12 @@ impl Registry {
                 archived_at INTEGER,
                 title TEXT,
                 kind TEXT NOT NULL DEFAULT 'agent'
+            );
+            CREATE TABLE IF NOT EXISTS run_sessions (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                agent TEXT NOT NULL,
+                created_at INTEGER NOT NULL
             );
             CREATE TABLE IF NOT EXISTS review_comments (
                 id TEXT PRIMARY KEY,
@@ -413,6 +434,49 @@ impl Registry {
         Ok(out)
     }
 
+    pub fn insert_run_session(&self, s: &RunSession) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO run_sessions (id, run_id, agent, created_at) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![s.id, s.run_id, s.agent, s.created_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_run_session(&self, id: &str) -> Result<Option<RunSession>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, run_id, agent, created_at FROM run_sessions WHERE id = ?1",
+        )?;
+        let mut rows = stmt.query([id])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(row_to_run_session(row)?)),
+            None => Ok(None),
+        }
+    }
+
+    pub fn list_run_sessions(&self, run_id: &str) -> Result<Vec<RunSession>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, run_id, agent, created_at FROM run_sessions
+             WHERE run_id = ?1 ORDER BY created_at",
+        )?;
+        let rows = stmt.query_map([run_id], |row| Ok(row_to_run_session(row)))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r??);
+        }
+        Ok(out)
+    }
+
+    pub fn delete_run_session(&self, id: &str) -> Result<()> {
+        self.conn.execute("DELETE FROM run_sessions WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    /// Remove every extra session of a run — the cascade for discard/archive.
+    pub fn delete_run_sessions(&self, run_id: &str) -> Result<()> {
+        self.conn.execute("DELETE FROM run_sessions WHERE run_id = ?1", [run_id])?;
+        Ok(())
+    }
+
     pub fn insert_review_comment(&self, c: &ReviewComment) -> Result<()> {
         self.conn.execute(
             "INSERT INTO review_comments (id, run_id, path, line_start, line_end, body, sent, created_at)
@@ -522,6 +586,15 @@ fn row_to_run(row: &rusqlite::Row) -> Result<Run> {
     })
 }
 
+fn row_to_run_session(row: &rusqlite::Row) -> Result<RunSession> {
+    Ok(RunSession {
+        id: row.get(0)?,
+        run_id: row.get(1)?,
+        agent: row.get(2)?,
+        created_at: row.get(3)?,
+    })
+}
+
 fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
     let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
     let mut rows = stmt.query([])?;
@@ -590,6 +663,33 @@ mod tests {
         let mut bases = reg.list_port_bases().unwrap();
         bases.sort();
         assert_eq!(bases, vec![5200, 5210]);
+    }
+
+    #[test]
+    fn run_sessions_roundtrip_and_cascade() {
+        let dir = tempdir().unwrap();
+        let reg = Registry::open(&dir.path().join("a.db")).unwrap();
+        reg.insert_run(&sample_run("x-1", None)).unwrap();
+        for (n, at) in [(2, 10), (3, 20)] {
+            reg.insert_run_session(&RunSession {
+                id: format!("x-1--{n}"),
+                run_id: "x-1".to_string(),
+                agent: "claude".to_string(),
+                created_at: at,
+            })
+            .unwrap();
+        }
+        let listed = reg.list_run_sessions("x-1").unwrap();
+        assert_eq!(
+            listed.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+            vec!["x-1--2", "x-1--3"]
+        );
+        assert_eq!(reg.get_run_session("x-1--2").unwrap().unwrap().agent, "claude");
+
+        reg.delete_run_session("x-1--2").unwrap();
+        assert_eq!(reg.list_run_sessions("x-1").unwrap().len(), 1);
+        reg.delete_run_sessions("x-1").unwrap();
+        assert!(reg.list_run_sessions("x-1").unwrap().is_empty());
     }
 
     #[test]

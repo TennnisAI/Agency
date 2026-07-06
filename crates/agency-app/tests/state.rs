@@ -533,6 +533,130 @@ fn ensure_run_active_falls_back_to_fresh_when_resume_fails() {
 }
 
 #[test]
+fn extra_session_lifecycle_shares_worktree_and_cascades() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
+    // Prints its cwd so we can prove the extra tab runs in the run's worktree.
+    state.register_profile(AgentProfile {
+        name: "pwds".into(),
+        command: "/bin/sh".into(),
+        args: vec!["-c".into(), "pwd; sleep 5".into()],
+        env: vec![],
+        resume_args: None,
+    }).unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+    let run = state.create_run(&project.id, "p", "pwds", "HEAD", None).unwrap();
+    let wt = state.worktree_path(&run.id).unwrap();
+
+    // First extra tab: defaults to the run's agent, gets the --2 suffix.
+    let s2 = state.start_run_session(&run.id, None).unwrap();
+    assert_eq!(s2.id, format!("{}--2", run.id));
+    assert_eq!(s2.agent, "pwds");
+
+    // It runs in the SAME worktree as the primary agent.
+    let mut cwd_ok = false;
+    for _ in 0..150 {
+        let cap = state.run_preview(&s2.id, 10).unwrap_or_default();
+        if cap.contains(&wt.to_string_lossy().to_string()) { cwd_ok = true; break; }
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    assert!(cwd_ok, "extra session did not report the run's worktree as cwd");
+
+    // Second tab (explicit agent) takes the next number; both are listed.
+    let s3 = state.start_run_session(&run.id, Some("pwds")).unwrap();
+    assert_eq!(s3.id, format!("{}--3", run.id));
+    assert_eq!(state.run_sessions(&run.id).unwrap().len(), 2);
+
+    // The primary id is not closable through the tab path.
+    assert!(state.close_run_session(&run.id).is_err());
+
+    // Closing a tab kills only that session; siblings survive.
+    state.close_run_session(&s2.id).unwrap();
+    let mut gone = false;
+    for _ in 0..75 {
+        if matches!(state.run_status(&s2.id).unwrap(), SessionStatus::Gone) { gone = true; break; }
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    assert!(gone, "closed tab session still present");
+    assert_eq!(state.run_sessions(&run.id).unwrap().len(), 1);
+    assert!(!matches!(state.run_status(&run.id).unwrap(), SessionStatus::Gone));
+
+    // Discarding the run sweeps the remaining tab: session and row.
+    state.discard_run(&run.id).unwrap();
+    let mut swept = false;
+    for _ in 0..75 {
+        if matches!(state.run_status(&s3.id).unwrap(), SessionStatus::Gone) { swept = true; break; }
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    assert!(swept, "discard did not kill the extra session");
+    assert!(state.run_sessions(&run.id).unwrap().is_empty());
+}
+
+#[test]
+fn ensure_run_active_revives_a_dead_extra_session() {
+    // App-restart path: the tab's daemon session is gone, but its registry row
+    // survives; mounting the tab must relaunch its agent in the run's worktree.
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
+    state.register_profile(AgentProfile {
+        name: "pwds".into(),
+        command: "/bin/sh".into(),
+        args: vec!["-c".into(), "pwd; sleep 5".into()],
+        env: vec![],
+        resume_args: None,
+    }).unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+    let run = state.create_run(&project.id, "p", "pwds", "HEAD", None).unwrap();
+    let wt = state.worktree_path(&run.id).unwrap();
+    let tab = state.start_run_session(&run.id, None).unwrap();
+
+    state.stop_run(&tab.id).unwrap();
+    let mut gone = false;
+    for _ in 0..75 {
+        if matches!(state.run_status(&tab.id).unwrap(), SessionStatus::Gone) { gone = true; break; }
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    assert!(gone, "tab session did not become Gone after stop");
+
+    state.ensure_run_active(&tab.id).unwrap();
+    let mut back = false;
+    for _ in 0..150 {
+        let cap = state.run_preview(&tab.id, 10).unwrap_or_default();
+        if cap.contains(&wt.to_string_lossy().to_string())
+            && matches!(state.run_status(&tab.id).unwrap(), SessionStatus::Running)
+        {
+            back = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    assert!(back, "revived tab did not come up in the run's worktree");
+
+    state.discard_run(&run.id).unwrap();
+}
+
+#[test]
+fn extra_session_rejects_terminal_runs() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+    let term = state.create_terminal(&project.id).unwrap();
+    let err = state.start_run_session(&term.id, None).unwrap_err().to_string();
+    assert!(err.contains("only agent runs"), "unexpected error: {err}");
+    state.discard_run(&term.id).unwrap();
+}
+
+#[test]
 fn send_review_comments_errors_when_session_not_running() {
     let dir = tempfile::tempdir().unwrap();
     let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();

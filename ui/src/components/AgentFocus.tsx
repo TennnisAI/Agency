@@ -1,8 +1,12 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRuns } from "../store/runs";
-import { discardRun, archiveRun, setRunTitle } from "../api";
+import {
+  discardRun, archiveRun, setRunTitle,
+  listProfiles, AgentProfile,
+  listRunSessions, startRunSession, closeRunSession, RunSessionInfo,
+} from "../api";
 import { toastError } from "../lib/toast";
-import { runName } from "../agents";
+import { runName, agentLabel } from "../agents";
 import FocusTerminal, { shellStream } from "./FocusTerminal";
 import RunPanel from "./RunPanel";
 import MergeModal from "./MergeModal";
@@ -31,11 +35,64 @@ export default function AgentFocus({
   const { runs, focusedRunId, setFocusedRun, refreshRuns, createAgent, createTerminal } = useRuns();
   const [showMerge, setShowMerge] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
-  const [panel, setPanel] = useState<"agent" | "run">("agent");
+  // "agent" (primary terminal), "run" (RunPanel), or an extra-session id —
+  // extra agent tabs sharing this run's worktree.
+  const [panel, setPanel] = useState<string>("agent");
+  const [sessions, setSessions] = useState<RunSessionInfo[]>([]);
+  const [confirmCloseTab, setConfirmCloseTab] = useState<string | null>(null);
+  // "+" tab menu: agent profiles to open as an extra tab. Anchored in viewport
+  // coordinates like AgentAddMenu so ancestor overflow can't clip it.
+  const [addOpen, setAddOpen] = useState(false);
+  const [addCoords, setAddCoords] = useState<{ top: number; left: number }>();
+  const [profiles, setProfiles] = useState<AgentProfile[]>([]);
+  const addBtnRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     setShowMerge(false);
     setPanel("agent");
+    setAddOpen(false);
+    setSessions([]);
+    if (focusedRunId) listRunSessions(focusedRunId).then(setSessions).catch(() => {});
   }, [focusedRunId]);
+
+  const toggleAddMenu = () => {
+    setAddOpen((o) => {
+      const next = !o;
+      if (next) {
+        listProfiles()
+          .then((ps) => setProfiles(ps.filter((p) => p.name !== "shell")))
+          .catch(() => {});
+        if (addBtnRef.current) {
+          const r = addBtnRef.current.getBoundingClientRect();
+          setAddCoords({ top: r.bottom + 4, left: r.left });
+        }
+      }
+      return next;
+    });
+  };
+
+  const spawnTab = async (agent: string) => {
+    setAddOpen(false);
+    if (!focusedRunId) return;
+    try {
+      const s = await startRunSession(focusedRunId, agent);
+      setSessions((prev) => [...prev, s]);
+      setPanel(s.id);
+    } catch (e) {
+      toastError(e, "Couldn't open agent tab");
+    }
+  };
+
+  // The tab strip scrolls horizontally (VS Code-style): vertical wheel input
+  // pans it, and the active tab is kept in view when tabs change.
+  const tabsScrollRef = useRef<HTMLDivElement>(null);
+  const onTabsWheel = (e: React.WheelEvent<HTMLDivElement>) => {
+    if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) e.currentTarget.scrollLeft += e.deltaY;
+  };
+  useEffect(() => {
+    tabsScrollRef.current
+      ?.querySelector(".session-tab.on")
+      ?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [panel, sessions.length]);
   const [railOpen, setRailOpen] = useState(true);
   const rail = usePaneWidth("rail", 312, 220, 520);
   // Companion terminal (bottom panel) — shared open-state + height across runs.
@@ -116,11 +173,7 @@ export default function AgentFocus({
               <div className="focus-head">
                 <span className={badgeClass(focused.agent)}>{focused.agent}</span>
                 <code>{focused.branch}</code>
-                <div className="focus-tabs">
-                  <button className={panel === "agent" ? "on" : ""} onClick={() => setPanel("agent")}>Agent</button>
-                  <button className={panel === "run" ? "on" : ""} onClick={() => setPanel("run")}>Run</button>
-                </div>
-                {panel === "agent" && (
+                {panel !== "run" && (
                   <button
                     className={`focus-shell-toggle ${shellOpen ? "on" : ""}`}
                     title="Toggle terminal in this worktree"
@@ -141,10 +194,55 @@ export default function AgentFocus({
                 }}>⌂ Archive</button>
                 <button onClick={() => setShowMerge(true)}>Approve →</button>
               </div>
-              {panel === "agent" ? (
+              <div className="session-tabs">
+                <div className="session-tabs-scroll" ref={tabsScrollRef} onWheel={onTabsWheel}>
+                  <button
+                    className={`session-tab ${panel === "agent" ? "on" : ""}`}
+                    onClick={() => setPanel("agent")}
+                  >{agentLabel(focused.agent)}</button>
+                  {sessions.map((s) => (
+                    <button
+                      key={s.id}
+                      className={`session-tab ${panel === s.id ? "on" : ""}`}
+                      title={`${agentLabel(s.agent)} — extra agent in this worktree`}
+                      onClick={() => setPanel(s.id)}
+                    >
+                      {agentLabel(s.agent)} · {s.id.split("--").pop()}
+                      <span
+                        className="tab-close"
+                        title="Close this agent tab"
+                        onClick={(e) => { e.stopPropagation(); setConfirmCloseTab(s.id); }}
+                      >✕</span>
+                    </button>
+                  ))}
+                </div>
+                <button
+                  ref={addBtnRef}
+                  className="session-tab-add"
+                  title="New agent tab in this worktree"
+                  onClick={toggleAddMenu}
+                >+</button>
+                <span className="spacer" />
+                <button
+                  className={`session-tab run-tab ${panel === "run" ? "on" : ""}`}
+                  onClick={() => setPanel("run")}
+                >Run</button>
+              </div>
+              {addOpen && (
+                <>
+                  <div className="agent-menu-backdrop" onClick={() => setAddOpen(false)} />
+                  <div className="agent-menu" style={{ position: "fixed", ...addCoords }}>
+                    {profiles.map((p) => (
+                      <button key={p.name} onClick={() => spawnTab(p.name)}>{agentLabel(p.name)}</button>
+                    ))}
+                  </div>
+                </>
+              )}
+              {panel !== "run" ? (
                 <div className="focus-body">
-                  <FocusTerminal key={focused.id} runId={focused.id}
-                    onFirstPrompt={focused.title ? undefined : (line) => { setRunTitle(focused.id, line).catch(() => {}); }} />
+                  <FocusTerminal key={panel === "agent" ? focused.id : panel}
+                    runId={panel === "agent" ? focused.id : panel}
+                    onFirstPrompt={panel === "agent" && !focused.title ? (line) => { setRunTitle(focused.id, line).catch(() => {}); } : undefined} />
                   {shellOpen && (
                     <>
                       <Resizer orientation="horizontal" side="right"
@@ -171,6 +269,26 @@ export default function AgentFocus({
                     setFocusedRun(null);
                     refreshRuns();
                   }}
+                />
+              )}
+              {confirmCloseTab && (
+                <ConfirmDialog
+                  title="Close agent tab?"
+                  body="Stop this extra agent session. The worktree, branch and other tabs are untouched."
+                  confirmLabel="Close"
+                  danger
+                  onConfirm={async () => {
+                    const sid = confirmCloseTab;
+                    setConfirmCloseTab(null);
+                    try {
+                      await closeRunSession(sid);
+                      setSessions((prev) => prev.filter((s) => s.id !== sid));
+                      setPanel((p) => (p === sid ? "agent" : p));
+                    } catch (e) {
+                      toastError(e, "Close failed");
+                    }
+                  }}
+                  onCancel={() => setConfirmCloseTab(null)}
                 />
               )}
               {confirmDiscard && (

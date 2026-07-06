@@ -127,6 +127,22 @@ export function attachShell(id: string, onBytes: (b: Uint8Array) => void): Promi
   return invoke<void>("attach_shell", { id, onChunk });
 }
 
+// Extra agent sessions: additional agent tabs sharing a run's worktree. Ids
+// are composite (`<runId>--<n>`) and are accepted by the ordinary run-terminal
+// calls (attachRun / runInput / resizeRun / runPreview / ensureRunActive).
+export interface RunSessionInfo {
+  id: string;
+  runId: string;
+  agent: string;
+  status: SessionStatus;
+}
+
+export const startRunSession = (runId: string, agent?: string) =>
+  invoke<RunSessionInfo>("start_run_session", { runId, agent: agent ?? null });
+export const listRunSessions = (runId: string) =>
+  invoke<RunSessionInfo[]>("list_run_sessions", { runId });
+export const closeRunSession = (id: string) => invoke<void>("close_run_session", { id });
+
 export interface FileChange {
   path: string;
   index: string; // staged status code

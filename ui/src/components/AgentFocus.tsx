@@ -77,6 +77,7 @@ export default function AgentFocus({
   const { runs, focusedRunId, setFocusedRun, refreshRuns, createAgent, createTerminal } = useRuns();
   const [showMerge, setShowMerge] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
+  const [confirmArchive, setConfirmArchive] = useState(false);
   // "agent" (primary terminal), "run" (RunPanel), or an extra-session id —
   // extra agent tabs sharing this run's worktree.
   const [panel, setPanel] = useState<string>("agent");
@@ -227,17 +228,8 @@ export default function AgentFocus({
                   ><TerminalIcon /></button>
                 )}
                 <span className="spacer" />
-                <button className="tile-act danger" title="Discard agent" onClick={() => setConfirmDiscard(true)}><TrashIcon /> Discard</button>
-                <button className="tile-act" title="Archive agent — stops it and removes the worktree; uncommitted work is auto-committed to its branch" onClick={async () => {
-                  const id = focused.id;
-                  try {
-                    await archiveRun(id);
-                    setFocusedRun(null);
-                    await refreshRuns();
-                  } catch (e) {
-                    toastError(e, "Archive failed");
-                  }
-                }}><InboxIcon /> Archive</button>
+                <button className="tile-act danger icon-only" title="Discard agent" onClick={() => setConfirmDiscard(true)}><TrashIcon /></button>
+                <button className="tile-act icon-only" title="Archive agent" onClick={() => setConfirmArchive(true)}><InboxIcon /></button>
                 <button onClick={() => setShowMerge(true)}>Approve →</button>
               </div>
               <LoopStrip run={focused} onChanged={refreshRuns} />
@@ -356,6 +348,25 @@ export default function AgentFocus({
                     }
                   }}
                   onCancel={() => setConfirmDiscard(false)}
+                />
+              )}
+              {confirmArchive && (
+                <ConfirmDialog
+                  title="Archive agent?"
+                  body={`Stop "${focused.agent}" and remove its worktree. Any uncommitted work is auto-committed to its "${focused.branch}" branch first.`}
+                  confirmLabel="Archive"
+                  onConfirm={async () => {
+                    const id = focused.id;
+                    setConfirmArchive(false);
+                    try {
+                      await archiveRun(id);
+                      setFocusedRun(null);
+                      await refreshRuns();
+                    } catch (e) {
+                      toastError(e, "Archive failed");
+                    }
+                  }}
+                  onCancel={() => setConfirmArchive(false)}
                 />
               )}
             </>

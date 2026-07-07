@@ -25,6 +25,22 @@ cargo build -p agency-core --bin agency-termd \
   --manifest-path "$REPO_ROOT/Cargo.toml"
 echo "Daemon binary: $REPO_ROOT/target/debug/agency-termd"
 
+# Tauri's externalBin (tauri.conf.json) requires the triple-suffixed sidecar to
+# exist at target/release/agency-termd-<triple> even in dev — its build script
+# validates the resource and aborts if missing. build-termd.sh normally produces
+# it via a full release build, but a fresh git worktree has an empty target/ and
+# has never run it, so `tauri dev` fails with "resource path ... doesn't exist".
+# Stage the just-built debug binary under that name so dev works with no separate
+# release build. (A later `pnpm tauri build` still uses build-termd.sh for the
+# real release sidecar.)
+TRIPLE="$(rustc -vV | sed -n 's/host: //p')"
+SIDECAR="$REPO_ROOT/target/release/agency-termd-$TRIPLE"
+if [ ! -e "$SIDECAR" ]; then
+  mkdir -p "$REPO_ROOT/target/release"
+  cp "$REPO_ROOT/target/debug/agency-termd" "$SIDECAR"
+  echo "Staged dev sidecar: $SIDECAR"
+fi
+
 echo "Launching tauri dev..."
 cd "$REPO_ROOT/crates/agency-app"
 exec "$REPO_ROOT/ui/node_modules/.bin/tauri" dev

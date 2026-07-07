@@ -16,6 +16,7 @@ import Resizer from "./Resizer";
 import ArchivedSection from "./ArchivedSection";
 import { usePaneWidth, loadFold, saveFold } from "../hooks/usePaneWidth";
 import AgentAddMenu from "./AgentAddMenu";
+import { TrashIcon, InboxIcon, TerminalIcon } from "./icons";
 
 const SHELL_MIN = 120;
 const SHELL_MAX = 640;
@@ -189,7 +190,7 @@ export default function AgentFocus({
               <div className="focus-head">
                 <span className="badge">terminal</span>
                 <span className="spacer" />
-                <button className="tile-act danger icon-only" title="Close terminal" onClick={() => setConfirmDiscard(true)}>✕</button>
+                <button className="tile-act danger icon-only" title="Close terminal" onClick={() => setConfirmDiscard(true)}><TrashIcon /></button>
               </div>
               <FocusTerminal key={focused.id} runId={focused.id} />
               {confirmDiscard && (
@@ -220,13 +221,13 @@ export default function AgentFocus({
                 <code>{focused.branch}</code>
                 {panel !== "run" && (
                   <button
-                    className={`focus-shell-toggle ${shellOpen ? "on" : ""}`}
+                    className={`focus-shell-toggle icon-only ${shellOpen ? "on" : ""}`}
                     title="Toggle terminal in this worktree"
                     onClick={toggleShell}
-                  >≳ Terminal</button>
+                  ><TerminalIcon /></button>
                 )}
                 <span className="spacer" />
-                <button className="tile-act danger" title="Discard agent" onClick={() => setConfirmDiscard(true)}>✕ Discard</button>
+                <button className="tile-act danger" title="Discard agent" onClick={() => setConfirmDiscard(true)}><TrashIcon /> Discard</button>
                 <button className="tile-act" title="Archive agent — stops it and removes the worktree; uncommitted work is auto-committed to its branch" onClick={async () => {
                   const id = focused.id;
                   try {
@@ -236,7 +237,7 @@ export default function AgentFocus({
                   } catch (e) {
                     toastError(e, "Archive failed");
                   }
-                }}>⌂ Archive</button>
+                }}><InboxIcon /> Archive</button>
                 <button onClick={() => setShowMerge(true)}>Approve →</button>
               </div>
               <LoopStrip run={focused} onChanged={refreshRuns} />

@@ -4,6 +4,7 @@ import { useRuns } from "../store/runs";
 import { runName } from "../agents";
 import { toastError } from "../lib/toast";
 import ConfirmDialog from "./ConfirmDialog";
+import { TrashIcon } from "./icons";
 
 function badgeClass(agent: string): string {
   if (agent === "claude") return "badge claude";
@@ -57,7 +58,7 @@ export default function AgentTile({ run }: { run: RunInfo }) {
       <pre className="tile-preview">{preview}</pre>
       <div className="tile-foot">
         {st.text}
-        <button className="tile-act danger" title={isTerminal ? "Close terminal" : "Discard agent"} onClick={(e) => { e.stopPropagation(); setConfirmDiscard(true); }}>✕</button>
+        <button className="tile-act danger" title={isTerminal ? "Close terminal" : "Discard agent"} onClick={(e) => { e.stopPropagation(); setConfirmDiscard(true); }}><TrashIcon /></button>
       </div>
       {confirmDiscard && (
         <ConfirmDialog

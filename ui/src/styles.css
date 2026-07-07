@@ -129,6 +129,9 @@ button:hover { background: var(--lav); }
 .tile-act.danger { color: var(--red); border-color: rgba(243,139,168,.35); }
 .tile-act.danger:hover { background: rgba(243,139,168,.12); }
 .tile-act.icon-only { padding: 4px 7px; line-height: 1; }
+/* Inline SVG button icons sit next to (or in place of) a text label */
+.btn-ico { vertical-align: -2px; }
+button > .btn-ico:not(:only-child) { margin-right: 4px; }
 
 /* Board */
 .board { flex: 1; display: flex; flex-direction: column; padding: 16px; gap: 12px; }
@@ -723,12 +726,16 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
   min-height: 0;
 }
 
+/* Highlight the terminal when a file is dragged over it (Finder drop → path). */
+.term-drag-over { box-shadow: inset 0 0 0 2px var(--blue); }
+
 /* ── Companion terminal (bottom panel in the agent focus view) ─────── */
 .focus-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .focus-shell-toggle {
   padding: 2px 10px; border-radius: 6px; background: transparent;
   color: var(--sub0); border: 1px solid transparent; cursor: pointer; font-size: 12px;
 }
+.focus-shell-toggle.icon-only { padding: 3px 7px; line-height: 0; }
 .focus-shell-toggle:hover { color: var(--text); background: var(--s0); }
 .focus-shell-toggle.on { background: var(--panel, #1d1f26); color: var(--text); border-color: var(--line); }
 .focus-shell {

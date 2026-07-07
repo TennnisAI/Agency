@@ -3,6 +3,7 @@ import { RunInfo, listArchivedRuns, restoreRun, discardRun } from "../api";
 import { useRuns } from "../store/runs";
 import { toastError } from "../lib/toast";
 import ConfirmDialog from "./ConfirmDialog";
+import { TrashIcon } from "./icons";
 
 export default function ArchivedSection() {
   const { selectedProjectId, refreshRuns, setFocusedRun } = useRuns();
@@ -77,7 +78,7 @@ export default function ArchivedSection() {
               title="Discard permanently"
               disabled={busy}
               onClick={() => setConfirmDiscard(r)}
-            >✕</button>
+            ><TrashIcon /></button>
           </div>
         ))}
       {open && items.length === 0 && <div className="archived-empty">Nothing archived.</div>}

@@ -87,30 +87,6 @@ pub fn run() {
                     let settings = state.notif_settings().unwrap_or_default();
                     let (focused, active) = state.ui_snapshot();
 
-                    // Advance active loops (respawn attempts, run checks) and
-                    // toast their terminal transitions. Same suppression rules
-                    // as run notifications.
-                    if let Ok(notices) = state.drive_loops() {
-                        for n in notices {
-                            let suppressed = !settings.loop_events
-                                || (settings.only_when_unfocused && focused)
-                                || active.as_deref() == Some(n.run_id.as_str());
-                            if suppressed {
-                                continue;
-                            }
-                            let (title, body) = if n.done {
-                                ("Loop complete".to_string(),
-                                 format!("{} — checks passed on attempt {}", n.label, n.attempt))
-                            } else {
-                                ("Loop stalled".to_string(),
-                                 format!("{} — stopped after attempt {}, checks still failing", n.label, n.attempt))
-                            };
-                            let _ = handle.notification().builder().title(title).body(body).show();
-                            if !focused {
-                                state.note_notification(&n.project_id, &n.run_id);
-                            }
-                        }
-                    }
                     let snaps = match state.watch_snapshot() {
                         Ok(s) => s,
                         Err(_) => continue,
@@ -150,6 +126,53 @@ pub fn run() {
                         watches.insert(snap.id.clone(), watch);
                     }
                     watches.retain(|id, _| seen.contains(id));
+                }
+            });
+
+            // Loop driver: advance active loops (respawn attempts, run
+            // checks) and toast their terminal transitions, with the same
+            // suppression rules as run notifications. Its own thread — a
+            // respawn does blocking git work (WIP commit) that must not
+            // stall the notifier/tray tick above. Idle cost is one atomic
+            // load per tick while no loops exist.
+            let loop_handle = app.handle().clone();
+            std::thread::spawn(move || {
+                use tauri::Manager;
+                use tauri_plugin_notification::NotificationExt;
+                loop {
+                    std::thread::sleep(std::time::Duration::from_secs(2));
+                    let state = loop_handle.state::<AppState>();
+                    let notices = match state.drive_loops() {
+                        Ok(n) => n,
+                        Err(e) => {
+                            log::warn!("drive_loops: {e}");
+                            continue;
+                        }
+                    };
+                    if notices.is_empty() {
+                        continue;
+                    }
+                    let settings = state.notif_settings().unwrap_or_default();
+                    let (focused, active) = state.ui_snapshot();
+                    for n in notices {
+                        let suppressed = !settings.loop_events
+                            || (settings.only_when_unfocused && focused)
+                            || active.as_deref() == Some(n.run_id.as_str());
+                        if suppressed {
+                            continue;
+                        }
+                        let (title, body) = if n.done {
+                            ("Loop complete".to_string(),
+                             format!("{} — checks passed on attempt {}", n.label, n.attempt))
+                        } else {
+                            ("Loop stalled".to_string(),
+                             format!("{} — stopped after attempt {}, checks still failing", n.label, n.attempt))
+                        };
+                        let _ = loop_handle.notification().builder().title(title).body(body).show();
+                        if !focused {
+                            state.note_notification(&n.project_id, &n.run_id);
+                        }
+                    }
                 }
             });
             Ok(())
@@ -201,6 +224,8 @@ pub fn run() {
             commands::send_check_feedback,
             commands::list_mcp_servers,
             commands::save_mcp_servers,
+            commands::get_knowledge_config,
+            commands::save_knowledge_config,
             commands::create_race,
             commands::list_gh_issues,
             commands::list_gh_prs,

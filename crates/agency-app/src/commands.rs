@@ -11,7 +11,7 @@ use tauri::ipc::Channel;
 use tauri::State;
 
 use agency_core::title::fallback_title;
-use crate::state::{AppState, MergePreview, ProviderSettings, RunInfo, RunSessionInfo};
+use crate::state::{AppState, KnowledgeConfigDto, MergePreview, ProviderSettings, RunInfo, RunSessionInfo};
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -517,6 +517,27 @@ pub fn save_mcp_servers(
     servers: Vec<agency_core::mcp::McpServer>,
 ) -> Result<(), String> {
     state.save_mcp_servers(&servers).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_knowledge_config(
+    state: State<'_, AppState>,
+    project_id: String,
+) -> Result<KnowledgeConfigDto, String> {
+    state.knowledge_config(&project_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn save_knowledge_config(
+    state: State<'_, AppState>,
+    project_id: String,
+    graph: bool,
+    serve_command: Option<String>,
+    build_command: Option<String>,
+) -> Result<(), String> {
+    state
+        .save_knowledge_config(&project_id, graph, serve_command, build_command)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]

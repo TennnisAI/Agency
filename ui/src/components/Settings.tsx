@@ -1,14 +1,17 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import {
   AgentProfile,
+  KnowledgeConfig,
   McpServer,
   ProviderSettings,
   NotifSettings,
   deleteProfile,
+  getKnowledgeConfig,
   getSettings,
   getNotifSettings,
   listMcpServers,
   listProfiles,
+  saveKnowledgeConfig,
   saveMcpServers,
   saveProfile,
   saveSettings,
@@ -21,7 +24,15 @@ import { getWordWrap, setWordWrap } from "../lib/editorPrefs";
 
 // Full-view settings page (design handoff: settings takes over the main area,
 // entered from the ⚙ button at the bottom of the Projects pane).
-export default function Settings({ onClose }: { onClose: () => void }) {
+export default function Settings({
+  onClose,
+  projectId,
+  projectName,
+}: {
+  onClose: () => void;
+  projectId: string | null;
+  projectName: string | null;
+}) {
   const [settings, setSettings] = useState<ProviderSettings>({
     lmStudioBaseUrl: "",
   });
@@ -48,6 +59,11 @@ export default function Settings({ onClose }: { onClose: () => void }) {
   const emptyMcpDraft = { name: "", command: "", args: "", env: "", url: "" };
   const [mcpDraft, setMcpDraft] = useState(emptyMcpDraft);
   const [mcpFormOpen, setMcpFormOpen] = useState(false);
+  // Per-project knowledge-graph config. `null` until loaded (or when no project
+  // is selected — the section then prompts to pick one). `kgDraft` holds the
+  // editable command-override text so it survives re-renders between saves.
+  const [kg, setKg] = useState<KnowledgeConfig | null>(null);
+  const [kgDraft, setKgDraft] = useState({ serve: "", build: "" });
 
   function pickWordWrap(on: boolean) {
     setWrap(on);
@@ -132,6 +148,37 @@ export default function Settings({ onClose }: { onClose: () => void }) {
   useEffect(() => {
     refresh();
   }, []);
+
+  // Knowledge-graph config is per-project — (re)load whenever the selected
+  // project changes; clear it when there is no project to configure.
+  async function loadKnowledge(id: string) {
+    try {
+      const cfg = await getKnowledgeConfig(id);
+      setKg(cfg);
+      setKgDraft({ serve: cfg.serve_command ?? "", build: cfg.build_command ?? "" });
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  useEffect(() => {
+    if (projectId) loadKnowledge(projectId);
+    else setKg(null);
+  }, [projectId]);
+
+  // Persist the whole knowledge section at once (toggle and Save both route
+  // here) so an in-progress command edit is never dropped by a toggle, then
+  // reload to refresh the derived install-status flags.
+  async function persistKnowledge(graph: boolean) {
+    if (!projectId) return;
+    try {
+      await saveKnowledgeConfig(projectId, graph, kgDraft.serve.trim() || null, kgDraft.build.trim() || null);
+      setError("");
+      await loadKnowledge(projectId);
+    } catch (e) {
+      setError(String(e));
+    }
+  }
 
   // Flush unsaved provider edits on the way out, from whatever navigation.
   useEffect(() => () => {
@@ -432,6 +479,63 @@ export default function Settings({ onClose }: { onClose: () => void }) {
           ) : (
             <button className="settings-add-profile" onClick={() => setMcpFormOpen(true)}>+ Add MCP server</button>
           )}
+        </section>
+
+        <section className="settings-section">
+          <div className="settings-section-label">Knowledge graph</div>
+          <p className="settings-section-hint">
+            Builds a graphify code-knowledge graph for this project and exposes it to every agent as an
+            MCP server, rebuilding after each clean merge. Saved to this machine only
+            (<code>.agency/agency.local.toml</code>), not shared with the team. Needs the{" "}
+            <code>graphify</code> / <code>uv</code> tooling on your <code>PATH</code>.
+          </p>
+          {!projectId ? (
+            <div className="settings-group-card">
+              <span className="settings-notif-label">Select a project to configure its knowledge graph.</span>
+            </div>
+          ) : kg ? (
+            <div className="settings-group-card">
+              <div className="settings-notif-row">
+                <span className="settings-notif-label">
+                  Enable knowledge graph{projectName ? ` for ${projectName}` : ""}
+                </span>
+                <Toggle checked={kg.graph} onChange={(next) => persistKnowledge(next)} />
+              </div>
+              {kg.graph && (
+                <>
+                  {(!kg.serve_installed || !kg.build_installed) && (
+                    <div className="settings-kg-warn">
+                      {!kg.serve_installed && !kg.build_installed
+                        ? "The serve and build commands aren't on your PATH"
+                        : !kg.serve_installed
+                        ? "The serve command isn't on your PATH"
+                        : "The build command isn't on your PATH"}
+                      {" "}— the graph is enabled but will be skipped until the tooling is installed.
+                    </div>
+                  )}
+                  <div className="settings-provider-field">
+                    <label className="settings-field-key">serve</label>
+                    <input
+                      className="settings-field-input"
+                      placeholder={kg.serve_default}
+                      value={kgDraft.serve}
+                      onChange={(e) => setKgDraft({ ...kgDraft, serve: e.target.value })}
+                    />
+                  </div>
+                  <div className="settings-provider-field">
+                    <label className="settings-field-key">build</label>
+                    <input
+                      className="settings-field-input"
+                      placeholder={kg.build_default}
+                      value={kgDraft.build}
+                      onChange={(e) => setKgDraft({ ...kgDraft, build: e.target.value })}
+                    />
+                  </div>
+                  <button className="settings-save" onClick={() => persistKnowledge(kg.graph)}>Save commands</button>
+                </>
+              )}
+            </div>
+          ) : null}
         </section>
 
         <section className="settings-section">

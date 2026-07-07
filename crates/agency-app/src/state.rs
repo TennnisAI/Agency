@@ -24,6 +24,20 @@ pub struct ProviderSettings {
     pub lm_studio_base_url: String,
 }
 
+/// A project's effective knowledge-graph config for the settings UI. Command
+/// overrides are `None` when unset (the `*_default` fields show what runs then);
+/// the `*_installed` flags report whether that tooling is actually on PATH.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct KnowledgeConfigDto {
+    pub graph: bool,
+    pub serve_command: Option<String>,
+    pub build_command: Option<String>,
+    pub serve_default: String,
+    pub build_default: String,
+    pub serve_installed: bool,
+    pub build_installed: bool,
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunInfo {
@@ -194,10 +208,17 @@ fn loop_argv(
     prompt: &str,
     setup: Option<&str>,
 ) -> Result<(String, Vec<String>)> {
-    let recipe = profile.loop_args.as_ref().ok_or_else(|| {
+    let recipe = profile.loop_args.as_ref().filter(|r| !r.is_empty()).ok_or_else(|| {
         anyhow!("agent '{}' has no loop recipe — set the profile's loop args first", profile.name)
     })?;
-    let args: Vec<String> = recipe.iter().map(|a| a.replace("{{prompt}}", prompt)).collect();
+    let mut args: Vec<String> = recipe.iter().map(|a| a.replace("{{prompt}}", prompt)).collect();
+    // A recipe without a {{prompt}} token still gets the prompt, as the final
+    // positional arg — mirroring the interactive path. Attempts must never
+    // silently launch promptless: the loop would burn its whole budget on
+    // no-op runs with nothing surfaced.
+    if !recipe.iter().any(|a| a.contains("{{prompt}}")) {
+        args.push(prompt.to_string());
+    }
     Ok(agency_core::scripts::wrap_setup(setup, &profile.command, &args))
 }
 
@@ -395,7 +416,19 @@ pub struct AppState {
     /// In-flight loop check commands, one slot per looping run id. The check
     /// runs on its own thread (never on the 2s poll tick); `drive_loops`
     /// drains finished slots into the looper state machine.
-    checks: Mutex<HashMap<String, std::sync::Arc<Mutex<CheckStatus>>>>,
+    checks: Mutex<HashMap<String, std::sync::Arc<CheckSlot>>>,
+    /// Serializes loop transitions: `drive_loops` holds this per run across its
+    /// read → step → persist → act sequence, and `stop_loop` holds it across
+    /// persist-Stopped → kill. Without it an in-flight tick that read the run
+    /// before a Stop observes the freshly killed session as Gone and respawns
+    /// an attempt that no later tick would ever kill.
+    loop_gate: Mutex<()>,
+    /// Whether any loop might be active — the `drive_loops` fast path, so the
+    /// no-loops case (the common one) costs one atomic load per tick instead
+    /// of a registry scan. Starts true so loops persisted by a previous app
+    /// run are picked up on the first tick; cleared when a full pass finds
+    /// none, re-set by loop creation.
+    loops_active: std::sync::atomic::AtomicBool,
 }
 
 /// Progress of a loop's check command. `Done(None)` = killed on timeout or
@@ -404,6 +437,14 @@ pub struct AppState {
 enum CheckStatus {
     Running,
     Done(Option<i32>),
+}
+
+/// One in-flight check: the thread writes `status` when the child finishes;
+/// `cancelled` tells the thread to kill the child now (loop stopped) instead
+/// of letting it run to the timeout in a worktree about to be discarded.
+struct CheckSlot {
+    status: Mutex<CheckStatus>,
+    cancelled: std::sync::atomic::AtomicBool,
 }
 
 /// A loop reaching a terminal state this tick, for the watcher thread to
@@ -498,6 +539,8 @@ impl AppState {
             input_seen: Mutex::new(HashSet::new()),
             merge_gate: Mutex::new(()),
             checks: Mutex::new(HashMap::new()),
+            loop_gate: Mutex::new(()),
+            loops_active: std::sync::atomic::AtomicBool::new(true),
         };
         // Rehydrate: any run the daemon still hosts is adopted as-is; the watch
         // loop (watch_snapshot) then reports live status. Nothing to spawn here —
@@ -717,14 +760,13 @@ impl AppState {
         }
         self.emit_mcp(spec.agent, &repo, &worktree.path, &config);
 
-        let mut env = self.provider_env()?;
-        env.extend(profile.env.iter().cloned());
-        env.extend(agency_core::scripts::script_env(&worktree.path, &repo, &id, Some(port)));
-        let (command, args) = if spec.loop_config.is_some() {
-            // Looping runs launch the agent headless (one-shot): the process
-            // exiting is the loop driver's attempt boundary.
-            loop_argv(&profile, spec.prompt, config.scripts.setup.as_deref())?
-        } else {
+        // Looping runs are spawned below via spawn_loop_attempt — the same
+        // path the driver uses for every respawn — so there is exactly one
+        // place that builds a headless attempt.
+        if spec.loop_config.is_none() {
+            let mut env = self.provider_env()?;
+            env.extend(profile.env.iter().cloned());
+            env.extend(agency_core::scripts::script_env(&worktree.path, &repo, &id, Some(port)));
             let mut args: Vec<String> = profile
                 .render_args(spec.prompt)
                 .into_iter()
@@ -738,13 +780,13 @@ impl AppState {
             if !spec.prompt.trim().is_empty() && !profile.args.iter().any(|a| a.contains("{{prompt}}")) {
                 args.push(spec.prompt.to_string());
             }
-            agency_core::scripts::wrap_setup(config.scripts.setup.as_deref(), &profile.command, &args)
-        };
-
-        self.term
-            .read()
-            .unwrap()
-            .start_session(&session_name(&id), &worktree.path, &command, &args, &env, 220, 50)?;
+            let (command, args) =
+                agency_core::scripts::wrap_setup(config.scripts.setup.as_deref(), &profile.command, &args);
+            self.term
+                .read()
+                .unwrap()
+                .start_session(&session_name(&id), &worktree.path, &command, &args, &env, 220, 50)?;
+        }
 
         // A run created with a real prompt gets a title immediately (word-based;
         // no LLM on this path). The promptless flow still titles via the
@@ -780,6 +822,14 @@ impl AppState {
             // Remember the agent type so new-task shortcuts default to what
             // this project actually uses. Best-effort bookkeeping.
             let _ = reg.set_project_default_agent(spec.project_id, spec.agent);
+        }
+        if run.loop_config.is_some() {
+            // Wake the driver's fast path before spawning: even if this first
+            // spawn fails, the driver retries (and stalls loudly if it keeps
+            // failing) instead of the loop sitting invisible.
+            self.loops_active.store(true, std::sync::atomic::Ordering::Relaxed);
+            let _gate = self.loop_gate.lock().unwrap();
+            self.spawn_loop_attempt(&run)?;
         }
         Ok(self.run_info(&run))
     }
@@ -836,6 +886,21 @@ impl AppState {
     ) -> Result<RunInfo> {
         if prompt.trim().is_empty() {
             bail!("a loop needs a prompt — it is re-sent to the agent on every attempt");
+        }
+        // Validate the recipe BEFORE create_run_spec cuts the worktree and
+        // branch: a loop-incapable agent (the dialog filters these, the raw
+        // command does not) must fail cleanly instead of leaking an orphaned
+        // worktree that no run record references.
+        {
+            let profile = self
+                .registry
+                .lock()
+                .unwrap()
+                .get_profile(agent)?
+                .ok_or_else(|| anyhow!("unknown agent profile: {agent}"))?;
+            if profile.loop_args.as_ref().is_none_or(|a| a.is_empty()) {
+                bail!("agent '{agent}' has no loop recipe — set the profile's loop args first");
+            }
         }
         let cfg = agency_core::loops::LoopConfig {
             check_command: check_command.trim().to_string(),
@@ -933,6 +998,48 @@ impl AppState {
         self.registry.lock().unwrap().set_setting(SETTING_MCP, &json)
     }
 
+    /// The effective knowledge-graph config for a project, plus whether the
+    /// resolved serve/build tooling is actually on PATH (the feature silently
+    /// no-ops when it isn't, so the UI surfaces it as a warning).
+    pub fn knowledge_config(&self, project_id: &str) -> Result<KnowledgeConfigDto> {
+        let repo = self.project_repo(project_id)?;
+        let k = agency_core::config::load(&repo).knowledge;
+        let serve_default = agency_core::config::default_serve_command(&repo);
+        let build_default = agency_core::config::default_build_command().to_string();
+        let serve_effective = k.serve_command.clone().unwrap_or_else(|| serve_default.clone());
+        let build_effective = k.build_command.clone().unwrap_or_else(|| build_default.clone());
+        Ok(KnowledgeConfigDto {
+            graph: k.graph,
+            serve_installed: first_token_on_path(&serve_effective),
+            build_installed: first_token_on_path(&build_effective),
+            serve_command: k.serve_command,
+            build_command: k.build_command,
+            serve_default,
+            build_default,
+        })
+    }
+
+    /// Persist a project's knowledge-graph config into its (gitignored) local
+    /// override file. Empty command strings clear the override (runtime default
+    /// applies) rather than persisting a blank command.
+    pub fn save_knowledge_config(
+        &self,
+        project_id: &str,
+        graph: bool,
+        serve_command: Option<String>,
+        build_command: Option<String>,
+    ) -> Result<()> {
+        let repo = self.project_repo(project_id)?;
+        let clean = |s: Option<String>| s.map(|x| x.trim().to_string()).filter(|x| !x.is_empty());
+        let k = agency_core::config::KnowledgeConfig {
+            graph,
+            serve_command: clean(serve_command),
+            build_command: clean(build_command),
+        };
+        agency_core::config::save_knowledge(&repo, &k)?;
+        Ok(())
+    }
+
     /// The full MCP server list for a workspace: app-global servers, overlaid
     /// by the project's `[mcp.servers.*]`, plus the graphify knowledge-graph
     /// server when the project opted in and the tooling is installed.
@@ -951,12 +1058,11 @@ impl AppState {
         let project = agency_core::mcp::from_config(&config.mcp);
         let mut auto = Vec::new();
         if config.knowledge.graph {
-            let serve = config.knowledge.serve_command.clone().unwrap_or_else(|| {
-                format!(
-                    "uv tool run --from graphifyy python -m graphify.serve {}",
-                    repo.join("graphify-out").join("graph.json").display()
-                )
-            });
+            let serve = config
+                .knowledge
+                .serve_command
+                .clone()
+                .unwrap_or_else(|| agency_core::config::default_serve_command(repo));
             let mut parts = serve.split_whitespace().map(str::to_string);
             if let Some(cmd) = parts.next() {
                 if command_on_path(&cmd) {
@@ -1004,7 +1110,7 @@ impl AppState {
             .knowledge
             .build_command
             .clone()
-            .unwrap_or_else(|| "graphify .".to_string());
+            .unwrap_or_else(|| agency_core::config::default_build_command().to_string());
         if let Some(cmd) = build.split_whitespace().next() {
             if !command_on_path(cmd) {
                 log::warn!("knowledge graph enabled but '{cmd}' is not installed; skipping rebuild");
@@ -1207,6 +1313,14 @@ impl AppState {
         self.attaches.lock().unwrap().remove(id);
         self.input_seen.lock().unwrap().remove(id);
         let run = self.run_record(id)?;
+        // End an active loop first (best-effort): once delete_run removes the
+        // row, nothing could ever stop a session the driver respawned into
+        // the deleted worktree.
+        if has_active_loop(&run) {
+            if let Err(e) = self.stop_loop(id) {
+                log::warn!("discard_run {id}: couldn't end loop: {e}");
+            }
+        }
         let _ = self.term.read().unwrap().kill(&session_name(id));
         self.run_attaches.lock().unwrap().remove(id);
         let _ = self.term.read().unwrap().kill(&run_session_name(id));
@@ -1230,6 +1344,16 @@ impl AppState {
     pub fn archive_run(&self, id: &str) -> Result<()> {
         let run = self.run_record(id)?;
         let repo = self.project_repo(&run.project_id)?;
+
+        // End an active loop first (best-effort): archiving spends seconds
+        // between the session kills and set_archived, and a driver tick in
+        // that window would respawn an attempt into the worktree being
+        // removed. Terminal loop state also keeps restore from auto-resuming.
+        if has_active_loop(&run) {
+            if let Err(e) = self.stop_loop(id) {
+                log::warn!("archive_run {id}: couldn't end loop: {e}");
+            }
+        }
 
         // Stop all sessions and drop attach handles. Extra tabs are purged for
         // good: the worktree they live in is about to disappear.
@@ -1271,6 +1395,18 @@ impl AppState {
     pub fn restore_run(&self, id: &str) -> Result<RunInfo> {
         let run = self.run_record(id)?;
         let repo = self.project_repo(&run.project_id)?;
+        // Belt and braces: archive_run now ends loops, but rows archived
+        // before that fix (or by a crash mid-archive) may still carry a live
+        // loop state — which would make the driver auto-resume headless
+        // attempts the moment archived_at clears, violating this function's
+        // no-auto-start contract.
+        if has_active_loop(&run) {
+            if let Some(mut st) = run.loop_state.clone() {
+                st.status = agency_core::loops::LoopStatus::Stopped;
+                st.updated_at = now_secs();
+                self.registry.lock().unwrap().set_loop_state(id, &st)?;
+            }
+        }
         let manager = WorktreeManager::new(repo.clone());
         manager.restore(id)?;
         let config = agency_core::config::load(&repo);
@@ -1291,11 +1427,15 @@ impl AppState {
 
     pub fn stop_run(&self, id: &str) -> Result<()> {
         // Stopping a looping run ends the loop too, or the driver would just
-        // respawn the session on the next tick. Best-effort: extra-tab ids and
-        // already-deleted runs have no record.
+        // respawn the session on the next tick. Best-effort throughout: a
+        // failed loop-state write must not abort the teardown below (the
+        // kills are this function's contract), and extra-tab ids and
+        // already-deleted runs have no record at all.
         if let Ok(run) = self.run_record(id) {
             if has_active_loop(&run) {
-                self.stop_loop(id)?;
+                if let Err(e) = self.stop_loop(id) {
+                    log::warn!("stop_run {id}: couldn't end loop: {e}");
+                }
             }
         }
         self.attaches.lock().unwrap().remove(id);
@@ -1594,9 +1734,26 @@ impl AppState {
         let run = self.run_record(id)?;
         let repo = self.project_repo(&run.project_id)?;
 
-        // The loop driver owns an active loop's session (attach between
-        // attempts must not spawn a rival interactive agent).
+        // The loop driver owns an active loop's session — never spawn a rival
+        // interactive agent. But an AwaitingAgent loop with no session (the
+        // gap between attempts, or right after an app restart) would leave the
+        // pane dead until the driver's next tick, so bring the next headless
+        // attempt up now; the driver treats a Running session as a no-op.
+        // During Checking the session stays down by design (the check result
+        // decides what happens next) — the loop strip shows the state.
         if has_active_loop(&run) {
+            let _gate = self.loop_gate.lock().unwrap();
+            let Some(fresh) = self.registry.lock().unwrap().get_run(id)? else {
+                return Ok(());
+            };
+            let awaiting = fresh
+                .loop_state
+                .as_ref()
+                .map(|s| s.status == agency_core::loops::LoopStatus::AwaitingAgent)
+                .unwrap_or(false);
+            if awaiting && matches!(self.run_status(id)?, SessionStatus::Gone) {
+                self.spawn_loop_attempt(&fresh)?;
+            }
             return Ok(());
         }
 
@@ -1709,7 +1866,10 @@ impl AppState {
     fn start_loop_check(&self, run: &agency_core::registry::Run, cfg: &agency_core::loops::LoopConfig) -> Result<()> {
         let repo = self.project_repo(&run.project_id)?;
         let worktree = repo.join(".agency").join("worktrees").join(&run.id);
-        let slot = std::sync::Arc::new(Mutex::new(CheckStatus::Running));
+        let slot = std::sync::Arc::new(CheckSlot {
+            status: Mutex::new(CheckStatus::Running),
+            cancelled: std::sync::atomic::AtomicBool::new(false),
+        });
         self.checks.lock().unwrap().insert(run.id.clone(), slot.clone());
         let command = cfg.check_command.clone();
         let timeout = std::time::Duration::from_secs(cfg.check_timeout_secs.max(1));
@@ -1727,12 +1887,20 @@ impl AppState {
                 Ok(c) => c,
                 Err(e) => {
                     log::warn!("loop check failed to spawn: {e}");
-                    *slot.lock().unwrap() = CheckStatus::Done(Some(127));
+                    *slot.status.lock().unwrap() = CheckStatus::Done(Some(127));
                     return;
                 }
             };
             let deadline = std::time::Instant::now() + timeout;
             let code = loop {
+                // Loop stopped/discarded: kill the child now rather than let a
+                // full test run keep writing into a worktree that may be
+                // removed out from under it.
+                if slot.cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break None;
+                }
                 match child.try_wait() {
                     // `code()` is None when the check died on a signal; both
                     // that and timeout report as None (a failed check).
@@ -1749,7 +1917,7 @@ impl AppState {
                     }
                 }
             };
-            *slot.lock().unwrap() = CheckStatus::Done(code);
+            *slot.status.lock().unwrap() = CheckStatus::Done(code);
         });
         Ok(())
     }
@@ -1757,6 +1925,10 @@ impl AppState {
     /// Halt a loop: mark it Stopped (terminal) and kill the live attempt.
     /// The worktree and its commits stay for the normal finish flow.
     pub fn stop_loop(&self, id: &str) -> Result<()> {
+        // Under the loop gate: an in-flight drive_loops tick that read the run
+        // before this Stop must not see the killed session as Gone and respawn
+        // it — the gate makes it re-read the Stopped state instead.
+        let _gate = self.loop_gate.lock().unwrap();
         let run = self.run_record(id)?;
         if let Some(mut st) = run.loop_state {
             if !st.status.is_terminal() {
@@ -1765,7 +1937,11 @@ impl AppState {
                 self.registry.lock().unwrap().set_loop_state(id, &st)?;
             }
         }
-        self.checks.lock().unwrap().remove(id);
+        // Cancel (not just forget) any in-flight check so its thread kills the
+        // child instead of leaving it running against this worktree.
+        if let Some(slot) = self.checks.lock().unwrap().remove(id) {
+            slot.cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
         self.attaches.lock().unwrap().remove(id);
         let _ = self.term.read().unwrap().kill(&session_name(id));
         Ok(())
@@ -1776,17 +1952,36 @@ impl AppState {
     /// side effects. Called from the watcher thread each poll tick; returns
     /// the terminal transitions for it to notify about.
     pub fn drive_loops(&self) -> Result<Vec<LoopNotice>> {
+        // Fast path: no loops anywhere (the common case) is one atomic load,
+        // not a registry scan on every poll tick.
+        if !self.loops_active.load(std::sync::atomic::Ordering::Relaxed) {
+            return Ok(Vec::new());
+        }
         let mut notices = Vec::new();
+        let mut any_active = false;
         let projects = self.registry.lock().unwrap().list_projects()?;
         for proj in projects {
             let runs = self.registry.lock().unwrap().list_runs(&proj.id)?;
             for run in runs {
+                if run.loop_config.is_none() {
+                    continue;
+                }
+                // The whole read → step → persist → act sequence runs under
+                // the loop gate, and the record is re-read inside it: a Stop
+                // (or archive/discard) landing after the list_runs read above
+                // has already killed the session, and acting on the stale
+                // state would respawn it as an unkillable orphan.
+                let _gate = self.loop_gate.lock().unwrap();
+                let Some(run) = self.registry.lock().unwrap().get_run(&run.id)? else {
+                    continue;
+                };
                 let (Some(cfg), Some(prev)) = (run.loop_config.clone(), run.loop_state.clone()) else {
                     continue;
                 };
-                if prev.status.is_terminal() {
+                if prev.status.is_terminal() || run.archived_at.is_some() {
                     continue;
                 }
+                any_active = true;
                 let agent = self
                     .term
                     .read()
@@ -1795,7 +1990,7 @@ impl AppState {
                     .unwrap_or(SessionStatus::Gone);
                 let (check_in_flight, check) = {
                     let mut checks = self.checks.lock().unwrap();
-                    match checks.get(&run.id).map(|s| *s.lock().unwrap()) {
+                    match checks.get(&run.id).map(|s| *s.status.lock().unwrap()) {
                         Some(CheckStatus::Running) => (true, None),
                         Some(CheckStatus::Done(code)) => {
                             checks.remove(&run.id);
@@ -1808,6 +2003,9 @@ impl AppState {
                 let (next, actions) = crate::looper::step(&cfg, &prev, &snap, now_secs());
                 if next != prev {
                     self.registry.lock().unwrap().set_loop_state(&run.id, &next)?;
+                }
+                if actions.is_empty() {
+                    continue;
                 }
                 let mut updated = run.clone();
                 updated.loop_state = Some(next.clone());
@@ -1859,6 +2057,12 @@ impl AppState {
                     }
                 }
             }
+        }
+        // A full pass with nothing active parks the driver until the next
+        // loop is created (terminal transitions above count as active for one
+        // last pass, which is what clears the flag).
+        if !any_active {
+            self.loops_active.store(false, std::sync::atomic::Ordering::Relaxed);
         }
         Ok(notices)
     }
@@ -1944,6 +2148,11 @@ impl AppState {
             .try_lock()
             .map_err(|_| anyhow!("another merge is already in progress"))?;
         let run = self.run_record(id)?;
+        // An active loop is still committing attempts onto this branch; merging
+        // mid-flight would take a half-done attempt and keep drifting after.
+        if has_active_loop(&run) {
+            bail!("this run is looping — stop the loop before merging");
+        }
         let repo = self.project_repo(&run.project_id)?;
         let base = agency_core::merge::resolve_target(run.merge_target.as_deref(), &repo)?;
         let outcome = agency_core::merge::merge(&repo, &run.branch, &base)?;
@@ -2263,7 +2472,12 @@ impl AppState {
                     })
                 );
                 let user_input_pending = self.input_seen.lock().unwrap().contains(&run.id);
-                let is_loop = has_active_loop(&run);
+                // Any run with a loop config, active OR terminal: suppression
+                // must not depend on when the driver persists the terminal
+                // transition, or the final attempt's exit edge (which lands on
+                // the same tick) would toast "Agent exited" next to the loop's
+                // own complete/stalled notification.
+                let is_loop = run.loop_config.is_some();
                 out.push(notifier::RunSnapshot {
                     id: run.id,
                     project_id: proj.id.clone(),
@@ -2283,6 +2497,17 @@ impl AppState {
 
 /// True when `command` resolves to an executable file: checked directly when it
 /// contains a path separator, otherwise searched across the PATH directories.
+/// Whether the first whitespace token of a command line resolves to an
+/// executable on PATH (or a runnable absolute/relative path). Command overrides
+/// and the graphify defaults are full command lines, not bare binaries.
+fn first_token_on_path(command_line: &str) -> bool {
+    command_line
+        .split_whitespace()
+        .next()
+        .map(command_on_path)
+        .unwrap_or(false)
+}
+
 fn command_on_path(command: &str) -> bool {
     fn executable(p: &Path) -> bool {
         #[cfg(unix)]
@@ -2384,8 +2609,29 @@ mod tests {
         assert_eq!(cmd, "claude");
         assert_eq!(args, vec!["-p", "fix the tests", "--permission-mode", "acceptEdits"]);
 
-        let no_recipe = AgentProfile { loop_args: None, ..p };
+        let no_recipe = AgentProfile { loop_args: None, ..p.clone() };
         assert!(super::loop_argv(&no_recipe, "x", None).is_err());
+
+        // An empty recipe is no recipe — Settings saves None for an empty
+        // field, but a hand-edited profile must not slip through.
+        let empty_recipe = AgentProfile { loop_args: Some(vec![]), ..p };
+        assert!(super::loop_argv(&empty_recipe, "x", None).is_err());
+    }
+
+    #[test]
+    fn loop_argv_appends_prompt_when_recipe_has_no_token() {
+        // A recipe without {{prompt}} must still deliver the prompt (as the
+        // final positional arg, like the interactive path) — never launch
+        // promptless attempts that burn the loop budget doing nothing.
+        let p = AgentProfile {
+            name: "codex".into(), command: "codex".into(),
+            args: vec![], env: vec![],
+            resume_args: None,
+            loop_args: Some(vec!["exec".into(), "--full-auto".into()]),
+        };
+        let (cmd, args) = super::loop_argv(&p, "fix the tests", None).unwrap();
+        assert_eq!(cmd, "codex");
+        assert_eq!(args, vec!["exec", "--full-auto", "fix the tests"]);
     }
 
     #[test]

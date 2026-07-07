@@ -127,7 +127,11 @@ function Shell() {
           <Resizer size={sidebar.width} min={200} max={460} onChange={sidebar.setWidth} side="left" />
         )}
         {showSettings ? (
-          <Settings onClose={() => setShowSettings(false)} />
+          <Settings
+            onClose={() => setShowSettings(false)}
+            projectId={selectedProjectId}
+            projectName={project?.name ?? null}
+          />
         ) : (
           <AgentsView
             project={project}

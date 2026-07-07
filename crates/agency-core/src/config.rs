@@ -117,6 +117,52 @@ fn read_value(path: &Path) -> Option<toml::Value> {
     toml::from_str::<toml::Value>(&text).ok()
 }
 
+/// The default graphify MCP serve command for a repo. graphify's server has no
+/// console-script entry point — it runs as `python -m graphify.serve <graph.json>`
+/// inside the uv tool venv, and the graph lives in the primary repo's untracked
+/// `graphify-out/`. Shared by the MCP injector and the settings UI so the UI's
+/// placeholder matches what actually runs.
+pub fn default_serve_command(repo_path: &Path) -> String {
+    format!(
+        "uv tool run --from graphifyy python -m graphify.serve {}",
+        repo_path.join("graphify-out").join("graph.json").display()
+    )
+}
+
+/// The default rebuild command run after a clean merge.
+pub fn default_build_command() -> &'static str {
+    "graphify ."
+}
+
+/// Persist the `[knowledge]` section into `.agency/agency.local.toml` — the
+/// gitignored, per-machine override file (`load` merges it over the tracked
+/// `agency.toml`). Any other config already in that file is preserved. `graph`
+/// is always written so toggling off is durable; empty command overrides are
+/// omitted so the runtime defaults apply.
+pub fn save_knowledge(repo_path: &Path, k: &KnowledgeConfig) -> std::io::Result<()> {
+    let dir = repo_path.join(".agency");
+    let path = dir.join("agency.local.toml");
+    let mut doc = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|t| toml::from_str::<toml::Value>(&t).ok())
+        .and_then(|v| v.as_table().cloned())
+        .unwrap_or_default();
+
+    let mut table = toml::value::Table::new();
+    table.insert("graph".into(), toml::Value::Boolean(k.graph));
+    for (key, val) in [("serve_command", &k.serve_command), ("build_command", &k.build_command)] {
+        if let Some(s) = val.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+            table.insert(key.into(), toml::Value::String(s.to_string()));
+        }
+    }
+    doc.insert("knowledge".into(), toml::Value::Table(table));
+
+    let text = toml::to_string_pretty(&toml::Value::Table(doc))
+        .map_err(std::io::Error::other)?;
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(&path, text)
+}
+
 /// Deep-merge `local` over `base`: tables merge recursively, every other value
 /// is replaced by `local`.
 fn merge_values(mut base: toml::Value, local: toml::Value) -> toml::Value {
@@ -239,6 +285,36 @@ mod tests {
         // local wins for setup, base survives for run
         assert_eq!(c.scripts.setup.as_deref(), Some("local-setup"));
         assert_eq!(c.scripts.run.as_deref(), Some("base-run"));
+    }
+
+    #[test]
+    fn save_knowledge_writes_local_and_preserves_other_config() {
+        let dir = tempdir().unwrap();
+        // Pre-existing local config in an unrelated section must survive.
+        write(dir.path(), "agency.local.toml", "[ports]\nbase = 4100\n");
+        save_knowledge(
+            dir.path(),
+            &KnowledgeConfig {
+                graph: true,
+                serve_command: None,
+                build_command: Some("  graphify . --skip-html  ".to_string()),
+            },
+        )
+        .unwrap();
+        let c = load(dir.path());
+        assert!(c.knowledge.graph);
+        // Trimmed, and the empty serve override is omitted (default applies).
+        assert_eq!(c.knowledge.build_command.as_deref(), Some("graphify . --skip-html"));
+        assert_eq!(c.knowledge.serve_command, None);
+        assert_eq!(c.ports.base, 4100);
+
+        // Toggling off is durable (graph = false is written, not dropped).
+        save_knowledge(
+            dir.path(),
+            &KnowledgeConfig { graph: false, serve_command: None, build_command: None },
+        )
+        .unwrap();
+        assert!(!load(dir.path()).knowledge.graph);
     }
 
     #[test]

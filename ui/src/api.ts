@@ -242,6 +242,28 @@ export const listMcpServers = () => invoke<McpServer[]>("list_mcp_servers");
 export const saveMcpServers = (servers: McpServer[]) =>
   invoke<void>("save_mcp_servers", { servers });
 
+// Per-project graphify knowledge-graph config (persisted to the project's
+// gitignored .agency/agency.local.toml). *_command are null when unset, in
+// which case *_default is what actually runs; *_installed reports PATH presence.
+export interface KnowledgeConfig {
+  graph: boolean;
+  serve_command: string | null;
+  build_command: string | null;
+  serve_default: string;
+  build_default: string;
+  serve_installed: boolean;
+  build_installed: boolean;
+}
+
+export const getKnowledgeConfig = (projectId: string) =>
+  invoke<KnowledgeConfig>("get_knowledge_config", { projectId });
+export const saveKnowledgeConfig = (
+  projectId: string,
+  graph: boolean,
+  serveCommand: string | null,
+  buildCommand: string | null,
+) => invoke<void>("save_knowledge_config", { projectId, graph, serveCommand, buildCommand });
+
 export const listProfiles = () => invoke<AgentProfile[]>("list_profiles");
 export const saveProfile = (profile: AgentProfile) =>
   invoke<void>("save_profile", { profile });

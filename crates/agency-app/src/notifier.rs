@@ -46,9 +46,12 @@ pub struct RunSnapshot {
     /// Terminals never notify: a shell exiting isn't an agent finishing, and a
     /// quiet shell isn't an agent finishing a turn.
     pub is_terminal: bool,
-    /// Active loops suppress per-attempt Finished/Idle (ten "agent exited"
+    /// Looping runs suppress per-attempt Finished/Idle (ten "agent exited"
     /// toasts are noise; the loop's own complete/stalled events are the
-    /// signal). Run-script crashes still notify.
+    /// signal). True whenever the run has a loop config — including terminal
+    /// loops, so the final attempt's exit edge (which lands on the same tick
+    /// as the terminal transition) can't slip through as a duplicate toast.
+    /// Run-script crashes still notify.
     pub is_loop: bool,
     pub agent: SessionStatus,
     pub run_script: SessionStatus,

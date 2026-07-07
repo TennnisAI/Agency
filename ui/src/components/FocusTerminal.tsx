@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import "@xterm/xterm/css/xterm.css";
 import { attachRun, detachRun, resizeRun, runInput, runPreview, ensureRunActive,
   attachRunScript, detachRunScript, resizeRunScript, runScriptInput, runScriptPreview,
@@ -48,6 +49,7 @@ export default function FocusTerminal(
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [showSearch, setShowSearch] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [dragOver, setDragOver] = useState(false);
 
   useEffect(() => {
     const container = ref.current;
@@ -60,6 +62,21 @@ export default function FocusTerminal(
     searchAddonRef.current = search;
     termRef.current = term;
     term.open(container);
+    // Shift/Ctrl+Enter → insert a newline instead of submitting. xterm sends a bare
+    // CR (\r) for Enter regardless of modifiers, so a TUI like Claude Code can't tell
+    // "submit" from "newline". We intercept the modified chord and send LF (\n, 0x0a),
+    // which is exactly what Claude Code's `/terminal-setup` maps Shift+Enter to. Bare
+    // Enter falls through to xterm's default (\r) and still submits.
+    term.attachCustomKeyEventHandler((e) => {
+      if (
+        e.type === "keydown" && e.key === "Enter" &&
+        (e.shiftKey || e.ctrlKey) && !e.altKey && !e.metaKey
+      ) {
+        stream.input(runId, "\n");
+        return false; // handled — don't let xterm also emit \r
+      }
+      return true;
+    });
     // Fit xterm to its container, then push the new size to the backend so the
     // PTY (and thus the daemon emulator) reflows to match. resize_run is a no-op until the
     // attach lands, so it's safe to call before/while attaching.
@@ -147,6 +164,43 @@ export default function FocusTerminal(
     };
   }, [runId, stream]);
 
+  // Dropping files/images from Finder. Tauri intercepts OS-level drag-drop at the
+  // webview boundary, so HTML5 drop events never reach the terminal div — we listen
+  // to Tauri's own drag-drop stream instead. The event is window-global and fires for
+  // every mounted terminal, so each instance hit-tests the drop position against its
+  // own rect and only the one under the cursor inserts the path(s). Positions arrive in
+  // physical pixels; divide by devicePixelRatio to compare with CSS-pixel client rects.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    const hit = (pos: { x: number; y: number }) => {
+      const el = ref.current;
+      if (!el) return false;
+      const dpr = window.devicePixelRatio || 1;
+      const x = pos.x / dpr, y = pos.y / dpr;
+      const r = el.getBoundingClientRect();
+      return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+    };
+    // Quote paths with whitespace so a multi-word path lands as one argument.
+    const quote = (p: string) => (/\s/.test(p) ? `'${p.replace(/'/g, `'\\''`)}'` : p);
+    getCurrentWebview().onDragDropEvent((event) => {
+      if (disposed) return;
+      const p = event.payload;
+      if (p.type === "enter" || p.type === "over") {
+        setDragOver(hit(p.position));
+      } else if (p.type === "drop") {
+        setDragOver(false);
+        if (hit(p.position) && p.paths.length) {
+          stream.input(runId, p.paths.map(quote).join(" ") + " ");
+          termRef.current?.focus();
+        }
+      } else {
+        setDragOver(false);
+      }
+    }).then((u) => { if (disposed) u(); else unlisten = u; });
+    return () => { disposed = true; unlisten?.(); };
+  }, [runId, stream]);
+
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "f") {
@@ -182,7 +236,7 @@ export default function FocusTerminal(
 
   return (
     <div className="term-search-wrap">
-      <div className="terminal focus-term" ref={ref} />
+      <div className={`terminal focus-term${dragOver ? " term-drag-over" : ""}`} ref={ref} />
       {showSearch && (
         <div className="term-search-box">
           <input

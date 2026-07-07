@@ -28,12 +28,18 @@ planned work, ordered by phase.
 
 ## Phase 1 — distribution gate (before any build goes out)
 
-1. **Code signing + notarization.** Developer ID cert; `signingIdentity` in
-   tauri.conf.json; hardened runtime + signing for the bundled `agency-termd`
-   sidecar; notarytool step in a release script or CI. Without this, testers get
-   "Agency is damaged." (M)
-2. **Release pipeline.** No CI exists. Minimal GitHub Actions workflow: build,
-   sign, notarize, attach DMG to a GitHub Release. (M)
+1. ~~**Code signing + notarization.**~~ **[done]** Developer ID cert installed;
+   `signingIdentity` + hardened runtime + `Agency.entitlements` in
+   tauri.conf.json (deep-signs the bundled `agency-termd` sidecar);
+   notarize + staple in `scripts/release-macos.sh` via the `agency-notary`
+   notarytool profile. Build + notarization verified 2026-07-07. CI wiring
+   still pending (see item 2). (M)
+2. ~~**Release pipeline.**~~ **[done]** `.github/workflows/release.yml` — on a
+   `v*` tag (or manual dispatch), builds on the macOS Apple Silicon runner,
+   signs + notarizes via native Tauri env-var signing (cert from
+   `APPLE_CERTIFICATE` secret, notarize via app-specific password), and attaches
+   the DMG to a draft GitHub Release. Secrets + setup documented in the README.
+   Apple Silicon only for now (universal build is a follow-up). (M)
 3. **Version + issue link.** Visible app version (Settings/About) and a
    "Report an issue" link. Partially covered by the in-progress Settings work. (S)
 

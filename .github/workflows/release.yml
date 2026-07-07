@@ -1,0 +1,90 @@
+name: Release (macOS)
+
+# Cuts a signed + notarized Agency DMG and attaches it to a draft GitHub Release.
+#
+# Trigger by pushing a version tag:
+#   git tag v0.1.0 && git push origin v0.1.0
+# or run manually from the Actions tab (workflow_dispatch).
+#
+# Signing/notarization is handled natively by `cargo tauri build`: when the
+# APPLE_* env vars below are present, Tauri imports the cert into a temporary
+# keychain, deep-signs the bundle (including the agency-termd sidecar), then
+# notarizes and staples the DMG. This mirrors scripts/release-macos.sh, except
+# the cert comes from a secret and notarization uses an app-specific password
+# instead of a local keychain profile.
+#
+# Required repository secrets (Settings -> Secrets and variables -> Actions):
+#   APPLE_CERTIFICATE           base64 of the exported Developer ID .p12
+#   APPLE_CERTIFICATE_PASSWORD  password used when exporting the .p12
+#   APPLE_SIGNING_IDENTITY      Developer ID Application: Nicholas Counts (9XD5R448N5)
+#   APPLE_ID                    Apple ID email used for notarization
+#   APPLE_PASSWORD              app-specific password for that Apple ID
+#   APPLE_TEAM_ID               9XD5R448N5
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  release-macos:
+    runs-on: macos-14 # Apple Silicon runner -> aarch64 build
+    permissions:
+      contents: write # create the release and upload the DMG
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: swatinem/rust-cache@v2
+
+      - name: Install tauri-cli
+        uses: taiki-e/install-action@v2
+        with:
+          tool: tauri-cli
+
+      - name: Install frontend dependencies
+        run: pnpm --dir ui install --frozen-lockfile
+
+      - name: Build agency-termd sidecar
+        run: ./crates/agency-app/build-termd.sh
+
+      - name: Build, sign, and notarize
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: cargo tauri build
+
+      - name: Verify notarization ticket is stapled
+        run: |
+          dmg="$(find target/release/bundle/dmg -maxdepth 1 -name '*.dmg' | head -n1)"
+          echo "DMG: $dmg"
+          xcrun stapler validate "$dmg"
+
+      - name: Publish draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          name: Agency ${{ github.ref_name }}
+          files: target/release/bundle/dmg/*.dmg
+          fail_on_unmatched_files: true

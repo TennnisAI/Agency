@@ -37,8 +37,14 @@ export default function RunPanel({ run }: { run: RunInfo }) {
     }
   };
   const stop = async () => {
-    await stopRunScript(run.id);
-    setStarted(false);
+    setError(null);
+    try {
+      await stopRunScript(run.id);
+      setStarted(false);
+    } catch (e) {
+      // Stop failed: the script is still running, so `started` must stay true.
+      setError(String(e));
+    }
   };
 
   if (configured === false) {

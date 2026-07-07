@@ -557,6 +557,18 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
   color: var(--o0);
 }
 
+/* Placeholder tile shown while a workspace is being created (worktree +
+   spawn). Reuses the status-dot pulse; not clickable. */
+.tile-spawning {
+  cursor: default;
+  justify-content: center;
+  min-height: 96px;
+  border-style: dashed;
+  animation: pulse 1.6s ease-in-out infinite;
+}
+.tile-spawning:hover { border-color: var(--line); background: var(--mantle); }
+.tile-spawning .tile-title { color: var(--sub0); }
+
 /* Source control wrap */
 .source-wrap {
   flex: 1;

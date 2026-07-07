@@ -4,10 +4,10 @@ use anyhow::{anyhow, Result};
 use std::collections::HashMap;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 type OutputCb = Arc<dyn Fn(Vec<u8>) + Send + Sync>;
 
@@ -16,6 +16,7 @@ struct Shared {
     callbacks: Mutex<HashMap<String, OutputCb>>,
     reply_rx: Mutex<Receiver<ServerMsg>>,
     req: Mutex<()>, // serializes request/reply pairs
+    next_seq: AtomicU64,
     alive: Arc<AtomicBool>,
 }
 
@@ -43,17 +44,53 @@ fn send_msg(shared: &Shared, msg: &ClientMsg) -> Result<()> {
 
 impl TermClient {
     pub fn connect_or_spawn(socket_path: PathBuf, daemon_bin: PathBuf) -> Result<TermClient> {
-        let stream = match connect(&socket_path) {
+        let client = Self::connect_once(&socket_path, &daemon_bin)?;
+        // A daemon from a previous app version survived an upgrade: it either
+        // reports a different version or fails the handshake outright. Its
+        // sessions are incompatible anyway, so replace it: ask it to shut down
+        // (Shutdown exists in every protocol version), wait for the socket to
+        // die, spawn a fresh daemon. One recovery attempt, then give up.
+        match client.daemon_version() {
+            Ok(version) if version == PROTOCOL_VERSION => return Ok(client),
+            Ok(version) => log::warn!(
+                "termd protocol mismatch: app speaks {PROTOCOL_VERSION}, daemon speaks {version}; \
+                 shutting the old daemon down (its sessions are lost) and spawning a fresh one"
+            ),
+            Err(e) => log::warn!(
+                "termd handshake failed ({e}); shutting the old daemon down \
+                 (its sessions are lost) and spawning a fresh one"
+            ),
+        }
+        let _ = client.shutdown();
+        drop(client);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while connect(&socket_path).is_some() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+
+        let client = Self::connect_once(&socket_path, &daemon_bin)?;
+        let version = client.daemon_version()?;
+        if version != PROTOCOL_VERSION {
+            return Err(anyhow!(
+                "termd protocol mismatch persists after replacing the daemon: \
+                 app speaks {PROTOCOL_VERSION}, daemon speaks {version}"
+            ));
+        }
+        Ok(client)
+    }
+
+    fn connect_once(socket_path: &Path, daemon_bin: &Path) -> Result<TermClient> {
+        let stream = match connect(socket_path) {
             Some(s) => s,
             None => {
                 // Spawn the daemon (it self-daemonizes) then retry with backoff.
-                std::process::Command::new(&daemon_bin)
-                    .arg(&socket_path)
+                std::process::Command::new(daemon_bin)
+                    .arg(socket_path)
                     .spawn()
                     .map_err(|e| anyhow!("spawn {daemon_bin:?}: {e}"))?;
                 let mut found = None;
                 for _ in 0..100 {
-                    if let Some(s) = connect(&socket_path) {
+                    if let Some(s) = connect(socket_path) {
                         found = Some(s);
                         break;
                     }
@@ -70,19 +107,12 @@ impl TermClient {
             callbacks: Mutex::new(HashMap::new()),
             reply_rx: Mutex::new(reply_rx),
             req: Mutex::new(()),
+            next_seq: AtomicU64::new(1),
             alive: Arc::new(AtomicBool::new(true)),
         });
 
         spawn_reader(read_half, shared.clone(), reply_tx);
-        let client = TermClient { shared };
-        let version = client.daemon_version()?;
-        if version != PROTOCOL_VERSION {
-            return Err(anyhow!(
-                "termd protocol mismatch: app speaks {PROTOCOL_VERSION}, daemon speaks {version}. \
-                 Quit running agents and restart, or relaunch the previous app version."
-            ));
-        }
-        Ok(client)
+        Ok(TermClient { shared })
     }
 
     pub fn is_alive(&self) -> bool {
@@ -90,8 +120,8 @@ impl TermClient {
     }
 
     pub fn daemon_version(&self) -> Result<u32> {
-        match self.request(ClientMsg::Hello { version: PROTOCOL_VERSION })? {
-            ServerMsg::Hello { version } => Ok(version),
+        match self.request(|seq| ClientMsg::Hello { version: PROTOCOL_VERSION, seq })? {
+            ServerMsg::Hello { version, .. } => Ok(version),
             other => Err(anyhow!("unexpected reply: {other:?}")),
         }
     }
@@ -121,7 +151,7 @@ impl TermClient {
         rows: u16,
         fallback: Option<FallbackSpec>,
     ) -> Result<()> {
-        self.request(ClientMsg::StartSession {
+        self.request(|seq| ClientMsg::StartSession {
             id: id.into(),
             cwd: cwd.to_string_lossy().into(),
             command: command.into(),
@@ -130,6 +160,7 @@ impl TermClient {
             cols,
             rows,
             fallback,
+            seq,
         })
         .map(|_| ())
     }
@@ -165,14 +196,14 @@ impl TermClient {
     }
 
     pub fn capture(&self, id: &str, lines: usize) -> Result<String> {
-        match self.request(ClientMsg::Capture { id: id.into(), lines })? {
+        match self.request(|seq| ClientMsg::Capture { id: id.into(), lines, seq })? {
             ServerMsg::Captured { text, .. } => Ok(text),
             other => Err(anyhow!("unexpected reply: {other:?}")),
         }
     }
 
     pub fn status(&self, id: &str) -> Result<SessionStatus> {
-        match self.request(ClientMsg::Status { id: id.into() })? {
+        match self.request(|seq| ClientMsg::Status { id: id.into(), seq })? {
             ServerMsg::Status { status, .. } => Ok(status),
             other => Err(anyhow!("unexpected reply: {other:?}")),
         }
@@ -183,8 +214,8 @@ impl TermClient {
     }
 
     pub fn list(&self) -> Result<Vec<(String, SessionStatus)>> {
-        match self.request(ClientMsg::List)? {
-            ServerMsg::List { sessions } => Ok(sessions),
+        match self.request(|seq| ClientMsg::List { seq })? {
+            ServerMsg::List { sessions, .. } => Ok(sessions),
             other => Err(anyhow!("unexpected reply: {other:?}")),
         }
     }
@@ -193,16 +224,40 @@ impl TermClient {
         send_msg(&self.shared, &ClientMsg::Shutdown)
     }
 
-    /// Send a request and block for the next reply. `req` serializes callers so
-    /// the single reply channel never mixes responses.
-    fn request(&self, msg: ClientMsg) -> Result<ServerMsg> {
+    /// Send a request tagged with a fresh seq and block for the reply that
+    /// echoes it. `req` serializes callers so the single reply channel never
+    /// interleaves responses; the seq match discards a reply that arrives
+    /// after its request already timed out — without it, one timeout would
+    /// permanently shift every later request onto the previous reply.
+    fn request(&self, make: impl FnOnce(u64) -> ClientMsg) -> Result<ServerMsg> {
         let _guard = self.shared.req.lock().unwrap();
+        let seq = self.shared.next_seq.fetch_add(1, Ordering::SeqCst);
+        let msg = make(seq);
+        let is_hello = matches!(msg, ClientMsg::Hello { .. });
         send_msg(&self.shared, &msg)?;
         let rx = self.shared.reply_rx.lock().unwrap();
-        match rx.recv_timeout(Duration::from_secs(5)) {
-            Ok(ServerMsg::Error { message, .. }) => Err(anyhow!(message)),
-            Ok(m) => Ok(m),
-            Err(_) => Err(anyhow!("daemon reply timeout")),
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let reply = match rx.recv_timeout(remaining) {
+                Ok(m) => m,
+                Err(_) => return Err(anyhow!("daemon reply timeout")),
+            };
+            // A legacy daemon doesn't echo seq (reads as 0). Accept its
+            // handshake reply — Hello, or an Error for our Hello (a daemon too
+            // old to even parse it) — so version mismatch surfaces immediately
+            // and connect_or_spawn can replace the daemon instead of timing out.
+            let legacy_handshake = reply.seq() == 0
+                && (matches!(reply, ServerMsg::Hello { .. })
+                    || (is_hello && matches!(reply, ServerMsg::Error { .. })));
+            if reply.seq() != seq && !legacy_handshake {
+                log::warn!("termd: dropping stale reply (seq {}, expected {seq})", reply.seq());
+                continue;
+            }
+            return match reply {
+                ServerMsg::Error { message, .. } => Err(anyhow!(message)),
+                m => Ok(m),
+            };
         }
     }
 }

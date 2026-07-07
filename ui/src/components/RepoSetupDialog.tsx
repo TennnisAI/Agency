@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { RepoReadiness, initRepo, commitRepo, inspectRepo } from "../api";
 import { repoSetupView } from "./repoSetupView";
+import { useModalKeys } from "../hooks/useModalKeys";
 
 type Props = {
   readiness: RepoReadiness;
@@ -17,6 +18,9 @@ export default function RepoSetupDialog({ readiness, context, repoPath, onResolv
   const [error, setError] = useState("");
 
   const view = repoSetupView(current, context);
+
+  // Escape matches the Cancel button, which is disabled while an op runs.
+  useModalKeys(onCancel, !busy);
 
   // Defensive: if we're already ready+clean (caller normally avoids opening then), resolve.
   useEffect(() => {
@@ -46,8 +50,8 @@ export default function RepoSetupDialog({ readiness, context, repoPath, onResolv
   const onPrimary = view.kind === "init" ? doInit : doCommit;
 
   return (
-    <div className="modal-backdrop" onClick={onCancel}>
-      <div className="modal confirm" onClick={(e) => e.stopPropagation()}>
+    <div className="modal-backdrop" onClick={(e) => { e.stopPropagation(); if (!busy) onCancel(); }}>
+      <div className="modal confirm" role="dialog" aria-modal="true" aria-label={view.title} onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
           <h3>{view.title}</h3>
           <button className="modal-x" onClick={onCancel}>✕</button>

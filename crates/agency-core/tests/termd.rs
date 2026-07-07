@@ -1,4 +1,8 @@
 use agency_core::term::client::TermClient;
+use agency_core::term::protocol::{
+    decode_client, encode_json, read_frame, write_frame, ClientFrame, ClientMsg, ServerMsg,
+    SessionStatus, PROTOCOL_VERSION,
+};
 use agency_core::term::registry::Registry;
 use agency_core::term::server;
 use std::sync::atomic::AtomicUsize;
@@ -33,6 +37,94 @@ fn server_and_client() -> (tempfile::TempDir, TermClient) {
 fn handshake_reports_protocol_version() {
     let (_dir, client) = server_and_client();
     assert_eq!(client.daemon_version().unwrap(), agency_core::term::protocol::PROTOCOL_VERSION);
+}
+
+/// A reply that arrives with the wrong seq (i.e. the answer to an earlier,
+/// timed-out request) must be discarded, not returned for the current request.
+#[test]
+fn stale_reply_with_old_seq_is_discarded() {
+    let dir = tempfile::tempdir().unwrap();
+    let sock = dir.path().join("fake.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+    std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        let mut read = stream.try_clone().unwrap();
+        let mut write = stream;
+        loop {
+            let payload = match read_frame(&mut read) {
+                Ok(p) => p,
+                Err(_) => break,
+            };
+            match decode_client(&payload) {
+                Ok(ClientFrame::Msg(ClientMsg::Hello { seq, .. })) => {
+                    let m = ServerMsg::Hello { version: PROTOCOL_VERSION, seq };
+                    write_frame(&mut write, &encode_json(&m)).unwrap();
+                }
+                Ok(ClientFrame::Msg(ClientMsg::Status { id, seq })) => {
+                    // First, a stale leftover reply (previous seq, wrong data)…
+                    let stale = ServerMsg::Status {
+                        id: id.clone(),
+                        status: SessionStatus::Gone,
+                        seq: seq.wrapping_sub(1),
+                    };
+                    write_frame(&mut write, &encode_json(&stale)).unwrap();
+                    // …then the real reply for this request.
+                    let real = ServerMsg::Status { id, status: SessionStatus::Running, seq };
+                    write_frame(&mut write, &encode_json(&real)).unwrap();
+                }
+                _ => {}
+            }
+        }
+    });
+
+    let client = TermClient::connect_or_spawn(sock, std::path::PathBuf::from("/nonexistent")).unwrap();
+    assert_eq!(client.status("x").unwrap(), SessionStatus::Running);
+    // And the channel is not left shifted: the next request still matches.
+    assert_eq!(client.status("y").unwrap(), SessionStatus::Running);
+}
+
+/// A surviving daemon that speaks an older protocol is shut down and replaced
+/// by a freshly spawned one instead of failing the connect (which used to
+/// crash-loop the app after an upgrade).
+#[test]
+fn protocol_mismatch_replaces_old_daemon() {
+    let dir = tempfile::tempdir().unwrap();
+    let sock = dir.path().join("termd.sock");
+
+    // Fake "old" daemon: v1 handshake (no seq on the wire), exits on Shutdown.
+    let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+    let sock_srv = sock.clone();
+    let old = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        let mut read = stream.try_clone().unwrap();
+        let mut write = stream;
+        loop {
+            let payload = match read_frame(&mut read) {
+                Ok(p) => p,
+                Err(_) => break,
+            };
+            match decode_client(&payload) {
+                Ok(ClientFrame::Msg(ClientMsg::Hello { .. })) => {
+                    let mut frame = vec![0u8]; // T_JSON, v1 payload without seq
+                    frame.extend_from_slice(br#"{"Hello":{"version":1}}"#);
+                    write_frame(&mut write, &frame).unwrap();
+                }
+                Ok(ClientFrame::Msg(ClientMsg::Shutdown)) => {
+                    drop(listener);
+                    let _ = std::fs::remove_file(&sock_srv);
+                    return;
+                }
+                _ => {}
+            }
+        }
+    });
+
+    let termd = std::path::PathBuf::from(env!("CARGO_BIN_EXE_agency-termd"));
+    let client = TermClient::connect_or_spawn(sock, termd).expect("recovered from mismatch");
+    assert_eq!(client.daemon_version().unwrap(), PROTOCOL_VERSION);
+    old.join().unwrap();
+    // Don't leak the real daemon this test spawned.
+    client.shutdown().unwrap();
 }
 
 #[test]

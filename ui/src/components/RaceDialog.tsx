@@ -3,6 +3,7 @@ import { createRace, listProfiles, listProjectBranches } from "../api";
 import { agentLabel } from "../agents";
 import { effectiveMergeTarget } from "../lib/branchTargets";
 import { useRuns } from "../store/runs";
+import { useModalKeys } from "../hooks/useModalKeys";
 
 // Fan one prompt out to several agents in parallel workspaces. This is the
 // one flow where composing the prompt up-front is the point: it's typed once
@@ -17,6 +18,8 @@ export default function RaceDialog({ onClose }: { onClose: () => void }) {
   const [targetOverride, setTargetOverride] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+
+  useModalKeys(onClose);
 
   useEffect(() => {
     listProfiles()
@@ -68,7 +71,7 @@ export default function RaceDialog({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="settings-overlay">
-      <div className="merge-modal race-dialog">
+      <div className="merge-modal race-dialog" role="dialog" aria-modal="true" aria-label="Race agents">
         <div className="settings-head">
           <h2>Race agents</h2>
           <button className="icon-btn" title="Close" onClick={onClose}>✕</button>

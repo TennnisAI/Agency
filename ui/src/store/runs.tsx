@@ -18,6 +18,9 @@ interface RunStore {
   setTab: (t: Tab) => void;
   createAgent: (agentId: string, opts?: { base: string; mergeTarget: string }) => Promise<void>;
   createTerminal: () => Promise<void>;
+  // True while a workspace is being created (worktree + spawn — the slowest
+  // first-session op). Drives the add-menu disable + placeholder tile.
+  spawning: boolean;
   approveRunId: string | null;
   setApproveRun: (id: string | null) => void;
 }
@@ -31,6 +34,8 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
   const [focusedRunId, setFocusedRun] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("agents");
   const [approveRunId, setApproveRun] = useState<string | null>(null);
+  // A count (not a flag) so overlapping creations can't clear each other.
+  const [spawnCount, setSpawnCount] = useState(0);
   const projectRef = useRef<string | null>(null);
   projectRef.current = selectedProjectId;
 
@@ -52,30 +57,40 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
     if (!pid) return;
     const base = opts?.base ?? "HEAD";
     const mergeTarget = opts?.mergeTarget ?? null;
-    // Runs start promptless by design — the user types the real prompt into
-    // the live agent terminal, and the first line is captured as the run's
-    // prompt + title (see set_run_title).
-    const run = await createRun(pid, "", agentId, base, mergeTarget).catch((e) => {
-      toastError(e, `Couldn't start ${agentId}`);
-      return null;
-    });
-    if (!run) return;
-    await refreshRuns();
-    setFocusedRun(run.id);
-    setView("focus");
+    setSpawnCount((c) => c + 1);
+    try {
+      // Runs start promptless by design — the user types the real prompt into
+      // the live agent terminal, and the first line is captured as the run's
+      // prompt + title (see set_run_title).
+      const run = await createRun(pid, "", agentId, base, mergeTarget).catch((e) => {
+        toastError(e, `Couldn't start ${agentId}`);
+        return null;
+      });
+      if (!run) return;
+      await refreshRuns();
+      setFocusedRun(run.id);
+      setView("focus");
+    } finally {
+      setSpawnCount((c) => c - 1);
+    }
   }, [refreshRuns]);
 
   const createTerminal = useCallback(async () => {
     const pid = projectRef.current;
     if (!pid) return;
-    const run = await createTerminalApi(pid).catch((e) => {
-      toastError(e, "Couldn't open terminal");
-      return null;
-    });
-    if (!run) return;
-    await refreshRuns();
-    setFocusedRun(run.id);
-    setView("focus");
+    setSpawnCount((c) => c + 1);
+    try {
+      const run = await createTerminalApi(pid).catch((e) => {
+        toastError(e, "Couldn't open terminal");
+        return null;
+      });
+      if (!run) return;
+      await refreshRuns();
+      setFocusedRun(run.id);
+      setView("focus");
+    } finally {
+      setSpawnCount((c) => c - 1);
+    }
   }, [refreshRuns]);
 
   function setSelectedProject(id: string | null) {
@@ -93,7 +108,7 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <Ctx.Provider
-      value={{ runs, selectedProjectId, setSelectedProject, view, setView, focusedRunId, setFocusedRun, refreshRuns, tab, setTab, createAgent, createTerminal, approveRunId, setApproveRun }}
+      value={{ runs, selectedProjectId, setSelectedProject, view, setView, focusedRunId, setFocusedRun, refreshRuns, tab, setTab, createAgent, createTerminal, spawning: spawnCount > 0, approveRunId, setApproveRun }}
     >
       {children}
     </Ctx.Provider>

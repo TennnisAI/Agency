@@ -101,6 +101,7 @@ fn handle_client(stream: UnixStream, client_id: u64, registry: Arc<Registry>) {
                 let _ = out_tx.send(encode_json(&ServerMsg::Error {
                     id: None,
                     message: format!("bad frame: {e}"),
+                    seq: 0,
                 }));
             }
         }
@@ -112,23 +113,24 @@ fn dispatch(frame: ClientFrame, client_id: u64, registry: &Arc<Registry>, out: &
         let _ = out.send(encode_json(&m));
     };
     match frame {
-        ClientFrame::Msg(ClientMsg::Hello { .. }) => {
-            reply(ServerMsg::Hello { version: PROTOCOL_VERSION });
+        ClientFrame::Msg(ClientMsg::Hello { seq, .. }) => {
+            reply(ServerMsg::Hello { version: PROTOCOL_VERSION, seq });
         }
-        ClientFrame::Msg(ClientMsg::StartSession { id, cwd, command, args, env, cols, rows, fallback }) => {
+        ClientFrame::Msg(ClientMsg::StartSession { id, cwd, command, args, env, cols, rows, fallback, seq }) => {
             let fb = fallback.map(|f| Fallback {
                 command: f.command,
                 args: f.args,
                 grace: Duration::from_millis(f.grace_ms),
             });
             match registry.start(id.clone(), Path::new(&cwd), &command, &args, &env, cols, rows, fb) {
-                Ok(()) => reply(ServerMsg::Started { id }),
-                Err(e) => reply(ServerMsg::Error { id: Some(id), message: e.to_string() }),
+                Ok(()) => reply(ServerMsg::Started { id, seq }),
+                Err(e) => reply(ServerMsg::Error { id: Some(id), message: e.to_string(), seq }),
             }
         }
         ClientFrame::Msg(ClientMsg::Subscribe { id }) => match registry.get(&id) {
             Some(s) => s.subscribe(client_id, out.clone()),
-            None => reply(ServerMsg::Error { id: Some(id), message: "no such session".into() }),
+            // seq 0: Subscribe is fire-and-forget, this error is async.
+            None => reply(ServerMsg::Error { id: Some(id), message: "no such session".into(), seq: 0 }),
         },
         ClientFrame::Msg(ClientMsg::Unsubscribe { id }) => {
             if let Some(s) = registry.get(&id) {
@@ -140,16 +142,16 @@ fn dispatch(frame: ClientFrame, client_id: u64, registry: &Arc<Registry>, out: &
                 s.resize(cols, rows);
             }
         }
-        ClientFrame::Msg(ClientMsg::Capture { id, lines }) => match registry.get(&id) {
-            Some(s) => reply(ServerMsg::Captured { id: id.clone(), text: s.capture(lines) }),
-            None => reply(ServerMsg::Captured { id, text: String::new() }),
+        ClientFrame::Msg(ClientMsg::Capture { id, lines, seq }) => match registry.get(&id) {
+            Some(s) => reply(ServerMsg::Captured { id: id.clone(), text: s.capture(lines), seq }),
+            None => reply(ServerMsg::Captured { id, text: String::new(), seq }),
         },
-        ClientFrame::Msg(ClientMsg::Status { id }) => {
+        ClientFrame::Msg(ClientMsg::Status { id, seq }) => {
             let status = registry.get(&id).map(|s| s.status()).unwrap_or(SessionStatus::Gone);
-            reply(ServerMsg::Status { id, status });
+            reply(ServerMsg::Status { id, status, seq });
         }
         ClientFrame::Msg(ClientMsg::Kill { id }) => registry.kill(&id),
-        ClientFrame::Msg(ClientMsg::List) => reply(ServerMsg::List { sessions: registry.list() }),
+        ClientFrame::Msg(ClientMsg::List { seq }) => reply(ServerMsg::List { sessions: registry.list(), seq }),
         ClientFrame::Msg(ClientMsg::Shutdown) => {
             registry.kill_all();
             std::process::exit(0);

@@ -128,6 +128,9 @@ export default function FocusTerminal(
         });
         // Re-send the size now that the attach exists, so the first paint matches.
         doFit();
+      }).catch((e) => {
+        // Attach failed: without this the terminal just sits silently blank.
+        if (!disposed) term.write(`\r\n\x1b[31mCould not attach to this session: ${e}\x1b[0m\r\n`);
       });
     })();
 

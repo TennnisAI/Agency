@@ -201,9 +201,13 @@ export default function AgentFocus({
                   onConfirm={async () => {
                     const id = focused.id;
                     setConfirmDiscard(false);
-                    await discardRun(id);
-                    setFocusedRun(null);
-                    await refreshRuns();
+                    try {
+                      await discardRun(id);
+                      setFocusedRun(null);
+                      await refreshRuns();
+                    } catch (e) {
+                      toastError(e, "Close failed");
+                    }
                   }}
                   onCancel={() => setConfirmDiscard(false)}
                 />

@@ -13,6 +13,7 @@ import {
 import { agentLabel } from "../agents";
 import GhSetupHint from "./GhSetupHint";
 import { useRuns } from "../store/runs";
+import { useModalKeys } from "../hooks/useModalKeys";
 
 // Start a workspace from GitHub: an issue (its body becomes the agent's
 // prompt) or an existing PR (its head branch is checked out for review).
@@ -31,6 +32,8 @@ export default function GhImportDialog({
   const [agent, setAgent] = useState("claude");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+
+  useModalKeys(onClose);
 
   // Probe gh readiness first: a missing/unauthenticated gh or remote-less
   // repo gets the guided setup, never a raw gh error dump.
@@ -83,7 +86,7 @@ export default function GhImportDialog({
 
   return (
     <div className="settings-overlay">
-      <div className="merge-modal race-dialog">
+      <div className="merge-modal race-dialog" role="dialog" aria-modal="true" aria-label={mode === "issue" ? "Start from GitHub issue" : "Review GitHub PR"}>
         <div className="settings-head">
           <h2>{mode === "issue" ? "Start from GitHub issue" : "Review GitHub PR"}</h2>
           <button className="icon-btn" title="Close" onClick={onClose}>✕</button>

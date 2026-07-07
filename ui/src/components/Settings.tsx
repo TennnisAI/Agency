@@ -1,4 +1,7 @@
 import { Fragment, useEffect, useRef, useState } from "react";
+import { getVersion } from "@tauri-apps/api/app";
+import { appLogDir } from "@tauri-apps/api/path";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
   AgentProfile,
   KnowledgeConfig,
@@ -18,6 +21,7 @@ import {
   saveNotifSettings,
 } from "../api";
 import Toggle from "./Toggle";
+import { toastError } from "../lib/toast";
 import { agentColor, agentLabel } from "../agents";
 import { THEMES, ThemeId, applyTheme, getStoredTheme } from "../lib/themes";
 import { getWordWrap, setWordWrap } from "../lib/editorPrefs";
@@ -64,6 +68,21 @@ export default function Settings({
   // editable command-override text so it survives re-renders between saves.
   const [kg, setKg] = useState<KnowledgeConfig | null>(null);
   const [kgDraft, setKgDraft] = useState({ serve: "", build: "" });
+  // App version for the Diagnostics section; empty until the Tauri call lands.
+  const [version, setVersion] = useState("");
+
+  useEffect(() => {
+    getVersion().then(setVersion).catch(() => {});
+  }, []);
+
+  async function openLogs() {
+    try {
+      const dir = await appLogDir();
+      await revealItemInDir(dir);
+    } catch (e) {
+      toastError(e, "Couldn't open the log folder");
+    }
+  }
 
   function pickWordWrap(on: boolean) {
     setWrap(on);
@@ -351,7 +370,7 @@ export default function Settings({
                     <span className="settings-profile-name">{agentLabel(p.name)}</span>
                     <span className="spacer" />
                     <button className="settings-ghost-btn" onClick={() => editProfile(p)}>Edit</button>
-                    <button className="settings-ghost-btn settings-del-btn" onClick={() => deleteProfile(p.name).then(refresh)}>Delete</button>
+                    <button className="settings-ghost-btn settings-del-btn" onClick={() => deleteProfile(p.name).then(refresh).catch((e) => toastError(e, "Couldn't delete profile"))}>Delete</button>
                   </div>
                   <div className="settings-profile-meta">
                     <span className="settings-meta-key">command</span>
@@ -601,6 +620,20 @@ export default function Settings({
                 value={notif.idleSecs}
                 onChange={(e) => persistNotif({ ...notif, idleSecs: Number(e.target.value) || 30 })}
               />
+            </div>
+          </div>
+        </section>
+
+        <section className="settings-section">
+          <div className="settings-section-label">Diagnostics</div>
+          <div className="settings-group-card">
+            <div className="settings-notif-row">
+              <span className="settings-notif-label">Version</span>
+              <span className="settings-notif-label">{version ? `Agency ${version}` : "Agency"}</span>
+            </div>
+            <div className="settings-notif-row">
+              <span className="settings-notif-label">Log files</span>
+              <button className="settings-ghost-btn" onClick={openLogs}>Open logs</button>
             </div>
           </div>
         </section>

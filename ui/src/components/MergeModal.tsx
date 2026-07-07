@@ -18,6 +18,7 @@ import {
 } from "../api";
 import PrSection from "./PrSection";
 import { useRuns } from "../store/runs";
+import { useModalKeys } from "../hooks/useModalKeys";
 
 // `onArchived` fires after the post-merge "Archive workspace" action so the
 // host view can drop focus and refresh its rail.
@@ -52,6 +53,10 @@ export default function MergeModal({
   const timerRef = useRef<ReturnType<typeof window.setInterval> | null>(null);
   const roRef = useRef<ResizeObserver | null>(null);
 
+  // Escape mirrors the header ✕; disabled while archiving (the modal's other
+  // cancel affordances are disabled then too).
+  useModalKeys(onClose, !archiving);
+
   // Load the preview first so we can explain what a merge would do instead of
   // silently running it the moment the modal opens.
   useEffect(() => {
@@ -85,6 +90,14 @@ export default function MergeModal({
     }
   }
 
+  // Failure keeps the modal open with the error visible instead of silently
+  // dropping the rejection and leaving the merge half-aborted.
+  function abortAndClose() {
+    abortMergeTask(taskId)
+      .then(onClose)
+      .catch((e) => setError(String(e)));
+  }
+
   async function attempt() {
     setError("");
     setMerging(true);
@@ -98,8 +111,18 @@ export default function MergeModal({
   }
 
   function startResolver() {
-    setResolving(true);
     setResolverDone(false);
+    setResolving(true);
+  }
+
+  // The resolver terminal's container div only exists once the `resolving`
+  // branch has rendered, so the xterm must be created in an effect (creating
+  // it inside startResolver ran before React committed the div — the ref was
+  // still null and the terminal was never opened). `resolving` never flips
+  // back to false, so the profile picked at start stays the one used.
+  useEffect(() => {
+    if (!resolving || !termRef.current) return;
+    const container = termRef.current;
     const term = new Terminal({ convertEol: true, fontSize: 12, fontFamily: TERMINAL_FONT_FAMILY, theme: currentXtermTheme(), minimumContrastRatio: minContrastRatio() });
     termInstanceRef.current = term;
     const fit = new FitAddon();
@@ -115,13 +138,11 @@ export default function MergeModal({
         /* not laid out */
       }
     };
-    if (termRef.current) {
-      term.open(termRef.current);
-      requestAnimationFrame(doFit);
-      const ro = new ResizeObserver(doFit);
-      ro.observe(termRef.current);
-      roRef.current = ro;
-    }
+    term.open(container);
+    requestAnimationFrame(doFit);
+    const ro = new ResizeObserver(doFit);
+    ro.observe(container);
+    roRef.current = ro;
     resolveMerge(taskId, resolverProfile, (bytes) => term.write(bytes))
       .then(doFit)
       .catch((e) => setError(String(e)));
@@ -138,15 +159,17 @@ export default function MergeModal({
       }
     }, 1000);
     timerRef.current = timer;
-  }
-
-  useEffect(() => {
     return () => {
       if (timerRef.current !== null) window.clearInterval(timerRef.current);
-      roRef.current?.disconnect();
-      termInstanceRef.current?.dispose();
+      timerRef.current = null;
+      ro.disconnect();
+      roRef.current = null;
+      term.dispose();
+      termInstanceRef.current = null;
     };
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- resolverProfile is
+    // frozen once resolving starts (the picker is hidden), taskId can't change.
+  }, [resolving]);
 
   const conflicts = outcome?.kind === "conflicts";
   const step = outcome?.kind === "clean"
@@ -167,7 +190,7 @@ export default function MergeModal({
 
   return (
     <div className="settings-overlay">
-      <div className="merge-modal">
+      <div className="merge-modal" role="dialog" aria-modal="true" aria-label="Approve and merge">
         <div className="settings-head">
           <h2>Approve &amp; merge</h2>
           <button className="icon-btn" title="Close" onClick={onClose}>✕</button>
@@ -285,7 +308,7 @@ export default function MergeModal({
                     ))}
                   </select>
                 )}
-                <button className="ghost" onClick={() => abortMergeTask(taskId).then(onClose)}>Abort merge</button>
+                <button className="ghost" onClick={abortAndClose}>Abort merge</button>
               </div>
             ) : (
               <div className="resolver">
@@ -294,7 +317,7 @@ export default function MergeModal({
                   <button disabled={!resolverDone} onClick={attempt}>
                     Re-check merge
                   </button>
-                  <button className="ghost" onClick={() => abortMergeTask(taskId).then(onClose)}>Abort merge</button>
+                  <button className="ghost" onClick={abortAndClose}>Abort merge</button>
                 </div>
               </div>
             )}

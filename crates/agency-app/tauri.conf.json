@@ -24,6 +24,12 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "externalBin": ["../../target/release/agency-termd"]
+    "externalBin": ["../../target/release/agency-termd"],
+    "macOS": {
+      "signingIdentity": "Developer ID Application: Nicholas Counts (9XD5R448N5)",
+      "hardenedRuntime": true,
+      "entitlements": "Agency.entitlements",
+      "minimumSystemVersion": "10.15"
+    }
   }
 }

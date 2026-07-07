@@ -24,8 +24,14 @@ anyhow = "1"
 url = "2"
 base64 = "0.22"
 tauri-plugin-dialog = "2"
+tauri-plugin-log = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-notification = "2"
+# Direct dep on the dialog backend tauri-plugin-dialog already uses: its sync
+# dialogs work before/without the Tauri event loop, which the plugin's
+# blocking_show (main-thread dispatch) does not — needed for the startup
+# failure dialog shown from setup().
+rfd = "0.16"
 # Direct dep on the same backend tauri-plugin-notification uses, only to call
 # set_application() on macOS so notifications carry the Agency icon.
 notify-rust = "4"

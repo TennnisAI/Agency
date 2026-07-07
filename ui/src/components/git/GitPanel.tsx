@@ -60,22 +60,25 @@ export default function GitPanel({
   }, [refresh]);
 
   // `label`, when given, raises a success toast once the op resolves.
-  const act = useCallback((fn: () => Promise<unknown>, label?: string) => {
-    (async () => {
-      setActionError("");
-      setBusy(true);
-      try {
-        await fn();
-        if (label) toastSuccess(label);
-      } catch (e) {
-        setActionError(String(e));
-      } finally {
-        setBusy(false);
-      }
-      await refresh();
-      // New/changed commits: reload the history graph (it doesn't poll).
-      setHistoryKey((k) => k + 1);
-    })();
+  // Resolves true on success so callers can react (e.g. CommitBox only clears
+  // the message once the commit actually landed); never rejects.
+  const act = useCallback(async (fn: () => Promise<unknown>, label?: string): Promise<boolean> => {
+    setActionError("");
+    setBusy(true);
+    let ok = false;
+    try {
+      await fn();
+      ok = true;
+      if (label) toastSuccess(label);
+    } catch (e) {
+      setActionError(String(e));
+    } finally {
+      setBusy(false);
+    }
+    await refresh();
+    // New/changed commits: reload the history graph (it doesn't poll).
+    setHistoryKey((k) => k + 1);
+    return ok;
   }, [refresh]);
 
   const onSelectFile = (path: string, group: "index" | "workingTree" | "merge" | "untracked") =>

@@ -30,19 +30,28 @@ fn git(worktree: &Path, args: &[&str]) -> Result<String> {
 }
 
 pub fn status(worktree: &Path) -> Result<Vec<FileChange>> {
-    let out = git(worktree, &["status", "--porcelain"])?;
+    // `-z` gives NUL-separated, unquoted paths: without it git C-quotes any
+    // path with spaces/unicode (core.quotePath default) and every downstream
+    // per-file operation fails with "pathspec did not match".
+    let out = git(worktree, &["status", "--porcelain", "-z"])?;
+    Ok(parse_porcelain_z(&out))
+}
+
+fn parse_porcelain_z(out: &str) -> Vec<FileChange> {
     let mut changes = Vec::new();
-    for line in out.lines() {
-        if line.len() < 4 {
+    let mut fields = out.split('\0');
+    while let Some(entry) = fields.next() {
+        // "XY path" — XY status, one space, then the path (no quoting in -z).
+        if entry.len() < 4 {
             continue;
         }
-        let index = line[0..1].to_string();
-        let work = line[1..2].to_string();
-        // Path begins at column 3 (after "XY ").
-        let mut path = line[3..].to_string();
-        // Renames are "orig -> new"; keep the new path.
-        if let Some(idx) = path.find(" -> ") {
-            path = path[idx + 4..].to_string();
+        let index = entry[0..1].to_string();
+        let work = entry[1..2].to_string();
+        let path = entry[3..].to_string();
+        // Renames/copies carry the original path as an extra NUL-separated
+        // field after the new path; consume and drop it.
+        if index == "R" || index == "C" || work == "R" || work == "C" {
+            let _ = fields.next();
         }
         changes.push(FileChange {
             path,
@@ -50,7 +59,7 @@ pub fn status(worktree: &Path) -> Result<Vec<FileChange>> {
             worktree: work,
         });
     }
-    Ok(changes)
+    changes
 }
 
 pub fn diff(worktree: &Path, path: &str, staged: bool) -> Result<String> {
@@ -525,6 +534,70 @@ pub fn revert_lines(worktree: &Path, path: &str, hunk_index: usize, selected: &[
     // Reverse-applied onto the working tree (the new side), so use reverse framing.
     let patch = build_partial_patch(&fd, hunk_index, selected, true)?;
     git_stdin(worktree, &["apply", "--reverse", "-"], &patch)
+}
+
+#[cfg(test)]
+mod status_tests {
+    use super::*;
+    use std::process::Command;
+    use tempfile::tempdir;
+
+    #[test]
+    fn parses_paths_with_spaces_verbatim() {
+        let out = " M with space.txt\0?? new file.txt\0";
+        let changes = parse_porcelain_z(out);
+        assert_eq!(changes.len(), 2);
+        assert_eq!(changes[0].path, "with space.txt");
+        assert_eq!((changes[0].index.as_str(), changes[0].worktree.as_str()), (" ", "M"));
+        assert_eq!(changes[1].path, "new file.txt");
+        assert_eq!(changes[1].index, "?");
+    }
+
+    #[test]
+    fn parses_unicode_paths_verbatim() {
+        let out = "?? héllo wörld/naïve — фаил.txt\0";
+        let changes = parse_porcelain_z(out);
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].path, "héllo wörld/naïve — фаил.txt");
+    }
+
+    #[test]
+    fn rename_keeps_new_path_and_skips_original() {
+        // -z rename entry: "R  new\0old\0" (new path first, origin second).
+        let out = "R  new name.txt\0old name.txt\0 M other.txt\0";
+        let changes = parse_porcelain_z(out);
+        assert_eq!(changes.len(), 2);
+        assert_eq!(changes[0].path, "new name.txt");
+        assert_eq!(changes[0].index, "R");
+        assert_eq!(changes[1].path, "other.txt");
+    }
+
+    #[test]
+    fn status_round_trips_special_names_through_git() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path();
+        let run = |args: &[&str]| {
+            let ok = Command::new("git").args(args).current_dir(repo).status().unwrap().success();
+            assert!(ok, "git {args:?} failed");
+        };
+        run(&["init", "-q", "-b", "main"]);
+        run(&["config", "user.email", "t@t"]);
+        run(&["config", "user.name", "t"]);
+        std::fs::write(repo.join("spaced ünicode – file.txt"), "x").unwrap();
+        std::fs::write(repo.join("orig.txt"), "y").unwrap();
+        run(&["add", "orig.txt"]);
+        run(&["commit", "-qm", "init"]);
+        run(&["mv", "orig.txt", "moved name.txt"]);
+
+        let changes = status(repo).unwrap();
+        // Untracked path comes back unquoted so per-file ops can use it.
+        let untracked = changes.iter().find(|c| c.index == "?").unwrap();
+        assert_eq!(untracked.path, "spaced ünicode – file.txt");
+        stage(repo, &untracked.path).expect("stage by returned path");
+        // Rename reports the new path.
+        let renamed = changes.iter().find(|c| c.index == "R").unwrap();
+        assert_eq!(renamed.path, "moved name.txt");
+    }
 }
 
 #[cfg(test)]

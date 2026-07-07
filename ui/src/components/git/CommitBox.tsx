@@ -9,9 +9,11 @@ export default function CommitBox({
   ahead: number;
   behind: number;
   busy?: boolean;
-  onCommit: (m: string) => void;
-  onCommitPush: (m: string) => void;
-  onAmend: (m: string) => void;
+  // Commit callbacks resolve true on success so the message is only cleared
+  // once the commit actually landed — a failed commit keeps the user's text.
+  onCommit: (m: string) => Promise<boolean>;
+  onCommitPush: (m: string) => Promise<boolean>;
+  onAmend: (m: string) => Promise<boolean>;
   onSync: () => void;
   onPublish: () => void;
   onPublishRemote: (url: string) => void;
@@ -20,7 +22,12 @@ export default function CommitBox({
   const [menu, setMenu] = useState(false);
   const [addingRemote, setAddingRemote] = useState(false);
   const [remoteUrl, setRemoteUrl] = useState("");
-  const send = (fn: (m: string) => void) => { fn(message); setMessage(""); setMenu(false); };
+  const canCommit = message.trim().length > 0;
+  const send = async (fn: (m: string) => Promise<boolean>) => {
+    if (!canCommit) return; // empty/whitespace message: nothing to commit with
+    setMenu(false);
+    if (await fn(message)) setMessage("");
+  };
   const submitRemote = () => {
     const url = remoteUrl.trim();
     if (!url) return;
@@ -34,10 +41,10 @@ export default function CommitBox({
         value={message} onChange={(e) => setMessage(e.target.value)} />
       <div className="git-commit-bar">
         <div className="git-split">
-          <button className="git-primary" onClick={() => send(onCommit)} disabled={busy}>
+          <button className="git-primary" onClick={() => send(onCommit)} disabled={busy || !canCommit}>
             {busy ? <span className="spinner" aria-label="working" /> : "✓"} Commit
           </button>
-          <button className="git-primary git-caret" onClick={() => setMenu((o) => !o)} disabled={busy}>▾</button>
+          <button className="git-primary git-caret" onClick={() => setMenu((o) => !o)} disabled={busy || !canCommit}>▾</button>
           {menu && (
             <div className="git-menu" onMouseLeave={() => setMenu(false)}>
               <button onClick={() => send(onCommitPush)}>Commit &amp; Push</button>

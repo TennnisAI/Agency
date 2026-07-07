@@ -14,7 +14,7 @@ export default function ChangesPanel({
   taskId: string;
   changes: FileChange[];
   branch: BranchInfo | null;
-  onAct: (fn: () => Promise<unknown>, label?: string) => void;
+  onAct: (fn: () => Promise<unknown>, label?: string) => Promise<boolean>;
   busy?: boolean;
   selectedPath: string | null;
   onSelectFile: (path: string, group: "index" | "workingTree" | "merge" | "untracked") => void;

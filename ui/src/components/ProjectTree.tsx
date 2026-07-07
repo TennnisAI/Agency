@@ -3,6 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { Project, RunInfo, RepoReadiness, addProject, closeProject, deleteProject, inspectRepo, listProjects, listRuns } from "../api";
 import { projectAccent, runName } from "../agents";
 import { useRuns } from "../store/runs";
+import { toastError } from "../lib/toast";
 import ConfirmDialog from "./ConfirmDialog";
 import RepoSetupDialog from "./RepoSetupDialog";
 import SidebarToggle from "./SidebarToggle";
@@ -112,10 +113,16 @@ export default function ProjectTree({
   async function confirmPending() {
     if (!pending) return;
     const { kind, project } = pending;
-    if (kind === "close") await closeProject(project.id);
-    else await deleteProject(project.id);
-    setPending(null);
-    await refresh();
+    try {
+      if (kind === "close") await closeProject(project.id);
+      else await deleteProject(project.id);
+      await refresh();
+    } catch (e) {
+      toastError(e, kind === "close" ? "Couldn't close project" : "Couldn't remove project");
+    } finally {
+      // Always drop the dialog — a failure must not leave it frozen open.
+      setPending(null);
+    }
   }
 
   return (

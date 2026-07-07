@@ -31,7 +31,7 @@ export default function AgentsView({
   onOpenRun: (project: Project, runId: string) => void;
   onOpenProject: (project: Project) => void;
 }) {
-  const { runs, view, setView, focusedRunId, tab, setTab, approveRunId, setApproveRun, createAgent, createTerminal, setFocusedRun, refreshRuns } = useRuns();
+  const { runs, view, setView, focusedRunId, tab, setTab, approveRunId, setApproveRun, createAgent, createTerminal, spawning, setFocusedRun, refreshRuns } = useRuns();
   const focused = runs.find((r) => r.id === focusedRunId) ?? null;
   const [review, setReview] = useState(false);
   const [error, setError] = useState("");
@@ -132,8 +132,18 @@ export default function AgentsView({
               <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, overflow: "hidden" }}>
                 {view === "grid" && (
                   <div className="grid">
-                    {runs.length === 0 && <div className="board empty">No agents yet — add one with "+ Agent".</div>}
+                    {runs.length === 0 && !spawning && <div className="board empty">No agents yet — add one with "+ Agent".</div>}
                     {runs.map((r) => <AgentTile key={r.id} run={r} />)}
+                    {spawning && (
+                      // Placeholder while the worktree + session are created —
+                      // the real tile appears once createRun resolves.
+                      <div className="tile tile-spawning" aria-hidden>
+                        <div className="tile-head">
+                          <span className="dot running" />
+                          <span className="tile-title">starting…</span>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
                 {view === "focus" && <AgentFocus onSpawn={spawn} />}

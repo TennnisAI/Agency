@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { RunInfo, runPreview, discardRun } from "../api";
 import { useRuns } from "../store/runs";
 import { runName } from "../agents";
+import { toastError } from "../lib/toast";
 import ConfirmDialog from "./ConfirmDialog";
 
 function badgeClass(agent: string): string {
@@ -20,6 +21,7 @@ export default function AgentTile({ run }: { run: RunInfo }) {
   const { setFocusedRun, setView, refreshRuns, focusedRunId } = useRuns();
   const [preview, setPreview] = useState("");
   const [confirmDiscard, setConfirmDiscard] = useState(false);
+  const [discarding, setDiscarding] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -63,11 +65,19 @@ export default function AgentTile({ run }: { run: RunInfo }) {
           body={isTerminal ? "Stop the shell and remove this terminal session." : `Stop "${run.agent}", remove its worktree, and delete the run. This cannot be undone.`}
           confirmLabel={isTerminal ? "Close" : "Discard"}
           danger
+          busy={discarding}
           onConfirm={async () => {
-            await discardRun(run.id);
-            if (focusedRunId === run.id) setFocusedRun(null);
-            setConfirmDiscard(false);
-            await refreshRuns();
+            setDiscarding(true);
+            try {
+              await discardRun(run.id);
+              if (focusedRunId === run.id) setFocusedRun(null);
+              await refreshRuns();
+            } catch (e) {
+              toastError(e, isTerminal ? "Close failed" : "Discard failed");
+            } finally {
+              setDiscarding(false);
+              setConfirmDiscard(false);
+            }
           }}
           onCancel={() => setConfirmDiscard(false)}
         />

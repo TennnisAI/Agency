@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { AgentProfile, listProfiles, listProjectBranches } from "../api";
 import { agentLabel } from "../agents";
+import { useRuns } from "../store/runs";
 import { effectiveMergeTarget } from "../lib/branchTargets";
 import RaceDialog from "./RaceDialog";
 import LoopDialog from "./LoopDialog";
@@ -24,6 +25,9 @@ export default function AgentAddMenu({
   variant?: "button" | "icon" | "header";
   projectId?: string;
 }) {
+  // While a workspace is being created, the triggers are disabled so the
+  // slow first spawn can't be double-fired.
+  const { spawning } = useRuns();
   const [open, setOpen] = useState(false);
   const [coords, setCoords] = useState<{ top: number; left?: number; right?: number }>();
   const [agents, setAgents] = useState<AgentProfile[]>([]);
@@ -94,11 +98,11 @@ export default function AgentAddMenu({
   return (
     <div className="agent-add">
       {variant === "header" ? (
-        <button ref={btnRef} className="rail-head-add" title="Add agent" onClick={toggle}>Agents <span className="rail-head-plus">+</span></button>
+        <button ref={btnRef} className="rail-head-add" title="Add agent" disabled={spawning} onClick={toggle}>Agents <span className="rail-head-plus">+</span></button>
       ) : variant === "icon" ? (
-        <button ref={btnRef} className="icon-btn" title="Add agent" onClick={toggle}>+</button>
+        <button ref={btnRef} className="icon-btn" title="Add agent" disabled={spawning} onClick={toggle}>+</button>
       ) : (
-        <button ref={btnRef} className="btn-primary" onClick={toggle}>+ Agent ▾</button>
+        <button ref={btnRef} className="btn-primary" disabled={spawning} onClick={toggle}>{spawning ? "Starting…" : "+ Agent ▾"}</button>
       )}
       {open && (
         <>

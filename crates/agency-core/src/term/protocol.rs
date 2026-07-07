@@ -2,7 +2,9 @@
 use serde::{Deserialize, Serialize};
 use std::io::{self, Read, Write};
 
-pub const PROTOCOL_VERSION: u32 = 1;
+// v2: request/reply messages carry a `seq` tag so a reply that arrives after
+// its request timed out can be discarded instead of desyncing the channel.
+pub const PROTOCOL_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "camelCase")]
@@ -19,9 +21,13 @@ pub struct FallbackSpec {
     pub grace_ms: u64,
 }
 
+// Request/reply variants carry `seq` (client-assigned, >= 1, echoed by the
+// server) so the client can match replies to requests. `#[serde(default)]`
+// keeps decoding tolerant of the seq-less v1 wire format: a legacy peer's
+// message reads as seq 0, which the client treats as "untagged".
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ClientMsg {
-    Hello { version: u32 },
+    Hello { version: u32, #[serde(default)] seq: u64 },
     StartSession {
         id: String,
         cwd: String,
@@ -32,26 +38,44 @@ pub enum ClientMsg {
         rows: u16,
         #[serde(default)]
         fallback: Option<FallbackSpec>,
+        #[serde(default)]
+        seq: u64,
     },
     Subscribe { id: String },
     Unsubscribe { id: String },
     Resize { id: String, cols: u16, rows: u16 },
-    Capture { id: String, lines: usize },
-    Status { id: String },
+    Capture { id: String, lines: usize, #[serde(default)] seq: u64 },
+    Status { id: String, #[serde(default)] seq: u64 },
     Kill { id: String },
-    List,
+    List { #[serde(default)] seq: u64 },
     Shutdown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ServerMsg {
-    Hello { version: u32 },
-    Started { id: String },
-    Captured { id: String, text: String },
-    Status { id: String, status: SessionStatus },
-    List { sessions: Vec<(String, SessionStatus)> },
+    Hello { version: u32, #[serde(default)] seq: u64 },
+    Started { id: String, #[serde(default)] seq: u64 },
+    Captured { id: String, text: String, #[serde(default)] seq: u64 },
+    Status { id: String, status: SessionStatus, #[serde(default)] seq: u64 },
+    List { sessions: Vec<(String, SessionStatus)>, #[serde(default)] seq: u64 },
     Exited { id: String, code: i32 },
-    Error { id: Option<String>, message: String },
+    Error { id: Option<String>, message: String, #[serde(default)] seq: u64 },
+}
+
+impl ServerMsg {
+    /// The request seq this message replies to; 0 for async messages and for
+    /// frames from a seq-less v1 peer.
+    pub fn seq(&self) -> u64 {
+        match self {
+            ServerMsg::Hello { seq, .. }
+            | ServerMsg::Started { seq, .. }
+            | ServerMsg::Captured { seq, .. }
+            | ServerMsg::Status { seq, .. }
+            | ServerMsg::List { seq, .. }
+            | ServerMsg::Error { seq, .. } => *seq,
+            ServerMsg::Exited { .. } => 0,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -168,10 +192,10 @@ mod tests {
 
     #[test]
     fn json_client_msg_round_trips() {
-        let payload = encode_json(&ClientMsg::Capture { id: "a".into(), lines: 50 });
+        let payload = encode_json(&ClientMsg::Capture { id: "a".into(), lines: 50, seq: 7 });
         match decode_client(&payload).unwrap() {
-            ClientFrame::Msg(ClientMsg::Capture { id, lines }) => {
-                assert_eq!((id.as_str(), lines), ("a", 50));
+            ClientFrame::Msg(ClientMsg::Capture { id, lines, seq }) => {
+                assert_eq!((id.as_str(), lines, seq), ("a", 50, 7));
             }
             other => panic!("wrong decode: {other:?}"),
         }
@@ -223,11 +247,27 @@ mod tests {
             fallback: Some(FallbackSpec {
                 command: "claude".into(), args: vec![], grace_ms: 3000,
             }),
+            seq: 1,
         };
         let payload = encode_json(&msg);
         match decode_client(&payload).unwrap() {
             ClientFrame::Msg(ClientMsg::StartSession { fallback: Some(fb), .. }) => {
                 assert_eq!((fb.command.as_str(), fb.grace_ms), ("claude", 3000));
+            }
+            other => panic!("wrong decode: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn v1_reply_without_seq_decodes_as_seq_zero() {
+        // A v1 daemon's Hello carries no seq; it must decode as seq 0 so the
+        // client can recognize it as a legacy handshake.
+        let json = br#"{"Hello":{"version":1}}"#;
+        let mut payload = vec![0u8];
+        payload.extend_from_slice(json);
+        match decode_server(&payload).unwrap() {
+            ServerFrame::Msg(ServerMsg::Hello { version, seq }) => {
+                assert_eq!((version, seq), (1, 0));
             }
             other => panic!("wrong decode: {other:?}"),
         }

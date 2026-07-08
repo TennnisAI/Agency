@@ -1,137 +1,143 @@
 # Beta readiness plan
 
-Status of findings from the 2026-07-07 pre-beta review (bug hunt + UX pass + gap
-analysis). Items marked **[in progress]** are being fixed now; everything else is
-planned work, ordered by phase.
+Tracks the findings from the 2026-07-07 pre-beta review (bug hunt + UX pass +
+gap analysis). Updated 2026-07-08 after the bug-fix pass: every verified bug in
+Phases 3–5 is fixed, plus the diagnosability/distribution work and the first
+Phase 6 item (background fetch). What remains is listed under **Still open**.
 
-## Done / in progress
+## Status at a glance
 
-- **[in progress]** Diagnosability: file logging (tauri-plugin-log), panic hook,
-  supervised notifier/loop threads, setup-failure dialog, React error boundary,
-  "Open logs" + version in Settings.
-- **[in progress]** termd protocol-mismatch recovery (kill+respawn old daemon
-  instead of crash-looping after an app upgrade).
-- **[in progress]** TermClient request/reply desync after a 5s timeout (all runs
-  flip to Gone, loops kill healthy attempts).
-- **[in progress]** `git status` C-quoted paths (spaces/unicode break
-  stage/discard/diff and merge preview).
-- **[in progress]** Merge resolver terminal never opens (null ref at `term.open()`).
-- **[in progress]** Commit message wiped on failed commit.
-- **[in progress]** Archived-section permanent discard: confirm + error handling.
-- **[in progress]** Catch/toast sweep over bare awaits (AgentTile, AgentFocus,
+- **Phase 0 (diagnosability sweep):** done.
+- **Phase 1 (distribution gate):** done.
+- **Phase 2 (update + recovery):** open — updater and DB safety net not started.
+- **Phase 3 (backend bugs, #6–14):** done (9/9).
+- **Phase 4 (frontend bugs, #15–22):** done (8/8).
+- **Phase 5 (UX polish, #23–34):** done (12/12).
+- **Phase 6 (feature gaps):** #35 done; #36–44 open (post-first-beta).
+
+Verification for the fix pass: `cargo build` clean, `cargo test` green (136
+tests: 82 core + 54 app), `tsc --noEmit` exit 0, `vite build` exit 0.
+
+## Done
+
+### Phase 0 — diagnosability sweep
+
+- **[done]** File logging (tauri-plugin-log), panic hook, supervised
+  notifier/loop threads, setup-failure dialog, React error boundary, "Open
+  logs" + version in Settings.
+- **[done]** termd protocol-mismatch recovery (kill+respawn old daemon instead
+  of crash-looping after an app upgrade).
+- **[done]** TermClient request/reply desync after a 5s timeout (seq-tagged
+  requests; stale replies dropped).
+- **[done]** `git status` C-quoted paths — switched to `--porcelain -z`.
+- **[done]** Merge resolver terminal null ref at `term.open()` (xterm created in
+  an effect after the container commits).
+- **[done]** Commit message preserved on failed commit.
+- **[done]** Archived-section permanent discard: confirm + error handling.
+- **[done]** Catch/toast sweep over bare awaits (AgentTile, AgentFocus,
   MergeModal abort, Settings deleteProfile, RunPanel stop, ProjectTree confirm,
   FocusTerminal attach).
-- **[in progress]** Escape-to-close + role=dialog + backdrop stopPropagation +
-  autofocus across all seven modals.
-- **[in progress]** Spawn feedback (placeholder tile / disabled add menu while
+- **[done]** Escape-to-close + role=dialog across all modals; backdrop
+  stopPropagation + autofocus extended to the settings-overlay modals.
+- **[done]** Spawn feedback (placeholder tile / disabled add menu while
   createRun is in flight).
 
-## Phase 1 — distribution gate (before any build goes out)
+### Phase 1 — distribution gate
 
-1. ~~**Code signing + notarization.**~~ **[done]** Developer ID cert installed;
-   `signingIdentity` + hardened runtime + `Agency.entitlements` in
-   tauri.conf.json (deep-signs the bundled `agency-termd` sidecar);
-   notarize + staple in `scripts/release-macos.sh` via the `agency-notary`
-   notarytool profile. Build + notarization verified 2026-07-07. CI wiring
-   still pending (see item 2). (M)
-2. ~~**Release pipeline.**~~ **[done]** `.github/workflows/release.yml` — on a
-   `v*` tag (or manual dispatch), builds on the macOS Apple Silicon runner,
-   signs + notarizes via native Tauri env-var signing (cert from
-   `APPLE_CERTIFICATE` secret, notarize via app-specific password), and attaches
-   the DMG to a draft GitHub Release. Secrets + setup documented in the README.
-   Apple Silicon only for now (universal build is a follow-up). (M)
-3. **Version + issue link.** Visible app version (Settings/About) and a
-   "Report an issue" link. Partially covered by the in-progress Settings work. (S)
+1. **[done]** Code signing + notarization (Developer ID + hardened runtime +
+   `Agency.entitlements`; deep-signs the `agency-termd` sidecar; notarize +
+   staple in `scripts/release-macos.sh`).
+2. **[done]** Release pipeline (`.github/workflows/release.yml`): `v*` tag or
+   manual dispatch builds on the macOS Apple Silicon runner, signs + notarizes,
+   attaches the DMG to a draft Release. (Apple Silicon only; universal build is
+   a follow-up.)
+3. **[done]** Visible app version (Settings ▸ Diagnostics) and a "Report an
+   issue" link (opens the GitHub issues page).
 
-## Phase 2 — update + recovery (before build #2)
+### Phase 3 — backend bugs
 
-4. **Updater.** tauri-plugin-updater against a static manifest (GitHub Releases).
-   Privacy note: frame as "checks a static manifest, sends nothing" to stay
-   consistent with the zero-first-party-data-collection positioning. Fallback if
-   time-boxed: passive new-version check + download link. (M)
+6. **[done]** Knowledge-graph serve command no longer whitespace-split — proper
+   argv via `config::default_serve_argv` + quote-aware `split_command`
+   (unit-tested), so repo paths with spaces work. (state.rs, config.rs)
+7. **[done]** `loops_active` park-forever race — a `loop_generation` counter;
+   `drive_loops` won't clear the flag if a loop was created mid-pass. (state.rs)
+8. **[done]** Port collision on restore — `restore_run` reallocates the port
+   block if a live run took it. (state.rs, registry.rs `set_port_base`)
+9. **[done]** `delete_project`/`close_project` now kill the companion-shell
+   daemon session (`agency-shell-<id>`). (state.rs)
+10. **[done]** `archive_run` ordering — WIP commit happens before session
+    teardown, so a failed commit no longer half-archives. (state.rs)
+11. **[done]** Spawn-failure rollback — a failed `start_session` removes the
+    just-cut worktree + branch. (state.rs)
+12. **[done]** Zombie `sh` per KG rebuild — child reaped on a thread. (state.rs)
+13. **[done]** Merge-resolver handle released via a new `resolver_close` command
+    the modal calls on close/abort. (state.rs, commands.rs, MergeModal.tsx)
+14. **[done]** Main-thread `loop_gate` stalls — `stop_loop` and
+    `ensure_run_active` are now async commands (off the UI thread). (commands.rs)
+
+### Phase 4 — frontend bugs
+
+15. **[done]** Stale-project race — `refreshRuns` drops a response if the
+    project changed during the await. (store/runs.tsx)
+16. **[done]** Stale `approveRunId` reset in `setSelectedProject`. (store/runs.tsx)
+17. **[done]** AgentFocus extra-tab sessions: liveness guard on the fetch +
+    4s re-poll; gone tabs drop out of the strip. (AgentFocus.tsx)
+18. **[done]** FocusTerminal attach/detach race — `disposed` guard + detach on
+    unmount. (already landed pre-pass)
+19. **[done]** MCP-server / agent-profile rename dedupes by the original name.
+    (Settings.tsx)
+20. **[done]** Cmd+F responds only in the focused terminal. (FocusTerminal.tsx)
+21. **[done]** LoopDialog max-attempts allows empty-while-editing, clamps on
+    blur. (LoopDialog.tsx)
+22. **[done]** gh readiness distinguishes a probe error from gh being absent,
+    with a retry. (GhImportDialog.tsx)
+
+### Phase 5 — UX polish
+
+23. **[done]** Archive confirm dialog. (AgentFocus.tsx)
+24. **[done]** Cmd+Enter guarded against editable/terminal targets. (useShortcuts.ts)
+25. **[done]** Terminology sweep — user-facing "workspace" → "agent"/"worktree"
+    across GhImportDialog, MergeModal, RunPanel.
+26. **[done]** ⌘K palette copy scoped to real "projects and agents" entries.
+27. **[done]** Status labels map exited(0)/non-zero/gone → finished/failed/
+    session-ended. (AgentTile.tsx, HomeView.tsx)
+28. **[done]** Emoji-presentation risk fixed with U+FE0E on ⚠ ⚙ ☁.
+    (ProjectTree.tsx, git/CommitBox.tsx)
+29. **[done]** Light-theme overlays via per-theme `--overlay`/`--shadow` vars.
+    (styles.css)
+30. **[done]** A11y basics — global `:focus-visible` outline + aria-labels on
+    icon-only buttons. (styles.css, ProjectTree.tsx, BranchBar.tsx, …)
+31. **[done]** GhSetupHint offers Homebrew install *and* a manual cli.github.com
+    download fallback. (GhSetupHint.tsx)
+32. **[done]** Rail AgentAddMenu threads `projectId` so the branch picker works
+    from the rail. (AgentFocus.tsx)
+33. **[done]** Settings save failures route to toasts; KG toggle is optimistic
+    with revert-on-failure. (Settings.tsx)
+34. **[done]** HomeView holds the header until the first poll (no zero-count
+    flash) and adds an "Add project" button to the welcome hero. (HomeView.tsx)
+
+### Phase 6 — feature gaps
+
+35. **[done]** Background remote fetch + sync affordance. A `remote-fetch`
+    thread fetches each project's `origin` every 5 min (capped exponential
+    backoff per project on failure/offline). The git panel's BranchBar gains a
+    Fetch button (updates ahead/behind) and a Pull button (fast-forward,
+    `--ff-only`) when the branch is behind an upstream. (git.rs, state.rs,
+    commands.rs, lib.rs, BranchBar.tsx, GitPanel.tsx)
+
+## Still open
+
+### Phase 2 — update + recovery (before build #2)
+
+4. **Updater.** tauri-plugin-updater against a static manifest (GitHub
+   Releases), framed as "checks a static manifest, sends nothing" to match the
+   zero-first-party-data positioning. Fallback: passive new-version check +
+   download link. This is a product/design decision as much as a build. (M)
 5. **DB safety net.** Stamp `PRAGMA user_version`; copy `agency.db` →
    `agency.db.bak` once per app-version change before migrations run. (S)
 
-## Phase 3 — remaining verified bugs (backend)
+### Phase 6 — feature gaps (post-first-beta unless testers scream)
 
-6. **Knowledge-graph serve command split on whitespace** — breaks graphify MCP
-   for any repo path containing a space. Store argv or run via `sh -lc` like the
-   build command. (state.rs:1060, config.rs:125) (S)
-7. **`loops_active` flag race** can permanently park a freshly created loop —
-   set the flag under `loop_gate` before insert, or generation-check before
-   clearing. (state.rs:826 vs 2060) (S)
-8. **Port collision on restore** — reallocate `AGENCY_PORT` base if taken.
-   (state.rs:1395, registry.rs:478) (S)
-9. **`delete_project`/`close_project` leak companion-shell daemon sessions** —
-   also kill `agency-shell-<id>`. (state.rs:634) (S)
-10. **`archive_run` ordering** — do the WIP commit first, session/tab teardown
-    after, so a failed commit doesn't half-archive. (state.rs:1358) (S)
-11. **Spawn-failure rollback** — remove worktree + branch when `start_session`
-    fails in `create_run_spec`. (state.rs:749) (S)
-12. **Zombie `sh` per KG rebuild** — reap the child on a thread.
-    (state.rs:1121) (S)
-13. **Merge-resolver handle never released** — stop/cleanup on modal close or
-    Exited. (state.rs:2291) (S)
-14. **Main-thread stalls on `loop_gate`** — make `stop_loop`/`create_loop`/
-    `ensure_run_active` async commands or shrink the gate's critical section so
-    a slow daemon call can't freeze the UI. (state.rs:1974) (M)
-
-## Phase 4 — remaining verified bugs (frontend)
-
-15. **Stale-project race in runs store** — guard `projectRef.current === pid`
-    after the await in `refreshRuns`. (store/runs.tsx:37) (S)
-16. **Stale `approveRunId`** re-opens MergeModal after project switch — reset it
-    in `setSelectedProject`. (store/runs.tsx:81) (S)
-17. **AgentFocus extra-tab sessions**: liveness guard on the fetch + occasional
-    re-poll so dead tabs disappear. (AgentFocus.tsx:90) (S)
-18. **FocusTerminal attach/detach race** — cancel or detach an in-flight attach
-    on unmount so a disposed xterm never receives writes. (FocusTerminal.tsx:98) (S)
-19. **MCP server / agent-profile rename duplicates the entry** — dedupe by the
-    original name on edit-save. (Settings.tsx:113, :212) (S)
-20. **Cmd+F opens search in every mounted terminal** — only the focused terminal
-    should respond. (FocusTerminal.tsx:147) (S)
-21. **LoopDialog max-attempts coercion** — allow empty-while-editing, clamp on
-    blur. (LoopDialog.tsx:124) (S)
-22. **gh readiness failure mapped to "notInstalled"** — distinguish errors from
-    absence. (GhImportDialog.tsx:39) (S)
-
-## Phase 5 — UX polish (first-session quality)
-
-23. **Archive needs a confirm or an undo toast** ("Archived — Restore") — it's
-    one-click destructive while Discard confirms. (AgentFocus.tsx:226)
-24. **Cmd+Enter guard** — don't intercept while typing in a terminal/editable,
-    and require a focused agent. (useShortcuts.ts:27)
-25. **Terminology sweep** — pick two words (suggest "agent" for the actor,
-    "worktree" for the place); today run/agent/task/workspace/worktree/attempt
-    all appear in user-facing strings.
-26. **⌘K palette honesty** — placeholder says "projects, tasks, files"; either
-    scope the copy or add file/action entries.
-27. **Status labels** — map `exited (0)`/`gone` to "finished"/"failed"/"session
-    ended". (AgentTile.tsx:13)
-28. **Emoji-presentation risk** — append U+FE0E to ⚠ ⚙ ☁ or swap glyphs
-    (no-emoji rule). (ProjectTree.tsx:149,175; CommitBox.tsx:53)
-29. **Light-theme overlays** — replace hardcoded dark backdrop/shadow colors
-    with per-theme `--overlay`/`--shadow` vars. (styles.css:97,747)
-30. **A11y basics** — aria-labels on icon-only buttons; global `:focus-visible`
-    outline.
-31. **GhSetupHint** — probe for Homebrew before offering `brew install gh`;
-    show manual install URL as fallback. Same for npm-based agent installs.
-32. **Rail AgentAddMenu** — thread projectId so the branch picker works from the
-    rail, not just the header. (AgentFocus.tsx:160)
-33. **Settings section errors** — route save failures to toasts (single top
-    banner is off-screen for bottom sections); make the KG toggle move
-    optimistically or show pending. (Settings.tsx:317)
-34. **HomeView first-run flash** — don't render the zero-counts header before
-    the first poll; put an "Add project" button in the welcome hero.
-    (HomeView.tsx:72)
-
-## Phase 6 — feature gaps (post-first-beta unless testers scream)
-
-35. **Background remote fetch + sync affordance.** Nothing ever fetches:
-    ahead/behind compares against local tracking refs, so "behind" is stale
-    forever. Add a low-frequency `git fetch` (e.g. every 5 min, only when a
-    remote exists, backoff on failure/offline) + a manual fetch/pull button in
-    the git panel. There is currently no pull at all. (M)
 36. **Quit without killing agents.** Daemon already outlives the app; offer
     "Quit and leave agents running" in the quit confirm. (M)
 37. **termd crash recovery affordance** — proactive "N agents stopped — resume
@@ -139,11 +145,10 @@ planned work, ordered by phase.
 38. **Missing-repo flow** — "project folder missing — relocate?" + project
     rename. (S/M)
 39. **Window state persistence** — tauri-plugin-window-state. (S)
-40. **Loop spend/time caps** — wall-clock cap alongside attempt cap (spec calls
-    cost compounding the main failure mode). (M)
+40. **Loop spend/time caps** — wall-clock cap alongside the attempt cap. (M)
 41. **Prereq checks** — git/CLT presence at launch with guidance. (S)
 42. **Per-run cost/token display** (parse headless agent JSON output). (M)
-43. **Message queueing** while agent is mid-turn. (M)
-44. **Structured transcript view** — biggest expectation gap vs
-    Conductor/Crystal; terminal-first is a legitimate positioning choice but
-    should be a stated one. (L / decision)
+43. **Message queueing** while an agent is mid-turn. (M)
+44. **Structured transcript view** — biggest expectation gap vs Conductor/
+    Crystal; terminal-first is a legitimate positioning choice but should be a
+    stated one. (L / decision)

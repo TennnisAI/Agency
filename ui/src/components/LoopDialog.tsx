@@ -18,7 +18,9 @@ export default function LoopDialog({ onClose }: { onClose: () => void }) {
   const [agents, setAgents] = useState<string[]>([]);
   const [agent, setAgent] = useState("");
   const [checkCommand, setCheckCommand] = useState("");
-  const [maxAttempts, setMaxAttempts] = useState(10);
+  // Kept as a raw string while editing so the field can be cleared/retyped;
+  // clamped to [1,100] only on blur and at submit.
+  const [maxAttempts, setMaxAttempts] = useState("10");
   const [branches, setBranches] = useState<string[]>([]);
   const [base, setBase] = useState("");
   const [targetOverride, setTargetOverride] = useState<string | null>(null);
@@ -49,6 +51,10 @@ export default function LoopDialog({ onClose }: { onClose: () => void }) {
   const mergeTarget = effectiveMergeTarget(base, targetOverride);
   const canStart = prompt.trim().length > 0 && agent !== "" && !busy;
   const fixedIterations = checkCommand.trim() === "";
+  const clampAttempts = (v: string) => {
+    const n = Math.floor(Number(v));
+    return Number.isFinite(n) && n > 0 ? Math.max(1, Math.min(100, n)) : 10;
+  };
 
   async function start() {
     if (!selectedProjectId || !canStart) return;
@@ -62,7 +68,7 @@ export default function LoopDialog({ onClose }: { onClose: () => void }) {
         base || "HEAD",
         mergeTarget,
         checkCommand.trim(),
-        maxAttempts,
+        clampAttempts(maxAttempts),
       );
       await refreshRuns();
       setFocusedRun(run.id);
@@ -75,8 +81,8 @@ export default function LoopDialog({ onClose }: { onClose: () => void }) {
   }
 
   return (
-    <div className="settings-overlay">
-      <div className="merge-modal race-dialog" role="dialog" aria-modal="true" aria-label="Loop agent">
+    <div className="settings-overlay" onClick={(e) => { e.stopPropagation(); onClose(); }}>
+      <div className="merge-modal race-dialog" role="dialog" aria-modal="true" aria-label="Loop agent" onClick={(e) => e.stopPropagation()}>
         <div className="settings-head">
           <h2>Loop agent</h2>
           <button className="icon-btn" title="Close" onClick={onClose}>✕</button>
@@ -124,13 +130,14 @@ export default function LoopDialog({ onClose }: { onClose: () => void }) {
               min={1}
               max={100}
               value={maxAttempts}
-              onChange={(e) => setMaxAttempts(Math.max(1, Math.min(100, Number(e.target.value) || 10)))}
+              onChange={(e) => setMaxAttempts(e.target.value)}
+              onBlur={() => setMaxAttempts(String(clampAttempts(maxAttempts)))}
             />
           </label>
         </div>
         {fixedIterations && (
           <p className="merge-note">
-            No check command: the loop runs exactly {maxAttempts} attempts, without verifying completion.
+            No check command: the loop runs exactly {clampAttempts(maxAttempts)} attempts, without verifying completion.
           </p>
         )}
         {agents.length === 0 && (

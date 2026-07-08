@@ -57,9 +57,9 @@ export default function CommitBox({
             <button className="git-secondary" onClick={onSync} disabled={busy}>⟳ Sync {behind ? `↓${behind}` : ""} {ahead ? `↑${ahead}` : ""}</button>
           // No upstream: only offer Publish when there are commits to push.
           : ahead > 0 && (hasRemote
-            ? <button className="git-secondary" onClick={onPublish} disabled={busy}>☁ Publish Branch ↑{ahead}</button>
+            ? <button className="git-secondary" onClick={onPublish} disabled={busy}>{"☁︎"} Publish Branch ↑{ahead}</button>
             : <button className="git-secondary" onClick={() => setAddingRemote((o) => !o)} disabled={busy}
-                title="No 'origin' remote configured — add one to publish">☁ Add Remote &amp; Publish…</button>)}
+                title="No 'origin' remote configured — add one to publish">{"☁︎"} Add Remote &amp; Publish…</button>)}
       </div>
       {addingRemote && !hasRemote && (
         <div className="git-remote-row">

@@ -1,10 +1,12 @@
 use agency_app_lib::AppState;
 use std::path::Path;
 
+mod common;
+
 #[test]
 fn new_seeds_default_shell_profile_and_version_holds() {
     let dir = tempfile::tempdir().unwrap();
-    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
+    let state = common::state(&dir);
     assert_eq!(AppState::version(), "0.1.0");
     assert!(state.profile_names().unwrap().contains(&"shell".to_string()));
 }
@@ -12,7 +14,7 @@ fn new_seeds_default_shell_profile_and_version_holds() {
 #[test]
 fn project_crud_roundtrip() {
     let dir = tempfile::tempdir().unwrap();
-    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
+    let state = common::state(&dir);
 
     let repo = dir.path().join("repo");
     std::fs::create_dir_all(&repo).unwrap();
@@ -32,7 +34,7 @@ fn project_crud_roundtrip() {
 #[test]
 fn add_project_rejects_non_git_folder() {
     let dir = tempfile::tempdir().unwrap();
-    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
+    let state = common::state(&dir);
 
     let plain = dir.path().join("plain");
     std::fs::create_dir_all(&plain).unwrap();
@@ -76,7 +78,7 @@ fn create_run_persists_starts_session_and_lists() {
     std::fs::create_dir_all(&repo).unwrap();
     init_repo(&repo); // repo on `main` with a commit
 
-    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
+    let state = common::state(&dir);
     // a profile that stays alive so the session is Running
     state.register_profile(AgentProfile {
         name: "stay".into(),
@@ -122,7 +124,7 @@ fn worktree_path_resolves_for_active_run() {
     std::fs::create_dir_all(&repo).unwrap();
     init_repo(&repo);
 
-    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
+    let state = common::state(&dir);
     state.register_profile(AgentProfile {
         name: "noop".into(),
         command: "sh".into(),
@@ -151,7 +153,7 @@ fn worktree_path_resolves_to_repo_root_for_terminal() {
     std::fs::create_dir_all(&repo).unwrap();
     init_repo(&repo);
 
-    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
+    let state = common::state(&dir);
     let project = state.add_project("demo", &repo).unwrap();
 
     // Agent run: still resolves under .agency/worktrees/<id>.
@@ -181,7 +183,7 @@ fn worktree_path_resolves_to_repo_root_for_terminal() {
 #[test]
 fn new_seeds_shell_and_claude_when_empty() {
     let dir = tempfile::tempdir().unwrap();
-    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
+    let state = common::state(&dir);
     let names = state.profile_names().unwrap();
     assert!(names.contains(&"shell".to_string()));
     assert!(names.contains(&"claude".to_string()));
@@ -190,7 +192,7 @@ fn new_seeds_shell_and_claude_when_empty() {
 #[test]
 fn settings_default_and_roundtrip() {
     let dir = tempfile::tempdir().unwrap();
-    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
+    let state = common::state(&dir);
     let s = state.get_settings().unwrap();
     assert_eq!(s.lm_studio_base_url, "http://localhost:1234/v1");
 
@@ -211,7 +213,7 @@ fn create_run_injects_provider_env() {
     std::fs::create_dir_all(&repo).unwrap();
     init_repo(&repo);
 
-    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
+    let state = common::state(&dir);
     state.save_settings(&agency_app_lib::ProviderSettings {
         lm_studio_base_url: "http://localhost:1234/v1".into(),
     }).unwrap();
@@ -254,7 +256,7 @@ fn resolve_merge_spawns_resolver_in_repo_and_streams() {
     std::fs::create_dir_all(&repo).unwrap();
     init_repo(&repo);
 
-    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
+    let state = common::state(&dir);
     state.register_profile(AgentProfile {
         name: "noop".into(),
         command: "sh".into(),
@@ -297,7 +299,7 @@ fn resolve_merge_spawns_resolver_in_repo_and_streams() {
 #[test]
 fn save_settings_rejects_bad_provider_url() {
     let dir = tempfile::tempdir().unwrap();
-    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
+    let state = common::state(&dir);
     // remote http (non-localhost) is rejected
     let bad = agency_app_lib::ProviderSettings {
         lm_studio_base_url: "http://evil.example.com/v1".into(),
@@ -324,7 +326,7 @@ fn attach_streams_and_input_reaches_agent() {
     std::fs::create_dir_all(&repo).unwrap();
     init_repo(&repo);
 
-    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
+    let state = common::state(&dir);
     state.register_profile(AgentProfile {
         name: "echoer".into(),
         command: "sh".into(),
@@ -374,7 +376,7 @@ fn terminal_survives_attach_detach_reattach() {
     std::fs::create_dir_all(&repo).unwrap();
     init_repo(&repo);
 
-    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
+    let state = common::state(&dir);
     let project = state.add_project("demo", &repo).unwrap();
     let info = state.create_terminal(&project.id).unwrap();
     assert_eq!(info.kind, "terminal");
@@ -419,7 +421,7 @@ fn merge_task_clean_merges_branch_into_base() {
     std::fs::create_dir_all(&repo).unwrap();
     init_repo(&repo);
 
-    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
+    let state = common::state(&dir);
     state.register_profile(AgentProfile {
         name: "noop".into(),
         command: "sh".into(),
@@ -452,7 +454,7 @@ fn ensure_run_active_respawns_a_stopped_agent_run() {
     let repo = dir.path().join("repo");
     std::fs::create_dir_all(&repo).unwrap();
     init_repo(&repo); // repo on `main` with a commit
-    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
+    let state = common::state(&dir);
     // A fake agent whose command just sleeps, so a respawn is observable as Running.
     state.register_profile(AgentProfile {
         name: "sleeper".into(),
@@ -492,7 +494,7 @@ fn ensure_run_active_is_noop_when_session_present() {
     let repo = dir.path().join("repo");
     std::fs::create_dir_all(&repo).unwrap();
     init_repo(&repo);
-    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
+    let state = common::state(&dir);
     let project = state.add_project("demo", &repo).unwrap();
     let info = state.create_terminal(&project.id).unwrap();
     // Session is live; ensure_run_active must not error or take it down.
@@ -507,7 +509,7 @@ fn ensure_run_active_falls_back_to_fresh_when_resume_fails() {
     let repo = dir.path().join("repo");
     std::fs::create_dir_all(&repo).unwrap();
     init_repo(&repo);
-    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
+    let state = common::state(&dir);
     // Fake agent: resume fails fast; fresh (render_args of `args`) prints FRESH and stays.
     state.register_profile(AgentProfile {
         name: "flaky".into(),
@@ -549,7 +551,7 @@ fn extra_session_lifecycle_shares_worktree_and_cascades() {
     std::fs::create_dir_all(&repo).unwrap();
     init_repo(&repo);
 
-    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
+    let state = common::state(&dir);
     // Prints its cwd so we can prove the extra tab runs in the run's worktree.
     state.register_profile(AgentProfile {
         name: "pwds".into(),
@@ -615,7 +617,7 @@ fn ensure_run_active_revives_a_dead_extra_session() {
     let repo = dir.path().join("repo");
     std::fs::create_dir_all(&repo).unwrap();
     init_repo(&repo);
-    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
+    let state = common::state(&dir);
     state.register_profile(AgentProfile {
         name: "pwds".into(),
         command: "/bin/sh".into(),
@@ -660,7 +662,7 @@ fn extra_session_rejects_terminal_runs() {
     let repo = dir.path().join("repo");
     std::fs::create_dir_all(&repo).unwrap();
     init_repo(&repo);
-    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
+    let state = common::state(&dir);
     let project = state.add_project("demo", &repo).unwrap();
     let term = state.create_terminal(&project.id).unwrap();
     let err = state.start_run_session(&term.id, None).unwrap_err().to_string();
@@ -671,7 +673,7 @@ fn extra_session_rejects_terminal_runs() {
 #[test]
 fn send_review_comments_errors_when_session_not_running() {
     let dir = tempfile::tempdir().unwrap();
-    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
+    let state = common::state(&dir);
 
     // Use a fake run_id — no session has ever been started for it.
     let fake_run_id = "00000000-0000-0000-0000-000000000000";

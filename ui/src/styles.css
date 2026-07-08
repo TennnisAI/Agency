@@ -1,4 +1,21 @@
-:root { color-scheme: dark; }
+:root {
+  color-scheme: dark;
+  /* Overlay/shadow tokens (Bug #29). Dark themes (the default) get the
+     original dark scrim/drop-shadow. The one light theme (Paperback) overrides
+     these below with a softer, lighter-appropriate translucent so backdrops and
+     shadows don't read as heavy black blocks on a pale background. */
+  --overlay: rgba(17,17,27,.6);
+  --shadow: rgba(0,0,0,.5);
+}
+/* Light theme (Paperback is the only scheme: "light" theme — see themes.ts). */
+:root[data-theme="paperback"] {
+  --overlay: rgba(20,18,14,.32);
+  --shadow: rgba(20,18,14,.18);
+}
+/* Keyboard focus ring, app-wide (Bug #30). Mouse focus keeps the `outline: none`
+   resets below; :focus-visible only matches keyboard/AT focus, so those users
+   always get a visible ring. */
+:focus-visible { outline: 2px solid var(--blue, #4c8dff); outline-offset: 2px; }
 /* App shell */
 .shell { display: flex; flex-direction: column; height: 100%; }
 .titlebar {
@@ -94,8 +111,8 @@ button:hover { background: var(--lav); }
 .btn-danger:hover { background: rgba(243,139,168,.12); }
 
 /* ConfirmDialog (Task 9) */
-.modal-backdrop { position: absolute; inset: 0; background: rgba(17,17,27,.66); backdrop-filter: blur(3px); z-index: 30; display: flex; align-items: center; justify-content: center; }
-.modal { width: 580px; max-width: 92%; background: var(--mantle); border: 1px solid var(--s1); border-radius: 15px; box-shadow: 0 24px 64px rgba(0,0,0,.5); }
+.modal-backdrop { position: absolute; inset: 0; background: var(--overlay); backdrop-filter: blur(3px); z-index: 30; display: flex; align-items: center; justify-content: center; }
+.modal { width: 580px; max-width: 92%; background: var(--mantle); border: 1px solid var(--s1); border-radius: 15px; box-shadow: 0 24px 64px var(--shadow); }
 .modal.confirm { width: 440px; }
 .modal-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 18px; border-bottom: 1px solid var(--line); }
 .modal-head h3 { margin: 0; font-size: 15px; font-weight: 600; color: var(--text); }
@@ -118,7 +135,7 @@ button:hover { background: var(--lav); }
 /* Agent add menu (Task 9) */
 .agent-add { position: relative; display: inline-flex; }
 .agent-menu-backdrop { position: fixed; inset: 0; z-index: 40; }
-.agent-menu { z-index: 41; background: var(--mantle); border: 1px solid var(--s1); border-radius: 9px; box-shadow: 0 12px 32px rgba(0,0,0,.4); padding: 5px; min-width: 220px; max-width: 300px; display: flex; flex-direction: column; }
+.agent-menu { z-index: 41; background: var(--mantle); border: 1px solid var(--s1); border-radius: 9px; box-shadow: 0 12px 32px var(--shadow); padding: 5px; min-width: 220px; max-width: 300px; display: flex; flex-direction: column; }
 .agent-menu button { background: transparent; border: none; color: var(--text); text-align: left; padding: 8px 10px; border-radius: 6px; cursor: pointer; font-family: var(--sans); font-size: 12.5px; }
 .agent-menu button:hover { background: var(--s0); }
 .agent-menu-sep { height: 1px; background: var(--line); margin: 4px 2px; }
@@ -216,7 +233,7 @@ textarea.settings-input { min-height: 64px; resize: vertical; }
 .settings-btn { margin: 8px; background: var(--s0); color: var(--text); font-weight: 400; }
 .settings-btn:hover { background: var(--s1); }
 /* Merge modal */
-.merge-modal { background: var(--crust); border: 1px solid var(--s1); border-radius: 15px; padding: 20px; width: 720px; max-height: 86vh; overflow: auto; display: flex; flex-direction: column; gap: 12px; box-shadow: 0 24px 64px rgba(0,0,0,.5); }
+.merge-modal { background: var(--crust); border: 1px solid var(--s1); border-radius: 15px; padding: 20px; width: 720px; max-height: 86vh; overflow: auto; display: flex; flex-direction: column; gap: 12px; box-shadow: 0 24px 64px var(--shadow); }
 .merge-ok { color: var(--green); }
 .merge-warn { color: var(--yellow); }
 .merge-note { color: var(--sub0); }
@@ -606,7 +623,7 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
   display: flex;
   flex-direction: column;
   gap: 10px;
-  box-shadow: 0 24px 64px rgba(0,0,0,.5);
+  box-shadow: 0 24px 64px var(--shadow);
 }
 .card h3 { margin: 0; font-size: 15px; font-weight: 600; }
 .card label { font-size: 12px; color: var(--o0); }
@@ -752,7 +769,7 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
 
 /* ── Terminal search overlay (Task 15) ─────────────────────── */
 .term-search-wrap { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.term-search-box { position: absolute; top: 8px; right: 12px; z-index: 10; display: flex; align-items: center; gap: 4px; background: var(--mantle); border: 1px solid var(--s1); border-radius: 8px; padding: 4px 8px; box-shadow: 0 4px 16px rgba(0,0,0,.4); }
+.term-search-box { position: absolute; top: 8px; right: 12px; z-index: 10; display: flex; align-items: center; gap: 4px; background: var(--mantle); border: 1px solid var(--s1); border-radius: 8px; padding: 4px 8px; box-shadow: 0 4px 16px var(--shadow); }
 .term-search-input { background: transparent; border: none; color: var(--text); font-size: 13px; outline: none; width: 200px; font-family: var(--sans); }
 .term-search-input::placeholder { color: var(--o0); }
 .term-search-btn { background: transparent; border: none; color: var(--sub0); cursor: pointer; font-size: 13px; padding: 2px 6px; border-radius: 4px; line-height: 1; font-family: inherit; }
@@ -763,8 +780,8 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
 .diff-empty { color: var(--o0); font-size: 12px; padding: 4px 0; }
 
 /* ── Command Palette (Task 7c-3) ────────────────────────────── */
-.palette-overlay{position:fixed;inset:0;background:rgba(17,17,27,.5);display:flex;justify-content:center;align-items:flex-start;padding-top:12vh;z-index:20}
-.palette{width:560px;background:var(--mantle);border:1px solid var(--s1);border-radius:12px;box-shadow:0 24px 64px rgba(0,0,0,.5);overflow:hidden}
+.palette-overlay{position:fixed;inset:0;background:var(--overlay);display:flex;justify-content:center;align-items:flex-start;padding-top:12vh;z-index:20}
+.palette{width:560px;background:var(--mantle);border:1px solid var(--s1);border-radius:12px;box-shadow:0 24px 64px var(--shadow);overflow:hidden}
 .palette-input{width:100%;background:var(--crust);border:none;border-bottom:1px solid var(--line);color:var(--text);padding:12px 14px;font-size:14px;outline:none}
 .palette-list{list-style:none;margin:0;padding:6px;max-height:50vh;overflow:auto}
 .palette-row{display:flex;gap:8px;align-items:baseline;padding:7px 9px;border-radius:6px;cursor:pointer}
@@ -831,7 +848,7 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
 .git-caret { border-radius: 0 7px 7px 0; padding: 6px 8px; border-left: 1px solid rgba(0,0,0,.25); }
 .git-secondary { background: var(--s0); color: var(--text); border: none; border-radius: 7px; padding: 6px 10px; cursor: pointer; font-size: 12.5px; }
 .git-secondary:hover { background: var(--s1); }
-.git-menu { position: absolute; top: calc(100% + 4px); left: 0; z-index: 25; background: var(--mantle); border: 1px solid var(--s1); border-radius: 8px; box-shadow: 0 12px 32px rgba(0,0,0,.4); padding: 4px; min-width: 160px; display: flex; flex-direction: column; }
+.git-menu { position: absolute; top: calc(100% + 4px); left: 0; z-index: 25; background: var(--mantle); border: 1px solid var(--s1); border-radius: 8px; box-shadow: 0 12px 32px var(--shadow); padding: 4px; min-width: 160px; display: flex; flex-direction: column; }
 .git-menu button { background: none; border: none; color: var(--text); text-align: left; padding: 7px 9px; border-radius: 5px; cursor: pointer; font-size: 12.5px; }
 .git-menu button:hover { background: var(--s0); }
 .git-branchbar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--line); background: var(--mantle); font-size: 12.5px; }
@@ -1160,7 +1177,7 @@ input, textarea, code,
   padding: 8px 10px; border-radius: 6px; cursor: default;
   font-size: 12px; line-height: 1.4;
   background: var(--mantle); border: 1px solid var(--line);
-  box-shadow: 0 4px 16px rgba(0,0,0,.35);
+  box-shadow: 0 4px 16px var(--shadow);
 }
 .toast-error { border-color: var(--red); }
 .toast-success { border-color: var(--green); }

@@ -70,8 +70,8 @@ export default function RaceDialog({ onClose }: { onClose: () => void }) {
   }
 
   return (
-    <div className="settings-overlay">
-      <div className="merge-modal race-dialog" role="dialog" aria-modal="true" aria-label="Race agents">
+    <div className="settings-overlay" onClick={(e) => { e.stopPropagation(); onClose(); }}>
+      <div className="merge-modal race-dialog" role="dialog" aria-modal="true" aria-label="Race agents" onClick={(e) => e.stopPropagation()}>
         <div className="settings-head">
           <h2>Race agents</h2>
           <button className="icon-btn" title="Close" onClick={onClose}>✕</button>

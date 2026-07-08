@@ -46,7 +46,11 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
       return;
     }
     try {
-      setRuns(await listRuns(pid));
+      const next = await listRuns(pid);
+      // Drop stale responses: if the selected project changed while awaiting,
+      // a late reply from the old project must not overwrite the current runs.
+      if (projectRef.current !== pid) return;
+      setRuns(next);
     } catch {
       /* ignore transient errors */
     }
@@ -98,6 +102,9 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
     setView("grid");
     setFocusedRun(null);
     setTab("agents");
+    // Clear any pending merge-approval so switching projects can't re-open the
+    // MergeModal for a run from the old project.
+    setApproveRun(null);
   }
 
   useEffect(() => {

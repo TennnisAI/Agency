@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { RunInfo, createInstallTerminal, listProfiles } from "../api";
 import { INSTALL_COMMANDS, agentLabel } from "../agents";
 import { useModalKeys } from "../hooks/useModalKeys";
@@ -22,8 +22,15 @@ export default function InstallAgentDialog({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const install = INSTALL_COMMANDS[agent];
+  // Focus the primary action on open (the install button when available,
+  // otherwise Cancel) so Enter/Escape act immediately.
+  const primaryRef = useRef<HTMLButtonElement>(null);
 
   useModalKeys(onCancel);
+
+  useEffect(() => {
+    primaryRef.current?.focus();
+  }, []);
 
   useEffect(() => {
     listProfiles()
@@ -69,9 +76,9 @@ export default function InstallAgentDialog({
           {error && <div className="git-error">{error}</div>}
         </div>
         <div className="modal-foot">
-          <button className="btn-secondary" onClick={onCancel}>Cancel</button>
+          <button className="btn-secondary" ref={install ? undefined : primaryRef} onClick={onCancel}>Cancel</button>
           {install && (
-            <button className="btn-primary" disabled={busy} onClick={runInstall}>
+            <button className="btn-primary" ref={primaryRef} disabled={busy} onClick={runInstall}>
               {busy ? "Opening terminal…" : "Install in terminal"}
             </button>
           )}

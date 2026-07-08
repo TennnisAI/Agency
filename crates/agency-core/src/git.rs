@@ -119,6 +119,29 @@ pub fn push(worktree: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Whether an `origin` remote is configured.
+pub fn has_origin(repo: &Path) -> bool {
+    git(repo, &["remote"])
+        .map(|out| out.lines().any(|r| r.trim() == "origin"))
+        .unwrap_or(false)
+}
+
+/// Fetch from `origin`, updating remote-tracking refs (and pruning branches
+/// deleted upstream) so ahead/behind reflects reality instead of a stale local
+/// snapshot. Nothing is checked out or merged.
+pub fn fetch(repo: &Path) -> Result<()> {
+    git(repo, &["fetch", "--prune", "origin"])?;
+    Ok(())
+}
+
+/// Fast-forward the current branch to its upstream. `--ff-only` on purpose: a
+/// branch that has diverged fails loudly rather than silently creating a merge
+/// commit the user never asked for.
+pub fn pull(worktree: &Path) -> Result<()> {
+    git(worktree, &["pull", "--ff-only"])?;
+    Ok(())
+}
+
 /// Point `origin` at `url`, adding the remote or updating it if it already
 /// exists. Lets the UI publish a branch from a repo that has no remote yet.
 pub fn set_origin(worktree: &Path, url: &str) -> Result<()> {
@@ -346,9 +369,7 @@ pub fn branch_info(worktree: &Path) -> Result<BranchInfo> {
             ahead = count.trim().parse().unwrap_or(0);
         }
     }
-    let has_remote = git(worktree, &["remote"])
-        .map(|out| out.lines().any(|r| r.trim() == "origin"))
-        .unwrap_or(false);
+    let has_remote = has_origin(worktree);
     Ok(BranchInfo { branch, upstream, ahead, behind, base, has_remote })
 }
 

@@ -204,6 +204,8 @@ export const gitCommit = (taskId: string, message: string) =>
   invoke<void>("git_commit", { taskId, message });
 
 export const gitPush = (taskId: string) => invoke<void>("git_push", { taskId });
+export const gitFetch = (taskId: string) => invoke<void>("git_fetch", { taskId });
+export const gitPull = (taskId: string) => invoke<void>("git_pull", { taskId });
 
 export const gitSetRemote = (taskId: string, url: string) =>
   invoke<void>("git_set_remote", { taskId, url });
@@ -354,6 +356,10 @@ export const resolverStatus = (taskId: string) =>
   invoke<StatusDto>("resolver_status", { taskId });
 export const resolverResize = (taskId: string, cols: number, rows: number) =>
   invoke<void>("resolver_resize", { taskId, cols, rows });
+// Tear down a merge resolver (kills its agent child) — called when the merge
+// modal closes or the resolver exits so the handle doesn't leak.
+export const resolverClose = (taskId: string) =>
+  invoke<void>("resolver_close", { taskId });
 
 export function resolveMerge(
   taskId: string,

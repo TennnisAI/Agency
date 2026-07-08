@@ -74,7 +74,7 @@ export default function AgentFocus({
 }: {
   onSpawn?: (agentId: string, opts?: { base: string; mergeTarget: string }) => void;
 }) {
-  const { runs, focusedRunId, setFocusedRun, refreshRuns, createAgent, createTerminal } = useRuns();
+  const { runs, focusedRunId, setFocusedRun, refreshRuns, createAgent, createTerminal, selectedProjectId } = useRuns();
   const [showMerge, setShowMerge] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [confirmArchive, setConfirmArchive] = useState(false);
@@ -94,7 +94,20 @@ export default function AgentFocus({
     setPanel("agent");
     setAddOpen(false);
     setSessions([]);
-    if (focusedRunId) listRunSessions(focusedRunId).then(setSessions).catch(() => {});
+    if (!focusedRunId) return;
+    // `live` drops a response that lands after the run changed (a slow fetch for
+    // the previous run must not repopulate this one's tab strip). The interval
+    // re-polls so a tab whose session died — agent exited, or the app was quit
+    // and reopened — updates its status and drops out of the strip on its own,
+    // instead of lingering as a dead tab until the next focus change.
+    let live = true;
+    const load = () =>
+      listRunSessions(focusedRunId)
+        .then((s) => { if (live) setSessions(s); })
+        .catch(() => {});
+    load();
+    const iv = setInterval(load, 4000);
+    return () => { live = false; clearInterval(iv); };
   }, [focusedRunId]);
 
   const toggleAddMenu = () => {
@@ -159,7 +172,7 @@ export default function AgentFocus({
         <>
           <div className="rail" style={{ width: rail.width, minWidth: rail.width }}>
             <div className="rail-head">
-              <AgentAddMenu variant="header" onSpawn={onSpawn ?? createAgent} onTerminal={createTerminal} />
+              <AgentAddMenu variant="header" projectId={selectedProjectId ?? undefined} onSpawn={onSpawn ?? createAgent} onTerminal={createTerminal} />
               <span className="spacer" />
               <button className="icon-btn" onClick={() => setRailOpen(false)}>«</button>
             </div>
@@ -239,7 +252,9 @@ export default function AgentFocus({
                     className={`session-tab ${panel === "agent" ? "on" : ""}`}
                     onClick={() => setPanel("agent")}
                   >{agentLabel(focused.agent)}</button>
-                  {sessions.map((s) => (
+                  {sessions
+                    .filter((s) => s.status.state !== "gone" || s.id === panel)
+                    .map((s) => (
                     <button
                       key={s.id}
                       className={`session-tab ${panel === s.id ? "on" : ""}`}

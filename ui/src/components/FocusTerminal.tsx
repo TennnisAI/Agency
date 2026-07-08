@@ -204,6 +204,11 @@ export default function FocusTerminal(
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "f") {
+        // Multiple FocusTerminals mount at once (agent + companion shell). This handler
+        // is window-global, so without a guard every instance opens its search box on
+        // Cmd+F. Only respond when this instance's xterm container actually holds focus
+        // (xterm keeps focus in a .xterm-helper-textarea inside the container).
+        if (!ref.current?.contains(document.activeElement)) return;
         e.preventDefault();
         setShowSearch(true);
         requestAnimationFrame(() => searchInputRef.current?.focus());

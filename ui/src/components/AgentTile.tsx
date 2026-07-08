@@ -12,10 +12,13 @@ function badgeClass(agent: string): string {
   if (agent === "hermes") return "badge hermes";
   return "badge";
 }
-function statusLabel(s: RunInfo["status"]): { cls: string; text: string } {
+function statusLabel(s: RunInfo["status"]): { cls: string; text: string; title?: string } {
   if (s.state === "running") return { cls: "running", text: "running" };
-  if (s.state === "exited") return { cls: "exited", text: `exited (${s.code})` };
-  return { cls: "exited", text: "gone" };
+  if (s.state === "exited") {
+    if (s.code === 0) return { cls: "exited", text: "finished" };
+    return { cls: "exited", text: "failed", title: `exited (${s.code})` };
+  }
+  return { cls: "exited", text: "session ended" };
 }
 
 export default function AgentTile({ run }: { run: RunInfo }) {
@@ -57,7 +60,7 @@ export default function AgentTile({ run }: { run: RunInfo }) {
       )}
       <pre className="tile-preview">{preview}</pre>
       <div className="tile-foot">
-        {st.text}
+        <span title={st.title}>{st.text}</span>
         <button className="tile-act danger" title={isTerminal ? "Close terminal" : "Discard agent"} onClick={(e) => { e.stopPropagation(); setConfirmDiscard(true); }}><TrashIcon /></button>
       </div>
       {confirmDiscard && (

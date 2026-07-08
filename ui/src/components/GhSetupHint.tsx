@@ -1,3 +1,4 @@
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { GhReadiness, createInstallTerminal } from "../api";
 import { useRuns } from "../store/runs";
 import { toastError } from "../lib/toast";
@@ -29,12 +30,19 @@ export default function GhSetupHint({
   }
 
   if (readiness === "notInstalled") {
+    // We can't cheaply probe whether Homebrew is on PATH (the agent_installed
+    // IPC only checks registered agent profiles, not arbitrary binaries like
+    // `brew`), so offer both paths: `brew install gh` for Homebrew users and a
+    // manual download for everyone else — never brew-only.
     return (
       <div className="pr-setup">
         <p className="merge-note">
           This uses the GitHub CLI (<code>gh</code>), which isn't installed.
         </p>
-        <button onClick={() => setupInTerminal("gh", "brew install gh")}>Install GitHub CLI…</button>
+        <button onClick={() => setupInTerminal("gh", "brew install gh")}>Install with Homebrew…</button>
+        <button className="ghost" onClick={() => openUrl("https://cli.github.com").catch(() => {})}>
+          No Homebrew? Download from cli.github.com ↗
+        </button>
       </div>
     );
   }

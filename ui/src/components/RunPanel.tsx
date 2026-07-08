@@ -51,7 +51,7 @@ export default function RunPanel({ run }: { run: RunInfo }) {
     return (
       <div className="run-panel empty">
         No run script configured. Add a <code>[scripts]</code> <code>run</code> line to
-        <code> .agency/agency.toml</code> to launch this workspace's app.
+        <code> .agency/agency.toml</code> to launch this agent's app.
       </div>
     );
   }
@@ -85,7 +85,7 @@ export default function RunPanel({ run }: { run: RunInfo }) {
             key={previewKey}
             className="run-preview"
             src={url}
-            title="workspace preview"
+            title="agent app preview"
           />
         )}
       </div>

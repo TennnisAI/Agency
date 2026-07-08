@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { FileChange, BranchInfo, HistoryItem, gitStatus, gitBranchInfo, gitPush } from "../../api";
+import { FileChange, BranchInfo, HistoryItem, gitStatus, gitBranchInfo, gitPush, gitFetch, gitPull } from "../../api";
 import { toastSuccess } from "../../lib/toast";
 import ChangesPanel from "./ChangesPanel";
 import HistoryPanel from "./HistoryPanel";
@@ -101,7 +101,11 @@ export default function GitPanel({
   if (layout === "compact") {
     return (
       <aside className="git-panel compact" style={width ? { width, minWidth: width } : undefined}>
-        <BranchBar info={branch} busy={busy} onSync={() => act(() => gitPush(taskId), "Pushed")} onRefresh={refresh} />
+        <BranchBar info={branch} busy={busy}
+          onSync={() => act(() => gitPush(taskId), "Pushed")}
+          onFetch={() => act(() => gitFetch(taskId), "Fetched")}
+          onPull={() => act(() => gitPull(taskId), "Pulled")}
+          onRefresh={refresh} />
         {(actionError || error) && <div className="git-error">{actionError || error}</div>}
         {sections}
         {allowComments && <ReviewComments key={commentsKey} taskId={taskId} />}
@@ -111,7 +115,11 @@ export default function GitPanel({
 
   return (
     <div className="git-panel full">
-      <BranchBar info={branch} busy={busy} onSync={() => act(() => gitPush(taskId), "Pushed")} onRefresh={refresh} />
+      <BranchBar info={branch} busy={busy}
+        onSync={() => act(() => gitPush(taskId), "Pushed")}
+        onFetch={() => act(() => gitFetch(taskId), "Fetched")}
+        onPull={() => act(() => gitPull(taskId), "Pulled")}
+        onRefresh={refresh} />
       {(actionError || error) && <div className="git-error">{actionError || error}</div>}
       <div className="git-full-body">
         <div className="git-full-left" style={{ width: leftPane.width }}>

@@ -429,6 +429,11 @@ pub struct AppState {
     /// run are picked up on the first tick; cleared when a full pass finds
     /// none, re-set by loop creation.
     loops_active: std::sync::atomic::AtomicBool,
+    /// Bumped whenever a loop is created. `drive_loops` snapshots it before its
+    /// scan and refuses to clear `loops_active` if it changed mid-pass — without
+    /// this, a loop created in the exact window where a finishing pass is about
+    /// to park the driver would clear the flag it just set and never be driven.
+    loop_generation: std::sync::atomic::AtomicU64,
 }
 
 /// Progress of a loop's check command. `Done(None)` = killed on timeout or
@@ -541,6 +546,7 @@ impl AppState {
             checks: Mutex::new(HashMap::new()),
             loop_gate: Mutex::new(()),
             loops_active: std::sync::atomic::AtomicBool::new(true),
+            loop_generation: std::sync::atomic::AtomicU64::new(0),
         };
         // Rehydrate: any run the daemon still hosts is adopted as-is; the watch
         // loop (watch_snapshot) then reports live status. Nothing to spawn here —
@@ -640,6 +646,8 @@ impl AppState {
             let _ = self.term.read().unwrap().kill(&session_name(&run.id));
             self.run_attaches.lock().unwrap().remove(&run.id);
             let _ = self.term.read().unwrap().kill(&run_session_name(&run.id));
+            self.shell_attaches.lock().unwrap().remove(&run.id);
+            let _ = self.term.read().unwrap().kill(&shell_session_name(&run.id));
             self.kill_extra_sessions(&run.id);
         }
         Ok(())
@@ -653,6 +661,8 @@ impl AppState {
             let _ = self.term.read().unwrap().kill(&session_name(&run.id));
             self.run_attaches.lock().unwrap().remove(&run.id);
             let _ = self.term.read().unwrap().kill(&run_session_name(&run.id));
+            self.shell_attaches.lock().unwrap().remove(&run.id);
+            let _ = self.term.read().unwrap().kill(&shell_session_name(&run.id));
             self.kill_extra_sessions(&run.id);
             if let Some(repo) = &repo {
                 let _ = WorktreeManager::new(repo.clone()).remove(&run.id);
@@ -782,10 +792,21 @@ impl AppState {
             }
             let (command, args) =
                 agency_core::scripts::wrap_setup(config.scripts.setup.as_deref(), &profile.command, &args);
-            self.term
-                .read()
-                .unwrap()
-                .start_session(&session_name(&id), &worktree.path, &command, &args, &env, 220, 50)?;
+            if let Err(e) = self.term.read().unwrap().start_session(
+                &session_name(&id),
+                &worktree.path,
+                &command,
+                &args,
+                &env,
+                220,
+                50,
+            ) {
+                // Roll back the worktree + branch we just cut: the run record is
+                // inserted below, so on a spawn failure nothing references them —
+                // leaving them would orphan a worktree/branch on every failure.
+                let _ = manager.remove(&id);
+                return Err(e.into());
+            }
         }
 
         // A run created with a real prompt gets a title immediately (word-based;
@@ -826,9 +847,16 @@ impl AppState {
         if run.loop_config.is_some() {
             // Wake the driver's fast path before spawning: even if this first
             // spawn fails, the driver retries (and stalls loudly if it keeps
-            // failing) instead of the loop sitting invisible.
-            self.loops_active.store(true, std::sync::atomic::Ordering::Relaxed);
+            // failing) instead of the loop sitting invisible. Bump the
+            // generation and set the flag UNDER loop_gate: drive_loops clears
+            // the flag under the same gate and only after re-reading the
+            // generation, so the bump+set here and its clear there are mutually
+            // exclusive. Without the shared gate the two stores race and a
+            // finishing pass can clobber this freshly-set flag, parking the new
+            // loop until the next creation.
             let _gate = self.loop_gate.lock().unwrap();
+            self.loop_generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.loops_active.store(true, std::sync::atomic::Ordering::SeqCst);
             self.spawn_loop_attempt(&run)?;
         }
         Ok(self.run_info(&run))
@@ -1058,12 +1086,16 @@ impl AppState {
         let project = agency_core::mcp::from_config(&config.mcp);
         let mut auto = Vec::new();
         if config.knowledge.graph {
-            let serve = config
+            // Build an argv (not a whitespace split): the default serve command
+            // embeds the primary repo's absolute graph.json path, which breaks
+            // graphify injection for any repo path containing a space.
+            let argv = config
                 .knowledge
                 .serve_command
-                .clone()
-                .unwrap_or_else(|| agency_core::config::default_serve_command(repo));
-            let mut parts = serve.split_whitespace().map(str::to_string);
+                .as_deref()
+                .map(agency_core::config::split_command)
+                .unwrap_or_else(|| agency_core::config::default_serve_argv(repo));
+            let mut parts = argv.into_iter();
             if let Some(cmd) = parts.next() {
                 if command_on_path(&cmd) {
                     auto.push(agency_core::mcp::McpServer {
@@ -1118,12 +1150,32 @@ impl AppState {
             }
         }
         log::info!("rebuilding knowledge graph after merge: {build}");
-        let _ = std::process::Command::new("sh")
+        let spawned = std::process::Command::new("sh")
             .args(["-lc", &build])
             .current_dir(repo)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn();
+        // Reap the child on its own thread — dropping it without waiting leaves a
+        // zombie `sh` per merge until the app exits.
+        if let Ok(mut child) = spawned {
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+        }
+    }
+
+    /// Best-effort `git fetch` for a project's `origin`, so ahead/behind stops
+    /// going stale. Returns `Ok(false)` when the project has no remote (nothing
+    /// to fetch). Runs no git under any lock — the network call happens after
+    /// the repo path is resolved and the registry lock released.
+    pub fn fetch_project(&self, project_id: &str) -> Result<bool> {
+        let repo = self.project_repo(project_id)?;
+        if !agency_core::git::has_origin(&repo) {
+            return Ok(false);
+        }
+        agency_core::git::fetch(&repo)?;
+        Ok(true)
     }
 
     pub fn list_project_branches(&self, project_id: &str) -> Result<agency_core::git::ProjectBranches> {
@@ -1355,6 +1407,18 @@ impl AppState {
             }
         }
 
+        // Preserve uncommitted agent work FIRST, before any teardown: commit it
+        // onto the kept agent branch so restore brings it back. A failure here
+        // must abort the archive — proceeding would destroy work. Doing this
+        // before killing sessions / deleting session rows means a failed commit
+        // leaves the run fully intact instead of half-archived (sessions gone
+        // but archived_at still null).
+        if run.kind == "agent" {
+            WorktreeManager::new(repo.clone())
+                .commit_all_if_dirty(id, "WIP: uncommitted changes auto-committed by Agency on archive")
+                .map_err(|e| anyhow!("couldn't preserve uncommitted changes before archiving: {e}"))?;
+        }
+
         // Stop all sessions and drop attach handles. Extra tabs are purged for
         // good: the worktree they live in is about to disappear.
         self.attaches.lock().unwrap().remove(id);
@@ -1365,15 +1429,6 @@ impl AppState {
         let _ = self.term.read().unwrap().kill(&shell_session_name(id));
         self.kill_extra_sessions(id);
         self.registry.lock().unwrap().delete_run_sessions(id)?;
-
-        // Preserve uncommitted agent work BEFORE the worktree is force-removed:
-        // commit it onto the kept agent branch so restore brings it back. A
-        // failure here must abort the archive — proceeding would destroy work.
-        if run.kind == "agent" {
-            WorktreeManager::new(repo.clone())
-                .commit_all_if_dirty(id, "WIP: uncommitted changes auto-committed by Agency on archive")
-                .map_err(|e| anyhow!("couldn't preserve uncommitted changes before archiving: {e}"))?;
-        }
 
         // Best-effort archive cleanup script, before the worktree disappears.
         let config = agency_core::config::load(&repo);
@@ -1412,6 +1467,18 @@ impl AppState {
         let config = agency_core::config::load(&repo);
         if let Err(e) = manager.copy_into(id, &config.files.copy) {
             log::warn!("copying [files] copy entries into restored worktree {id}: {e}");
+        }
+        // Reallocate the port block if another active run claimed it while this
+        // one was archived (list_port_bases excludes archived rows, so a live
+        // collision means a real conflict) — otherwise both export the same
+        // AGENCY_PORT into their scripts.
+        if let Some(existing) = run.port_base {
+            let taken: std::collections::HashSet<u16> =
+                self.registry.lock().unwrap().list_port_bases()?.into_iter().collect();
+            if taken.contains(&existing) {
+                let fresh = self.allocate_port(config.ports.base, config.ports.block_size)?;
+                self.registry.lock().unwrap().set_port_base(id, Some(fresh))?;
+            }
         }
         let worktree = repo.join(".agency").join("worktrees").join(id);
         self.emit_mcp(&run.agent, &repo, &worktree, &config);
@@ -1954,9 +2021,12 @@ impl AppState {
     pub fn drive_loops(&self) -> Result<Vec<LoopNotice>> {
         // Fast path: no loops anywhere (the common case) is one atomic load,
         // not a registry scan on every poll tick.
-        if !self.loops_active.load(std::sync::atomic::Ordering::Relaxed) {
+        if !self.loops_active.load(std::sync::atomic::Ordering::SeqCst) {
             return Ok(Vec::new());
         }
+        // Snapshot the generation BEFORE scanning: if a loop is created while
+        // this pass runs, the generation changes and we must not clear the flag.
+        let gen_at_start = self.loop_generation.load(std::sync::atomic::Ordering::SeqCst);
         let mut notices = Vec::new();
         let mut any_active = false;
         let projects = self.registry.lock().unwrap().list_projects()?;
@@ -2060,9 +2130,18 @@ impl AppState {
         }
         // A full pass with nothing active parks the driver until the next
         // loop is created (terminal transitions above count as active for one
-        // last pass, which is what clears the flag).
+        // last pass, which is what clears the flag). Clear under loop_gate and
+        // re-read the generation while holding it: create_run_spec bumps the
+        // generation and sets the flag under this same gate, so a loop created
+        // after gen_at_start was snapshotted no longer matches here and we leave
+        // the flag set. Taking the gate makes the read-and-clear atomic against
+        // that set — otherwise the load-then-store races the creator's
+        // set-then-store and can park the new loop until the next creation.
         if !any_active {
-            self.loops_active.store(false, std::sync::atomic::Ordering::Relaxed);
+            let _gate = self.loop_gate.lock().unwrap();
+            if self.loop_generation.load(std::sync::atomic::Ordering::SeqCst) == gen_at_start {
+                self.loops_active.store(false, std::sync::atomic::Ordering::SeqCst);
+            }
         }
         Ok(notices)
     }
@@ -2293,6 +2372,14 @@ impl AppState {
         Ok(())
     }
 
+    /// Tear down a merge resolver: dropping its handle kills the agent child
+    /// (see `AgentHandle`'s Drop) and frees the map slot. Called when the merge
+    /// modal closes or the resolver exits; a no-op if none is running, so it is
+    /// safe to call unconditionally.
+    pub fn resolver_close(&self, id: &str) {
+        self.resolvers.lock().unwrap().remove(id);
+    }
+
     pub fn resolver_input(&self, id: &str, data: &[u8]) -> anyhow::Result<()> {
         let resolvers = self.resolvers.lock().unwrap();
         let handle = resolvers
@@ -2400,10 +2487,17 @@ impl AppState {
 
     /// Tell the daemon to shut down without killing sessions first. The daemon
     /// intentionally outlives the app (sessions survive restarts), which means
-    /// every `AppState::new` in a test would otherwise leak a daemon process —
-    /// tests call this in their teardown.
+    /// every `AppState::new` in a test would otherwise leak a daemon process.
     pub fn shutdown_daemon(&self) {
         let _ = self.term.read().unwrap().shutdown();
+    }
+
+    /// Test-only teardown: kill every session this state started, then shut the
+    /// daemon down, so no test leaks a daemon (or its session child processes).
+    /// The integration-test harness (`tests/common`) calls this from a drop
+    /// guard so cleanup runs even when a test panics mid-way.
+    pub fn test_teardown(&self) {
+        self.kill_all_and_shutdown();
     }
 
     /// Count of all sessions currently tracked by the daemon (used for the quit

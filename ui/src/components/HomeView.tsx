@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
-import { Project, RunInfo, listProjects, listRuns, runPreview } from "../api";
+import { open } from "@tauri-apps/plugin-dialog";
+import { Project, RunInfo, RepoReadiness, addProject, inspectRepo, listProjects, listRuns, runPreview } from "../api";
 import { projectAccent, runName } from "../agents";
+import RepoSetupDialog from "./RepoSetupDialog";
 
 const FOLD_KEY = "home:folded";
 
@@ -37,6 +39,38 @@ export default function HomeView({
   const [loaded, setLoaded] = useState(false);
   // Folded project ids persist across sessions so a big workspace stays tidy.
   const [folded, setFolded] = useState<Set<string>>(loadFolded);
+  const [addError, setAddError] = useState("");
+  const [setup, setSetup] = useState<{ path: string; name: string; readiness: RepoReadiness } | null>(null);
+
+  // Same add-project flow as the Projects pane "+" control: pick a directory,
+  // add it straight away if the repo is ready, otherwise route through the
+  // setup dialog. A freshly added project is auto-opened.
+  async function handleAdd() {
+    const sel = await open({ directory: true, multiple: false });
+    if (typeof sel !== "string") return;
+    const name = sel.split("/").filter(Boolean).pop() ?? sel;
+    setAddError("");
+    try {
+      const r = await inspectRepo(sel);
+      if (r.state === "ready" && !r.dirty) {
+        onOpenProject(await addProject(name, sel));
+      } else {
+        setSetup({ path: sel, name, readiness: r });
+      }
+    } catch (e) {
+      setAddError(String(e));
+    }
+  }
+
+  async function finishSetup() {
+    if (!setup) return;
+    try {
+      onOpenProject(await addProject(setup.name, setup.path));
+    } catch (e) {
+      setAddError(String(e));
+    }
+    setSetup(null);
+  }
 
   function toggleFold(id: string) {
     setFolded((prev) => {
@@ -69,14 +103,29 @@ export default function HomeView({
   const all = projects.flatMap((p) => runsBy[p.id] ?? []);
   const running = all.filter((r) => r.status.state === "running").length;
 
-  if (loaded && projects.length === 0) {
+  // Hold the header (and its 0/0/0 stats) until the first poll returns, so an
+  // empty overview doesn't flash before real counts or the welcome hero.
+  if (!loaded) return null;
+
+  if (projects.length === 0) {
     return (
       <div className="home home-blank">
         <div className="home-hero">
           <div className="home-hero-mark">▦</div>
           <h1>Welcome to Agency</h1>
           <p>Add a project with the <strong>+</strong> button in the Projects pane, then dispatch agents to work on it in parallel.</p>
+          <button className="btn-primary" onClick={handleAdd}>Add project</button>
+          {addError && <div className="git-error">{addError}</div>}
         </div>
+        {setup && (
+          <RepoSetupDialog
+            readiness={setup.readiness}
+            context="add"
+            repoPath={setup.path}
+            onResolved={finishSetup}
+            onCancel={() => setSetup(null)}
+          />
+        )}
       </div>
     );
   }
@@ -152,10 +201,13 @@ function Stat({ value, label, accent }: { value: number; label: string; accent?:
   );
 }
 
-function statusLabel(s: RunInfo["status"]): { cls: string; text: string } {
+function statusLabel(s: RunInfo["status"]): { cls: string; text: string; title?: string } {
   if (s.state === "running") return { cls: "running", text: "running" };
-  if (s.state === "exited") return { cls: "exited", text: `exited (${s.code})` };
-  return { cls: "exited", text: "gone" };
+  if (s.state === "exited") {
+    if (s.code === 0) return { cls: "exited", text: "finished" };
+    return { cls: "exited", text: "failed", title: `exited (${s.code})` };
+  }
+  return { cls: "exited", text: "session ended" };
 }
 
 function badgeClass(agent: string): string {
@@ -198,7 +250,7 @@ function HomeTile({ run, onOpen }: { run: RunInfo; onOpen: () => void }) {
         </div>
       )}
       {preview && <pre className="tile-preview">{preview}</pre>}
-      <div className="tile-foot">{st.text}</div>
+      <div className="tile-foot" title={st.title}>{st.text}</div>
     </div>
   );
 }

@@ -475,6 +475,14 @@ impl Registry {
         Ok(())
     }
 
+    pub fn set_port_base(&self, id: &str, port_base: Option<u16>) -> Result<()> {
+        self.conn.execute(
+            "UPDATE runs SET port_base = ?2 WHERE id = ?1",
+            rusqlite::params![id, port_base.map(|p| p as i64)],
+        )?;
+        Ok(())
+    }
+
     pub fn list_port_bases(&self) -> Result<Vec<u16>> {
         let mut stmt = self
             .conn

@@ -129,6 +129,65 @@ pub fn default_serve_command(repo_path: &Path) -> String {
     )
 }
 
+/// The default graphify MCP serve command as an argv vector. The graph path is
+/// a single element, so a repo path containing spaces survives intact — unlike
+/// splitting the string form of [`default_serve_command`] on whitespace.
+pub fn default_serve_argv(repo_path: &Path) -> Vec<String> {
+    vec![
+        "uv".to_string(),
+        "tool".to_string(),
+        "run".to_string(),
+        "--from".to_string(),
+        "graphifyy".to_string(),
+        "python".to_string(),
+        "-m".to_string(),
+        "graphify.serve".to_string(),
+        repo_path.join("graphify-out").join("graph.json").display().to_string(),
+    ]
+}
+
+/// Split a shell-style command string into an argv, honoring single/double
+/// quotes so a user-configured serve command can carry a path containing
+/// spaces (`... "/my repo/graph.json"`). No escape processing — quotes are
+/// enough for the paths this guards.
+pub fn split_command(s: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut cur = String::new();
+    let mut quote: Option<char> = None;
+    let mut started = false;
+    for c in s.chars() {
+        match quote {
+            Some(q) => {
+                if c == q {
+                    quote = None;
+                } else {
+                    cur.push(c);
+                }
+            }
+            None => match c {
+                '\'' | '"' => {
+                    quote = Some(c);
+                    started = true;
+                }
+                c if c.is_whitespace() => {
+                    if started {
+                        args.push(std::mem::take(&mut cur));
+                        started = false;
+                    }
+                }
+                c => {
+                    cur.push(c);
+                    started = true;
+                }
+            },
+        }
+    }
+    if started {
+        args.push(cur);
+    }
+    args
+}
+
 /// The default rebuild command run after a clean merge.
 pub fn default_build_command() -> &'static str {
     "graphify ."
@@ -192,6 +251,30 @@ mod tests {
         let agency = dir.join(".agency");
         fs::create_dir_all(&agency).unwrap();
         fs::write(agency.join(name), body).unwrap();
+    }
+
+    #[test]
+    fn default_serve_argv_keeps_spaced_path_as_one_arg() {
+        let argv = default_serve_argv(Path::new("/Users/me/My Repos/proj"));
+        assert_eq!(argv.last().unwrap(), "/Users/me/My Repos/proj/graphify-out/graph.json");
+        // The command itself is the first element; the path is not split.
+        assert_eq!(argv[0], "uv");
+        assert_eq!(argv.len(), 9);
+    }
+
+    #[test]
+    fn split_command_honors_quotes() {
+        assert_eq!(split_command("uv run python"), vec!["uv", "run", "python"]);
+        assert_eq!(
+            split_command("python -m graphify.serve \"/my repo/graph.json\""),
+            vec!["python", "-m", "graphify.serve", "/my repo/graph.json"]
+        );
+        assert_eq!(
+            split_command("a 'b c' d"),
+            vec!["a", "b c", "d"]
+        );
+        // Extra whitespace collapses; no empty trailing arg.
+        assert_eq!(split_command("  a   b  "), vec!["a", "b"]);
     }
 
     #[test]

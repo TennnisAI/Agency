@@ -15,6 +15,7 @@ import {
   resolveMerge,
   resolverResize,
   resolverStatus,
+  resolverClose,
 } from "../api";
 import PrSection from "./PrSection";
 import { useRuns } from "../store/runs";
@@ -166,6 +167,9 @@ export default function MergeModal({
       roRef.current = null;
       term.dispose();
       termInstanceRef.current = null;
+      // Release the backend resolver handle (kills the agent child) — without
+      // this the resolver process leaks every time the modal closes or aborts.
+      resolverClose(taskId).catch(() => {});
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- resolverProfile is
     // frozen once resolving starts (the picker is hidden), taskId can't change.
@@ -189,8 +193,14 @@ export default function MergeModal({
   const nothingToMerge = !!preview && preview.commitsAhead === 0;
 
   return (
-    <div className="settings-overlay">
-      <div className="merge-modal" role="dialog" aria-modal="true" aria-label="Approve and merge">
+    <div className="settings-overlay" onClick={() => { if (!archiving) onClose(); }}>
+      <div
+        className="merge-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Approve and merge"
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="settings-head">
           <h2>Approve &amp; merge</h2>
           <button className="icon-btn" title="Close" onClick={onClose}>✕</button>
@@ -235,7 +245,7 @@ export default function MergeModal({
               )}
               {!nothingToMerge && (
                 <div className="git-actions">
-                  <button onClick={attempt}>Merge into {preview.base}</button>
+                  <button autoFocus onClick={attempt}>Merge into {preview.base}</button>
                   <button className="ghost" onClick={onClose}>Cancel</button>
                 </div>
               )}
@@ -258,7 +268,7 @@ export default function MergeModal({
             <p className="merge-ok">✓ Merged cleanly into {preview?.base ?? "main"}.</p>
             <code>{outcome.commit.slice(0, 10)}</code>
             <p className="merge-note">
-              The workspace and its <code>{preview?.branch ?? "agent"}</code> branch are no longer needed —
+              The worktree and its <code>{preview?.branch ?? "agent"}</code> branch are no longer needed —
               archiving stops the agent and removes the worktree (the branch is kept, so it can be restored).
             </p>
             <div className="git-actions">
@@ -270,7 +280,7 @@ export default function MergeModal({
                 </button>
               ) : (
                 <button disabled={archiving} onClick={() => archiveWorkspace(false)}>
-                  {archiving ? "Archiving…" : "Archive workspace"}
+                  {archiving ? "Archiving…" : "Archive agent"}
                 </button>
               )}
               {losers.length > 0 && (
@@ -278,7 +288,7 @@ export default function MergeModal({
                   Archive, keep losers
                 </button>
               )}
-              <button className="ghost" disabled={archiving} onClick={onClose}>Keep workspace</button>
+              <button className="ghost" disabled={archiving} onClick={onClose}>Keep agent</button>
             </div>
           </div>
         )}

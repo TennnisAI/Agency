@@ -123,8 +123,13 @@ pub fn create_loop(
         .map_err(|e| e.to_string())
 }
 
+// async: this contends on `loop_gate`, which the watcher thread can hold across
+// a multi-second daemon spawn. As a sync command it would block the main thread
+// (freezing the UI) for that whole wait; async runs it on the async runtime. It
+// writes no git index, so it doesn't need the main-thread serialization the
+// note above relies on.
 #[tauri::command]
-pub fn stop_loop(state: State<'_, AppState>, id: String) -> Result<(), String> {
+pub async fn stop_loop(state: State<'_, AppState>, id: String) -> Result<(), String> {
     state.stop_loop(&id).map_err(|e| e.to_string())
 }
 
@@ -258,8 +263,13 @@ pub fn rerun(state: State<'_, AppState>, id: String) -> Result<RunInfo, String> 
     state.rerun(&id).map_err(|e| e.to_string())
 }
 
+// async: an active-loop run makes this take `loop_gate`, which the watcher can
+// hold across a slow daemon spawn. Run off the main thread so waiting on the
+// gate (or the session round-trip) can't freeze the UI. It creates no worktree
+// and writes no git index — it only revives/keeps a daemon session — so it is
+// safe off the main thread.
 #[tauri::command]
-pub fn ensure_run_active(state: State<'_, AppState>, id: String) -> Result<(), String> {
+pub async fn ensure_run_active(state: State<'_, AppState>, id: String) -> Result<(), String> {
     state.ensure_run_active(&id).map_err(|e| e.to_string())
 }
 
@@ -345,6 +355,20 @@ pub fn git_push(state: State<'_, AppState>, task_id: String) -> Result<(), Strin
 pub fn git_set_remote(state: State<'_, AppState>, task_id: String, url: String) -> Result<(), String> {
     let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
     git::set_origin(&wt, url.trim()).map_err(|e| e.to_string())
+}
+
+// async: both round-trip the network (fetch/pull), which must never run on the
+// main thread — a slow or offline remote would freeze the UI otherwise.
+#[tauri::command]
+pub async fn git_fetch(state: State<'_, AppState>, task_id: String) -> Result<(), String> {
+    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
+    git::fetch(&wt).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn git_pull(state: State<'_, AppState>, task_id: String) -> Result<(), String> {
+    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
+    git::pull(&wt).map_err(|e| e.to_string())
 }
 
 #[derive(Serialize)]
@@ -572,6 +596,12 @@ pub fn resolver_resize(
     rows: u16,
 ) -> Result<(), String> {
     state.resolver_resize(&task_id, cols, rows).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn resolver_close(state: State<'_, AppState>, task_id: String) -> Result<(), String> {
+    state.resolver_close(&task_id);
+    Ok(())
 }
 
 #[tauri::command]

@@ -133,7 +133,7 @@ export default function ProjectTree({
           PROJECTS
         </button>
         <span className="spacer" />
-        <button className="icon-add" title="Add project" onClick={handleAdd}>+</button>
+        <button className="icon-add" title="Add project" aria-label="Add project" onClick={handleAdd}>+</button>
       </div>
       {error && <div className="git-error">{error}</div>}
       <ul className="tree-list">
@@ -152,11 +152,12 @@ export default function ProjectTree({
                 <button
                   className="row-badge warn"
                   title="Needs a commit before agents can run"
+                  aria-label="Needs a commit before agents can run"
                   onClick={(e) => { e.stopPropagation(); setSetup({ path: p.repo_path, name: p.name, readiness: readiness[p.id]!, existing: true }); }}
-                >⚠ commit</button>
+                >{"⚠︎"} commit</button>
               )}
-              <button className="row-act" title="Close project" onClick={(e) => { e.stopPropagation(); setPending({ kind: "close", project: p }); }}>⏻</button>
-              <button className="row-act danger" title="Remove project" onClick={(e) => { e.stopPropagation(); setPending({ kind: "remove", project: p }); }}>×</button>
+              <button className="row-act" title="Close project" aria-label="Close project" onClick={(e) => { e.stopPropagation(); setPending({ kind: "close", project: p }); }}>⏻</button>
+              <button className="row-act danger" title="Remove project" aria-label="Remove project" onClick={(e) => { e.stopPropagation(); setPending({ kind: "remove", project: p }); }}>×</button>
             </div>
             {openIds.has(p.id) && (
               <ul className="tree-children">
@@ -178,8 +179,8 @@ export default function ProjectTree({
         ))}
       </ul>
       <div className="tree-foot">
-        <button className="tree-settings" onClick={onOpenSettings}>
-          <span className="tree-settings-gear">⚙</span> Settings
+        <button className="tree-settings" aria-label="Settings" onClick={onOpenSettings}>
+          <span className="tree-settings-gear">{"⚙︎"}</span> Settings
         </button>
       </div>
       {setup && (

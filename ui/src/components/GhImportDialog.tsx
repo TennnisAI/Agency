@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   GhReadiness,
   IssueItem,
@@ -15,7 +15,7 @@ import GhSetupHint from "./GhSetupHint";
 import { useRuns } from "../store/runs";
 import { useModalKeys } from "../hooks/useModalKeys";
 
-// Start a workspace from GitHub: an issue (its body becomes the agent's
+// Start an agent from GitHub: an issue (its body becomes the agent's
 // prompt) or an existing PR (its head branch is checked out for review).
 export default function GhImportDialog({
   mode,
@@ -25,21 +25,32 @@ export default function GhImportDialog({
   onClose: () => void;
 }) {
   const { selectedProjectId, refreshRuns, setView, setFocusedRun } = useRuns();
-  const [readiness, setReadiness] = useState<GhReadiness | null>(null);
+  // "error" is local-only (not a GhReadiness): the probe call itself failed,
+  // which is distinct from gh being genuinely absent ("notInstalled").
+  const [readiness, setReadiness] = useState<GhReadiness | "error" | null>(null);
   const [items, setItems] = useState<{ number: number; label: string }[] | null>(null);
   const [picked, setPicked] = useState<number | null>(null);
   const [agents, setAgents] = useState<string[]>([]);
   const [agent, setAgent] = useState("claude");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const firstItemRef = useRef<HTMLInputElement>(null);
 
   useModalKeys(onClose);
 
   // Probe gh readiness first: a missing/unauthenticated gh or remote-less
-  // repo gets the guided setup, never a raw gh error dump.
+  // repo gets the guided setup, never a raw gh error dump. A caught error
+  // means the probe couldn't run — not that gh is absent — so it lands on a
+  // retryable "error" state rather than being conflated with "notInstalled".
+  function probeReadiness() {
+    if (!selectedProjectId) return;
+    setReadiness(null);
+    ghReadiness(selectedProjectId).then(setReadiness).catch(() => setReadiness("error"));
+  }
+
   useEffect(() => {
     if (!selectedProjectId) return;
-    ghReadiness(selectedProjectId).then(setReadiness).catch(() => setReadiness("notInstalled"));
+    probeReadiness();
     listProfiles()
       .then((ps) => {
         const names = ps.map((p) => p.name).filter((n) => n !== "shell");
@@ -65,6 +76,12 @@ export default function GhImportDialog({
     });
   }, [mode, selectedProjectId, readiness]);
 
+  // Autofocus the primary input (the first pickable item) once the list loads
+  // so keyboard users can navigate the choices immediately.
+  useEffect(() => {
+    if (items && items.length > 0) firstItemRef.current?.focus();
+  }, [items]);
+
   async function create() {
     if (!selectedProjectId || picked === null) return;
     setBusy(true);
@@ -85,19 +102,26 @@ export default function GhImportDialog({
   }
 
   return (
-    <div className="settings-overlay">
-      <div className="merge-modal race-dialog" role="dialog" aria-modal="true" aria-label={mode === "issue" ? "Start from GitHub issue" : "Review GitHub PR"}>
+    // Backdrop click closes; the panel stops propagation so clicks inside it
+    // don't bubble out to the overlay's close handler.
+    <div className="settings-overlay" onClick={onClose}>
+      <div className="merge-modal race-dialog" role="dialog" aria-modal="true" aria-label={mode === "issue" ? "Start from GitHub issue" : "Review GitHub PR"} onClick={(e) => e.stopPropagation()}>
         <div className="settings-head">
           <h2>{mode === "issue" ? "Start from GitHub issue" : "Review GitHub PR"}</h2>
           <button className="icon-btn" title="Close" onClick={onClose}>✕</button>
         </div>
         <p className="merge-note">
           {mode === "issue"
-            ? "The issue becomes the agent's prompt in a fresh workspace."
-            : "The PR's branch is checked out into a workspace so an agent can review or amend it."}
+            ? "The issue becomes the prompt for a fresh agent."
+            : "The PR's branch is checked out into a worktree so an agent can review or amend it."}
         </p>
         {error && <div className="git-error">{error}</div>}
-        {readiness !== null && readiness !== "ready" ? (
+        {readiness === "error" ? (
+          <div className="pr-setup">
+            <p className="merge-note">Couldn't check GitHub CLI status.</p>
+            <button onClick={probeReadiness}>Retry</button>
+          </div>
+        ) : readiness !== null && readiness !== "ready" ? (
           <GhSetupHint readiness={readiness} onLeave={onClose} />
         ) : readiness === null || (readiness === "ready" && items === null) ? (
           <p className="merge-note">Loading…</p>
@@ -105,9 +129,10 @@ export default function GhImportDialog({
           <p className="merge-note">Nothing open to pick from.</p>
         ) : (
           <div className="gh-pick-list">
-            {items?.map((it) => (
+            {items?.map((it, idx) => (
               <label key={it.number} className="gh-pick-item">
                 <input
+                  ref={idx === 0 ? firstItemRef : undefined}
                   type="radio"
                   name="gh-pick"
                   checked={picked === it.number}
@@ -130,7 +155,7 @@ export default function GhImportDialog({
             </div>
             <div className="git-actions">
               <button disabled={picked === null || busy} onClick={create}>
-                {busy ? "Creating…" : "Create workspace"}
+                {busy ? "Creating…" : "Create agent"}
               </button>
               <button className="ghost" onClick={onClose}>Cancel</button>
             </div>

@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { appLogDir } from "@tauri-apps/api/path";
-import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import { revealItemInDir, openUrl } from "@tauri-apps/plugin-opener";
 import {
   AgentProfile,
   KnowledgeConfig,
@@ -63,6 +63,10 @@ export default function Settings({
   const emptyMcpDraft = { name: "", command: "", args: "", env: "", url: "" };
   const [mcpDraft, setMcpDraft] = useState(emptyMcpDraft);
   const [mcpFormOpen, setMcpFormOpen] = useState(false);
+  // Original name of the MCP server being edited (null when adding). A rename
+  // must drop the old-named entry, not just upsert the new name — otherwise the
+  // list keeps both and the server is duplicated.
+  const [mcpEditing, setMcpEditing] = useState<string | null>(null);
   // Per-project knowledge-graph config. `null` until loaded (or when no project
   // is selected — the section then prompts to pick one). `kgDraft` holds the
   // editable command-override text so it survives re-renders between saves.
@@ -121,10 +125,9 @@ export default function Settings({
     try {
       await saveMcpServers(next);
       setMcpServers(next);
-      setError("");
       return true;
     } catch (e) {
-      setError(String(e));
+      toastError(e, "Couldn't save MCP servers");
       return false;
     }
   }
@@ -146,9 +149,15 @@ export default function Settings({
       env,
       url: url || null,
     };
-    const next = [...mcpServers.filter((s) => s.name !== name), server];
+    // Drop both the new name and the original (on a rename they differ) so an
+    // edit replaces the entry instead of leaving a stale duplicate behind.
+    const next = [
+      ...mcpServers.filter((s) => s.name !== name && s.name !== mcpEditing),
+      server,
+    ];
     if (await persistMcp(next)) {
       setMcpDraft(emptyMcpDraft);
+      setMcpEditing(null);
       setMcpFormOpen(false);
     }
   }
@@ -161,6 +170,7 @@ export default function Settings({
       env: Object.entries(s.env).map(([k, v]) => `${k}=${v}`).join("\n"),
       url: s.url ?? "",
     });
+    setMcpEditing(s.name);
     setMcpFormOpen(true);
   }
 
@@ -190,12 +200,16 @@ export default function Settings({
   // reload to refresh the derived install-status flags.
   async function persistKnowledge(graph: boolean) {
     if (!projectId) return;
+    // Optimistic: reflect the toggle immediately so it doesn't lag the save
+    // round-trip; revert if the write fails.
+    const prev = kg;
+    setKg((k) => (k ? { ...k, graph } : k));
     try {
       await saveKnowledgeConfig(projectId, graph, kgDraft.serve.trim() || null, kgDraft.build.trim() || null);
-      setError("");
       await loadKnowledge(projectId);
     } catch (e) {
-      setError(String(e));
+      setKg(prev);
+      toastError(e, "Couldn't save knowledge settings");
     }
   }
 
@@ -212,9 +226,8 @@ export default function Settings({
     try {
       await saveSettings(settings);
       loadedRef.current = settings;
-      setError("");
     } catch (e) {
-      setError(String(e));
+      toastError(e, "Couldn't save settings");
     }
   }
 
@@ -222,9 +235,8 @@ export default function Settings({
     setNotif(next);
     try {
       await saveNotifSettings(next);
-      setError("");
     } catch (e) {
-      setError(String(e));
+      toastError(e, "Couldn't save notification settings");
     }
   }
 
@@ -246,12 +258,18 @@ export default function Settings({
     // Empty loop field = no headless one-shot recipe: the agent can't loop.
     const loop = draft.loop.trim();
     const loop_args = loop ? loop.split(/\s+/) : null;
+    const name = draft.name.trim();
     try {
-      await saveProfile({ name: draft.name.trim(), command: draft.command.trim(), args, env, resume_args, loop_args });
+      await saveProfile({ name, command: draft.command.trim(), args, env, resume_args, loop_args });
+      // A rename upserts under the new name; delete the old-named profile so the
+      // list doesn't keep both.
+      if (editing && editing !== name) {
+        await deleteProfile(editing);
+      }
       closeForm();
       await refresh();
     } catch (e) {
-      setError(String(e));
+      toastError(e, "Couldn't save profile");
     }
   }
 
@@ -492,7 +510,7 @@ export default function Settings({
               />
               <div className="row-actions">
                 <button onClick={addMcpServer}>Save server</button>
-                <button className="ghost" onClick={() => { setMcpFormOpen(false); setMcpDraft(emptyMcpDraft); }}>Cancel</button>
+                <button className="ghost" onClick={() => { setMcpFormOpen(false); setMcpDraft(emptyMcpDraft); setMcpEditing(null); }}>Cancel</button>
               </div>
             </div>
           ) : (
@@ -634,6 +652,13 @@ export default function Settings({
             <div className="settings-notif-row">
               <span className="settings-notif-label">Log files</span>
               <button className="settings-ghost-btn" onClick={openLogs}>Open logs</button>
+            </div>
+            <div className="settings-notif-row">
+              <span className="settings-notif-label">Report an issue</span>
+              <button
+                className="settings-ghost-btn"
+                onClick={() => { openUrl("https://github.com/nic123/Agency/issues/new").catch(() => {}); }}
+              >Open GitHub issues</button>
             </div>
           </div>
         </section>

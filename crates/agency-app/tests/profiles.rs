@@ -1,9 +1,9 @@
-use agency_app_lib::AppState;
+mod common;
 
 #[test]
 fn seeds_builtin_resume_recipes() {
     let dir = tempfile::tempdir().unwrap();
-    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
+    let state = common::state(&dir);
     let profiles = state.list_profiles().unwrap();
     let get = |name: &str| profiles.iter().find(|p| p.name == name).cloned().unwrap();
     assert_eq!(get("claude").resume_args, Some(vec!["--continue".into()]));
@@ -14,13 +14,12 @@ fn seeds_builtin_resume_recipes() {
     assert_eq!(get("cursor").command, "cursor-agent");
     assert_eq!(get("cursor").resume_args, None);
     assert_eq!(get("hermes").resume_args, None);
-    state.shutdown_daemon();
 }
 
 #[test]
 fn seeds_three_agent_profiles_with_bare_commands() {
     let dir = tempfile::tempdir().unwrap();
-    let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
+    let state = common::state(&dir);
     let profiles = state.list_profiles().unwrap();
     let by_name = |n: &str| profiles.iter().find(|p| p.name == n).cloned();
 
@@ -35,5 +34,4 @@ fn seeds_three_agent_profiles_with_bare_commands() {
     let hermes = by_name("hermes").expect("hermes profile");
     assert_eq!(hermes.command, "hermes");
     assert!(hermes.args.is_empty());
-    state.shutdown_daemon();
 }

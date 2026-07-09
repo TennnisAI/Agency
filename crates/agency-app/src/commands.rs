@@ -745,6 +745,118 @@ pub fn git_commit_amend(
 }
 
 #[tauri::command]
+pub fn git_checkout_branch(state: State<'_, AppState>, task_id: String, name: String) -> Result<(), String> {
+    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
+    agency_core::git::checkout_branch(&wt, &name).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn git_create_branch(
+    state: State<'_, AppState>,
+    task_id: String,
+    name: String,
+    from: Option<String>,
+    checkout: bool,
+) -> Result<(), String> {
+    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
+    agency_core::git::create_branch(&wt, &name, from.as_deref(), checkout).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn git_delete_branch(
+    state: State<'_, AppState>,
+    task_id: String,
+    name: String,
+    force: bool,
+) -> Result<(), String> {
+    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
+    agency_core::git::delete_branch(&wt, &name, force).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn git_list_branches(state: State<'_, AppState>, task_id: String) -> Result<agency_core::git::ProjectBranches, String> {
+    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
+    agency_core::git::list_branches(&wt).map_err(|e| e.to_string())
+}
+
+// async: round-trips the network, must never block the main thread.
+#[tauri::command]
+pub async fn git_pull_rebase(state: State<'_, AppState>, task_id: String) -> Result<(), String> {
+    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
+    agency_core::git::pull_rebase(&wt).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn git_push_force(state: State<'_, AppState>, task_id: String) -> Result<(), String> {
+    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
+    agency_core::git::push_force(&wt).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn git_undo_last_commit(state: State<'_, AppState>, task_id: String) -> Result<String, String> {
+    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
+    agency_core::git::undo_last_commit(&wt).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn git_reset_to(
+    state: State<'_, AppState>,
+    task_id: String,
+    hash: String,
+    mode: String,
+) -> Result<(), String> {
+    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
+    agency_core::git::reset_to(&wt, &hash, &mode).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn git_revert_commit(state: State<'_, AppState>, task_id: String, hash: String) -> Result<(), String> {
+    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
+    agency_core::git::revert_commit(&wt, &hash).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn git_cherry_pick(state: State<'_, AppState>, task_id: String, hash: String) -> Result<(), String> {
+    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
+    agency_core::git::cherry_pick(&wt, &hash).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn git_stash_list(state: State<'_, AppState>, task_id: String) -> Result<Vec<agency_core::git::StashEntry>, String> {
+    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
+    agency_core::git::stash_list(&wt).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn git_stash_push(
+    state: State<'_, AppState>,
+    task_id: String,
+    message: Option<String>,
+    include_untracked: bool,
+) -> Result<(), String> {
+    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
+    agency_core::git::stash_push(&wt, message.as_deref(), include_untracked).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn git_stash_apply(state: State<'_, AppState>, task_id: String, index: usize) -> Result<(), String> {
+    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
+    agency_core::git::stash_apply(&wt, index).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn git_stash_pop(state: State<'_, AppState>, task_id: String, index: usize) -> Result<(), String> {
+    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
+    agency_core::git::stash_pop(&wt, index).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn git_stash_drop(state: State<'_, AppState>, task_id: String, index: usize) -> Result<(), String> {
+    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
+    agency_core::git::stash_drop(&wt, index).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub fn commit_repo(
     state: State<'_, AppState>,
     repo_path: String,

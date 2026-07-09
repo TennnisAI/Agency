@@ -15,9 +15,20 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
 
+/// The wire transport a remote MCP server speaks. `Stdio` is the local
+/// command-spawned case. When unset on a server we infer it (command → stdio,
+/// url → http) so older configs keep working.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum McpTransport {
+    Stdio,
+    Http,
+    Sse,
+}
+
 /// One MCP server definition. Exactly one of `command` (stdio transport) or
 /// `url` (remote transport) should be set.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpServer {
     pub name: String,
@@ -29,6 +40,17 @@ pub struct McpServer {
     pub env: BTreeMap<String, String>,
     #[serde(default)]
     pub url: Option<String>,
+    /// Explicit transport; inferred from command/url when `None`.
+    #[serde(default)]
+    pub transport: Option<McpTransport>,
+    /// HTTP headers for remote transports (e.g. `Authorization`). Ignored for stdio.
+    #[serde(default)]
+    pub headers: BTreeMap<String, String>,
+    /// True when the server is registered at the agent CLI's own user scope (via
+    /// the Authenticate flow) — its OAuth session lives there and persists across
+    /// worktrees, so Agency must NOT re-emit it into per-worktree config.
+    #[serde(default)]
+    pub user_scope: bool,
 }
 
 impl McpServer {
@@ -42,6 +64,16 @@ impl McpServer {
             _ => bail!("MCP server '{}' needs either a command or a url (not both)", self.name),
         }
     }
+
+    /// The effective transport: explicit if set, else inferred from which of
+    /// command/url is present. Defaults to stdio when neither is set.
+    pub fn effective_transport(&self) -> McpTransport {
+        self.transport.unwrap_or(if self.url.is_some() {
+            McpTransport::Http
+        } else {
+            McpTransport::Stdio
+        })
+    }
 }
 
 /// Flatten the project config's `[mcp.servers.<name>]` tables into servers.
@@ -54,8 +86,68 @@ pub fn from_config(cfg: &crate::config::McpConfig) -> Vec<McpServer> {
             args: def.args.clone(),
             env: def.env.clone(),
             url: def.url.clone(),
+            transport: def.transport,
+            headers: def.headers.clone(),
+            user_scope: def.user_scope,
         })
         .collect()
+}
+
+/// Parse a standard / VS Code `mcp.json` document into servers. Accepts either
+/// root key (`mcpServers`, as Claude/Cursor use, or `servers`, as VS Code uses),
+/// or a bare `{ name: def }` map. Each entry's `type`/`command`/`args`/`env`/
+/// `url`/`headers` map onto [`McpServer`]; `inputs` and unknown keys are ignored.
+/// Entries with neither a command nor a url are skipped.
+pub fn import_json(text: &str) -> Result<Vec<McpServer>> {
+    let root: serde_json::Value = serde_json::from_str(text)?;
+    let obj = root.as_object().ok_or_else(|| anyhow::anyhow!("mcp.json must be a JSON object"))?;
+    // The server map is under mcpServers/servers, or the object is the map itself.
+    let servers = obj
+        .get("mcpServers")
+        .or_else(|| obj.get("servers"))
+        .and_then(|v| v.as_object())
+        .unwrap_or(obj);
+
+    let mut out = Vec::new();
+    for (name, def) in servers {
+        let Some(def) = def.as_object() else { continue };
+        let str_at = |k: &str| def.get(k).and_then(|v| v.as_str()).map(str::to_string);
+        let map_at = |k: &str| -> BTreeMap<String, String> {
+            def.get(k)
+                .and_then(|v| v.as_object())
+                .map(|o| {
+                    o.iter()
+                        .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let args = def
+            .get("args")
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+            .unwrap_or_default();
+        let transport = match def.get("type").and_then(|v| v.as_str()) {
+            Some("sse") => Some(McpTransport::Sse),
+            Some("http") | Some("streamable-http") => Some(McpTransport::Http),
+            Some("stdio") => Some(McpTransport::Stdio),
+            _ => None,
+        };
+        let server = McpServer {
+            name: name.clone(),
+            command: str_at("command"),
+            args,
+            env: map_at("env"),
+            url: str_at("url"),
+            transport,
+            headers: map_at("headers"),
+            user_scope: false,
+        };
+        if server.command.is_some() || server.url.is_some() {
+            out.push(server);
+        }
+    }
+    Ok(out)
 }
 
 /// Merge server lists; later lists win on name conflicts (callers pass
@@ -74,7 +166,11 @@ pub fn merge(lists: &[Vec<McpServer>]) -> Vec<McpServer> {
 /// Returns false (and writes nothing) for agents Agency can't configure
 /// per-workspace. Invalid entries are skipped rather than failing the run.
 pub fn emit_for_agent(agent: &str, worktree: &Path, servers: &[McpServer]) -> Result<bool> {
-    let valid: Vec<&McpServer> = servers.iter().filter(|s| s.validate().is_ok()).collect();
+    // Skip user-scope servers: they're registered with the agent CLI directly
+    // (Authenticate flow) so its persisted OAuth session applies, and re-emitting
+    // a project-scoped copy would only trigger an untrusted-server approval.
+    let valid: Vec<&McpServer> =
+        servers.iter().filter(|s| !s.user_scope && s.validate().is_ok()).collect();
     if valid.is_empty() {
         return Ok(false);
     }
@@ -86,9 +182,24 @@ pub fn emit_for_agent(agent: &str, worktree: &Path, servers: &[McpServer]) -> Re
     }
 }
 
+/// The `"type"` string Claude/standard `.mcp.json` uses for a remote transport.
+fn remote_type_str(t: McpTransport) -> &'static str {
+    match t {
+        McpTransport::Sse => "sse",
+        // http is the modern streamable-HTTP transport; stdio never reaches here.
+        _ => "http",
+    }
+}
+
 fn claude_entry(s: &McpServer) -> serde_json::Value {
     match &s.url {
-        Some(url) => serde_json::json!({ "type": "http", "url": url }),
+        Some(url) => {
+            let mut v = serde_json::json!({ "type": remote_type_str(s.effective_transport()), "url": url });
+            if !s.headers.is_empty() {
+                v["headers"] = serde_json::json!(s.headers);
+            }
+            v
+        }
         None => serde_json::json!({
             "command": s.command.clone().unwrap_or_default(),
             "args": s.args,
@@ -99,7 +210,13 @@ fn claude_entry(s: &McpServer) -> serde_json::Value {
 
 fn cursor_entry(s: &McpServer) -> serde_json::Value {
     match &s.url {
-        Some(url) => serde_json::json!({ "url": url }),
+        Some(url) => {
+            let mut v = serde_json::json!({ "url": url });
+            if !s.headers.is_empty() {
+                v["headers"] = serde_json::json!(s.headers);
+            }
+            v
+        }
         None => serde_json::json!({
             "command": s.command.clone().unwrap_or_default(),
             "args": s.args,
@@ -110,7 +227,13 @@ fn cursor_entry(s: &McpServer) -> serde_json::Value {
 
 fn opencode_entry(s: &McpServer) -> serde_json::Value {
     match &s.url {
-        Some(url) => serde_json::json!({ "type": "remote", "url": url, "enabled": true }),
+        Some(url) => {
+            let mut v = serde_json::json!({ "type": "remote", "url": url, "enabled": true });
+            if !s.headers.is_empty() {
+                v["headers"] = serde_json::json!(s.headers);
+            }
+            v
+        }
         None => {
             let mut command = vec![s.command.clone().unwrap_or_default()];
             command.extend(s.args.iter().cloned());
@@ -168,19 +291,19 @@ mod tests {
             command: Some(command.into()),
             args: vec!["--flag".into()],
             env: BTreeMap::from([("KEY".to_string(), "V".to_string())]),
-            url: None,
+            ..Default::default()
         }
     }
 
     fn remote(name: &str, url: &str) -> McpServer {
-        McpServer { name: name.into(), command: None, args: vec![], env: BTreeMap::new(), url: Some(url.into()) }
+        McpServer { name: name.into(), url: Some(url.into()), ..Default::default() }
     }
 
     #[test]
     fn validate_requires_exactly_one_transport() {
         assert!(stdio("a", "cmd").validate().is_ok());
         assert!(remote("b", "https://x").validate().is_ok());
-        let neither = McpServer { name: "n".into(), command: None, args: vec![], env: BTreeMap::new(), url: None };
+        let neither = McpServer { name: "n".into(), ..Default::default() };
         assert!(neither.validate().is_err());
         let mut both = stdio("c", "cmd");
         both.url = Some("https://x".into());
@@ -220,6 +343,73 @@ mod tests {
     }
 
     #[test]
+    fn claude_remote_honors_sse_transport_and_headers() {
+        let dir = tempfile::tempdir().unwrap();
+        let server = McpServer {
+            name: "atlassian".into(),
+            url: Some("https://mcp.atlassian.com/v1/sse".into()),
+            transport: Some(McpTransport::Sse),
+            headers: BTreeMap::from([("Authorization".to_string(), "Bearer tok".to_string())]),
+            ..Default::default()
+        };
+        emit_for_agent("claude", dir.path(), &[server]).unwrap();
+        let root: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join(".mcp.json")).unwrap()).unwrap();
+        assert_eq!(root["mcpServers"]["atlassian"]["type"], "sse");
+        assert_eq!(root["mcpServers"]["atlassian"]["headers"]["Authorization"], "Bearer tok");
+    }
+
+    #[test]
+    fn user_scope_servers_are_not_emitted_per_worktree() {
+        let dir = tempfile::tempdir().unwrap();
+        let server = McpServer {
+            name: "atlassian".into(),
+            url: Some("https://mcp.atlassian.com/v1/sse".into()),
+            transport: Some(McpTransport::Sse),
+            user_scope: true,
+            ..Default::default()
+        };
+        // Only the user-scope server is present → nothing to write.
+        assert!(!emit_for_agent("claude", dir.path(), &[server.clone()]).unwrap());
+        assert!(!dir.path().join(".mcp.json").exists());
+        // Mixed with a normal server → the user-scope one is filtered out.
+        let wrote = emit_for_agent("claude", dir.path(), &[server, stdio("kg", "graphify")]).unwrap();
+        assert!(wrote);
+        let root: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join(".mcp.json")).unwrap()).unwrap();
+        assert!(root["mcpServers"].get("atlassian").is_none());
+        assert_eq!(root["mcpServers"]["kg"]["command"], "graphify");
+    }
+
+    #[test]
+    fn import_json_reads_both_root_keys_and_maps_fields() {
+        // Claude/Cursor style: mcpServers.
+        let a = import_json(
+            r#"{"mcpServers":{"ctx":{"command":"npx","args":["-y","x"],"env":{"K":"V"}}}}"#,
+        )
+        .unwrap();
+        assert_eq!(a.len(), 1);
+        assert_eq!(a[0].name, "ctx");
+        assert_eq!(a[0].command.as_deref(), Some("npx"));
+        assert_eq!(a[0].args, vec!["-y", "x"]);
+        assert_eq!(a[0].env["K"], "V");
+
+        // VS Code style: servers + type + headers + inputs (ignored).
+        let b = import_json(
+            r#"{"servers":{"jira":{"type":"sse","url":"https://x/sse","headers":{"Authorization":"Bearer t"}}},"inputs":[{"id":"tok"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(b.len(), 1);
+        assert_eq!(b[0].transport, Some(McpTransport::Sse));
+        assert_eq!(b[0].url.as_deref(), Some("https://x/sse"));
+        assert_eq!(b[0].headers["Authorization"], "Bearer t");
+
+        // Entries with neither command nor url are dropped.
+        let c = import_json(r#"{"mcpServers":{"broken":{"type":"http"}}}"#).unwrap();
+        assert!(c.is_empty());
+    }
+
+    #[test]
     fn emits_cursor_into_nested_dir() {
         let dir = tempfile::tempdir().unwrap();
         emit_for_agent("cursor", dir.path(), &[remote("api", "https://mcp.example")]).unwrap();
@@ -244,7 +434,7 @@ mod tests {
     fn unsupported_agents_and_invalid_servers_write_nothing() {
         let dir = tempfile::tempdir().unwrap();
         assert!(!emit_for_agent("codex", dir.path(), &[stdio("x", "cmd")]).unwrap());
-        let invalid = McpServer { name: "bad".into(), command: None, args: vec![], env: BTreeMap::new(), url: None };
+        let invalid = McpServer { name: "bad".into(), ..Default::default() };
         assert!(!emit_for_agent("claude", dir.path(), &[invalid]).unwrap());
         assert!(!dir.path().join(".mcp.json").exists());
     }

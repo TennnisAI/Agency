@@ -4,16 +4,22 @@ import { appLogDir } from "@tauri-apps/api/path";
 import { revealItemInDir, openUrl } from "@tauri-apps/plugin-opener";
 import {
   AgentProfile,
+  FilesConfig,
   KnowledgeConfig,
   McpServer,
   ProviderSettings,
   NotifSettings,
+  authenticateMcpServer,
+  deauthenticateMcpServer,
   deleteProfile,
+  getFilesConfig,
   getKnowledgeConfig,
   getSettings,
   getNotifSettings,
+  importMcpJson,
   listMcpServers,
   listProfiles,
+  saveFilesConfig,
   saveKnowledgeConfig,
   saveMcpServers,
   saveProfile,
@@ -21,7 +27,7 @@ import {
   saveNotifSettings,
 } from "../api";
 import Toggle from "./Toggle";
-import { toastError } from "../lib/toast";
+import { toastError, toastSuccess } from "../lib/toast";
 import { agentColor, agentLabel } from "../agents";
 import { THEMES, ThemeId, applyTheme, getStoredTheme } from "../lib/themes";
 import { getWordWrap, setWordWrap } from "../lib/editorPrefs";
@@ -30,10 +36,12 @@ import { getWordWrap, setWordWrap } from "../lib/editorPrefs";
 // entered from the ⚙ button at the bottom of the Projects pane).
 export default function Settings({
   onClose,
+  onOpenTerminal,
   projectId,
   projectName,
 }: {
   onClose: () => void;
+  onOpenTerminal?: (runId: string) => void;
   projectId: string | null;
   projectName: string | null;
 }) {
@@ -60,7 +68,7 @@ export default function Settings({
   const [themeId, setThemeId] = useState<ThemeId>(getStoredTheme());
   const [wordWrap, setWrap] = useState<boolean>(getWordWrap());
   const [mcpServers, setMcpServers] = useState<McpServer[]>([]);
-  const emptyMcpDraft = { name: "", command: "", args: "", env: "", url: "" };
+  const emptyMcpDraft = { name: "", command: "", args: "", env: "", url: "", transport: "stdio", headers: "" };
   const [mcpDraft, setMcpDraft] = useState(emptyMcpDraft);
   const [mcpFormOpen, setMcpFormOpen] = useState(false);
   // Original name of the MCP server being edited (null when adding). A rename
@@ -72,6 +80,11 @@ export default function Settings({
   // editable command-override text so it survives re-renders between saves.
   const [kg, setKg] = useState<KnowledgeConfig | null>(null);
   const [kgDraft, setKgDraft] = useState({ serve: "", build: "" });
+  // Per-project list of files copied into every new worktree. `files` holds the
+  // loaded config (incl. auto-detected .env files); `filesDraft` is the editable
+  // newline-separated text of the explicit copy list.
+  const [files, setFiles] = useState<FilesConfig | null>(null);
+  const [filesDraft, setFilesDraft] = useState("");
   // App version for the Diagnostics section; empty until the Tauri call lands.
   const [version, setVersion] = useState("");
 
@@ -142,12 +155,26 @@ export default function Settings({
       const i = line.indexOf("=");
       if (i > 0) env[line.slice(0, i)] = line.slice(i + 1);
     }
+    // Headers accept "Key: value" or "Key=value"; only meaningful for remote servers.
+    const headers: Record<string, string> = {};
+    for (const line of mcpDraft.headers.split("\n").map((l) => l.trim()).filter(Boolean)) {
+      const i = line.search(/[:=]/);
+      if (i > 0) headers[line.slice(0, i).trim()] = line.slice(i + 1).trim();
+    }
+    // Only remote servers carry a transport; stdio is inferred from `command`.
+    const transport: McpServer["transport"] = url
+      ? (mcpDraft.transport === "sse" ? "sse" : "http")
+      : null;
     const server: McpServer = {
       name,
       command: command || null,
       args: mcpDraft.args.trim() ? mcpDraft.args.trim().split(/\s+/) : [],
       env,
       url: url || null,
+      transport,
+      headers,
+      // Preserve the authenticated flag across edits of the same server.
+      userScope: mcpServers.find((s) => s.name === mcpEditing)?.userScope ?? false,
     };
     // Drop both the new name and the original (on a rename they differ) so an
     // edit replaces the entry instead of leaving a stale duplicate behind.
@@ -169,9 +196,50 @@ export default function Settings({
       args: s.args.join(" "),
       env: Object.entries(s.env).map(([k, v]) => `${k}=${v}`).join("\n"),
       url: s.url ?? "",
+      transport: s.transport ?? (s.url ? "http" : "stdio"),
+      headers: Object.entries(s.headers).map(([k, v]) => `${k}: ${v}`).join("\n"),
     });
     setMcpEditing(s.name);
     setMcpFormOpen(true);
+  }
+
+  // Import servers from a standard / VS Code mcp.json. Read client-side (avoids
+  // a filesystem plugin) and merge into the global list backend-side.
+  async function importMcp(file: File) {
+    try {
+      const { servers, imported } = await importMcpJson(await file.text());
+      setMcpServers(servers);
+      toastSuccess(`Imported ${imported} MCP server${imported === 1 ? "" : "s"}`);
+    } catch (e) {
+      toastError(e, "Couldn't import mcp.json");
+    }
+  }
+
+  // Register the server with the Claude CLI at user scope (synchronously, so a
+  // failure surfaces here instead of silently flagging it), then open a terminal
+  // to complete the interactive /mcp OAuth sign-in.
+  async function authenticateMcp(name: string) {
+    if (!projectId) return;
+    try {
+      const run = await authenticateMcpServer(projectId, "claude", name);
+      setMcpServers(await listMcpServers());
+      // Jump straight into the terminal so the user can run /mcp and sign in.
+      if (onOpenTerminal) onOpenTerminal(run.id);
+      else onClose();
+    } catch (e) {
+      toastError(e, "Couldn't start MCP authentication");
+    }
+  }
+
+  // Clear the user-scope flag so Agency emits the server per-worktree again — the
+  // recovery path if registration failed or the user wants Agency to manage it.
+  async function deauthenticateMcp(name: string) {
+    try {
+      await deauthenticateMcpServer(name);
+      setMcpServers(await listMcpServers());
+    } catch (e) {
+      toastError(e, "Couldn't un-authenticate server");
+    }
   }
 
   useEffect(() => {
@@ -194,6 +262,33 @@ export default function Settings({
     if (projectId) loadKnowledge(projectId);
     else setKg(null);
   }, [projectId]);
+
+  // Worktree copy-list is per-project — same lifecycle as the knowledge config.
+  async function loadFiles(id: string) {
+    try {
+      const cfg = await getFilesConfig(id);
+      setFiles(cfg);
+      setFilesDraft(cfg.copy.join("\n"));
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  useEffect(() => {
+    if (projectId) loadFiles(projectId);
+    else setFiles(null);
+  }, [projectId]);
+
+  async function persistFiles() {
+    if (!projectId) return;
+    const copy = filesDraft.split("\n").map((l) => l.trim()).filter(Boolean);
+    try {
+      await saveFilesConfig(projectId, copy);
+      await loadFiles(projectId);
+    } catch (e) {
+      toastError(e, "Couldn't save worktree files");
+    }
+  }
 
   // Persist the whole knowledge section at once (toggle and Save both route
   // here) so an in-progress command edit is never dropped by a toggle, then
@@ -434,7 +529,9 @@ export default function Settings({
           <div className="settings-section-label">MCP servers</div>
           <p className="settings-section-hint">
             Available to every agent workspace, in each agent's native config format (Claude, Cursor,
-            OpenCode). Projects can add their own via <code>[mcp.servers]</code> in{" "}
+            OpenCode). Remote servers support <code>http</code>/<code>sse</code> transports and auth
+            headers; OAuth servers (e.g. Atlassian) use <b>Authenticate</b> to sign in via the Claude
+            CLI at user scope. Projects can add their own via <code>[mcp.servers]</code> in{" "}
             <code>.agency/agency.toml</code>; project entries win on name conflicts.
           </p>
           <div className="settings-card-list">
@@ -442,7 +539,27 @@ export default function Settings({
               <div key={s.name} className="settings-profile-card">
                 <div className="settings-profile-head">
                   <span className="settings-profile-name">{s.name}</span>
+                  {s.userScope && <span className="settings-meta-key">user scope · not emitted per-worktree</span>}
                   <span className="spacer" />
+                  {s.url && !s.userScope && (
+                    <button
+                      className="settings-ghost-btn"
+                      disabled={!projectId}
+                      title={projectId ? "Register & sign in with the Claude CLI" : "Select a project first"}
+                      onClick={() => authenticateMcp(s.name)}
+                    >
+                      Authenticate
+                    </button>
+                  )}
+                  {s.url && s.userScope && (
+                    <button
+                      className="settings-ghost-btn"
+                      title="Stop treating this as user-scope; Agency will emit it into worktrees again"
+                      onClick={() => deauthenticateMcp(s.name)}
+                    >
+                      Un-authenticate
+                    </button>
+                  )}
                   <button className="settings-ghost-btn" onClick={() => editMcpServer(s)}>Edit</button>
                   <button
                     className="settings-ghost-btn settings-del-btn"
@@ -454,13 +571,19 @@ export default function Settings({
                 <div className="settings-profile-meta">
                   {s.url ? (
                     <>
-                      <span className="settings-meta-key">url</span>
+                      <span className="settings-meta-key">{s.transport ?? "http"}</span>
                       <code className="settings-meta-val">{s.url}</code>
                     </>
                   ) : (
                     <>
                       <span className="settings-meta-key">command</span>
                       <code className="settings-meta-val">{[s.command, ...s.args].filter(Boolean).join(" ")}</code>
+                    </>
+                  )}
+                  {Object.keys(s.headers).length > 0 && (
+                    <>
+                      <span className="settings-meta-key">headers</span>
+                      <code className="settings-meta-val">{Object.keys(s.headers).join(", ")}</code>
                     </>
                   )}
                   {Object.keys(s.env).length > 0 && (
@@ -502,6 +625,24 @@ export default function Settings({
                 value={mcpDraft.url}
                 onChange={(e) => setMcpDraft({ ...mcpDraft, url: e.target.value })}
               />
+              {mcpDraft.url.trim() && (
+                <>
+                  <select
+                    className="settings-input"
+                    value={mcpDraft.transport === "sse" ? "sse" : "http"}
+                    onChange={(e) => setMcpDraft({ ...mcpDraft, transport: e.target.value })}
+                  >
+                    <option value="http">transport: http (streamable)</option>
+                    <option value="sse">transport: sse</option>
+                  </select>
+                  <textarea
+                    className="settings-input"
+                    placeholder="headers (remote auth), one 'Authorization: Bearer …' per line"
+                    value={mcpDraft.headers}
+                    onChange={(e) => setMcpDraft({ ...mcpDraft, headers: e.target.value })}
+                  />
+                </>
+              )}
               <textarea
                 className="settings-input"
                 placeholder="env, one KEY=VALUE per line"
@@ -514,7 +655,22 @@ export default function Settings({
               </div>
             </div>
           ) : (
-            <button className="settings-add-profile" onClick={() => setMcpFormOpen(true)}>+ Add MCP server</button>
+            <div className="row-actions">
+              <button className="settings-add-profile" onClick={() => setMcpFormOpen(true)}>+ Add MCP server</button>
+              <label className="settings-add-profile" style={{ cursor: "pointer" }}>
+                Import mcp.json
+                <input
+                  type="file"
+                  accept=".json,application/json"
+                  style={{ display: "none" }}
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) importMcp(f);
+                    e.target.value = "";
+                  }}
+                />
+              </label>
+            </div>
           )}
         </section>
 
@@ -571,6 +727,43 @@ export default function Settings({
                   <button className="settings-save" onClick={() => persistKnowledge(kg.graph)}>Save commands</button>
                 </>
               )}
+            </div>
+          ) : null}
+        </section>
+
+        <section className="settings-section">
+          <div className="settings-section-label">Worktree files</div>
+          <p className="settings-section-hint">
+            Files copied into every new agent worktree. Git worktrees only contain
+            committed files, so untracked essentials (local certs, service-account
+            keys) must be listed here to reach agents. Untracked{" "}
+            <code>.env</code> / <code>.env.*</code> files in the repo root are copied
+            automatically. Saved to this machine only (<code>.agency/agency.local.toml</code>).
+          </p>
+          {!projectId ? (
+            <div className="settings-group-card">
+              <span className="settings-notif-label">Select a project to configure its worktree files.</span>
+            </div>
+          ) : files ? (
+            <div className="settings-group-card">
+              {files.detectedEnv.length > 0 && (
+                <div className="settings-notif-row">
+                  <span className="settings-notif-label">
+                    Auto-copied env files:{" "}
+                    {files.detectedEnv.map((f) => <code key={f} className="settings-meta-val">{f}</code>)}
+                  </span>
+                </div>
+              )}
+              <div className="settings-provider-field">
+                <label className="settings-field-key">copy</label>
+                <textarea
+                  className="settings-input"
+                  placeholder={"One repo-relative path per line, e.g.\nconfig/service-account.json\ncerts/dev.pem"}
+                  value={filesDraft}
+                  onChange={(e) => setFilesDraft(e.target.value)}
+                />
+              </div>
+              <button className="settings-save" onClick={persistFiles}>Save file list</button>
             </div>
           ) : null}
         </section>

@@ -97,6 +97,71 @@ impl WorktreeManager {
         Ok(copied)
     }
 
+    /// Copy the configured `[files] copy` list plus any auto-detected untracked
+    /// root `.env` files into the worktree. This is the entry point run at every
+    /// worktree create/restore — it unions the explicit list with the env
+    /// defaults (config order kept, duplicates dropped) so a project's local
+    /// `.env` reaches agent workspaces even when nothing is configured.
+    pub fn copy_essentials(&self, task_id: &str, configured: &[String]) -> Result<Vec<String>> {
+        let mut list: Vec<String> = configured.to_vec();
+        for env in self.default_env_files() {
+            if !list.iter().any(|p| p == &env) {
+                list.push(env);
+            }
+        }
+        self.copy_into(task_id, &list)
+    }
+
+    /// Root-level `.env` / `.env.*` files that git does not track (untracked or
+    /// ignored). Tracked env files already materialize in a worktree, so only
+    /// the untracked ones need copying. Returns repo-root-relative names, sorted;
+    /// best-effort (empty on any io/git error).
+    pub fn default_env_files(&self) -> Vec<String> {
+        let mut candidates = Vec::new();
+        let Ok(entries) = std::fs::read_dir(&self.repo_path) else {
+            return candidates;
+        };
+        for entry in entries.flatten() {
+            if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name == ".env" || name.starts_with(".env.") {
+                candidates.push(name);
+            }
+        }
+        if candidates.is_empty() {
+            return candidates;
+        }
+        let tracked = self.tracked_subset(&candidates);
+        let mut names: Vec<String> =
+            candidates.into_iter().filter(|n| !tracked.contains(n)).collect();
+        names.sort();
+        names
+    }
+
+    /// The subset of `rels` (repo-root-relative names) that git tracks. One git
+    /// invocation for the whole set; best-effort (empty on any git error).
+    fn tracked_subset(&self, rels: &[String]) -> std::collections::HashSet<String> {
+        let output = Command::new("git")
+            .args(["ls-files", "-z", "--"])
+            .args(rels)
+            .current_dir(&self.repo_path)
+            .output();
+        let Ok(output) = output else {
+            return Default::default();
+        };
+        if !output.status.success() {
+            return Default::default();
+        }
+        output
+            .stdout
+            .split(|b| *b == 0)
+            .filter(|s| !s.is_empty())
+            .map(|s| String::from_utf8_lossy(s).into_owned())
+            .collect()
+    }
+
     /// Ensure agency's local artifacts are git-excluded without ignoring the
     /// tracked `.agency/agency.toml`. Writes `.agency/worktrees/` and
     /// `.agency/agency.local.toml`, and migrates away the legacy broad

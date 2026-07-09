@@ -22,7 +22,7 @@ export const AGENT_TYPES: AgentType[] = [
 export const INSTALL_COMMANDS: Record<string, string> = {
   claude: "npm install -g @anthropic-ai/claude-code",
   codex: "npm install -g @openai/codex",
-  pi: "npm install -g @mariozechner/pi",
+  pi: "npm install -g --ignore-scripts @earendil-works/pi-coding-agent",
   opencode: "npm install -g opencode-ai",
   copilot: "npm install -g @github/copilot",
   cursor: "curl https://cursor.com/install -fsS | bash",

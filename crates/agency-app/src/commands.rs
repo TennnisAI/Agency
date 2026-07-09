@@ -11,7 +11,7 @@ use tauri::ipc::Channel;
 use tauri::State;
 
 use agency_core::title::fallback_title;
-use crate::state::{AppState, KnowledgeConfigDto, MergePreview, ProviderSettings, RunInfo, RunSessionInfo};
+use crate::state::{AppState, FilesConfigDto, KnowledgeConfigDto, McpImportResult, MergePreview, ProviderSettings, RunInfo, RunSessionInfo};
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -544,6 +544,31 @@ pub fn save_mcp_servers(
 }
 
 #[tauri::command]
+pub fn import_mcp_json(
+    state: State<'_, AppState>,
+    text: String,
+) -> Result<McpImportResult, String> {
+    state.import_mcp_json(&text).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn authenticate_mcp_server(
+    state: State<'_, AppState>,
+    project_id: String,
+    agent: String,
+    name: String,
+) -> Result<RunInfo, String> {
+    state
+        .authenticate_mcp_server(&project_id, &agent, &name)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn deauthenticate_mcp_server(state: State<'_, AppState>, name: String) -> Result<(), String> {
+    state.deauthenticate_mcp_server(&name).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub fn get_knowledge_config(
     state: State<'_, AppState>,
     project_id: String,
@@ -562,6 +587,23 @@ pub fn save_knowledge_config(
     state
         .save_knowledge_config(&project_id, graph, serve_command, build_command)
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_files_config(
+    state: State<'_, AppState>,
+    project_id: String,
+) -> Result<FilesConfigDto, String> {
+    state.files_config(&project_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn save_files_config(
+    state: State<'_, AppState>,
+    project_id: String,
+    copy: Vec<String>,
+) -> Result<(), String> {
+    state.save_files_config(&project_id, copy).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

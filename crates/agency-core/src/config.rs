@@ -31,6 +31,13 @@ pub struct McpServerDef {
     #[serde(default)]
     pub env: std::collections::BTreeMap<String, String>,
     pub url: Option<String>,
+    #[serde(default)]
+    pub transport: Option<crate::mcp::McpTransport>,
+    #[serde(default)]
+    pub headers: std::collections::BTreeMap<String, String>,
+    /// Registered at the agent CLI's user scope; not re-emitted per worktree.
+    #[serde(default)]
+    pub user_scope: bool,
 }
 
 /// Knowledge-graph integration (graphify). When `graph = true`, the serve
@@ -222,6 +229,40 @@ pub fn save_knowledge(repo_path: &Path, k: &KnowledgeConfig) -> std::io::Result<
     std::fs::write(&path, text)
 }
 
+/// Persist the `[files]` section (the `copy` list) into `.agency/agency.local.toml`
+/// — the gitignored, per-machine override file. Paths are trimmed and blanks
+/// dropped; any other config already in that file is preserved. Mirrors
+/// [`save_knowledge`]. The list lives in the local file because worktree-copy
+/// targets (`.env`, local certs) are inherently machine-specific.
+pub fn save_files(repo_path: &Path, f: &FilesConfig) -> std::io::Result<()> {
+    let dir = repo_path.join(".agency");
+    let path = dir.join("agency.local.toml");
+    let mut doc = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|t| toml::from_str::<toml::Value>(&t).ok())
+        .and_then(|v| v.as_table().cloned())
+        .unwrap_or_default();
+
+    let copy: Vec<toml::Value> = f
+        .copy
+        .iter()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| toml::Value::String(s.to_string()))
+        .collect();
+    // `copy` is the only `[files]` key today, so replacing the whole table is
+    // safe. If more keys are added here, merge into the existing table instead of
+    // overwriting so sibling keys aren't dropped.
+    let mut table = toml::value::Table::new();
+    table.insert("copy".into(), toml::Value::Array(copy));
+    doc.insert("files".into(), toml::Value::Table(table));
+
+    let text = toml::to_string_pretty(&toml::Value::Table(doc))
+        .map_err(std::io::Error::other)?;
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(&path, text)
+}
+
 /// Deep-merge `local` over `base`: tables merge recursively, every other value
 /// is replaced by `local`.
 fn merge_values(mut base: toml::Value, local: toml::Value) -> toml::Value {
@@ -398,6 +439,28 @@ mod tests {
         )
         .unwrap();
         assert!(!load(dir.path()).knowledge.graph);
+    }
+
+    #[test]
+    fn save_files_writes_local_trims_and_preserves_other_config() {
+        let dir = tempdir().unwrap();
+        write(dir.path(), "agency.local.toml", "[ports]\nbase = 4100\n");
+        save_files(
+            dir.path(),
+            &FilesConfig {
+                copy: vec![" .env ".to_string(), "".to_string(), "config/certs".to_string()],
+            },
+        )
+        .unwrap();
+        let c = load(dir.path());
+        // Trimmed, blanks dropped, order preserved.
+        assert_eq!(c.files.copy, vec![".env".to_string(), "config/certs".to_string()]);
+        // Unrelated local section survives.
+        assert_eq!(c.ports.base, 4100);
+
+        // Clearing the list is durable (empty array written, not dropped).
+        save_files(dir.path(), &FilesConfig { copy: vec![] }).unwrap();
+        assert!(load(dir.path()).files.copy.is_empty());
     }
 
     #[test]

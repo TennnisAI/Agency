@@ -38,6 +38,26 @@ pub struct KnowledgeConfigDto {
     pub build_installed: bool,
 }
 
+/// Files copied into every new worktree. `copy` is the user-configured
+/// (per-machine) list; `detected_env` is the auto-detected set of untracked
+/// root `.env*` files that are always copied on top, shown so the UI can tell
+/// the user what happens without configuration.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FilesConfigDto {
+    pub copy: Vec<String>,
+    pub detected_env: Vec<String>,
+}
+
+/// Result of importing an `mcp.json`: the full app-global list after the merge,
+/// plus how many servers the file contributed (so the UI can confirm the count).
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpImportResult {
+    pub servers: Vec<agency_core::mcp::McpServer>,
+    pub imported: usize,
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunInfo {
@@ -764,9 +784,10 @@ impl AppState {
             None => manager.create(&id, spec.base)?,
         };
         // Untracked essentials (.env etc.) don't come with a worktree; copy the
-        // configured list. Best-effort: a bad entry shouldn't block the run.
-        if let Err(e) = manager.copy_into(&id, &config.files.copy) {
-            log::warn!("copying [files] copy entries into worktree {id}: {e}");
+        // configured list plus auto-detected root .env files. Best-effort: a bad
+        // entry shouldn't block the run.
+        if let Err(e) = manager.copy_essentials(&id, &config.files.copy) {
+            log::warn!("copying essentials into worktree {id}: {e}");
         }
         self.emit_mcp(spec.agent, &repo, &worktree.path, &config);
 
@@ -1068,6 +1089,23 @@ impl AppState {
         Ok(())
     }
 
+    /// The files-copied-into-worktrees config for a project: the configured
+    /// `[files] copy` list plus the auto-detected untracked root `.env*` files.
+    pub fn files_config(&self, project_id: &str) -> Result<FilesConfigDto> {
+        let repo = self.project_repo(project_id)?;
+        let copy = agency_core::config::load(&repo).files.copy;
+        let detected_env = WorktreeManager::new(repo).default_env_files();
+        Ok(FilesConfigDto { copy, detected_env })
+    }
+
+    /// Persist a project's worktree copy list into its (gitignored) local
+    /// override file. Entries are trimmed and blanks dropped by `save_files`.
+    pub fn save_files_config(&self, project_id: &str, copy: Vec<String>) -> Result<()> {
+        let repo = self.project_repo(project_id)?;
+        agency_core::config::save_files(&repo, &agency_core::config::FilesConfig { copy })?;
+        Ok(())
+    }
+
     /// The full MCP server list for a workspace: app-global servers, overlaid
     /// by the project's `[mcp.servers.*]`, plus the graphify knowledge-graph
     /// server when the project opted in and the tooling is installed.
@@ -1102,8 +1140,7 @@ impl AppState {
                         name: "graphify".to_string(),
                         command: Some(cmd),
                         args: parts.collect(),
-                        env: Default::default(),
-                        url: None,
+                        ..Default::default()
                     });
                 } else {
                     log::warn!("knowledge graph enabled but '{cmd}' is not installed; skipping MCP injection");
@@ -1268,13 +1305,118 @@ impl AppState {
     /// (an agent install line), then execs the user's login shell so they can
     /// verify the result — and immediately use the freshly installed CLI.
     pub fn create_install_terminal(&self, project_id: &str, agent: &str, command: &str) -> Result<RunInfo> {
-        let repo = self.project_repo(project_id)?;
-        let id = new_task_id(&format!("install {agent}"));
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
-        // Login shell (-l) so the user's profile is loaded before the install
-        // runs (npm, brew, curl need their PATH). Falls through to an
-        // interactive login shell whether the install succeeds or fails.
         let script = format!("{command}\nexec \"$SHELL\" -l");
+        self.spawn_terminal(project_id, &format!("install {agent}"), script)
+    }
+
+    /// Register a remote MCP `server` with Claude at user scope, then open a
+    /// terminal so the user can complete the interactive OAuth handshake (which
+    /// needs a browser Agency can't drive headlessly). Registering at user scope
+    /// means the session persists across every worktree, so the server is flagged
+    /// `user_scope` and Agency stops emitting a project-scoped copy of it.
+    ///
+    /// `claude mcp add` is run synchronously and its exit status checked *before*
+    /// flagging: a failed registration (e.g. the Claude CLI isn't installed) must
+    /// not silently flag the server, which would remove it from every worktree
+    /// while never actually registering it. Only Claude is supported today.
+    pub fn authenticate_mcp_server(&self, project_id: &str, agent: &str, name: &str) -> Result<RunInfo> {
+        if agent != "claude" {
+            bail!("Authenticate currently supports Claude only; add the server to {agent} via its own CLI");
+        }
+        let repo = self.project_repo(project_id)?;
+        let mut servers = self.list_mcp_servers()?;
+        let idx = servers
+            .iter()
+            .position(|s| s.name == name)
+            .ok_or_else(|| anyhow!("unknown MCP server: {name}"))?;
+        let server = servers[idx].clone();
+        let url = server
+            .url
+            .clone()
+            .filter(|u| !u.trim().is_empty())
+            .ok_or_else(|| anyhow!("Authenticate is for remote (url) servers; '{name}' is a stdio server"))?;
+
+        // Register at user scope unless it already is — `claude mcp add` errors on
+        // a duplicate name, and re-flagging an already-flagged server is a no-op.
+        if !server.user_scope {
+            let transport = match server.effective_transport() {
+                agency_core::mcp::McpTransport::Sse => "sse",
+                _ => "http",
+            };
+            // Pass argv directly (no shell) so user-supplied values need no quoting.
+            let mut args: Vec<String> = vec![
+                "mcp".into(), "add".into(),
+                "--scope".into(), "user".into(),
+                "--transport".into(), transport.into(),
+                name.into(), url.clone(),
+            ];
+            for (k, v) in &server.headers {
+                args.push("--header".into());
+                args.push(format!("{k}: {v}"));
+            }
+            let out = std::process::Command::new("claude")
+                .args(&args)
+                .current_dir(&repo)
+                .output()
+                .map_err(|e| anyhow!("running `claude mcp add` (is the Claude CLI installed and on PATH?): {e}"))?;
+            if !out.status.success() {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                bail!("`claude mcp add` failed: {}", stderr.trim());
+            }
+            // Registration succeeded — now it's safe to flag.
+            servers[idx].user_scope = true;
+            self.save_mcp_servers(&servers)?;
+        }
+
+        // Drop the user into a terminal to finish the interactive OAuth step.
+        let hint = format!(
+            "echo; echo 'Registered \"{name}\" with Claude (user scope). To finish OAuth: run  claude  then  /mcp  and choose Authenticate.'; echo"
+        );
+        let script = format!("{hint}\nexec \"$SHELL\" -l");
+        self.spawn_terminal(project_id, &format!("authenticate {name}"), script)
+    }
+
+    /// Clear a server's `user_scope` flag so Agency resumes emitting it into
+    /// per-worktree config. The recovery path when a registration failed (or the
+    /// user wants Agency to manage the server again); the Claude user-scope
+    /// registration, if any, is left in place — remove it with `claude mcp remove`.
+    pub fn deauthenticate_mcp_server(&self, name: &str) -> Result<()> {
+        let mut servers = self.list_mcp_servers()?;
+        let s = servers
+            .iter_mut()
+            .find(|s| s.name == name)
+            .ok_or_else(|| anyhow!("unknown MCP server: {name}"))?;
+        if s.user_scope {
+            s.user_scope = false;
+            self.save_mcp_servers(&servers)?;
+        }
+        Ok(())
+    }
+
+    /// Import MCP servers from a standard / VS Code `mcp.json` document, merging
+    /// them into the app-global list (imported entries win on name conflict).
+    /// Returns the resulting full list plus how many servers were imported, so
+    /// the UI can confirm the count (entries with neither command nor url are
+    /// silently skipped by the parser).
+    pub fn import_mcp_json(&self, text: &str) -> Result<McpImportResult> {
+        let imported = agency_core::mcp::import_json(text)?;
+        if imported.is_empty() {
+            bail!("no MCP servers found in that file");
+        }
+        let count = imported.len();
+        let existing = self.list_mcp_servers()?;
+        let servers = agency_core::mcp::merge(&[existing, imported]);
+        self.save_mcp_servers(&servers)?;
+        Ok(McpImportResult { servers, imported: count })
+    }
+
+    /// Spawn a `terminal`-kind run whose shell runs `script` (via `$SHELL -lc`).
+    /// Shared by the install and MCP-authenticate flows.
+    fn spawn_terminal(&self, project_id: &str, title: &str, script: String) -> Result<RunInfo> {
+        let repo = self.project_repo(project_id)?;
+        let id = new_task_id(title);
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+        // Login shell (-l) so the user's profile (PATH etc.) is loaded first.
         let args = vec!["-lc".to_string(), script];
         let env = vec![("SHELL".to_string(), shell.clone())];
         self.term
@@ -1292,7 +1434,7 @@ impl AppState {
             created_at: now_secs(),
             port_base: None,
             archived_at: None,
-            title: Some(format!("install {agent}")),
+            title: Some(title.to_string()),
             kind: "terminal".to_string(),
             merge_target: None,
             race_id: None,
@@ -1465,8 +1607,8 @@ impl AppState {
         let manager = WorktreeManager::new(repo.clone());
         manager.restore(id)?;
         let config = agency_core::config::load(&repo);
-        if let Err(e) = manager.copy_into(id, &config.files.copy) {
-            log::warn!("copying [files] copy entries into restored worktree {id}: {e}");
+        if let Err(e) = manager.copy_essentials(id, &config.files.copy) {
+            log::warn!("copying essentials into restored worktree {id}: {e}");
         }
         // Reallocate the port block if another active run claimed it while this
         // one was archived (list_port_bases excludes archived rows, so a live

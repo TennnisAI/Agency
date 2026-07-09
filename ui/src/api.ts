@@ -231,18 +231,39 @@ export interface ProviderSettings {
   lmStudioBaseUrl: string;
 }
 
+export type McpTransport = "stdio" | "http" | "sse";
+
 // One MCP server definition: either stdio (command/args/env) or remote (url).
+// `transport` is inferred when null; `headers` carry auth for remote servers;
+// `userScope` marks a server registered/authenticated with the agent CLI itself
+// (Authenticate flow) so Agency stops emitting it into per-worktree config.
 export interface McpServer {
   name: string;
   command: string | null;
   args: string[];
   env: Record<string, string>;
   url: string | null;
+  transport: McpTransport | null;
+  headers: Record<string, string>;
+  userScope: boolean;
+}
+
+// Result of importing an mcp.json: the full list after merge, plus how many
+// servers the file contributed (entries with neither command nor url are skipped).
+export interface McpImportResult {
+  servers: McpServer[];
+  imported: number;
 }
 
 export const listMcpServers = () => invoke<McpServer[]>("list_mcp_servers");
 export const saveMcpServers = (servers: McpServer[]) =>
   invoke<void>("save_mcp_servers", { servers });
+export const importMcpJson = (text: string) =>
+  invoke<McpImportResult>("import_mcp_json", { text });
+export const authenticateMcpServer = (projectId: string, agent: string, name: string) =>
+  invoke<RunInfo>("authenticate_mcp_server", { projectId, agent, name });
+export const deauthenticateMcpServer = (name: string) =>
+  invoke<void>("deauthenticate_mcp_server", { name });
 
 // Per-project graphify knowledge-graph config (persisted to the project's
 // gitignored .agency/agency.local.toml). *_command are null when unset, in
@@ -265,6 +286,19 @@ export const saveKnowledgeConfig = (
   serveCommand: string | null,
   buildCommand: string | null,
 ) => invoke<void>("save_knowledge_config", { projectId, graph, serveCommand, buildCommand });
+
+// Per-project list of files copied into every new agent worktree (persisted to
+// the project's gitignored .agency/agency.local.toml). `detectedEnv` is the set
+// of untracked root .env* files copied automatically on top of `copy`.
+export interface FilesConfig {
+  copy: string[];
+  detectedEnv: string[];
+}
+
+export const getFilesConfig = (projectId: string) =>
+  invoke<FilesConfig>("get_files_config", { projectId });
+export const saveFilesConfig = (projectId: string, copy: string[]) =>
+  invoke<void>("save_files_config", { projectId, copy });
 
 export const listProfiles = () => invoke<AgentProfile[]>("list_profiles");
 export const saveProfile = (profile: AgentProfile) =>

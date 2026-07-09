@@ -129,6 +129,7 @@ function Shell() {
         {showSettings ? (
           <Settings
             onClose={() => setShowSettings(false)}
+            onOpenTerminal={(runId) => project && openRun(project, runId)}
             projectId={selectedProjectId}
             projectName={project?.name ?? null}
           />

@@ -162,6 +162,48 @@ fn copy_into_copies_untracked_files_and_dirs_skipping_bad_paths() {
 }
 
 #[test]
+fn copy_essentials_auto_copies_untracked_root_env_files() {
+    let repo = init_repo();
+    let mgr = WorktreeManager::new(repo.path().to_path_buf());
+    let wt = mgr.create("task-env", "HEAD").unwrap();
+
+    // Untracked local secrets — the frustrating case: not committed, so a
+    // worktree wouldn't otherwise get them.
+    std::fs::write(repo.path().join(".env"), "SECRET=1").unwrap();
+    std::fs::write(repo.path().join(".env.local"), "LOCAL=2").unwrap();
+    // A tracked env file must NOT be re-copied (it already materializes).
+    std::fs::write(repo.path().join(".env.example"), "EXAMPLE=tracked").unwrap();
+    git(repo.path(), &["add", ".env.example"]);
+    git(repo.path(), &["commit", "-q", "-m", "add example"]);
+
+    let detected = mgr.default_env_files();
+    assert_eq!(detected, vec![".env".to_string(), ".env.local".to_string()]);
+
+    // With no configured copy list, the env defaults still land in the worktree.
+    let copied = mgr.copy_essentials("task-env", &[]).unwrap();
+    assert_eq!(copied, vec![".env".to_string(), ".env.local".to_string()]);
+    assert_eq!(std::fs::read_to_string(wt.path.join(".env")).unwrap(), "SECRET=1");
+    assert_eq!(std::fs::read_to_string(wt.path.join(".env.local")).unwrap(), "LOCAL=2");
+}
+
+#[test]
+fn copy_essentials_unions_configured_list_with_env_defaults_without_dupes() {
+    let repo = init_repo();
+    let mgr = WorktreeManager::new(repo.path().to_path_buf());
+    mgr.create("task-union", "HEAD").unwrap();
+
+    std::fs::write(repo.path().join(".env"), "SECRET=1").unwrap();
+    std::fs::create_dir_all(repo.path().join("config")).unwrap();
+    std::fs::write(repo.path().join("config/dev.pem"), "pem").unwrap();
+
+    // `.env` is listed explicitly AND auto-detected — it must appear once.
+    let copied = mgr
+        .copy_essentials("task-union", &[".env".to_string(), "config".to_string()])
+        .unwrap();
+    assert_eq!(copied, vec![".env".to_string(), "config".to_string()]);
+}
+
+#[test]
 fn create_on_branch_checks_out_existing_branch() {
     let repo = init_repo();
     git(repo.path(), &["branch", "feat/existing"]);

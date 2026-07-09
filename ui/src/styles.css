@@ -1034,7 +1034,9 @@ input.settings-notif-secs { width: 90px; flex: 0 0 auto; }
 .tree-row:hover { background: var(--hover, rgba(255,255,255,0.05)); }
 .tree-row.on { background: var(--sel, rgba(255,255,255,0.12)); }
 .tree-row.error { color: var(--err, #e06c75); cursor: default; }
-.tree-icon { display: inline-block; width: 1em; opacity: 0.7; }
+.tree-icon { display: inline-flex; align-items: center; justify-content: center; width: 16px; flex: none; opacity: 0.7; }
+.tree-icon.file-icon { opacity: 1; }
+.tree-icon svg { display: block; }
 
 /* ── Text selection: off on chrome, on where copy matters ───── */
 /* Placeholders default to a very faint browser color; pin them to a muted-but-

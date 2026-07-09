@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { DirEntry, FileRoot, listDir } from "../api";
 import { joinPath } from "../lib/filePath";
+import { fileIcon } from "../lib/fileIcon";
+import { FileIcon } from "./fileIcons";
 
 function TreeNode({
   root, path, name, isDir, depth, selected, onSelect,
@@ -25,13 +27,17 @@ function TreeNode({
   const pad = { paddingLeft: 8 + depth * 12 };
 
   if (!isDir) {
+    const { kind, color } = fileIcon(name);
     return (
       <div
         className={`tree-row file ${selected === path ? "on" : ""}`}
         style={pad}
         onClick={() => onSelect(path)}
       >
-        <span className="tree-icon">·</span> {name}
+        <span className="tree-icon file-icon" style={{ color }}>
+          <FileIcon kind={kind} />
+        </span>{" "}
+        {name}
       </div>
     );
   }

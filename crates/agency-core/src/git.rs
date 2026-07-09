@@ -321,9 +321,11 @@ pub fn log_graph(worktree: &Path, limit: usize) -> Result<Vec<HistoryItem>> {
             continue;
         }
         let parents = f[1].split_whitespace().map(str::to_string).collect();
+        // Keep the "HEAD -> " marker verbatim: the UI uses it to highlight the
+        // checked-out ref and to mark the HEAD commit in the graph.
         let refs = f[6]
             .split(',')
-            .map(|r| r.trim().trim_start_matches("HEAD -> ").to_string())
+            .map(|r| r.trim().to_string())
             .filter(|r| !r.is_empty())
             .collect();
         items.push(HistoryItem {
@@ -557,6 +559,134 @@ pub fn revert_lines(worktree: &Path, path: &str, hunk_index: usize, selected: &[
     git_stdin(worktree, &["apply", "--reverse", "-"], &patch)
 }
 
+/// Switch the worktree to an existing branch.
+pub fn checkout_branch(worktree: &Path, name: &str) -> Result<()> {
+    git(worktree, &["switch", name])?;
+    Ok(())
+}
+
+/// Create `name` (optionally at `from` instead of HEAD) and optionally switch to it.
+pub fn create_branch(worktree: &Path, name: &str, from: Option<&str>, checkout: bool) -> Result<()> {
+    let mut args: Vec<&str> = if checkout {
+        vec!["switch", "-c", name]
+    } else {
+        vec!["branch", name]
+    };
+    if let Some(f) = from {
+        args.push(f);
+    }
+    git(worktree, &args)?;
+    Ok(())
+}
+
+/// Delete a local branch. Non-forced by default so unmerged work fails loudly.
+pub fn delete_branch(worktree: &Path, name: &str, force: bool) -> Result<()> {
+    git(worktree, &[ "branch", if force { "-D" } else { "-d" }, name])?;
+    Ok(())
+}
+
+/// Pull with rebase — the diverged-branch alternative to the ff-only `pull`.
+pub fn pull_rebase(worktree: &Path) -> Result<()> {
+    git(worktree, &["pull", "--rebase"])?;
+    Ok(())
+}
+
+/// Force-push the current branch. `--force-with-lease` so a remote updated by
+/// someone else since the last fetch is never clobbered silently.
+pub fn push_force(worktree: &Path) -> Result<()> {
+    let branch = git(worktree, &["rev-parse", "--abbrev-ref", "HEAD"])?
+        .trim()
+        .to_string();
+    git(worktree, &["push", "--force-with-lease", "-u", "origin", &branch])?;
+    Ok(())
+}
+
+/// Undo the last commit, keeping its changes staged (mirrors VSCode's
+/// "Undo Last Commit"). Returns the undone commit's message so the UI can put
+/// it back into the commit input.
+pub fn undo_last_commit(worktree: &Path) -> Result<String> {
+    let message = git(worktree, &["log", "-1", "--format=%B"])?.trim_end().to_string();
+    git(worktree, &["reset", "--soft", "HEAD~1"])?;
+    Ok(message)
+}
+
+/// Reset the current branch to `hash`. `mode` is validated against a fixed set
+/// so arbitrary flags can never be smuggled into the git invocation.
+pub fn reset_to(worktree: &Path, hash: &str, mode: &str) -> Result<()> {
+    let flag = match mode {
+        "soft" => "--soft",
+        "mixed" => "--mixed",
+        "hard" => "--hard",
+        other => bail!("unsupported reset mode: {other}"),
+    };
+    git(worktree, &["reset", flag, hash])?;
+    Ok(())
+}
+
+pub fn revert_commit(worktree: &Path, hash: &str) -> Result<()> {
+    git(worktree, &["revert", "--no-edit", hash])?;
+    Ok(())
+}
+
+pub fn cherry_pick(worktree: &Path, hash: &str) -> Result<()> {
+    git(worktree, &["cherry-pick", hash])?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StashEntry {
+    pub index: usize,
+    pub message: String,
+}
+
+/// All stashes, newest first (index 0 = most recent).
+pub fn stash_list(worktree: &Path) -> Result<Vec<StashEntry>> {
+    let out = git(worktree, &["stash", "list", "--format=%gd\u{1f}%gs"])?;
+    let mut entries = Vec::new();
+    for line in out.lines() {
+        let mut f = line.split('\u{1f}');
+        let (Some(refname), Some(message)) = (f.next(), f.next()) else { continue };
+        // refname is "stash@{N}"
+        let index = refname
+            .trim_start_matches("stash@{")
+            .trim_end_matches('}')
+            .parse()
+            .unwrap_or(0);
+        entries.push(StashEntry { index, message: message.to_string() });
+    }
+    Ok(entries)
+}
+
+pub fn stash_push(worktree: &Path, message: Option<&str>, include_untracked: bool) -> Result<()> {
+    let mut args = vec!["stash", "push"];
+    if include_untracked {
+        args.push("--include-untracked");
+    }
+    if let Some(m) = message {
+        if !m.trim().is_empty() {
+            args.push("-m");
+            args.push(m);
+        }
+    }
+    git(worktree, &args)?;
+    Ok(())
+}
+
+pub fn stash_apply(worktree: &Path, index: usize) -> Result<()> {
+    git(worktree, &["stash", "apply", &format!("stash@{{{index}}}")])?;
+    Ok(())
+}
+
+pub fn stash_pop(worktree: &Path, index: usize) -> Result<()> {
+    git(worktree, &["stash", "pop", &format!("stash@{{{index}}}")])?;
+    Ok(())
+}
+
+pub fn stash_drop(worktree: &Path, index: usize) -> Result<()> {
+    git(worktree, &["stash", "drop", &format!("stash@{{{index}}}")])?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod status_tests {
     use super::*;
@@ -630,6 +760,110 @@ mod branch_tests {
     fn run(dir: &std::path::Path, args: &[&str]) {
         let ok = Command::new("git").args(args).current_dir(dir).status().unwrap().success();
         assert!(ok, "git {args:?} failed");
+    }
+
+    fn init_repo(repo: &std::path::Path) {
+        run(repo, &["init", "-q", "-b", "main"]);
+        run(repo, &["config", "user.email", "t@t"]);
+        run(repo, &["config", "user.name", "t"]);
+        std::fs::write(repo.join("f"), "x").unwrap();
+        run(repo, &["add", "."]);
+        run(repo, &["commit", "-qm", "init"]);
+    }
+
+    #[test]
+    fn create_checkout_delete_branch_roundtrip() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path();
+        init_repo(repo);
+
+        create_branch(repo, "feature", None, true).unwrap();
+        assert_eq!(branch_info(repo).unwrap().branch, "feature");
+        checkout_branch(repo, "main").unwrap();
+        assert_eq!(branch_info(repo).unwrap().branch, "main");
+        delete_branch(repo, "feature", false).unwrap();
+        assert!(!list_branches(repo).unwrap().branches.contains(&"feature".to_string()));
+    }
+
+    #[test]
+    fn create_branch_from_commit() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path();
+        init_repo(repo);
+        let first = git(repo, &["rev-parse", "HEAD"]).unwrap().trim().to_string();
+        std::fs::write(repo.join("f"), "y").unwrap();
+        run(repo, &["commit", "-aqm", "second"]);
+
+        create_branch(repo, "from-first", Some(&first), false).unwrap();
+        let tip = git(repo, &["rev-parse", "from-first"]).unwrap().trim().to_string();
+        assert_eq!(tip, first);
+    }
+
+    #[test]
+    fn stash_push_list_pop() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path();
+        init_repo(repo);
+        std::fs::write(repo.join("f"), "dirty").unwrap();
+
+        stash_push(repo, Some("wip work"), true).unwrap();
+        assert!(status(repo).unwrap().is_empty(), "worktree clean after stash");
+        let list = stash_list(repo).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].index, 0);
+        assert!(list[0].message.contains("wip work"), "message kept: {}", list[0].message);
+
+        stash_pop(repo, 0).unwrap();
+        assert_eq!(std::fs::read_to_string(repo.join("f")).unwrap(), "dirty");
+        assert!(stash_list(repo).unwrap().is_empty());
+    }
+
+    #[test]
+    fn undo_last_commit_keeps_changes_staged_and_returns_message() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path();
+        init_repo(repo);
+        std::fs::write(repo.join("f"), "y").unwrap();
+        run(repo, &["commit", "-aqm", "second commit"]);
+
+        let msg = undo_last_commit(repo).unwrap();
+        assert_eq!(msg, "second commit");
+        let changes = status(repo).unwrap();
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].index, "M", "change is staged after soft reset");
+    }
+
+    #[test]
+    fn reset_to_rejects_unknown_mode() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path();
+        init_repo(repo);
+        assert!(reset_to(repo, "HEAD", "--hard; rm -rf /").is_err());
+        reset_to(repo, "HEAD", "mixed").unwrap();
+    }
+
+    #[test]
+    fn revert_and_cherry_pick() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path();
+        init_repo(repo);
+        std::fs::write(repo.join("f"), "y").unwrap();
+        run(repo, &["commit", "-aqm", "second"]);
+        let second = git(repo, &["rev-parse", "HEAD"]).unwrap().trim().to_string();
+
+        revert_commit(repo, &second).unwrap();
+        assert_eq!(std::fs::read_to_string(repo.join("f")).unwrap(), "x");
+        cherry_pick(repo, &second).unwrap();
+        assert_eq!(std::fs::read_to_string(repo.join("f")).unwrap(), "y");
+    }
+
+    #[test]
+    fn log_graph_keeps_head_marker_in_refs() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path();
+        init_repo(repo);
+        let items = log_graph(repo, 10).unwrap();
+        assert!(items[0].refs.iter().any(|r| r.starts_with("HEAD -> ")), "refs: {:?}", items[0].refs);
     }
 
     #[test]

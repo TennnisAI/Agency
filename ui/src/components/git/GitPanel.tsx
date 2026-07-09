@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
-import { FileChange, BranchInfo, HistoryItem, gitStatus, gitBranchInfo, gitPush, gitFetch, gitPull } from "../../api";
+import {
+  FileChange, BranchInfo, HistoryItem, StashEntry,
+  gitStatus, gitBranchInfo, gitStashList, gitUndoLastCommit,
+} from "../../api";
 import { toastSuccess } from "../../lib/toast";
 import ChangesPanel from "./ChangesPanel";
 import HistoryPanel from "./HistoryPanel";
@@ -33,22 +36,26 @@ export default function GitPanel({
 }) {
   const [changes, setChanges] = useState<FileChange[]>([]);
   const [branch, setBranch] = useState<BranchInfo | null>(null);
+  const [stashes, setStashes] = useState<StashEntry[]>([]);
   // `error` is the transient status-refresh error (re-evaluated every poll).
   // `actionError` is sticky: it survives the follow-up refresh so a failed
-  // commit/push/publish stays readable until the next action.
+  // commit/push/publish stays readable until dismissed or the next action.
   const [error, setError] = useState("");
   const [actionError, setActionError] = useState("");
   const [commentsKey, setCommentsKey] = useState(0);
-  // `busy` disables action buttons + shows spinners while a git op runs.
+  // `busy` disables action buttons + shows the progress bar while a git op runs.
   // `historyKey` bumps after every action so the commit graph reloads.
   const [busy, setBusy] = useState(false);
   const [historyKey, setHistoryKey] = useState(0);
+  // After Undo Last Commit, the undone message is restored into the commit box.
+  const [restoreMessage, setRestoreMessage] = useState<{ text: string; nonce: number } | null>(null);
   const leftPane = usePaneWidth("git-full-left", 360, 300, 720);
 
   const refresh = useCallback(async () => {
     try {
       setChanges(await gitStatus(taskId));
       setBranch(await gitBranchInfo(taskId));
+      setStashes(await gitStashList(taskId));
       setError("");
     } catch (e) { setError(String(e)); }
   }, [taskId]);
@@ -81,18 +88,43 @@ export default function GitPanel({
     return ok;
   }, [refresh]);
 
+  const undoCommit = () => act(async () => {
+    const message = await gitUndoLastCommit(taskId);
+    // nonce: restoring the same message twice must still re-trigger the effect.
+    setRestoreMessage((p) => ({ text: message, nonce: (p?.nonce ?? 0) + 1 }));
+  }, "Last commit undone — changes kept staged");
+
   const onSelectFile = (path: string, group: "index" | "workingTree" | "merge" | "untracked") =>
     onSelect({ kind: "file", path, group });
 
   const diffMode = (group: string): "working-unstaged" | "working-staged" =>
     group === "index" ? "working-staged" : "working-unstaged";
 
+  const branchBar = (
+    <BranchBar taskId={taskId} info={branch} busy={busy} onAct={act}
+      onRefresh={refresh} onUndoCommit={undoCommit} />
+  );
+  // VS Code-style thin indeterminate progress bar while an operation runs; an
+  // invisible placeholder otherwise so the layout doesn't jump.
+  const progress = (
+    <div className={`git-progress ${busy ? "on" : ""}`}>{busy && <div className="git-progress-bar" />}</div>
+  );
+  const errorBanner = (actionError || error) && (
+    <div className="git-error" role="alert">
+      <span className="git-error-glyph">!</span>
+      <span className="git-error-text">{actionError || error}</span>
+      <button className="git-iconbtn" title="Dismiss" aria-label="Dismiss error"
+        onClick={() => { setActionError(""); setError(""); }}>✕</button>
+    </div>
+  );
+
   const changesPanel = (
-    <ChangesPanel taskId={taskId} changes={changes} branch={branch} onAct={act} busy={busy}
+    <ChangesPanel taskId={taskId} changes={changes} branch={branch} stashes={stashes}
+      restoreMessage={restoreMessage} onAct={act} busy={busy}
       selectedPath={selection?.kind === "file" ? selection.path : null} onSelectFile={onSelectFile} />
   );
   const historyPanel = (
-    <HistoryPanel taskId={taskId} base={branch?.base ?? null} reloadKey={historyKey}
+    <HistoryPanel taskId={taskId} base={branch?.base ?? null} reloadKey={historyKey} onAct={act}
       selectedHash={selection?.kind === "commit" ? selection.item.hash : null}
       onSelectCommit={(item) => onSelect({ kind: "commit", item })} />
   );
@@ -101,12 +133,9 @@ export default function GitPanel({
   if (layout === "compact") {
     return (
       <aside className="git-panel compact" style={width ? { width, minWidth: width } : undefined}>
-        <BranchBar info={branch} busy={busy}
-          onSync={() => act(() => gitPush(taskId), "Pushed")}
-          onFetch={() => act(() => gitFetch(taskId), "Fetched")}
-          onPull={() => act(() => gitPull(taskId), "Pulled")}
-          onRefresh={refresh} />
-        {(actionError || error) && <div className="git-error">{actionError || error}</div>}
+        {branchBar}
+        {progress}
+        {errorBanner}
         {sections}
         {allowComments && <ReviewComments key={commentsKey} taskId={taskId} />}
       </aside>
@@ -115,12 +144,9 @@ export default function GitPanel({
 
   return (
     <div className="git-panel full">
-      <BranchBar info={branch} busy={busy}
-        onSync={() => act(() => gitPush(taskId), "Pushed")}
-        onFetch={() => act(() => gitFetch(taskId), "Fetched")}
-        onPull={() => act(() => gitPull(taskId), "Pulled")}
-        onRefresh={refresh} />
-      {(actionError || error) && <div className="git-error">{actionError || error}</div>}
+      {branchBar}
+      {progress}
+      {errorBanner}
       <div className="git-full-body">
         <div className="git-full-left" style={{ width: leftPane.width }}>
           {sections}

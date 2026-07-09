@@ -168,7 +168,19 @@ button > .btn-ico:not(:only-child) { margin-right: 4px; }
 .task-split { display: flex; gap: 12px; flex: 1; min-height: 0; }
 .task-split .terminal { flex: 2; }
 .git-actions { display: flex; gap: 6px; flex-wrap: wrap; }
-.git-error { color: var(--red); font-size: 12px; white-space: pre-wrap; background: rgba(243,139,168,.08); border-radius: 4px; padding: 4px 6px; }
+.git-error {
+  display: flex; align-items: flex-start; gap: 8px;
+  color: var(--red); font-size: 12px; white-space: pre-wrap;
+  background: color-mix(in srgb, var(--red) 9%, transparent);
+  border: 1px solid color-mix(in srgb, var(--red) 35%, transparent);
+  border-radius: 6px; padding: 6px 8px; margin: 6px 8px;
+}
+.git-error-glyph {
+  width: 15px; height: 15px; border-radius: 50%; flex: none; margin-top: 1px;
+  background: var(--red); color: var(--mantle);
+  font-weight: 700; font-size: 10.5px; line-height: 15px; text-align: center;
+}
+.git-error-text { flex: 1; color: var(--text); word-break: break-word; }
 /* Settings full view (design handoff: takes over the main area) */
 .settings-page { flex: 1; min-width: 0; overflow-y: auto; background: var(--base); }
 .settings-inner { max-width: 780px; margin: 0 auto; padding: 34px 28px 60px; display: flex; flex-direction: column; gap: 26px; }
@@ -826,8 +838,11 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
 .git-row:hover { background: var(--s0); }
 .git-row.sel { background: var(--s1); }
 .git-letter { width: 12px; text-align: center; font-family: var(--mono); font-weight: 600; flex-shrink: 0; }
-.git-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
-.git-dir { color: var(--o0); }
+.git-fileicon { display: flex; align-items: center; flex-shrink: 0; width: 14px; }
+.git-name { flex: 1; display: flex; align-items: baseline; gap: 7px; overflow: hidden; white-space: nowrap; color: var(--text); min-width: 0; }
+.git-basename { flex-shrink: 0; }
+.git-basename.deleted { text-decoration: line-through; }
+.git-dir { color: var(--o0); font-size: 11px; overflow: hidden; text-overflow: ellipsis; }
 .git-row-actions { display: flex; gap: 2px; opacity: 0; }
 .git-row:hover .git-row-actions { opacity: 1; }
 .git-iconbtn { background: none; border: none; color: var(--sub0); cursor: pointer; font-size: 13px; line-height: 1; padding: 2px 4px; border-radius: 4px; }
@@ -851,9 +866,56 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
 .git-menu { position: absolute; top: calc(100% + 4px); left: 0; z-index: 25; background: var(--mantle); border: 1px solid var(--s1); border-radius: 8px; box-shadow: 0 12px 32px var(--shadow); padding: 4px; min-width: 160px; display: flex; flex-direction: column; }
 .git-menu button { background: none; border: none; color: var(--text); text-align: left; padding: 7px 9px; border-radius: 5px; cursor: pointer; font-size: 12.5px; }
 .git-menu button:hover { background: var(--s0); }
-.git-branchbar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--line); background: var(--mantle); font-size: 12.5px; }
-.git-branch { color: var(--blue); font-weight: 600; }
+.git-branchbar { display: flex; align-items: center; gap: 6px; padding: 5px 8px; border-bottom: 1px solid var(--line); background: var(--mantle); font-size: 12.5px; }
+.git-branch {
+  display: inline-flex; align-items: center; gap: 5px; max-width: 55%;
+  background: none; border: none; cursor: pointer;
+  color: var(--blue); font-weight: 600; font-size: 12.5px;
+  padding: 3px 7px; border-radius: 5px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.git-branch:hover { background: var(--s0); }
+.git-branch svg { flex-shrink: 0; }
+.git-upstream { display: flex; color: var(--o0); }
 .git-aheadbehind { display: flex; gap: 6px; color: var(--sub0); font-family: var(--mono); font-size: 12px; }
+
+/* Thin indeterminate progress strip under the branch bar (VS Code-style). */
+.git-progress { height: 2px; flex-shrink: 0; overflow: hidden; position: relative; }
+.git-progress-bar {
+  position: absolute; top: 0; bottom: 0; width: 40%;
+  background: var(--blue); border-radius: 2px;
+  animation: git-progress-slide 1.1s ease-in-out infinite;
+}
+@keyframes git-progress-slide {
+  from { left: -40%; }
+  to { left: 100%; }
+}
+
+/* Popup menus (context menus + button dropdowns), fixed-position. */
+.menu-overlay { position: fixed; inset: 0; z-index: 60; }
+.ctx-menu {
+  position: fixed; min-width: 210px; max-width: 320px; max-height: 70vh; overflow-y: auto;
+  background: var(--mantle); border: 1px solid var(--s1); border-radius: 8px;
+  box-shadow: 0 12px 32px var(--shadow); padding: 4px;
+  display: flex; flex-direction: column;
+}
+.ctx-item {
+  display: flex; align-items: center; gap: 8px;
+  background: none; border: none; text-align: left; cursor: pointer;
+  color: var(--text); font-size: 12.5px; padding: 6px 9px; border-radius: 5px;
+}
+.ctx-item:hover:not(:disabled) { background: var(--s0); }
+.ctx-item:disabled { color: var(--o0); cursor: default; }
+.ctx-item.danger { color: var(--red); }
+.ctx-glyph { width: 14px; display: inline-flex; justify-content: center; color: var(--sub0); flex: none; }
+.ctx-item.danger .ctx-glyph { color: var(--red); }
+.ctx-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ctx-hint { color: var(--o0); font-family: var(--mono); font-size: 10.5px; margin-left: 12px; }
+.ctx-sep { height: 1px; background: var(--line); margin: 4px 6px; flex-shrink: 0; }
+.ctx-header {
+  color: var(--o1); font-size: 10.5px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .07em; padding: 5px 9px 3px;
+}
 
 /* ── DiffViewer (Task 11) ──────────────────────────────────────── */
 .diffviewer { display: flex; flex-direction: column; min-height: 0; flex: 1; }
@@ -895,16 +957,37 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
 
 /* ── Graph + CommitRow + HistoryPanel + CommitDetail (Task 12) ─── */
 .git-history { overflow: auto; flex: 1; }
-.git-commitrow { display: flex; align-items: center; gap: 8px; padding: 4px 8px; cursor: pointer; }
+/* Fixed height with zero vertical padding: each row's graph SVG spans the full
+   row, so the rails of adjacent rows meet edge-to-edge with no gaps. Height
+   must match ROW_H in Graph.tsx. */
+.git-commitrow {
+  display: flex; align-items: center; gap: 8px;
+  height: 42px; box-sizing: border-box; padding: 0 8px 0 0;
+  cursor: pointer; overflow: hidden;
+}
 .git-commitrow:hover { background: var(--s0); }
 .git-commitrow.sel { background: var(--s1); }
 .git-commitrow.base { opacity: 0.7; }
-.git-graph { flex-shrink: 0; }
-.git-commit-main { min-width: 0; flex: 1; }
-.git-commit-subject { color: var(--text); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.git-graph { flex-shrink: 0; display: block; }
+.git-commit-main { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 1px; }
+.git-commit-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.git-commit-subject { color: var(--text); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .git-commit-meta { display: flex; gap: 8px; align-items: center; font-size: 11px; color: var(--o0); }
 .git-commit-hash { font-family: var(--mono); }
-.git-ref { background: color-mix(in srgb, var(--blue) 20%, transparent); color: var(--blue); border-radius: 9px; padding: 0 7px; font-size: 10px; }
+.git-ref {
+  display: inline-flex; align-items: center; gap: 3px; flex-shrink: 0;
+  max-width: 150px; padding: 0 6px; border-radius: 9px;
+  font-size: 10px; line-height: 16px; font-weight: 500;
+}
+.git-ref svg { flex-shrink: 0; }
+.git-ref-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.git-ref-head {
+  background: color-mix(in srgb, var(--blue) 22%, transparent); color: var(--blue);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--blue) 45%, transparent);
+}
+.git-ref-local { background: color-mix(in srgb, var(--teal) 15%, transparent); color: var(--teal); }
+.git-ref-remote { background: color-mix(in srgb, var(--mauve) 15%, transparent); color: var(--mauve); }
+.git-ref-tag { background: color-mix(in srgb, var(--yellow) 16%, transparent); color: var(--yellow); }
 .git-commitdetail { display: flex; flex-direction: column; min-height: 0; flex: 1; }
 .git-commitdetail-head { padding: 10px; border-bottom: 1px solid var(--line); }
 .git-commitdetail-subject { font-size: 14px; color: var(--text); margin-bottom: 4px; }
@@ -1136,6 +1219,13 @@ input, textarea, code,
 /* ── Install-missing-agent dialog ────────────────────────────── */
 .modal-body p { margin: 0 0 10px; }
 .modal-body p:last-child { margin-bottom: 0; }
+.modal-note { color: var(--sub0); font-size: 12px; }
+.modal-input {
+  width: 100%; box-sizing: border-box;
+  background: var(--crust); border: 1px solid var(--s1); color: var(--text);
+  border-radius: 6px; padding: 7px 9px; font-size: 13px; font-family: var(--sans);
+}
+.modal-input:focus { outline: none; border-color: var(--blue); }
 .install-lede code { color: var(--peach); font-size: 12px; }
 .install-cmd {
   font-family: var(--mono); font-size: 12px; line-height: 1.5; color: var(--text);
@@ -1186,10 +1276,23 @@ input, textarea, code,
   font-size: 12px; line-height: 1.4;
   background: var(--mantle); border: 1px solid var(--line);
   box-shadow: 0 4px 16px var(--shadow);
+  animation: toast-in .16s ease-out;
+}
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+.toast-glyph {
+  width: 15px; height: 15px; border-radius: 50%; flex: none; margin-top: 1px;
+  color: var(--mantle); font-size: 9.5px; font-weight: 700;
+  line-height: 15px; text-align: center;
 }
 .toast-error { border-color: var(--red); }
+.toast-error .toast-glyph { background: var(--red); }
 .toast-success { border-color: var(--green); }
+.toast-success .toast-glyph { background: var(--green); }
 .toast-info { border-color: var(--blue); }
+.toast-info .toast-glyph { background: var(--blue); }
 .toast-text { color: var(--text); white-space: pre-wrap; word-break: break-word; }
 .toast-close {
   background: none; border: none; color: var(--sub0); cursor: pointer;

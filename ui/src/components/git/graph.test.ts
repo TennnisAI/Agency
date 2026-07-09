@@ -34,4 +34,63 @@ describe("computeGraph", () => {
     expect(rows[0].output).toEqual([{ target: "root", color: rows[0].color }]);
     expect(rows[1].output).toEqual([]);
   });
+
+  it("emits enter/exit segments that join rails to the dot", () => {
+    const rows = computeGraph([
+      { hash: "c", parents: ["b"] },
+      { hash: "b", parents: ["a"] },
+      { hash: "a", parents: [] },
+    ]);
+    // Tip: only an exit rail leaving the dot toward its parent.
+    expect(rows[0].segments).toEqual([
+      { kind: "exit", from: 0, to: 0, color: rows[0].color },
+    ]);
+    // Middle commit: rail enters the dot from above and exits below.
+    expect(rows[1].segments).toEqual([
+      { kind: "enter", from: 0, to: 0, color: rows[1].color },
+      { kind: "exit", from: 0, to: 0, color: rows[1].color },
+    ]);
+    // Root: rail enters, nothing leaves.
+    expect(rows[2].segments).toEqual([
+      { kind: "enter", from: 0, to: 0, color: rows[2].color },
+    ]);
+  });
+
+  it("merge commit: second parent exits diagonally to a new lane", () => {
+    const rows = computeGraph([
+      { hash: "m", parents: ["a", "b"] },
+      { hash: "b", parents: ["root"] },
+      { hash: "a", parents: ["root"] },
+      { hash: "root", parents: [] },
+    ]);
+    expect(rows[0].isMerge).toBe(true);
+    // Merge dot at column 0 exits to column 0 (first parent) and column 1 (second).
+    expect(rows[0].segments).toContainEqual({ kind: "exit", from: 0, to: 0, color: rows[0].color });
+    expect(rows[0].segments.filter((s) => s.kind === "exit")).toHaveLength(2);
+    expect(rows[0].segments.find((s) => s.kind === "exit" && s.to === 1)).toBeTruthy();
+    // Row for 'b' (dot in lane 1): lane 0 passes straight through it.
+    expect(rows[1].circleIndex).toBe(1);
+    expect(rows[1].segments).toContainEqual({ kind: "pass", from: 0, to: 0, color: rows[1].input[0].color });
+    // Second lane bends into 'root' when it collapses: an enter from column 1 to column 0.
+    expect(rows[3].segments).toContainEqual({ kind: "enter", from: 1, to: 0, color: rows[3].input[1].color });
+    // Column counts: the merge row and both middle rows occupy 2 lanes.
+    expect(rows[0].lanes).toBe(2);
+    expect(rows[1].lanes).toBe(2);
+  });
+
+  it("a lane right of a collapsed lane shifts left via a pass segment", () => {
+    // x is a second root tip so a third lane exists while lanes 0+1 converge.
+    const rows = computeGraph([
+      { hash: "m", parents: ["a", "b"] },
+      { hash: "x", parents: [] },
+      { hash: "a", parents: ["root"] },
+      { hash: "b", parents: ["root"] },
+      { hash: "root", parents: [] },
+    ]);
+    // 'b' row: lane 0 (targeting root) passes, lane 1 is the dot continuing to root.
+    // 'root' row: two lanes both target root -> first is the dot, second enters it.
+    const rootRow = rows[4];
+    expect(rootRow.circleIndex).toBe(0);
+    expect(rootRow.segments).toContainEqual({ kind: "enter", from: 1, to: 0, color: rootRow.input[1].color });
+  });
 });

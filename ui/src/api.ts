@@ -466,6 +466,42 @@ export const gitCommitDiff = (taskId: string, hash: string, path: string) =>
 export const gitCommitAmend = (taskId: string, message: string) =>
   invoke<void>("git_commit_amend", { taskId, message });
 
+export const gitCheckoutBranch = (taskId: string, name: string) =>
+  invoke<void>("git_checkout_branch", { taskId, name });
+export const gitCreateBranch = (taskId: string, name: string, from: string | null, checkout: boolean) =>
+  invoke<void>("git_create_branch", { taskId, name, from, checkout });
+export const gitDeleteBranch = (taskId: string, name: string, force: boolean) =>
+  invoke<void>("git_delete_branch", { taskId, name, force });
+export const gitListBranches = (taskId: string) =>
+  invoke<ProjectBranches>("git_list_branches", { taskId });
+export const gitPullRebase = (taskId: string) => invoke<void>("git_pull_rebase", { taskId });
+export const gitPushForce = (taskId: string) => invoke<void>("git_push_force", { taskId });
+/** Resolves to the undone commit's message so it can be restored into the input. */
+export const gitUndoLastCommit = (taskId: string) =>
+  invoke<string>("git_undo_last_commit", { taskId });
+export const gitResetTo = (taskId: string, hash: string, mode: "soft" | "mixed" | "hard") =>
+  invoke<void>("git_reset_to", { taskId, hash, mode });
+export const gitRevertCommit = (taskId: string, hash: string) =>
+  invoke<void>("git_revert_commit", { taskId, hash });
+export const gitCherryPick = (taskId: string, hash: string) =>
+  invoke<void>("git_cherry_pick", { taskId, hash });
+
+export interface StashEntry {
+  index: number;
+  message: string;
+}
+
+export const gitStashList = (taskId: string) =>
+  invoke<StashEntry[]>("git_stash_list", { taskId });
+export const gitStashPush = (taskId: string, message: string | null, includeUntracked: boolean) =>
+  invoke<void>("git_stash_push", { taskId, message, includeUntracked });
+export const gitStashApply = (taskId: string, index: number) =>
+  invoke<void>("git_stash_apply", { taskId, index });
+export const gitStashPop = (taskId: string, index: number) =>
+  invoke<void>("git_stash_pop", { taskId, index });
+export const gitStashDrop = (taskId: string, index: number) =>
+  invoke<void>("git_stash_drop", { taskId, index });
+
 export const gitStageLines = (taskId: string, path: string, hunkIndex: number, lines: number[]) =>
   invoke<void>("git_stage_lines", { taskId, path, hunkIndex, lines });
 export const gitUnstageLines = (taskId: string, path: string, hunkIndex: number, lines: number[]) =>

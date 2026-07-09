@@ -401,13 +401,17 @@ pub fn delete_profile(state: State<'_, AppState>, name: String) -> Result<(), St
     state.delete_profile(&name).map_err(|e| e.to_string())
 }
 
+// async (not sync): these only read/write the settings KV, never the git index,
+// so per the main-thread note above they must run on the async runtime. Keeping
+// get_settings sync put it on the main thread right before the (sync) create_run
+// on the "New Agent" path, stalling the spawn.
 #[tauri::command]
-pub fn get_settings(state: State<'_, AppState>) -> Result<ProviderSettings, String> {
+pub async fn get_settings(state: State<'_, AppState>) -> Result<ProviderSettings, String> {
     state.get_settings().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn save_settings(state: State<'_, AppState>, settings: ProviderSettings) -> Result<(), String> {
+pub async fn save_settings(state: State<'_, AppState>, settings: ProviderSettings) -> Result<(), String> {
     state.save_settings(&settings).map_err(|e| e.to_string())
 }
 
@@ -955,6 +959,24 @@ pub async fn list_archived_runs(
 }
 
 use crate::notifier::NotifSettings;
+
+/// Sync the native menu's context-dependent items with the current selection:
+/// `project` enables the project-gated items (New Agent/Terminal, Source), and
+/// `focused_agent` enables the Agent menu.
+///
+/// async (not sync): this fires on every selection/focus change, and a sync
+/// command would run on the main thread and queue behind the mutating git
+/// commands (create_run/discard_run) that also live there — adding menu work to
+/// the very path it shouldn't slow. As async it runs on the async runtime and
+/// only the fast `set_context` closure touches the main thread (menu mutation is
+/// main-thread-only on macOS).
+#[tauri::command]
+pub async fn set_menu_context(app: tauri::AppHandle, project: bool, focused_agent: bool) {
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        crate::menu::set_context(&handle, project, focused_agent);
+    });
+}
 
 #[tauri::command]
 pub fn set_ui_state(

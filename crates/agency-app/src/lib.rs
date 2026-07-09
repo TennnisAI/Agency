@@ -1,6 +1,7 @@
 mod commands;
 mod lifecycle;
 mod looper;
+mod menu;
 mod notifier;
 mod pathenv;
 mod resume_probe;
@@ -55,6 +56,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
+        .menu(|app| menu::build(app))
+        .on_menu_event(|app, event| menu::on_event(app, event))
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 // Don't quit — retreat to the menu bar. Quit happens only via the
@@ -183,6 +186,7 @@ pub fn run() {
             commands::restore_run,
             commands::list_archived_runs,
             commands::set_ui_state,
+            commands::set_menu_context,
             commands::get_notif_settings,
             commands::save_notif_settings,
             commands::add_review_comment,

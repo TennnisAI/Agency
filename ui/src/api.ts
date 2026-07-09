@@ -229,6 +229,8 @@ export interface AgentProfile {
 
 export interface ProviderSettings {
   lmStudioBaseUrl: string;
+  // Agent id "New Agent" spawns; null = auto (project's last-used agent).
+  defaultAgent: string | null;
 }
 
 export type McpTransport = "stdio" | "http" | "sse";
@@ -483,6 +485,10 @@ export interface NotifSettings {
 
 export const setUiState = (focused: boolean, activeRun: string | null) =>
   invoke<void>("set_ui_state", { focused, activeRun });
+// Toggle the native menu's context-dependent items: project-gated (New
+// Agent/Terminal, Source) and agent-gated (the Agent menu).
+export const setMenuContext = (project: boolean, focusedAgent: boolean) =>
+  invoke<void>("set_menu_context", { project, focusedAgent });
 export const getNotifSettings = () => invoke<NotifSettings>("get_notif_settings");
 export const saveNotifSettings = (settings: NotifSettings) =>
   invoke<void>("save_notif_settings", { settings });

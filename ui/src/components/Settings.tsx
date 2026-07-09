@@ -47,6 +47,7 @@ export default function Settings({
 }) {
   const [settings, setSettings] = useState<ProviderSettings>({
     lmStudioBaseUrl: "",
+    defaultAgent: null,
   });
   const [profiles, setProfiles] = useState<AgentProfile[]>([]);
   const emptyDraft = { name: "", command: "", args: "", env: "", resume: "", loop: "" };
@@ -326,6 +327,16 @@ export default function Settings({
     }
   }
 
+  // The default-agent dropdown saves immediately (unlike the text fields, which
+  // flush on blur/exit). Empty value = "auto", persisted as null.
+  function pickDefaultAgent(name: string) {
+    const next = { ...settings, defaultAgent: name || null };
+    setSettings(next);
+    saveSettings(next)
+      .then(() => { loadedRef.current = next; })
+      .catch((e) => toastError(e, "Couldn't save settings"));
+  }
+
   async function persistNotif(next: NotifSettings) {
     setNotif(next);
     try {
@@ -474,6 +485,23 @@ export default function Settings({
 
         <section className="settings-section">
           <div className="settings-section-label">Agent profiles</div>
+          <div className="settings-group-card">
+            <div className="settings-notif-row">
+              <span className="settings-notif-label">Default agent for new tasks</span>
+              <select
+                className="settings-input"
+                style={{ maxWidth: 220 }}
+                value={settings.defaultAgent ?? ""}
+                onChange={(e) => pickDefaultAgent(e.target.value)}
+              >
+                {/* Auto = fall back to the project's last-used agent (prior behavior). */}
+                <option value="">Auto (last used in project)</option>
+                {profiles.filter((p) => p.name !== "shell").map((p) => (
+                  <option key={p.name} value={p.name}>{agentLabel(p.name)}</option>
+                ))}
+              </select>
+            </div>
+          </div>
           <div className="settings-card-list">
             {profiles.map((p) => (
               <Fragment key={p.name}>

@@ -195,14 +195,27 @@ fn settings_default_and_roundtrip() {
     let state = common::state(&dir);
     let s = state.get_settings().unwrap();
     assert_eq!(s.lm_studio_base_url, "http://localhost:1234/v1");
+    // Unset by default (empty string surfaces as None, i.e. "auto").
+    assert_eq!(s.default_agent, None);
 
     state
         .save_settings(&agency_app_lib::ProviderSettings {
             lm_studio_base_url: "http://localhost:9999/v1".into(),
+            default_agent: Some("codex".into()),
         })
         .unwrap();
     let s2 = state.get_settings().unwrap();
     assert_eq!(s2.lm_studio_base_url, "http://localhost:9999/v1");
+    assert_eq!(s2.default_agent.as_deref(), Some("codex"));
+
+    // Clearing it round-trips back to None, not Some("").
+    state
+        .save_settings(&agency_app_lib::ProviderSettings {
+            lm_studio_base_url: "http://localhost:9999/v1".into(),
+            default_agent: None,
+        })
+        .unwrap();
+    assert_eq!(state.get_settings().unwrap().default_agent, None);
 }
 
 #[test]
@@ -216,6 +229,7 @@ fn create_run_injects_provider_env() {
     let state = common::state(&dir);
     state.save_settings(&agency_app_lib::ProviderSettings {
         lm_studio_base_url: "http://localhost:1234/v1".into(),
+        default_agent: None,
     }).unwrap();
     // Profile echoes env vars and then sleeps so we can capture output.
     state.register_profile(AgentProfile {
@@ -303,17 +317,20 @@ fn save_settings_rejects_bad_provider_url() {
     // remote http (non-localhost) is rejected
     let bad = agency_app_lib::ProviderSettings {
         lm_studio_base_url: "http://evil.example.com/v1".into(),
+        default_agent: None,
     };
     assert!(state.save_settings(&bad).is_err());
     // embedded credentials are rejected
     let creds = agency_app_lib::ProviderSettings {
         lm_studio_base_url: "http://user:pass@localhost:1234/v1".into(),
+        default_agent: None,
     };
     assert!(state.save_settings(&creds).is_err());
     // localhost, IPv6 loopback http, and https are allowed
     for ok in ["http://localhost:1234/v1", "http://[::1]:1234/v1", "https://api.example.com/v1", ""] {
         let s = agency_app_lib::ProviderSettings {
             lm_studio_base_url: ok.into(),
+            default_agent: None,
         };
         assert!(state.save_settings(&s).is_ok(), "should accept {ok}");
     }

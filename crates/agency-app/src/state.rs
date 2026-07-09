@@ -13,6 +13,8 @@ use uuid;
 
 const SETTING_LM_STUDIO_URL: &str = "lm_studio_base_url";
 const DEFAULT_LM_STUDIO_URL: &str = "http://localhost:1234/v1";
+// Agent the "New Agent" menu/shortcut spawns. Empty = auto (project's last-used).
+const SETTING_DEFAULT_AGENT: &str = "default_agent";
 const SETTING_NOTIF: &str = "notification_settings";
 const SETTING_MCP: &str = "mcp_servers";
 
@@ -22,6 +24,9 @@ const MERGE_RESOLVER_SKILL: &str = include_str!("../../../skills/merge-resolver/
 #[serde(rename_all = "camelCase")]
 pub struct ProviderSettings {
     pub lm_studio_base_url: String,
+    /// Agent id the "New Agent" menu/shortcut spawns. `None` = auto (fall back
+    /// to the project's last-used agent).
+    pub default_agent: Option<String>,
 }
 
 /// A project's effective knowledge-graph config for the settings UI. Command
@@ -617,6 +622,8 @@ impl AppState {
             lm_studio_base_url: reg
                 .get_setting(SETTING_LM_STUDIO_URL)?
                 .unwrap_or_else(|| DEFAULT_LM_STUDIO_URL.to_string()),
+            // Stored as "" when unset; surface that as None so the UI shows "Auto".
+            default_agent: reg.get_setting(SETTING_DEFAULT_AGENT)?.filter(|s| !s.is_empty()),
         })
     }
 
@@ -624,6 +631,7 @@ impl AppState {
         validate_provider_url(&s.lm_studio_base_url)?;
         let reg = self.registry.lock().unwrap();
         reg.set_setting(SETTING_LM_STUDIO_URL, &s.lm_studio_base_url)?;
+        reg.set_setting(SETTING_DEFAULT_AGENT, s.default_agent.as_deref().unwrap_or(""))?;
         Ok(())
     }
 

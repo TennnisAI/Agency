@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Project, RunInfo, RepoReadiness, addProject, closeProject, deleteProject, inspectRepo, listProjects, listRuns } from "../api";
 import { projectAccent, runName } from "../agents";
@@ -51,6 +51,17 @@ export default function ProjectTree({
     setReadiness(Object.fromEntries(entries.filter(([, r]) => r) as [string, RepoReadiness][]));
   }
   useEffect(() => { refresh(); }, []);
+
+  // The "Add Project…" menu item lives in the native menu bar; it dispatches a
+  // DOM event that triggers the same add flow as the sidebar's + button. Kept
+  // in a ref so the once-bound listener always calls the latest handleAdd.
+  const addRef = useRef(handleAdd);
+  addRef.current = handleAdd;
+  useEffect(() => {
+    const h = () => addRef.current();
+    window.addEventListener("agency:add-project", h);
+    return () => window.removeEventListener("agency:add-project", h);
+  }, []);
 
   // Keep the agents shown under each expanded project in sync with the shared
   // run store. Re-fetching whenever a project is opened or the global `runs`

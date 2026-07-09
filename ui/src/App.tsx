@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { RunStoreProvider, useRuns } from "./store/runs";
 import TitleBar from "./components/TitleBar";
 import StatusBar from "./components/StatusBar";
@@ -12,24 +13,32 @@ import Resizer from "./components/Resizer";
 import Toasts from "./components/Toasts";
 import { useShortcuts } from "./hooks/useShortcuts";
 import { usePaneWidth } from "./hooks/usePaneWidth";
-import { Project, RunInfo, confirmQuit, listProjects, setUiState } from "./api";
+import { Project, RunInfo, archiveRun, confirmQuit, discardRun, getSettings, listProjects, setMenuContext, setUiState } from "./api";
+
+const REPO_URL = "https://github.com/nic123/Agency";
 
 function Shell() {
-  const { selectedProjectId, setSelectedProject, createAgent, setTab, focusedRunId, setApproveRun, setFocusedRun, setView, runs } = useRuns();
+  const { selectedProjectId, setSelectedProject, createAgent, createTerminal, refreshRuns, setTab, focusedRunId, setApproveRun, setFocusedRun, setView, runs } = useRuns();
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [project, setProject] = useState<Project | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [showSettings, setShowSettings] = useState(false);
+  // Menu-driven archive/discard of the focused agent, gated behind a confirm
+  // dialog (matching the tile-level action). null = no confirmation showing.
+  const [agentAction, setAgentAction] = useState<{ kind: "archive" | "discard"; run: RunInfo } | null>(null);
   // Sessions the quit would stop (from the backend's quit-requested event);
   // null = no quit confirmation showing.
   const [quitPrompt, setQuitPrompt] = useState<number | null>(null);
   const sidebar = usePaneWidth("sidebar", 266, 200, 460);
 
-  // New task defaults to the agent this project last used (default_agent is
-  // updated on every run creation), refetched so it isn't stale from the
-  // Project captured at selection time. Falls back to claude.
+  // Picks the agent a menu/shortcut "New Agent" spawns: the Settings default if
+  // set, else the project's last-used agent, else claude. See body for the order.
   async function newTaskDefaultAgent() {
     if (!selectedProjectId) return;
+    // An explicit choice in Settings wins; otherwise fall back to the project's
+    // last-used agent (default_agent is updated on every run creation), then claude.
+    const chosen = await getSettings().then((s) => s.defaultAgent).catch(() => null);
+    if (chosen) { createAgent(chosen); return; }
     const projects = await listProjects().catch(() => null);
     const current = projects?.find((p) => p.id === selectedProjectId);
     createAgent(current?.default_agent ?? project?.default_agent ?? "claude");
@@ -58,6 +67,18 @@ function Shell() {
     };
   }, [focusedRunId]);
 
+  // Keep the native menu's context items (New Agent/Terminal, Source, and the
+  // Agent menu) enabled only when they'd actually do something, so they aren't
+  // clickable no-ops. The Agent menu tracks a focused *agent* — a focused
+  // terminal doesn't count (it has no branch to approve/merge). Depending on
+  // the derived booleans (not `runs`, whose identity changes every poll) keeps
+  // this to one IPC call per actual state change.
+  const hasProject = !!selectedProjectId;
+  const hasFocusedAgent = runs.some((r) => r.id === focusedRunId && r.kind === "agent");
+  useEffect(() => {
+    setMenuContext(hasProject, hasFocusedAgent).catch(() => {});
+  }, [hasProject, hasFocusedAgent]);
+
   function selectProject(p: Project) {
     setShowSettings(false);
     setProject(p);
@@ -82,11 +103,51 @@ function Shell() {
     setView("focus");
   }
 
-  // Backend-driven navigation: quit confirmations and tray-menu clicks arrive
-  // as Tauri events.
+  // Route a native-menu action (payload of the backend "menu" event) to the
+  // same handlers the buttons/shortcuts use, so the menu bar never drifts from
+  // the UI. Kept in a ref (below) so the event listener, bound once, always
+  // calls the version closed over the latest state.
+  function onMenu(action: string) {
+    switch (action) {
+      case "settings": setShowSettings(true); break;
+      case "palette": setPaletteOpen(true); break;
+      case "new-agent": newTaskDefaultAgent(); break;
+      case "new-terminal": createTerminal(); break;
+      // The full add flow (dir picker + repo-setup dialog) lives in ProjectTree;
+      // signal it rather than duplicating that logic here.
+      case "add-project": window.dispatchEvent(new CustomEvent("agency:add-project")); break;
+      case "source": setTab("source"); break;
+      case "toggle-sidebar": setSidebarOpen((s) => !s); break;
+      case "home": goHome(); break;
+      case "approve": {
+        // Approve/merge is agent-only — terminals have no branch to merge.
+        const focused = runs.find((r) => r.id === focusedRunId);
+        if (focused?.kind === "agent") setApproveRun(focused.id);
+        break;
+      }
+      case "archive": {
+        const focused = runs.find((r) => r.id === focusedRunId);
+        if (focused?.kind === "agent") setAgentAction({ kind: "archive", run: focused });
+        break;
+      }
+      case "discard": {
+        const focused = runs.find((r) => r.id === focusedRunId);
+        if (focused) setAgentAction({ kind: "discard", run: focused });
+        break;
+      }
+      case "report-issue": openUrl(`${REPO_URL}/issues/new`).catch(() => {}); break;
+      case "github": openUrl(REPO_URL).catch(() => {}); break;
+    }
+  }
+  const menuRef = useRef(onMenu);
+  menuRef.current = onMenu;
+
+  // Backend-driven navigation: quit confirmations, tray-menu and app-menu
+  // clicks arrive as Tauri events.
   useEffect(() => {
     const subs = [
       listen<number>("quit-requested", (e) => setQuitPrompt(e.payload)),
+      listen<string>("menu", (e) => menuRef.current(e.payload)),
       listen<{ projectId: string; runId: string }>("tray-open-run", async (e) => {
         const p = (await listProjects().catch(() => [])).find((x) => x.id === e.payload.projectId);
         if (p) openRun(p, e.payload.runId);
@@ -99,6 +160,22 @@ function Shell() {
     return () => { subs.forEach((s) => s.then((un) => un())); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Run the confirmed archive/discard, then clear focus (if it was this run)
+  // and refresh so the tile disappears.
+  async function runAgentAction() {
+    if (!agentAction) return;
+    const { kind, run } = agentAction;
+    try {
+      if (kind === "archive") await archiveRun(run.id);
+      else await discardRun(run.id);
+      if (focusedRunId === run.id) { setFocusedRun(null); setView("grid"); }
+      await refreshRuns();
+    } catch {
+      /* the backend surfaces failures; keep the dialog dismissal simple */
+    }
+    setAgentAction(null);
+  }
 
   return (
     <div className="shell">
@@ -146,6 +223,18 @@ function Shell() {
       <StatusBar projectName={project?.name ?? null} focusedRunId={focusedRunId} />
       <Toasts />
       {paletteOpen && <CommandPalette onClose={() => setPaletteOpen(false)} />}
+      {agentAction && (
+        <ConfirmDialog
+          title={agentAction.kind === "archive" ? "Archive agent?" : "Discard agent?"}
+          body={agentAction.kind === "archive"
+            ? `Move "${agentAction.run.agent}" to the archived list. You can restore it later.`
+            : `Stop "${agentAction.run.agent}", remove its worktree, and delete the run. This cannot be undone.`}
+          confirmLabel={agentAction.kind === "archive" ? "Archive" : "Discard"}
+          danger={agentAction.kind === "discard"}
+          onConfirm={() => { runAgentAction(); }}
+          onCancel={() => setAgentAction(null)}
+        />
+      )}
       {quitPrompt !== null && (
         <ConfirmDialog
           title="Quit Agency?"

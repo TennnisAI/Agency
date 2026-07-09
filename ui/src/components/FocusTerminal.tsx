@@ -72,6 +72,9 @@ export default function FocusTerminal(
         e.type === "keydown" && e.key === "Enter" &&
         (e.shiftKey || e.ctrlKey) && !e.altKey && !e.metaKey
       ) {
+        // Returning false only makes xterm skip the event; WebKit's own default
+        // for Ctrl+Return (show the context menu) still runs without this.
+        e.preventDefault();
         stream.input(runId, "\n");
         return false; // handled — don't let xterm also emit \r
       }
@@ -168,18 +171,19 @@ export default function FocusTerminal(
   // webview boundary, so HTML5 drop events never reach the terminal div — we listen
   // to Tauri's own drag-drop stream instead. The event is window-global and fires for
   // every mounted terminal, so each instance hit-tests the drop position against its
-  // own rect and only the one under the cursor inserts the path(s). Positions arrive in
-  // physical pixels; divide by devicePixelRatio to compare with CSS-pixel client rects.
+  // own rect and only the one under the cursor inserts the path(s). The payload says
+  // PhysicalPosition, but on macOS wry reports NSView coordinates (logical points) and
+  // tauri-runtime-wry wraps them unscaled — so the values are already CSS pixels.
+  // Dividing by devicePixelRatio here halved them on Retina displays and made the
+  // hit-test miss the terminal entirely (drops silently did nothing).
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     let disposed = false;
     const hit = (pos: { x: number; y: number }) => {
       const el = ref.current;
       if (!el) return false;
-      const dpr = window.devicePixelRatio || 1;
-      const x = pos.x / dpr, y = pos.y / dpr;
       const r = el.getBoundingClientRect();
-      return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+      return pos.x >= r.left && pos.x <= r.right && pos.y >= r.top && pos.y <= r.bottom;
     };
     // Quote paths with whitespace so a multi-word path lands as one argument.
     const quote = (p: string) => (/\s/.test(p) ? `'${p.replace(/'/g, `'\\''`)}'` : p);

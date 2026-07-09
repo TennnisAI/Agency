@@ -1161,6 +1161,12 @@ input, textarea, code,
     conic-gradient(rgba(255,255,255,.06) 0 25%, transparent 0 50%,
                    rgba(255,255,255,.06) 0 75%, transparent 0) 0 0 / 16px 16px;
 }
+.file-preview-media video {
+  max-width: 100%; max-height: 100%; border-radius: 4px;
+}
+.file-preview-media audio {
+  width: 100%; max-width: 480px;
+}
 .file-preview-frame {
   flex: 1; min-height: 0; width: 100%;
   border: none; background: var(--base);

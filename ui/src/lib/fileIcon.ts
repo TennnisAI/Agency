@@ -10,8 +10,15 @@ export type FileIconKind =
   | "style" // css/scss/less
   | "doc" // md/txt/prose
   | "image" // png/jpg/gif/webp
+  | "audio" // mp3/wav/flac/…
+  | "video" // mp4/mov/webm/…
+  | "pdf" // pdf
+  | "archive" // zip/tar/gz/…
+  | "font" // ttf/otf/woff/…
+  | "binary" // db/wasm/exe/… (opaque data)
   | "lock" // secrets & lockfiles: .env/*.pem/*.lock
   | "config" // dotfiles & build config
+  | "folder" // directories (rendered by FileTree, not mapped by extension)
   | "file"; // unknown / generic
 
 export interface FileIconSpec {
@@ -85,8 +92,60 @@ const BY_EXT: Record<string, FileIconSpec> = {
   jpeg: { kind: "image", color: "var(--teal)" },
   gif: { kind: "image", color: "var(--teal)" },
   webp: { kind: "image", color: "var(--teal)" },
+  bmp: { kind: "image", color: "var(--teal)" },
+  avif: { kind: "image", color: "var(--teal)" },
   svg: { kind: "image", color: "var(--teal)" },
   ico: { kind: "image", color: "var(--teal)" },
+
+  mp3: { kind: "audio", color: "var(--mauve)" },
+  wav: { kind: "audio", color: "var(--mauve)" },
+  flac: { kind: "audio", color: "var(--mauve)" },
+  aac: { kind: "audio", color: "var(--mauve)" },
+  ogg: { kind: "audio", color: "var(--mauve)" },
+  oga: { kind: "audio", color: "var(--mauve)" },
+  m4a: { kind: "audio", color: "var(--mauve)" },
+  opus: { kind: "audio", color: "var(--mauve)" },
+  wma: { kind: "audio", color: "var(--mauve)" },
+  aiff: { kind: "audio", color: "var(--mauve)" },
+  aif: { kind: "audio", color: "var(--mauve)" },
+
+  mp4: { kind: "video", color: "var(--pink)" },
+  m4v: { kind: "video", color: "var(--pink)" },
+  mov: { kind: "video", color: "var(--pink)" },
+  webm: { kind: "video", color: "var(--pink)" },
+  mkv: { kind: "video", color: "var(--pink)" },
+  avi: { kind: "video", color: "var(--pink)" },
+  wmv: { kind: "video", color: "var(--pink)" },
+  flv: { kind: "video", color: "var(--pink)" },
+
+  pdf: { kind: "pdf", color: "var(--red)" },
+
+  zip: { kind: "archive", color: "var(--yellow)" },
+  tar: { kind: "archive", color: "var(--yellow)" },
+  gz: { kind: "archive", color: "var(--yellow)" },
+  tgz: { kind: "archive", color: "var(--yellow)" },
+  bz2: { kind: "archive", color: "var(--yellow)" },
+  xz: { kind: "archive", color: "var(--yellow)" },
+  zst: { kind: "archive", color: "var(--yellow)" },
+  rar: { kind: "archive", color: "var(--yellow)" },
+  "7z": { kind: "archive", color: "var(--yellow)" },
+
+  ttf: { kind: "font", color: "var(--peach)" },
+  otf: { kind: "font", color: "var(--peach)" },
+  woff: { kind: "font", color: "var(--peach)" },
+  woff2: { kind: "font", color: "var(--peach)" },
+  eot: { kind: "font", color: "var(--peach)" },
+
+  db: { kind: "binary", color: "var(--sub1)" },
+  sqlite: { kind: "binary", color: "var(--sub1)" },
+  sqlite3: { kind: "binary", color: "var(--sub1)" },
+  wasm: { kind: "binary", color: "var(--sub1)" },
+  exe: { kind: "binary", color: "var(--sub1)" },
+  dll: { kind: "binary", color: "var(--sub1)" },
+  so: { kind: "binary", color: "var(--sub1)" },
+  dylib: { kind: "binary", color: "var(--sub1)" },
+  bin: { kind: "binary", color: "var(--sub1)" },
+  dat: { kind: "binary", color: "var(--sub1)" },
 
   sh: { kind: "config", color: "var(--green)" },
   bash: { kind: "config", color: "var(--green)" },

@@ -45,7 +45,10 @@ function TreeNode({
   return (
     <>
       <div className="tree-row dir" style={pad} onClick={() => setOpen((o) => !o)}>
-        <span className="tree-icon">{open ? "▾" : "▸"}</span> {name}
+        <span className="tree-icon file-icon" style={{ color: "var(--blue)" }}>
+          <FileIcon kind="folder" open={open} />
+        </span>{" "}
+        {name}
       </div>
       {open && error && <div className="tree-row error" style={pad}>{error}</div>}
       {open && children?.map((c) => (

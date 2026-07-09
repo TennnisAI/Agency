@@ -9,18 +9,29 @@ import { languageExtension } from "../lib/cmLanguage";
 import { editorChromeTheme, editorHighlight } from "../lib/cmTheme";
 import { getWordWrap } from "../lib/editorPrefs";
 
-// How a file is displayed. Raster images and PDFs render directly (no code
-// view); md/html/svg open in the editor with a Preview toggle; everything
-// else is plain text (or "binary — not shown").
+// How a file is displayed. Raster images, PDFs, and playable audio/video
+// render directly (no code view); md/html/svg open in the editor with a
+// Preview toggle; everything else is plain text (or "binary — not shown").
 type ViewKind =
   | { kind: "image" }
   | { kind: "pdf" }
+  | { kind: "audio" }
+  | { kind: "video" }
   | { kind: "text"; preview: "md" | "html" | "svg" | null };
+
+// Extensions the browser's <audio>/<video> can actually decode. Container
+// formats Chromium can't play (mkv/avi/wmv/flv) are intentionally excluded so
+// they fall through to the honest "binary file" message rather than a broken
+// player. Keep in step with mime_for() in crates/agency-core/src/files.rs.
+const AUDIO_EXTS = ["mp3", "wav", "flac", "aac", "ogg", "oga", "opus", "m4a"];
+const VIDEO_EXTS = ["mp4", "m4v", "webm", "mov", "ogv"];
 
 function viewKind(path: string): ViewKind {
   const ext = (path.split(".").pop() ?? "").toLowerCase();
   if (["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "avif"].includes(ext)) return { kind: "image" };
   if (ext === "pdf") return { kind: "pdf" };
+  if (AUDIO_EXTS.includes(ext)) return { kind: "audio" };
+  if (VIDEO_EXTS.includes(ext)) return { kind: "video" };
   if (ext === "md" || ext === "markdown") return { kind: "text", preview: "md" };
   if (ext === "html" || ext === "htm") return { kind: "text", preview: "html" };
   if (ext === "svg") return { kind: "text", preview: "svg" };
@@ -86,8 +97,8 @@ export default function FileEditor({ root, path }: { root: FileRoot; path: strin
     setPreviewing(false);
     setPreviewContent("");
 
-    // Images and PDFs skip the text pipeline entirely.
-    if (vk.kind === "image" || vk.kind === "pdf") {
+    // Images, PDFs, and media skip the text pipeline entirely.
+    if (vk.kind === "image" || vk.kind === "pdf" || vk.kind === "audio" || vk.kind === "video") {
       readFileBase64(root, path).then((bc) => {
         if (cancelled) return;
         if (bc.tooLarge) { setStatus("tooLarge"); return; }
@@ -197,6 +208,12 @@ export default function FileEditor({ root, path }: { root: FileRoot; path: strin
       )}
       {vk.kind === "pdf" && status === "ready" && (
         <iframe className="file-preview-frame" title={path} src={dataUrl} />
+      )}
+      {vk.kind === "audio" && status === "ready" && (
+        <div className="file-preview-media"><audio controls src={dataUrl} /></div>
+      )}
+      {vk.kind === "video" && status === "ready" && (
+        <div className="file-preview-media"><video controls src={dataUrl} /></div>
       )}
 
       {vk.kind === "text" && (

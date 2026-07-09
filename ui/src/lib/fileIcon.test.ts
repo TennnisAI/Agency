@@ -34,6 +34,18 @@ describe("fileIcon", () => {
     expect(fileIcon("Package.JSON").color).toBe("var(--red)");
   });
 
+  it("maps media, archives, fonts, and opaque binaries to their own kinds", () => {
+    expect(fileIcon("song.mp3").kind).toBe("audio");
+    expect(fileIcon("clip.mp4").kind).toBe("video");
+    expect(fileIcon("scan.pdf").kind).toBe("pdf");
+    expect(fileIcon("bundle.zip").kind).toBe("archive");
+    expect(fileIcon("Inter.woff2").kind).toBe("font");
+    expect(fileIcon("data.sqlite").kind).toBe("binary");
+    // bmp/avif preview as images, so their tree icon should match.
+    expect(fileIcon("photo.bmp").kind).toBe("image");
+    expect(fileIcon("photo.avif").kind).toBe("image");
+  });
+
   it("falls back to a generic file for unknown types", () => {
     expect(fileIcon("mystery")).toEqual({ kind: "file", color: "var(--sub1)" });
     expect(fileIcon("archive.xyz")).toEqual({ kind: "file", color: "var(--sub1)" });

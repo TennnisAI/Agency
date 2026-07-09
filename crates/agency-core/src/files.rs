@@ -158,6 +158,16 @@ pub fn mime_for(rel: &str) -> &'static str {
         "avif" => "image/avif",
         "svg" => "image/svg+xml",
         "pdf" => "application/pdf",
+        "mp3" => "audio/mpeg",
+        "wav" => "audio/wav",
+        "flac" => "audio/flac",
+        "aac" => "audio/aac",
+        "ogg" | "oga" | "opus" => "audio/ogg",
+        "m4a" => "audio/mp4",
+        "mp4" | "m4v" => "video/mp4",
+        "webm" => "video/webm",
+        "mov" => "video/quicktime",
+        "ogv" => "video/ogg",
         _ => "application/octet-stream",
     }
 }

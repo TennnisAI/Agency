@@ -7,6 +7,7 @@ import {
   RunInfo, stopLoop,
 } from "../api";
 import { toastError } from "../lib/toast";
+import { runStatus } from "../lib/runstate";
 import { runName, agentLabel } from "../agents";
 import FocusTerminal, { shellStream } from "./FocusTerminal";
 import RunPanel from "./RunPanel";
@@ -184,7 +185,7 @@ export default function AgentFocus({
                 onClick={() => setFocusedRun(r.id)}
                 onDoubleClick={() => setRenaming(r)}
                 title="Double-click to rename">
-                <span className={`dot ${r.status.state === "running" ? "running" : "exited"}`} />
+                <span className={`dot ${runStatus(r).cls}`} />
                 <span className="rail-name">
                   {r.kind === "terminal"
                     ? `≳ ${r.title || "terminal"}`

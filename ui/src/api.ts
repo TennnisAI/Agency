@@ -37,6 +37,17 @@ export interface LoopState {
   updatedAt: number;
 }
 
+// Live activity signal derived from pane output (camelCase serde, see
+// agency_app::activity). "working" = output recently; "waiting" = quiet after
+// a user-driven turn (finished, or blocked on input), decaying to idle after
+// ~30m; "idle" = quiet with no turn in flight (never prompted, or waited too
+// long). `since` is epoch ms when the current state began. Null until the
+// backend's first 2s poll observes the run.
+export interface RunActivity {
+  state: "working" | "waiting" | "idle";
+  since: number;
+}
+
 export interface RunInfo {
   id: string;
   projectId: string;
@@ -45,6 +56,7 @@ export interface RunInfo {
   title: string | null;
   branch: string;
   status: SessionStatus;
+  activity: RunActivity | null;
   added: number;
   deleted: number;
   files: number;

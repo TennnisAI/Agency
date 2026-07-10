@@ -4,14 +4,11 @@ import { Project, RunInfo, RepoReadiness, addProject, closeProject, deleteProjec
 import { projectAccent, runName } from "../agents";
 import { useRuns } from "../store/runs";
 import { toastError } from "../lib/toast";
+import { runStatus } from "../lib/runstate";
 import ConfirmDialog from "./ConfirmDialog";
 import RepoSetupDialog from "./RepoSetupDialog";
 import CloneDialog from "./CloneDialog";
 import SidebarToggle from "./SidebarToggle";
-
-function statusClass(s: RunInfo["status"]): string {
-  return s.state === "running" ? "running" : "exited";
-}
 
 type Pending =
   | { kind: "close" | "remove"; project: Project }
@@ -203,7 +200,7 @@ export default function ProjectTree({
                     title={`Open ${r.agent}: ${runName(r)}`}
                     onClick={(e) => { e.stopPropagation(); onSelectRun(p, r); }}
                   >
-                    <span className={`dot ${statusClass(r.status)}`} />
+                    <span className={`dot ${runStatus(r).cls}`} />
                     <span className="tree-child-name tl">{r.agent}: {runName(r)}</span>
                   </li>
                 ))}

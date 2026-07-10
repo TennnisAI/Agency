@@ -73,6 +73,10 @@ pub struct RunInfo {
     pub title: Option<String>,
     pub branch: String,
     pub status: SessionStatus,
+    /// Live working/waiting/idle signal from the notifier's pane poll. None
+    /// until the first tick observes the run (~2s after spawn or app start);
+    /// the UI treats a running agent without it as working.
+    pub activity: Option<crate::activity::ActivityInfo>,
     pub added: u32,
     pub deleted: u32,
     pub files: u32,
@@ -437,6 +441,15 @@ pub struct AppState {
     /// Run ids that have received user input since their last "waiting for input"
     /// notification. Drives idle-notification gating (see `notifier::step`).
     input_seen: Mutex<HashSet<String>>,
+    /// Per-run busy/idle state, written by the notifier tick from its pane-hash
+    /// diff and read into `RunInfo` (see `crate::activity`). In-memory only:
+    /// it re-derives within one tick of an app start.
+    activity: Mutex<HashMap<String, crate::activity::ActivityEntry>>,
+    /// Run ids that have ever been given a turn (typed Enter, or created with a
+    /// non-empty prompt). Unlike `input_seen` this is never consumed — it
+    /// separates "waiting on the user" from "idle, never prompted" in
+    /// `activity::classify`. In-memory: forgotten runs just show idle.
+    prompted: Mutex<HashSet<String>>,
     /// Serializes merges. The merge sequence (status check → checkout →
     /// merge) runs in the shared primary checkout and is not atomic, so a
     /// second concurrent merge (double-click, another run's Approve) must
@@ -571,6 +584,8 @@ impl AppState {
             resolvers: Mutex::new(HashMap::new()),
             ui: Mutex::new(UiState { focused: true, active_run: None, pending_open: None }),
             input_seen: Mutex::new(HashSet::new()),
+            activity: Mutex::new(HashMap::new()),
+            prompted: Mutex::new(HashSet::new()),
             merge_gate: Mutex::new(()),
             checks: Mutex::new(HashMap::new()),
             loop_gate: Mutex::new(()),
@@ -763,6 +778,13 @@ impl AppState {
             title: run.title.clone(),
             branch: run.branch.clone(),
             status,
+            activity: self.activity.lock().unwrap().get(&run.id).map(|e| {
+                // Loops drive themselves — a quiet attempt isn't waiting on
+                // the user, so it classifies as idle at most.
+                let turn_driven = run.loop_config.is_none()
+                    && self.prompted.lock().unwrap().contains(&run.id);
+                crate::activity::classify(e, turn_driven, crate::activity::now_ms())
+            }),
             added: stat.added,
             deleted: stat.deleted,
             files: stat.files,
@@ -897,6 +919,11 @@ impl AppState {
             // Remember the agent type so new-task shortcuts default to what
             // this project actually uses. Best-effort bookkeeping.
             let _ = reg.set_project_default_agent(spec.project_id, spec.agent);
+        }
+        // A run born with a real prompt is already mid-turn: when it goes
+        // quiet it's waiting on the user, same as after a typed turn.
+        if !spec.prompt.trim().is_empty() {
+            self.prompted.lock().unwrap().insert(id.clone());
         }
         if run.loop_config.is_some() {
             // Wake the driver's fast path before spawning: even if this first
@@ -1721,6 +1748,7 @@ impl AppState {
         // seemingly random times for runs the user never prompted.
         if data.contains(&b'\r') || data.contains(&b'\n') {
             self.input_seen.lock().unwrap().insert(id.to_string());
+            self.prompted.lock().unwrap().insert(id.to_string());
         }
         Ok(())
     }
@@ -1734,6 +1762,20 @@ impl AppState {
     /// run stays quiet until the user drives another turn.
     pub fn clear_input_seen(&self, id: &str) {
         self.input_seen.lock().unwrap().remove(id);
+    }
+
+    /// Advance a run's busy/idle state; called by the notifier tick with its
+    /// pane-changed observation.
+    pub fn update_activity(&self, id: &str, pane_changed: bool, now_ms: i64) {
+        let mut map = self.activity.lock().unwrap();
+        let next = crate::activity::update(map.get(id).copied(), pane_changed, now_ms);
+        map.insert(id.to_string(), next);
+    }
+
+    /// Drop activity entries for runs no longer in the watch snapshot
+    /// (archived or discarded), mirroring the notifier's own watch pruning.
+    pub fn retain_activity(&self, keep: &HashSet<String>) {
+        self.activity.lock().unwrap().retain(|id, _| keep.contains(id));
     }
 
     /// Resize the session's PTY so the emulator reflows to the visible terminal.
@@ -1750,6 +1792,7 @@ impl AppState {
     pub fn discard_run(&self, id: &str) -> Result<()> {
         self.attaches.lock().unwrap().remove(id);
         self.input_seen.lock().unwrap().remove(id);
+        self.prompted.lock().unwrap().remove(id);
         let run = self.run_record(id)?;
         // End an active loop first (best-effort): once delete_run removes the
         // row, nothing could ever stop a session the driver respawned into
@@ -2147,6 +2190,7 @@ impl AppState {
         }
         self.attaches.lock().unwrap().remove(id);
         self.input_seen.lock().unwrap().remove(id);
+        self.prompted.lock().unwrap().remove(id);
         let _ = self.term.read().unwrap().kill(&session_name(id));
         self.registry.lock().unwrap().delete_run_session(id)?;
         Ok(())
@@ -2172,6 +2216,7 @@ impl AppState {
         for s in rows {
             self.attaches.lock().unwrap().remove(&s.id);
             self.input_seen.lock().unwrap().remove(&s.id);
+            self.prompted.lock().unwrap().remove(&s.id);
             let _ = self.term.read().unwrap().kill(&session_name(&s.id));
         }
     }

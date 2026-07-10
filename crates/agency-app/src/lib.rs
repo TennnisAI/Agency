@@ -1,3 +1,4 @@
+mod activity;
 mod commands;
 mod lifecycle;
 mod looper;
@@ -319,9 +320,15 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                     Ok(s) => s,
                     Err(_) => return,
                 };
+                let now_ms = crate::activity::now_ms();
                 let mut seen: HashSet<String> = HashSet::new();
                 for snap in &snaps {
                     seen.insert(snap.id.clone());
+                    // Busy/idle bookkeeping shares the notification poll: the
+                    // pane-changed bit here is the same edge step() detects.
+                    let pane_changed =
+                        watches.get(&snap.id).map(|w| w.pane_hash != snap.pane_hash).unwrap_or(true);
+                    state.update_activity(&snap.id, pane_changed, now_ms);
                     let (watch, events) =
                         crate::notifier::step(watches.get(&snap.id), snap, tick, poll_secs, settings.idle_secs);
                     for ev in &events {
@@ -354,6 +361,7 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                     watches.insert(snap.id.clone(), watch);
                 }
                 watches.retain(|id, _| seen.contains(id));
+                state.retain_activity(&seen);
             }));
             if tick_result.is_err() {
                 log::error!("notifier tick panicked; continuing");

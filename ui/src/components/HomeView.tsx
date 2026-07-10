@@ -3,6 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { Issue, Project, RunInfo, RepoReadiness, addProject, inspectRepo, listIssues, listProjects, listRuns, runPreview } from "../api";
 import { projectAccent, runName } from "../agents";
 import { ISSUE_STATUSES, PENDING_ISSUE_KEY, STATUS_LABELS, compareIssues, isClosed, issueLabel } from "../lib/issues";
+import { isWaiting, isWorking, runStatus } from "../lib/runstate";
 import RepoSetupDialog from "./RepoSetupDialog";
 import CloneDialog from "./CloneDialog";
 import { PriorityGlyph, StatusDot } from "./IssueRow";
@@ -128,7 +129,8 @@ export default function HomeView({
   }, [mode]);
 
   const all = projects.flatMap((p) => runsBy[p.id] ?? []);
-  const running = all.filter((r) => r.status.state === "running").length;
+  const working = all.filter(isWorking).length;
+  const waitingCount = all.filter(isWaiting).length;
 
   // Hold the header (and its 0/0/0 stats) until the first poll returns, so an
   // empty overview doesn't flash before real counts or the welcome hero.
@@ -265,7 +267,8 @@ export default function HomeView({
         <div className="home-stats">
           <Stat value={projects.length} label={projects.length === 1 ? "project" : "projects"} />
           <Stat value={all.length} label={all.length === 1 ? "agent" : "agents"} />
-          <Stat value={running} label="running" accent={running > 0} />
+          <Stat value={working} label="working" accent={working > 0} />
+          <Stat value={waitingCount} label="waiting" warn={waitingCount > 0} />
         </div>
       </div>
 
@@ -273,7 +276,8 @@ export default function HomeView({
         const runs = [...(runsBy[p.id] ?? [])].sort(
           (a, b) => Number(b.status.state === "running") - Number(a.status.state === "running"),
         );
-        const live = runs.filter((r) => r.status.state === "running").length;
+        const live = runs.filter(isWorking).length;
+        const waiting = runs.filter(isWaiting).length;
         const isFolded = folded.has(p.id);
         return (
           <section key={p.id} className="home-group">
@@ -292,7 +296,8 @@ export default function HomeView({
                 <span className="home-group-name">{p.name}</span>
                 <span className="home-group-meta">
                   {runs.length === 0 ? "no agents" : `${runs.length} agent${runs.length === 1 ? "" : "s"}`}
-                  {live > 0 && <span className="home-live"> · {live} running</span>}
+                  {live > 0 && <span className="home-live"> · {live} working</span>}
+                  {waiting > 0 && <span className="home-attn"> · {waiting} waiting</span>}
                 </span>
                 <span className="home-group-open">open →</span>
               </button>
@@ -311,21 +316,12 @@ export default function HomeView({
   );
 }
 
-function Stat({ value, label, accent }: { value: number; label: string; accent?: boolean }) {
+function Stat({ value, label, accent, warn }: { value: number; label: string; accent?: boolean; warn?: boolean }) {
   return (
-    <span className={`home-stat ${accent ? "accent" : ""}`}>
+    <span className={`home-stat ${accent ? "accent" : ""} ${warn ? "warn" : ""}`}>
       <span className="home-stat-n">{value}</span> {label}
     </span>
   );
-}
-
-function statusLabel(s: RunInfo["status"]): { cls: string; text: string; title?: string } {
-  if (s.state === "running") return { cls: "running", text: "running" };
-  if (s.state === "exited") {
-    if (s.code === 0) return { cls: "exited", text: "finished" };
-    return { cls: "exited", text: "failed", title: `exited (${s.code})` };
-  }
-  return { cls: "exited", text: "session ended" };
 }
 
 function badgeClass(agent: string): string {
@@ -352,7 +348,7 @@ function HomeTile({ run, onOpen }: { run: RunInfo; onOpen: () => void }) {
     return () => { alive = false; window.clearInterval(t); };
   }, [run.id]);
 
-  const st = statusLabel(run.status);
+  const st = runStatus(run);
   const isTerminal = run.kind === "terminal";
   return (
     <div className="tile" onClick={onOpen} title="Open in focus mode">

@@ -3,6 +3,7 @@ import { RunInfo, runPreview, discardRun } from "../api";
 import { useRuns } from "../store/runs";
 import { runName } from "../agents";
 import { toastError } from "../lib/toast";
+import { runStatus } from "../lib/runstate";
 import ConfirmDialog from "./ConfirmDialog";
 import { TrashIcon } from "./icons";
 
@@ -11,14 +12,6 @@ function badgeClass(agent: string): string {
   if (agent === "pi") return "badge pi";
   if (agent === "hermes") return "badge hermes";
   return "badge";
-}
-function statusLabel(s: RunInfo["status"]): { cls: string; text: string; title?: string } {
-  if (s.state === "running") return { cls: "running", text: "running" };
-  if (s.state === "exited") {
-    if (s.code === 0) return { cls: "exited", text: "finished" };
-    return { cls: "exited", text: "failed", title: `exited (${s.code})` };
-  }
-  return { cls: "exited", text: "session ended" };
 }
 
 export default function AgentTile({ run }: { run: RunInfo }) {
@@ -42,7 +35,7 @@ export default function AgentTile({ run }: { run: RunInfo }) {
     return () => { alive = false; window.clearInterval(t); };
   }, [run.id]);
 
-  const st = statusLabel(run.status);
+  const st = runStatus(run);
   const isTerminal = run.kind === "terminal";
   return (
     <div className="tile" onClick={() => { setFocusedRun(run.id); setView("focus"); }}>

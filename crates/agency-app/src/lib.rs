@@ -170,6 +170,7 @@ pub fn run() {
             commands::list_project_branches,
             commands::inspect_repo,
             commands::init_repo,
+            commands::clone_repo,
             commands::commit_repo,
             commands::git_commit_files,
             commands::git_commit_diff,

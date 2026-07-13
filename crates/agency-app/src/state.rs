@@ -657,6 +657,10 @@ impl AppState {
         agency_core::setup::init_repo(repo_path)
     }
 
+    pub fn clone_repo(&self, url: &str, parent_dir: &Path) -> Result<std::path::PathBuf> {
+        agency_core::setup::clone_repo(url, parent_dir)
+    }
+
     pub fn commit_repo(&self, repo_path: &Path, add_gitignore: bool) -> Result<()> {
         agency_core::setup::initial_commit(repo_path, add_gitignore)
     }

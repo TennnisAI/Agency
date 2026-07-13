@@ -1215,6 +1215,15 @@ input, textarea, code,
 }
 .home-hero h1 { margin: 8px 0 0; font-size: 20px; font-weight: 600; color: var(--text); }
 .home-hero p { margin: 0; font-size: 13px; line-height: 1.65; color: var(--sub0); }
+.home-hero-actions { display: flex; gap: 8px; margin-top: 4px; }
+
+/* ── Clone-repository dialog ─────────────────────────────────── */
+.clone-field { display: flex; flex-direction: column; gap: 5px; margin-top: 12px; }
+.clone-label { font-size: 12px; color: var(--sub0); }
+.clone-dest { display: flex; gap: 8px; align-items: center; }
+.clone-dest .modal-input { cursor: pointer; }
+.clone-dest .btn-secondary { white-space: nowrap; }
+.modal-body code { color: var(--peach); font-family: var(--mono); font-size: 12px; word-break: break-all; }
 
 /* ── Install-missing-agent dialog ────────────────────────────── */
 .modal-body p { margin: 0 0 10px; }

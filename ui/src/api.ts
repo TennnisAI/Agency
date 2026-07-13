@@ -69,6 +69,9 @@ export const inspectRepo = (repoPath: string) =>
   invoke<RepoReadiness>("inspect_repo", { repoPath });
 export const initRepo = (repoPath: string) =>
   invoke<void>("init_repo", { repoPath });
+// Clones `url` into a new folder under `parentDir`; resolves to the clone's path.
+export const cloneRepo = (url: string, parentDir: string) =>
+  invoke<string>("clone_repo", { url, parentDir });
 export const commitRepo = (repoPath: string, addGitignore: boolean) =>
   invoke<void>("commit_repo", { repoPath, addGitignore });
 

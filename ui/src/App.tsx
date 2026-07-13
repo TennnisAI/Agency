@@ -116,6 +116,7 @@ function Shell() {
       // The full add flow (dir picker + repo-setup dialog) lives in ProjectTree;
       // signal it rather than duplicating that logic here.
       case "add-project": window.dispatchEvent(new CustomEvent("agency:add-project")); break;
+      case "clone-project": window.dispatchEvent(new CustomEvent("agency:clone-project")); break;
       case "source": setTab("source"); break;
       case "toggle-sidebar": setSidebarOpen((s) => !s); break;
       case "home": goHome(); break;

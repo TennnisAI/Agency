@@ -1,4 +1,4 @@
-use agency_core::setup::{repo_readiness, RepoReadiness, init_repo, initial_commit, write_default_gitignore};
+use agency_core::setup::{repo_readiness, RepoReadiness, init_repo, initial_commit, write_default_gitignore, repo_name_from_url, clone_repo};
 use std::path::Path;
 use std::process::Command;
 
@@ -109,4 +109,48 @@ fn write_default_gitignore_does_not_overwrite() {
     std::fs::write(dir.path().join(".gitignore"), "custom\n").unwrap();
     write_default_gitignore(dir.path()).unwrap();
     assert_eq!(std::fs::read_to_string(dir.path().join(".gitignore")).unwrap(), "custom\n");
+}
+
+#[test]
+fn repo_name_from_url_handles_common_forms() {
+    assert_eq!(repo_name_from_url("https://github.com/owner/repo.git"), "repo");
+    assert_eq!(repo_name_from_url("https://github.com/owner/repo"), "repo");
+    assert_eq!(repo_name_from_url("git@github.com:owner/repo.git"), "repo");
+    assert_eq!(repo_name_from_url("https://github.com/owner/repo/"), "repo");
+    assert_eq!(repo_name_from_url("  https://github.com/owner/repo.git  "), "repo");
+}
+
+#[test]
+fn clone_repo_clones_into_named_subfolder() {
+    // A local source repo with one commit stands in for a remote.
+    let src = tempfile::tempdir().unwrap();
+    init_bare_repo(src.path());
+    std::fs::write(src.path().join("hello.txt"), "hi\n").unwrap();
+    git(src.path(), &["add", "-A"]);
+    git(src.path(), &["commit", "-q", "-m", "init"]);
+
+    let parent = tempfile::tempdir().unwrap();
+    let url = format!("file://{}", src.path().display());
+    let dest = clone_repo(&url, parent.path()).unwrap();
+
+    // A file:// URL ending in the temp dir's name yields that name as the folder.
+    assert_eq!(dest.parent().unwrap(), parent.path());
+    assert!(dest.join("hello.txt").exists());
+    assert_eq!(repo_readiness(&dest), RepoReadiness::Ready { dirty: false });
+}
+
+#[test]
+fn clone_repo_refuses_existing_destination() {
+    let src = tempfile::tempdir().unwrap();
+    init_bare_repo(src.path());
+    std::fs::write(src.path().join("a.txt"), "a\n").unwrap();
+    git(src.path(), &["add", "-A"]);
+    git(src.path(), &["commit", "-q", "-m", "init"]);
+
+    let parent = tempfile::tempdir().unwrap();
+    let name = src.path().file_name().unwrap();
+    // Pre-create the folder the clone would land in.
+    std::fs::create_dir(parent.path().join(name)).unwrap();
+    let url = format!("file://{}", src.path().display());
+    assert!(clone_repo(&url, parent.path()).is_err());
 }

@@ -65,6 +65,10 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
                 .accelerator("CmdOrCtrl+Shift+O")
                 .build(app)?,
         )
+        .item(
+            &MenuItemBuilder::with_id("menu:clone-project", "Clone Repository…")
+                .build(app)?,
+        )
         .separator()
         .close_window()
         .build()?;

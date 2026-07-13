@@ -12,7 +12,8 @@
 #
 # What this does:
 #   1. Builds target/debug/agency-termd  (cargo build -p agency-core --bin agency-termd)
-#   2. Launches tauri dev via pnpm from the ui/ directory
+#   2. Installs ui/ dependencies if missing (fresh worktrees have no node_modules)
+#   3. Launches tauri dev via pnpm from the ui/ directory
 #
 # For release builds, run crates/agency-app/build-termd.sh first, then
 # `pnpm tauri build` from crates/agency-app/.
@@ -39,6 +40,14 @@ if [ ! -e "$SIDECAR" ]; then
   mkdir -p "$REPO_ROOT/target/release"
   cp "$REPO_ROOT/target/debug/agency-termd" "$SIDECAR"
   echo "Staged dev sidecar: $SIDECAR"
+fi
+
+# Each git worktree is a separate checkout with its own empty ui/node_modules,
+# so the tauri CLI (a devDependency) is absent until deps are installed. Install
+# on demand so a fresh worktree runs without a manual `pnpm install` first.
+if [ ! -x "$REPO_ROOT/ui/node_modules/.bin/tauri" ]; then
+  echo "Installing ui/ dependencies (pnpm install)..."
+  pnpm --dir "$REPO_ROOT/ui" install
 fi
 
 echo "Launching tauri dev..."

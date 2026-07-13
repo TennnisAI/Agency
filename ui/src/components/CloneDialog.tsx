@@ -1,0 +1,98 @@
+import { useState } from "react";
+import { open } from "@tauri-apps/plugin-dialog";
+import { cloneRepo } from "../api";
+import { useModalKeys } from "../hooks/useModalKeys";
+
+type Props = {
+  // Called with the freshly cloned repo's absolute path once the clone succeeds.
+  onCloned: (path: string) => void;
+  onCancel: () => void;
+};
+
+// Mirror the backend's repo_name_from_url so the dialog can preview the folder
+// name that will be created — handles https, scp-style, and trailing slashes.
+function repoNameFromUrl(url: string): string {
+  const trimmed = url.trim().replace(/\/+$/, "");
+  const last = trimmed.split(/[/:]/).pop() ?? trimmed;
+  return last.replace(/\.git$/, "");
+}
+
+export default function CloneDialog({ onCloned, onCancel }: Props) {
+  const [url, setUrl] = useState("");
+  const [parentDir, setParentDir] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  // Escape cancels, but never mid-clone (the button is disabled then too).
+  useModalKeys(onCancel, !busy);
+
+  const name = repoNameFromUrl(url);
+  const canClone = !!url.trim() && !!parentDir && !busy;
+
+  async function chooseLocation() {
+    const sel = await open({ directory: true, multiple: false });
+    if (typeof sel === "string") setParentDir(sel);
+  }
+
+  async function doClone() {
+    if (!canClone) return;
+    setBusy(true); setError("");
+    try {
+      const path = await cloneRepo(url.trim(), parentDir);
+      onCloned(path);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" onClick={(e) => { e.stopPropagation(); if (!busy) onCancel(); }}>
+      <div className="modal confirm" role="dialog" aria-modal="true" aria-label="Clone repository" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <h3>Clone a repository</h3>
+          <button className="modal-x" disabled={busy} onClick={onCancel}>✕</button>
+        </div>
+        <div className="modal-body">
+          <p className="modal-note">Clone an existing Git repository, then add it as a project.</p>
+          <label className="clone-field">
+            <span className="clone-label">Repository URL</span>
+            <input
+              className="modal-input"
+              autoFocus
+              placeholder="https://github.com/owner/repo.git"
+              value={url}
+              disabled={busy}
+              onChange={(e) => setUrl(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter" && canClone) doClone(); }}
+            />
+          </label>
+          <label className="clone-field">
+            <span className="clone-label">Destination folder</span>
+            <div className="clone-dest">
+              <input
+                className="modal-input"
+                readOnly
+                placeholder="Choose a location…"
+                value={parentDir}
+                onClick={chooseLocation}
+              />
+              <button className="btn-secondary" disabled={busy} onClick={chooseLocation}>Choose…</button>
+            </div>
+          </label>
+          {parentDir && name && (
+            <p className="modal-note">Clones into <code>{parentDir}/{name}</code></p>
+          )}
+          {error && <div className="git-error">{error}</div>}
+        </div>
+        <div className="modal-foot">
+          <button className="btn-secondary" disabled={busy} onClick={onCancel}>Cancel</button>
+          <button className="btn-primary" disabled={!canClone} onClick={doClone}>
+            {busy ? "Cloning…" : "Clone repository"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}

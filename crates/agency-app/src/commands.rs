@@ -713,6 +713,16 @@ pub fn init_repo(state: State<'_, AppState>, repo_path: String) -> Result<(), St
     state.init_repo(std::path::Path::new(&repo_path)).map_err(|e| e.to_string())
 }
 
+// Clones a remote repo into a new folder under `parent_dir` and returns the
+// absolute path of the clone, ready to be added as a project.
+#[tauri::command]
+pub fn clone_repo(state: State<'_, AppState>, url: String, parent_dir: String) -> Result<String, String> {
+    let dest = state
+        .clone_repo(&url, std::path::Path::new(&parent_dir))
+        .map_err(|e| e.to_string())?;
+    Ok(dest.to_string_lossy().to_string())
+}
+
 #[tauri::command]
 pub async fn git_commit_files(
     state: State<'_, AppState>,

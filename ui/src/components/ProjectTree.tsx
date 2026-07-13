@@ -6,6 +6,7 @@ import { useRuns } from "../store/runs";
 import { toastError } from "../lib/toast";
 import ConfirmDialog from "./ConfirmDialog";
 import RepoSetupDialog from "./RepoSetupDialog";
+import CloneDialog from "./CloneDialog";
 import SidebarToggle from "./SidebarToggle";
 
 function statusClass(s: RunInfo["status"]): string {
@@ -40,6 +41,7 @@ export default function ProjectTree({
   const [pending, setPending] = useState<Pending>(null);
   const [error, setError] = useState("");
   const [setup, setSetup] = useState<{ path: string; name: string; readiness: RepoReadiness; existing: boolean } | null>(null);
+  const [cloning, setCloning] = useState(false);
   const [readiness, setReadiness] = useState<Record<string, RepoReadiness>>({});
 
   async function refresh() {
@@ -58,9 +60,14 @@ export default function ProjectTree({
   const addRef = useRef(handleAdd);
   addRef.current = handleAdd;
   useEffect(() => {
-    const h = () => addRef.current();
-    window.addEventListener("agency:add-project", h);
-    return () => window.removeEventListener("agency:add-project", h);
+    const add = () => addRef.current();
+    const clone = () => setCloning(true);
+    window.addEventListener("agency:add-project", add);
+    window.addEventListener("agency:clone-project", clone);
+    return () => {
+      window.removeEventListener("agency:add-project", add);
+      window.removeEventListener("agency:clone-project", clone);
+    };
   }, []);
 
   // Keep the agents shown under each expanded project in sync with the shared
@@ -106,6 +113,21 @@ export default function ProjectTree({
     }
   }
 
+  // A freshly cloned repo already has commits and a clean tree, so it's ready to
+  // add straight away — no setup dialog needed. Auto-open it like a fresh add.
+  async function handleCloned(path: string) {
+    setCloning(false);
+    const name = path.split("/").filter(Boolean).pop() ?? path;
+    setError("");
+    try {
+      const created = await addProject(name, path);
+      await refresh();
+      onSelect(created);
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
   async function finishSetup() {
     if (!setup) return;
     try {
@@ -144,6 +166,7 @@ export default function ProjectTree({
           PROJECTS
         </button>
         <span className="spacer" />
+        <button className="icon-add" title="Clone repository" aria-label="Clone repository" onClick={() => setCloning(true)}>⤓</button>
         <button className="icon-add" title="Add project" aria-label="Add project" onClick={handleAdd}>+</button>
       </div>
       {error && <div className="git-error">{error}</div>}
@@ -202,6 +225,9 @@ export default function ProjectTree({
           onResolved={finishSetup}
           onCancel={() => setSetup(null)}
         />
+      )}
+      {cloning && (
+        <CloneDialog onCloned={handleCloned} onCancel={() => setCloning(false)} />
       )}
       {pending && (
         <ConfirmDialog

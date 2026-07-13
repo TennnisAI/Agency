@@ -1,6 +1,6 @@
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -54,6 +54,41 @@ fn git_checked(dir: &Path, args: &[&str]) -> Result<()> {
 /// `git init` in `path`. Uses the user's configured default branch name.
 pub fn init_repo(path: &Path) -> Result<()> {
     git_checked(path, &["init"])
+}
+
+/// Derive a destination folder name from a git remote URL. Handles the common
+/// forms — `https://host/owner/repo.git`, `git@host:owner/repo.git`, and
+/// trailing slashes — by taking the final path segment and stripping `.git`.
+pub fn repo_name_from_url(url: &str) -> String {
+    let trimmed = url.trim().trim_end_matches('/');
+    // scp-style `git@host:owner/repo` separates the path with ':'; splitting on
+    // both '/' and ':' lands on the final segment for either URL shape.
+    let last = trimmed.rsplit(|c| c == '/' || c == ':').next().unwrap_or(trimmed);
+    last.strip_suffix(".git").unwrap_or(last).to_string()
+}
+
+/// Clone `url` into a new folder under `parent_dir`, named after the repo, and
+/// return the new path. The destination must not already exist — git refuses to
+/// clone into a non-empty dir, but checking up front yields a clearer message.
+pub fn clone_repo(url: &str, parent_dir: &Path) -> Result<PathBuf> {
+    let name = repo_name_from_url(url);
+    if name.is_empty() {
+        bail!("couldn't determine a folder name from the URL");
+    }
+    let dest = parent_dir.join(&name);
+    if dest.exists() {
+        bail!("{} already exists — choose another location", dest.display());
+    }
+    let out = Command::new("git")
+        .arg("clone")
+        .arg(url)
+        .arg(&dest)
+        .current_dir(parent_dir)
+        .output()?;
+    if !out.status.success() {
+        bail!("git clone failed: {}", String::from_utf8_lossy(&out.stderr));
+    }
+    Ok(dest)
 }
 
 /// Write a sensible default `.gitignore`, but never overwrite an existing one.

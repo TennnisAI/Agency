@@ -102,6 +102,9 @@ export const createInstallTerminal = (projectId: string, agent: string, command:
 export const confirmQuit = () => invoke<void>("confirm_quit");
 export const setRunTitle = (id: string, firstPrompt: string) =>
   invoke<void>("set_run_title", { id, firstPrompt });
+// Rename a run: overwrites the display title (empty clears it → falls back to prompt/branch).
+export const renameRun = (id: string, title: string) =>
+  invoke<void>("rename_run", { id, title });
 export const listRuns = (projectId: string) => invoke<RunInfo[]>("list_runs", { projectId });
 export const runPreview = (id: string, lines: number) =>
   invoke<string>("run_preview", { id, lines });
@@ -560,6 +563,8 @@ export type FileRoot = { kind: "run"; id: string } | { kind: "project"; id: stri
 export interface DirEntry {
   name: string;
   isDir: boolean;
+  // For directories: whether they hold at least one entry (drives the expand arrow).
+  hasChildren: boolean;
 }
 
 export interface FileContents {
@@ -585,3 +590,16 @@ export const readFileBase64 = (root: FileRoot, relPath: string) =>
 
 export const writeFile = (root: FileRoot, relPath: string, contents: string) =>
   invoke<void>("write_file", { root, relPath, contents });
+
+export const createFile = (root: FileRoot, relPath: string) =>
+  invoke<void>("create_file", { root, relPath });
+export const createDir = (root: FileRoot, relPath: string) =>
+  invoke<void>("create_dir", { root, relPath });
+export const renamePath = (root: FileRoot, from: string, to: string) =>
+  invoke<void>("rename_path", { root, from, to });
+export const trashPath = (root: FileRoot, relPath: string) =>
+  invoke<void>("trash_path", { root, relPath });
+export const absPath = (root: FileRoot, relPath: string) =>
+  invoke<string>("abs_path", { root, relPath });
+export const revealPath = (root: FileRoot, relPath: string) =>
+  invoke<void>("reveal_path", { root, relPath });

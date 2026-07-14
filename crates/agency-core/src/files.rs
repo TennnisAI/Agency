@@ -14,6 +14,10 @@ const MAX_BINARY_BYTES: u64 = 25_000_000;
 pub struct DirEntry {
     pub name: String,
     pub is_dir: bool,
+    /// For directories: whether they contain at least one entry, so the tree can
+    /// show an expand arrow only on folders that have something to reveal. Always
+    /// false for files. Best-effort: an unreadable directory reports false.
+    pub has_children: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -93,13 +97,78 @@ pub fn list_dir(root: &Path, rel: &str) -> Result<Vec<DirEntry>> {
     let mut out = Vec::new();
     for entry in std::fs::read_dir(&dir)? {
         let entry = entry?;
+        let is_dir = entry.file_type()?.is_dir();
+        // Cheap emptiness probe: open the subdir and pull a single entry. Only
+        // runs for directories, and only one level below what the user opened,
+        // so browsing cost stays proportional to what's actually expanded.
+        let has_children = is_dir && dir_has_entry(&entry.path());
         out.push(DirEntry {
             name: entry.file_name().to_string_lossy().into_owned(),
-            is_dir: entry.file_type()?.is_dir(),
+            is_dir,
+            has_children,
         });
     }
     out.sort_by(|a, b| (!a.is_dir, &a.name).cmp(&(!b.is_dir, &b.name)));
     Ok(out)
+}
+
+/// True if `dir` contains at least one entry. Unreadable directories (permission
+/// denied, races) report false rather than erroring — the arrow is a hint, not a
+/// guarantee, and expansion surfaces any real error.
+fn dir_has_entry(dir: &Path) -> bool {
+    std::fs::read_dir(dir)
+        .map(|mut it| it.next().is_some())
+        .unwrap_or(false)
+}
+
+/// Create an empty file at `rel`. Fails if it already exists so an accidental
+/// "New File" over an existing name can't truncate it.
+pub fn create_file(root: &Path, rel: &str) -> Result<()> {
+    let path = resolve_within(root, rel)?;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map_err(|e| anyhow!("cannot create {}: {e}", path.display()))?;
+    Ok(())
+}
+
+/// Create a directory at `rel` (its parent must already exist). Fails if the
+/// path already exists.
+pub fn create_dir(root: &Path, rel: &str) -> Result<()> {
+    let path = resolve_within(root, rel)?;
+    std::fs::create_dir(&path).map_err(|e| anyhow!("cannot create {}: {e}", path.display()))?;
+    Ok(())
+}
+
+/// Rename/move `from` to `to`, both resolved within `root`. Refuses to clobber an
+/// existing destination.
+pub fn rename_path(root: &Path, from: &str, to: &str) -> Result<()> {
+    let src = resolve_within(root, from)?;
+    let dst = resolve_within(root, to)?;
+    if dst.symlink_metadata().is_ok() {
+        bail!("destination already exists: {to}");
+    }
+    std::fs::rename(&src, &dst).map_err(|e| anyhow!("cannot rename {from}{to}: {e}"))?;
+    Ok(())
+}
+
+/// Move the file or directory at `rel` to the OS trash (recoverable), rather than
+/// deleting it permanently.
+pub fn trash_path(root: &Path, rel: &str) -> Result<()> {
+    let path = resolve_within(root, rel)?;
+    trash::delete(&path).map_err(|e| anyhow!("cannot delete {}: {e}", path.display()))?;
+    Ok(())
+}
+
+/// Resolve `rel` to an absolute path within `root` (for "reveal in Finder" /
+/// "copy path"). The path is validated by `resolve_within` and must exist.
+pub fn abs_path(root: &Path, rel: &str) -> Result<PathBuf> {
+    let path = resolve_within(root, rel)?;
+    if path.symlink_metadata().is_err() {
+        bail!("path does not exist: {rel}");
+    }
+    Ok(path)
 }
 
 /// Read a file's contents. Oversized files are flagged `too_large`; files

@@ -1212,6 +1212,89 @@ pub fn write_file(
     agency_core::files::write_file(&base, &rel_path, &contents).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+pub fn create_file(
+    state: State<'_, AppState>,
+    root: FileRoot,
+    rel_path: String,
+) -> Result<(), String> {
+    let base = resolve_root(&state, &root)?;
+    agency_core::files::create_file(&base, &rel_path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn create_dir(
+    state: State<'_, AppState>,
+    root: FileRoot,
+    rel_path: String,
+) -> Result<(), String> {
+    let base = resolve_root(&state, &root)?;
+    agency_core::files::create_dir(&base, &rel_path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn rename_path(
+    state: State<'_, AppState>,
+    root: FileRoot,
+    from: String,
+    to: String,
+) -> Result<(), String> {
+    let base = resolve_root(&state, &root)?;
+    agency_core::files::rename_path(&base, &from, &to).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn trash_path(
+    state: State<'_, AppState>,
+    root: FileRoot,
+    rel_path: String,
+) -> Result<(), String> {
+    let base = resolve_root(&state, &root)?;
+    agency_core::files::trash_path(&base, &rel_path).map_err(|e| e.to_string())
+}
+
+/// Absolute path of a file/dir within a root, for "Copy path".
+#[tauri::command]
+pub fn abs_path(
+    state: State<'_, AppState>,
+    root: FileRoot,
+    rel_path: String,
+) -> Result<String, String> {
+    let base = resolve_root(&state, &root)?;
+    let p = agency_core::files::abs_path(&base, &rel_path).map_err(|e| e.to_string())?;
+    Ok(p.to_string_lossy().into_owned())
+}
+
+/// Reveal a file/dir in the OS file manager (Finder / Explorer). Runs the
+/// opener plugin from Rust, so the path is validated by `resolve_within` rather
+/// than the plugin's static capability scope.
+#[tauri::command]
+pub fn reveal_path(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    root: FileRoot,
+    rel_path: String,
+) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let base = resolve_root(&state, &root)?;
+    let p = agency_core::files::abs_path(&base, &rel_path).map_err(|e| e.to_string())?;
+    app.opener()
+        .reveal_item_in_dir(p)
+        .map_err(|e| e.to_string())
+}
+
+/// Rename a run: overwrite its display title unconditionally (unlike
+/// set_run_title, which only fills an empty title from the first prompt). An
+/// empty/whitespace title clears it, so the name falls back to prompt/branch.
+#[tauri::command]
+pub fn rename_run(
+    state: State<'_, AppState>,
+    id: String,
+    title: String,
+) -> Result<(), String> {
+    state.store_run_title(&id, title.trim()).map_err(|e| e.to_string())
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BinaryContents {

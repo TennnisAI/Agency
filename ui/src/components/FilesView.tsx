@@ -20,10 +20,7 @@ export default function FilesView({ root, projectName }: { root: FileRoot | null
   return (
     <div className="files-view">
       <div className="files-tree" style={{ width: treePane.width }}>
-        <div className="files-root-label">{rootLabel}</div>
-        <div className="files-tree-body">
-          <FileTree root={root} selected={selected} onSelect={setSelected} />
-        </div>
+        <FileTree root={root} rootLabel={rootLabel} selected={selected} onSelect={setSelected} />
       </div>
       <Resizer size={treePane.width} min={180} max={560} onChange={treePane.setWidth} />
       <div className="files-editor">

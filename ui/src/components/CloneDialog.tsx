@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { cloneRepo, ghAuthReadiness, GhReadiness } from "../api";
+import { cloneRepo, ghAuthReadiness, GhReadiness, CloneProgress } from "../api";
 import { useModalKeys } from "../hooks/useModalKeys";
 
 type Props = {
@@ -22,6 +22,8 @@ export default function CloneDialog({ onCloned, onCancel }: Props) {
   const [url, setUrl] = useState("");
   const [parentDir, setParentDir] = useState("");
   const [busy, setBusy] = useState(false);
+  // Latest git progress update while a clone is running (null before the first).
+  const [progress, setProgress] = useState<CloneProgress | null>(null);
   const [error, setError] = useState("");
   // When a clone fails on authentication, we surface a guided sign-in step keyed
   // to how far the user is from being ready (gh missing vs. not signed in).
@@ -40,9 +42,9 @@ export default function CloneDialog({ onCloned, onCancel }: Props) {
 
   async function doClone() {
     if (!canClone) return;
-    setBusy(true); setError(""); setAuthHelp(null);
+    setBusy(true); setError(""); setAuthHelp(null); setProgress(null);
     try {
-      const path = await cloneRepo(url.trim(), parentDir);
+      const path = await cloneRepo(url.trim(), parentDir, setProgress);
       onCloned(path);
     } catch (e) {
       const msg = String(e);
@@ -54,6 +56,7 @@ export default function CloneDialog({ onCloned, onCancel }: Props) {
       }
     } finally {
       setBusy(false);
+      setProgress(null);
     }
   }
 
@@ -91,8 +94,29 @@ export default function CloneDialog({ onCloned, onCancel }: Props) {
               <button className="btn-secondary" disabled={busy} onClick={chooseLocation}>Choose…</button>
             </div>
           </label>
-          {parentDir && name && (
+          {parentDir && name && !busy && (
             <p className="modal-note">Clones into <code>{parentDir}/{name}</code></p>
+          )}
+          {busy && (
+            <div className="clone-progress" role="status" aria-live="polite">
+              <div className="clone-progress-head">
+                <span className="clone-progress-phase">
+                  {progress ? progress.phase : "Starting clone…"}
+                </span>
+                {progress?.percent != null && (
+                  <span className="clone-progress-pct">{progress.percent}%</span>
+                )}
+              </div>
+              <div className="clone-progress-track">
+                <div
+                  className={`clone-progress-bar${progress?.percent == null ? " indeterminate" : ""}`}
+                  style={progress?.percent != null ? { width: `${progress.percent}%` } : undefined}
+                />
+              </div>
+              {progress?.detail && (
+                <div className="clone-progress-detail">{progress.detail}</div>
+              )}
+            </div>
           )}
           {error && <div className="git-error">{error}</div>}
           {authHelp && authHelp !== "ready" && (

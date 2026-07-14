@@ -143,12 +143,26 @@ impl GhCli {
     /// Clone `url` into `dest` through gh, which injects the user's stored
     /// credentials — so private repos clone without git prompting for a
     /// username/password it can't read. Assumes the caller has confirmed gh is
-    /// authenticated (see `auth_readiness`).
-    pub fn clone(&self, url: &str, dest: &Path) -> Result<()> {
+    /// authenticated (see `auth_readiness`). Progress is streamed to
+    /// `on_progress`; `--progress` after `--` is forwarded to the underlying git.
+    pub fn clone_with_progress(
+        &self,
+        url: &str,
+        dest: &Path,
+        on_progress: &mut dyn FnMut(crate::setup::CloneProgress),
+    ) -> Result<()> {
         let dest_str = dest.to_string_lossy();
-        let out = self.run(Path::new("."), &["repo", "clone", url, &dest_str])?;
-        if !out.status.success() {
-            bail!("{}", String::from_utf8_lossy(&out.stderr).trim());
+        let mut cmd = Command::new(&self.bin);
+        cmd.arg("repo")
+            .arg("clone")
+            .arg(url)
+            .arg(dest_str.as_ref())
+            .arg("--")
+            .arg("--progress")
+            .current_dir(Path::new("."));
+        let (ok, stderr) = crate::setup::run_clone_streaming(cmd, on_progress)?;
+        if !ok {
+            bail!("{}", stderr.trim());
         }
         Ok(())
     }

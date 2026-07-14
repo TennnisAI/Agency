@@ -69,9 +69,20 @@ export const inspectRepo = (repoPath: string) =>
   invoke<RepoReadiness>("inspect_repo", { repoPath });
 export const initRepo = (repoPath: string) =>
   invoke<void>("init_repo", { repoPath });
+// A progress update streamed from `git clone --progress` during a clone.
+export type CloneProgress = { phase: string; percent: number | null; detail: string };
+
 // Clones `url` into a new folder under `parentDir`; resolves to the clone's path.
-export const cloneRepo = (url: string, parentDir: string) =>
-  invoke<string>("clone_repo", { url, parentDir });
+// `onProgress`, if given, is called as git reports download progress.
+export function cloneRepo(
+  url: string,
+  parentDir: string,
+  onProgress?: (p: CloneProgress) => void,
+): Promise<string> {
+  const onProgressChannel = new Channel<CloneProgress>();
+  if (onProgress) onProgressChannel.onmessage = onProgress;
+  return invoke<string>("clone_repo", { url, parentDir, onProgress: onProgressChannel });
+}
 export const commitRepo = (repoPath: string, addGitignore: boolean) =>
   invoke<void>("commit_repo", { repoPath, addGitignore });
 

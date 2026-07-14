@@ -116,17 +116,116 @@ fn github_auth_message(url: &str, gh: &GhCli) -> String {
     }
 }
 
+/// A single progress update parsed from `git clone --progress` output, streamed
+/// to the UI so a large clone shows movement instead of a frozen dialog.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloneProgress {
+    /// The git phase, e.g. "Receiving objects" or "Resolving deltas".
+    pub phase: String,
+    /// Percent complete for this phase (0-100), when git reports one.
+    pub percent: Option<u8>,
+    /// The rest of the line — e.g. "47% (5000/11000), 12.5 MiB | 5.2 MiB/s".
+    pub detail: String,
+}
+
+/// Parse one line of `git clone --progress` stderr into a progress update, or
+/// `None` for lines that aren't phase progress (e.g. "Cloning into '…'"). Git
+/// overwrites these in place with carriage returns, so the streamer splits on
+/// `\r` as well as `\n` before handing each line here.
+fn parse_clone_progress(line: &str) -> Option<CloneProgress> {
+    // Phases that carry a percentage; "remote: " prefixes the server-side ones.
+    const PHASES: &[&str] = &[
+        "remote: Counting objects",
+        "remote: Compressing objects",
+        "Receiving objects",
+        "Resolving deltas",
+        "Updating files",
+    ];
+    let line = line.trim();
+    let phase = PHASES.iter().find(|p| line.starts_with(**p))?;
+    let rest = line[phase.len()..].trim_start_matches(':').trim();
+    let percent = rest.split('%').next().and_then(|p| p.trim().parse::<u8>().ok());
+    // Drop the "remote: " prefix from the label the UI shows.
+    let label = phase.strip_prefix("remote: ").unwrap_or(phase);
+    Some(CloneProgress { phase: label.to_string(), percent, detail: rest.to_string() })
+}
+
+/// Run a clone `Command`, streaming its progress to `on_progress` as git prints
+/// it, and return `(success, full_stderr)`. Stderr is piped and split on both
+/// `\r` and `\n` because git overwrites progress in place with carriage returns;
+/// the full text is still accumulated so the caller can inspect failure output.
+pub(crate) fn run_clone_streaming(
+    mut cmd: Command,
+    on_progress: &mut dyn FnMut(CloneProgress),
+) -> std::io::Result<(bool, String)> {
+    use std::io::Read;
+    use std::process::Stdio;
+    cmd.stdout(Stdio::null()).stderr(Stdio::piped());
+    let mut child = cmd.spawn()?;
+    let mut stderr = child.stderr.take().expect("stderr was piped");
+    let mut chunk = [0u8; 4096];
+    let mut line: Vec<u8> = Vec::new();
+    let mut full = String::new();
+    loop {
+        let n = stderr.read(&mut chunk)?;
+        if n == 0 {
+            break;
+        }
+        for &b in &chunk[..n] {
+            if b == b'\r' || b == b'\n' {
+                flush_progress_line(&mut line, &mut full, on_progress);
+            } else {
+                line.push(b);
+            }
+        }
+    }
+    flush_progress_line(&mut line, &mut full, on_progress);
+    let status = child.wait()?;
+    Ok((status.success(), full))
+}
+
+/// Emit `line` as a progress update (if it parses) and append it to `full`,
+/// then clear it for the next line.
+fn flush_progress_line(
+    line: &mut Vec<u8>,
+    full: &mut String,
+    on_progress: &mut dyn FnMut(CloneProgress),
+) {
+    if line.is_empty() {
+        return;
+    }
+    let s = String::from_utf8_lossy(line).to_string();
+    line.clear();
+    if let Some(p) = parse_clone_progress(&s) {
+        on_progress(p);
+    }
+    full.push_str(&s);
+    full.push('\n');
+}
+
+/// Clone `url` into a new folder under `parent_dir`. See
+/// [`clone_repo_with_progress`]; this is the no-progress convenience wrapper.
+pub fn clone_repo(url: &str, parent_dir: &Path) -> Result<PathBuf> {
+    clone_repo_with_progress(url, parent_dir, |_| {})
+}
+
 /// Clone `url` into a new folder under `parent_dir`, named after the repo, and
-/// return the new path. The destination must not already exist — git refuses to
-/// clone into a non-empty dir, but checking up front yields a clearer message.
+/// return the new path, calling `on_progress` as git reports download progress.
+/// The destination must not already exist — git refuses to clone into a
+/// non-empty dir, but checking up front yields a clearer message.
 ///
 /// Credentials are the usual snag: the desktop app has no TTY, so a private repo
 /// makes `git` try (and fail) to read a username from a terminal that isn't
 /// there. We disable that prompt so the failure is fast and legible, then —
 /// for github.com — retry through `gh`, which supplies the user's stored
 /// credentials. That makes an authenticated private clone just work; when it
-/// can't, `auth_error_message` says exactly what to configure.
-pub fn clone_repo(url: &str, parent_dir: &Path) -> Result<PathBuf> {
+/// can't, `github_auth_message` says exactly what to configure.
+pub fn clone_repo_with_progress(
+    url: &str,
+    parent_dir: &Path,
+    mut on_progress: impl FnMut(CloneProgress),
+) -> Result<PathBuf> {
     let name = repo_name_from_url(url);
     if name.is_empty() {
         bail!("couldn't determine a folder name from the URL");
@@ -135,25 +234,27 @@ pub fn clone_repo(url: &str, parent_dir: &Path) -> Result<PathBuf> {
     if dest.exists() {
         bail!("{} already exists — choose another location", dest.display());
     }
-    let out = Command::new("git")
-        .arg("clone")
+    let mut cmd = Command::new("git");
+    cmd.arg("clone")
+        .arg("--progress")
         .arg(url)
         .arg(&dest)
         .current_dir(parent_dir)
         // No TTY in the app: fail fast instead of blocking on a prompt git can't read.
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .output()?;
-    if out.status.success() {
+        .env("GIT_TERMINAL_PROMPT", "0");
+    let (ok, stderr) = run_clone_streaming(cmd, &mut on_progress)?;
+    if ok {
         return Ok(dest);
     }
-    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
 
     if is_auth_failure(&stderr) {
         if is_github_url(url) {
             let gh = GhCli::default();
             // For github.com, gh can inject credentials where bare git couldn't.
             // If gh fails too (no access, bad URL), fall through to guidance.
-            if matches!(gh.auth_readiness(), GhReadiness::Ready) && gh.clone(url, &dest).is_ok() {
+            if matches!(gh.auth_readiness(), GhReadiness::Ready)
+                && gh.clone_with_progress(url, &dest, &mut on_progress).is_ok()
+            {
                 return Ok(dest);
             }
             bail!("{}", github_auth_message(url, &gh));

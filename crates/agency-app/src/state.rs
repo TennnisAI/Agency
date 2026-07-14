@@ -657,8 +657,13 @@ impl AppState {
         agency_core::setup::init_repo(repo_path)
     }
 
-    pub fn clone_repo(&self, url: &str, parent_dir: &Path) -> Result<std::path::PathBuf> {
-        agency_core::setup::clone_repo(url, parent_dir)
+    pub fn clone_repo(
+        &self,
+        url: &str,
+        parent_dir: &Path,
+        on_progress: impl FnMut(agency_core::setup::CloneProgress),
+    ) -> Result<std::path::PathBuf> {
+        agency_core::setup::clone_repo_with_progress(url, parent_dir, on_progress)
     }
 
     pub fn commit_repo(&self, repo_path: &Path, add_gitignore: bool) -> Result<()> {

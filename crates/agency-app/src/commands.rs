@@ -721,11 +721,24 @@ pub fn init_repo(state: State<'_, AppState>, repo_path: String) -> Result<(), St
 }
 
 // Clones a remote repo into a new folder under `parent_dir` and returns the
-// absolute path of the clone, ready to be added as a project.
+// absolute path of the clone, ready to be added as a project. `on_progress`
+// streams git's download progress to the dialog.
+//
+// async (not sync): a clone shells out to git for as long as the download takes
+// — minutes for a large repo. A sync command runs on the main thread, which
+// froze the whole UI mid-clone (see the main-thread note at the top of this
+// file); async runs it on the async runtime instead.
 #[tauri::command]
-pub fn clone_repo(state: State<'_, AppState>, url: String, parent_dir: String) -> Result<String, String> {
+pub async fn clone_repo(
+    state: State<'_, AppState>,
+    url: String,
+    parent_dir: String,
+    on_progress: Channel<agency_core::setup::CloneProgress>,
+) -> Result<String, String> {
     let dest = state
-        .clone_repo(&url, std::path::Path::new(&parent_dir))
+        .clone_repo(&url, std::path::Path::new(&parent_dir), move |p| {
+            let _ = on_progress.send(p);
+        })
         .map_err(|e| e.to_string())?;
     Ok(dest.to_string_lossy().to_string())
 }

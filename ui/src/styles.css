@@ -1240,6 +1240,24 @@ input, textarea, code,
 .clone-auth-help { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; margin-top: 10px; }
 .clone-auth-help .modal-note { margin: 0; }
 
+/* ── Clone progress ──────────────────────────────────────────── */
+.clone-progress { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
+.clone-progress-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.clone-progress-phase { font-size: 12px; color: var(--text); }
+.clone-progress-pct { font-size: 12px; color: var(--sub0); font-variant-numeric: tabular-nums; }
+.clone-progress-track { height: 6px; border-radius: 3px; background: var(--s1); overflow: hidden; }
+.clone-progress-bar { height: 100%; border-radius: 3px; background: var(--blue); transition: width 0.15s ease; }
+/* No percent yet (spinning up / server-side phases): sweep an indeterminate bar. */
+.clone-progress-bar.indeterminate { width: 40%; animation: clone-progress-sweep 1.1s ease-in-out infinite; }
+@keyframes clone-progress-sweep {
+  0% { margin-left: -40%; }
+  100% { margin-left: 100%; }
+}
+.clone-progress-detail {
+  font-size: 11px; color: var(--sub0); font-family: var(--mono);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
 /* ── Install-missing-agent dialog ────────────────────────────── */
 .modal-body p { margin: 0 0 10px; }
 .modal-body p:last-child { margin-bottom: 0; }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   FileChange, BranchInfo, HistoryItem, StashEntry,
   gitStatus, gitBranchInfo, gitStashList, gitUndoLastCommit,
@@ -53,17 +53,35 @@ export default function GitPanel({
 
   const refresh = useCallback(async () => {
     try {
-      setChanges(await gitStatus(taskId));
-      setBranch(await gitBranchInfo(taskId));
-      setStashes(await gitStashList(taskId));
+      // Fetch in parallel: three sequential IPC round-trips needlessly tripled
+      // the per-poll latency, and the status payload is the slow one to deserialize.
+      const [st, br, sh] = await Promise.all([
+        gitStatus(taskId), gitBranchInfo(taskId), gitStashList(taskId),
+      ]);
+      setChanges(st);
+      setBranch(br);
+      setStashes(sh);
       setError("");
     } catch (e) { setError(String(e)); }
   }, [taskId]);
 
   useEffect(() => { refresh(); }, [refresh]);
+  // Poll for changes, but back off on huge changesets: re-deserializing a
+  // multi-megabyte status payload across IPC every 2s re-hitches the main
+  // thread, so once there are thousands of changes we poll far less often.
+  const changeCount = useRef(0);
+  changeCount.current = changes.length;
   useEffect(() => {
-    const id = setInterval(() => refresh(), 2000);
-    return () => clearInterval(id);
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const tick = async () => {
+      await refresh();
+      if (stopped) return;
+      const delay = changeCount.current > 2000 ? 10000 : 2000;
+      timer = setTimeout(tick, delay);
+    };
+    timer = setTimeout(tick, 2000);
+    return () => { stopped = true; clearTimeout(timer); };
   }, [refresh]);
 
   // `label`, when given, raises a success toast once the op resolves.

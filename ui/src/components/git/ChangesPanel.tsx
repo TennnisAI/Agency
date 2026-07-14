@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   FileChange, BranchInfo, StashEntry, gitStage, gitUnstage, gitStageAll, gitUnstageAll,
   gitDiscard, gitDiscardAll, gitCommit, gitCommitAmend, gitPush, gitSetRemote,
@@ -23,7 +23,7 @@ export default function ChangesPanel({
   selectedPath: string | null;
   onSelectFile: (path: string, group: "index" | "workingTree" | "merge" | "untracked") => void;
 }) {
-  const g = partition(changes);
+  const g = useMemo(() => partition(changes), [changes]);
   // Discard/drop are destructive (git restore / clean -f / stash drop); confirm first.
   const [pending, setPending] = useState<{ title?: string; label?: string; body: string; run: () => Promise<unknown> } | null>(null);
   const confirmDiscard = (body: string, run: () => Promise<unknown>) => setPending({ body, run });

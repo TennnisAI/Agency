@@ -833,6 +833,7 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
 
 /* ── Git FileRow + ResourceGroup (Task 9) ──────────────────────── */
 .git-group { display: flex; flex-direction: column; }
+.git-rows { display: flex; flex-direction: column; }
 .git-group-head { display: flex; align-items: center; gap: 6px; padding: 4px 6px; }
 .git-group-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--o1); font-weight: 600; }
 .git-count { background: var(--s0); color: var(--sub0); border-radius: 9px; font-size: 10px; padding: 0 6px; }

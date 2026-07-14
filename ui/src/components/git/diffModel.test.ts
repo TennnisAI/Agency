@@ -25,6 +25,14 @@ describe("buildRows", () => {
     expect(add.oldSpans).toBeNull();
     expect(add.newSpans?.map((s) => s.text).join("")).toBe("added");
   });
+  it("terminates on git's '\\ No newline at end of file' marker (no infinite loop)", () => {
+    // A file with no trailing newline (common in a root commit's full-file
+    // diff) ends with this marker; it must not spin buildRows forever.
+    const rows = buildRows(fd(["+line one", "+line two", "\\ No newline at end of file"]));
+    // The marker itself produces no row; only the two added lines do.
+    expect(rows.map((r) => r.kind)).toEqual(["add", "add"]);
+    expect(rows.map((r) => r.newSpans?.map((s) => s.text).join(""))).toEqual(["line one", "line two"]);
+  });
 });
 
 describe("wordSpans", () => {

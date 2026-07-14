@@ -8,6 +8,17 @@ import { highlightLine, langForPath } from "./highlight";
 
 type Mode = "working-unstaged" | "working-staged" | "commit";
 
+// Above this many rows we skip syntax highlighting entirely. A root commit's
+// diff is the *whole file* as additions (git show has no parent to diff
+// against), so the auto-selected first file can be thousands of lines — Shiki's
+// per-line codeToHtml is far too expensive to run across all of them.
+const MAX_HIGHLIGHT_ROWS = 3000;
+// Yield to the event loop after this many rows so input/paint aren't starved.
+// Each highlightLine resolves on the microtask queue once Shiki is loaded, and
+// the browser drains all microtasks before painting, so without a macrotask
+// break (setTimeout) a long loop freezes the UI even though it is `await`ed.
+const HIGHLIGHT_CHUNK = 200;
+
 function spansToText(spans: Span[] | null): string {
   return spans ? spans.map((s) => s.text).join("") : "";
 }
@@ -65,19 +76,30 @@ export default function DiffViewer({
     return () => window.removeEventListener("themechange", onTheme);
   }, []);
 
-  // syntax highlight (async, best-effort)
+  // syntax highlight (async, best-effort). Skips outright for very large diffs
+  // (e.g. a root commit's full-file diff) and yields to the event loop as it
+  // goes, so highlighting never freezes the UI. Plain text renders regardless
+  // via the fallback path in DiffLineRow.
   useEffect(() => {
+    if (rows.length > MAX_HIGHLIGHT_ROWS) { setHighlighted({}); return; }
     let cancelled = false;
     const lang = langForPath(path);
     (async () => {
       const out: Record<string, string> = {};
+      let sinceYield = 0;
       for (const r of rows) {
+        if (cancelled) return;
         for (const [side, spans] of [["o", r.oldSpans], ["n", r.newSpans]] as const) {
           const text = spansToText(spans);
           const key = `${side}:${r.lineIndex}`;
           if (text && out[key] === undefined) {
             try { out[key] = await highlightLine(text, lang); } catch { /* best-effort: leave key absent, falls back to plain text */ }
           }
+        }
+        if (++sinceYield >= HIGHLIGHT_CHUNK) {
+          sinceYield = 0;
+          setHighlighted({ ...out }); // progressive reveal
+          await new Promise((res) => setTimeout(res, 0)); // let the UI breathe
         }
       }
       if (!cancelled) setHighlighted(out);

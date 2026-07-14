@@ -52,6 +52,11 @@ export function buildRows(fd: FileDiff): DiffRow[] {
       const adds: number[] = [];
       while (i < lines.length && lines[i][0] === "-") { dels.push(i); i++; }
       while (i < lines.length && lines[i][0] === "+") { adds.push(i); i++; }
+      // A line that is neither context, '-', nor '+' — notably git's
+      // "\ No newline at end of file" marker — consumes nothing above, so
+      // without advancing `i` here this loop would spin forever and freeze the
+      // UI. Such a marker carries no displayable row, so skip it.
+      if (dels.length === 0 && adds.length === 0) { i++; continue; }
       const pairs = Math.max(dels.length, adds.length);
       for (let p = 0; p < pairs; p++) {
         const d = dels[p];

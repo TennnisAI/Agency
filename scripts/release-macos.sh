@@ -20,6 +20,13 @@ cd "$REPO_ROOT"
 
 NOTARY_PROFILE="${AGENCY_NOTARY_PROFILE:-agency-notary}"
 
+# Package the DMG headless-safe: CI=true makes Tauri's bundle_dmg.sh skip the
+# Finder AppleScript that styles the DMG window (icon layout / background). That
+# osascript step requires GUI automation permission and fails when the build runs
+# from a non-interactive shell, leaving a temp image mounted. The drag-to-
+# Applications shortcut is still created — only the cosmetic layout is skipped.
+export CI=true
+
 echo "==> [1/5] Building agency-termd sidecar (release)"
 ./crates/agency-app/build-termd.sh
 

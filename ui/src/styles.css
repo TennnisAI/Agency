@@ -749,6 +749,11 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
 }
 .focus-head .spacer { flex: 1; }
 .focus-head code { font-size: 12px; color: var(--blue); }
+.focus-name { font-size: 12.5px; font-weight: 550; color: var(--text); max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The rename pencil stays quiet until the header is hovered. */
+.focus-head .tile-act.icon-only[title^="Rename"] { opacity: 0; transition: opacity 0.12s; }
+.focus-head:hover .tile-act.icon-only[title^="Rename"] { opacity: 0.75; }
+.focus-head .tile-act.icon-only[title^="Rename"]:hover { opacity: 1; }
 
 .focus-term {
   flex: 1;
@@ -1107,8 +1112,11 @@ input.settings-notif-secs { width: 90px; flex: 0 0 auto; }
 
 /* ── Files view ─────────────────────────────────────────────── */
 .files-view { display: flex; flex: 1; min-height: 0; }
-.files-tree { min-width: 180px; flex-shrink: 0; border-right: 1px solid var(--line); display: flex; flex-direction: column; overflow: auto; }
-.files-root-label { padding: 6px 10px; font-size: 11px; opacity: 0.7; border-bottom: 1px solid var(--line); }
+.files-tree { min-width: 180px; flex-shrink: 0; border-right: 1px solid var(--line); display: flex; flex-direction: column; overflow: hidden; }
+.files-root-label { display: flex; align-items: center; gap: 2px; padding: 4px 6px 4px 10px; font-size: 11px; border-bottom: 1px solid var(--line); }
+.files-root-name { text-transform: uppercase; letter-spacing: 0.04em; opacity: 0.65; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.files-tool-btn { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; padding: 0; border: none; background: none; color: var(--sub0); border-radius: 5px; cursor: pointer; }
+.files-tool-btn:hover { background: var(--s0); color: var(--text); }
 .files-tree-body { flex: 1; overflow: auto; padding: 4px 0; }
 .files-editor { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 
@@ -1120,6 +1128,10 @@ input.settings-notif-secs { width: 90px; flex: 0 0 auto; }
 .tree-icon { display: inline-flex; align-items: center; justify-content: center; width: 16px; flex: none; opacity: 0.7; }
 .tree-icon.file-icon { opacity: 1; }
 .tree-icon svg { display: block; }
+.tree-twistie-slot { display: inline-flex; align-items: center; justify-content: center; width: 12px; flex: none; }
+.tree-twistie { color: var(--sub0); transition: transform 0.1s ease; }
+.tree-twistie.open { transform: rotate(90deg); }
+.tree-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ── Text selection: off on chrome, on where copy matters ───── */
 /* Placeholders default to a very faint browser color; pin them to a muted-but-

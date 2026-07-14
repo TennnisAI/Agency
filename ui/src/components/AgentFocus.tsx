@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useRuns } from "../store/runs";
 import {
-  discardRun, archiveRun, setRunTitle,
+  discardRun, archiveRun, setRunTitle, renameRun,
   listProfiles, AgentProfile,
   listRunSessions, startRunSession, closeRunSession, RunSessionInfo,
   RunInfo, stopLoop,
@@ -12,11 +12,12 @@ import FocusTerminal, { shellStream } from "./FocusTerminal";
 import RunPanel from "./RunPanel";
 import MergeModal from "./MergeModal";
 import ConfirmDialog from "./ConfirmDialog";
+import PromptDialog from "./PromptDialog";
 import Resizer from "./Resizer";
 import ArchivedSection from "./ArchivedSection";
 import { usePaneWidth, loadFold, saveFold } from "../hooks/usePaneWidth";
 import AgentAddMenu from "./AgentAddMenu";
-import { TrashIcon, InboxIcon, TerminalIcon } from "./icons";
+import { TrashIcon, InboxIcon, TerminalIcon, PencilIcon } from "./icons";
 
 const SHELL_MIN = 120;
 const SHELL_MAX = 640;
@@ -78,6 +79,8 @@ export default function AgentFocus({
   const [showMerge, setShowMerge] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [confirmArchive, setConfirmArchive] = useState(false);
+  // Run being renamed (its display title). Any run — agent or terminal.
+  const [renaming, setRenaming] = useState<RunInfo | null>(null);
   // "agent" (primary terminal), "run" (RunPanel), or an extra-session id —
   // extra agent tabs sharing this run's worktree.
   const [panel, setPanel] = useState<string>("agent");
@@ -177,7 +180,10 @@ export default function AgentFocus({
               <button className="icon-btn" onClick={() => setRailOpen(false)}>«</button>
             </div>
             {runs.map((r) => (
-              <button key={r.id} className={`rail-row ${r.id === focusedRunId ? "on" : ""}`} onClick={() => setFocusedRun(r.id)}>
+              <button key={r.id} className={`rail-row ${r.id === focusedRunId ? "on" : ""}`}
+                onClick={() => setFocusedRun(r.id)}
+                onDoubleClick={() => setRenaming(r)}
+                title="Double-click to rename">
                 <span className={`dot ${r.status.state === "running" ? "running" : "exited"}`} />
                 <span className="rail-name">
                   {r.kind === "terminal"
@@ -203,6 +209,8 @@ export default function AgentFocus({
             <>
               <div className="focus-head">
                 <span className="badge">terminal</span>
+                <span className="focus-name">{focused.title || "terminal"}</span>
+                <button className="tile-act icon-only" title="Rename" onClick={() => setRenaming(focused)}><PencilIcon /></button>
                 <span className="spacer" />
                 <button className="tile-act danger icon-only" title="Close terminal" onClick={() => setConfirmDiscard(true)}><TrashIcon /></button>
               </div>
@@ -232,6 +240,8 @@ export default function AgentFocus({
             <>
               <div className="focus-head">
                 <span className={badgeClass(focused.agent)}>{focused.agent}</span>
+                {focused.title && <span className="focus-name">{focused.title}</span>}
+                <button className="tile-act icon-only" title="Rename agent" onClick={() => setRenaming(focused)}><PencilIcon /></button>
                 <code>{focused.branch}</code>
                 {panel !== "run" && (
                   <button
@@ -394,6 +404,21 @@ export default function AgentFocus({
           <div className="board empty">Select an agent from the rail.</div>
         )}
       </div>
+
+      {renaming && (
+        <PromptDialog
+          title={renaming.kind === "terminal" ? "Rename terminal" : "Rename agent"}
+          placeholder="New name"
+          initial={renaming.title ?? ""}
+          confirmLabel="Rename"
+          onConfirm={(v) => {
+            const id = renaming.id;
+            setRenaming(null);
+            renameRun(id, v).then(refreshRuns).catch((e) => toastError(e, "Rename failed"));
+          }}
+          onCancel={() => setRenaming(null)}
+        />
+      )}
     </div>
   );
 }

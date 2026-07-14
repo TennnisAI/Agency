@@ -19,6 +19,48 @@ fn list_dir_sorts_dirs_first_then_name() {
 }
 
 #[test]
+fn list_dir_reports_has_children_for_nonempty_dirs() {
+    let dir = fixture();
+    fs::create_dir(dir.path().join("empty")).unwrap();
+    let entries = files::list_dir(dir.path(), "").unwrap();
+    let src = entries.iter().find(|e| e.name == "src").unwrap();
+    let empty = entries.iter().find(|e| e.name == "empty").unwrap();
+    let readme = entries.iter().find(|e| e.name == "README.md").unwrap();
+    assert!(src.has_children, "src holds main.rs");
+    assert!(!empty.has_children, "empty dir has no children");
+    assert!(!readme.has_children, "files never report children");
+}
+
+#[test]
+fn create_file_and_dir_then_rename_and_trash() {
+    let dir = fixture();
+    files::create_dir(dir.path(), "sub").unwrap();
+    assert!(dir.path().join("sub").is_dir());
+    files::create_file(dir.path(), "sub/new.txt").unwrap();
+    assert!(dir.path().join("sub/new.txt").is_file());
+    // create_new refuses to clobber.
+    assert!(files::create_file(dir.path(), "sub/new.txt").is_err());
+
+    files::rename_path(dir.path(), "sub/new.txt", "sub/renamed.txt").unwrap();
+    assert!(!dir.path().join("sub/new.txt").exists());
+    assert!(dir.path().join("sub/renamed.txt").is_file());
+    // rename refuses to clobber an existing destination.
+    assert!(files::rename_path(dir.path(), "sub/renamed.txt", "README.md").is_err());
+
+    files::trash_path(dir.path(), "sub/renamed.txt").unwrap();
+    assert!(!dir.path().join("sub/renamed.txt").exists());
+}
+
+#[test]
+fn mutations_reject_traversal() {
+    let dir = fixture();
+    assert!(files::create_file(dir.path(), "../evil.txt").is_err());
+    assert!(files::create_dir(dir.path(), "../evil").is_err());
+    assert!(files::rename_path(dir.path(), "README.md", "../escaped.md").is_err());
+    assert!(files::trash_path(dir.path(), "../../etc/hosts").is_err());
+}
+
+#[test]
 fn list_dir_reads_subdirectory() {
     let dir = fixture();
     let entries = files::list_dir(dir.path(), "src").unwrap();

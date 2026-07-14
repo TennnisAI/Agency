@@ -38,6 +38,15 @@ export function TerminalIcon({ size = 14 }: IconProps) {
   );
 }
 
+export function PencilIcon({ size = 13 }: IconProps) {
+  return (
+    <svg {...base(size)}>
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z" />
+    </svg>
+  );
+}
+
 export function InboxIcon({ size = 13 }: IconProps) {
   return (
     <svg {...base(size)}>

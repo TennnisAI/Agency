@@ -140,6 +140,7 @@ pub fn run() {
             commands::merge_task,
             commands::abort_merge_task,
             commands::gh_readiness,
+            commands::gh_auth_readiness,
             commands::create_pr,
             commands::pr_status,
             commands::send_check_feedback,

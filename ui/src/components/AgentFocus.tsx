@@ -258,10 +258,12 @@ export default function AgentFocus({
                     <button
                       key={s.id}
                       className={`session-tab ${panel === s.id ? "on" : ""}`}
-                      title={`${agentLabel(s.agent)} — extra agent in this worktree`}
+                      title={s.agent === "shell"
+                        ? "Terminal — extra shell in this worktree"
+                        : `${agentLabel(s.agent)} — extra agent in this worktree`}
                       onClick={() => setPanel(s.id)}
                     >
-                      {agentLabel(s.agent)} · {s.id.split("--").pop()}
+                      {s.agent === "shell" ? "≳ terminal" : agentLabel(s.agent)} · {s.id.split("--").pop()}
                       <span
                         className="tab-close"
                         title="Close this agent tab"
@@ -289,6 +291,8 @@ export default function AgentFocus({
                     {profiles.map((p) => (
                       <button key={p.name} onClick={() => spawnTab(p.name)}>{agentLabel(p.name)}</button>
                     ))}
+                    <div className="agent-menu-sep" />
+                    <button onClick={() => spawnTab("shell")}>≳ New terminal</button>
                   </div>
                 </>
               )}

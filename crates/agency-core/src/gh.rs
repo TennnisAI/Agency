@@ -122,6 +122,37 @@ impl GhCli {
         }
     }
 
+    /// How far the user is from being able to authenticate against GitHub, with
+    /// no repo in play. Same first two checks as `readiness` (install + auth) but
+    /// stops there — used before a clone, when there is no local repo yet. Never
+    /// returns `NoGithubRemote`; the caller only cares about NotInstalled vs
+    /// NotAuthenticated vs Ready.
+    pub fn auth_readiness(&self) -> GhReadiness {
+        let here = Path::new(".");
+        match self.run(here, &["--version"]) {
+            Err(_) => return GhReadiness::NotInstalled,
+            Ok(out) if !out.status.success() => return GhReadiness::NotInstalled,
+            Ok(_) => {}
+        }
+        match self.run(here, &["auth", "status"]) {
+            Ok(out) if out.status.success() => GhReadiness::Ready,
+            _ => GhReadiness::NotAuthenticated,
+        }
+    }
+
+    /// Clone `url` into `dest` through gh, which injects the user's stored
+    /// credentials — so private repos clone without git prompting for a
+    /// username/password it can't read. Assumes the caller has confirmed gh is
+    /// authenticated (see `auth_readiness`).
+    pub fn clone(&self, url: &str, dest: &Path) -> Result<()> {
+        let dest_str = dest.to_string_lossy();
+        let out = self.run(Path::new("."), &["repo", "clone", url, &dest_str])?;
+        if !out.status.success() {
+            bail!("{}", String::from_utf8_lossy(&out.stderr).trim());
+        }
+        Ok(())
+    }
+
     /// The open or merged PR for `branch`, if any. gh's "no pull requests
     /// found" error is a normal answer here, not a failure.
     pub fn view_pr(&self, repo: &Path, branch: &str) -> Result<Option<PrInfo>> {

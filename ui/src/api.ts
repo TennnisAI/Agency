@@ -374,6 +374,8 @@ export const createRunFromPr = (projectId: string, number: number, agent: string
 
 export const ghReadiness = (projectId: string) =>
   invoke<GhReadiness>("gh_readiness", { projectId });
+// gh install + auth state without a repo — for the clone dialog's sign-in guidance.
+export const ghAuthReadiness = () => invoke<GhReadiness>("gh_auth_readiness");
 export const createPr = (taskId: string) => invoke<PrInfo>("create_pr", { taskId });
 export const prStatus = (taskId: string) => invoke<PrStatus>("pr_status", { taskId });
 export const sendCheckFeedback = (taskId: string) =>

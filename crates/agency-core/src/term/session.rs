@@ -218,6 +218,38 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_restores_alt_screen_mode_for_a_reattaching_client() {
+        // A full-screen TUI enters the alt screen and hides the cursor. A client
+        // that attaches later (navigated away and back) must be put back into that
+        // mode by the snapshot, or its cursor-relative redraws desync.
+        let s = Session::start(
+            "alt1".into(),
+            std::env::temp_dir().as_path(),
+            "/bin/sh",
+            &["-c".into(), "printf '\\033[?1049h\\033[?25lPAINTED'; sleep 2".into()],
+            &[],
+            80,
+            24,
+            None,
+        )
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+
+        let (tx, rx) = mpsc::channel();
+        s.subscribe(1, tx);
+        let snap = drain_until(&rx, |f| matches!(f, ServerFrame::Snapshot { .. }));
+        match snap {
+            ServerFrame::Snapshot { data, .. } => {
+                let text = String::from_utf8_lossy(&data);
+                assert!(text.contains("\x1b[?1049h"), "alt-screen enter missing: {text:?}");
+                assert!(text.contains("\x1b[?25l"), "cursor-hide missing: {text:?}");
+                assert!(text.contains("PAINTED"), "content missing: {text:?}");
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
     fn input_is_echoed_to_subscribers_and_capture() {
         let s = Session::start(
             "t2".into(),

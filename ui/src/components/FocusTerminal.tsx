@@ -54,7 +54,11 @@ export default function FocusTerminal(
   useEffect(() => {
     const container = ref.current;
     if (!container) return;
-    const term = new Terminal({ convertEol: true, fontSize: 13, fontFamily: TERMINAL_FONT_FAMILY, cursorBlink: true, theme: currentXtermTheme(), minimumContrastRatio: minContrastRatio(), scrollback: 10000 });
+    // Large scrollback: this is the live scroll depth (xterm accumulates the
+    // streamed output into its own buffer), so a small cap is what makes long
+    // agent conversations "stop" scrolling well before their start. xterm
+    // allocates lines lazily, so the ceiling only costs memory once it's filled.
+    const term = new Terminal({ convertEol: true, fontSize: 13, fontFamily: TERMINAL_FONT_FAMILY, cursorBlink: true, theme: currentXtermTheme(), minimumContrastRatio: minContrastRatio(), scrollback: 50000 });
     const fit = new FitAddon();
     const search = new SearchAddon();
     term.loadAddon(fit);

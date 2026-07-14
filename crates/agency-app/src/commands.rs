@@ -459,6 +459,13 @@ pub async fn gh_readiness(
     state.gh_readiness(&project_id).map_err(|e| e.to_string())
 }
 
+/// gh install + auth state with no repo in play — used by the clone dialog to
+/// guide the user toward signing in when a clone fails on authentication.
+#[tauri::command]
+pub async fn gh_auth_readiness() -> Result<agency_core::gh::GhReadiness, String> {
+    Ok(agency_core::gh::GhCli::default().auth_readiness())
+}
+
 #[tauri::command]
 pub async fn create_pr(
     state: State<'_, AppState>,

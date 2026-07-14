@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { cloneRepo } from "../api";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { cloneRepo, ghAuthReadiness, GhReadiness } from "../api";
 import { useModalKeys } from "../hooks/useModalKeys";
 
 type Props = {
@@ -22,6 +23,9 @@ export default function CloneDialog({ onCloned, onCancel }: Props) {
   const [parentDir, setParentDir] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // When a clone fails on authentication, we surface a guided sign-in step keyed
+  // to how far the user is from being ready (gh missing vs. not signed in).
+  const [authHelp, setAuthHelp] = useState<GhReadiness | null>(null);
 
   // Escape cancels, but never mid-clone (the button is disabled then too).
   useModalKeys(onCancel, !busy);
@@ -36,12 +40,18 @@ export default function CloneDialog({ onCloned, onCancel }: Props) {
 
   async function doClone() {
     if (!canClone) return;
-    setBusy(true); setError("");
+    setBusy(true); setError(""); setAuthHelp(null);
     try {
       const path = await cloneRepo(url.trim(), parentDir);
       onCloned(path);
     } catch (e) {
-      setError(String(e));
+      const msg = String(e);
+      setError(msg);
+      // The backend's auth guidance mentions signing in to GitHub; when it does,
+      // fetch the gh state so we can offer the matching fix (install / sign in).
+      if (/sign in to GitHub|gh auth login/i.test(msg)) {
+        ghAuthReadiness().then(setAuthHelp).catch(() => {});
+      }
     } finally {
       setBusy(false);
     }
@@ -85,6 +95,28 @@ export default function CloneDialog({ onCloned, onCancel }: Props) {
             <p className="modal-note">Clones into <code>{parentDir}/{name}</code></p>
           )}
           {error && <div className="git-error">{error}</div>}
+          {authHelp && authHelp !== "ready" && (
+            <div className="clone-auth-help">
+              {authHelp === "notInstalled" ? (
+                <>
+                  <p className="modal-note">
+                    Cloning a private repo needs the GitHub CLI (<code>gh</code>), which isn't installed.
+                  </p>
+                  <button className="btn-secondary" onClick={() => openUrl("https://cli.github.com").catch(() => {})}>
+                    Get GitHub CLI ↗
+                  </button>
+                  <p className="modal-note">After installing, run <code>gh auth login</code>, then retry.</p>
+                </>
+              ) : (
+                <>
+                  <p className="modal-note">
+                    Sign in first: run <code>gh auth login</code> in a terminal, then retry.
+                  </p>
+                </>
+              )}
+              <button className="btn-primary" disabled={!canClone} onClick={doClone}>Retry</button>
+            </div>
+          )}
         </div>
         <div className="modal-foot">
           <button className="btn-secondary" disabled={busy} onClick={onCancel}>Cancel</button>

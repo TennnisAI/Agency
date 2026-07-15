@@ -107,6 +107,7 @@ fn runs_persist_list_and_delete() {
         race_id: Some("race-9".into()),
         loop_config: None,
         loop_state: None,
+        issue_id: None,
     };
     {
         let reg = Registry::open(&db).unwrap();
@@ -130,7 +131,7 @@ fn list_runs_newest_first() {
             id: id.into(), project_id: "p".into(), agent: "shell".into(),
             prompt: "".into(), base: "main".into(), branch: format!("agent/{id}"), created_at: ts,
             port_base: None, archived_at: None, title: None, kind: "agent".into(),
-            merge_target: None, race_id: None, loop_config: None, loop_state: None,
+            merge_target: None, race_id: None, loop_config: None, loop_state: None, issue_id: None,
         }).unwrap();
     }
     let ids: Vec<String> = reg.list_runs("p").unwrap().into_iter().map(|r| r.id).collect();

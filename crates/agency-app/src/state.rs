@@ -112,6 +112,9 @@ struct NewRunSpec<'a> {
     /// Present = create a looping run: spawn the agent headless (profile
     /// loop_args) and let the loop driver re-run it until checks pass.
     loop_config: Option<agency_core::loops::LoopConfig>,
+    /// Local issue this run is dispatched from (see start_issue_*): stored on
+    /// the run so merge/PR/discard can drive the issue's status.
+    issue_id: Option<String>,
 }
 
 /// What an "Approve & merge" would do, computed before running it so the UI can
@@ -780,6 +783,7 @@ impl AppState {
             title: None,
             existing_branch: None,
             loop_config: None,
+            issue_id: None,
         })
     }
 
@@ -874,6 +878,7 @@ impl AppState {
                 .as_ref()
                 .map(|_| agency_core::loops::LoopState::new(now_secs())),
             loop_config: spec.loop_config.clone(),
+            issue_id: spec.issue_id.clone(),
         };
         {
             let reg = self.registry.lock().unwrap();
@@ -931,6 +936,7 @@ impl AppState {
                 title: None,
                 existing_branch: None,
                 loop_config: None,
+                issue_id: None,
             })?);
         }
         Ok(out)
@@ -983,6 +989,7 @@ impl AppState {
             title: None,
             existing_branch: None,
             loop_config: Some(cfg),
+            issue_id: None,
         })
     }
 
@@ -1008,6 +1015,7 @@ impl AppState {
             title: Some(format!("#{number} {}", issue.title)),
             existing_branch: None,
             loop_config: None,
+            issue_id: None,
         })
     }
 
@@ -1038,6 +1046,7 @@ impl AppState {
             title: Some(format!("PR #{number} {}", pr.title)),
             existing_branch: Some(pr.head_ref_name.clone()),
             loop_config: None,
+            issue_id: None,
         })
     }
 
@@ -1268,6 +1277,7 @@ impl AppState {
             race_id: None,
             loop_config: None,
             loop_state: None,
+            issue_id: None,
         };
         self.registry.lock().unwrap().insert_run(&run)?;
         Ok(self.run_info(&run))
@@ -1457,6 +1467,7 @@ impl AppState {
             race_id: None,
             loop_config: None,
             loop_state: None,
+            issue_id: None,
         };
         self.registry.lock().unwrap().insert_run(&run)?;
         Ok(self.run_info(&run))
@@ -3022,6 +3033,7 @@ mod tests {
             race_id: None,
             loop_config: None,
             loop_state: None,
+            issue_id: None,
         };
         assert_eq!(run.kind, "terminal");
         assert!(run.branch.is_empty());

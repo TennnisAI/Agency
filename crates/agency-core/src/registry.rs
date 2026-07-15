@@ -21,6 +21,9 @@ pub struct Project {
     /// Theme accent name (e.g. "blue") the UI maps to a CSS var. Assigned at
     /// add time: the least-used palette color, so projects stay distinct.
     pub color: Option<String>,
+    /// 3-letter issue key ("AGE") issues are numbered under (AGE-14). Stored,
+    /// not derived, so renaming the project never re-keys its issues.
+    pub issue_key: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -47,6 +50,87 @@ pub struct Run {
     /// Loop progress, persisted on every transition so an app restart resumes
     /// the loop. Always None for non-loop runs.
     pub loop_state: Option<crate::loops::LoopState>,
+    /// The local issue this run was dispatched from. Many runs may share one
+    /// issue (races, retries), so the link lives on the run.
+    pub issue_id: Option<String>,
+}
+
+/// A local issue: the tracker is per-project and agent-native — dispatching
+/// an issue spawns a run, merging the run's branch closes the issue.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Issue {
+    pub id: String,
+    pub project_id: String,
+    /// Per-project number; displayed as `<project issue_key>-<seq>` (AGE-14).
+    /// Never reused — deleting an issue leaves a gap.
+    pub seq: i64,
+    pub title: String,
+    pub body: String,
+    pub status: IssueStatus,
+    /// 0 none · 1 low · 2 medium · 3 high · 4 urgent.
+    pub priority: u8,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IssueStatus {
+    Backlog,
+    Todo,
+    InProgress,
+    InReview,
+    Done,
+    Cancelled,
+}
+
+impl IssueStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            IssueStatus::Backlog => "backlog",
+            IssueStatus::Todo => "todo",
+            IssueStatus::InProgress => "in_progress",
+            IssueStatus::InReview => "in_review",
+            IssueStatus::Done => "done",
+            IssueStatus::Cancelled => "cancelled",
+        }
+    }
+
+    pub fn parse(s: &str) -> Result<IssueStatus> {
+        Ok(match s {
+            "backlog" => IssueStatus::Backlog,
+            "todo" => IssueStatus::Todo,
+            "in_progress" => IssueStatus::InProgress,
+            "in_review" => IssueStatus::InReview,
+            "done" => IssueStatus::Done,
+            "cancelled" => IssueStatus::Cancelled,
+            other => anyhow::bail!("unknown issue status: {other}"),
+        })
+    }
+
+    /// Position in the forward workflow. Cancelled is terminal and outside
+    /// the progression: automation neither advances from nor to it.
+    fn rank(self) -> Option<u8> {
+        match self {
+            IssueStatus::Backlog => Some(0),
+            IssueStatus::Todo => Some(1),
+            IssueStatus::InProgress => Some(2),
+            IssueStatus::InReview => Some(3),
+            IssueStatus::Done => Some(4),
+            IssueStatus::Cancelled => None,
+        }
+    }
+}
+
+/// Partial update for `update_issue` — `None` fields are left untouched.
+#[derive(Debug, Default, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IssuePatch {
+    pub title: Option<String>,
+    pub body: Option<String>,
+    pub status: Option<IssueStatus>,
+    pub priority: Option<u8>,
 }
 
 /// An extra agent session inside an existing run's worktree. The run's
@@ -135,6 +219,22 @@ impl Registry {
                 body TEXT NOT NULL,
                 sent INTEGER NOT NULL DEFAULT 0,
                 created_at INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS issues (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                seq INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                body TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'todo',
+                priority INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                UNIQUE (project_id, seq)
+            );
+            CREATE TABLE IF NOT EXISTS issue_seqs (
+                project_id TEXT PRIMARY KEY,
+                next INTEGER NOT NULL
             );",
         )?;
         // Migrate older DBs whose `runs` table predates `port_base`.
@@ -171,8 +271,15 @@ impl Registry {
         if !column_exists(&conn, "runs", "loop_state")? {
             conn.execute("ALTER TABLE runs ADD COLUMN loop_state TEXT", [])?;
         }
+        if !column_exists(&conn, "runs", "issue_id")? {
+            conn.execute("ALTER TABLE runs ADD COLUMN issue_id TEXT", [])?;
+        }
+        if !column_exists(&conn, "projects", "issue_key")? {
+            conn.execute("ALTER TABLE projects ADD COLUMN issue_key TEXT", [])?;
+        }
         let reg = Registry { conn };
         reg.backfill_project_colors()?;
+        reg.backfill_issue_keys()?;
         Ok(reg)
     }
 
@@ -197,6 +304,35 @@ impl Registry {
         Ok(())
     }
 
+    /// Give key-less projects (rows predating the issue_key column) stable
+    /// issue keys, in name order, with the same collision rule as
+    /// `add_project`. Idempotent: no-op once every project has a key.
+    fn backfill_issue_keys(&self) -> Result<()> {
+        let rows: Vec<(String, String)> = {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT id, name FROM projects WHERE issue_key IS NULL ORDER BY name")?;
+            let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+            rows.filter_map(|r| r.ok()).collect()
+        };
+        for (id, name) in rows {
+            let key = derive_issue_key(&name, &self.used_issue_keys()?);
+            self.conn.execute(
+                "UPDATE projects SET issue_key = ?2 WHERE id = ?1",
+                rusqlite::params![id, key],
+            )?;
+        }
+        Ok(())
+    }
+
+    fn used_issue_keys(&self) -> Result<Vec<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT issue_key FROM projects WHERE issue_key IS NOT NULL")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
     pub fn add_project(&self, name: &str, repo_path: &Path) -> Result<Project> {
         let project = Project {
             id: Uuid::new_v4().to_string(),
@@ -205,10 +341,11 @@ impl Registry {
             default_agent: None,
             default_provider: None,
             color: Some(self.pick_project_color()?),
+            issue_key: Some(derive_issue_key(name, &self.used_issue_keys()?)),
         };
         self.conn.execute(
-            "INSERT INTO projects (id, name, repo_path, default_agent, default_provider, color)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO projects (id, name, repo_path, default_agent, default_provider, color, issue_key)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             rusqlite::params![
                 project.id,
                 project.name,
@@ -216,6 +353,7 @@ impl Registry {
                 project.default_agent,
                 project.default_provider,
                 project.color,
+                project.issue_key,
             ],
         )?;
         Ok(project)
@@ -238,7 +376,7 @@ impl Registry {
 
     pub fn get_project(&self, id: &str) -> Result<Option<Project>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, repo_path, default_agent, default_provider, color
+            "SELECT id, name, repo_path, default_agent, default_provider, color, issue_key
              FROM projects WHERE id = ?1",
         )?;
         let mut rows = stmt.query([id])?;
@@ -250,7 +388,7 @@ impl Registry {
 
     pub fn list_projects(&self) -> Result<Vec<Project>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, repo_path, default_agent, default_provider, color
+            "SELECT id, name, repo_path, default_agent, default_provider, color, issue_key
              FROM projects ORDER BY name",
         )?;
         let rows = stmt.query_map([], |row| Ok(row_to_project(row)))?;
@@ -373,12 +511,12 @@ impl Registry {
             None => None,
         };
         self.conn.execute(
-            "INSERT INTO runs (id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+            "INSERT INTO runs (id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             rusqlite::params![
                 run.id, run.project_id, run.agent, run.prompt, run.base, run.branch,
                 run.created_at, run.port_base.map(|p| p as i64), run.archived_at, run.title, run.kind,
-                run.merge_target, run.race_id, loop_config, loop_state
+                run.merge_target, run.race_id, loop_config, loop_state, run.issue_id
             ],
         )?;
         Ok(())
@@ -397,7 +535,7 @@ impl Registry {
 
     pub fn get_run(&self, id: &str) -> Result<Option<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state FROM runs WHERE id = ?1",
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id FROM runs WHERE id = ?1",
         )?;
         let mut rows = stmt.query([id])?;
         match rows.next()? {
@@ -408,7 +546,7 @@ impl Registry {
 
     pub fn list_runs(&self, project_id: &str) -> Result<Vec<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id
              FROM runs WHERE project_id = ?1 AND archived_at IS NULL ORDER BY created_at DESC",
         )?;
         let rows = stmt.query_map([project_id], |row| Ok(row_to_run(row)))?;
@@ -421,7 +559,7 @@ impl Registry {
 
     pub fn list_archived_runs(&self, project_id: &str) -> Result<Vec<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id
              FROM runs WHERE project_id = ?1 AND archived_at IS NOT NULL ORDER BY archived_at DESC",
         )?;
         let rows = stmt.query_map([project_id], |row| Ok(row_to_run(row)))?;
@@ -598,6 +736,214 @@ impl Registry {
         )?;
         Ok(())
     }
+
+    // ── issues ─────────────────────────────────────────────────────────────
+
+    pub fn create_issue(
+        &self,
+        project_id: &str,
+        title: &str,
+        body: &str,
+        status: IssueStatus,
+        now: i64,
+    ) -> Result<Issue> {
+        let id = Uuid::new_v4().to_string();
+        // Numbers come from a per-project counter (not MAX(seq)+1) so a
+        // deleted issue's number is never reused. `next` holds the number
+        // to hand out *after* this one, so the row is seeded at 2.
+        self.conn.execute(
+            "INSERT INTO issue_seqs (project_id, next) VALUES (?1, 2)
+             ON CONFLICT(project_id) DO UPDATE SET next = next + 1",
+            [project_id],
+        )?;
+        let seq: i64 = self.conn.query_row(
+            "SELECT next - 1 FROM issue_seqs WHERE project_id = ?1",
+            [project_id],
+            |row| row.get(0),
+        )?;
+        self.conn.execute(
+            "INSERT INTO issues (id, project_id, seq, title, body, status, priority, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, ?7)",
+            rusqlite::params![id, project_id, seq, title, body, status.as_str(), now],
+        )?;
+        Ok(self.get_issue(&id)?.expect("issue just inserted"))
+    }
+
+    pub fn get_issue(&self, id: &str) -> Result<Option<Issue>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, project_id, seq, title, body, status, priority, created_at, updated_at
+             FROM issues WHERE id = ?1",
+        )?;
+        let mut rows = stmt.query([id])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(row_to_issue(row)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Every issue of the project, all statuses — the UI groups and collapses.
+    pub fn list_issues(&self, project_id: &str) -> Result<Vec<Issue>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, project_id, seq, title, body, status, priority, created_at, updated_at
+             FROM issues WHERE project_id = ?1 ORDER BY seq",
+        )?;
+        let rows = stmt.query_map([project_id], |row| Ok(row_to_issue(row)))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r??);
+        }
+        Ok(out)
+    }
+
+    /// Apply a partial update; untouched fields keep their values. Bumps
+    /// `updated_at`. This is the *manual* path — status moves here are
+    /// unconditional (the user always wins over automation).
+    pub fn update_issue(&self, id: &str, patch: &IssuePatch, now: i64) -> Result<Option<Issue>> {
+        let changed = self.conn.execute(
+            "UPDATE issues SET
+                title = COALESCE(?2, title),
+                body = COALESCE(?3, body),
+                status = COALESCE(?4, status),
+                priority = COALESCE(?5, priority),
+                updated_at = ?6
+             WHERE id = ?1",
+            rusqlite::params![
+                id,
+                patch.title,
+                patch.body,
+                patch.status.map(|s| s.as_str()),
+                patch.priority.map(|p| p as i64),
+                now
+            ],
+        )?;
+        if changed == 0 {
+            return Ok(None);
+        }
+        self.get_issue(id)
+    }
+
+    pub fn delete_issue(&self, id: &str) -> Result<()> {
+        self.conn.execute("DELETE FROM issues WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    /// Cascade for `delete_project`.
+    pub fn delete_project_issues(&self, project_id: &str) -> Result<()> {
+        self.conn.execute("DELETE FROM issues WHERE project_id = ?1", [project_id])?;
+        self.conn.execute("DELETE FROM issue_seqs WHERE project_id = ?1", [project_id])?;
+        Ok(())
+    }
+
+    /// Automation path: move the issue *forward* to `status`, but never
+    /// demote a manual advance and never touch a cancelled issue. Returns
+    /// whether the status actually changed.
+    pub fn advance_issue_status(&self, id: &str, status: IssueStatus, now: i64) -> Result<bool> {
+        let Some(current) = self.get_issue(id)? else { return Ok(false) };
+        let (Some(from), Some(to)) = (current.status.rank(), status.rank()) else {
+            return Ok(false);
+        };
+        if from >= to {
+            return Ok(false);
+        }
+        self.conn.execute(
+            "UPDATE issues SET status = ?2, updated_at = ?3 WHERE id = ?1",
+            rusqlite::params![id, status.as_str(), now],
+        )?;
+        Ok(true)
+    }
+
+    /// Automation path for abandonment: an issue whose last run was
+    /// discarded/archived unmerged falls back to `todo` — but only from the
+    /// two agent-driven states, so manual `done`/`cancelled` stay put.
+    pub fn rollback_issue_to_todo(&self, id: &str, now: i64) -> Result<bool> {
+        let changed = self.conn.execute(
+            "UPDATE issues SET status = 'todo', updated_at = ?2
+             WHERE id = ?1 AND status IN ('in_progress', 'in_review')",
+            rusqlite::params![id, now],
+        )?;
+        Ok(changed > 0)
+    }
+
+    /// Non-archived runs dispatched from this issue (the issue's "linked
+    /// runs" list; also drives the last-run-abandoned rollback check).
+    pub fn runs_for_issue(&self, issue_id: &str) -> Result<Vec<Run>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id
+             FROM runs WHERE issue_id = ?1 AND archived_at IS NULL ORDER BY created_at DESC",
+        )?;
+        let rows = stmt.query_map([issue_id], |row| Ok(row_to_run(row)))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r??);
+        }
+        Ok(out)
+    }
+}
+
+/// Derive a project's 3-letter issue key from its name: word initials for
+/// multi-word names (padded from the first word), the first three letters
+/// otherwise. `used` keys are avoided by substituting the last position with
+/// later letters of the name, then A–Z.
+pub fn derive_issue_key(name: &str, used: &[String]) -> String {
+    let words: Vec<Vec<char>> = name
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(|w| w.chars().map(|c| c.to_ascii_uppercase()).collect())
+        .collect();
+    let letters: Vec<char> = words.iter().flatten().copied().collect();
+
+    let mut key: Vec<char> = if words.len() >= 2 {
+        words.iter().take(3).map(|w| w[0]).collect()
+    } else {
+        letters.iter().take(3).copied().collect()
+    };
+    // Pad short keys. Initials-based keys borrow the rest of the first word
+    // ("Todo App" -> TA -> TAO); single-word keys already used those letters,
+    // so both fall through to 'X' padding ("Go" -> GOX).
+    if key.len() < 3 {
+        if words.len() >= 2 {
+            if let Some(first) = words.first() {
+                for &c in first.iter().skip(1) {
+                    if key.len() >= 3 {
+                        break;
+                    }
+                    key.push(c);
+                }
+            }
+        }
+        while key.len() < 3 {
+            key.push('X');
+        }
+    }
+
+    let taken = |k: &[char]| used.iter().any(|u| u.chars().eq(k.iter().copied()));
+    if !taken(&key) {
+        return key.into_iter().collect();
+    }
+    // Collision: try later letters of the name in the last position, then A–Z.
+    for c in letters.into_iter().skip(3).chain('A'..='Z') {
+        key[2] = c;
+        if !taken(&key) {
+            return key.into_iter().collect();
+        }
+    }
+    // 26+ collisions on the same prefix: give up on uniqueness gracefully.
+    key.into_iter().collect()
+}
+
+fn row_to_issue(row: &rusqlite::Row) -> Result<Issue> {
+    let status: String = row.get(5)?;
+    Ok(Issue {
+        id: row.get(0)?,
+        project_id: row.get(1)?,
+        seq: row.get(2)?,
+        title: row.get(3)?,
+        body: row.get(4)?,
+        status: IssueStatus::parse(&status)?,
+        priority: row.get::<_, i64>(6)? as u8,
+        created_at: row.get(7)?,
+        updated_at: row.get(8)?,
+    })
 }
 
 fn row_to_profile(row: &rusqlite::Row) -> Result<AgentProfile> {
@@ -629,6 +975,7 @@ fn row_to_project(row: &rusqlite::Row) -> Result<Project> {
         default_agent: row.get(3)?,
         default_provider: row.get(4)?,
         color: row.get(5)?,
+        issue_key: row.get(6)?,
     })
 }
 
@@ -656,6 +1003,7 @@ fn row_to_run(row: &rusqlite::Row) -> Result<Run> {
             Some(s) => Some(serde_json::from_str(&s)?),
             None => None,
         },
+        issue_id: row.get(15)?,
     })
 }
 
@@ -703,6 +1051,7 @@ mod tests {
             merge_target: None,
             loop_config: None,
             loop_state: None,
+            issue_id: None,
         }
     }
 
@@ -1061,9 +1410,192 @@ mod tests {
             race_id: None,
             loop_config: None,
             loop_state: None,
+            issue_id: None,
         };
         reg.insert_run(&run).unwrap();
         let got = reg.get_run("t1").unwrap().unwrap();
         assert_eq!(got.merge_target.as_deref(), Some("develop"));
+    }
+
+    // ── issues ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn issue_crud_roundtrip() {
+        let dir = tempdir().unwrap();
+        let reg = Registry::open(&dir.path().join("issues.db")).unwrap();
+        let a = reg.create_issue("proj", "Fix login", "steps to repro", IssueStatus::Todo, 100).unwrap();
+        assert_eq!((a.seq, a.priority, a.status), (1, 0, IssueStatus::Todo));
+        assert_eq!((a.created_at, a.updated_at), (100, 100));
+        let b = reg.create_issue("proj", "Add board", "", IssueStatus::Backlog, 101).unwrap();
+        assert_eq!(b.seq, 2);
+
+        let listed = reg.list_issues("proj").unwrap();
+        assert_eq!(listed.iter().map(|i| i.seq).collect::<Vec<_>>(), vec![1, 2]);
+
+        let patch = IssuePatch {
+            title: Some("Fix login flow".into()),
+            status: Some(IssueStatus::Cancelled),
+            priority: Some(4),
+            ..Default::default()
+        };
+        let updated = reg.update_issue(&a.id, &patch, 200).unwrap().unwrap();
+        assert_eq!(updated.title, "Fix login flow");
+        assert_eq!(updated.body, "steps to repro"); // untouched by the patch
+        assert_eq!(updated.status, IssueStatus::Cancelled);
+        assert_eq!(updated.priority, 4);
+        assert_eq!(updated.updated_at, 200);
+
+        assert!(reg.update_issue("nope", &patch, 201).unwrap().is_none());
+
+        reg.delete_issue(&a.id).unwrap();
+        assert!(reg.get_issue(&a.id).unwrap().is_none());
+        assert_eq!(reg.list_issues("proj").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn issue_seq_is_per_project_and_never_reused() {
+        let dir = tempdir().unwrap();
+        let reg = Registry::open(&dir.path().join("issues.db")).unwrap();
+        let a1 = reg.create_issue("pa", "a1", "", IssueStatus::Todo, 1).unwrap();
+        let a2 = reg.create_issue("pa", "a2", "", IssueStatus::Todo, 2).unwrap();
+        let b1 = reg.create_issue("pb", "b1", "", IssueStatus::Todo, 3).unwrap();
+        assert_eq!((a1.seq, a2.seq, b1.seq), (1, 2, 1));
+
+        // Deleting the highest-numbered issue must not free its number.
+        reg.delete_issue(&a2.id).unwrap();
+        let a3 = reg.create_issue("pa", "a3", "", IssueStatus::Todo, 4).unwrap();
+        assert_eq!(a3.seq, 3);
+    }
+
+    #[test]
+    fn advance_issue_status_is_forward_only() {
+        let dir = tempdir().unwrap();
+        let reg = Registry::open(&dir.path().join("issues.db")).unwrap();
+        let i = reg.create_issue("proj", "t", "", IssueStatus::Todo, 1).unwrap();
+
+        // Forward: applied.
+        assert!(reg.advance_issue_status(&i.id, IssueStatus::InProgress, 2).unwrap());
+        assert_eq!(reg.get_issue(&i.id).unwrap().unwrap().status, IssueStatus::InProgress);
+
+        // Backward or same: refused (a manual advance is never demoted).
+        assert!(!reg.advance_issue_status(&i.id, IssueStatus::Todo, 3).unwrap());
+        assert!(!reg.advance_issue_status(&i.id, IssueStatus::InProgress, 3).unwrap());
+
+        // Skipping ahead is fine (merge closes an issue that never saw a PR).
+        assert!(reg.advance_issue_status(&i.id, IssueStatus::Done, 4).unwrap());
+
+        // Cancelled is outside the progression: never a source nor a target.
+        let c = reg.create_issue("proj", "c", "", IssueStatus::Cancelled, 5).unwrap();
+        assert!(!reg.advance_issue_status(&c.id, IssueStatus::InProgress, 6).unwrap());
+        assert!(!reg.advance_issue_status(&i.id, IssueStatus::Cancelled, 6).unwrap());
+
+        // Missing issue: quietly a no-op (runs can outlive their issue).
+        assert!(!reg.advance_issue_status("nope", IssueStatus::Done, 7).unwrap());
+    }
+
+    #[test]
+    fn rollback_issue_to_todo_only_from_agent_states() {
+        let dir = tempdir().unwrap();
+        let reg = Registry::open(&dir.path().join("issues.db")).unwrap();
+        let i = reg.create_issue("proj", "t", "", IssueStatus::InProgress, 1).unwrap();
+        assert!(reg.rollback_issue_to_todo(&i.id, 2).unwrap());
+        assert_eq!(reg.get_issue(&i.id).unwrap().unwrap().status, IssueStatus::Todo);
+
+        // Already todo / done / cancelled: untouched.
+        assert!(!reg.rollback_issue_to_todo(&i.id, 3).unwrap());
+        reg.update_issue(&i.id, &IssuePatch { status: Some(IssueStatus::Done), ..Default::default() }, 4).unwrap();
+        assert!(!reg.rollback_issue_to_todo(&i.id, 5).unwrap());
+        assert_eq!(reg.get_issue(&i.id).unwrap().unwrap().status, IssueStatus::Done);
+    }
+
+    #[test]
+    fn runs_for_issue_lists_only_active_linked_runs() {
+        let dir = tempdir().unwrap();
+        let reg = Registry::open(&dir.path().join("issues.db")).unwrap();
+        let issue = reg.create_issue("proj", "t", "", IssueStatus::Todo, 1).unwrap();
+        let mut r1 = sample_run("x-1", None);
+        r1.issue_id = Some(issue.id.clone());
+        let mut r2 = sample_run("x-2", None);
+        r2.issue_id = Some(issue.id.clone());
+        reg.insert_run(&r1).unwrap();
+        reg.insert_run(&r2).unwrap();
+        reg.insert_run(&sample_run("x-3", None)).unwrap(); // unlinked
+
+        assert_eq!(reg.runs_for_issue(&issue.id).unwrap().len(), 2);
+        assert_eq!(reg.get_run("x-1").unwrap().unwrap().issue_id.as_deref(), Some(issue.id.as_str()));
+
+        reg.set_archived("x-1", Some(1000)).unwrap();
+        let active: Vec<String> = reg.runs_for_issue(&issue.id).unwrap().into_iter().map(|r| r.id).collect();
+        assert_eq!(active, vec!["x-2"]);
+    }
+
+    #[test]
+    fn derive_issue_key_shapes_and_collisions() {
+        let none: Vec<String> = vec![];
+        assert_eq!(derive_issue_key("Agency", &none), "AGE");
+        assert_eq!(derive_issue_key("Todo App", &none), "TAO"); // T + A, padded from "Todo"
+        assert_eq!(derive_issue_key("My Cool Project", &none), "MCP");
+        assert_eq!(derive_issue_key("Go", &none), "GOX"); // short name padded with X
+        assert_eq!(derive_issue_key("a-b_c d", &none), "ABC"); // separators split words
+
+        // Collision: last slot walks later letters of the name, then A-Z.
+        let used = vec!["AGE".to_string()];
+        assert_eq!(derive_issue_key("Agency", &used), "AGN");
+        let used = vec!["AGE".into(), "AGN".into(), "AGC".into(), "AGY".into()];
+        assert_eq!(derive_issue_key("Agency", &used), "AGA");
+    }
+
+    #[test]
+    fn projects_get_issue_keys_assigned_and_backfilled() {
+        let dir = tempdir().unwrap();
+        let db = dir.path().join("keys.db");
+        {
+            let reg = Registry::open(&db).unwrap();
+            let p = reg.add_project("Agency", std::path::Path::new("/tmp/a")).unwrap();
+            assert_eq!(p.issue_key.as_deref(), Some("AGE"));
+            // Same-name project gets a distinct key.
+            let q = reg.add_project("Agency", std::path::Path::new("/tmp/b")).unwrap();
+            assert_eq!(q.issue_key.as_deref(), Some("AGN"));
+        }
+        // Legacy rows (pre-issue_key) are backfilled on open.
+        {
+            let conn = Connection::open(&db).unwrap();
+            conn.execute(
+                "INSERT INTO projects (id, name, repo_path, color, issue_key) VALUES ('old', 'Zebra', '/tmp/z', 'blue', NULL)",
+                [],
+            )
+            .unwrap();
+        }
+        let reg = Registry::open(&db).unwrap();
+        assert_eq!(reg.get_project("old").unwrap().unwrap().issue_key.as_deref(), Some("ZEB"));
+    }
+
+    #[test]
+    fn migrates_legacy_runs_table_without_issue_id() {
+        let dir = tempdir().unwrap();
+        let db = dir.path().join("legacy-issue.db");
+        {
+            let conn = Connection::open(&db).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE runs (
+                    id TEXT PRIMARY KEY, project_id TEXT NOT NULL, agent TEXT NOT NULL,
+                    prompt TEXT NOT NULL, base TEXT NOT NULL, branch TEXT NOT NULL,
+                    created_at INTEGER NOT NULL
+                );",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO runs (id, project_id, agent, prompt, base, branch, created_at)
+                 VALUES ('old-1','proj','claude','p','HEAD','agent/old-1',1)",
+                [],
+            )
+            .unwrap();
+        }
+        let reg = Registry::open(&db).unwrap();
+        assert_eq!(reg.get_run("old-1").unwrap().unwrap().issue_id, None);
+        let mut linked = sample_run("new-1", None);
+        linked.issue_id = Some("iss-1".into());
+        reg.insert_run(&linked).unwrap();
+        assert_eq!(reg.get_run("new-1").unwrap().unwrap().issue_id.as_deref(), Some("iss-1"));
     }
 }

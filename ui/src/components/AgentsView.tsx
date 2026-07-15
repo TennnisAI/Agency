@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Project, inspectRepo, RepoReadiness, FileRoot, agentInstalled } from "../api";
+import { Issue, Project, inspectRepo, RepoReadiness, FileRoot, agentInstalled, startIssueRun } from "../api";
 import { useRuns } from "../store/runs";
 import AgentTile from "./AgentTile";
 import AgentFocus from "./AgentFocus";
@@ -11,6 +11,7 @@ import Resizer from "./Resizer";
 import { usePaneWidth } from "../hooks/usePaneWidth";
 import FilesView from "./FilesView";
 import HomeView from "./HomeView";
+import IssuesView from "./IssuesView";
 import SidebarToggle from "./SidebarToggle";
 import RightPanelToggle from "./RightPanelToggle";
 import InstallAgentDialog from "./InstallAgentDialog";
@@ -35,7 +36,7 @@ export default function AgentsView({
   const focused = runs.find((r) => r.id === focusedRunId) ?? null;
   const [review, setReview] = useState(false);
   const [error, setError] = useState("");
-  const [pendingSpawn, setPendingSpawn] = useState<{ agentId: string; readiness: RepoReadiness; repoPath: string; opts?: { base: string; mergeTarget: string } } | null>(null);
+  const [pendingSpawn, setPendingSpawn] = useState<{ agentId: string; readiness: RepoReadiness; repoPath: string; opts?: { base: string; mergeTarget: string }; issue?: Issue } | null>(null);
   const [missingAgent, setMissingAgent] = useState<string | null>(null);
   const [gitSel, setGitSel] = useState<GitSelection>(null);
   useEffect(() => { setGitSel(null); }, [focusedRunId, project?.id]);
@@ -48,7 +49,7 @@ export default function AgentsView({
   const gitRoot = focusedRunId ?? (project ? `project:${project.id}` : null);
   const allowComments = focused?.kind === "agent";
 
-  async function spawn(agentId: string, opts?: { base: string; mergeTarget: string }) {
+  async function spawn(agentId: string, opts?: { base: string; mergeTarget: string }, issue?: Issue) {
     if (!project) return;
     setError("");
     try {
@@ -61,13 +62,24 @@ export default function AgentsView({
       }
       const r = await inspectRepo(project.repo_path);
       if (r.state === "ready" && !r.dirty) {
-        await createAgent(agentId, opts);
+        if (issue) await startIssue(issue, agentId, opts);
+        else await createAgent(agentId, opts);
       } else {
-        setPendingSpawn({ agentId, readiness: r, repoPath: project.repo_path, opts });
+        setPendingSpawn({ agentId, readiness: r, repoPath: project.repo_path, opts, issue });
       }
     } catch (e) {
       setError(String(e));
     }
+  }
+
+  // Dispatch an issue to an agent, then jump to the run — the issue-flavored
+  // tail of the same flow createAgent handles for promptless runs.
+  async function startIssue(issue: Issue, agentId: string, opts?: { base: string; mergeTarget: string }) {
+    const run = await startIssueRun(issue.id, agentId, opts?.base, opts?.mergeTarget);
+    await refreshRuns();
+    setFocusedRun(run.id);
+    setView("focus");
+    setTab("agents");
   }
 
   return (
@@ -76,6 +88,7 @@ export default function AgentsView({
         {!sidebarOpen && <SidebarToggle open={false} onToggle={onToggleSidebar} />}
         <div className="seg">
           <button className={tab === "agents" ? "on" : ""} onClick={() => setTab("agents")}>▦ Agents</button>
+          <button className={tab === "issues" ? "on" : ""} onClick={() => setTab("issues")}>▧ Issues</button>
           <button className={tab === "source" ? "on" : ""} onClick={() => setTab("source")}>⎇ Source Control</button>
           <button className={tab === "files" ? "on" : ""} onClick={() => setTab("files")}>▤ Files</button>
         </div>
@@ -97,8 +110,8 @@ export default function AgentsView({
       {error && <div className="git-error">{error}</div>}
 
       {!project ? (
-        tab === "agents" ? (
-          <HomeView onOpenRun={onOpenRun} onOpenProject={onOpenProject} />
+        tab === "agents" || tab === "issues" ? (
+          <HomeView onOpenRun={onOpenRun} onOpenProject={onOpenProject} mode={tab === "issues" ? "issues" : "agents"} />
         ) : (
           <div className="board empty">
             {tab === "source"
@@ -108,6 +121,13 @@ export default function AgentsView({
         )
       ) : (
         <>
+          {tab === "issues" && (
+            <IssuesView
+              project={project}
+              onStartIssue={(issue, agentId, opts) => spawn(agentId, opts, issue)}
+            />
+          )}
+
           {tab === "source" && gitRoot && (
             <div className="source-wrap">
               <GitPanel taskId={gitRoot} layout="full" selection={gitSel} onSelect={setGitSel} allowComments={allowComments} />
@@ -172,10 +192,11 @@ export default function AgentsView({
           context="spawn"
           repoPath={pendingSpawn.repoPath}
           onResolved={async () => {
-            const { agentId, opts } = pendingSpawn;
+            const { agentId, opts, issue } = pendingSpawn;
             setPendingSpawn(null);
             try {
-              await createAgent(agentId, opts);
+              if (issue) await startIssue(issue, agentId, opts);
+              else await createAgent(agentId, opts);
             } catch (e) {
               setError(String(e));
             }

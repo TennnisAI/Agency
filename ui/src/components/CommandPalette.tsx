@@ -2,9 +2,10 @@ import { useEffect, useMemo, useState } from "react";
 import { Project, listProjects } from "../api";
 import { useRuns } from "../store/runs";
 import { PaletteEntry, filterEntries } from "../lib/paletteFilter";
+import { PENDING_QUICKADD_KEY } from "../lib/issues";
 
 export default function CommandPalette({ onClose }: { onClose: () => void }) {
-  const { runs, setSelectedProject, setFocusedRun, setView } = useRuns();
+  const { runs, selectedProjectId, setSelectedProject, setFocusedRun, setView, setTab } = useRuns();
   const [projects, setProjects] = useState<Project[]>([]);
   const [query, setQuery] = useState("");
   const [hi, setHi] = useState(0);
@@ -14,6 +15,16 @@ export default function CommandPalette({ onClose }: { onClose: () => void }) {
   }, []);
 
   const entries: PaletteEntry[] = useMemo(() => {
+    // Actions need a project to act on, so they only list inside one.
+    const as: PaletteEntry[] = selectedProjectId
+      ? [{
+          kind: "action",
+          id: "new-issue",
+          projectId: selectedProjectId,
+          label: "New Issue",
+          sublabel: "Capture an issue in this project",
+        }]
+      : [];
     const ps: PaletteEntry[] = projects.map((p) => ({
       kind: "project",
       id: p.id,
@@ -28,8 +39,8 @@ export default function CommandPalette({ onClose }: { onClose: () => void }) {
       label: `${r.agent}: ${r.prompt || r.branch}`,
       sublabel: r.branch,
     }));
-    return [...ps, ...rs];
-  }, [projects, runs]);
+    return [...as, ...ps, ...rs];
+  }, [projects, runs, selectedProjectId]);
 
   const filtered = useMemo(() => filterEntries(query, entries), [query, entries]);
 
@@ -38,7 +49,12 @@ export default function CommandPalette({ onClose }: { onClose: () => void }) {
   }, [query]);
 
   function activate(e: PaletteEntry) {
-    if (e.kind === "project") {
+    if (e.kind === "action") {
+      // "New Issue": jump to the board with quick-add focused (the flag is
+      // consumed by IssuesView on tab activation).
+      sessionStorage.setItem(PENDING_QUICKADD_KEY, "1");
+      setTab("issues");
+    } else if (e.kind === "project") {
       setSelectedProject(e.id);
     } else {
       setSelectedProject(e.projectId);
@@ -83,7 +99,7 @@ export default function CommandPalette({ onClose }: { onClose: () => void }) {
               onMouseEnter={() => setHi(i)}
               onClick={() => activate(e)}
             >
-              <span className={`palette-kind ${e.kind}`}>{e.kind === "project" ? "▢" : "▸"}</span>
+              <span className={`palette-kind ${e.kind}`}>{e.kind === "project" ? "▢" : e.kind === "action" ? "＋" : "▸"}</span>
               <span className="palette-label">{e.label}</span>
               <span className="palette-sub">{e.sublabel}</span>
             </li>

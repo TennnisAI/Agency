@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { createLoop, listProfiles, listProjectBranches } from "../api";
+import { Issue, createLoop, listProfiles, listProjectBranches, startIssueLoop } from "../api";
 import { agentLabel } from "../agents";
 import { effectiveMergeTarget } from "../lib/branchTargets";
 import { useRuns } from "../store/runs";
@@ -11,9 +11,14 @@ const PROMPT_TEMPLATE =
 
 // Run one agent in a loop: the same prompt is re-sent to a fresh headless
 // session until the check command exits 0 (or the attempt cap is spent).
-// Racing is breadth; this is depth.
-export default function LoopDialog({ onClose }: { onClose: () => void }) {
-  const { selectedProjectId, refreshRuns, setView, setFocusedRun } = useRuns();
+// Racing is breadth; this is depth. With `issue` set the prompt comes from
+// the issue instead (composed backend-side).
+export default function LoopDialog({ onClose, issue, issueLabel }: {
+  onClose: () => void;
+  issue?: Issue;
+  issueLabel?: string;
+}) {
+  const { selectedProjectId, refreshRuns, setView, setTab, setFocusedRun } = useRuns();
   const [prompt, setPrompt] = useState("");
   const [agents, setAgents] = useState<string[]>([]);
   const [agent, setAgent] = useState("");
@@ -49,7 +54,7 @@ export default function LoopDialog({ onClose }: { onClose: () => void }) {
   }, [selectedProjectId]);
 
   const mergeTarget = effectiveMergeTarget(base, targetOverride);
-  const canStart = prompt.trim().length > 0 && agent !== "" && !busy;
+  const canStart = (issue ? true : prompt.trim().length > 0) && agent !== "" && !busy;
   const fixedIterations = checkCommand.trim() === "";
   const clampAttempts = (v: string) => {
     const n = Math.floor(Number(v));
@@ -61,15 +66,18 @@ export default function LoopDialog({ onClose }: { onClose: () => void }) {
     setBusy(true);
     setError("");
     try {
-      const run = await createLoop(
-        selectedProjectId,
-        prompt.trim(),
-        agent,
-        base || "HEAD",
-        mergeTarget,
-        checkCommand.trim(),
-        clampAttempts(maxAttempts),
-      );
+      const run = issue
+        ? await startIssueLoop(issue.id, agent, checkCommand.trim(), clampAttempts(maxAttempts), base || null, mergeTarget)
+        : await createLoop(
+            selectedProjectId,
+            prompt.trim(),
+            agent,
+            base || "HEAD",
+            mergeTarget,
+            checkCommand.trim(),
+            clampAttempts(maxAttempts),
+          );
+      if (issue) setTab("agents"); // jump from the board to the running loop
       await refreshRuns();
       setFocusedRun(run.id);
       setView("focus");
@@ -92,18 +100,27 @@ export default function LoopDialog({ onClose }: { onClose: () => void }) {
           Each attempt is committed to the run's branch; review and merge when the loop completes.
         </p>
         {error && <div className="git-error">{error}</div>}
-        <textarea
-          className="settings-input race-prompt"
-          placeholder="What should the agent keep working on? Best prompts pick one task per attempt, run the tests, and commit."
-          value={prompt}
-          autoFocus
-          onChange={(e) => setPrompt(e.target.value)}
-        />
-        <button
-          className="ghost loop-template"
-          type="button"
-          onClick={() => setPrompt(PROMPT_TEMPLATE)}
-        >Use prompt template</button>
+        {issue ? (
+          <div className="issue-dialog-summary">
+            <code>{issueLabel}</code>
+            <span>{issue.title}</span>
+          </div>
+        ) : (
+          <>
+            <textarea
+              className="settings-input race-prompt"
+              placeholder="What should the agent keep working on? Best prompts pick one task per attempt, run the tests, and commit."
+              value={prompt}
+              autoFocus
+              onChange={(e) => setPrompt(e.target.value)}
+            />
+            <button
+              className="ghost loop-template"
+              type="button"
+              onClick={() => setPrompt(PROMPT_TEMPLATE)}
+            >Use prompt template</button>
+          </>
+        )}
         <div className="loop-fields">
           <label className="branch-row">
             <span>agent</span>

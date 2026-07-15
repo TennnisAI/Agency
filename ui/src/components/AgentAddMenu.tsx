@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { AgentProfile, listProfiles, listProjectBranches } from "../api";
+import { AgentProfile, Issue, listProfiles, listProjectBranches } from "../api";
 import { agentLabel } from "../agents";
 import { useRuns } from "../store/runs";
 import { effectiveMergeTarget } from "../lib/branchTargets";
@@ -16,6 +16,8 @@ export default function AgentAddMenu({
   onTerminal,
   variant = "button",
   projectId,
+  issue,
+  issueLabel,
 }: {
   onSpawn: (agentId: string, opts?: { base: string; mergeTarget: string }) => void;
   // Required (not optional) so every call site exposes the same options — the two
@@ -24,6 +26,11 @@ export default function AgentAddMenu({
   onTerminal: () => void;
   variant?: "button" | "icon" | "header";
   projectId?: string;
+  // Issue-dispatch context: the same menu (agents, race, loop, branch pickers)
+  // minus the entries that make no sense for an issue (terminal, GitHub
+  // imports). onSpawn then routes to startIssueRun at the call site.
+  issue?: Issue;
+  issueLabel?: string;
 }) {
   // While a workspace is being created, the triggers are disabled so the
   // slow first spawn can't be double-fired.
@@ -100,7 +107,7 @@ export default function AgentAddMenu({
       {variant === "header" ? (
         <button ref={btnRef} className="rail-head-add" title="Add agent" disabled={spawning} onClick={toggle}>Agents <span className="rail-head-plus">+</span></button>
       ) : variant === "icon" ? (
-        <button ref={btnRef} className="icon-btn" title="Add agent" disabled={spawning} onClick={toggle}>+</button>
+        <button ref={btnRef} className="icon-btn" title={issue ? "Start agent…" : "Add agent"} disabled={spawning} onClick={(e) => { e.stopPropagation(); toggle(); }}>{issue ? "▾" : "+"}</button>
       ) : (
         <button ref={btnRef} className="btn-primary" disabled={spawning} onClick={toggle}>{spawning ? "Starting…" : "+ Agent ▾"}</button>
       )}
@@ -114,10 +121,14 @@ export default function AgentAddMenu({
             <div className="agent-menu-sep" />
             <button onClick={() => { setOpen(false); setRaceOpen(true); }}>∥ Race agents…</button>
             <button onClick={() => { setOpen(false); setLoopOpen(true); }}>⟳ Loop agent…</button>
-            <button onClick={() => { setOpen(false); setImportMode("issue"); }}>◈ GitHub issue…</button>
-            <button onClick={() => { setOpen(false); setImportMode("pr"); }}>⇋ GitHub PR…</button>
-            <div className="agent-menu-sep" />
-            <button onClick={chooseTerminal}>≳ New terminal</button>
+            {!issue && (
+              <>
+                <button onClick={() => { setOpen(false); setImportMode("issue"); }}>◈ GitHub issue…</button>
+                <button onClick={() => { setOpen(false); setImportMode("pr"); }}>⇋ GitHub PR…</button>
+                <div className="agent-menu-sep" />
+                <button onClick={chooseTerminal}>≳ New terminal</button>
+              </>
+            )}
             {showPicker && branches.length > 0 && (
               <>
                 <div className="agent-menu-sep" />
@@ -156,8 +167,8 @@ export default function AgentAddMenu({
           </div>
         </>
       )}
-      {raceOpen && <RaceDialog onClose={() => setRaceOpen(false)} />}
-      {loopOpen && <LoopDialog onClose={() => setLoopOpen(false)} />}
+      {raceOpen && <RaceDialog onClose={() => setRaceOpen(false)} issue={issue} issueLabel={issueLabel} />}
+      {loopOpen && <LoopDialog onClose={() => setLoopOpen(false)} issue={issue} issueLabel={issueLabel} />}
       {importMode && <GhImportDialog mode={importMode} onClose={() => setImportMode(null)} />}
     </div>
   );

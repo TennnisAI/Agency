@@ -3,7 +3,7 @@ import { RunInfo, createRun, createTerminal as createTerminalApi, listRuns } fro
 import { toastError } from "../lib/toast";
 
 type View = "grid" | "focus";
-type Tab = "agents" | "source" | "files";
+type Tab = "agents" | "source" | "files" | "issues";
 
 interface RunStore {
   runs: RunInfo[];

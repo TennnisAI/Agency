@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { createRace, listProfiles, listProjectBranches } from "../api";
+import { Issue, createRace, listProfiles, listProjectBranches, startIssueRace } from "../api";
 import { agentLabel } from "../agents";
 import { effectiveMergeTarget } from "../lib/branchTargets";
 import { useRuns } from "../store/runs";
@@ -7,9 +7,14 @@ import { useModalKeys } from "../hooks/useModalKeys";
 
 // Fan one prompt out to several agents in parallel workspaces. This is the
 // one flow where composing the prompt up-front is the point: it's typed once
-// and delivered to every agent at launch.
-export default function RaceDialog({ onClose }: { onClose: () => void }) {
-  const { selectedProjectId, refreshRuns, setView, setFocusedRun } = useRuns();
+// and delivered to every agent at launch. With `issue` set the prompt comes
+// from the issue instead (composed backend-side), racing agents on it.
+export default function RaceDialog({ onClose, issue, issueLabel }: {
+  onClose: () => void;
+  issue?: Issue;
+  issueLabel?: string;
+}) {
+  const { selectedProjectId, refreshRuns, setView, setTab, setFocusedRun } = useRuns();
   const [prompt, setPrompt] = useState("");
   const [agents, setAgents] = useState<string[]>([]);
   const [picked, setPicked] = useState<Set<string>>(new Set());
@@ -50,14 +55,19 @@ export default function RaceDialog({ onClose }: { onClose: () => void }) {
   }
 
   const mergeTarget = effectiveMergeTarget(base, targetOverride);
-  const canStart = prompt.trim().length > 0 && picked.size >= 2 && !busy;
+  const canStart = (issue ? true : prompt.trim().length > 0) && picked.size >= 2 && !busy;
 
   async function start() {
     if (!selectedProjectId || !canStart) return;
     setBusy(true);
     setError("");
     try {
-      await createRace(selectedProjectId, prompt.trim(), [...picked], base || "HEAD", mergeTarget);
+      if (issue) {
+        await startIssueRace(issue.id, [...picked], base || null, mergeTarget);
+        setTab("agents"); // jump from the board to where the attempts run
+      } else {
+        await createRace(selectedProjectId, prompt.trim(), [...picked], base || "HEAD", mergeTarget);
+      }
       await refreshRuns();
       // Grid view is the natural place to watch attempts side by side.
       setFocusedRun(null);
@@ -77,17 +87,25 @@ export default function RaceDialog({ onClose }: { onClose: () => void }) {
           <button className="icon-btn" title="Close" onClick={onClose}>✕</button>
         </div>
         <p className="merge-note">
-          The same prompt is sent to every selected agent, each in its own isolated workspace.
-          Compare the attempts, merge the winner, discard the rest.
+          {issue
+            ? "The issue is sent to every selected agent, each in its own isolated workspace. Compare the attempts, merge the winner, discard the rest."
+            : "The same prompt is sent to every selected agent, each in its own isolated workspace. Compare the attempts, merge the winner, discard the rest."}
         </p>
         {error && <div className="git-error">{error}</div>}
-        <textarea
-          className="settings-input race-prompt"
-          placeholder="What should the agents build?"
-          value={prompt}
-          autoFocus
-          onChange={(e) => setPrompt(e.target.value)}
-        />
+        {issue ? (
+          <div className="issue-dialog-summary">
+            <code>{issueLabel}</code>
+            <span>{issue.title}</span>
+          </div>
+        ) : (
+          <textarea
+            className="settings-input race-prompt"
+            placeholder="What should the agents build?"
+            value={prompt}
+            autoFocus
+            onChange={(e) => setPrompt(e.target.value)}
+          />
+        )}
         <div className="race-agents">
           {agents.map((name) => (
             <label key={name} className="race-agent">

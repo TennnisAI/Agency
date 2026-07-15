@@ -1,7 +1,7 @@
 use agency_core::git::{self, CommitFile, FileDiff, FileChange};
 use agency_core::merge::MergeOutcome;
 use agency_core::profile::AgentProfile;
-use agency_core::registry::{Project, ReviewComment};
+use agency_core::registry::{Issue, IssuePatch, IssueStatus, Project, ReviewComment};
 use agency_core::supervisor::AgentStatus;
 use agency_core::term::SessionStatus;
 use base64::engine::general_purpose::STANDARD;
@@ -537,6 +537,82 @@ pub async fn create_run_from_pr(
     agent: String,
 ) -> Result<RunInfo, String> {
     state.create_run_from_pr(&project_id, number, &agent).map_err(|e| e.to_string())
+}
+
+// ── issues (the local tracker; GitHub issues are create_run_from_issue) ─────
+
+#[tauri::command]
+pub async fn list_issues(
+    state: State<'_, AppState>,
+    project_id: String,
+) -> Result<Vec<Issue>, String> {
+    state.list_issues(&project_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn create_issue(
+    state: State<'_, AppState>,
+    project_id: String,
+    title: String,
+    body: String,
+    status: IssueStatus,
+) -> Result<Issue, String> {
+    state.create_issue(&project_id, &title, &body, status).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn update_issue(
+    state: State<'_, AppState>,
+    id: String,
+    patch: IssuePatch,
+) -> Result<Issue, String> {
+    state.update_issue(&id, &patch).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_issue(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    state.delete_issue(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn start_issue_run(
+    state: State<'_, AppState>,
+    issue_id: String,
+    agent: String,
+    base: Option<String>,
+    merge_target: Option<String>,
+) -> Result<RunInfo, String> {
+    state
+        .start_issue_run(&issue_id, &agent, base.as_deref(), merge_target.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn start_issue_race(
+    state: State<'_, AppState>,
+    issue_id: String,
+    agents: Vec<String>,
+    base: Option<String>,
+    merge_target: Option<String>,
+) -> Result<Vec<RunInfo>, String> {
+    state
+        .start_issue_race(&issue_id, &agents, base.as_deref(), merge_target.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn start_issue_loop(
+    state: State<'_, AppState>,
+    issue_id: String,
+    agent: String,
+    check_command: String,
+    max_attempts: u32,
+    base: Option<String>,
+    merge_target: Option<String>,
+) -> Result<RunInfo, String> {
+    state
+        .start_issue_loop(&issue_id, &agent, &check_command, max_attempts, base.as_deref(), merge_target.as_deref())
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]

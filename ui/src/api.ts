@@ -9,6 +9,8 @@ export interface Project {
   default_agent: string | null;
   default_provider: string | null;
   color: string | null;
+  // 3-letter issue key ("AGE") the project's issues are numbered under.
+  issue_key: string | null;
 }
 
 export type SessionStatus =
@@ -52,9 +54,59 @@ export interface RunInfo {
   raceId: string | null;
   loopConfig: LoopConfig | null;
   loopState: LoopState | null;
+  // Local issue this run was dispatched from (see startIssueRun).
+  issueId: string | null;
+}
+
+// ── issues (the local per-project tracker) ──────────────────────────────────
+
+export type IssueStatus = "backlog" | "todo" | "in_progress" | "in_review" | "done" | "cancelled";
+
+export interface Issue {
+  id: string;
+  projectId: string;
+  // Per-project number, displayed with the project's issue key: AGE-14.
+  seq: number;
+  title: string;
+  body: string;
+  status: IssueStatus;
+  // 0 none · 1 low · 2 medium · 3 high · 4 urgent.
+  priority: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+// Partial update: omitted fields keep their values.
+export interface IssuePatch {
+  title?: string;
+  body?: string;
+  status?: IssueStatus;
+  priority?: number;
 }
 
 export const listProjects = () => invoke<Project[]>("list_projects");
+
+export const listIssues = (projectId: string) => invoke<Issue[]>("list_issues", { projectId });
+export const createIssue = (projectId: string, title: string, body: string, status: IssueStatus) =>
+  invoke<Issue>("create_issue", { projectId, title, body, status });
+export const updateIssue = (id: string, patch: IssuePatch) =>
+  invoke<Issue>("update_issue", { id, patch });
+export const deleteIssue = (id: string) => invoke<void>("delete_issue", { id });
+export const startIssueRun = (issueId: string, agent: string, base?: string | null, mergeTarget?: string | null) =>
+  invoke<RunInfo>("start_issue_run", { issueId, agent, base: base ?? null, mergeTarget: mergeTarget ?? null });
+export const startIssueRace = (issueId: string, agents: string[], base?: string | null, mergeTarget?: string | null) =>
+  invoke<RunInfo[]>("start_issue_race", { issueId, agents, base: base ?? null, mergeTarget: mergeTarget ?? null });
+export const startIssueLoop = (
+  issueId: string,
+  agent: string,
+  checkCommand: string,
+  maxAttempts: number,
+  base?: string | null,
+  mergeTarget?: string | null,
+) =>
+  invoke<RunInfo>("start_issue_loop", {
+    issueId, agent, checkCommand, maxAttempts, base: base ?? null, mergeTarget: mergeTarget ?? null,
+  });
 
 export const addProject = (name: string, repoPath: string) =>
   invoke<Project>("add_project", { name, repoPath });

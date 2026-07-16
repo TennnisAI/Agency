@@ -272,7 +272,16 @@ export const gitDiscardAll = (taskId: string) => invoke<void>("git_discard_all",
 export const gitCommit = (taskId: string, message: string) =>
   invoke<void>("git_commit", { taskId, message });
 
-export const gitPush = (taskId: string) => invoke<void>("git_push", { taskId });
+// Pushes the current branch to origin, streaming git's progress to `onProgress`
+// (same shape as clone) so the UI can show a determinate bar for large pushes.
+export function gitPush(
+  taskId: string,
+  onProgress?: (p: CloneProgress) => void,
+): Promise<void> {
+  const onProgressChannel = new Channel<CloneProgress>();
+  if (onProgress) onProgressChannel.onmessage = onProgress;
+  return invoke<void>("git_push", { taskId, onProgress: onProgressChannel });
+}
 export const gitFetch = (taskId: string) => invoke<void>("git_fetch", { taskId });
 export const gitPull = (taskId: string) => invoke<void>("git_pull", { taskId });
 
@@ -662,6 +671,10 @@ export const renamePath = (root: FileRoot, from: string, to: string) =>
   invoke<void>("rename_path", { root, from, to });
 export const trashPath = (root: FileRoot, relPath: string) =>
   invoke<void>("trash_path", { root, relPath });
+// Appends the path to the root's .gitignore. Resolves to true if a new entry was
+// written, false if the path was already ignored.
+export const addToGitignore = (root: FileRoot, relPath: string) =>
+  invoke<boolean>("add_to_gitignore", { root, relPath });
 export const absPath = (root: FileRoot, relPath: string) =>
   invoke<string>("abs_path", { root, relPath });
 export const revealPath = (root: FileRoot, relPath: string) =>

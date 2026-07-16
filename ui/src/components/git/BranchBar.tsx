@@ -1,18 +1,20 @@
 import { useState } from "react";
 import {
   BranchInfo, gitCheckoutBranch, gitCreateBranch, gitFetch, gitListBranches,
-  gitPull, gitPullRebase, gitPush, gitPushForce, gitStashPop, gitStashPush,
+  gitPull, gitPullRebase, gitPushForce, gitStashPop, gitStashPush,
 } from "../../api";
 import Menu, { MenuEntry, menuAt } from "./Menu";
 import { BranchIcon, StashIcon, CloudIcon } from "./gitIcons";
 import ConfirmDialog from "../ConfirmDialog";
 import PromptDialog from "../PromptDialog";
 
-export default function BranchBar({ taskId, info, busy = false, onAct, onRefresh, onUndoCommit }: {
+export default function BranchBar({ taskId, info, busy = false, onAct, onPush, onRefresh, onUndoCommit }: {
   taskId: string;
   info: BranchInfo | null;
   busy?: boolean;
   onAct: (fn: () => Promise<unknown>, label?: string) => Promise<boolean>;
+  // Push has its own handler (streams progress) rather than going through onAct.
+  onPush: () => void;
   onRefresh: () => void;
   onUndoCommit: () => void;
 }) {
@@ -55,7 +57,7 @@ export default function BranchBar({ taskId, info, busy = false, onAct, onRefresh
   const overflowItems = (at: { x: number; y: number }): MenuEntry[] => [
     { label: "Pull", disabled: !info.upstream, onClick: () => onAct(() => gitPull(taskId), "Pulled") },
     { label: "Pull (Rebase)", disabled: !info.upstream, onClick: () => onAct(() => gitPullRebase(taskId), "Pulled (rebase)") },
-    { label: "Push", disabled: !info.hasRemote, onClick: () => onAct(() => gitPush(taskId), "Pushed") },
+    { label: "Push", disabled: !info.hasRemote, onClick: onPush },
     { label: "Push (Force)…", disabled: !info.upstream, danger: true, onClick: () => setConfirmForce(true) },
     { label: "Fetch", disabled: !info.hasRemote, onClick: () => onAct(() => gitFetch(taskId), "Fetched") },
     { kind: "separator" },
@@ -92,9 +94,10 @@ export default function BranchBar({ taskId, info, busy = false, onAct, onRefresh
         <button className="git-iconbtn" title={`Pull ${info.behind} commit${info.behind === 1 ? "" : "s"} from origin`}
           aria-label="Pull from origin" onClick={() => onAct(() => gitPull(taskId), "Pulled")} disabled={busy}>↓{info.behind}</button>
       )}
+      {/* Push: ↥ mirrors the ↧ fetch glyph — an arrow leaving for origin. */}
       {info.upstream && (
         <button className="git-iconbtn" title="Push" aria-label="Push to origin"
-          onClick={() => onAct(() => gitPush(taskId), "Pushed")} disabled={busy}>⟳</button>
+          onClick={onPush} disabled={busy}>↥</button>
       )}
       <button className="git-iconbtn" title="Refresh" aria-label="Refresh" onClick={onRefresh}>⟲</button>
       <button className="git-iconbtn" title="More Actions…" aria-label="More actions"

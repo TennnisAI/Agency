@@ -345,10 +345,21 @@ pub fn git_commit(
     git::commit(&wt, &message).map_err(|e| e.to_string())
 }
 
+// async (not sync): a push round-trips the network for as long as the upload
+// takes — seconds to minutes for a large changeset. A sync command runs on the
+// main thread and froze the whole UI mid-push; async runs it off-thread and
+// streams `--progress` to the panel so the user sees movement (like clone).
 #[tauri::command]
-pub fn git_push(state: State<'_, AppState>, task_id: String) -> Result<(), String> {
+pub async fn git_push(
+    state: State<'_, AppState>,
+    task_id: String,
+    on_progress: Channel<agency_core::setup::CloneProgress>,
+) -> Result<(), String> {
     let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
-    git::push(&wt).map_err(|e| e.to_string())
+    git::push_with_progress(&wt, move |p| {
+        let _ = on_progress.send(p);
+    })
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1340,6 +1351,18 @@ pub fn trash_path(
 ) -> Result<(), String> {
     let base = resolve_root(&state, &root)?;
     agency_core::files::trash_path(&base, &rel_path).map_err(|e| e.to_string())
+}
+
+/// Append a file/dir to the root's `.gitignore`. Returns whether a new entry was
+/// added (false = the path was already ignored) so the UI can toast accordingly.
+#[tauri::command]
+pub fn add_to_gitignore(
+    state: State<'_, AppState>,
+    root: FileRoot,
+    rel_path: String,
+) -> Result<bool, String> {
+    let base = resolve_root(&state, &root)?;
+    agency_core::files::add_to_gitignore(&base, &rel_path).map_err(|e| e.to_string())
 }
 
 /// Absolute path of a file/dir within a root, for "Copy path".

@@ -85,8 +85,13 @@ export default function AgentAddMenu({
       if (next) loadAgents();
       if (next && btnRef.current) {
         const r = btnRef.current.getBoundingClientRect();
+        // Icon/header triggers open rightward, but near the right edge (e.g. an
+        // issue row with the sidebar closed) that clips. Flip to right-anchor
+        // when the menu wouldn't fit. The primary button always opens leftward.
+        const MENU_W = 300; // .agent-menu max-width
+        const fitsRight = r.left + MENU_W <= window.innerWidth - 8;
         setCoords(
-          variant === "button"
+          variant === "button" || !fitsRight
             ? { top: r.bottom + 4, right: window.innerWidth - r.right }
             : { top: r.bottom + 4, left: r.left },
         );

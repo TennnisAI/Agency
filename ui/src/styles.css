@@ -1481,9 +1481,32 @@ input, textarea, code,
 }
 .issue-detail-head { display: flex; align-items: center; gap: 8px; }
 .issue-detail-head .spacer { flex: 1; }
-.issue-detail-title { font-size: 14px; font-weight: 600; }
-.issue-detail-fields { display: flex; flex-direction: column; gap: 6px; }
-.issue-detail-body { min-height: 140px; font-size: 12.5px; }
+/* Title & description read as plain header/body text; clicking edits in place. */
+.issue-detail-title, .issue-detail-body {
+  width: 100%; background: transparent; border: 0; border-radius: 6px;
+  color: var(--text); font-family: var(--sans); resize: none;
+  padding: 4px 6px; margin: 0 -6px; outline: none;
+  overflow-wrap: break-word; word-break: break-word;
+}
+.issue-detail-title {
+  font-size: 21px; font-weight: 700; line-height: 1.3;
+  overflow: hidden; /* height is managed in JS to fit wrapped content */
+}
+.issue-detail-body {
+  min-height: 120px; font-size: 13.5px; line-height: 1.5;
+}
+.issue-detail-title::placeholder, .issue-detail-body::placeholder { color: var(--o0); }
+.issue-detail-title:hover, .issue-detail-body:hover,
+.issue-detail-title:focus, .issue-detail-body:focus { background: var(--s0); }
+/* Linear-style property chips: icon + label pills that open a picker menu. */
+.issue-detail-props { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.issue-prop-pill {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--s0); border: 1px solid transparent; border-radius: 999px;
+  color: var(--text); padding: 4px 11px 4px 9px; cursor: pointer;
+  font-family: var(--sans); font-size: 12px; line-height: 1;
+}
+.issue-prop-pill:hover { background: var(--s1); border-color: var(--s1); }
 .issue-detail-runs h3 { margin: 4px 0 6px; font-size: 11px; font-weight: 600; color: var(--o1); text-transform: uppercase; letter-spacing: .06em; }
 .issue-detail-run {
   display: flex; align-items: center; gap: 8px; width: 100%;

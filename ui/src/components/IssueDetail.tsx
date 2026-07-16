@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
-import { Issue, IssuePatch, IssueStatus, RunInfo } from "../api";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Issue, IssuePatch, RunInfo } from "../api";
 import { runName } from "../agents";
 import { ISSUE_STATUSES, PRIORITY_LABELS, STATUS_LABELS } from "../lib/issues";
+import { PriorityGlyph, StatusDot } from "./IssueRow";
 
 function ts(secs: number): string {
   return new Date(secs * 1000).toLocaleString(undefined, {
@@ -30,6 +31,17 @@ export default function IssueDetail({
 }) {
   const [title, setTitle] = useState(issue.title);
   const [body, setBody] = useState(issue.body);
+  const titleRef = useRef<HTMLTextAreaElement>(null);
+  const [menu, setMenu] = useState<"status" | "priority" | null>(null);
+  const [coords, setCoords] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
+  const statusRef = useRef<HTMLButtonElement>(null);
+  const priorityRef = useRef<HTMLButtonElement>(null);
+
+  const openMenu = (which: "status" | "priority", ref: React.RefObject<HTMLButtonElement>) => {
+    const r = ref.current?.getBoundingClientRect();
+    if (r) setCoords({ top: r.bottom + 4, left: r.left });
+    setMenu(which);
+  };
 
   // Reset drafts when another issue is selected — but never clobber an edit
   // in progress with poll results for the same issue.
@@ -38,6 +50,14 @@ export default function IssueDetail({
     setBody(issue.body);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [issue.id]);
+
+  // Grow the title textarea to fit its wrapped content (no scroll, no clip).
+  useLayoutEffect(() => {
+    const el = titleRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [title]);
 
   const commitTitle = () => {
     const t = title.trim();
@@ -55,34 +75,59 @@ export default function IssueDetail({
         <div className="spacer" />
         <button className="icon-btn" title="Close" onClick={onClose}>✕</button>
       </div>
-      <input
-        className="settings-input issue-detail-title"
+      <textarea
+        ref={titleRef}
+        className="issue-detail-title"
+        rows={1}
+        placeholder="Issue title"
         value={title}
         onChange={(e) => setTitle(e.target.value)}
         onBlur={commitTitle}
-        onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+        onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); (e.target as HTMLTextAreaElement).blur(); } }}
       />
-      <div className="issue-detail-fields">
-        <label className="branch-row">
-          <span>status</span>
-          <select value={issue.status} onChange={(e) => onPatch({ status: e.target.value as IssueStatus })}>
-            {ISSUE_STATUSES.map((s) => (
-              <option key={s} value={s}>{STATUS_LABELS[s]}</option>
-            ))}
-          </select>
-        </label>
-        <label className="branch-row">
-          <span>priority</span>
-          <select value={issue.priority} onChange={(e) => onPatch({ priority: Number(e.target.value) })}>
-            {PRIORITY_LABELS.map((p, n) => (
-              <option key={p} value={n}>{p}</option>
-            ))}
-          </select>
-        </label>
+      <div className="issue-detail-props">
+        <button
+          ref={statusRef}
+          className="issue-prop-pill"
+          title="Change status"
+          onClick={() => openMenu("status", statusRef)}
+        >
+          <StatusDot status={issue.status} />
+          {STATUS_LABELS[issue.status]}
+        </button>
+        <button
+          ref={priorityRef}
+          className="issue-prop-pill"
+          title="Change priority"
+          onClick={() => openMenu("priority", priorityRef)}
+        >
+          <PriorityGlyph priority={issue.priority} />
+          {PRIORITY_LABELS[issue.priority]}
+        </button>
       </div>
+
+      {menu && (
+        <>
+          <div className="agent-menu-backdrop" onClick={() => setMenu(null)} />
+          <div className="agent-menu" style={{ position: "fixed", ...coords }}>
+            {menu === "status" &&
+              ISSUE_STATUSES.map((s) => (
+                <button key={s} onClick={() => { setMenu(null); if (s !== issue.status) onPatch({ status: s }); }}>
+                  <StatusDot status={s} /> {STATUS_LABELS[s]}{s === issue.status ? " ✓" : ""}
+                </button>
+              ))}
+            {menu === "priority" &&
+              PRIORITY_LABELS.map((p, n) => (
+                <button key={p} onClick={() => { setMenu(null); if (n !== issue.priority) onPatch({ priority: n }); }}>
+                  <PriorityGlyph priority={n} /> {p}{n === issue.priority ? " ✓" : ""}
+                </button>
+              ))}
+          </div>
+        </>
+      )}
       <textarea
-        className="settings-input issue-detail-body"
-        placeholder="Add a description — it is sent to the agent as part of the prompt."
+        className="issue-detail-body"
+        placeholder="Add description…"
         value={body}
         onChange={(e) => setBody(e.target.value)}
         onBlur={commitBody}

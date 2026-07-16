@@ -58,7 +58,7 @@ export default function IssueRow({
   onDelete: () => void;
 }) {
   const [menu, setMenu] = useState<"status" | "more" | null>(null);
-  const [coords, setCoords] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
+  const [coords, setCoords] = useState<{ top: number; left?: number; right?: number }>({ top: 0, left: 0 });
   const statusRef = useRef<HTMLButtonElement>(null);
   const moreRef = useRef<HTMLButtonElement>(null);
 
@@ -66,9 +66,20 @@ export default function IssueRow({
   const startable = issue.status !== "done" && issue.status !== "cancelled";
 
   // Same fixed-coords trick as AgentAddMenu so ancestors' overflow can't clip.
+  // These triggers sit at the far right of the row, so left-anchoring would run
+  // the menu off the right edge (worse when the sidebar is closed and the row is
+  // wide). Flip to right-anchor (open leftward) whenever there isn't room.
   const openMenu = (which: "status" | "more", ref: React.RefObject<HTMLButtonElement>) => {
     const r = ref.current?.getBoundingClientRect();
-    if (r) setCoords({ top: r.bottom + 4, left: r.left });
+    if (r) {
+      const MENU_W = 300; // .agent-menu max-width
+      const fitsRight = r.left + MENU_W <= window.innerWidth - 8;
+      setCoords(
+        fitsRight
+          ? { top: r.bottom + 4, left: r.left }
+          : { top: r.bottom + 4, right: window.innerWidth - r.right },
+      );
+    }
     setMenu(which);
   };
 

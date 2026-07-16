@@ -135,8 +135,17 @@ export function cloneRepo(
   if (onProgress) onProgressChannel.onmessage = onProgress;
   return invoke<string>("clone_repo", { url, parentDir, onProgress: onProgressChannel });
 }
-export const commitRepo = (repoPath: string, addGitignore: boolean) =>
-  invoke<void>("commit_repo", { repoPath, addGitignore });
+// Stages everything in `repoPath` and makes the initial commit. `onProgress`, if
+// given, is called as files are staged — a folder with a big tree takes a while.
+export function commitRepo(
+  repoPath: string,
+  addGitignore: boolean,
+  onProgress?: (p: CloneProgress) => void,
+): Promise<void> {
+  const onProgressChannel = new Channel<CloneProgress>();
+  if (onProgress) onProgressChannel.onmessage = onProgress;
+  return invoke<void>("commit_repo", { repoPath, addGitignore, onProgress: onProgressChannel });
+}
 
 export const closeProject = (id: string) => invoke<void>("close_project", { id });
 export const deleteProject = (id: string) => invoke<void>("delete_project", { id });

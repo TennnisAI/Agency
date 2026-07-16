@@ -1,4 +1,4 @@
-use agency_core::setup::{repo_readiness, RepoReadiness, init_repo, initial_commit, write_default_gitignore, repo_name_from_url, clone_repo};
+use agency_core::setup::{repo_readiness, RepoReadiness, init_repo, initial_commit, initial_commit_with_progress, write_default_gitignore, repo_name_from_url, clone_repo};
 use std::path::Path;
 use std::process::Command;
 
@@ -84,6 +84,43 @@ fn initial_commit_on_empty_folder_uses_allow_empty() {
     git(dir.path(), &["config", "user.name", "T"]);
     initial_commit(dir.path(), false).unwrap();
     assert_eq!(repo_readiness(dir.path()), RepoReadiness::Ready { dirty: false });
+}
+
+#[test]
+fn initial_commit_reports_staging_progress_then_commit() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path()).unwrap();
+    git(dir.path(), &["config", "user.email", "t@e.com"]);
+    git(dir.path(), &["config", "user.name", "T"]);
+    // Enough files to cross the every-100 staging update threshold twice.
+    for i in 0..250 {
+        std::fs::write(dir.path().join(format!("f{i}.txt")), "x\n").unwrap();
+    }
+
+    let mut seen: Vec<(String, String)> = Vec::new();
+    initial_commit_with_progress(dir.path(), false, |p| seen.push((p.phase, p.detail))).unwrap();
+
+    assert_eq!(repo_readiness(dir.path()), RepoReadiness::Ready { dirty: false });
+    // Staging counts up as git hashes files, then the commit phase closes it out.
+    let staging: Vec<&String> =
+        seen.iter().filter(|(ph, _)| ph == "Staging files").map(|(_, d)| d).collect();
+    assert!(staging.contains(&&"100 files".to_string()), "got {seen:?}");
+    assert!(staging.contains(&&"200 files".to_string()), "got {seen:?}");
+    assert_eq!(seen.last().unwrap().0, "Writing commit");
+}
+
+#[test]
+fn initial_commit_on_empty_folder_reports_no_staged_files() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path()).unwrap();
+    git(dir.path(), &["config", "user.email", "t@e.com"]);
+    git(dir.path(), &["config", "user.name", "T"]);
+
+    let mut seen: Vec<(String, String)> = Vec::new();
+    initial_commit_with_progress(dir.path(), false, |p| seen.push((p.phase, p.detail))).unwrap();
+
+    // Nothing to stage, but the phases still fire so the dialog isn't left blank.
+    assert_eq!(seen.last().unwrap(), &("Writing commit".to_string(), "0 files".to_string()));
 }
 
 #[test]

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { RepoReadiness, initRepo, commitRepo, inspectRepo } from "../api";
+import { RepoReadiness, CloneProgress, initRepo, commitRepo, inspectRepo } from "../api";
 import { repoSetupView } from "./repoSetupView";
 import { useModalKeys } from "../hooks/useModalKeys";
 
@@ -15,6 +15,8 @@ export default function RepoSetupDialog({ readiness, context, repoPath, onResolv
   const [current, setCurrent] = useState<RepoReadiness>(readiness);
   const [addGitignore, setAddGitignore] = useState(true);
   const [busy, setBusy] = useState(false);
+  // Latest progress update while an op runs (null before the first arrives).
+  const [progress, setProgress] = useState<CloneProgress | null>(null);
   const [error, setError] = useState("");
 
   const view = repoSetupView(current, context);
@@ -29,32 +31,35 @@ export default function RepoSetupDialog({ readiness, context, repoPath, onResolv
   if (view.kind === "ready") return null;
 
   async function doInit() {
-    setBusy(true); setError("");
+    setBusy(true); setError(""); setProgress(null);
     try {
       await initRepo(repoPath);
       // After init the folder always has no commits — advance to the commit step.
       setCurrent(await inspectRepo(repoPath));
     } catch (e) { setError(String(e)); }
-    finally { setBusy(false); }
+    finally { setBusy(false); setProgress(null); }
   }
 
   async function doCommit() {
-    setBusy(true); setError("");
+    setBusy(true); setError(""); setProgress(null);
     try {
-      await commitRepo(repoPath, addGitignore);
+      await commitRepo(repoPath, addGitignore, setProgress);
       onResolved();
     } catch (e) { setError(String(e)); }
-    finally { setBusy(false); }
+    finally { setBusy(false); setProgress(null); }
   }
 
   const onPrimary = view.kind === "init" ? doInit : doCommit;
+  // Shown until the backend's first progress message lands. `init` streams
+  // nothing — it's a fast `git init` plus a rescan of the folder.
+  const startingLabel = view.kind === "init" ? "Setting up repository…" : "Staging files…";
 
   return (
     <div className="modal-backdrop" onClick={(e) => { e.stopPropagation(); if (!busy) onCancel(); }}>
       <div className="modal confirm" role="dialog" aria-modal="true" aria-label={view.title} onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
           <h3>{view.title}</h3>
-          <button className="modal-x" onClick={onCancel}>✕</button>
+          <button className="modal-x" disabled={busy} onClick={onCancel}>✕</button>
         </div>
         <div className="modal-body">
           {view.body}
@@ -63,6 +68,19 @@ export default function RepoSetupDialog({ readiness, context, repoPath, onResolv
               <input type="checkbox" checked={addGitignore} onChange={(e) => setAddGitignore(e.target.checked)} />
               Add a .gitignore (node_modules, .env, dist, target, .DS_Store)
             </label>
+          )}
+          {busy && (
+            // Always indeterminate: git reports no percentage for add/commit, so
+            // the detail line carries the staged-file count instead.
+            <div className="clone-progress" role="status" aria-live="polite">
+              <div className="clone-progress-head">
+                <span className="clone-progress-phase">{progress ? progress.phase : startingLabel}</span>
+              </div>
+              <div className="clone-progress-track">
+                <div className="clone-progress-bar indeterminate" />
+              </div>
+              {progress?.detail && <div className="clone-progress-detail">{progress.detail}</div>}
+            </div>
           )}
           {error && <div className="git-error">{error}</div>}
         </div>

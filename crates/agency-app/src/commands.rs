@@ -973,14 +973,22 @@ pub fn git_stash_drop(state: State<'_, AppState>, task_id: String, index: usize)
     agency_core::git::stash_drop(&wt, index).map_err(|e| e.to_string())
 }
 
+// async (not sync): the initial commit on a folder that isn't a repo yet means
+// `git add -A` over every file in it — minutes for a large tree. A sync command
+// runs on the main thread, which froze the whole UI with no feedback (see the
+// main-thread note at the top of this file); async runs it off-thread and
+// streams the staged-file count to the dialog (like clone).
 #[tauri::command]
-pub fn commit_repo(
+pub async fn commit_repo(
     state: State<'_, AppState>,
     repo_path: String,
     add_gitignore: bool,
+    on_progress: Channel<agency_core::setup::CloneProgress>,
 ) -> Result<(), String> {
     state
-        .commit_repo(std::path::Path::new(&repo_path), add_gitignore)
+        .commit_repo(std::path::Path::new(&repo_path), add_gitignore, move |p| {
+            let _ = on_progress.send(p);
+        })
         .map_err(|e| e.to_string())
 }
 

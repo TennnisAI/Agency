@@ -670,8 +670,13 @@ impl AppState {
         agency_core::setup::clone_repo_with_progress(url, parent_dir, on_progress)
     }
 
-    pub fn commit_repo(&self, repo_path: &Path, add_gitignore: bool) -> Result<()> {
-        agency_core::setup::initial_commit(repo_path, add_gitignore)
+    pub fn commit_repo(
+        &self,
+        repo_path: &Path,
+        add_gitignore: bool,
+        on_progress: impl FnMut(agency_core::setup::CloneProgress),
+    ) -> Result<()> {
+        agency_core::setup::initial_commit_with_progress(repo_path, add_gitignore, on_progress)
     }
 
     pub fn list_projects(&self) -> Result<Vec<Project>> {

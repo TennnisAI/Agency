@@ -116,8 +116,9 @@ fn github_auth_message(url: &str, gh: &GhCli) -> String {
     }
 }
 
-/// A single progress update parsed from `git clone --progress` output, streamed
-/// to the UI so a large clone shows movement instead of a frozen dialog.
+/// A single progress update from a long-running git command, streamed to the UI
+/// so it shows movement instead of a frozen dialog. Named for its first caller;
+/// clone, push, and the initial commit all report through it.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CloneProgress {
@@ -191,6 +192,33 @@ pub(crate) fn run_clone_streaming(
     flush_progress_line(&mut line, &mut full, on_progress);
     let status = child.wait()?;
     Ok((status.success(), full))
+}
+
+/// Run `cmd`, handing each line of its stdout to `on_line` as git prints it, and
+/// return `(success, full_stderr)`. Unlike [`run_clone_streaming`], progress here
+/// comes from stdout, so stderr is drained on a side thread — a git that's chatty
+/// there (one line-ending warning per file, say) would otherwise fill its pipe
+/// and wedge the stdout reader.
+fn run_streaming_stdout(
+    mut cmd: Command,
+    on_line: &mut dyn FnMut(&str),
+) -> std::io::Result<(bool, String)> {
+    use std::io::{BufRead, BufReader, Read};
+    use std::process::Stdio;
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = cmd.spawn()?;
+    let stdout = child.stdout.take().expect("stdout was piped");
+    let mut stderr = child.stderr.take().expect("stderr was piped");
+    let drain = std::thread::spawn(move || {
+        let mut s = String::new();
+        let _ = stderr.read_to_string(&mut s);
+        s
+    });
+    for line in BufReader::new(stdout).lines() {
+        on_line(&line?);
+    }
+    let status = child.wait()?;
+    Ok((status.success(), drain.join().unwrap_or_default()))
 }
 
 /// Emit `line` as a progress update (if it parses) and append it to `full`,
@@ -286,15 +314,68 @@ pub fn write_default_gitignore(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Stage everything and make the initial commit. Optionally writes a default
-/// `.gitignore` first. Falls back to `--allow-empty` when nothing is staged
-/// (empty or fully-ignored folder), so the repo still gains a usable `HEAD`.
+/// Emit a staged-file count every this many files. Per-file updates would flood
+/// the IPC channel on a large folder without telling the user anything more.
+const STAGE_PROGRESS_EVERY: u64 = 100;
+
+/// Stage everything and make the initial commit. See
+/// [`initial_commit_with_progress`]; this is the no-progress convenience wrapper.
 pub fn initial_commit(path: &Path, add_gitignore: bool) -> Result<()> {
+    initial_commit_with_progress(path, add_gitignore, |_| {})
+}
+
+/// Stage everything and make the initial commit, calling `on_progress` as it
+/// goes. Optionally writes a default `.gitignore` first. Falls back to
+/// `--allow-empty` when nothing is staged (empty or fully-ignored folder), so the
+/// repo still gains a usable `HEAD`.
+///
+/// Staging is the slow part: on a folder with a large tree, `git add -A` hashes
+/// every file, which is minutes of work the user was staring at a frozen window
+/// through. Git reports no percentage for `add` or `commit` the way it does for
+/// clone, so progress is a running count of staged files under hand-named phases
+/// — enough to show the app is alive and working.
+pub fn initial_commit_with_progress(
+    path: &Path,
+    add_gitignore: bool,
+    mut on_progress: impl FnMut(CloneProgress),
+) -> Result<()> {
     if add_gitignore {
         write_default_gitignore(path)?;
     }
-    git_checked(path, &["add", "-A"])?;
+    let staging = |detail: String| CloneProgress {
+        phase: "Staging files".to_string(),
+        percent: None,
+        detail,
+    };
+    on_progress(staging(String::new()));
+
+    // `--verbose` prints one line per staged path; counting those lines is the
+    // only progress git offers here. Match on emptiness rather than the "add '…'"
+    // prefix, which git localizes.
+    let mut cmd = Command::new("git");
+    cmd.args(["add", "-A", "--verbose"]).current_dir(path);
+    let mut count: u64 = 0;
+    let (ok, stderr) = run_streaming_stdout(cmd, &mut |line| {
+        if line.trim().is_empty() {
+            return;
+        }
+        count += 1;
+        if count.is_multiple_of(STAGE_PROGRESS_EVERY) {
+            on_progress(staging(format!("{count} files")));
+        }
+    })?;
+    if !ok {
+        bail!("git add -A failed: {}", stderr.trim());
+    }
+
+    on_progress(CloneProgress {
+        phase: "Writing commit".to_string(),
+        percent: None,
+        detail: format!("{count} files"),
+    });
     // Nothing staged → empty commit so HEAD exists and worktrees can branch.
+    // Probe the index rather than trusting `count`: on an already-initialized
+    // repo the user may have staged changes that `git add -A` had nothing to add.
     let staged = Command::new("git")
         .args(["diff", "--cached", "--quiet"])
         .current_dir(path)

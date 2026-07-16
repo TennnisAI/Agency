@@ -174,6 +174,19 @@ button > .btn-ico:not(:only-child) { margin-right: 4px; }
   background: color-mix(in srgb, var(--red) 9%, transparent);
   border: 1px solid color-mix(in srgb, var(--red) 35%, transparent);
   border-radius: 6px; padding: 6px 8px; margin: 6px 8px;
+  /* Safety net: even the one-line summary can't grow the panel unbounded. */
+  max-height: 96px; overflow-y: auto;
+}
+/* "Output" affordance in the error banner opening the full scrollable view. */
+.git-error-more { flex: none; align-self: center; color: var(--red); font-size: 11px; text-decoration: underline; }
+.git-error-more:hover { background: color-mix(in srgb, var(--red) 16%, transparent); color: var(--red); }
+/* Full git output view (long push errors): monospace, scrollable, roomy. */
+.git-output-modal { width: min(760px, 92vw); }
+.git-output-text {
+  margin: 0; max-height: 52vh; overflow: auto;
+  background: var(--crust); border: 1px solid var(--line); border-radius: 8px;
+  padding: 12px 14px; font-family: ui-monospace, Menlo, monospace; font-size: 12px;
+  line-height: 1.55; color: var(--text); white-space: pre-wrap; word-break: break-word;
 }
 .git-error-glyph {
   width: 15px; height: 15px; border-radius: 50%; flex: none; margin-top: 1px;
@@ -896,6 +909,11 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
   from { left: -40%; }
   to { left: 100%; }
 }
+/* Determinate push progress (reuses the clone-progress track/bar styles). */
+.git-push-progress { display: flex; flex-direction: column; gap: 5px; padding: 7px 10px; border-bottom: 1px solid var(--line); }
+.git-push-progress-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.git-push-progress-phase { font-size: 12px; color: var(--text); }
+.git-push-progress-pct { font-size: 12px; color: var(--sub0); font-variant-numeric: tabular-nums; }
 
 /* Popup menus (context menus + button dropdowns), fixed-position. */
 .menu-overlay { position: fixed; inset: 0; z-index: 60; }
@@ -948,7 +966,9 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
 .git-sections { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
 .git-section { display: flex; flex-direction: column; min-height: 0; }
 .git-section-changes { flex: 1; min-height: 0; }
-.git-section-body { overflow: auto; flex: 1; min-height: 0; }
+/* Reserve a gutter so the scrollbar can't cover the right-aligned group
+   actions (Stage All, etc.) or status letters when the list overflows. */
+.git-section-body { overflow: auto; flex: 1; min-height: 0; padding-right: 8px; scrollbar-gutter: stable; }
 .git-section-head {
   display: flex; align-items: center; gap: 6px; width: 100%;
   padding: 6px 10px; border-bottom: 1px solid var(--line);
@@ -1151,6 +1171,14 @@ input, textarea, code,
 .file-editor-wrap { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .file-editor-bar { display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-bottom: 1px solid var(--line); font-size: 12px; }
 .file-editor-path { opacity: 0.85; }
+/* Icon buttons in the editor bar (save / revert). */
+.file-editor-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 24px; padding: 0; border: none; border-radius: 5px;
+  background: none; color: var(--sub0); cursor: pointer;
+}
+.file-editor-btn:hover:not(:disabled) { background: var(--s0); color: var(--text); }
+.file-editor-btn:disabled { opacity: 0.35; cursor: default; }
 /* CodeMirror owns its own scrolling (incl. horizontal when word-wrap is off);
    keeping the host non-scrolling avoids a redundant outer scrollbar. */
 .file-editor-host { flex: 1; min-height: 0; overflow: hidden; }

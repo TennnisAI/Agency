@@ -8,6 +8,7 @@ import { FileRoot, readFile, readFileBase64, writeFile } from "../api";
 import { languageExtension } from "../lib/cmLanguage";
 import { editorChromeTheme, editorHighlight } from "../lib/cmTheme";
 import { getWordWrap } from "../lib/editorPrefs";
+import ConfirmDialog from "./ConfirmDialog";
 
 // How a file is displayed. Raster images, PDFs, and playable audio/video
 // render directly (no code view); md/html/svg open in the editor with a
@@ -71,6 +72,8 @@ export default function FileEditor({ root, path }: { root: FileRoot; path: strin
   // Preview toggle for md/html/svg; holds the rendered content when active.
   const [previewing, setPreviewing] = useState(false);
   const [previewContent, setPreviewContent] = useState("");
+  // Guards the destructive revert behind a confirmation when there are edits.
+  const [confirmRevert, setConfirmRevert] = useState(false);
 
   const vk = viewKind(path);
 
@@ -81,6 +84,25 @@ export default function FileEditor({ root, path }: { root: FileRoot; path: strin
     if (!view) return;
     try {
       await writeFile(root, path, view.state.doc.toString());
+      setDirty(false);
+    } catch (e) {
+      setErrorMsg(String(e));
+      setStatus("error");
+    }
+  };
+
+  // Reload the file from disk, discarding in-editor edits. Kept as a ref (like
+  // save) so the handler always reads the live view without re-subscribing.
+  const revert = useRef(async () => {});
+  revert.current = async () => {
+    const view = viewRef.current;
+    if (!view) return;
+    try {
+      const fc = await readFile(root, path);
+      if (fc.binary || fc.tooLarge) return;
+      view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: fc.text } });
+      // The dispatch above flips `dirty` back on via the update listener; clear
+      // it after so a freshly-reverted buffer reads as clean.
       setDirty(false);
     } catch (e) {
       setErrorMsg(String(e));
@@ -193,9 +215,16 @@ export default function FileEditor({ root, path }: { root: FileRoot; path: strin
           </div>
         )}
         {vk.kind === "text" && (
-          <button className="git-iconbtn" disabled={!dirty || status !== "ready"} onClick={() => void save.current()}>
-            Save
-          </button>
+          <>
+            <button className="file-editor-btn" title="Revert changes" aria-label="Revert changes"
+              disabled={!dirty || status !== "ready"} onClick={() => setConfirmRevert(true)}>
+              <RevertGlyph />
+            </button>
+            <button className="file-editor-btn" title="Save (⌘S)" aria-label="Save"
+              disabled={!dirty || status !== "ready"} onClick={() => void save.current()}>
+              <SaveGlyph />
+            </button>
+          </>
         )}
       </div>
       {status === "loading" && <div className="diff-empty">loading…</div>}
@@ -240,6 +269,42 @@ export default function FileEditor({ root, path }: { root: FileRoot; path: strin
           )}
         </>
       )}
+
+      {confirmRevert && (
+        <ConfirmDialog
+          title="Revert changes?"
+          body={`Discard unsaved changes to ${path.split("/").pop()} and reload it from disk. This can't be undone.`}
+          confirmLabel="Revert"
+          danger
+          onConfirm={() => { setConfirmRevert(false); void revert.current(); }}
+          onCancel={() => setConfirmRevert(false)}
+        />
+      )}
     </div>
+  );
+}
+
+// ── Toolbar glyphs (stroked SVG, matching the app's icon convention) ──────
+const eg = {
+  width: 15, height: 15, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor",
+  strokeWidth: 1.9, strokeLinecap: "round" as const, strokeLinejoin: "round" as const, "aria-hidden": true,
+};
+// Floppy-disk save glyph.
+function SaveGlyph() {
+  return (
+    <svg {...eg}>
+      <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+      <polyline points="17 21 17 13 7 13 7 21" />
+      <polyline points="7 3 7 8 15 8" />
+    </svg>
+  );
+}
+// Curved undo arrow: discard edits / reload from disk.
+function RevertGlyph() {
+  return (
+    <svg {...eg}>
+      <path d="M9 14 4 9l5-5" />
+      <path d="M4 9h11a5 5 0 0 1 0 10h-4" />
+    </svg>
   );
 }

@@ -31,6 +31,7 @@ export default function ChangesPanel({
   return (
     <div className="git-changes">
       <CommitBox
+        taskId={taskId}
         branch={branch?.branch ?? "?"}
         hasUpstream={!!branch?.upstream}
         hasRemote={!!branch?.hasRemote}

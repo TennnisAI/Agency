@@ -1,9 +1,15 @@
 import { useEffect, useState } from "react";
 
+// In-progress commit messages outlive the commit box being unmounted (switching
+// tabs, toggling the review pane). Keyed by repo so each keeps its own draft for
+// the session; cleared once the commit lands.
+const draftStore = new Map<string, string>();
+
 export default function CommitBox({
-  branch, hasUpstream, hasRemote, ahead, behind, busy = false, restoreMessage,
+  taskId, branch, hasUpstream, hasRemote, ahead, behind, busy = false, restoreMessage,
   onCommit, onCommitAll, onCommitPush, onAmend, onSync, onPublish, onPublishRemote,
 }: {
+  taskId: string;
   branch: string;
   hasUpstream: boolean;
   hasRemote: boolean;
@@ -22,10 +28,18 @@ export default function CommitBox({
   onPublish: () => void;
   onPublishRemote: (url: string) => void;
 }) {
-  const [message, setMessage] = useState("");
+  const [message, setMessageState] = useState(() => draftStore.get(taskId) ?? "");
   const [menu, setMenu] = useState(false);
   const [addingRemote, setAddingRemote] = useState(false);
   const [remoteUrl, setRemoteUrl] = useState("");
+  // Keep the per-repo draft store in sync so the message survives unmounts.
+  const setMessage = (m: string) => {
+    setMessageState(m);
+    if (m) draftStore.set(taskId, m);
+    else draftStore.delete(taskId);
+  };
+  // Switching repos without remounting: load the new repo's draft.
+  useEffect(() => { setMessageState(draftStore.get(taskId) ?? ""); }, [taskId]);
   useEffect(() => {
     if (restoreMessage) setMessage(restoreMessage.text);
   }, [restoreMessage]);

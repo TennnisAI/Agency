@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  FileChange, BranchInfo, HistoryItem, StashEntry,
-  gitStatus, gitBranchInfo, gitStashList, gitUndoLastCommit,
+  FileChange, BranchInfo, HistoryItem, StashEntry, CloneProgress,
+  gitStatus, gitBranchInfo, gitStashList, gitUndoLastCommit, gitPush,
 } from "../../api";
 import { toastSuccess } from "../../lib/toast";
 import ChangesPanel from "./ChangesPanel";
@@ -11,6 +11,7 @@ import DiffViewer from "./DiffViewer";
 import ReviewComments from "./ReviewComments";
 import BranchBar from "./BranchBar";
 import GitSections from "./GitSections";
+import GitOutputModal from "./GitOutputModal";
 import Resizer from "../Resizer";
 import { usePaneWidth } from "../../hooks/usePaneWidth";
 
@@ -43,9 +44,14 @@ export default function GitPanel({
   const [error, setError] = useState("");
   const [actionError, setActionError] = useState("");
   const [commentsKey, setCommentsKey] = useState(0);
+  // When set, the full git output (a long push error) is shown in a modal.
+  const [outputText, setOutputText] = useState<string | null>(null);
   // `busy` disables action buttons + shows the progress bar while a git op runs.
   // `historyKey` bumps after every action so the commit graph reloads.
   const [busy, setBusy] = useState(false);
+  // Streamed push progress (phase/percent), shown as a determinate bar while a
+  // push uploads. Null when no push is in flight.
+  const [pushProgress, setPushProgress] = useState<CloneProgress | null>(null);
   const [historyKey, setHistoryKey] = useState(0);
   // After Undo Last Commit, the undone message is restored into the commit box.
   const [restoreMessage, setRestoreMessage] = useState<{ text: string; nonce: number } | null>(null);
@@ -106,6 +112,16 @@ export default function GitPanel({
     return ok;
   }, [refresh]);
 
+  // Push streams `--progress` into `pushProgress` so a big upload shows a
+  // determinate bar instead of freezing (the command is async, off the main
+  // thread). Cleared when the push settles, success or failure.
+  const push = useCallback(async () => {
+    setPushProgress({ phase: "Starting push…", percent: null, detail: "" });
+    const ok = await act(() => gitPush(taskId, setPushProgress), "Pushed");
+    setPushProgress(null);
+    return ok;
+  }, [act, taskId]);
+
   const undoCommit = () => act(async () => {
     const message = await gitUndoLastCommit(taskId);
     // nonce: restoring the same message twice must still re-trigger the effect.
@@ -120,20 +136,55 @@ export default function GitPanel({
 
   const branchBar = (
     <BranchBar taskId={taskId} info={branch} busy={busy} onAct={act}
-      onRefresh={refresh} onUndoCommit={undoCommit} />
+      onPush={push} onRefresh={refresh} onUndoCommit={undoCommit} />
   );
-  // VS Code-style thin indeterminate progress bar while an operation runs; an
-  // invisible placeholder otherwise so the layout doesn't jump.
-  const progress = (
+  // While a push streams progress, show a determinate bar with phase/percent
+  // (like the clone dialog). For any other op, fall back to the VS Code-style
+  // thin indeterminate bar; an invisible placeholder otherwise so nothing jumps.
+  const progress = pushProgress ? (
+    <div className="git-push-progress" role="status" aria-live="polite">
+      <div className="git-push-progress-head">
+        <span className="git-push-progress-phase">{pushProgress.phase}</span>
+        {pushProgress.percent != null && (
+          <span className="git-push-progress-pct">{pushProgress.percent}%</span>
+        )}
+      </div>
+      <div className="clone-progress-track">
+        <div
+          className={`clone-progress-bar${pushProgress.percent == null ? " indeterminate" : ""}`}
+          style={pushProgress.percent != null ? { width: `${pushProgress.percent}%` } : undefined}
+        />
+      </div>
+      {pushProgress.detail && <div className="clone-progress-detail">{pushProgress.detail}</div>}
+    </div>
+  ) : (
     <div className={`git-progress ${busy ? "on" : ""}`}>{busy && <div className="git-progress-bar" />}</div>
   );
-  const errorBanner = (actionError || error) && (
+  // Keep the inline banner to a single summary line; a multi-line/long error
+  // (a rejected push, etc.) is one click away in a scrollable output view so it
+  // can't overflow and break the panel layout. Prefer the line that actually
+  // names the failure over git's generic "failed to push" wrapper.
+  const fullError = actionError || error;
+  const errorLines = fullError.split("\n").map((l) => l.trim()).filter(Boolean);
+  const errorSummary =
+    errorLines.find((l) => /rejected|error:|fatal:|denied|permission|forbidden|403|could not|remote:/i.test(l)) ??
+    errorLines.find((l) => !/failed:?$/i.test(l)) ??
+    errorLines[0] ?? fullError;
+  const errorHasDetail = fullError.trim() !== errorSummary;
+  const errorBanner = fullError && (
     <div className="git-error" role="alert">
       <span className="git-error-glyph">!</span>
-      <span className="git-error-text">{actionError || error}</span>
+      <span className="git-error-text">{errorSummary}</span>
+      {errorHasDetail && (
+        <button className="git-iconbtn git-error-more" title="View full output"
+          onClick={() => setOutputText(fullError)}>Output</button>
+      )}
       <button className="git-iconbtn" title="Dismiss" aria-label="Dismiss error"
         onClick={() => { setActionError(""); setError(""); }}>✕</button>
     </div>
+  );
+  const outputModal = outputText != null && (
+    <GitOutputModal title="Git output" text={outputText} onClose={() => setOutputText(null)} />
   );
 
   const changesPanel = (
@@ -156,6 +207,7 @@ export default function GitPanel({
         {errorBanner}
         {sections}
         {allowComments && <ReviewComments key={commentsKey} taskId={taskId} />}
+        {outputModal}
       </aside>
     );
   }
@@ -177,6 +229,7 @@ export default function GitPanel({
           {!selection && <div className="diff-empty">Select a file or commit.</div>}
         </div>
       </div>
+      {outputModal}
     </div>
   );
 }

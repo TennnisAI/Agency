@@ -141,6 +141,34 @@ pub fn create_dir(root: &Path, rel: &str) -> Result<()> {
     Ok(())
 }
 
+/// Append `rel` to the root's `.gitignore` as an anchored pattern, creating the
+/// file if it doesn't exist. Anchoring with a leading slash ("/src/foo") means
+/// the entry ignores this exact path rather than every same-named file in the
+/// tree; directories get a trailing slash. A no-op when the identical pattern is
+/// already present, so repeated use never piles up duplicates. Returns whether a
+/// new line was written (false = already ignored).
+pub fn add_to_gitignore(root: &Path, rel: &str) -> Result<bool> {
+    let target = resolve_within(root, rel)?;
+    let mut pattern = format!("/{}", rel.trim_start_matches('/'));
+    if target.is_dir() {
+        pattern.push('/');
+    }
+    let gi_path = root.join(".gitignore");
+    let existing = std::fs::read_to_string(&gi_path).unwrap_or_default();
+    if existing.lines().any(|l| l.trim() == pattern) {
+        return Ok(false);
+    }
+    let mut out = existing;
+    // Ensure the previous entry is newline-terminated before appending ours.
+    if !out.is_empty() && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str(&pattern);
+    out.push('\n');
+    std::fs::write(&gi_path, out).map_err(|e| anyhow!("cannot write .gitignore: {e}"))?;
+    Ok(true)
+}
+
 /// Rename/move `from` to `to`, both resolved within `root`. Refuses to clobber an
 /// existing destination.
 pub fn rename_path(root: &Path, from: &str, to: &str) -> Result<()> {
@@ -251,4 +279,43 @@ pub fn read_file_bytes(root: &Path, rel: &str) -> Result<BinaryFile> {
         return Ok(BinaryFile { bytes: Vec::new(), mime, too_large: true });
     }
     Ok(BinaryFile { bytes: std::fs::read(&path)?, mime, too_large: false })
+}
+
+#[cfg(test)]
+mod gitignore_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn add_to_gitignore_anchors_creates_and_dedupes() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("secret.env"), "x").unwrap();
+        std::fs::create_dir(root.join("build")).unwrap();
+
+        // First add creates the file with an anchored file pattern.
+        assert!(add_to_gitignore(root, "secret.env").unwrap());
+        let gi = std::fs::read_to_string(root.join(".gitignore")).unwrap();
+        assert_eq!(gi, "/secret.env\n");
+
+        // A directory gets a trailing slash.
+        assert!(add_to_gitignore(root, "build").unwrap());
+        let gi = std::fs::read_to_string(root.join(".gitignore")).unwrap();
+        assert_eq!(gi, "/secret.env\n/build/\n");
+
+        // Re-adding an existing pattern is a no-op and reports false.
+        assert!(!add_to_gitignore(root, "secret.env").unwrap());
+        assert_eq!(std::fs::read_to_string(root.join(".gitignore")).unwrap(), "/secret.env\n/build/\n");
+    }
+
+    #[test]
+    fn add_to_gitignore_appends_a_newline_when_missing() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join(".gitignore"), "node_modules").unwrap(); // no trailing newline
+        std::fs::write(root.join("a.log"), "x").unwrap();
+
+        add_to_gitignore(root, "a.log").unwrap();
+        assert_eq!(std::fs::read_to_string(root.join(".gitignore")).unwrap(), "node_modules\n/a.log\n");
+    }
 }

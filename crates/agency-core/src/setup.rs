@@ -135,9 +135,17 @@ pub struct CloneProgress {
 /// `\r` as well as `\n` before handing each line here.
 fn parse_clone_progress(line: &str) -> Option<CloneProgress> {
     // Phases that carry a percentage; "remote: " prefixes the server-side ones.
+    // Clone reports the "Receiving/Resolving/Updating" phases; push reports the
+    // local "Enumerating/Counting/Compressing/Writing objects" phases — this
+    // parser feeds both, so the union is listed here.
     const PHASES: &[&str] = &[
         "remote: Counting objects",
         "remote: Compressing objects",
+        "remote: Resolving deltas",
+        "Enumerating objects",
+        "Counting objects",
+        "Compressing objects",
+        "Writing objects",
         "Receiving objects",
         "Resolving deltas",
         "Updating files",

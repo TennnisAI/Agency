@@ -112,11 +112,34 @@ pub fn fetch_branch(repo: &Path, branch: &str) -> Result<()> {
 }
 
 pub fn push(worktree: &Path) -> Result<()> {
+    push_with_progress(worktree, |_| {})
+}
+
+/// Push the current branch to `origin` (setting upstream), streaming git's
+/// `--progress` output to `on_progress` so a large push shows movement instead
+/// of a frozen UI. On failure, the error carries git's raw stderr so the UI can
+/// surface the real reason (rejected push, protected branch, no permission, …).
+pub fn push_with_progress(
+    worktree: &Path,
+    mut on_progress: impl FnMut(crate::setup::CloneProgress),
+) -> Result<()> {
     let branch = git(worktree, &["rev-parse", "--abbrev-ref", "HEAD"])?
         .trim()
         .to_string();
-    git(worktree, &["push", "-u", "origin", &branch])?;
-    Ok(())
+    let mut cmd = Command::new("git");
+    cmd.arg("push")
+        .arg("--progress")
+        .arg("-u")
+        .arg("origin")
+        .arg(&branch)
+        .current_dir(worktree)
+        // No TTY in the app: fail fast rather than blocking on a credential prompt.
+        .env("GIT_TERMINAL_PROMPT", "0");
+    let (ok, stderr) = crate::setup::run_clone_streaming(cmd, &mut on_progress)?;
+    if ok {
+        return Ok(());
+    }
+    bail!("git push failed:\n{}", stderr.trim());
 }
 
 /// Whether an `origin` remote is configured.
@@ -322,11 +345,14 @@ pub fn log_graph(worktree: &Path, limit: usize) -> Result<Vec<HistoryItem>> {
         }
         let parents = f[1].split_whitespace().map(str::to_string).collect();
         // Keep the "HEAD -> " marker verbatim: the UI uses it to highlight the
-        // checked-out ref and to mark the HEAD commit in the graph.
+        // checked-out ref and to mark the HEAD commit in the graph. Drop
+        // `origin/HEAD`, git's symbolic pointer to the remote's default branch:
+        // it always sits on the same commit as `origin/<default>`, so showing
+        // both is redundant noise (VS Code hides it too).
         let refs = f[6]
             .split(',')
             .map(|r| r.trim().to_string())
-            .filter(|r| !r.is_empty())
+            .filter(|r| !r.is_empty() && r != "origin/HEAD")
             .collect();
         items.push(HistoryItem {
             hash: f[0].to_string(),
@@ -864,6 +890,24 @@ mod branch_tests {
         init_repo(repo);
         let items = log_graph(repo, 10).unwrap();
         assert!(items[0].refs.iter().any(|r| r.starts_with("HEAD -> ")), "refs: {:?}", items[0].refs);
+    }
+
+    #[test]
+    fn log_graph_hides_origin_head_but_keeps_origin_branch() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path();
+        init_repo(repo);
+        // A bare remote gives us real remote-tracking refs, including the
+        // symbolic origin/HEAD that `git remote set-head` creates.
+        let remote_dir = tempdir().unwrap();
+        run(remote_dir.path(), &["init", "-q", "--bare"]);
+        run(repo, &["remote", "add", "origin", remote_dir.path().to_str().unwrap()]);
+        run(repo, &["push", "-q", "-u", "origin", "main"]);
+        run(repo, &["remote", "set-head", "origin", "main"]);
+
+        let refs = &log_graph(repo, 10).unwrap()[0].refs;
+        assert!(refs.iter().any(|r| r == "origin/main"), "origin/main kept: {refs:?}");
+        assert!(!refs.iter().any(|r| r == "origin/HEAD"), "origin/HEAD hidden: {refs:?}");
     }
 
     #[test]

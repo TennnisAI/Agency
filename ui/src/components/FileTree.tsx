@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   DirEntry, FileRoot, listDir,
-  createFile, createDir, renamePath, trashPath, absPath, revealPath,
+  createFile, createDir, renamePath, trashPath, absPath, revealPath, addToGitignore,
 } from "../api";
 import { joinPath, parentPath, baseName } from "../lib/filePath";
 import { fileIcon } from "../lib/fileIcon";
@@ -131,6 +131,17 @@ export default function FileTree({
     }
   };
 
+  const addGitignore = async (path: string) => {
+    try {
+      const added = await addToGitignore(root, path);
+      toastInfo(added ? `Added ${baseName(path)} to .gitignore` : `${baseName(path)} is already in .gitignore`);
+      // A first-time add creates .gitignore at the root — refresh so it shows.
+      await loadDir("");
+    } catch (e) {
+      toastError(e, "Couldn't update .gitignore");
+    }
+  };
+
   const copyPath = async (path: string) => {
     try {
       const abs = await absPath(root, path);
@@ -155,6 +166,7 @@ export default function FileTree({
         { label: "Rename…", onClick: () => setDialog({ kind: "rename", orig: entry.path }) },
         { label: "Delete", danger: true, onClick: () => setConfirmDel({ path: entry.path, isDir: entry.isDir }) },
         { kind: "separator" },
+        { label: "Add to .gitignore", onClick: () => addGitignore(entry.path) },
         { label: revealLabel, onClick: () => revealPath(root, entry.path).catch((err) => toastError(err, "Couldn't reveal")) },
         { label: "Copy Path", onClick: () => copyPath(entry.path) },
         { label: "Copy Relative Path", onClick: () => { navigator.clipboard.writeText(entry.path).then(() => toastInfo("Path copied")).catch(() => {}); } },

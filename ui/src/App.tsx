@@ -13,7 +13,8 @@ import Resizer from "./components/Resizer";
 import Toasts from "./components/Toasts";
 import { useShortcuts } from "./hooks/useShortcuts";
 import { usePaneWidth } from "./hooks/usePaneWidth";
-import { Project, RunInfo, archiveRun, confirmQuit, discardRun, getSettings, listProjects, setMenuContext, setUiState } from "./api";
+import { Project, RunInfo, archiveRun, confirmQuit, discardRun, listProjects, setMenuContext, setUiState } from "./api";
+import { pickDefaultAgent } from "./lib/defaultAgent";
 
 const REPO_URL = "https://github.com/nic123/Agency";
 
@@ -31,17 +32,11 @@ function Shell() {
   const [quitPrompt, setQuitPrompt] = useState<number | null>(null);
   const sidebar = usePaneWidth("sidebar", 266, 200, 460);
 
-  // Picks the agent a menu/shortcut "New Agent" spawns: the Settings default if
-  // set, else the project's last-used agent, else claude. See body for the order.
+  // Picks the agent a menu/shortcut "New Agent" spawns — the shared pick
+  // order in lib/defaultAgent (Settings default → project's last-used → claude).
   async function newTaskDefaultAgent() {
     if (!selectedProjectId) return;
-    // An explicit choice in Settings wins; otherwise fall back to the project's
-    // last-used agent (default_agent is updated on every run creation), then claude.
-    const chosen = await getSettings().then((s) => s.defaultAgent).catch(() => null);
-    if (chosen) { createAgent(chosen); return; }
-    const projects = await listProjects().catch(() => null);
-    const current = projects?.find((p) => p.id === selectedProjectId);
-    createAgent(current?.default_agent ?? project?.default_agent ?? "claude");
+    createAgent(await pickDefaultAgent(selectedProjectId, project?.default_agent));
   }
 
   useShortcuts({

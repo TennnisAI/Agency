@@ -1,5 +1,5 @@
 use agency_core::profile::AgentProfile;
-use agency_core::registry::{Project, Registry};
+use agency_core::registry::{IssueStatus, Project, Registry};
 use agency_core::supervisor::AgentHandle;
 use agency_core::term::client::{Subscription, TermClient};
 use agency_core::term::SessionStatus;
@@ -81,6 +81,7 @@ pub struct RunInfo {
     pub race_id: Option<String>,
     pub loop_config: Option<agency_core::loops::LoopConfig>,
     pub loop_state: Option<agency_core::loops::LoopState>,
+    pub issue_id: Option<String>,
 }
 
 /// An extra agent tab sharing a run's worktree, as shown in the UI. `id` is
@@ -112,6 +113,9 @@ struct NewRunSpec<'a> {
     /// Present = create a looping run: spawn the agent headless (profile
     /// loop_args) and let the loop driver re-run it until checks pass.
     loop_config: Option<agency_core::loops::LoopConfig>,
+    /// Local issue this run is dispatched from (see start_issue_*): stored on
+    /// the run so merge/PR/discard can drive the issue's status.
+    issue_id: Option<String>,
 }
 
 /// What an "Approve & merge" would do, computed before running it so the UI can
@@ -708,7 +712,11 @@ impl AppState {
             reg.delete_run_sessions(&run.id)?;
             reg.delete_run(&run.id)?;
         }
-        self.registry.lock().unwrap().remove_project(id)?;
+        {
+            let reg = self.registry.lock().unwrap();
+            reg.delete_project_issues(id)?;
+            reg.remove_project(id)?;
+        }
         Ok(())
     }
 
@@ -758,6 +766,7 @@ impl AppState {
             race_id: run.race_id.clone(),
             loop_config: run.loop_config.clone(),
             loop_state: run.loop_state.clone(),
+            issue_id: run.issue_id.clone(),
         }
     }
 
@@ -780,6 +789,7 @@ impl AppState {
             title: None,
             existing_branch: None,
             loop_config: None,
+            issue_id: None,
         })
     }
 
@@ -874,6 +884,7 @@ impl AppState {
                 .as_ref()
                 .map(|_| agency_core::loops::LoopState::new(now_secs())),
             loop_config: spec.loop_config.clone(),
+            issue_id: spec.issue_id.clone(),
         };
         {
             let reg = self.registry.lock().unwrap();
@@ -912,6 +923,19 @@ impl AppState {
         base: &str,
         merge_target: Option<&str>,
     ) -> Result<Vec<RunInfo>> {
+        self.create_race_inner(project_id, prompt, agents, base, merge_target, None, None)
+    }
+
+    fn create_race_inner(
+        &self,
+        project_id: &str,
+        prompt: &str,
+        agents: &[String],
+        base: &str,
+        merge_target: Option<&str>,
+        title: Option<String>,
+        issue_id: Option<String>,
+    ) -> Result<Vec<RunInfo>> {
         if prompt.trim().is_empty() {
             bail!("racing needs a prompt — it is sent to every agent at launch");
         }
@@ -928,9 +952,10 @@ impl AppState {
                 base,
                 merge_target,
                 race_id: Some(race_id.clone()),
-                title: None,
+                title: title.clone(),
                 existing_branch: None,
                 loop_config: None,
+                issue_id: issue_id.clone(),
             })?);
         }
         Ok(out)
@@ -949,6 +974,22 @@ impl AppState {
         merge_target: Option<&str>,
         check_command: &str,
         max_attempts: u32,
+    ) -> Result<RunInfo> {
+        self.create_loop_inner(project_id, prompt, agent, base, merge_target, check_command, max_attempts, None, None)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn create_loop_inner(
+        &self,
+        project_id: &str,
+        prompt: &str,
+        agent: &str,
+        base: &str,
+        merge_target: Option<&str>,
+        check_command: &str,
+        max_attempts: u32,
+        title: Option<String>,
+        issue_id: Option<String>,
     ) -> Result<RunInfo> {
         if prompt.trim().is_empty() {
             bail!("a loop needs a prompt — it is re-sent to the agent on every attempt");
@@ -980,10 +1021,187 @@ impl AppState {
             base,
             merge_target,
             race_id: None,
-            title: None,
+            title,
             existing_branch: None,
             loop_config: Some(cfg),
+            issue_id,
         })
+    }
+
+    /// The prompt, run title, and default base for dispatching a local issue,
+    /// labeled with the project's issue key ("AGE-14 Fix login"). One place
+    /// composes these so run, race, and loop dispatch can't drift.
+    fn issue_dispatch(&self, issue_id: &str) -> Result<(agency_core::registry::Issue, String, String)> {
+        let (issue, key) = {
+            let reg = self.registry.lock().unwrap();
+            let issue = reg
+                .get_issue(issue_id)?
+                .ok_or_else(|| anyhow!("unknown issue: {issue_id}"))?;
+            let key = reg
+                .get_project(&issue.project_id)?
+                .and_then(|p| p.issue_key)
+                .unwrap_or_else(|| "ISSUE".to_string());
+            (issue, key)
+        };
+        let label = format!("{key}-{}", issue.seq);
+        let prompt = if issue.body.trim().is_empty() {
+            format!("Work on issue {label}: {title}", title = issue.title)
+        } else {
+            format!("Work on issue {label}: {title}\n\n{body}", title = issue.title, body = issue.body)
+        };
+        let title = format!("{label} {}", issue.title);
+        Ok((issue, prompt, title))
+    }
+
+    /// Resolve the base branch an issue-dispatched workspace is cut from:
+    /// the caller's explicit pick, else the repo's main/master.
+    fn issue_base(&self, project_id: &str, base: Option<&str>) -> Result<String> {
+        match base {
+            Some(b) if !b.trim().is_empty() => Ok(b.to_string()),
+            _ => agency_core::merge::detect_base(&self.project_repo(project_id)?),
+        }
+    }
+
+    /// Dispatch a local issue to an agent: the issue becomes the run's prompt
+    /// and title, the run links back via issue_id, and the issue advances to
+    /// in_progress. The agent-native counterpart of `create_run_from_issue`.
+    pub fn start_issue_run(
+        &self,
+        issue_id: &str,
+        agent: &str,
+        base: Option<&str>,
+        merge_target: Option<&str>,
+    ) -> Result<RunInfo> {
+        let (issue, prompt, title) = self.issue_dispatch(issue_id)?;
+        let base = self.issue_base(&issue.project_id, base)?;
+        let info = self.create_run_spec(NewRunSpec {
+            project_id: &issue.project_id,
+            prompt: &prompt,
+            agent,
+            base: &base,
+            merge_target,
+            race_id: None,
+            title: Some(title),
+            existing_branch: None,
+            loop_config: None,
+            issue_id: Some(issue.id.clone()),
+        })?;
+        self.registry
+            .lock()
+            .unwrap()
+            .advance_issue_status(&issue.id, IssueStatus::InProgress, now_secs())?;
+        Ok(info)
+    }
+
+    /// Race several agents on one issue; every attempt links the issue.
+    pub fn start_issue_race(
+        &self,
+        issue_id: &str,
+        agents: &[String],
+        base: Option<&str>,
+        merge_target: Option<&str>,
+    ) -> Result<Vec<RunInfo>> {
+        let (issue, prompt, title) = self.issue_dispatch(issue_id)?;
+        let base = self.issue_base(&issue.project_id, base)?;
+        let out = self.create_race_inner(
+            &issue.project_id,
+            &prompt,
+            agents,
+            &base,
+            merge_target,
+            Some(title),
+            Some(issue.id.clone()),
+        )?;
+        self.registry
+            .lock()
+            .unwrap()
+            .advance_issue_status(&issue.id, IssueStatus::InProgress, now_secs())?;
+        Ok(out)
+    }
+
+    /// Loop an agent on one issue until the check command passes.
+    pub fn start_issue_loop(
+        &self,
+        issue_id: &str,
+        agent: &str,
+        check_command: &str,
+        max_attempts: u32,
+        base: Option<&str>,
+        merge_target: Option<&str>,
+    ) -> Result<RunInfo> {
+        let (issue, prompt, title) = self.issue_dispatch(issue_id)?;
+        let base = self.issue_base(&issue.project_id, base)?;
+        let info = self.create_loop_inner(
+            &issue.project_id,
+            &prompt,
+            agent,
+            &base,
+            merge_target,
+            check_command,
+            max_attempts,
+            Some(title),
+            Some(issue.id.clone()),
+        )?;
+        self.registry
+            .lock()
+            .unwrap()
+            .advance_issue_status(&issue.id, IssueStatus::InProgress, now_secs())?;
+        Ok(info)
+    }
+
+    pub fn list_issues(&self, project_id: &str) -> Result<Vec<agency_core::registry::Issue>> {
+        self.registry.lock().unwrap().list_issues(project_id)
+    }
+
+    pub fn create_issue(
+        &self,
+        project_id: &str,
+        title: &str,
+        body: &str,
+        status: IssueStatus,
+    ) -> Result<agency_core::registry::Issue> {
+        if title.trim().is_empty() {
+            bail!("an issue needs a title");
+        }
+        self.registry
+            .lock()
+            .unwrap()
+            .create_issue(project_id, title.trim(), body, status, now_secs())
+    }
+
+    pub fn update_issue(
+        &self,
+        id: &str,
+        patch: &agency_core::registry::IssuePatch,
+    ) -> Result<agency_core::registry::Issue> {
+        if patch.title.as_deref().is_some_and(|t| t.trim().is_empty()) {
+            bail!("an issue needs a title");
+        }
+        self.registry
+            .lock()
+            .unwrap()
+            .update_issue(id, patch, now_secs())?
+            .ok_or_else(|| anyhow!("unknown issue: {id}"))
+    }
+
+    pub fn delete_issue(&self, id: &str) -> Result<()> {
+        self.registry.lock().unwrap().delete_issue(id)
+    }
+
+    /// The abandonment rule: when a linked run is discarded or archived and
+    /// it was the issue's last active run, the issue falls back to `todo`
+    /// (only from in_progress/in_review — see rollback_issue_to_todo).
+    fn maybe_rollback_issue(&self, issue_id: &str) {
+        let reg = self.registry.lock().unwrap();
+        match reg.runs_for_issue(issue_id) {
+            Ok(runs) if runs.is_empty() => {
+                if let Err(e) = reg.rollback_issue_to_todo(issue_id, now_secs()) {
+                    log::warn!("rolling back issue {issue_id}: {e}");
+                }
+            }
+            Ok(_) => {}
+            Err(e) => log::warn!("checking linked runs of issue {issue_id}: {e}"),
+        }
     }
 
     /// Spawn a workspace for a GitHub issue: the issue becomes the run's
@@ -1008,6 +1226,7 @@ impl AppState {
             title: Some(format!("#{number} {}", issue.title)),
             existing_branch: None,
             loop_config: None,
+            issue_id: None,
         })
     }
 
@@ -1038,6 +1257,7 @@ impl AppState {
             title: Some(format!("PR #{number} {}", pr.title)),
             existing_branch: Some(pr.head_ref_name.clone()),
             loop_config: None,
+            issue_id: None,
         })
     }
 
@@ -1268,6 +1488,7 @@ impl AppState {
             race_id: None,
             loop_config: None,
             loop_state: None,
+            issue_id: None,
         };
         self.registry.lock().unwrap().insert_run(&run)?;
         Ok(self.run_info(&run))
@@ -1457,6 +1678,7 @@ impl AppState {
             race_id: None,
             loop_config: None,
             loop_state: None,
+            issue_id: None,
         };
         self.registry.lock().unwrap().insert_run(&run)?;
         Ok(self.run_info(&run))
@@ -1543,9 +1765,14 @@ impl AppState {
                 let _ = WorktreeManager::new(repo).remove(id);
             }
         }
-        let reg = self.registry.lock().unwrap();
-        reg.delete_run_sessions(id)?;
-        reg.delete_run(id)?;
+        {
+            let reg = self.registry.lock().unwrap();
+            reg.delete_run_sessions(id)?;
+            reg.delete_run(id)?;
+        }
+        if let Some(issue_id) = &run.issue_id {
+            self.maybe_rollback_issue(issue_id);
+        }
         Ok(())
     }
 
@@ -1601,6 +1828,11 @@ impl AppState {
 
         WorktreeManager::new(repo).remove_keep_branch(id)?;
         self.registry.lock().unwrap().set_archived(id, Some(now_secs()))?;
+        // Archiving an unmerged run abandons it from the issue's point of
+        // view. A merged run's issue is already done, which rollback skips.
+        if let Some(issue_id) = &run.issue_id {
+            self.maybe_rollback_issue(issue_id);
+        }
         Ok(())
     }
 
@@ -2396,6 +2628,18 @@ impl AppState {
         let outcome = agency_core::merge::merge(&repo, &run.branch, &base)?;
         if matches!(outcome, agency_core::merge::MergeOutcome::Clean { .. }) {
             self.maybe_rebuild_knowledge_graph(&repo);
+            // A merged run completes its issue. Best-effort: the merge itself
+            // already succeeded and must not report failure.
+            if let Some(issue_id) = &run.issue_id {
+                if let Err(e) = self
+                    .registry
+                    .lock()
+                    .unwrap()
+                    .advance_issue_status(issue_id, IssueStatus::Done, now_secs())
+                {
+                    log::warn!("closing issue {issue_id} after merge: {e}");
+                }
+            }
         }
         Ok(outcome)
     }
@@ -2429,17 +2673,32 @@ impl AppState {
         }
         let gh = agency_core::gh::GhCli::default();
         agency_core::git::push(&worktree)?;
-        if let Some(existing) = gh.view_pr(&repo, &run.branch)? {
-            return Ok(existing);
+        let pr = match gh.view_pr(&repo, &run.branch)? {
+            Some(existing) => existing,
+            None => {
+                let base = agency_core::merge::resolve_target(run.merge_target.as_deref(), &repo)?;
+                let title = run
+                    .title
+                    .clone()
+                    .filter(|t| !t.is_empty())
+                    .unwrap_or_else(|| run.branch.clone());
+                let body = agency_core::git::branch_summary(&repo, &run.branch, &base)?;
+                gh.create_pr(&repo, &run.branch, &base, &title, &body)?
+            }
+        };
+        // A PR means the work awaits review. Best-effort: the PR exists
+        // either way, so an issue-status hiccup must not fail the call.
+        if let Some(issue_id) = &run.issue_id {
+            if let Err(e) = self
+                .registry
+                .lock()
+                .unwrap()
+                .advance_issue_status(issue_id, IssueStatus::InReview, now_secs())
+            {
+                log::warn!("advancing issue {issue_id} to in_review: {e}");
+            }
         }
-        let base = agency_core::merge::resolve_target(run.merge_target.as_deref(), &repo)?;
-        let title = run
-            .title
-            .clone()
-            .filter(|t| !t.is_empty())
-            .unwrap_or_else(|| run.branch.clone());
-        let body = agency_core::git::branch_summary(&repo, &run.branch, &base)?;
-        gh.create_pr(&repo, &run.branch, &base, &title, &body)
+        Ok(pr)
     }
 
     /// The run's PR (if any) plus its check rollup, polled by the UI.
@@ -3022,6 +3281,7 @@ mod tests {
             race_id: None,
             loop_config: None,
             loop_state: None,
+            issue_id: None,
         };
         assert_eq!(run.kind, "terminal");
         assert!(run.branch.is_empty());

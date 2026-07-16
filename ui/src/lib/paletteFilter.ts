@@ -1,5 +1,5 @@
 export interface PaletteEntry {
-  kind: "project" | "run";
+  kind: "project" | "run" | "action";
   id: string;
   projectId: string;
   label: string;

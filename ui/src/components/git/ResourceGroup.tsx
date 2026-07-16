@@ -5,16 +5,19 @@ import type { GitGroup } from "./status";
 import { useVirtualRows } from "../../hooks/useVirtualRows";
 
 export default function ResourceGroup({
-  id, label, changes, selectedPath, onSelectFile, onFilePrimary, onFileDiscard,
-  onStageAll, onUnstageAll, onDiscardAll,
+  id, label, changes, selectedPath, menuPath = null, onSelectFile, onFilePrimary, onFileDiscard,
+  onFileContextMenu, onStageAll, onUnstageAll, onDiscardAll,
 }: {
   id: GitGroup;
   label: string;
   changes: FileChange[];
   selectedPath: string | null;
+  // Path whose context menu is open, when it belongs to this group.
+  menuPath?: string | null;
   onSelectFile: (c: FileChange) => void;
   onFilePrimary: (c: FileChange) => void;
   onFileDiscard?: (c: FileChange) => void;
+  onFileContextMenu?: (c: FileChange, e: React.MouseEvent) => void;
   onStageAll?: () => void;
   onUnstageAll?: () => void;
   onDiscardAll?: () => void;
@@ -43,9 +46,11 @@ export default function ResourceGroup({
           {changes.slice(range.start, range.end).map((c) => (
             <FileRow key={`${id}:${c.path}`} change={c} group={id}
               selected={selectedPath === c.path}
+              menuOpen={menuPath === c.path}
               onSelect={() => onSelectFile(c)}
               onPrimary={() => onFilePrimary(c)}
-              onDiscard={onFileDiscard ? () => onFileDiscard(c) : undefined} />
+              onDiscard={onFileDiscard ? () => onFileDiscard(c) : undefined}
+              onContextMenu={onFileContextMenu ? (e) => onFileContextMenu(c, e) : undefined} />
           ))}
           {padBottom > 0 && <div style={{ height: padBottom, flexShrink: 0 }} aria-hidden />}
         </div>

@@ -1,19 +1,23 @@
 import { FileChange } from "../../api";
-import { decorate, type GitGroup } from "./status";
+import { decorateIn, type GitGroup } from "./status";
 import { fileIcon } from "../../lib/fileIcon";
 import { FileIcon } from "../fileIcons";
 
 export default function FileRow({
-  change, group, selected, onSelect, onPrimary, onDiscard,
+  change, group, selected, menuOpen = false, onSelect, onPrimary, onDiscard, onContextMenu,
 }: {
   change: FileChange;
   group: GitGroup;
   selected: boolean;
+  // This row's context menu is open — highlight it, since right-clicking
+  // doesn't move the selection and the menu acts on this row, not the selected one.
+  menuOpen?: boolean;
   onSelect: () => void;
   onPrimary: () => void;
   onDiscard?: () => void;
+  onContextMenu?: (e: React.MouseEvent) => void;
 }) {
-  const dec = decorate(group === "index" ? change.index : " ", group === "index" ? " " : change.worktree);
+  const dec = decorateIn(change, group);
   const slash = change.path.lastIndexOf("/");
   const dir = slash >= 0 ? change.path.slice(0, slash) : "";
   const name = slash >= 0 ? change.path.slice(slash + 1) : change.path;
@@ -22,7 +26,8 @@ export default function FileRow({
   const primaryGlyph = group === "index" ? "−" : "+";
   const deleted = dec.letter === "D";
   return (
-    <div className={`git-row ${selected ? "sel" : ""}`} onClick={onSelect} title={change.path}>
+    <div className={`git-row ${selected ? "sel" : ""} ${menuOpen ? "ctx" : ""}`}
+      onClick={onSelect} onContextMenu={onContextMenu} title={change.path}>
       <span className="git-fileicon" style={{ color: `var(${icon.color})` }}>
         <FileIcon kind={icon.kind} size={13} />
       </span>

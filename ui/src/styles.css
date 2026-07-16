@@ -856,6 +856,10 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
 .git-row { display: flex; align-items: center; gap: 8px; padding: 3px 6px 3px 20px; border-radius: 4px; cursor: pointer; font-size: 13px; }
 .git-row:hover { background: var(--s0); }
 .git-row.sel { background: var(--s1); }
+/* Right-clicked row. Its menu overlay swallows :hover, so mark the row the menu
+   acts on — it isn't necessarily the selected one. */
+.git-row.ctx { background: var(--s1); box-shadow: inset 0 0 0 1px var(--s2); }
+.git-row.ctx .git-row-actions { opacity: 1; }
 .git-letter { width: 12px; text-align: center; font-family: var(--mono); font-weight: 600; flex-shrink: 0; }
 .git-fileicon { display: flex; align-items: center; flex-shrink: 0; width: 14px; }
 .git-name { flex: 1; display: flex; align-items: baseline; gap: 7px; overflow: hidden; white-space: nowrap; color: var(--text); min-width: 0; }
@@ -918,7 +922,10 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
 /* Popup menus (context menus + button dropdowns), fixed-position. */
 .menu-overlay { position: fixed; inset: 0; z-index: 60; }
 .ctx-menu {
-  position: fixed; min-width: 210px; max-width: 320px; max-height: 70vh; overflow-y: auto;
+  /* Never wider/taller than the window itself, however narrow it gets: the JS
+     clamp can only shift the menu inward, it can't shrink one that doesn't fit. */
+  position: fixed; min-width: min(210px, calc(100vw - 8px));
+  max-width: min(320px, calc(100vw - 8px)); max-height: min(70vh, calc(100vh - 8px)); overflow-y: auto;
   background: var(--mantle); border: 1px solid var(--s1); border-radius: 8px;
   box-shadow: 0 12px 32px var(--shadow); padding: 4px;
   display: flex; flex-direction: column;

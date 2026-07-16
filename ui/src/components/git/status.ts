@@ -28,6 +28,15 @@ export function decorate(index: string, worktree: string): Decoration {
   }
 }
 
+/**
+ * How a change reads in the group it's rendered under: the staged group shows
+ * the index code, every other group the worktree code. A path with both staged
+ * and unstaged edits appears in two groups and decorates differently in each.
+ */
+export function decorateIn(c: FileChange, group: GitGroup): Decoration {
+  return decorate(group === "index" ? c.index : " ", group === "index" ? " " : c.worktree);
+}
+
 export function groupOf(c: FileChange): GitGroup {
   if (isConflict(c)) return "merge";
   if (c.index === "?" || c.worktree === "?") return "untracked";

@@ -5,6 +5,9 @@ export type MenuEntry =
   | { kind: "separator" }
   | { kind: "header"; label: string };
 
+/** Breathing room kept between the menu and the window edge. */
+const EDGE_GAP = 4;
+
 /**
  * Popup menu at fixed viewport coordinates (context menus and button dropdowns
  * both use this — fixed positioning escapes every overflow/scroll container).
@@ -17,28 +20,41 @@ export default function Menu({ x, y, items, onClose }: {
   onClose: () => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
-  const [pos, setPos] = useState({ x, y });
+  // Null until measured — see below.
+  const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
 
-  // Clamp into the viewport once rendered (menus opened near an edge flip inward).
+  // Clamp into the viewport so a menu opened near an edge shifts inward instead
+  // of spilling past it. The first pass renders at the origin, hidden, because a
+  // fixed element is shrink-to-fit against the room left to its right: measuring
+  // it at a near-the-edge x reports a squeezed width and clamping to that width
+  // would bake the squeeze in. Both passes run in a layout effect, before paint,
+  // so the origin pass never reaches the screen.
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
     const r = el.getBoundingClientRect();
     setPos({
-      x: Math.max(4, Math.min(x, window.innerWidth - r.width - 4)),
-      y: Math.max(4, Math.min(y, window.innerHeight - r.height - 4)),
+      x: Math.max(EDGE_GAP, Math.min(x, window.innerWidth - r.width - EDGE_GAP)),
+      y: Math.max(EDGE_GAP, Math.min(y, window.innerHeight - r.height - EDGE_GAP)),
     });
   }, [x, y]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    // A resize would strand the menu at coordinates measured against the old
+    // window; it's anchored to a row that has moved anyway, so just close it.
+    window.addEventListener("resize", onClose);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("resize", onClose);
+    };
   }, [onClose]);
 
   return (
     <div className="menu-overlay" onMouseDown={onClose} onContextMenu={(e) => { e.preventDefault(); onClose(); }}>
-      <div ref={ref} className="ctx-menu" style={{ left: pos.x, top: pos.y }}
+      <div ref={ref} className="ctx-menu"
+        style={pos ? { left: pos.x, top: pos.y } : { left: 0, top: 0, visibility: "hidden" }}
         onMouseDown={(e) => e.stopPropagation()}>
         {items.map((it, i) => {
           if (it.kind === "separator") return <div key={i} className="ctx-sep" />;

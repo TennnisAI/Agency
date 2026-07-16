@@ -632,6 +632,16 @@ export const sendReviewComments = (runId: string) =>
 
 export type FileRoot = { kind: "run"; id: string } | { kind: "project"; id: string };
 
+/**
+ * The file root behind a git panel's task token, mirroring the backend's
+ * `git_root`: a "project:<id>" token means the project's main checkout, any
+ * other token is a run's worktree.
+ */
+export const fileRootOf = (taskId: string): FileRoot =>
+  taskId.startsWith("project:")
+    ? { kind: "project", id: taskId.slice("project:".length) }
+    : { kind: "run", id: taskId };
+
 export interface DirEntry {
   name: string;
   isDir: boolean;

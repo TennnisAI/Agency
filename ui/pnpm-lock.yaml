@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      '@codemirror/autocomplete':
+        specifier: 6.20.3
+        version: 6.20.3
       '@codemirror/commands':
         specifier: ^6.10.4
         version: 6.10.4
@@ -44,6 +47,9 @@ importers:
       '@lezer/highlight':
         specifier: 1.2.3
         version: 1.2.3
+      '@lezer/markdown':
+        specifier: 1.6.4
+        version: 1.6.4
       '@tauri-apps/api':
         specifier: ^2
         version: 2.11.1

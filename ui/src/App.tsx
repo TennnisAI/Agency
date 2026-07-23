@@ -153,7 +153,11 @@ function Shell() {
         if (p) selectProject(p);
       }),
     ];
-    return () => { subs.forEach((s) => s.then((un) => un())); };
+    // The .catch matters: Tauri's injected event plugin throws
+    // ("listeners[eventId].handlerId") when an unlisten races a listener that
+    // was already removed (e.g. across remounts). A failed cleanup of a dead
+    // listener is a no-op — don't let it surface as an error toast.
+    return () => { subs.forEach((s) => s.then((un) => un()).catch(() => {})); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

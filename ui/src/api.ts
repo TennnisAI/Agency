@@ -710,3 +710,23 @@ export const absPath = (root: FileRoot, relPath: string) =>
   invoke<string>("abs_path", { root, relPath });
 export const revealPath = (root: FileRoot, relPath: string) =>
   invoke<void>("reveal_path", { root, relPath });
+
+// Actual on-disk name of the project's top-level docs folder (case-insensitive
+// match), or null when the project has none.
+export const detectDocsDir = (projectId: string) =>
+  invoke<string | null>("detect_docs_dir", { projectId });
+
+export interface DocFile {
+  // Path relative to the docs dir, "/"-separated.
+  path: string;
+  text: string;
+  tooLarge: boolean;
+}
+
+// Every markdown file under the docs dir in one call — feeds the docs index.
+export const readDocsCorpus = (root: FileRoot, docsDir: string) =>
+  invoke<DocFile[]>("read_docs_corpus", { root, docsDir });
+
+// Write base64 bytes to a NEW file (fails on an existing path). For image paste.
+export const writeFileBase64 = (root: FileRoot, relPath: string, b64: string) =>
+  invoke<void>("write_file_base64", { root, relPath, b64 });

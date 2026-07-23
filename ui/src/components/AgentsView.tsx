@@ -10,6 +10,7 @@ import AgentAddMenu from "./AgentAddMenu";
 import Resizer from "./Resizer";
 import { usePaneWidth } from "../hooks/usePaneWidth";
 import FilesView from "./FilesView";
+import DocsView from "./DocsView";
 import HomeView from "./HomeView";
 import IssuesView from "./IssuesView";
 import SidebarToggle from "./SidebarToggle";
@@ -89,6 +90,7 @@ export default function AgentsView({
         <div className="seg">
           <button className={tab === "agents" ? "on" : ""} onClick={() => setTab("agents")}>▦ Agents</button>
           <button className={tab === "issues" ? "on" : ""} onClick={() => setTab("issues")}>▧ Issues</button>
+          <button className={tab === "docs" ? "on" : ""} onClick={() => setTab("docs")}>▥ Docs</button>
           <button className={tab === "source" ? "on" : ""} onClick={() => setTab("source")}>⎇ Source Control</button>
           <button className={tab === "files" ? "on" : ""} onClick={() => setTab("files")}>▤ Files</button>
         </div>
@@ -116,7 +118,9 @@ export default function AgentsView({
           <div className="board empty">
             {tab === "source"
               ? "Select a project to browse its source control."
-              : "Select a project to browse its files."}
+              : tab === "docs"
+                ? "Select a project to browse its docs."
+                : "Select a project to browse its files."}
           </div>
         )
       ) : (
@@ -126,6 +130,12 @@ export default function AgentsView({
               project={project}
               onStartIssue={(issue, agentId, opts) => spawn(agentId, opts, issue)}
             />
+          )}
+
+          {tab === "docs" && (
+            <div className="source-wrap">
+              <DocsView project={project} />
+            </div>
           )}
 
           {tab === "source" && gitRoot && (

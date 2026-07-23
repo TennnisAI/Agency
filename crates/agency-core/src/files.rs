@@ -229,6 +229,112 @@ pub fn write_file(root: &Path, rel: &str, contents: &str) -> Result<()> {
     Ok(())
 }
 
+/// Find a top-level directory whose name matches `name` case-insensitively and
+/// return its actual on-disk name. An exact match wins over case variants;
+/// among variants the alphabetically first is chosen so the result is stable.
+pub fn find_dir_case_insensitive(root: &Path, name: &str) -> Result<Option<String>> {
+    let want = name.to_ascii_lowercase();
+    let mut candidates = Vec::new();
+    for entry in std::fs::read_dir(root)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let actual = entry.file_name().to_string_lossy().into_owned();
+        if actual.to_ascii_lowercase() == want {
+            if actual == name {
+                return Ok(Some(actual));
+            }
+            candidates.push(actual);
+        }
+    }
+    candidates.sort();
+    Ok(candidates.into_iter().next())
+}
+
+/// Write raw bytes to a new file at `rel`. Refuses to clobber an existing file
+/// (the caller retries with a different name) and rejects oversized payloads.
+pub fn write_file_bytes(root: &Path, rel: &str, bytes: &[u8]) -> Result<()> {
+    if bytes.len() as u64 > MAX_BINARY_BYTES {
+        bail!("file too large: {} bytes", bytes.len());
+    }
+    let path = resolve_within(root, rel)?;
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map_err(|e| anyhow!("cannot create {}: {e}", path.display()))?;
+    f.write_all(bytes)?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocFile {
+    /// Path relative to the scanned directory, `/`-separated.
+    pub path: String,
+    pub text: String,
+    pub too_large: bool,
+}
+
+/// Corpus caps: a docs folder is expected to be small; these guard against
+/// pointing the scan at something pathological. Hitting a cap stops the walk
+/// but still returns what was collected — the index is best-effort.
+const MAX_CORPUS_FILES: usize = 2000;
+const MAX_CORPUS_BYTES: u64 = 20_000_000;
+
+/// Recursively read every markdown file under `rel_dir` in one pass, for the
+/// docs index (links, tags, search). Hidden directories, symlinked directories,
+/// and node_modules are skipped; per-file and total caps apply. Files that
+/// aren't valid UTF-8 are skipped; oversized ones are listed with `too_large`
+/// set and empty text so the tree can still show them.
+pub fn read_markdown_corpus(root: &Path, rel_dir: &str) -> Result<Vec<DocFile>> {
+    let base = resolve_within(root, rel_dir)?;
+    let mut out = Vec::new();
+    let mut total: u64 = 0;
+    let mut stack = vec![(base.clone(), String::new())];
+    while let Some((dir, prefix)) = stack.pop() {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(it) => it,
+            Err(_) => continue, // unreadable subdir: skip, don't fail the corpus
+        };
+        for entry in entries {
+            let Ok(entry) = entry else { continue };
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let rel = if prefix.is_empty() { name.clone() } else { format!("{prefix}/{name}") };
+            let Ok(ft) = entry.file_type() else { continue };
+            if ft.is_dir() {
+                if name.starts_with('.') || name == "node_modules" {
+                    continue;
+                }
+                stack.push((entry.path(), rel));
+                continue;
+            }
+            if !ft.is_file() {
+                continue; // symlinks (incl. symlinked dirs) are skipped entirely
+            }
+            let lower = name.to_ascii_lowercase();
+            if !lower.ends_with(".md") && !lower.ends_with(".markdown") {
+                continue;
+            }
+            if out.len() >= MAX_CORPUS_FILES || total >= MAX_CORPUS_BYTES {
+                return Ok(out);
+            }
+            let Ok(meta) = entry.metadata() else { continue };
+            if meta.len() > MAX_FILE_BYTES {
+                out.push(DocFile { path: rel, text: String::new(), too_large: true });
+                continue;
+            }
+            let Ok(bytes) = std::fs::read(entry.path()) else { continue };
+            let Ok(text) = String::from_utf8(bytes) else { continue };
+            total += text.len() as u64;
+            out.push(DocFile { path: rel, text, too_large: false });
+        }
+    }
+    Ok(out)
+}
+
 #[derive(Debug, Clone)]
 pub struct BinaryFile {
     pub bytes: Vec<u8>,

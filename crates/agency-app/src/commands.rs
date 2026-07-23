@@ -1423,6 +1423,44 @@ pub struct BinaryContents {
     pub too_large: bool,
 }
 
+/// Case-insensitive lookup of a project's top-level `docs` directory. Returns
+/// the actual on-disk name (`"Docs"`, `"DOCS"`, ...) or None when absent, so the
+/// Docs tab can offer to create one.
+#[tauri::command]
+pub async fn detect_docs_dir(
+    state: State<'_, AppState>,
+    project_id: String,
+) -> Result<Option<String>, String> {
+    let base = state.project_repo_path(&project_id).map_err(|e| e.to_string())?;
+    agency_core::files::find_dir_case_insensitive(&base, "docs").map_err(|e| e.to_string())
+}
+
+/// All markdown files under a root's docs directory in one call — powers the
+/// Docs tab's link/tag/search index without N read_file round-trips per poll.
+#[tauri::command]
+pub async fn read_docs_corpus(
+    state: State<'_, AppState>,
+    root: FileRoot,
+    docs_dir: String,
+) -> Result<Vec<agency_core::files::DocFile>, String> {
+    let base = resolve_root(&state, &root)?;
+    agency_core::files::read_markdown_corpus(&base, &docs_dir).map_err(|e| e.to_string())
+}
+
+/// Write base64-decoded bytes to a new file (refuses to clobber). Used for
+/// pasting images into docs notes.
+#[tauri::command]
+pub fn write_file_base64(
+    state: State<'_, AppState>,
+    root: FileRoot,
+    rel_path: String,
+    b64: String,
+) -> Result<(), String> {
+    let base = resolve_root(&state, &root)?;
+    let bytes = STANDARD.decode(b64.as_bytes()).map_err(|e| e.to_string())?;
+    agency_core::files::write_file_bytes(&base, &rel_path, &bytes).map_err(|e| e.to_string())
+}
+
 /// Raw file bytes as base64, for the file browser's image/PDF previews.
 #[tauri::command]
 pub async fn read_file_base64(

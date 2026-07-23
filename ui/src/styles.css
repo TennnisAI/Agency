@@ -1568,3 +1568,168 @@ input, textarea, code,
 /* Home overview, issues mode */
 .home-issues { display: flex; flex-direction: column; padding: 2px 4px 6px; }
 .issue-row.home-issue .issue-status-pill { visibility: visible; }
+
+/* ── Docs tab ─────────────────────────────────────────────────── */
+.docs-empty { flex-direction: column; gap: 10px; text-align: center; padding: 40px; }
+.docs-empty-title { font-size: 15px; color: var(--text); }
+.docs-empty-sub { font-size: 12.5px; color: var(--sub0); max-width: 420px; line-height: 1.5; }
+.docs-empty-sub code { background: var(--crust); border-radius: 4px; padding: 1px 5px; }
+.docs-empty .btn-primary { margin-top: 6px; }
+
+.docs-search { padding: 8px 8px 6px; border-bottom: 1px solid var(--line); }
+.docs-search-input {
+  width: 100%; box-sizing: border-box;
+  background: var(--mantle); border: 1px solid var(--s1); border-radius: 7px;
+  color: var(--text); padding: 5px 9px; font-family: var(--sans); font-size: 12px;
+}
+.docs-search-input:focus { outline: none; border-color: var(--blue); }
+.docs-search-results { display: flex; flex-direction: column; padding: 4px; }
+.docs-search-none { color: var(--o0); font-size: 12px; padding: 10px 12px; }
+.docs-search-hit {
+  display: flex; flex-direction: column; gap: 1px;
+  padding: 5px 8px; border-radius: 6px; cursor: pointer;
+}
+.docs-search-hit:hover { background: var(--s0); }
+.docs-search-hit-title { font-size: 12px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.docs-search-hit-snippet { font-size: 11px; color: var(--sub0); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.docs-editor-col { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.docs-editor-head { display: flex; align-items: center; gap: 8px; padding: 4px 10px; border-bottom: 1px solid var(--line); font-size: 12px; }
+.docs-editor-path { opacity: 0.85; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.docs-save-state { font-size: 11px; color: var(--o0); }
+.docs-save-state.saving { color: var(--sub0); }
+.docs-editor-host { flex: 1; min-height: 0; overflow: hidden; }
+.docs-editor-host .cm-editor { height: 100%; }
+.docs-editor-host .cm-scroller { overflow: auto; }
+.docs-editor-host .cm-content { user-select: text; -webkit-user-select: text; }
+
+/* ── Docs live preview (CodeMirror decorations) ───────────────── */
+.docs-editor-host .lp-h { font-weight: 650; line-height: 1.3; }
+.docs-editor-host .lp-h1 { font-size: 1.6em; font-weight: 700; padding: 0.5em 0 0.2em; }
+.docs-editor-host .lp-h2 { font-size: 1.35em; padding: 0.45em 0 0.15em; }
+.docs-editor-host .lp-h3 { font-size: 1.18em; padding: 0.4em 0 0.1em; }
+.docs-editor-host .lp-h4 { font-size: 1.06em; padding: 0.3em 0 0.1em; }
+.docs-editor-host .lp-h5 { font-size: 1em; padding: 0.25em 0 0.05em; }
+.docs-editor-host .lp-h6 { font-size: 0.95em; color: var(--sub0); padding: 0.25em 0 0.05em; }
+.docs-editor-host .lp-mark { color: var(--o0); }
+.docs-editor-host .lp-em { font-style: italic; }
+.docs-editor-host .lp-strong { font-weight: 700; }
+.docs-editor-host .lp-strike { text-decoration: line-through; color: var(--sub0); }
+/* Code (and callout) backgrounds live on ::before pseudo-elements at
+   z-index -3 so drawSelection's selection layer (z-index -1 in the scroller's
+   stacking context) paints ABOVE them — a plain background on the span/line
+   is in-flow and would occlude the selection (the "can't see selection over
+   code" bug; WebKit also paints native ::selection behind such backgrounds,
+   which is why drawSelection + layered backgrounds is the only working combo). */
+.docs-editor-host .lp-code {
+  font-family: var(--mono); font-size: 0.88em;
+  padding: 1px 2px; position: relative;
+}
+.docs-editor-host .lp-code::before {
+  content: ""; position: absolute; inset: 0; z-index: -3;
+  background: var(--crust); border-radius: 4px;
+}
+.docs-editor-host .lp-codeblock {
+  font-family: var(--mono); font-size: 0.85em;
+  position: relative;
+}
+.docs-editor-host .lp-codeblock::before {
+  content: ""; position: absolute; inset: 0; z-index: -3;
+  background: var(--crust);
+}
+.docs-editor-host .lp-fence { color: var(--o0); }
+.docs-editor-host .lp-quote {
+  border-left: 3px solid var(--s1); padding-left: 12px; color: var(--sub0);
+}
+.docs-editor-host .lp-link { color: var(--teal); cursor: pointer; }
+.docs-editor-host .lp-link:hover { text-decoration: underline; }
+.docs-editor-host .lp-wikilink { color: var(--blue); cursor: pointer; }
+.docs-editor-host .lp-wikilink:hover { text-decoration: underline; }
+.docs-editor-host .lp-wikilink.unresolved {
+  color: var(--o1); text-decoration: underline dashed; text-underline-offset: 3px;
+}
+.docs-editor-host .lp-tag {
+  color: var(--sub0); padding: 1px 7px; font-size: 0.85em;
+  cursor: pointer; position: relative;
+}
+.docs-editor-host .lp-tag::before {
+  content: ""; position: absolute; inset: 0; z-index: -3;
+  background: var(--s1); border-radius: 999px;
+}
+.docs-editor-host .lp-tag:hover { color: var(--text); }
+.docs-editor-host .lp-checkbox {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 14px; height: 14px; border-radius: 4px; margin: 0 2px;
+  border: 1.5px solid var(--s1); vertical-align: -2px; cursor: pointer;
+  background: var(--mantle); color: var(--crust);
+}
+.docs-editor-host .lp-checkbox.checked { background: var(--blue); border-color: var(--blue); }
+.docs-editor-host .lp-bullet { color: var(--sub0); }
+.docs-editor-host .lp-hr {
+  display: inline-block; width: 100%; height: 0;
+  border-top: 1px solid var(--line); vertical-align: middle;
+}
+
+/* ── Docs side panel (outline + backlinks) ────────────────────── */
+.docs-side { min-width: 180px; flex-shrink: 0; border-left: 1px solid var(--line); overflow-y: auto; }
+.docs-side-body { display: flex; flex-direction: column; padding: 4px 0 20px; }
+.docs-side-head {
+  display: flex; align-items: center; gap: 6px; width: 100%;
+  background: none; border: none; cursor: pointer; text-align: left;
+  padding: 7px 10px 5px; color: var(--o1); font-family: var(--sans);
+  font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em;
+}
+.docs-side-head:hover { color: var(--sub0); }
+.docs-side-chev { width: 10px; display: inline-block; }
+.docs-side-count { color: var(--o0); font-weight: 400; }
+.docs-side-section { display: flex; flex-direction: column; padding: 0 4px 6px; }
+.docs-side-none { color: var(--o0); font-size: 12px; padding: 2px 12px 4px; }
+.docs-outline-row {
+  font-size: 12px; color: var(--sub0); padding: 3px 8px; border-radius: 5px;
+  cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.docs-outline-row:hover { background: var(--s0); color: var(--text); }
+.docs-backlink-row {
+  display: flex; flex-direction: column; gap: 1px;
+  padding: 5px 8px; border-radius: 6px; cursor: pointer;
+}
+.docs-backlink-row:hover { background: var(--s0); }
+.docs-backlink-title { font-size: 12px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.docs-backlink-snippet { font-size: 11px; color: var(--sub0); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-editor-btn.on { color: var(--blue); }
+
+/* ── Docs images & callouts ───────────────────────────────────── */
+.docs-editor-host .lp-img-wrap { display: inline-block; max-width: 100%; }
+.docs-editor-host .lp-img-wrap.loading,
+.docs-editor-host .lp-img-wrap.missing { color: var(--o0); font-size: 0.85em; font-style: italic; }
+.docs-editor-host .lp-img-wrap.missing::after { content: " (image not found)"; }
+.docs-editor-host .lp-img { max-width: 100%; max-height: 480px; border-radius: 5px; display: block; margin: 4px 0; }
+.docs-editor-host .lp-callout { border-left-width: 3px; border-left-style: solid; padding-left: 12px; color: var(--text); position: relative; }
+.docs-editor-host .lp-callout::before { content: ""; position: absolute; inset: 0; z-index: -3; }
+.docs-editor-host .lp-callout-note { border-left-color: var(--blue); }
+.docs-editor-host .lp-callout-note::before { background: color-mix(in srgb, var(--blue) 8%, transparent); }
+.docs-editor-host .lp-callout-tip { border-left-color: var(--green); }
+.docs-editor-host .lp-callout-tip::before { background: color-mix(in srgb, var(--green) 8%, transparent); }
+.docs-editor-host .lp-callout-warning { border-left-color: var(--yellow); }
+.docs-editor-host .lp-callout-warning::before { background: color-mix(in srgb, var(--yellow) 8%, transparent); }
+.docs-editor-host .lp-callout-danger { border-left-color: var(--red); }
+.docs-editor-host .lp-callout-danger::before { background: color-mix(in srgb, var(--red) 8%, transparent); }
+.docs-editor-host .lp-callout-title { font-weight: 650; }
+.docs-editor-host .lp-callout-title-note { color: var(--blue); }
+.docs-editor-host .lp-callout-title-tip { color: var(--green); }
+.docs-editor-host .lp-callout-title-warning { color: var(--yellow); }
+.docs-editor-host .lp-callout-title-danger { color: var(--red); }
+
+/* CodeMirror classes our editors as "light" (no theme passes {dark:true}), so
+   its light base theme paints the FOCUSED selection #d7d4f0 (near-white) with a
+   5-class selector that out-specifies editorChromeTheme's var(--s1) rule —
+   white-on-white on dark themes. Pin the selection layer to the theme tone for
+   both the Files and Docs editors, focused or not. */
+.file-editor-host .cm-selectionLayer .cm-selectionBackground,
+.docs-editor-host .cm-selectionLayer .cm-selectionBackground { background: var(--s1) !important; }
+
+/* Prose font for docs notes. The shared CM chrome theme pins the editor to
+   --mono via injected styles that tie on specificity, so these need !important
+   to win; code spans then re-claim the mono font the same way. */
+.docs-editor-host .cm-scroller, .docs-editor-host .cm-content { font-family: -apple-system, system-ui, sans-serif !important; }
+.docs-editor-host .lp-code, .docs-editor-host .lp-codeblock, .docs-editor-host .lp-fence { font-family: var(--mono) !important; }

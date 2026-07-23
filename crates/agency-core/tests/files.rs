@@ -117,6 +117,73 @@ fn read_file_flags_invalid_utf8_as_binary() {
     assert_eq!(fc.text, "");
 }
 
+#[test]
+fn find_dir_case_insensitive_matches_variants() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir(dir.path().join("Docs")).unwrap();
+    assert_eq!(files::find_dir_case_insensitive(dir.path(), "docs").unwrap(), Some("Docs".into()));
+
+    // An exact-case match wins over a variant. Only testable on a
+    // case-sensitive filesystem (macOS default is case-insensitive, so
+    // creating "docs" next to "Docs" fails there).
+    if fs::create_dir(dir.path().join("docs")).is_ok() {
+        assert_eq!(files::find_dir_case_insensitive(dir.path(), "docs").unwrap(), Some("docs".into()));
+    }
+}
+
+#[test]
+fn find_dir_case_insensitive_ignores_files_and_absence() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("docs"), "a file, not a dir").unwrap();
+    assert_eq!(files::find_dir_case_insensitive(dir.path(), "docs").unwrap(), None);
+    let empty = tempfile::tempdir().unwrap();
+    assert_eq!(files::find_dir_case_insensitive(empty.path(), "docs").unwrap(), None);
+}
+
+#[test]
+fn read_markdown_corpus_walks_nested_md_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let docs = dir.path().join("docs");
+    fs::create_dir_all(docs.join("guides/.hidden")).unwrap();
+    fs::create_dir(docs.join("node_modules")).unwrap();
+    fs::write(docs.join("index.md"), "# Index\n").unwrap();
+    fs::write(docs.join("guides/setup.MD"), "# Setup\n").unwrap();
+    fs::write(docs.join("guides/notes.markdown"), "notes\n").unwrap();
+    fs::write(docs.join("guides/image.png"), [0u8, 1]).unwrap();
+    fs::write(docs.join("guides/.hidden/skip.md"), "hidden\n").unwrap();
+    fs::write(docs.join("node_modules/skip.md"), "dep\n").unwrap();
+
+    let mut got = files::read_markdown_corpus(dir.path(), "docs").unwrap();
+    got.sort_by(|a, b| a.path.cmp(&b.path));
+    let paths: Vec<_> = got.iter().map(|d| d.path.as_str()).collect();
+    assert_eq!(paths, vec!["guides/notes.markdown", "guides/setup.MD", "index.md"]);
+    assert_eq!(got[2].text, "# Index\n");
+    assert!(got.iter().all(|d| !d.too_large));
+}
+
+#[test]
+fn read_markdown_corpus_rejects_traversal_and_flags_oversize() {
+    let dir = tempfile::tempdir().unwrap();
+    assert!(files::read_markdown_corpus(dir.path(), "../elsewhere").is_err());
+
+    let docs = dir.path().join("docs");
+    fs::create_dir(&docs).unwrap();
+    fs::write(docs.join("big.md"), "x".repeat(2_000_001)).unwrap();
+    let got = files::read_markdown_corpus(dir.path(), "docs").unwrap();
+    assert_eq!(got.len(), 1);
+    assert!(got[0].too_large);
+    assert_eq!(got[0].text, "");
+}
+
+#[test]
+fn write_file_bytes_creates_and_refuses_clobber() {
+    let dir = tempfile::tempdir().unwrap();
+    files::write_file_bytes(dir.path(), "img.png", &[1u8, 2, 3]).unwrap();
+    assert_eq!(fs::read(dir.path().join("img.png")).unwrap(), vec![1u8, 2, 3]);
+    assert!(files::write_file_bytes(dir.path(), "img.png", &[9u8]).is_err());
+    assert!(files::write_file_bytes(dir.path(), "../evil.png", &[1u8]).is_err());
+}
+
 #[cfg(unix)]
 #[test]
 fn rejects_symlink_escape() {

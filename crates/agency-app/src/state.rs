@@ -2917,6 +2917,43 @@ impl AppState {
         agency_core::gh::GhCli::default().unresolve_review_thread(&repo, thread_id)
     }
 
+    /// Open a PR from an existing branch in the project repo (the Pull Requests
+    /// tab's "New pull request" flow, not tied to any run). Pushes the branch
+    /// first, defaults the base to the repo's merge target and the title/body
+    /// from the branch when not given. If a PR already exists for the branch it
+    /// is returned instead of erroring.
+    pub fn create_pr_from_branch(
+        &self,
+        project_id: &str,
+        head: &str,
+        base: Option<&str>,
+        title: Option<&str>,
+        body: Option<&str>,
+    ) -> Result<agency_core::gh::PrInfo> {
+        let repo = self.project_repo(project_id)?;
+        let gh = agency_core::gh::GhCli::default();
+        if let Some(existing) = gh.view_pr(&repo, head)? {
+            return Ok(existing);
+        }
+        let base = match base {
+            Some(b) if !b.trim().is_empty() => b.to_string(),
+            _ => agency_core::merge::resolve_target(None, &repo)?,
+        };
+        if head == base {
+            bail!("a PR's branch and base must differ (both are {base})");
+        }
+        agency_core::git::push_branch(&repo, head)?;
+        let title = match title {
+            Some(t) if !t.trim().is_empty() => t.to_string(),
+            _ => head.to_string(),
+        };
+        let body = match body {
+            Some(b) if !b.trim().is_empty() => b.to_string(),
+            _ => agency_core::git::branch_summary(&repo, head, &base)?,
+        };
+        gh.create_pr(&repo, head, &base, &title, &body)
+    }
+
     /// The PR number for a run's branch, if a PR exists — lets the agent's
     /// Approve window deep-link into the review view.
     pub fn pr_number_for_run(&self, id: &str) -> Result<Option<u64>> {

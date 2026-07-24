@@ -599,6 +599,13 @@ export const unresolvePrThread = (projectId: string, threadId: string) =>
   invoke<void>("unresolve_pr_thread", { projectId, threadId });
 export const prNumberForRun = (taskId: string) =>
   invoke<number | null>("pr_number_for_run", { taskId });
+export const createPrFromBranch = (
+  projectId: string,
+  head: string,
+  base: string | null,
+  title: string | null,
+  body: string | null,
+) => invoke<PrInfo>("create_pr_from_branch", { projectId, head, base, title, body });
 
 export const mergePreview = (taskId: string) =>
   invoke<MergePreview>("merge_preview", { taskId });

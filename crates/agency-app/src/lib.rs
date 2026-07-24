@@ -158,6 +158,7 @@ pub fn run() {
             commands::resolve_pr_thread,
             commands::unresolve_pr_thread,
             commands::pr_number_for_run,
+            commands::create_pr_from_branch,
             commands::list_mcp_servers,
             commands::save_mcp_servers,
             commands::get_knowledge_config,

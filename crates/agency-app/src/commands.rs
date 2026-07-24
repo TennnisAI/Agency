@@ -625,6 +625,20 @@ pub async fn pr_number_for_run(
 }
 
 #[tauri::command]
+pub async fn create_pr_from_branch(
+    state: State<'_, AppState>,
+    project_id: String,
+    head: String,
+    base: Option<String>,
+    title: Option<String>,
+    body: Option<String>,
+) -> Result<agency_core::gh::PrInfo, String> {
+    state
+        .create_pr_from_branch(&project_id, &head, base.as_deref(), title.as_deref(), body.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub fn create_race(
     state: State<'_, AppState>,
     project_id: String,

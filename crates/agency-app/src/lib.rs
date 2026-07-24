@@ -1,4 +1,5 @@
 mod activity;
+mod agent_catalog;
 mod commands;
 mod lifecycle;
 mod looper;
@@ -135,6 +136,10 @@ pub fn run() {
             commands::list_profiles,
             commands::save_profile,
             commands::delete_profile,
+            commands::agent_onboarding_needed,
+            commands::list_agent_catalog,
+            commands::enable_agent_profiles,
+            commands::complete_agent_onboarding,
             commands::get_settings,
             commands::save_settings,
             commands::merge_preview,

@@ -405,6 +405,24 @@ export const listProfiles = () => invoke<AgentProfile[]>("list_profiles");
 export const saveProfile = (profile: AgentProfile) =>
   invoke<void>("save_profile", { profile });
 export const deleteProfile = (name: string) => invoke<void>("delete_profile", { name });
+
+/** One built-in agent from the catalog (may or may not be enabled yet). */
+export interface CatalogEntry {
+  id: string;
+  command: string;
+  resumeArgs: string[] | null;
+  loopArgs: string[] | null;
+  enabled: boolean;
+  installed: boolean;
+}
+
+export const agentOnboardingNeeded = () => invoke<boolean>("agent_onboarding_needed");
+export const listAgentCatalog = () => invoke<CatalogEntry[]>("list_agent_catalog");
+export const enableAgentProfiles = (ids: string[]) =>
+  invoke<void>("enable_agent_profiles", { ids });
+export const completeAgentOnboarding = (ids: string[]) =>
+  invoke<void>("complete_agent_onboarding", { ids });
+
 export const getSettings = () => invoke<ProviderSettings>("get_settings");
 export const saveSettings = (settings: ProviderSettings) =>
   invoke<void>("save_settings", { settings });

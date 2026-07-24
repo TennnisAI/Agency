@@ -1,25 +1,108 @@
 mod common;
 
 #[test]
-fn seeds_builtin_resume_recipes() {
+fn fresh_db_seeds_only_shell() {
     let dir = tempfile::tempdir().unwrap();
     let state = common::state(&dir);
+    let profiles = state.list_profiles().unwrap();
+    assert_eq!(profiles.len(), 1);
+    assert_eq!(profiles[0].name, "shell");
+    assert!(state.agent_onboarding_needed().unwrap());
+}
+
+#[test]
+fn enable_catalog_profiles_writes_recipes() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = common::state(&dir);
+    state
+        .enable_agent_profiles(&["claude".into(), "codex".into(), "cursor".into(), "gemini".into()])
+        .unwrap();
     let profiles = state.list_profiles().unwrap();
     let get = |name: &str| profiles.iter().find(|p| p.name == name).cloned().unwrap();
     assert_eq!(get("claude").resume_args, Some(vec!["--continue".into()]));
     assert_eq!(get("codex").resume_args, Some(vec!["resume".into(), "--last".into()]));
-    assert_eq!(get("pi").resume_args, Some(vec!["--continue".into()]));
-    assert_eq!(get("opencode").resume_args, Some(vec!["--continue".into()]));
-    assert_eq!(get("copilot").resume_args, Some(vec!["--continue".into()]));
     assert_eq!(get("cursor").command, "cursor-agent");
     assert_eq!(get("cursor").resume_args, None);
-    assert_eq!(get("hermes").resume_args, None);
+    assert_eq!(get("gemini").command, "gemini");
+    assert!(get("gemini").args.is_empty());
 }
 
 #[test]
-fn seeds_three_agent_profiles_with_bare_commands() {
+fn deleted_builtin_stays_gone_across_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let state = common::state(&dir);
+        state.enable_agent_profiles(&["claude".into(), "pi".into()]).unwrap();
+        state.delete_profile("claude").unwrap();
+        assert!(state.list_profiles().unwrap().iter().all(|p| p.name != "claude"));
+    }
+    // Re-open on the same DB — claude must not be re-seeded.
+    let state = common::state(&dir);
+    assert!(state.list_profiles().unwrap().iter().all(|p| p.name != "claude"));
+    assert!(state.list_profiles().unwrap().iter().any(|p| p.name == "pi"));
+}
+
+#[test]
+fn complete_onboarding_enables_and_clears_flag() {
     let dir = tempfile::tempdir().unwrap();
     let state = common::state(&dir);
+    assert!(state.agent_onboarding_needed().unwrap());
+    state
+        .complete_agent_onboarding(&["hermes".into(), "kimi".into(), "crush".into()])
+        .unwrap();
+    assert!(!state.agent_onboarding_needed().unwrap());
+    let names: Vec<_> = state
+        .list_profiles()
+        .unwrap()
+        .into_iter()
+        .map(|p| p.name)
+        .collect();
+    assert!(names.contains(&"hermes".into()));
+    assert!(names.contains(&"kimi".into()));
+    assert!(names.contains(&"crush".into()));
+}
+
+#[test]
+fn existing_profiles_migrate_onboarding_done() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let state = common::state(&dir);
+        state.enable_agent_profiles(&["claude".into()]).unwrap();
+        // Simulate a pre-onboarding DB: clear the flag if somehow set, then
+        // re-open. AppState::new should see the existing agent and mark done.
+    }
+    // Manually clear the flag to mimic an upgraded install that already had profiles.
+    {
+        use agency_core::registry::Registry;
+        let reg = Registry::open(&dir.path().join("agency.db")).unwrap();
+        reg.set_setting("agent_onboarding_completed", "").unwrap();
+        assert!(reg.get_profile("claude").unwrap().is_some());
+    }
+    let state = common::state(&dir);
+    assert!(!state.agent_onboarding_needed().unwrap());
+}
+
+#[test]
+fn catalog_lists_all_builtins_with_enabled_flag() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = common::state(&dir);
+    state.enable_agent_profiles(&["claude".into()]).unwrap();
+    let catalog = state.list_agent_catalog().unwrap();
+    assert_eq!(catalog.len(), 10);
+    let claude = catalog.iter().find(|e| e.id == "claude").unwrap();
+    assert!(claude.enabled);
+    let gemini = catalog.iter().find(|e| e.id == "gemini").unwrap();
+    assert!(!gemini.enabled);
+    assert_eq!(gemini.command, "gemini");
+}
+
+#[test]
+fn enabled_profiles_have_bare_commands() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = common::state(&dir);
+    state
+        .enable_agent_profiles(&["claude".into(), "pi".into(), "hermes".into()])
+        .unwrap();
     let profiles = state.list_profiles().unwrap();
     let by_name = |n: &str| profiles.iter().find(|p| p.name == n).cloned();
 

@@ -17,6 +17,8 @@ const DEFAULT_LM_STUDIO_URL: &str = "http://localhost:1234/v1";
 const SETTING_DEFAULT_AGENT: &str = "default_agent";
 const SETTING_NOTIF: &str = "notification_settings";
 const SETTING_MCP: &str = "mcp_servers";
+/// Set to "1" once the user finishes agent-profile onboarding (or is migrated).
+const SETTING_AGENT_ONBOARDING: &str = "agent_onboarding_completed";
 
 const MERGE_RESOLVER_SKILL: &str = include_str!("../../../skills/merge-resolver/SKILL.md");
 
@@ -511,7 +513,9 @@ impl AppState {
 
     pub fn new(db_path: &Path, data_dir: &Path) -> Result<AppState> {
         let registry = Registry::open(db_path)?;
-        // Seed the built-in shell profile once.
+        // Seed the built-in shell profile once. Other agent profiles are no
+        // longer auto-seeded — users pick them during onboarding (or add them
+        // later from Settings → Add from catalog).
         if registry.get_profile("shell")?.is_none() {
             let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
             registry.upsert_profile(&AgentProfile {
@@ -523,55 +527,29 @@ impl AppState {
                 loop_args: None,
             })?;
         }
-        // Built-in agent profiles with their resume and loop recipes. Both are
-        // seeded for missing profiles and retrofitted onto existing ones only
+        // Retrofit resume/loop recipes onto *existing* catalog profiles only
         // when unset, so a user's customized command/args/env is never
-        // clobbered. cursor/hermes are id-keyed (not cwd-keyed) so they start
-        // fresh rather than risk resuming the wrong global session. Loop
-        // recipes are the agents' headless one-shot modes (the process exits
-        // when the turn ends — the loop driver's attempt boundary); agents
-        // without a known headless mode get None and simply can't loop.
-        // claude gets acceptEdits so unattended attempts don't die on the
-        // first file-edit permission prompt; the worktree bounds the blast
-        // radius.
-        type Recipe = Option<Vec<String>>;
-        let builtins: [(&str, &str, Recipe, Recipe); 7] = [
-            (
-                "claude",
-                "claude",
-                Some(vec!["--continue".into()]),
-                Some(vec!["-p".into(), "{{prompt}}".into(), "--permission-mode".into(), "acceptEdits".into()]),
-            ),
-            (
-                "codex",
-                "codex",
-                Some(vec!["resume".into(), "--last".into()]),
-                Some(vec!["exec".into(), "--full-auto".into(), "{{prompt}}".into()]),
-            ),
-            ("pi", "pi", Some(vec!["--continue".into()]), None),
-            (
-                "opencode",
-                "opencode",
-                Some(vec!["--continue".into()]),
-                Some(vec!["run".into(), "{{prompt}}".into()]),
-            ),
-            ("copilot", "copilot", Some(vec!["--continue".into()]), None),
-            ("cursor", "cursor-agent", None, Some(vec!["-p".into(), "{{prompt}}".into()])),
-            ("hermes", "hermes", None, None),
-        ];
-        for (name, command, resume_args, loop_args) in builtins {
-            if registry.get_profile(name)?.is_none() {
-                registry.upsert_profile(&AgentProfile {
-                    name: name.to_string(),
-                    command: command.to_string(),
-                    args: vec![],
-                    env: vec![],
-                    resume_args: resume_args.clone(),
-                    loop_args: loop_args.clone(),
-                })?;
-            } else {
-                registry.ensure_profile_resume_args(name, &resume_args)?;
-                registry.ensure_profile_loop_args(name, &loop_args)?;
+        // clobbered and deleted builtins stay gone across launches.
+        for entry in crate::agent_catalog::builtins() {
+            if registry.get_profile(entry.id)?.is_some() {
+                registry.ensure_profile_resume_args(entry.id, &entry.resume_args)?;
+                registry.ensure_profile_loop_args(entry.id, &entry.loop_args)?;
+            }
+        }
+        // Existing installs already have agent profiles — mark onboarding done
+        // so they aren't interrupted by the picker. Fresh DBs (shell only) keep
+        // the flag unset and show onboarding on first launch.
+        let onboarding_done = registry
+            .get_setting(SETTING_AGENT_ONBOARDING)?
+            .as_deref()
+            == Some("1");
+        if !onboarding_done {
+            let has_agents = registry
+                .list_profiles()?
+                .iter()
+                .any(|p| p.name != "shell");
+            if has_agents {
+                registry.set_setting(SETTING_AGENT_ONBOARDING, "1")?;
             }
         }
         let state = AppState {
@@ -633,6 +611,75 @@ impl AppState {
 
     pub fn delete_profile(&self, name: &str) -> Result<()> {
         self.registry.lock().unwrap().delete_profile(name)
+    }
+
+    /// Whether agent-profile onboarding still needs to run.
+    pub fn agent_onboarding_needed(&self) -> Result<bool> {
+        let reg = self.registry.lock().unwrap();
+        Ok(reg.get_setting(SETTING_AGENT_ONBOARDING)?.as_deref() != Some("1"))
+    }
+
+    /// Catalog entries with enabled/installed flags for the UI picker.
+    pub fn list_agent_catalog(&self) -> Result<Vec<crate::agent_catalog::CatalogEntryInfo>> {
+        let builtins = crate::agent_catalog::builtins();
+        // Read the enabled flags under the lock, then drop it before probing
+        // PATH (a per-command filesystem scan) so the registry mutex isn't held
+        // across ~10 syscall-heavy lookups.
+        let enabled: Vec<bool> = {
+            let reg = self.registry.lock().unwrap();
+            builtins
+                .iter()
+                .map(|e| Ok(reg.get_profile(e.id)?.is_some()))
+                .collect::<Result<_>>()?
+        };
+        Ok(builtins
+            .iter()
+            .zip(enabled)
+            .map(|(entry, enabled)| crate::agent_catalog::CatalogEntryInfo {
+                id: entry.id.to_string(),
+                command: entry.command.to_string(),
+                resume_args: entry.resume_args.clone(),
+                loop_args: entry.loop_args.clone(),
+                enabled,
+                installed: command_on_path(entry.command),
+            })
+            .collect())
+    }
+
+    /// Upsert catalog recipes for the given ids (idempotent). Unknown ids error.
+    pub fn enable_agent_profiles(&self, ids: &[String]) -> Result<()> {
+        let reg = self.registry.lock().unwrap();
+        for id in ids {
+            let entry = crate::agent_catalog::find(id)
+                .ok_or_else(|| anyhow!("unknown catalog agent: {id}"))?;
+            // Don't clobber a customized profile the user already has.
+            if reg.get_profile(id)?.is_none() {
+                reg.upsert_profile(&crate::agent_catalog::profile_for(entry))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Enable selected catalog agents and mark onboarding complete.
+    pub fn complete_agent_onboarding(&self, ids: &[String]) -> Result<()> {
+        if ids.is_empty() {
+            // Allow completing with only custom profiles already saved — the UI
+            // guarantees at least one profile exists before calling.
+            let has_agents = self
+                .list_profiles()?
+                .iter()
+                .any(|p| p.name != "shell");
+            if !has_agents {
+                bail!("select at least one agent profile");
+            }
+        } else {
+            self.enable_agent_profiles(ids)?;
+        }
+        self.registry
+            .lock()
+            .unwrap()
+            .set_setting(SETTING_AGENT_ONBOARDING, "1")?;
+        Ok(())
     }
 
     pub fn get_settings(&self) -> Result<ProviderSettings> {
@@ -1561,14 +1608,20 @@ impl AppState {
 
     /// Whether the agent profile's command resolves to something executable —
     /// an explicit path, or a name found on PATH (which pathenv::repair() has
-    /// already fixed up for Finder launches).
+    /// already fixed up for Finder launches). Falls back to the catalog command
+    /// when the profile isn't enabled yet (onboarding / catalog install checks).
     pub fn agent_installed(&self, agent: &str) -> Result<bool> {
-        let profile = {
+        let command = {
             let reg = self.registry.lock().unwrap();
-            reg.get_profile(agent)?
-                .ok_or_else(|| anyhow!("unknown agent profile: {agent}"))?
+            if let Some(profile) = reg.get_profile(agent)? {
+                profile.command
+            } else if let Some(entry) = crate::agent_catalog::find(agent) {
+                entry.command.to_string()
+            } else {
+                bail!("unknown agent profile: {agent}");
+            }
         };
-        Ok(command_on_path(&profile.command))
+        Ok(command_on_path(&command))
     }
 
     /// Spawn a terminal session in the project repo that first runs `command`

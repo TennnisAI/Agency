@@ -486,6 +486,73 @@ export interface IssueItem {
   title: string;
 }
 
+// ── In-app PR review ────────────────────────────────────────────────────────
+
+export interface Author {
+  login: string;
+}
+
+export interface PrDetail {
+  number: number;
+  url: string;
+  title: string;
+  state: "OPEN" | "CLOSED" | "MERGED";
+  isDraft: boolean;
+  baseRefName: string;
+  headRefName: string;
+  body: string;
+  headRefOid: string;
+  mergeable: string; // MERGEABLE | CONFLICTING | UNKNOWN
+  reviewDecision: string | null; // APPROVED | CHANGES_REQUESTED | REVIEW_REQUIRED | null
+  author: Author;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// One file of a PR diff: the local FileDiff shape plus path metadata.
+export interface PrFileDiff extends FileDiff {
+  path: string;
+  oldPath: string | null;
+  binary: boolean;
+}
+
+export interface PrReviewComment {
+  id: string;
+  databaseId: number;
+  path: string;
+  line: number | null;
+  originalLine: number | null;
+  diffHunk: string;
+  body: string;
+  author: string;
+  createdAt: string;
+  inReplyToId: string | null;
+}
+
+export interface ReviewThread {
+  id: string;
+  isResolved: boolean;
+  isOutdated: boolean;
+  path: string;
+  line: number | null;
+  diffSide: string; // RIGHT | LEFT
+  comments: PrReviewComment[];
+}
+
+export type ReviewEvent = "APPROVE" | "REQUEST_CHANGES" | "COMMENT";
+
+// A new inline comment to include when submitting a review. Anchoring (line +
+// side, and start_* for multi-line) is computed on the frontend from the
+// selected diff rows.
+export interface DraftComment {
+  path: string;
+  body: string;
+  line: number;
+  side: "RIGHT" | "LEFT";
+  startLine?: number | null;
+  startSide?: "RIGHT" | "LEFT" | null;
+}
+
 export const createRace = (
   projectId: string,
   prompt: string,
@@ -509,6 +576,29 @@ export const createPr = (taskId: string) => invoke<PrInfo>("create_pr", { taskId
 export const prStatus = (taskId: string) => invoke<PrStatus>("pr_status", { taskId });
 export const sendCheckFeedback = (taskId: string) =>
   invoke<void>("send_check_feedback", { taskId });
+
+// In-app PR review, keyed by (projectId, prNumber).
+export const prDetail = (projectId: string, number: number) =>
+  invoke<PrDetail | null>("pr_detail", { projectId, number });
+export const prDiff = (projectId: string, number: number) =>
+  invoke<PrFileDiff[]>("pr_diff", { projectId, number });
+export const prReviewThreads = (projectId: string, number: number) =>
+  invoke<ReviewThread[]>("pr_review_threads", { projectId, number });
+export const submitPrReview = (
+  projectId: string,
+  number: number,
+  event: ReviewEvent,
+  body: string | null,
+  comments: DraftComment[],
+) => invoke<void>("submit_pr_review", { projectId, number, event, body, comments });
+export const replyPrComment = (projectId: string, number: number, inReplyTo: number, body: string) =>
+  invoke<void>("reply_pr_comment", { projectId, number, inReplyTo, body });
+export const resolvePrThread = (projectId: string, threadId: string) =>
+  invoke<void>("resolve_pr_thread", { projectId, threadId });
+export const unresolvePrThread = (projectId: string, threadId: string) =>
+  invoke<void>("unresolve_pr_thread", { projectId, threadId });
+export const prNumberForRun = (taskId: string) =>
+  invoke<number | null>("pr_number_for_run", { taskId });
 
 export const mergePreview = (taskId: string) =>
   invoke<MergePreview>("merge_preview", { taskId });

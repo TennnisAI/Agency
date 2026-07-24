@@ -28,11 +28,15 @@ export default function PrSection({
   projectId,
   canCreate,
   onLeave,
+  onReviewPr,
 }: {
   taskId: string;
   projectId: string;
   canCreate: boolean;
   onLeave: () => void;
+  // When set, shows a "Review in Agency" action that deep-links to the PR
+  // review panel for the created/existing PR.
+  onReviewPr?: (number: number) => void;
 }) {
   const [readiness, setReadiness] = useState<GhReadiness | null>(null);
   const [pr, setPr] = useState<PrInfo | null>(null);
@@ -140,6 +144,11 @@ export default function PrSection({
               #{pr.number} {pr.title}
             </span>
             <span className="spacer" />
+            {onReviewPr && (
+              <button className="settings-ghost-btn" onClick={() => onReviewPr(pr.number)}>
+                Review in Agency
+              </button>
+            )}
             <button
               className="settings-ghost-btn"
               onClick={() => openUrl(pr.url).catch((e) => toastError(e, "Couldn't open the pull request"))}

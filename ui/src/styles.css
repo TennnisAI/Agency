@@ -1795,3 +1795,110 @@ input, textarea, code,
    to win; code spans then re-claim the mono font the same way. */
 .docs-editor-host .cm-scroller, .docs-editor-host .cm-content { font-family: -apple-system, system-ui, sans-serif !important; }
 .docs-editor-host .lp-code, .docs-editor-host .lp-codeblock, .docs-editor-host .lp-fence { font-family: var(--mono) !important; }
+
+/* ── In-app PR review ─────────────────────────────────────────────────────── */
+
+.pr-state-closed { color: var(--red); border: 1px solid var(--red); }
+
+/* Inline markdown (PR descriptions + comment bodies). */
+.md { font-size: 13px; line-height: 1.6; color: var(--text); overflow-wrap: anywhere; }
+.md > :first-child { margin-top: 0; }
+.md > :last-child { margin-bottom: 0; }
+.md p, .md ul, .md ol, .md blockquote, .md pre, .md table { margin: 6px 0; }
+.md h1, .md h2, .md h3, .md h4 { margin: 12px 0 6px; line-height: 1.25; }
+.md h1 { font-size: 17px; } .md h2 { font-size: 15px; } .md h3 { font-size: 13.5px; }
+.md a { color: var(--blue); }
+.md code { font-family: var(--mono); font-size: 12px; background: var(--crust); border-radius: 5px; padding: 1px 5px; }
+.md pre { background: var(--crust); border-radius: 8px; padding: 10px 12px; overflow-x: auto; }
+.md pre code { background: none; padding: 0; }
+.md blockquote { border-left: 3px solid var(--s1); margin-left: 0; padding-left: 12px; color: var(--sub0); }
+.md ul, .md ol { padding-left: 20px; }
+.md img { max-width: 100%; }
+.md table { border-collapse: collapse; }
+.md th, .md td { border: 1px solid var(--line); padding: 4px 8px; }
+.md hr { border: none; border-top: 1px solid var(--line); }
+
+/* Two-pane panel: PR list + review. */
+.pr-panel { flex: 1; display: flex; min-height: 0; min-width: 0; }
+.pr-panel-setup { flex: 1; padding: 8px; }
+.pr-list { width: 280px; min-width: 240px; flex-shrink: 0; border-right: 1px solid var(--line); display: flex; flex-direction: column; overflow-y: auto; }
+.pr-list-head { display: flex; align-items: center; gap: 6px; padding: 8px 10px; color: var(--sub0); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; border-bottom: 1px solid var(--line); }
+.pr-list-empty { padding: 14px 10px; color: var(--sub0); font-size: 12px; }
+.pr-list-row { display: flex; align-items: baseline; gap: 8px; width: 100%; text-align: left; background: none; border: none; border-bottom: 1px solid var(--line); color: var(--text); padding: 8px 10px; cursor: pointer; }
+.pr-list-row:hover { background: var(--s0); }
+.pr-list-row.on { background: var(--s1); }
+.pr-list-num { color: var(--sub0); font-family: var(--mono); font-size: 11.5px; flex-shrink: 0; }
+.pr-list-title { font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pr-list-draft { margin-left: auto; color: var(--sub0); font-size: 10px; text-transform: uppercase; letter-spacing: .04em; }
+.pr-panel-main { flex: 1; display: flex; min-width: 0; min-height: 0; }
+
+/* One PR's review. */
+.pr-review { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.pr-review-scroll { flex: 1; overflow-y: auto; min-height: 0; }
+.pr-review-empty { padding: 24px; color: var(--sub0); font-size: 13px; }
+.pr-review-header { padding: 14px 16px; border-bottom: 1px solid var(--line); }
+.pr-review-titlerow { display: flex; align-items: center; gap: 10px; }
+.pr-review-title { font-size: 15px; font-weight: 600; }
+.pr-review-num { color: var(--sub0); font-weight: 400; }
+.pr-review-meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 6px; font-size: 12px; color: var(--sub0); }
+.pr-review-meta code { font-family: var(--mono); font-size: 11.5px; background: var(--crust); border-radius: 5px; padding: 1px 5px; }
+.pr-review-conflict { color: var(--red); }
+.pr-review-decision { color: var(--peach); }
+.pr-review-desc { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+.pr-review-files { padding: 10px 16px 24px; }
+
+/* Per-file diff. */
+.prdiff-file { border: 1px solid var(--line); border-radius: 8px; margin-bottom: 12px; overflow: hidden; }
+.prdiff-file-head { display: flex; align-items: center; gap: 8px; padding: 7px 10px; background: var(--mantle); cursor: pointer; font-family: var(--mono); font-size: 12px; }
+.prdiff-caret { color: var(--sub0); width: 12px; }
+.prdiff-path { color: var(--text); }
+.prdiff-renamed { color: var(--sub0); }
+.prdiff-binary { margin-left: auto; color: var(--sub0); font-size: 10px; text-transform: uppercase; }
+.prdiff-emptyline { padding: 10px; color: var(--sub0); font-size: 12px; }
+.prdiff-body { font-family: var(--mono); font-size: 12px; }
+.prdiff-line { display: grid; grid-template-columns: 44px 44px 16px 1fr; align-items: stretch; cursor: pointer; white-space: pre-wrap; word-break: break-word; }
+.prdiff-line:hover { background: color-mix(in srgb, var(--blue) 6%, transparent); }
+.prdiff-line.sel { outline: 1px solid var(--blue); outline-offset: -1px; }
+.prdiff-gutter { color: var(--o0); text-align: right; padding: 0 6px; user-select: none; background: var(--mantle); }
+.prdiff-sign { text-align: center; user-select: none; color: var(--sub0); }
+.prdiff-code { padding: 0 8px; }
+.prdiff-line.add { background: color-mix(in srgb, var(--green) 12%, transparent); }
+.prdiff-line.del { background: color-mix(in srgb, var(--red) 12%, transparent); }
+.prdiff-line.add .wd { background: color-mix(in srgb, var(--green) 30%, transparent); border-radius: 2px; }
+.prdiff-line.del .wd { background: color-mix(in srgb, var(--red) 30%, transparent); border-radius: 2px; }
+.prdiff-selbar, .prdiff-commentbox, .prdiff-comment-actions, .prdiff-comment-actions { display: flex; gap: 8px; align-items: center; }
+.prdiff-selbar { padding: 4px 10px; background: var(--mantle); }
+.prdiff-commentbox { flex-direction: column; align-items: stretch; padding: 8px 10px; background: var(--mantle); gap: 6px; }
+.prdiff-commentbox textarea { min-height: 60px; font-family: var(--sans); }
+.prdiff-comment-actions { justify-content: flex-end; }
+.prdiff-draft { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: color-mix(in srgb, var(--peach) 8%, transparent); border-left: 2px solid var(--peach); }
+.prdiff-draft-tag { color: var(--peach); font-size: 10px; text-transform: uppercase; letter-spacing: .04em; flex-shrink: 0; }
+.prdiff-draft-body { flex: 1; font-family: var(--sans); font-size: 12.5px; color: var(--text); overflow-wrap: anywhere; }
+.prdiff-outdated { border-top: 1px solid var(--line); }
+.prdiff-outdated-head { padding: 6px 10px; color: var(--sub0); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+
+/* Review threads. */
+.pr-thread { border-top: 1px solid var(--line); background: var(--base); padding: 8px 10px; }
+.pr-thread.resolved { opacity: .72; }
+.pr-thread-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+.pr-thread-tag { color: var(--green); font-size: 10px; text-transform: uppercase; letter-spacing: .04em; }
+.pr-thread-tag.outdated { color: var(--peach); }
+.pr-comment { padding: 4px 0; }
+.pr-comment-meta { display: flex; gap: 8px; align-items: baseline; }
+.pr-comment-author { font-weight: 600; font-size: 12.5px; }
+.pr-comment-date { color: var(--sub0); font-size: 11px; }
+.pr-comment-body { margin-top: 2px; }
+.pr-reply-box { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.pr-reply-box textarea { min-height: 52px; font-family: var(--sans); }
+.pr-reply-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.pr-reply-open { background: none; border: 1px dashed var(--s1); color: var(--sub0); font-size: 11.5px; padding: 3px 10px; border-radius: 6px; cursor: pointer; margin-top: 6px; }
+.pr-reply-open:hover { color: var(--text); border-color: var(--s2); }
+
+/* Sticky submit bar. */
+.pr-review-submit { border-top: 1px solid var(--line); padding: 10px 16px; background: var(--mantle); display: flex; flex-direction: column; gap: 8px; }
+.pr-review-summary { min-height: 52px; font-family: var(--sans); }
+.pr-review-verdicts { display: flex; align-items: center; gap: 8px; }
+.pr-review-draftcount { color: var(--sub0); font-size: 11.5px; }
+.pr-review-verdicts .git-iconbtn { border: 1px solid var(--s1); padding: 5px 12px; border-radius: 6px; }
+.pr-approve { color: var(--green); border-color: var(--green) !important; }
+.pr-approve:hover { background: color-mix(in srgb, var(--green) 14%, transparent); }

@@ -2856,6 +2856,77 @@ impl AppState {
         Ok(PrStatus { pr, checks })
     }
 
+    // ── In-app PR review (keyed by project + PR number) ─────────────────────────
+    // These power the Source Control → Pull Requests review surface. Identity is
+    // (project_id, number): a PR list already has both, and the agent's Approve
+    // window resolves its number once via `pr_number_for_run`.
+
+    /// Full PR detail (description, head SHA, mergeable, review decision).
+    pub fn pr_detail(&self, project_id: &str, number: u64) -> Result<Option<agency_core::gh::PrDetail>> {
+        let repo = self.project_repo(project_id)?;
+        agency_core::gh::GhCli::default().view_pr_detail(&repo, number)
+    }
+
+    /// The PR's full multi-file diff, split per file for the diff renderer.
+    pub fn pr_diff(&self, project_id: &str, number: u64) -> Result<Vec<agency_core::gh::PrFileDiff>> {
+        let repo = self.project_repo(project_id)?;
+        agency_core::gh::GhCli::default().pr_diff(&repo, number)
+    }
+
+    /// The PR's review threads (with resolution state) for inline rendering.
+    pub fn pr_review_threads(&self, project_id: &str, number: u64) -> Result<Vec<agency_core::gh::ReviewThread>> {
+        let repo = self.project_repo(project_id)?;
+        agency_core::gh::GhCli::default().pr_review_threads(&repo, number)
+    }
+
+    /// Submit a review verdict + inline comments as one atomic operation. The
+    /// head SHA the comments anchor to is read here rather than trusted from the
+    /// client — the reviews API rejects a stale `commit_id`.
+    pub fn submit_pr_review(
+        &self,
+        project_id: &str,
+        number: u64,
+        event: &str,
+        body: Option<&str>,
+        comments: &[agency_core::gh::DraftComment],
+    ) -> Result<()> {
+        let repo = self.project_repo(project_id)?;
+        let gh = agency_core::gh::GhCli::default();
+        let detail = gh
+            .view_pr_detail(&repo, number)?
+            .ok_or_else(|| anyhow!("PR #{number} not found"))?;
+        gh.submit_pr_review(&repo, number, &detail.head_ref_oid, event, body, comments)
+    }
+
+    /// Reply into an existing review thread. `in_reply_to` is a comment's
+    /// `database_id` from `pr_review_threads`.
+    pub fn reply_pr_comment(&self, project_id: &str, number: u64, in_reply_to: u64, body: &str) -> Result<()> {
+        let repo = self.project_repo(project_id)?;
+        agency_core::gh::GhCli::default().reply_review_comment(&repo, number, in_reply_to, body)
+    }
+
+    /// Resolve a review thread. `thread_id` is the GraphQL node id.
+    pub fn resolve_pr_thread(&self, project_id: &str, thread_id: &str) -> Result<()> {
+        let repo = self.project_repo(project_id)?;
+        agency_core::gh::GhCli::default().resolve_review_thread(&repo, thread_id)
+    }
+
+    /// Reopen a resolved review thread.
+    pub fn unresolve_pr_thread(&self, project_id: &str, thread_id: &str) -> Result<()> {
+        let repo = self.project_repo(project_id)?;
+        agency_core::gh::GhCli::default().unresolve_review_thread(&repo, thread_id)
+    }
+
+    /// The PR number for a run's branch, if a PR exists — lets the agent's
+    /// Approve window deep-link into the review view.
+    pub fn pr_number_for_run(&self, id: &str) -> Result<Option<u64>> {
+        let run = self.run_record(id)?;
+        let repo = self.project_repo(&run.project_id)?;
+        Ok(agency_core::gh::GhCli::default()
+            .view_pr(&repo, &run.branch)?
+            .map(|p| p.number))
+    }
+
     /// Type the PR's failing checks into the agent's live session so it can
     /// investigate — same delivery path as review comments.
     pub fn send_check_feedback(&self, id: &str) -> Result<()> {

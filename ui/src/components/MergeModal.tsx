@@ -27,10 +27,13 @@ export default function MergeModal({
   taskId,
   onClose,
   onArchived,
+  onReviewPr,
 }: {
   taskId: string;
   onClose: () => void;
   onArchived?: () => void;
+  // Deep-link handler for "Review in Agency" — opens the PR in the review panel.
+  onReviewPr?: (number: number) => void;
 }) {
   const [preview, setPreview] = useState<MergePreview | null>(null);
   const [outcome, setOutcome] = useState<MergeOutcome | null>(null);
@@ -255,6 +258,7 @@ export default function MergeModal({
                   projectId={projectId}
                   canCreate={!nothingToMerge}
                   onLeave={onClose}
+                  onReviewPr={onReviewPr}
                 />
               )}
             </div>

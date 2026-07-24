@@ -214,11 +214,14 @@ export default function GitPanel({
 
   return (
     <div className="git-panel full">
-      {branchBar}
-      {progress}
-      {errorBanner}
+      {/* Branch bar + progress + error live inside the Changes (left) pane so
+          they span only that column, not the whole app — the diff pane keeps its
+          full height and the "Pull Requests" sub-tab isn't shoved down by them. */}
       <div className="git-full-body">
         <div className="git-full-left" style={{ width: leftPane.width }}>
+          {branchBar}
+          {progress}
+          {errorBanner}
           {sections}
           {allowComments && <ReviewComments key={commentsKey} taskId={taskId} />}
         </div>

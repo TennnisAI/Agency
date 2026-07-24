@@ -2,9 +2,15 @@ import { useEffect, useMemo, useState } from "react";
 import { createPrFromBranch, listProjectBranches } from "../../api";
 
 // Pick a sensible default base branch: the conventional trunk if present,
-// otherwise the first branch that isn't the chosen head.
+// otherwise the first branch that isn't the chosen head. The head is always
+// excluded — a PR's base and head must differ, and opening a PR while on `main`
+// itself would otherwise default the base to `main` too.
 function defaultBase(branches: string[], head: string): string {
-  return branches.find((b) => b === "main" || b === "master") ?? branches.find((b) => b !== head) ?? "";
+  return (
+    branches.find((b) => (b === "main" || b === "master") && b !== head) ??
+    branches.find((b) => b !== head) ??
+    ""
+  );
 }
 
 // Open a PR from an existing branch, without going through an agent run. Lives

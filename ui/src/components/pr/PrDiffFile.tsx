@@ -112,6 +112,17 @@ export default function PrDiffFile({
 
   const [selLo, selHi] = sel ? [Math.min(sel.start, sel.end), Math.max(sel.start, sel.end)] : [-1, -1];
 
+  // A GitHub multi-line comment can't straddle two hunks. A selection dragged
+  // across a hunk gap would build a `start_line..line` range GitHub rejects with
+  // a 422, so detect it up front and block the comment flow instead.
+  const selCrossesHunks = useMemo(() => {
+    if (selLo < 0) return false;
+    const hunks = new Set(
+      rows.slice(selLo, selHi + 1).filter((r) => r.oldNo != null || r.newNo != null).map((r) => r.hunkIndex),
+    );
+    return hunks.size > 1;
+  }, [rows, selLo, selHi]);
+
   function onRowClick(e: React.MouseEvent, i: number) {
     if (e.shiftKey && sel) setSel({ start: sel.start, end: i });
     else setSel({ start: i, end: i });
@@ -119,7 +130,7 @@ export default function PrDiffFile({
   }
 
   function saveComment() {
-    if (!sel || !draft.trim()) return;
+    if (!sel || !draft.trim() || selCrossesHunks) return;
     const anchor = computeAnchor(rows.slice(selLo, selHi + 1));
     if (!anchor) return;
     onAddDraft({ path: file.path, body: draft.trim(), ...anchor });
@@ -148,7 +159,11 @@ export default function PrDiffFile({
                 {rowVisuals(r, i, selected, highlighted, onRowClick)}
                 {selected && i === selHi && !commenting && (
                   <div className="prdiff-selbar">
-                    <button className="git-iconbtn" onClick={() => setCommenting(true)}>Comment on selection</button>
+                    {selCrossesHunks ? (
+                      <span className="prdiff-selwarn">Selection spans multiple hunks — narrow it to comment.</span>
+                    ) : (
+                      <button className="git-iconbtn" onClick={() => setCommenting(true)}>Comment on selection</button>
+                    )}
                     <button className="git-iconbtn" onClick={() => setSel(null)}>Clear</button>
                   </div>
                 )}

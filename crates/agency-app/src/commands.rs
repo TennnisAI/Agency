@@ -238,12 +238,17 @@ pub async fn run_preview(state: State<'_, AppState>, id: String, lines: usize) -
 pub fn attach_run(
     state: State<'_, AppState>,
     id: String,
+    cols: u16,
+    rows: u16,
     on_chunk: Channel<TerminalChunk>,
 ) -> Result<(), String> {
     state
-        // The frontend immediately follows attach with a resize to its real
-        // FitAddon dims; 220x50 is the placeholder initial size until then.
-        .attach_run(&id, 220, 50, move |bytes| {
+        // Attach at the frontend's real FitAddon dims so the daemon builds its
+        // snapshot at the geometry xterm is already showing. Passing a placeholder
+        // here made the snapshot paint at the wrong width, and the follow-up resize
+        // then forced a reflow that stacked a second, mis-aligned frame ("decomposed"
+        // output on switch-in).
+        .attach_run(&id, cols.max(1), rows.max(1), move |bytes| {
             let _ = on_chunk.send(TerminalChunk { b64: STANDARD.encode(&bytes) });
         })
         .map_err(|e| e.to_string())
@@ -1241,11 +1246,13 @@ pub async fn run_script_preview(
 pub fn attach_run_script(
     state: State<'_, AppState>,
     id: String,
+    cols: u16,
+    rows: u16,
     on_chunk: Channel<TerminalChunk>,
 ) -> Result<(), String> {
     state
-        // See attach_run: real dims arrive via the follow-up resize command.
-        .attach_run_script(&id, 220, 50, move |bytes| {
+        // See attach_run: attach at the frontend's real FitAddon dims.
+        .attach_run_script(&id, cols.max(1), rows.max(1), move |bytes| {
             let _ = on_chunk.send(TerminalChunk { b64: STANDARD.encode(&bytes) });
         })
         .map_err(|e| e.to_string())
@@ -1301,11 +1308,13 @@ pub async fn shell_preview(
 pub fn attach_shell(
     state: State<'_, AppState>,
     id: String,
+    cols: u16,
+    rows: u16,
     on_chunk: Channel<TerminalChunk>,
 ) -> Result<(), String> {
     state
-        // See attach_run: real dims arrive via the follow-up resize command.
-        .attach_shell(&id, 220, 50, move |bytes| {
+        // See attach_run: attach at the frontend's real FitAddon dims.
+        .attach_shell(&id, cols.max(1), rows.max(1), move |bytes| {
             let _ = on_chunk.send(TerminalChunk { b64: STANDARD.encode(&bytes) });
         })
         .map_err(|e| e.to_string())

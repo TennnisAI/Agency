@@ -221,10 +221,10 @@ export const restoreRun = (id: string) => invoke<RunInfo>("restore_run", { id })
 export const listArchivedRuns = (projectId: string) =>
   invoke<RunInfo[]>("list_archived_runs", { projectId });
 
-export function attachRun(id: string, onBytes: (b: Uint8Array) => void): Promise<void> {
+export function attachRun(id: string, cols: number, rows: number, onBytes: (b: Uint8Array) => void): Promise<void> {
   const onChunk = new Channel<{ b64: string }>();
   onChunk.onmessage = (m) => onBytes(b64ToBytes(m.b64));
-  return invoke<void>("attach_run", { id, onChunk });
+  return invoke<void>("attach_run", { id, cols, rows, onChunk });
 }
 
 export const runScriptConfigured = (id: string) =>
@@ -241,10 +241,10 @@ export const runScriptInput = (id: string, data: string) =>
 export const resizeRunScript = (id: string, cols: number, rows: number) =>
   invoke<void>("resize_run_script", { id, cols, rows });
 
-export function attachRunScript(id: string, onBytes: (b: Uint8Array) => void): Promise<void> {
+export function attachRunScript(id: string, cols: number, rows: number, onBytes: (b: Uint8Array) => void): Promise<void> {
   const onChunk = new Channel<{ b64: string }>();
   onChunk.onmessage = (m) => onBytes(b64ToBytes(m.b64));
-  return invoke<void>("attach_run_script", { id, onChunk });
+  return invoke<void>("attach_run_script", { id, cols, rows, onChunk });
 }
 
 // Companion shell: a per-run interactive terminal sharing the run's worktree,
@@ -260,10 +260,10 @@ export const shellInput = (id: string, data: string) =>
 export const resizeShell = (id: string, cols: number, rows: number) =>
   invoke<void>("resize_shell", { id, cols, rows });
 
-export function attachShell(id: string, onBytes: (b: Uint8Array) => void): Promise<void> {
+export function attachShell(id: string, cols: number, rows: number, onBytes: (b: Uint8Array) => void): Promise<void> {
   const onChunk = new Channel<{ b64: string }>();
   onChunk.onmessage = (m) => onBytes(b64ToBytes(m.b64));
-  return invoke<void>("attach_shell", { id, onChunk });
+  return invoke<void>("attach_shell", { id, cols, rows, onChunk });
 }
 
 // Extra agent sessions: additional agent tabs sharing a run's worktree. Ids

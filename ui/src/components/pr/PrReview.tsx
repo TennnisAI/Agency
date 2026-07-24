@@ -172,7 +172,11 @@ export default function PrReview({ projectId, number }: { projectId: string; num
           <button
             className="git-iconbtn"
             disabled={submitting || !canVerdict}
-            title={canVerdict ? "Comment without a verdict" : "Add a summary or a comment first"}
+            title={
+              canVerdict
+                ? "Submit feedback without a verdict — leaves your comments but doesn't approve or block the merge."
+                : "Add a summary or a comment first"
+            }
             onClick={() => submit("COMMENT")}
           >
             Comment
@@ -180,12 +184,21 @@ export default function PrReview({ projectId, number }: { projectId: string; num
           <button
             className="git-iconbtn"
             disabled={submitting || !canVerdict}
-            title={canVerdict ? "Request changes" : "Add a summary or a comment first"}
+            title={
+              canVerdict
+                ? "Block the merge until addressed — marks the PR “Changes requested”; you'll need to re-review to clear it."
+                : "Add a summary or a comment first"
+            }
             onClick={() => submit("REQUEST_CHANGES")}
           >
             Request changes
           </button>
-          <button className="git-iconbtn pr-approve" disabled={submitting} onClick={() => submit("APPROVE")}>
+          <button
+            className="git-iconbtn pr-approve"
+            disabled={submitting}
+            title="Sign off on the PR — marks it “Approved” and counts toward required approvals."
+            onClick={() => submit("APPROVE")}
+          >
             {submitting ? "Submitting…" : "Approve"}
           </button>
         </div>

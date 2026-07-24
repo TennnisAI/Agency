@@ -33,7 +33,7 @@ export default function AgentsView({
   onOpenRun: (project: Project, runId: string) => void;
   onOpenProject: (project: Project) => void;
 }) {
-  const { runs, view, setView, focusedRunId, tab, setTab, approveRunId, setApproveRun, createAgent, createTerminal, spawning, setFocusedRun, refreshRuns } = useRuns();
+  const { runs, view, setView, focusedRunId, tab, setTab, approveRunId, setApproveRun, createAgent, createTerminal, spawning, spawnProgress, setFocusedRun, refreshRuns } = useRuns();
   const focused = runs.find((r) => r.id === focusedRunId) ?? null;
   const [review, setReview] = useState(false);
   const [error, setError] = useState("");
@@ -166,12 +166,28 @@ export default function AgentsView({
                     {runs.map((r) => <AgentTile key={r.id} run={r} />)}
                     {spawning && (
                       // Placeholder while the worktree + session are created —
-                      // the real tile appears once createRun resolves.
-                      <div className="tile tile-spawning" aria-hidden>
+                      // the real tile appears once createRun resolves. On a large
+                      // repo the worktree checkout takes a while, so show its
+                      // streamed progress instead of a static "starting…".
+                      <div className="tile tile-spawning">
                         <div className="tile-head">
                           <span className="dot running" />
-                          <span className="tile-title">starting…</span>
+                          <span className="tile-title">
+                            {spawnProgress ? spawnProgress.phase : "starting…"}
+                          </span>
+                          {spawnProgress?.percent != null && (
+                            <span className="clone-progress-pct">{spawnProgress.percent}%</span>
+                          )}
                         </div>
+                        <div className="clone-progress-track">
+                          <div
+                            className={`clone-progress-bar${spawnProgress?.percent == null ? " indeterminate" : ""}`}
+                            style={spawnProgress?.percent != null ? { width: `${spawnProgress.percent}%` } : undefined}
+                          />
+                        </div>
+                        {spawnProgress?.detail && (
+                          <div className="clone-progress-detail">{spawnProgress.detail}</div>
+                        )}
                       </div>
                     )}
                   </div>

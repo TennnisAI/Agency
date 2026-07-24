@@ -614,6 +614,9 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
 }
 .tile-spawning:hover { border-color: var(--line); background: var(--mantle); }
 .tile-spawning .tile-title { color: var(--sub0); }
+.tile-spawning .tile-head { width: 100%; }
+.tile-spawning .clone-progress-track { width: 100%; margin-top: 8px; }
+.tile-spawning .clone-progress-detail { margin-top: 4px; }
 
 /* Source control wrap */
 .source-wrap {

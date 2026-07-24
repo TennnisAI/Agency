@@ -162,8 +162,23 @@ export function commitRepo(
 export const closeProject = (id: string) => invoke<void>("close_project", { id });
 export const deleteProject = (id: string) => invoke<void>("delete_project", { id });
 
-export const createRun = (projectId: string, prompt: string, agent: string, base: string, mergeTarget?: string | null) =>
-  invoke<RunInfo>("create_run", { projectId, prompt, agent, base, mergeTarget: mergeTarget ?? null });
+// Creates an agent workspace (git worktree + first session). `onProgress`, if
+// given, is called as the worktree is checked out and essentials copied — a
+// large repo takes a while, so the UI shows movement instead of freezing.
+export function createRun(
+  projectId: string,
+  prompt: string,
+  agent: string,
+  base: string,
+  mergeTarget?: string | null,
+  onProgress?: (p: CloneProgress) => void,
+): Promise<RunInfo> {
+  const onProgressChannel = new Channel<CloneProgress>();
+  if (onProgress) onProgressChannel.onmessage = onProgress;
+  return invoke<RunInfo>("create_run", {
+    projectId, prompt, agent, base, mergeTarget: mergeTarget ?? null, onProgress: onProgressChannel,
+  });
+}
 export const createLoop = (
   projectId: string,
   prompt: string,

@@ -457,6 +457,11 @@ pub struct AppState {
     /// second concurrent merge (double-click, another run's Approve) must
     /// fail fast instead of interleaving.
     merge_gate: Mutex<()>,
+    /// Serializes workspace creation (worktree add + branch cut). `create_run`
+    /// is async so a large checkout can't freeze the UI; this replaces the
+    /// main-thread serialization that previously kept concurrent creates from
+    /// racing on git's worktree/branch state.
+    worktree_gate: Mutex<()>,
     /// In-flight loop check commands, one slot per looping run id. The check
     /// runs on its own thread (never on the 2s poll tick); `drive_loops`
     /// drains finished slots into the looper state machine.
@@ -565,6 +570,7 @@ impl AppState {
             activity: Mutex::new(HashMap::new()),
             prompted: Mutex::new(HashSet::new()),
             merge_gate: Mutex::new(()),
+            worktree_gate: Mutex::new(()),
             checks: Mutex::new(HashMap::new()),
             loop_gate: Mutex::new(()),
             loops_active: std::sync::atomic::AtomicBool::new(true),
@@ -853,21 +859,49 @@ impl AppState {
     }
 
     pub fn create_run(&self, project_id: &str, prompt: &str, agent: &str, base: &str, merge_target: Option<&str>) -> Result<RunInfo> {
-        self.create_run_spec(NewRunSpec {
-            project_id,
-            prompt,
-            agent,
-            base,
-            merge_target,
-            race_id: None,
-            title: None,
-            existing_branch: None,
-            loop_config: None,
-            issue_id: None,
-        })
+        self.create_run_with_progress(project_id, prompt, agent, base, merge_target, |_| {})
     }
 
-    fn create_run_spec(&self, spec: NewRunSpec) -> Result<RunInfo> {
+    /// Like [`create_run`], but streams workspace-setup progress to `on_progress`
+    /// (worktree checkout + essential-file copy). Used by the async `create_run`
+    /// Tauri command so the UI shows movement instead of freezing on a large repo.
+    pub fn create_run_with_progress(
+        &self,
+        project_id: &str,
+        prompt: &str,
+        agent: &str,
+        base: &str,
+        merge_target: Option<&str>,
+        mut on_progress: impl FnMut(agency_core::setup::CloneProgress),
+    ) -> Result<RunInfo> {
+        self.create_run_spec(
+            NewRunSpec {
+                project_id,
+                prompt,
+                agent,
+                base,
+                merge_target,
+                race_id: None,
+                title: None,
+                existing_branch: None,
+                loop_config: None,
+                issue_id: None,
+            },
+            &mut on_progress,
+        )
+    }
+
+    fn create_run_spec(
+        &self,
+        spec: NewRunSpec,
+        on_progress: &mut dyn FnMut(agency_core::setup::CloneProgress),
+    ) -> Result<RunInfo> {
+        // Serialize workspace creation. The sync mutating commands run on the
+        // main thread and so are serialized there; `create_run` is now async
+        // (off the main thread, so it can't freeze the UI on a big checkout), so
+        // this gate stands in for that mutual exclusion against concurrent
+        // worktree/branch creation.
+        let _gate = self.worktree_gate.lock().unwrap();
         let repo = self.project_repo(spec.project_id)?;
         let config = agency_core::config::load(&repo);
         let port = self.allocate_port(config.ports.base, config.ports.block_size)?;
@@ -881,12 +915,17 @@ impl AppState {
         // Default: cut agent/<id> from the base. PR-review runs instead check
         // out the PR's existing head branch.
         let worktree = match &spec.existing_branch {
-            Some(branch) => manager.create_on_branch(&id, branch)?,
-            None => manager.create(&id, spec.base)?,
+            Some(branch) => manager.create_on_branch_with_progress(&id, branch, on_progress)?,
+            None => manager.create_with_progress(&id, spec.base, on_progress)?,
         };
         // Untracked essentials (.env etc.) don't come with a worktree; copy the
         // configured list plus auto-detected root .env files. Best-effort: a bad
         // entry shouldn't block the run.
+        on_progress(agency_core::setup::CloneProgress {
+            phase: "Copying files".into(),
+            percent: None,
+            detail: String::new(),
+        });
         if let Err(e) = manager.copy_essentials(&id, &config.files.copy) {
             log::warn!("copying essentials into worktree {id}: {e}");
         }
@@ -1035,7 +1074,7 @@ impl AppState {
                 existing_branch: None,
                 loop_config: None,
                 issue_id: issue_id.clone(),
-            })?);
+            }, &mut |_| {})?);
         }
         Ok(out)
     }
@@ -1104,7 +1143,7 @@ impl AppState {
             existing_branch: None,
             loop_config: Some(cfg),
             issue_id,
-        })
+        }, &mut |_| {})
     }
 
     /// The prompt, run title, and default base for dispatching a local issue,
@@ -1164,7 +1203,7 @@ impl AppState {
             existing_branch: None,
             loop_config: None,
             issue_id: Some(issue.id.clone()),
-        })?;
+        }, &mut |_| {})?;
         self.registry
             .lock()
             .unwrap()
@@ -1306,7 +1345,7 @@ impl AppState {
             existing_branch: None,
             loop_config: None,
             issue_id: None,
-        })
+        }, &mut |_| {})
     }
 
     /// Check an existing PR's head branch out into a workspace for review.
@@ -1337,7 +1376,7 @@ impl AppState {
             existing_branch: Some(pr.head_ref_name.clone()),
             loop_config: None,
             issue_id: None,
-        })
+        }, &mut |_| {})
     }
 
     /// Store the first prompt the user typed into the agent terminal as the

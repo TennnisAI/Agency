@@ -85,17 +85,33 @@ pub fn delete_project(state: State<'_, AppState>, id: String) -> Result<(), Stri
     state.delete_project(&id).map_err(|e| e.to_string())
 }
 
+// async: creating a workspace shells out to `git worktree add`, which checks
+// out the whole tree — seconds to minutes on a large repo. As a sync command
+// that ran on the main thread and froze the entire UI until it finished. Async
+// runs it on the async runtime, and progress streams back over `on_progress` so
+// the UI shows the checkout advancing. `create_run_spec` holds `worktree_gate`
+// to replace the main-thread serialization this used to rely on.
 #[tauri::command]
-pub fn create_run(
+pub async fn create_run(
     state: State<'_, AppState>,
     project_id: String,
     prompt: String,
     agent: String,
     base: String,
     merge_target: Option<String>,
+    on_progress: Channel<agency_core::setup::CloneProgress>,
 ) -> Result<RunInfo, String> {
     state
-        .create_run(&project_id, &prompt, &agent, &base, merge_target.as_deref())
+        .create_run_with_progress(
+            &project_id,
+            &prompt,
+            &agent,
+            &base,
+            merge_target.as_deref(),
+            move |p| {
+                let _ = on_progress.send(p);
+            },
+        )
         .map_err(|e| e.to_string())
 }
 

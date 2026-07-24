@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
-import { RunInfo, createRun, createTerminal as createTerminalApi, listRuns } from "../api";
+import { CloneProgress, RunInfo, createRun, createTerminal as createTerminalApi, listRuns } from "../api";
 import { toastError } from "../lib/toast";
 
 type View = "grid" | "focus";
@@ -21,6 +21,9 @@ interface RunStore {
   // True while a workspace is being created (worktree + spawn — the slowest
   // first-session op). Drives the add-menu disable + placeholder tile.
   spawning: boolean;
+  // Latest workspace-setup progress for the placeholder tile (null before the
+  // first update or between spawns). Streamed from `create_run`.
+  spawnProgress: CloneProgress | null;
   approveRunId: string | null;
   setApproveRun: (id: string | null) => void;
 }
@@ -36,6 +39,7 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
   const [approveRunId, setApproveRun] = useState<string | null>(null);
   // A count (not a flag) so overlapping creations can't clear each other.
   const [spawnCount, setSpawnCount] = useState(0);
+  const [spawnProgress, setSpawnProgress] = useState<CloneProgress | null>(null);
   const projectRef = useRef<string | null>(null);
   projectRef.current = selectedProjectId;
   // Per-project memory of the last-viewed tab, so each project independently
@@ -72,11 +76,12 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
     const base = opts?.base ?? "HEAD";
     const mergeTarget = opts?.mergeTarget ?? null;
     setSpawnCount((c) => c + 1);
+    setSpawnProgress(null);
     try {
       // Runs start promptless by design — the user types the real prompt into
       // the live agent terminal, and the first line is captured as the run's
       // prompt + title (see set_run_title).
-      const run = await createRun(pid, "", agentId, base, mergeTarget).catch((e) => {
+      const run = await createRun(pid, "", agentId, base, mergeTarget, setSpawnProgress).catch((e) => {
         toastError(e, `Couldn't start ${agentId}`);
         return null;
       });
@@ -86,6 +91,7 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
       setView("focus");
     } finally {
       setSpawnCount((c) => c - 1);
+      setSpawnProgress(null);
     }
   }, [refreshRuns]);
 
@@ -128,7 +134,7 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <Ctx.Provider
-      value={{ runs, selectedProjectId, setSelectedProject, view, setView, focusedRunId, setFocusedRun, refreshRuns, tab, setTab, createAgent, createTerminal, spawning: spawnCount > 0, approveRunId, setApproveRun }}
+      value={{ runs, selectedProjectId, setSelectedProject, view, setView, focusedRunId, setFocusedRun, refreshRuns, tab, setTab, createAgent, createTerminal, spawning: spawnCount > 0, spawnProgress, approveRunId, setApproveRun }}
     >
       {children}
     </Ctx.Provider>

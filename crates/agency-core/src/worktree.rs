@@ -1,7 +1,9 @@
+use crate::setup::CloneProgress;
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Worktree {
@@ -198,16 +200,102 @@ impl WorktreeManager {
     }
 
     pub fn create(&self, task_id: &str, base: &str) -> Result<Worktree> {
+        self.create_with_progress(task_id, base, &mut |_| {})
+    }
+
+    /// Like [`create`], but streams progress as git checks out the tree. On a
+    /// large repo the checkout is seconds-to-minutes of work; `git worktree add`
+    /// reports no percentage to a pipe, so progress is approximated from how many
+    /// files have materialized in the new worktree vs. the repo's tracked count —
+    /// enough to show the app is working instead of frozen.
+    pub fn create_with_progress(
+        &self,
+        task_id: &str,
+        base: &str,
+        on_progress: &mut dyn FnMut(CloneProgress),
+    ) -> Result<Worktree> {
         self.ensure_excluded()?;
         let path = self.worktrees_root().join(task_id);
         let branch = Self::branch_for(task_id);
         let path_str = path.to_string_lossy().to_string();
-        self.git(&["worktree", "add", &path_str, "-b", &branch, base])?;
+        self.run_worktree_add(
+            &["worktree", "add", &path_str, "-b", &branch, base],
+            &path,
+            on_progress,
+        )?;
         Ok(Worktree {
             task_id: task_id.to_string(),
             path,
             branch,
         })
+    }
+
+    /// Run a `git worktree add …` command, polling the destination's file count
+    /// so `on_progress` shows the checkout advancing. git prints no progress for
+    /// this to a pipe, so the fraction is files-materialized / files-tracked; the
+    /// denominator is best-effort and the bar caps at 99% until git returns.
+    fn run_worktree_add(
+        &self,
+        args: &[&str],
+        dest: &std::path::Path,
+        on_progress: &mut dyn FnMut(CloneProgress),
+    ) -> Result<()> {
+        let total = self.tracked_file_count();
+        let emit = |on_progress: &mut dyn FnMut(CloneProgress), n: u64| {
+            let (percent, detail) = match total {
+                Some(t) if t > 0 => {
+                    (Some(((n * 100 / t).min(99)) as u8), format!("{n}/{t} files"))
+                }
+                _ => (None, format!("{n} files")),
+            };
+            on_progress(CloneProgress { phase: "Setting up workspace".into(), percent, detail });
+        };
+        emit(on_progress, 0);
+
+        // stderr/stdout are piped but only read after the child exits. Safe here
+        // because `git worktree add` prints only a couple of short lines; a chatty
+        // command could fill the pipe and stall, so don't reuse this blindly.
+        let mut child = Command::new("git")
+            .args(args)
+            .current_dir(&self.repo_path)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+
+        let mut last = 0u64;
+        loop {
+            if child.try_wait()?.is_some() {
+                break;
+            }
+            let n = count_files(dest);
+            if n != last {
+                last = n;
+                emit(on_progress, n);
+            }
+            std::thread::sleep(Duration::from_millis(150));
+        }
+
+        let output = child.wait_with_output()?;
+        if !output.status.success() {
+            bail!("git {:?} failed: {}", args, String::from_utf8_lossy(&output.stderr));
+        }
+        Ok(())
+    }
+
+    /// Number of files git tracks in this repo, the denominator for create
+    /// progress. `None` when git can't be consulted; approximate (the index of
+    /// the current checkout, not necessarily `base`), which is fine for a bar.
+    fn tracked_file_count(&self) -> Option<u64> {
+        let output = Command::new("git")
+            .args(["ls-files", "-z"])
+            .current_dir(&self.repo_path)
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let n = output.stdout.iter().filter(|b| **b == 0).count() as u64;
+        (n > 0).then_some(n)
     }
 
     pub fn list(&self) -> Result<Vec<Worktree>> {
@@ -269,10 +357,20 @@ impl WorktreeManager {
     /// being reviewed) instead of cutting a fresh `agent/<id>` branch. Fails
     /// if the branch is already checked out elsewhere — git enforces that.
     pub fn create_on_branch(&self, task_id: &str, branch: &str) -> Result<Worktree> {
+        self.create_on_branch_with_progress(task_id, branch, &mut |_| {})
+    }
+
+    /// [`create_on_branch`] with checkout progress; see [`create_with_progress`].
+    pub fn create_on_branch_with_progress(
+        &self,
+        task_id: &str,
+        branch: &str,
+        on_progress: &mut dyn FnMut(CloneProgress),
+    ) -> Result<Worktree> {
         self.ensure_excluded()?;
         let path = self.worktrees_root().join(task_id);
         let path_str = path.to_string_lossy().to_string();
-        self.git(&["worktree", "add", &path_str, branch])?;
+        self.run_worktree_add(&["worktree", "add", &path_str, branch], &path, on_progress)?;
         Ok(Worktree {
             task_id: task_id.to_string(),
             path,
@@ -289,6 +387,24 @@ impl WorktreeManager {
         self.git(&["worktree", "add", &path_str, &branch])?;
         Ok(Worktree { task_id: task_id.to_string(), path, branch })
     }
+}
+
+/// Best-effort recursive count of regular files under `dir` (directories are
+/// descended, symlinks counted as files, all io errors swallowed). Drives only
+/// the create progress indicator, so an approximate count is fine.
+fn count_files(dir: &std::path::Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut count = 0;
+    for entry in entries.flatten() {
+        match entry.file_type() {
+            Ok(ft) if ft.is_dir() => count += count_files(&entry.path()),
+            Ok(_) => count += 1,
+            Err(_) => {}
+        }
+    }
+    count
 }
 
 fn copy_recursive(src: &std::path::Path, dest: &std::path::Path) -> Result<()> {

@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   FileChange, BranchInfo, HistoryItem, StashEntry, CloneProgress,
-  gitStatus, gitBranchInfo, gitStashList, gitUndoLastCommit, gitPush,
+  gitStatus, gitBranchInfo, gitStashList, gitUndoLastCommit, gitPush, gitSync, gitPullRebase,
 } from "../../api";
 import { toastSuccess } from "../../lib/toast";
+import ConfirmDialog from "../ConfirmDialog";
 import ChangesPanel from "./ChangesPanel";
 import HistoryPanel from "./HistoryPanel";
 import CommitDetail from "./CommitDetail";
@@ -53,6 +54,9 @@ export default function GitPanel({
   // push uploads. Null when no push is in flight.
   const [pushProgress, setPushProgress] = useState<CloneProgress | null>(null);
   const [historyKey, setHistoryKey] = useState(0);
+  // When a Sync finds the branch diverged from upstream, prompt the user to
+  // rebase-and-sync rather than silently merging or failing with a raw error.
+  const [divergedPrompt, setDivergedPrompt] = useState(false);
   // After Undo Last Commit, the undone message is restored into the commit box.
   const [restoreMessage, setRestoreMessage] = useState<{ text: string; nonce: number } | null>(null);
   const leftPane = usePaneWidth("git-full-left", 360, 300, 720);
@@ -122,6 +126,33 @@ export default function GitPanel({
     return ok;
   }, [act, taskId]);
 
+  // Sync = pull (fast-forward) + push, like VS Code's "Sync Changes". A diverged
+  // branch can't fast-forward, so the backend reports it and we ask the user
+  // whether to rebase rather than merging silently or dying on a raw error.
+  const sync = useCallback(async () => {
+    setPushProgress({ phase: "Syncing…", percent: null, detail: "" });
+    let diverged = false;
+    // No label: the toast depends on the outcome, raised below.
+    const ok = await act(async () => {
+      diverged = (await gitSync(taskId, setPushProgress)) === "diverged";
+    });
+    setPushProgress(null);
+    if (!ok) return;
+    if (diverged) setDivergedPrompt(true);
+    else toastSuccess("Synced");
+  }, [act, taskId]);
+
+  // Chosen from the diverged prompt: replay local commits onto upstream, then push.
+  const rebaseAndSync = useCallback(async () => {
+    setDivergedPrompt(false);
+    setPushProgress({ phase: "Rebasing…", percent: null, detail: "" });
+    await act(async () => {
+      await gitPullRebase(taskId);
+      await gitPush(taskId, setPushProgress);
+    }, "Synced (rebased)");
+    setPushProgress(null);
+  }, [act, taskId]);
+
   const undoCommit = () => act(async () => {
     const message = await gitUndoLastCommit(taskId);
     // nonce: restoring the same message twice must still re-trigger the effect.
@@ -189,8 +220,17 @@ export default function GitPanel({
 
   const changesPanel = (
     <ChangesPanel taskId={taskId} changes={changes} branch={branch} stashes={stashes}
-      restoreMessage={restoreMessage} onAct={act} busy={busy}
+      restoreMessage={restoreMessage} onAct={act} onSync={sync} busy={busy}
       selectedPath={selection?.kind === "file" ? selection.path : null} onSelectFile={onSelectFile} />
+  );
+  const divergedDialog = divergedPrompt && (
+    <ConfirmDialog
+      title="Branch has diverged"
+      body={`Your branch and ${branch?.upstream ?? "its upstream"} each have commits the other doesn't, so Sync can't fast-forward. Rebase your local commits on top of the remote and push?`}
+      confirmLabel="Rebase & Sync"
+      onConfirm={rebaseAndSync}
+      onCancel={() => setDivergedPrompt(false)}
+    />
   );
   const historyPanel = (
     <HistoryPanel taskId={taskId} base={branch?.base ?? null} reloadKey={historyKey} onAct={act}
@@ -208,6 +248,7 @@ export default function GitPanel({
         {sections}
         {allowComments && <ReviewComments key={commentsKey} taskId={taskId} />}
         {outputModal}
+        {divergedDialog}
       </aside>
     );
   }
@@ -233,6 +274,7 @@ export default function GitPanel({
         </div>
       </div>
       {outputModal}
+      {divergedDialog}
     </div>
   );
 }

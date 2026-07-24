@@ -32,12 +32,22 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [view, setView] = useState<View>("grid");
   const [focusedRunId, setFocusedRun] = useState<string | null>(null);
-  const [tab, setTab] = useState<Tab>("agents");
+  const [tab, setTabState] = useState<Tab>("agents");
   const [approveRunId, setApproveRun] = useState<string | null>(null);
   // A count (not a flag) so overlapping creations can't clear each other.
   const [spawnCount, setSpawnCount] = useState(0);
   const projectRef = useRef<string | null>(null);
   projectRef.current = selectedProjectId;
+  // Per-project memory of the last-viewed tab, so each project independently
+  // restores where you left off. A ref (not state) because it only needs to be
+  // read on project switch — the visible `tab` state drives rendering.
+  const tabByProject = useRef<Record<string, Tab>>({});
+
+  const setTab = useCallback((t: Tab) => {
+    setTabState(t);
+    const pid = projectRef.current;
+    if (pid) tabByProject.current[pid] = t;
+  }, []);
 
   const refreshRuns = useCallback(async () => {
     const pid = projectRef.current;
@@ -101,7 +111,10 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
     setSelectedProjectId(id);
     setView("grid");
     setFocusedRun(null);
-    setTab("agents");
+    // Restore this project's last-viewed tab (defaults to "agents" the first
+    // time a project is opened). Viewing Files for one project and clicking
+    // another lands you on that project's Files.
+    if (id) setTabState(tabByProject.current[id] ?? "agents");
     // Clear any pending merge-approval so switching projects can't re-open the
     // MergeModal for a run from the old project.
     setApproveRun(null);

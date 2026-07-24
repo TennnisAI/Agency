@@ -554,6 +554,30 @@ pub async fn pr_detail(
 }
 
 #[tauri::command]
+pub async fn gh_current_login(state: State<'_, AppState>, project_id: String) -> Result<String, String> {
+    state.gh_current_login(&project_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn pr_merge_methods(
+    state: State<'_, AppState>,
+    project_id: String,
+) -> Result<agency_core::gh::MergeMethods, String> {
+    state.pr_merge_methods(&project_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn merge_pr(
+    state: State<'_, AppState>,
+    project_id: String,
+    number: u64,
+    method: String,
+    delete_branch: bool,
+) -> Result<(), String> {
+    state.merge_pr(&project_id, number, &method, delete_branch).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn pr_diff(
     state: State<'_, AppState>,
     project_id: String,

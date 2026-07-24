@@ -200,6 +200,16 @@ pub struct DraftComment {
     pub start_side: Option<String>,
 }
 
+/// The merge methods a repo permits (mirrors GitHub's repo settings), so the UI
+/// offers only the buttons that will actually work.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MergeMethods {
+    pub merge: bool,
+    pub squash: bool,
+    pub rebase: bool,
+}
+
 pub struct GhCli {
     bin: String,
 }
@@ -430,6 +440,55 @@ impl GhCli {
             .split_once('/')
             .ok_or_else(|| anyhow::anyhow!("unexpected repo slug from gh: {slug:?}"))?;
         Ok((owner.to_string(), name.to_string()))
+    }
+
+    /// Which merge methods the repo allows, so the UI only offers valid ones.
+    pub fn merge_methods(&self, repo: &Path) -> Result<MergeMethods> {
+        let out = self.run_ok(
+            repo,
+            &["repo", "view", "--json", "mergeCommitAllowed,squashMergeAllowed,rebaseMergeAllowed"],
+        )?;
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Raw {
+            #[serde(default)]
+            merge_commit_allowed: bool,
+            #[serde(default)]
+            squash_merge_allowed: bool,
+            #[serde(default)]
+            rebase_merge_allowed: bool,
+        }
+        let r: Raw = serde_json::from_str(&out)?;
+        Ok(MergeMethods {
+            merge: r.merge_commit_allowed,
+            squash: r.squash_merge_allowed,
+            rebase: r.rebase_merge_allowed,
+        })
+    }
+
+    /// Merge PR `number` with `method` (merge | squash | rebase), optionally
+    /// deleting the head branch after. gh's stderr (conflicts, required checks,
+    /// protected branch) is surfaced as-is on failure.
+    pub fn merge_pr(&self, repo: &Path, number: u64, method: &str, delete_branch: bool) -> Result<()> {
+        let num = number.to_string();
+        let flag = match method {
+            "squash" => "--squash",
+            "rebase" => "--rebase",
+            _ => "--merge",
+        };
+        let mut args: Vec<&str> = vec!["pr", "merge", num.as_str(), flag];
+        if delete_branch {
+            args.push("--delete-branch");
+        }
+        self.run_ok(repo, &args)?;
+        Ok(())
+    }
+
+    /// The authenticated gh user's login. Used to detect self-authored PRs —
+    /// GitHub forbids approving or requesting changes on your own PR, so the UI
+    /// disables those verdicts rather than letting them fail with a 422.
+    pub fn current_login(&self, repo: &Path) -> Result<String> {
+        Ok(self.run_ok(repo, &["api", "user", "-q", ".login"])?.trim().to_string())
     }
 
     /// Full detail for PR `number` (adds body/head SHA/mergeable/reviewDecision
@@ -1043,6 +1102,27 @@ esac
             .submit_pr_review(dir.path(), 7, "sha", "REQUEST_CHANGES", None, &[])
             .unwrap_err();
         assert!(err.to_string().contains("needs a summary"));
+    }
+
+    #[test]
+    fn merge_methods_parses_repo_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = fake_gh(
+            dir.path(),
+            r#"echo '{"mergeCommitAllowed":true,"squashMergeAllowed":true,"rebaseMergeAllowed":false}'"#,
+        );
+        let m = GhCli::with_bin(bin).merge_methods(dir.path()).unwrap();
+        assert!(m.merge && m.squash && !m.rebase);
+    }
+
+    #[test]
+    fn merge_pr_builds_expected_args() {
+        let dir = tempfile::tempdir().unwrap();
+        let cap = dir.path().join("args.txt");
+        let bin = fake_gh(dir.path(), &format!(r#"echo "$@" > "{}""#, cap.display()));
+        GhCli::with_bin(bin).merge_pr(dir.path(), 3, "squash", true).unwrap();
+        let args = std::fs::read_to_string(&cap).unwrap();
+        assert_eq!(args.trim(), "pr merge 3 --squash --delete-branch");
     }
 
     #[test]

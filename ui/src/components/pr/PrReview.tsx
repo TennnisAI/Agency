@@ -5,6 +5,7 @@ import {
   PrFileDiff,
   ReviewEvent,
   ReviewThread,
+  ghCurrentLogin,
   prDetail,
   prDiff,
   prReviewThreads,
@@ -15,6 +16,7 @@ import {
 } from "../../api";
 import { toastError, toastSuccess } from "../../lib/toast";
 import Markdown from "../Markdown";
+import MergePrDialog from "./MergePrDialog";
 import PrDiffFile from "./PrDiffFile";
 import type { DraftEntry } from "./anchor";
 
@@ -32,8 +34,18 @@ const DECISION_LABEL: Record<string, string> = {
 // The review surface for one PR: header + description, the full diff with inline
 // threads and pending comments, and a submit bar that posts a verdict + all
 // pending comments as one GitHub review.
-export default function PrReview({ projectId, number }: { projectId: string; number: number }) {
+export default function PrReview({
+  projectId,
+  number,
+  onMerged,
+}: {
+  projectId: string;
+  number: number;
+  // Lets the host panel refresh its list after a merge (the PR drops from open).
+  onMerged?: () => void;
+}) {
   const [detail, setDetail] = useState<PrDetail | null>(null);
+  const [viewer, setViewer] = useState<string | null>(null);
   const [files, setFiles] = useState<PrFileDiff[]>([]);
   const [threads, setThreads] = useState<ReviewThread[]>([]);
   const [drafts, setDrafts] = useState<DraftEntry[]>([]);
@@ -41,6 +53,7 @@ export default function PrReview({ projectId, number }: { projectId: string; num
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [showMerge, setShowMerge] = useState(false);
 
   const reloadThreads = useCallback(async () => {
     setThreads(await prReviewThreads(projectId, number));
@@ -50,14 +63,16 @@ export default function PrReview({ projectId, number }: { projectId: string; num
     setLoading(true);
     setError("");
     try {
-      const [d, f, t] = await Promise.all([
+      const [d, f, t, v] = await Promise.all([
         prDetail(projectId, number),
         prDiff(projectId, number),
         prReviewThreads(projectId, number),
+        ghCurrentLogin(projectId).catch(() => null), // best-effort; only gates self-review UI
       ]);
       setDetail(d);
       setFiles(f);
       setThreads(t);
+      setViewer(v);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -101,7 +116,15 @@ export default function PrReview({ projectId, number }: { projectId: string; num
       );
       await load();
     } catch (e) {
-      toastError(e, "Couldn't submit review");
+      // A 422 on a non-comment review most often means a line no longer maps to
+      // the diff or a self-authored PR — give a more useful hint than gh's raw
+      // "Unprocessable Entity".
+      const msg = String(e);
+      if (/422|unprocessable/i.test(msg) && event !== "COMMENT") {
+        toastError(e, "GitHub rejected the review — you can't approve or request changes on your own PR, and comment lines must still be part of the diff.");
+      } else {
+        toastError(e, "Couldn't submit review");
+      }
     } finally {
       setSubmitting(false);
     }
@@ -112,8 +135,21 @@ export default function PrReview({ projectId, number }: { projectId: string; num
   if (!detail) return <div className="pr-review-empty">PR #{number} not found.</div>;
 
   const badge = detail.isDraft ? "DRAFT" : detail.state;
-  // Request-changes/Comment need a body or a pending comment; approve is always allowed.
+  // Request-changes/Comment need a body or a pending comment.
   const canVerdict = summary.trim().length > 0 || drafts.length > 0;
+  // GitHub forbids approving or requesting changes on your own PR — only a
+  // Comment review is allowed. Detect it so we disable those buttons up front
+  // instead of failing with a 422.
+  const isOwnPr = !!viewer && detail.author.login.toLowerCase() === viewer.toLowerCase();
+  const ownPrHint = "You authored this PR — GitHub only lets you leave a Comment review on your own PR.";
+  // The PR is mergeable when it's open, not a draft, and GitHub doesn't report a
+  // conflict. UNKNOWN (still computing) is allowed — gh will refuse if it can't.
+  const canMerge = detail.state === "OPEN" && !detail.isDraft && detail.mergeable !== "CONFLICTING";
+  const mergeHint = detail.isDraft
+    ? "This PR is a draft — mark it ready before merging."
+    : detail.mergeable === "CONFLICTING"
+      ? "This PR has conflicts that must be resolved first."
+      : "Merge this PR into its base branch.";
 
   return (
     <div className="pr-review">
@@ -125,6 +161,16 @@ export default function PrReview({ projectId, number }: { projectId: string; num
               {detail.title} <span className="pr-review-num">#{detail.number}</span>
             </span>
             <span className="spacer" style={{ flex: 1 }} />
+            {detail.state === "OPEN" && (
+              <button
+                className="git-iconbtn pr-merge-btn"
+                disabled={!canMerge}
+                title={mergeHint}
+                onClick={() => setShowMerge(true)}
+              >
+                Merge
+              </button>
+            )}
             <button className="settings-ghost-btn" onClick={() => openUrl(detail.url).catch((e) => toastError(e, "Couldn't open the PR"))}>
               Open ↗
             </button>
@@ -166,7 +212,11 @@ export default function PrReview({ projectId, number }: { projectId: string; num
         />
         <div className="pr-review-verdicts">
           <span className="pr-review-draftcount">
-            {drafts.length > 0 ? `${drafts.length} pending comment${drafts.length === 1 ? "" : "s"}` : "No pending comments"}
+            {isOwnPr
+              ? "Your PR — comment only"
+              : drafts.length > 0
+                ? `${drafts.length} pending comment${drafts.length === 1 ? "" : "s"}`
+                : "No pending comments"}
           </span>
           <span className="spacer" style={{ flex: 1 }} />
           <button
@@ -183,11 +233,13 @@ export default function PrReview({ projectId, number }: { projectId: string; num
           </button>
           <button
             className="git-iconbtn"
-            disabled={submitting || !canVerdict}
+            disabled={submitting || !canVerdict || isOwnPr}
             title={
-              canVerdict
-                ? "Block the merge until addressed — marks the PR “Changes requested”; you'll need to re-review to clear it."
-                : "Add a summary or a comment first"
+              isOwnPr
+                ? ownPrHint
+                : canVerdict
+                  ? "Block the merge until addressed — marks the PR “Changes requested”; you'll need to re-review to clear it."
+                  : "Add a summary or a comment first"
             }
             onClick={() => submit("REQUEST_CHANGES")}
           >
@@ -195,14 +247,29 @@ export default function PrReview({ projectId, number }: { projectId: string; num
           </button>
           <button
             className="git-iconbtn pr-approve"
-            disabled={submitting}
-            title="Sign off on the PR — marks it “Approved” and counts toward required approvals."
+            disabled={submitting || isOwnPr}
+            title={isOwnPr ? ownPrHint : "Sign off on the PR — marks it “Approved” and counts toward required approvals."}
             onClick={() => submit("APPROVE")}
           >
             {submitting ? "Submitting…" : "Approve"}
           </button>
         </div>
       </div>
+
+      {showMerge && (
+        <MergePrDialog
+          projectId={projectId}
+          number={number}
+          title={detail.title}
+          onMerged={() => {
+            setShowMerge(false);
+            toastSuccess(`Merged #${number}`);
+            onMerged?.();
+            load();
+          }}
+          onCancel={() => setShowMerge(false)}
+        />
+      )}
     </div>
   );
 }

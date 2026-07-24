@@ -2867,6 +2867,25 @@ impl AppState {
         agency_core::gh::GhCli::default().view_pr_detail(&repo, number)
     }
 
+    /// The authenticated gh user's login (for self-review detection).
+    pub fn gh_current_login(&self, project_id: &str) -> Result<String> {
+        let repo = self.project_repo(project_id)?;
+        agency_core::gh::GhCli::default().current_login(&repo)
+    }
+
+    /// Which merge methods the repo allows (drives the merge dialog's options).
+    pub fn pr_merge_methods(&self, project_id: &str) -> Result<agency_core::gh::MergeMethods> {
+        let repo = self.project_repo(project_id)?;
+        agency_core::gh::GhCli::default().merge_methods(&repo)
+    }
+
+    /// Merge a PR from the review view (the solo-dev path — you can't approve
+    /// your own PR but can merge it).
+    pub fn merge_pr(&self, project_id: &str, number: u64, method: &str, delete_branch: bool) -> Result<()> {
+        let repo = self.project_repo(project_id)?;
+        agency_core::gh::GhCli::default().merge_pr(&repo, number, method, delete_branch)
+    }
+
     /// The PR's full multi-file diff, split per file for the diff renderer.
     pub fn pr_diff(&self, project_id: &str, number: u64) -> Result<Vec<agency_core::gh::PrFileDiff>> {
         let repo = self.project_repo(project_id)?;

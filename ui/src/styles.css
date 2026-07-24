@@ -1912,3 +1912,11 @@ input, textarea, code,
 .newpr-field-body textarea { min-height: 96px; }
 .newpr-actions { display: flex; gap: 8px; margin-top: 4px; }
 .newpr-actions .git-iconbtn { border: 1px solid var(--s1); padding: 6px 13px; border-radius: 6px; }
+
+/* Merge button + dialog. */
+.pr-merge-btn { border: 1px solid var(--green); color: var(--green); padding: 4px 12px; border-radius: 6px; }
+.pr-merge-btn:hover:not(:disabled) { background: color-mix(in srgb, var(--green) 14%, transparent); }
+.pr-merge-btn:disabled { color: var(--sub0); border-color: var(--s1); cursor: not-allowed; }
+.merge-methods { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
+.merge-method { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text); cursor: pointer; }
+.merge-method input { accent-color: var(--green); }

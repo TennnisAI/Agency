@@ -101,7 +101,7 @@ export default function PrReviewPanel({
         {creating ? (
           <NewPrForm projectId={projectId} openPrBranches={openPrBranches} onCreated={afterCreate} onCancel={() => setCreating(false)} />
         ) : selected != null ? (
-          <PrReview key={selected} projectId={projectId} number={selected} />
+          <PrReview key={selected} projectId={projectId} number={selected} onMerged={load} />
         ) : (
           <div className="pr-review-empty">Select a pull request to review, or start a new one with “+ New”.</div>
         )}

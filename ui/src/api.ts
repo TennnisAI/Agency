@@ -580,6 +580,18 @@ export const sendCheckFeedback = (taskId: string) =>
 // In-app PR review, keyed by (projectId, prNumber).
 export const prDetail = (projectId: string, number: number) =>
   invoke<PrDetail | null>("pr_detail", { projectId, number });
+export const ghCurrentLogin = (projectId: string) =>
+  invoke<string>("gh_current_login", { projectId });
+export interface MergeMethods {
+  merge: boolean;
+  squash: boolean;
+  rebase: boolean;
+}
+export type MergeMethod = "merge" | "squash" | "rebase";
+export const prMergeMethods = (projectId: string) =>
+  invoke<MergeMethods>("pr_merge_methods", { projectId });
+export const mergePr = (projectId: string, number: number, method: MergeMethod, deleteBranch: boolean) =>
+  invoke<void>("merge_pr", { projectId, number, method, deleteBranch });
 export const prDiff = (projectId: string, number: number) =>
   invoke<PrFileDiff[]>("pr_diff", { projectId, number });
 export const prReviewThreads = (projectId: string, number: number) =>

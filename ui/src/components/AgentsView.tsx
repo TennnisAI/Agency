@@ -5,6 +5,7 @@ import AgentTile from "./AgentTile";
 import AgentFocus from "./AgentFocus";
 import MergeModal from "./MergeModal";
 import GitPanel, { GitSelection } from "./git/GitPanel";
+import PrReviewPanel from "./pr/PrReviewPanel";
 import RepoSetupDialog from "./RepoSetupDialog";
 import AgentAddMenu from "./AgentAddMenu";
 import Resizer from "./Resizer";
@@ -40,6 +41,10 @@ export default function AgentsView({
   const [pendingSpawn, setPendingSpawn] = useState<{ agentId: string; readiness: RepoReadiness; repoPath: string; opts?: { base: string; mergeTarget: string }; issue?: Issue } | null>(null);
   const [missingAgent, setMissingAgent] = useState<string | null>(null);
   const [gitSel, setGitSel] = useState<GitSelection>(null);
+  // Source Control has two sub-views: Changes (the git panel) and Pull Requests
+  // (in-app review). `reviewPr` deep-links a specific PR from the Approve window.
+  const [srcTab, setSrcTab] = useState<"changes" | "prs">("changes");
+  const [reviewPr, setReviewPr] = useState<number | null>(null);
   useEffect(() => { setGitSel(null); }, [focusedRunId, project?.id]);
   const reviewPane = usePaneWidth("review", 360, 280, 640);
 
@@ -100,6 +105,12 @@ export default function AgentsView({
             <button className={view === "focus" ? "on" : ""} onClick={() => setView("focus")}>▭ Focus</button>
           </div>
         )}
+        {project && tab === "source" && (
+          <div className="seg">
+            <button className={srcTab === "changes" ? "on" : ""} onClick={() => setSrcTab("changes")}>Changes</button>
+            <button className={srcTab === "prs" ? "on" : ""} onClick={() => setSrcTab("prs")}>Pull Requests</button>
+          </div>
+        )}
         <div className="spacer" />
         {project && tab === "agents" && (
           <RightPanelToggle open={review} onToggle={() => setReview((r) => !r)} />
@@ -138,9 +149,14 @@ export default function AgentsView({
             </div>
           )}
 
-          {tab === "source" && gitRoot && (
+          {tab === "source" && (
             <div className="source-wrap">
-              <GitPanel taskId={gitRoot} layout="full" selection={gitSel} onSelect={setGitSel} allowComments={allowComments} />
+              {srcTab === "changes" && gitRoot && (
+                <GitPanel taskId={gitRoot} layout="full" selection={gitSel} onSelect={setGitSel} allowComments={allowComments} />
+              )}
+              {srcTab === "prs" && (
+                <PrReviewPanel projectId={project.id} initialPr={reviewPr} onConsumeInitial={() => setReviewPr(null)} />
+              )}
             </div>
           )}
 
@@ -249,6 +265,13 @@ export default function AgentsView({
         <MergeModal
           taskId={approveRunId}
           onClose={() => setApproveRun(null)}
+          onReviewPr={(number) => {
+            // Deep-link into Source Control → Pull Requests focused on this PR.
+            setApproveRun(null);
+            setTab("source");
+            setSrcTab("prs");
+            setReviewPr(number);
+          }}
           onArchived={() => {
             setApproveRun(null);
             setFocusedRun(null);

@@ -2856,6 +2856,133 @@ impl AppState {
         Ok(PrStatus { pr, checks })
     }
 
+    // ── In-app PR review (keyed by project + PR number) ─────────────────────────
+    // These power the Source Control → Pull Requests review surface. Identity is
+    // (project_id, number): a PR list already has both, and the agent's Approve
+    // window resolves its number once via `pr_number_for_run`.
+
+    /// Full PR detail (description, head SHA, mergeable, review decision).
+    pub fn pr_detail(&self, project_id: &str, number: u64) -> Result<Option<agency_core::gh::PrDetail>> {
+        let repo = self.project_repo(project_id)?;
+        agency_core::gh::GhCli::default().view_pr_detail(&repo, number)
+    }
+
+    /// The authenticated gh user's login (for self-review detection).
+    pub fn gh_current_login(&self, project_id: &str) -> Result<String> {
+        let repo = self.project_repo(project_id)?;
+        agency_core::gh::GhCli::default().current_login(&repo)
+    }
+
+    /// Which merge methods the repo allows (drives the merge dialog's options).
+    pub fn pr_merge_methods(&self, project_id: &str) -> Result<agency_core::gh::MergeMethods> {
+        let repo = self.project_repo(project_id)?;
+        agency_core::gh::GhCli::default().merge_methods(&repo)
+    }
+
+    /// Merge a PR from the review view (the solo-dev path — you can't approve
+    /// your own PR but can merge it).
+    pub fn merge_pr(&self, project_id: &str, number: u64, method: &str, delete_branch: bool) -> Result<()> {
+        let repo = self.project_repo(project_id)?;
+        agency_core::gh::GhCli::default().merge_pr(&repo, number, method, delete_branch)
+    }
+
+    /// The PR's full multi-file diff, split per file for the diff renderer.
+    pub fn pr_diff(&self, project_id: &str, number: u64) -> Result<Vec<agency_core::gh::PrFileDiff>> {
+        let repo = self.project_repo(project_id)?;
+        agency_core::gh::GhCli::default().pr_diff(&repo, number)
+    }
+
+    /// The PR's review threads (with resolution state) for inline rendering.
+    pub fn pr_review_threads(&self, project_id: &str, number: u64) -> Result<Vec<agency_core::gh::ReviewThread>> {
+        let repo = self.project_repo(project_id)?;
+        agency_core::gh::GhCli::default().pr_review_threads(&repo, number)
+    }
+
+    /// Submit a review verdict + inline comments as one atomic operation. The
+    /// head SHA the comments anchor to is read here rather than trusted from the
+    /// client — the reviews API rejects a stale `commit_id`.
+    pub fn submit_pr_review(
+        &self,
+        project_id: &str,
+        number: u64,
+        event: &str,
+        body: Option<&str>,
+        comments: &[agency_core::gh::DraftComment],
+    ) -> Result<()> {
+        let repo = self.project_repo(project_id)?;
+        let gh = agency_core::gh::GhCli::default();
+        let detail = gh
+            .view_pr_detail(&repo, number)?
+            .ok_or_else(|| anyhow!("PR #{number} not found"))?;
+        gh.submit_pr_review(&repo, number, &detail.head_ref_oid, event, body, comments)
+    }
+
+    /// Reply into an existing review thread. `in_reply_to` is a comment's
+    /// `database_id` from `pr_review_threads`.
+    pub fn reply_pr_comment(&self, project_id: &str, number: u64, in_reply_to: u64, body: &str) -> Result<()> {
+        let repo = self.project_repo(project_id)?;
+        agency_core::gh::GhCli::default().reply_review_comment(&repo, number, in_reply_to, body)
+    }
+
+    /// Resolve a review thread. `thread_id` is the GraphQL node id.
+    pub fn resolve_pr_thread(&self, project_id: &str, thread_id: &str) -> Result<()> {
+        let repo = self.project_repo(project_id)?;
+        agency_core::gh::GhCli::default().resolve_review_thread(&repo, thread_id)
+    }
+
+    /// Reopen a resolved review thread.
+    pub fn unresolve_pr_thread(&self, project_id: &str, thread_id: &str) -> Result<()> {
+        let repo = self.project_repo(project_id)?;
+        agency_core::gh::GhCli::default().unresolve_review_thread(&repo, thread_id)
+    }
+
+    /// Open a PR from an existing branch in the project repo (the Pull Requests
+    /// tab's "New pull request" flow, not tied to any run). Pushes the branch
+    /// first, defaults the base to the repo's merge target and the title/body
+    /// from the branch when not given. If a PR already exists for the branch it
+    /// is returned instead of erroring.
+    pub fn create_pr_from_branch(
+        &self,
+        project_id: &str,
+        head: &str,
+        base: Option<&str>,
+        title: Option<&str>,
+        body: Option<&str>,
+    ) -> Result<agency_core::gh::PrInfo> {
+        let repo = self.project_repo(project_id)?;
+        let gh = agency_core::gh::GhCli::default();
+        if let Some(existing) = gh.view_pr(&repo, head)? {
+            return Ok(existing);
+        }
+        let base = match base {
+            Some(b) if !b.trim().is_empty() => b.to_string(),
+            _ => agency_core::merge::resolve_target(None, &repo)?,
+        };
+        if head == base {
+            bail!("a PR's branch and base must differ (both are {base})");
+        }
+        agency_core::git::push_branch(&repo, head)?;
+        let title = match title {
+            Some(t) if !t.trim().is_empty() => t.to_string(),
+            _ => head.to_string(),
+        };
+        let body = match body {
+            Some(b) if !b.trim().is_empty() => b.to_string(),
+            _ => agency_core::git::branch_summary(&repo, head, &base)?,
+        };
+        gh.create_pr(&repo, head, &base, &title, &body)
+    }
+
+    /// The PR number for a run's branch, if a PR exists — lets the agent's
+    /// Approve window deep-link into the review view.
+    pub fn pr_number_for_run(&self, id: &str) -> Result<Option<u64>> {
+        let run = self.run_record(id)?;
+        let repo = self.project_repo(&run.project_id)?;
+        Ok(agency_core::gh::GhCli::default()
+            .view_pr(&repo, &run.branch)?
+            .map(|p| p.number))
+    }
+
     /// Type the PR's failing checks into the agent's live session so it can
     /// investigate — same delivery path as review comments.
     pub fn send_check_feedback(&self, id: &str) -> Result<()> {

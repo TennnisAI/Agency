@@ -28,11 +28,15 @@ export default function PrSection({
   projectId,
   canCreate,
   onLeave,
+  onReviewPr,
 }: {
   taskId: string;
   projectId: string;
   canCreate: boolean;
   onLeave: () => void;
+  // When set, shows a "Review in Agency" action that deep-links to the PR
+  // review panel for the created/existing PR.
+  onReviewPr?: (number: number) => void;
 }) {
   const [readiness, setReadiness] = useState<GhReadiness | null>(null);
   const [pr, setPr] = useState<PrInfo | null>(null);
@@ -94,16 +98,26 @@ export default function PrSection({
     }
   }
 
-  if (readiness === null) return null;
-
   const failing = checks.filter((c) => c.bucket === "fail" || c.bucket === "cancel");
+
+  // Render the section (with its label and border) from the first frame so the
+  // Merge button above it never shifts. While the gh readiness probe is in
+  // flight we hold the space with a spinner instead of popping in a beat later.
+  if (readiness === null) {
+    return (
+      <div className="pr-section">
+        <div className="pr-section-label">Pull request</div>
+        <p className="merge-note"><span className="spinner" /> Checking GitHub…</p>
+      </div>
+    );
+  }
 
   return (
     <div className="pr-section">
       <div className="pr-section-label">Pull request</div>
       {error && <div className="git-error">{error}</div>}
 
-      {readiness !== null && readiness !== "ready" && (
+      {readiness !== "ready" && (
         <GhSetupHint readiness={readiness} onLeave={onLeave} />
       )}
 
@@ -130,7 +144,15 @@ export default function PrSection({
               #{pr.number} {pr.title}
             </span>
             <span className="spacer" />
-            <button className="settings-ghost-btn" onClick={() => openUrl(pr.url).catch(() => {})}>
+            {onReviewPr && (
+              <button className="settings-ghost-btn" onClick={() => onReviewPr(pr.number)}>
+                Review in Agency
+              </button>
+            )}
+            <button
+              className="settings-ghost-btn"
+              onClick={() => openUrl(pr.url).catch((e) => toastError(e, "Couldn't open the pull request"))}
+            >
               Open ↗
             </button>
             <button className="settings-ghost-btn" onClick={refreshStatus} title="Refresh checks">

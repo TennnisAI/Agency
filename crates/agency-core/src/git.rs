@@ -115,6 +115,14 @@ pub fn push(worktree: &Path) -> Result<()> {
     push_with_progress(worktree, |_| {})
 }
 
+/// Publish a specific local branch to `origin` (setting upstream) without
+/// checking it out — used to open a PR from an existing branch in the project
+/// repo. git's stderr is carried on failure so the UI can show the real reason.
+pub fn push_branch(repo: &Path, branch: &str) -> Result<()> {
+    git(repo, &["push", "-u", "origin", branch])?;
+    Ok(())
+}
+
 /// Push the current branch to `origin` (setting upstream), streaming git's
 /// `--progress` output to `on_progress` so a large push shows movement instead
 /// of a frozen UI. On failure, the error carries git's raw stderr so the UI can

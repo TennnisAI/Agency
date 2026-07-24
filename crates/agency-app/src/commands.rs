@@ -542,6 +542,126 @@ pub async fn send_check_feedback(state: State<'_, AppState>, task_id: String) ->
     state.send_check_feedback(&task_id).map_err(|e| e.to_string())
 }
 
+// ── In-app PR review ────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn pr_detail(
+    state: State<'_, AppState>,
+    project_id: String,
+    number: u64,
+) -> Result<Option<agency_core::gh::PrDetail>, String> {
+    state.pr_detail(&project_id, number).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn gh_current_login(state: State<'_, AppState>, project_id: String) -> Result<String, String> {
+    state.gh_current_login(&project_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn pr_merge_methods(
+    state: State<'_, AppState>,
+    project_id: String,
+) -> Result<agency_core::gh::MergeMethods, String> {
+    state.pr_merge_methods(&project_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn merge_pr(
+    state: State<'_, AppState>,
+    project_id: String,
+    number: u64,
+    method: String,
+    delete_branch: bool,
+) -> Result<(), String> {
+    state.merge_pr(&project_id, number, &method, delete_branch).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn pr_diff(
+    state: State<'_, AppState>,
+    project_id: String,
+    number: u64,
+) -> Result<Vec<agency_core::gh::PrFileDiff>, String> {
+    state.pr_diff(&project_id, number).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn pr_review_threads(
+    state: State<'_, AppState>,
+    project_id: String,
+    number: u64,
+) -> Result<Vec<agency_core::gh::ReviewThread>, String> {
+    state.pr_review_threads(&project_id, number).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn submit_pr_review(
+    state: State<'_, AppState>,
+    project_id: String,
+    number: u64,
+    event: String,
+    body: Option<String>,
+    comments: Vec<agency_core::gh::DraftComment>,
+) -> Result<(), String> {
+    state
+        .submit_pr_review(&project_id, number, &event, body.as_deref(), &comments)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn reply_pr_comment(
+    state: State<'_, AppState>,
+    project_id: String,
+    number: u64,
+    in_reply_to: u64,
+    body: String,
+) -> Result<(), String> {
+    state
+        .reply_pr_comment(&project_id, number, in_reply_to, &body)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn resolve_pr_thread(
+    state: State<'_, AppState>,
+    project_id: String,
+    thread_id: String,
+) -> Result<(), String> {
+    state.resolve_pr_thread(&project_id, &thread_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn unresolve_pr_thread(
+    state: State<'_, AppState>,
+    project_id: String,
+    thread_id: String,
+) -> Result<(), String> {
+    state.unresolve_pr_thread(&project_id, &thread_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn pr_number_for_run(
+    state: State<'_, AppState>,
+    task_id: String,
+) -> Result<Option<u64>, String> {
+    state.pr_number_for_run(&task_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn create_pr_from_branch(
+    state: State<'_, AppState>,
+    project_id: String,
+    head: String,
+    base: Option<String>,
+    title: Option<String>,
+    body: Option<String>,
+) -> Result<agency_core::gh::PrInfo, String> {
+    state
+        .create_pr_from_branch(&project_id, &head, base.as_deref(), title.as_deref(), body.as_deref())
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn create_race(
     state: State<'_, AppState>,

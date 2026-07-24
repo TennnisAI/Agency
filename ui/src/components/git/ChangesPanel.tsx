@@ -14,7 +14,7 @@ import Menu, { MenuEntry } from "./Menu";
 import StashGroup from "./StashGroup";
 
 export default function ChangesPanel({
-  taskId, changes, branch, stashes, restoreMessage, onAct, busy = false, selectedPath, onSelectFile,
+  taskId, changes, branch, stashes, restoreMessage, onAct, onSync, busy = false, selectedPath, onSelectFile,
 }: {
   taskId: string;
   changes: FileChange[];
@@ -22,6 +22,9 @@ export default function ChangesPanel({
   stashes: StashEntry[];
   restoreMessage?: { text: string; nonce: number } | null;
   onAct: (fn: () => Promise<unknown>, label?: string) => Promise<boolean>;
+  // Sync = pull (fast-forward) + push; owned by GitPanel because it streams push
+  // progress and can raise a diverged-branch prompt (unlike the plain onAct ops).
+  onSync: () => void;
   busy?: boolean;
   selectedPath: string | null;
   onSelectFile: (path: string, group: "index" | "workingTree" | "merge" | "untracked") => void;
@@ -123,7 +126,7 @@ export default function ChangesPanel({
         onCommitAll={(m) => onAct(async () => { await gitStageAll(taskId); await gitCommit(taskId, m); }, "Committed all changes")}
         onCommitPush={(m) => onAct(async () => { await gitCommit(taskId, m); await gitPush(taskId); }, "Committed & pushed")}
         onAmend={(m) => onAct(() => gitCommitAmend(taskId, m), "Amended")}
-        onSync={() => onAct(() => gitPush(taskId), "Synced")}
+        onSync={onSync}
         onPublish={() => onAct(() => gitPush(taskId), "Branch published")}
         onPublishRemote={(url) => onAct(async () => { await gitSetRemote(taskId, url); await gitPush(taskId); }, "Branch published")}
       />

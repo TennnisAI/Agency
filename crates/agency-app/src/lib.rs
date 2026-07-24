@@ -114,6 +114,7 @@ pub fn run() {
             commands::git_discard_all,
             commands::git_commit,
             commands::git_push,
+            commands::git_sync,
             commands::git_fetch,
             commands::git_pull,
             commands::git_set_remote,

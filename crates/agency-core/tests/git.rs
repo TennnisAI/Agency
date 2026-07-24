@@ -423,3 +423,100 @@ fn fetch_branch_updates_local_from_origin_without_checkout() {
         .unwrap();
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "later");
 }
+
+/// A local clone of a bare remote, checked out on the remote's default branch
+/// with upstream tracking set — the shape `sync` operates on. Returns
+/// (`_keep`, remote_path, clone_path); `_keep` holds the tempdirs alive.
+fn clone_with_upstream() -> (Vec<tempfile::TempDir>, std::path::PathBuf, std::path::PathBuf) {
+    let src = tempfile::tempdir().unwrap();
+    init_repo(src.path());
+
+    let remote_parent = tempfile::tempdir().unwrap();
+    let remote = remote_parent.path().join("remote.git");
+    run(src.path(), &["clone", "--bare", "-q", ".", remote.to_str().unwrap()]);
+
+    let clone_parent = tempfile::tempdir().unwrap();
+    let clone = clone_parent.path().join("clone");
+    run(clone_parent.path(), &["clone", "-q", remote.to_str().unwrap(), clone.to_str().unwrap()]);
+    run(&clone, &["config", "user.email", "t@e.com"]);
+    run(&clone, &["config", "user.name", "T"]);
+    (vec![src, remote_parent, clone_parent], remote, clone)
+}
+
+fn commit_file(dir: &Path, name: &str, contents: &str, msg: &str) {
+    std::fs::write(dir.join(name), contents).unwrap();
+    run(dir, &["add", "-A"]);
+    run(dir, &["commit", "-q", "-m", msg]);
+}
+
+#[test]
+fn sync_pushes_when_only_ahead() {
+    let (_keep, remote, clone) = clone_with_upstream();
+    commit_file(&clone, "local.txt", "a", "local commit");
+
+    let outcome = git::sync(&clone, |_| {}).unwrap();
+    assert_eq!(outcome, git::SyncOutcome::Synced);
+
+    // The remote received the local commit.
+    let out = std::process::Command::new("git")
+        .args(["log", "--format=%s", "-n1", "--all"])
+        .current_dir(&remote)
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&out.stdout).contains("local commit"));
+}
+
+#[test]
+fn sync_fast_forwards_when_only_behind() {
+    let (_keep, _remote, clone) = clone_with_upstream();
+    // A second clone advances the remote, so `clone` falls behind.
+    let other_parent = tempfile::tempdir().unwrap();
+    let other = other_parent.path().join("other");
+    run(other_parent.path(), &["clone", "-q", _remote.to_str().unwrap(), other.to_str().unwrap()]);
+    run(&other, &["config", "user.email", "t@e.com"]);
+    run(&other, &["config", "user.name", "T"]);
+    commit_file(&other, "remote.txt", "r", "remote commit");
+    git::push(&other).unwrap();
+
+    let outcome = git::sync(&clone, |_| {}).unwrap();
+    assert_eq!(outcome, git::SyncOutcome::Synced);
+    // The incoming commit was fast-forwarded into the local branch.
+    assert!(clone.join("remote.txt").exists());
+    let (ahead, behind) = git::ahead_behind(&clone).unwrap();
+    assert_eq!((ahead, behind), (0, 0));
+}
+
+#[test]
+fn sync_reports_diverged_without_touching_anything() {
+    let (_keep, remote, clone) = clone_with_upstream();
+    // Remote advances via another clone…
+    let other_parent = tempfile::tempdir().unwrap();
+    let other = other_parent.path().join("other");
+    run(other_parent.path(), &["clone", "-q", remote.to_str().unwrap(), other.to_str().unwrap()]);
+    run(&other, &["config", "user.email", "t@e.com"]);
+    run(&other, &["config", "user.name", "T"]);
+    commit_file(&other, "remote.txt", "r", "remote commit");
+    git::push(&other).unwrap();
+    // …while our clone makes its own commit, so the two have diverged.
+    commit_file(&clone, "local.txt", "a", "local commit");
+
+    let head_before = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"]).current_dir(&clone).output().unwrap();
+
+    let outcome = git::sync(&clone, |_| {}).unwrap();
+    assert_eq!(outcome, git::SyncOutcome::Diverged);
+
+    // Nothing changed locally: no merge, no rebase, no lost work.
+    let head_after = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"]).current_dir(&clone).output().unwrap();
+    assert_eq!(head_before.stdout, head_after.stdout);
+    assert!(clone.join("local.txt").exists());
+    assert!(!clone.join("remote.txt").exists());
+    // And the remote's tip was not overwritten by a force-push.
+    let out = std::process::Command::new("git")
+        .args(["log", "--format=%s", "-n1", "HEAD"])
+        .current_dir(&remote)
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "remote commit");
+}

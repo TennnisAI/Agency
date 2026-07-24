@@ -321,6 +321,20 @@ export function gitPush(
 export const gitFetch = (taskId: string) => invoke<void>("git_fetch", { taskId });
 export const gitPull = (taskId: string) => invoke<void>("git_pull", { taskId });
 
+// VS Code-style "Sync Changes": fetch, fast-forward in incoming commits, then
+// push local ones (streaming push progress, same shape as `gitPush`). Resolves
+// to "diverged" when the branch can't fast-forward — nothing was changed and
+// the caller should offer to rebase.
+export type SyncOutcome = "synced" | "diverged";
+export function gitSync(
+  taskId: string,
+  onProgress?: (p: CloneProgress) => void,
+): Promise<SyncOutcome> {
+  const onProgressChannel = new Channel<CloneProgress>();
+  if (onProgress) onProgressChannel.onmessage = onProgress;
+  return invoke<SyncOutcome>("git_sync", { taskId, onProgress: onProgressChannel });
+}
+
 export const gitSetRemote = (taskId: string, url: string) =>
   invoke<void>("git_set_remote", { taskId, url });
 

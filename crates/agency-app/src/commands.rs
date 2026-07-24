@@ -378,6 +378,22 @@ pub async fn git_push(
     .map_err(|e| e.to_string())
 }
 
+// async, streamed: same as `git_push`, but reconciles both directions before
+// pushing (VS Code-style "Sync Changes"). Returns `Diverged` when the branch
+// can't fast-forward so the UI can offer to rebase instead of failing outright.
+#[tauri::command]
+pub async fn git_sync(
+    state: State<'_, AppState>,
+    task_id: String,
+    on_progress: Channel<agency_core::setup::CloneProgress>,
+) -> Result<git::SyncOutcome, String> {
+    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
+    git::sync(&wt, move |p| {
+        let _ = on_progress.send(p);
+    })
+    .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn git_set_remote(state: State<'_, AppState>, task_id: String, url: String) -> Result<(), String> {
     let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;

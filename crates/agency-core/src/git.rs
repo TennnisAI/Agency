@@ -173,6 +173,61 @@ pub fn pull(worktree: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Ahead/behind counts against the configured upstream (`@{u}`), read from the
+/// current remote-tracking refs — call [`fetch`] first if they may be stale.
+/// Returns `(ahead, behind)`, or `(0, 0)` when there is no upstream.
+pub fn ahead_behind(worktree: &Path) -> Result<(u32, u32)> {
+    if git(worktree, &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]).is_err() {
+        return Ok((0, 0));
+    }
+    let counts = git(worktree, &["rev-list", "--left-right", "--count", "@{u}...HEAD"])?;
+    let mut p = counts.split_whitespace();
+    let behind = p.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let ahead = p.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    Ok((ahead, behind))
+}
+
+/// Outcome of [`sync`]. `Diverged` means the caller must decide how to
+/// reconcile (rebase, or force-push) — sync never picks for them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SyncOutcome {
+    /// Branch is level with upstream: any incoming commits were fast-forwarded
+    /// in and any local commits pushed.
+    Synced,
+    /// Local and upstream each have commits the other lacks. Nothing was
+    /// changed — a fast-forward is impossible and sync won't silently create a
+    /// merge commit.
+    Diverged,
+}
+
+/// VS Code-style "Sync Changes": reconcile the branch with its upstream in both
+/// directions — fetch, fast-forward in any incoming commits, then push any
+/// local ones (streaming push progress). Unlike a bare push, this pulls first,
+/// so a branch that is merely behind syncs cleanly instead of failing with a
+/// non-fast-forward rejection. A branch that has genuinely diverged can't
+/// fast-forward, so it returns [`SyncOutcome::Diverged`] without touching
+/// anything and lets the caller offer a rebase or force-push.
+pub fn sync(
+    worktree: &Path,
+    mut on_progress: impl FnMut(crate::setup::CloneProgress),
+) -> Result<SyncOutcome> {
+    fetch(worktree)?;
+    let (ahead, behind) = ahead_behind(worktree)?;
+    if behind > 0 {
+        if ahead > 0 {
+            return Ok(SyncOutcome::Diverged);
+        }
+        // Pure catch-up: fast-forward onto the freshly fetched upstream.
+        // `--ff-only` so a non-ff situation errors rather than merging.
+        git(worktree, &["merge", "--ff-only", "@{u}"])?;
+    }
+    if ahead > 0 {
+        push_with_progress(worktree, &mut on_progress)?;
+    }
+    Ok(SyncOutcome::Synced)
+}
+
 /// Point `origin` at `url`, adding the remote or updating it if it already
 /// exists. Lets the UI publish a branch from a repo that has no remote yet.
 pub fn set_origin(worktree: &Path, url: &str) -> Result<()> {

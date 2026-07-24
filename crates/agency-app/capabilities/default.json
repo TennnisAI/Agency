@@ -8,6 +8,7 @@
     "core:window:allow-start-dragging",
     "dialog:allow-open",
     "opener:allow-open-url",
+    "opener:allow-default-urls",
     "notification:default",
     "log:default",
     {

@@ -11,7 +11,7 @@ import { currentXtermTheme, minContrastRatio, TERMINAL_FONT_FAMILY } from "../li
 import { initialCapture, feed } from "../lib/firstPrompt";
 
 export interface TerminalStream {
-  attach(id: string, onBytes: (b: Uint8Array) => void): Promise<void>;
+  attach(id: string, cols: number, rows: number, onBytes: (b: Uint8Array) => void): Promise<void>;
   detach(id: string): void;
   resize(id: string, cols: number, rows: number): Promise<void>;
   input(id: string, data: string): Promise<void>;
@@ -105,7 +105,6 @@ export default function FocusTerminal(
 
     let disposed = false;
     let liveStarted = false;
-    let seeded = false;
     let onData: { dispose(): void } | undefined;
     stream.preview(runId, 200).then((seed) => {
       // Only seed before the live stream lands. Once attach is streaming, the daemon has
@@ -117,7 +116,7 @@ export default function FocusTerminal(
       // we also used to force a trailing newline. Both rendered as a block of empty
       // lines on every open. Trim trailing blank lines.
       const trimmed = seed.replace(/[\r\n]+$/, "");
-      if (trimmed) { term.write(trimmed); seeded = true; }
+      if (trimmed) term.write(trimmed);
     });
     (async () => {
       try {
@@ -127,16 +126,22 @@ export default function FocusTerminal(
         return; // don't attach to a session that failed to come up
       }
       if (disposed) return;
-      stream.attach(runId, (bytes) => {
+      // Fit *before* attaching and hand the real dims to the daemon, so its
+      // snapshot is generated at the exact geometry xterm is showing. Attaching at
+      // a placeholder size made the snapshot paint at the wrong width and the
+      // follow-up resize then reflowed it — stacking a second, mis-aligned frame
+      // ("decomposed" output that a switch-away-and-back sometimes cleared).
+      doFit();
+      const cols = term.cols > 0 ? term.cols : 80;
+      const rows = term.rows > 0 ? term.rows : 24;
+      stream.attach(runId, cols, rows, (bytes) => {
         if (!liveStarted) {
           liveStarted = true;
-          // The live attach is authoritative: the daemon sends a full snapshot on attach.
-          // If we already painted a preview seed, the seed and the repaint overlap
-          // (the snapshot is positioned relative to the old screen, the repaint to a
-          // fresh one) and leave artifacts — e.g. a stale blank line above the prompt.
-          // Resetting first lets the repaint own a clean screen. The guard above also
-          // skips the seed when attach wins the race, so this only fires when needed.
-          if (seeded) term.reset();
+          // The live attach is authoritative: the daemon sends a full snapshot as its
+          // first frame. Reset first so that snapshot owns a clean screen — this clears
+          // any preview seed we painted, and (for alt-screen apps, whose snapshot only
+          // switches buffers without wiping the normal one) any seed residue too.
+          term.reset();
         }
         term.write(bytes);
       }).then(() => {

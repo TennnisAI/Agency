@@ -5,6 +5,7 @@ describe("agents", () => {
   it("lists the preconfigured agent types", () => {
     expect(AGENT_TYPES.map((a) => a.id)).toEqual([
       "claude", "codex", "pi", "opencode", "copilot", "cursor", "hermes",
+      "gemini", "kimi", "crush",
     ]);
   });
   it("has an install command for every preconfigured agent except hermes", () => {
@@ -16,6 +17,9 @@ describe("agents", () => {
     expect(agentColor("claude")).toBe("#fab387");
     expect(agentColor("pi")).toBe("#94e2d5");
     expect(agentColor("hermes")).toBe("#cba6f7");
+    expect(agentColor("gemini")).toBe("#89b4fa");
+    expect(agentColor("kimi")).toBe("#f5c2e7");
+    expect(agentColor("crush")).toBe("#a6e3a1");
   });
   it("falls back to a neutral color for unknown agents", () => {
     expect(agentColor("shell")).toBe("#a6adc8");

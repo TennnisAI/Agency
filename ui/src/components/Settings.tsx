@@ -4,6 +4,7 @@ import { appLogDir } from "@tauri-apps/api/path";
 import { revealItemInDir, openUrl } from "@tauri-apps/plugin-opener";
 import {
   AgentProfile,
+  CatalogEntry,
   FilesConfig,
   KnowledgeConfig,
   McpServer,
@@ -12,11 +13,13 @@ import {
   authenticateMcpServer,
   deauthenticateMcpServer,
   deleteProfile,
+  enableAgentProfiles,
   getFilesConfig,
   getKnowledgeConfig,
   getSettings,
   getNotifSettings,
   importMcpJson,
+  listAgentCatalog,
   listMcpServers,
   listProfiles,
   saveFilesConfig,
@@ -50,6 +53,7 @@ export default function Settings({
     defaultAgent: null,
   });
   const [profiles, setProfiles] = useState<AgentProfile[]>([]);
+  const [catalog, setCatalog] = useState<CatalogEntry[]>([]);
   const emptyDraft = { name: "", command: "", args: "", env: "", resume: "", loop: "" };
   const [draft, setDraft] = useState(emptyDraft);
   const [formOpen, setFormOpen] = useState(false);
@@ -127,11 +131,21 @@ export default function Settings({
       loadedRef.current = loaded;
       setSettings(loaded);
       setProfiles(await listProfiles());
+      setCatalog(await listAgentCatalog());
       setNotif(await getNotifSettings());
       setMcpServers(await listMcpServers());
       setError("");
     } catch (e) {
       setError(String(e));
+    }
+  }
+
+  async function addFromCatalog(id: string) {
+    try {
+      await enableAgentProfiles([id]);
+      await refresh();
+    } catch (e) {
+      toastError(e, "Couldn't add agent");
     }
   }
 
@@ -551,6 +565,27 @@ export default function Settings({
             : !formOpen && (
                 <button className="settings-add-profile" onClick={openAddProfile}>+ Add agent profile</button>
               )}
+          {catalog.some((e) => !e.enabled) && (
+            <>
+              <div className="settings-section-label" style={{ marginTop: 16 }}>Available agents</div>
+              <p className="settings-section-hint">
+                Built-in agents you haven&apos;t enabled yet. Add one to include it in the spawn menu.
+              </p>
+              <div className="settings-card-list">
+                {catalog.filter((e) => !e.enabled).map((e) => (
+                  <div key={e.id} className="settings-profile-card">
+                    <div className="settings-profile-head">
+                      <span className="agent-dot" style={{ background: agentColor(e.id) }} />
+                      <span className="settings-profile-name">{agentLabel(e.id)}</span>
+                      <code className="settings-meta-val" style={{ marginLeft: 8 }}>{e.command}</code>
+                      <span className="spacer" />
+                      <button className="settings-ghost-btn" onClick={() => addFromCatalog(e.id)}>Add</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
         </section>
 
         <section className="settings-section">

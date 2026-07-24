@@ -7,13 +7,14 @@ import StatusBar from "./components/StatusBar";
 import ProjectTree from "./components/ProjectTree";
 import AgentsView from "./components/AgentsView";
 import Settings from "./components/Settings";
+import AgentOnboarding from "./components/AgentOnboarding";
 import CommandPalette from "./components/CommandPalette";
 import ConfirmDialog from "./components/ConfirmDialog";
 import Resizer from "./components/Resizer";
 import Toasts from "./components/Toasts";
 import { useShortcuts } from "./hooks/useShortcuts";
 import { usePaneWidth } from "./hooks/usePaneWidth";
-import { Project, RunInfo, archiveRun, confirmQuit, discardRun, listProjects, setMenuContext, setUiState } from "./api";
+import { Project, RunInfo, agentOnboardingNeeded, archiveRun, confirmQuit, discardRun, listProjects, setMenuContext, setUiState } from "./api";
 import { pickDefaultAgent } from "./lib/defaultAgent";
 
 const REPO_URL = "https://github.com/nic123/Agency";
@@ -252,6 +253,26 @@ function Shell() {
 }
 
 export default function App() {
+  // null = still checking; true = show picker; false = main shell.
+  const [needsOnboarding, setNeedsOnboarding] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    agentOnboardingNeeded()
+      .then(setNeedsOnboarding)
+      .catch(() => setNeedsOnboarding(false));
+  }, []);
+
+  if (needsOnboarding === null) return null;
+  if (needsOnboarding) {
+    return (
+      <div className="shell">
+        <TitleBar onOpenPalette={() => {}} />
+        <AgentOnboarding onDone={() => setNeedsOnboarding(false)} />
+        <Toasts />
+      </div>
+    );
+  }
+
   return (
     <RunStoreProvider>
       <Shell />

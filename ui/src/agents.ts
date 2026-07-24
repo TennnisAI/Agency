@@ -13,6 +13,9 @@ export const AGENT_TYPES: AgentType[] = [
   { id: "copilot", label: "Copilot CLI" },
   { id: "cursor", label: "Cursor" },
   { id: "hermes", label: "Hermes" },
+  { id: "gemini", label: "Gemini CLI" },
+  { id: "kimi", label: "Kimi Code" },
+  { id: "crush", label: "Crush" },
 ];
 
 // Install one-liners for the preconfigured agents, used when a spawn is
@@ -26,12 +29,18 @@ export const INSTALL_COMMANDS: Record<string, string> = {
   opencode: "npm install -g opencode-ai",
   copilot: "npm install -g @github/copilot",
   cursor: "curl https://cursor.com/install -fsS | bash",
+  gemini: "npm install -g @google/gemini-cli",
+  kimi: "curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash",
+  crush: "npm install -g @charmland/crush",
 };
 
 const COLORS: Record<string, string> = {
   claude: "#fab387",
   pi: "#94e2d5",
   hermes: "#cba6f7",
+  gemini: "#89b4fa",
+  kimi: "#f5c2e7",
+  crush: "#a6e3a1",
 };
 
 export function agentColor(name: string): string {

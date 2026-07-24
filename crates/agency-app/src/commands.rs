@@ -412,6 +412,34 @@ pub fn delete_profile(state: State<'_, AppState>, name: String) -> Result<(), St
     state.delete_profile(&name).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+pub async fn agent_onboarding_needed(state: State<'_, AppState>) -> Result<bool, String> {
+    state.agent_onboarding_needed().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn list_agent_catalog(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::agent_catalog::CatalogEntryInfo>, String> {
+    state.list_agent_catalog().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn enable_agent_profiles(
+    state: State<'_, AppState>,
+    ids: Vec<String>,
+) -> Result<(), String> {
+    state.enable_agent_profiles(&ids).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn complete_agent_onboarding(
+    state: State<'_, AppState>,
+    ids: Vec<String>,
+) -> Result<(), String> {
+    state.complete_agent_onboarding(&ids).map_err(|e| e.to_string())
+}
+
 // async (not sync): these only read/write the settings KV, never the git index,
 // so per the main-thread note above they must run on the async runtime. Keeping
 // get_settings sync put it on the main thread right before the (sync) create_run

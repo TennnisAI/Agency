@@ -54,6 +54,8 @@ export default function Settings({
   });
   const [profiles, setProfiles] = useState<AgentProfile[]>([]);
   const [catalog, setCatalog] = useState<CatalogEntry[]>([]);
+  // Whether the "add built-in agent" dropdown is open.
+  const [catalogOpen, setCatalogOpen] = useState(false);
   const emptyDraft = { name: "", command: "", args: "", env: "", resume: "", loop: "" };
   const [draft, setDraft] = useState(emptyDraft);
   const [formOpen, setFormOpen] = useState(false);
@@ -560,32 +562,34 @@ export default function Settings({
               </Fragment>
             ))}
           </div>
-          {formOpen && editing === null
-            ? renderProfileForm()
-            : !formOpen && (
-                <button className="settings-add-profile" onClick={openAddProfile}>+ Add agent profile</button>
+          {formOpen && editing === null ? (
+            renderProfileForm()
+          ) : !formOpen ? (
+            <div className="settings-add-row">
+              {catalog.some((e) => !e.enabled) && (
+                <div className="settings-add-dropdown">
+                  <button className="settings-add-profile" onClick={() => setCatalogOpen((o) => !o)}>
+                    + Add agent ▾
+                  </button>
+                  {catalogOpen && (
+                    <>
+                      <div className="settings-menu-backdrop" onClick={() => setCatalogOpen(false)} />
+                      <div className="settings-menu">
+                        {catalog.filter((e) => !e.enabled).map((e) => (
+                          <button key={e.id} onClick={() => { setCatalogOpen(false); addFromCatalog(e.id); }}>
+                            <span className="agent-dot" style={{ background: agentColor(e.id) }} />
+                            <span className="settings-menu-name">{agentLabel(e.id)}</span>
+                            <code className="settings-menu-cmd">{e.command}</code>
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </div>
               )}
-          {catalog.some((e) => !e.enabled) && (
-            <>
-              <div className="settings-section-label" style={{ marginTop: 16 }}>Available agents</div>
-              <p className="settings-section-hint">
-                Built-in agents you haven&apos;t enabled yet. Add one to include it in the spawn menu.
-              </p>
-              <div className="settings-card-list">
-                {catalog.filter((e) => !e.enabled).map((e) => (
-                  <div key={e.id} className="settings-profile-card">
-                    <div className="settings-profile-head">
-                      <span className="agent-dot" style={{ background: agentColor(e.id) }} />
-                      <span className="settings-profile-name">{agentLabel(e.id)}</span>
-                      <code className="settings-meta-val" style={{ marginLeft: 8 }}>{e.command}</code>
-                      <span className="spacer" />
-                      <button className="settings-ghost-btn" onClick={() => addFromCatalog(e.id)}>Add</button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </>
-          )}
+              <button className="settings-add-profile" onClick={openAddProfile}>+ Custom agent</button>
+            </div>
+          ) : null}
         </section>
 
         <section className="settings-section">
@@ -787,7 +791,9 @@ export default function Settings({
                       onChange={(e) => setKgDraft({ ...kgDraft, build: e.target.value })}
                     />
                   </div>
-                  <button className="settings-save" onClick={() => persistKnowledge(kg.graph)}>Save commands</button>
+                  <div className="settings-card-foot">
+                    <button className="settings-save" onClick={() => persistKnowledge(kg.graph)}>Save commands</button>
+                  </div>
                 </>
               )}
             </div>
@@ -817,8 +823,8 @@ export default function Settings({
                   </span>
                 </div>
               )}
-              <div className="settings-provider-field">
-                <label className="settings-field-key">copy</label>
+              <div className="settings-field-stack">
+                <label className="settings-field-key">Files to copy</label>
                 <textarea
                   className="settings-input"
                   placeholder={"One repo-relative path per line, e.g.\nconfig/service-account.json\ncerts/dev.pem"}
@@ -826,7 +832,9 @@ export default function Settings({
                   onChange={(e) => setFilesDraft(e.target.value)}
                 />
               </div>
-              <button className="settings-save" onClick={persistFiles}>Save file list</button>
+              <div className="settings-card-foot">
+                <button className="settings-save" onClick={persistFiles}>Save file list</button>
+              </div>
             </div>
           ) : null}
         </section>
@@ -851,9 +859,11 @@ export default function Settings({
                   onChange={(e) => setSettings({ ...settings, lmStudioBaseUrl: e.target.value })}
                 />
               </div>
+              <div className="settings-card-foot">
+                <button className="settings-save" onClick={persistSettings}>Save</button>
+              </div>
             </div>
           </div>
-          <button className="settings-save" onClick={persistSettings}>Save</button>
         </section>
 
         <section className="settings-section">

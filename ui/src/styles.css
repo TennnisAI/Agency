@@ -1268,6 +1268,13 @@ input, textarea, code,
 .home-hero p { margin: 0; font-size: 13px; line-height: 1.65; color: var(--sub0); }
 .home-hero-actions { display: flex; gap: 8px; margin-top: 4px; }
 
+/* First-run onboarding check: centered spinner while the backend answers. */
+.app-loading {
+  flex: 1; min-height: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--base);
+}
+
 /* ── Agent-profile onboarding ────────────────────────────────── */
 .onboarding {
   flex: 1; min-height: 0; overflow: auto;

@@ -621,20 +621,29 @@ impl AppState {
 
     /// Catalog entries with enabled/installed flags for the UI picker.
     pub fn list_agent_catalog(&self) -> Result<Vec<crate::agent_catalog::CatalogEntryInfo>> {
-        let reg = self.registry.lock().unwrap();
-        let mut out = Vec::with_capacity(crate::agent_catalog::builtins().len());
-        for entry in crate::agent_catalog::builtins() {
-            let enabled = reg.get_profile(entry.id)?.is_some();
-            out.push(crate::agent_catalog::CatalogEntryInfo {
+        let builtins = crate::agent_catalog::builtins();
+        // Read the enabled flags under the lock, then drop it before probing
+        // PATH (a per-command filesystem scan) so the registry mutex isn't held
+        // across ~10 syscall-heavy lookups.
+        let enabled: Vec<bool> = {
+            let reg = self.registry.lock().unwrap();
+            builtins
+                .iter()
+                .map(|e| Ok(reg.get_profile(e.id)?.is_some()))
+                .collect::<Result<_>>()?
+        };
+        Ok(builtins
+            .iter()
+            .zip(enabled)
+            .map(|(entry, enabled)| crate::agent_catalog::CatalogEntryInfo {
                 id: entry.id.to_string(),
                 command: entry.command.to_string(),
                 resume_args: entry.resume_args.clone(),
                 loop_args: entry.loop_args.clone(),
                 enabled,
                 installed: command_on_path(entry.command),
-            });
-        }
-        Ok(out)
+            })
+            .collect())
     }
 
     /// Upsert catalog recipes for the given ids (idempotent). Unknown ids error.

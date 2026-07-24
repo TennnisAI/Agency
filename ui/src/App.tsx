@@ -262,7 +262,18 @@ export default function App() {
       .catch(() => setNeedsOnboarding(false));
   }, []);
 
-  if (needsOnboarding === null) return null;
+  if (needsOnboarding === null) {
+    // Brief check against the backend — show the chrome with a spinner rather
+    // than a blank window so launch doesn't flash empty.
+    return (
+      <div className="shell">
+        <TitleBar onOpenPalette={() => {}} />
+        <div className="app-loading">
+          <span className="spinner" />
+        </div>
+      </div>
+    );
+  }
   if (needsOnboarding) {
     return (
       <div className="shell">

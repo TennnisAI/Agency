@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   CatalogEntry,
   completeAgentOnboarding,
@@ -22,6 +22,11 @@ export default function AgentOnboarding({ onDone }: { onDone: () => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
+  const copyTimer = useRef<number | undefined>(undefined);
+
+  // Clear any pending copy-reset timer on unmount so it can't fire setCopied
+  // after the component is gone.
+  useEffect(() => () => window.clearTimeout(copyTimer.current), []);
 
   async function load() {
     try {
@@ -103,9 +108,10 @@ export default function AgentOnboarding({ onDone }: { onDone: () => void }) {
     try {
       await navigator.clipboard.writeText(cmd);
       setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch {
-      toastError("Couldn't copy to clipboard");
+      window.clearTimeout(copyTimer.current);
+      copyTimer.current = window.setTimeout(() => setCopied(false), 1500);
+    } catch (e) {
+      toastError(e, "Couldn't copy to clipboard");
     }
   }
 

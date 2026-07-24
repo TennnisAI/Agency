@@ -155,16 +155,25 @@ export default function AgentFocus({
   }, [panel, sessions.length]);
   const [railOpen, setRailOpen] = useState(true);
   const rail = usePaneWidth("rail", 312, 220, 520);
-  // Companion terminal (bottom panel) — shared open-state + height across runs.
+  // Companion terminal (bottom panel) — height shared across runs, but the
+  // open-state is per-run (per-worktree): keyed by the focused run id so
+  // toggling one agent's terminal doesn't flip every other agent's.
   const shellPane = usePaneWidth("focus-shell-h", 240, SHELL_MIN, SHELL_MAX);
-  const [shellOpen, setShellOpen] = useState<boolean>(() =>
-    typeof localStorage === "undefined" ? false : loadFold(localStorage, SHELL_FOLD_KEY, false),
-  );
+  const shellFoldKey = focusedRunId ? `${SHELL_FOLD_KEY}:${focusedRunId}` : null;
+  const [shellOpen, setShellOpen] = useState<boolean>(false);
+  useEffect(() => {
+    setShellOpen(
+      shellFoldKey && typeof localStorage !== "undefined"
+        ? loadFold(localStorage, shellFoldKey, false)
+        : false,
+    );
+  }, [shellFoldKey]);
   const toggleShell = () =>
     setShellOpen((o) => {
       const next = !o;
       try {
-        if (typeof localStorage !== "undefined") saveFold(localStorage, SHELL_FOLD_KEY, next);
+        if (shellFoldKey && typeof localStorage !== "undefined")
+          saveFold(localStorage, shellFoldKey, next);
       } catch { /* ignore quota / security errors */ }
       return next;
     });

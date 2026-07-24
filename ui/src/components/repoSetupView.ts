@@ -4,7 +4,6 @@ export type RepoSetupView = {
   kind: "init" | "commit" | "dirty" | "ready";
   title: string;
   body: string;
-  showGitignore: boolean;
   primaryLabel: string;
   secondaryLabel: string | null;
 };
@@ -17,7 +16,6 @@ export function repoSetupView(readiness: RepoReadiness, context: "add" | "spawn"
       kind: "init",
       title: "Set up this folder for agents",
       body: "No git repository found. Agency runs each agent in an isolated git worktree, so this folder needs to be a repository. Initialize one now?",
-      showGitignore: false,
       primaryLabel: "Initialize repository",
       secondaryLabel: null,
     };
@@ -27,7 +25,6 @@ export function repoSetupView(readiness: RepoReadiness, context: "add" | "spawn"
       kind: "commit",
       title: "Create an initial commit",
       body: "Agency needs at least one commit — each agent starts from your latest commit. Create the initial commit now?",
-      showGitignore: true,
       primaryLabel: "Create initial commit",
       secondaryLabel: null,
     };
@@ -37,10 +34,9 @@ export function repoSetupView(readiness: RepoReadiness, context: "add" | "spawn"
       kind: "dirty",
       title: "Uncommitted changes",
       body: "Agents work from your last commit, so they won't see your current uncommitted changes until you commit them. Commit now?",
-      showGitignore: true,
       primaryLabel: "Commit now",
       secondaryLabel: context === "spawn" ? "Spawn anyway" : "Add anyway",
     };
   }
-  return { kind: "ready", title: "", body: "", showGitignore: false, primaryLabel: "", secondaryLabel: null };
+  return { kind: "ready", title: "", body: "", primaryLabel: "", secondaryLabel: null };
 }

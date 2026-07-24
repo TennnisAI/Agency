@@ -202,7 +202,33 @@ button > .btn-ico:not(:only-child) { margin-right: 4px; }
 .settings-title { font-size: 24px; font-weight: 600; margin: -18px 0 0; color: var(--text); }
 .settings-add-profile { align-self: flex-start; font-size: 12px; font-weight: 400; padding: 8px 13px; border-radius: 8px; border: 1px dashed var(--s1); background: transparent; color: var(--sub0); }
 .settings-add-profile:hover { background: var(--mantle); color: var(--text); }
-.settings-save { align-self: flex-start; }
+/* Add-agent row: the built-in dropdown trigger + the custom-agent button. */
+.settings-add-row { display: flex; gap: 8px; align-items: center; }
+.settings-add-dropdown { position: relative; }
+/* Lightweight dropdown reused for the built-in agent catalog. */
+.settings-menu-backdrop { position: fixed; inset: 0; z-index: 40; }
+.settings-menu {
+  position: absolute; top: calc(100% + 4px); left: 0; z-index: 41; min-width: 240px;
+  background: var(--mantle); border: 1px solid var(--s1); border-radius: 9px;
+  padding: 5px; display: flex; flex-direction: column; gap: 2px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.35);
+}
+.settings-menu button {
+  display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+  background: transparent; border: none; border-radius: 6px; padding: 7px 9px;
+  color: var(--text); font-size: 12.5px;
+}
+.settings-menu button:hover { background: var(--s0); }
+.settings-menu-name { flex-shrink: 0; }
+.settings-menu-cmd { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--o0); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Stacked field: label above a full-width control (for tall inputs like textareas). */
+.settings-field-stack { display: flex; flex-direction: column; gap: 6px; }
+.settings-field-stack .settings-field-key { min-width: 0; }
+/* Card footer: right-aligns a save/action button beneath a field. */
+.settings-card-foot { display: flex; justify-content: flex-end; margin-top: 10px; }
+.settings-save { align-self: flex-start; background: var(--blue); border: none; color: var(--crust); font-size: 12px; font-weight: 500; padding: 7px 15px; border-radius: 7px; }
+.settings-save:hover { filter: brightness(1.08); }
+.settings-card-foot .settings-save { align-self: auto; }
 .agent-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 .settings-group-card { background: var(--mantle); border: 1px solid var(--s0); border-radius: 11px; padding: 6px 15px; display: flex; flex-direction: column; }
 /* Section */
@@ -456,8 +482,6 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
 .row-badge { font-family: var(--mono); font-size: 9.5px; border: none; border-radius: 5px; padding: 1px 6px; margin-left: 4px; cursor: pointer; background: var(--s0); }
 .row-badge.warn { color: var(--yellow); background: rgba(249,226,175,.10); }
 .row-badge.warn:hover { background: rgba(249,226,175,.20); }
-.setup-gitignore { display: flex; align-items: center; gap: 7px; margin-top: 10px; font-size: 12px; color: var(--sub0); cursor: pointer; }
-.setup-gitignore input { accent-color: var(--peach); }
 
 /* ── Agents view (Task 10) ──────────────────────────────────── */
 .agents {

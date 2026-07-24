@@ -1359,6 +1359,20 @@ impl AppState {
         if pr.head_ref_name.is_empty() {
             bail!("PR #{number} has no local head branch (cross-fork PRs aren't supported yet)");
         }
+        // The PR's branch may already be an active run here (e.g. the PR was
+        // opened from an Agency agent). git only allows a branch to be checked
+        // out in one worktree, so re-checking it out into a review worktree
+        // fails — reuse the existing run instead of erroring.
+        if let Some(run) = self
+            .registry
+            .lock()
+            .unwrap()
+            .list_runs(project_id)?
+            .into_iter()
+            .find(|r| r.branch == pr.head_ref_name)
+        {
+            return Ok(self.run_info(&run));
+        }
         agency_core::git::fetch_branch(&repo, &pr.head_ref_name)?;
         let prompt = format!(
             "Review GitHub pull request #{number}: {title}. Its branch is checked out in this workspace. PR link: {url}",

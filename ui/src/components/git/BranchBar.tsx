@@ -84,22 +84,24 @@ export default function BranchBar({ taskId, info, busy = false, onAct, onPush, o
         </span>
       )}
       <span className="spacer" style={{ flex: 1 }} />
-      {/* Fetch updates remote-tracking refs so ↓behind reflects origin. */}
-      {info.hasRemote && (
-        <button className="git-iconbtn" title="Fetch from origin" aria-label="Fetch from origin"
-          onClick={() => onAct(() => gitFetch(taskId), "Fetched")} disabled={busy}>{"↧"}</button>
-      )}
       {/* Pull (fast-forward) only when there is an upstream with commits behind. */}
       {info.upstream && info.behind > 0 && (
         <button className="git-iconbtn" title={`Pull ${info.behind} commit${info.behind === 1 ? "" : "s"} from origin`}
           aria-label="Pull from origin" onClick={() => onAct(() => gitPull(taskId), "Pulled")} disabled={busy}>↓{info.behind}</button>
       )}
-      {/* Push: ↥ mirrors the ↧ fetch glyph — an arrow leaving for origin. */}
+      {/* Push: ↥ — an arrow leaving for origin. */}
       {info.upstream && (
         <button className="git-iconbtn" title="Push" aria-label="Push to origin"
           onClick={onPush} disabled={busy}>↥</button>
       )}
-      <button className="git-iconbtn" title="Refresh" aria-label="Refresh" onClick={onRefresh}>⟲</button>
+      {/* Refresh fetches from origin (so ↓behind reflects reality) then reloads
+          the working-tree status. With no remote there's nothing to fetch, so it
+          just reloads. */}
+      <button className="git-iconbtn"
+        title={info.hasRemote ? "Refresh — fetch from origin and reload status" : "Refresh status"}
+        aria-label="Refresh"
+        disabled={busy}
+        onClick={() => (info.hasRemote ? onAct(() => gitFetch(taskId), "Fetched") : onRefresh())}>⟲</button>
       <button className="git-iconbtn" title="More Actions…" aria-label="More actions"
         onClick={(e) => setMenu({ ...menuAt(e), view: "overflow" })}>⋯</button>
 

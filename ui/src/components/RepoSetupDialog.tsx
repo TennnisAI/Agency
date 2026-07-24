@@ -13,7 +13,6 @@ type Props = {
 
 export default function RepoSetupDialog({ readiness, context, repoPath, onResolved, onCancel }: Props) {
   const [current, setCurrent] = useState<RepoReadiness>(readiness);
-  const [addGitignore, setAddGitignore] = useState(true);
   const [busy, setBusy] = useState(false);
   // Latest progress update while an op runs (null before the first arrives).
   const [progress, setProgress] = useState<CloneProgress | null>(null);
@@ -43,7 +42,11 @@ export default function RepoSetupDialog({ readiness, context, repoPath, onResolv
   async function doCommit() {
     setBusy(true); setError(""); setProgress(null);
     try {
-      await commitRepo(repoPath, addGitignore, setProgress);
+      // Only write a default .gitignore when creating the very first commit of a
+      // brand-new repo — there it stops node_modules/target getting committed and
+      // never overwrites an existing file. For an already-established repo with
+      // uncommitted changes we don't touch it.
+      await commitRepo(repoPath, view.kind === "commit", setProgress);
       onResolved();
     } catch (e) { setError(String(e)); }
     finally { setBusy(false); setProgress(null); }
@@ -63,12 +66,6 @@ export default function RepoSetupDialog({ readiness, context, repoPath, onResolv
         </div>
         <div className="modal-body">
           {view.body}
-          {view.showGitignore && (
-            <label className="setup-gitignore">
-              <input type="checkbox" checked={addGitignore} onChange={(e) => setAddGitignore(e.target.checked)} />
-              Add a .gitignore (node_modules, .env, dist, target, .DS_Store)
-            </label>
-          )}
           {busy && (
             // Always indeterminate: git reports no percentage for add/commit, so
             // the detail line carries the staged-file count instead.

@@ -1,16 +1,20 @@
 import { useEffect, useMemo, useState } from "react";
 import { createPrFromBranch, listProjectBranches } from "../../api";
 
+// The conventional trunk, if the repo has one. This is the branch we merge
+// *into*, so it's the default base regardless of what's currently checked out.
+function trunk(branches: string[]): string | undefined {
+  return branches.find((b) => b === "main" || b === "master");
+}
+
 // Pick a sensible default base branch: the conventional trunk if present,
 // otherwise the first branch that isn't the chosen head. The head is always
-// excluded — a PR's base and head must differ, and opening a PR while on `main`
-// itself would otherwise default the base to `main` too.
+// excluded — a PR's base and head must differ, and opening a PR while on the
+// base itself would otherwise default the base to that same branch.
 function defaultBase(branches: string[], head: string): string {
-  return (
-    branches.find((b) => (b === "main" || b === "master") && b !== head) ??
-    branches.find((b) => b !== head) ??
-    ""
-  );
+  const t = trunk(branches);
+  if (t && t !== head) return t;
+  return branches.find((b) => b !== head) ?? "";
 }
 
 // Open a PR from an existing branch, without going through an agent run. Lives
@@ -47,9 +51,19 @@ export default function NewPrForm({
       .then((pb) => {
         setBranches(pb.branches);
         const avail = pb.branches.filter((b) => !openPrBranches.includes(b));
-        const h = avail.includes(pb.current) ? pb.current : avail[0] ?? "";
+        // Base defaults to the trunk (main/master) — the branch you merge into.
+        const b = defaultBase(pb.branches, "");
+        // Head defaults to the branch you're on (the agent/feature branch), as
+        // long as it isn't the base and can still open a PR; otherwise the first
+        // available branch that isn't the base.
+        const h =
+          avail.includes(pb.current) && pb.current !== b
+            ? pb.current
+            : avail.find((x) => x !== b) ?? avail[0] ?? "";
         setHead(h);
-        setBase(defaultBase(pb.branches, h));
+        // If the trunk happened to be the only available head, fall back so base
+        // and head still differ.
+        setBase(b !== h ? b : defaultBase(pb.branches, h));
       })
       .catch((e) => setError(String(e)));
     // openPrBranches is captured at open time; the form is transient.

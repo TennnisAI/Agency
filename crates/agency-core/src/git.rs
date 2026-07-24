@@ -103,10 +103,30 @@ pub fn branch_summary(repo: &Path, branch: &str, base: &str) -> Result<String> {
     Ok(body)
 }
 
+/// Whether `branch` is currently checked out in any worktree of `repo`
+/// (including the primary working tree). git forbids updating a branch ref that
+/// is checked out, and forbids checking the same branch out twice — callers use
+/// this to avoid both failures.
+pub fn branch_checked_out(repo: &Path, branch: &str) -> bool {
+    let Ok(out) = git(repo, &["worktree", "list", "--porcelain"]) else {
+        return false;
+    };
+    let needle = format!("branch refs/heads/{branch}");
+    out.lines().any(|l| l.trim() == needle)
+}
+
 /// Update (or create) the local `branch` from origin's copy without checking
 /// it out. Deliberately not forced: a local branch that diverged from origin
 /// fails loudly instead of being clobbered.
 pub fn fetch_branch(repo: &Path, branch: &str) -> Result<()> {
+    // A branch that's already checked out in a worktree can't be updated via a
+    // fetch refspec ("refusing to fetch into branch ... checked out at ...") —
+    // and we already have it locally, so there's nothing to pull it into. Update
+    // the remote-tracking ref only so ahead/behind stays accurate, and stop.
+    if branch_checked_out(repo, branch) {
+        let _ = git(repo, &["fetch", "origin", branch]);
+        return Ok(());
+    }
     git(repo, &["fetch", "origin", &format!("{branch}:{branch}")])?;
     Ok(())
 }

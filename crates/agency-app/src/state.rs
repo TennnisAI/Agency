@@ -276,6 +276,21 @@ fn shell_session_name(id: &str) -> String {
     format!("agency-shell-{id}")
 }
 
+/// The agent name reserved for terminal sessions. Not an agent profile — every
+/// terminal Agency opens runs `login_shell()` directly (see `SHELL_AGENT` uses),
+/// so no row in the profiles table backs it and none of the agent pickers list it.
+pub const SHELL_AGENT: &str = "shell";
+
+/// The user's login shell, for every interactive terminal Agency opens. One
+/// helper so the fallback can't drift between spawn sites (it previously varied
+/// between `/bin/zsh` and `/bin/bash` for the same feature).
+fn login_shell() -> String {
+    std::env::var("SHELL")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "/bin/zsh".to_string())
+}
+
 fn validate_provider_url(raw: &str) -> Result<()> {
     if raw.is_empty() {
         return Ok(());
@@ -518,20 +533,12 @@ impl AppState {
 
     pub fn new(db_path: &Path, data_dir: &Path) -> Result<AppState> {
         let registry = Registry::open(db_path)?;
-        // Seed the built-in shell profile once. Other agent profiles are no
-        // longer auto-seeded — users pick them during onboarding (or add them
-        // later from Settings → Add from catalog).
-        if registry.get_profile("shell")?.is_none() {
-            let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
-            registry.upsert_profile(&AgentProfile {
-                name: "shell".to_string(),
-                command: shell,
-                args: vec!["-l".to_string()],
-                env: vec![],
-                resume_args: None,
-                loop_args: None,
-            })?;
-        }
+        // Terminals are not agents: they run `login_shell()` directly, so no
+        // profile row backs them. Older installs seeded a "shell" profile that
+        // showed up as an editable (and deletable) card in Settings; drop it.
+        // No profiles are auto-seeded now — users pick them during onboarding
+        // (or add them later from Settings → Add from catalog).
+        registry.delete_profile(SHELL_AGENT)?;
         // Retrofit resume/loop recipes onto *existing* catalog profiles only
         // when unset, so a user's customized command/args/env is never
         // clobbered and deleted builtins stay gone across launches.
@@ -542,20 +549,14 @@ impl AppState {
             }
         }
         // Existing installs already have agent profiles — mark onboarding done
-        // so they aren't interrupted by the picker. Fresh DBs (shell only) keep
-        // the flag unset and show onboarding on first launch.
+        // so they aren't interrupted by the picker. Fresh DBs have no profiles
+        // at all, so the flag stays unset and onboarding shows on first launch.
         let onboarding_done = registry
             .get_setting(SETTING_AGENT_ONBOARDING)?
             .as_deref()
             == Some("1");
-        if !onboarding_done {
-            let has_agents = registry
-                .list_profiles()?
-                .iter()
-                .any(|p| p.name != "shell");
-            if has_agents {
-                registry.set_setting(SETTING_AGENT_ONBOARDING, "1")?;
-            }
+        if !onboarding_done && !registry.list_profiles()?.is_empty() {
+            registry.set_setting(SETTING_AGENT_ONBOARDING, "1")?;
         }
         let state = AppState {
             registry: Mutex::new(registry),
@@ -671,11 +672,7 @@ impl AppState {
         if ids.is_empty() {
             // Allow completing with only custom profiles already saved — the UI
             // guarantees at least one profile exists before calling.
-            let has_agents = self
-                .list_profiles()?
-                .iter()
-                .any(|p| p.name != "shell");
-            if !has_agents {
+            if self.list_profiles()?.is_empty() {
                 bail!("select at least one agent profile");
             }
         } else {
@@ -1595,7 +1592,7 @@ impl AppState {
     pub fn create_terminal(&self, project_id: &str) -> Result<RunInfo> {
         let repo = self.project_repo(project_id)?;
         let id = new_task_id("terminal");
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+        let shell = login_shell();
         // Login shell so the user's prompt/profile loads.
         let args = vec!["-l".to_string()];
         pty_debug(&format!("create_terminal id={id} shell={shell} args={args:?}"));
@@ -1791,7 +1788,7 @@ impl AppState {
     fn spawn_terminal(&self, project_id: &str, title: &str, script: String) -> Result<RunInfo> {
         let repo = self.project_repo(project_id)?;
         let id = new_task_id(title);
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+        let shell = login_shell();
         // Login shell (-l) so the user's profile (PATH etc.) is loaded first.
         let args = vec!["-lc".to_string(), script];
         let env = vec![("SHELL".to_string(), shell.clone())];
@@ -2159,7 +2156,7 @@ impl AppState {
         let repo = self.project_repo(&run.project_id)?;
         // Agents run in their worktree; terminals map to the repo root.
         let cwd = self.worktree_path(id)?;
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+        let shell = login_shell();
         let args = vec!["-l".to_string()];
         let mut env = self.provider_env()?;
         env.extend(agency_core::scripts::script_env(&cwd, &repo, &run.id, run.port_base));
@@ -2227,13 +2224,29 @@ impl AppState {
     /// to a sibling tab, so extras never resume.
     fn launch_run_session(&self, sid: &str, run: &agency_core::registry::Run, agent: &str) -> Result<()> {
         let repo = self.project_repo(&run.project_id)?;
+        let config = agency_core::config::load(&repo);
+        let worktree = repo.join(".agency").join("worktrees").join(&run.id);
+        // A terminal tab is not an agent: no profile, no MCP config, no argv
+        // recipe — just the user's login shell in the worktree, matching what
+        // `start_shell` and `create_terminal` do.
+        if agent == SHELL_AGENT {
+            let mut env = self.provider_env()?;
+            env.extend(agency_core::scripts::script_env(&worktree, &repo, &run.id, run.port_base));
+            return self.term.read().unwrap().start_session(
+                &session_name(sid),
+                &worktree,
+                &login_shell(),
+                &["-l".to_string()],
+                &env,
+                220,
+                50,
+            );
+        }
         let profile = {
             let reg = self.registry.lock().unwrap();
             reg.get_profile(agent)?
                 .ok_or_else(|| anyhow!("unknown agent profile: {agent}"))?
         };
-        let config = agency_core::config::load(&repo);
-        let worktree = repo.join(".agency").join("worktrees").join(&run.id);
         // The extra tab may run a different agent than the one the worktree
         // was created for; make sure MCP config exists in its native format.
         self.emit_mcp(agent, &repo, &worktree, &config);
@@ -2372,7 +2385,7 @@ impl AppState {
         }
 
         if run.kind == "terminal" {
-            let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+            let shell = login_shell();
             self.term.read().unwrap().start_session(
                 &session_name(id), &repo, &shell, &["-l".to_string()], &[], 220, 50,
             )?;

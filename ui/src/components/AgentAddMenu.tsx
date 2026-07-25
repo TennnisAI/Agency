@@ -7,10 +7,6 @@ import RaceDialog from "./RaceDialog";
 import LoopDialog from "./LoopDialog";
 import GhImportDialog from "./GhImportDialog";
 
-// The built-in shell profile backs the hardcoded "New terminal" entry, so it is
-// never listed as a spawnable agent.
-const TERMINAL_PROFILE = "shell";
-
 export default function AgentAddMenu({
   onSpawn,
   onTerminal,
@@ -48,7 +44,7 @@ export default function AgentAddMenu({
   // in sync. Refresh on open so a profile added moments ago appears immediately.
   const loadAgents = () =>
     listProfiles()
-      .then((ps) => setAgents(ps.filter((p) => p.name !== TERMINAL_PROFILE)))
+      .then(setAgents)
       .catch(() => {});
   useEffect(() => { loadAgents(); }, []);
 

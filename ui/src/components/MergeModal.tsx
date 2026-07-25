@@ -65,10 +65,10 @@ export default function MergeModal({
   // silently running it the moment the modal opens.
   useEffect(() => {
     mergePreview(taskId).then(setPreview).catch((e) => setError(String(e)));
-    // Conflict-resolver choices: any agent profile except the internal shell.
+    // Conflict-resolver choices: any agent profile.
     listProfiles()
       .then((ps) => {
-        const names = ps.map((p) => p.name).filter((n) => n !== "shell");
+        const names = ps.map((p) => p.name);
         setProfileNames(names);
         // Default resolver is claude; fall back to whatever exists if the
         // user deleted that profile.

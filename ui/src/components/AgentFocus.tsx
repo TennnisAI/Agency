@@ -119,7 +119,7 @@ export default function AgentFocus({
       const next = !o;
       if (next) {
         listProfiles()
-          .then((ps) => setProfiles(ps.filter((p) => p.name !== "shell")))
+          .then(setProfiles)
           .catch(() => {});
         if (addBtnRef.current) {
           const r = addBtnRef.current.getBoundingClientRect();
@@ -312,6 +312,8 @@ export default function AgentFocus({
                       <button key={p.name} onClick={() => spawnTab(p.name)}>{agentLabel(p.name)}</button>
                     ))}
                     <div className="agent-menu-sep" />
+                    {/* "shell" is a reserved session name, not an agent profile —
+                        the backend runs the login shell in the worktree for it. */}
                     <button onClick={() => spawnTab("shell")}>≳ New terminal</button>
                   </div>
                 </>

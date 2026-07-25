@@ -512,7 +512,7 @@ export default function Settings({
               >
                 {/* Auto = fall back to the project's last-used agent (prior behavior). */}
                 <option value="">Auto (last used in project)</option>
-                {profiles.filter((p) => p.name !== "shell").map((p) => (
+                {profiles.map((p) => (
                   <option key={p.name} value={p.name}>{agentLabel(p.name)}</option>
                 ))}
               </select>

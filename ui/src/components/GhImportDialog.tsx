@@ -53,7 +53,7 @@ export default function GhImportDialog({
     probeReadiness();
     listProfiles()
       .then((ps) => {
-        const names = ps.map((p) => p.name).filter((n) => n !== "shell");
+        const names = ps.map((p) => p.name);
         setAgents(names);
         if (!names.includes("claude") && names.length > 0) setAgent(names[0]);
       })

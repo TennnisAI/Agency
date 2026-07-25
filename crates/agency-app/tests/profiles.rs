@@ -1,12 +1,35 @@
 mod common;
 
 #[test]
-fn fresh_db_seeds_only_shell() {
+fn fresh_db_seeds_no_profiles() {
     let dir = tempfile::tempdir().unwrap();
     let state = common::state(&dir);
-    let profiles = state.list_profiles().unwrap();
-    assert_eq!(profiles.len(), 1);
-    assert_eq!(profiles[0].name, "shell");
+    assert!(state.list_profiles().unwrap().is_empty());
+    assert!(state.agent_onboarding_needed().unwrap());
+}
+
+/// Terminals aren't agents. Older installs seeded a "shell" profile that showed
+/// up as an editable card in Settings; opening the DB must drop it.
+#[test]
+fn legacy_shell_profile_is_removed_on_open() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let state = common::state(&dir);
+        state
+            .register_profile(agency_core::profile::AgentProfile {
+                name: "shell".into(),
+                command: "/bin/zsh".into(),
+                args: vec!["-l".into()],
+                env: vec![],
+                resume_args: None,
+                loop_args: None,
+            })
+            .unwrap();
+        assert!(state.list_profiles().unwrap().iter().any(|p| p.name == "shell"));
+    }
+    let state = common::state(&dir);
+    assert!(state.list_profiles().unwrap().iter().all(|p| p.name != "shell"));
+    // A lone legacy shell row must not count as "has agents" and skip onboarding.
     assert!(state.agent_onboarding_needed().unwrap());
 }
 

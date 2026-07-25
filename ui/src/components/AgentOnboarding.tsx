@@ -82,7 +82,7 @@ export default function AgentOnboarding({ onDone }: { onDone: () => void }) {
       // Custom may have been saved before this render — re-check profiles.
       try {
         const profiles = await listProfiles();
-        if (!profiles.some((p) => p.name !== "shell")) {
+        if (profiles.length === 0) {
           setError("Select at least one agent, or add a custom profile.");
           return;
         }

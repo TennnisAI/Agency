@@ -4,11 +4,13 @@ use std::path::Path;
 mod common;
 
 #[test]
-fn new_seeds_default_shell_profile_and_version_holds() {
+fn new_opens_clean_and_version_holds() {
     let dir = tempfile::tempdir().unwrap();
     let state = common::state(&dir);
     assert_eq!(AppState::version(), "0.1.0");
-    assert!(state.profile_names().unwrap().contains(&"shell".to_string()));
+    // Nothing is auto-seeded: agents come from onboarding, terminals aren't
+    // profiles. Fresh-DB profile behavior is covered in tests/profiles.rs.
+    assert!(state.profile_names().unwrap().is_empty());
 }
 
 #[test]
@@ -178,15 +180,6 @@ fn worktree_path_resolves_to_repo_root_for_terminal() {
     // Cleanup sessions/records.
     state.discard_run(&agent.id).unwrap();
     state.discard_run(&term.id).unwrap();
-}
-
-#[test]
-fn new_seeds_shell_and_claude_when_empty() {
-    let dir = tempfile::tempdir().unwrap();
-    let state = common::state(&dir);
-    let names = state.profile_names().unwrap();
-    assert!(names.contains(&"shell".to_string()));
-    assert!(names.contains(&"claude".to_string()));
 }
 
 #[test]
@@ -624,6 +617,45 @@ fn extra_session_lifecycle_shares_worktree_and_cascades() {
     }
     assert!(swept, "discard did not kill the extra session");
     assert!(state.run_sessions(&run.id).unwrap().is_empty());
+}
+
+#[test]
+fn shell_tab_needs_no_profile_and_runs_in_the_worktree() {
+    // A terminal tab is not an agent: no "shell" row exists in the profiles
+    // table, so this must launch the login shell directly rather than fail with
+    // "unknown agent profile".
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let state = common::state(&dir);
+    state.register_profile(AgentProfile {
+        name: "pwds".into(),
+        command: "/bin/sh".into(),
+        args: vec!["-c".into(), "pwd; sleep 5".into()],
+        env: vec![],
+        resume_args: None,
+        loop_args: None,
+    }).unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+    let run = state.create_run(&project.id, "p", "pwds", "HEAD", None).unwrap();
+    let wt = state.worktree_path(&run.id).unwrap();
+    assert!(state.profile_names().unwrap().iter().all(|n| n != "shell"));
+
+    let tab = state.start_run_session(&run.id, Some("shell")).unwrap();
+    assert_eq!(tab.agent, "shell");
+
+    // Prove it's a live shell rooted in the run's worktree.
+    state.run_input(&tab.id, b"pwd\n").unwrap();
+    let mut cwd_ok = false;
+    for _ in 0..150 {
+        let cap = state.run_preview(&tab.id, 20).unwrap_or_default();
+        if cap.contains(&wt.to_string_lossy().to_string()) { cwd_ok = true; break; }
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    assert!(cwd_ok, "shell tab did not report the run's worktree as cwd");
+
+    state.discard_run(&run.id).unwrap();
 }
 
 #[test]

@@ -29,7 +29,7 @@ export default function RaceDialog({ onClose, issue, issueLabel }: {
   useEffect(() => {
     listProfiles()
       .then((ps) => {
-        const names = ps.map((p) => p.name).filter((n) => n !== "shell");
+        const names = ps.map((p) => p.name);
         setAgents(names);
         // Preselect the first two so the fastest path is prompt → Start.
         setPicked(new Set(names.slice(0, 2)));

@@ -75,7 +75,7 @@ export const THEMES: Theme[] = [
     id: "nicole", label: "Nicole Punk", scheme: "dark",
     vars: {
       base: "#21181b", mantle: "#1b1316", crust: "#160f12",
-      s0: "#2e2226", s1: "#3b2d30", s2: "#49383b",
+      s0: "#3b2b2f", s1: "#4c383d", s2: "#5e474c",
       o0: "#7c6457", o1: "#9c8070", o2: "#c09a7d",
       text: "#faf5d8", sub1: "#e6d9bd", sub0: "#d8ae8b",
       blue: "#4f93a8", lav: "#c9a0d0", mauve: "#b07ab0", pink: "#e08b8b",

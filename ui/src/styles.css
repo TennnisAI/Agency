@@ -122,8 +122,13 @@ button:hover { background: var(--lav); }
 .modal-x:hover { color: var(--text); }
 
 /* Projects header + icons (Task 9) */
-.icon-add { width: 22px; height: 22px; border-radius: 6px; background: var(--base); border: 1px solid var(--s0); color: var(--text); cursor: pointer; font-size: 14px; line-height: 1; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+/* `padding: 0` is load-bearing: without it these inherit the base button rule's
+   8px/13px padding, and a flex item's automatic minimum size then forces the
+   button 6px wider than the 22px asked for — which is what squeezed "PROJECTS"
+   into an ellipsis in the sidebar header. */
+.icon-add { width: 22px; height: 22px; padding: 0; border-radius: 6px; background: var(--base); border: 1px solid var(--s0); color: var(--text); cursor: pointer; font-size: 14px; line-height: 1; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .icon-add:hover { background: var(--s0); }
+.icon-add.on { background: var(--s1); border-color: var(--s2); color: var(--blue); }
 /* Background is set per-project inline via projectColor(); var(--blue) is just a fallback. */
 .proj-icon { width: 24px; height: 24px; border-radius: 7px; background: var(--blue); color: var(--crust); font-size: 12px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .row-act { opacity: 0; border: none; background: transparent; color: var(--o0); cursor: pointer; font-size: 13px; padding: 0 2px; }
@@ -371,13 +376,21 @@ textarea.settings-input { min-height: 64px; resize: vertical; }
   overflow: hidden;
 }
 .tree-head {
-  display: flex; align-items: center; gap: 6px; padding: 8px 10px 6px;
+  display: flex; align-items: center; gap: 4px; padding: 8px 8px 6px;
 }
 .tree-head .spacer { flex: 1; }
 .tree-head .eyebrow {
   font-size: 10.5px; font-weight: 600; letter-spacing: .13em; color: var(--o0);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+/* The header has to hold "PROJECTS" plus four controls at the 200px minimum
+   sidebar width (see App.tsx's usePaneWidth), which leaves ~75px for a word
+   that measures ~68px. Hence the smaller rail buttons and trimmed label
+   padding here — the defaults don't fit. */
+.tree-head .icon-btn, .tree-head .icon-add { width: 20px; height: 20px; }
+.tree-head .icon-btn svg { width: 15px; height: 15px; }
+.tree-head .eyebrow-link { padding: 4px; }
+.tree-head .icon-filter { font-size: 11px; }
 /* "PROJECTS" doubles as the way back to the all-projects overview. */
 button.eyebrow-link {
   background: transparent; border: none; cursor: pointer;
@@ -397,6 +410,9 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
 .tree-list {
   list-style: none; margin: 0; padding: 0 6px;
   flex: 1; overflow-y: auto;
+}
+.tree-empty {
+  padding: 8px 12px; font-size: 12px; color: var(--o0);
 }
 .tree-row {
   display: flex; align-items: center; gap: 4px;

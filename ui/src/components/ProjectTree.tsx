@@ -14,6 +14,10 @@ type Pending =
   | { kind: "close" | "remove"; project: Project }
   | null;
 
+// "active" = the project has at least one live agent or terminal, i.e. at least
+// one row would appear under it in the tree.
+type Filter = "all" | "active";
+
 export default function ProjectTree({
   selectedId,
   focusedRunId,
@@ -34,7 +38,8 @@ export default function ProjectTree({
   const { runs } = useRuns();
   const [projects, setProjects] = useState<Project[]>([]);
   const [openIds, setOpenIds] = useState<Set<string>>(() => new Set());
-  const [childRuns, setChildRuns] = useState<Record<string, RunInfo[]>>({});
+  const [projectRuns, setProjectRuns] = useState<Record<string, RunInfo[]>>({});
+  const [filter, setFilter] = useState<Filter>("all");
   const [pending, setPending] = useState<Pending>(null);
   const [error, setError] = useState("");
   const [setup, setSetup] = useState<{ path: string; name: string; readiness: RepoReadiness; existing: boolean } | null>(null);
@@ -67,21 +72,27 @@ export default function ProjectTree({
     };
   }, []);
 
-  // Keep the agents shown under each expanded project in sync with the shared
-  // run store. Re-fetching whenever a project is opened or the global `runs`
-  // change (discard, spawn, or the store's poll) means the tree can't keep
-  // showing an agent the Agents rail has already dropped.
+  // Keep the agents shown under each project in sync with the shared run store.
+  // Re-fetching whenever the project list or the global `runs` change (discard,
+  // spawn, or the store's poll) means the tree can't keep showing an agent the
+  // Agents rail has already dropped. Every project is fetched, not just the
+  // expanded ones, because the "active" filter needs a run count for all of
+  // them — the shared store only ever holds the selected project's runs.
   useEffect(() => {
     let cancelled = false;
-    const ids = [...openIds];
-    if (ids.length === 0) { setChildRuns({}); return; }
+    const ids = projects.map((p) => p.id);
+    if (ids.length === 0) { setProjectRuns({}); return; }
     (async () => {
       const lists = await Promise.all(ids.map((id) => listRuns(id).catch(() => [])));
       if (cancelled) return;
-      setChildRuns(Object.fromEntries(ids.map((id, i) => [id, lists[i]])));
+      setProjectRuns(Object.fromEntries(ids.map((id, i) => [id, lists[i]])));
     })();
     return () => { cancelled = true; };
-  }, [openIds, runs]);
+  }, [projects, runs]);
+
+  const visible = filter === "active"
+    ? projects.filter((p) => (projectRuns[p.id] ?? []).length > 0)
+    : projects;
 
   function toggle(p: Project) {
     setOpenIds((s) => {
@@ -163,12 +174,24 @@ export default function ProjectTree({
           PROJECTS
         </button>
         <span className="spacer" />
+        <button
+          className={`icon-add icon-filter${filter === "active" ? " on" : ""}`}
+          title={filter === "active"
+            ? "Showing active projects only — click to show all"
+            : "Show only active projects (those with an agent or terminal)"}
+          aria-label="Show only active projects"
+          aria-pressed={filter === "active"}
+          onClick={() => setFilter((f) => (f === "active" ? "all" : "active"))}
+        >◉</button>
         <button className="icon-add" title="Clone repository" aria-label="Clone repository" onClick={() => setCloning(true)}>⤓</button>
         <button className="icon-add" title="Add project" aria-label="Add project" onClick={handleAdd}>+</button>
       </div>
       {error && <div className="git-error">{error}</div>}
       <ul className="tree-list">
-        {projects.map((p) => (
+        {filter === "active" && visible.length === 0 && projects.length > 0 && (
+          <li className="tree-empty">No active projects.</li>
+        )}
+        {visible.map((p) => (
           <li key={p.id}>
             <div
               className={`tree-row ${p.id === selectedId ? (focusedRunId ? "selected ancestor" : "selected") : ""}`}
@@ -192,7 +215,7 @@ export default function ProjectTree({
             </div>
             {openIds.has(p.id) && (
               <ul className="tree-children">
-                {(childRuns[p.id] ?? []).map((r) => (
+                {(projectRuns[p.id] ?? []).map((r) => (
                   <li
                     key={r.id}
                     className={`tree-child ${r.id === focusedRunId ? "active" : ""}`}

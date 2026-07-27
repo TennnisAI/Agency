@@ -10,7 +10,9 @@ import {
   McpServer,
   ProviderSettings,
   NotifSettings,
+  UpdateCheck,
   authenticateMcpServer,
+  checkForUpdate,
   deauthenticateMcpServer,
   deleteProfile,
   enableAgentProfiles,
@@ -18,6 +20,7 @@ import {
   getKnowledgeConfig,
   getSettings,
   getNotifSettings,
+  getUpdateCheckEnabled,
   importMcpJson,
   listAgentCatalog,
   listMcpServers,
@@ -28,6 +31,7 @@ import {
   saveProfile,
   saveSettings,
   saveNotifSettings,
+  setUpdateCheckEnabled,
 } from "../api";
 import Toggle from "./Toggle";
 import { toastError, toastSuccess } from "../lib/toast";
@@ -94,10 +98,36 @@ export default function Settings({
   const [filesDraft, setFilesDraft] = useState("");
   // App version for the Diagnostics section; empty until the Tauri call lands.
   const [version, setVersion] = useState("");
+  // Result of the last update check, or null before one has run in this view.
+  const [update, setUpdate] = useState<UpdateCheck | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [autoCheck, setAutoCheck] = useState(true);
 
   useEffect(() => {
     getVersion().then(setVersion).catch(() => {});
+    getUpdateCheckEnabled().then(setAutoCheck).catch(() => {});
   }, []);
+
+  async function runUpdateCheck() {
+    setChecking(true);
+    try {
+      setUpdate(await checkForUpdate());
+    } catch (e) {
+      toastError(e, "Couldn't check for updates");
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  async function pickAutoCheck(on: boolean) {
+    setAutoCheck(on);
+    try {
+      await setUpdateCheckEnabled(on);
+    } catch (e) {
+      setAutoCheck(!on);
+      toastError(e, "Couldn't save the update setting");
+    }
+  }
 
   async function openLogs() {
     try {
@@ -914,6 +944,31 @@ export default function Settings({
             <div className="settings-notif-row">
               <span className="settings-notif-label">Version</span>
               <span className="settings-notif-label">{version ? `Agency ${version}` : "Agency"}</span>
+            </div>
+            <div className="settings-notif-row">
+              <span className="settings-notif-label">
+                {update?.updateAvailable
+                  ? `Agency ${update.latest} is available`
+                  : update?.error
+                    ? "Couldn't reach the releases feed"
+                    : update
+                      ? "Up to date"
+                      : "Updates"}
+              </span>
+              {update?.updateAvailable ? (
+                <button
+                  className="settings-ghost-btn"
+                  onClick={() => { openUrl(update.url).catch(() => {}); }}
+                >Download</button>
+              ) : (
+                <button className="settings-ghost-btn" disabled={checking} onClick={runUpdateCheck}>
+                  {checking ? "Checking…" : "Check now"}
+                </button>
+              )}
+            </div>
+            <div className="settings-notif-row">
+              <span className="settings-notif-label">Check for updates on launch</span>
+              <Toggle checked={autoCheck} onChange={pickAutoCheck} />
             </div>
             <div className="settings-notif-row">
               <span className="settings-notif-label">Log files</span>

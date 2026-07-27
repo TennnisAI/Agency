@@ -12,6 +12,7 @@ pub mod scripts;
 pub mod setup;
 pub mod supervisor;
 pub mod title;
+pub mod version;
 pub mod worktree;
 
 /// Returns the crate version string.

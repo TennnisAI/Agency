@@ -19,6 +19,8 @@ const SETTING_NOTIF: &str = "notification_settings";
 const SETTING_MCP: &str = "mcp_servers";
 /// Set to "1" once the user finishes agent-profile onboarding (or is migrated).
 const SETTING_AGENT_ONBOARDING: &str = "agent_onboarding_completed";
+/// "0" disables the passive update check. Unset = enabled (the beta default).
+const SETTING_UPDATE_CHECK: &str = "update_check_enabled";
 
 const MERGE_RESOLVER_SKILL: &str = include_str!("../../../skills/merge-resolver/SKILL.md");
 
@@ -3231,6 +3233,21 @@ impl AppState {
             }
         }
         let _ = self.term.read().unwrap().shutdown();
+    }
+
+    /// Whether Agency checks GitHub for a newer release on launch. Defaults to
+    /// on so beta testers hear about fixes; the toggle lives in Settings and
+    /// only ever suppresses the automatic check — the manual button still works.
+    pub fn update_check_enabled(&self) -> Result<bool> {
+        let raw = self.registry.lock().unwrap().get_setting(SETTING_UPDATE_CHECK)?;
+        Ok(raw.as_deref() != Some("0"))
+    }
+
+    pub fn set_update_check_enabled(&self, enabled: bool) -> Result<()> {
+        self.registry
+            .lock()
+            .unwrap()
+            .set_setting(SETTING_UPDATE_CHECK, if enabled { "1" } else { "0" })
     }
 
     pub fn notif_settings(&self) -> Result<notifier::NotifSettings> {

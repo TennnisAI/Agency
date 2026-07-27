@@ -9,7 +9,7 @@ Phase 6 item (background fetch). What remains is listed under **Still open**.
 
 - **Phase 0 (diagnosability sweep):** done.
 - **Phase 1 (distribution gate):** done.
-- **Phase 2 (update + recovery):** open — updater and DB safety net not started.
+- **Phase 2 (update + recovery):** DB safety net done; updater still open.
 - **Phase 3 (backend bugs, #6–14):** done (9/9).
 - **Phase 4 (frontend bugs, #15–22):** done (8/8).
 - **Phase 5 (UX polish, #23–34):** done (12/12).
@@ -116,6 +116,21 @@ tests: 82 core + 54 app), `tsc --noEmit` exit 0, `vite build` exit 0.
 34. **[done]** HomeView holds the header until the first poll (no zero-count
     flash) and adds an "Add project" button to the welcome hero. (HomeView.tsx)
 
+### Phase 2 — update + recovery
+
+4. **[partial]** Passive update check shipped (the documented fallback). On
+   launch — unless disabled in Settings ▸ Diagnostics — `update::check` curls
+   GitHub's latest-release API, compares tags via `version::is_newer`, and dots
+   the Settings button. Agency downloads and installs nothing, so an update can
+   never restart the app over running agents. Full `tauri-plugin-updater`
+   auto-update is still open; see **Still open** for what it needs.
+   (update.rs, version.rs, App.tsx, ProjectTree.tsx, Settings.tsx)
+5. **[done]** DB safety net. `registry::backup_before_migrations` stamps
+   `PRAGMA user_version` with the encoded app version and copies `agency.db` →
+   `agency.db.bak` once per version change, before `Registry::open` migrates.
+   Called from `lib.rs` setup; best-effort (logs on failure, never blocks
+   launch). (registry.rs, lib.rs)
+
 ### Phase 6 — feature gaps
 
 35. **[done]** Background remote fetch + sync affordance. A `remote-fetch`
@@ -129,12 +144,25 @@ tests: 82 core + 54 app), `tsc --noEmit` exit 0, `vite build` exit 0.
 
 ### Phase 2 — update + recovery (before build #2)
 
-4. **Updater.** tauri-plugin-updater against a static manifest (GitHub
-   Releases), framed as "checks a static manifest, sends nothing" to match the
-   zero-first-party-data positioning. Fallback: passive new-version check +
-   download link. This is a product/design decision as much as a build. (M)
-5. **DB safety net.** Stamp `PRAGMA user_version`; copy `agency.db` →
-   `agency.db.bak` once per app-version change before migrations run. (S)
+4. **Auto-updater.** The passive check (above) covers the beta; this is the
+   upgrade to real one-click updates via tauri-plugin-updater against a static
+   manifest on GitHub Releases. Outstanding work: (M)
+   - `tauri-plugin-updater` + `tauri-plugin-process`, `updater:default`
+     capability, `bundle.createUpdaterArtifacts: true`.
+   - A Tauri signing keypair, distinct from the Apple Developer ID. **The
+     private key is unrecoverable** — lose it and every installed client is
+     stranded on its current version permanently. Back it up before first use.
+   - `release.yml`: signing env vars, upload `.app.tar.gz` + `.sig`, generate
+     `latest.json` (only a `darwin-aarch64` key while builds are Apple Silicon
+     only).
+   - Requires a **public repo** — `releases/latest/download/` won't serve
+     private assets.
+   - **Must not install while agents are running.** `TermClient::connect_or_spawn`
+     handles a `PROTOCOL_VERSION` bump by killing the old daemon, and its own
+     log says "its sessions are lost" — an eager install would destroy in-flight
+     work on relaunch. Needs a gate, and overlaps with #36.
+   - Can't be verified without two real releases; plan a throwaway manifest test
+     before testers depend on it.
 
 ### Phase 6 — feature gaps (post-first-beta unless testers scream)
 

@@ -1420,6 +1420,26 @@ pub fn set_ui_state(
     }
 }
 
+/// Ask GitHub whether a newer release exists. Async so the curl call never
+/// blocks the UI thread; returns a report rather than failing when offline.
+#[tauri::command]
+pub async fn check_for_update(app: tauri::AppHandle) -> Result<crate::update::UpdateCheck, String> {
+    let current = app.package_info().version.to_string();
+    tauri::async_runtime::spawn_blocking(move || crate::update::check(&current))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_update_check_enabled(state: State<'_, AppState>) -> Result<bool, String> {
+    state.update_check_enabled().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn set_update_check_enabled(state: State<'_, AppState>, enabled: bool) -> Result<(), String> {
+    state.set_update_check_enabled(enabled).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn get_notif_settings(state: State<'_, AppState>) -> Result<NotifSettings, String> {
     state.notif_settings().map_err(|e| e.to_string())

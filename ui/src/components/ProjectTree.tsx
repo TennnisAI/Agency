@@ -26,6 +26,7 @@ export default function ProjectTree({
   onHome,
   onToggleSidebar,
   onOpenSettings,
+  updateAvailable = false,
 }: {
   selectedId: string | null;
   focusedRunId: string | null;
@@ -34,6 +35,8 @@ export default function ProjectTree({
   onHome: () => void;
   onToggleSidebar: () => void;
   onOpenSettings: () => void;
+  /** Marks the Settings button with a dot — a newer release is on GitHub. */
+  updateAvailable?: boolean;
 }) {
   const { runs } = useRuns();
   const [projects, setProjects] = useState<Project[]>([]);
@@ -233,8 +236,13 @@ export default function ProjectTree({
         ))}
       </ul>
       <div className="tree-foot">
-        <button className="tree-settings" aria-label="Settings" onClick={onOpenSettings}>
+        <button
+          className="tree-settings"
+          aria-label={updateAvailable ? "Settings — an update is available" : "Settings"}
+          onClick={onOpenSettings}
+        >
           <span className="tree-settings-gear">{"⚙︎"}</span> Settings
+          {updateAvailable && <span className="tree-settings-dot" aria-hidden="true" />}
         </button>
       </div>
       {setup && (

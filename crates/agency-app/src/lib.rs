@@ -9,6 +9,7 @@ mod pathenv;
 mod resume_probe;
 mod state;
 mod tray;
+mod update;
 
 pub use state::{AppState, ProviderSettings, RunInfo};
 
@@ -232,6 +233,9 @@ pub fn run() {
             commands::set_menu_context,
             commands::get_notif_settings,
             commands::save_notif_settings,
+            commands::check_for_update,
+            commands::get_update_check_enabled,
+            commands::set_update_check_enabled,
             commands::add_review_comment,
             commands::list_review_comments,
             commands::delete_review_comment,
@@ -301,7 +305,16 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 
     let data_dir = app.path().app_data_dir()?;
     std::fs::create_dir_all(&data_dir)?;
-    let state = AppState::new(&data_dir.join("agency.db"), &data_dir)?;
+    let db_path = data_dir.join("agency.db");
+    // Snapshot the DB once per app-version change before migrations touch it.
+    // Best-effort: a failed backup is worth a log line, not a failed launch.
+    let app_version = app.package_info().version.to_string();
+    match agency_core::registry::backup_before_migrations(&db_path, &app_version) {
+        Ok(Some(bak)) => log::info!("backed up db to {} before migrations", bak.display()),
+        Ok(None) => {}
+        Err(e) => log::warn!("db backup before migrations failed: {e:#}"),
+    }
+    let state = AppState::new(&db_path, &data_dir)?;
     app.manage(state);
     let handle = app.handle().clone();
     std::thread::Builder::new().name("notifier".into()).spawn(move || {

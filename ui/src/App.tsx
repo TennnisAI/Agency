@@ -14,7 +14,7 @@ import Resizer from "./components/Resizer";
 import Toasts from "./components/Toasts";
 import { useShortcuts } from "./hooks/useShortcuts";
 import { usePaneWidth } from "./hooks/usePaneWidth";
-import { Project, RunInfo, agentOnboardingNeeded, archiveRun, confirmQuit, discardRun, listProjects, setMenuContext, setUiState } from "./api";
+import { Project, RunInfo, agentOnboardingNeeded, archiveRun, checkForUpdate, confirmQuit, discardRun, getUpdateCheckEnabled, listProjects, setMenuContext, setUiState } from "./api";
 import { pickDefaultAgent } from "./lib/defaultAgent";
 
 const REPO_URL = "https://github.com/nic123/Agency";
@@ -25,6 +25,9 @@ function Shell() {
   const [project, setProject] = useState<Project | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [showSettings, setShowSettings] = useState(false);
+  // A newer release exists on GitHub. Dots the Settings button; the actual
+  // download link lives in Settings ▸ Diagnostics.
+  const [updateAvailable, setUpdateAvailable] = useState(false);
   // Menu-driven archive/discard of the focused agent, gated behind a confirm
   // dialog (matching the tile-level action). null = no confirmation showing.
   const [agentAction, setAgentAction] = useState<{ kind: "archive" | "discard"; run: RunInfo } | null>(null);
@@ -51,6 +54,23 @@ function Shell() {
     onPalette: () => setPaletteOpen(true),
     onSettings: () => setShowSettings(true),
   });
+
+  // One passive release check per launch, when the user hasn't opted out. It
+  // only lights the dot on Settings — Agency never downloads or installs
+  // anything on its own, so this can't disturb running agents. Failures are
+  // silent by design: being offline is not something to interrupt anyone about.
+  useEffect(() => {
+    let cancelled = false;
+    getUpdateCheckEnabled()
+      .then((enabled) => (enabled ? checkForUpdate() : null))
+      .then((res) => {
+        if (!cancelled && res?.updateAvailable) setUpdateAvailable(true);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     const report = () => setUiState(document.hasFocus(), focusedRunId).catch(() => {});
@@ -198,6 +218,7 @@ function Shell() {
               onHome={goHome}
               onToggleSidebar={() => setSidebarOpen(false)}
               onOpenSettings={() => setShowSettings(true)}
+              updateAvailable={updateAvailable}
             />
           </div>
         </div>

@@ -880,6 +880,53 @@ impl Registry {
     }
 }
 
+/// Snapshot `agency.db` to `agency.db.bak` once per app-version change, before
+/// `Registry::open` runs its migrations. `PRAGMA user_version` records the app
+/// version that last opened the DB, so the copy happens exactly once per
+/// upgrade — leaving the last pre-migration state recoverable if a migration
+/// in a new build corrupts or drops data.
+///
+/// Best-effort by design: it must never block startup, so a failed copy is
+/// reported to the caller to log rather than propagated as a fatal error.
+/// Returns the backup path when one was taken.
+///
+/// Call this *before* `Registry::open` on the same path.
+pub fn backup_before_migrations(db_path: &Path, app_version: &str) -> Result<Option<PathBuf>> {
+    let current = crate::version::encode(app_version);
+    let existed = db_path.exists();
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+
+    // Read and stamp through short-lived connections so the file is never open
+    // while it is being copied.
+    let stored: i64 = {
+        let conn = Connection::open(db_path)
+            .with_context(|| format!("opening db at {} for version check", db_path.display()))?;
+        conn.query_row("PRAGMA user_version", [], |row| row.get(0))?
+    };
+
+    if stored == current {
+        return Ok(None);
+    }
+
+    // A DB that did not exist a moment ago is a fresh install: nothing worth
+    // preserving, just stamp it.
+    let backup = if existed {
+        let bak = db_path.with_extension("db.bak");
+        std::fs::copy(db_path, &bak)
+            .with_context(|| format!("backing up {} to {}", db_path.display(), bak.display()))?;
+        Some(bak)
+    } else {
+        None
+    };
+
+    let conn = Connection::open(db_path)
+        .with_context(|| format!("opening db at {} to stamp version", db_path.display()))?;
+    conn.pragma_update(None, "user_version", current)?;
+    Ok(backup)
+}
+
 /// Derive a project's 3-letter issue key from its name: word initials for
 /// multi-word names (padded from the first word), the first three letters
 /// otherwise. `used` keys are avoided by substituting the last position with
@@ -1033,6 +1080,57 @@ mod tests {
     use super::*;
     use rusqlite::Connection;
     use tempfile::tempdir;
+
+    #[test]
+    fn backup_skips_fresh_install_but_stamps_the_version() {
+        let dir = tempdir().unwrap();
+        let db = dir.path().join("agency.db");
+
+        let taken = backup_before_migrations(&db, "0.1.0").unwrap();
+        assert!(taken.is_none(), "a fresh install has nothing to back up");
+        assert!(!db.with_extension("db.bak").exists());
+
+        // The stamp landed, so the next same-version launch is a no-op.
+        let taken = backup_before_migrations(&db, "0.1.0").unwrap();
+        assert!(taken.is_none());
+    }
+
+    #[test]
+    fn backup_runs_once_per_version_change_and_preserves_pre_migration_data() {
+        let dir = tempdir().unwrap();
+        let db = dir.path().join("agency.db");
+        let bak = db.with_extension("db.bak");
+
+        // An existing DB from a build that predates the stamp (user_version 0).
+        {
+            let reg = Registry::open(&db).unwrap();
+            reg.add_project("Agency", dir.path()).unwrap();
+        }
+
+        // First launch of the stamping build backs the old DB up.
+        let taken = backup_before_migrations(&db, "0.1.0").unwrap();
+        assert_eq!(taken.as_deref(), Some(bak.as_path()));
+        assert!(bak.exists());
+
+        // Same version again: no second copy.
+        std::fs::write(&bak, b"sentinel").unwrap();
+        assert!(backup_before_migrations(&db, "0.1.0").unwrap().is_none());
+        assert_eq!(std::fs::read(&bak).unwrap(), b"sentinel");
+
+        // A version bump takes a fresh copy, overwriting the stale sentinel.
+        {
+            let reg = Registry::open(&db).unwrap();
+            reg.add_project("Second", dir.path()).unwrap();
+        }
+        assert!(backup_before_migrations(&db, "0.2.0").unwrap().is_some());
+
+        // The backup is a real, readable DB holding the pre-upgrade rows.
+        let restored = Registry::open(&bak).unwrap();
+        let names: Vec<String> =
+            restored.list_projects().unwrap().into_iter().map(|p| p.name).collect();
+        assert!(names.contains(&"Agency".to_string()));
+        assert!(names.contains(&"Second".to_string()));
+    }
 
     fn sample_run(id: &str, port: Option<u16>) -> Run {
         Run {

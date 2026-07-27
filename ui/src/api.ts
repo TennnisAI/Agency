@@ -786,6 +786,24 @@ export const getNotifSettings = () => invoke<NotifSettings>("get_notif_settings"
 export const saveNotifSettings = (settings: NotifSettings) =>
   invoke<void>("save_notif_settings", { settings });
 
+export interface UpdateCheck {
+  current: string;
+  /** Latest published release, or null when the check couldn't complete. */
+  latest: string | null;
+  updateAvailable: boolean;
+  /** Releases page to send the user to. */
+  url: string;
+  /** Why the check came back empty; null on success. */
+  error: string | null;
+}
+
+/** Asks GitHub for the latest release. Resolves (never rejects) when offline —
+ *  inspect `error`. Agency downloads nothing; the user installs the DMG. */
+export const checkForUpdate = () => invoke<UpdateCheck>("check_for_update");
+export const getUpdateCheckEnabled = () => invoke<boolean>("get_update_check_enabled");
+export const setUpdateCheckEnabled = (enabled: boolean) =>
+  invoke<void>("set_update_check_enabled", { enabled });
+
 export interface ReviewComment {
   id: string;
   runId: string;

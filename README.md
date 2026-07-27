@@ -4,6 +4,47 @@ A desktop app for running and managing coding agents across git worktrees. Built
 with [Tauri 2](https://tauri.app) — a Rust backend (`crates/`) and a React + Vite
 frontend (`ui/`).
 
+Agency does no first-party data collection: no analytics, no telemetry, no
+account, no vendor backend. There is no server of ours for it to talk to.
+Outbound traffic is only what you initiate — the coding agent you launch talking
+to its own provider, and git talking to your remotes.
+
+The one exception is the update check: on launch Agency asks GitHub's public API
+for the latest release tag and compares it to the running version. It sends no
+identifiers — just a plain request GitHub sees like any other — and it downloads
+and installs nothing. If a newer version exists, Agency dots the Settings button
+and offers a link; you install the DMG yourself, whenever suits you. Turn it off
+in Settings ▸ Diagnostics ("Check for updates on launch") and Agency makes no
+network calls of its own at all.
+
+## Installing (beta)
+
+1. Download the latest `Agency_*.dmg` from
+   [Releases](https://github.com/nic123/Agency/releases).
+2. Open the DMG and drag **Agency** to Applications.
+3. Launch it. The build is signed and notarized, so it opens without a Gatekeeper
+   prompt — if macOS says the app is damaged, you have an unsigned local build
+   rather than a release DMG.
+
+**Requirements**
+
+- **macOS 11+ on Apple Silicon.** Release builds are `aarch64` only right now;
+  there is no Intel or universal build yet.
+- **Git**, and Xcode Command Line Tools (`xcode-select --install`).
+- **At least one coding-agent CLI** — Claude Code, Codex, Pi, OpenCode, Copilot
+  CLI, Cursor, Hermes, Gemini CLI, Kimi Code, or Crush. Agency detects what is on
+  your `PATH` and offers to install a missing one for you. Most install via
+  `npm install -g`, so **Node** is needed for those.
+- **[gh](https://cli.github.com)** (optional) — needed only for the GitHub import
+  and PR flows.
+
+On first launch, Agency asks you to pick a default agent, then you add a project
+by pointing it at a local git repo.
+
+**Reporting problems.** Settings ▸ Diagnostics has your exact version, an "Open
+logs" button, and a link to file an issue. Attaching the log makes a bug report
+far easier to act on.
+
 ## Repository layout
 
 | Path                 | What it is                                              |

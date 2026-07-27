@@ -2,6 +2,7 @@
 name = "agency-core"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
 
 [dependencies]
 alacritty_terminal = "0.26"

@@ -2,6 +2,7 @@
 name = "agency-app"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
 
 [lib]
 name = "agency_app_lib"
@@ -38,7 +39,6 @@ notify-rust = "4"
 agency-core = { path = "../agency-core" }
 log = "0.4"
 uuid = { version = "1", features = ["v4"] }
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 
 [dev-dependencies]
 tempfile = "3"

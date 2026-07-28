@@ -284,16 +284,15 @@ pub struct DocFile {
 const MAX_CORPUS_FILES: usize = 2000;
 const MAX_CORPUS_BYTES: u64 = 20_000_000;
 
-/// Recursively read every markdown file under `rel_dir` in one pass, for the
-/// docs index (links, tags, search). Hidden directories, symlinked directories,
-/// and node_modules are skipped; per-file and total caps apply. Files that
-/// aren't valid UTF-8 are skipped; oversized ones are listed with `too_large`
-/// set and empty text so the tree can still show them.
-pub fn read_markdown_corpus(root: &Path, rel_dir: &str) -> Result<Vec<DocFile>> {
+/// Walk every markdown file under `rel_dir` (same skip rules everywhere the
+/// corpus is touched: hidden dirs, symlinks, node_modules; file-count cap).
+/// Returns `(rel_path, abs_path, metadata)` per file — the shared base for the
+/// full read, the stat-only pass, and anything else that must agree with them
+/// on what "the corpus" is.
+fn walk_markdown(root: &Path, rel_dir: &str) -> Result<Vec<(String, std::path::PathBuf, std::fs::Metadata)>> {
     let base = resolve_within(root, rel_dir)?;
     let mut out = Vec::new();
-    let mut total: u64 = 0;
-    let mut stack = vec![(base.clone(), String::new())];
+    let mut stack = vec![(base, String::new())];
     while let Some((dir, prefix)) = stack.pop() {
         let entries = match std::fs::read_dir(&dir) {
             Ok(it) => it,
@@ -318,19 +317,93 @@ pub fn read_markdown_corpus(root: &Path, rel_dir: &str) -> Result<Vec<DocFile>> 
             if !lower.ends_with(".md") && !lower.ends_with(".markdown") {
                 continue;
             }
-            if out.len() >= MAX_CORPUS_FILES || total >= MAX_CORPUS_BYTES {
+            if out.len() >= MAX_CORPUS_FILES {
                 return Ok(out);
             }
             let Ok(meta) = entry.metadata() else { continue };
-            if meta.len() > MAX_FILE_BYTES {
-                out.push(DocFile { path: rel, text: String::new(), too_large: true });
-                continue;
-            }
-            let Ok(bytes) = std::fs::read(entry.path()) else { continue };
-            let Ok(text) = String::from_utf8(bytes) else { continue };
-            total += text.len() as u64;
-            out.push(DocFile { path: rel, text, too_large: false });
+            out.push((rel, entry.path(), meta));
         }
+    }
+    Ok(out)
+}
+
+/// Recursively read every markdown file under `rel_dir` in one pass, for the
+/// docs index (links, tags, search). Hidden directories, symlinked directories,
+/// and node_modules are skipped; per-file and total caps apply. Files that
+/// aren't valid UTF-8 are skipped; oversized ones are listed with `too_large`
+/// set and empty text so the tree can still show them.
+pub fn read_markdown_corpus(root: &Path, rel_dir: &str) -> Result<Vec<DocFile>> {
+    let mut out = Vec::new();
+    let mut total: u64 = 0;
+    for (rel, abs, meta) in walk_markdown(root, rel_dir)? {
+        if total >= MAX_CORPUS_BYTES {
+            return Ok(out);
+        }
+        if meta.len() > MAX_FILE_BYTES {
+            out.push(DocFile { path: rel, text: String::new(), too_large: true });
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(&abs) else { continue };
+        let Ok(text) = String::from_utf8(bytes) else { continue };
+        total += text.len() as u64;
+        out.push(DocFile { path: rel, text, too_large: false });
+    }
+    Ok(out)
+}
+
+/// One corpus file's change signature: enough for a poll to decide whether the
+/// body needs re-reading, at stat cost instead of read cost.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocStat {
+    /// Path relative to the scanned directory, `/`-separated.
+    pub path: String,
+    /// Modification time, epoch milliseconds (0 when the platform won't say).
+    pub mtime_ms: i64,
+    pub size: u64,
+}
+
+/// Stat-only pass over the markdown corpus — same walk, same skips, no body
+/// reads. Steady-state polls diff this against their cache and fetch bodies
+/// only for files that actually changed.
+pub fn scan_markdown_stats(root: &Path, rel_dir: &str) -> Result<Vec<DocStat>> {
+    Ok(walk_markdown(root, rel_dir)?
+        .into_iter()
+        .map(|(rel, _, meta)| DocStat {
+            path: rel,
+            mtime_ms: meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0),
+            size: meta.len(),
+        })
+        .collect())
+}
+
+/// Read a named subset of the markdown corpus (the poll's "these changed"
+/// list). Paths resolve through the jail relative to `rel_dir`; files deleted
+/// between the stat pass and this read are silently skipped — the next poll
+/// reports them as removed. Same UTF-8 / too-large handling as the full read.
+pub fn read_markdown_files(root: &Path, rel_dir: &str, paths: &[String]) -> Result<Vec<DocFile>> {
+    let base = resolve_within(root, rel_dir)?;
+    let mut out = Vec::new();
+    let mut total: u64 = 0;
+    for rel in paths.iter().take(MAX_CORPUS_FILES) {
+        if total >= MAX_CORPUS_BYTES {
+            break;
+        }
+        let path = resolve_within(&base, rel)?;
+        let Ok(meta) = std::fs::metadata(&path) else { continue };
+        if meta.len() > MAX_FILE_BYTES {
+            out.push(DocFile { path: rel.clone(), text: String::new(), too_large: true });
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(&path) else { continue };
+        let Ok(text) = String::from_utf8(bytes) else { continue };
+        total += text.len() as u64;
+        out.push(DocFile { path: rel.clone(), text, too_large: false });
     }
     Ok(out)
 }
@@ -426,6 +499,58 @@ mod root_as_vault_tests {
             read_markdown_corpus(dir.path(), "").unwrap().into_iter().map(|f| f.path).collect();
         paths.sort();
         assert_eq!(paths, vec!["journal/2026-07-28.md", "top.md"]);
+    }
+}
+
+#[cfg(test)]
+mod corpus_stats_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn stats_cover_the_same_files_as_the_corpus_read() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("docs/sub")).unwrap();
+        std::fs::create_dir_all(root.join("docs/.hidden")).unwrap();
+        std::fs::write(root.join("docs/a.md"), "# a").unwrap();
+        std::fs::write(root.join("docs/sub/b.md"), "# b").unwrap();
+        std::fs::write(root.join("docs/notes.txt"), "not markdown").unwrap();
+        std::fs::write(root.join("docs/.hidden/c.md"), "skipped").unwrap();
+
+        let mut stat_paths: Vec<String> =
+            scan_markdown_stats(root, "docs").unwrap().into_iter().map(|s| s.path).collect();
+        let mut corpus_paths: Vec<String> =
+            read_markdown_corpus(root, "docs").unwrap().into_iter().map(|f| f.path).collect();
+        stat_paths.sort();
+        corpus_paths.sort();
+        assert_eq!(stat_paths, corpus_paths);
+        assert_eq!(stat_paths, vec!["a.md", "sub/b.md"]);
+
+        // Signatures change when a file does.
+        let before = scan_markdown_stats(root, "docs").unwrap();
+        let a = before.iter().find(|s| s.path == "a.md").unwrap();
+        assert_eq!(a.size, 3);
+        assert!(a.mtime_ms > 0);
+        std::fs::write(root.join("docs/a.md"), "# a grew").unwrap();
+        let after = scan_markdown_stats(root, "docs").unwrap();
+        assert_ne!(after.iter().find(|s| s.path == "a.md").unwrap().size, a.size);
+    }
+
+    #[test]
+    fn read_markdown_files_reads_exactly_the_asked_subset() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("docs")).unwrap();
+        std::fs::write(root.join("docs/a.md"), "alpha").unwrap();
+        std::fs::write(root.join("docs/b.md"), "beta").unwrap();
+
+        let got = read_markdown_files(root, "docs", &["b.md".to_string(), "gone.md".to_string()]).unwrap();
+        assert_eq!(got.len(), 1, "missing files are skipped, not errors");
+        assert_eq!((got[0].path.as_str(), got[0].text.as_str()), ("b.md", "beta"));
+
+        // Jail escape is an error, not a silent skip.
+        assert!(read_markdown_files(root, "docs", &["../a.md".to_string()]).is_err());
     }
 }
 

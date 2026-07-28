@@ -917,6 +917,44 @@ export interface DocFile {
 export const readDocsCorpus = (root: FileRoot, docsDir: string) =>
   invoke<DocFile[]>("read_docs_corpus", { root, docsDir });
 
+// Stat-only corpus pass: change signatures without body reads. Steady-state
+// docs polls diff these and re-read only what changed.
+export interface DocStat {
+  path: string;
+  mtimeMs: number;
+  size: number;
+}
+export const docsCorpusStats = (root: FileRoot, docsDir: string) =>
+  invoke<DocStat[]>("docs_corpus_stats", { root, docsDir });
+// Read a named subset of the corpus (the poll's "these changed" list).
+export const readDocsFiles = (root: FileRoot, docsDir: string, paths: string[]) =>
+  invoke<DocFile[]>("read_docs_files", { root, docsDir, paths });
+
+// ── content search (one-stop Phase 2 primitive) ─────────────────────────────
+
+export interface SearchQuery {
+  query: string;
+  // Treat query as a regex; default literal.
+  regex?: boolean;
+  // Case-sensitive when true; default insensitive.
+  case?: boolean;
+  // Gitignore-style globs ("*.md" matches at any depth); empty = all files.
+  globs?: string[];
+  maxHits?: number;
+}
+
+export interface BackendSearchHit {
+  path: string; // relative to the searched dir
+  line: number; // 1-based
+  col: number; // 1-based
+  text: string; // the matching line, length-capped
+}
+
+// Content search under `dir` within a root. Bounded (hits/bytes/time) and
+// best-effort: hitting a cap returns what was collected.
+export const searchFiles = (root: FileRoot, dir: string, query: SearchQuery) =>
+  invoke<BackendSearchHit[]>("search_files", { root, dir, query });
+
 // Write base64 bytes to a NEW file (fails on an existing path). For image paste.
 export const writeFileBase64 = (root: FileRoot, relPath: string, b64: string) =>
   invoke<void>("write_file_base64", { root, relPath, b64 });

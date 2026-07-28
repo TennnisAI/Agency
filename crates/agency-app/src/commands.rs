@@ -1691,6 +1691,45 @@ pub async fn read_docs_corpus(
     agency_core::files::read_markdown_corpus(&base, &docs_dir).map_err(|e| e.to_string())
 }
 
+/// Stat-only corpus pass: `(path, mtime, size)` per markdown file, so the
+/// docs poll can detect change without re-reading bodies.
+#[tauri::command]
+pub async fn docs_corpus_stats(
+    state: State<'_, AppState>,
+    root: FileRoot,
+    docs_dir: String,
+) -> Result<Vec<agency_core::files::DocStat>, String> {
+    let base = resolve_root(&state, &root)?;
+    agency_core::files::scan_markdown_stats(&base, &docs_dir).map_err(|e| e.to_string())
+}
+
+/// Read a named subset of the docs corpus — the poll's "these changed" list.
+#[tauri::command]
+pub async fn read_docs_files(
+    state: State<'_, AppState>,
+    root: FileRoot,
+    docs_dir: String,
+    paths: Vec<String>,
+) -> Result<Vec<agency_core::files::DocFile>, String> {
+    let base = resolve_root(&state, &root)?;
+    agency_core::files::read_markdown_files(&base, &docs_dir, &paths).map_err(|e| e.to_string())
+}
+
+/// Content search under `dir` within a root (one-stop Phase 2). Hit paths come
+/// back relative to `dir`. Async on purpose: a search must never wedge the
+/// main thread — the core enforces hit/byte/time caps so it always returns.
+#[tauri::command]
+pub async fn search_files(
+    state: State<'_, AppState>,
+    root: FileRoot,
+    dir: String,
+    query: agency_core::search::SearchQuery,
+) -> Result<Vec<agency_core::search::SearchHit>, String> {
+    let base = resolve_root(&state, &root)?;
+    let target = agency_core::files::abs_path(&base, &dir).map_err(|e| e.to_string())?;
+    agency_core::search::search_files(&target, &query).map_err(|e| e.to_string())
+}
+
 /// Write base64-decoded bytes to a new file (refuses to clobber). Used for
 /// pasting images into docs notes.
 #[tauri::command]

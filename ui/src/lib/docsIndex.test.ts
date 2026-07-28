@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildIndex, resolveLink, searchDocs } from "./docsIndex";
+import { SearchHit, buildIndex, mergeBodyHits, resolveLink, searchDocs, searchLocal } from "./docsIndex";
 import { DocFile } from "../api";
 
 const doc = (path: string, text: string): DocFile => ({ path, text, tooLarge: false });
@@ -102,5 +102,45 @@ describe("searchDocs", () => {
 
   it("returns nothing for an empty query", () => {
     expect(searchDocs(index, "  ")).toEqual([]);
+  });
+});
+
+describe("searchLocal + mergeBodyHits", () => {
+  const index = buildIndex([
+    doc("alpha.md", "# Alpha Guide\n\nbody mentions needle\nagain needle\n#projx\n"),
+    doc("beta.md", "# Beta\n\nneedle here too\n"),
+  ]);
+
+  it("answers tag queries entirely from the index", () => {
+    const hits = searchLocal(index, "#proj");
+    expect(hits).toEqual([{ path: "alpha.md", line: -1, snippet: "#projx" }]);
+  });
+
+  it("returns title hits only (bodies belong to the backend)", () => {
+    const hits = searchLocal(index, "alpha");
+    expect(hits).toEqual([{ path: "alpha.md", line: -1, snippet: "Alpha Guide" }]);
+    expect(searchLocal(index, "needle")).toEqual([]);
+  });
+
+  it("maps backend hits to 0-based lines with trimmed snippets", () => {
+    const merged = mergeBodyHits(index, [], [
+      { path: "beta.md", line: 3, col: 1, text: "needle here too\n" },
+    ]);
+    expect(merged).toEqual([{ path: "beta.md", line: 2, snippet: "needle here too" }]);
+  });
+
+  it("keeps title hits first, drops unknown paths, and caps per doc", () => {
+    const local = searchLocal(index, "alpha");
+    const body = [
+      { path: "alpha.md", line: 3, col: 15, text: "body mentions needle" },
+      { path: "not-in-corpus.txt", line: 1, col: 1, text: "needle" },
+      ...Array.from({ length: 10 }, (_, i) => ({
+        path: "alpha.md", line: 10 + i, col: 1, text: `filler ${i}`,
+      })),
+    ];
+    const merged = mergeBodyHits(index, local, body);
+    expect(merged[0]).toEqual({ path: "alpha.md", line: -1, snippet: "Alpha Guide" });
+    expect(merged.every((h: SearchHit) => h.path !== "not-in-corpus.txt")).toBe(true);
+    expect(merged.filter((h: SearchHit) => h.path === "alpha.md").length).toBe(5);
   });
 });

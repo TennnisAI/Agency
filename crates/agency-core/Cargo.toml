@@ -8,7 +8,9 @@ license = "MIT"
 alacritty_terminal = "0.26"
 anyhow = "1"
 daemonize = "0.5"
+globset = "0.4"
 log = "0.4"
+regex = "1"
 rusqlite = { version = "0.31", features = ["bundled"] }
 portable-pty = "0.8"
 serde = { version = "1", features = ["derive"] }

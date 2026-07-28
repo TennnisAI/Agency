@@ -349,7 +349,9 @@ P1 workspace ──► P2 search ──► P3 editor ──► P4 palette ──
 - [x] Phase 1 — Workspace root + daily note — *shipped 2026-07-28: verification
   gate green, manual ship gate passed
   (plan: `docs/superpowers/plans/2026-07-28-one-stop-phase1-workspace-daily-note.md`)*
-- [ ] Phase 2 — Search primitive
+- [x] Phase 2 — Search primitive — *shipped 2026-07-28: verification gate green,
+  ship gates passed (10k files: 304ms fallback / 144ms rg; idle corpus does zero
+  body reads; plan: `docs/superpowers/plans/2026-07-28-one-stop-phase2-search-primitive.md`)*
 - [ ] Phase 3 — Quick-open, find-in-files, tabs
 - [ ] Phase 4 — Command palette v2
 - [ ] Phase 5 — Issues as files

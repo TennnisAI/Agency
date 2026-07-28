@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
-import { FileRoot, createFile, createDir, renamePath, trashPath, writeFile } from "../api";
-import { DocsIndex, SearchHit, searchDocs, stripExt } from "../lib/docsIndex";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { FileRoot, createFile, createDir, renamePath, searchFiles, trashPath, writeFile } from "../api";
+import { DocsIndex, SearchHit, mergeBodyHits, searchDocs, searchLocal, stripExt } from "../lib/docsIndex";
 import { joinPath, parentPath, baseName } from "../lib/filePath";
 import { FileIcon } from "./fileIcons";
 import Menu, { MenuEntry } from "./git/Menu";
@@ -235,10 +235,35 @@ export default function DocsTree({
     return rows;
   };
 
-  const hits = useMemo(
-    () => (index && query.trim() ? searchDocs(index, query) : []),
-    [index, query],
-  );
+  // Search: tag/title hits are answered instantly from the index; body hits
+  // come from the backend search primitive, debounced 150ms. The token guards
+  // against a stale slow response landing over a newer query's results; the
+  // in-memory substring scan remains as the error fallback.
+  const [hits, setHits] = useState<SearchHit[]>([]);
+  const searchToken = useRef(0);
+  useEffect(() => {
+    const q = query.trim();
+    const token = ++searchToken.current;
+    if (!index || !q) {
+      setHits([]);
+      return;
+    }
+    const local = searchLocal(index, q);
+    setHits(local);
+    if (q.startsWith("#")) return; // tag queries are fully local
+    const t = window.setTimeout(async () => {
+      let merged: SearchHit[];
+      try {
+        const body = await searchFiles(root, docsDir, { query: q, globs: ["*.md", "*.markdown"] });
+        merged = mergeBodyHits(index, local, body);
+      } catch {
+        merged = searchDocs(index, q);
+      }
+      if (searchToken.current === token) setHits(merged);
+    }, 150);
+    return () => window.clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [index, query, root.kind, root.id, docsDir]);
 
   const searching = query.trim() !== "";
 

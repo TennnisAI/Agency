@@ -1,4 +1,4 @@
-import { DocFile } from "../api";
+import { BackendSearchHit, DocFile } from "../api";
 
 // The docs index: everything the Docs tab derives from the markdown corpus —
 // titles, headings, tags, wikilinks, backlinks, and the text kept for search.
@@ -179,10 +179,73 @@ export interface SearchHit {
   snippet: string;
 }
 
+const MAX_SEARCH_HITS = 200;
+const MAX_HITS_PER_DOC = 5;
+
 /**
- * Full-text search. A query starting with "#" matches the tag index; anything
- * else is a case-insensitive substring search over every doc's text, one hit
- * per matching line (capped so a common word can't flood the pane).
+ * The index-local half of docs search: `#` queries match the tag index;
+ * anything else matches titles (line -1 hits). Body hits come from the
+ * backend search primitive and are folded in via [`mergeBodyHits`] — this
+ * half stays synchronous so tag/title results never wait on IPC.
+ */
+export function searchLocal(index: DocsIndex, query: string): SearchHit[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return [];
+  const hits: SearchHit[] = [];
+
+  if (q.startsWith("#") && q.length > 1) {
+    const tag = q.slice(1);
+    for (const [t, paths] of index.tags) {
+      if (!t.startsWith(tag)) continue;
+      for (const path of paths) {
+        if (!hits.some((h) => h.path === path)) {
+          hits.push({ path, line: -1, snippet: `#${t}` });
+        }
+      }
+    }
+    return hits;
+  }
+
+  for (const d of index.docs.values()) {
+    if (d.title.toLowerCase().includes(q)) {
+      hits.push({ path: d.path, line: -1, snippet: d.title });
+      if (hits.length >= MAX_SEARCH_HITS) break;
+    }
+  }
+  return hits;
+}
+
+/**
+ * Fold backend body hits (1-based lines, raw line text) into the local
+ * title/tag hits: 0-based lines, trimmed snippets, only paths the index knows
+ * (the corpus is the source of truth for what counts as a note), capped per
+ * doc and in total so a common word can't flood the pane.
+ */
+export function mergeBodyHits(
+  index: DocsIndex,
+  local: SearchHit[],
+  body: BackendSearchHit[],
+): SearchHit[] {
+  const hits = [...local];
+  const perDoc = new Map<string, number>();
+  for (const h of local) perDoc.set(h.path, (perDoc.get(h.path) ?? 0) + 1);
+  for (const b of body) {
+    if (hits.length >= MAX_SEARCH_HITS) break;
+    if (!index.docs.has(b.path)) continue;
+    const n = perDoc.get(b.path) ?? 0;
+    if (n >= MAX_HITS_PER_DOC) continue;
+    hits.push({ path: b.path, line: b.line - 1, snippet: b.text.trim() });
+    perDoc.set(b.path, n + 1);
+  }
+  return hits;
+}
+
+/**
+ * Full-text search over the in-memory index. A query starting with "#"
+ * matches the tag index; anything else is a case-insensitive substring search
+ * over every doc's text, one hit per matching line (capped so a common word
+ * can't flood the pane). Kept as the fallback when the backend search command
+ * fails — the primary path is `searchLocal` + `mergeBodyHits`.
  */
 export function searchDocs(index: DocsIndex, query: string): SearchHit[] {
   const q = query.trim().toLowerCase();

@@ -9,6 +9,7 @@ pub mod merge;
 pub mod profile;
 pub mod registry;
 pub mod scripts;
+pub mod search;
 pub mod setup;
 pub mod supervisor;
 pub mod title;

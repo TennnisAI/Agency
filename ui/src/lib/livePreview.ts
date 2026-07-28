@@ -16,6 +16,7 @@ import { autocompletion, CompletionContext, CompletionResult } from "@codemirror
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { FileRoot, readFileBase64 } from "../api";
 import { DocsIndex, resolveLink, stripExt } from "./docsIndex";
+import { joinPath } from "./filePath";
 
 // Obsidian-style live preview for the Docs tab: one CodeMirror pane where
 // markdown renders inline (headings sized, marks hidden, checkboxes clickable)
@@ -180,7 +181,9 @@ function loadImage(nav: DocsNav, src: string): Promise<string> {
     cached = (async () => {
       for (const rel of candidates) {
         try {
-          const bc = await readFileBase64(nav.root, `${nav.docsDir}/${rel}`);
+          // joinPath: a workspace vault has docsDir "" — a bare `${dir}/${rel}`
+          // would produce a leading slash the path jail rejects as absolute.
+          const bc = await readFileBase64(nav.root, joinPath(nav.docsDir, rel));
           if (!bc.tooLarge && bc.mime.startsWith("image/")) {
             return `data:${bc.mime};base64,${bc.b64}`;
           }

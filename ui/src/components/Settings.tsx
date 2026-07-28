@@ -2,18 +2,23 @@ import { Fragment, useEffect, useRef, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { appLogDir } from "@tauri-apps/api/path";
 import { revealItemInDir, openUrl } from "@tauri-apps/plugin-opener";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   AgentProfile,
   CatalogEntry,
   FilesConfig,
   KnowledgeConfig,
   McpServer,
+  Project,
   ProviderSettings,
   NotifSettings,
   UpdateCheck,
   authenticateMcpServer,
   checkForUpdate,
+  closeProject,
+  createWorkspace,
   deauthenticateMcpServer,
+  defaultWorkspaceLocation,
   deleteProfile,
   enableAgentProfiles,
   getFilesConfig,
@@ -21,10 +26,13 @@ import {
   getSettings,
   getNotifSettings,
   getUpdateCheckEnabled,
+  getWorkspace,
   importMcpJson,
+  inspectRepo,
   listAgentCatalog,
   listMcpServers,
   listProfiles,
+  moveWorkspace,
   saveFilesConfig,
   saveKnowledgeConfig,
   saveMcpServers,
@@ -38,6 +46,7 @@ import { toastError, toastSuccess } from "../lib/toast";
 import { agentColor, agentLabel } from "../agents";
 import { THEMES, ThemeId, applyTheme, getStoredTheme } from "../lib/themes";
 import { getWordWrap, setWordWrap } from "../lib/editorPrefs";
+import { setWorkspaceHidden, workspaceHidden } from "../lib/workspacePref";
 
 // Full-view settings page (design handoff: settings takes over the main area,
 // entered from the ⚙ button at the bottom of the Projects pane).
@@ -498,6 +507,76 @@ export default function Settings({
     );
   }
 
+  // ── workspace (pinned notes/journal project) ──────────────────────────
+  const [workspace, setWorkspace] = useState<Project | null>(null);
+  const [wsDefault, setWsDefault] = useState("");
+  const [wsGitless, setWsGitless] = useState(false);
+  const refreshWorkspace = () => {
+    getWorkspace()
+      .then(async (ws) => {
+        setWorkspace(ws);
+        if (ws) {
+          const r = await inspectRepo(ws.repo_path).catch(() => null);
+          setWsGitless(r?.state === "notARepo");
+        }
+      })
+      .catch(() => {});
+  };
+  useEffect(() => {
+    refreshWorkspace();
+    defaultWorkspaceLocation().then(setWsDefault).catch(() => {});
+  }, []);
+
+  // Move = pick a destination parent; the folder keeps its name. The backend
+  // renames on disk and repoints the project row.
+  async function doMoveWorkspace() {
+    if (!workspace) return;
+    const sel = await openDialog({ directory: true, multiple: false });
+    if (typeof sel !== "string") return;
+    const name = workspace.repo_path.split("/").filter(Boolean).pop() ?? "Agency";
+    const dest = `${sel.replace(/\/+$/, "")}/${name}`;
+    if (dest === workspace.repo_path) return;
+    try {
+      setWorkspace(await moveWorkspace(dest));
+      toastSuccess("Workspace moved");
+    } catch (e) {
+      toastError(e, "Couldn't move workspace");
+    }
+  }
+
+  // Hide the workspace entirely for people who don't want it: the pinned ◈
+  // row (and ⌘⇧D / the palette entry) go away. A created workspace is also
+  // closed — sessions stop, records and files stay — and re-enabling revives
+  // it via the idempotent create_workspace.
+  const [wsOff, setWsOff] = useState(workspaceHidden());
+  async function toggleWorkspaceVisible(show: boolean) {
+    setWorkspaceHidden(!show);
+    setWsOff(!show);
+    try {
+      const ws = await getWorkspace();
+      if (ws) {
+        if (show) await createWorkspace(ws.repo_path, false);
+        else await closeProject(ws.id);
+      }
+    } catch (e) {
+      toastError(e, show ? "Couldn't restore the workspace" : "Couldn't hide the workspace");
+    }
+    refreshWorkspace();
+  }
+
+  // Late opt-in to git for a workspace created without it (create_workspace is
+  // idempotent: it just inits + makes the initial commit).
+  async function enableWorkspaceGit() {
+    if (!workspace) return;
+    try {
+      await createWorkspace(workspace.repo_path, true);
+      refreshWorkspace();
+      toastSuccess("Workspace repository initialized");
+    } catch (e) {
+      toastError(e, "Couldn't initialize git");
+    }
+  }
+
   return (
     <main className="settings-page">
       <div className="settings-inner">
@@ -525,6 +604,56 @@ export default function Settings({
                   )}
                 </span>
               </button>
+            ))}
+          </div>
+        </section>
+
+        <section className="settings-section">
+          <div className="settings-section-label">Workspace</div>
+          <p className="settings-section-hint">
+            Your home for journaling, planning, and cross-project notes — plain
+            markdown files on disk. <kbd>⌘⇧D</kbd> opens today's journal note.
+          </p>
+          <div className="settings-group-card">
+            <div className="settings-notif-row">
+              <span className="settings-notif-label">
+                Show the workspace
+                {wsOff && " — currently hidden; nothing on disk was deleted"}
+              </span>
+              <Toggle checked={!wsOff} onChange={(on) => { void toggleWorkspaceVisible(on); }} />
+            </div>
+            {!wsOff && (workspace ? (
+              <>
+                <div className="settings-notif-row">
+                  <span className="settings-notif-label">
+                    Location: <code className="settings-meta-val">{workspace.repo_path}</code>
+                  </span>
+                  <button className="settings-save" onClick={doMoveWorkspace}>Move…</button>
+                </div>
+                {wsGitless && (
+                  <div className="settings-notif-row">
+                    <span className="settings-notif-label">
+                      Git is off, so agents can't be dispatched on notes. Initialize a
+                      repository to enable them — nothing is ever pushed anywhere.
+                    </span>
+                    <button className="settings-save" onClick={enableWorkspaceGit}>Enable git</button>
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="settings-notif-row">
+                <span className="settings-notif-label">
+                  Not created yet — by default it will live at{" "}
+                  <code className="settings-meta-val">{wsDefault || "~/Agency"}</code>.
+                </span>
+                <button
+                  className="settings-save"
+                  onClick={() => {
+                    onClose();
+                    window.dispatchEvent(new CustomEvent("agency:create-workspace"));
+                  }}
+                >Create…</button>
+              </div>
             ))}
           </div>
         </section>

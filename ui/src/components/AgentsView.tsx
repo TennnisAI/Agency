@@ -48,6 +48,30 @@ export default function AgentsView({
   useEffect(() => { setGitSel(null); }, [focusedRunId, project?.id]);
   const reviewPane = usePaneWidth("review", 360, 280, 640);
 
+  // The workspace can decline git; everything git-shaped (Source Control, the
+  // review panel, agent spawn — agents need worktrees) hides for it then.
+  // Terminals stay: they run in the checkout, no branch required.
+  const [projReadiness, setProjReadiness] = useState<RepoReadiness | null>(null);
+  const refreshReadiness = () => {
+    if (!project) { setProjReadiness(null); return; }
+    const path = project.repo_path;
+    inspectRepo(path).then((r) => {
+      // Guard against a stale response landing after a project switch.
+      if (path === project.repo_path) setProjReadiness(r);
+    }).catch(() => {});
+  };
+  useEffect(() => {
+    setProjReadiness(null);
+    refreshReadiness();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project?.id]);
+  const gitlessWorkspace = project?.kind === "workspace" && projReadiness?.state === "notARepo";
+
+  // Per-project tab memory can restore "source" from before git was declined.
+  useEffect(() => {
+    if (gitlessWorkspace && tab === "source") setTab("agents");
+  }, [gitlessWorkspace, tab, setTab]);
+
   // Which working tree source control operates on: the focused run's worktree
   // (terminals share the project checkout) or, with no run selected, the
   // project's main checkout via a "project:<id>" token. Null only at the
@@ -96,7 +120,9 @@ export default function AgentsView({
           <button className={tab === "agents" ? "on" : ""} onClick={() => setTab("agents")}>▦ Agents</button>
           <button className={tab === "issues" ? "on" : ""} onClick={() => setTab("issues")}>▧ Issues</button>
           <button className={tab === "docs" ? "on" : ""} onClick={() => setTab("docs")}>▥ Docs</button>
-          <button className={tab === "source" ? "on" : ""} onClick={() => setTab("source")}>⎇ Source Control</button>
+          {!gitlessWorkspace && (
+            <button className={tab === "source" ? "on" : ""} onClick={() => setTab("source")}>⎇ Source Control</button>
+          )}
           <button className={tab === "files" ? "on" : ""} onClick={() => setTab("files")}>▤ Files</button>
         </div>
         {project && tab === "agents" && (
@@ -112,11 +138,16 @@ export default function AgentsView({
           </div>
         )}
         <div className="spacer" />
-        {project && tab === "agents" && (
+        {project && tab === "agents" && !gitlessWorkspace && (
           <RightPanelToggle open={review} onToggle={() => setReview((r) => !r)} />
         )}
         {project && tab === "agents" && (
-          <AgentAddMenu projectId={project.id} onSpawn={spawn} onTerminal={createTerminal} />
+          <AgentAddMenu
+            projectId={project.id}
+            onSpawn={spawn}
+            onTerminal={createTerminal}
+            terminalOnly={gitlessWorkspace}
+          />
         )}
       </div>
 
@@ -178,7 +209,13 @@ export default function AgentsView({
               <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, overflow: "hidden" }}>
                 {view === "grid" && (
                   <div className="grid">
-                    {runs.length === 0 && !spawning && <div className="board empty">No agents yet — add one with "+ Agent".</div>}
+                    {runs.length === 0 && !spawning && (
+                      <div className="board empty">
+                        {gitlessWorkspace
+                          ? "Agents need git to work in isolated branches. Initialize a repository in the workspace (Settings ▸ Workspace) to dispatch them here."
+                          : "No agents yet — add one with \"+ Agent\"."}
+                      </div>
+                    )}
                     {runs.map((r) => <AgentTile key={r.id} run={r} />)}
                     {spawning && (
                       // Placeholder while the worktree + session are created —
@@ -210,7 +247,7 @@ export default function AgentsView({
                 )}
                 {view === "focus" && <AgentFocus onSpawn={spawn} />}
               </div>
-              {review && gitRoot && (
+              {review && gitRoot && !gitlessWorkspace && (
                 <>
                   <Resizer size={reviewPane.width} min={280} max={640} onChange={reviewPane.setWidth} side="right" />
                   <GitPanel
@@ -236,6 +273,7 @@ export default function AgentsView({
           onResolved={async () => {
             const { agentId, opts, issue } = pendingSpawn;
             setPendingSpawn(null);
+            refreshReadiness();
             try {
               if (issue) await startIssue(issue, agentId, opts);
               else await createAgent(agentId, opts);

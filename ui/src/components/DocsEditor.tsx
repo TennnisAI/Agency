@@ -51,7 +51,10 @@ export default forwardRef<DocsEditorHandle, {
   onTagClick: (tag: string) => void;
   sideOpen: boolean;
   onToggleSide: () => void;
-}>(function DocsEditor({ root, docsDir, path, diskText, index, onSaved, onNavigate, onTagClick, sideOpen, onToggleSide }, ref) {
+  // Journal notes get prev/next-day navigation; null hides the buttons. Targets
+  // are the nearest *existing* daily notes (navigation never creates files).
+  daily?: { prev: string | null; next: string | null; onOpen: (path: string) => void } | null;
+}>(function DocsEditor({ root, docsDir, path, diskText, index, onSaved, onNavigate, onTagClick, sideOpen, onToggleSide, daily }, ref) {
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
@@ -294,6 +297,22 @@ export default forwardRef<DocsEditorHandle, {
   return (
     <div className="docs-editor-col">
       <div className="docs-editor-head">
+        {daily && (
+          <span className="daily-nav">
+            <button
+              className="file-editor-btn"
+              title="Previous daily note"
+              disabled={!daily.prev}
+              onClick={() => daily.prev && daily.onOpen(daily.prev)}
+            >‹</button>
+            <button
+              className="file-editor-btn"
+              title="Next daily note"
+              disabled={!daily.next}
+              onClick={() => daily.next && daily.onOpen(daily.next)}
+            >›</button>
+          </span>
+        )}
         <span className="docs-editor-path" title={repoRel}>{path}</span>
         <span className="spacer" style={{ flex: 1 }} />
         <span className={`docs-save-state ${saveState}`}>

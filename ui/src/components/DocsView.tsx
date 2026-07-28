@@ -11,6 +11,7 @@ import DocsQuickSwitcher from "./DocsQuickSwitcher";
 import ConfirmDialog from "./ConfirmDialog";
 import { toastError } from "../lib/toast";
 import { joinPath } from "../lib/filePath";
+import { adjacentDailyPath, isDailyNotePath } from "../lib/dailyNote";
 
 const lastNoteKey = (projectId: string) => `docs:last:${projectId}`;
 
@@ -74,6 +75,21 @@ export default function DocsView({ project }: { project: Project }) {
     if (first) setSelectedState(first.path);
   }, [index, project.id]);
 
+  // "Today's note" (⌘⇧D / menu / palette) lands here when this view is already
+  // mounted; a fresh mount is covered by the docs:last localStorage restore.
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
+  useEffect(() => {
+    const onOpen = (e: Event) => {
+      const d = (e as CustomEvent<{ projectId: string; path: string }>).detail;
+      if (!d || d.projectId !== project.id) return;
+      void refreshRef.current().then(() => setSelected(d.path));
+    };
+    window.addEventListener("agency:open-note", onOpen);
+    return () => window.removeEventListener("agency:open-note", onOpen);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project.id]);
+
   // A wikilink pointed at a note that doesn't exist; confirm before creating.
   const [pendingCreate, setPendingCreate] = useState<string | null>(null);
 
@@ -89,7 +105,7 @@ export default function DocsView({ project }: { project: Project }) {
   };
 
   const createNote = async (target: string) => {
-    if (!docsDir) return;
+    if (docsDir == null) return; // "" is valid: the workspace vault root
     // "folder/Note" creates in that folder (if it exists); plain names land at
     // the docs root.
     const path = `${target}.md`;
@@ -135,6 +151,7 @@ export default function DocsView({ project }: { project: Project }) {
         <DocsTree
           root={root}
           docsDir={docsDir}
+          rootLabel={docsDir === "" ? project.name : undefined}
           index={index}
           selected={selected}
           query={query}
@@ -167,6 +184,11 @@ export default function DocsView({ project }: { project: Project }) {
             onTagClick={(tag) => setQuery(tag.startsWith("#") ? tag : `#${tag}`)}
             sideOpen={sideOpen}
             onToggleSide={() => setSideOpen((o) => !o)}
+            daily={index && isDailyNotePath(selected) ? {
+              prev: adjacentDailyPath(index.docs.keys(), selected, "prev"),
+              next: adjacentDailyPath(index.docs.keys(), selected, "next"),
+              onOpen: setSelected,
+            } : null}
           />
         ) : (
           <div className="diff-empty">Select or create a note.</div>

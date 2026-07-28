@@ -38,10 +38,12 @@ function Twistie({ open }: { open: boolean }) {
  * folders without markdown).
  */
 export default function DocsTree({
-  root, docsDir, index, selected, query, onQuery, onSelect, onOpenHit, onRenamed, onDeleted, refresh,
+  root, docsDir, rootLabel, index, selected, query, onQuery, onSelect, onOpenHit, onRenamed, onDeleted, refresh,
 }: {
   root: FileRoot;
   docsDir: string;
+  /** Label for the tree root when docsDir is "" (the workspace vault). */
+  rootLabel?: string;
   index: DocsIndex | null;
   selected: string | null;
   query: string;
@@ -89,7 +91,13 @@ export default function DocsTree({
     }
     for (const dir of extraDirs) dirAt(dir);
     const sortDir = (d: TreeDir) => {
-      d.notes.sort((a, b) => a.title.localeCompare(b.title));
+      // The journal reads newest-first (date-stamped names, so name order is
+      // date order); everything else alphabetical.
+      if (d.path === "journal") {
+        d.notes.sort((a, b) => b.path.localeCompare(a.path));
+      } else {
+        d.notes.sort((a, b) => a.title.localeCompare(b.title));
+      }
       for (const sub of d.dirs.values()) sortDir(sub);
     };
     sortDir(rootDir);
@@ -246,7 +254,7 @@ export default function DocsTree({
         />
       </div>
       <div className="files-root-label">
-        <span className="files-root-name" title={docsDir}>{docsDir}/</span>
+        <span className="files-root-name" title={docsDir || rootLabel}>{docsDir ? `${docsDir}/` : rootLabel ?? "/"}</span>
         <span className="spacer" style={{ flex: 1 }} />
         <button className="files-tool-btn" title="New Note" onClick={() => setDialog({ kind: "newNote", dir: "" })}>
           <NewNoteGlyph />

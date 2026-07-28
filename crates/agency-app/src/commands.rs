@@ -75,6 +75,36 @@ pub fn add_project(
         .map_err(|e| e.to_string())
 }
 
+// ── workspace (the pinned notes/journal project) ────────────────────────────
+
+#[tauri::command]
+pub async fn get_workspace(state: State<'_, AppState>) -> Result<Option<Project>, String> {
+    state.get_workspace().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn default_workspace_location(state: State<'_, AppState>) -> Result<String, String> {
+    Ok(state.default_workspace_location().to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+pub fn create_workspace(
+    state: State<'_, AppState>,
+    path: String,
+    use_git: bool,
+) -> Result<Project, String> {
+    state
+        .create_workspace(std::path::Path::new(&path), use_git)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn move_workspace(state: State<'_, AppState>, new_path: String) -> Result<Project, String> {
+    state
+        .move_workspace(std::path::Path::new(&new_path))
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn close_project(state: State<'_, AppState>, id: String) -> Result<(), String> {
     state.close_project(&id).map_err(|e| e.to_string())
@@ -1640,6 +1670,11 @@ pub async fn detect_docs_dir(
     state: State<'_, AppState>,
     project_id: String,
 ) -> Result<Option<String>, String> {
+    // The workspace's *whole folder* is the vault — its docs root is the empty
+    // relative path, not a `docs/` subfolder.
+    if state.project_is_workspace(&project_id).map_err(|e| e.to_string())? {
+        return Ok(Some(String::new()));
+    }
     let base = state.project_repo_path(&project_id).map_err(|e| e.to_string())?;
     agency_core::files::find_dir_case_insensitive(&base, "docs").map_err(|e| e.to_string())
 }

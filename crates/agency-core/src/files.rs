@@ -388,6 +388,48 @@ pub fn read_file_bytes(root: &Path, rel: &str) -> Result<BinaryFile> {
 }
 
 #[cfg(test)]
+mod root_as_vault_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    // The workspace project uses the *whole folder* as its docs vault, which
+    // reaches these functions as the empty relative path. That must mean "the
+    // root itself" — never an error, never an escape.
+
+    #[test]
+    fn resolve_within_empty_rel_is_the_root() {
+        let dir = tempdir().unwrap();
+        let got = resolve_within(dir.path(), "").unwrap();
+        assert_eq!(got.canonicalize().unwrap(), dir.path().canonicalize().unwrap());
+    }
+
+    #[test]
+    fn list_dir_empty_rel_lists_the_root() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("a.md"), "x").unwrap();
+        std::fs::create_dir(dir.path().join("journal")).unwrap();
+        let names: Vec<String> = list_dir(dir.path(), "").unwrap().into_iter().map(|e| e.name).collect();
+        assert_eq!(names, vec!["journal", "a.md"]);
+    }
+
+    #[test]
+    fn read_markdown_corpus_empty_rel_walks_the_root() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("top.md"), "# top").unwrap();
+        std::fs::create_dir(dir.path().join("journal")).unwrap();
+        std::fs::write(dir.path().join("journal/2026-07-28.md"), "# today").unwrap();
+        // Hidden dirs are still skipped from the vault walk.
+        std::fs::create_dir(dir.path().join(".git")).unwrap();
+        std::fs::write(dir.path().join(".git/skip.md"), "no").unwrap();
+
+        let mut paths: Vec<String> =
+            read_markdown_corpus(dir.path(), "").unwrap().into_iter().map(|f| f.path).collect();
+        paths.sort();
+        assert_eq!(paths, vec!["journal/2026-07-28.md", "top.md"]);
+    }
+}
+
+#[cfg(test)]
 mod gitignore_tests {
     use super::*;
     use tempfile::tempdir;

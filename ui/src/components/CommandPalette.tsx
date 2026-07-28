@@ -3,6 +3,7 @@ import { Project, listProjects } from "../api";
 import { useRuns } from "../store/runs";
 import { PaletteEntry, filterEntries } from "../lib/paletteFilter";
 import { PENDING_QUICKADD_KEY } from "../lib/issues";
+import { workspaceHidden } from "../lib/workspacePref";
 
 export default function CommandPalette({ onClose }: { onClose: () => void }) {
   const { runs, selectedProjectId, setSelectedProject, setFocusedRun, setView, setTab } = useRuns();
@@ -15,16 +16,29 @@ export default function CommandPalette({ onClose }: { onClose: () => void }) {
   }, []);
 
   const entries: PaletteEntry[] = useMemo(() => {
-    // Actions need a project to act on, so they only list inside one.
-    const as: PaletteEntry[] = selectedProjectId
-      ? [{
-          kind: "action",
-          id: "new-issue",
-          projectId: selectedProjectId,
-          label: "New Issue",
-          sublabel: "Capture an issue in this project",
-        }]
-      : [];
+    // "Today's Note" is global (the workspace is app-level, created on first
+    // use — and absent entirely when the user hides the workspace); the rest
+    // of the actions need a project to act on.
+    const as: PaletteEntry[] = [
+      ...(workspaceHidden()
+        ? []
+        : [{
+            kind: "action" as const,
+            id: "daily-note",
+            projectId: selectedProjectId ?? "",
+            label: "Today's Note",
+            sublabel: "Open today's journal entry in the workspace",
+          }]),
+      ...(selectedProjectId
+        ? [{
+            kind: "action" as const,
+            id: "new-issue",
+            projectId: selectedProjectId,
+            label: "New Issue",
+            sublabel: "Capture an issue in this project",
+          }]
+        : []),
+    ];
     const ps: PaletteEntry[] = projects.map((p) => ({
       kind: "project",
       id: p.id,
@@ -50,10 +64,15 @@ export default function CommandPalette({ onClose }: { onClose: () => void }) {
 
   function activate(e: PaletteEntry) {
     if (e.kind === "action") {
-      // "New Issue": jump to the board with quick-add focused (the flag is
-      // consumed by IssuesView on tab activation).
-      sessionStorage.setItem(PENDING_QUICKADD_KEY, "1");
-      setTab("issues");
+      if (e.id === "daily-note") {
+        // Routed through Shell (it owns the workspace/daily-note flow).
+        window.dispatchEvent(new CustomEvent("agency:daily-note"));
+      } else {
+        // "New Issue": jump to the board with quick-add focused (the flag is
+        // consumed by IssuesView on tab activation).
+        sessionStorage.setItem(PENDING_QUICKADD_KEY, "1");
+        setTab("issues");
+      }
     } else if (e.kind === "project") {
       setSelectedProject(e.id);
     } else {

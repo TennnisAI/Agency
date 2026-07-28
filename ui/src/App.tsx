@@ -14,8 +14,11 @@ import Resizer from "./components/Resizer";
 import Toasts from "./components/Toasts";
 import { useShortcuts } from "./hooks/useShortcuts";
 import { usePaneWidth } from "./hooks/usePaneWidth";
-import { Project, RunInfo, agentOnboardingNeeded, archiveRun, checkForUpdate, confirmQuit, discardRun, getUpdateCheckEnabled, listProjects, setMenuContext, setUiState } from "./api";
+import { FileRoot, Project, RunInfo, agentOnboardingNeeded, archiveRun, checkForUpdate, confirmQuit, createDir, createFile, discardRun, getUpdateCheckEnabled, getWorkspace, inspectRepo, listProjects, readFile, setMenuContext, setUiState, writeFile } from "./api";
 import { pickDefaultAgent } from "./lib/defaultAgent";
+import { DAILY_TEMPLATE_PATH, JOURNAL_DIR, dailyNotePath, defaultDailyContent, renderDailyTemplate } from "./lib/dailyNote";
+import { toastError, toastInfo } from "./lib/toast";
+import { workspaceHidden } from "./lib/workspacePref";
 
 const REPO_URL = "https://github.com/nic123/Agency";
 
@@ -40,12 +43,67 @@ function Shell() {
   // order in lib/defaultAgent (Settings default → project's last-used → claude).
   async function newTaskDefaultAgent() {
     if (!selectedProjectId) return;
+    // A git-less workspace has no worktrees to spawn into; the in-view spawn
+    // affordances are hidden, so catch the menu/shortcut path with a hint.
+    if (project?.kind === "workspace") {
+      const r = await inspectRepo(project.repo_path).catch(() => null);
+      if (r?.state === "notARepo") {
+        toastInfo("Agents need git — initialize a repository in the workspace first.");
+        return;
+      }
+    }
     createAgent(await pickDefaultAgent(selectedProjectId, project?.default_agent));
   }
+
+  // ⌘⇧D / File ▸ Today's Note / palette: open today's journal note in the
+  // workspace, creating the note (from templates/daily.md when present) — and,
+  // on very first use, the workspace itself via ProjectTree's create dialog,
+  // which resumes this flow through the agency:workspace-ready event.
+  async function openDailyNote() {
+    // Hidden means "I don't use this" — respect it rather than resurrecting
+    // the workspace from a stray shortcut press.
+    if (workspaceHidden()) {
+      toastInfo("The workspace is hidden — turn it back on in Settings ▸ Workspace.");
+      return;
+    }
+    const ws = await getWorkspace().catch(() => null);
+    if (!ws) {
+      window.dispatchEvent(new CustomEvent("agency:create-workspace", { detail: { intent: "daily-note" } }));
+      return;
+    }
+    const root: FileRoot = { kind: "project", id: ws.id };
+    const now = new Date();
+    const path = dailyNotePath(now);
+    try {
+      const existing = await readFile(root, path).catch(() => null);
+      if (!existing) {
+        let content = defaultDailyContent(now);
+        const tpl = await readFile(root, DAILY_TEMPLATE_PATH).catch(() => null);
+        if (tpl && !tpl.binary && !tpl.tooLarge && tpl.text.trim()) {
+          content = renderDailyTemplate(tpl.text, now);
+        }
+        await createDir(root, JOURNAL_DIR).catch(() => { /* already exists */ });
+        await createFile(root, path);
+        await writeFile(root, path, content);
+      }
+    } catch (e) {
+      toastError(e, "Couldn't open today's note");
+      return;
+    }
+    // Stamp the last-open note so a freshly mounted DocsView restores straight
+    // to it; the event covers the already-mounted case.
+    try { localStorage.setItem(`docs:last:${ws.id}`, path); } catch { /* storage unavailable */ }
+    selectProject(ws);
+    setTab("docs");
+    window.dispatchEvent(new CustomEvent("agency:open-note", { detail: { projectId: ws.id, path } }));
+  }
+  const dailyRef = useRef(openDailyNote);
+  dailyRef.current = openDailyNote;
 
   useShortcuts({
     onNewTask: () => { newTaskDefaultAgent(); },
     onSource: () => setTab("source"),
+    onDailyNote: () => { openDailyNote(); },
     onApprove: () => {
       // Approve/merge is an agent-only workflow; terminals have no branch to merge.
       const focused = runs.find((r) => r.id === focusedRunId);
@@ -134,6 +192,7 @@ function Shell() {
       case "add-project": window.dispatchEvent(new CustomEvent("agency:add-project")); break;
       case "clone-project": window.dispatchEvent(new CustomEvent("agency:clone-project")); break;
       case "source": setTab("source"); break;
+      case "daily-note": openDailyNote(); break;
       case "toggle-sidebar": setSidebarOpen((s) => !s); break;
       case "home": goHome(); break;
       case "approve": {
@@ -174,11 +233,25 @@ function Shell() {
         if (p) selectProject(p);
       }),
     ];
+    // Palette "Today's Note" and the post-creation resume of that flow arrive
+    // as DOM events (the palette can't call into Shell directly).
+    const daily = () => { void dailyRef.current(); };
+    const ready = (e: Event) => {
+      if ((e as CustomEvent<{ intent?: string }>).detail?.intent === "daily-note") {
+        void dailyRef.current();
+      }
+    };
+    window.addEventListener("agency:daily-note", daily);
+    window.addEventListener("agency:workspace-ready", ready);
     // The .catch matters: Tauri's injected event plugin throws
     // ("listeners[eventId].handlerId") when an unlisten races a listener that
     // was already removed (e.g. across remounts). A failed cleanup of a dead
     // listener is a no-op — don't let it surface as an error toast.
-    return () => { subs.forEach((s) => s.then((un) => un()).catch(() => {})); };
+    return () => {
+      subs.forEach((s) => s.then((un) => un()).catch(() => {}));
+      window.removeEventListener("agency:daily-note", daily);
+      window.removeEventListener("agency:workspace-ready", ready);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

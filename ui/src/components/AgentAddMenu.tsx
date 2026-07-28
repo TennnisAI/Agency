@@ -14,6 +14,7 @@ export default function AgentAddMenu({
   projectId,
   issue,
   issueLabel,
+  terminalOnly = false,
 }: {
   onSpawn: (agentId: string, opts?: { base: string; mergeTarget: string }) => void;
   // Required (not optional) so every call site exposes the same options — the two
@@ -27,6 +28,9 @@ export default function AgentAddMenu({
   // imports). onSpawn then routes to startIssueRun at the call site.
   issue?: Issue;
   issueLabel?: string;
+  // Git-less workspace: everything that needs a worktree/branch is hidden, so
+  // the menu collapses to the terminal entry.
+  terminalOnly?: boolean;
 }) {
   // While a workspace is being created, the triggers are disabled so the
   // slow first spawn can't be double-fired.
@@ -110,27 +114,35 @@ export default function AgentAddMenu({
       ) : variant === "icon" ? (
         <button ref={btnRef} className="icon-btn" title={issue ? "Start agent…" : "Add agent"} disabled={spawning} onClick={(e) => { e.stopPropagation(); toggle(); }}>{issue ? "▾" : "+"}</button>
       ) : (
-        <button ref={btnRef} className="btn-primary" disabled={spawning} onClick={toggle}>{spawning ? "Starting…" : "+ Agent ▾"}</button>
+        <button ref={btnRef} className="btn-primary" disabled={spawning} onClick={toggle}>{spawning ? "Starting…" : terminalOnly ? "+ Terminal ▾" : "+ Agent ▾"}</button>
       )}
       {open && (
         <>
           <div className="agent-menu-backdrop" onClick={() => setOpen(false)} />
           <div className="agent-menu" style={{ position: "fixed", ...coords }}>
-            {agents.map((a) => (
-              <button key={a.name} onClick={() => choose(a.name)}>{agentLabel(a.name)}</button>
-            ))}
-            <div className="agent-menu-sep" />
-            <button onClick={() => { setOpen(false); setRaceOpen(true); }}>∥ Race agents…</button>
-            <button onClick={() => { setOpen(false); setLoopOpen(true); }}>⟳ Loop agent…</button>
+            {!terminalOnly && (
+              <>
+                {agents.map((a) => (
+                  <button key={a.name} onClick={() => choose(a.name)}>{agentLabel(a.name)}</button>
+                ))}
+                <div className="agent-menu-sep" />
+                <button onClick={() => { setOpen(false); setRaceOpen(true); }}>∥ Race agents…</button>
+                <button onClick={() => { setOpen(false); setLoopOpen(true); }}>⟳ Loop agent…</button>
+              </>
+            )}
             {!issue && (
               <>
-                <button onClick={() => { setOpen(false); setImportMode("issue"); }}>◈ GitHub issue…</button>
-                <button onClick={() => { setOpen(false); setImportMode("pr"); }}>⇋ GitHub PR…</button>
-                <div className="agent-menu-sep" />
+                {!terminalOnly && (
+                  <>
+                    <button onClick={() => { setOpen(false); setImportMode("issue"); }}>◈ GitHub issue…</button>
+                    <button onClick={() => { setOpen(false); setImportMode("pr"); }}>⇋ GitHub PR…</button>
+                    <div className="agent-menu-sep" />
+                  </>
+                )}
                 <button onClick={chooseTerminal}>≳ New terminal</button>
               </>
             )}
-            {showPicker && branches.length > 0 && (
+            {showPicker && branches.length > 0 && !terminalOnly && (
               <>
                 <div className="agent-menu-sep" />
                 <div className="branch-picker">

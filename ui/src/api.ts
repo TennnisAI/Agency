@@ -11,6 +11,8 @@ export interface Project {
   color: string | null;
   // 3-letter issue key ("AGE") the project's issues are numbered under.
   issue_key: string | null;
+  // null = normal repo project; "workspace" = the pinned notes/journal home.
+  kind: string | null;
 }
 
 export type SessionStatus =
@@ -122,6 +124,18 @@ export const startIssueLoop = (
 
 export const addProject = (name: string, repoPath: string) =>
   invoke<Project>("add_project", { name, repoPath });
+
+// ── workspace (the pinned notes/journal project) ────────────────────────────
+
+export const getWorkspace = () => invoke<Project | null>("get_workspace");
+export const defaultWorkspaceLocation = () => invoke<string>("default_workspace_location");
+// Creates (or adopts) the workspace folder. With `useGit` it is initialized and
+// given an initial commit so agents can run in it; without, it's just a folder.
+export const createWorkspace = (path: string, useGit: boolean) =>
+  invoke<Project>("create_workspace", { path, useGit });
+// Moves the workspace folder on disk and repoints the project at it.
+export const moveWorkspace = (newPath: string) =>
+  invoke<Project>("move_workspace", { newPath });
 
 export type RepoReadiness = {
   state: "notARepo" | "noCommits" | "ready";

@@ -24,7 +24,13 @@ pub struct Project {
     /// 3-letter issue key ("AGE") issues are numbered under (AGE-14). Stored,
     /// not derived, so renaming the project never re-keys its issues.
     pub issue_key: Option<String>,
+    /// `None` = a normal repo project; `"workspace"` = the single pinned
+    /// workspace (journaling/notes home) with relaxed git requirements.
+    pub kind: Option<String>,
 }
+
+/// The `Project.kind` value marking the pinned workspace.
+pub const PROJECT_KIND_WORKSPACE: &str = "workspace";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Run {
@@ -283,6 +289,9 @@ impl Registry {
                 [],
             )?;
         }
+        if !column_exists(&conn, "projects", "kind")? {
+            conn.execute("ALTER TABLE projects ADD COLUMN kind TEXT", [])?;
+        }
         let reg = Registry { conn };
         reg.backfill_project_colors()?;
         reg.backfill_issue_keys()?;
@@ -317,7 +326,13 @@ impl Registry {
         let rows: Vec<(String, String)> = {
             let mut stmt = self
                 .conn
-                .prepare("SELECT id, name FROM projects WHERE issue_key IS NULL ORDER BY name")?;
+                // The workspace keeps no issue key until Phase 5 brings it
+                // into the tracker — leave it out of the backfill.
+                .prepare(
+                    "SELECT id, name FROM projects
+                     WHERE issue_key IS NULL AND (kind IS NULL OR kind <> 'workspace')
+                     ORDER BY name",
+                )?;
             let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
             rows.filter_map(|r| r.ok()).collect()
         };
@@ -355,10 +370,16 @@ impl Registry {
             default_provider: None,
             color: Some(self.pick_project_color()?),
             issue_key: Some(derive_issue_key(name, &self.used_issue_keys()?)),
+            kind: None,
         };
+        self.insert_project(&project)?;
+        Ok(project)
+    }
+
+    fn insert_project(&self, project: &Project) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO projects (id, name, repo_path, default_agent, default_provider, color, issue_key)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO projects (id, name, repo_path, default_agent, default_provider, color, issue_key, kind)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             rusqlite::params![
                 project.id,
                 project.name,
@@ -367,9 +388,60 @@ impl Registry {
                 project.default_provider,
                 project.color,
                 project.issue_key,
+                project.kind,
             ],
         )?;
+        Ok(())
+    }
+
+    /// The single pinned workspace project, if it has been created — closed or
+    /// not (there is exactly one; hiding it is not a flow).
+    pub fn get_workspace(&self) -> Result<Option<Project>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, repo_path, default_agent, default_provider, color, issue_key, kind
+             FROM projects WHERE kind = 'workspace'",
+        )?;
+        let mut rows = stmt.query([])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(row_to_project(row)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Create the pinned workspace project, or return the existing one
+    /// (un-closing it if needed). No issue key: the workspace stays out of the
+    /// tracker until Phase 5.
+    pub fn ensure_workspace(&self, name: &str, repo_path: &Path) -> Result<Project> {
+        if let Some(mut ws) = self.get_workspace()? {
+            self.set_project_closed(&ws.id, false)?;
+            // A workspace re-created at a new location adopts it.
+            if ws.repo_path != repo_path {
+                self.set_project_repo_path(&ws.id, repo_path)?;
+                ws.repo_path = repo_path.to_path_buf();
+            }
+            return Ok(ws);
+        }
+        let project = Project {
+            id: Uuid::new_v4().to_string(),
+            name: name.to_string(),
+            repo_path: repo_path.to_path_buf(),
+            default_agent: None,
+            default_provider: None,
+            color: Some(self.pick_project_color()?),
+            issue_key: None,
+            kind: Some(PROJECT_KIND_WORKSPACE.to_string()),
+        };
+        self.insert_project(&project)?;
         Ok(project)
+    }
+
+    /// Point a project at a new folder (workspace move).
+    pub fn set_project_repo_path(&self, id: &str, repo_path: &Path) -> Result<()> {
+        self.conn.execute(
+            "UPDATE projects SET repo_path = ?2 WHERE id = ?1",
+            rusqlite::params![id, repo_path.to_string_lossy()],
+        )?;
+        Ok(())
     }
 
     /// The least-used palette color (palette order breaks ties), so every new
@@ -389,7 +461,7 @@ impl Registry {
 
     pub fn get_project(&self, id: &str) -> Result<Option<Project>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, repo_path, default_agent, default_provider, color, issue_key
+            "SELECT id, name, repo_path, default_agent, default_provider, color, issue_key, kind
              FROM projects WHERE id = ?1",
         )?;
         let mut rows = stmt.query([id])?;
@@ -401,7 +473,7 @@ impl Registry {
 
     pub fn list_projects(&self) -> Result<Vec<Project>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, repo_path, default_agent, default_provider, color, issue_key
+            "SELECT id, name, repo_path, default_agent, default_provider, color, issue_key, kind
              FROM projects WHERE closed = 0 ORDER BY name",
         )?;
         let rows = stmt.query_map([], |row| Ok(row_to_project(row)))?;
@@ -425,7 +497,7 @@ impl Registry {
 
     fn find_closed_project(&self, repo_path: &Path) -> Result<Option<Project>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, repo_path, default_agent, default_provider, color, issue_key
+            "SELECT id, name, repo_path, default_agent, default_provider, color, issue_key, kind
              FROM projects WHERE repo_path = ?1 AND closed = 1",
         )?;
         let mut rows = stmt.query([repo_path.to_string_lossy()])?;
@@ -1059,6 +1131,7 @@ fn row_to_project(row: &rusqlite::Row) -> Result<Project> {
         default_provider: row.get(4)?,
         color: row.get(5)?,
         issue_key: row.get(6)?,
+        kind: row.get(7)?,
     })
 }
 
@@ -1731,5 +1804,78 @@ mod tests {
         linked.issue_id = Some("iss-1".into());
         reg.insert_run(&linked).unwrap();
         assert_eq!(reg.get_run("new-1").unwrap().unwrap().issue_id.as_deref(), Some("iss-1"));
+    }
+
+    // ── workspace ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn project_kind_defaults_to_none_and_roundtrips() {
+        let dir = tempdir().unwrap();
+        let reg = Registry::open(&dir.path().join("kind.db")).unwrap();
+        let p = reg.add_project("Agency", std::path::Path::new("/tmp/a")).unwrap();
+        assert_eq!(p.kind, None);
+        assert_eq!(reg.get_project(&p.id).unwrap().unwrap().kind, None);
+
+        let ws = reg.ensure_workspace("Workspace", std::path::Path::new("/tmp/ws")).unwrap();
+        assert_eq!(ws.kind.as_deref(), Some(PROJECT_KIND_WORKSPACE));
+        assert_eq!(reg.get_project(&ws.id).unwrap().unwrap().kind.as_deref(), Some("workspace"));
+    }
+
+    #[test]
+    fn ensure_workspace_is_idempotent_revives_closed_and_adopts_new_path() {
+        let dir = tempdir().unwrap();
+        let reg = Registry::open(&dir.path().join("ws.db")).unwrap();
+        assert!(reg.get_workspace().unwrap().is_none());
+
+        let ws = reg.ensure_workspace("Workspace", std::path::Path::new("/tmp/ws")).unwrap();
+        // Second call returns the same row, not a duplicate.
+        let again = reg.ensure_workspace("Workspace", std::path::Path::new("/tmp/ws")).unwrap();
+        assert_eq!(again.id, ws.id);
+
+        // A closed workspace comes back on ensure.
+        reg.set_project_closed(&ws.id, true).unwrap();
+        assert!(reg.list_projects().unwrap().iter().all(|p| p.id != ws.id));
+        let revived = reg.ensure_workspace("Workspace", std::path::Path::new("/tmp/ws")).unwrap();
+        assert_eq!(revived.id, ws.id);
+        assert!(reg.list_projects().unwrap().iter().any(|p| p.id == ws.id));
+
+        // Re-created at a new location: the row adopts it.
+        let moved = reg.ensure_workspace("Workspace", std::path::Path::new("/tmp/ws2")).unwrap();
+        assert_eq!(moved.id, ws.id);
+        assert_eq!(moved.repo_path, std::path::PathBuf::from("/tmp/ws2"));
+        assert_eq!(
+            reg.get_workspace().unwrap().unwrap().repo_path,
+            std::path::PathBuf::from("/tmp/ws2")
+        );
+    }
+
+    #[test]
+    fn workspace_has_no_issue_key_and_backfill_skips_it() {
+        let dir = tempdir().unwrap();
+        let db = dir.path().join("ws-keys.db");
+        {
+            let reg = Registry::open(&db).unwrap();
+            let ws = reg.ensure_workspace("Workspace", std::path::Path::new("/tmp/ws")).unwrap();
+            assert_eq!(ws.issue_key, None);
+        }
+        // Reopening runs the backfill — the workspace must stay key-less
+        // (it joins the tracker in Phase 5), while normal key-less rows are
+        // still backfilled.
+        let reg = Registry::open(&db).unwrap();
+        assert_eq!(reg.get_workspace().unwrap().unwrap().issue_key, None);
+        let p = reg.add_project("Zebra", std::path::Path::new("/tmp/z")).unwrap();
+        assert_eq!(p.issue_key.as_deref(), Some("ZEB"));
+    }
+
+    #[test]
+    fn set_project_repo_path_moves_the_row() {
+        let dir = tempdir().unwrap();
+        let reg = Registry::open(&dir.path().join("move.db")).unwrap();
+        let ws = reg.ensure_workspace("Workspace", std::path::Path::new("/tmp/ws")).unwrap();
+        reg.set_project_repo_path(&ws.id, std::path::Path::new("/tmp/elsewhere")).unwrap();
+        assert_eq!(
+            reg.get_project(&ws.id).unwrap().unwrap().repo_path,
+            std::path::PathBuf::from("/tmp/elsewhere")
+        );
     }
 }

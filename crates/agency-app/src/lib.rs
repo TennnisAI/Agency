@@ -87,6 +87,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::list_projects,
             commands::add_project,
+            commands::get_workspace,
+            commands::default_workspace_location,
+            commands::create_workspace,
+            commands::move_workspace,
             commands::close_project,
             commands::delete_project,
             commands::create_run,

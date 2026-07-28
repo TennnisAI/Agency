@@ -4,7 +4,7 @@ use agency_core::supervisor::AgentHandle;
 use agency_core::term::client::{Subscription, TermClient};
 use agency_core::term::SessionStatus;
 use agency_core::worktree::WorktreeManager;
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use crate::notifier;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -719,6 +719,75 @@ impl AppState {
     pub fn add_project(&self, name: &str, repo_path: &Path) -> Result<Project> {
         validate_repo(repo_path)?;
         self.registry.lock().unwrap().add_project(name, repo_path)
+    }
+
+    // ── workspace (the pinned notes/journal project) ───────────────────────
+
+    /// The pinned workspace project, if the user has created it.
+    pub fn get_workspace(&self) -> Result<Option<Project>> {
+        self.registry.lock().unwrap().get_workspace()
+    }
+
+    /// The folder offered by default for a new workspace: `~/Agency`.
+    pub fn default_workspace_location(&self) -> std::path::PathBuf {
+        std::env::var_os("HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("/"))
+            .join("Agency")
+    }
+
+    /// Create (or adopt) the workspace at `path`. Unlike `add_project`, git is
+    /// optional: with `use_git` the folder is initialized and given an initial
+    /// commit so agents can spawn in it; without, it's just a folder — Docs and
+    /// Files work, Source Control and agents stay hidden in the UI. Idempotent:
+    /// an existing workspace row is reused (and repointed at `path`).
+    pub fn create_workspace(&self, path: &Path, use_git: bool) -> Result<Project> {
+        std::fs::create_dir_all(path)
+            .with_context(|| format!("creating workspace folder {}", path.display()))?;
+        if use_git {
+            use agency_core::setup::RepoReadiness;
+            if matches!(agency_core::setup::repo_readiness(path), RepoReadiness::NotARepo) {
+                agency_core::setup::init_repo(path)?;
+            }
+            if matches!(agency_core::setup::repo_readiness(path), RepoReadiness::NoCommits { .. }) {
+                agency_core::setup::initial_commit(path, true)?;
+            }
+        }
+        self.registry.lock().unwrap().ensure_workspace("Workspace", path)
+    }
+
+    /// Move the workspace folder on disk and repoint its project row. Refuses
+    /// to clobber an existing destination; a cross-volume move surfaces the
+    /// rename error rather than silently copying.
+    pub fn move_workspace(&self, new_path: &Path) -> Result<Project> {
+        let ws = self
+            .get_workspace()?
+            .ok_or_else(|| anyhow!("no workspace to move — create it first"))?;
+        if new_path == ws.repo_path {
+            return Ok(ws);
+        }
+        if new_path.exists() {
+            bail!("{} already exists — choose a new location", new_path.display());
+        }
+        if let Some(parent) = new_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::rename(&ws.repo_path, new_path).with_context(|| {
+            format!("moving {} to {}", ws.repo_path.display(), new_path.display())
+        })?;
+        let reg = self.registry.lock().unwrap();
+        reg.set_project_repo_path(&ws.id, new_path)?;
+        reg.get_project(&ws.id)?.ok_or_else(|| anyhow!("workspace row vanished"))
+    }
+
+    /// Whether `project_id` is the pinned workspace (drives the whole-folder
+    /// docs vault and the relaxed-git UI gating).
+    pub fn project_is_workspace(&self, project_id: &str) -> Result<bool> {
+        let reg = self.registry.lock().unwrap();
+        Ok(reg
+            .get_project(project_id)?
+            .map(|p| p.kind.as_deref() == Some(agency_core::registry::PROJECT_KIND_WORKSPACE))
+            .unwrap_or(false))
     }
 
     pub fn inspect_repo(&self, repo_path: &Path) -> agency_core::setup::RepoReadiness {

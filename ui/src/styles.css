@@ -1967,3 +1967,28 @@ input, textarea, code,
 .merge-methods { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
 .merge-method { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text); cursor: pointer; }
 .merge-method input { accent-color: var(--green); }
+
+/* ── Workspace (pinned notes/journal project) ─────────────────────────── */
+/* Pinned above the project list, separated by a hairline. */
+.tree-workspace { padding-bottom: 4px; margin-bottom: 4px; border-bottom: 1px solid var(--s0); }
+.ws-icon { font-size: 13px; font-weight: 400; background: var(--s1); color: var(--sub1); }
+/* Before first use the row is an invitation, not an entity — render it quiet. */
+.tree-row.ws-absent { color: var(--o0); }
+.tree-row.ws-absent:hover { color: var(--text); }
+.tree-row.ws-absent .ws-icon { background: transparent; border: 1px dashed var(--o0); color: var(--o0); }
+
+/* Workspace-creation dialog */
+.ws-create-row { display: flex; align-items: center; gap: 8px; margin: 12px 0; }
+.ws-create-path {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: var(--mono); font-size: 12px; color: var(--text);
+  background: var(--s0); border-radius: 6px; padding: 6px 8px;
+}
+.ws-create-git { display: flex; align-items: flex-start; gap: 10px; margin-top: 4px; cursor: pointer; }
+.ws-create-git > span { font-size: 13px; color: var(--text); }
+.ws-create-hint { display: block; font-size: 12px; color: var(--sub0); margin-top: 2px; }
+
+/* Prev/next-day navigation for journal notes (Docs editor header). */
+.daily-nav { display: inline-flex; gap: 2px; margin-right: 6px; }
+.daily-nav .file-editor-btn { font-size: 15px; line-height: 1; padding: 0 6px; }
+.daily-nav .file-editor-btn:disabled { opacity: .35; cursor: default; }

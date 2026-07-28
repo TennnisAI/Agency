@@ -6,6 +6,9 @@ export default function ConfirmDialog({
   confirmLabel,
   danger,
   busy,
+  altLabel,
+  altDanger,
+  onAlt,
   onConfirm,
   onCancel,
 }: {
@@ -15,6 +18,10 @@ export default function ConfirmDialog({
   danger?: boolean;
   /** Disables both buttons (and Escape) while the confirmed action runs. */
   busy?: boolean;
+  /** Optional second action rendered between Cancel and the confirm button. */
+  altLabel?: string;
+  altDanger?: boolean;
+  onAlt?: () => void;
   onConfirm: () => void;
   onCancel: () => void;
 }) {
@@ -34,6 +41,11 @@ export default function ConfirmDialog({
           {/* Autofocused so Enter/Escape act immediately — and Enter lands on
               the safe option, not the (possibly destructive) confirm. */}
           <button className="btn-secondary" autoFocus disabled={busy} onClick={onCancel}>Cancel</button>
+          {altLabel && onAlt && (
+            <button className={altDanger ? "btn-danger" : "btn-secondary"} disabled={busy} onClick={onAlt}>
+              {altLabel}
+            </button>
+          )}
           <button className={danger ? "btn-danger" : "btn-primary"} disabled={busy} onClick={onConfirm}>
             {confirmLabel}
           </button>

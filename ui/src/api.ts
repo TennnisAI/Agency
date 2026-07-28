@@ -443,6 +443,8 @@ export interface CatalogEntry {
   loopArgs: string[] | null;
   enabled: boolean;
   installed: boolean;
+  /** Whether Agency emits per-workspace MCP config for this agent. */
+  supportsMcp: boolean;
 }
 
 export const agentOnboardingNeeded = () => invoke<boolean>("agent_onboarding_needed");

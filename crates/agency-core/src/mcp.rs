@@ -3,12 +3,13 @@
 //! Agency keeps one canonical list of MCP servers (global app settings merged
 //! with the project's `[mcp.servers.*]` in `.agency/agency.toml`) and emits it
 //! into each new worktree in the *native* format of the agent that will run
-//! there — `.mcp.json` for Claude Code, `.cursor/mcp.json` for Cursor,
-//! `opencode.json` for OpenCode. Existing files are merged into (our entries
-//! upserted by name), never replaced, so repo-committed server definitions
-//! survive. Agents whose MCP config is global-only (Codex's ~/.codex/config.toml,
-//! Copilot's ~/.copilot) are intentionally skipped: Agency never mutates
-//! files outside the workspace.
+//! there — `.mcp.json` for Claude Code and Copilot CLI (Copilot discovers
+//! project-level `.mcp.json` and applies it once the user confirms folder
+//! trust), `.cursor/mcp.json` for Cursor, `opencode.json` for OpenCode.
+//! Existing files are merged into (our entries upserted by name), never
+//! replaced, so repo-committed server definitions survive. Agents whose MCP
+//! config is global-only (Codex's ~/.codex/config.toml) are intentionally
+//! skipped: Agency never mutates files outside the workspace.
 
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
@@ -162,6 +163,25 @@ pub fn merge(lists: &[Vec<McpServer>]) -> Vec<McpServer> {
     by_name.into_values().collect()
 }
 
+/// Where and how `agent`'s per-workspace MCP config is written: relative path
+/// segments, root key, and per-server formatter. `None` means the agent has no
+/// per-workspace config format Agency can emit.
+fn emit_target(
+    agent: &str,
+) -> Option<(&'static [&'static str], &'static str, fn(&McpServer) -> serde_json::Value)> {
+    match agent {
+        "claude" | "copilot" => Some((&[".mcp.json"], "mcpServers", claude_entry)),
+        "cursor" => Some((&[".cursor", "mcp.json"], "mcpServers", cursor_entry)),
+        "opencode" => Some((&["opencode.json"], "mcp", opencode_entry)),
+        _ => None,
+    }
+}
+
+/// Whether Agency can emit per-workspace MCP config for this agent.
+pub fn agent_supported(agent: &str) -> bool {
+    emit_target(agent).is_some()
+}
+
 /// Write the servers into `worktree` in `agent`'s native config format.
 /// Returns false (and writes nothing) for agents Agency can't configure
 /// per-workspace. Invalid entries are skipped rather than failing the run.
@@ -174,12 +194,11 @@ pub fn emit_for_agent(agent: &str, worktree: &Path, servers: &[McpServer]) -> Re
     if valid.is_empty() {
         return Ok(false);
     }
-    match agent {
-        "claude" => upsert_json(&worktree.join(".mcp.json"), "mcpServers", &valid, claude_entry),
-        "cursor" => upsert_json(&worktree.join(".cursor").join("mcp.json"), "mcpServers", &valid, cursor_entry),
-        "opencode" => upsert_json(&worktree.join("opencode.json"), "mcp", &valid, opencode_entry),
-        _ => Ok(false),
-    }
+    let Some((segments, root_key, entry)) = emit_target(agent) else {
+        return Ok(false);
+    };
+    let path = segments.iter().fold(worktree.to_path_buf(), |p, s| p.join(s));
+    upsert_json(&path, root_key, &valid, entry)
 }
 
 /// The `"type"` string Claude/standard `.mcp.json` uses for a remote transport.
@@ -200,7 +219,10 @@ fn claude_entry(s: &McpServer) -> serde_json::Value {
             }
             v
         }
+        // Explicit "type" so Copilot (which shares this file) never has to
+        // rely on its default; "stdio" is the standard name both CLIs accept.
         None => serde_json::json!({
+            "type": "stdio",
             "command": s.command.clone().unwrap_or_default(),
             "args": s.args,
             "env": s.env,
@@ -336,10 +358,39 @@ mod tests {
         let root: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(root["other"], 1, "unrelated keys survive");
         assert_eq!(root["mcpServers"]["repo-own"]["command"], "keep-me", "existing servers survive");
+        assert_eq!(root["mcpServers"]["mine"]["type"], "stdio");
         assert_eq!(root["mcpServers"]["mine"]["command"], "my-cmd");
         assert_eq!(root["mcpServers"]["mine"]["env"]["KEY"], "V");
         assert_eq!(root["mcpServers"]["api"]["type"], "http");
         assert_eq!(root["mcpServers"]["api"]["url"], "https://mcp.example");
+    }
+
+    #[test]
+    fn emits_copilot_into_project_mcp_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let wrote = emit_for_agent(
+            "copilot",
+            dir.path(),
+            &[stdio("kg", "graphify"), remote("api", "https://mcp.example")],
+        )
+        .unwrap();
+        assert!(wrote);
+        let root: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join(".mcp.json")).unwrap()).unwrap();
+        assert_eq!(root["mcpServers"]["kg"]["type"], "stdio");
+        assert_eq!(root["mcpServers"]["kg"]["command"], "graphify");
+        assert_eq!(root["mcpServers"]["api"]["type"], "http");
+        assert_eq!(root["mcpServers"]["api"]["url"], "https://mcp.example");
+    }
+
+    #[test]
+    fn agent_supported_matches_emit_targets() {
+        for agent in ["claude", "copilot", "cursor", "opencode"] {
+            assert!(agent_supported(agent), "{agent} should be supported");
+        }
+        for agent in ["codex", "gemini", "kimi", "crush", "hermes", "pi", "custom-profile"] {
+            assert!(!agent_supported(agent), "{agent} should not be supported");
+        }
     }
 
     #[test]

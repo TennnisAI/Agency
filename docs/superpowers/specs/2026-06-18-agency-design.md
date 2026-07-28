@@ -166,28 +166,35 @@ analytics dashboard, a headless `maestro-cli`, and ~24h unattended runs.
 
 | Dimension | **Agency** | **Maestro** |
 |---|---|---|
-| Privacy stance | **Zero first-party data collection** — no analytics, no telemetry, no account, no vendor backend; Agency never phones home. Outbound traffic is only user-initiated provider and git-remote calls. | Local + no account, but ships error telemetry by default (see below). |
+| Privacy stance | **Zero first-party data collection** — no analytics, no telemetry, no account, no vendor backend. Outbound traffic is user-initiated provider and git-remote calls, plus an optional update check against GitHub's public releases API. | Local + no account; shipped client-side error telemetry as of the 2026-06-18 review (see below). |
 | Stack | Tauri + Rust core, thin web UI | Electron + TypeScript |
 | Local models | First-class peer to Anthropic (LM Studio / OpenAI-compatible) | Provider-agent oriented; local-first models not the pitch |
 | Architecture | Rust core owns all state/process/git; heavily TDD'd headless engine | App-layer orchestration in TS/Electron |
 | v1 scope | Deliberately tight (no group chat, cloud, analytics) | Broad surface already |
-| License | Self-hosted alternative to Conductor | AGPL-3.0 |
+| License | MIT | AGPL-3.0 |
 
-**Privacy posture (verified 2026-06-18):** Maestro runs locally and requires **no account,
-login, or sign-up** (AGPL-3.0; session state stays in `MAESTRO_STATE_DIR`; no committed
-long-lived credentials). However, it is **not** a no-egress design:
-- It ships **Sentry client-side error telemetry**. The Sentry DSN is intentionally public
-  ("public secret by design"); the docs do not state that it is opt-in and expose no
-  documented disable toggle. ([SECURITY.md](https://github.com/RunMaestro/Maestro/blob/main/SECURITY.md))
-- It offers **optional remote control** via a built-in local web server with QR access and
-  **remote tunneling over Cloudflare**. ([README](https://github.com/RunMaestro/Maestro))
+**Privacy posture — Maestro as read on 2026-06-18.** This is a point-in-time reading of
+their published docs, recorded to position Agency, not a standing claim about how Maestro
+behaves today. Projects change; re-check the sources before repeating any of it publicly.
 
-So "local, no account required" is true for Maestro, but it still ships Sentry error
-telemetry by default. Agency's differentiator is narrower and more honest: **zero
-first-party data collection** — no analytics, no telemetry, Agency never phones home — while
-still connecting to the external services the user configures and initiates (model
-providers, GitHub). It is *not* a claim that no bytes ever leave the machine. Combined with
-the Rust-native core and local-models-as-peer, that is the position.
+At that date, Maestro ran locally and required **no account, login, or sign-up** (AGPL-3.0;
+session state in `MAESTRO_STATE_DIR`; no committed long-lived credentials). It was not,
+however, a no-egress design:
+- Its SECURITY.md described **Sentry client-side error telemetry**, with the DSN
+  intentionally public ("public secret by design"). The docs did not describe it as opt-in
+  and documented no disable toggle.
+  ([SECURITY.md](https://github.com/RunMaestro/Maestro/blob/main/SECURITY.md))
+- It offered **optional remote control** via a built-in local web server with QR access and
+  remote tunneling over Cloudflare. ([README](https://github.com/RunMaestro/Maestro))
+
+State Agency's position in its own terms rather than by comparison: **zero first-party data
+collection** — no analytics, no telemetry, no account, no vendor backend. Agency makes
+exactly one call the user did not initiate: an update check against GitHub's public releases
+API, which sends nothing beyond the request, downloads and installs nothing, and can be
+switched off in Settings. Everything else is a connection to a service the user configured
+and started themselves — model providers, git remotes. This is *not* a claim that no bytes
+ever leave the machine. Combined with the Rust-native core and local-models-as-peer, that is
+the position.
 
 **Implication for roadmap:** treat Maestro as the bar for power-user features — group chat /
 moderator routing, message queueing, output filtering, headless CLI, and **remote/mobile

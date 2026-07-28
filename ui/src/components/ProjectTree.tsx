@@ -10,9 +10,7 @@ import RepoSetupDialog from "./RepoSetupDialog";
 import CloneDialog from "./CloneDialog";
 import SidebarToggle from "./SidebarToggle";
 
-type Pending =
-  | { kind: "close" | "remove"; project: Project }
-  | null;
+type Pending = { project: Project } | null;
 
 // "active" = the project has at least one live agent or terminal, i.e. at least
 // one row would appear under it in the tree.
@@ -154,15 +152,15 @@ export default function ProjectTree({
     setSetup(null);
   }
 
-  async function confirmPending() {
+  async function confirmPending(kind: "close" | "delete") {
     if (!pending) return;
-    const { kind, project } = pending;
+    const { project } = pending;
     try {
       if (kind === "close") await closeProject(project.id);
       else await deleteProject(project.id);
       await refresh();
     } catch (e) {
-      toastError(e, kind === "close" ? "Couldn't close project" : "Couldn't remove project");
+      toastError(e, "Couldn't close project");
     } finally {
       // Always drop the dialog — a failure must not leave it frozen open.
       setPending(null);
@@ -213,8 +211,7 @@ export default function ProjectTree({
                   onClick={(e) => { e.stopPropagation(); setSetup({ path: p.repo_path, name: p.name, readiness: readiness[p.id]!, existing: true }); }}
                 >{"⚠︎"} commit</button>
               )}
-              <button className="row-act" title="Close project" aria-label="Close project" onClick={(e) => { e.stopPropagation(); setPending({ kind: "close", project: p }); }}>⏻</button>
-              <button className="row-act danger" title="Remove project" aria-label="Remove project" onClick={(e) => { e.stopPropagation(); setPending({ kind: "remove", project: p }); }}>×</button>
+              <button className="row-act" title="Close project" aria-label="Close project" onClick={(e) => { e.stopPropagation(); setPending({ project: p }); }}>×</button>
             </div>
             {openIds.has(p.id) && (
               <ul className="tree-children">
@@ -259,13 +256,13 @@ export default function ProjectTree({
       )}
       {pending && (
         <ConfirmDialog
-          title={pending.kind === "close" ? "Close project?" : "Remove project?"}
-          body={pending.kind === "close"
-            ? `Stop all running agents in "${pending.project.name}". Their setup is kept — reopen to re-run them.`
-            : `Permanently remove "${pending.project.name}" and delete all its agents and worktrees. This cannot be undone.`}
-          confirmLabel={pending.kind === "close" ? "Close project" : "Remove project"}
-          danger={pending.kind === "remove"}
-          onConfirm={confirmPending}
+          title="Close project?"
+          body={`Stop all agents in "${pending.project.name}" and remove it from the sidebar. Everything on disk is kept — add the project again to pick up where you left off. "Delete worktrees & close" also deletes the agents' worktrees and branches, including unmerged work. Your repository files are never touched.`}
+          confirmLabel="Close project"
+          altLabel="Delete worktrees & close"
+          altDanger
+          onAlt={() => confirmPending("delete")}
+          onConfirm={() => confirmPending("close")}
           onCancel={() => setPending(null)}
         />
       )}

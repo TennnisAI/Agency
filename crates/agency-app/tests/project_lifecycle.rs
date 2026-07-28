@@ -20,7 +20,7 @@ fn add_project_allows_repo_without_commits() {
 }
 
 #[test]
-fn close_keeps_records_delete_removes_them() {
+fn close_hides_project_readd_revives_delete_removes() {
     let dir = tempfile::tempdir().unwrap();
     let repo = dir.path().join("repo");
     std::fs::create_dir_all(&repo).unwrap();
@@ -36,10 +36,16 @@ fn close_keeps_records_delete_removes_them() {
     let state = common::state(&dir);
     let project = state.add_project("repo", &repo).unwrap();
 
-    // close_project must succeed and keep the project record
+    // close_project hides the project from the list but keeps its record
     state.close_project(&project.id).unwrap();
+    assert!(!state.list_projects().unwrap().iter().any(|p| p.id == project.id),
+        "close_project must hide the project");
+
+    // re-adding the same path revives the closed project instead of duplicating it
+    let revived = state.add_project("repo", &repo).unwrap();
+    assert_eq!(revived.id, project.id, "re-add must revive the closed project");
     assert!(state.list_projects().unwrap().iter().any(|p| p.id == project.id),
-        "close_project must keep the project");
+        "revived project must be listed again");
 
     // delete_project must remove the project record
     state.delete_project(&project.id).unwrap();

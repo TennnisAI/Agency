@@ -651,6 +651,7 @@ impl AppState {
                 loop_args: entry.loop_args.clone(),
                 enabled,
                 installed: command_on_path(entry.command),
+                supports_mcp: agency_core::mcp::agent_supported(entry.id),
             })
             .collect())
     }
@@ -751,8 +752,9 @@ impl AppState {
     }
 
     pub fn close_project(&self, id: &str) -> Result<()> {
-        // Kill live terminals; keep project + run records (and extra-session
-        // rows) so reopen can re-run and revive the tabs.
+        // Kill live terminals, then hide the project from the list. Project +
+        // run records (and extra-session rows) and the worktrees on disk are
+        // all kept — re-adding the same repo path revives everything.
         let runs = self.registry.lock().unwrap().list_runs(id)?;
         for run in &runs {
             self.attaches.lock().unwrap().remove(&run.id);
@@ -763,6 +765,7 @@ impl AppState {
             let _ = self.term.read().unwrap().kill(&shell_session_name(&run.id));
             self.kill_extra_sessions(&run.id);
         }
+        self.registry.lock().unwrap().set_project_closed(id, true)?;
         Ok(())
     }
 
@@ -1531,8 +1534,17 @@ impl AppState {
         if servers.is_empty() {
             return;
         }
-        if let Err(e) = agency_core::mcp::emit_for_agent(agent, worktree, &servers) {
-            log::warn!("emitting MCP config for {agent} into {}: {e}", worktree.display());
+        match agency_core::mcp::emit_for_agent(agent, worktree, &servers) {
+            Err(e) => {
+                log::warn!("emitting MCP config for {agent} into {}: {e}", worktree.display());
+            }
+            Ok(false) => {
+                log::info!(
+                    "MCP servers not emitted for {agent}: no per-workspace config format \
+                     (or all entries user-scope/invalid)"
+                );
+            }
+            Ok(true) => {}
         }
     }
 

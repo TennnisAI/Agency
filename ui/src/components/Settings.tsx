@@ -625,12 +625,21 @@ export default function Settings({
         <section className="settings-section">
           <div className="settings-section-label">MCP servers</div>
           <p className="settings-section-hint">
-            Available to every agent workspace, in each agent's native config format (Claude, Cursor,
-            OpenCode). Remote servers support <code>http</code>/<code>sse</code> transports and auth
+            Emitted into each agent workspace, in the agent's native config format (
+            {catalog.filter((e) => e.supportsMcp).map((e) => agentLabel(e.id)).join(", ") ||
+              "Claude Code, Copilot CLI, Cursor, OpenCode"}
+            ). Copilot loads workspace servers after you approve folder trust on first launch.
+            Remote servers support <code>http</code>/<code>sse</code> transports and auth
             headers; OAuth servers (e.g. Atlassian) use <b>Authenticate</b> to sign in via the Claude
             CLI at user scope. Projects can add their own via <code>[mcp.servers]</code> in{" "}
             <code>.agency/agency.toml</code>; project entries win on name conflicts.
           </p>
+          {catalog.some((e) => e.enabled && !e.supportsMcp) && (
+            <p className="settings-section-hint">
+              {catalog.filter((e) => e.enabled && !e.supportsMcp).map((e) => agentLabel(e.id)).join(", ")}{" "}
+              manage MCP servers in their own global config and won't see the servers below.
+            </p>
+          )}
           <div className="settings-card-list">
             {mcpServers.map((s) => (
               <div key={s.name} className="settings-profile-card">

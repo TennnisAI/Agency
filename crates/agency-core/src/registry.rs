@@ -277,6 +277,12 @@ impl Registry {
         if !column_exists(&conn, "projects", "issue_key")? {
             conn.execute("ALTER TABLE projects ADD COLUMN issue_key TEXT", [])?;
         }
+        if !column_exists(&conn, "projects", "closed")? {
+            conn.execute(
+                "ALTER TABLE projects ADD COLUMN closed INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
         let reg = Registry { conn };
         reg.backfill_project_colors()?;
         reg.backfill_issue_keys()?;
@@ -334,6 +340,13 @@ impl Registry {
     }
 
     pub fn add_project(&self, name: &str, repo_path: &Path) -> Result<Project> {
+        // Re-adding a closed project's path revives it instead of inserting a
+        // duplicate — its runs and worktrees were kept on close, so the project
+        // comes back exactly as it was left.
+        if let Some(p) = self.find_closed_project(repo_path)? {
+            self.set_project_closed(&p.id, false)?;
+            return Ok(p);
+        }
         let project = Project {
             id: Uuid::new_v4().to_string(),
             name: name.to_string(),
@@ -389,7 +402,7 @@ impl Registry {
     pub fn list_projects(&self) -> Result<Vec<Project>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, repo_path, default_agent, default_provider, color, issue_key
-             FROM projects ORDER BY name",
+             FROM projects WHERE closed = 0 ORDER BY name",
         )?;
         let rows = stmt.query_map([], |row| Ok(row_to_project(row)))?;
         let mut out = Vec::new();
@@ -397,6 +410,29 @@ impl Registry {
             out.push(r??);
         }
         Ok(out)
+    }
+
+    /// Hide (or un-hide) a project without touching its runs or worktrees.
+    /// Closed projects drop out of `list_projects` but keep every record, so
+    /// `add_project` on the same path can revive them.
+    pub fn set_project_closed(&self, id: &str, closed: bool) -> Result<()> {
+        self.conn.execute(
+            "UPDATE projects SET closed = ?2 WHERE id = ?1",
+            rusqlite::params![id, closed as i64],
+        )?;
+        Ok(())
+    }
+
+    fn find_closed_project(&self, repo_path: &Path) -> Result<Option<Project>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, repo_path, default_agent, default_provider, color, issue_key
+             FROM projects WHERE repo_path = ?1 AND closed = 1",
+        )?;
+        let mut rows = stmt.query([repo_path.to_string_lossy()])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(row_to_project(row)?)),
+            None => Ok(None),
+        }
     }
 
     pub fn remove_project(&self, id: &str) -> Result<()> {

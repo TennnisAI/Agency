@@ -30,6 +30,8 @@ pub struct CatalogEntryInfo {
     pub enabled: bool,
     /// Whether `command` resolves on PATH (usable without a profile row).
     pub installed: bool,
+    /// Whether Agency emits per-workspace MCP config for this agent.
+    pub supports_mcp: bool,
 }
 
 /// All built-in agent profiles Agency ships recipes for.

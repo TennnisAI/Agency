@@ -130,12 +130,17 @@ export default function IssuesView({
     if (e.button !== 0) return;
     // Grabs must start on the row itself — not its buttons and menus.
     if ((e.target as HTMLElement).closest("button, input, textarea")) return;
+    // Stop WebKit starting a text selection on the key/title — the selection
+    // begins at mousedown, long before the drag threshold; the click that
+    // selects the row is unaffected.
+    e.preventDefault();
     const start = { x: e.clientX, y: e.clientY };
 
     const onMove = (ev: MouseEvent) => {
       if (!dragLive.current) {
         if (Math.abs(ev.clientX - start.x) + Math.abs(ev.clientY - start.y) < 5) return;
         dragLive.current = { status, from, to: from };
+        window.getSelection()?.removeAllRanges();
       }
       ev.preventDefault();
       const row = (document.elementFromPoint(ev.clientX, ev.clientY) as HTMLElement | null)

@@ -59,13 +59,16 @@ export default function IssueRow({
   onPatch: (patch: IssuePatch) => void;
   onDelete: () => void;
   // Manual reorder within a status group (the per-project board wires this;
-  // the cross-project board doesn't — reordering across projects is meaningless).
+  // the cross-project board doesn't — reordering across projects is
+  // meaningless). Pointer-based, not HTML5 DnD: Tauri's native drag-drop
+  // layer swallows in-page drops on macOS, so the drop event never arrives.
   drag?: {
     over: "above" | "below" | null;
-    onStart: (e: React.DragEvent) => void;
-    onOver: (e: React.DragEvent) => void;
-    onDrop: (e: React.DragEvent) => void;
-    onEnd: () => void;
+    // True while this row is the one being dragged.
+    source: boolean;
+    idx: number;
+    status: IssueStatus;
+    onMouseDown: (e: React.MouseEvent) => void;
   };
 }) {
   const [menu, setMenu] = useState<"status" | "more" | null>(null);
@@ -98,13 +101,11 @@ export default function IssueRow({
 
   return (
     <div
-      className={`issue-row${selected ? " selected" : ""}${drag?.over ? ` drop-${drag.over}` : ""}`}
+      className={`issue-row${selected ? " selected" : ""}${drag?.over ? ` drop-${drag.over}` : ""}${drag?.source ? " dragging" : ""}`}
       onClick={onSelect}
-      draggable={!!drag}
-      onDragStart={drag?.onStart}
-      onDragOver={drag?.onOver}
-      onDrop={drag?.onDrop}
-      onDragEnd={drag?.onEnd}
+      onMouseDown={drag?.onMouseDown}
+      data-issue-idx={drag?.idx}
+      data-issue-status={drag?.status}
     >
       <PriorityGlyph priority={issue.priority} />
       <code className="issue-key">{label}</code>

@@ -80,7 +80,10 @@ updated: 2026-07-27T14:02:00Z
   today. Group order (status) is unchanged.
 - **Drag-to-reorder lives in the per-project IssuesView only.** The
   cross-project board mixes projects inside a status group; reordering there
-  has no stable meaning. Mechanics: HTML5 drag events on `IssueRow`, and a
+  has no stable meaning. Mechanics: pointer-based drag (mousedown → 5px
+  threshold → `elementFromPoint` tracking → commit on mouseup) — **not HTML5
+  DnD**, because Tauri's native drag-drop layer intercepts drops at the
+  NSView level on macOS and the page's `drop` event never fires — plus a
   pure planner in `ui/src/lib/issueRank.ts` —
   `planReorder(group, fromIdx, toIdx) -> {id, rank}[]`:
   - If the group isn't fully ranked yet, **materialize** ranks 1..n in the

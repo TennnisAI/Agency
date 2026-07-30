@@ -1720,10 +1720,12 @@ input, textarea, code,
 }
 .issue-due.overdue { color: var(--red); }
 
-/* Drag-to-reorder within a status group: the drop slot reads as a seam.
-   user-select off so grabbing the title starts an element drag, not a
-   text-selection drag (WebKit gives text the right of way otherwise). */
-.issue-row[draggable="true"] { cursor: grab; user-select: none; -webkit-user-select: none; }
+/* Pointer-based reorder within a status group: while a drag is live the
+   list locks selection and shows a grabbing cursor, the source row dims,
+   and the drop slot reads as a seam. */
+.issues-list.reordering { cursor: grabbing; user-select: none; -webkit-user-select: none; }
+.issues-list.reordering .issue-row { cursor: grabbing; }
+.issue-row.dragging { opacity: .45; }
 .issue-row.drop-above { box-shadow: 0 -2px 0 0 var(--blue); border-radius: 0 0 7px 7px; }
 .issue-row.drop-below { box-shadow: 0 2px 0 0 var(--blue); border-radius: 7px 7px 0 0; }
 

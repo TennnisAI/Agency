@@ -60,6 +60,9 @@ export default function IssuesView({
       })),
     [issues],
   );
+  // Mouse handlers commit against the freshest grouping, not their closure's.
+  const groupsRef = useRef(groups);
+  groupsRef.current = groups;
   const visible = useMemo(
     () => groups.flatMap((g) => (isClosed(g.status) && !openClosed.has(g.status) ? [] : g.issues)),
     [groups, openClosed],
@@ -100,12 +103,17 @@ export default function IssuesView({
     }
   }
 
-  // Manual reorder: HTML5 drag within a status group; the drop maps to a
-  // rank plan (materialize / midpoint / renormalize — see lib/issueRank).
-  // The drag source lives in a ref, not state — a re-render during dragstart
-  // aborts the native drag in WebKit; only the drop indicator is state.
-  const dragSrc = useRef<{ status: IssueStatus; from: number } | null>(null);
-  const [dragOver, setDragOver] = useState<{ status: IssueStatus; from: number; to: number } | null>(null);
+  // Manual reorder within a status group. Pointer-based (mousedown →
+  // 5px threshold → track → commit on mouseup), NOT HTML5 drag-and-drop:
+  // Tauri's native drag-drop layer intercepts drops at the NSView level on
+  // macOS, so an in-page HTML5 drag lifts but its drop event never fires.
+  // The live position is a plain ref (mouse events outrun React renders);
+  // `drag` state mirrors it for the seam indicator. The drop maps to a rank
+  // plan (materialize / midpoint / renormalize — see lib/issueRank).
+  const [drag, setDrag] = useState<{ status: IssueStatus; from: number; to: number } | null>(null);
+  const dragLive = useRef<{ status: IssueStatus; from: number; to: number } | null>(null);
+  // A completed drag must not read as a click on the row it ends over.
+  const suppressClick = useRef(false);
 
   async function dropReorder(group: Issue[], from: number, to: number) {
     const plan = planReorder(group.map((i) => ({ id: i.id, rank: i.rank })), from, to);
@@ -116,6 +124,49 @@ export default function IssuesView({
     } catch (e) {
       toastError(e, "Couldn't reorder");
     }
+  }
+
+  function onRowMouseDown(status: IssueStatus, from: number, e: React.MouseEvent) {
+    if (e.button !== 0) return;
+    // Grabs must start on the row itself — not its buttons and menus.
+    if ((e.target as HTMLElement).closest("button, input, textarea")) return;
+    const start = { x: e.clientX, y: e.clientY };
+
+    const onMove = (ev: MouseEvent) => {
+      if (!dragLive.current) {
+        if (Math.abs(ev.clientX - start.x) + Math.abs(ev.clientY - start.y) < 5) return;
+        dragLive.current = { status, from, to: from };
+      }
+      ev.preventDefault();
+      const row = (document.elementFromPoint(ev.clientX, ev.clientY) as HTMLElement | null)
+        ?.closest<HTMLElement>("[data-issue-idx]");
+      if (row && row.dataset.issueStatus === status) {
+        dragLive.current = { ...dragLive.current, to: Number(row.dataset.issueIdx) };
+      }
+      setDrag({ ...dragLive.current });
+    };
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key !== "Escape") return;
+      dragLive.current = null;
+      setDrag(null);
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      window.removeEventListener("keydown", onKey, true);
+      const d = dragLive.current;
+      dragLive.current = null;
+      setDrag(null);
+      if (!d) return;
+      suppressClick.current = true;
+      window.setTimeout(() => { suppressClick.current = false; }, 0);
+      const group = groupsRef.current.find((g) => g.status === d.status)?.issues ?? [];
+      dropReorder(group, d.from, d.to);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    // Capture phase so an Escape mid-drag can't reach anything else.
+    window.addEventListener("keydown", onKey, true);
   }
 
   async function startDefault(issue: Issue) {
@@ -180,7 +231,7 @@ export default function IssuesView({
         {loaded && issues.length === 0 ? (
           <div className="board empty">Capture your first issue — you can hand it to an agent later.</div>
         ) : (
-          <div className="issues-list">
+          <div className={`issues-list${drag ? " reordering" : ""}`}>
             {groups.map(({ status, issues: group }) => {
               if (group.length === 0) return null;
               const closed = isClosed(status);
@@ -209,40 +260,23 @@ export default function IssuesView({
                       label={issueLabel(project, issue)}
                       runs={runsFor(issue)}
                       selected={issue.id === selectedId}
-                      onSelect={() => setSelectedId(issue.id === selectedId ? null : issue.id)}
+                      onSelect={() => {
+                        if (suppressClick.current) return;
+                        setSelectedId(issue.id === selectedId ? null : issue.id);
+                      }}
                       onStart={() => { startDefault(issue); }}
                       onSpawnAgent={(agentId, opts) => { onStartIssue(issue, agentId, opts); }}
                       onPatch={(p) => patch(issue, p)}
                       onDelete={() => setConfirmDelete(issue)}
                       drag={{
                         over:
-                          dragOver && dragOver.status === status && dragOver.to === idx && dragOver.from !== idx
-                            ? (dragOver.to > dragOver.from ? "below" : "above")
+                          drag && drag.status === status && drag.to === idx && drag.from !== idx
+                            ? (drag.to > drag.from ? "below" : "above")
                             : null,
-                        onStart: (e) => {
-                          // WebKit refuses to start a drag with no payload.
-                          e.dataTransfer.setData("text/plain", issueLabel(project, issue));
-                          e.dataTransfer.effectAllowed = "move";
-                          dragSrc.current = { status, from: idx };
-                        },
-                        onOver: (e) => {
-                          const src = dragSrc.current;
-                          if (!src || src.status !== status) return;
-                          e.preventDefault();
-                          e.dataTransfer.dropEffect = "move";
-                          if (!dragOver || dragOver.status !== status || dragOver.to !== idx) {
-                            setDragOver({ status, from: src.from, to: idx });
-                          }
-                        },
-                        onDrop: (e) => {
-                          const src = dragSrc.current;
-                          dragSrc.current = null;
-                          setDragOver(null);
-                          if (!src || src.status !== status) return;
-                          e.preventDefault();
-                          dropReorder(group, src.from, idx);
-                        },
-                        onEnd: () => { dragSrc.current = null; setDragOver(null); },
+                        source: !!drag && drag.status === status && drag.from === idx,
+                        idx,
+                        status,
+                        onMouseDown: (e) => onRowMouseDown(status, idx, e),
                       }}
                     />
                   ))}

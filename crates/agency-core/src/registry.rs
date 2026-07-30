@@ -127,6 +127,13 @@ impl IssueStatus {
             IssueStatus::Cancelled => None,
         }
     }
+
+    /// Whether automation may move `self` → `to`: strictly forward, never
+    /// into or out of cancelled. The one guard behind every automatic status
+    /// move (merge → done, PR → in_review, dispatch → in_progress).
+    pub fn advances_to(self, to: IssueStatus) -> bool {
+        matches!((self.rank(), to.rank()), (Some(from), Some(to)) if from < to)
+    }
 }
 
 /// Partial update for `update_issue` — `None` fields are left untouched.
@@ -292,6 +299,12 @@ impl Registry {
         if !column_exists(&conn, "projects", "kind")? {
             conn.execute("ALTER TABLE projects ADD COLUMN kind TEXT", [])?;
         }
+        if !column_exists(&conn, "projects", "issues_migrated")? {
+            conn.execute(
+                "ALTER TABLE projects ADD COLUMN issues_migrated INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
         let reg = Registry { conn };
         reg.backfill_project_colors()?;
         reg.backfill_issue_keys()?;
@@ -326,11 +339,11 @@ impl Registry {
         let rows: Vec<(String, String)> = {
             let mut stmt = self
                 .conn
-                // The workspace keeps no issue key until Phase 5 brings it
-                // into the tracker — leave it out of the backfill.
+                // The workspace is included: Phase 5 brought it into the
+                // tracker, so a key-less workspace row gets one here.
                 .prepare(
                     "SELECT id, name FROM projects
-                     WHERE issue_key IS NULL AND (kind IS NULL OR kind <> 'workspace')
+                     WHERE issue_key IS NULL
                      ORDER BY name",
                 )?;
             let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
@@ -409,8 +422,8 @@ impl Registry {
     }
 
     /// Create the pinned workspace project, or return the existing one
-    /// (un-closing it if needed). No issue key: the workspace stays out of the
-    /// tracker until Phase 5.
+    /// (un-closing it if needed). The workspace is in the tracker like any
+    /// project: it gets an issue key so personal/planning tasks have one too.
     pub fn ensure_workspace(&self, name: &str, repo_path: &Path) -> Result<Project> {
         if let Some(mut ws) = self.get_workspace()? {
             self.set_project_closed(&ws.id, false)?;
@@ -428,7 +441,7 @@ impl Registry {
             default_agent: None,
             default_provider: None,
             color: Some(self.pick_project_color()?),
-            issue_key: None,
+            issue_key: Some(derive_issue_key(name, &self.used_issue_keys()?)),
             kind: Some(PROJECT_KIND_WORKSPACE.to_string()),
         };
         self.insert_project(&project)?;
@@ -846,6 +859,92 @@ impl Registry {
     }
 
     // ── issues ─────────────────────────────────────────────────────────────
+    //
+    // Since Phase 5 the rows here are an index over `.agency/issues/*.md` —
+    // the files are canonical, `issuefs::reconcile` makes rows follow them.
+    // Only `issue_seqs` (the never-reuse high-water mark) is owned by the DB.
+
+    /// Hand out the next issue number for a project. Numbers come from a
+    /// per-project counter (not MAX(seq)+1) so a deleted issue's number is
+    /// never reused. `next` holds the number to hand out *after* this one, so
+    /// the row is seeded at 2.
+    pub fn alloc_issue_seq(&self, project_id: &str) -> Result<i64> {
+        self.conn.execute(
+            "INSERT INTO issue_seqs (project_id, next) VALUES (?1, 2)
+             ON CONFLICT(project_id) DO UPDATE SET next = next + 1",
+            [project_id],
+        )?;
+        Ok(self.conn.query_row(
+            "SELECT next - 1 FROM issue_seqs WHERE project_id = ?1",
+            [project_id],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// Raise the high-water mark so `seq` is never handed out again — an agent
+    /// that filed `AGE-15.md` by hand consumed 15, whatever the counter said.
+    /// Monotonic: never lowers `next`.
+    pub fn ensure_issue_seq_at_least(&self, project_id: &str, seq: i64) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO issue_seqs (project_id, next) VALUES (?1, ?2 + 1)
+             ON CONFLICT(project_id) DO UPDATE SET next = MAX(next, ?2 + 1)",
+            rusqlite::params![project_id, seq],
+        )?;
+        Ok(())
+    }
+
+    /// Write an index row from a file's parsed state, keyed `(project_id,
+    /// seq)`. An existing row keeps its `id` — uuids are minted at import and
+    /// stay stable for the life of the file — and `issue.id` is used only when
+    /// the row is new. Returns the stored row.
+    pub fn upsert_issue_row(&self, issue: &Issue) -> Result<Issue> {
+        self.conn.execute(
+            "INSERT INTO issues (id, project_id, seq, title, body, status, priority, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             ON CONFLICT(project_id, seq) DO UPDATE SET
+                title = ?4, body = ?5, status = ?6, priority = ?7,
+                created_at = ?8, updated_at = ?9",
+            rusqlite::params![
+                issue.id,
+                issue.project_id,
+                issue.seq,
+                issue.title,
+                issue.body,
+                issue.status.as_str(),
+                issue.priority as i64,
+                issue.created_at,
+                issue.updated_at
+            ],
+        )?;
+        let mut stmt = self.conn.prepare(
+            "SELECT id, project_id, seq, title, body, status, priority, created_at, updated_at
+             FROM issues WHERE project_id = ?1 AND seq = ?2",
+        )?;
+        let mut rows = stmt.query(rusqlite::params![issue.project_id, issue.seq])?;
+        match rows.next()? {
+            Some(row) => row_to_issue(row),
+            None => anyhow::bail!("issue row vanished after upsert"),
+        }
+    }
+
+    /// Whether this project's issues have been exported to `.agency/issues/`
+    /// (the one-shot Phase-5 migration).
+    pub fn project_issues_migrated(&self, project_id: &str) -> Result<bool> {
+        let v: i64 = self.conn.query_row(
+            "SELECT issues_migrated FROM projects WHERE id = ?1",
+            [project_id],
+            |row| row.get(0),
+        )?;
+        Ok(v != 0)
+    }
+
+    pub fn mark_issues_migrated(&self, project_id: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE projects SET issues_migrated = 1 WHERE id = ?1",
+            [project_id],
+        )?;
+        Ok(())
+    }
 
     pub fn create_issue(
         &self,
@@ -856,19 +955,7 @@ impl Registry {
         now: i64,
     ) -> Result<Issue> {
         let id = Uuid::new_v4().to_string();
-        // Numbers come from a per-project counter (not MAX(seq)+1) so a
-        // deleted issue's number is never reused. `next` holds the number
-        // to hand out *after* this one, so the row is seeded at 2.
-        self.conn.execute(
-            "INSERT INTO issue_seqs (project_id, next) VALUES (?1, 2)
-             ON CONFLICT(project_id) DO UPDATE SET next = next + 1",
-            [project_id],
-        )?;
-        let seq: i64 = self.conn.query_row(
-            "SELECT next - 1 FROM issue_seqs WHERE project_id = ?1",
-            [project_id],
-            |row| row.get(0),
-        )?;
+        let seq = self.alloc_issue_seq(project_id)?;
         self.conn.execute(
             "INSERT INTO issues (id, project_id, seq, title, body, status, priority, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, ?7)",
@@ -947,10 +1034,7 @@ impl Registry {
     /// whether the status actually changed.
     pub fn advance_issue_status(&self, id: &str, status: IssueStatus, now: i64) -> Result<bool> {
         let Some(current) = self.get_issue(id)? else { return Ok(false) };
-        let (Some(from), Some(to)) = (current.status.rank(), status.rank()) else {
-            return Ok(false);
-        };
-        if from >= to {
+        if !current.status.advances_to(status) {
             return Ok(false);
         }
         self.conn.execute(
@@ -1850,21 +1934,91 @@ mod tests {
     }
 
     #[test]
-    fn workspace_has_no_issue_key_and_backfill_skips_it() {
+    fn workspace_gets_an_issue_key_and_backfill_covers_legacy_rows() {
         let dir = tempdir().unwrap();
         let db = dir.path().join("ws-keys.db");
         {
             let reg = Registry::open(&db).unwrap();
+            // Phase 5: the workspace is in the tracker like any project.
             let ws = reg.ensure_workspace("Workspace", std::path::Path::new("/tmp/ws")).unwrap();
-            assert_eq!(ws.issue_key, None);
+            assert_eq!(ws.issue_key.as_deref(), Some("WOR"));
+            // A pre-Phase-5 workspace row (key-less) simulated by clearing it.
+            reg.conn
+                .execute("UPDATE projects SET issue_key = NULL WHERE id = ?1", [&ws.id])
+                .unwrap();
         }
-        // Reopening runs the backfill — the workspace must stay key-less
-        // (it joins the tracker in Phase 5), while normal key-less rows are
-        // still backfilled.
+        // Reopening runs the backfill — the workspace is included now.
         let reg = Registry::open(&db).unwrap();
-        assert_eq!(reg.get_workspace().unwrap().unwrap().issue_key, None);
+        assert_eq!(reg.get_workspace().unwrap().unwrap().issue_key.as_deref(), Some("WOR"));
         let p = reg.add_project("Zebra", std::path::Path::new("/tmp/z")).unwrap();
         assert_eq!(p.issue_key.as_deref(), Some("ZEB"));
+    }
+
+    // ── issues as files: index helpers ─────────────────────────────────────
+
+    #[test]
+    fn alloc_issue_seq_counts_and_never_reuses() {
+        let dir = tempdir().unwrap();
+        let reg = Registry::open(&dir.path().join("seq.db")).unwrap();
+        assert_eq!(reg.alloc_issue_seq("p1").unwrap(), 1);
+        assert_eq!(reg.alloc_issue_seq("p1").unwrap(), 2);
+        assert_eq!(reg.alloc_issue_seq("p2").unwrap(), 1);
+        // Interleaves with create_issue's numbering.
+        let i = reg.create_issue("p1", "t", "", IssueStatus::Todo, 1).unwrap();
+        assert_eq!(i.seq, 3);
+    }
+
+    #[test]
+    fn ensure_issue_seq_at_least_is_monotonic() {
+        let dir = tempdir().unwrap();
+        let reg = Registry::open(&dir.path().join("seq2.db")).unwrap();
+        // Fresh project: an externally-created AGE-15 pushes the counter past it.
+        reg.ensure_issue_seq_at_least("p1", 15).unwrap();
+        assert_eq!(reg.alloc_issue_seq("p1").unwrap(), 16);
+        // Never lowers.
+        reg.ensure_issue_seq_at_least("p1", 3).unwrap();
+        assert_eq!(reg.alloc_issue_seq("p1").unwrap(), 17);
+    }
+
+    #[test]
+    fn upsert_issue_row_keeps_id_on_update() {
+        let dir = tempdir().unwrap();
+        let reg = Registry::open(&dir.path().join("upsert.db")).unwrap();
+        let issue = Issue {
+            id: "uuid-1".into(),
+            project_id: "p1".into(),
+            seq: 4,
+            title: "First".into(),
+            body: "b".into(),
+            status: IssueStatus::Todo,
+            priority: 1,
+            created_at: 10,
+            updated_at: 10,
+        };
+        let stored = reg.upsert_issue_row(&issue).unwrap();
+        assert_eq!(stored, issue);
+        // Same (project, seq) with a different candidate id: fields follow the
+        // file, the row's id survives.
+        let mut edited = issue.clone();
+        edited.id = "uuid-2".into();
+        edited.title = "Edited".into();
+        edited.status = IssueStatus::Done;
+        edited.updated_at = 20;
+        let stored = reg.upsert_issue_row(&edited).unwrap();
+        assert_eq!(stored.id, "uuid-1");
+        assert_eq!(stored.title, "Edited");
+        assert_eq!(stored.status, IssueStatus::Done);
+        assert_eq!(reg.list_issues("p1").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn issues_migrated_flag_roundtrips() {
+        let dir = tempdir().unwrap();
+        let reg = Registry::open(&dir.path().join("mig.db")).unwrap();
+        let p = reg.add_project("Agency", std::path::Path::new("/tmp/a")).unwrap();
+        assert!(!reg.project_issues_migrated(&p.id).unwrap());
+        reg.mark_issues_migrated(&p.id).unwrap();
+        assert!(reg.project_issues_migrated(&p.id).unwrap());
     }
 
     #[test]

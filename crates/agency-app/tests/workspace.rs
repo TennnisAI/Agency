@@ -15,7 +15,8 @@ fn create_workspace_without_git_is_a_plain_folder_project() {
 
     let ws = state.create_workspace(&loc, false).unwrap();
     assert_eq!(ws.kind.as_deref(), Some("workspace"));
-    assert_eq!(ws.issue_key, None);
+    // Phase 5: the workspace is in the tracker, so it has an issue key.
+    assert!(ws.issue_key.is_some());
     assert!(loc.is_dir(), "the folder is created");
     assert!(matches!(state.inspect_repo(&loc), RepoReadiness::NotARepo));
 

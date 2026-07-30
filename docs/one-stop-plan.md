@@ -355,10 +355,12 @@ P1 workspace ──► P2 search ──► P3 editor ──► P4 palette ──
 - [x] Phase 3 — Quick-open, find-in-files, tabs — *shipped 2026-07-30:
   verification gate green, ship gate passed
   (plan: `docs/superpowers/plans/2026-07-28-one-stop-phase3-editor-gaps.md`)*
-- [ ] Phase 4 — Command palette v2 — *implemented 2026-07-30, verification gate
-  green; manual ship-gate pass pending
+- [x] Phase 4 — Command palette v2 — *shipped 2026-07-30: verification gate
+  green, ship gate passed
   (plan: `docs/superpowers/plans/2026-07-30-one-stop-phase4-command-palette.md`)*
-- [ ] Phase 5 — Issues as files
+- [ ] Phase 5 — Issues as files — *implemented 2026-07-30, verification gate
+  green; manual ship-gate pass pending
+  (plan: `docs/superpowers/plans/2026-07-30-one-stop-phase5-issues-as-files.md`)*
 - [ ] Phase 6 — Tracker depth
 - [ ] Phase 7 — Cross-domain links
 - [ ] Phase 8 — Time / review

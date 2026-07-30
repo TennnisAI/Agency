@@ -3,6 +3,7 @@ pub mod term;
 pub mod files;
 pub mod gh;
 pub mod git;
+pub mod issuefs;
 pub mod loops;
 pub mod mcp;
 pub mod merge;

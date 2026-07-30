@@ -46,7 +46,17 @@ export default function PillSelect<T extends string | number>({
         title={title}
         onClick={openMenu}
       >
-        {current?.label ?? String(value)}
+        {/* Every label is rendered stacked in one grid cell (only the active
+            one visible) so the pill is sized by its widest option and never
+            resizes when the selection changes. */}
+        <span className="filter-pill-labels">
+          {options.map((o) => (
+            <span key={String(o.value)} className={o.value === value ? "on" : ""}>
+              {o.label}
+            </span>
+          ))}
+          {current === undefined && <span className="on">{String(value)}</span>}
+        </span>
         <span className="filter-caret">▾</span>
       </button>
       {open && (

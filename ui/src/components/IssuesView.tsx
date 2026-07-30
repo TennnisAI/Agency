@@ -28,15 +28,19 @@ export default function IssuesView({
   const [confirmDelete, setConfirmDelete] = useState<Issue | null>(null);
   // done/cancelled fold away by default; an open group stays open.
   const [openClosed, setOpenClosed] = useState<Set<string>>(new Set());
+  // Quick-add rests as a + button and expands into an inline input on demand.
+  const [quickOpen, setQuickOpen] = useState(false);
   const quickRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => { setSelectedId(null); setQuick(""); }, [project.id]);
+  useEffect(() => { setSelectedId(null); setQuick(""); setQuickOpen(false); }, [project.id]);
+  useEffect(() => { if (quickOpen) quickRef.current?.focus(); }, [quickOpen]);
 
-  // The palette's "New Issue" lands here: focus quick-add on tab activation.
+  // The palette's "New Issue" lands here: open quick-add on tab activation.
   useEffect(() => {
     if (tab !== "issues") return;
     if (sessionStorage.getItem(PENDING_QUICKADD_KEY)) {
       sessionStorage.removeItem(PENDING_QUICKADD_KEY);
+      setQuickOpen(true);
       quickRef.current?.focus();
     }
   }, [tab]);
@@ -195,6 +199,7 @@ export default function IssuesView({
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       if (e.key === "c") {
         e.preventDefault();
+        setQuickOpen(true);
         quickRef.current?.focus();
       } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
         if (visible.length === 0) return;
@@ -220,17 +225,30 @@ export default function IssuesView({
   return (
     <div className="issues-wrap">
       <div className="issues-main">
-        <div className="issues-quickadd">
+        <div className={`issues-quickadd${quickOpen ? " open" : ""}`}>
+          <button
+            className="quickadd-toggle"
+            title={quickOpen ? "Close" : "Add an issue (c)"}
+            onClick={() => { setQuick(""); setQuickOpen((o) => !o); }}
+          >
+            +
+          </button>
           <input
             ref={quickRef}
-            className="settings-input"
+            className="quickadd-input"
             placeholder="Add an issue…  (Enter → Todo, Shift+Enter → Backlog)"
             value={quick}
+            tabIndex={quickOpen ? 0 : -1}
             onChange={(e) => setQuick(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter") add(e.shiftKey ? "backlog" : "todo");
-              if (e.key === "Escape") (e.target as HTMLInputElement).blur();
+              if (e.key === "Escape") {
+                setQuick("");
+                setQuickOpen(false);
+                (e.target as HTMLInputElement).blur();
+              }
             }}
+            onBlur={() => { if (!quick.trim()) setQuickOpen(false); }}
           />
         </div>
         {loaded && issues.length === 0 ? (

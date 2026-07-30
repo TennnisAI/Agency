@@ -1611,7 +1611,32 @@ input, textarea, code,
 /* ── issues (the local per-project tracker) ──────────────────────────────── */
 .issues-wrap { flex: 1; display: flex; min-height: 0; }
 .issues-main { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
-.issues-quickadd { padding: 12px 16px 4px; }
+/* Quick capture rests as a + button; clicking swings it 45° (to an ×) and
+   the input unfolds beside it — no box, just a hairline underline. */
+.issues-quickadd { padding: 12px 16px 4px; display: flex; align-items: center; gap: 8px; }
+.quickadd-toggle {
+  width: 26px; height: 26px; border-radius: 50%; flex-shrink: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: transparent; border: 1px solid var(--s1); color: var(--o1);
+  cursor: pointer; font-family: var(--sans); font-size: 15px; line-height: 1;
+  transition: transform .18s ease, background .15s ease, color .15s ease;
+}
+.quickadd-toggle:hover { background: var(--s0); color: var(--text); }
+.issues-quickadd.open .quickadd-toggle { transform: rotate(45deg); }
+.quickadd-input {
+  flex: 1; min-width: 0; max-width: 0; opacity: 0; pointer-events: none;
+  background: transparent; border: 0; border-radius: 0;
+  border-bottom: 1px solid transparent;
+  color: var(--text); font-family: var(--sans); font-size: 13px;
+  padding: 4px 2px 5px; outline: none;
+  transition: max-width .25s ease, opacity .18s ease, border-color .15s ease;
+}
+.issues-quickadd.open .quickadd-input {
+  max-width: 720px; opacity: 1; pointer-events: auto;
+  border-bottom-color: var(--s1);
+}
+.quickadd-input:focus { border-bottom-color: var(--o1); }
+.quickadd-input::placeholder { color: var(--o0); }
 .issues-list { flex: 1; overflow-y: auto; padding: 8px 16px 24px; }
 
 .issue-group { margin-top: 10px; }
@@ -1795,6 +1820,15 @@ input, textarea, code,
 .filter-pill:hover { background: var(--s0); color: var(--text); }
 .filter-pill.active { background: var(--s0); color: var(--text); }
 .filter-caret { color: var(--o0); font-size: 9px; }
+/* All option labels occupy the same grid cell; only the active one is
+   visible. The pill is therefore as wide as its widest option and stays
+   put when the selection changes (no filter-bar reflow). */
+.filter-pill-labels { display: grid; max-width: 170px; }
+.filter-pill-labels > span {
+  grid-area: 1 / 1; visibility: hidden; text-align: left;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.filter-pill-labels > span.on { visibility: visible; }
 .filter-menu { max-height: min(420px, 70vh); overflow-y: auto; }
 
 /* Today: the day's slice gets the one card on the page, so it reads as the

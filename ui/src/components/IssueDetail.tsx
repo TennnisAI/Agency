@@ -1,13 +1,92 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Issue, IssuePatch, RunInfo } from "../api";
 import { runName } from "../agents";
-import { ISSUE_STATUSES, PRIORITY_LABELS, STATUS_LABELS } from "../lib/issues";
+import { ISSUE_STATUSES, PRIORITY_LABELS, STATUS_LABELS, fmtDate, isOverdue } from "../lib/issues";
+import { dateStamp } from "../lib/dailyNote";
 import { PriorityGlyph, StatusDot } from "./IssueRow";
 
 function ts(secs: number): string {
   return new Date(secs * 1000).toLocaleString(undefined, {
     month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
   });
+}
+
+// A date as a quiet property pill: reads as text ("◷ Due Aug 1"), the click
+// opens the calendar picker (an invisible date input carries the value — the
+// segmented mm/dd/yyyy control never shows). Unset renders a ghost prompt;
+// clearing is the ✕ that appears once a date is set.
+function DateProp({
+  glyph,
+  label,
+  value,
+  overdue,
+  onChange,
+}: {
+  glyph: string;
+  label: string;
+  value: string | null;
+  overdue?: boolean;
+  onChange: (v: string | null) => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const today = dateStamp(new Date());
+  // Without showPicker (older WebKit) the invisible-input trick would leave
+  // the pill inert — fall back to the plain segmented control there.
+  const canPick = "showPicker" in HTMLInputElement.prototype;
+
+  const openPicker = () => {
+    const el = inputRef.current;
+    if (!el) return;
+    try {
+      (el as HTMLInputElement & { showPicker?: () => void }).showPicker?.();
+    } catch {
+      el.focus();
+    }
+  };
+
+  if (!canPick) {
+    return (
+      <input
+        className="date-input-fallback"
+        type="date"
+        title={label}
+        value={value ?? ""}
+        onChange={(e) => onChange(e.target.value || null)}
+      />
+    );
+  }
+
+  return (
+    <span
+      className={`issue-prop-pill date-pill${value ? "" : " date-empty"}${overdue ? " overdue" : ""}`}
+      role="button"
+      tabIndex={0}
+      title={value ? `${label} ${value} — click to change` : `Set ${label.toLowerCase()} date`}
+      onClick={openPicker}
+      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openPicker(); } }}
+    >
+      <span aria-hidden>{glyph}</span>
+      {value ? `${label} ${fmtDate(value, today)}` : label}
+      {value && (
+        <button
+          className="date-clear"
+          title={`Clear ${label.toLowerCase()} date`}
+          onClick={(e) => { e.stopPropagation(); onChange(null); }}
+        >
+          ✕
+        </button>
+      )}
+      <input
+        ref={inputRef}
+        className="date-input-hidden"
+        type="date"
+        tabIndex={-1}
+        aria-hidden
+        value={value ?? ""}
+        onChange={(e) => onChange(e.target.value || null)}
+      />
+    </span>
+  );
 }
 
 // Right-hand detail pane of the Issues view. Title/body commit on blur (and
@@ -104,25 +183,19 @@ export default function IssueDetail({
           <PriorityGlyph priority={issue.priority} />
           {PRIORITY_LABELS[issue.priority]}
         </button>
-      </div>
-
-      <div className="issue-detail-dates">
-        <label>
-          <span>Due</span>
-          <input
-            type="date"
-            value={issue.due ?? ""}
-            onChange={(e) => onPatch({ due: e.target.value || null })}
-          />
-        </label>
-        <label>
-          <span>Scheduled</span>
-          <input
-            type="date"
-            value={issue.scheduled ?? ""}
-            onChange={(e) => onPatch({ scheduled: e.target.value || null })}
-          />
-        </label>
+        <DateProp
+          glyph="◷"
+          label="Due"
+          value={issue.due}
+          overdue={isOverdue(issue, dateStamp(new Date()))}
+          onChange={(due) => onPatch({ due })}
+        />
+        <DateProp
+          glyph="⧖"
+          label="Scheduled"
+          value={issue.scheduled}
+          onChange={(scheduled) => onPatch({ scheduled })}
+        />
       </div>
 
       {menu && (

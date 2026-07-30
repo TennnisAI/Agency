@@ -1725,31 +1725,75 @@ input, textarea, code,
 .issue-row.drop-above { box-shadow: 0 -2px 0 0 var(--blue); border-radius: 0 0 7px 7px; }
 .issue-row.drop-below { box-shadow: 0 2px 0 0 var(--blue); border-radius: 7px 7px 0 0; }
 
-/* Detail pane date editors */
-.issue-detail-dates { display: flex; gap: 10px; }
-.issue-detail-dates label {
-  flex: 1; display: flex; flex-direction: column; gap: 3px;
-  font-size: 11px; color: var(--o1);
+/* Detail pane date props: text-quiet pills; the real date input is invisible
+   and only exists to host the calendar picker (showPicker on click). */
+.issue-prop-pill.date-pill { position: relative; }
+.issue-prop-pill.date-empty { color: var(--o0); background: transparent; border-color: var(--s1); border-style: dashed; }
+.issue-prop-pill.date-empty:hover { color: var(--o1); background: var(--s0); }
+.issue-prop-pill.date-pill.overdue { color: var(--red); }
+.date-input-hidden {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  opacity: 0; pointer-events: none; border: 0; padding: 0;
 }
-.issue-detail-dates input[type="date"] {
-  background: var(--s0); border: 1px solid transparent; border-radius: 7px;
+.date-clear {
+  background: transparent; border: 0; padding: 0 0 0 2px; margin-right: -3px;
+  color: var(--o0); cursor: pointer; font-size: 10px; line-height: 1;
+}
+.date-clear:hover { color: var(--text); }
+/* Only rendered when the webview has no showPicker() to anchor a calendar. */
+.date-input-fallback {
+  background: var(--s0); border: 1px solid transparent; border-radius: 999px;
   color: var(--text); font-family: var(--sans); font-size: 12px;
-  padding: 4px 8px; outline: none;
+  padding: 4px 10px; outline: none;
 }
-.issue-detail-dates input[type="date"]:hover,
-.issue-detail-dates input[type="date"]:focus { background: var(--s1); }
+.date-input-fallback:hover, .date-input-fallback:focus { background: var(--s1); }
 
 /* Home overview, issues mode */
 .home-issues { display: flex; flex-direction: column; padding: 2px 4px 6px; }
 .issue-row.home-issue .issue-status-pill { visibility: visible; }
 
-/* Cross-project board: filter bar + Today */
-.issues-filterbar {
-  display: flex; gap: 8px; align-items: center; margin: 4px 0 14px;
+/* Cross-project board: one 28px-tall row — search pill left, filter pills
+   right, everything the same height and radius so nothing towers. */
+.issues-filterbar { display: flex; gap: 6px; align-items: center; margin: 2px 0 18px; }
+.issues-filterbar .spacer { flex: 1; }
+.filter-search {
+  display: inline-flex; align-items: center; gap: 7px;
+  flex: 1; min-width: 160px; max-width: 340px; height: 28px; padding: 0 11px;
+  border-radius: 999px; background: var(--s0); border: 1px solid transparent;
 }
-.issues-filterbar input { flex: 1; min-width: 160px; }
-.issues-filterbar select { width: auto; flex-shrink: 0; }
-.today-head { display: flex; align-items: center; gap: 8px; cursor: default; }
+.filter-search:focus-within { border-color: var(--s1); }
+.filter-search-glyph { color: var(--o0); font-size: 13px; }
+.filter-search input {
+  flex: 1; min-width: 0; background: transparent; border: 0; outline: none;
+  color: var(--text); font-family: var(--sans); font-size: 12px;
+}
+.filter-search input::placeholder { color: var(--o0); }
+.filter-clear {
+  background: transparent; border: 0; padding: 0; color: var(--o0);
+  cursor: pointer; font-size: 10px; line-height: 1;
+}
+.filter-clear:hover { color: var(--text); }
+.filter-pill {
+  display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0;
+  height: 28px; padding: 0 10px 0 12px; border-radius: 999px;
+  background: transparent; border: 1px solid var(--s1);
+  color: var(--o1); font-family: var(--sans); font-size: 12px; cursor: pointer;
+}
+.filter-pill:hover { background: var(--s0); color: var(--text); }
+.filter-pill.active { background: var(--s0); color: var(--text); }
+.filter-caret { color: var(--o0); font-size: 9px; }
+.filter-menu { max-height: min(420px, 70vh); overflow-y: auto; }
+
+/* Today: the day's slice gets the one card on the page, so it reads as the
+   place to look first — and it's always there, even when it's empty. */
+.today-group {
+  border: 1px solid var(--line); background: var(--mantle);
+  border-radius: 12px; padding: 8px 12px 8px; margin-bottom: 18px;
+}
+.today-head { display: flex; align-items: baseline; gap: 10px; padding: 2px 4px 4px; }
+.today-title { font-size: 13px; font-weight: 700; }
+.today-meta { color: var(--o0); font-size: 11.5px; }
+.today-empty { color: var(--o0); font-size: 12.5px; padding: 2px 4px 6px; }
 
 /* ── Docs tab ─────────────────────────────────────────────────── */
 .docs-empty { flex-direction: column; gap: 10px; text-align: center; padding: 40px; }

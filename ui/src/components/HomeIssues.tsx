@@ -31,6 +31,7 @@ import IssueRow from "./IssueRow";
 import ConfirmDialog from "./ConfirmDialog";
 import RepoSetupDialog from "./RepoSetupDialog";
 import InstallAgentDialog from "./InstallAgentDialog";
+import PillSelect from "./PillSelect";
 import { Stat } from "./HomeView";
 
 type StatusFilter = "open" | IssueStatus;
@@ -207,56 +208,82 @@ export default function HomeIssues({
       </div>
 
       <div className="issues-filterbar">
-        <input
-          className="settings-input"
-          placeholder="Search issues…"
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Escape") (e.target as HTMLInputElement).blur(); }}
+        <span className="filter-search">
+          <span className="filter-search-glyph">⌕</span>
+          <input
+            placeholder="Search issues…"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Escape") (e.target as HTMLInputElement).blur(); }}
+          />
+          {q && (
+            <button className="filter-clear" title="Clear search" onClick={() => setQ("")}>✕</button>
+          )}
+        </span>
+        <div className="spacer" />
+        <PillSelect<StatusFilter>
+          value={fStatus}
+          defaultValue="open"
+          title="Status"
+          onChange={setFStatus}
+          options={[
+            { value: "open", label: "Open" },
+            ...ISSUE_STATUSES.map((s) => ({ value: s, label: STATUS_LABELS[s] })),
+          ]}
         />
-        <select className="settings-input" value={fStatus} onChange={(e) => setFStatus(e.target.value as StatusFilter)}>
-          <option value="open">Open</option>
-          {ISSUE_STATUSES.map((s) => (
-            <option key={s} value={s}>{STATUS_LABELS[s]}</option>
-          ))}
-        </select>
-        <select className="settings-input" value={fPriority} onChange={(e) => setFPriority(Number(e.target.value))}>
-          <option value={-1}>Any priority</option>
-          {PRIORITY_LABELS.map((p, n) => (
-            <option key={p} value={n}>{p}</option>
-          ))}
-        </select>
-        <select className="settings-input" value={fProject} onChange={(e) => setFProject(e.target.value)}>
-          <option value="">All projects</option>
-          {projects.map((p) => (
-            <option key={p.id} value={p.id}>{p.name}</option>
-          ))}
-        </select>
-        <select className="settings-input" value={sort} onChange={(e) => setSort(e.target.value as Sort)}>
-          <option value="board">Board order</option>
-          <option value="due">Due date</option>
-          <option value="updated">Recently updated</option>
-        </select>
+        <PillSelect
+          value={fPriority}
+          defaultValue={-1}
+          title="Priority"
+          onChange={setFPriority}
+          options={[
+            { value: -1, label: "Any priority" },
+            ...PRIORITY_LABELS.map((p, n) => ({ value: n, label: p })),
+          ]}
+        />
+        <PillSelect
+          value={fProject}
+          defaultValue=""
+          title="Project"
+          onChange={setFProject}
+          options={[
+            { value: "", label: "All projects" },
+            ...projects.map((p) => ({ value: p.id, label: p.name })),
+          ]}
+        />
+        <PillSelect<Sort>
+          value={sort}
+          defaultValue="board"
+          title="Sort"
+          onChange={setSort}
+          options={[
+            { value: "board", label: "Board order" },
+            { value: "due", label: "Due date" },
+            { value: "updated", label: "Recently updated" },
+          ]}
+        />
       </div>
 
-      {todays.length > 0 && (
-        <section className="home-group">
-          <div className="home-group-head">
-            <span className="home-group-title today-head">
-              <span className="home-group-name">Today</span>
-              <span className="home-group-meta">
-                due, scheduled, or in progress · {todays.length}
-              </span>
-            </span>
-          </div>
+      <section className="today-group">
+        <div className="today-head">
+          <span className="today-title">Today</span>
+          <span className="today-meta">
+            {todays.length === 0
+              ? "due, scheduled, and in-progress issues land here"
+              : `${todays.length} to work on`}
+          </span>
+        </div>
+        {todays.length === 0 ? (
+          <div className="today-empty">Nothing due or in progress. Set a due date to plan your day.</div>
+        ) : (
           <div className="home-issues">
             {todays.map((issue) => {
               const p = byProject.get(issue.projectId);
               return p ? row(p, issue) : null;
             })}
           </div>
-        </section>
-      )}
+        )}
+      </section>
 
       {shownCount === 0 && filtered && (
         <div className="board empty">No issues match the current filters.</div>

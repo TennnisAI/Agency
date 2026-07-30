@@ -102,10 +102,12 @@ export default function IssuesView({
 
   // Manual reorder: HTML5 drag within a status group; the drop maps to a
   // rank plan (materialize / midpoint / renormalize — see lib/issueRank).
-  const [drag, setDrag] = useState<{ status: IssueStatus; from: number; to: number | null } | null>(null);
+  // The drag source lives in a ref, not state — a re-render during dragstart
+  // aborts the native drag in WebKit; only the drop indicator is state.
+  const dragSrc = useRef<{ status: IssueStatus; from: number } | null>(null);
+  const [dragOver, setDragOver] = useState<{ status: IssueStatus; from: number; to: number } | null>(null);
 
   async function dropReorder(group: Issue[], from: number, to: number) {
-    setDrag(null);
     const plan = planReorder(group.map((i) => ({ id: i.id, rank: i.rank })), from, to);
     if (plan.length === 0) return;
     try {
@@ -214,25 +216,33 @@ export default function IssuesView({
                       onDelete={() => setConfirmDelete(issue)}
                       drag={{
                         over:
-                          drag && drag.status === status && drag.to === idx && drag.from !== idx
-                            ? (drag.to > drag.from ? "below" : "above")
+                          dragOver && dragOver.status === status && dragOver.to === idx && dragOver.from !== idx
+                            ? (dragOver.to > dragOver.from ? "below" : "above")
                             : null,
                         onStart: (e) => {
+                          // WebKit refuses to start a drag with no payload.
+                          e.dataTransfer.setData("text/plain", issueLabel(project, issue));
                           e.dataTransfer.effectAllowed = "move";
-                          setDrag({ status, from: idx, to: null });
+                          dragSrc.current = { status, from: idx };
                         },
                         onOver: (e) => {
-                          if (!drag || drag.status !== status) return;
+                          const src = dragSrc.current;
+                          if (!src || src.status !== status) return;
                           e.preventDefault();
                           e.dataTransfer.dropEffect = "move";
-                          if (drag.to !== idx) setDrag({ ...drag, to: idx });
+                          if (!dragOver || dragOver.status !== status || dragOver.to !== idx) {
+                            setDragOver({ status, from: src.from, to: idx });
+                          }
                         },
                         onDrop: (e) => {
-                          if (!drag || drag.status !== status) return;
+                          const src = dragSrc.current;
+                          dragSrc.current = null;
+                          setDragOver(null);
+                          if (!src || src.status !== status) return;
                           e.preventDefault();
-                          dropReorder(group, drag.from, idx);
+                          dropReorder(group, src.from, idx);
                         },
-                        onEnd: () => setDrag(null),
+                        onEnd: () => { dragSrc.current = null; setDragOver(null); },
                       }}
                     />
                   ))}

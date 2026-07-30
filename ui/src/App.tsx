@@ -16,6 +16,7 @@ import { useShortcuts } from "./hooks/useShortcuts";
 import { usePaneWidth } from "./hooks/usePaneWidth";
 import { FileRoot, Project, RunInfo, agentOnboardingNeeded, archiveRun, checkForUpdate, confirmQuit, createDir, createFile, discardRun, getUpdateCheckEnabled, getWorkspace, inspectRepo, listProjects, readFile, setMenuContext, setUiState, writeFile } from "./api";
 import { pickDefaultAgent } from "./lib/defaultAgent";
+import { PENDING_QUICKADD_KEY } from "./lib/issues";
 import { DAILY_TEMPLATE_PATH, JOURNAL_DIR, dailyNotePath, defaultDailyContent, renderDailyTemplate } from "./lib/dailyNote";
 import { toastError, toastInfo } from "./lib/toast";
 import { workspaceHidden } from "./lib/workspacePref";
@@ -193,6 +194,13 @@ function Shell() {
       case "clone-project": window.dispatchEvent(new CustomEvent("agency:clone-project")); break;
       case "source": setTab("source"); break;
       case "daily-note": openDailyNote(); break;
+      // Palette-only actions (no native-menu counterpart) share this router so
+      // every palette command goes through exactly one switch.
+      case "new-issue": sessionStorage.setItem(PENDING_QUICKADD_KEY, "1"); setTab("issues"); break;
+      case "go-agents": setTab("agents"); break;
+      case "go-issues": setTab("issues"); break;
+      case "go-docs": setTab("docs"); break;
+      case "go-files": setTab("files"); break;
       case "toggle-sidebar": setSidebarOpen((s) => !s); break;
       case "home": goHome(); break;
       case "approve": {
@@ -317,7 +325,14 @@ function Shell() {
       </div>
       <StatusBar projectName={project?.name ?? null} focusedRunId={focusedRunId} />
       <Toasts />
-      {paletteOpen && <CommandPalette onClose={() => setPaletteOpen(false)} />}
+      {paletteOpen && (
+        <CommandPalette
+          onClose={() => setPaletteOpen(false)}
+          onAction={(id) => menuRef.current(id)}
+          onOpenProject={selectProject}
+          onOpenRun={(p, runId) => openRun(p, runId)}
+        />
+      )}
       {agentAction && (
         <ConfirmDialog
           title={agentAction.kind === "archive" ? "Archive agent?" : "Discard agent?"}

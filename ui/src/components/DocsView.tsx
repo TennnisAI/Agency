@@ -12,6 +12,7 @@ import ConfirmDialog from "./ConfirmDialog";
 import { toastError } from "../lib/toast";
 import { joinPath } from "../lib/filePath";
 import { adjacentDailyPath, isDailyNotePath } from "../lib/dailyNote";
+import { recordActivation } from "../lib/recency";
 
 const lastNoteKey = (projectId: string) => `docs:last:${projectId}`;
 
@@ -51,6 +52,11 @@ export default function DocsView({ project }: { project: Project }) {
       if (path) localStorage.setItem(lastNoteKey(project.id), path);
       else localStorage.removeItem(lastNoteKey(project.id));
     } catch { /* storage unavailable */ }
+    // Feed the palette's recents. Only user-driven opens land here — the
+    // last-note restore uses setSelectedState directly and stays silent.
+    if (path) {
+      recordActivation(`note:${project.id}:${path}`, index?.docs.get(path)?.title ?? path, path);
+    }
   };
 
   // Reset on project switch; the last-open note is restored once the index has

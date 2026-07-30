@@ -94,12 +94,12 @@
 - [x] `QuickOpen.tsx`: palette-style modal (reuse `palette-overlay/palette/palette-input/palette-list/palette-row` classes + `useModalKeys` + arrow/Enter navigation à la `DocsQuickSwitcher`); on mount `listFiles(root, "", 20000)`; rows = `fuzzyFilter` capped at 50 (empty query: first 50 alphabetically); row = file icon + basename + dimmed dir; Enter/click → `onOpen(path)`.
 - [x] `AgentsView.tsx`: ⌘P keydown (no shift/alt, `project && tab !== "docs"`) toggles QuickOpen with the same root FilesView derives (focused run else project); `onOpen` → `setTab("files")` + `requestOpenFile({ path })`.
 - [x] `FilesView.tsx`: listen for `agency:open-file` + consume pending on mount/root-switch → `openAtLine`.
-- [ ] Manual check: ⌘P in Docs still opens the note switcher; ⌘P on Agents/Issues/Source/Files opens quick-open; ⌘K palette unaffected.
+- [x] Manual check: ⌘P in Docs still opens the note switcher; ⌘P on Agents/Issues/Source/Files opens quick-open; ⌘K palette unaffected.
 
 ### Task 7: verification + ship gate
 
 - [x] `cargo test`, `tsc --noEmit`, `vite build`, `vitest run` all green.
-- [ ] Ship gate (dev app): open 5 files in tabs, edit two, switch roots and back — dirty state and active tab survive; find-in-files jumps to the exact line; ⌘P works from every tab of a project and still does the Docs switcher inside Docs; 11th open evicts a clean tab, never a dirty one.
-- [ ] Update `docs/one-stop-plan.md` status line.
+- [x] Ship gate (dev app): open 5 files in tabs, edit two, switch roots and back — dirty state and active tab survive; find-in-files jumps to the exact line; ⌘P works from every tab of a project and still does the Docs switcher inside Docs; 11th open evicts a clean tab, never a dirty one.
+- [x] Update `docs/one-stop-plan.md` status line (done alongside Phase 4).
 
 **Non-goals (resist):** palette providers / `/` content search in ⌘K (Phase 4), search options UI (regex/case/globs), context lines in results, recency-weighted quick-open ranking (Phase 4's activation store), drag-to-reorder tabs, split editors, issue-model fields.

@@ -222,7 +222,7 @@ export default function AgentsView({
 
           {tab === "files" && (
             <div className="source-wrap">
-              <FilesView root={filesRoot} projectName={project.name} />
+              <FilesView root={filesRoot} projectId={project.id} projectName={project.name} />
             </div>
           )}
 

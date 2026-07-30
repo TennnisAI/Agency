@@ -1,17 +1,17 @@
 import { fuzzyScore } from "./fuzzy";
 
 export interface PaletteEntry {
-  kind: "project" | "run" | "action";
+  kind: string;
   id: string;
   projectId: string;
   label: string;
   sublabel: string;
 }
 
-export function filterEntries(query: string, entries: PaletteEntry[]): PaletteEntry[] {
+export function filterEntries<T extends PaletteEntry>(query: string, entries: T[]): T[] {
   const q = query.trim().toLowerCase();
   if (!q) return entries;
-  const scored: { e: PaletteEntry; score: number }[] = [];
+  const scored: { e: T; score: number }[] = [];
   for (const e of entries) {
     const label = e.label.toLowerCase();
     const sub = e.sublabel.toLowerCase();

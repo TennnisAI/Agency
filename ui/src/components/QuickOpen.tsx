@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { FileRoot, listFiles } from "../api";
 import { fuzzyFilter } from "../lib/fuzzy";
+import { useListNav } from "../hooks/useListNav";
 import { useModalKeys } from "../hooks/useModalKeys";
 import { baseName, parentPath } from "../lib/filePath";
 import { fileIcon } from "../lib/fileIcon";
@@ -19,7 +20,6 @@ export default function QuickOpen({
   onClose: () => void;
 }) {
   const [query, setQuery] = useState("");
-  const [hi, setHi] = useState(0);
   const [files, setFiles] = useState<string[] | null>(null);
   const [failed, setFailed] = useState(false);
   useModalKeys(onClose);
@@ -44,19 +44,7 @@ export default function QuickOpen({
     onOpen(path);
     onClose();
   };
-
-  function onKey(ev: React.KeyboardEvent) {
-    if (ev.key === "ArrowDown") {
-      ev.preventDefault();
-      setHi((h) => (rows.length === 0 ? 0 : Math.min(h + 1, rows.length - 1)));
-    } else if (ev.key === "ArrowUp") {
-      ev.preventDefault();
-      setHi((h) => Math.max(h - 1, 0));
-    } else if (ev.key === "Enter") {
-      ev.preventDefault();
-      if (rows[hi]) activate(rows[hi]);
-    }
-  }
+  const { hi, setHi, onKey } = useListNav(rows.length, (i) => activate(rows[i]), query);
 
   return (
     <div className="palette-overlay" onClick={onClose}>
@@ -66,7 +54,7 @@ export default function QuickOpen({
           autoFocus
           placeholder="Go to file…"
           value={query}
-          onChange={(e) => { setQuery(e.target.value); setHi(0); }}
+          onChange={(e) => setQuery(e.target.value)}
           onKeyDown={onKey}
         />
         <ul className="palette-list">

@@ -13,10 +13,17 @@ import {
 import { bufferKey, dropBuffer, hasBuffer, stashBuffer, takeBuffer } from "../lib/editorBuffers";
 import { consumePendingOpen, onOpenFile } from "../lib/openFile";
 import { baseName } from "../lib/filePath";
+import { recordActivation } from "../lib/recency";
 
 const tabsKey = (root: FileRoot) => `files:tabs:${root.kind}:${root.id}`;
 
-export default function FilesView({ root, projectName }: { root: FileRoot | null; projectName: string }) {
+export default function FilesView({ root, projectId, projectName }: {
+  root: FileRoot | null;
+  // Owning project even when `root` is a run worktree — recency keys need it
+  // so the palette can reopen the file later (it selects the project first).
+  projectId: string;
+  projectName: string;
+}) {
   const treePane = usePaneWidth("files-tree", 280, 180, 560);
   // Tab state travels WITH the root key it belongs to. The persistence effect
   // below only writes when the state's own key matches the rendered root, so
@@ -84,6 +91,8 @@ export default function FilesView({ root, projectName }: { root: FileRoot | null
   const openAtLine = (path: string, line?: number) => {
     updateTabs((s) => openTab(s, path));
     setWarm((w) => (w.has(path) ? w : new Set(w).add(path)));
+    // Tab restores don't come through here, so recents stay user-driven.
+    recordActivation(`file:${projectId}:${path}`, baseName(path), path);
     if (line !== undefined) {
       // Best-effort, same convention as DocsView heading jumps: give a fresh
       // editor a beat to mount and load before scrolling.

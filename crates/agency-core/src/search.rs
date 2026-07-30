@@ -229,6 +229,20 @@ fn list_files(root: &Path) -> Vec<String> {
     git_files(root).unwrap_or_else(|| walk_files(root))
 }
 
+/// Ceiling on names returned by [`list_root_files`], whatever the caller asks.
+const MAX_LIST_FILES: usize = 20_000;
+
+/// Sorted relative file paths under `root`, for quick-open. Same file set as
+/// the fallback search engine: `git ls-files` semantics in a repo (gitignore
+/// respected, untracked included), bounded walk elsewhere; hidden files
+/// dropped either way. Truncated to `max` (itself capped) — quick-open is
+/// best-effort name matching, not an exhaustive listing.
+pub fn list_root_files(root: &Path, max: usize) -> Vec<String> {
+    let mut files = list_files(root);
+    files.truncate(max.min(MAX_LIST_FILES));
+    files
+}
+
 fn git_files(root: &Path) -> Option<Vec<String>> {
     let out = Command::new("git")
         .args(["ls-files", "-z", "--cached", "--others", "--exclude-standard"])
@@ -429,6 +443,36 @@ mod tests {
         assert!(paths.contains(&"tracked.txt".to_string()));
         assert!(paths.contains(&"untracked.txt".to_string()), "untracked-not-ignored is searchable");
         assert!(!paths.contains(&"ignored.txt".to_string()), "gitignored files are not");
+    }
+
+    #[test]
+    fn list_root_files_sorted_skips_hidden_and_truncates() {
+        let dir = fixture();
+        let files = list_root_files(dir.path(), 100);
+        assert_eq!(files, vec!["a.md", "bin.dat", "src/lib.rs"], "sorted, hidden dropped");
+        assert_eq!(list_root_files(dir.path(), 2), vec!["a.md", "bin.dat"], "truncated to max");
+    }
+
+    #[test]
+    fn list_root_files_respects_gitignore() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let git = |args: &[&str]| {
+            assert!(Command::new("git").args(args).current_dir(root).output().unwrap().status.success());
+        };
+        git(&["init", "-q"]);
+        std::fs::write(root.join(".gitignore"), "ignored.txt\n").unwrap();
+        std::fs::write(root.join("tracked.txt"), "t\n").unwrap();
+        std::fs::write(root.join("ignored.txt"), "i\n").unwrap();
+        std::fs::write(root.join("untracked.txt"), "u\n").unwrap();
+        git(&["config", "user.email", "t@t"]);
+        git(&["config", "user.name", "t"]);
+        git(&["add", "tracked.txt"]);
+
+        let files = list_root_files(root, 100);
+        assert!(files.contains(&"tracked.txt".to_string()));
+        assert!(files.contains(&"untracked.txt".to_string()));
+        assert!(!files.contains(&"ignored.txt".to_string()));
     }
 
     #[test]

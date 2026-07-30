@@ -66,12 +66,19 @@ export default function ProjectTree({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Guarded against out-of-order responses: back-to-back refreshes (e.g. the
+  // workspace toggle fires one before and one after the backend settles) must
+  // not let a stale project list land last and hide a just-revived row.
+  const refreshSeq = useRef(0);
   async function refresh() {
+    const seq = ++refreshSeq.current;
     const ps = await listProjects();
+    if (seq !== refreshSeq.current) return;
     setProjects(ps);
     const entries = await Promise.all(
       ps.map(async (p) => [p.id, await inspectRepo(p.repo_path).catch(() => null)] as const),
     );
+    if (seq !== refreshSeq.current) return;
     setReadiness(Object.fromEntries(entries.filter(([, r]) => r) as [string, RepoReadiness][]));
   }
   useEffect(() => { refresh(); }, []);

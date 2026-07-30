@@ -261,6 +261,7 @@ pub fn run() {
             commands::docs_corpus_stats,
             commands::read_docs_files,
             commands::search_files,
+            commands::list_files,
             commands::write_file_base64,
             commands::confirm_quit,
             commands::agent_installed,

@@ -19,6 +19,12 @@ describe("filterEntries", () => {
     const r = filterEntries("senba", E);
     expect(r.map((e) => e.id)).toContain("p1");
   });
+  it("matches in-order subsequences as the weakest tier", () => {
+    const r = filterEntries("ftb", E); // f…t…b in "claude: fix the bug"
+    expect(r.map((e) => e.id)).toEqual(["r1"]);
+    const mixed = filterEntries("se", E); // "Senba" sublabel-substring beats any subsequence
+    expect(mixed[0].id).toBe("p1");
+  });
   it("orders label-prefix matches before substring matches", () => {
     const entries: PaletteEntry[] = [
       { kind: "run", id: "a", projectId: "p", label: "refactor parser", sublabel: "agent/a" },

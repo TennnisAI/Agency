@@ -1730,6 +1730,22 @@ pub async fn search_files(
     agency_core::search::search_files(&target, &query).map_err(|e| e.to_string())
 }
 
+/// Sorted relative file paths under `dir` within a root — quick-open's name
+/// list (one-stop Phase 3). Same file set as the fallback search engine:
+/// gitignore respected in repos, bounded walk elsewhere. Async like
+/// search_files: listing a big tree must not wedge the IPC thread.
+#[tauri::command]
+pub async fn list_files(
+    state: State<'_, AppState>,
+    root: FileRoot,
+    dir: String,
+    max_files: usize,
+) -> Result<Vec<String>, String> {
+    let base = resolve_root(&state, &root)?;
+    let target = agency_core::files::abs_path(&base, &dir).map_err(|e| e.to_string())?;
+    Ok(agency_core::search::list_root_files(&target, max_files))
+}
+
 /// Write base64-decoded bytes to a new file (refuses to clobber). Used for
 /// pasting images into docs notes.
 #[tauri::command]

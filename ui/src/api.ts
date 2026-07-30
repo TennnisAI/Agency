@@ -955,6 +955,11 @@ export interface BackendSearchHit {
 export const searchFiles = (root: FileRoot, dir: string, query: SearchQuery) =>
   invoke<BackendSearchHit[]>("search_files", { root, dir, query });
 
+// Sorted relative file paths under `dir` — quick-open's name list. Same file
+// set as the search fallback (gitignore respected in repos), capped backend-side.
+export const listFiles = (root: FileRoot, dir: string, maxFiles: number) =>
+  invoke<string[]>("list_files", { root, dir, maxFiles });
+
 // Write base64 bytes to a NEW file (fails on an existing path). For image paste.
 export const writeFileBase64 = (root: FileRoot, relPath: string, b64: string) =>
   invoke<void>("write_file_base64", { root, relPath, b64 });

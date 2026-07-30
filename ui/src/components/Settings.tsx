@@ -550,6 +550,9 @@ export default function Settings({
   // it via the idempotent create_workspace.
   const [wsOff, setWsOff] = useState(workspaceHidden());
   async function toggleWorkspaceVisible(show: boolean) {
+    // Flip the pref (and this Toggle) immediately — the pinned row is gated on
+    // the pref alone, so hiding is instant even while close_project is still
+    // killing sessions.
     setWorkspaceHidden(!show);
     setWsOff(!show);
     try {
@@ -558,7 +561,16 @@ export default function Settings({
         if (show) await createWorkspace(ws.repo_path, false);
         else await closeProject(ws.id);
       }
+      // Re-fire the pref event now that the row's closed state has settled.
+      // The first event races the backend call by design (instant hide); this
+      // one makes ProjectTree refetch a list that finally includes the revived
+      // workspace — without it, re-enabling looked like it did nothing until
+      // the next app launch.
+      setWorkspaceHidden(!show);
     } catch (e) {
+      // Backend didn't follow — put the pref (and Toggle) back.
+      setWorkspaceHidden(show);
+      setWsOff(show);
       toastError(e, show ? "Couldn't restore the workspace" : "Couldn't hide the workspace");
     }
     refreshWorkspace();

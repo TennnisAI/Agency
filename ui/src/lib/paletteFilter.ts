@@ -1,3 +1,5 @@
+import { fuzzyScore } from "./fuzzy";
+
 export interface PaletteEntry {
   kind: "project" | "run" | "action";
   id: string;
@@ -17,6 +19,7 @@ export function filterEntries(query: string, entries: PaletteEntry[]): PaletteEn
     if (label.startsWith(q)) score = 0;
     else if (label.includes(q)) score = 1;
     else if (sub.includes(q)) score = 2;
+    else if (fuzzyScore(q, e.label) !== null) score = 3; // in-order subsequence, weakest tier
     if (score >= 0) scored.push({ e, score });
   }
   // Stable sort by score (lower = better); preserve input order within a score.

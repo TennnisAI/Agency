@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Issue, Project, inspectRepo, RepoReadiness, FileRoot, agentInstalled, startIssueRun } from "../api";
+import { requestOpenFile } from "../lib/openFile";
 import { useRuns } from "../store/runs";
 import AgentTile from "./AgentTile";
 import AgentFocus from "./AgentFocus";
@@ -17,6 +18,7 @@ import IssuesView from "./IssuesView";
 import SidebarToggle from "./SidebarToggle";
 import RightPanelToggle from "./RightPanelToggle";
 import InstallAgentDialog from "./InstallAgentDialog";
+import QuickOpen from "./QuickOpen";
 
 // Main content area. With a project selected this is that project's agents /
 // source control / files; with none it hosts the all-projects overview under
@@ -78,6 +80,33 @@ export default function AgentsView({
   // all-projects home screen.
   const gitRoot = focusedRunId ?? (project ? `project:${project.id}` : null);
   const allowComments = focused?.kind === "agent";
+
+  // The root the Files tab shows (and quick-open must list): the focused run's
+  // worktree, else the project's main checkout.
+  const filesRoot: FileRoot | null = project
+    ? focusedRunId
+      ? { kind: "run", id: focusedRunId }
+      : { kind: "project", id: project.id }
+    : null;
+
+  // ⌘P quick-open, everywhere except the Docs tab — DocsView owns ⌘P there
+  // (its note switcher) and is only mounted on that tab, so exactly one
+  // handler acts per keypress.
+  const [quickOpen, setQuickOpen] = useState(false);
+  const quickOpenGate = useRef({ enabled: false });
+  quickOpenGate.current.enabled = !!project && tab !== "docs";
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "p") {
+        if (!quickOpenGate.current.enabled) return;
+        e.preventDefault();
+        setQuickOpen((s) => !s);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+  useEffect(() => { setQuickOpen(false); }, [project?.id, tab]);
 
   async function spawn(agentId: string, opts?: { base: string; mergeTarget: string }, issue?: Issue) {
     if (!project) return;
@@ -193,14 +222,7 @@ export default function AgentsView({
 
           {tab === "files" && (
             <div className="source-wrap">
-              <FilesView
-                root={
-                  focusedRunId
-                    ? ({ kind: "run", id: focusedRunId } as FileRoot)
-                    : ({ kind: "project", id: project.id } as FileRoot)
-                }
-                projectName={project.name}
-              />
+              <FilesView root={filesRoot} projectName={project.name} />
             </div>
           )}
 
@@ -263,6 +285,17 @@ export default function AgentsView({
             </div>
           )}
         </>
+      )}
+
+      {quickOpen && filesRoot && (
+        <QuickOpen
+          root={filesRoot}
+          onOpen={(path) => {
+            setTab("files");
+            requestOpenFile({ path });
+          }}
+          onClose={() => setQuickOpen(false)}
+        />
       )}
 
       {pendingSpawn && (

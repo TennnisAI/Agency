@@ -25,6 +25,20 @@ describe("filterEntries", () => {
     const mixed = filterEntries("se", E); // "Senba" sublabel-substring beats any subsequence
     expect(mixed[0].id).toBe("p1");
   });
+  it("matches haystack after sublabel, before fuzzy", () => {
+    const entries: PaletteEntry[] = [
+      { kind: "issue", id: "h", projectId: "p", label: "AGE-1 fix crash", sublabel: "Agency · Todo", haystack: "repro: resize the pane" },
+      { kind: "issue", id: "f", projectId: "p", label: "roster page", sublabel: "Agency · Todo" },
+    ];
+    // "resize" hits only the haystack.
+    expect(filterEntries("resize", entries).map((e) => e.id)).toEqual(["h"]);
+    // A haystack substring outranks a fuzzy label subsequence ("rop" ⊂ "roster page").
+    const both: PaletteEntry[] = [
+      { kind: "issue", id: "fz", projectId: "p", label: "roster page", sublabel: "x" },
+      { kind: "issue", id: "hy", projectId: "p", label: "AGE-2 other", sublabel: "x", haystack: "drop the cache" },
+    ];
+    expect(filterEntries("rop", both).map((e) => e.id)).toEqual(["hy", "fz"]);
+  });
   it("orders label-prefix matches before substring matches", () => {
     const entries: PaletteEntry[] = [
       { kind: "run", id: "a", projectId: "p", label: "refactor parser", sublabel: "agent/a" },

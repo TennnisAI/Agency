@@ -1423,6 +1423,9 @@ impl AppState {
             body: issue.body.clone(),
             status: issue.status,
             priority: issue.priority,
+            due: issue.due.clone(),
+            scheduled: issue.scheduled.clone(),
+            rank: issue.rank,
             created_at: issue.created_at,
             updated_at: issue.updated_at,
             extra,
@@ -1500,6 +1503,9 @@ impl AppState {
             body: body.to_string(),
             status,
             priority: 0,
+            due: None,
+            scheduled: None,
+            rank: None,
             created_at: now,
             updated_at: now,
         };
@@ -1529,6 +1535,20 @@ impl AppState {
         }
         if let Some(p) = patch.priority {
             next.priority = p;
+        }
+        // Validate what the file parser would reject — the API must never
+        // write a file that reconcile then skips as corrupt.
+        if let Some(d) = &patch.due {
+            next.due = d.as_deref().map(agency_core::issuefs::parse_date).transpose()?;
+        }
+        if let Some(d) = &patch.scheduled {
+            next.scheduled = d.as_deref().map(agency_core::issuefs::parse_date).transpose()?;
+        }
+        if let Some(r) = patch.rank {
+            if r.is_some_and(|r| !r.is_finite()) {
+                bail!("invalid rank");
+            }
+            next.rank = r;
         }
         next.updated_at = now_secs();
         self.write_issue_file(&reg, &next)?;

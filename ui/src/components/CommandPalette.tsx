@@ -24,6 +24,8 @@ interface Row {
   projectId: string;
   label: string;
   sublabel: string;
+  // Matched but never displayed (issue bodies, dates) — see filterEntries.
+  haystack?: string;
   glyph: string;
   section: string;
   activate: () => void;
@@ -212,6 +214,8 @@ export default function CommandPalette({
           projectId: project.id,
           label: `${issueLabel(project, issue)} ${issue.title}`,
           sublabel: `${project.name} · ${STATUS_LABELS[issue.status]}`,
+          // Body text and dates are searchable without being shown.
+          haystack: [issue.body, issue.due, issue.scheduled].filter(Boolean).join(" "),
           glyph: "▧",
           section: "Issues",
           activate: () => openIssue(project, issue),

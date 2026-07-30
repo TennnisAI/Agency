@@ -106,6 +106,25 @@ export default function IssueDetail({
         </button>
       </div>
 
+      <div className="issue-detail-dates">
+        <label>
+          <span>Due</span>
+          <input
+            type="date"
+            value={issue.due ?? ""}
+            onChange={(e) => onPatch({ due: e.target.value || null })}
+          />
+        </label>
+        <label>
+          <span>Scheduled</span>
+          <input
+            type="date"
+            value={issue.scheduled ?? ""}
+            onChange={(e) => onPatch({ scheduled: e.target.value || null })}
+          />
+        </label>
+      </div>
+
       {menu && (
         <>
           <div className="agent-menu-backdrop" onClick={() => setMenu(null)} />

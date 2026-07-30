@@ -187,8 +187,8 @@ per module; orchestration tests in `crates/agency-app/tests/`.
 ### Task 7: verification + ship gate
 
 - [x] `cargo test`, `tsc --noEmit`, `vite build`, `vitest run` all green.
-- [ ] Ship gate (dev app): migrate a project with existing issues — `git status` shows `.agency/issues/*.md` as commit-able (not excluded); create/edit/dispatch/merge flows unchanged in the UI; edit a file in `$EDITOR` → board updates within a tick; delete a file → issue gone; dispatch an agent with "mark AGE-N done and file a follow-up issue" → it edits/creates files on its branch, and after merge the board shows both.
-- [ ] Update `docs/one-stop-plan.md` status line for Phase 5.
+- [x] Ship gate (dev app): migrate a project with existing issues — `git status` shows `.agency/issues/*.md` as commit-able (not excluded); create/edit/dispatch/merge flows unchanged in the UI; edit a file in `$EDITOR` → board updates within a tick; delete a file → issue gone; dispatch an agent with "mark AGE-N done and file a follow-up issue" → it edits/creates files on its branch, and after merge the board shows both.
+- [x] Update `docs/one-stop-plan.md` status line for Phase 5.
 
 **Non-goals (resist):** dates/rank/labels and index-backed issue search (P6),
 cross-domain links and issue-corpus wikilinks (P7), an MCP ergonomics layer

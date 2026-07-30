@@ -86,16 +86,25 @@ export interface Issue {
   status: IssueStatus;
   // 0 none · 1 low · 2 medium · 3 high · 4 urgent.
   priority: number;
+  // Civil dates, "YYYY-MM-DD" — lexicographic order is date order.
+  due: string | null;
+  scheduled: string | null;
+  // Manual board order within a status group, ascending.
+  rank: number | null;
   createdAt: number;
   updatedAt: number;
 }
 
-// Partial update: omitted fields keep their values.
+// Partial update: omitted fields keep their values. For the nullable fields
+// an explicit null clears the value (absent still means untouched).
 export interface IssuePatch {
   title?: string;
   body?: string;
   status?: IssueStatus;
   priority?: number;
+  due?: string | null;
+  scheduled?: string | null;
+  rank?: number | null;
 }
 
 export const listProjects = () => invoke<Project[]>("list_projects");

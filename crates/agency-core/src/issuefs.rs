@@ -32,6 +32,12 @@ pub struct IssueFile {
     pub body: String,
     pub status: IssueStatus,
     pub priority: u8,
+    /// Civil dates, `YYYY-MM-DD` — an issue is due on a day, not an instant.
+    pub due: Option<String>,
+    pub scheduled: Option<String>,
+    /// Manual board order within a status group, ascending. Finite by
+    /// construction (NaN/inf rejects the file).
+    pub rank: Option<f64>,
     /// Epoch seconds; 0 = the file didn't say (reconcile substitutes mtime).
     pub created_at: i64,
     /// Epoch seconds; 0 = the file didn't say (reconcile substitutes mtime).
@@ -89,6 +95,21 @@ pub fn rfc3339_to_epoch(s: &str) -> Result<i64> {
     Ok(days * 86_400 + hh * 3600 + mm * 60 + ss)
 }
 
+/// Validate a civil date `2026-08-01`: exact shape and a real calendar day.
+/// Returned as-is — date strings are the storage format, and they compare
+/// lexicographically, which is all sorting and "overdue" need.
+pub fn parse_date(s: &str) -> Result<String> {
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| regex::Regex::new(r"^(\d{4})-(\d{2})-(\d{2})$").unwrap());
+    let caps = re.captures(s).ok_or_else(|| anyhow!("invalid date: {s}"))?;
+    let num = |i: usize| caps[i].parse::<i64>().unwrap();
+    let (y, m, d) = (num(1), num(2), num(3));
+    if !(1..=12).contains(&m) || d < 1 || d > days_in_month(y, m) {
+        bail!("invalid date: {s}");
+    }
+    Ok(s.to_string())
+}
+
 fn days_in_month(y: i64, m: i64) -> i64 {
     match m {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
@@ -120,7 +141,8 @@ pub fn issue_path(root: &Path, key: &str) -> PathBuf {
 // ---------------------------------------------------------------------------
 // Parse / serialize
 
-const KNOWN_KEYS: [&str; 5] = ["key", "status", "priority", "created", "updated"];
+const KNOWN_KEYS: [&str; 8] =
+    ["key", "status", "priority", "due", "scheduled", "rank", "created", "updated"];
 
 /// Parse an issue file. `file_key` is the filename stem (`AGE-14`) — the
 /// frontmatter `key` must agree with it or the file is rejected; a file's name
@@ -134,6 +156,9 @@ pub fn parse_issue_file(file_key: &str, text: &str) -> Result<IssueFile> {
     let mut key = None;
     let mut status = None;
     let mut priority: Option<u8> = None;
+    let mut due = None;
+    let mut scheduled = None;
+    let mut rank: Option<f64> = None;
     let mut created = None;
     let mut updated = None;
     let mut extra = Vec::new();
@@ -173,6 +198,28 @@ pub fn parse_issue_file(file_key: &str, text: &str) -> Result<IssueFile> {
                 }
                 if priority.replace(p).is_some() {
                     bail!("duplicate frontmatter key: priority");
+                }
+                continue;
+            }
+            "due" => {
+                if due.replace(parse_date(v)?).is_some() {
+                    bail!("duplicate frontmatter key: due");
+                }
+                continue;
+            }
+            "scheduled" => {
+                if scheduled.replace(parse_date(v)?).is_some() {
+                    bail!("duplicate frontmatter key: scheduled");
+                }
+                continue;
+            }
+            "rank" => {
+                let r: f64 = v.parse().map_err(|_| anyhow!("invalid rank: {v}"))?;
+                if !r.is_finite() {
+                    bail!("invalid rank: {v}");
+                }
+                if rank.replace(r).is_some() {
+                    bail!("duplicate frontmatter key: rank");
                 }
                 continue;
             }
@@ -217,6 +264,9 @@ pub fn parse_issue_file(file_key: &str, text: &str) -> Result<IssueFile> {
         body,
         status,
         priority: priority.unwrap_or(0),
+        due,
+        scheduled,
+        rank,
         created_at,
         updated_at,
         extra,
@@ -233,6 +283,15 @@ pub fn serialize_issue_file(f: &IssueFile) -> String {
     out.push_str(&format!("key: {}\n", f.key));
     out.push_str(&format!("status: {}\n", f.status.as_str()));
     out.push_str(&format!("priority: {}\n", f.priority));
+    if let Some(d) = &f.due {
+        out.push_str(&format!("due: {d}\n"));
+    }
+    if let Some(d) = &f.scheduled {
+        out.push_str(&format!("scheduled: {d}\n"));
+    }
+    if let Some(r) = f.rank {
+        out.push_str(&format!("rank: {r}\n"));
+    }
     out.push_str(&format!("created: {}\n", epoch_to_rfc3339(f.created_at)));
     out.push_str(&format!("updated: {}\n", epoch_to_rfc3339(f.updated_at)));
     for line in &f.extra {
@@ -407,6 +466,9 @@ pub fn export_project(reg: &Registry, project_id: &str, issue_key: &str, root: &
             body: row.body,
             status: row.status,
             priority: row.priority,
+            due: row.due,
+            scheduled: row.scheduled,
+            rank: row.rank,
             created_at: row.created_at,
             updated_at: row.updated_at,
             extra: vec![],
@@ -494,6 +556,9 @@ pub fn reconcile(reg: &Registry, project_id: &str, root: &Path) -> Result<Reconc
             body: f.body.clone(),
             status: f.status,
             priority: f.priority,
+            due: f.due.clone(),
+            scheduled: f.scheduled.clone(),
+            rank: f.rank,
             created_at,
             updated_at,
         };
@@ -599,6 +664,9 @@ Body markdown, wikilinks allowed.\n";
             body: "Body markdown, wikilinks allowed.".into(),
             status: IssueStatus::InProgress,
             priority: 2,
+            due: None,
+            scheduled: None,
+            rank: None,
             created_at: 1_785_144_600,
             updated_at: 1_785_160_920,
             extra: vec![],
@@ -616,15 +684,79 @@ created: 2026-07-27T09:30:00Z\nupdated: 2026-07-27T14:02:00Z\n---\n\
 
     #[test]
     fn unknown_frontmatter_keys_survive_roundtrip_in_order() {
-        let text = "---\nkey: AGE-2\ndue: 2026-08-01\nstatus: todo\nrank: 1.5\n---\n# T\n";
+        let text = "---\nkey: AGE-2\nassignee: sam\nstatus: todo\nlabels: a, b\n---\n# T\n";
         let f = parse_issue_file("AGE-2", text).unwrap();
-        assert_eq!(f.extra, vec!["due: 2026-08-01".to_string(), "rank: 1.5".to_string()]);
+        assert_eq!(f.extra, vec!["assignee: sam".to_string(), "labels: a, b".to_string()]);
         let out = serialize_issue_file(&f);
-        let due = out.find("due: 2026-08-01").unwrap();
-        let rank = out.find("rank: 1.5").unwrap();
+        let assignee = out.find("assignee: sam").unwrap();
+        let labels = out.find("labels: a, b").unwrap();
         let fence = out.find("\n---\n# ").unwrap();
-        assert!(due < rank && rank < fence, "order lost: {out}");
+        assert!(assignee < labels && labels < fence, "order lost: {out}");
         assert_eq!(parse_issue_file("AGE-2", &out).unwrap(), f);
+    }
+
+    #[test]
+    fn parse_date_shapes() {
+        assert_eq!(parse_date("2026-08-01").unwrap(), "2026-08-01");
+        assert_eq!(parse_date("2024-02-29").unwrap(), "2024-02-29");
+        for bad in
+            ["2026-02-30", "2023-02-29", "2026-13-01", "26-8-1", "2026/08/01", "2026-08-01T00:00:00Z", ""]
+        {
+            assert!(parse_date(bad).is_err(), "accepted {bad}");
+        }
+    }
+
+    #[test]
+    fn dates_and_rank_roundtrip_in_canonical_order() {
+        let text = "---\nkey: AGE-5\nstatus: todo\npriority: 1\ndue: 2026-08-01\n\
+scheduled: 2026-07-30   # planning\nrank: 1.5\ncreated: 2026-07-27T09:30:00Z\n\
+updated: 2026-07-27T09:30:00Z\n---\n# T\n";
+        let f = parse_issue_file("AGE-5", text).unwrap();
+        assert_eq!(f.due.as_deref(), Some("2026-08-01"));
+        assert_eq!(f.scheduled.as_deref(), Some("2026-07-30"));
+        assert_eq!(f.rank, Some(1.5));
+        let out = serialize_issue_file(&f);
+        assert_eq!(
+            out,
+            "---\nkey: AGE-5\nstatus: todo\npriority: 1\ndue: 2026-08-01\n\
+scheduled: 2026-07-30\nrank: 1.5\ncreated: 2026-07-27T09:30:00Z\n\
+updated: 2026-07-27T09:30:00Z\n---\n# T\n"
+        );
+        assert_eq!(parse_issue_file("AGE-5", &out).unwrap(), f);
+        // Integer-valued ranks survive the float round-trip.
+        let f2 = IssueFile { rank: Some(2.0), ..f.clone() };
+        assert_eq!(parse_issue_file("AGE-5", &serialize_issue_file(&f2)).unwrap().rank, Some(2.0));
+    }
+
+    #[test]
+    fn phase5_shaped_file_is_untouched_by_the_new_keys() {
+        // A file with none of the new keys parses to Nones and serializes
+        // byte-identically to what Phase 5 wrote.
+        let f = parse_issue_file("AGE-14", EXAMPLE).unwrap();
+        assert_eq!((f.due, f.scheduled, f.rank), (None, None, None));
+        let f = parse_issue_file("AGE-14", &serialize_issue_file(&parse_issue_file("AGE-14", EXAMPLE).unwrap())).unwrap();
+        assert_eq!(
+            serialize_issue_file(&f),
+            "---\nkey: AGE-14\nstatus: in_progress\npriority: 2\n\
+created: 2026-07-27T09:30:00Z\nupdated: 2026-07-27T14:02:00Z\n---\n\
+# Fix terminal resize on reattach\n\nBody markdown, wikilinks allowed.\n"
+        );
+    }
+
+    #[test]
+    fn date_and_rank_rejections() {
+        let cases: &[&str] = &[
+            "---\nkey: AGE-1\nstatus: todo\ndue: whenever\n---\n# T\n",
+            "---\nkey: AGE-1\nstatus: todo\ndue: 2026-02-30\n---\n# T\n",
+            "---\nkey: AGE-1\nstatus: todo\nscheduled: tomorrow\n---\n# T\n",
+            "---\nkey: AGE-1\nstatus: todo\nrank: abc\n---\n# T\n",
+            "---\nkey: AGE-1\nstatus: todo\nrank: NaN\n---\n# T\n",
+            "---\nkey: AGE-1\nstatus: todo\nrank: inf\n---\n# T\n",
+            "---\nkey: AGE-1\nstatus: todo\ndue: 2026-08-01\ndue: 2026-08-02\n---\n# T\n",
+        ];
+        for text in cases {
+            assert!(parse_issue_file("AGE-1", text).is_err(), "accepted: {text}");
+        }
     }
 
     #[test]
@@ -765,6 +897,26 @@ created: 2026-07-27T09:30:00Z\nupdated: 2026-07-27T14:02:00Z\n---\n\
         let s = reconcile(&reg, "p1", root).unwrap();
         assert_eq!((s.imported, s.updated, s.dropped), (0, 0, 1));
         assert!(reg.list_issues("p1").unwrap().is_empty());
+    }
+
+    #[test]
+    fn reconcile_carries_dates_and_rank_into_rows() {
+        let db = tempfile::tempdir().unwrap();
+        let reg = Registry::open(&db.path().join("r.db")).unwrap();
+        let root_dir = tempfile::tempdir().unwrap();
+        let root = root_dir.path();
+        let dir = root.join(ISSUES_DIR);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("AGE-4.md"),
+            "---\nkey: AGE-4\nstatus: todo\ndue: 2026-08-01\nrank: 2.5\n---\n# Four\n",
+        )
+        .unwrap();
+        reconcile(&reg, "p1", root).unwrap();
+        let row = &reg.list_issues("p1").unwrap()[0];
+        assert_eq!(row.due.as_deref(), Some("2026-08-01"));
+        assert_eq!(row.scheduled, None);
+        assert_eq!(row.rank, Some(2.5));
     }
 
     #[test]

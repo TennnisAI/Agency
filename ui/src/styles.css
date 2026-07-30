@@ -1713,9 +1713,43 @@ input, textarea, code,
 }
 .issue-dialog-summary code { color: var(--o1); font-size: 11px; }
 
+/* Due-date chip: quiet until the date is past, then it isn't. */
+.issue-due {
+  display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0;
+  color: var(--o1); font-size: 11px; font-variant-numeric: tabular-nums;
+}
+.issue-due.overdue { color: var(--red); }
+
+/* Drag-to-reorder within a status group: the drop slot reads as a seam. */
+.issue-row[draggable="true"] { cursor: grab; }
+.issue-row.drop-above { box-shadow: 0 -2px 0 0 var(--blue); border-radius: 0 0 7px 7px; }
+.issue-row.drop-below { box-shadow: 0 2px 0 0 var(--blue); border-radius: 7px 7px 0 0; }
+
+/* Detail pane date editors */
+.issue-detail-dates { display: flex; gap: 10px; }
+.issue-detail-dates label {
+  flex: 1; display: flex; flex-direction: column; gap: 3px;
+  font-size: 11px; color: var(--o1);
+}
+.issue-detail-dates input[type="date"] {
+  background: var(--s0); border: 1px solid transparent; border-radius: 7px;
+  color: var(--text); font-family: var(--sans); font-size: 12px;
+  padding: 4px 8px; outline: none;
+}
+.issue-detail-dates input[type="date"]:hover,
+.issue-detail-dates input[type="date"]:focus { background: var(--s1); }
+
 /* Home overview, issues mode */
 .home-issues { display: flex; flex-direction: column; padding: 2px 4px 6px; }
 .issue-row.home-issue .issue-status-pill { visibility: visible; }
+
+/* Cross-project board: filter bar + Today */
+.issues-filterbar {
+  display: flex; gap: 8px; align-items: center; margin: 4px 0 14px;
+}
+.issues-filterbar input { flex: 1; min-width: 160px; }
+.issues-filterbar select { width: auto; flex-shrink: 0; }
+.today-head { display: flex; align-items: center; gap: 8px; cursor: default; }
 
 /* ── Docs tab ─────────────────────────────────────────────────── */
 .docs-empty { flex-direction: column; gap: 10px; text-align: center; padding: 40px; }

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Issue, IssuePatch, Project, createIssue, deleteIssue, updateIssue } from "../api";
+import { Issue, IssuePatch, IssueStatus, Project, createIssue, deleteIssue, updateIssue } from "../api";
+import { planReorder } from "../lib/issueRank";
 import { useRuns } from "../store/runs";
 import { useIssues } from "../hooks/useIssues";
 import { ISSUE_STATUSES, PENDING_ISSUE_KEY, PENDING_QUICKADD_KEY, STATUS_LABELS, compareIssues, isClosed, issueLabel } from "../lib/issues";
@@ -99,6 +100,22 @@ export default function IssuesView({
     }
   }
 
+  // Manual reorder: HTML5 drag within a status group; the drop maps to a
+  // rank plan (materialize / midpoint / renormalize — see lib/issueRank).
+  const [drag, setDrag] = useState<{ status: IssueStatus; from: number; to: number | null } | null>(null);
+
+  async function dropReorder(group: Issue[], from: number, to: number) {
+    setDrag(null);
+    const plan = planReorder(group.map((i) => ({ id: i.id, rank: i.rank })), from, to);
+    if (plan.length === 0) return;
+    try {
+      await Promise.all(plan.map((u) => updateIssue(u.id, { rank: u.rank })));
+      await refresh();
+    } catch (e) {
+      toastError(e, "Couldn't reorder");
+    }
+  }
+
   async function startDefault(issue: Issue) {
     const agent = await pickDefaultAgent(project.id, project.default_agent);
     await onStartIssue(issue, agent);
@@ -183,7 +200,7 @@ export default function IssuesView({
                     <span className="issue-group-name">{STATUS_LABELS[status]}</span>
                     <span className="issue-group-count">{group.length}</span>
                   </button>
-                  {open && group.map((issue) => (
+                  {open && group.map((issue, idx) => (
                     <IssueRow
                       key={issue.id}
                       issue={issue}
@@ -195,6 +212,28 @@ export default function IssuesView({
                       onSpawnAgent={(agentId, opts) => { onStartIssue(issue, agentId, opts); }}
                       onPatch={(p) => patch(issue, p)}
                       onDelete={() => setConfirmDelete(issue)}
+                      drag={{
+                        over:
+                          drag && drag.status === status && drag.to === idx && drag.from !== idx
+                            ? (drag.to > drag.from ? "below" : "above")
+                            : null,
+                        onStart: (e) => {
+                          e.dataTransfer.effectAllowed = "move";
+                          setDrag({ status, from: idx, to: null });
+                        },
+                        onOver: (e) => {
+                          if (!drag || drag.status !== status) return;
+                          e.preventDefault();
+                          e.dataTransfer.dropEffect = "move";
+                          if (drag.to !== idx) setDrag({ ...drag, to: idx });
+                        },
+                        onDrop: (e) => {
+                          if (!drag || drag.status !== status) return;
+                          e.preventDefault();
+                          dropReorder(group, drag.from, idx);
+                        },
+                        onEnd: () => setDrag(null),
+                      }}
                     />
                   ))}
                 </section>

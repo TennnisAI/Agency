@@ -110,7 +110,7 @@ fn mutations_are_file_first_and_reconcile_follows_external_edits() {
     // unknown frontmatter keys survive the app's next write.
     std::fs::write(
         d.join("DEM-1.md"),
-        "---\nkey: DEM-1\nstatus: done\npriority: 3\ndue: 2026-08-01\n---\n# Renamed outside\n",
+        "---\nkey: DEM-1\nstatus: done\npriority: 3\ndue: 2026-08-01\nassignee: sam\n---\n# Renamed outside\n",
     )
     .unwrap();
     let listed = state.list_issues(&p.id).unwrap();
@@ -118,6 +118,7 @@ fn mutations_are_file_first_and_reconcile_follows_external_edits() {
     assert_eq!(listed[0].id, issue.id, "external edit must not change the row's id");
     assert_eq!(listed[0].status, IssueStatus::Done);
     assert_eq!(listed[0].title, "Renamed outside");
+    assert_eq!(listed[0].due.as_deref(), Some("2026-08-01"), "known key must reach the row");
     let roundtrip = state
         .update_issue(&issue.id, &agency_core::registry::IssuePatch {
             body: Some("new body".into()),
@@ -126,7 +127,8 @@ fn mutations_are_file_first_and_reconcile_follows_external_edits() {
         .unwrap();
     assert_eq!(roundtrip.body, "new body");
     let text = std::fs::read_to_string(d.join("DEM-1.md")).unwrap();
-    assert!(text.contains("due: 2026-08-01"), "unknown key lost on app write: {text}");
+    assert!(text.contains("due: 2026-08-01"), "date lost on app write: {text}");
+    assert!(text.contains("assignee: sam"), "unknown key lost on app write: {text}");
 
     // A hand-filed issue consumes its number: the next create skips past it.
     std::fs::write(d.join("DEM-9.md"), "---\nkey: DEM-9\nstatus: todo\n---\n# Filed by hand\n")
@@ -142,4 +144,59 @@ fn mutations_are_file_first_and_reconcile_follows_external_edits() {
     state.delete_issue(&next.id).unwrap();
     assert!(!d.join("DEM-10.md").exists());
     assert_eq!(state.list_issues(&p.id).unwrap().len(), 1);
+}
+
+#[test]
+fn dates_and_rank_patch_set_clear_and_validate() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let state = common::state(&dir);
+    let p = state.add_project("demo", &repo).unwrap();
+    let d = issues_dir(&repo);
+    let issue = state.create_issue(&p.id, "Dated", "", IssueStatus::Todo).unwrap();
+    assert_eq!((issue.due.clone(), issue.scheduled.clone(), issue.rank), (None, None, None));
+
+    // Set: file gains the keys, row matches.
+    let patch = agency_core::registry::IssuePatch {
+        due: Some(Some("2026-08-01".into())),
+        scheduled: Some(Some("2026-07-30".into())),
+        rank: Some(Some(1.5)),
+        ..Default::default()
+    };
+    let updated = state.update_issue(&issue.id, &patch).unwrap();
+    assert_eq!(updated.due.as_deref(), Some("2026-08-01"));
+    assert_eq!(updated.scheduled.as_deref(), Some("2026-07-30"));
+    assert_eq!(updated.rank, Some(1.5));
+    let text = std::fs::read_to_string(d.join("DEM-1.md")).unwrap();
+    assert!(
+        text.contains("due: 2026-08-01") && text.contains("scheduled: 2026-07-30") && text.contains("rank: 1.5"),
+        "{text}"
+    );
+
+    // Absent fields stay put; explicit clear removes key from file and row.
+    let updated = state
+        .update_issue(&issue.id, &agency_core::registry::IssuePatch {
+            due: Some(None),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(updated.due, None);
+    assert_eq!(updated.scheduled.as_deref(), Some("2026-07-30"), "absent field was touched");
+    let text = std::fs::read_to_string(d.join("DEM-1.md")).unwrap();
+    assert!(!text.contains("due:"), "cleared key still in file: {text}");
+    assert!(text.contains("scheduled: 2026-07-30"), "{text}");
+
+    // Bad values are rejected before anything is written.
+    for patch in [
+        agency_core::registry::IssuePatch { due: Some(Some("whenever".into())), ..Default::default() },
+        agency_core::registry::IssuePatch { due: Some(Some("2026-02-30".into())), ..Default::default() },
+        agency_core::registry::IssuePatch { rank: Some(Some(f64::NAN)), ..Default::default() },
+    ] {
+        assert!(state.update_issue(&issue.id, &patch).is_err());
+    }
+    let after = state.list_issues(&p.id).unwrap();
+    assert_eq!(after[0].scheduled.as_deref(), Some("2026-07-30"), "failed patch mutated state");
 }

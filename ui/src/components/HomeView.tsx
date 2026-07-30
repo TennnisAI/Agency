@@ -1,13 +1,11 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Issue, Project, RunInfo, RepoReadiness, addProject, inspectRepo, listIssues, listProjects, listRuns, runPreview } from "../api";
 import { projectAccent, runName } from "../agents";
-import { ISSUE_STATUSES, PENDING_ISSUE_KEY, STATUS_LABELS, compareIssues, isClosed, issueLabel } from "../lib/issues";
 import { isWaiting, isWorking, runStatus } from "../lib/runstate";
 import RepoSetupDialog from "./RepoSetupDialog";
 import CloneDialog from "./CloneDialog";
-import { PriorityGlyph, StatusDot } from "./IssueRow";
-import { useRuns } from "../store/runs";
+import HomeIssues from "./HomeIssues";
 
 const FOLD_KEY = "home:folded";
 
@@ -42,7 +40,6 @@ export default function HomeView({
   onOpenProject: (project: Project) => void;
   mode?: "agents" | "issues";
 }) {
-  const { setTab } = useRuns();
   const [projects, setProjects] = useState<Project[]>([]);
   const [runsBy, setRunsBy] = useState<Record<string, RunInfo[]>>({});
   const [issuesBy, setIssuesBy] = useState<Record<string, Issue[]>>({});
@@ -104,29 +101,30 @@ export default function HomeView({
     });
   }
 
+  // Hoisted so the issues board can force a refresh right after a mutation
+  // instead of waiting out the poll interval.
+  const tick = useCallback(async () => {
+    try {
+      const ps = await listProjects();
+      const lists = await Promise.all(ps.map((p) => listRuns(p.id).catch(() => [] as RunInfo[])));
+      // Issue lists only matter (and only cost IPC) in issues mode.
+      const issueLists = mode === "issues"
+        ? await Promise.all(ps.map((p) => listIssues(p.id).catch(() => [] as Issue[])))
+        : null;
+      setProjects(ps);
+      setRunsBy(Object.fromEntries(ps.map((p, i) => [p.id, lists[i]])));
+      if (issueLists) setIssuesBy(Object.fromEntries(ps.map((p, i) => [p.id, issueLists[i]])));
+      setLoaded(true);
+    } catch {
+      /* transient backend errors: keep the last snapshot */
+    }
+  }, [mode]);
+
   useEffect(() => {
-    let alive = true;
-    const tick = async () => {
-      try {
-        const ps = await listProjects();
-        const lists = await Promise.all(ps.map((p) => listRuns(p.id).catch(() => [] as RunInfo[])));
-        // Issue lists only matter (and only cost IPC) in issues mode.
-        const issueLists = mode === "issues"
-          ? await Promise.all(ps.map((p) => listIssues(p.id).catch(() => [] as Issue[])))
-          : null;
-        if (!alive) return;
-        setProjects(ps);
-        setRunsBy(Object.fromEntries(ps.map((p, i) => [p.id, lists[i]])));
-        if (issueLists) setIssuesBy(Object.fromEntries(ps.map((p, i) => [p.id, issueLists[i]])));
-        setLoaded(true);
-      } catch {
-        /* transient backend errors: keep the last snapshot */
-      }
-    };
     tick();
     const t = window.setInterval(tick, 2500);
-    return () => { alive = false; window.clearInterval(t); };
-  }, [mode]);
+    return () => window.clearInterval(t);
+  }, [tick]);
 
   const all = projects.flatMap((p) => runsBy[p.id] ?? []);
   const working = all.filter(isWorking).length;
@@ -166,87 +164,17 @@ export default function HomeView({
   }
 
   if (mode === "issues") {
-    // Open (not done/cancelled) issues per project, board order.
-    const openIssues = (p: Project) =>
-      (issuesBy[p.id] ?? [])
-        .filter((i) => !isClosed(i.status))
-        .sort((a, b) => ISSUE_STATUSES.indexOf(a.status) - ISSUE_STATUSES.indexOf(b.status) || compareIssues(a, b));
-    const totalOpen = projects.reduce((n, p) => n + openIssues(p).length, 0);
-    const active = projects.reduce(
-      (n, p) => n + openIssues(p).filter((i) => i.status === "in_progress" || i.status === "in_review").length,
-      0,
-    );
-    // Busiest boards first; ties break alphabetically.
-    const byOpen = [...projects].sort(
-      (a, b) => openIssues(b).length - openIssues(a).length || a.name.localeCompare(b.name),
-    );
-
-    // Navigating resets the tab to "agents" (setSelectedProject), so re-assert
-    // the Issues tab after — React batches both in this handler. The clicked
-    // issue rides sessionStorage; IssuesView selects it once its list loads.
-    const openIssue = (p: Project, issue: Issue) => {
-      sessionStorage.setItem(PENDING_ISSUE_KEY, issue.id);
-      onOpenProject(p);
-      setTab("issues");
-    };
-
     return (
-      <div className="home">
-        <div className="home-head">
-          <div>
-            <div className="eyebrow">ALL PROJECTS</div>
-            <h1 className="home-title">Issues</h1>
-          </div>
-          <div className="home-stats">
-            <Stat value={projects.length} label={projects.length === 1 ? "project" : "projects"} />
-            <Stat value={totalOpen} label="open" />
-            <Stat value={active} label="with agents" accent={active > 0} />
-          </div>
-        </div>
-
-        {byOpen.map((p) => {
-          const open = openIssues(p);
-          const isFolded = folded.has(p.id);
-          return (
-            <section key={p.id} className="home-group">
-              <div className="home-group-head">
-                <button
-                  className="home-fold"
-                  title={isFolded ? "Expand project" : "Collapse project"}
-                  onClick={() => toggleFold(p.id)}
-                >
-                  {isFolded ? "▸" : "▾"}
-                </button>
-                <button className="home-group-title" onClick={() => { onOpenProject(p); setTab("issues"); }} title={`Open ${p.name} issues`}>
-                  <span className="proj-icon" aria-hidden style={{ background: projectAccent(p) }}>
-                    {p.name.slice(0, 1).toUpperCase()}
-                  </span>
-                  <span className="home-group-name">{p.name}</span>
-                  <span className="home-group-meta">
-                    {open.length === 0 ? "no open issues" : `${open.length} open issue${open.length === 1 ? "" : "s"}`}
-                  </span>
-                  <span className="home-group-open">open →</span>
-                </button>
-              </div>
-              {!isFolded && open.length > 0 && (
-                <div className="home-issues">
-                  {open.map((issue) => (
-                    <button key={issue.id} className="issue-row home-issue" onClick={() => openIssue(p, issue)}>
-                      <PriorityGlyph priority={issue.priority} />
-                      <code className="issue-key">{issueLabel(p, issue)}</code>
-                      <span className="issue-title">{issue.title}</span>
-                      <span className="issue-status-pill static">
-                        <StatusDot status={issue.status} />
-                        {STATUS_LABELS[issue.status]}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </section>
-          );
-        })}
-      </div>
+      <HomeIssues
+        projects={projects}
+        issuesBy={issuesBy}
+        runsBy={runsBy}
+        folded={folded}
+        onToggleFold={toggleFold}
+        onOpenProject={onOpenProject}
+        onOpenRun={onOpenRun}
+        refresh={tick}
+      />
     );
   }
 
@@ -316,7 +244,7 @@ export default function HomeView({
   );
 }
 
-function Stat({ value, label, accent, warn }: { value: number; label: string; accent?: boolean; warn?: boolean }) {
+export function Stat({ value, label, accent, warn }: { value: number; label: string; accent?: boolean; warn?: boolean }) {
   return (
     <span className={`home-stat ${accent ? "accent" : ""} ${warn ? "warn" : ""}`}>
       <span className="home-stat-n">{value}</span> {label}

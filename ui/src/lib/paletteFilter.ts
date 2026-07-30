@@ -6,6 +6,9 @@ export interface PaletteEntry {
   projectId: string;
   label: string;
   sublabel: string;
+  // Extra searchable text that is matched but never displayed (issue bodies,
+  // dates). Weakest substring tier, above only the fuzzy fallback.
+  haystack?: string;
 }
 
 export function filterEntries<T extends PaletteEntry>(query: string, entries: T[]): T[] {
@@ -19,7 +22,8 @@ export function filterEntries<T extends PaletteEntry>(query: string, entries: T[
     if (label.startsWith(q)) score = 0;
     else if (label.includes(q)) score = 1;
     else if (sub.includes(q)) score = 2;
-    else if (fuzzyScore(q, e.label) !== null) score = 3; // in-order subsequence, weakest tier
+    else if (e.haystack?.toLowerCase().includes(q)) score = 3;
+    else if (fuzzyScore(q, e.label) !== null) score = 4; // in-order subsequence, weakest tier
     if (score >= 0) scored.push({ e, score });
   }
   // Stable sort by score (lower = better); preserve input order within a score.

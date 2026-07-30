@@ -76,6 +76,11 @@ pub struct Issue {
     pub status: IssueStatus,
     /// 0 none · 1 low · 2 medium · 3 high · 4 urgent.
     pub priority: u8,
+    /// Civil dates, `YYYY-MM-DD` strings — lexicographic order is date order.
+    pub due: Option<String>,
+    pub scheduled: Option<String>,
+    /// Manual board order within a status group, ascending. Finite.
+    pub rank: Option<f64>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -137,6 +142,8 @@ impl IssueStatus {
 }
 
 /// Partial update for `update_issue` — `None` fields are left untouched.
+/// The nullable fields (`due`/`scheduled`/`rank`) are double-`Option`s so a
+/// patch can distinguish "leave it" (absent) from "clear it" (explicit null).
 #[derive(Debug, Default, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IssuePatch {
@@ -144,6 +151,22 @@ pub struct IssuePatch {
     pub body: Option<String>,
     pub status: Option<IssueStatus>,
     pub priority: Option<u8>,
+    #[serde(default, deserialize_with = "double_option")]
+    pub due: Option<Option<String>>,
+    #[serde(default, deserialize_with = "double_option")]
+    pub scheduled: Option<Option<String>>,
+    #[serde(default, deserialize_with = "double_option")]
+    pub rank: Option<Option<f64>>,
+}
+
+/// Deserialize a present-but-maybe-null field as `Some(inner)`; combined with
+/// `#[serde(default)]`, an absent field stays `None`.
+fn double_option<'de, T, D>(de: D) -> std::result::Result<Option<Option<T>>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    Deserialize::deserialize(de).map(Some)
 }
 
 /// An extra agent session inside an existing run's worktree. The run's
@@ -304,6 +327,15 @@ impl Registry {
                 "ALTER TABLE projects ADD COLUMN issues_migrated INTEGER NOT NULL DEFAULT 0",
                 [],
             )?;
+        }
+        if !column_exists(&conn, "issues", "due")? {
+            conn.execute("ALTER TABLE issues ADD COLUMN due TEXT", [])?;
+        }
+        if !column_exists(&conn, "issues", "scheduled")? {
+            conn.execute("ALTER TABLE issues ADD COLUMN scheduled TEXT", [])?;
+        }
+        if !column_exists(&conn, "issues", "rank")? {
+            conn.execute("ALTER TABLE issues ADD COLUMN rank REAL", [])?;
         }
         let reg = Registry { conn };
         reg.backfill_project_colors()?;
@@ -899,11 +931,11 @@ impl Registry {
     /// the row is new. Returns the stored row.
     pub fn upsert_issue_row(&self, issue: &Issue) -> Result<Issue> {
         self.conn.execute(
-            "INSERT INTO issues (id, project_id, seq, title, body, status, priority, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "INSERT INTO issues (id, project_id, seq, title, body, status, priority, created_at, updated_at, due, scheduled, rank)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
              ON CONFLICT(project_id, seq) DO UPDATE SET
                 title = ?4, body = ?5, status = ?6, priority = ?7,
-                created_at = ?8, updated_at = ?9",
+                created_at = ?8, updated_at = ?9, due = ?10, scheduled = ?11, rank = ?12",
             rusqlite::params![
                 issue.id,
                 issue.project_id,
@@ -913,11 +945,14 @@ impl Registry {
                 issue.status.as_str(),
                 issue.priority as i64,
                 issue.created_at,
-                issue.updated_at
+                issue.updated_at,
+                issue.due,
+                issue.scheduled,
+                issue.rank
             ],
         )?;
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, seq, title, body, status, priority, created_at, updated_at
+            "SELECT id, project_id, seq, title, body, status, priority, created_at, updated_at, due, scheduled, rank
              FROM issues WHERE project_id = ?1 AND seq = ?2",
         )?;
         let mut rows = stmt.query(rusqlite::params![issue.project_id, issue.seq])?;
@@ -966,7 +1001,7 @@ impl Registry {
 
     pub fn get_issue(&self, id: &str) -> Result<Option<Issue>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, seq, title, body, status, priority, created_at, updated_at
+            "SELECT id, project_id, seq, title, body, status, priority, created_at, updated_at, due, scheduled, rank
              FROM issues WHERE id = ?1",
         )?;
         let mut rows = stmt.query([id])?;
@@ -979,7 +1014,7 @@ impl Registry {
     /// Every issue of the project, all statuses — the UI groups and collapses.
     pub fn list_issues(&self, project_id: &str) -> Result<Vec<Issue>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, seq, title, body, status, priority, created_at, updated_at
+            "SELECT id, project_id, seq, title, body, status, priority, created_at, updated_at, due, scheduled, rank
              FROM issues WHERE project_id = ?1 ORDER BY seq",
         )?;
         let rows = stmt.query_map([project_id], |row| Ok(row_to_issue(row)))?;
@@ -988,33 +1023,6 @@ impl Registry {
             out.push(r??);
         }
         Ok(out)
-    }
-
-    /// Apply a partial update; untouched fields keep their values. Bumps
-    /// `updated_at`. This is the *manual* path — status moves here are
-    /// unconditional (the user always wins over automation).
-    pub fn update_issue(&self, id: &str, patch: &IssuePatch, now: i64) -> Result<Option<Issue>> {
-        let changed = self.conn.execute(
-            "UPDATE issues SET
-                title = COALESCE(?2, title),
-                body = COALESCE(?3, body),
-                status = COALESCE(?4, status),
-                priority = COALESCE(?5, priority),
-                updated_at = ?6
-             WHERE id = ?1",
-            rusqlite::params![
-                id,
-                patch.title,
-                patch.body,
-                patch.status.map(|s| s.as_str()),
-                patch.priority.map(|p| p as i64),
-                now
-            ],
-        )?;
-        if changed == 0 {
-            return Ok(None);
-        }
-        self.get_issue(id)
     }
 
     pub fn delete_issue(&self, id: &str) -> Result<()> {
@@ -1182,6 +1190,9 @@ fn row_to_issue(row: &rusqlite::Row) -> Result<Issue> {
         priority: row.get::<_, i64>(6)? as u8,
         created_at: row.get(7)?,
         updated_at: row.get(8)?,
+        due: row.get(9)?,
+        scheduled: row.get(10)?,
+        rank: row.get(11)?,
     })
 }
 
@@ -1723,20 +1734,33 @@ mod tests {
         let listed = reg.list_issues("proj").unwrap();
         assert_eq!(listed.iter().map(|i| i.seq).collect::<Vec<_>>(), vec![1, 2]);
 
-        let patch = IssuePatch {
-            title: Some("Fix login flow".into()),
-            status: Some(IssueStatus::Cancelled),
-            priority: Some(4),
-            ..Default::default()
-        };
-        let updated = reg.update_issue(&a.id, &patch, 200).unwrap().unwrap();
+        // The mutation path is upsert_issue_row (files are truth; state.rs
+        // computes the new value and the row follows). id survives on update.
+        let mut next = a.clone();
+        next.title = "Fix login flow".into();
+        next.status = IssueStatus::Cancelled;
+        next.priority = 4;
+        next.due = Some("2026-08-01".into());
+        next.scheduled = Some("2026-07-30".into());
+        next.rank = Some(1.5);
+        next.updated_at = 200;
+        let updated = reg.upsert_issue_row(&next).unwrap();
+        assert_eq!(updated.id, a.id);
         assert_eq!(updated.title, "Fix login flow");
-        assert_eq!(updated.body, "steps to repro"); // untouched by the patch
+        assert_eq!(updated.body, "steps to repro"); // untouched
         assert_eq!(updated.status, IssueStatus::Cancelled);
         assert_eq!(updated.priority, 4);
+        assert_eq!(updated.due.as_deref(), Some("2026-08-01"));
+        assert_eq!(updated.scheduled.as_deref(), Some("2026-07-30"));
+        assert_eq!(updated.rank, Some(1.5));
         assert_eq!(updated.updated_at, 200);
-
-        assert!(reg.update_issue("nope", &patch, 201).unwrap().is_none());
+        // list/get surface the new fields; clearing them round-trips too.
+        assert_eq!(reg.list_issues("proj").unwrap()[0].due.as_deref(), Some("2026-08-01"));
+        next.due = None;
+        next.scheduled = None;
+        next.rank = None;
+        let cleared = reg.upsert_issue_row(&next).unwrap();
+        assert_eq!((cleared.due, cleared.scheduled, cleared.rank), (None, None, None));
 
         reg.delete_issue(&a.id).unwrap();
         assert!(reg.get_issue(&a.id).unwrap().is_none());
@@ -1794,7 +1818,9 @@ mod tests {
 
         // Already todo / done / cancelled: untouched.
         assert!(!reg.rollback_issue_to_todo(&i.id, 3).unwrap());
-        reg.update_issue(&i.id, &IssuePatch { status: Some(IssueStatus::Done), ..Default::default() }, 4).unwrap();
+        let mut done = reg.get_issue(&i.id).unwrap().unwrap();
+        done.status = IssueStatus::Done;
+        reg.upsert_issue_row(&done).unwrap();
         assert!(!reg.rollback_issue_to_todo(&i.id, 5).unwrap());
         assert_eq!(reg.get_issue(&i.id).unwrap().unwrap().status, IssueStatus::Done);
     }
@@ -1992,6 +2018,9 @@ mod tests {
             body: "b".into(),
             status: IssueStatus::Todo,
             priority: 1,
+            due: None,
+            scheduled: None,
+            rank: None,
             created_at: 10,
             updated_at: 10,
         };
@@ -2009,6 +2038,26 @@ mod tests {
         assert_eq!(stored.title, "Edited");
         assert_eq!(stored.status, IssueStatus::Done);
         assert_eq!(reg.list_issues("p1").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn issue_patch_distinguishes_absent_from_null() {
+        // Absent nullable fields deserialize to None (untouched)…
+        let p: IssuePatch = serde_json::from_str(r#"{"title":"t"}"#).unwrap();
+        assert_eq!(p.title.as_deref(), Some("t"));
+        assert_eq!((p.due, p.scheduled, p.rank), (None, None, None));
+        // …explicit null to Some(None) (clear)…
+        let p: IssuePatch = serde_json::from_str(r#"{"due":null,"rank":null}"#).unwrap();
+        assert_eq!(p.due, Some(None));
+        assert_eq!(p.rank, Some(None));
+        assert_eq!(p.scheduled, None);
+        // …and a value to Some(Some(v)).
+        let p: IssuePatch =
+            serde_json::from_str(r#"{"due":"2026-08-01","scheduled":"2026-07-30","rank":1.5}"#)
+                .unwrap();
+        assert_eq!(p.due, Some(Some("2026-08-01".into())));
+        assert_eq!(p.scheduled, Some(Some("2026-07-30".into())));
+        assert_eq!(p.rank, Some(Some(1.5)));
     }
 
     #[test]

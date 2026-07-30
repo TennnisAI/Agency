@@ -4,6 +4,7 @@ import { runName } from "../agents";
 import { ISSUE_STATUSES, PRIORITY_LABELS, STATUS_LABELS, fmtDate, isOverdue } from "../lib/issues";
 import { dateStamp } from "../lib/dailyNote";
 import { PriorityGlyph, StatusDot } from "./IssueRow";
+import DatePicker from "./DatePicker";
 
 function ts(secs: number): string {
   return new Date(secs * 1000).toLocaleString(undefined, {
@@ -12,8 +13,8 @@ function ts(secs: number): string {
 }
 
 // A date as a quiet property pill: reads as text ("◷ Due Aug 1"), the click
-// opens the calendar picker (an invisible date input carries the value — the
-// segmented mm/dd/yyyy control never shows). Unset renders a ghost prompt;
+// opens the in-app calendar popover (native pickers can't be dismissed
+// without choosing a date in this webview). Unset renders a ghost prompt;
 // clearing is the ✕ that appears once a date is set.
 function DateProp({
   glyph,
@@ -28,64 +29,57 @@ function DateProp({
   overdue?: boolean;
   onChange: (v: string | null) => void;
 }) {
-  const inputRef = useRef<HTMLInputElement>(null);
+  const pillRef = useRef<HTMLSpanElement>(null);
+  const [picker, setPicker] = useState<{ top: number; left?: number; right?: number } | null>(null);
   const today = dateStamp(new Date());
-  // Without showPicker (older WebKit) the invisible-input trick would leave
-  // the pill inert — fall back to the plain segmented control there.
-  const canPick = "showPicker" in HTMLInputElement.prototype;
 
+  // Same edge-flip anchoring as the row menus: the detail pane hugs the
+  // window's right edge, so the popover usually opens leftward.
   const openPicker = () => {
-    const el = inputRef.current;
-    if (!el) return;
-    try {
-      (el as HTMLInputElement & { showPicker?: () => void }).showPicker?.();
-    } catch {
-      el.focus();
-    }
+    const r = pillRef.current?.getBoundingClientRect();
+    if (!r) return;
+    const MENU_W = 240; // .date-picker width
+    const fitsRight = r.left + MENU_W <= window.innerWidth - 8;
+    setPicker(
+      fitsRight
+        ? { top: r.bottom + 4, left: r.left }
+        : { top: r.bottom + 4, right: window.innerWidth - r.right },
+    );
   };
 
-  if (!canPick) {
-    return (
-      <input
-        className="date-input-fallback"
-        type="date"
-        title={label}
-        value={value ?? ""}
-        onChange={(e) => onChange(e.target.value || null)}
-      />
-    );
-  }
-
   return (
-    <span
-      className={`issue-prop-pill date-pill${value ? "" : " date-empty"}${overdue ? " overdue" : ""}`}
-      role="button"
-      tabIndex={0}
-      title={value ? `${label} ${value} — click to change` : `Set ${label.toLowerCase()} date`}
-      onClick={openPicker}
-      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openPicker(); } }}
-    >
-      <span aria-hidden>{glyph}</span>
-      {value ? `${label} ${fmtDate(value, today)}` : label}
-      {value && (
-        <button
-          className="date-clear"
-          title={`Clear ${label.toLowerCase()} date`}
-          onClick={(e) => { e.stopPropagation(); onChange(null); }}
-        >
-          ✕
-        </button>
+    <>
+      <span
+        ref={pillRef}
+        className={`issue-prop-pill date-pill${value ? "" : " date-empty"}${overdue ? " overdue" : ""}`}
+        role="button"
+        tabIndex={0}
+        title={value ? `${label} ${value} — click to change` : `Set ${label.toLowerCase()} date`}
+        onClick={openPicker}
+        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openPicker(); } }}
+      >
+        <span aria-hidden>{glyph}</span>
+        {value ? `${label} ${fmtDate(value, today)}` : label}
+        {value && (
+          <button
+            className="date-clear"
+            title={`Clear ${label.toLowerCase()} date`}
+            onClick={(e) => { e.stopPropagation(); onChange(null); }}
+          >
+            ✕
+          </button>
+        )}
+      </span>
+      {picker && (
+        <DatePicker
+          value={value}
+          coords={picker}
+          onPick={(d) => { setPicker(null); if (d !== value) onChange(d); }}
+          onClear={() => { setPicker(null); onChange(null); }}
+          onClose={() => setPicker(null)}
+        />
       )}
-      <input
-        ref={inputRef}
-        className="date-input-hidden"
-        type="date"
-        tabIndex={-1}
-        aria-hidden
-        value={value ?? ""}
-        onChange={(e) => onChange(e.target.value || null)}
-      />
-    </span>
+    </>
   );
 }
 

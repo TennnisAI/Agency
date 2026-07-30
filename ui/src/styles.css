@@ -1725,28 +1725,37 @@ input, textarea, code,
 .issue-row.drop-above { box-shadow: 0 -2px 0 0 var(--blue); border-radius: 0 0 7px 7px; }
 .issue-row.drop-below { box-shadow: 0 2px 0 0 var(--blue); border-radius: 7px 7px 0 0; }
 
-/* Detail pane date props: text-quiet pills; the real date input is invisible
-   and only exists to host the calendar picker (showPicker on click). */
-.issue-prop-pill.date-pill { position: relative; }
-.issue-prop-pill.date-empty { color: var(--o0); background: transparent; border-color: var(--s1); border-style: dashed; }
+/* Detail pane date props: text-quiet pills; clicking opens the in-app
+   calendar popover below. */
+.issue-prop-pill.date-pill { cursor: pointer; }
+.issue-prop-pill.date-empty { color: var(--o0); background: transparent; border: 1px dashed var(--s1); }
 .issue-prop-pill.date-empty:hover { color: var(--o1); background: var(--s0); }
 .issue-prop-pill.date-pill.overdue { color: var(--red); }
-.date-input-hidden {
-  position: absolute; inset: 0; width: 100%; height: 100%;
-  opacity: 0; pointer-events: none; border: 0; padding: 0;
-}
 .date-clear {
   background: transparent; border: 0; padding: 0 0 0 2px; margin-right: -3px;
   color: var(--o0); cursor: pointer; font-size: 10px; line-height: 1;
 }
 .date-clear:hover { color: var(--text); }
-/* Only rendered when the webview has no showPicker() to anchor a calendar. */
-.date-input-fallback {
-  background: var(--s0); border: 1px solid transparent; border-radius: 999px;
-  color: var(--text); font-family: var(--sans); font-size: 12px;
-  padding: 4px 10px; outline: none;
+
+/* Calendar popover — agent-menu chrome, calendar innards. Selectors are
+   scoped under .date-picker to out-rank the .agent-menu button defaults. */
+.date-picker { width: 240px; min-width: 240px; padding: 8px; }
+.date-picker-head { display: flex; align-items: center; gap: 2px; padding: 0 0 4px; }
+.date-picker .date-picker-label { flex: 1; text-align: center; font-size: 12px; font-weight: 600; }
+.date-picker .icon-btn { padding: 2px 8px; font-size: 13px; }
+.date-picker-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 1px; }
+.date-picker-dow { text-align: center; color: var(--o0); font-size: 9.5px; padding: 2px 0 4px; }
+.date-picker .date-cell {
+  padding: 5px 0; text-align: center; border-radius: 6px;
+  font-size: 11.5px; font-variant-numeric: tabular-nums;
 }
-.date-input-fallback:hover, .date-input-fallback:focus { background: var(--s1); }
+.date-picker .date-cell.out { color: var(--o0); opacity: .55; }
+.date-picker .date-cell.today { color: var(--blue); font-weight: 700; }
+.date-picker .date-cell.selected,
+.date-picker .date-cell.selected:hover { background: var(--blue); color: var(--crust); }
+.date-picker-foot { display: flex; align-items: center; padding: 6px 2px 0; }
+.date-picker-foot .spacer { flex: 1; }
+.date-picker .ghost { padding: 3px 8px; font-size: 11.5px; }
 
 /* Home overview, issues mode */
 .home-issues { display: flex; flex-direction: column; padding: 2px 4px 6px; }

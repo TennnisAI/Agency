@@ -408,6 +408,102 @@ pub fn read_markdown_files(root: &Path, rel_dir: &str, paths: &[String]) -> Resu
     Ok(out)
 }
 
+/// One `- [ ]` / `- [x]` checkbox found in the markdown corpus.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskHit {
+    /// Path relative to the scanned directory, `/`-separated.
+    pub path: String,
+    /// 0-based line number of the task line.
+    pub line: u32,
+    pub checked: bool,
+    /// The task's text with bullet and marker stripped, trimmed.
+    pub text: String,
+}
+
+/// Parse `- [ ] text` / `- [x] text` (also `*`/`+` bullets, any indentation).
+/// The 3-char marker must be followed by a space or end the line. Returns
+/// (checked, text) or None.
+fn parse_task_line(line: &str) -> Option<(bool, &str)> {
+    let s = line.trim_start();
+    let rest = ["- ", "* ", "+ "].iter().find_map(|p| s.strip_prefix(p))?;
+    let checked = match rest.get(..3)? {
+        "[ ]" => false,
+        "[x]" | "[X]" => true,
+        _ => return None,
+    };
+    let tail = &rest[3..];
+    if !tail.is_empty() && !tail.starts_with(' ') {
+        return None;
+    }
+    Some((checked, tail.trim()))
+}
+
+/// Collect every checkbox task in the markdown corpus under `rel_dir` — the
+/// same walk (and therefore the same file set) as the docs index, skipping
+/// fenced code blocks the way the frontend parser does. Feeds the Home Tasks
+/// aggregation, so only task lines cross the IPC boundary, not corpus bodies.
+pub fn scan_tasks(root: &Path, rel_dir: &str) -> Result<Vec<TaskHit>> {
+    let mut out = Vec::new();
+    let mut total: u64 = 0;
+    for (rel, abs, meta) in walk_markdown(root, rel_dir)? {
+        if total >= MAX_CORPUS_BYTES {
+            break;
+        }
+        if meta.len() > MAX_FILE_BYTES {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(&abs) else { continue };
+        let Ok(text) = String::from_utf8(bytes) else { continue };
+        total += text.len() as u64;
+        let mut in_fence = false;
+        for (i, line) in text.split('\n').enumerate() {
+            if line.starts_with("```") || line.starts_with("~~~") {
+                in_fence = !in_fence;
+                continue;
+            }
+            if in_fence {
+                continue;
+            }
+            if let Some((checked, task)) = parse_task_line(line) {
+                out.push(TaskHit { path: rel.clone(), line: i as u32, checked, text: task.to_string() });
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Flip the checkbox on one task line, in place. The caller's view of the file
+/// may be stale (agents and editors write concurrently), so the addressed line
+/// is re-verified: it must still parse as a task in the opposite state of
+/// `checked`. On a mismatch nothing is written and `false` comes back — the
+/// caller refreshes. The write is atomic (temp + rename) so a reader never
+/// sees a torn file.
+pub fn toggle_task(root: &Path, rel_dir: &str, rel: &str, line: u32, checked: bool) -> Result<bool> {
+    let base = resolve_within(root, rel_dir)?;
+    let path = resolve_within(&base, rel)?;
+    let text = std::fs::read_to_string(&path)?;
+    let lines: Vec<&str> = text.split('\n').collect();
+    let Some(target) = lines.get(line as usize) else {
+        return Ok(false);
+    };
+    let Some((was, _)) = parse_task_line(target) else {
+        return Ok(false);
+    };
+    if was == checked {
+        return Ok(false);
+    }
+    let marker_at = (target.len() - target.trim_start().len()) + 2;
+    let mut new_line = String::with_capacity(target.len());
+    new_line.push_str(&target[..marker_at]);
+    new_line.push_str(if checked { "[x]" } else { "[ ]" });
+    new_line.push_str(&target[marker_at + 3..]);
+    let mut out: Vec<&str> = lines;
+    out[line as usize] = &new_line;
+    crate::issuefs::atomic_write(&path, &out.join("\n"))?;
+    Ok(true)
+}
+
 #[derive(Debug, Clone)]
 pub struct BinaryFile {
     pub bytes: Vec<u8>,
@@ -590,5 +686,83 @@ mod gitignore_tests {
 
         add_to_gitignore(root, "a.log").unwrap();
         assert_eq!(std::fs::read_to_string(root.join(".gitignore")).unwrap(), "node_modules\n/a.log\n");
+    }
+}
+
+#[cfg(test)]
+mod task_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn scan_tasks_finds_checkboxes_with_lines_and_text() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir(root.join("docs")).unwrap();
+        std::fs::write(
+            root.join("docs/todo.md"),
+            "# Todo\n\n- [ ] call the bank\n- [x] done thing\n  * [ ] indented star\n- not a task\n- [z] bad marker\n",
+        )
+        .unwrap();
+
+        let hits = scan_tasks(root, "docs").unwrap();
+        assert_eq!(
+            hits,
+            vec![
+                TaskHit { path: "todo.md".into(), line: 2, checked: false, text: "call the bank".into() },
+                TaskHit { path: "todo.md".into(), line: 3, checked: true, text: "done thing".into() },
+                TaskHit { path: "todo.md".into(), line: 4, checked: false, text: "indented star".into() },
+            ]
+        );
+    }
+
+    #[test]
+    fn scan_tasks_skips_fenced_blocks_and_non_corpus_files() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("note.md"), "```\n- [ ] in code\n```\n- [ ] real\n").unwrap();
+        std::fs::write(root.join("script.sh"), "- [ ] not markdown\n").unwrap();
+        std::fs::create_dir(root.join(".hidden")).unwrap();
+        std::fs::write(root.join(".hidden/x.md"), "- [ ] hidden\n").unwrap();
+
+        // Workspace-vault style: rel_dir "" walks the root.
+        let hits = scan_tasks(root, "").unwrap();
+        assert_eq!(
+            hits,
+            vec![TaskHit { path: "note.md".into(), line: 3, checked: false, text: "real".into() }]
+        );
+    }
+
+    #[test]
+    fn toggle_task_flips_in_place_and_preserves_the_rest() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let filler = "filler line\n".repeat(200);
+        let text = format!("# T\n{filler}- [ ] the task  \ntail\n");
+        std::fs::write(root.join("n.md"), &text).unwrap();
+
+        assert!(toggle_task(root, "", "n.md", 201, true).unwrap());
+        let after = std::fs::read_to_string(root.join("n.md")).unwrap();
+        assert_eq!(after, text.replace("- [ ] the task  ", "- [x] the task  "));
+
+        assert!(toggle_task(root, "", "n.md", 201, false).unwrap());
+        assert_eq!(std::fs::read_to_string(root.join("n.md")).unwrap(), text);
+    }
+
+    #[test]
+    fn toggle_task_refuses_stale_or_invalid_lines() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let text = "- [ ] a\nplain\n";
+        std::fs::write(root.join("n.md"), text).unwrap();
+
+        // Line is not a task.
+        assert!(!toggle_task(root, "", "n.md", 1, true).unwrap());
+        // Line out of range.
+        assert!(!toggle_task(root, "", "n.md", 99, true).unwrap());
+        // Already in the requested state (caller's view was stale).
+        assert!(!toggle_task(root, "", "n.md", 0, false).unwrap());
+        // Nothing was written by any refusal.
+        assert_eq!(std::fs::read_to_string(root.join("n.md")).unwrap(), text);
     }
 }

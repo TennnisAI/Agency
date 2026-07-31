@@ -42,6 +42,7 @@ import {
   setUpdateCheckEnabled,
 } from "../api";
 import Toggle from "./Toggle";
+import ConfirmDialog from "./ConfirmDialog";
 import { toastError, toastSuccess } from "../lib/toast";
 import { agentColor, agentLabel } from "../agents";
 import { THEMES, ThemeId, applyTheme, getStoredTheme } from "../lib/themes";
@@ -544,6 +545,33 @@ export default function Settings({
     }
   }
 
+  // Switch = point the workspace at a different folder (picked directly,
+  // unlike Move which picks a parent and renames on disk). The old folder
+  // stays untouched, so switching back is choosing it again; the idempotent
+  // create_workspace repoints the row and seeds a fresh folder's guide.
+  const [wsSwitch, setWsSwitch] = useState<string | null>(null);
+  async function pickSwitchWorkspace() {
+    if (!workspace) return;
+    const sel = await openDialog({ directory: true, multiple: false });
+    if (typeof sel !== "string") return;
+    const dest = sel.replace(/\/+$/, "");
+    if (dest === workspace.repo_path) return;
+    setWsSwitch(dest);
+  }
+  async function doSwitchWorkspace(dest: string) {
+    try {
+      // Keep the current git preference; a gitless workspace stays gitless
+      // (Enable git stays one click away in this section).
+      await createWorkspace(dest, !wsGitless);
+      refreshWorkspace();
+      // Same-value re-fire: makes ProjectTree refetch the repointed row.
+      setWorkspaceHidden(wsOff);
+      toastSuccess("Workspace switched");
+    } catch (e) {
+      toastError(e, "Couldn't switch workspace");
+    }
+  }
+
   // Hide the workspace entirely for people who don't want it: the pinned ◈
   // row (and ⌘⇧D / the palette entry) go away. A created workspace is also
   // closed — sessions stop, records and files stay — and re-enabling revives
@@ -640,7 +668,18 @@ export default function Settings({
                   <span className="settings-notif-label">
                     Location: <code className="settings-meta-val">{workspace.repo_path}</code>
                   </span>
-                  <button className="settings-save" onClick={doMoveWorkspace}>Move…</button>
+                  <span style={{ display: "flex", gap: 8 }}>
+                    <button
+                      className="settings-save"
+                      title="Move this folder somewhere else on disk"
+                      onClick={doMoveWorkspace}
+                    >Move…</button>
+                    <button
+                      className="settings-save"
+                      title="Use a different folder as the workspace; this one stays on disk"
+                      onClick={() => { void pickSwitchWorkspace(); }}
+                    >Switch…</button>
+                  </span>
                 </div>
                 {wsGitless && (
                   <div className="settings-notif-row">
@@ -1134,6 +1173,16 @@ export default function Settings({
           </div>
         </section>
       </div>
+
+      {wsSwitch && (
+        <ConfirmDialog
+          title="Switch workspace?"
+          body={`Your journal, notes, and workspace issues will now live in "${wsSwitch}". The current folder stays on disk untouched; choose it again later to switch back. A fresh folder starts with the Welcome guide.`}
+          confirmLabel="Switch"
+          onConfirm={() => { const d = wsSwitch; setWsSwitch(null); void doSwitchWorkspace(d); }}
+          onCancel={() => setWsSwitch(null)}
+        />
+      )}
     </main>
   );
 }

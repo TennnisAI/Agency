@@ -15,7 +15,7 @@ import { python } from "@codemirror/lang-python";
 import { autocompletion, CompletionContext, CompletionResult } from "@codemirror/autocomplete";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { FileRoot, readFileBase64 } from "../api";
-import { DocsIndex, stripExt } from "./docsIndex";
+import { DocsIndex, parseFrontmatter, stripExt } from "./docsIndex";
 import { CrossRefs, issueCompletionOptions, wikilinkView } from "./links";
 import { joinPath } from "./filePath";
 
@@ -270,6 +270,17 @@ class HRWidget extends WidgetType {
   }
 }
 
+// The opening frontmatter fence renders as a small "properties" label.
+class FmLabelWidget extends WidgetType {
+  eq() { return true; }
+  toDOM() {
+    const el = document.createElement("span");
+    el.className = "lp-fm-label";
+    el.textContent = "properties";
+    return el;
+  }
+}
+
 // ── Decoration building ──────────────────────────────────────────────────────
 
 const TAG_RE = /(^|[\s(])#([A-Za-z0-9_][A-Za-z0-9_/-]*)/g;
@@ -305,7 +316,8 @@ class LivePreviewPlugin {
     const indexChanged =
       u.startState.facet(docsIndexFacet) !== u.state.facet(docsIndexFacet) ||
       u.startState.facet(crossRefsFacet) !== u.state.facet(crossRefsFacet);
-    if (u.docChanged || u.viewportChanged || indexChanged || key !== this.key) {
+    // focusChanged matters because reveal is focus-gated (see build).
+    if (u.docChanged || u.viewportChanged || indexChanged || u.focusChanged || key !== this.key) {
       this.key = key;
       [this.decorations, this.atomic] = this.safeBuild(u.view);
     }
@@ -325,7 +337,12 @@ class LivePreviewPlugin {
   build(view: EditorView): [DecorationSet, DecorationSet] {
     const decos: Range<Decoration>[] = [];
     const atomics: Range<Decoration>[] = [];
-    const active = activeLines(view);
+    // Reveal is focus-gated: an unfocused editor has no visible cursor, so
+    // nothing should show raw syntax. Without this, a freshly opened note
+    // reveals whatever line 1 holds (the cursor parks at position 0 on
+    // mount) — most visibly the frontmatter block, which rendered as raw
+    // fences until the first click into the body.
+    const active = view.hasFocus ? activeLines(view) : new Set<number>();
     const index = view.state.facet(docsIndexFacet);
     const cross = view.state.facet(crossRefsFacet);
     const doc = view.state.doc;
@@ -359,11 +376,61 @@ class LivePreviewPlugin {
       decos.push(isRevealed || multiline ? markDim.range(from, to) : hide.range(from, to));
     };
 
+    // Frontmatter: markdown has no node for it (the fences parse as a
+    // horizontal rule + setext heading, which reads wrong), so detect it
+    // textually — the same rule the index uses — style it as a property
+    // table, and keep the generic handlers out of its range entirely.
+    let fmLastLine = 0; // 1-based line of the closing fence; 0 = none
+    if (doc.lines >= 2 && doc.line(1).text.trim() === "---") {
+      const head: string[] = [];
+      const max = Math.min(doc.lines, 100);
+      for (let n = 1; n <= max; n++) head.push(doc.line(n).text);
+      const fm = parseFrontmatter(head);
+      if (fm) fmLastLine = fm.end;
+    }
+    const fmEndPos = fmLastLine ? doc.line(fmLastLine).to : 0;
+    if (fmLastLine) {
+      let rev = false;
+      for (let n = 1; n <= fmLastLine; n++) if (active.has(n)) { rev = true; break; }
+      if (!rev) {
+        for (let n = 1; n <= fmLastLine; n++) {
+          const line = doc.line(n);
+          if (n === 1 || n === fmLastLine) {
+            addLineClass(line.from, "lp-fm lp-fm-fence");
+            const deco = n === 1 ? Decoration.replace({ widget: new FmLabelWidget() }) : hide;
+            if (line.from < line.to) {
+              decos.push(deco.range(line.from, line.to));
+              atomics.push(deco.range(line.from, line.to));
+            }
+          } else {
+            addLineClass(line.from, "lp-fm");
+            const m = /^([A-Za-z][A-Za-z0-9_-]*)(\s*:\s*)(.*)$/.exec(line.text);
+            if (m) {
+              const keyEnd = line.from + m[1].length;
+              decos.push(Decoration.mark({ class: "lp-fm-key" }).range(line.from, keyEnd));
+              if (m[2]) decos.push(hide.range(keyEnd, keyEnd + m[2].length));
+              if (m[3]) {
+                decos.push(
+                  Decoration.mark({ class: "lp-fm-value" }).range(keyEnd + m[2].length, line.to),
+                );
+              }
+            }
+          }
+        }
+      }
+    }
+
     for (const { from, to } of view.visibleRanges) {
       tree.iterate({
         from, to,
         enter: (node) => {
           const name = node.name;
+
+          // Nodes inside the frontmatter range are styled (or revealed raw)
+          // above — never as rules/headings/paragraphs.
+          if (fmEndPos && node.from < fmEndPos && node.to <= fmEndPos && name !== "Document") {
+            return false;
+          }
 
           const headingLevel = name.startsWith("ATXHeading") ? Number(name.slice(10))
             : name === "SetextHeading1" ? 1 : name === "SetextHeading2" ? 2 : 0;
@@ -530,6 +597,7 @@ class LivePreviewPlugin {
       let n = doc.lineAt(from).number;
       const last = doc.lineAt(to).number;
       for (; n <= last; n++) {
+        if (n <= fmLastLine) continue; // frontmatter carries no tags
         const line = doc.line(n);
         for (const m of line.text.matchAll(TAG_RE)) {
           const start = line.from + m.index + m[1].length;

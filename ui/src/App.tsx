@@ -14,13 +14,15 @@ import Resizer from "./components/Resizer";
 import Toasts from "./components/Toasts";
 import { useShortcuts } from "./hooks/useShortcuts";
 import { usePaneWidth } from "./hooks/usePaneWidth";
-import { FileRoot, Project, RunInfo, agentOnboardingNeeded, archiveRun, checkForUpdate, confirmQuit, createDir, createFile, discardRun, getUpdateCheckEnabled, getWorkspace, inspectRepo, listProjects, readFile, setMenuContext, setUiState, writeFile } from "./api";
+import { FileRoot, Project, RepoReadiness, RunInfo, agentOnboardingNeeded, archiveRun, checkForUpdate, confirmQuit, createDir, createFile, createRun, discardRun, ensureWorkspaceGuide, getUpdateCheckEnabled, getWorkspace, gitLogGraph, inspectRepo, listArchivedRuns, listIssues, listProjects, readFile, setMenuContext, setUiState, writeFile } from "./api";
 import { pickDefaultAgent } from "./lib/defaultAgent";
-import { PENDING_ISSUE_KEY, PENDING_QUICKADD_KEY } from "./lib/issues";
+import { PENDING_ISSUE_KEY, PENDING_QUICKADD_KEY, isClosed, issueLabel } from "./lib/issues";
 import { NAVIGATE_EVENT, NavTarget } from "./lib/navigate";
 import { DAILY_TEMPLATE_PATH, JOURNAL_DIR, dailyNotePath, defaultDailyContent, renderDailyTemplate } from "./lib/dailyNote";
+import { WEEKLY_DIR, buildWeeklyNote, isoWeekStamp, isoWeekStart, weeklyNotePath } from "./lib/weeklyNote";
 import { toastError, toastInfo } from "./lib/toast";
 import { workspaceHidden } from "./lib/workspacePref";
+import RepoSetupDialog from "./components/RepoSetupDialog";
 
 const REPO_URL = "https://github.com/nic123/Agency";
 
@@ -101,6 +103,139 @@ function Shell() {
   }
   const dailyRef = useRef(openDailyNote);
   dailyRef.current = openDailyNote;
+
+  // Palette "Workspace Guide": bring back (or just open) the seeded
+  // Welcome.md that demos links, properties, tasks, and the journal.
+  async function openWorkspaceGuide() {
+    if (workspaceHidden()) {
+      toastInfo("The workspace is hidden. Turn it back on in Settings ▸ Workspace.");
+      return;
+    }
+    const ws = await getWorkspace().catch(() => null);
+    if (!ws) {
+      window.dispatchEvent(new CustomEvent("agency:create-workspace", { detail: { intent: "workspace-guide" } }));
+      return;
+    }
+    try {
+      const path = await ensureWorkspaceGuide(ws.id);
+      try { localStorage.setItem(`docs:last:${ws.id}`, path); } catch { /* storage unavailable */ }
+      selectProject(ws);
+      setTab("docs");
+      window.dispatchEvent(new CustomEvent("agency:open-note", { detail: { projectId: ws.id, path } }));
+    } catch (e) {
+      toastError(e, "Couldn't open the guide");
+    }
+  }
+  const guideRef = useRef(openWorkspaceGuide);
+  guideRef.current = openWorkspaceGuide;
+
+  // Narration offer after a fresh weekly note (confirm), and the repo-setup
+  // step when the workspace has uncommitted work (the note itself, usually).
+  const [weeklyNarrate, setWeeklyNarrate] = useState<{ ws: Project; path: string } | null>(null);
+  const [weeklySetup, setWeeklySetup] = useState<{ ws: Project; path: string; readiness: RepoReadiness } | null>(null);
+
+  // File ▸ Generate Weekly Note / palette: assemble journal/weekly/2026-W31.md
+  // from local data — merges (git log per project), issues closed (index
+  // status + updated), agent runs archived — then open it in the workspace.
+  // An existing note for this week is opened untouched: narration and hand
+  // edits live there, regeneration would clobber them.
+  async function generateWeeklyNote() {
+    if (workspaceHidden()) {
+      toastInfo("The workspace is hidden. Turn it back on in Settings ▸ Workspace.");
+      return;
+    }
+    const ws = await getWorkspace().catch(() => null);
+    if (!ws) {
+      window.dispatchEvent(new CustomEvent("agency:create-workspace", { detail: { intent: "weekly-note" } }));
+      return;
+    }
+    const root: FileRoot = { kind: "project", id: ws.id };
+    const now = new Date();
+    const path = weeklyNotePath(now);
+    const existing = await readFile(root, path).catch(() => null);
+    if (existing) {
+      toastInfo("This week's note already exists. Opening it.");
+    } else {
+      try {
+        const weekStartSec = Math.floor(isoWeekStart(now).getTime() / 1000);
+        const projects = await listProjects();
+        const merges: { project: string; subjects: string[] }[] = [];
+        const issuesClosed: { label: string; title: string }[] = [];
+        const runsArchived: { id: string; title: string; project: string }[] = [];
+        // Per-project fetches in parallel; a failing project contributes
+        // nothing rather than failing the note.
+        await Promise.all(projects.map(async (p) => {
+          const [log, issues, archived] = await Promise.all([
+            gitLogGraph(`project:${p.id}`, 300).catch(() => []),
+            listIssues(p.id).catch(() => []),
+            listArchivedRuns(p.id).catch(() => []),
+          ]);
+          merges.push({
+            project: p.name,
+            subjects: log
+              .filter((c) => c.parents.length > 1 && c.date >= weekStartSec)
+              .map((c) => c.subject),
+          });
+          for (const i of issues) {
+            if (isClosed(i.status) && i.updatedAt >= weekStartSec) {
+              issuesClosed.push({ label: issueLabel(p, i), title: i.title });
+            }
+          }
+          for (const r of archived) {
+            if ((r.archivedAt ?? 0) >= weekStartSec) {
+              runsArchived.push({ id: r.id, title: r.title ?? r.prompt.slice(0, 60), project: p.name });
+            }
+          }
+        }));
+        merges.sort((a, b) => a.project.localeCompare(b.project));
+        await createDir(root, JOURNAL_DIR).catch(() => { /* already exists */ });
+        await createDir(root, WEEKLY_DIR).catch(() => { /* already exists */ });
+        await createFile(root, path);
+        await writeFile(root, path, buildWeeklyNote(isoWeekStamp(now), { merges, issuesClosed, runsArchived }));
+      } catch (e) {
+        toastError(e, "Couldn't generate the weekly note");
+        return;
+      }
+    }
+    try { localStorage.setItem(`docs:last:${ws.id}`, path); } catch { /* storage unavailable */ }
+    selectProject(ws);
+    setTab("docs");
+    window.dispatchEvent(new CustomEvent("agency:open-note", { detail: { projectId: ws.id, path } }));
+    if (!existing) {
+      // Offer narration only where an agent can actually run (git workspace).
+      const r = await inspectRepo(ws.repo_path).catch(() => null);
+      if (r && r.state !== "notARepo") setWeeklyNarrate({ ws, path });
+    }
+  }
+  const weeklyRef = useRef(generateWeeklyNote);
+  weeklyRef.current = generateWeeklyNote;
+
+  async function dispatchWeeklyNarration(ws: Project, path: string) {
+    try {
+      const agent = await pickDefaultAgent(ws.id, ws.default_agent);
+      const prompt = `Narrate the weekly review note \`${path}\`. Read it, then write a short narrative summary of the week into its Notes section, drawing on the listed merges, closed issues, and archived runs. Keep the existing sections and wikilinks intact.`;
+      const run = await createRun(ws.id, prompt, agent, "HEAD", null);
+      openRun(ws, run.id);
+    } catch (e) {
+      toastError(e, "Couldn't start agent");
+    }
+  }
+
+  // Confirmed narration: same readiness gate as issue dispatch — a dirty
+  // workspace (the fresh note is uncommitted) goes through RepoSetupDialog
+  // so the note is committed and visible in the agent's worktree.
+  async function confirmWeeklyNarration() {
+    if (!weeklyNarrate) return;
+    const { ws, path } = weeklyNarrate;
+    setWeeklyNarrate(null);
+    const r = await inspectRepo(ws.repo_path).catch(() => null);
+    if (!r || r.state === "notARepo") {
+      toastInfo("Agents need git. Initialize a repository in the workspace first.");
+      return;
+    }
+    if (r.state === "ready" && !r.dirty) await dispatchWeeklyNarration(ws, path);
+    else setWeeklySetup({ ws, path, readiness: r });
+  }
 
   useShortcuts({
     onNewTask: () => { newTaskDefaultAgent(); },
@@ -195,6 +330,8 @@ function Shell() {
       case "clone-project": window.dispatchEvent(new CustomEvent("agency:clone-project")); break;
       case "source": setTab("source"); break;
       case "daily-note": openDailyNote(); break;
+      case "weekly-note": void generateWeeklyNote(); break;
+      case "workspace-guide": void openWorkspaceGuide(); break;
       // Palette-only actions (no native-menu counterpart) share this router so
       // every palette command goes through exactly one switch.
       case "new-issue": sessionStorage.setItem(PENDING_QUICKADD_KEY, "1"); setTab("issues"); break;
@@ -274,9 +411,10 @@ function Shell() {
     // as DOM events (the palette can't call into Shell directly).
     const daily = () => { void dailyRef.current(); };
     const ready = (e: Event) => {
-      if ((e as CustomEvent<{ intent?: string }>).detail?.intent === "daily-note") {
-        void dailyRef.current();
-      }
+      const intent = (e as CustomEvent<{ intent?: string }>).detail?.intent;
+      if (intent === "daily-note") void dailyRef.current();
+      else if (intent === "weekly-note") void weeklyRef.current();
+      else if (intent === "workspace-guide") void guideRef.current();
     };
     const navigate = (e: Event) => {
       const detail = (e as CustomEvent<NavTarget>).detail;
@@ -378,6 +516,28 @@ function Shell() {
           danger={agentAction.kind === "discard"}
           onConfirm={() => { runAgentAction(); }}
           onCancel={() => setAgentAction(null)}
+        />
+      )}
+      {weeklyNarrate && (
+        <ConfirmDialog
+          title="Narrate with an agent?"
+          body="Dispatch a workspace agent to turn this week's facts into a short written summary in the note's Notes section."
+          confirmLabel="Dispatch"
+          onConfirm={() => { void confirmWeeklyNarration(); }}
+          onCancel={() => setWeeklyNarrate(null)}
+        />
+      )}
+      {weeklySetup && (
+        <RepoSetupDialog
+          readiness={weeklySetup.readiness}
+          context="spawn"
+          repoPath={weeklySetup.ws.repo_path}
+          onResolved={() => {
+            const { ws, path } = weeklySetup;
+            setWeeklySetup(null);
+            void dispatchWeeklyNarration(ws, path);
+          }}
+          onCancel={() => setWeeklySetup(null)}
         />
       )}
       {quitPrompt !== null && (

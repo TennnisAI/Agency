@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FileRoot, createFile, createDir, renamePath, searchFiles, trashPath, writeFile } from "../api";
-import { DocsIndex, SearchHit, mergeBodyHits, searchDocs, searchLocal, stripExt } from "../lib/docsIndex";
+import { DocsIndex, SearchHit, fmFilterPaths, mergeBodyHits, searchDocs, searchLocal, stripExt } from "../lib/docsIndex";
+import { parseDocsQuery } from "../lib/docsQuery";
 import { joinPath, parentPath, baseName } from "../lib/filePath";
 import { FileIcon } from "./fileIcons";
 import Menu, { MenuEntry } from "./git/Menu";
@@ -251,11 +252,16 @@ export default function DocsTree({
     const local = searchLocal(index, q);
     setHits(local);
     if (q.startsWith("#")) return; // tag queries are fully local
+    const { filters, text } = parseDocsQuery(q);
+    if (filters.length > 0 && !text) return; // filter-only queries are fully local
     const t = window.setTimeout(async () => {
       let merged: SearchHit[];
       try {
-        const body = await searchFiles(root, docsDir, { query: q, globs: ["*.md", "*.markdown"] });
-        merged = mergeBodyHits(index, local, body);
+        // The backend only sees the free-text remainder; frontmatter filters
+        // restrict which docs its body hits may come from.
+        const body = await searchFiles(root, docsDir, { query: text, globs: ["*.md", "*.markdown"] });
+        const allowed = filters.length > 0 ? fmFilterPaths(index, filters) : undefined;
+        merged = mergeBodyHits(index, local, body, allowed);
       } catch {
         merged = searchDocs(index, q);
       }
@@ -272,7 +278,7 @@ export default function DocsTree({
       <div className="docs-search">
         <input
           className="docs-search-input"
-          placeholder="Search notes…  (#tag)"
+          placeholder="Search notes…  (#tag, key:value)"
           value={query}
           onChange={(e) => onQuery(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Escape") onQuery(""); }}

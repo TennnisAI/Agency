@@ -1715,6 +1715,49 @@ pub async fn read_docs_files(
     agency_core::files::read_markdown_files(&base, &docs_dir, &paths).map_err(|e| e.to_string())
 }
 
+/// Seed the workspace's Welcome guide if it was deleted and return its note
+/// path. Backs the palette's "Workspace Guide" command; creation-time seeding
+/// happens in create_workspace. Sync: it writes a file.
+#[tauri::command]
+pub fn ensure_workspace_guide(
+    state: State<'_, AppState>,
+    project_id: String,
+) -> Result<String, String> {
+    let base = state.project_repo_path(&project_id).map_err(|e| e.to_string())?;
+    agency_core::guide::ensure_guide(&base).map_err(|e| e.to_string())?;
+    Ok(agency_core::guide::GUIDE_FILE.to_string())
+}
+
+/// Every checkbox task in a root's docs corpus (one-stop Phase 8) — same walk
+/// as the corpus reads, but only task lines cross the IPC boundary. Async:
+/// read-only and polled from Home.
+#[tauri::command]
+pub async fn scan_tasks(
+    state: State<'_, AppState>,
+    root: FileRoot,
+    docs_dir: String,
+) -> Result<Vec<agency_core::files::TaskHit>, String> {
+    let base = resolve_root(&state, &root)?;
+    agency_core::files::scan_tasks(&base, &docs_dir).map_err(|e| e.to_string())
+}
+
+/// Flip one checkbox task in place (one-stop Phase 8). Sync like the other
+/// mutating file commands; the core re-verifies the line before writing and
+/// returns false when the caller's view was stale.
+#[tauri::command]
+pub fn toggle_task(
+    state: State<'_, AppState>,
+    root: FileRoot,
+    docs_dir: String,
+    rel_path: String,
+    line: u32,
+    checked: bool,
+) -> Result<bool, String> {
+    let base = resolve_root(&state, &root)?;
+    agency_core::files::toggle_task(&base, &docs_dir, &rel_path, line, checked)
+        .map_err(|e| e.to_string())
+}
+
 /// Content search under `dir` within a root (one-stop Phase 2). Hit paths come
 /// back relative to `dir`. Async on purpose: a search must never wedge the
 /// main thread — the core enforces hit/byte/time caps so it always returns.

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Issue,
   IssuePatch,
@@ -6,7 +6,9 @@ import {
   Project,
   RepoReadiness,
   RunInfo,
+  TaskHit,
   agentInstalled,
+  createIssue,
   deleteIssue,
   inspectRepo,
   startIssueRun,
@@ -25,8 +27,13 @@ import {
 } from "../lib/issues";
 import { dateStamp } from "../lib/dailyNote";
 import { pickDefaultAgent } from "../lib/defaultAgent";
+import { parentPath } from "../lib/filePath";
+import { requestNavigate } from "../lib/navigate";
+import { TaskExclusion, TaskGroup, isTaskExcluded, openTaskCount, promoteBody } from "../lib/tasks";
 import { toastError } from "../lib/toast";
+import { useAllTasks } from "../hooks/useAllTasks";
 import { useRuns } from "../store/runs";
+import Menu, { MenuEntry } from "./git/Menu";
 import IssueRow from "./IssueRow";
 import ConfirmDialog from "./ConfirmDialog";
 import RepoSetupDialog from "./RepoSetupDialog";
@@ -36,6 +43,34 @@ import { Stat } from "./HomeView";
 
 type StatusFilter = "open" | IssueStatus;
 type Sort = "board" | "due" | "updated";
+
+// Notes shown in the Tasks section before the explicit "N more" line.
+// Collapsed groups are one row each, so this can be generous.
+const TASK_GROUP_CAP = 30;
+
+// Persisted Tasks-section state: which sources the user hid, and which note
+// groups are expanded (groups start collapsed — plan docs carry hundreds of
+// checkboxes and an expanded wall of them buries the board).
+const TASKS_EXCLUDED_KEY = "home:tasksExcluded";
+const TASKS_OPEN_KEY = "home:tasksOpen";
+const TASKS_COLLAPSED_KEY = "home:tasksCollapsed";
+
+function loadJson<T>(key: string, fallback: T): T {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? (JSON.parse(raw) as T) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function saveJson(key: string, value: unknown) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    /* storage unavailable */
+  }
+}
 
 // The cross-project issue board (one-stop Phase 6): Today on top, filters and
 // search across every project, real IssueRows — inline edits and dispatch
@@ -175,6 +210,111 @@ export default function HomeIssues({
     await dispatch(project, issue, agent);
   }
 
+  // ── Tasks: checkboxes across every note, checked in place ────────────
+  const { groups: taskData, toggle: toggleTaskBox } = useAllTasks(true);
+  // Optimistic strikethrough while the write + poll round-trips.
+  const [struck, setStruck] = useState<Set<string>>(new Set());
+  const taskKey = (g: TaskGroup, t: TaskHit) => `${g.project.id}:${g.path}:${t.line}`;
+  // A refreshed scan drops checked tasks, so stale strike keys can go too.
+  useEffect(() => setStruck(new Set()), [taskData]);
+
+  const [taskExclusions, setTaskExclusions] = useState<TaskExclusion[]>(
+    () => loadJson<TaskExclusion[]>(TASKS_EXCLUDED_KEY, []),
+  );
+  const [tasksOpen, setTasksOpen] = useState<Set<string>>(
+    () => new Set(loadJson<string[]>(TASKS_OPEN_KEY, [])),
+  );
+  const [taskMenu, setTaskMenu] = useState<{ x: number; y: number; items: MenuEntry[] } | null>(null);
+  // The whole card folds to its header line; "show all" lifts the group cap
+  // for this visit (a persisted lift would quietly bring the wall back).
+  const [tasksCollapsed, setTasksCollapsed] = useState<boolean>(
+    () => loadJson<boolean>(TASKS_COLLAPSED_KEY, false),
+  );
+  const [showAllTaskGroups, setShowAllTaskGroups] = useState(false);
+
+  const groupKey = (g: TaskGroup) => `${g.project.id}:${g.path}`;
+  const setOpenSet = (next: Set<string>) => {
+    setTasksOpen(next);
+    saveJson(TASKS_OPEN_KEY, [...next]);
+  };
+  const toggleTasksCollapsed = () => {
+    setTasksCollapsed(!tasksCollapsed);
+    saveJson(TASKS_COLLAPSED_KEY, !tasksCollapsed);
+  };
+  const setExclusions = (next: TaskExclusion[]) => {
+    setTaskExclusions(next);
+    saveJson(TASKS_EXCLUDED_KEY, next);
+  };
+  const addExclusion = (rule: TaskExclusion) => setExclusions([...taskExclusions, rule]);
+
+  // The "N hidden" button lists every hidden source; clicking one unhides it.
+  function openHiddenMenu(e: React.MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    const items: MenuEntry[] = [
+      ...taskExclusions.map((r, i): MenuEntry => {
+        const name = byProject.get(r.projectId)?.name ?? "removed project";
+        return {
+          label: r.prefix === "" ? `Unhide all ${name} tasks` : `Unhide ${r.prefix} (${name})`,
+          onClick: () => setExclusions(taskExclusions.filter((_, j) => j !== i)),
+        };
+      }),
+      { kind: "separator" },
+      { label: "Unhide everything", onClick: () => setExclusions([]) },
+    ];
+    setTaskMenu({ x: e.clientX, y: e.clientY, items });
+  }
+
+  const taskGroups = (taskData ?? [])
+    .map((g) => ({ ...g, tasks: g.tasks.filter((t) => !t.checked) }))
+    .filter(
+      (g) =>
+        g.tasks.length > 0 &&
+        (!fProject || g.project.id === fProject) &&
+        !isTaskExcluded(g.project.id, g.path, taskExclusions),
+    );
+  const allOpen = taskGroups.length > 0 && taskGroups.every((g) => tasksOpen.has(groupKey(g)));
+
+  function openTaskMenu(e: React.MouseEvent, g: TaskGroup) {
+    e.preventDefault();
+    e.stopPropagation();
+    const folder = parentPath(g.path);
+    const items: MenuEntry[] = [
+      {
+        label: "Open note",
+        onClick: () => requestNavigate({ kind: "note", projectId: g.project.id, path: g.path }),
+      },
+      { kind: "separator" },
+      { label: `Hide "${g.title}"`, onClick: () => addExclusion({ projectId: g.project.id, prefix: g.path }) },
+      ...(folder
+        ? [{ label: `Hide folder "${folder}/"`, onClick: () => addExclusion({ projectId: g.project.id, prefix: folder }) }]
+        : []),
+      { label: `Hide all ${g.project.name} tasks`, onClick: () => addExclusion({ projectId: g.project.id, prefix: "" }) },
+    ];
+    setTaskMenu({ x: e.clientX, y: e.clientY, items });
+  }
+
+  async function checkTask(g: TaskGroup, t: TaskHit) {
+    const key = taskKey(g, t);
+    setStruck((s) => new Set(s).add(key));
+    try {
+      await toggleTaskBox(g, t, true);
+    } catch (e) {
+      setStruck((s) => { const n = new Set(s); n.delete(key); return n; });
+      toastError(e, "Couldn't update task");
+    }
+  }
+
+  async function promoteTask(g: TaskGroup, t: TaskHit) {
+    try {
+      const issue = await createIssue(g.project.id, t.text, promoteBody(g.path), "todo");
+      await refresh();
+      openIssue(g.project, issue);
+    } catch (e) {
+      toastError(e, "Couldn't create issue");
+    }
+  }
+
   const row = (project: Project, issue: Issue) => (
     <IssueRow
       key={issue.id}
@@ -284,6 +424,120 @@ export default function HomeIssues({
           </div>
         )}
       </section>
+
+      {(taskGroups.length > 0 || taskExclusions.length > 0) && (
+        <section className={`today-group tasks-group${tasksCollapsed ? " collapsed" : ""}`}>
+          <div className="today-head">
+            <button
+              className="task-collapse"
+              title={tasksCollapsed ? "Expand tasks" : "Collapse tasks"}
+              onClick={toggleTasksCollapsed}
+            >
+              <span className="task-note-chev">{tasksCollapsed ? "▸" : "▾"}</span>
+              <span className="today-title">Tasks</span>
+              <span className="today-meta">{openTaskCount(taskGroups)} unchecked in notes</span>
+            </button>
+            {!tasksCollapsed && (
+              <span className="task-head-tools">
+                {taskExclusions.length > 0 && (
+                  <button
+                    className="task-head-btn"
+                    title="List the hidden sources"
+                    onClick={openHiddenMenu}
+                  >
+                    {taskExclusions.length} hidden
+                  </button>
+                )}
+                {taskGroups.length > 0 && (
+                  <button
+                    className="task-head-btn"
+                    onClick={() =>
+                      setOpenSet(allOpen ? new Set() : new Set(taskGroups.map(groupKey)))
+                    }
+                  >
+                    {allOpen ? "Collapse all" : "Expand all"}
+                  </button>
+                )}
+              </span>
+            )}
+          </div>
+          {!tasksCollapsed &&
+            (showAllTaskGroups ? taskGroups : taskGroups.slice(0, TASK_GROUP_CAP)).map((g) => {
+            const gk = groupKey(g);
+            const isOpen = tasksOpen.has(gk);
+            return (
+              <div key={gk} className="task-note">
+                <button
+                  className="task-note-head"
+                  title={g.path}
+                  onClick={() => {
+                    const next = new Set(tasksOpen);
+                    if (isOpen) next.delete(gk);
+                    else next.add(gk);
+                    setOpenSet(next);
+                  }}
+                  onContextMenu={(e) => openTaskMenu(e, g)}
+                >
+                  <span className="task-note-chev">{isOpen ? "▾" : "▸"}</span>
+                  <span className="proj-icon" aria-hidden style={{ background: projectAccent(g.project) }}>
+                    {g.project.name.slice(0, 1).toUpperCase()}
+                  </span>
+                  <span className="task-note-title">{g.title}</span>
+                  <span className="task-note-count">{g.tasks.length}</span>
+                  <span className="task-note-meta">{g.project.name}</span>
+                  <span
+                    className="task-note-dots"
+                    title="Open or hide this source"
+                    onClick={(e) => openTaskMenu(e, g)}
+                  >
+                    ⋯
+                  </span>
+                </button>
+                {isOpen &&
+                  g.tasks.map((t) => {
+                    const key = taskKey(g, t);
+                    const isStruck = struck.has(key);
+                    return (
+                      <div key={key} className={`task-row${isStruck ? " struck" : ""}`}>
+                        <button
+                          className={`task-check${isStruck ? " checked" : ""}`}
+                          role="checkbox"
+                          aria-checked={isStruck}
+                          title="Check off in the note"
+                          onClick={() => { if (!isStruck) void checkTask(g, t); }}
+                        />
+                        <span className="task-text">{t.text}</span>
+                        <button
+                          className="task-promote"
+                          title="Promote to issue"
+                          onClick={() => void promoteTask(g, t)}
+                        >
+                          ▧ promote
+                        </button>
+                      </div>
+                    );
+                  })}
+              </div>
+            );
+          })}
+          {!tasksCollapsed && taskGroups.length > TASK_GROUP_CAP && (
+            <button
+              className="task-more"
+              onClick={() => setShowAllTaskGroups((s) => !s)}
+            >
+              {showAllTaskGroups
+                ? "Show fewer"
+                : `Show ${taskGroups.length - TASK_GROUP_CAP} more notes`}
+            </button>
+          )}
+          {!tasksCollapsed && taskGroups.length === 0 && (
+            <div className="today-empty">All visible tasks are done or hidden.</div>
+          )}
+          {taskMenu && (
+            <Menu x={taskMenu.x} y={taskMenu.y} items={taskMenu.items} onClose={() => setTaskMenu(null)} />
+          )}
+        </section>
+      )}
 
       {shownCount === 0 && filtered && (
         <div className="board empty">No issues match the current filters.</div>

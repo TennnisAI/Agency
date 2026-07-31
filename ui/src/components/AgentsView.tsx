@@ -68,11 +68,16 @@ export default function AgentsView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project?.id]);
   const gitlessWorkspace = project?.kind === "workspace" && projReadiness?.state === "notARepo";
+  // The workspace is a markdown vault: the Files tab would duplicate Docs
+  // (with a manual-save editor, no less), so it's hidden there entirely.
+  const isWorkspace = project?.kind === "workspace";
 
-  // Per-project tab memory can restore "source" from before git was declined.
+  // Per-project tab memory can restore "source" from before git was declined,
+  // or "files" from before the workspace hid it.
   useEffect(() => {
     if (gitlessWorkspace && tab === "source") setTab("agents");
-  }, [gitlessWorkspace, tab, setTab]);
+    if (isWorkspace && tab === "files") setTab("docs");
+  }, [gitlessWorkspace, isWorkspace, tab, setTab]);
 
   // Which working tree source control operates on: the focused run's worktree
   // (terminals share the project checkout) or, with no run selected, the
@@ -94,7 +99,9 @@ export default function AgentsView({
   // handler acts per keypress.
   const [quickOpen, setQuickOpen] = useState(false);
   const quickOpenGate = useRef({ enabled: false });
-  quickOpenGate.current.enabled = !!project && tab !== "docs";
+  // The workspace has no Files tab, so quick-open (which lands there) is off;
+  // ⌘P inside Docs is the note switcher.
+  quickOpenGate.current.enabled = !!project && tab !== "docs" && !isWorkspace;
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "p") {
@@ -152,7 +159,9 @@ export default function AgentsView({
           {!gitlessWorkspace && (
             <button className={tab === "source" ? "on" : ""} onClick={() => setTab("source")}>⎇ Source Control</button>
           )}
-          <button className={tab === "files" ? "on" : ""} onClick={() => setTab("files")}>▤ Files</button>
+          {!isWorkspace && (
+            <button className={tab === "files" ? "on" : ""} onClick={() => setTab("files")}>▤ Files</button>
+          )}
         </div>
         {project && tab === "agents" && (
           <div className="seg">

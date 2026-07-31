@@ -1861,6 +1861,83 @@ input, textarea, code,
 .today-meta { color: var(--o0); font-size: 11.5px; }
 .today-empty { color: var(--o0); font-size: 12.5px; padding: 2px 4px 6px; }
 
+/* Tasks: checkbox lines aggregated from notes; the card skin comes from
+   .today-group, kept quieter than Today (no border emphasis of its own). */
+.tasks-group { background: var(--base); }
+/* The whole card folds to its header line; the header is one click target.
+   Negative margins keep the text aligned while the hover pill gets padding
+   (the global button:hover background otherwise hugs the text). */
+.task-collapse {
+  display: flex; align-items: baseline; gap: 10px;
+  background: none; border: none; cursor: pointer;
+  padding: 4px 10px; margin: -4px -10px;
+  font-family: var(--sans); color: var(--text); text-align: left;
+  border-radius: 7px;
+}
+.task-collapse:hover { background: var(--s0); }
+.task-collapse .task-note-chev { align-self: center; }
+.tasks-group.collapsed .today-head { padding-bottom: 2px; }
+.task-head-tools { margin-left: auto; display: flex; gap: 6px; }
+.task-head-btn {
+  background: none; border: 1px solid var(--s1); border-radius: 999px;
+  color: var(--sub0); font-family: var(--sans); font-size: 10.5px;
+  padding: 1px 9px; cursor: pointer;
+}
+.task-head-btn:hover { color: var(--text); border-color: var(--o0); background: var(--s0); }
+.task-note { padding: 1px 0; }
+.task-note-chev { width: 10px; color: var(--o1); flex-shrink: 0; }
+.task-note-count {
+  color: var(--sub0); font-size: 10.5px; font-weight: 400; flex-shrink: 0;
+  background: var(--s0); border-radius: 999px; padding: 0 7px;
+}
+.task-note-dots {
+  margin-left: auto; color: var(--o0); padding: 0 6px; border-radius: 4px;
+  visibility: hidden; font-weight: 700;
+}
+.task-note-head:hover .task-note-dots { visibility: visible; }
+.task-note-dots:hover { color: var(--text); background: var(--s1); }
+.task-note-head {
+  display: flex; align-items: center; gap: 7px; width: 100%;
+  background: none; border: none; cursor: pointer; text-align: left;
+  padding: 4px; border-radius: 6px; color: var(--text); font-family: var(--sans);
+  font-size: 12.5px; font-weight: 600;
+}
+.task-note-head:hover { background: var(--s0); }
+.task-note-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-note-meta { color: var(--o0); font-size: 11px; font-weight: 400; flex-shrink: 0; }
+.task-row {
+  display: flex; align-items: center; gap: 9px;
+  padding: 3px 4px 3px 26px; border-radius: 6px; font-size: 13px;
+}
+.task-row:hover { background: var(--s0); }
+.task-row:hover .task-promote { visibility: visible; }
+.task-check {
+  width: 14px; height: 14px; border-radius: 4px; flex-shrink: 0;
+  border: 1.5px solid var(--s1); background: var(--mantle); cursor: pointer;
+  padding: 0; color: var(--crust); position: relative;
+}
+.task-check:hover { background: var(--mantle); border-color: var(--o0); }
+.task-check.checked, .task-check.checked:hover { background: var(--blue); border-color: var(--blue); }
+.task-check.checked::after {
+  content: "✓"; position: absolute; inset: 0; font-size: 10px; line-height: 12px;
+  color: var(--crust); text-align: center;
+}
+.task-text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-row.struck .task-text { color: var(--o0); text-decoration: line-through; }
+.task-promote {
+  visibility: hidden; flex-shrink: 0;
+  background: none; border: 1px solid var(--s1); border-radius: 999px;
+  color: var(--sub0); font-family: var(--sans); font-size: 10.5px;
+  padding: 1px 8px; cursor: pointer;
+}
+.task-promote:hover { color: var(--text); border-color: var(--o0); background: var(--s0); }
+.task-more {
+  background: none; border: none; cursor: pointer; text-align: left;
+  color: var(--sub0); font-family: var(--sans); font-size: 11.5px;
+  padding: 4px 4px 4px 26px; border-radius: 6px;
+}
+.task-more:hover { color: var(--text); background: var(--s0); }
+
 /* ── Docs tab ─────────────────────────────────────────────────── */
 .docs-empty { flex-direction: column; gap: 10px; text-align: center; padding: 40px; }
 .docs-empty-title { font-size: 15px; color: var(--text); }
@@ -1961,6 +2038,21 @@ input, textarea, code,
   display: inline-block; width: 100%; height: 0;
   border-top: 1px solid var(--line); vertical-align: middle;
 }
+/* Frontmatter rendered as a property table (raw text when the selection is
+   inside; backgrounds ride ::before at z-index:-3 under drawSelection). */
+.docs-editor-host .lp-fm { font-size: 12.5px; padding-left: 10px; position: relative; }
+.docs-editor-host .lp-fm::before {
+  content: ""; position: absolute; inset: 0; z-index: -3; background: var(--mantle);
+}
+.docs-editor-host .lp-fm.lp-fm-fence { font-size: 10px; line-height: 1.4; }
+.docs-editor-host .lp-fm-label {
+  color: var(--o1); font-size: 10px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .06em;
+}
+.docs-editor-host .lp-fm-key {
+  color: var(--sub0); display: inline-block; min-width: 92px; padding-right: 12px;
+}
+.docs-editor-host .lp-fm-value { color: var(--text); }
 
 /* ── Docs side panel (outline + backlinks) ────────────────────── */
 .docs-side { min-width: 180px; flex-shrink: 0; border-left: 1px solid var(--line); overflow-y: auto; }
@@ -1976,6 +2068,19 @@ input, textarea, code,
 .docs-side-count { color: var(--o0); font-weight: 400; }
 .docs-side-section { display: flex; flex-direction: column; padding: 0 4px 6px; }
 .docs-side-none { color: var(--o0); font-size: 12px; padding: 2px 12px 4px; }
+.docs-prop-row {
+  display: flex; align-items: baseline; gap: 8px;
+  font-size: 12px; padding: 3px 8px; border-radius: 5px;
+}
+.docs-prop-key {
+  color: var(--o1); flex-shrink: 0; min-width: 64px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.docs-prop-value {
+  color: var(--sub0); cursor: pointer; border-radius: 4px; padding: 0 4px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.docs-prop-value:hover { background: var(--s0); color: var(--text); }
 .docs-outline-row {
   font-size: 12px; color: var(--sub0); padding: 3px 8px; border-radius: 5px;
   cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;

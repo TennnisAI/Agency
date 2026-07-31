@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { SearchHit, buildIndex, mergeBodyHits, resolveLink, searchDocs, searchLocal } from "./docsIndex";
+import {
+  SearchHit,
+  buildIndex,
+  fmFilterPaths,
+  mergeBodyHits,
+  parseFrontmatter,
+  resolveLink,
+  searchDocs,
+  searchLocal,
+} from "./docsIndex";
 import { DocFile } from "../api";
 
 const doc = (path: string, text: string): DocFile => ({ path, text, tooLarge: false });
@@ -49,6 +58,99 @@ describe("buildIndex", () => {
     expect(link.target).toBe("Note");
     expect(link.heading).toBe("Some Heading");
     expect(link.alias).toBe("shown");
+  });
+});
+
+describe("frontmatter", () => {
+  it("parses ordered pairs and reports the body start", () => {
+    const meta = buildIndex([
+      doc("a.md", '---\nstatus: draft\ntype: "plan"\nstatus: extra\n---\n# Real Title\n#tag\n'),
+    ]).docs.get("a.md")!;
+    expect(meta.frontmatter).toEqual([["status", "draft"], ["type", "plan"], ["status", "extra"]]);
+    expect(meta.fmEnd).toBe(5);
+    expect(meta.title).toBe("Real Title");
+    expect(meta.tags).toEqual(["tag"]);
+  });
+
+  it("keeps empty values and blank lines", () => {
+    const fm = parseFrontmatter(["---", "due:", "", "owner: nic", "---", "body"]);
+    expect(fm).toEqual({ pairs: [["due", ""], ["owner", "nic"]], end: 5 });
+  });
+
+  it("rejects malformed frontmatter as body", () => {
+    // No fence on line 1.
+    expect(parseFrontmatter(["x", "---", "k: v", "---"])).toBeNull();
+    // Unclosed fence.
+    expect(parseFrontmatter(["---", "k: v"])).toBeNull();
+    // A line that isn't key: value.
+    expect(parseFrontmatter(["---", "just prose", "---"])).toBeNull();
+    const meta = buildIndex([doc("a.md", "---\nnot a pair\n---\n")]).docs.get("a.md")!;
+    expect(meta.frontmatter).toEqual([]);
+    expect(meta.fmEnd).toBe(0);
+  });
+
+  it("does not collect headings, tags, or links from frontmatter", () => {
+    const meta = buildIndex([
+      doc("a.md", "---\nref: [[Setup]]\nnote: #notatag\n---\nbody\n"),
+      doc("setup.md", "# Setup\n"),
+    ]).docs.get("a.md")!;
+    expect(meta.links).toEqual([]);
+    expect(meta.tags).toEqual([]);
+    expect(meta.headings).toEqual([]);
+    expect(meta.title).toBe("a");
+  });
+
+  it("treats a mid-document --- as body, not frontmatter", () => {
+    const meta = buildIndex([doc("a.md", "# T\n\n---\n\nmore\n")]).docs.get("a.md")!;
+    expect(meta.frontmatter).toEqual([]);
+    expect(meta.fmEnd).toBe(0);
+  });
+});
+
+describe("key:value search", () => {
+  const index = buildIndex([
+    doc("plan.md", "---\nstatus: draft\ntype: plan\n---\n# Budget Plan\n\nneedle body\n"),
+    doc("done.md", "---\nstatus: shipped\n---\n# Done Thing\n"),
+    doc("plain.md", "# Plain\n\nneedle body\n"),
+  ]);
+
+  it("filter-only queries return matching docs as title hits", () => {
+    expect(searchLocal(index, "status:draft")).toEqual([
+      { path: "plan.md", line: -1, snippet: "Budget Plan" },
+    ]);
+  });
+
+  it("matches values by case-insensitive substring and bare key: by presence", () => {
+    expect(searchLocal(index, "status:SHIP").map((h) => h.path)).toEqual(["done.md"]);
+    expect(searchLocal(index, "status:").map((h) => h.path).sort()).toEqual(["done.md", "plan.md"]);
+    expect(searchLocal(index, "missing:x")).toEqual([]);
+  });
+
+  it("combines filters with free text over titles", () => {
+    expect(searchLocal(index, "status:draft budget").map((h) => h.path)).toEqual(["plan.md"]);
+    expect(searchLocal(index, "status:draft done")).toEqual([]);
+  });
+
+  it("fmFilterPaths returns the allowed set and mergeBodyHits honors it", () => {
+    const allowed = fmFilterPaths(index, [["status", "draft"]]);
+    expect([...allowed]).toEqual(["plan.md"]);
+    const merged = mergeBodyHits(
+      index,
+      [],
+      [
+        { path: "plan.md", line: 7, col: 1, text: "needle body" },
+        { path: "plain.md", line: 3, col: 1, text: "needle body" },
+      ],
+      allowed,
+    );
+    expect(merged.map((h) => h.path)).toEqual(["plan.md"]);
+  });
+
+  it("searchDocs fallback applies filters too", () => {
+    expect(searchDocs(index, "status:draft needle")).toEqual([
+      { path: "plan.md", line: 6, snippet: "needle body" },
+    ]);
+    expect(searchDocs(index, "type:plan").map((h) => h.path)).toEqual(["plan.md"]);
   });
 });
 

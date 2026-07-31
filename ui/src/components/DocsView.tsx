@@ -248,6 +248,7 @@ export default function DocsView({ project }: { project: Project }) {
                   requestNavigate({ kind: "issue", projectId: m.fromProjectId, issueId: m.fromId });
                 }
               }}
+              onFilter={(k, v) => setQuery(/\s/.test(v) ? `${k}:"${v}"` : `${k}:${v}`)}
             />
           </div>
         </>

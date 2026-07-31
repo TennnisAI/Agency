@@ -90,6 +90,10 @@ pub struct RunInfo {
     pub loop_config: Option<agency_core::loops::LoopConfig>,
     pub loop_state: Option<agency_core::loops::LoopState>,
     pub issue_id: Option<String>,
+    /// Epoch seconds. Exposed for time views (the weekly note); archived_at is
+    /// None for live runs and last-archive-wins after a restore cycle.
+    pub created_at: i64,
+    pub archived_at: Option<i64>,
 }
 
 /// An extra agent tab sharing a run's worktree, as shown in the UI. `id` is
@@ -749,6 +753,10 @@ impl AppState {
     pub fn create_workspace(&self, path: &Path, use_git: bool) -> Result<Project> {
         std::fs::create_dir_all(path)
             .with_context(|| format!("creating workspace folder {}", path.display()))?;
+        // Seed the starter guide before the initial commit so it's tracked.
+        // Only when missing — re-running create on an adopted folder (or the
+        // idempotent re-create path) must not clobber user edits.
+        agency_core::guide::ensure_guide(path)?;
         if use_git {
             use agency_core::setup::RepoReadiness;
             if matches!(agency_core::setup::repo_readiness(path), RepoReadiness::NotARepo) {
@@ -770,6 +778,14 @@ impl AppState {
             .ok_or_else(|| anyhow!("no workspace to move — create it first"))?;
         if new_path == ws.repo_path {
             return Ok(ws);
+        }
+        // A folder cannot move into itself; the location picker makes this
+        // easy to do by creating the destination inside the open workspace.
+        if new_path.starts_with(&ws.repo_path) {
+            bail!(
+                "the destination is inside the current workspace; choose a location outside {}",
+                ws.repo_path.display()
+            );
         }
         if new_path.exists() {
             bail!("{} already exists — choose a new location", new_path.display());
@@ -923,6 +939,8 @@ impl AppState {
             loop_config: run.loop_config.clone(),
             loop_state: run.loop_state.clone(),
             issue_id: run.issue_id.clone(),
+            created_at: run.created_at,
+            archived_at: run.archived_at,
         }
     }
 

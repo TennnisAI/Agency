@@ -364,7 +364,9 @@ P1 workspace ──► P2 search ──► P3 editor ──► P4 palette ──
 - [x] Phase 6 — Tracker depth — *shipped 2026-07-31: verification gate green,
   ship gate passed
   (plan: `docs/superpowers/plans/2026-07-30-one-stop-phase6-tracker-depth.md`)*
-- [ ] Phase 7 — Cross-domain links — *implemented 2026-07-31, verification
-  gate green; manual ship-gate pass pending
+- [x] Phase 7 — Cross-domain links — *shipped 2026-07-31: verification gate
+  green, ship gate passed
   (plan: `docs/superpowers/plans/2026-07-31-one-stop-phase7-cross-domain-links.md`)*
-- [ ] Phase 8 — Time / review
+- [ ] Phase 8 — Time / review — *implemented 2026-07-31, verification gate
+  green; manual ship-gate pass pending
+  (plan: `docs/superpowers/plans/2026-07-31-one-stop-phase8-time-review.md`)*

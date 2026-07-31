@@ -19,6 +19,8 @@ export const PALETTE_COMMANDS: PaletteCommand[] = [
   { id: "new-terminal", label: "New Terminal", sublabel: "Open a terminal in this project", when: "project" },
   { id: "new-issue", label: "New Issue", sublabel: "Capture an issue in this project", when: "project" },
   { id: "daily-note", label: "Today's Note", sublabel: "Open today's journal entry in the workspace", when: "workspaceVisible" },
+  { id: "weekly-note", label: "Generate Weekly Note", sublabel: "Assemble this week's merges, closed issues, and runs", when: "workspaceVisible" },
+  { id: "workspace-guide", label: "Workspace Guide", sublabel: "Open the Welcome note explaining links, properties, and tasks", when: "workspaceVisible" },
   { id: "go-agents", label: "Go to Agents", sublabel: "Show this project's agents", when: "project" },
   { id: "go-issues", label: "Go to Issues", sublabel: "Show this project's issue board", when: "project" },
   { id: "go-docs", label: "Go to Docs", sublabel: "Show this project's docs", when: "project" },

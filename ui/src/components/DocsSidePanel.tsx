@@ -3,13 +3,14 @@ import { DocsIndex } from "../lib/docsIndex";
 import { LinkEdge } from "../lib/links";
 
 /**
- * Right-hand panel for the Docs tab: the open note's outline (click to jump),
- * its backlinks ("linked mentions", click to navigate), and the issues whose
+ * Right-hand panel for the Docs tab: the open note's frontmatter properties
+ * (click a value to filter the search), its outline (click to jump), its
+ * backlinks ("linked mentions", click to navigate), and the issues whose
  * bodies link to it (Mentions, click to jump to the tracker). All read
  * polled indexes, so they lag unsaved edits by at most autosave + one poll.
  */
 export default function DocsSidePanel({
-  index, selected, mentions, onJumpToHeading, onOpen, onOpenMention,
+  index, selected, mentions, onJumpToHeading, onOpen, onOpenMention, onFilter,
 }: {
   index: DocsIndex | null;
   selected: string | null;
@@ -17,7 +18,9 @@ export default function DocsSidePanel({
   onJumpToHeading: (text: string) => void;
   onOpen: (path: string) => void;
   onOpenMention: (edge: LinkEdge) => void;
+  onFilter: (key: string, value: string) => void;
 }) {
+  const [propsOpen, setPropsOpen] = useState(true);
   const [outlineOpen, setOutlineOpen] = useState(true);
   const [backlinksOpen, setBacklinksOpen] = useState(true);
   const [mentionsOpen, setMentionsOpen] = useState(true);
@@ -27,6 +30,30 @@ export default function DocsSidePanel({
 
   return (
     <div className="docs-side-body">
+      {doc && doc.frontmatter.length > 0 && (
+        <>
+          <button className="docs-side-head" onClick={() => setPropsOpen((o) => !o)}>
+            <span className="docs-side-chev">{propsOpen ? "▾" : "▸"}</span> Properties
+          </button>
+          {propsOpen && (
+            <div className="docs-side-section">
+              {doc.frontmatter.map(([k, v], i) => (
+                <div key={`${k}:${i}`} className="docs-prop-row">
+                  <span className="docs-prop-key">{k}</span>
+                  <span
+                    className="docs-prop-value"
+                    title={`Filter ${k}:${v}`}
+                    onClick={() => onFilter(k, v)}
+                  >
+                    {v || "…"}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+
       <button className="docs-side-head" onClick={() => setOutlineOpen((o) => !o)}>
         <span className="docs-side-chev">{outlineOpen ? "▾" : "▸"}</span> Outline
       </button>

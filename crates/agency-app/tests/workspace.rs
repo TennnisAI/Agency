@@ -63,4 +63,11 @@ fn move_workspace_renames_folder_and_repoints_row() {
     let other = dir.path().join("Occupied");
     std::fs::create_dir_all(&other).unwrap();
     assert!(state.move_workspace(&other).is_err());
+
+    // Refuses a destination inside the workspace itself (a rename into a
+    // subfolder of the source can never succeed and the picker allows it).
+    let inside = dest.join("Sub").join("Notes");
+    let err = state.move_workspace(&inside).unwrap_err().to_string();
+    assert!(err.contains("inside the current workspace"), "got: {err}");
+    assert!(dest.join("keep.md").exists(), "nothing moved");
 }

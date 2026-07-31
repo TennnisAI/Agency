@@ -1,4 +1,5 @@
 import { BackendSearchHit, DocFile } from "../api";
+import { parseDocsQuery } from "./docsQuery";
 
 // The docs index: everything the Docs tab derives from the markdown corpus —
 // titles, headings, tags, wikilinks, backlinks, and the text kept for search.
@@ -25,6 +26,10 @@ export interface DocMeta {
   headings: Heading[];
   tags: string[];
   links: WikiLink[];
+  /** Ordered frontmatter pairs as written (duplicates kept); [] when none. */
+  frontmatter: [string, string][];
+  /** First body line: the line after the closing fence, 0 when no frontmatter. */
+  fmEnd: number;
   text: string;
   tooLarge: boolean;
 }
@@ -52,6 +57,46 @@ const FENCE_RE = /^(```|~~~)/;
 
 export function stripExt(name: string): string {
   return name.replace(/\.(md|markdown)$/i, "");
+}
+
+// Frontmatter is a `---` fence on line 1, flat `key: value` lines, closing
+// `---`. Deliberately forgiving: anything that doesn't fit (no closing fence
+// nearby, a non-blank line that isn't `key: value`) means "no frontmatter" —
+// the text is body, never an error. No YAML lists/nesting/multiline values.
+const FM_KEY_RE = /^([A-Za-z][A-Za-z0-9_-]*)\s*:\s*(.*)$/;
+const FM_MAX_LINES = 100;
+
+function unquote(v: string): string {
+  if (
+    v.length >= 2 &&
+    ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'")))
+  ) {
+    return v.slice(1, -1);
+  }
+  return v;
+}
+
+/**
+ * Parse leading frontmatter from a note's lines. Returns the ordered pairs
+ * and `end` (the first body line, just past the closing fence), or null when
+ * the note has no well-formed frontmatter. Shared with the live-preview
+ * renderer so the editor and the index agree on the fence range.
+ */
+export function parseFrontmatter(
+  lines: string[],
+): { pairs: [string, string][]; end: number } | null {
+  if (lines[0]?.trim() !== "---") return null;
+  const pairs: [string, string][] = [];
+  const limit = Math.min(lines.length, FM_MAX_LINES);
+  for (let i = 1; i < limit; i++) {
+    const line = lines[i];
+    if (line.trim() === "---") return { pairs, end: i + 1 };
+    if (!line.trim()) continue;
+    const m = FM_KEY_RE.exec(line);
+    if (!m) return null;
+    pairs.push([m[1], unquote(m[2].trim())]);
+  }
+  return null;
 }
 
 /** Strip inline code spans so tags/links inside backticks don't index. */
@@ -92,12 +137,15 @@ function parseDoc(file: DocFile): DocMeta {
   const base = stripExt(file.path.split("/").pop() ?? file.path);
   const headings: Heading[] = [];
   const tags: string[] = [];
-  const links = extractWikilinks(file.text);
   let title = "";
   let inFence = false;
 
   const lines = file.text.split("\n");
-  for (let i = 0; i < lines.length; i++) {
+  const fm = parseFrontmatter(lines);
+  const fmEnd = fm?.end ?? 0;
+  // Nothing inside frontmatter is a heading, tag, or link.
+  const links = extractWikilinks(file.text).filter((l) => l.line >= fmEnd);
+  for (let i = fmEnd; i < lines.length; i++) {
     const raw = lines[i];
     if (FENCE_RE.test(raw)) {
       inFence = !inFence;
@@ -125,9 +173,35 @@ function parseDoc(file: DocFile): DocMeta {
     headings,
     tags,
     links,
+    frontmatter: fm?.pairs ?? [],
+    fmEnd,
     text: file.text,
     tooLarge: file.tooLarge,
   };
+}
+
+/**
+ * Does this doc's frontmatter satisfy a `key:value` filter? Key match is
+ * case-insensitive exact; value match is case-insensitive substring; an
+ * empty filter value means "has this key".
+ */
+export function fmMatches(meta: DocMeta, key: string, value: string): boolean {
+  const k = key.toLowerCase();
+  const v = value.toLowerCase();
+  for (const [pk, pv] of meta.frontmatter) {
+    if (pk.toLowerCase() !== k) continue;
+    if (!v || pv.toLowerCase().includes(v)) return true;
+  }
+  return false;
+}
+
+/** Paths whose frontmatter satisfies every filter. */
+export function fmFilterPaths(index: DocsIndex, filters: [string, string][]): Set<string> {
+  const out = new Set<string>();
+  for (const d of index.docs.values()) {
+    if (filters.every(([k, v]) => fmMatches(d, k, v))) out.add(d.path);
+  }
+  return out;
 }
 
 /**
@@ -203,10 +277,12 @@ const MAX_SEARCH_HITS = 200;
 const MAX_HITS_PER_DOC = 5;
 
 /**
- * The index-local half of docs search: `#` queries match the tag index;
- * anything else matches titles (line -1 hits). Body hits come from the
- * backend search primitive and are folded in via [`mergeBodyHits`] — this
- * half stays synchronous so tag/title results never wait on IPC.
+ * The index-local half of docs search: `#` queries match the tag index,
+ * `key:value` tokens filter on frontmatter, the free-text remainder matches
+ * titles (line -1 hits). A filter-only query returns every matching doc.
+ * Body hits come from the backend search primitive and are folded in via
+ * [`mergeBodyHits`] — this half stays synchronous so tag/title/filter
+ * results never wait on IPC.
  */
 export function searchLocal(index: DocsIndex, query: string): SearchHit[] {
   const q = query.trim().toLowerCase();
@@ -226,8 +302,10 @@ export function searchLocal(index: DocsIndex, query: string): SearchHit[] {
     return hits;
   }
 
+  const { filters, text } = parseDocsQuery(q);
   for (const d of index.docs.values()) {
-    if (d.title.toLowerCase().includes(q)) {
+    if (filters.length && !filters.every(([k, v]) => fmMatches(d, k, v))) continue;
+    if (text ? d.title.toLowerCase().includes(text) : filters.length > 0) {
       hits.push({ path: d.path, line: -1, snippet: d.title });
       if (hits.length >= MAX_SEARCH_HITS) break;
     }
@@ -239,12 +317,15 @@ export function searchLocal(index: DocsIndex, query: string): SearchHit[] {
  * Fold backend body hits (1-based lines, raw line text) into the local
  * title/tag hits: 0-based lines, trimmed snippets, only paths the index knows
  * (the corpus is the source of truth for what counts as a note), capped per
- * doc and in total so a common word can't flood the pane.
+ * doc and in total so a common word can't flood the pane. When the query
+ * carried `key:value` filters, `allowed` restricts body hits to the docs
+ * that passed them (the backend only saw the free-text remainder).
  */
 export function mergeBodyHits(
   index: DocsIndex,
   local: SearchHit[],
   body: BackendSearchHit[],
+  allowed?: Set<string>,
 ): SearchHit[] {
   const hits = [...local];
   const perDoc = new Map<string, number>();
@@ -252,6 +333,7 @@ export function mergeBodyHits(
   for (const b of body) {
     if (hits.length >= MAX_SEARCH_HITS) break;
     if (!index.docs.has(b.path)) continue;
+    if (allowed && !allowed.has(b.path)) continue;
     const n = perDoc.get(b.path) ?? 0;
     if (n >= MAX_HITS_PER_DOC) continue;
     hits.push({ path: b.path, line: b.line - 1, snippet: b.text.trim() });
@@ -287,17 +369,21 @@ export function searchDocs(index: DocsIndex, query: string): SearchHit[] {
 
   const MAX_HITS = 200;
   const MAX_PER_DOC = 5;
+  const { filters, text } = parseDocsQuery(q);
   for (const d of index.docs.values()) {
+    if (filters.length && !filters.every(([k, v]) => fmMatches(d, k, v))) continue;
     let inDoc = 0;
-    if (d.title.toLowerCase().includes(q)) {
+    if (text ? d.title.toLowerCase().includes(text) : filters.length > 0) {
       hits.push({ path: d.path, line: -1, snippet: d.title });
       inDoc++;
     }
-    const lines = d.text.split("\n");
-    for (let i = 0; i < lines.length && inDoc < MAX_PER_DOC; i++) {
-      if (lines[i].toLowerCase().includes(q)) {
-        hits.push({ path: d.path, line: i, snippet: lines[i].trim() });
-        inDoc++;
+    if (text) {
+      const lines = d.text.split("\n");
+      for (let i = 0; i < lines.length && inDoc < MAX_PER_DOC; i++) {
+        if (lines[i].toLowerCase().includes(text)) {
+          hits.push({ path: d.path, line: i, snippet: lines[i].trim() });
+          inDoc++;
+        }
       }
     }
     if (hits.length >= MAX_HITS) break;

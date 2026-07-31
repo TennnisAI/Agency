@@ -325,7 +325,13 @@ export default function CommandPalette({
       },
     }));
 
-    const pool = [...topCmds, ...recents, ...projectRows, ...runRows];
+    // With a query, every available command joins the pool — "weekly" must
+    // find Generate Weekly Note without the ">" prefix. The curated topCmds
+    // list is only for the empty-query browse state.
+    const cmdRows = term
+      ? cmds.map((c) => commandRow(c.id, c.label, c.sublabel))
+      : topCmds;
+    const pool = [...cmdRows, ...recents, ...projectRows, ...runRows];
     if (!term) return pool.slice(0, MAX_ROWS);
     const rec = recencyIndex();
     const recKey = (r: Row) => (r.kind === "command" ? `cmd:${r.id}`

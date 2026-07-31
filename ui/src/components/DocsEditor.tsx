@@ -6,7 +6,8 @@ import { FileRoot, createDir, readFile, writeFile, writeFileBase64 } from "../ap
 import { toastError } from "../lib/toast";
 import { editorChromeTheme } from "../lib/cmTheme";
 import { DocsIndex } from "../lib/docsIndex";
-import { docsCompletion, docsHighlight, docsIndexFacet, docsMarkdown, docsNavFacet, livePreview, DocsNav } from "../lib/livePreview";
+import { CrossRefs } from "../lib/links";
+import { crossRefsFacet, docsCompletion, docsHighlight, docsIndexFacet, docsMarkdown, docsNavFacet, livePreview, DocsNav } from "../lib/livePreview";
 import { joinPath } from "../lib/filePath";
 
 export interface DocsEditorHandle {
@@ -46,6 +47,7 @@ export default forwardRef<DocsEditorHandle, {
   path: string; // rel to docs dir
   diskText: string | undefined; // latest corpus copy of this note
   index: DocsIndex | null; // for wikilink resolution styling
+  cross: CrossRefs | null; // for typed wikilinks ([[AGE-14]], [[run:id]])
   onSaved: () => void; // refresh the index after a write lands
   onNavigate: (target: string, heading: string | null) => void; // wikilink follow
   onTagClick: (tag: string) => void;
@@ -54,7 +56,7 @@ export default forwardRef<DocsEditorHandle, {
   // Journal notes get prev/next-day navigation; null hides the buttons. Targets
   // are the nearest *existing* daily notes (navigation never creates files).
   daily?: { prev: string | null; next: string | null; onOpen: (path: string) => void } | null;
-}>(function DocsEditor({ root, docsDir, path, diskText, index, onSaved, onNavigate, onTagClick, sideOpen, onToggleSide, daily }, ref) {
+}>(function DocsEditor({ root, docsDir, path, diskText, index, cross, onSaved, onNavigate, onTagClick, sideOpen, onToggleSide, daily }, ref) {
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
@@ -74,6 +76,9 @@ export default forwardRef<DocsEditorHandle, {
   const indexRef = useRef(index);
   indexRef.current = index;
   const indexCompRef = useRef(new Compartment());
+  const crossRef = useRef(cross);
+  crossRef.current = cross;
+  const crossCompRef = useRef(new Compartment());
 
   // Bound inside the load effect so it always writes to the note the live view
   // belongs to. (Binding on render would point a pre-switch flush at the NEXT
@@ -210,6 +215,7 @@ export default forwardRef<DocsEditorHandle, {
           livePreview,
           docsCompletion,
           indexCompRef.current.of(docsIndexFacet.of(indexRef.current)),
+          crossCompRef.current.of(crossRefsFacet.of(crossRef.current)),
           // A stable nav facade reading live refs, so callback identity churn
           // never forces a reconfigure.
           docsNavFacet.of({
@@ -267,6 +273,13 @@ export default forwardRef<DocsEditorHandle, {
       effects: indexCompRef.current.reconfigure(docsIndexFacet.of(index)),
     });
   }, [index]);
+
+  // Same for the cross-project refs (issue/run wikilinks + completion).
+  useEffect(() => {
+    viewRef.current?.dispatch({
+      effects: crossCompRef.current.reconfigure(crossRefsFacet.of(cross)),
+    });
+  }, [cross]);
 
   // Flush when the window loses focus, so edits land before e.g. an agent or
   // external editor touches the same file.

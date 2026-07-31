@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Issue, IssuePatch, RunInfo } from "../api";
+import { LinkEdge } from "../lib/links";
 import { runName } from "../agents";
 import { ISSUE_STATUSES, PRIORITY_LABELS, STATUS_LABELS, fmtDate, isOverdue } from "../lib/issues";
 import { dateStamp } from "../lib/dailyNote";
@@ -89,17 +90,22 @@ export default function IssueDetail({
   issue,
   label,
   runs,
+  mentions,
   onPatch,
   onDelete,
   onOpenRun,
+  onOpenMention,
   onClose,
 }: {
   issue: Issue;
   label: string;
   runs: RunInfo[];
+  // Notes and issues whose text links here ([[AGE-14]]), via lib/links.
+  mentions: LinkEdge[];
   onPatch: (patch: IssuePatch) => void;
   onDelete: () => void;
   onOpenRun: (runId: string) => void;
+  onOpenMention: (edge: LinkEdge) => void;
   onClose: () => void;
 }) {
   const [title, setTitle] = useState(issue.title);
@@ -226,6 +232,25 @@ export default function IssueDetail({
               <span className={`dot ${r.status.state === "running" ? "running" : "exited"}`} />
               <span className="issue-detail-run-name">{runName(r)}</span>
               <span className="badge">{r.agent}</span>
+            </button>
+          ))}
+        </div>
+      )}
+      {mentions.length > 0 && (
+        <div className="issue-detail-runs issue-detail-mentions">
+          <h3>Mentions</h3>
+          {mentions.map((m, i) => (
+            <button
+              key={`${m.fromKind}:${m.fromProjectId}:${m.fromId}:${m.line}:${i}`}
+              className="issue-detail-run issue-detail-mention"
+              title={m.snippet}
+              onClick={() => onOpenMention(m)}
+            >
+              <span className="mention-glyph" aria-hidden>{m.fromKind === "issue" ? "▧" : "▥"}</span>
+              <span className="issue-detail-run-name">
+                {m.fromLabel ? `${m.fromLabel} ` : ""}{m.fromTitle}
+              </span>
+              <span className="mention-snippet">{m.snippet}</span>
             </button>
           ))}
         </div>

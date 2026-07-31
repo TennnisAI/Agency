@@ -59,11 +59,40 @@ function stripInlineCode(line: string): string {
   return line.replace(/`[^`]*`/g, (m) => " ".repeat(m.length));
 }
 
+/**
+ * All wikilinks in a markdown text, skipping fenced blocks and inline code —
+ * the same scan `parseDoc` uses for notes, exported standalone so issue
+ * bodies (which live outside any corpus) can feed the cross-domain link
+ * index (lib/links.ts).
+ */
+export function extractWikilinks(text: string): WikiLink[] {
+  const links: WikiLink[] = [];
+  let inFence = false;
+  const lines = text.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    if (FENCE_RE.test(raw)) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) continue;
+    for (const m of stripInlineCode(raw).matchAll(WIKILINK_RE)) {
+      links.push({
+        target: m[1].trim(),
+        heading: m[2] ? m[2].slice(1).trim() || null : null,
+        alias: m[3]?.trim() || null,
+        line: i,
+      });
+    }
+  }
+  return links;
+}
+
 function parseDoc(file: DocFile): DocMeta {
   const base = stripExt(file.path.split("/").pop() ?? file.path);
   const headings: Heading[] = [];
   const tags: string[] = [];
-  const links: WikiLink[] = [];
+  const links = extractWikilinks(file.text);
   let title = "";
   let inFence = false;
 
@@ -83,16 +112,7 @@ function parseDoc(file: DocFile): DocMeta {
       if (!title && h[1].length === 1) title = text;
     }
 
-    const line = stripInlineCode(raw);
-    for (const m of line.matchAll(WIKILINK_RE)) {
-      links.push({
-        target: m[1].trim(),
-        heading: m[2] ? m[2].slice(1).trim() || null : null,
-        alias: m[3]?.trim() || null,
-        line: i,
-      });
-    }
-    for (const m of line.matchAll(TAG_RE)) {
+    for (const m of stripInlineCode(raw).matchAll(TAG_RE)) {
       const tag = m[2].toLowerCase();
       if (!tags.includes(tag)) tags.push(tag);
     }

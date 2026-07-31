@@ -33,7 +33,7 @@ export const STATUS_COLORS: Record<IssueStatus, string> = {
 export const PRIORITY_LABELS = ["No priority", "Low", "Medium", "High", "Urgent"] as const;
 
 // "AGE-14" — the project's stored key plus the per-project number.
-export function issueLabel(project: Pick<Project, "issue_key"> | null, issue: Issue): string {
+export function issueLabel(project: Pick<Project, "issue_key"> | null, issue: Pick<Issue, "seq">): string {
   return `${project?.issue_key ?? "ISSUE"}-${issue.seq}`;
 }
 

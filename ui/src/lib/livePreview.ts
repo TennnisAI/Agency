@@ -15,7 +15,8 @@ import { python } from "@codemirror/lang-python";
 import { autocompletion, CompletionContext, CompletionResult } from "@codemirror/autocomplete";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { FileRoot, readFileBase64 } from "../api";
-import { DocsIndex, resolveLink, stripExt } from "./docsIndex";
+import { DocsIndex, stripExt } from "./docsIndex";
+import { CrossRefs, issueCompletionOptions, wikilinkView } from "./links";
 import { joinPath } from "./filePath";
 
 // Obsidian-style live preview for the Docs tab: one CodeMirror pane where
@@ -24,6 +25,11 @@ import { joinPath } from "./filePath";
 
 /** The docs index, for wikilink resolution. Reconfigured via a Compartment. */
 export const docsIndexFacet = Facet.define<DocsIndex | null, DocsIndex | null>({
+  combine: (v) => v[0] ?? null,
+});
+
+/** Cross-project issue/run refs, for typed wikilinks ([[AGE-14]], [[run:id]]). */
+export const crossRefsFacet = Facet.define<CrossRefs | null, CrossRefs | null>({
   combine: (v) => v[0] ?? null,
 });
 
@@ -296,7 +302,9 @@ class LivePreviewPlugin {
 
   update(u: ViewUpdate) {
     const key = activeKey(activeLines(u.view));
-    const indexChanged = u.startState.facet(docsIndexFacet) !== u.state.facet(docsIndexFacet);
+    const indexChanged =
+      u.startState.facet(docsIndexFacet) !== u.state.facet(docsIndexFacet) ||
+      u.startState.facet(crossRefsFacet) !== u.state.facet(crossRefsFacet);
     if (u.docChanged || u.viewportChanged || indexChanged || key !== this.key) {
       this.key = key;
       [this.decorations, this.atomic] = this.safeBuild(u.view);
@@ -319,6 +327,7 @@ class LivePreviewPlugin {
     const atomics: Range<Decoration>[] = [];
     const active = activeLines(view);
     const index = view.state.facet(docsIndexFacet);
+    const cross = view.state.facet(crossRefsFacet);
     const doc = view.state.doc;
     const tree = syntaxTree(view.state);
     // Line classes accumulate here (a line can be quote + codeblock etc.).
@@ -411,10 +420,10 @@ class LivePreviewPlugin {
               const targetFull = pipe >= 0 ? text.slice(0, pipe) : text;
               const hashAt = targetFull.indexOf("#");
               const target = (hashAt >= 0 ? targetFull.slice(0, hashAt) : targetFull).trim();
-              const unresolved = index ? resolveLink(index, target) === null : false;
+              const view = wikilinkView(index, cross, target);
               decos.push(Decoration.mark({
-                class: `lp-wikilink${unresolved ? " unresolved" : ""}`,
-                attributes: { title: unresolved ? "⌘-click to create" : "⌘-click to open" },
+                class: `lp-wikilink${view.unresolved ? " unresolved" : ""}`,
+                attributes: { title: view.title },
               }).range(node.from, node.to));
               const marks = node.node.getChildren("WikilinkMark");
               if (marks.length === 2) {
@@ -601,6 +610,13 @@ function wikilinkCompletions(ctx: CompletionContext): CompletionResult | null {
     const label = dup ? stripExt(d.path) : d.base;
     return { label, detail: d.title !== d.base ? d.title : d.path, apply: `${label}]]` };
   });
+  // Issues complete too ([[AGE-14 → the tracker); notes win ties via boost.
+  const cross = ctx.state.facet(crossRefsFacet);
+  if (cross) {
+    options.push(...issueCompletionOptions(cross).map((o) => ({
+      label: o.label, detail: o.detail, apply: `${o.label}]]`, boost: -1,
+    })));
+  }
   return { from: m.from + 2, options, validFor: /^[^\]\n]*$/ };
 }
 

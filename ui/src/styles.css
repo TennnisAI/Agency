@@ -1733,6 +1733,22 @@ input, textarea, code,
 .issue-detail-foot { display: flex; align-items: center; gap: 8px; color: var(--o0); font-size: 11px; margin-top: auto; }
 .issue-detail-foot .spacer { flex: 1; }
 
+/* Cross-domain mentions (Phase 7): notes/issues whose text links here. */
+.mention-glyph { color: var(--o1); flex: none; }
+.mention-snippet {
+  max-width: 45%; flex: none; color: var(--sub0); font-size: 11px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* Issue chip in the agent focus header: the run's originating issue. */
+.issue-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  background: var(--s0); border: 1px solid transparent; border-radius: 999px;
+  color: var(--sub1); padding: 3px 9px; cursor: pointer;
+  font-family: var(--mono); font-size: 11px; line-height: 1;
+}
+.issue-chip:hover { background: var(--s1); border-color: var(--s1); color: var(--text); }
+
 /* Read-only issue summary in the race/loop dialogs (replaces the prompt box). */
 .issue-dialog-summary {
   display: flex; align-items: baseline; gap: 8px;

@@ -16,7 +16,8 @@ import { useShortcuts } from "./hooks/useShortcuts";
 import { usePaneWidth } from "./hooks/usePaneWidth";
 import { FileRoot, Project, RunInfo, agentOnboardingNeeded, archiveRun, checkForUpdate, confirmQuit, createDir, createFile, discardRun, getUpdateCheckEnabled, getWorkspace, inspectRepo, listProjects, readFile, setMenuContext, setUiState, writeFile } from "./api";
 import { pickDefaultAgent } from "./lib/defaultAgent";
-import { PENDING_QUICKADD_KEY } from "./lib/issues";
+import { PENDING_ISSUE_KEY, PENDING_QUICKADD_KEY } from "./lib/issues";
+import { NAVIGATE_EVENT, NavTarget } from "./lib/navigate";
 import { DAILY_TEMPLATE_PATH, JOURNAL_DIR, dailyNotePath, defaultDailyContent, renderDailyTemplate } from "./lib/dailyNote";
 import { toastError, toastInfo } from "./lib/toast";
 import { workspaceHidden } from "./lib/workspacePref";
@@ -226,6 +227,34 @@ function Shell() {
   const menuRef = useRef(onMenu);
   menuRef.current = onMenu;
 
+  // Cross-domain navigation (one-stop Phase 7): mentions panels, wikilinks,
+  // and the focus header's issue chip all land here. Same handoffs the
+  // palette uses: PENDING_ISSUE_KEY for issues, docs:last + agency:open-note
+  // for notes (the stamp covers a freshly mounting DocsView, the event the
+  // already-mounted one).
+  async function onNavigate(target: NavTarget) {
+    const p = (await listProjects().catch(() => [])).find((x) => x.id === target.projectId);
+    if (!p) return;
+    switch (target.kind) {
+      case "issue":
+        sessionStorage.setItem(PENDING_ISSUE_KEY, target.issueId);
+        selectProject(p);
+        setTab("issues");
+        break;
+      case "run":
+        openRun(p, target.runId);
+        break;
+      case "note":
+        try { localStorage.setItem(`docs:last:${p.id}`, target.path); } catch { /* storage unavailable */ }
+        selectProject(p);
+        setTab("docs");
+        window.dispatchEvent(new CustomEvent("agency:open-note", { detail: { projectId: p.id, path: target.path } }));
+        break;
+    }
+  }
+  const navRef = useRef(onNavigate);
+  navRef.current = onNavigate;
+
   // Backend-driven navigation: quit confirmations, tray-menu and app-menu
   // clicks arrive as Tauri events.
   useEffect(() => {
@@ -249,8 +278,13 @@ function Shell() {
         void dailyRef.current();
       }
     };
+    const navigate = (e: Event) => {
+      const detail = (e as CustomEvent<NavTarget>).detail;
+      if (detail) void navRef.current(detail);
+    };
     window.addEventListener("agency:daily-note", daily);
     window.addEventListener("agency:workspace-ready", ready);
+    window.addEventListener(NAVIGATE_EVENT, navigate);
     // The .catch matters: Tauri's injected event plugin throws
     // ("listeners[eventId].handlerId") when an unlisten races a listener that
     // was already removed (e.g. across remounts). A failed cleanup of a dead
@@ -259,6 +293,7 @@ function Shell() {
       subs.forEach((s) => s.then((un) => un()).catch(() => {}));
       window.removeEventListener("agency:daily-note", daily);
       window.removeEventListener("agency:workspace-ready", ready);
+      window.removeEventListener(NAVIGATE_EVENT, navigate);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

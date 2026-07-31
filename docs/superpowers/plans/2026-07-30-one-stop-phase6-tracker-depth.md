@@ -248,7 +248,7 @@ updated: 2026-07-27T14:02:00Z
 ### Task 9: verification + ship gate
 
 - [x] `cargo test`, `tsc --noEmit`, `vite build`, `vitest run` all green.
-- [ ] Ship gate (dev app, ≥3 projects): filter by status/priority/project and
+- [x] Ship gate (dev app, ≥3 projects): filter by status/priority/project and
       text on the home board; drag-reorder within a status in a project and
       watch `rank:` appear in the file; set a due date in the detail pane —
       chip appears, file gains `due:`, issue shows in Today once due; dispatch

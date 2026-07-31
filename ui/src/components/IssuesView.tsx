@@ -1,8 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Issue, IssuePatch, IssueStatus, Project, createIssue, deleteIssue, updateIssue } from "../api";
+import { Issue, IssuePatch, IssueStatus, Project, createIssue, deleteIssue, getWorkspace, updateIssue } from "../api";
 import { planReorder } from "../lib/issueRank";
+import { Corpus, LinkEdge, buildLinkIndex, mentionsOf } from "../lib/links";
+import { requestNavigate } from "../lib/navigate";
 import { useRuns } from "../store/runs";
 import { useIssues } from "../hooks/useIssues";
+import { useCrossRefs } from "../hooks/useCrossRefs";
+import { useDocs } from "../hooks/useDocs";
 import { ISSUE_STATUSES, PENDING_ISSUE_KEY, PENDING_QUICKADD_KEY, STATUS_LABELS, compareIssues, isClosed, issueLabel } from "../lib/issues";
 import { pickDefaultAgent } from "../lib/defaultAgent";
 import IssueRow from "./IssueRow";
@@ -73,6 +77,41 @@ export default function IssuesView({
   );
   const selected = issues.find((i) => i.id === selectedId) ?? null;
   const runsFor = (issue: Issue) => runs.filter((r) => r.issueId === issue.id);
+
+  // Mentions for the detail pane (one-stop Phase 7): notes and issues linking
+  // to the selected issue. Corpora scanned: this project's docs plus the
+  // workspace vault (where journal notes live) — other projects' docs are out
+  // of scope until someone needs them.
+  const [workspace, setWorkspace] = useState<Project | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    getWorkspace().then((ws) => { if (!cancelled) setWorkspace(ws); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+  const wsId = workspace && workspace.id !== project.id ? workspace.id : null;
+  const active = tab === "issues";
+  const ownDocs = useDocs(project.id, active);
+  const wsDocs = useDocs(wsId, active);
+  const { cross } = useCrossRefs(active);
+  const linkTable = useMemo(() => {
+    if (!cross) return null;
+    const corpora: Corpus[] = [];
+    if (ownDocs.index) corpora.push({ project, index: ownDocs.index });
+    if (workspace && wsId && wsDocs.index) corpora.push({ project: workspace, index: wsDocs.index });
+    return buildLinkIndex(corpora, cross);
+  }, [cross, ownDocs.index, wsDocs.index, project, workspace, wsId]);
+  const mentions = useMemo(
+    () => (linkTable && selected ? mentionsOf(linkTable, "issue", selected.id) : []),
+    [linkTable, selected],
+  );
+
+  function openMention(m: LinkEdge) {
+    if (m.fromKind === "note") {
+      requestNavigate({ kind: "note", projectId: m.fromProjectId, path: m.fromId });
+    } else {
+      requestNavigate({ kind: "issue", projectId: m.fromProjectId, issueId: m.fromId });
+    }
+  }
 
   async function add(status: "todo" | "backlog") {
     const title = quick.trim();
@@ -334,9 +373,11 @@ export default function IssuesView({
           issue={selected}
           label={issueLabel(project, selected)}
           runs={runsFor(selected)}
+          mentions={mentions}
           onPatch={(p) => patch(selected, p)}
           onDelete={() => setConfirmDelete(selected)}
           onOpenRun={openRun}
+          onOpenMention={openMention}
           onClose={() => setSelectedId(null)}
         />
       )}

@@ -4,8 +4,10 @@ import {
   discardRun, archiveRun, setRunTitle, renameRun,
   listProfiles, AgentProfile,
   listRunSessions, startRunSession, closeRunSession, RunSessionInfo,
-  RunInfo, stopLoop,
+  RunInfo, stopLoop, listIssues, listProjects,
 } from "../api";
+import { issueLabel } from "../lib/issues";
+import { requestNavigate } from "../lib/navigate";
 import { toastError } from "../lib/toast";
 import { runStatus } from "../lib/runstate";
 import { runName, agentLabel } from "../agents";
@@ -179,6 +181,33 @@ export default function AgentFocus({
     });
   const focused = runs.find((r) => r.id === focusedRunId) ?? null;
 
+  // Issue chip (one-stop Phase 7): a run dispatched from an issue links back
+  // to it in the header. One-shot lookup on focus change — the label needs
+  // the project's issue key and the issue's seq, neither of which rides on
+  // RunInfo.
+  const [issueChip, setIssueChip] = useState<{ label: string; title: string; issueId: string; projectId: string } | null>(null);
+  const chipIssueId = focused?.kind === "agent" ? focused.issueId : null;
+  const chipProjectId = focused?.projectId ?? null;
+  useEffect(() => {
+    setIssueChip(null);
+    if (!chipIssueId || !chipProjectId) return;
+    let live = true;
+    (async () => {
+      const project = (await listProjects()).find((p) => p.id === chipProjectId);
+      if (!project) return;
+      const issue = (await listIssues(project.id)).find((i) => i.id === chipIssueId);
+      if (live && issue) {
+        setIssueChip({
+          label: issueLabel(project, issue),
+          title: issue.title,
+          issueId: issue.id,
+          projectId: project.id,
+        });
+      }
+    })().catch(() => {});
+    return () => { live = false; };
+  }, [chipIssueId, chipProjectId]);
+
   return (
     <div className="focus">
       {railOpen ? (
@@ -253,6 +282,15 @@ export default function AgentFocus({
                 {focused.title && <span className="focus-name">{focused.title}</span>}
                 <button className="tile-act icon-only" title="Rename agent" onClick={() => setRenaming(focused)}><PencilIcon /></button>
                 <code>{focused.branch}</code>
+                {issueChip && (
+                  <button
+                    className="issue-chip"
+                    title={issueChip.title}
+                    onClick={() => requestNavigate({ kind: "issue", projectId: issueChip.projectId, issueId: issueChip.issueId })}
+                  >
+                    <span aria-hidden>▧</span> {issueChip.label}
+                  </button>
+                )}
                 {panel !== "run" && (
                   <button
                     className={`focus-shell-toggle icon-only ${shellOpen ? "on" : ""}`}

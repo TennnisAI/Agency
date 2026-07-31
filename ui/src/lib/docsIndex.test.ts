@@ -3,11 +3,13 @@ import {
   SearchHit,
   buildIndex,
   fmFilterPaths,
+  isValidFmKey,
   mergeBodyHits,
   parseFrontmatter,
   resolveLink,
   searchDocs,
   searchLocal,
+  serializeFrontmatter,
 } from "./docsIndex";
 import { DocFile } from "../api";
 
@@ -104,6 +106,26 @@ describe("frontmatter", () => {
     const meta = buildIndex([doc("a.md", "# T\n\n---\n\nmore\n")]).docs.get("a.md")!;
     expect(meta.frontmatter).toEqual([]);
     expect(meta.fmEnd).toBe(0);
+  });
+
+  it("serializeFrontmatter round-trips through parseFrontmatter", () => {
+    const pairs: [string, string][] = [["status", "draft"], ["due", ""], ["status", "extra"]];
+    const text = serializeFrontmatter(pairs);
+    expect(text).toBe("---\nstatus: draft\ndue:\nstatus: extra\n---\n");
+    expect(parseFrontmatter(text.split("\n"))).toEqual({ pairs, end: 5 });
+    expect(serializeFrontmatter([])).toBe("");
+  });
+
+  it("isValidFmKey matches what the parser accepts", () => {
+    expect(isValidFmKey("status")).toBe(true);
+    expect(isValidFmKey("my-key_2")).toBe(true);
+    expect(isValidFmKey("2fast")).toBe(false);
+    expect(isValidFmKey("has space")).toBe(false);
+    expect(isValidFmKey("")).toBe(false);
+  });
+
+  it("an empty frontmatter block parses as zero pairs", () => {
+    expect(parseFrontmatter(["---", "---", "body"])).toEqual({ pairs: [], end: 2 });
   });
 });
 

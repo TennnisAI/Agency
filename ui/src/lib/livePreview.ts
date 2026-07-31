@@ -38,6 +38,8 @@ export interface DocsNav {
   onNavigate: (target: string, heading: string | null) => void;
   /** A #tag was clicked. */
   onTagClick: (tag: string) => void;
+  /** Filter the docs search by a frontmatter property (properties card). */
+  onFilter?: (key: string, value: string) => void;
   /** Where this note lives, for resolving relative image paths. */
   root: FileRoot;
   docsDir: string;
@@ -270,16 +272,6 @@ class HRWidget extends WidgetType {
   }
 }
 
-// The opening frontmatter fence renders as a small "properties" label.
-class FmLabelWidget extends WidgetType {
-  eq() { return true; }
-  toDOM() {
-    const el = document.createElement("span");
-    el.className = "lp-fm-label";
-    el.textContent = "properties";
-    return el;
-  }
-}
 
 // ── Decoration building ──────────────────────────────────────────────────────
 
@@ -377,9 +369,10 @@ class LivePreviewPlugin {
     };
 
     // Frontmatter: markdown has no node for it (the fences parse as a
-    // horizontal rule + setext heading, which reads wrong), so detect it
-    // textually — the same rule the index uses — style it as a property
-    // table, and keep the generic handlers out of its range entirely.
+    // horizontal rule + setext heading, which reads wrong). Display belongs
+    // to the properties card (fmEditor.ts, a block widget); this pass only
+    // computes the range so the generic handlers and the tag scan stay out
+    // of it entirely.
     let fmLastLine = 0; // 1-based line of the closing fence; 0 = none
     if (doc.lines >= 2 && doc.line(1).text.trim() === "---") {
       const head: string[] = [];
@@ -389,36 +382,6 @@ class LivePreviewPlugin {
       if (fm) fmLastLine = fm.end;
     }
     const fmEndPos = fmLastLine ? doc.line(fmLastLine).to : 0;
-    if (fmLastLine) {
-      let rev = false;
-      for (let n = 1; n <= fmLastLine; n++) if (active.has(n)) { rev = true; break; }
-      if (!rev) {
-        for (let n = 1; n <= fmLastLine; n++) {
-          const line = doc.line(n);
-          if (n === 1 || n === fmLastLine) {
-            addLineClass(line.from, "lp-fm lp-fm-fence");
-            const deco = n === 1 ? Decoration.replace({ widget: new FmLabelWidget() }) : hide;
-            if (line.from < line.to) {
-              decos.push(deco.range(line.from, line.to));
-              atomics.push(deco.range(line.from, line.to));
-            }
-          } else {
-            addLineClass(line.from, "lp-fm");
-            const m = /^([A-Za-z][A-Za-z0-9_-]*)(\s*:\s*)(.*)$/.exec(line.text);
-            if (m) {
-              const keyEnd = line.from + m[1].length;
-              decos.push(Decoration.mark({ class: "lp-fm-key" }).range(line.from, keyEnd));
-              if (m[2]) decos.push(hide.range(keyEnd, keyEnd + m[2].length));
-              if (m[3]) {
-                decos.push(
-                  Decoration.mark({ class: "lp-fm-value" }).range(keyEnd + m[2].length, line.to),
-                );
-              }
-            }
-          }
-        }
-      }
-    }
 
     for (const { from, to } of view.visibleRanges) {
       tree.iterate({

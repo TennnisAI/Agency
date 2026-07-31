@@ -364,6 +364,19 @@ markdown; frontmatter renders and filters.
       frontmatter" and showed a fresh note's properties as raw fences until
       the first click. An unfocused editor now reveals nothing (it has no
       visible cursor); rebuilds ride `focusChanged`.
+- [x] Properties editing UI (supersedes the "table is read-only chrome"
+      non-goal): `ui/src/lib/fmEditor.ts`, a StateField block widget
+      replacing the raw fences with an editable card in the note's flow.
+      Key/value inputs (quiet until hover/focus), per-row filter and delete
+      tools, corpus-wide key/value autocomplete via datalists, "+ property",
+      invalid keys refused (red) so a bad key can't demote the block to
+      body, edits committed as one transaction on card focusout/Enter
+      (Tab never rebuilds), Escape reverts a row, empty blocks self-delete.
+      Side panel Properties section always shows with "+ add property"
+      (creates the block via `requestAddProperty`); the old line-styled
+      table and its reveal logic are gone from livePreview (which keeps
+      only the range skip). `serializeFrontmatter` / `isValidFmKey` in
+      docsIndex, round-trip tested.
 
 **Non-goals (resist):** YAML lists/nesting/multiline values, `title:`
 override of H1, frontmatter *editing* UI beyond the raw text (the table is

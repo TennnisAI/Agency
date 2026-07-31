@@ -34,11 +34,16 @@ Tag a note by writing #tags anywhere in its body, then search them with `#`.
 
 ## Properties
 
-The block at the very top of this note, between the `---` fences, is its
-properties. Click into it to edit the raw `key: value` lines; click back
-into the body and it snaps into a table. Filter notes by property in the
-Docs search box, for example `type:guide`, or `status:` to find every note
-that has a status at all.
+The card at the top of this note is its properties (stored as plain
+`key: value` frontmatter in the file). Click a name or value to edit it in
+place; Enter or clicking away saves, Escape reverts. Hover a row for its
+tools: the magnifier finds every note sharing that property, the cross
+removes it. Hover the properties label and press + to add one; names and
+values suggest what you already use across the vault. A note without
+properties gets them from "+ add property" in the side panel. Filter notes
+in the Docs search box
+with the same syntax, for example `type:guide`, or `status:` to find every
+note that has a status at all.
 
 ## Tasks
 

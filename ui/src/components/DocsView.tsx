@@ -221,6 +221,7 @@ export default function DocsView({ project }: { project: Project }) {
             onSaved={() => void refresh()}
             onNavigate={navigate}
             onTagClick={(tag) => setQuery(tag.startsWith("#") ? tag : `#${tag}`)}
+            onFilter={(k, v) => setQuery(v ? (/\s/.test(v) ? `${k}:"${v}"` : `${k}:${v}`) : `${k}:`)}
             sideOpen={sideOpen}
             onToggleSide={() => setSideOpen((o) => !o)}
             daily={index && isDailyNotePath(selected) ? {
@@ -248,7 +249,8 @@ export default function DocsView({ project }: { project: Project }) {
                   requestNavigate({ kind: "issue", projectId: m.fromProjectId, issueId: m.fromId });
                 }
               }}
-              onFilter={(k, v) => setQuery(/\s/.test(v) ? `${k}:"${v}"` : `${k}:${v}`)}
+              onFilter={(k, v) => setQuery(v ? (/\s/.test(v) ? `${k}:"${v}"` : `${k}:${v}`) : `${k}:`)}
+              onAddProperty={() => editorRef.current?.addProperty()}
             />
           </div>
         </>

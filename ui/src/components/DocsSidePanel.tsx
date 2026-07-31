@@ -10,7 +10,7 @@ import { LinkEdge } from "../lib/links";
  * polled indexes, so they lag unsaved edits by at most autosave + one poll.
  */
 export default function DocsSidePanel({
-  index, selected, mentions, onJumpToHeading, onOpen, onOpenMention, onFilter,
+  index, selected, mentions, onJumpToHeading, onOpen, onOpenMention, onFilter, onAddProperty,
 }: {
   index: DocsIndex | null;
   selected: string | null;
@@ -19,6 +19,7 @@ export default function DocsSidePanel({
   onOpen: (path: string) => void;
   onOpenMention: (edge: LinkEdge) => void;
   onFilter: (key: string, value: string) => void;
+  onAddProperty: () => void;
 }) {
   const [propsOpen, setPropsOpen] = useState(true);
   const [outlineOpen, setOutlineOpen] = useState(true);
@@ -30,10 +31,13 @@ export default function DocsSidePanel({
 
   return (
     <div className="docs-side-body">
-      {doc && doc.frontmatter.length > 0 && (
+      {doc && (
         <>
           <button className="docs-side-head" onClick={() => setPropsOpen((o) => !o)}>
             <span className="docs-side-chev">{propsOpen ? "▾" : "▸"}</span> Properties
+            {doc.frontmatter.length > 0 && (
+              <span className="docs-side-count">{doc.frontmatter.length}</span>
+            )}
           </button>
           {propsOpen && (
             <div className="docs-side-section">
@@ -49,6 +53,7 @@ export default function DocsSidePanel({
                   </span>
                 </div>
               ))}
+              <button className="docs-prop-add" onClick={onAddProperty}>+ add property</button>
             </div>
           )}
         </>

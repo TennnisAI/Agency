@@ -76,6 +76,23 @@ function unquote(v: string): string {
   return v;
 }
 
+/** Keys the frontmatter parser will accept back — the properties editor
+ * refuses to commit anything else (a bad key would demote the whole block
+ * to body text). */
+export function isValidFmKey(key: string): boolean {
+  return /^[A-Za-z][A-Za-z0-9_-]*$/.test(key);
+}
+
+/**
+ * Canonical text for a frontmatter block: `---`, one `key: value` line per
+ * pair, `---`, trailing newline. Empty pairs serialize to "" (no block).
+ * Round-trips through `parseFrontmatter` for any valid keys.
+ */
+export function serializeFrontmatter(pairs: [string, string][]): string {
+  if (pairs.length === 0) return "";
+  return `---\n${pairs.map(([k, v]) => (v ? `${k}: ${v}` : `${k}:`)).join("\n")}\n---\n`;
+}
+
 /**
  * Parse leading frontmatter from a note's lines. Returns the ordered pairs
  * and `end` (the first body line, just past the closing fence), or null when

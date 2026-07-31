@@ -306,7 +306,7 @@ markdown; frontmatter renders and filters.
 ### Task 8: verification + ship gate
 
 - [x] `cargo test`, `tsc --noEmit`, `vite build`, `vitest run` all green.
-- [ ] Ship gate (dev app): add `status: draft` frontmatter to a note → it
+- [x] Ship gate (dev app): add `status: draft` frontmatter to a note → it
       renders as a property table, raw on click-in; search `status:draft`
       finds it, `status:draft foo` restricts body search; add `- [ ] call
       the bank` to a journal note → it appears on Home (issues mode),
@@ -317,7 +317,7 @@ markdown; frontmatter renders and filters.
       re-running opens the same file without overwriting; narration offer
       appears (git workspace) and dispatches a workspace agent when
       accepted.
-- [ ] Update `docs/one-stop-plan.md` status line for Phase 8.
+- [x] Update `docs/one-stop-plan.md` status line for Phase 8.
 
 ## Post-gate fixes (2026-07-31, from first manual pass)
 

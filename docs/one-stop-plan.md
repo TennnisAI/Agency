@@ -367,6 +367,10 @@ P1 workspace ──► P2 search ──► P3 editor ──► P4 palette ──
 - [x] Phase 7 — Cross-domain links — *shipped 2026-07-31: verification gate
   green, ship gate passed
   (plan: `docs/superpowers/plans/2026-07-31-one-stop-phase7-cross-domain-links.md`)*
-- [ ] Phase 8 — Time / review — *implemented 2026-07-31, verification gate
-  green; manual ship-gate pass pending
+- [x] Phase 8 — Time / review — *shipped 2026-07-31: verification gate green,
+  ship gate passed after three rounds of post-gate fixes (tasks-view scaling
+  and hiding, palette command search, workspace tab diet, seeded Welcome
+  guide, workspace switch, focus-gated live-preview reveal)
   (plan: `docs/superpowers/plans/2026-07-31-one-stop-phase8-time-review.md`)*
+
+All eight phases of this plan are shipped; the sequence is complete.

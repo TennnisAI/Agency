@@ -236,7 +236,7 @@ export default function ProjectTree({
         <button
           className={`icon-add icon-filter${filter === "active" ? " on" : ""}`}
           title={filter === "active"
-            ? "Showing active projects only — click to show all"
+            ? "Showing active projects only. Click to show all."
             : "Show only active projects (those with an agent or terminal)"}
           aria-label="Show only active projects"
           aria-pressed={filter === "active"}
@@ -253,7 +253,7 @@ export default function ProjectTree({
         <li className="tree-workspace">
           <div
             className={`tree-row ${workspace && workspace.id === selectedId ? (focusedRunId ? "selected ancestor" : "selected") : ""}${workspace ? "" : " ws-absent"}`}
-            title={workspace ? workspace.repo_path : "Create your workspace — a home for journaling, planning, and notes"}
+            title={workspace ? workspace.repo_path : "Create your workspace: a home for journaling, planning, and notes"}
             onClick={() => openWorkspace(null)}
           >
             <span className="chev" onClick={(e) => { e.stopPropagation(); if (workspace) toggle(workspace); }}>
@@ -326,7 +326,7 @@ export default function ProjectTree({
       <div className="tree-foot">
         <button
           className="tree-settings"
-          aria-label={updateAvailable ? "Settings — an update is available" : "Settings"}
+          aria-label={updateAvailable ? "Settings (an update is available)" : "Settings"}
           onClick={onOpenSettings}
         >
           <span className="tree-settings-gear">{"⚙︎"}</span> Settings
@@ -354,7 +354,7 @@ export default function ProjectTree({
       {pending && (
         <ConfirmDialog
           title="Close project?"
-          body={`Stop all agents in "${pending.project.name}" and remove it from the sidebar. Everything on disk is kept — add the project again to pick up where you left off. "Delete worktrees & close" also deletes the agents' worktrees and branches, including unmerged work. Your repository files are never touched.`}
+          body={`Stop all agents in "${pending.project.name}" and remove it from the sidebar. Everything on disk is kept; add the project again to pick up where you left off. "Delete worktrees & close" also deletes the agents' worktrees and branches, including unmerged work. Your repository files are never touched.`}
           confirmLabel="Close project"
           altLabel="Delete worktrees & close"
           altDanger

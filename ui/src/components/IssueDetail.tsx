@@ -54,7 +54,7 @@ function DateProp({
         className={`issue-prop-pill date-pill${value ? "" : " date-empty"}${overdue ? " overdue" : ""}`}
         role="button"
         tabIndex={0}
-        title={value ? `${label} ${value} — click to change` : `Set ${label.toLowerCase()} date`}
+        title={value ? `${label} ${value} (click to change)` : `Set ${label.toLowerCase()} date`}
         onClick={openPicker}
         onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openPicker(); } }}
       >

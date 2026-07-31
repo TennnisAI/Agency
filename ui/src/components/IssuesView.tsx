@@ -229,7 +229,18 @@ export default function IssuesView({
           <button
             className="quickadd-toggle"
             title={quickOpen ? "Close" : "Add an issue (c)"}
-            onClick={() => { setQuick(""); setQuickOpen((o) => !o); }}
+            // Keep the press from blurring the input first — the blur handler
+            // would collapse the box and this click would re-open it.
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => {
+              if (quickOpen) {
+                setQuick("");
+                setQuickOpen(false);
+                quickRef.current?.blur();
+              } else {
+                setQuickOpen(true);
+              }
+            }}
           >
             +
           </button>
@@ -252,7 +263,16 @@ export default function IssuesView({
           />
         </div>
         {loaded && issues.length === 0 ? (
-          <div className="board empty">Capture your first issue — you can hand it to an agent later.</div>
+          <div className="board empty issues-empty">
+            <button
+              className="quickadd-toggle big"
+              title="Add an issue (c)"
+              onClick={() => setQuickOpen(true)}
+            >
+              +
+            </button>
+            <div>Capture your first issues. Agents can pick up issues from here.</div>
+          </div>
         ) : (
           <div className={`issues-list${drag ? " reordering" : ""}`}>
             {groups.map(({ status, issues: group }) => {

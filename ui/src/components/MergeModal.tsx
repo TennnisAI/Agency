@@ -236,13 +236,13 @@ export default function MergeModal({
               {!nothingToMerge && preview.commitsBehind > 0 && (
                 <p className="merge-warn">
                   <code>{preview.base}</code> has moved ahead by {preview.commitsBehind} commit
-                  {preview.commitsBehind === 1 ? "" : "s"} since this agent branched — the merge may hit conflicts.
+                  {preview.commitsBehind === 1 ? "" : "s"} since this agent branched, so the merge may hit conflicts.
                 </p>
               )}
               {preview.worktreeDirty && (
                 <p className="merge-warn">
                   {preview.dirtyFiles.length} uncommitted change{preview.dirtyFiles.length === 1 ? "" : "s"} in this
-                  agent's worktree {nothingToMerge ? "exist but aren't committed" : "won't be included"} — only committed
+                  agent's worktree {nothingToMerge ? "exist but aren't committed" : "won't be included"}. Only committed
                   work is merged. Commit them in Source Control first to include them.
                 </p>
               )}
@@ -272,8 +272,8 @@ export default function MergeModal({
             <p className="merge-ok">✓ Merged cleanly into {preview?.base ?? "main"}.</p>
             <code>{outcome.commit.slice(0, 10)}</code>
             <p className="merge-note">
-              The worktree and its <code>{preview?.branch ?? "agent"}</code> branch are no longer needed —
-              archiving stops the agent and removes the worktree (the branch is kept, so it can be restored).
+              The worktree and its <code>{preview?.branch ?? "agent"}</code> branch are no longer needed.
+              Archiving stops the agent and removes the worktree (the branch is kept, so it can be restored).
             </p>
             <div className="git-actions">
               {losers.length > 0 ? (

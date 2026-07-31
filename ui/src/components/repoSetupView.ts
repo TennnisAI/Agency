@@ -24,7 +24,7 @@ export function repoSetupView(readiness: RepoReadiness, context: "add" | "spawn"
     return {
       kind: "commit",
       title: "Create an initial commit",
-      body: "Agency needs at least one commit — each agent starts from your latest commit. Create the initial commit now?",
+      body: "Agency needs at least one commit; each agent starts from your latest commit. Create the initial commit now?",
       primaryLabel: "Create initial commit",
       secondaryLabel: null,
     };

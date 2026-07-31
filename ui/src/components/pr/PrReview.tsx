@@ -121,7 +121,7 @@ export default function PrReview({
       // "Unprocessable Entity".
       const msg = String(e);
       if (/422|unprocessable/i.test(msg) && event !== "COMMENT") {
-        toastError(e, "GitHub rejected the review — you can't approve or request changes on your own PR, and comment lines must still be part of the diff.");
+        toastError(e, "GitHub rejected the review. You can't approve or request changes on your own PR, and comment lines must still be part of the diff.");
       } else {
         toastError(e, "Couldn't submit review");
       }
@@ -141,12 +141,12 @@ export default function PrReview({
   // Comment review is allowed. Detect it so we disable those buttons up front
   // instead of failing with a 422.
   const isOwnPr = !!viewer && detail.author.login.toLowerCase() === viewer.toLowerCase();
-  const ownPrHint = "You authored this PR — GitHub only lets you leave a Comment review on your own PR.";
+  const ownPrHint = "You authored this PR. GitHub only lets you leave a Comment review on your own PR.";
   // The PR is mergeable when it's open, not a draft, and GitHub doesn't report a
   // conflict. UNKNOWN (still computing) is allowed — gh will refuse if it can't.
   const canMerge = detail.state === "OPEN" && !detail.isDraft && detail.mergeable !== "CONFLICTING";
   const mergeHint = detail.isDraft
-    ? "This PR is a draft — mark it ready before merging."
+    ? "This PR is a draft. Mark it ready before merging."
     : detail.mergeable === "CONFLICTING"
       ? "This PR has conflicts that must be resolved first."
       : "Merge this PR into its base branch.";
@@ -213,7 +213,7 @@ export default function PrReview({
         <div className="pr-review-verdicts">
           <span className="pr-review-draftcount">
             {isOwnPr
-              ? "Your PR — comment only"
+              ? "Your PR: comment only"
               : drafts.length > 0
                 ? `${drafts.length} pending comment${drafts.length === 1 ? "" : "s"}`
                 : "No pending comments"}
@@ -224,7 +224,7 @@ export default function PrReview({
             disabled={submitting || !canVerdict}
             title={
               canVerdict
-                ? "Submit feedback without a verdict — leaves your comments but doesn't approve or block the merge."
+                ? "Submit feedback without a verdict. Leaves your comments but doesn't approve or block the merge."
                 : "Add a summary or a comment first"
             }
             onClick={() => submit("COMMENT")}
@@ -238,7 +238,7 @@ export default function PrReview({
               isOwnPr
                 ? ownPrHint
                 : canVerdict
-                  ? "Block the merge until addressed — marks the PR “Changes requested”; you'll need to re-review to clear it."
+                  ? "Block the merge until addressed. Marks the PR “Changes requested”; you'll need to re-review to clear it."
                   : "Add a summary or a comment first"
             }
             onClick={() => submit("REQUEST_CHANGES")}
@@ -248,7 +248,7 @@ export default function PrReview({
           <button
             className="git-iconbtn pr-approve"
             disabled={submitting || isOwnPr}
-            title={isOwnPr ? ownPrHint : "Sign off on the PR — marks it “Approved” and counts toward required approvals."}
+            title={isOwnPr ? ownPrHint : "Sign off on the PR. Marks it “Approved” and counts toward required approvals."}
             onClick={() => submit("APPROVE")}
           >
             {submitting ? "Submitting…" : "Approve"}

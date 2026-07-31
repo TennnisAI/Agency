@@ -215,7 +215,7 @@ export default function AgentOnboarding({ onDone }: { onDone: () => void }) {
         )}
 
         {customSaved && (
-          <p className="onboarding-custom-ok">Custom profile saved — it will appear in your agent list.</p>
+          <p className="onboarding-custom-ok">Custom profile saved. It will appear in your agent list.</p>
         )}
 
         {error && <div className="git-error">{error}</div>}

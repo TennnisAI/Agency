@@ -144,7 +144,7 @@ export default function DocsView({ project }: { project: Project }) {
       <div className="board empty docs-empty">
         <div className="docs-empty-title">This project has no docs folder.</div>
         <div className="docs-empty-sub">
-          Notes live as markdown files in <code>docs/</code> at the repo root — editable here, by agents, or by any other tool.
+          Notes live as markdown files in <code>docs/</code> at the repo root, editable here, by agents, or by any other tool.
         </div>
         <button className="btn-primary" onClick={() => void createDocsDir()}>Create docs/</button>
       </div>

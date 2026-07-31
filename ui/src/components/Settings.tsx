@@ -630,7 +630,7 @@ export default function Settings({
             <div className="settings-notif-row">
               <span className="settings-notif-label">
                 Show the workspace
-                {wsOff && " — currently hidden; nothing on disk was deleted"}
+                {wsOff && " (currently hidden; nothing on disk was deleted)"}
               </span>
               <Toggle checked={!wsOff} onChange={(on) => { void toggleWorkspaceVisible(on); }} />
             </div>
@@ -868,7 +868,7 @@ export default function Settings({
               />
               <input
                 className="settings-input"
-                placeholder="url (remote server — leave command empty)"
+                placeholder="url (remote server; leave command empty)"
                 value={mcpDraft.url}
                 onChange={(e) => setMcpDraft({ ...mcpDraft, url: e.target.value })}
               />
@@ -950,7 +950,7 @@ export default function Settings({
                         : !kg.serve_installed
                         ? "The serve command isn't on your PATH"
                         : "The build command isn't on your PATH"}
-                      {" "}— the graph is enabled but will be skipped until the tooling is installed.
+                      . The graph is enabled but will be skipped until the tooling is installed.
                     </div>
                   )}
                   <div className="settings-provider-field">

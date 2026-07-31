@@ -134,7 +134,7 @@ export default function LoopDialog({ onClose, issue, issueLabel }: {
             <span>done when</span>
             <input
               className="settings-input loop-check"
-              placeholder="e.g. pnpm test — exits 0 when done (empty = fixed iterations)"
+              placeholder="e.g. pnpm test (exits 0 when done; empty = fixed iterations)"
               value={checkCommand}
               onChange={(e) => setCheckCommand(e.target.value)}
             />

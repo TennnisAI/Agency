@@ -53,7 +53,7 @@ function LoopStrip({ run, onChanged }: { run: RunInfo; onChanged: () => void }) 
       {active && (
         <button
           className="tile-act"
-          title="Stop the loop — the worktree and its commits stay"
+          title="Stop the loop. The worktree and its commits stay."
           onClick={async () => {
             try {
               await stopLoop(run.id);
@@ -279,8 +279,8 @@ export default function AgentFocus({
                       key={s.id}
                       className={`session-tab ${panel === s.id ? "on" : ""}`}
                       title={s.agent === "shell"
-                        ? "Terminal — extra shell in this worktree"
-                        : `${agentLabel(s.agent)} — extra agent in this worktree`}
+                        ? "Terminal: extra shell in this worktree"
+                        : `${agentLabel(s.agent)}: extra agent in this worktree`}
                       onClick={() => setPanel(s.id)}
                     >
                       {s.agent === "shell" ? "≳ terminal" : agentLabel(s.agent)} · {s.id.split("--").pop()}

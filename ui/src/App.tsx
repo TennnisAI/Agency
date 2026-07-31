@@ -49,7 +49,7 @@ function Shell() {
     if (project?.kind === "workspace") {
       const r = await inspectRepo(project.repo_path).catch(() => null);
       if (r?.state === "notARepo") {
-        toastInfo("Agents need git — initialize a repository in the workspace first.");
+        toastInfo("Agents need git. Initialize a repository in the workspace first.");
         return;
       }
     }
@@ -64,7 +64,7 @@ function Shell() {
     // Hidden means "I don't use this" — respect it rather than resurrecting
     // the workspace from a stray shortcut press.
     if (workspaceHidden()) {
-      toastInfo("The workspace is hidden — turn it back on in Settings ▸ Workspace.");
+      toastInfo("The workspace is hidden. Turn it back on in Settings ▸ Workspace.");
       return;
     }
     const ws = await getWorkspace().catch(() => null);
@@ -350,7 +350,7 @@ function Shell() {
           title="Quit Agency?"
           body={quitPrompt > 0
             ? `Quitting will stop ${quitPrompt} running session${quitPrompt === 1 ? "" : "s"}. Agents resume where they left off next time you open Agency.`
-            : "All agents are idle — nothing will be interrupted."}
+            : "All agents are idle; nothing will be interrupted."}
           confirmLabel="Quit"
           danger={quitPrompt > 0}
           onConfirm={() => { confirmQuit().catch(() => {}); }}

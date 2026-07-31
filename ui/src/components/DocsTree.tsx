@@ -303,7 +303,7 @@ export default function DocsTree({
             ))}
           </div>
         ) : index && index.docs.size === 0 && extraDirs.length === 0 ? (
-          <div className="docs-search-none">No notes yet — create one.</div>
+          <div className="docs-search-none">No notes yet. Create one.</div>
         ) : (
           renderDir(tree, 0)
         )}

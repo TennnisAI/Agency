@@ -131,7 +131,7 @@ export default function PrSection({
       )}
 
       {readiness === "ready" && !pr && !canCreate && (
-        <p className="merge-note">Commit some work first — there's nothing to open a PR for.</p>
+        <p className="merge-note">Commit some work first. There's nothing to open a PR for.</p>
       )}
 
       {pr && (

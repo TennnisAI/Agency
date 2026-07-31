@@ -98,7 +98,7 @@ export default function HistoryPanel({ taskId, base, onSelectCommit, selectedHas
           onCancel={() => setConfirm(null)} />
       )}
       {branchFrom && (
-        <PromptDialog title="Create branch" body={`New branch at ${branchFrom.hash.slice(0, 7)} — ${branchFrom.subject}`}
+        <PromptDialog title="Create branch" body={`New branch at ${branchFrom.hash.slice(0, 7)} (${branchFrom.subject})`}
           placeholder="branch name" confirmLabel="Create & Switch"
           onConfirm={(name) => {
             onAct(() => gitCreateBranch(taskId, name, branchFrom.hash, true), `Switched to ${name}`);

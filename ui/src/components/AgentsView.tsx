@@ -235,7 +235,7 @@ export default function AgentsView({
                       <div className="board empty">
                         {gitlessWorkspace
                           ? "Agents need git to work in isolated branches. Initialize a repository in the workspace (Settings ▸ Workspace) to dispatch them here."
-                          : "No agents yet — add one with \"+ Agent\"."}
+                          : "No agents yet. Add one with \"+ Agent\"."}
                       </div>
                     )}
                     {runs.map((r) => <AgentTile key={r.id} run={r} />)}

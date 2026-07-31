@@ -143,7 +143,7 @@ export default function NewPrForm({
         <span>Description</span>
         <textarea
           className="settings-input"
-          placeholder="Optional — a summary of the branch's commits is generated when left blank."
+          placeholder="Optional. A summary of the branch's commits is generated when left blank."
           value={body}
           onChange={(e) => setBody(e.target.value)}
         />

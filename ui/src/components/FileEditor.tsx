@@ -294,7 +294,7 @@ const FileEditor = forwardRef<FileEditorHandle, {
         )}
       </div>
       {status === "loading" && <div className="diff-empty">loading…</div>}
-      {status === "binary" && <div className="diff-empty">Binary file — no preview for this format.</div>}
+      {status === "binary" && <div className="diff-empty">Binary file. No preview for this format.</div>}
       {status === "tooLarge" && <div className="diff-empty">File too large to open.</div>}
       {status === "error" && <div className="git-error">{errorMsg}</div>}
 

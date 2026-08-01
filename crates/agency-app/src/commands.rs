@@ -75,6 +75,36 @@ pub fn add_project(
         .map_err(|e| e.to_string())
 }
 
+// ── workspace (the pinned notes/journal project) ────────────────────────────
+
+#[tauri::command]
+pub async fn get_workspace(state: State<'_, AppState>) -> Result<Option<Project>, String> {
+    state.get_workspace().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn default_workspace_location(state: State<'_, AppState>) -> Result<String, String> {
+    Ok(state.default_workspace_location().to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+pub fn create_workspace(
+    state: State<'_, AppState>,
+    path: String,
+    use_git: bool,
+) -> Result<Project, String> {
+    state
+        .create_workspace(std::path::Path::new(&path), use_git)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn move_workspace(state: State<'_, AppState>, new_path: String) -> Result<Project, String> {
+    state
+        .move_workspace(std::path::Path::new(&new_path))
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn close_project(state: State<'_, AppState>, id: String) -> Result<(), String> {
     state.close_project(&id).map_err(|e| e.to_string())
@@ -1640,6 +1670,11 @@ pub async fn detect_docs_dir(
     state: State<'_, AppState>,
     project_id: String,
 ) -> Result<Option<String>, String> {
+    // The workspace's *whole folder* is the vault — its docs root is the empty
+    // relative path, not a `docs/` subfolder.
+    if state.project_is_workspace(&project_id).map_err(|e| e.to_string())? {
+        return Ok(Some(String::new()));
+    }
     let base = state.project_repo_path(&project_id).map_err(|e| e.to_string())?;
     agency_core::files::find_dir_case_insensitive(&base, "docs").map_err(|e| e.to_string())
 }
@@ -1654,6 +1689,104 @@ pub async fn read_docs_corpus(
 ) -> Result<Vec<agency_core::files::DocFile>, String> {
     let base = resolve_root(&state, &root)?;
     agency_core::files::read_markdown_corpus(&base, &docs_dir).map_err(|e| e.to_string())
+}
+
+/// Stat-only corpus pass: `(path, mtime, size)` per markdown file, so the
+/// docs poll can detect change without re-reading bodies.
+#[tauri::command]
+pub async fn docs_corpus_stats(
+    state: State<'_, AppState>,
+    root: FileRoot,
+    docs_dir: String,
+) -> Result<Vec<agency_core::files::DocStat>, String> {
+    let base = resolve_root(&state, &root)?;
+    agency_core::files::scan_markdown_stats(&base, &docs_dir).map_err(|e| e.to_string())
+}
+
+/// Read a named subset of the docs corpus — the poll's "these changed" list.
+#[tauri::command]
+pub async fn read_docs_files(
+    state: State<'_, AppState>,
+    root: FileRoot,
+    docs_dir: String,
+    paths: Vec<String>,
+) -> Result<Vec<agency_core::files::DocFile>, String> {
+    let base = resolve_root(&state, &root)?;
+    agency_core::files::read_markdown_files(&base, &docs_dir, &paths).map_err(|e| e.to_string())
+}
+
+/// Seed the workspace's Welcome guide if it was deleted and return its note
+/// path. Backs the palette's "Workspace Guide" command; creation-time seeding
+/// happens in create_workspace. Sync: it writes a file.
+#[tauri::command]
+pub fn ensure_workspace_guide(
+    state: State<'_, AppState>,
+    project_id: String,
+) -> Result<String, String> {
+    let base = state.project_repo_path(&project_id).map_err(|e| e.to_string())?;
+    agency_core::guide::ensure_guide(&base).map_err(|e| e.to_string())?;
+    Ok(agency_core::guide::GUIDE_FILE.to_string())
+}
+
+/// Every checkbox task in a root's docs corpus (one-stop Phase 8) — same walk
+/// as the corpus reads, but only task lines cross the IPC boundary. Async:
+/// read-only and polled from Home.
+#[tauri::command]
+pub async fn scan_tasks(
+    state: State<'_, AppState>,
+    root: FileRoot,
+    docs_dir: String,
+) -> Result<Vec<agency_core::files::TaskHit>, String> {
+    let base = resolve_root(&state, &root)?;
+    agency_core::files::scan_tasks(&base, &docs_dir).map_err(|e| e.to_string())
+}
+
+/// Flip one checkbox task in place (one-stop Phase 8). Sync like the other
+/// mutating file commands; the core re-verifies the line before writing and
+/// returns false when the caller's view was stale.
+#[tauri::command]
+pub fn toggle_task(
+    state: State<'_, AppState>,
+    root: FileRoot,
+    docs_dir: String,
+    rel_path: String,
+    line: u32,
+    checked: bool,
+) -> Result<bool, String> {
+    let base = resolve_root(&state, &root)?;
+    agency_core::files::toggle_task(&base, &docs_dir, &rel_path, line, checked)
+        .map_err(|e| e.to_string())
+}
+
+/// Content search under `dir` within a root (one-stop Phase 2). Hit paths come
+/// back relative to `dir`. Async on purpose: a search must never wedge the
+/// main thread — the core enforces hit/byte/time caps so it always returns.
+#[tauri::command]
+pub async fn search_files(
+    state: State<'_, AppState>,
+    root: FileRoot,
+    dir: String,
+    query: agency_core::search::SearchQuery,
+) -> Result<Vec<agency_core::search::SearchHit>, String> {
+    let base = resolve_root(&state, &root)?;
+    let target = agency_core::files::abs_path(&base, &dir).map_err(|e| e.to_string())?;
+    agency_core::search::search_files(&target, &query).map_err(|e| e.to_string())
+}
+
+/// Sorted relative file paths under `dir` within a root — quick-open's name
+/// list (one-stop Phase 3). Same file set as the fallback search engine:
+/// gitignore respected in repos, bounded walk elsewhere. Async like
+/// search_files: listing a big tree must not wedge the IPC thread.
+#[tauri::command]
+pub async fn list_files(
+    state: State<'_, AppState>,
+    root: FileRoot,
+    dir: String,
+    max_files: usize,
+) -> Result<Vec<String>, String> {
+    let base = resolve_root(&state, &root)?;
+    let target = agency_core::files::abs_path(&base, &dir).map_err(|e| e.to_string())?;
+    Ok(agency_core::search::list_root_files(&target, max_files))
 }
 
 /// Write base64-decoded bytes to a new file (refuses to clobber). Used for

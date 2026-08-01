@@ -346,11 +346,31 @@ P1 workspace ──► P2 search ──► P3 editor ──► P4 palette ──
 
 ## Status
 
-- [ ] Phase 1 — Workspace root + daily note
-- [ ] Phase 2 — Search primitive
-- [ ] Phase 3 — Quick-open, find-in-files, tabs
-- [ ] Phase 4 — Command palette v2
-- [ ] Phase 5 — Issues as files
-- [ ] Phase 6 — Tracker depth
-- [ ] Phase 7 — Cross-domain links
-- [ ] Phase 8 — Time / review
+- [x] Phase 1 — Workspace root + daily note — *shipped 2026-07-28: verification
+  gate green, manual ship gate passed
+  (plan: `docs/superpowers/plans/2026-07-28-one-stop-phase1-workspace-daily-note.md`)*
+- [x] Phase 2 — Search primitive — *shipped 2026-07-28: verification gate green,
+  ship gates passed (10k files: 304ms fallback / 144ms rg; idle corpus does zero
+  body reads; plan: `docs/superpowers/plans/2026-07-28-one-stop-phase2-search-primitive.md`)*
+- [x] Phase 3 — Quick-open, find-in-files, tabs — *shipped 2026-07-30:
+  verification gate green, ship gate passed
+  (plan: `docs/superpowers/plans/2026-07-28-one-stop-phase3-editor-gaps.md`)*
+- [x] Phase 4 — Command palette v2 — *shipped 2026-07-30: verification gate
+  green, ship gate passed
+  (plan: `docs/superpowers/plans/2026-07-30-one-stop-phase4-command-palette.md`)*
+- [x] Phase 5 — Issues as files — *shipped 2026-07-30: verification gate green,
+  ship gate passed
+  (plan: `docs/superpowers/plans/2026-07-30-one-stop-phase5-issues-as-files.md`)*
+- [x] Phase 6 — Tracker depth — *shipped 2026-07-31: verification gate green,
+  ship gate passed
+  (plan: `docs/superpowers/plans/2026-07-30-one-stop-phase6-tracker-depth.md`)*
+- [x] Phase 7 — Cross-domain links — *shipped 2026-07-31: verification gate
+  green, ship gate passed
+  (plan: `docs/superpowers/plans/2026-07-31-one-stop-phase7-cross-domain-links.md`)*
+- [x] Phase 8 — Time / review — *shipped 2026-07-31: verification gate green,
+  ship gate passed after three rounds of post-gate fixes (tasks-view scaling
+  and hiding, palette command search, workspace tab diet, seeded Welcome
+  guide, workspace switch, focus-gated live-preview reveal)
+  (plan: `docs/superpowers/plans/2026-07-31-one-stop-phase8-time-review.md`)*
+
+All eight phases of this plan are shipped; the sequence is complete.

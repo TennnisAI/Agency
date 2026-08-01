@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Issue, Project, inspectRepo, RepoReadiness, FileRoot, agentInstalled, startIssueRun } from "../api";
+import { fileRootKey, requestOpenFile } from "../lib/openFile";
 import { useRuns } from "../store/runs";
 import AgentTile from "./AgentTile";
 import AgentFocus from "./AgentFocus";
@@ -17,6 +18,7 @@ import IssuesView from "./IssuesView";
 import SidebarToggle from "./SidebarToggle";
 import RightPanelToggle from "./RightPanelToggle";
 import InstallAgentDialog from "./InstallAgentDialog";
+import QuickOpen from "./QuickOpen";
 
 // Main content area. With a project selected this is that project's agents /
 // source control / files; with none it hosts the all-projects overview under
@@ -48,12 +50,72 @@ export default function AgentsView({
   useEffect(() => { setGitSel(null); }, [focusedRunId, project?.id]);
   const reviewPane = usePaneWidth("review", 360, 280, 640);
 
+  // The workspace can decline git; everything git-shaped (Source Control, the
+  // review panel, agent spawn — agents need worktrees) hides for it then.
+  // Terminals stay: they run in the checkout, no branch required.
+  const [projReadiness, setProjReadiness] = useState<RepoReadiness | null>(null);
+  // Request token: a slow inspectRepo from a previous project (or an older
+  // refresh) must not land over the current one's readiness.
+  const readinessSeq = useRef(0);
+  const refreshReadiness = () => {
+    const seq = ++readinessSeq.current;
+    if (!project) { setProjReadiness(null); return; }
+    inspectRepo(project.repo_path).then((r) => {
+      if (seq === readinessSeq.current) setProjReadiness(r);
+    }).catch(() => {});
+  };
+  useEffect(() => {
+    setProjReadiness(null);
+    refreshReadiness();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project?.id]);
+  const gitlessWorkspace = project?.kind === "workspace" && projReadiness?.state === "notARepo";
+  // The workspace is a markdown vault: the Files tab would duplicate Docs
+  // (with a manual-save editor, no less), so it's hidden there entirely.
+  const isWorkspace = project?.kind === "workspace";
+
+  // Per-project tab memory can restore "source" from before git was declined,
+  // or "files" from before the workspace hid it.
+  useEffect(() => {
+    if (gitlessWorkspace && tab === "source") setTab("agents");
+    if (isWorkspace && tab === "files") setTab("docs");
+  }, [gitlessWorkspace, isWorkspace, tab, setTab]);
+
   // Which working tree source control operates on: the focused run's worktree
   // (terminals share the project checkout) or, with no run selected, the
   // project's main checkout via a "project:<id>" token. Null only at the
   // all-projects home screen.
   const gitRoot = focusedRunId ?? (project ? `project:${project.id}` : null);
   const allowComments = focused?.kind === "agent";
+
+  // The root the Files tab shows (and quick-open must list): the focused run's
+  // worktree, else the project's main checkout.
+  const filesRoot: FileRoot | null = project
+    ? focusedRunId
+      ? { kind: "run", id: focusedRunId }
+      : { kind: "project", id: project.id }
+    : null;
+
+  // ⌘P quick-open, everywhere except the Docs tab — DocsView owns ⌘P there
+  // (its note switcher) and is only mounted on that tab, so exactly one
+  // handler acts per keypress.
+  const [quickOpen, setQuickOpen] = useState(false);
+  const quickOpenGate = useRef({ enabled: false });
+  // The workspace has no Files tab, so quick-open (which lands there) is off;
+  // ⌘P inside Docs is the note switcher.
+  quickOpenGate.current.enabled = !!project && tab !== "docs" && !isWorkspace;
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "p") {
+        if (!quickOpenGate.current.enabled) return;
+        e.preventDefault();
+        setQuickOpen((s) => !s);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+  useEffect(() => { setQuickOpen(false); }, [project?.id, tab]);
 
   async function spawn(agentId: string, opts?: { base: string; mergeTarget: string }, issue?: Issue) {
     if (!project) return;
@@ -96,8 +158,12 @@ export default function AgentsView({
           <button className={tab === "agents" ? "on" : ""} onClick={() => setTab("agents")}>▦ Agents</button>
           <button className={tab === "issues" ? "on" : ""} onClick={() => setTab("issues")}>▧ Issues</button>
           <button className={tab === "docs" ? "on" : ""} onClick={() => setTab("docs")}>▥ Docs</button>
-          <button className={tab === "source" ? "on" : ""} onClick={() => setTab("source")}>⎇ Source Control</button>
-          <button className={tab === "files" ? "on" : ""} onClick={() => setTab("files")}>▤ Files</button>
+          {!gitlessWorkspace && (
+            <button className={tab === "source" ? "on" : ""} onClick={() => setTab("source")}>⎇ Source Control</button>
+          )}
+          {!isWorkspace && (
+            <button className={tab === "files" ? "on" : ""} onClick={() => setTab("files")}>▤ Files</button>
+          )}
         </div>
         {project && tab === "agents" && (
           <div className="seg">
@@ -112,11 +178,16 @@ export default function AgentsView({
           </div>
         )}
         <div className="spacer" />
-        {project && tab === "agents" && (
+        {project && tab === "agents" && !gitlessWorkspace && (
           <RightPanelToggle open={review} onToggle={() => setReview((r) => !r)} />
         )}
         {project && tab === "agents" && (
-          <AgentAddMenu projectId={project.id} onSpawn={spawn} onTerminal={createTerminal} />
+          <AgentAddMenu
+            projectId={project.id}
+            onSpawn={spawn}
+            onTerminal={createTerminal}
+            terminalOnly={gitlessWorkspace}
+          />
         )}
       </div>
 
@@ -162,14 +233,7 @@ export default function AgentsView({
 
           {tab === "files" && (
             <div className="source-wrap">
-              <FilesView
-                root={
-                  focusedRunId
-                    ? ({ kind: "run", id: focusedRunId } as FileRoot)
-                    : ({ kind: "project", id: project.id } as FileRoot)
-                }
-                projectName={project.name}
-              />
+              <FilesView root={filesRoot} projectId={project.id} projectName={project.name} />
             </div>
           )}
 
@@ -178,7 +242,13 @@ export default function AgentsView({
               <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, overflow: "hidden" }}>
                 {view === "grid" && (
                   <div className="grid">
-                    {runs.length === 0 && !spawning && <div className="board empty">No agents yet — add one with "+ Agent".</div>}
+                    {runs.length === 0 && !spawning && (
+                      <div className="board empty">
+                        {gitlessWorkspace
+                          ? "Agents need git to work in isolated branches. Initialize a repository in the workspace (Settings ▸ Workspace) to dispatch them here."
+                          : "No agents yet. Add one with \"+ Agent\"."}
+                      </div>
+                    )}
                     {runs.map((r) => <AgentTile key={r.id} run={r} />)}
                     {spawning && (
                       // Placeholder while the worktree + session are created —
@@ -210,7 +280,7 @@ export default function AgentsView({
                 )}
                 {view === "focus" && <AgentFocus onSpawn={spawn} />}
               </div>
-              {review && gitRoot && (
+              {review && gitRoot && !gitlessWorkspace && (
                 <>
                   <Resizer size={reviewPane.width} min={280} max={640} onChange={reviewPane.setWidth} side="right" />
                   <GitPanel
@@ -228,6 +298,17 @@ export default function AgentsView({
         </>
       )}
 
+      {quickOpen && filesRoot && (
+        <QuickOpen
+          root={filesRoot}
+          onOpen={(path) => {
+            setTab("files");
+            requestOpenFile({ rootKey: fileRootKey(filesRoot), path });
+          }}
+          onClose={() => setQuickOpen(false)}
+        />
+      )}
+
       {pendingSpawn && (
         <RepoSetupDialog
           readiness={pendingSpawn.readiness}
@@ -236,6 +317,7 @@ export default function AgentsView({
           onResolved={async () => {
             const { agentId, opts, issue } = pendingSpawn;
             setPendingSpawn(null);
+            refreshReadiness();
             try {
               if (issue) await startIssue(issue, agentId, opts);
               else await createAgent(agentId, opts);

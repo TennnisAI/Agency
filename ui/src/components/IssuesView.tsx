@@ -1,7 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Issue, IssuePatch, Project, createIssue, deleteIssue, updateIssue } from "../api";
+import { Issue, IssuePatch, IssueStatus, Project, createIssue, deleteIssue, getWorkspace, updateIssue } from "../api";
+import { planReorder } from "../lib/issueRank";
+import { Corpus, LinkEdge, buildLinkIndex, mentionsOf } from "../lib/links";
+import { requestNavigate } from "../lib/navigate";
 import { useRuns } from "../store/runs";
 import { useIssues } from "../hooks/useIssues";
+import { useCrossRefs } from "../hooks/useCrossRefs";
+import { useDocs } from "../hooks/useDocs";
 import { ISSUE_STATUSES, PENDING_ISSUE_KEY, PENDING_QUICKADD_KEY, STATUS_LABELS, compareIssues, isClosed, issueLabel } from "../lib/issues";
 import { pickDefaultAgent } from "../lib/defaultAgent";
 import IssueRow from "./IssueRow";
@@ -27,15 +32,19 @@ export default function IssuesView({
   const [confirmDelete, setConfirmDelete] = useState<Issue | null>(null);
   // done/cancelled fold away by default; an open group stays open.
   const [openClosed, setOpenClosed] = useState<Set<string>>(new Set());
+  // Quick-add rests as a + button and expands into an inline input on demand.
+  const [quickOpen, setQuickOpen] = useState(false);
   const quickRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => { setSelectedId(null); setQuick(""); }, [project.id]);
+  useEffect(() => { setSelectedId(null); setQuick(""); setQuickOpen(false); }, [project.id]);
+  useEffect(() => { if (quickOpen) quickRef.current?.focus(); }, [quickOpen]);
 
-  // The palette's "New Issue" lands here: focus quick-add on tab activation.
+  // The palette's "New Issue" lands here: open quick-add on tab activation.
   useEffect(() => {
     if (tab !== "issues") return;
     if (sessionStorage.getItem(PENDING_QUICKADD_KEY)) {
       sessionStorage.removeItem(PENDING_QUICKADD_KEY);
+      setQuickOpen(true);
       quickRef.current?.focus();
     }
   }, [tab]);
@@ -59,12 +68,50 @@ export default function IssuesView({
       })),
     [issues],
   );
+  // Mouse handlers commit against the freshest grouping, not their closure's.
+  const groupsRef = useRef(groups);
+  groupsRef.current = groups;
   const visible = useMemo(
     () => groups.flatMap((g) => (isClosed(g.status) && !openClosed.has(g.status) ? [] : g.issues)),
     [groups, openClosed],
   );
   const selected = issues.find((i) => i.id === selectedId) ?? null;
   const runsFor = (issue: Issue) => runs.filter((r) => r.issueId === issue.id);
+
+  // Mentions for the detail pane (one-stop Phase 7): notes and issues linking
+  // to the selected issue. Corpora scanned: this project's docs plus the
+  // workspace vault (where journal notes live) — other projects' docs are out
+  // of scope until someone needs them.
+  const [workspace, setWorkspace] = useState<Project | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    getWorkspace().then((ws) => { if (!cancelled) setWorkspace(ws); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+  const wsId = workspace && workspace.id !== project.id ? workspace.id : null;
+  const active = tab === "issues";
+  const ownDocs = useDocs(project.id, active);
+  const wsDocs = useDocs(wsId, active);
+  const { cross } = useCrossRefs(active);
+  const linkTable = useMemo(() => {
+    if (!cross) return null;
+    const corpora: Corpus[] = [];
+    if (ownDocs.index) corpora.push({ project, index: ownDocs.index });
+    if (workspace && wsId && wsDocs.index) corpora.push({ project: workspace, index: wsDocs.index });
+    return buildLinkIndex(corpora, cross);
+  }, [cross, ownDocs.index, wsDocs.index, project, workspace, wsId]);
+  const mentions = useMemo(
+    () => (linkTable && selected ? mentionsOf(linkTable, "issue", selected.id) : []),
+    [linkTable, selected],
+  );
+
+  function openMention(m: LinkEdge) {
+    if (m.fromKind === "note") {
+      requestNavigate({ kind: "note", projectId: m.fromProjectId, path: m.fromId });
+    } else {
+      requestNavigate({ kind: "issue", projectId: m.fromProjectId, issueId: m.fromId });
+    }
+  }
 
   async function add(status: "todo" | "backlog") {
     const title = quick.trim();
@@ -99,6 +146,90 @@ export default function IssuesView({
     }
   }
 
+  // Manual reorder within a status group. Pointer-based (mousedown →
+  // 5px threshold → track → commit on mouseup), NOT HTML5 drag-and-drop:
+  // Tauri's native drag-drop layer intercepts drops at the NSView level on
+  // macOS, so an in-page HTML5 drag lifts but its drop event never fires.
+  // The live position is a plain ref (mouse events outrun React renders);
+  // `drag` state mirrors it for the seam indicator. The drop maps to a rank
+  // plan (materialize / midpoint / renormalize — see lib/issueRank).
+  const [drag, setDrag] = useState<{ status: IssueStatus; from: number; to: number } | null>(null);
+  const dragLive = useRef<{ status: IssueStatus; from: number; to: number } | null>(null);
+  // A completed drag must not read as a click on the row it ends over.
+  const suppressClick = useRef(false);
+
+  async function dropReorder(group: Issue[], from: number, to: number) {
+    const plan = planReorder(group.map((i) => ({ id: i.id, rank: i.rank })), from, to);
+    if (plan.length === 0) return;
+    try {
+      await Promise.all(plan.map((u) => updateIssue(u.id, { rank: u.rank })));
+      await refresh();
+    } catch (e) {
+      toastError(e, "Couldn't reorder");
+    }
+  }
+
+  function onRowMouseDown(status: IssueStatus, from: number, e: React.MouseEvent) {
+    if (e.button !== 0) return;
+    // Grabs must start on the row itself — not its buttons and menus.
+    if ((e.target as HTMLElement).closest("button, input, textarea")) return;
+    // Stop WebKit starting a text selection on the key/title — the selection
+    // begins at mousedown, long before the drag threshold; the click that
+    // selects the row is unaffected.
+    e.preventDefault();
+    const start = { x: e.clientX, y: e.clientY };
+    // Set once the 5px threshold is crossed; drives click suppression on
+    // release even after a cancel (the pointer is no longer "just clicking").
+    let started = false;
+    // Escape sets this so the drag can't silently restart on the next
+    // mousemove; the still-held button then releases as a no-op.
+    let cancelled = false;
+
+    const onMove = (ev: MouseEvent) => {
+      if (cancelled) return;
+      if (!dragLive.current) {
+        if (Math.abs(ev.clientX - start.x) + Math.abs(ev.clientY - start.y) < 5) return;
+        started = true;
+        dragLive.current = { status, from, to: from };
+        window.getSelection()?.removeAllRanges();
+      }
+      ev.preventDefault();
+      const row = (document.elementFromPoint(ev.clientX, ev.clientY) as HTMLElement | null)
+        ?.closest<HTMLElement>("[data-issue-idx]");
+      if (row && row.dataset.issueStatus === status) {
+        dragLive.current = { ...dragLive.current, to: Number(row.dataset.issueIdx) };
+      }
+      setDrag({ ...dragLive.current });
+    };
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key !== "Escape") return;
+      cancelled = true;
+      dragLive.current = null;
+      setDrag(null);
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      window.removeEventListener("keydown", onKey, true);
+      const d = dragLive.current;
+      dragLive.current = null;
+      setDrag(null);
+      if (started) {
+        // Neither a completed nor a cancelled drag may read as a click on
+        // the row the pointer ends over.
+        suppressClick.current = true;
+        window.setTimeout(() => { suppressClick.current = false; }, 0);
+      }
+      if (!d || cancelled) return;
+      const group = groupsRef.current.find((g) => g.status === d.status)?.issues ?? [];
+      dropReorder(group, d.from, d.to);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    // Capture phase so an Escape mid-drag can't reach anything else.
+    window.addEventListener("keydown", onKey, true);
+  }
+
   async function startDefault(issue: Issue) {
     const agent = await pickDefaultAgent(project.id, project.default_agent);
     await onStartIssue(issue, agent);
@@ -120,6 +251,7 @@ export default function IssuesView({
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       if (e.key === "c") {
         e.preventDefault();
+        setQuickOpen(true);
         quickRef.current?.focus();
       } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
         if (visible.length === 0) return;
@@ -145,23 +277,56 @@ export default function IssuesView({
   return (
     <div className="issues-wrap">
       <div className="issues-main">
-        <div className="issues-quickadd">
+        <div className={`issues-quickadd${quickOpen ? " open" : ""}`}>
+          <button
+            className="quickadd-toggle"
+            title={quickOpen ? "Close" : "Add an issue (c)"}
+            // Keep the press from blurring the input first — the blur handler
+            // would collapse the box and this click would re-open it.
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => {
+              if (quickOpen) {
+                setQuick("");
+                setQuickOpen(false);
+                quickRef.current?.blur();
+              } else {
+                setQuickOpen(true);
+              }
+            }}
+          >
+            +
+          </button>
           <input
             ref={quickRef}
-            className="settings-input"
+            className="quickadd-input"
             placeholder="Add an issue…  (Enter → Todo, Shift+Enter → Backlog)"
             value={quick}
+            tabIndex={quickOpen ? 0 : -1}
             onChange={(e) => setQuick(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter") add(e.shiftKey ? "backlog" : "todo");
-              if (e.key === "Escape") (e.target as HTMLInputElement).blur();
+              if (e.key === "Escape") {
+                setQuick("");
+                setQuickOpen(false);
+                (e.target as HTMLInputElement).blur();
+              }
             }}
+            onBlur={() => { if (!quick.trim()) setQuickOpen(false); }}
           />
         </div>
         {loaded && issues.length === 0 ? (
-          <div className="board empty">Capture your first issue — you can hand it to an agent later.</div>
+          <div className="board empty issues-empty">
+            <button
+              className="quickadd-toggle big"
+              title="Add an issue (c)"
+              onClick={() => setQuickOpen(true)}
+            >
+              +
+            </button>
+            <div>Capture your first issues. Agents can pick up issues from here.</div>
+          </div>
         ) : (
-          <div className="issues-list">
+          <div className={`issues-list${drag ? " reordering" : ""}`}>
             {groups.map(({ status, issues: group }) => {
               if (group.length === 0) return null;
               const closed = isClosed(status);
@@ -183,18 +348,31 @@ export default function IssuesView({
                     <span className="issue-group-name">{STATUS_LABELS[status]}</span>
                     <span className="issue-group-count">{group.length}</span>
                   </button>
-                  {open && group.map((issue) => (
+                  {open && group.map((issue, idx) => (
                     <IssueRow
                       key={issue.id}
                       issue={issue}
                       label={issueLabel(project, issue)}
                       runs={runsFor(issue)}
                       selected={issue.id === selectedId}
-                      onSelect={() => setSelectedId(issue.id === selectedId ? null : issue.id)}
+                      onSelect={() => {
+                        if (suppressClick.current) return;
+                        setSelectedId(issue.id === selectedId ? null : issue.id);
+                      }}
                       onStart={() => { startDefault(issue); }}
                       onSpawnAgent={(agentId, opts) => { onStartIssue(issue, agentId, opts); }}
                       onPatch={(p) => patch(issue, p)}
                       onDelete={() => setConfirmDelete(issue)}
+                      drag={{
+                        over:
+                          drag && drag.status === status && drag.to === idx && drag.from !== idx
+                            ? (drag.to > drag.from ? "below" : "above")
+                            : null,
+                        source: !!drag && drag.status === status && drag.from === idx,
+                        idx,
+                        status,
+                        onMouseDown: (e) => onRowMouseDown(status, idx, e),
+                      }}
                     />
                   ))}
                 </section>
@@ -208,9 +386,11 @@ export default function IssuesView({
           issue={selected}
           label={issueLabel(project, selected)}
           runs={runsFor(selected)}
+          mentions={mentions}
           onPatch={(p) => patch(selected, p)}
           onDelete={() => setConfirmDelete(selected)}
           onOpenRun={openRun}
+          onOpenMention={openMention}
           onClose={() => setSelectedId(null)}
         />
       )}

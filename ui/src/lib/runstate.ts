@@ -46,11 +46,11 @@ export function runStatus(
       return {
         cls: "awaiting",
         text: `waiting · ${fmtDur(now - a.since)}`,
-        title: "The agent finished a turn or needs input — waiting on you",
+        title: "The agent finished a turn or needs input. Waiting on you.",
       };
     }
     if (a?.state === "idle") {
-      return { cls: "idle", text: "idle", title: "No turn in flight — send the agent a message" };
+      return { cls: "idle", text: "idle", title: "No turn in flight. Send the agent a message." };
     }
     return { cls: "running", text: a ? `working · ${fmtDur(now - a.since)}` : "working" };
   }

@@ -11,6 +11,8 @@ export interface Project {
   color: string | null;
   // 3-letter issue key ("AGE") the project's issues are numbered under.
   issue_key: string | null;
+  // null = normal repo project; "workspace" = the pinned notes/journal home.
+  kind: string | null;
 }
 
 export type SessionStatus =
@@ -62,6 +64,8 @@ export interface RunInfo {
   files: number;
   port: number | null;
   kind: "agent" | "terminal";
+  // Epoch seconds; archivedAt is null for live runs.
+  createdAt: number;
   archivedAt: number | null;
   raceId: string | null;
   loopConfig: LoopConfig | null;
@@ -84,16 +88,25 @@ export interface Issue {
   status: IssueStatus;
   // 0 none · 1 low · 2 medium · 3 high · 4 urgent.
   priority: number;
+  // Civil dates, "YYYY-MM-DD" — lexicographic order is date order.
+  due: string | null;
+  scheduled: string | null;
+  // Manual board order within a status group, ascending.
+  rank: number | null;
   createdAt: number;
   updatedAt: number;
 }
 
-// Partial update: omitted fields keep their values.
+// Partial update: omitted fields keep their values. For the nullable fields
+// an explicit null clears the value (absent still means untouched).
 export interface IssuePatch {
   title?: string;
   body?: string;
   status?: IssueStatus;
   priority?: number;
+  due?: string | null;
+  scheduled?: string | null;
+  rank?: number | null;
 }
 
 export const listProjects = () => invoke<Project[]>("list_projects");
@@ -122,6 +135,21 @@ export const startIssueLoop = (
 
 export const addProject = (name: string, repoPath: string) =>
   invoke<Project>("add_project", { name, repoPath });
+
+// ── workspace (the pinned notes/journal project) ────────────────────────────
+
+export const getWorkspace = () => invoke<Project | null>("get_workspace");
+export const defaultWorkspaceLocation = () => invoke<string>("default_workspace_location");
+// Creates (or adopts) the workspace folder. With `useGit` it is initialized and
+// given an initial commit so agents can run in it; without, it's just a folder.
+export const createWorkspace = (path: string, useGit: boolean) =>
+  invoke<Project>("create_workspace", { path, useGit });
+// Moves the workspace folder on disk and repoints the project at it.
+export const moveWorkspace = (newPath: string) =>
+  invoke<Project>("move_workspace", { newPath });
+// Re-seed the workspace's Welcome guide if deleted; returns its note path.
+export const ensureWorkspaceGuide = (projectId: string) =>
+  invoke<string>("ensure_workspace_guide", { projectId });
 
 export type RepoReadiness = {
   state: "notARepo" | "noCommits" | "ready";
@@ -902,6 +930,67 @@ export interface DocFile {
 // Every markdown file under the docs dir in one call — feeds the docs index.
 export const readDocsCorpus = (root: FileRoot, docsDir: string) =>
   invoke<DocFile[]>("read_docs_corpus", { root, docsDir });
+
+// Stat-only corpus pass: change signatures without body reads. Steady-state
+// docs polls diff these and re-read only what changed.
+export interface DocStat {
+  path: string;
+  mtimeMs: number;
+  size: number;
+}
+export const docsCorpusStats = (root: FileRoot, docsDir: string) =>
+  invoke<DocStat[]>("docs_corpus_stats", { root, docsDir });
+// Read a named subset of the corpus (the poll's "these changed" list).
+export const readDocsFiles = (root: FileRoot, docsDir: string, paths: string[]) =>
+  invoke<DocFile[]>("read_docs_files", { root, docsDir, paths });
+
+// ── checkbox tasks (one-stop Phase 8) ───────────────────────────────────────
+
+export interface TaskHit {
+  path: string; // relative to the docs dir, "/"-separated
+  line: number; // 0-based
+  checked: boolean;
+  text: string; // marker stripped, trimmed
+}
+
+// Every checkbox task in a root's docs corpus (same file set as the index).
+export const scanTasks = (root: FileRoot, docsDir: string) =>
+  invoke<TaskHit[]>("scan_tasks", { root, docsDir });
+
+// Flip one task's checkbox in place. False = the line no longer holds the
+// expected task (external edit); the caller refreshes instead of writing.
+export const toggleTask = (root: FileRoot, docsDir: string, relPath: string, line: number, checked: boolean) =>
+  invoke<boolean>("toggle_task", { root, docsDir, relPath, line, checked });
+
+// ── content search (one-stop Phase 2 primitive) ─────────────────────────────
+
+export interface SearchQuery {
+  query: string;
+  // Treat query as a regex; default literal.
+  regex?: boolean;
+  // Case-sensitive when true; default insensitive.
+  case?: boolean;
+  // Gitignore-style globs ("*.md" matches at any depth); empty = all files.
+  globs?: string[];
+  maxHits?: number;
+}
+
+export interface BackendSearchHit {
+  path: string; // relative to the searched dir
+  line: number; // 1-based
+  col: number; // 1-based
+  text: string; // the matching line, length-capped
+}
+
+// Content search under `dir` within a root. Bounded (hits/bytes/time) and
+// best-effort: hitting a cap returns what was collected.
+export const searchFiles = (root: FileRoot, dir: string, query: SearchQuery) =>
+  invoke<BackendSearchHit[]>("search_files", { root, dir, query });
+
+// Sorted relative file paths under `dir` — quick-open's name list. Same file
+// set as the search fallback (gitignore respected in repos), capped backend-side.
+export const listFiles = (root: FileRoot, dir: string, maxFiles: number) =>
+  invoke<string[]>("list_files", { root, dir, maxFiles });
 
 // Write base64 bytes to a NEW file (fails on an existing path). For image paste.
 export const writeFileBase64 = (root: FileRoot, relPath: string, b64: string) =>

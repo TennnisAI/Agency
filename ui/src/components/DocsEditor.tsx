@@ -6,7 +6,9 @@ import { FileRoot, createDir, readFile, writeFile, writeFileBase64 } from "../ap
 import { toastError } from "../lib/toast";
 import { editorChromeTheme } from "../lib/cmTheme";
 import { DocsIndex } from "../lib/docsIndex";
-import { docsCompletion, docsHighlight, docsIndexFacet, docsMarkdown, docsNavFacet, livePreview, DocsNav } from "../lib/livePreview";
+import { CrossRefs } from "../lib/links";
+import { crossRefsFacet, docsCompletion, docsHighlight, docsIndexFacet, docsMarkdown, docsNavFacet, livePreview, DocsNav } from "../lib/livePreview";
+import { frontmatterEditor, requestAddProperty } from "../lib/fmEditor";
 import { joinPath } from "../lib/filePath";
 
 export interface DocsEditorHandle {
@@ -14,6 +16,8 @@ export interface DocsEditorHandle {
   scrollToHeading: (text: string) => void;
   /** Flush any pending autosave immediately. */
   flush: () => Promise<void>;
+  /** Grow the properties card by one row (creating the block if absent). */
+  addProperty: () => void;
 }
 
 const AUTOSAVE_MS = 800;
@@ -46,12 +50,17 @@ export default forwardRef<DocsEditorHandle, {
   path: string; // rel to docs dir
   diskText: string | undefined; // latest corpus copy of this note
   index: DocsIndex | null; // for wikilink resolution styling
+  cross: CrossRefs | null; // for typed wikilinks ([[AGE-14]], [[run:id]])
   onSaved: () => void; // refresh the index after a write lands
   onNavigate: (target: string, heading: string | null) => void; // wikilink follow
   onTagClick: (tag: string) => void;
+  onFilter: (key: string, value: string) => void; // properties card filter glyph
   sideOpen: boolean;
   onToggleSide: () => void;
-}>(function DocsEditor({ root, docsDir, path, diskText, index, onSaved, onNavigate, onTagClick, sideOpen, onToggleSide }, ref) {
+  // Journal notes get prev/next-day navigation; null hides the buttons. Targets
+  // are the nearest *existing* daily notes (navigation never creates files).
+  daily?: { prev: string | null; next: string | null; onOpen: (path: string) => void } | null;
+}>(function DocsEditor({ root, docsDir, path, diskText, index, cross, onSaved, onNavigate, onTagClick, onFilter, sideOpen, onToggleSide, daily }, ref) {
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
@@ -66,11 +75,14 @@ export default forwardRef<DocsEditorHandle, {
   const repoRel = joinPath(docsDir, path);
   const onSavedRef = useRef(onSaved);
   onSavedRef.current = onSaved;
-  const navRef = useRef<Pick<DocsNav, "onNavigate" | "onTagClick">>({ onNavigate, onTagClick });
-  navRef.current = { onNavigate, onTagClick };
+  const navRef = useRef<Pick<DocsNav, "onNavigate" | "onTagClick" | "onFilter">>({ onNavigate, onTagClick, onFilter });
+  navRef.current = { onNavigate, onTagClick, onFilter };
   const indexRef = useRef(index);
   indexRef.current = index;
   const indexCompRef = useRef(new Compartment());
+  const crossRef = useRef(cross);
+  crossRef.current = cross;
+  const crossCompRef = useRef(new Compartment());
 
   // Bound inside the load effect so it always writes to the note the live view
   // belongs to. (Binding on render would point a pre-switch flush at the NEXT
@@ -127,6 +139,10 @@ export default forwardRef<DocsEditorHandle, {
 
   useImperativeHandle(ref, () => ({
     flush: () => flushRef.current(),
+    addProperty: () => {
+      const view = viewRef.current;
+      if (view) requestAddProperty(view);
+    },
     scrollToHeading: (text: string) => {
       const view = viewRef.current;
       if (!view) return;
@@ -207,15 +223,18 @@ export default forwardRef<DocsEditorHandle, {
           livePreview,
           docsCompletion,
           indexCompRef.current.of(docsIndexFacet.of(indexRef.current)),
+          crossCompRef.current.of(crossRefsFacet.of(crossRef.current)),
           // A stable nav facade reading live refs, so callback identity churn
           // never forces a reconfigure.
           docsNavFacet.of({
             onNavigate: (t, h) => navRef.current.onNavigate(t, h),
             onTagClick: (t) => navRef.current.onTagClick(t),
+            onFilter: (k, v) => navRef.current.onFilter?.(k, v),
             root,
             docsDir,
             notePath: path,
           }),
+          frontmatterEditor,
           EditorView.domEventHandlers({
             paste: (e, v) => {
               const file = [...(e.clipboardData?.files ?? [])].find((f) => f.type.startsWith("image/"));
@@ -265,6 +284,13 @@ export default forwardRef<DocsEditorHandle, {
     });
   }, [index]);
 
+  // Same for the cross-project refs (issue/run wikilinks + completion).
+  useEffect(() => {
+    viewRef.current?.dispatch({
+      effects: crossCompRef.current.reconfigure(crossRefsFacet.of(cross)),
+    });
+  }, [cross]);
+
   // Flush when the window loses focus, so edits land before e.g. an agent or
   // external editor touches the same file.
   useEffect(() => {
@@ -294,6 +320,22 @@ export default forwardRef<DocsEditorHandle, {
   return (
     <div className="docs-editor-col">
       <div className="docs-editor-head">
+        {daily && (
+          <span className="daily-nav">
+            <button
+              className="file-editor-btn"
+              title="Previous daily note"
+              disabled={!daily.prev}
+              onClick={() => daily.prev && daily.onOpen(daily.prev)}
+            >‹</button>
+            <button
+              className="file-editor-btn"
+              title="Next daily note"
+              disabled={!daily.next}
+              onClick={() => daily.next && daily.onOpen(daily.next)}
+            >›</button>
+          </span>
+        )}
         <span className="docs-editor-path" title={repoRel}>{path}</span>
         <span className="spacer" style={{ flex: 1 }} />
         <span className={`docs-save-state ${saveState}`}>

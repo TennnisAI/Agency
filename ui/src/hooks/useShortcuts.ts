@@ -6,6 +6,7 @@ interface Handlers {
   onApprove: () => void;
   onPalette: () => void;
   onSettings: () => void;
+  onDailyNote: () => void;
 }
 
 function inEditable(t: EventTarget | null): boolean {
@@ -27,6 +28,8 @@ export function useShortcuts(h: Handlers): void {
       const key = e.key.toLowerCase();
       if (key === "k") { e.preventDefault(); ref.current.onPalette(); }
       else if (key === ",") { e.preventDefault(); ref.current.onSettings(); }
+      // Global navigation like ⌘K: works from anywhere, including editors.
+      else if (key === "d" && e.shiftKey) { e.preventDefault(); ref.current.onDailyNote(); }
       // Skip when typing into an editable/terminal target. The focused-agent
       // requirement for approval is enforced by the caller's onApprove.
       else if (key === "enter" && !inEditable(e.target)) { e.preventDefault(); ref.current.onApprove(); }

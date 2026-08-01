@@ -9,6 +9,8 @@ import ConfirmDialog from "./ConfirmDialog";
 import RepoSetupDialog from "./RepoSetupDialog";
 import CloneDialog from "./CloneDialog";
 import SidebarToggle from "./SidebarToggle";
+import WorkspaceCreateDialog from "./WorkspaceCreateDialog";
+import { WORKSPACE_HIDDEN_EVENT, workspaceHidden } from "../lib/workspacePref";
 
 type Pending = { project: Project } | null;
 
@@ -46,30 +48,86 @@ export default function ProjectTree({
   const [setup, setSetup] = useState<{ path: string; name: string; readiness: RepoReadiness; existing: boolean } | null>(null);
   const [cloning, setCloning] = useState(false);
   const [readiness, setReadiness] = useState<Record<string, RepoReadiness>>({});
+  // Workspace-creation dialog; `intent` (e.g. "daily-note") is re-emitted via
+  // an `agency:workspace-ready` event once the workspace exists, so the flow
+  // that needed it (⌘⇧D on first use) can resume.
+  const [wsCreate, setWsCreate] = useState<{ intent: string | null } | null>(null);
 
+  // The pinned workspace is a project row flagged `kind: "workspace"` — shown
+  // above the list, never part of the active filter, not closable. Users who
+  // don't want it can hide it entirely (Settings ▸ Workspace).
+  const workspace = projects.find((p) => p.kind === "workspace") ?? null;
+  const repoProjects = projects.filter((p) => p.kind !== "workspace");
+  const [wsHidden, setWsHidden] = useState(workspaceHidden());
+  useEffect(() => {
+    const onChange = () => { setWsHidden(workspaceHidden()); void refresh(); };
+    window.addEventListener(WORKSPACE_HIDDEN_EVENT, onChange);
+    return () => window.removeEventListener(WORKSPACE_HIDDEN_EVENT, onChange);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Guarded against out-of-order responses: back-to-back refreshes (e.g. the
+  // workspace toggle fires one before and one after the backend settles) must
+  // not let a stale project list land last and hide a just-revived row.
+  const refreshSeq = useRef(0);
   async function refresh() {
+    const seq = ++refreshSeq.current;
     const ps = await listProjects();
+    if (seq !== refreshSeq.current) return;
     setProjects(ps);
     const entries = await Promise.all(
       ps.map(async (p) => [p.id, await inspectRepo(p.repo_path).catch(() => null)] as const),
     );
+    if (seq !== refreshSeq.current) return;
     setReadiness(Object.fromEntries(entries.filter(([, r]) => r) as [string, RepoReadiness][]));
   }
   useEffect(() => { refresh(); }, []);
 
+  // Open the workspace, creating it first if it doesn't exist yet (it is lazy
+  // by design — no surprise folders at app launch). `intent` is forwarded to
+  // `agency:workspace-ready` so the caller's flow can resume after creation.
+  function openWorkspace(intent: string | null) {
+    if (workspace) {
+      onSelect(workspace);
+      if (intent) {
+        window.dispatchEvent(new CustomEvent("agency:workspace-ready", { detail: { intent } }));
+      }
+    } else {
+      setWsCreate({ intent });
+    }
+  }
+
+  async function workspaceCreated(ws: Project) {
+    const intent = wsCreate?.intent ?? null;
+    setWsCreate(null);
+    await refresh();
+    onSelect(ws);
+    if (intent) {
+      window.dispatchEvent(new CustomEvent("agency:workspace-ready", { detail: { intent } }));
+    }
+  }
+
   // The "Add Project…" menu item lives in the native menu bar; it dispatches a
   // DOM event that triggers the same add flow as the sidebar's + button. Kept
   // in a ref so the once-bound listener always calls the latest handleAdd.
+  // `agency:create-workspace` is the same pattern for flows (⌘⇧D, palette)
+  // that need the workspace to exist.
   const addRef = useRef(handleAdd);
   addRef.current = handleAdd;
+  const openWorkspaceRef = useRef(openWorkspace);
+  openWorkspaceRef.current = openWorkspace;
   useEffect(() => {
     const add = () => addRef.current();
     const clone = () => setCloning(true);
+    const ws = (e: Event) =>
+      openWorkspaceRef.current((e as CustomEvent<{ intent?: string }>).detail?.intent ?? null);
     window.addEventListener("agency:add-project", add);
     window.addEventListener("agency:clone-project", clone);
+    window.addEventListener("agency:create-workspace", ws);
     return () => {
       window.removeEventListener("agency:add-project", add);
       window.removeEventListener("agency:clone-project", clone);
+      window.removeEventListener("agency:create-workspace", ws);
     };
   }, []);
 
@@ -92,8 +150,8 @@ export default function ProjectTree({
   }, [projects, runs]);
 
   const visible = filter === "active"
-    ? projects.filter((p) => (projectRuns[p.id] ?? []).length > 0)
-    : projects;
+    ? repoProjects.filter((p) => (projectRuns[p.id] ?? []).length > 0)
+    : repoProjects;
 
   function toggle(p: Project) {
     setOpenIds((s) => {
@@ -178,7 +236,7 @@ export default function ProjectTree({
         <button
           className={`icon-add icon-filter${filter === "active" ? " on" : ""}`}
           title={filter === "active"
-            ? "Showing active projects only — click to show all"
+            ? "Showing active projects only. Click to show all."
             : "Show only active projects (those with an agent or terminal)"}
           aria-label="Show only active projects"
           aria-pressed={filter === "active"}
@@ -189,7 +247,40 @@ export default function ProjectTree({
       </div>
       {error && <div className="git-error">{error}</div>}
       <ul className="tree-list">
-        {filter === "active" && visible.length === 0 && projects.length > 0 && (
+        {/* Pinned workspace: always first, outside the active filter. Before
+            first use it's an invitation — clicking sets it up. */}
+        {!wsHidden && (
+        <li className="tree-workspace">
+          <div
+            className={`tree-row ${workspace && workspace.id === selectedId ? (focusedRunId ? "selected ancestor" : "selected") : ""}${workspace ? "" : " ws-absent"}`}
+            title={workspace ? workspace.repo_path : "Create your workspace: a home for journaling, planning, and notes"}
+            onClick={() => openWorkspace(null)}
+          >
+            <span className="chev" onClick={(e) => { e.stopPropagation(); if (workspace) toggle(workspace); }}>
+              {workspace && openIds.has(workspace.id) ? "▾" : "▸"}
+            </span>
+            <span className="proj-icon ws-icon" aria-hidden style={workspace ? { background: projectAccent(workspace) } : undefined}>◈</span>
+            <span className="tree-name tl">{workspace?.name ?? "Workspace"}</span>
+          </div>
+          {workspace && openIds.has(workspace.id) && (
+            <ul className="tree-children">
+              {(projectRuns[workspace.id] ?? []).map((r) => (
+                <li
+                  key={r.id}
+                  className={`tree-child ${r.id === focusedRunId ? "active" : ""}`}
+                  style={{ "--sel-accent": projectAccent(workspace) } as React.CSSProperties}
+                  title={`Open ${r.agent}: ${runName(r)}`}
+                  onClick={(e) => { e.stopPropagation(); onSelectRun(workspace, r); }}
+                >
+                  <span className={`dot ${runStatus(r).cls}`} />
+                  <span className="tree-child-name tl">{r.agent}: {runName(r)}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </li>
+        )}
+        {filter === "active" && visible.length === 0 && repoProjects.length > 0 && (
           <li className="tree-empty">No active projects.</li>
         )}
         {visible.map((p) => (
@@ -235,7 +326,7 @@ export default function ProjectTree({
       <div className="tree-foot">
         <button
           className="tree-settings"
-          aria-label={updateAvailable ? "Settings — an update is available" : "Settings"}
+          aria-label={updateAvailable ? "Settings (an update is available)" : "Settings"}
           onClick={onOpenSettings}
         >
           <span className="tree-settings-gear">{"⚙︎"}</span> Settings
@@ -254,10 +345,16 @@ export default function ProjectTree({
       {cloning && (
         <CloneDialog onCloned={handleCloned} onCancel={() => setCloning(false)} />
       )}
+      {wsCreate && (
+        <WorkspaceCreateDialog
+          onCreated={(ws) => { void workspaceCreated(ws); }}
+          onCancel={() => setWsCreate(null)}
+        />
+      )}
       {pending && (
         <ConfirmDialog
           title="Close project?"
-          body={`Stop all agents in "${pending.project.name}" and remove it from the sidebar. Everything on disk is kept — add the project again to pick up where you left off. "Delete worktrees & close" also deletes the agents' worktrees and branches, including unmerged work. Your repository files are never touched.`}
+          body={`Stop all agents in "${pending.project.name}" and remove it from the sidebar. Everything on disk is kept; add the project again to pick up where you left off. "Delete worktrees & close" also deletes the agents' worktrees and branches, including unmerged work. Your repository files are never touched.`}
           confirmLabel="Close project"
           altLabel="Delete worktrees & close"
           altDanger

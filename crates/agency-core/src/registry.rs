@@ -24,7 +24,13 @@ pub struct Project {
     /// 3-letter issue key ("AGE") issues are numbered under (AGE-14). Stored,
     /// not derived, so renaming the project never re-keys its issues.
     pub issue_key: Option<String>,
+    /// `None` = a normal repo project; `"workspace"` = the single pinned
+    /// workspace (journaling/notes home) with relaxed git requirements.
+    pub kind: Option<String>,
 }
+
+/// The `Project.kind` value marking the pinned workspace.
+pub const PROJECT_KIND_WORKSPACE: &str = "workspace";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Run {
@@ -70,6 +76,11 @@ pub struct Issue {
     pub status: IssueStatus,
     /// 0 none · 1 low · 2 medium · 3 high · 4 urgent.
     pub priority: u8,
+    /// Civil dates, `YYYY-MM-DD` strings — lexicographic order is date order.
+    pub due: Option<String>,
+    pub scheduled: Option<String>,
+    /// Manual board order within a status group, ascending. Finite.
+    pub rank: Option<f64>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -121,9 +132,18 @@ impl IssueStatus {
             IssueStatus::Cancelled => None,
         }
     }
+
+    /// Whether automation may move `self` → `to`: strictly forward, never
+    /// into or out of cancelled. The one guard behind every automatic status
+    /// move (merge → done, PR → in_review, dispatch → in_progress).
+    pub fn advances_to(self, to: IssueStatus) -> bool {
+        matches!((self.rank(), to.rank()), (Some(from), Some(to)) if from < to)
+    }
 }
 
 /// Partial update for `update_issue` — `None` fields are left untouched.
+/// The nullable fields (`due`/`scheduled`/`rank`) are double-`Option`s so a
+/// patch can distinguish "leave it" (absent) from "clear it" (explicit null).
 #[derive(Debug, Default, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IssuePatch {
@@ -131,6 +151,22 @@ pub struct IssuePatch {
     pub body: Option<String>,
     pub status: Option<IssueStatus>,
     pub priority: Option<u8>,
+    #[serde(default, deserialize_with = "double_option")]
+    pub due: Option<Option<String>>,
+    #[serde(default, deserialize_with = "double_option")]
+    pub scheduled: Option<Option<String>>,
+    #[serde(default, deserialize_with = "double_option")]
+    pub rank: Option<Option<f64>>,
+}
+
+/// Deserialize a present-but-maybe-null field as `Some(inner)`; combined with
+/// `#[serde(default)]`, an absent field stays `None`.
+fn double_option<'de, T, D>(de: D) -> std::result::Result<Option<Option<T>>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    Deserialize::deserialize(de).map(Some)
 }
 
 /// An extra agent session inside an existing run's worktree. The run's
@@ -283,6 +319,24 @@ impl Registry {
                 [],
             )?;
         }
+        if !column_exists(&conn, "projects", "kind")? {
+            conn.execute("ALTER TABLE projects ADD COLUMN kind TEXT", [])?;
+        }
+        if !column_exists(&conn, "projects", "issues_migrated")? {
+            conn.execute(
+                "ALTER TABLE projects ADD COLUMN issues_migrated INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
+        if !column_exists(&conn, "issues", "due")? {
+            conn.execute("ALTER TABLE issues ADD COLUMN due TEXT", [])?;
+        }
+        if !column_exists(&conn, "issues", "scheduled")? {
+            conn.execute("ALTER TABLE issues ADD COLUMN scheduled TEXT", [])?;
+        }
+        if !column_exists(&conn, "issues", "rank")? {
+            conn.execute("ALTER TABLE issues ADD COLUMN rank REAL", [])?;
+        }
         let reg = Registry { conn };
         reg.backfill_project_colors()?;
         reg.backfill_issue_keys()?;
@@ -317,7 +371,13 @@ impl Registry {
         let rows: Vec<(String, String)> = {
             let mut stmt = self
                 .conn
-                .prepare("SELECT id, name FROM projects WHERE issue_key IS NULL ORDER BY name")?;
+                // The workspace is included: Phase 5 brought it into the
+                // tracker, so a key-less workspace row gets one here.
+                .prepare(
+                    "SELECT id, name FROM projects
+                     WHERE issue_key IS NULL
+                     ORDER BY name",
+                )?;
             let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
             rows.filter_map(|r| r.ok()).collect()
         };
@@ -355,10 +415,16 @@ impl Registry {
             default_provider: None,
             color: Some(self.pick_project_color()?),
             issue_key: Some(derive_issue_key(name, &self.used_issue_keys()?)),
+            kind: None,
         };
+        self.insert_project(&project)?;
+        Ok(project)
+    }
+
+    fn insert_project(&self, project: &Project) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO projects (id, name, repo_path, default_agent, default_provider, color, issue_key)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO projects (id, name, repo_path, default_agent, default_provider, color, issue_key, kind)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             rusqlite::params![
                 project.id,
                 project.name,
@@ -367,9 +433,60 @@ impl Registry {
                 project.default_provider,
                 project.color,
                 project.issue_key,
+                project.kind,
             ],
         )?;
+        Ok(())
+    }
+
+    /// The single pinned workspace project, if it has been created — closed or
+    /// not (there is exactly one; hiding it is not a flow).
+    pub fn get_workspace(&self) -> Result<Option<Project>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, repo_path, default_agent, default_provider, color, issue_key, kind
+             FROM projects WHERE kind = 'workspace'",
+        )?;
+        let mut rows = stmt.query([])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(row_to_project(row)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Create the pinned workspace project, or return the existing one
+    /// (un-closing it if needed). The workspace is in the tracker like any
+    /// project: it gets an issue key so personal/planning tasks have one too.
+    pub fn ensure_workspace(&self, name: &str, repo_path: &Path) -> Result<Project> {
+        if let Some(mut ws) = self.get_workspace()? {
+            self.set_project_closed(&ws.id, false)?;
+            // A workspace re-created at a new location adopts it.
+            if ws.repo_path != repo_path {
+                self.set_project_repo_path(&ws.id, repo_path)?;
+                ws.repo_path = repo_path.to_path_buf();
+            }
+            return Ok(ws);
+        }
+        let project = Project {
+            id: Uuid::new_v4().to_string(),
+            name: name.to_string(),
+            repo_path: repo_path.to_path_buf(),
+            default_agent: None,
+            default_provider: None,
+            color: Some(self.pick_project_color()?),
+            issue_key: Some(derive_issue_key(name, &self.used_issue_keys()?)),
+            kind: Some(PROJECT_KIND_WORKSPACE.to_string()),
+        };
+        self.insert_project(&project)?;
         Ok(project)
+    }
+
+    /// Point a project at a new folder (workspace move).
+    pub fn set_project_repo_path(&self, id: &str, repo_path: &Path) -> Result<()> {
+        self.conn.execute(
+            "UPDATE projects SET repo_path = ?2 WHERE id = ?1",
+            rusqlite::params![id, repo_path.to_string_lossy()],
+        )?;
+        Ok(())
     }
 
     /// The least-used palette color (palette order breaks ties), so every new
@@ -389,7 +506,7 @@ impl Registry {
 
     pub fn get_project(&self, id: &str) -> Result<Option<Project>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, repo_path, default_agent, default_provider, color, issue_key
+            "SELECT id, name, repo_path, default_agent, default_provider, color, issue_key, kind
              FROM projects WHERE id = ?1",
         )?;
         let mut rows = stmt.query([id])?;
@@ -401,7 +518,7 @@ impl Registry {
 
     pub fn list_projects(&self) -> Result<Vec<Project>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, repo_path, default_agent, default_provider, color, issue_key
+            "SELECT id, name, repo_path, default_agent, default_provider, color, issue_key, kind
              FROM projects WHERE closed = 0 ORDER BY name",
         )?;
         let rows = stmt.query_map([], |row| Ok(row_to_project(row)))?;
@@ -425,7 +542,7 @@ impl Registry {
 
     fn find_closed_project(&self, repo_path: &Path) -> Result<Option<Project>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, repo_path, default_agent, default_provider, color, issue_key
+            "SELECT id, name, repo_path, default_agent, default_provider, color, issue_key, kind
              FROM projects WHERE repo_path = ?1 AND closed = 1",
         )?;
         let mut rows = stmt.query([repo_path.to_string_lossy()])?;
@@ -774,6 +891,95 @@ impl Registry {
     }
 
     // ── issues ─────────────────────────────────────────────────────────────
+    //
+    // Since Phase 5 the rows here are an index over `.agency/issues/*.md` —
+    // the files are canonical, `issuefs::reconcile` makes rows follow them.
+    // Only `issue_seqs` (the never-reuse high-water mark) is owned by the DB.
+
+    /// Hand out the next issue number for a project. Numbers come from a
+    /// per-project counter (not MAX(seq)+1) so a deleted issue's number is
+    /// never reused. `next` holds the number to hand out *after* this one, so
+    /// the row is seeded at 2.
+    pub fn alloc_issue_seq(&self, project_id: &str) -> Result<i64> {
+        self.conn.execute(
+            "INSERT INTO issue_seqs (project_id, next) VALUES (?1, 2)
+             ON CONFLICT(project_id) DO UPDATE SET next = next + 1",
+            [project_id],
+        )?;
+        Ok(self.conn.query_row(
+            "SELECT next - 1 FROM issue_seqs WHERE project_id = ?1",
+            [project_id],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// Raise the high-water mark so `seq` is never handed out again — an agent
+    /// that filed `AGE-15.md` by hand consumed 15, whatever the counter said.
+    /// Monotonic: never lowers `next`.
+    pub fn ensure_issue_seq_at_least(&self, project_id: &str, seq: i64) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO issue_seqs (project_id, next) VALUES (?1, ?2 + 1)
+             ON CONFLICT(project_id) DO UPDATE SET next = MAX(next, ?2 + 1)",
+            rusqlite::params![project_id, seq],
+        )?;
+        Ok(())
+    }
+
+    /// Write an index row from a file's parsed state, keyed `(project_id,
+    /// seq)`. An existing row keeps its `id` — uuids are minted at import and
+    /// stay stable for the life of the file — and `issue.id` is used only when
+    /// the row is new. Returns the stored row.
+    pub fn upsert_issue_row(&self, issue: &Issue) -> Result<Issue> {
+        self.conn.execute(
+            "INSERT INTO issues (id, project_id, seq, title, body, status, priority, created_at, updated_at, due, scheduled, rank)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+             ON CONFLICT(project_id, seq) DO UPDATE SET
+                title = ?4, body = ?5, status = ?6, priority = ?7,
+                created_at = ?8, updated_at = ?9, due = ?10, scheduled = ?11, rank = ?12",
+            rusqlite::params![
+                issue.id,
+                issue.project_id,
+                issue.seq,
+                issue.title,
+                issue.body,
+                issue.status.as_str(),
+                issue.priority as i64,
+                issue.created_at,
+                issue.updated_at,
+                issue.due,
+                issue.scheduled,
+                issue.rank
+            ],
+        )?;
+        let mut stmt = self.conn.prepare(
+            "SELECT id, project_id, seq, title, body, status, priority, created_at, updated_at, due, scheduled, rank
+             FROM issues WHERE project_id = ?1 AND seq = ?2",
+        )?;
+        let mut rows = stmt.query(rusqlite::params![issue.project_id, issue.seq])?;
+        match rows.next()? {
+            Some(row) => row_to_issue(row),
+            None => anyhow::bail!("issue row vanished after upsert"),
+        }
+    }
+
+    /// Whether this project's issues have been exported to `.agency/issues/`
+    /// (the one-shot Phase-5 migration).
+    pub fn project_issues_migrated(&self, project_id: &str) -> Result<bool> {
+        let v: i64 = self.conn.query_row(
+            "SELECT issues_migrated FROM projects WHERE id = ?1",
+            [project_id],
+            |row| row.get(0),
+        )?;
+        Ok(v != 0)
+    }
+
+    pub fn mark_issues_migrated(&self, project_id: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE projects SET issues_migrated = 1 WHERE id = ?1",
+            [project_id],
+        )?;
+        Ok(())
+    }
 
     pub fn create_issue(
         &self,
@@ -784,19 +990,7 @@ impl Registry {
         now: i64,
     ) -> Result<Issue> {
         let id = Uuid::new_v4().to_string();
-        // Numbers come from a per-project counter (not MAX(seq)+1) so a
-        // deleted issue's number is never reused. `next` holds the number
-        // to hand out *after* this one, so the row is seeded at 2.
-        self.conn.execute(
-            "INSERT INTO issue_seqs (project_id, next) VALUES (?1, 2)
-             ON CONFLICT(project_id) DO UPDATE SET next = next + 1",
-            [project_id],
-        )?;
-        let seq: i64 = self.conn.query_row(
-            "SELECT next - 1 FROM issue_seqs WHERE project_id = ?1",
-            [project_id],
-            |row| row.get(0),
-        )?;
+        let seq = self.alloc_issue_seq(project_id)?;
         self.conn.execute(
             "INSERT INTO issues (id, project_id, seq, title, body, status, priority, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, ?7)",
@@ -807,7 +1001,7 @@ impl Registry {
 
     pub fn get_issue(&self, id: &str) -> Result<Option<Issue>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, seq, title, body, status, priority, created_at, updated_at
+            "SELECT id, project_id, seq, title, body, status, priority, created_at, updated_at, due, scheduled, rank
              FROM issues WHERE id = ?1",
         )?;
         let mut rows = stmt.query([id])?;
@@ -820,7 +1014,7 @@ impl Registry {
     /// Every issue of the project, all statuses — the UI groups and collapses.
     pub fn list_issues(&self, project_id: &str) -> Result<Vec<Issue>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, seq, title, body, status, priority, created_at, updated_at
+            "SELECT id, project_id, seq, title, body, status, priority, created_at, updated_at, due, scheduled, rank
              FROM issues WHERE project_id = ?1 ORDER BY seq",
         )?;
         let rows = stmt.query_map([project_id], |row| Ok(row_to_issue(row)))?;
@@ -829,33 +1023,6 @@ impl Registry {
             out.push(r??);
         }
         Ok(out)
-    }
-
-    /// Apply a partial update; untouched fields keep their values. Bumps
-    /// `updated_at`. This is the *manual* path — status moves here are
-    /// unconditional (the user always wins over automation).
-    pub fn update_issue(&self, id: &str, patch: &IssuePatch, now: i64) -> Result<Option<Issue>> {
-        let changed = self.conn.execute(
-            "UPDATE issues SET
-                title = COALESCE(?2, title),
-                body = COALESCE(?3, body),
-                status = COALESCE(?4, status),
-                priority = COALESCE(?5, priority),
-                updated_at = ?6
-             WHERE id = ?1",
-            rusqlite::params![
-                id,
-                patch.title,
-                patch.body,
-                patch.status.map(|s| s.as_str()),
-                patch.priority.map(|p| p as i64),
-                now
-            ],
-        )?;
-        if changed == 0 {
-            return Ok(None);
-        }
-        self.get_issue(id)
     }
 
     pub fn delete_issue(&self, id: &str) -> Result<()> {
@@ -875,10 +1042,7 @@ impl Registry {
     /// whether the status actually changed.
     pub fn advance_issue_status(&self, id: &str, status: IssueStatus, now: i64) -> Result<bool> {
         let Some(current) = self.get_issue(id)? else { return Ok(false) };
-        let (Some(from), Some(to)) = (current.status.rank(), status.rank()) else {
-            return Ok(false);
-        };
-        if from >= to {
+        if !current.status.advances_to(status) {
             return Ok(false);
         }
         self.conn.execute(
@@ -1026,6 +1190,9 @@ fn row_to_issue(row: &rusqlite::Row) -> Result<Issue> {
         priority: row.get::<_, i64>(6)? as u8,
         created_at: row.get(7)?,
         updated_at: row.get(8)?,
+        due: row.get(9)?,
+        scheduled: row.get(10)?,
+        rank: row.get(11)?,
     })
 }
 
@@ -1059,6 +1226,7 @@ fn row_to_project(row: &rusqlite::Row) -> Result<Project> {
         default_provider: row.get(4)?,
         color: row.get(5)?,
         issue_key: row.get(6)?,
+        kind: row.get(7)?,
     })
 }
 
@@ -1566,20 +1734,33 @@ mod tests {
         let listed = reg.list_issues("proj").unwrap();
         assert_eq!(listed.iter().map(|i| i.seq).collect::<Vec<_>>(), vec![1, 2]);
 
-        let patch = IssuePatch {
-            title: Some("Fix login flow".into()),
-            status: Some(IssueStatus::Cancelled),
-            priority: Some(4),
-            ..Default::default()
-        };
-        let updated = reg.update_issue(&a.id, &patch, 200).unwrap().unwrap();
+        // The mutation path is upsert_issue_row (files are truth; state.rs
+        // computes the new value and the row follows). id survives on update.
+        let mut next = a.clone();
+        next.title = "Fix login flow".into();
+        next.status = IssueStatus::Cancelled;
+        next.priority = 4;
+        next.due = Some("2026-08-01".into());
+        next.scheduled = Some("2026-07-30".into());
+        next.rank = Some(1.5);
+        next.updated_at = 200;
+        let updated = reg.upsert_issue_row(&next).unwrap();
+        assert_eq!(updated.id, a.id);
         assert_eq!(updated.title, "Fix login flow");
-        assert_eq!(updated.body, "steps to repro"); // untouched by the patch
+        assert_eq!(updated.body, "steps to repro"); // untouched
         assert_eq!(updated.status, IssueStatus::Cancelled);
         assert_eq!(updated.priority, 4);
+        assert_eq!(updated.due.as_deref(), Some("2026-08-01"));
+        assert_eq!(updated.scheduled.as_deref(), Some("2026-07-30"));
+        assert_eq!(updated.rank, Some(1.5));
         assert_eq!(updated.updated_at, 200);
-
-        assert!(reg.update_issue("nope", &patch, 201).unwrap().is_none());
+        // list/get surface the new fields; clearing them round-trips too.
+        assert_eq!(reg.list_issues("proj").unwrap()[0].due.as_deref(), Some("2026-08-01"));
+        next.due = None;
+        next.scheduled = None;
+        next.rank = None;
+        let cleared = reg.upsert_issue_row(&next).unwrap();
+        assert_eq!((cleared.due, cleared.scheduled, cleared.rank), (None, None, None));
 
         reg.delete_issue(&a.id).unwrap();
         assert!(reg.get_issue(&a.id).unwrap().is_none());
@@ -1637,7 +1818,9 @@ mod tests {
 
         // Already todo / done / cancelled: untouched.
         assert!(!reg.rollback_issue_to_todo(&i.id, 3).unwrap());
-        reg.update_issue(&i.id, &IssuePatch { status: Some(IssueStatus::Done), ..Default::default() }, 4).unwrap();
+        let mut done = reg.get_issue(&i.id).unwrap().unwrap();
+        done.status = IssueStatus::Done;
+        reg.upsert_issue_row(&done).unwrap();
         assert!(!reg.rollback_issue_to_todo(&i.id, 5).unwrap());
         assert_eq!(reg.get_issue(&i.id).unwrap().unwrap().status, IssueStatus::Done);
     }
@@ -1731,5 +1914,171 @@ mod tests {
         linked.issue_id = Some("iss-1".into());
         reg.insert_run(&linked).unwrap();
         assert_eq!(reg.get_run("new-1").unwrap().unwrap().issue_id.as_deref(), Some("iss-1"));
+    }
+
+    // ── workspace ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn project_kind_defaults_to_none_and_roundtrips() {
+        let dir = tempdir().unwrap();
+        let reg = Registry::open(&dir.path().join("kind.db")).unwrap();
+        let p = reg.add_project("Agency", std::path::Path::new("/tmp/a")).unwrap();
+        assert_eq!(p.kind, None);
+        assert_eq!(reg.get_project(&p.id).unwrap().unwrap().kind, None);
+
+        let ws = reg.ensure_workspace("Workspace", std::path::Path::new("/tmp/ws")).unwrap();
+        assert_eq!(ws.kind.as_deref(), Some(PROJECT_KIND_WORKSPACE));
+        assert_eq!(reg.get_project(&ws.id).unwrap().unwrap().kind.as_deref(), Some("workspace"));
+    }
+
+    #[test]
+    fn ensure_workspace_is_idempotent_revives_closed_and_adopts_new_path() {
+        let dir = tempdir().unwrap();
+        let reg = Registry::open(&dir.path().join("ws.db")).unwrap();
+        assert!(reg.get_workspace().unwrap().is_none());
+
+        let ws = reg.ensure_workspace("Workspace", std::path::Path::new("/tmp/ws")).unwrap();
+        // Second call returns the same row, not a duplicate.
+        let again = reg.ensure_workspace("Workspace", std::path::Path::new("/tmp/ws")).unwrap();
+        assert_eq!(again.id, ws.id);
+
+        // A closed workspace comes back on ensure.
+        reg.set_project_closed(&ws.id, true).unwrap();
+        assert!(reg.list_projects().unwrap().iter().all(|p| p.id != ws.id));
+        let revived = reg.ensure_workspace("Workspace", std::path::Path::new("/tmp/ws")).unwrap();
+        assert_eq!(revived.id, ws.id);
+        assert!(reg.list_projects().unwrap().iter().any(|p| p.id == ws.id));
+
+        // Re-created at a new location: the row adopts it.
+        let moved = reg.ensure_workspace("Workspace", std::path::Path::new("/tmp/ws2")).unwrap();
+        assert_eq!(moved.id, ws.id);
+        assert_eq!(moved.repo_path, std::path::PathBuf::from("/tmp/ws2"));
+        assert_eq!(
+            reg.get_workspace().unwrap().unwrap().repo_path,
+            std::path::PathBuf::from("/tmp/ws2")
+        );
+    }
+
+    #[test]
+    fn workspace_gets_an_issue_key_and_backfill_covers_legacy_rows() {
+        let dir = tempdir().unwrap();
+        let db = dir.path().join("ws-keys.db");
+        {
+            let reg = Registry::open(&db).unwrap();
+            // Phase 5: the workspace is in the tracker like any project.
+            let ws = reg.ensure_workspace("Workspace", std::path::Path::new("/tmp/ws")).unwrap();
+            assert_eq!(ws.issue_key.as_deref(), Some("WOR"));
+            // A pre-Phase-5 workspace row (key-less) simulated by clearing it.
+            reg.conn
+                .execute("UPDATE projects SET issue_key = NULL WHERE id = ?1", [&ws.id])
+                .unwrap();
+        }
+        // Reopening runs the backfill — the workspace is included now.
+        let reg = Registry::open(&db).unwrap();
+        assert_eq!(reg.get_workspace().unwrap().unwrap().issue_key.as_deref(), Some("WOR"));
+        let p = reg.add_project("Zebra", std::path::Path::new("/tmp/z")).unwrap();
+        assert_eq!(p.issue_key.as_deref(), Some("ZEB"));
+    }
+
+    // ── issues as files: index helpers ─────────────────────────────────────
+
+    #[test]
+    fn alloc_issue_seq_counts_and_never_reuses() {
+        let dir = tempdir().unwrap();
+        let reg = Registry::open(&dir.path().join("seq.db")).unwrap();
+        assert_eq!(reg.alloc_issue_seq("p1").unwrap(), 1);
+        assert_eq!(reg.alloc_issue_seq("p1").unwrap(), 2);
+        assert_eq!(reg.alloc_issue_seq("p2").unwrap(), 1);
+        // Interleaves with create_issue's numbering.
+        let i = reg.create_issue("p1", "t", "", IssueStatus::Todo, 1).unwrap();
+        assert_eq!(i.seq, 3);
+    }
+
+    #[test]
+    fn ensure_issue_seq_at_least_is_monotonic() {
+        let dir = tempdir().unwrap();
+        let reg = Registry::open(&dir.path().join("seq2.db")).unwrap();
+        // Fresh project: an externally-created AGE-15 pushes the counter past it.
+        reg.ensure_issue_seq_at_least("p1", 15).unwrap();
+        assert_eq!(reg.alloc_issue_seq("p1").unwrap(), 16);
+        // Never lowers.
+        reg.ensure_issue_seq_at_least("p1", 3).unwrap();
+        assert_eq!(reg.alloc_issue_seq("p1").unwrap(), 17);
+    }
+
+    #[test]
+    fn upsert_issue_row_keeps_id_on_update() {
+        let dir = tempdir().unwrap();
+        let reg = Registry::open(&dir.path().join("upsert.db")).unwrap();
+        let issue = Issue {
+            id: "uuid-1".into(),
+            project_id: "p1".into(),
+            seq: 4,
+            title: "First".into(),
+            body: "b".into(),
+            status: IssueStatus::Todo,
+            priority: 1,
+            due: None,
+            scheduled: None,
+            rank: None,
+            created_at: 10,
+            updated_at: 10,
+        };
+        let stored = reg.upsert_issue_row(&issue).unwrap();
+        assert_eq!(stored, issue);
+        // Same (project, seq) with a different candidate id: fields follow the
+        // file, the row's id survives.
+        let mut edited = issue.clone();
+        edited.id = "uuid-2".into();
+        edited.title = "Edited".into();
+        edited.status = IssueStatus::Done;
+        edited.updated_at = 20;
+        let stored = reg.upsert_issue_row(&edited).unwrap();
+        assert_eq!(stored.id, "uuid-1");
+        assert_eq!(stored.title, "Edited");
+        assert_eq!(stored.status, IssueStatus::Done);
+        assert_eq!(reg.list_issues("p1").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn issue_patch_distinguishes_absent_from_null() {
+        // Absent nullable fields deserialize to None (untouched)…
+        let p: IssuePatch = serde_json::from_str(r#"{"title":"t"}"#).unwrap();
+        assert_eq!(p.title.as_deref(), Some("t"));
+        assert_eq!((p.due, p.scheduled, p.rank), (None, None, None));
+        // …explicit null to Some(None) (clear)…
+        let p: IssuePatch = serde_json::from_str(r#"{"due":null,"rank":null}"#).unwrap();
+        assert_eq!(p.due, Some(None));
+        assert_eq!(p.rank, Some(None));
+        assert_eq!(p.scheduled, None);
+        // …and a value to Some(Some(v)).
+        let p: IssuePatch =
+            serde_json::from_str(r#"{"due":"2026-08-01","scheduled":"2026-07-30","rank":1.5}"#)
+                .unwrap();
+        assert_eq!(p.due, Some(Some("2026-08-01".into())));
+        assert_eq!(p.scheduled, Some(Some("2026-07-30".into())));
+        assert_eq!(p.rank, Some(Some(1.5)));
+    }
+
+    #[test]
+    fn issues_migrated_flag_roundtrips() {
+        let dir = tempdir().unwrap();
+        let reg = Registry::open(&dir.path().join("mig.db")).unwrap();
+        let p = reg.add_project("Agency", std::path::Path::new("/tmp/a")).unwrap();
+        assert!(!reg.project_issues_migrated(&p.id).unwrap());
+        reg.mark_issues_migrated(&p.id).unwrap();
+        assert!(reg.project_issues_migrated(&p.id).unwrap());
+    }
+
+    #[test]
+    fn set_project_repo_path_moves_the_row() {
+        let dir = tempdir().unwrap();
+        let reg = Registry::open(&dir.path().join("move.db")).unwrap();
+        let ws = reg.ensure_workspace("Workspace", std::path::Path::new("/tmp/ws")).unwrap();
+        reg.set_project_repo_path(&ws.id, std::path::Path::new("/tmp/elsewhere")).unwrap();
+        assert_eq!(
+            reg.get_project(&ws.id).unwrap().unwrap().repo_path,
+            std::path::PathBuf::from("/tmp/elsewhere")
+        );
     }
 }

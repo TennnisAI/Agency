@@ -157,7 +157,7 @@ export default function GitPanel({
     const message = await gitUndoLastCommit(taskId);
     // nonce: restoring the same message twice must still re-trigger the effect.
     setRestoreMessage((p) => ({ text: message, nonce: (p?.nonce ?? 0) + 1 }));
-  }, "Last commit undone — changes kept staged");
+  }, "Last commit undone; changes kept staged");
 
   const onSelectFile = (path: string, group: "index" | "workingTree" | "merge" | "untracked") =>
     onSelect({ kind: "file", path, group });

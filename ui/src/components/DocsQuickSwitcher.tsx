@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { DocsIndex } from "../lib/docsIndex";
+import { useListNav } from "../hooks/useListNav";
 import { useModalKeys } from "../hooks/useModalKeys";
 
 interface Row {
@@ -23,7 +24,6 @@ export default function DocsQuickSwitcher({
   onClose: () => void;
 }) {
   const [query, setQuery] = useState("");
-  const [hi, setHi] = useState(0);
   useModalKeys(onClose);
 
   const rows = useMemo<Row[]>(() => {
@@ -54,19 +54,7 @@ export default function DocsQuickSwitcher({
     else onCreate(row.path);
     onClose();
   };
-
-  function onKey(ev: React.KeyboardEvent) {
-    if (ev.key === "ArrowDown") {
-      ev.preventDefault();
-      setHi((h) => (rows.length === 0 ? 0 : Math.min(h + 1, rows.length - 1)));
-    } else if (ev.key === "ArrowUp") {
-      ev.preventDefault();
-      setHi((h) => Math.max(h - 1, 0));
-    } else if (ev.key === "Enter") {
-      ev.preventDefault();
-      if (rows[hi]) activate(rows[hi]);
-    }
-  }
+  const { hi, setHi, onKey } = useListNav(rows.length, (i) => activate(rows[i]), query);
 
   return (
     <div className="palette-overlay" onClick={onClose}>
@@ -76,7 +64,7 @@ export default function DocsQuickSwitcher({
           autoFocus
           placeholder="Open or create a note…"
           value={query}
-          onChange={(e) => { setQuery(e.target.value); setHi(0); }}
+          onChange={(e) => setQuery(e.target.value)}
           onKeyDown={onKey}
         />
         <ul className="palette-list">

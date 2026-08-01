@@ -15,7 +15,9 @@ import { python } from "@codemirror/lang-python";
 import { autocompletion, CompletionContext, CompletionResult } from "@codemirror/autocomplete";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { FileRoot, readFileBase64 } from "../api";
-import { DocsIndex, resolveLink, stripExt } from "./docsIndex";
+import { DocsIndex, parseFrontmatter, stripExt } from "./docsIndex";
+import { CrossRefs, issueCompletionOptions, wikilinkView } from "./links";
+import { joinPath } from "./filePath";
 
 // Obsidian-style live preview for the Docs tab: one CodeMirror pane where
 // markdown renders inline (headings sized, marks hidden, checkboxes clickable)
@@ -26,11 +28,18 @@ export const docsIndexFacet = Facet.define<DocsIndex | null, DocsIndex | null>({
   combine: (v) => v[0] ?? null,
 });
 
+/** Cross-project issue/run refs, for typed wikilinks ([[AGE-14]], [[run:id]]). */
+export const crossRefsFacet = Facet.define<CrossRefs | null, CrossRefs | null>({
+  combine: (v) => v[0] ?? null,
+});
+
 export interface DocsNav {
   /** Follow a wikilink target (raw text between the brackets, sans alias). */
   onNavigate: (target: string, heading: string | null) => void;
   /** A #tag was clicked. */
   onTagClick: (tag: string) => void;
+  /** Filter the docs search by a frontmatter property (properties card). */
+  onFilter?: (key: string, value: string) => void;
   /** Where this note lives, for resolving relative image paths. */
   root: FileRoot;
   docsDir: string;
@@ -180,7 +189,9 @@ function loadImage(nav: DocsNav, src: string): Promise<string> {
     cached = (async () => {
       for (const rel of candidates) {
         try {
-          const bc = await readFileBase64(nav.root, `${nav.docsDir}/${rel}`);
+          // joinPath: a workspace vault has docsDir "" — a bare `${dir}/${rel}`
+          // would produce a leading slash the path jail rejects as absolute.
+          const bc = await readFileBase64(nav.root, joinPath(nav.docsDir, rel));
           if (!bc.tooLarge && bc.mime.startsWith("image/")) {
             return `data:${bc.mime};base64,${bc.b64}`;
           }
@@ -261,6 +272,7 @@ class HRWidget extends WidgetType {
   }
 }
 
+
 // ── Decoration building ──────────────────────────────────────────────────────
 
 const TAG_RE = /(^|[\s(])#([A-Za-z0-9_][A-Za-z0-9_/-]*)/g;
@@ -293,8 +305,11 @@ class LivePreviewPlugin {
 
   update(u: ViewUpdate) {
     const key = activeKey(activeLines(u.view));
-    const indexChanged = u.startState.facet(docsIndexFacet) !== u.state.facet(docsIndexFacet);
-    if (u.docChanged || u.viewportChanged || indexChanged || key !== this.key) {
+    const indexChanged =
+      u.startState.facet(docsIndexFacet) !== u.state.facet(docsIndexFacet) ||
+      u.startState.facet(crossRefsFacet) !== u.state.facet(crossRefsFacet);
+    // focusChanged matters because reveal is focus-gated (see build).
+    if (u.docChanged || u.viewportChanged || indexChanged || u.focusChanged || key !== this.key) {
       this.key = key;
       [this.decorations, this.atomic] = this.safeBuild(u.view);
     }
@@ -314,8 +329,14 @@ class LivePreviewPlugin {
   build(view: EditorView): [DecorationSet, DecorationSet] {
     const decos: Range<Decoration>[] = [];
     const atomics: Range<Decoration>[] = [];
-    const active = activeLines(view);
+    // Reveal is focus-gated: an unfocused editor has no visible cursor, so
+    // nothing should show raw syntax. Without this, a freshly opened note
+    // reveals whatever line 1 holds (the cursor parks at position 0 on
+    // mount) — most visibly the frontmatter block, which rendered as raw
+    // fences until the first click into the body.
+    const active = view.hasFocus ? activeLines(view) : new Set<number>();
     const index = view.state.facet(docsIndexFacet);
+    const cross = view.state.facet(crossRefsFacet);
     const doc = view.state.doc;
     const tree = syntaxTree(view.state);
     // Line classes accumulate here (a line can be quote + codeblock etc.).
@@ -347,11 +368,32 @@ class LivePreviewPlugin {
       decos.push(isRevealed || multiline ? markDim.range(from, to) : hide.range(from, to));
     };
 
+    // Frontmatter: markdown has no node for it (the fences parse as a
+    // horizontal rule + setext heading, which reads wrong). Display belongs
+    // to the properties card (fmEditor.ts, a block widget); this pass only
+    // computes the range so the generic handlers and the tag scan stay out
+    // of it entirely.
+    let fmLastLine = 0; // 1-based line of the closing fence; 0 = none
+    if (doc.lines >= 2 && doc.line(1).text.trim() === "---") {
+      const head: string[] = [];
+      const max = Math.min(doc.lines, 100);
+      for (let n = 1; n <= max; n++) head.push(doc.line(n).text);
+      const fm = parseFrontmatter(head);
+      if (fm) fmLastLine = fm.end;
+    }
+    const fmEndPos = fmLastLine ? doc.line(fmLastLine).to : 0;
+
     for (const { from, to } of view.visibleRanges) {
       tree.iterate({
         from, to,
         enter: (node) => {
           const name = node.name;
+
+          // Nodes inside the frontmatter range are styled (or revealed raw)
+          // above — never as rules/headings/paragraphs.
+          if (fmEndPos && node.from < fmEndPos && node.to <= fmEndPos && name !== "Document") {
+            return false;
+          }
 
           const headingLevel = name.startsWith("ATXHeading") ? Number(name.slice(10))
             : name === "SetextHeading1" ? 1 : name === "SetextHeading2" ? 2 : 0;
@@ -408,10 +450,10 @@ class LivePreviewPlugin {
               const targetFull = pipe >= 0 ? text.slice(0, pipe) : text;
               const hashAt = targetFull.indexOf("#");
               const target = (hashAt >= 0 ? targetFull.slice(0, hashAt) : targetFull).trim();
-              const unresolved = index ? resolveLink(index, target) === null : false;
+              const view = wikilinkView(index, cross, target);
               decos.push(Decoration.mark({
-                class: `lp-wikilink${unresolved ? " unresolved" : ""}`,
-                attributes: { title: unresolved ? "⌘-click to create" : "⌘-click to open" },
+                class: `lp-wikilink${view.unresolved ? " unresolved" : ""}`,
+                attributes: { title: view.title },
               }).range(node.from, node.to));
               const marks = node.node.getChildren("WikilinkMark");
               if (marks.length === 2) {
@@ -518,6 +560,7 @@ class LivePreviewPlugin {
       let n = doc.lineAt(from).number;
       const last = doc.lineAt(to).number;
       for (; n <= last; n++) {
+        if (n <= fmLastLine) continue; // frontmatter carries no tags
         const line = doc.line(n);
         for (const m of line.text.matchAll(TAG_RE)) {
           const start = line.from + m.index + m[1].length;
@@ -598,6 +641,13 @@ function wikilinkCompletions(ctx: CompletionContext): CompletionResult | null {
     const label = dup ? stripExt(d.path) : d.base;
     return { label, detail: d.title !== d.base ? d.title : d.path, apply: `${label}]]` };
   });
+  // Issues complete too ([[AGE-14 → the tracker); notes win ties via boost.
+  const cross = ctx.state.facet(crossRefsFacet);
+  if (cross) {
+    options.push(...issueCompletionOptions(cross).map((o) => ({
+      label: o.label, detail: o.detail, apply: `${o.label}]]`, boost: -1,
+    })));
+  }
   return { from: m.from + 2, options, validFor: /^[^\]\n]*$/ };
 }
 

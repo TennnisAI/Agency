@@ -284,16 +284,15 @@ pub struct DocFile {
 const MAX_CORPUS_FILES: usize = 2000;
 const MAX_CORPUS_BYTES: u64 = 20_000_000;
 
-/// Recursively read every markdown file under `rel_dir` in one pass, for the
-/// docs index (links, tags, search). Hidden directories, symlinked directories,
-/// and node_modules are skipped; per-file and total caps apply. Files that
-/// aren't valid UTF-8 are skipped; oversized ones are listed with `too_large`
-/// set and empty text so the tree can still show them.
-pub fn read_markdown_corpus(root: &Path, rel_dir: &str) -> Result<Vec<DocFile>> {
+/// Walk every markdown file under `rel_dir` (same skip rules everywhere the
+/// corpus is touched: hidden dirs, symlinks, node_modules; file-count cap).
+/// Returns `(rel_path, abs_path, metadata)` per file — the shared base for the
+/// full read, the stat-only pass, and anything else that must agree with them
+/// on what "the corpus" is.
+fn walk_markdown(root: &Path, rel_dir: &str) -> Result<Vec<(String, std::path::PathBuf, std::fs::Metadata)>> {
     let base = resolve_within(root, rel_dir)?;
     let mut out = Vec::new();
-    let mut total: u64 = 0;
-    let mut stack = vec![(base.clone(), String::new())];
+    let mut stack = vec![(base, String::new())];
     while let Some((dir, prefix)) = stack.pop() {
         let entries = match std::fs::read_dir(&dir) {
             Ok(it) => it,
@@ -318,21 +317,191 @@ pub fn read_markdown_corpus(root: &Path, rel_dir: &str) -> Result<Vec<DocFile>> 
             if !lower.ends_with(".md") && !lower.ends_with(".markdown") {
                 continue;
             }
-            if out.len() >= MAX_CORPUS_FILES || total >= MAX_CORPUS_BYTES {
+            if out.len() >= MAX_CORPUS_FILES {
                 return Ok(out);
             }
             let Ok(meta) = entry.metadata() else { continue };
-            if meta.len() > MAX_FILE_BYTES {
-                out.push(DocFile { path: rel, text: String::new(), too_large: true });
-                continue;
-            }
-            let Ok(bytes) = std::fs::read(entry.path()) else { continue };
-            let Ok(text) = String::from_utf8(bytes) else { continue };
-            total += text.len() as u64;
-            out.push(DocFile { path: rel, text, too_large: false });
+            out.push((rel, entry.path(), meta));
         }
     }
     Ok(out)
+}
+
+/// Recursively read every markdown file under `rel_dir` in one pass, for the
+/// docs index (links, tags, search). Hidden directories, symlinked directories,
+/// and node_modules are skipped; per-file and total caps apply. Files that
+/// aren't valid UTF-8 are skipped; oversized ones are listed with `too_large`
+/// set and empty text so the tree can still show them.
+pub fn read_markdown_corpus(root: &Path, rel_dir: &str) -> Result<Vec<DocFile>> {
+    let mut out = Vec::new();
+    let mut total: u64 = 0;
+    for (rel, abs, meta) in walk_markdown(root, rel_dir)? {
+        if total >= MAX_CORPUS_BYTES {
+            return Ok(out);
+        }
+        if meta.len() > MAX_FILE_BYTES {
+            out.push(DocFile { path: rel, text: String::new(), too_large: true });
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(&abs) else { continue };
+        let Ok(text) = String::from_utf8(bytes) else { continue };
+        total += text.len() as u64;
+        out.push(DocFile { path: rel, text, too_large: false });
+    }
+    Ok(out)
+}
+
+/// One corpus file's change signature: enough for a poll to decide whether the
+/// body needs re-reading, at stat cost instead of read cost.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocStat {
+    /// Path relative to the scanned directory, `/`-separated.
+    pub path: String,
+    /// Modification time, epoch milliseconds (0 when the platform won't say).
+    pub mtime_ms: i64,
+    pub size: u64,
+}
+
+/// Stat-only pass over the markdown corpus — same walk, same skips, no body
+/// reads. Steady-state polls diff this against their cache and fetch bodies
+/// only for files that actually changed.
+pub fn scan_markdown_stats(root: &Path, rel_dir: &str) -> Result<Vec<DocStat>> {
+    Ok(walk_markdown(root, rel_dir)?
+        .into_iter()
+        .map(|(rel, _, meta)| DocStat {
+            path: rel,
+            mtime_ms: meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0),
+            size: meta.len(),
+        })
+        .collect())
+}
+
+/// Read a named subset of the markdown corpus (the poll's "these changed"
+/// list). Paths resolve through the jail relative to `rel_dir`; files deleted
+/// between the stat pass and this read are silently skipped — the next poll
+/// reports them as removed. Same UTF-8 / too-large handling as the full read.
+pub fn read_markdown_files(root: &Path, rel_dir: &str, paths: &[String]) -> Result<Vec<DocFile>> {
+    let base = resolve_within(root, rel_dir)?;
+    let mut out = Vec::new();
+    let mut total: u64 = 0;
+    for rel in paths.iter().take(MAX_CORPUS_FILES) {
+        if total >= MAX_CORPUS_BYTES {
+            break;
+        }
+        let path = resolve_within(&base, rel)?;
+        let Ok(meta) = std::fs::metadata(&path) else { continue };
+        if meta.len() > MAX_FILE_BYTES {
+            out.push(DocFile { path: rel.clone(), text: String::new(), too_large: true });
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(&path) else { continue };
+        let Ok(text) = String::from_utf8(bytes) else { continue };
+        total += text.len() as u64;
+        out.push(DocFile { path: rel.clone(), text, too_large: false });
+    }
+    Ok(out)
+}
+
+/// One `- [ ]` / `- [x]` checkbox found in the markdown corpus.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskHit {
+    /// Path relative to the scanned directory, `/`-separated.
+    pub path: String,
+    /// 0-based line number of the task line.
+    pub line: u32,
+    pub checked: bool,
+    /// The task's text with bullet and marker stripped, trimmed.
+    pub text: String,
+}
+
+/// Parse `- [ ] text` / `- [x] text` (also `*`/`+` bullets, any indentation).
+/// The 3-char marker must be followed by a space or end the line. Returns
+/// (checked, text) or None.
+fn parse_task_line(line: &str) -> Option<(bool, &str)> {
+    let s = line.trim_start();
+    let rest = ["- ", "* ", "+ "].iter().find_map(|p| s.strip_prefix(p))?;
+    let checked = match rest.get(..3)? {
+        "[ ]" => false,
+        "[x]" | "[X]" => true,
+        _ => return None,
+    };
+    let tail = &rest[3..];
+    if !tail.is_empty() && !tail.starts_with(' ') {
+        return None;
+    }
+    Some((checked, tail.trim()))
+}
+
+/// Collect every checkbox task in the markdown corpus under `rel_dir` — the
+/// same walk (and therefore the same file set) as the docs index, skipping
+/// fenced code blocks the way the frontend parser does. Feeds the Home Tasks
+/// aggregation, so only task lines cross the IPC boundary, not corpus bodies.
+pub fn scan_tasks(root: &Path, rel_dir: &str) -> Result<Vec<TaskHit>> {
+    let mut out = Vec::new();
+    let mut total: u64 = 0;
+    for (rel, abs, meta) in walk_markdown(root, rel_dir)? {
+        if total >= MAX_CORPUS_BYTES {
+            break;
+        }
+        if meta.len() > MAX_FILE_BYTES {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(&abs) else { continue };
+        let Ok(text) = String::from_utf8(bytes) else { continue };
+        total += text.len() as u64;
+        let mut in_fence = false;
+        for (i, line) in text.split('\n').enumerate() {
+            if line.starts_with("```") || line.starts_with("~~~") {
+                in_fence = !in_fence;
+                continue;
+            }
+            if in_fence {
+                continue;
+            }
+            if let Some((checked, task)) = parse_task_line(line) {
+                out.push(TaskHit { path: rel.clone(), line: i as u32, checked, text: task.to_string() });
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Flip the checkbox on one task line, in place. The caller's view of the file
+/// may be stale (agents and editors write concurrently), so the addressed line
+/// is re-verified: it must still parse as a task in the opposite state of
+/// `checked`. On a mismatch nothing is written and `false` comes back — the
+/// caller refreshes. The write is atomic (temp + rename) so a reader never
+/// sees a torn file.
+pub fn toggle_task(root: &Path, rel_dir: &str, rel: &str, line: u32, checked: bool) -> Result<bool> {
+    let base = resolve_within(root, rel_dir)?;
+    let path = resolve_within(&base, rel)?;
+    let text = std::fs::read_to_string(&path)?;
+    let lines: Vec<&str> = text.split('\n').collect();
+    let Some(target) = lines.get(line as usize) else {
+        return Ok(false);
+    };
+    let Some((was, _)) = parse_task_line(target) else {
+        return Ok(false);
+    };
+    if was == checked {
+        return Ok(false);
+    }
+    let marker_at = (target.len() - target.trim_start().len()) + 2;
+    let mut new_line = String::with_capacity(target.len());
+    new_line.push_str(&target[..marker_at]);
+    new_line.push_str(if checked { "[x]" } else { "[ ]" });
+    new_line.push_str(&target[marker_at + 3..]);
+    let mut out: Vec<&str> = lines;
+    out[line as usize] = &new_line;
+    crate::issuefs::atomic_write(&path, &out.join("\n"))?;
+    Ok(true)
 }
 
 #[derive(Debug, Clone)]
@@ -388,6 +557,100 @@ pub fn read_file_bytes(root: &Path, rel: &str) -> Result<BinaryFile> {
 }
 
 #[cfg(test)]
+mod root_as_vault_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    // The workspace project uses the *whole folder* as its docs vault, which
+    // reaches these functions as the empty relative path. That must mean "the
+    // root itself" — never an error, never an escape.
+
+    #[test]
+    fn resolve_within_empty_rel_is_the_root() {
+        let dir = tempdir().unwrap();
+        let got = resolve_within(dir.path(), "").unwrap();
+        assert_eq!(got.canonicalize().unwrap(), dir.path().canonicalize().unwrap());
+    }
+
+    #[test]
+    fn list_dir_empty_rel_lists_the_root() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("a.md"), "x").unwrap();
+        std::fs::create_dir(dir.path().join("journal")).unwrap();
+        let names: Vec<String> = list_dir(dir.path(), "").unwrap().into_iter().map(|e| e.name).collect();
+        assert_eq!(names, vec!["journal", "a.md"]);
+    }
+
+    #[test]
+    fn read_markdown_corpus_empty_rel_walks_the_root() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("top.md"), "# top").unwrap();
+        std::fs::create_dir(dir.path().join("journal")).unwrap();
+        std::fs::write(dir.path().join("journal/2026-07-28.md"), "# today").unwrap();
+        // Hidden dirs are still skipped from the vault walk.
+        std::fs::create_dir(dir.path().join(".git")).unwrap();
+        std::fs::write(dir.path().join(".git/skip.md"), "no").unwrap();
+
+        let mut paths: Vec<String> =
+            read_markdown_corpus(dir.path(), "").unwrap().into_iter().map(|f| f.path).collect();
+        paths.sort();
+        assert_eq!(paths, vec!["journal/2026-07-28.md", "top.md"]);
+    }
+}
+
+#[cfg(test)]
+mod corpus_stats_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn stats_cover_the_same_files_as_the_corpus_read() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("docs/sub")).unwrap();
+        std::fs::create_dir_all(root.join("docs/.hidden")).unwrap();
+        std::fs::write(root.join("docs/a.md"), "# a").unwrap();
+        std::fs::write(root.join("docs/sub/b.md"), "# b").unwrap();
+        std::fs::write(root.join("docs/notes.txt"), "not markdown").unwrap();
+        std::fs::write(root.join("docs/.hidden/c.md"), "skipped").unwrap();
+
+        let mut stat_paths: Vec<String> =
+            scan_markdown_stats(root, "docs").unwrap().into_iter().map(|s| s.path).collect();
+        let mut corpus_paths: Vec<String> =
+            read_markdown_corpus(root, "docs").unwrap().into_iter().map(|f| f.path).collect();
+        stat_paths.sort();
+        corpus_paths.sort();
+        assert_eq!(stat_paths, corpus_paths);
+        assert_eq!(stat_paths, vec!["a.md", "sub/b.md"]);
+
+        // Signatures change when a file does.
+        let before = scan_markdown_stats(root, "docs").unwrap();
+        let a = before.iter().find(|s| s.path == "a.md").unwrap();
+        assert_eq!(a.size, 3);
+        assert!(a.mtime_ms > 0);
+        std::fs::write(root.join("docs/a.md"), "# a grew").unwrap();
+        let after = scan_markdown_stats(root, "docs").unwrap();
+        assert_ne!(after.iter().find(|s| s.path == "a.md").unwrap().size, a.size);
+    }
+
+    #[test]
+    fn read_markdown_files_reads_exactly_the_asked_subset() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("docs")).unwrap();
+        std::fs::write(root.join("docs/a.md"), "alpha").unwrap();
+        std::fs::write(root.join("docs/b.md"), "beta").unwrap();
+
+        let got = read_markdown_files(root, "docs", &["b.md".to_string(), "gone.md".to_string()]).unwrap();
+        assert_eq!(got.len(), 1, "missing files are skipped, not errors");
+        assert_eq!((got[0].path.as_str(), got[0].text.as_str()), ("b.md", "beta"));
+
+        // Jail escape is an error, not a silent skip.
+        assert!(read_markdown_files(root, "docs", &["../a.md".to_string()]).is_err());
+    }
+}
+
+#[cfg(test)]
 mod gitignore_tests {
     use super::*;
     use tempfile::tempdir;
@@ -423,5 +686,83 @@ mod gitignore_tests {
 
         add_to_gitignore(root, "a.log").unwrap();
         assert_eq!(std::fs::read_to_string(root.join(".gitignore")).unwrap(), "node_modules\n/a.log\n");
+    }
+}
+
+#[cfg(test)]
+mod task_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn scan_tasks_finds_checkboxes_with_lines_and_text() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir(root.join("docs")).unwrap();
+        std::fs::write(
+            root.join("docs/todo.md"),
+            "# Todo\n\n- [ ] call the bank\n- [x] done thing\n  * [ ] indented star\n- not a task\n- [z] bad marker\n",
+        )
+        .unwrap();
+
+        let hits = scan_tasks(root, "docs").unwrap();
+        assert_eq!(
+            hits,
+            vec![
+                TaskHit { path: "todo.md".into(), line: 2, checked: false, text: "call the bank".into() },
+                TaskHit { path: "todo.md".into(), line: 3, checked: true, text: "done thing".into() },
+                TaskHit { path: "todo.md".into(), line: 4, checked: false, text: "indented star".into() },
+            ]
+        );
+    }
+
+    #[test]
+    fn scan_tasks_skips_fenced_blocks_and_non_corpus_files() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("note.md"), "```\n- [ ] in code\n```\n- [ ] real\n").unwrap();
+        std::fs::write(root.join("script.sh"), "- [ ] not markdown\n").unwrap();
+        std::fs::create_dir(root.join(".hidden")).unwrap();
+        std::fs::write(root.join(".hidden/x.md"), "- [ ] hidden\n").unwrap();
+
+        // Workspace-vault style: rel_dir "" walks the root.
+        let hits = scan_tasks(root, "").unwrap();
+        assert_eq!(
+            hits,
+            vec![TaskHit { path: "note.md".into(), line: 3, checked: false, text: "real".into() }]
+        );
+    }
+
+    #[test]
+    fn toggle_task_flips_in_place_and_preserves_the_rest() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let filler = "filler line\n".repeat(200);
+        let text = format!("# T\n{filler}- [ ] the task  \ntail\n");
+        std::fs::write(root.join("n.md"), &text).unwrap();
+
+        assert!(toggle_task(root, "", "n.md", 201, true).unwrap());
+        let after = std::fs::read_to_string(root.join("n.md")).unwrap();
+        assert_eq!(after, text.replace("- [ ] the task  ", "- [x] the task  "));
+
+        assert!(toggle_task(root, "", "n.md", 201, false).unwrap());
+        assert_eq!(std::fs::read_to_string(root.join("n.md")).unwrap(), text);
+    }
+
+    #[test]
+    fn toggle_task_refuses_stale_or_invalid_lines() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let text = "- [ ] a\nplain\n";
+        std::fs::write(root.join("n.md"), text).unwrap();
+
+        // Line is not a task.
+        assert!(!toggle_task(root, "", "n.md", 1, true).unwrap());
+        // Line out of range.
+        assert!(!toggle_task(root, "", "n.md", 99, true).unwrap());
+        // Already in the requested state (caller's view was stale).
+        assert!(!toggle_task(root, "", "n.md", 0, false).unwrap());
+        // Nothing was written by any refusal.
+        assert_eq!(std::fs::read_to_string(root.join("n.md")).unwrap(), text);
     }
 }

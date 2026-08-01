@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  DirEntry, FileRoot, listDir,
+  BackendSearchHit, DirEntry, FileRoot, listDir, searchFiles,
   createFile, createDir, renamePath, trashPath,
 } from "../api";
 import { joinPath, parentPath, baseName } from "../lib/filePath";
@@ -30,12 +30,19 @@ function Twistie({ open }: { open: boolean }) {
 }
 
 export default function FileTree({
-  root, rootLabel, selected, onSelect,
+  root, rootLabel, selected, query, onQuery, onSelect, onOpenHit, onRenamed, onDeleted,
 }: {
   root: FileRoot;
   rootLabel: string;
   selected: string | null;
+  /** Find-in-files query; non-empty replaces the tree with grouped hits. */
+  query: string;
+  onQuery: (q: string) => void;
   onSelect: (path: string | null) => void;
+  /** A search hit was clicked: open `path` at the 1-based `line`. */
+  onOpenHit: (path: string, line: number) => void;
+  onRenamed: (from: string, to: string) => void;
+  onDeleted: (path: string) => void;
 }) {
   // Centralized tree state keyed by dir path ("" = root). Lifting it out of the
   // rows lets a mutation refresh exactly the affected directory.
@@ -111,9 +118,8 @@ export default function FileTree({
     try {
       await renamePath(root, orig, dest);
       await loadDir(dir);
-      // Move selection along if the renamed file (or its ancestor) was selected.
-      if (selected === orig) onSelect(dest);
-      else if (selected && selected.startsWith(orig + "/")) onSelect(dest + selected.slice(orig.length));
+      // The owner retargets open tabs/selection (and their unsaved buffers).
+      onRenamed(orig, dest);
     } catch (e) {
       toastError(e, "Rename failed");
     }
@@ -124,7 +130,7 @@ export default function FileTree({
     try {
       await trashPath(root, path);
       await loadDir(dir);
-      if (selected === path || (selected && selected.startsWith(path + "/"))) onSelect(null);
+      onDeleted(path);
     } catch (e) {
       toastError(e, "Delete failed");
     }
@@ -222,8 +228,58 @@ export default function FileTree({
     return rows;
   };
 
+  // Find-in-files: debounced 150 ms against the backend search primitive, with
+  // a token guarding stale slow responses (same pattern as DocsTree search).
+  const [hits, setHits] = useState<BackendSearchHit[]>([]);
+  const [searchFailed, setSearchFailed] = useState(false);
+  const searchToken = useRef(0);
+  useEffect(() => {
+    const q = query.trim();
+    const token = ++searchToken.current;
+    setSearchFailed(false);
+    if (!q) {
+      setHits([]);
+      return;
+    }
+    const t = window.setTimeout(async () => {
+      try {
+        const res = await searchFiles(root, "", { query: q });
+        if (searchToken.current === token) setHits(res);
+      } catch {
+        if (searchToken.current === token) {
+          setHits([]);
+          setSearchFailed(true);
+        }
+      }
+    }, 150);
+    return () => window.clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query, rootKey]);
+
+  // Hits grouped by file, preserving the backend's order.
+  const hitGroups = useMemo(() => {
+    const m = new Map<string, BackendSearchHit[]>();
+    for (const h of hits) {
+      const g = m.get(h.path);
+      if (g) g.push(h);
+      else m.set(h.path, [h]);
+    }
+    return [...m.entries()];
+  }, [hits]);
+
+  const searching = query.trim() !== "";
+
   return (
     <>
+      <div className="docs-search">
+        <input
+          className="docs-search-input"
+          placeholder="Search in files…"
+          value={query}
+          onChange={(e) => onQuery(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Escape") onQuery(""); }}
+        />
+      </div>
       <div className="files-root-label">
         <span className="files-root-name" title={rootLabel}>{rootLabel}</span>
         <span className="spacer" style={{ flex: 1 }} />
@@ -241,7 +297,37 @@ export default function FileTree({
         </button>
       </div>
       <div className="files-tree-body" onContextMenu={(e) => { if (e.target === e.currentTarget) openMenu(e, null); }}>
-        {renderDir("", 0)}
+        {searching ? (
+          <div className="files-search-results">
+            {searchFailed && <div className="docs-search-none">Search failed</div>}
+            {!searchFailed && hitGroups.length === 0 && <div className="docs-search-none">No matches</div>}
+            {hitGroups.map(([path, group]) => {
+              const { kind, color } = fileIcon(baseName(path));
+              return (
+                <div key={path} className="files-search-group">
+                  <div className="files-search-file" title={path} onClick={() => onOpenHit(path, group[0].line)}>
+                    <span className="tree-icon file-icon" style={{ color }}>
+                      <FileIcon kind={kind} />
+                    </span>
+                    <span className="files-search-path">{path}</span>
+                  </div>
+                  {group.map((h) => (
+                    <div
+                      key={`${h.line}:${h.col}`}
+                      className="files-search-line"
+                      onClick={() => onOpenHit(path, h.line)}
+                    >
+                      <span className="files-search-ln">{h.line}</span>
+                      <span className="files-search-text">{h.text.trim()}</span>
+                    </div>
+                  ))}
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          renderDir("", 0)
+        )}
       </div>
 
       {menu && <Menu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} />}

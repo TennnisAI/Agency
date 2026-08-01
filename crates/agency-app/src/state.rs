@@ -4,7 +4,7 @@ use agency_core::supervisor::AgentHandle;
 use agency_core::term::client::{Subscription, TermClient};
 use agency_core::term::SessionStatus;
 use agency_core::worktree::WorktreeManager;
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use crate::notifier;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -90,6 +90,10 @@ pub struct RunInfo {
     pub loop_config: Option<agency_core::loops::LoopConfig>,
     pub loop_state: Option<agency_core::loops::LoopState>,
     pub issue_id: Option<String>,
+    /// Epoch seconds. Exposed for time views (the weekly note); archived_at is
+    /// None for live runs and last-archive-wins after a restore cycle.
+    pub created_at: i64,
+    pub archived_at: Option<i64>,
 }
 
 /// An extra agent tab sharing a run's worktree, as shown in the UI. `id` is
@@ -388,6 +392,13 @@ fn now_secs() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
 
+/// Issue titles are one H1 line in the file; collapse all whitespace runs
+/// (newlines included) to single spaces so a pasted multi-line title can't
+/// smear into the body on the next parse.
+fn normalize_title(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 fn now_millis() -> u128 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)
@@ -500,6 +511,10 @@ pub struct AppState {
     /// this, a loop created in the exact window where a finishing pass is about
     /// to park the driver would clear the flag it just set and never be driven.
     loop_generation: std::sync::atomic::AtomicU64,
+    /// Per-project signature of `.agency/issues/` (`scan_issue_stats`
+    /// digest). `list_issues` reconciles the index from the files only when
+    /// this changes, so an idle Issues-tab poll costs one readdir.
+    issue_sigs: Mutex<HashMap<String, String>>,
 }
 
 /// Progress of a loop's check command. `Done(None)` = killed on timeout or
@@ -578,6 +593,7 @@ impl AppState {
             loop_gate: Mutex::new(()),
             loops_active: std::sync::atomic::AtomicBool::new(true),
             loop_generation: std::sync::atomic::AtomicU64::new(0),
+            issue_sigs: Mutex::new(HashMap::new()),
         };
         // Rehydrate: any run the daemon still hosts is adopted as-is; the watch
         // loop (watch_snapshot) then reports live status. Nothing to spawn here —
@@ -721,6 +737,99 @@ impl AppState {
         self.registry.lock().unwrap().add_project(name, repo_path)
     }
 
+    // ── workspace (the pinned notes/journal project) ───────────────────────
+
+    /// The pinned workspace project, if the user has created it.
+    pub fn get_workspace(&self) -> Result<Option<Project>> {
+        self.registry.lock().unwrap().get_workspace()
+    }
+
+    /// The folder offered by default for a new workspace: `~/Agency`.
+    pub fn default_workspace_location(&self) -> std::path::PathBuf {
+        std::env::var_os("HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("/"))
+            .join("Agency")
+    }
+
+    /// Create (or adopt) the workspace at `path`. Unlike `add_project`, git is
+    /// optional: with `use_git` the folder is initialized and given an initial
+    /// commit so agents can spawn in it; without, it's just a folder — Docs and
+    /// Files work, Source Control and agents stay hidden in the UI. Idempotent:
+    /// an existing workspace row is reused (and repointed at `path`).
+    pub fn create_workspace(&self, path: &Path, use_git: bool) -> Result<Project> {
+        std::fs::create_dir_all(path)
+            .with_context(|| format!("creating workspace folder {}", path.display()))?;
+        // Seed the starter guide before the initial commit so it's tracked.
+        // Only when missing — re-running create on an adopted folder (or the
+        // idempotent re-create path) must not clobber user edits.
+        agency_core::guide::ensure_guide(path)?;
+        if use_git {
+            use agency_core::setup::RepoReadiness;
+            if matches!(agency_core::setup::repo_readiness(path), RepoReadiness::NotARepo) {
+                agency_core::setup::init_repo(path)?;
+            }
+            if matches!(agency_core::setup::repo_readiness(path), RepoReadiness::NoCommits { .. }) {
+                agency_core::setup::initial_commit(path, true)?;
+            }
+        }
+        self.registry.lock().unwrap().ensure_workspace("Workspace", path)
+    }
+
+    /// Move the workspace folder on disk and repoint its project row. Refuses
+    /// to clobber an existing destination; a cross-volume move surfaces the
+    /// rename error rather than silently copying.
+    pub fn move_workspace(&self, new_path: &Path) -> Result<Project> {
+        let ws = self
+            .get_workspace()?
+            .ok_or_else(|| anyhow!("no workspace to move; create it first"))?;
+        if new_path == ws.repo_path {
+            return Ok(ws);
+        }
+        // Live runs keep worktrees under `<ws>/.agency/worktrees/` whose git
+        // metadata records absolute paths (the worktree's `.git` file and the
+        // main repo's `.git/worktrees/<id>/gitdir`); renaming the folder
+        // would orphan them and strand any unmerged work. Registry list_runs
+        // already excludes archived runs.
+        let live = self.registry.lock().unwrap().list_runs(&ws.id)?.len();
+        if live > 0 {
+            bail!(
+                "the workspace has {live} active agent run{}; merge or archive them before moving",
+                if live == 1 { "" } else { "s" }
+            );
+        }
+        // A folder cannot move into itself; the location picker makes this
+        // easy to do by creating the destination inside the open workspace.
+        if new_path.starts_with(&ws.repo_path) {
+            bail!(
+                "the destination is inside the current workspace; choose a location outside {}",
+                ws.repo_path.display()
+            );
+        }
+        if new_path.exists() {
+            bail!("{} already exists; choose a new location", new_path.display());
+        }
+        if let Some(parent) = new_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::rename(&ws.repo_path, new_path).with_context(|| {
+            format!("moving {} to {}", ws.repo_path.display(), new_path.display())
+        })?;
+        let reg = self.registry.lock().unwrap();
+        reg.set_project_repo_path(&ws.id, new_path)?;
+        reg.get_project(&ws.id)?.ok_or_else(|| anyhow!("workspace row vanished"))
+    }
+
+    /// Whether `project_id` is the pinned workspace (drives the whole-folder
+    /// docs vault and the relaxed-git UI gating).
+    pub fn project_is_workspace(&self, project_id: &str) -> Result<bool> {
+        let reg = self.registry.lock().unwrap();
+        Ok(reg
+            .get_project(project_id)?
+            .map(|p| p.kind.as_deref() == Some(agency_core::registry::PROJECT_KIND_WORKSPACE))
+            .unwrap_or(false))
+    }
+
     pub fn inspect_repo(&self, repo_path: &Path) -> agency_core::setup::RepoReadiness {
         agency_core::setup::repo_readiness(repo_path)
     }
@@ -849,6 +958,8 @@ impl AppState {
             loop_config: run.loop_config.clone(),
             loop_state: run.loop_state.clone(),
             issue_id: run.issue_id.clone(),
+            created_at: run.created_at,
+            archived_at: run.archived_at,
         }
     }
 
@@ -1157,6 +1268,9 @@ impl AppState {
             let issue = reg
                 .get_issue(issue_id)?
                 .ok_or_else(|| anyhow!("unknown issue: {issue_id}"))?;
+            // Dispatch is an issue-touching path: make sure the file exists
+            // before an agent is told where to find it.
+            self.ensure_issue_files(&reg, &issue.project_id)?;
             let key = reg
                 .get_project(&issue.project_id)?
                 .and_then(|p| p.issue_key)
@@ -1164,11 +1278,20 @@ impl AppState {
             (issue, key)
         };
         let label = format!("{key}-{}", issue.seq);
-        let prompt = if issue.body.trim().is_empty() {
+        let mut prompt = if issue.body.trim().is_empty() {
             format!("Work on issue {label}: {title}", title = issue.title)
         } else {
             format!("Work on issue {label}: {title}\n\n{body}", title = issue.title, body = issue.body)
         };
+        // The tracker is files: tell the agent where its issue lives and how
+        // to work the tracker from its branch (edits land at merge).
+        prompt.push_str(&format!(
+            "\n\nThis issue is the file `.agency/issues/{label}.md` (frontmatter \
+             `status:`/`priority:`, H1 title, markdown body). You may update it, or file \
+             follow-up issues as `.agency/issues/{key}-<n>.md` using the next unused \
+             number — see `.agency/issues/README.md`. Your edits land when this branch \
+             merges; merging also marks {label} done automatically."
+        ));
         let title = format!("{label} {}", issue.title);
         Ok((issue, prompt, title))
     }
@@ -1206,10 +1329,10 @@ impl AppState {
             loop_config: None,
             issue_id: Some(issue.id.clone()),
         }, &mut |_| {})?;
-        self.registry
-            .lock()
-            .unwrap()
-            .advance_issue_status(&issue.id, IssueStatus::InProgress, now_secs())?;
+        {
+            let reg = self.registry.lock().unwrap();
+            self.advance_issue(&reg, &issue.id, IssueStatus::InProgress)?;
+        }
         Ok(info)
     }
 
@@ -1232,10 +1355,10 @@ impl AppState {
             Some(title),
             Some(issue.id.clone()),
         )?;
-        self.registry
-            .lock()
-            .unwrap()
-            .advance_issue_status(&issue.id, IssueStatus::InProgress, now_secs())?;
+        {
+            let reg = self.registry.lock().unwrap();
+            self.advance_issue(&reg, &issue.id, IssueStatus::InProgress)?;
+        }
         Ok(out)
     }
 
@@ -1262,15 +1385,138 @@ impl AppState {
             Some(title),
             Some(issue.id.clone()),
         )?;
-        self.registry
-            .lock()
-            .unwrap()
-            .advance_issue_status(&issue.id, IssueStatus::InProgress, now_secs())?;
+        {
+            let reg = self.registry.lock().unwrap();
+            self.advance_issue(&reg, &issue.id, IssueStatus::InProgress)?;
+        }
         Ok(info)
     }
 
+    // Since Phase 5 issues are files (`.agency/issues/AGE-14.md`) and the
+    // registry rows are an index over them. Every mutation here is file-first:
+    // write the file, then the row, both under the registry lock — a crash
+    // between the two leaves the file ahead, and reconcile squares the row up
+    // on the next poll. The Tauri surface and api.ts are unchanged.
+
+    /// Root + issue-key prefix for a project's issue files.
+    fn issue_root(
+        &self,
+        reg: &agency_core::registry::Registry,
+        project_id: &str,
+    ) -> Result<(std::path::PathBuf, String)> {
+        let p = reg
+            .get_project(project_id)?
+            .ok_or_else(|| anyhow!("unknown project: {project_id}"))?;
+        let key = p.issue_key.unwrap_or_else(|| "ISSUE".to_string());
+        Ok((p.repo_path, key))
+    }
+
+    /// One-shot per project: export the SQLite issues to `.agency/issues/`,
+    /// fix the repo's exclude file so those files are commit-able, and flip
+    /// `issues_migrated`. Cheap (one flag read) ever after. Runs at the top
+    /// of every issue-touching path, so no caller can see a pre-file project.
+    fn ensure_issue_files(
+        &self,
+        reg: &agency_core::registry::Registry,
+        project_id: &str,
+    ) -> Result<()> {
+        if reg.project_issues_migrated(project_id)? {
+            return Ok(());
+        }
+        let (root, key) = self.issue_root(reg, project_id)?;
+        let written = agency_core::issuefs::export_project(reg, project_id, &key, &root)?;
+        // Best-effort: a repo whose exclude file can't be rewritten (or a
+        // workspace without git) still migrates — the files are what matter.
+        if let Err(e) = agency_core::worktree::ensure_agency_excludes(&root) {
+            log::warn!("updating git excludes for {}: {e}", root.display());
+        }
+        reg.mark_issues_migrated(project_id)?;
+        if written > 0 {
+            log::info!("exported {written} issues to files for project {project_id}");
+        }
+        Ok(())
+    }
+
+    /// Serialize an issue to its file, carrying over any unknown frontmatter
+    /// keys already in the file (a newer schema's fields survive our write).
+    fn write_issue_file(
+        &self,
+        reg: &agency_core::registry::Registry,
+        issue: &agency_core::registry::Issue,
+    ) -> Result<()> {
+        use agency_core::issuefs;
+        let (root, prefix) = self.issue_root(reg, &issue.project_id)?;
+        let key = format!("{prefix}-{}", issue.seq);
+        let path = issuefs::issue_path(&root, &key);
+        let extra = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|t| issuefs::parse_issue_file(&key, &t).ok())
+            .map(|f| f.extra)
+            .unwrap_or_default();
+        let file = issuefs::IssueFile {
+            key,
+            seq: issue.seq,
+            title: issue.title.clone(),
+            body: issue.body.clone(),
+            status: issue.status,
+            priority: issue.priority,
+            due: issue.due.clone(),
+            scheduled: issue.scheduled.clone(),
+            rank: issue.rank,
+            created_at: issue.created_at,
+            updated_at: issue.updated_at,
+            extra,
+        };
+        issuefs::atomic_write(&path, &issuefs::serialize_issue_file(&file))?;
+        issuefs::ensure_readme(&root)?;
+        Ok(())
+    }
+
+    /// Automation path: move the issue strictly forward (see
+    /// `IssueStatus::advances_to`), file-first. Returns whether it changed.
+    fn advance_issue(
+        &self,
+        reg: &agency_core::registry::Registry,
+        issue_id: &str,
+        status: IssueStatus,
+    ) -> Result<bool> {
+        let Some(current) = reg.get_issue(issue_id)? else { return Ok(false) };
+        if !current.status.advances_to(status) {
+            return Ok(false);
+        }
+        self.ensure_issue_files(reg, &current.project_id)?;
+        let mut next = current;
+        next.status = status;
+        next.updated_at = now_secs();
+        self.write_issue_file(reg, &next)?;
+        reg.upsert_issue_row(&next)?;
+        Ok(true)
+    }
+
     pub fn list_issues(&self, project_id: &str) -> Result<Vec<agency_core::registry::Issue>> {
-        self.registry.lock().unwrap().list_issues(project_id)
+        let reg = self.registry.lock().unwrap();
+        self.ensure_issue_files(&reg, project_id)?;
+        let (root, key) = self.issue_root(&reg, project_id)?;
+        // Reconcile only when the files' stat signature moved.
+        let sig = agency_core::issuefs::scan_issue_stats(&root)?
+            .iter()
+            .map(|s| format!("{}:{}:{}", s.path, s.mtime_ms, s.size))
+            .collect::<Vec<_>>()
+            .join("|");
+        let mut sigs = self.issue_sigs.lock().unwrap();
+        if sigs.get(project_id) != Some(&sig) {
+            let summary = agency_core::issuefs::reconcile(&reg, project_id, &key, &root)?;
+            if summary.imported + summary.updated + summary.dropped > 0 {
+                log::debug!(
+                    "issues reconciled for {project_id}: +{} ~{} -{}",
+                    summary.imported,
+                    summary.updated,
+                    summary.dropped
+                );
+            }
+            sigs.insert(project_id.to_string(), sig);
+        }
+        reg.list_issues(project_id)
     }
 
     pub fn create_issue(
@@ -1283,10 +1529,35 @@ impl AppState {
         if title.trim().is_empty() {
             bail!("an issue needs a title");
         }
-        self.registry
-            .lock()
-            .unwrap()
-            .create_issue(project_id, title.trim(), body, status, now_secs())
+        let reg = self.registry.lock().unwrap();
+        self.ensure_issue_files(&reg, project_id)?;
+        // The counter only learns about hand-authored files at reconcile time
+        // (the list_issues poll), so a number it hands out may already be
+        // taken on disk — skip past those files rather than clobbering them.
+        let (root, prefix) = self.issue_root(&reg, project_id)?;
+        let seq = loop {
+            let seq = reg.alloc_issue_seq(project_id)?;
+            if !agency_core::issuefs::issue_path(&root, &format!("{prefix}-{seq}")).exists() {
+                break seq;
+            }
+        };
+        let now = now_secs();
+        let issue = agency_core::registry::Issue {
+            id: uuid::Uuid::new_v4().to_string(),
+            project_id: project_id.to_string(),
+            seq,
+            title: normalize_title(title),
+            body: body.to_string(),
+            status,
+            priority: 0,
+            due: None,
+            scheduled: None,
+            rank: None,
+            created_at: now,
+            updated_at: now,
+        };
+        self.write_issue_file(&reg, &issue)?;
+        reg.upsert_issue_row(&issue)
     }
 
     pub fn update_issue(
@@ -1297,31 +1568,89 @@ impl AppState {
         if patch.title.as_deref().is_some_and(|t| t.trim().is_empty()) {
             bail!("an issue needs a title");
         }
-        self.registry
-            .lock()
-            .unwrap()
-            .update_issue(id, patch, now_secs())?
-            .ok_or_else(|| anyhow!("unknown issue: {id}"))
+        let reg = self.registry.lock().unwrap();
+        let mut next = reg.get_issue(id)?.ok_or_else(|| anyhow!("unknown issue: {id}"))?;
+        self.ensure_issue_files(&reg, &next.project_id)?;
+        if let Some(t) = &patch.title {
+            next.title = normalize_title(t);
+        }
+        if let Some(b) = &patch.body {
+            next.body = b.clone();
+        }
+        if let Some(s) = patch.status {
+            next.status = s;
+        }
+        // Validate what the file parser would reject — the API must never
+        // write a file that reconcile then skips as corrupt.
+        if let Some(p) = patch.priority {
+            if p > 4 {
+                bail!("invalid priority: {p}");
+            }
+            next.priority = p;
+        }
+        if let Some(d) = &patch.due {
+            next.due = d.as_deref().map(agency_core::issuefs::parse_date).transpose()?;
+        }
+        if let Some(d) = &patch.scheduled {
+            next.scheduled = d.as_deref().map(agency_core::issuefs::parse_date).transpose()?;
+        }
+        if let Some(r) = patch.rank {
+            if r.is_some_and(|r| !r.is_finite()) {
+                bail!("invalid rank");
+            }
+            next.rank = r;
+        }
+        next.updated_at = now_secs();
+        self.write_issue_file(&reg, &next)?;
+        reg.upsert_issue_row(&next)
     }
 
     pub fn delete_issue(&self, id: &str) -> Result<()> {
-        self.registry.lock().unwrap().delete_issue(id)
+        let reg = self.registry.lock().unwrap();
+        let Some(issue) = reg.get_issue(id)? else { return Ok(()) };
+        self.ensure_issue_files(&reg, &issue.project_id)?;
+        let (root, prefix) = self.issue_root(&reg, &issue.project_id)?;
+        let path = agency_core::issuefs::issue_path(&root, &format!("{prefix}-{}", issue.seq));
+        if path.exists() {
+            std::fs::remove_file(&path)
+                .map_err(|e| anyhow!("cannot delete {}: {e}", path.display()))?;
+        }
+        reg.delete_issue(id)
     }
 
     /// The abandonment rule: when a linked run is discarded or archived and
     /// it was the issue's last active run, the issue falls back to `todo`
-    /// (only from in_progress/in_review — see rollback_issue_to_todo).
+    /// (only from in_progress/in_review — manual done/cancelled stay put).
     fn maybe_rollback_issue(&self, issue_id: &str) {
         let reg = self.registry.lock().unwrap();
         match reg.runs_for_issue(issue_id) {
             Ok(runs) if runs.is_empty() => {
-                if let Err(e) = reg.rollback_issue_to_todo(issue_id, now_secs()) {
+                if let Err(e) = self.rollback_issue_to_todo(&reg, issue_id) {
                     log::warn!("rolling back issue {issue_id}: {e}");
                 }
             }
             Ok(_) => {}
             Err(e) => log::warn!("checking linked runs of issue {issue_id}: {e}"),
         }
+    }
+
+    /// File-first counterpart of the old registry-only rollback.
+    fn rollback_issue_to_todo(
+        &self,
+        reg: &agency_core::registry::Registry,
+        issue_id: &str,
+    ) -> Result<bool> {
+        let Some(current) = reg.get_issue(issue_id)? else { return Ok(false) };
+        if !matches!(current.status, IssueStatus::InProgress | IssueStatus::InReview) {
+            return Ok(false);
+        }
+        self.ensure_issue_files(reg, &current.project_id)?;
+        let mut next = current;
+        next.status = IssueStatus::Todo;
+        next.updated_at = now_secs();
+        self.write_issue_file(reg, &next)?;
+        reg.upsert_issue_row(&next)?;
+        Ok(true)
     }
 
     /// Spawn a workspace for a GitHub issue: the issue becomes the run's
@@ -2812,14 +3141,12 @@ impl AppState {
         if matches!(outcome, agency_core::merge::MergeOutcome::Clean { .. }) {
             self.maybe_rebuild_knowledge_graph(&repo);
             // A merged run completes its issue. Best-effort: the merge itself
-            // already succeeded and must not report failure.
+            // already succeeded and must not report failure. If the branch
+            // edited the issue file, that edit just landed too — the forward-
+            // only guard keeps this from regressing anything.
             if let Some(issue_id) = &run.issue_id {
-                if let Err(e) = self
-                    .registry
-                    .lock()
-                    .unwrap()
-                    .advance_issue_status(issue_id, IssueStatus::Done, now_secs())
-                {
+                let reg = self.registry.lock().unwrap();
+                if let Err(e) = self.advance_issue(&reg, issue_id, IssueStatus::Done) {
                     log::warn!("closing issue {issue_id} after merge: {e}");
                 }
             }
@@ -2872,12 +3199,8 @@ impl AppState {
         // A PR means the work awaits review. Best-effort: the PR exists
         // either way, so an issue-status hiccup must not fail the call.
         if let Some(issue_id) = &run.issue_id {
-            if let Err(e) = self
-                .registry
-                .lock()
-                .unwrap()
-                .advance_issue_status(issue_id, IssueStatus::InReview, now_secs())
-            {
+            let reg = self.registry.lock().unwrap();
+            if let Err(e) = self.advance_issue(&reg, issue_id, IssueStatus::InReview) {
                 log::warn!("advancing issue {issue_id} to in_review: {e}");
             }
         }

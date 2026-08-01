@@ -1,13 +1,87 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Issue, IssuePatch, RunInfo } from "../api";
+import { LinkEdge } from "../lib/links";
 import { runName } from "../agents";
-import { ISSUE_STATUSES, PRIORITY_LABELS, STATUS_LABELS } from "../lib/issues";
+import { ISSUE_STATUSES, PRIORITY_LABELS, STATUS_LABELS, fmtDate, isOverdue } from "../lib/issues";
+import { dateStamp } from "../lib/dailyNote";
 import { PriorityGlyph, StatusDot } from "./IssueRow";
+import DatePicker from "./DatePicker";
 
 function ts(secs: number): string {
   return new Date(secs * 1000).toLocaleString(undefined, {
     month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
   });
+}
+
+// A date as a quiet property pill: reads as text ("◷ Due Aug 1"), the click
+// opens the in-app calendar popover (native pickers can't be dismissed
+// without choosing a date in this webview). Unset renders a ghost prompt;
+// clearing is the ✕ that appears once a date is set.
+function DateProp({
+  glyph,
+  label,
+  value,
+  overdue,
+  onChange,
+}: {
+  glyph: string;
+  label: string;
+  value: string | null;
+  overdue?: boolean;
+  onChange: (v: string | null) => void;
+}) {
+  const pillRef = useRef<HTMLSpanElement>(null);
+  const [picker, setPicker] = useState<{ top: number; left?: number; right?: number } | null>(null);
+  const today = dateStamp(new Date());
+
+  // Same edge-flip anchoring as the row menus: the detail pane hugs the
+  // window's right edge, so the popover usually opens leftward.
+  const openPicker = () => {
+    const r = pillRef.current?.getBoundingClientRect();
+    if (!r) return;
+    const MENU_W = 240; // .date-picker width
+    const fitsRight = r.left + MENU_W <= window.innerWidth - 8;
+    setPicker(
+      fitsRight
+        ? { top: r.bottom + 4, left: r.left }
+        : { top: r.bottom + 4, right: window.innerWidth - r.right },
+    );
+  };
+
+  return (
+    <>
+      <span
+        ref={pillRef}
+        className={`issue-prop-pill date-pill${value ? "" : " date-empty"}${overdue ? " overdue" : ""}`}
+        role="button"
+        tabIndex={0}
+        title={value ? `${label} ${value} (click to change)` : `Set ${label.toLowerCase()} date`}
+        onClick={openPicker}
+        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openPicker(); } }}
+      >
+        <span aria-hidden>{glyph}</span>
+        {value ? `${label} ${fmtDate(value, today)}` : label}
+        {value && (
+          <button
+            className="date-clear"
+            title={`Clear ${label.toLowerCase()} date`}
+            onClick={(e) => { e.stopPropagation(); onChange(null); }}
+          >
+            ✕
+          </button>
+        )}
+      </span>
+      {picker && (
+        <DatePicker
+          value={value}
+          coords={picker}
+          onPick={(d) => { setPicker(null); if (d !== value) onChange(d); }}
+          onClear={() => { setPicker(null); onChange(null); }}
+          onClose={() => setPicker(null)}
+        />
+      )}
+    </>
+  );
 }
 
 // Right-hand detail pane of the Issues view. Title/body commit on blur (and
@@ -16,17 +90,22 @@ export default function IssueDetail({
   issue,
   label,
   runs,
+  mentions,
   onPatch,
   onDelete,
   onOpenRun,
+  onOpenMention,
   onClose,
 }: {
   issue: Issue;
   label: string;
   runs: RunInfo[];
+  // Notes and issues whose text links here ([[AGE-14]]), via lib/links.
+  mentions: LinkEdge[];
   onPatch: (patch: IssuePatch) => void;
   onDelete: () => void;
   onOpenRun: (runId: string) => void;
+  onOpenMention: (edge: LinkEdge) => void;
   onClose: () => void;
 }) {
   const [title, setTitle] = useState(issue.title);
@@ -104,6 +183,19 @@ export default function IssueDetail({
           <PriorityGlyph priority={issue.priority} />
           {PRIORITY_LABELS[issue.priority]}
         </button>
+        <DateProp
+          glyph="◷"
+          label="Due"
+          value={issue.due}
+          overdue={isOverdue(issue, dateStamp(new Date()))}
+          onChange={(due) => onPatch({ due })}
+        />
+        <DateProp
+          glyph="⧖"
+          label="Scheduled"
+          value={issue.scheduled}
+          onChange={(scheduled) => onPatch({ scheduled })}
+        />
       </div>
 
       {menu && (
@@ -140,6 +232,25 @@ export default function IssueDetail({
               <span className={`dot ${r.status.state === "running" ? "running" : "exited"}`} />
               <span className="issue-detail-run-name">{runName(r)}</span>
               <span className="badge">{r.agent}</span>
+            </button>
+          ))}
+        </div>
+      )}
+      {mentions.length > 0 && (
+        <div className="issue-detail-runs issue-detail-mentions">
+          <h3>Mentions</h3>
+          {mentions.map((m, i) => (
+            <button
+              key={`${m.fromKind}:${m.fromProjectId}:${m.fromId}:${m.line}:${i}`}
+              className="issue-detail-run issue-detail-mention"
+              title={m.snippet}
+              onClick={() => onOpenMention(m)}
+            >
+              <span className="mention-glyph" aria-hidden>{m.fromKind === "issue" ? "▧" : "▥"}</span>
+              <span className="issue-detail-run-name">
+                {m.fromLabel ? `${m.fromLabel} ` : ""}{m.fromTitle}
+              </span>
+              <span className="mention-snippet">{m.snippet}</span>
             </button>
           ))}
         </div>

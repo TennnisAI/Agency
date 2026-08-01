@@ -60,6 +60,16 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
                 .build(app)?,
         )
         .separator()
+        // Always enabled: the daily and weekly notes live in the app-global
+        // workspace, not the selected project (the frontend creates both on
+        // demand).
+        .item(
+            &MenuItemBuilder::with_id("menu:daily-note", "Today's Note")
+                .accelerator("CmdOrCtrl+Shift+D")
+                .build(app)?,
+        )
+        .item(&MenuItemBuilder::with_id("menu:weekly-note", "Generate Weekly Note").build(app)?)
+        .separator()
         .item(
             &MenuItemBuilder::with_id("menu:add-project", "Add Project…")
                 .accelerator("CmdOrCtrl+Shift+O")

@@ -11,7 +11,9 @@ export default function TitleBar({
       <div className="titlebar-left" />
       <button className="search-box" onClick={onOpenPalette}>
         <span>⌕</span>
-        <span className="search-ph">Search projects, tasks, files…</span>
+        {/* Keep this in sync with what CommandPalette actually searches —
+            files/issues/contents join in Phase 4 (palette v2). */}
+        <span className="search-ph">Search projects and agents…</span>
         <span className="kbd">⌘K</span>
       </button>
       <div className="titlebar-right" />

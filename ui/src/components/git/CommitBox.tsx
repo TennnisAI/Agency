@@ -83,7 +83,7 @@ export default function CommitBox({
           : ahead > 0 && (hasRemote
             ? <button className="git-secondary" onClick={onPublish} disabled={busy}>{"☁︎"} Publish Branch ↑{ahead}</button>
             : <button className="git-secondary" onClick={() => setAddingRemote((o) => !o)} disabled={busy}
-                title="No 'origin' remote configured — add one to publish">{"☁︎"} Add Remote &amp; Publish…</button>)}
+                title="No 'origin' remote configured. Add one to publish.">{"☁︎"} Add Remote &amp; Publish…</button>)}
       </div>
       {addingRemote && !hasRemote && (
         <div className="git-remote-row">

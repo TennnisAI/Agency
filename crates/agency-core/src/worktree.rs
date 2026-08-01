@@ -169,34 +169,7 @@ impl WorktreeManager {
     /// `.agency/agency.local.toml`, and migrates away the legacy broad
     /// `.agency/` entry if present.
     pub(crate) fn ensure_excluded(&self) -> Result<()> {
-        let exclude = self.repo_path.join(".git").join("info").join("exclude");
-        let current = std::fs::read_to_string(&exclude).unwrap_or_default();
-        let wanted = [".agency/worktrees/", ".agency/agency.local.toml"];
-
-        let had_legacy = current.lines().any(|l| l.trim() == ".agency/");
-        let mut lines: Vec<String> = current
-            .lines()
-            .filter(|l| l.trim() != ".agency/")
-            .map(|l| l.to_string())
-            .collect();
-
-        let mut changed = had_legacy;
-        for w in wanted {
-            if !lines.iter().any(|l| l.trim() == w) {
-                lines.push(w.to_string());
-                changed = true;
-            }
-        }
-
-        if changed {
-            if let Some(parent) = exclude.parent() {
-                std::fs::create_dir_all(parent).ok();
-            }
-            let mut out = lines.join("\n");
-            out.push('\n');
-            std::fs::write(&exclude, out)?;
-        }
-        Ok(())
+        ensure_agency_excludes(&self.repo_path)
     }
 
     pub fn create(&self, task_id: &str, base: &str) -> Result<Worktree> {
@@ -387,6 +360,44 @@ impl WorktreeManager {
         self.git(&["worktree", "add", &path_str, &branch])?;
         Ok(Worktree { task_id: task_id.to_string(), path, branch })
     }
+}
+
+/// The exclude-file rewrite behind [`WorktreeManager::ensure_excluded`], as a
+/// free function so callers without a manager (the issues-as-files migration)
+/// can fix a repo's excludes too. Idempotent; a repo without `.git` is left
+/// alone.
+pub fn ensure_agency_excludes(repo_path: &std::path::Path) -> Result<()> {
+    if !repo_path.join(".git").exists() {
+        return Ok(());
+    }
+    let exclude = repo_path.join(".git").join("info").join("exclude");
+    let current = std::fs::read_to_string(&exclude).unwrap_or_default();
+    let wanted = [".agency/worktrees/", ".agency/agency.local.toml"];
+
+    let had_legacy = current.lines().any(|l| l.trim() == ".agency/");
+    let mut lines: Vec<String> = current
+        .lines()
+        .filter(|l| l.trim() != ".agency/")
+        .map(|l| l.to_string())
+        .collect();
+
+    let mut changed = had_legacy;
+    for w in wanted {
+        if !lines.iter().any(|l| l.trim() == w) {
+            lines.push(w.to_string());
+            changed = true;
+        }
+    }
+
+    if changed {
+        if let Some(parent) = exclude.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        let mut out = lines.join("\n");
+        out.push('\n');
+        std::fs::write(&exclude, out)?;
+    }
+    Ok(())
 }
 
 /// Best-effort recursive count of regular files under `dir` (directories are

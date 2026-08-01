@@ -148,7 +148,7 @@ export default function PrDiffFile({
         {file.binary && <span className="prdiff-binary">binary</span>}
       </div>
 
-      {!collapsed && file.binary && <div className="prdiff-emptyline">Binary file — not shown.</div>}
+      {!collapsed && file.binary && <div className="prdiff-emptyline">Binary file, not shown.</div>}
 
       {!collapsed && !file.binary && (
         <div className="prdiff-body">
@@ -160,7 +160,7 @@ export default function PrDiffFile({
                 {selected && i === selHi && !commenting && (
                   <div className="prdiff-selbar">
                     {selCrossesHunks ? (
-                      <span className="prdiff-selwarn">Selection spans multiple hunks — narrow it to comment.</span>
+                      <span className="prdiff-selwarn">Selection spans multiple hunks. Narrow it to comment.</span>
                     ) : (
                       <button className="git-iconbtn" onClick={() => setCommenting(true)}>Comment on selection</button>
                     )}

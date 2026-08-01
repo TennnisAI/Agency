@@ -870,6 +870,9 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
 .palette-label{color:var(--text)}
 .palette-sub{color:var(--o0);font-family:var(--mono);font-size:11px;margin-left:auto}
 .palette-empty{color:var(--o0);padding:10px}
+.palette-section{color:var(--o0);font-size:10px;text-transform:uppercase;letter-spacing:.08em;padding:8px 9px 3px}
+.palette-row+.palette-section,li+li .palette-section{margin-top:2px}
+.palette-hint{color:var(--o0);font-size:11px;font-family:var(--mono);padding:7px 14px;border-top:1px solid var(--line)}
 
 /* ── New-task preview (Task 7c-4) ──────────────────────────────── */
 .nt-preview{font-size:12px;color:var(--o0);background:var(--crust);border:1px solid var(--s1);border-radius:6px;padding:8px 10px;display:flex;flex-direction:column;gap:4px}
@@ -1166,7 +1169,8 @@ input.settings-notif-secs { width: 90px; flex: 0 0 auto; }
 
 /* Sleek toggle switch */
 .toggle { position: relative; display: inline-flex; flex-shrink: 0; cursor: pointer; }
-.toggle input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; }
+/* Explicit width/height: WebKit doesn't stretch form controls to inset:0. */
+.toggle input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; margin: 0; cursor: pointer; }
 .toggle-track {
   width: 36px; height: 20px; border-radius: 999px; background: var(--s1);
   transition: background 0.15s ease; display: inline-flex; align-items: center; padding: 2px;
@@ -1189,7 +1193,11 @@ input.settings-notif-secs { width: 90px; flex: 0 0 auto; }
 .review-body { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ── Files view ─────────────────────────────────────────────── */
-.files-view { display: flex; flex: 1; min-height: 0; }
+/* min-width: 0 matters: as a flex item of .source-wrap, the view's automatic
+   minimum is min-content, and the nowrap tab strip would blow that up to the
+   full width of every open tab — pushing the whole layout off-screen instead
+   of letting the strip scroll. */
+.files-view { display: flex; flex: 1; min-height: 0; min-width: 0; }
 .files-tree { min-width: 180px; flex-shrink: 0; border-right: 1px solid var(--line); display: flex; flex-direction: column; overflow: hidden; }
 .files-root-label { display: flex; align-items: center; gap: 2px; padding: 4px 6px 4px 10px; font-size: 11px; border-bottom: 1px solid var(--line); }
 .files-root-name { text-transform: uppercase; letter-spacing: 0.04em; opacity: 0.65; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1197,6 +1205,38 @@ input.settings-notif-secs { width: 90px; flex: 0 0 auto; }
 .files-tool-btn:hover { background: var(--s0); color: var(--text); }
 .files-tree-body { flex: 1; overflow: auto; padding: 4px 0; }
 .files-editor { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+/* Hidden-not-unmounted editor panes: one per warm tab, display toggled inline. */
+.files-editor-pane { flex: 1; min-height: 0; flex-direction: column; }
+
+/* ── Editor tabs (one-stop Phase 3) ──────────────────────────── */
+.file-tabs-wrap { display: flex; align-items: stretch; flex-shrink: 0; min-width: 0; border-bottom: 1px solid var(--line); background: var(--mantle); }
+/* Arrows + wheel + trackpad drive the scroll; the bar itself stays clean. */
+.file-tabs { display: flex; align-items: stretch; overflow-x: auto; flex: 1; min-width: 0; scrollbar-width: none; }
+.file-tabs::-webkit-scrollbar { display: none; }
+.file-tabs-arrow { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 22px; padding: 0; border: none; background: transparent; color: var(--sub0); cursor: pointer; }
+.file-tabs-arrow:first-child { border-right: 1px solid var(--line); }
+.file-tabs-arrow:last-child { border-left: 1px solid var(--line); }
+.file-tabs-arrow:hover:not(:disabled) { background: var(--s0); color: var(--text); }
+.file-tabs-arrow:disabled { opacity: 0.3; cursor: default; }
+.file-tab { flex: none; display: flex; align-items: center; gap: 6px; padding: 5px 6px 5px 12px; font-size: 12px; color: var(--sub0); border-right: 1px solid var(--line); white-space: nowrap; cursor: pointer; user-select: none; }
+.file-tab:hover { background: var(--s0); color: var(--text); }
+.file-tab.on { background: var(--base); color: var(--text); box-shadow: inset 0 2px 0 var(--blue); }
+.file-tab-dir { color: var(--o0); font-size: 11px; }
+.file-tab-dirty { color: var(--yellow); font-size: 9px; line-height: 1; }
+.file-tab-close { background: transparent; border: none; color: var(--o0); cursor: pointer; font-size: 13px; padding: 0 4px; border-radius: 4px; line-height: 1; font-family: inherit; visibility: hidden; }
+.file-tab:hover .file-tab-close, .file-tab.on .file-tab-close { visibility: visible; }
+.file-tab-close:hover { background: var(--s1); color: var(--text); }
+
+/* ── Find-in-files results (one-stop Phase 3) ────────────────── */
+.files-search-results { display: flex; flex-direction: column; padding: 4px; }
+.files-search-group { margin-bottom: 6px; }
+.files-search-file { display: flex; align-items: center; gap: 5px; padding: 3px 6px; border-radius: 6px; font-size: 12px; color: var(--text); cursor: pointer; }
+.files-search-file:hover { background: var(--s0); }
+.files-search-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.files-search-line { display: flex; align-items: baseline; gap: 8px; padding: 2px 6px 2px 26px; border-radius: 6px; cursor: pointer; }
+.files-search-line:hover { background: var(--s0); }
+.files-search-ln { color: var(--o0); font-size: 11px; font-family: ui-monospace, Menlo, monospace; flex: none; min-width: 2.5ch; text-align: right; }
+.files-search-text { color: var(--sub0); font-size: 11.5px; font-family: ui-monospace, Menlo, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ── File tree ───────────────────────────────────────────────── */
 .tree-row { display: flex; align-items: center; gap: 4px; padding: 2px 8px; font-size: 12px; white-space: nowrap; cursor: pointer; user-select: none; }
@@ -1571,7 +1611,35 @@ input, textarea, code,
 /* ── issues (the local per-project tracker) ──────────────────────────────── */
 .issues-wrap { flex: 1; display: flex; min-height: 0; }
 .issues-main { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
-.issues-quickadd { padding: 12px 16px 4px; }
+/* Quick capture rests as a + button; clicking swings it 45° (to an ×) and
+   the input unfolds beside it — no box, just a hairline underline. */
+.issues-quickadd { padding: 12px 16px 4px; display: flex; align-items: center; gap: 8px; }
+.quickadd-toggle {
+  width: 26px; height: 26px; border-radius: 50%; flex-shrink: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: transparent; border: 1px solid var(--s1); color: var(--o1);
+  cursor: pointer; font-family: var(--sans); font-size: 15px; line-height: 1;
+  transition: transform .18s ease, background .15s ease, color .15s ease;
+}
+.quickadd-toggle:hover { background: var(--s0); color: var(--text); }
+.issues-quickadd.open .quickadd-toggle { transform: rotate(45deg); }
+.quickadd-input {
+  flex: 1; min-width: 0; max-width: 0; opacity: 0; pointer-events: none;
+  background: transparent; border: 0; border-radius: 0;
+  border-bottom: 1px solid transparent;
+  color: var(--text); font-family: var(--sans); font-size: 13px;
+  padding: 4px 2px 5px; outline: none;
+  transition: max-width .25s ease, opacity .18s ease, border-color .15s ease;
+}
+.issues-quickadd.open .quickadd-input {
+  max-width: 720px; opacity: 1; pointer-events: auto;
+  border-bottom-color: var(--s1);
+}
+.quickadd-input:focus { border-bottom-color: var(--o1); }
+.quickadd-input::placeholder { color: var(--o0); }
+/* Empty board: the + is the hero, centered above the hint. */
+.issues-empty { gap: 12px; }
+.quickadd-toggle.big { width: 36px; height: 36px; font-size: 19px; }
 .issues-list { flex: 1; overflow-y: auto; padding: 8px 16px 24px; }
 
 .issue-group { margin-top: 10px; }
@@ -1665,6 +1733,22 @@ input, textarea, code,
 .issue-detail-foot { display: flex; align-items: center; gap: 8px; color: var(--o0); font-size: 11px; margin-top: auto; }
 .issue-detail-foot .spacer { flex: 1; }
 
+/* Cross-domain mentions (Phase 7): notes/issues whose text links here. */
+.mention-glyph { color: var(--o1); flex: none; }
+.mention-snippet {
+  max-width: 45%; flex: none; color: var(--sub0); font-size: 11px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* Issue chip in the agent focus header: the run's originating issue. */
+.issue-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  background: var(--s0); border: 1px solid transparent; border-radius: 999px;
+  color: var(--sub1); padding: 3px 9px; cursor: pointer;
+  font-family: var(--mono); font-size: 11px; line-height: 1;
+}
+.issue-chip:hover { background: var(--s1); border-color: var(--s1); color: var(--text); }
+
 /* Read-only issue summary in the race/loop dialogs (replaces the prompt box). */
 .issue-dialog-summary {
   display: flex; align-items: baseline; gap: 8px;
@@ -1673,9 +1757,186 @@ input, textarea, code,
 }
 .issue-dialog-summary code { color: var(--o1); font-size: 11px; }
 
+/* Due-date chip: quiet until the date is past, then it isn't. */
+.issue-due {
+  display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0;
+  color: var(--o1); font-size: 11px; font-variant-numeric: tabular-nums;
+}
+.issue-due.overdue { color: var(--red); }
+
+/* Pointer-based reorder within a status group: while a drag is live the
+   list locks selection and shows a grabbing cursor, the source row dims,
+   and the drop slot reads as a seam. */
+.issues-list.reordering { cursor: grabbing; user-select: none; -webkit-user-select: none; }
+.issues-list.reordering .issue-row { cursor: grabbing; }
+.issue-row.dragging { opacity: .45; }
+.issue-row.drop-above { box-shadow: 0 -2px 0 0 var(--blue); border-radius: 0 0 7px 7px; }
+.issue-row.drop-below { box-shadow: 0 2px 0 0 var(--blue); border-radius: 7px 7px 0 0; }
+
+/* Detail pane date props: text-quiet pills; clicking opens the in-app
+   calendar popover below. */
+.issue-prop-pill.date-pill { cursor: pointer; }
+.issue-prop-pill.date-empty { color: var(--o0); background: transparent; border: 1px dashed var(--s1); }
+.issue-prop-pill.date-empty:hover { color: var(--o1); background: var(--s0); }
+.issue-prop-pill.date-pill.overdue { color: var(--red); }
+.date-clear {
+  background: transparent; border: 0; padding: 0 0 0 2px; margin-right: -3px;
+  color: var(--o0); cursor: pointer; font-size: 10px; line-height: 1;
+}
+.date-clear:hover { color: var(--text); }
+
+/* Calendar popover — agent-menu chrome, calendar innards. Selectors are
+   scoped under .date-picker to out-rank the .agent-menu button defaults. */
+.date-picker { width: 240px; min-width: 240px; padding: 8px; }
+.date-picker-head { display: flex; align-items: center; gap: 2px; padding: 0 0 4px; }
+.date-picker .date-picker-label { flex: 1; text-align: center; font-size: 12px; font-weight: 600; }
+.date-picker .icon-btn { padding: 2px 8px; font-size: 13px; }
+.date-picker-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 1px; }
+.date-picker-dow { text-align: center; color: var(--o0); font-size: 9.5px; padding: 2px 0 4px; }
+.date-picker .date-cell {
+  padding: 5px 0; text-align: center; border-radius: 6px;
+  font-size: 11.5px; font-variant-numeric: tabular-nums;
+}
+.date-picker .date-cell.out { color: var(--o0); opacity: .55; }
+.date-picker .date-cell.today { color: var(--blue); font-weight: 700; }
+.date-picker .date-cell.selected,
+.date-picker .date-cell.selected:hover { background: var(--blue); color: var(--crust); }
+.date-picker-foot { display: flex; align-items: center; padding: 6px 2px 0; }
+.date-picker-foot .spacer { flex: 1; }
+.date-picker .ghost { padding: 3px 8px; font-size: 11.5px; }
+
 /* Home overview, issues mode */
 .home-issues { display: flex; flex-direction: column; padding: 2px 4px 6px; }
 .issue-row.home-issue .issue-status-pill { visibility: visible; }
+
+/* Cross-project board: one 28px-tall row — search pill left, filter pills
+   right, everything the same height and radius so nothing towers. */
+.issues-filterbar { display: flex; gap: 6px; align-items: center; margin: 2px 0 18px; }
+.issues-filterbar .spacer { flex: 1; }
+.filter-search {
+  display: inline-flex; align-items: center; gap: 7px;
+  flex: 1; min-width: 160px; max-width: 340px; height: 28px; padding: 0 11px;
+  border-radius: 999px; background: var(--s0); border: 1px solid transparent;
+}
+.filter-search:focus-within { border-color: var(--s1); }
+.filter-search-glyph { color: var(--o0); font-size: 13px; }
+.filter-search input {
+  flex: 1; min-width: 0; background: transparent; border: 0; outline: none;
+  color: var(--text); font-family: var(--sans); font-size: 12px;
+}
+.filter-search input::placeholder { color: var(--o0); }
+.filter-clear {
+  background: transparent; border: 0; padding: 0; color: var(--o0);
+  cursor: pointer; font-size: 10px; line-height: 1;
+}
+.filter-clear:hover { color: var(--text); }
+.filter-pill {
+  display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0;
+  height: 28px; padding: 0 10px 0 12px; border-radius: 999px;
+  background: transparent; border: 1px solid var(--s1);
+  color: var(--o1); font-family: var(--sans); font-size: 12px; cursor: pointer;
+}
+.filter-pill:hover { background: var(--s0); color: var(--text); }
+.filter-pill.active { background: var(--s0); color: var(--text); }
+.filter-caret { color: var(--o0); font-size: 9px; }
+/* All option labels occupy the same grid cell; only the active one is
+   visible. The pill is therefore as wide as its widest option and stays
+   put when the selection changes (no filter-bar reflow). */
+.filter-pill-labels { display: grid; max-width: 170px; }
+.filter-pill-labels > span {
+  grid-area: 1 / 1; visibility: hidden; text-align: left;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.filter-pill-labels > span.on { visibility: visible; }
+.filter-menu { max-height: min(420px, 70vh); overflow-y: auto; }
+
+/* Today: the day's slice gets the one card on the page, so it reads as the
+   place to look first — and it's always there, even when it's empty. */
+.today-group {
+  border: 1px solid var(--line); background: var(--mantle);
+  border-radius: 12px; padding: 8px 12px 8px; margin-bottom: 18px;
+}
+.today-head { display: flex; align-items: baseline; gap: 10px; padding: 2px 4px 4px; }
+.today-title { font-size: 13px; font-weight: 700; }
+.today-meta { color: var(--o0); font-size: 11.5px; }
+.today-empty { color: var(--o0); font-size: 12.5px; padding: 2px 4px 6px; }
+
+/* Tasks: checkbox lines aggregated from notes; the card skin comes from
+   .today-group, kept quieter than Today (no border emphasis of its own). */
+.tasks-group { background: var(--base); }
+/* The whole card folds to its header line; the header is one click target.
+   Negative margins keep the text aligned while the hover pill gets padding
+   (the global button:hover background otherwise hugs the text). */
+.task-collapse {
+  display: flex; align-items: baseline; gap: 10px;
+  background: none; border: none; cursor: pointer;
+  padding: 4px 10px; margin: -4px -10px;
+  font-family: var(--sans); color: var(--text); text-align: left;
+  border-radius: 7px;
+}
+.task-collapse:hover { background: var(--s0); }
+.task-collapse .task-note-chev { align-self: center; }
+.tasks-group.collapsed .today-head { padding-bottom: 2px; }
+.task-head-tools { margin-left: auto; display: flex; gap: 6px; }
+.task-head-btn {
+  background: none; border: 1px solid var(--s1); border-radius: 999px;
+  color: var(--sub0); font-family: var(--sans); font-size: 10.5px;
+  padding: 1px 9px; cursor: pointer;
+}
+.task-head-btn:hover { color: var(--text); border-color: var(--o0); background: var(--s0); }
+.task-note { padding: 1px 0; }
+.task-note-chev { width: 10px; color: var(--o1); flex-shrink: 0; }
+.task-note-count {
+  color: var(--sub0); font-size: 10.5px; font-weight: 400; flex-shrink: 0;
+  background: var(--s0); border-radius: 999px; padding: 0 7px;
+}
+.task-note-dots {
+  margin-left: auto; color: var(--o0); padding: 0 6px; border-radius: 4px;
+  visibility: hidden; font-weight: 700;
+}
+.task-note-head:hover .task-note-dots { visibility: visible; }
+.task-note-dots:hover { color: var(--text); background: var(--s1); }
+.task-note-head {
+  display: flex; align-items: center; gap: 7px; width: 100%;
+  background: none; border: none; cursor: pointer; text-align: left;
+  padding: 4px; border-radius: 6px; color: var(--text); font-family: var(--sans);
+  font-size: 12.5px; font-weight: 600;
+}
+.task-note-head:hover { background: var(--s0); }
+.task-note-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-note-meta { color: var(--o0); font-size: 11px; font-weight: 400; flex-shrink: 0; }
+.task-row {
+  display: flex; align-items: center; gap: 9px;
+  padding: 3px 4px 3px 26px; border-radius: 6px; font-size: 13px;
+}
+.task-row:hover { background: var(--s0); }
+.task-row:hover .task-promote { visibility: visible; }
+.task-check {
+  width: 14px; height: 14px; border-radius: 4px; flex-shrink: 0;
+  border: 1.5px solid var(--s1); background: var(--mantle); cursor: pointer;
+  padding: 0; color: var(--crust); position: relative;
+}
+.task-check:hover { background: var(--mantle); border-color: var(--o0); }
+.task-check.checked, .task-check.checked:hover { background: var(--blue); border-color: var(--blue); }
+.task-check.checked::after {
+  content: "✓"; position: absolute; inset: 0; font-size: 10px; line-height: 12px;
+  color: var(--crust); text-align: center;
+}
+.task-text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-row.struck .task-text { color: var(--o0); text-decoration: line-through; }
+.task-promote {
+  visibility: hidden; flex-shrink: 0;
+  background: none; border: 1px solid var(--s1); border-radius: 999px;
+  color: var(--sub0); font-family: var(--sans); font-size: 10.5px;
+  padding: 1px 8px; cursor: pointer;
+}
+.task-promote:hover { color: var(--text); border-color: var(--o0); background: var(--s0); }
+.task-more {
+  background: none; border: none; cursor: pointer; text-align: left;
+  color: var(--sub0); font-family: var(--sans); font-size: 11.5px;
+  padding: 4px 4px 4px 26px; border-radius: 6px;
+}
+.task-more:hover { color: var(--text); background: var(--s0); }
 
 /* ── Docs tab ─────────────────────────────────────────────────── */
 .docs-empty { flex-direction: column; gap: 10px; text-align: center; padding: 40px; }
@@ -1777,6 +2038,49 @@ input, textarea, code,
   display: inline-block; width: 100%; height: 0;
   border-top: 1px solid var(--line); vertical-align: middle;
 }
+/* Frontmatter properties card (fmEditor.ts): an editable block widget that
+   replaces the raw fences in the note's flow. Inputs are quiet until
+   hovered/focused so the resting state reads like a rendered table. */
+.docs-editor-host .fmw {
+  margin: 2px 0 20px; padding: 9px 12px 7px;
+  background: var(--mantle); border: 1px solid var(--line); border-radius: 10px;
+  font-family: -apple-system, system-ui, sans-serif; font-size: 13px;
+}
+.docs-editor-host .fmw-head {
+  display: flex; align-items: center; gap: 7px;
+  color: var(--o1); font-size: 10px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .07em; padding: 0 6px 4px;
+}
+/* The add affordance lives in the head, revealed on hover with a small
+   overshoot pop so it reads as arriving, not just unhiding. */
+.docs-editor-host .fmw-head-add {
+  background: none; border: none; cursor: pointer; border-radius: 5px;
+  color: var(--sub0); font-size: 15px; line-height: 1; padding: 1px 5px;
+  opacity: 0; transform: translateX(-4px) scale(.7);
+  transition: opacity .16s ease, transform .2s cubic-bezier(.2, .9, .3, 1.35);
+}
+.docs-editor-host .fmw-head:hover .fmw-head-add { opacity: 1; transform: none; }
+.docs-editor-host .fmw-head-add:hover { background: var(--s1); color: var(--text); }
+.docs-editor-host .fmw-row { display: flex; align-items: center; gap: 6px; }
+.docs-editor-host .fmw-row input {
+  background: none; border: none; outline: none; border-radius: 6px;
+  font: inherit; padding: 3px 6px; color: var(--text);
+}
+.docs-editor-host .fmw-row input::placeholder { color: var(--o0); }
+.docs-editor-host .fmw-row input:hover { background: var(--s0); }
+.docs-editor-host .fmw-row input:focus { background: var(--s0); box-shadow: inset 0 0 0 1px var(--s1); }
+.docs-editor-host .fmw-key { width: 132px; flex-shrink: 0; color: var(--sub0) !important; }
+.docs-editor-host .fmw-key.invalid { color: var(--red) !important; box-shadow: inset 0 0 0 1px var(--red); }
+.docs-editor-host .fmw-val { flex: 1; min-width: 0; }
+.docs-editor-host .fmw-tool {
+  background: none; border: none; cursor: pointer; border-radius: 5px;
+  color: var(--sub0); font-size: 15.5px; line-height: 1; padding: 2px 4px;
+  visibility: hidden;
+}
+.docs-editor-host .fmw-row:hover .fmw-tool,
+.docs-editor-host .fmw-row:focus-within .fmw-tool { visibility: visible; }
+.docs-editor-host .fmw-tool:hover { background: var(--s1); color: var(--text); }
+.docs-editor-host .fmw-del:hover { color: var(--red); }
 
 /* ── Docs side panel (outline + backlinks) ────────────────────── */
 .docs-side { min-width: 180px; flex-shrink: 0; border-left: 1px solid var(--line); overflow-y: auto; }
@@ -1792,6 +2096,25 @@ input, textarea, code,
 .docs-side-count { color: var(--o0); font-weight: 400; }
 .docs-side-section { display: flex; flex-direction: column; padding: 0 4px 6px; }
 .docs-side-none { color: var(--o0); font-size: 12px; padding: 2px 12px 4px; }
+.docs-prop-row {
+  display: flex; align-items: baseline; gap: 8px;
+  font-size: 12px; padding: 3px 8px; border-radius: 5px;
+}
+.docs-prop-key {
+  color: var(--o1); flex-shrink: 0; min-width: 64px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.docs-prop-value {
+  color: var(--sub0); cursor: pointer; border-radius: 4px; padding: 0 4px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.docs-prop-value:hover { background: var(--s0); color: var(--text); }
+.docs-prop-add {
+  background: none; border: none; cursor: pointer; text-align: left;
+  color: var(--o0); font-family: var(--sans); font-size: 12px;
+  padding: 3px 8px; border-radius: 5px;
+}
+.docs-prop-add:hover { background: var(--s0); color: var(--text); }
 .docs-outline-row {
   font-size: 12px; color: var(--sub0); padding: 3px 8px; border-radius: 5px;
   cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -1967,3 +2290,28 @@ input, textarea, code,
 .merge-methods { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
 .merge-method { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text); cursor: pointer; }
 .merge-method input { accent-color: var(--green); }
+
+/* ── Workspace (pinned notes/journal project) ─────────────────────────── */
+/* Pinned above the project list, separated by a hairline. */
+.tree-workspace { padding-bottom: 4px; margin-bottom: 4px; border-bottom: 1px solid var(--s0); }
+.ws-icon { font-size: 13px; font-weight: 400; background: var(--s1); color: var(--sub1); }
+/* Before first use the row is an invitation, not an entity — render it quiet. */
+.tree-row.ws-absent { color: var(--o0); }
+.tree-row.ws-absent:hover { color: var(--text); }
+.tree-row.ws-absent .ws-icon { background: transparent; border: 1px dashed var(--o0); color: var(--o0); }
+
+/* Workspace-creation dialog */
+.ws-create-row { display: flex; align-items: center; gap: 8px; margin: 12px 0; }
+.ws-create-path {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: var(--mono); font-size: 12px; color: var(--text);
+  background: var(--s0); border-radius: 6px; padding: 6px 8px;
+}
+.ws-create-git { display: flex; align-items: flex-start; gap: 10px; margin-top: 4px; cursor: pointer; }
+.ws-create-git > span { font-size: 13px; color: var(--text); }
+.ws-create-hint { display: block; font-size: 12px; color: var(--sub0); margin-top: 2px; }
+
+/* Prev/next-day navigation for journal notes (Docs editor header). */
+.daily-nav { display: inline-flex; gap: 2px; margin-right: 6px; }
+.daily-nav .file-editor-btn { font-size: 15px; line-height: 1; padding: 0 6px; }
+.daily-nav .file-editor-btn:disabled { opacity: .35; cursor: default; }

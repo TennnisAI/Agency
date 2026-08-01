@@ -2,18 +2,23 @@ import { Fragment, useEffect, useRef, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { appLogDir } from "@tauri-apps/api/path";
 import { revealItemInDir, openUrl } from "@tauri-apps/plugin-opener";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   AgentProfile,
   CatalogEntry,
   FilesConfig,
   KnowledgeConfig,
   McpServer,
+  Project,
   ProviderSettings,
   NotifSettings,
   UpdateCheck,
   authenticateMcpServer,
   checkForUpdate,
+  closeProject,
+  createWorkspace,
   deauthenticateMcpServer,
+  defaultWorkspaceLocation,
   deleteProfile,
   enableAgentProfiles,
   getFilesConfig,
@@ -21,10 +26,13 @@ import {
   getSettings,
   getNotifSettings,
   getUpdateCheckEnabled,
+  getWorkspace,
   importMcpJson,
+  inspectRepo,
   listAgentCatalog,
   listMcpServers,
   listProfiles,
+  moveWorkspace,
   saveFilesConfig,
   saveKnowledgeConfig,
   saveMcpServers,
@@ -34,10 +42,12 @@ import {
   setUpdateCheckEnabled,
 } from "../api";
 import Toggle from "./Toggle";
+import ConfirmDialog from "./ConfirmDialog";
 import { toastError, toastSuccess } from "../lib/toast";
 import { agentColor, agentLabel } from "../agents";
 import { THEMES, ThemeId, applyTheme, getStoredTheme } from "../lib/themes";
 import { getWordWrap, setWordWrap } from "../lib/editorPrefs";
+import { setWorkspaceHidden, workspaceHidden } from "../lib/workspacePref";
 
 // Full-view settings page (design handoff: settings takes over the main area,
 // entered from the ⚙ button at the bottom of the Projects pane).
@@ -498,6 +508,115 @@ export default function Settings({
     );
   }
 
+  // ── workspace (pinned notes/journal project) ──────────────────────────
+  const [workspace, setWorkspace] = useState<Project | null>(null);
+  const [wsDefault, setWsDefault] = useState("");
+  const [wsGitless, setWsGitless] = useState(false);
+  const refreshWorkspace = () => {
+    getWorkspace()
+      .then(async (ws) => {
+        setWorkspace(ws);
+        if (ws) {
+          const r = await inspectRepo(ws.repo_path).catch(() => null);
+          setWsGitless(r?.state === "notARepo");
+        }
+      })
+      .catch(() => {});
+  };
+  useEffect(() => {
+    refreshWorkspace();
+    defaultWorkspaceLocation().then(setWsDefault).catch(() => {});
+  }, []);
+
+  // Move = pick a destination parent; the folder keeps its name. The backend
+  // renames on disk and repoints the project row.
+  async function doMoveWorkspace() {
+    if (!workspace) return;
+    const sel = await openDialog({ directory: true, multiple: false });
+    if (typeof sel !== "string") return;
+    const name = workspace.repo_path.split("/").filter(Boolean).pop() ?? "Agency";
+    const dest = `${sel.replace(/\/+$/, "")}/${name}`;
+    if (dest === workspace.repo_path) return;
+    try {
+      setWorkspace(await moveWorkspace(dest));
+      toastSuccess("Workspace moved");
+    } catch (e) {
+      toastError(e, "Couldn't move workspace");
+    }
+  }
+
+  // Switch = point the workspace at a different folder (picked directly,
+  // unlike Move which picks a parent and renames on disk). The old folder
+  // stays untouched, so switching back is choosing it again; the idempotent
+  // create_workspace repoints the row and seeds a fresh folder's guide.
+  const [wsSwitch, setWsSwitch] = useState<string | null>(null);
+  async function pickSwitchWorkspace() {
+    if (!workspace) return;
+    const sel = await openDialog({ directory: true, multiple: false });
+    if (typeof sel !== "string") return;
+    const dest = sel.replace(/\/+$/, "");
+    if (dest === workspace.repo_path) return;
+    setWsSwitch(dest);
+  }
+  async function doSwitchWorkspace(dest: string) {
+    try {
+      // Keep the current git preference; a gitless workspace stays gitless
+      // (Enable git stays one click away in this section).
+      await createWorkspace(dest, !wsGitless);
+      refreshWorkspace();
+      // Same-value re-fire: makes ProjectTree refetch the repointed row.
+      setWorkspaceHidden(wsOff);
+      toastSuccess("Workspace switched");
+    } catch (e) {
+      toastError(e, "Couldn't switch workspace");
+    }
+  }
+
+  // Hide the workspace entirely for people who don't want it: the pinned ◈
+  // row (and ⌘⇧D / the palette entry) go away. A created workspace is also
+  // closed — sessions stop, records and files stay — and re-enabling revives
+  // it via the idempotent create_workspace.
+  const [wsOff, setWsOff] = useState(workspaceHidden());
+  async function toggleWorkspaceVisible(show: boolean) {
+    // Flip the pref (and this Toggle) immediately — the pinned row is gated on
+    // the pref alone, so hiding is instant even while close_project is still
+    // killing sessions.
+    setWorkspaceHidden(!show);
+    setWsOff(!show);
+    try {
+      const ws = await getWorkspace();
+      if (ws) {
+        if (show) await createWorkspace(ws.repo_path, false);
+        else await closeProject(ws.id);
+      }
+      // Re-fire the pref event now that the row's closed state has settled.
+      // The first event races the backend call by design (instant hide); this
+      // one makes ProjectTree refetch a list that finally includes the revived
+      // workspace — without it, re-enabling looked like it did nothing until
+      // the next app launch.
+      setWorkspaceHidden(!show);
+    } catch (e) {
+      // Backend didn't follow — put the pref (and Toggle) back.
+      setWorkspaceHidden(show);
+      setWsOff(show);
+      toastError(e, show ? "Couldn't restore the workspace" : "Couldn't hide the workspace");
+    }
+    refreshWorkspace();
+  }
+
+  // Late opt-in to git for a workspace created without it (create_workspace is
+  // idempotent: it just inits + makes the initial commit).
+  async function enableWorkspaceGit() {
+    if (!workspace) return;
+    try {
+      await createWorkspace(workspace.repo_path, true);
+      refreshWorkspace();
+      toastSuccess("Workspace repository initialized");
+    } catch (e) {
+      toastError(e, "Couldn't initialize git");
+    }
+  }
+
   return (
     <main className="settings-page">
       <div className="settings-inner">
@@ -525,6 +644,67 @@ export default function Settings({
                   )}
                 </span>
               </button>
+            ))}
+          </div>
+        </section>
+
+        <section className="settings-section">
+          <div className="settings-section-label">Workspace</div>
+          <p className="settings-section-hint">
+            Your home for journaling, planning, and cross-project notes: plain
+            markdown files on disk. <kbd>⌘⇧D</kbd> opens today's journal note.
+          </p>
+          <div className="settings-group-card">
+            <div className="settings-notif-row">
+              <span className="settings-notif-label">
+                Show the workspace
+                {wsOff && " (currently hidden; nothing on disk was deleted)"}
+              </span>
+              <Toggle checked={!wsOff} onChange={(on) => { void toggleWorkspaceVisible(on); }} />
+            </div>
+            {!wsOff && (workspace ? (
+              <>
+                <div className="settings-notif-row">
+                  <span className="settings-notif-label">
+                    Location: <code className="settings-meta-val">{workspace.repo_path}</code>
+                  </span>
+                  <span style={{ display: "flex", gap: 8 }}>
+                    <button
+                      className="settings-save"
+                      title="Move this folder somewhere else on disk"
+                      onClick={doMoveWorkspace}
+                    >Move…</button>
+                    <button
+                      className="settings-save"
+                      title="Use a different folder as the workspace; this one stays on disk"
+                      onClick={() => { void pickSwitchWorkspace(); }}
+                    >Switch…</button>
+                  </span>
+                </div>
+                {wsGitless && (
+                  <div className="settings-notif-row">
+                    <span className="settings-notif-label">
+                      Git is off, so agents can't be dispatched on notes. Initialize a
+                      repository to enable them; nothing is ever pushed anywhere.
+                    </span>
+                    <button className="settings-save" onClick={enableWorkspaceGit}>Enable git</button>
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="settings-notif-row">
+                <span className="settings-notif-label">
+                  Not created yet. By default it will live at{" "}
+                  <code className="settings-meta-val">{wsDefault || "~/Agency"}</code>.
+                </span>
+                <button
+                  className="settings-save"
+                  onClick={() => {
+                    onClose();
+                    window.dispatchEvent(new CustomEvent("agency:create-workspace"));
+                  }}
+                >Create…</button>
+              </div>
             ))}
           </div>
         </section>
@@ -727,7 +907,7 @@ export default function Settings({
               />
               <input
                 className="settings-input"
-                placeholder="url (remote server — leave command empty)"
+                placeholder="url (remote server; leave command empty)"
                 value={mcpDraft.url}
                 onChange={(e) => setMcpDraft({ ...mcpDraft, url: e.target.value })}
               />
@@ -809,7 +989,7 @@ export default function Settings({
                         : !kg.serve_installed
                         ? "The serve command isn't on your PATH"
                         : "The build command isn't on your PATH"}
-                      {" "}— the graph is enabled but will be skipped until the tooling is installed.
+                      . The graph is enabled but will be skipped until the tooling is installed.
                     </div>
                   )}
                   <div className="settings-provider-field">
@@ -993,6 +1173,16 @@ export default function Settings({
           </div>
         </section>
       </div>
+
+      {wsSwitch && (
+        <ConfirmDialog
+          title="Switch workspace?"
+          body={`Your journal, notes, and workspace issues will now live in "${wsSwitch}". The current folder stays on disk untouched; choose it again later to switch back. A fresh folder starts with the Welcome guide.`}
+          confirmLabel="Switch"
+          onConfirm={() => { const d = wsSwitch; setWsSwitch(null); void doSwitchWorkspace(d); }}
+          onCancel={() => setWsSwitch(null)}
+        />
+      )}
     </main>
   );
 }

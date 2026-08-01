@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { Compartment, EditorState } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { basicSetup } from "codemirror";
@@ -8,6 +8,7 @@ import { FileRoot, readFile, readFileBase64, writeFile } from "../api";
 import { languageExtension } from "../lib/cmLanguage";
 import { editorChromeTheme, editorHighlight } from "../lib/cmTheme";
 import { getWordWrap } from "../lib/editorPrefs";
+import { bufferKey, dropBuffer, stashBuffer, takeBuffer } from "../lib/editorBuffers";
 import ConfirmDialog from "./ConfirmDialog";
 
 // How a file is displayed. Raster images, PDFs, and playable audio/video
@@ -59,13 +60,47 @@ hr { border: none; border-top: 1px solid ${v("--line")}; }
 </style></head><body>${html}</body></html>`;
 }
 
-export default function FileEditor({ root, path }: { root: FileRoot; path: string }) {
+export interface FileEditorHandle {
+  /** Scroll a 1-based line into view (clamped) and put the cursor there. */
+  scrollToLine: (line: number) => void;
+  /**
+   * Stash the live doc into the buffer cache now (no-op when clean). The owner
+   * calls this before a rename retargets the tab, so unsaved edits can migrate
+   * to the new buffer key instead of dying with the old editor instance.
+   */
+  stashIfDirty: () => void;
+  /**
+   * Forget the dirty state so an imminent unmount does NOT stash the doc.
+   * Called when the user explicitly discards (close-without-saving, delete) —
+   * without it the unmount stash would resurrect the discarded edits.
+   */
+  discard: () => void;
+}
+
+const FileEditor = forwardRef<FileEditorHandle, {
+  root: FileRoot;
+  path: string;
+  onDirtyChange?: (dirty: boolean) => void;
+}>(function FileEditor({ root, path, onDirtyChange }, ref) {
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   // Compartment so the word-wrap toggle reconfigures the live editor in place.
   const wrapRef = useRef(new Compartment());
   const [status, setStatus] = useState<"loading" | "binary" | "tooLarge" | "ready" | "error">("loading");
   const [dirty, setDirty] = useState(false);
+  // Mirror of `dirty` for unmount cleanup + a change-only owner callback.
+  const dirtyRef = useRef(false);
+  const onDirtyRef = useRef(onDirtyChange);
+  onDirtyRef.current = onDirtyChange;
+  const markDirty = (d: boolean) => {
+    if (dirtyRef.current !== d) {
+      dirtyRef.current = d;
+      onDirtyRef.current?.(d);
+    }
+    setDirty(d);
+  };
+  const markDirtyRef = useRef(markDirty);
+  markDirtyRef.current = markDirty;
   const [errorMsg, setErrorMsg] = useState("");
   // Binary payload (data URL) for image/pdf files.
   const [dataUrl, setDataUrl] = useState("");
@@ -84,7 +119,8 @@ export default function FileEditor({ root, path }: { root: FileRoot; path: strin
     if (!view) return;
     try {
       await writeFile(root, path, view.state.doc.toString());
-      setDirty(false);
+      markDirtyRef.current(false);
+      dropBuffer(bufferKey(root, path));
     } catch (e) {
       setErrorMsg(String(e));
       setStatus("error");
@@ -103,17 +139,40 @@ export default function FileEditor({ root, path }: { root: FileRoot; path: strin
       view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: fc.text } });
       // The dispatch above flips `dirty` back on via the update listener; clear
       // it after so a freshly-reverted buffer reads as clean.
-      setDirty(false);
+      markDirtyRef.current(false);
+      dropBuffer(bufferKey(root, path));
     } catch (e) {
       setErrorMsg(String(e));
       setStatus("error");
     }
   };
 
+  useImperativeHandle(ref, () => ({
+    scrollToLine: (line: number) => {
+      const view = viewRef.current;
+      if (!view) return;
+      const doc = view.state.doc;
+      const l = doc.line(Math.min(Math.max(line, 1), doc.lines));
+      view.dispatch({
+        selection: { anchor: l.from },
+        effects: EditorView.scrollIntoView(l.from, { y: "start", yMargin: 12 }),
+      });
+      view.focus();
+    },
+    stashIfDirty: () => {
+      if (dirtyRef.current && viewRef.current) {
+        stashBuffer(bufferKey(root, path), viewRef.current.state.doc.toString());
+      }
+    },
+    discard: () => {
+      dirtyRef.current = false;
+    },
+  }));
+
   useEffect(() => {
     let cancelled = false;
     setStatus("loading");
-    setDirty(false);
+    markDirtyRef.current(false);
     setErrorMsg("");
     setDataUrl("");
     setPreviewing(false);
@@ -142,8 +201,11 @@ export default function FileEditor({ root, path }: { root: FileRoot; path: strin
       const host = hostRef.current;
       if (!host) { setStatus("error"); setErrorMsg("Editor failed to mount."); return; }
       viewRef.current?.destroy();
+      // An unmount with unsaved edits stashed the doc; restore it over the
+      // disk text and stay dirty, so tab/root switches never lose work.
+      const stashed = takeBuffer(bufferKey(root, path));
       const state = EditorState.create({
-        doc: fc.text,
+        doc: stashed ?? fc.text,
         extensions: [
           basicSetup,
           editorChromeTheme,
@@ -154,10 +216,11 @@ export default function FileEditor({ root, path }: { root: FileRoot; path: strin
             { key: "Mod-s", preventDefault: true, run: () => { void save.current(); return true; } },
             ...defaultKeymap,
           ]),
-          EditorView.updateListener.of((u) => { if (u.docChanged) setDirty(true); }),
+          EditorView.updateListener.of((u) => { if (u.docChanged) markDirtyRef.current(true); }),
         ],
       });
       viewRef.current = new EditorView({ state, parent: host });
+      if (stashed !== null) markDirtyRef.current(true);
     }).catch((e) => {
       if (cancelled) return;
       setErrorMsg(String(e));
@@ -166,6 +229,9 @@ export default function FileEditor({ root, path }: { root: FileRoot; path: strin
 
     return () => {
       cancelled = true;
+      if (dirtyRef.current && viewRef.current) {
+        stashBuffer(bufferKey(root, path), viewRef.current.state.doc.toString());
+      }
       viewRef.current?.destroy();
       viewRef.current = null;
     };
@@ -228,7 +294,7 @@ export default function FileEditor({ root, path }: { root: FileRoot; path: strin
         )}
       </div>
       {status === "loading" && <div className="diff-empty">loading…</div>}
-      {status === "binary" && <div className="diff-empty">Binary file — no preview for this format.</div>}
+      {status === "binary" && <div className="diff-empty">Binary file. No preview for this format.</div>}
       {status === "tooLarge" && <div className="diff-empty">File too large to open.</div>}
       {status === "error" && <div className="git-error">{errorMsg}</div>}
 
@@ -282,7 +348,9 @@ export default function FileEditor({ root, path }: { root: FileRoot; path: strin
       )}
     </div>
   );
-}
+});
+
+export default FileEditor;
 
 // ── Toolbar glyphs (stroked SVG, matching the app's icon convention) ──────
 const eg = {

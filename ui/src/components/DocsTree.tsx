@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
-import { FileRoot, createFile, createDir, renamePath, trashPath, writeFile } from "../api";
-import { DocsIndex, SearchHit, searchDocs, stripExt } from "../lib/docsIndex";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { FileRoot, createFile, createDir, renamePath, searchFiles, trashPath, writeFile } from "../api";
+import { DocsIndex, SearchHit, fmFilterPaths, mergeBodyHits, searchDocs, searchLocal, stripExt } from "../lib/docsIndex";
+import { parseDocsQuery } from "../lib/docsQuery";
 import { joinPath, parentPath, baseName } from "../lib/filePath";
 import { FileIcon } from "./fileIcons";
 import Menu, { MenuEntry } from "./git/Menu";
@@ -38,10 +39,12 @@ function Twistie({ open }: { open: boolean }) {
  * folders without markdown).
  */
 export default function DocsTree({
-  root, docsDir, index, selected, query, onQuery, onSelect, onOpenHit, onRenamed, onDeleted, refresh,
+  root, docsDir, rootLabel, index, selected, query, onQuery, onSelect, onOpenHit, onRenamed, onDeleted, refresh,
 }: {
   root: FileRoot;
   docsDir: string;
+  /** Label for the tree root when docsDir is "" (the workspace vault). */
+  rootLabel?: string;
   index: DocsIndex | null;
   selected: string | null;
   query: string;
@@ -89,7 +92,13 @@ export default function DocsTree({
     }
     for (const dir of extraDirs) dirAt(dir);
     const sortDir = (d: TreeDir) => {
-      d.notes.sort((a, b) => a.title.localeCompare(b.title));
+      // The journal reads newest-first (date-stamped names, so name order is
+      // date order); everything else alphabetical.
+      if (d.path === "journal") {
+        d.notes.sort((a, b) => b.path.localeCompare(a.path));
+      } else {
+        d.notes.sort((a, b) => a.title.localeCompare(b.title));
+      }
       for (const sub of d.dirs.values()) sortDir(sub);
     };
     sortDir(rootDir);
@@ -227,10 +236,40 @@ export default function DocsTree({
     return rows;
   };
 
-  const hits = useMemo(
-    () => (index && query.trim() ? searchDocs(index, query) : []),
-    [index, query],
-  );
+  // Search: tag/title hits are answered instantly from the index; body hits
+  // come from the backend search primitive, debounced 150ms. The token guards
+  // against a stale slow response landing over a newer query's results; the
+  // in-memory substring scan remains as the error fallback.
+  const [hits, setHits] = useState<SearchHit[]>([]);
+  const searchToken = useRef(0);
+  useEffect(() => {
+    const q = query.trim();
+    const token = ++searchToken.current;
+    if (!index || !q) {
+      setHits([]);
+      return;
+    }
+    const local = searchLocal(index, q);
+    setHits(local);
+    if (q.startsWith("#")) return; // tag queries are fully local
+    const { filters, text } = parseDocsQuery(q);
+    if (filters.length > 0 && !text) return; // filter-only queries are fully local
+    const t = window.setTimeout(async () => {
+      let merged: SearchHit[];
+      try {
+        // The backend only sees the free-text remainder; frontmatter filters
+        // restrict which docs its body hits may come from.
+        const body = await searchFiles(root, docsDir, { query: text, globs: ["*.md", "*.markdown"] });
+        const allowed = filters.length > 0 ? fmFilterPaths(index, filters) : undefined;
+        merged = mergeBodyHits(index, local, body, allowed);
+      } catch {
+        merged = searchDocs(index, q);
+      }
+      if (searchToken.current === token) setHits(merged);
+    }, 150);
+    return () => window.clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [index, query, root.kind, root.id, docsDir]);
 
   const searching = query.trim() !== "";
 
@@ -239,14 +278,14 @@ export default function DocsTree({
       <div className="docs-search">
         <input
           className="docs-search-input"
-          placeholder="Search notes…  (#tag)"
+          placeholder="Search notes…  (#tag, key:value)"
           value={query}
           onChange={(e) => onQuery(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Escape") onQuery(""); }}
         />
       </div>
       <div className="files-root-label">
-        <span className="files-root-name" title={docsDir}>{docsDir}/</span>
+        <span className="files-root-name" title={docsDir || rootLabel}>{docsDir ? `${docsDir}/` : rootLabel ?? "/"}</span>
         <span className="spacer" style={{ flex: 1 }} />
         <button className="files-tool-btn" title="New Note" onClick={() => setDialog({ kind: "newNote", dir: "" })}>
           <NewNoteGlyph />
@@ -270,7 +309,7 @@ export default function DocsTree({
             ))}
           </div>
         ) : index && index.docs.size === 0 && extraDirs.length === 0 ? (
-          <div className="docs-search-none">No notes yet — create one.</div>
+          <div className="docs-search-none">No notes yet. Create one.</div>
         ) : (
           renderDir(tree, 0)
         )}

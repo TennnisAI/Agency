@@ -98,7 +98,7 @@ export default function BranchBar({ taskId, info, busy = false, onAct, onPush, o
           the working-tree status. With no remote there's nothing to fetch, so it
           just reloads. */}
       <button className="git-iconbtn"
-        title={info.hasRemote ? "Refresh — fetch from origin and reload status" : "Refresh status"}
+        title={info.hasRemote ? "Refresh: fetch from origin and reload status" : "Refresh status"}
         aria-label="Refresh"
         disabled={busy}
         onClick={() => (info.hasRemote ? onAct(() => gitFetch(taskId), "Fetched") : onRefresh())}>⟲</button>

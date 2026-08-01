@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import { Issue, IssuePatch, IssueStatus, RunInfo } from "../api";
-import { ISSUE_STATUSES, PRIORITY_LABELS, STATUS_COLORS, STATUS_LABELS } from "../lib/issues";
+import { ISSUE_STATUSES, PRIORITY_LABELS, STATUS_COLORS, STATUS_LABELS, fmtDate, isOverdue } from "../lib/issues";
+import { dateStamp } from "../lib/dailyNote";
 import AgentAddMenu from "./AgentAddMenu";
 
 // Priority as Linear-style signal bars: 1-3 bars for low/medium/high, an
@@ -45,6 +46,7 @@ export default function IssueRow({
   onSpawnAgent,
   onPatch,
   onDelete,
+  drag,
 }: {
   issue: Issue;
   label: string;
@@ -56,6 +58,18 @@ export default function IssueRow({
   onSpawnAgent: (agentId: string, opts?: { base: string; mergeTarget: string }) => void;
   onPatch: (patch: IssuePatch) => void;
   onDelete: () => void;
+  // Manual reorder within a status group (the per-project board wires this;
+  // the cross-project board doesn't — reordering across projects is
+  // meaningless). Pointer-based, not HTML5 DnD: Tauri's native drag-drop
+  // layer swallows in-page drops on macOS, so the drop event never arrives.
+  drag?: {
+    over: "above" | "below" | null;
+    // True while this row is the one being dragged.
+    source: boolean;
+    idx: number;
+    status: IssueStatus;
+    onMouseDown: (e: React.MouseEvent) => void;
+  };
 }) {
   const [menu, setMenu] = useState<"status" | "more" | null>(null);
   const [coords, setCoords] = useState<{ top: number; left?: number; right?: number }>({ top: 0, left: 0 });
@@ -83,11 +97,27 @@ export default function IssueRow({
     setMenu(which);
   };
 
+  const today = dateStamp(new Date());
+
   return (
-    <div className={`issue-row${selected ? " selected" : ""}`} onClick={onSelect}>
+    <div
+      className={`issue-row${selected ? " selected" : ""}${drag?.over ? ` drop-${drag.over}` : ""}${drag?.source ? " dragging" : ""}`}
+      onClick={onSelect}
+      onMouseDown={drag?.onMouseDown}
+      data-issue-idx={drag?.idx}
+      data-issue-status={drag?.status}
+    >
       <PriorityGlyph priority={issue.priority} />
       <code className="issue-key">{label}</code>
       <span className={`issue-title${issue.status === "cancelled" ? " cancelled" : ""}`}>{issue.title}</span>
+      {issue.due && (
+        <span
+          className={`issue-due${isOverdue(issue, today) ? " overdue" : ""}`}
+          title={`Due ${issue.due}`}
+        >
+          ◷ {fmtDate(issue.due, today)}
+        </span>
+      )}
       {activity && <span className={`dot ${activity.cls}`} title={activity.title} />}
       <span className="issue-row-actions" onClick={(e) => e.stopPropagation()}>
         {startable && (

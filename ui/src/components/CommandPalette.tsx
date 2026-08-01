@@ -11,7 +11,7 @@ import { loadRecency, recencyIndex, recentByPrefix, recordActivation } from "../
 import { PENDING_ISSUE_KEY, STATUS_LABELS, isClosed, issueLabel } from "../lib/issues";
 import { workspaceHidden } from "../lib/workspacePref";
 import { DocsIndex, buildIndex } from "../lib/docsIndex";
-import { requestOpenFile } from "../lib/openFile";
+import { fileRootKey, requestOpenFile } from "../lib/openFile";
 import { useListNav } from "../hooks/useListNav";
 import { useModalKeys } from "../hooks/useModalKeys";
 import { baseName } from "../lib/filePath";
@@ -81,14 +81,14 @@ export default function CommandPalette({
   useEffect(() => {
     if (mode !== "issue" || issuesRequested.current || projects === null) return;
     issuesRequested.current = true;
-    let cancelled = false;
+    // Deliberately not cancelled on cleanup: `issuesRequested` marks the fetch
+    // as spent, so discarding a mid-flight result (user backspaced out of "@")
+    // would leave re-entry stuck on "loading…" with no retry. The late set is
+    // a no-op if the palette has closed.
     Promise.all(
       // Per-project failures drop that project rather than the whole mode.
       projects.map(async (p) => (await listIssues(p.id).catch(() => [])).map((issue) => ({ project: p, issue }))),
-    ).then((all) => {
-      if (!cancelled) setIssueData(all.flat());
-    });
-    return () => { cancelled = true; };
+    ).then((all) => setIssueData(all.flat()));
   }, [mode, projects]);
 
   // ── "#": the scope's docs index, built once per palette open ──────────────
@@ -101,17 +101,18 @@ export default function CommandPalette({
       return;
     }
     setDocsState("loading");
-    let cancelled = false;
+    // Deliberately not cancelled on cleanup: "loading" gates re-entry, so a
+    // discarded mid-flight result (user backspaced out of "#") would wedge the
+    // mode on "loading…" forever. The late set is a no-op after unmount.
     (async () => {
       const dir = await detectDocsDir(scope.id);
       if (dir == null) return "none" as const;
       const files = await readDocsCorpus({ kind: "project", id: scope.id }, dir);
-      if (!cancelled) setDocsIdx(buildIndex(files));
+      setDocsIdx(buildIndex(files));
       return "ready" as const;
     })()
-      .then((s) => { if (!cancelled) setDocsState(s); })
-      .catch(() => { if (!cancelled) setDocsState("error"); });
-    return () => { cancelled = true; };
+      .then((s) => setDocsState(s))
+      .catch(() => setDocsState("error"));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode, docsState, projects, scope?.id]);
 
@@ -164,12 +165,25 @@ export default function CommandPalette({
   }
 
   function openFile(project: Project, path: string, line?: number) {
+    // The workspace has no Files tab (AgentsView redirects it to Docs), so a
+    // Files-tab open would silently dead-end. Its corpus is the vault itself
+    // (docsDir ""), so route the hit through the Docs editor instead.
+    if (project.kind === "workspace") {
+      openNote(project, path, baseName(path));
+      return;
+    }
     recordActivation(`file:${project.id}:${path}`, baseName(path), path);
     // Re-selecting the current project would clear run focus (and with it the
     // worktree root "/" just searched) — only switch when actually elsewhere.
-    if (selectedProjectId !== project.id) onOpenProject(project);
+    const sameProject = selectedProjectId === project.id;
+    if (!sameProject) onOpenProject(project);
+    // The root the Files tab will show: the focused run's worktree only while
+    // staying inside the current project.
+    const rootKey = sameProject && focusedRunId
+      ? fileRootKey({ kind: "run", id: focusedRunId })
+      : fileRootKey({ kind: "project", id: project.id });
     setTab("files");
-    requestOpenFile({ path, line });
+    requestOpenFile({ rootKey, path, line });
     onClose();
   }
 

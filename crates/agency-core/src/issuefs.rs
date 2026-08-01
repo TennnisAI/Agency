@@ -334,18 +334,26 @@ pub fn atomic_write(path: &Path, contents: &str) -> Result<()> {
 pub struct IssueDirRead {
     pub issues: Vec<IssueFile>,
     pub skipped: Vec<(String, String)>,
+    /// The issues directory could not be listed at all — absent (a branch
+    /// without the tracker checked out) or unreadable (permissions). Nothing
+    /// is known about the files, which is not the same as "there are none";
+    /// reconcile must not treat it as an empty tracker.
+    pub missing: bool,
 }
 
 /// Read every issue file in `root`'s issues dir. Only filenames shaped like a
 /// key (`AGE-14.md`) are considered — `README.md`, editor droppings, and
 /// anything else are ignored outright. Files that match the shape but fail to
-/// parse land in `skipped`. A missing directory is an empty tracker.
+/// parse land in `skipped`. A directory that cannot be listed sets `missing`.
 pub fn read_issue_dir(root: &Path) -> Result<IssueDirRead> {
     let dir = root.join(ISSUES_DIR);
     let mut out = IssueDirRead::default();
     let entries = match std::fs::read_dir(&dir) {
         Ok(it) => it,
-        Err(_) => return Ok(out),
+        Err(_) => {
+            out.missing = true;
+            return Ok(out);
+        }
     };
     for entry in entries {
         let Ok(entry) = entry else { continue };
@@ -520,17 +528,55 @@ pub struct ReconcileSummary {
 /// seq raises the high-water mark — numbers consumed by hand-authored files
 /// are never handed out again. Files that omit `created`/`updated` get the
 /// file's mtime.
-pub fn reconcile(reg: &Registry, project_id: &str, root: &Path) -> Result<ReconcileSummary> {
+///
+/// Only files under the project's own `issue_key` prefix belong to it: the
+/// filename is the issue's identity, and the app writes/deletes exactly
+/// `{issue_key}-{seq}.md`. A foreign-prefix file (a repo cloned from someone
+/// whose project derived a different key, an agent using the wrong key) is
+/// ignored with a warning — importing it would leave a row whose edits land
+/// in a *different* file, duplicating and resurrecting issues.
+///
+/// An unlistable issues dir (`read.missing`) with rows in the index is a
+/// no-op, not a wipe: a branch checkout without the tracker or a permissions
+/// blip must not delete every row (and with them, re-mint the uuids that
+/// `runs.issue_id` points at).
+pub fn reconcile(
+    reg: &Registry,
+    project_id: &str,
+    issue_key: &str,
+    root: &Path,
+) -> Result<ReconcileSummary> {
     let read = read_issue_dir(root)?;
-    let mut summary = ReconcileSummary { skipped: read.skipped, ..Default::default() };
-    for (name, reason) in &summary.skipped {
-        log::warn!("issue file skipped: {name}: {reason}");
-    }
     let existing: std::collections::HashMap<i64, Issue> =
         reg.list_issues(project_id)?.into_iter().map(|i| (i.seq, i)).collect();
+    if read.missing && !existing.is_empty() {
+        log::warn!(
+            "issues dir unlistable for project {project_id}; keeping {} indexed rows",
+            existing.len()
+        );
+        return Ok(ReconcileSummary::default());
+    }
+    let mut summary = ReconcileSummary { skipped: read.skipped, ..Default::default() };
+    summary.skipped.retain(|(name, reason)| {
+        let ours = name
+            .strip_suffix(".md")
+            .and_then(parse_key)
+            .is_some_and(|(prefix, _)| prefix == issue_key);
+        if ours {
+            log::warn!("issue file skipped: {name}: {reason}");
+        }
+        ours
+    });
 
     let mut seen = std::collections::HashSet::new();
     for f in &read.issues {
+        if parse_key(&f.key).is_none_or(|(prefix, _)| prefix != issue_key) {
+            log::warn!(
+                "issue file {}.md ignored: key prefix does not match project key {issue_key}",
+                f.key
+            );
+            continue;
+        }
         seen.insert(f.seq);
         reg.ensure_issue_seq_at_least(project_id, f.seq)?;
         let (created_at, updated_at) = if f.created_at == 0 || f.updated_at == 0 {
@@ -842,10 +888,12 @@ created: 2026-07-27T09:30:00Z\nupdated: 2026-07-27T14:02:00Z\n---\n\
         assert_eq!(keys, vec!["AGE-1", "AGE-2"]);
         assert_eq!(read.skipped.len(), 1);
         assert_eq!(read.skipped[0].0, "AGE-3.md");
-        // Missing dir: empty tracker, not an error.
+        // Missing dir: flagged as unlistable, not an error — and not the same
+        // as an empty tracker.
         let empty = tempfile::tempdir().unwrap();
         let read = read_issue_dir(empty.path()).unwrap();
         assert!(read.issues.is_empty() && read.skipped.is_empty());
+        assert!(read.missing);
     }
 
     fn write_issue(root: &Path, key: &str, status: &str, title: &str) {
@@ -867,7 +915,7 @@ created: 2026-07-27T09:30:00Z\nupdated: 2026-07-27T14:02:00Z\n---\n\
 
         // External file with no row: imported, seq high-water bumped past it.
         write_issue(root, "AGE-7", "todo", "Seven");
-        let s = reconcile(&reg, "p1", root).unwrap();
+        let s = reconcile(&reg, "p1", "AGE", root).unwrap();
         assert_eq!((s.imported, s.updated, s.dropped), (1, 0, 0));
         let rows = reg.list_issues("p1").unwrap();
         assert_eq!(rows.len(), 1);
@@ -879,13 +927,13 @@ created: 2026-07-27T09:30:00Z\nupdated: 2026-07-27T14:02:00Z\n---\n\
         assert_eq!(reg.alloc_issue_seq("p1").unwrap(), 8);
 
         // Idempotent, and the uuid is stable across reconciles.
-        let s = reconcile(&reg, "p1", root).unwrap();
+        let s = reconcile(&reg, "p1", "AGE", root).unwrap();
         assert_eq!((s.imported, s.updated, s.dropped), (0, 0, 0));
         assert_eq!(reg.list_issues("p1").unwrap()[0].id, id);
 
         // Edit: the row follows, id survives.
         write_issue(root, "AGE-7", "done", "Seven edited");
-        let s = reconcile(&reg, "p1", root).unwrap();
+        let s = reconcile(&reg, "p1", "AGE", root).unwrap();
         assert_eq!((s.imported, s.updated, s.dropped), (0, 1, 0));
         let row = &reg.list_issues("p1").unwrap()[0];
         assert_eq!(row.id, id);
@@ -894,7 +942,7 @@ created: 2026-07-27T09:30:00Z\nupdated: 2026-07-27T14:02:00Z\n---\n\
 
         // Delete the file: the row is dropped.
         std::fs::remove_file(issue_path(root, "AGE-7")).unwrap();
-        let s = reconcile(&reg, "p1", root).unwrap();
+        let s = reconcile(&reg, "p1", "AGE", root).unwrap();
         assert_eq!((s.imported, s.updated, s.dropped), (0, 0, 1));
         assert!(reg.list_issues("p1").unwrap().is_empty());
     }
@@ -912,7 +960,7 @@ created: 2026-07-27T09:30:00Z\nupdated: 2026-07-27T14:02:00Z\n---\n\
             "---\nkey: AGE-4\nstatus: todo\ndue: 2026-08-01\nrank: 2.5\n---\n# Four\n",
         )
         .unwrap();
-        reconcile(&reg, "p1", root).unwrap();
+        reconcile(&reg, "p1", "AGE", root).unwrap();
         let row = &reg.list_issues("p1").unwrap()[0];
         assert_eq!(row.due.as_deref(), Some("2026-08-01"));
         assert_eq!(row.scheduled, None);
@@ -927,13 +975,13 @@ created: 2026-07-27T09:30:00Z\nupdated: 2026-07-27T14:02:00Z\n---\n\
         let root = root_dir.path();
 
         write_issue(root, "AGE-3", "todo", "Three");
-        reconcile(&reg, "p1", root).unwrap();
+        reconcile(&reg, "p1", "AGE", root).unwrap();
         let id = reg.list_issues("p1").unwrap()[0].id.clone();
 
         // The file goes corrupt (say, a half-written agent edit): the row
         // stays, the skip is reported.
         std::fs::write(issue_path(root, "AGE-3"), "garbage").unwrap();
-        let s = reconcile(&reg, "p1", root).unwrap();
+        let s = reconcile(&reg, "p1", "AGE", root).unwrap();
         assert_eq!(s.dropped, 0);
         assert_eq!(s.skipped.len(), 1);
         assert_eq!(s.skipped[0].0, "AGE-3.md");
@@ -941,6 +989,70 @@ created: 2026-07-27T09:30:00Z\nupdated: 2026-07-27T14:02:00Z\n---\n\
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].id, id);
         assert_eq!(rows[0].title, "Three");
+    }
+
+    #[test]
+    fn reconcile_ignores_foreign_prefix_files() {
+        let db = tempfile::tempdir().unwrap();
+        let reg = Registry::open(&db.path().join("r.db")).unwrap();
+        let root_dir = tempfile::tempdir().unwrap();
+        let root = root_dir.path();
+
+        // A foreign-prefix file shares seq 1 with the project's own file
+        // (say, a repo cloned from someone whose project derived another
+        // key). Only the project's own file becomes a row.
+        write_issue(root, "AGE-1", "todo", "Ours");
+        write_issue(root, "XYZ-1", "done", "Theirs");
+        let s = reconcile(&reg, "p1", "AGE", root).unwrap();
+        assert_eq!((s.imported, s.updated, s.dropped), (1, 0, 0));
+        let rows = reg.list_issues("p1").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].title, "Ours");
+        assert_eq!(rows[0].status, IssueStatus::Todo);
+
+        // Deleting the project's file deletes the issue for good — the
+        // foreign file must not resurrect it (or flip the row's content).
+        std::fs::remove_file(issue_path(root, "AGE-1")).unwrap();
+        let s = reconcile(&reg, "p1", "AGE", root).unwrap();
+        assert_eq!((s.imported, s.updated, s.dropped), (0, 0, 1));
+        assert!(reg.list_issues("p1").unwrap().is_empty());
+
+        // A corrupt foreign file is not ours to report either.
+        std::fs::write(root.join(ISSUES_DIR).join("XYZ-2.md"), "garbage").unwrap();
+        let s = reconcile(&reg, "p1", "AGE", root).unwrap();
+        assert!(s.skipped.is_empty());
+    }
+
+    #[test]
+    fn reconcile_keeps_rows_when_the_dir_is_unlistable() {
+        let db = tempfile::tempdir().unwrap();
+        let reg = Registry::open(&db.path().join("r.db")).unwrap();
+        let root_dir = tempfile::tempdir().unwrap();
+        let root = root_dir.path();
+
+        write_issue(root, "AGE-2", "todo", "Two");
+        reconcile(&reg, "p1", "AGE", root).unwrap();
+        let id = reg.list_issues("p1").unwrap()[0].id.clone();
+
+        // The whole dir vanishes (a branch without the tracker checked out):
+        // the rows — and with them the uuids runs.issue_id points at — stay.
+        std::fs::remove_dir_all(root.join(ISSUES_DIR)).unwrap();
+        let s = reconcile(&reg, "p1", "AGE", root).unwrap();
+        assert_eq!(s, ReconcileSummary::default());
+        let rows = reg.list_issues("p1").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, id);
+
+        // The dir comes back (checkout returns): same row, same uuid.
+        write_issue(root, "AGE-2", "done", "Two");
+        let s = reconcile(&reg, "p1", "AGE", root).unwrap();
+        assert_eq!((s.imported, s.updated, s.dropped), (0, 1, 0));
+        assert_eq!(reg.list_issues("p1").unwrap()[0].id, id);
+
+        // An empty index plus a missing dir really is an empty tracker.
+        let fresh = tempfile::tempdir().unwrap();
+        let s = reconcile(&reg, "p2", "AGE", fresh.path()).unwrap();
+        assert_eq!(s, ReconcileSummary::default());
     }
 
     #[test]

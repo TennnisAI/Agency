@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Issue, Project, RunInfo, RepoReadiness, addProject, inspectRepo, listIssues, listProjects, listRuns, runPreview } from "../api";
 import { projectAccent, runName } from "../agents";
@@ -102,8 +102,12 @@ export default function HomeView({
   }
 
   // Hoisted so the issues board can force a refresh right after a mutation
-  // instead of waiting out the poll interval.
+  // instead of waiting out the poll interval. The token sequences overlapping
+  // ticks (a mutation refresh can interleave with the interval): only the
+  // newest snapshot may land, and unmount invalidates whatever is in flight.
+  const tickSeq = useRef(0);
   const tick = useCallback(async () => {
+    const seq = ++tickSeq.current;
     try {
       const ps = await listProjects();
       const lists = await Promise.all(ps.map((p) => listRuns(p.id).catch(() => [] as RunInfo[])));
@@ -111,6 +115,7 @@ export default function HomeView({
       const issueLists = mode === "issues"
         ? await Promise.all(ps.map((p) => listIssues(p.id).catch(() => [] as Issue[])))
         : null;
+      if (seq !== tickSeq.current) return;
       setProjects(ps);
       setRunsBy(Object.fromEntries(ps.map((p, i) => [p.id, lists[i]])));
       if (issueLists) setIssuesBy(Object.fromEntries(ps.map((p, i) => [p.id, issueLists[i]])));
@@ -123,7 +128,10 @@ export default function HomeView({
   useEffect(() => {
     tick();
     const t = window.setInterval(tick, 2500);
-    return () => window.clearInterval(t);
+    return () => {
+      tickSeq.current++; // drop any in-flight snapshot
+      window.clearInterval(t);
+    };
   }, [tick]);
 
   const all = projects.flatMap((p) => runsBy[p.id] ?? []);

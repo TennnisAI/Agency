@@ -139,10 +139,13 @@ export default function FilesView({ root, projectId, projectName }: {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  // Quick-open lands here: live while mounted, pending slot for the mount race.
+  // Quick-open lands here: live while mounted, pending slot for the mount
+  // race. Both are scoped to this root, so a request aimed elsewhere is never
+  // opened here (a mismatched pending one is dropped as stale instead).
   useEffect(() => {
-    const unsubscribe = onOpenFile((req) => openRef.current(req.path, req.line));
-    const pending = consumePendingOpen();
+    if (!rootKey) return;
+    const unsubscribe = onOpenFile(rootKey, (req) => openRef.current(req.path, req.line));
+    const pending = consumePendingOpen(rootKey);
     if (pending) openRef.current(pending.path, pending.line);
     return unsubscribe;
   }, [rootKey]);

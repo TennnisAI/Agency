@@ -66,7 +66,8 @@ export function stripExt(name: string): string {
 const FM_KEY_RE = /^([A-Za-z][A-Za-z0-9_-]*)\s*:\s*(.*)$/;
 const FM_MAX_LINES = 100;
 
-function unquote(v: string): string {
+/** Strip one matching pair of surrounding quotes from a scalar, if present. */
+export function unquote(v: string): string {
   if (
     v.length >= 2 &&
     ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'")))
@@ -86,6 +87,8 @@ export function isValidFmKey(key: string): boolean {
 /**
  * Canonical text for a frontmatter block: `---`, one `key: value` line per
  * pair, `---`, trailing newline. Empty pairs serialize to "" (no block).
+ * Value scalars are written verbatim — pass `parseFrontmatter`'s raw
+ * scalars for values that must keep their original quoting.
  * Round-trips through `parseFrontmatter` for any valid keys.
  */
 export function serializeFrontmatter(pairs: [string, string][]): string {
@@ -95,23 +98,29 @@ export function serializeFrontmatter(pairs: [string, string][]): string {
 
 /**
  * Parse leading frontmatter from a note's lines. Returns the ordered pairs
- * and `end` (the first body line, just past the closing fence), or null when
+ * (values unquoted), the raw scalar each value was written as (`raws`,
+ * quotes intact — the properties editor serializes an untouched value back
+ * in this form so `type: "plan"` survives a click-through unchanged), and
+ * `end` (the first body line, just past the closing fence), or null when
  * the note has no well-formed frontmatter. Shared with the live-preview
  * renderer so the editor and the index agree on the fence range.
  */
 export function parseFrontmatter(
   lines: string[],
-): { pairs: [string, string][]; end: number } | null {
+): { pairs: [string, string][]; raws: string[]; end: number } | null {
   if (lines[0]?.trim() !== "---") return null;
   const pairs: [string, string][] = [];
+  const raws: string[] = [];
   const limit = Math.min(lines.length, FM_MAX_LINES);
   for (let i = 1; i < limit; i++) {
     const line = lines[i];
-    if (line.trim() === "---") return { pairs, end: i + 1 };
+    if (line.trim() === "---") return { pairs, raws, end: i + 1 };
     if (!line.trim()) continue;
     const m = FM_KEY_RE.exec(line);
     if (!m) return null;
-    pairs.push([m[1], unquote(m[2].trim())]);
+    const raw = m[2].trim();
+    pairs.push([m[1], unquote(raw)]);
+    raws.push(raw);
   }
   return null;
 }

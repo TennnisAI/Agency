@@ -76,7 +76,7 @@ describe("frontmatter", () => {
 
   it("keeps empty values and blank lines", () => {
     const fm = parseFrontmatter(["---", "due:", "", "owner: nic", "---", "body"]);
-    expect(fm).toEqual({ pairs: [["due", ""], ["owner", "nic"]], end: 5 });
+    expect(fm).toEqual({ pairs: [["due", ""], ["owner", "nic"]], raws: ["", "nic"], end: 5 });
   });
 
   it("rejects malformed frontmatter as body", () => {
@@ -112,8 +112,18 @@ describe("frontmatter", () => {
     const pairs: [string, string][] = [["status", "draft"], ["due", ""], ["status", "extra"]];
     const text = serializeFrontmatter(pairs);
     expect(text).toBe("---\nstatus: draft\ndue:\nstatus: extra\n---\n");
-    expect(parseFrontmatter(text.split("\n"))).toEqual({ pairs, end: 5 });
+    expect(parseFrontmatter(text.split("\n"))).toEqual({ pairs, raws: ["draft", "", "extra"], end: 5 });
     expect(serializeFrontmatter([])).toBe("");
+  });
+
+  it("raw scalars round-trip quoted values losslessly", () => {
+    const text = '---\ntype: "plan"\nstatus: draft\n---\n';
+    const fm = parseFrontmatter(text.split("\n"))!;
+    expect(fm.pairs).toEqual([["type", "plan"], ["status", "draft"]]);
+    expect(fm.raws).toEqual(['"plan"', "draft"]);
+    // The properties card serializes untouched values in their raw form, so
+    // opening it and clicking away never rewrites the document.
+    expect(serializeFrontmatter(fm.pairs.map(([k], i): [string, string] => [k, fm.raws[i]]))).toBe(text);
   });
 
   it("isValidFmKey matches what the parser accepts", () => {
@@ -125,7 +135,7 @@ describe("frontmatter", () => {
   });
 
   it("an empty frontmatter block parses as zero pairs", () => {
-    expect(parseFrontmatter(["---", "---", "body"])).toEqual({ pairs: [], end: 2 });
+    expect(parseFrontmatter(["---", "---", "body"])).toEqual({ pairs: [], raws: [], end: 2 });
   });
 });
 

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Issue, Project, inspectRepo, RepoReadiness, FileRoot, agentInstalled, startIssueRun } from "../api";
-import { requestOpenFile } from "../lib/openFile";
+import { fileRootKey, requestOpenFile } from "../lib/openFile";
 import { useRuns } from "../store/runs";
 import AgentTile from "./AgentTile";
 import AgentFocus from "./AgentFocus";
@@ -54,12 +54,14 @@ export default function AgentsView({
   // review panel, agent spawn — agents need worktrees) hides for it then.
   // Terminals stay: they run in the checkout, no branch required.
   const [projReadiness, setProjReadiness] = useState<RepoReadiness | null>(null);
+  // Request token: a slow inspectRepo from a previous project (or an older
+  // refresh) must not land over the current one's readiness.
+  const readinessSeq = useRef(0);
   const refreshReadiness = () => {
+    const seq = ++readinessSeq.current;
     if (!project) { setProjReadiness(null); return; }
-    const path = project.repo_path;
-    inspectRepo(path).then((r) => {
-      // Guard against a stale response landing after a project switch.
-      if (path === project.repo_path) setProjReadiness(r);
+    inspectRepo(project.repo_path).then((r) => {
+      if (seq === readinessSeq.current) setProjReadiness(r);
     }).catch(() => {});
   };
   useEffect(() => {
@@ -301,7 +303,7 @@ export default function AgentsView({
           root={filesRoot}
           onOpen={(path) => {
             setTab("files");
-            requestOpenFile({ path });
+            requestOpenFile({ rootKey: fileRootKey(filesRoot), path });
           }}
           onClose={() => setQuickOpen(false)}
         />

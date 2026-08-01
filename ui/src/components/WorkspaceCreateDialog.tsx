@@ -53,7 +53,7 @@ export default function WorkspaceCreateDialog({
         <div className="modal-body">
           <p>
             The workspace is your home for journaling, planning, and notes across
-            projects — plain markdown files, editable here, by agents, or by any
+            projects: plain markdown files, editable here, by agents, or by any
             other tool.
           </p>
           <div className="ws-create-row">
@@ -65,7 +65,7 @@ export default function WorkspaceCreateDialog({
             <span>
               Keep history with git
               <span className="ws-create-hint">
-                Recommended — this is what lets agents draft and edit notes on
+                Recommended: this is what lets agents draft and edit notes on
                 their own branches. Nothing is ever pushed anywhere.
               </span>
             </span>

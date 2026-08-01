@@ -41,12 +41,13 @@ export interface CrossRefs {
   keyPrefixes: Set<string>;
 }
 
-// The raw KEY-n shape. Loose on purpose (real keys are ~3 letters): whether a
-// match *means* an issue is decided by the known-prefix check in
-// resolveTarget, so hyphenated note names ("2026-07-31" starts with a digit
-// and never matches; "FOO-3" matches but falls back to the note domain when
-// no project uses the FOO key).
-export const ISSUE_TARGET_RE = /^([A-Za-z][A-Za-z0-9]{1,7})-(\d+)$/;
+// The raw KEY-n shape. Loose on purpose: the backend derives keys from a
+// project name's alphanumerics (registry.rs derive_issue_key), so a key can
+// start with a digit ("3D Print" → 3DP). Whether a match *means* an issue is
+// decided by the known-prefix gate in classifyTarget — date-like note names
+// ("2026-07") fit the shape, but no project key is "2026", so they stay
+// notes, as does "FOO-3" when no project uses the FOO key.
+export const ISSUE_TARGET_RE = /^([A-Za-z0-9]{1,8})-(\d+)$/;
 
 const RUN_PREFIX = "run:";
 
@@ -55,14 +56,22 @@ export type TargetClass =
   | { kind: "issuePattern"; prefix: string; label: string }
   | { kind: "note" };
 
-/** Syntactic classification of a wikilink target (no lookups). */
-export function classifyTarget(target: string): TargetClass {
+/**
+ * Classification of a wikilink target. `keyPrefixes` (lowercased project
+ * issue keys) gates the issue domain: a KEY-n shape classifies as an issue
+ * only when KEY belongs to a known project, so date-like note names
+ * ("2026-07") and hyphenated titles stay notes. Omit it while cross refs are
+ * loading — every non-run target is then a note.
+ */
+export function classifyTarget(target: string, keyPrefixes?: Set<string> | null): TargetClass {
   const t = target.trim();
   if (t.toLowerCase().startsWith(RUN_PREFIX)) {
     return { kind: "run", id: t.slice(RUN_PREFIX.length).trim() };
   }
   const m = ISSUE_TARGET_RE.exec(t);
-  if (m) return { kind: "issuePattern", prefix: m[1].toLowerCase(), label: t.toLowerCase() };
+  if (m && keyPrefixes?.has(m[1].toLowerCase())) {
+    return { kind: "issuePattern", prefix: m[1].toLowerCase(), label: t.toLowerCase() };
+  }
   return { kind: "note" };
 }
 
@@ -110,13 +119,13 @@ export function resolveTarget(
   cross: CrossRefs | null,
   target: string,
 ): Resolution {
-  const c = classifyTarget(target);
+  const c = classifyTarget(target, cross?.keyPrefixes);
   if (c.kind === "run") {
     if (!cross) return { kind: "unresolvedRun", id: c.id };
     const ref = cross.runsById.get(c.id);
     return ref ? { kind: "run", ref } : { kind: "unresolvedRun", id: c.id };
   }
-  if (c.kind === "issuePattern" && cross && cross.keyPrefixes.has(c.prefix)) {
+  if (c.kind === "issuePattern" && cross) {
     const ref = cross.issuesByLabel.get(c.label);
     return ref ? { kind: "issue", ref } : { kind: "unresolvedIssue", label: target.trim().toUpperCase() };
   }
@@ -228,11 +237,11 @@ export function buildLinkIndex(corpora: Corpus[], cross: CrossRefs): Map<string,
       Number(b.project.id === issue.projectId) - Number(a.project.id === issue.projectId));
     for (const link of extractWikilinks(issue.body)) {
       let edge: { toKind: LinkKind; toId: string } | null = null;
-      const c = classifyTarget(link.target);
+      const c = classifyTarget(link.target, cross.keyPrefixes);
       if (c.kind === "run") {
         const ref = cross.runsById.get(c.id);
         if (ref) edge = { toKind: "run", toId: ref.run.id };
-      } else if (c.kind === "issuePattern" && cross.keyPrefixes.has(c.prefix)) {
+      } else if (c.kind === "issuePattern") {
         const ref = cross.issuesByLabel.get(c.label);
         if (ref && ref.issue.id !== issue.id) edge = { toKind: "issue", toId: ref.issue.id };
       } else {

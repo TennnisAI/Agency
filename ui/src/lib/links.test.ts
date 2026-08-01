@@ -54,16 +54,26 @@ describe("extractWikilinks", () => {
 });
 
 describe("classifyTarget", () => {
-  it("classifies run:, KEY-n, and note targets", () => {
+  const prefixes = new Set(["age", "3dp"]);
+
+  it("classifies run:, known KEY-n, and note targets", () => {
     expect(classifyTarget("run:abc-123")).toEqual({ kind: "run", id: "abc-123" });
-    expect(classifyTarget("AGE-14")).toEqual({ kind: "issuePattern", prefix: "age", label: "age-14" });
-    expect(classifyTarget("age-14")).toEqual({ kind: "issuePattern", prefix: "age", label: "age-14" });
-    // Key-shaped, but only syntactically — resolveTarget decides via known prefixes.
-    expect(classifyTarget("FOO-3")).toEqual({ kind: "issuePattern", prefix: "foo", label: "foo-3" });
-    expect(classifyTarget("Note")).toEqual({ kind: "note" });
-    expect(classifyTarget("guides/Setup")).toEqual({ kind: "note" });
-    // Daily-note names start with a digit and never match the key pattern.
-    expect(classifyTarget("2026-07-31")).toEqual({ kind: "note" });
+    expect(classifyTarget("AGE-14", prefixes)).toEqual({ kind: "issuePattern", prefix: "age", label: "age-14" });
+    expect(classifyTarget("age-14", prefixes)).toEqual({ kind: "issuePattern", prefix: "age", label: "age-14" });
+    // Keys can lead with a digit (derive_issue_key: "3D Print" → 3DP).
+    expect(classifyTarget("3dp-7", prefixes)).toEqual({ kind: "issuePattern", prefix: "3dp", label: "3dp-7" });
+    expect(classifyTarget("Note", prefixes)).toEqual({ kind: "note" });
+    expect(classifyTarget("guides/Setup", prefixes)).toEqual({ kind: "note" });
+  });
+
+  it("keeps unknown prefixes and date-like names in the note domain", () => {
+    // Key-shaped but no project uses FOO: a note target.
+    expect(classifyTarget("FOO-3", prefixes)).toEqual({ kind: "note" });
+    // While cross refs load there are no known keys — everything is a note.
+    expect(classifyTarget("AGE-14")).toEqual({ kind: "note" });
+    // Daily/monthly note names fit the shape but never a known key.
+    expect(classifyTarget("2026-07-31", prefixes)).toEqual({ kind: "note" });
+    expect(classifyTarget("2026-07", prefixes)).toEqual({ kind: "note" });
   });
 });
 
@@ -91,6 +101,17 @@ describe("resolveTarget", () => {
   it("unknown prefix falls through to the note domain", () => {
     expect(resolveTarget(index, cross, "FOO-3")).toEqual({ kind: "note", path: "foo-3.md" });
     expect(resolveTarget(index, cross, "FOO-4")).toEqual({ kind: "unresolvedNote" });
+  });
+
+  it("resolves digit-leading issue keys end to end", () => {
+    const threeD: CrossSource[] = [{
+      project: { id: "p3", name: "3D Print", issue_key: "3DP" },
+      issues: [issue({ id: "d1", projectId: "p3", seq: 1 })],
+      runs: [],
+    }];
+    const c3 = buildCrossRefs(threeD);
+    expect(resolveTarget(index, c3, "3dp-1")).toMatchObject({ kind: "issue", ref: { issue: { id: "d1" } } });
+    expect(resolveTarget(index, c3, "3DP-9")).toEqual({ kind: "unresolvedIssue", label: "3DP-9" });
   });
 
   it("resolves runs and reports missing ones", () => {
@@ -156,11 +177,15 @@ describe("buildLinkIndex", () => {
     const selfIndex = buildIndex([doc("a.md", "[[b]]\n"), doc("b.md", "x\n")]);
     const selfSources: CrossSource[] = [{
       project: { id: "p", name: "P", issue_key: "P" },
-      issues: [issue({ id: "s1", projectId: "p", seq: 1, body: "self [[P-1]]" })],
+      issues: [
+        issue({ id: "s1", projectId: "p", seq: 1, body: "self [[P-1]]" }),
+        issue({ id: "s2", projectId: "p", seq: 2, body: "see [[P-1]]" }),
+      ],
       runs: [],
     }];
     const t = buildLinkIndex([{ project: selfSources[0].project, index: selfIndex }], buildCrossRefs(selfSources));
-    expect(mentionsOf(t, "issue", "s1")).toEqual([]);
+    // s2's link lands (single-letter keys classify), s1's self-link is dropped.
+    expect(mentionsOf(t, "issue", "s1").map((m) => m.fromId)).toEqual(["s2"]);
     expect(t.get(linkKey("note", noteId("p", "b.md")))).toBeUndefined();
   });
 });

@@ -147,6 +147,74 @@ fn mutations_are_file_first_and_reconcile_follows_external_edits() {
 }
 
 #[test]
+fn create_never_clobbers_an_unreconciled_hand_filed_issue() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let state = common::state(&dir);
+    let p = state.add_project("demo", &repo).unwrap();
+    let d = issues_dir(&repo);
+
+    // Hand-filed issues the counter has never heard of (no list_issues has
+    // run, so no reconcile raised the high-water mark). The next create must
+    // skip past them, not overwrite them.
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(d.join("DEM-1.md"), "---\nkey: DEM-1\nstatus: todo\n---\n# Hand one\n")
+        .unwrap();
+    std::fs::write(d.join("DEM-2.md"), "---\nkey: DEM-2\nstatus: todo\n---\n# Hand two\n")
+        .unwrap();
+    let created = state.create_issue(&p.id, "App issue", "", IssueStatus::Todo).unwrap();
+    assert_eq!(created.seq, 3, "numbers taken on disk are skipped");
+    assert!(std::fs::read_to_string(d.join("DEM-1.md")).unwrap().contains("# Hand one"));
+    assert!(std::fs::read_to_string(d.join("DEM-2.md")).unwrap().contains("# Hand two"));
+    assert!(std::fs::read_to_string(d.join("DEM-3.md")).unwrap().contains("# App issue"));
+    assert_eq!(state.list_issues(&p.id).unwrap().len(), 3);
+}
+
+#[test]
+fn titles_normalize_and_priority_validates() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let state = common::state(&dir);
+    let p = state.add_project("demo", &repo).unwrap();
+    let d = issues_dir(&repo);
+
+    // A pasted multi-line title collapses to one line — the title is one H1
+    // line in the file, so a raw newline would smear it into the body.
+    let issue = state.create_issue(&p.id, " Multi\nline\ttitle ", "", IssueStatus::Todo).unwrap();
+    assert_eq!(issue.title, "Multi line title");
+    let text = std::fs::read_to_string(d.join("DEM-1.md")).unwrap();
+    let parsed = agency_core::issuefs::parse_issue_file("DEM-1", &text).unwrap();
+    assert_eq!(parsed.title, "Multi line title");
+    assert_eq!(parsed.body, "");
+
+    let patch = agency_core::registry::IssuePatch {
+        title: Some("Renamed\nagain".into()),
+        ..Default::default()
+    };
+    assert_eq!(state.update_issue(&issue.id, &patch).unwrap().title, "Renamed again");
+
+    // A priority the file format rejects never reaches the file.
+    let patch = agency_core::registry::IssuePatch { priority: Some(9), ..Default::default() };
+    assert!(state.update_issue(&issue.id, &patch).is_err());
+    let after = &state.list_issues(&p.id).unwrap()[0];
+    assert_eq!(after.priority, 0, "failed patch mutated state");
+    assert!(
+        agency_core::issuefs::parse_issue_file(
+            "DEM-1",
+            &std::fs::read_to_string(d.join("DEM-1.md")).unwrap()
+        )
+        .is_ok(),
+        "the app wrote a file its own parser rejects"
+    );
+}
+
+#[test]
 fn dates_and_rank_patch_set_clear_and_validate() {
     let dir = tempfile::tempdir().unwrap();
     let repo = dir.path().join("repo");

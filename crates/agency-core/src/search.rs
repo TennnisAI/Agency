@@ -134,6 +134,26 @@ fn search_rg(rg: &Path, root: &Path, q: &SearchQuery, deadline: Instant) -> Resu
 
     let mut child = cmd.spawn()?;
     let stdout = child.stdout.take().expect("stdout was piped");
+    // The read loop only notices the deadline between output lines, so an rg
+    // that is busy but silent (a huge tree on a slow volume) would block the
+    // read past the budget. A watchdog thread kills the child at the
+    // deadline; the kill closes stdout, which unblocks the read.
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+    let child = Arc::new(Mutex::new(child));
+    let finished = Arc::new(AtomicBool::new(false));
+    let watchdog = {
+        let (child, finished) = (Arc::clone(&child), Arc::clone(&finished));
+        std::thread::spawn(move || {
+            while !finished.load(Ordering::Relaxed) {
+                if Instant::now() >= deadline {
+                    let _ = child.lock().unwrap().kill();
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+        })
+    };
     let mut hits = Vec::new();
     let mut stopped_early = false;
     for line in std::io::BufReader::new(stdout).lines() {
@@ -155,11 +175,17 @@ fn search_rg(rg: &Path, root: &Path, q: &SearchQuery, deadline: Instant) -> Resu
             text: cap_text(d["lines"]["text"].as_str().unwrap_or("")),
         });
     }
+    finished.store(true, Ordering::Relaxed);
     // Kill rg if a cap/deadline ended the read mid-stream; harmless if it
-    // already exited on its own.
-    let _ = child.kill();
-    let status = child.wait()?;
-    // Exit 0 = matches, 1 = no matches — both fine. Anything else with no
+    // already exited on its own (or the watchdog got there first).
+    let status = {
+        let mut child = child.lock().unwrap();
+        let _ = child.kill();
+        child.wait()?
+    };
+    let _ = watchdog.join();
+    // Exit 0 = matches, 1 = no matches — both fine (a deadline kill exits by
+    // signal, so `code()` is None and lands here too). Anything else with no
     // output means rg itself failed; error out so the caller falls back.
     if hits.is_empty() && !stopped_early {
         if let Some(code) = status.code() {
@@ -505,6 +531,30 @@ mod tests {
             b.sort_by(|x, y| (&x.path, x.line).cmp(&(&y.path, y.line)));
             assert_eq!(a, b, "engines must agree ({label})");
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rg_deadline_kills_a_silent_engine() {
+        use std::os::unix::fs::PermissionsExt;
+        // A stand-in rg that produces no output and never exits on its own:
+        // the watchdog must kill it at the deadline instead of blocking the
+        // stdout read for the child's whole lifetime.
+        let dir = tempdir().unwrap();
+        let fake = dir.path().join("fake-rg");
+        std::fs::write(&fake, "#!/bin/sh\nsleep 30\n").unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let started = Instant::now();
+        let hits =
+            search_rg(&fake, dir.path(), &q("x"), Instant::now() + Duration::from_millis(200))
+                .unwrap();
+        assert!(hits.is_empty());
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "silent rg outlived the deadline: {:?}",
+            started.elapsed()
+        );
     }
 
     /// Ship gate A: both engines finish a 10k-file tree within the search

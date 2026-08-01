@@ -178,10 +178,18 @@ export default function IssuesView({
     // selects the row is unaffected.
     e.preventDefault();
     const start = { x: e.clientX, y: e.clientY };
+    // Set once the 5px threshold is crossed; drives click suppression on
+    // release even after a cancel (the pointer is no longer "just clicking").
+    let started = false;
+    // Escape sets this so the drag can't silently restart on the next
+    // mousemove; the still-held button then releases as a no-op.
+    let cancelled = false;
 
     const onMove = (ev: MouseEvent) => {
+      if (cancelled) return;
       if (!dragLive.current) {
         if (Math.abs(ev.clientX - start.x) + Math.abs(ev.clientY - start.y) < 5) return;
+        started = true;
         dragLive.current = { status, from, to: from };
         window.getSelection()?.removeAllRanges();
       }
@@ -195,6 +203,7 @@ export default function IssuesView({
     };
     const onKey = (ev: KeyboardEvent) => {
       if (ev.key !== "Escape") return;
+      cancelled = true;
       dragLive.current = null;
       setDrag(null);
     };
@@ -205,9 +214,13 @@ export default function IssuesView({
       const d = dragLive.current;
       dragLive.current = null;
       setDrag(null);
-      if (!d) return;
-      suppressClick.current = true;
-      window.setTimeout(() => { suppressClick.current = false; }, 0);
+      if (started) {
+        // Neither a completed nor a cancelled drag may read as a click on
+        // the row the pointer ends over.
+        suppressClick.current = true;
+        window.setTimeout(() => { suppressClick.current = false; }, 0);
+      }
+      if (!d || cancelled) return;
       const group = groupsRef.current.find((g) => g.status === d.status)?.issues ?? [];
       dropReorder(group, d.from, d.to);
     };

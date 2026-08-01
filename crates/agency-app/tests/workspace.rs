@@ -71,3 +71,46 @@ fn move_workspace_renames_folder_and_repoints_row() {
     assert!(err.contains("inside the current workspace"), "got: {err}");
     assert!(dest.join("keep.md").exists(), "nothing moved");
 }
+
+#[test]
+fn move_workspace_refuses_while_agent_runs_are_live() {
+    let dir = tempfile::tempdir().unwrap();
+    let loc = dir.path().join("Agency");
+    let dest = dir.path().join("Elsewhere");
+
+    let state = common::state(&dir);
+    let ws = state.create_workspace(&loc, false).unwrap();
+
+    // A live run's worktree git metadata records absolute paths; a rename
+    // would orphan it. Seed the run row directly (spawning a real agent is
+    // the supervisor tests' job).
+    let reg = agency_core::registry::Registry::open(&dir.path().join("agency.db")).unwrap();
+    let run = agency_core::registry::Run {
+        id: "run-1".into(),
+        project_id: ws.id.clone(),
+        agent: "claude".into(),
+        prompt: "p".into(),
+        base: "main".into(),
+        branch: "agent/run-1".into(),
+        created_at: 1,
+        port_base: None,
+        archived_at: None,
+        title: None,
+        kind: "workspace".into(),
+        merge_target: None,
+        race_id: None,
+        loop_config: None,
+        loop_state: None,
+        issue_id: None,
+    };
+    reg.insert_run(&run).unwrap();
+
+    let err = state.move_workspace(&dest).unwrap_err().to_string();
+    assert!(err.contains("active agent run"), "got: {err}");
+    assert!(loc.exists() && !dest.exists(), "nothing moved");
+
+    // Archiving the run clears the objection.
+    reg.set_archived("run-1", Some(2)).unwrap();
+    let moved = state.move_workspace(&dest).unwrap();
+    assert_eq!(moved.repo_path, dest);
+}

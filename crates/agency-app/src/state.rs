@@ -392,6 +392,13 @@ fn now_secs() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
 
+/// Issue titles are one H1 line in the file; collapse all whitespace runs
+/// (newlines included) to single spaces so a pasted multi-line title can't
+/// smear into the body on the next parse.
+fn normalize_title(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 fn now_millis() -> u128 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)
@@ -775,9 +782,21 @@ impl AppState {
     pub fn move_workspace(&self, new_path: &Path) -> Result<Project> {
         let ws = self
             .get_workspace()?
-            .ok_or_else(|| anyhow!("no workspace to move — create it first"))?;
+            .ok_or_else(|| anyhow!("no workspace to move; create it first"))?;
         if new_path == ws.repo_path {
             return Ok(ws);
+        }
+        // Live runs keep worktrees under `<ws>/.agency/worktrees/` whose git
+        // metadata records absolute paths (the worktree's `.git` file and the
+        // main repo's `.git/worktrees/<id>/gitdir`); renaming the folder
+        // would orphan them and strand any unmerged work. Registry list_runs
+        // already excludes archived runs.
+        let live = self.registry.lock().unwrap().list_runs(&ws.id)?.len();
+        if live > 0 {
+            bail!(
+                "the workspace has {live} active agent run{}; merge or archive them before moving",
+                if live == 1 { "" } else { "s" }
+            );
         }
         // A folder cannot move into itself; the location picker makes this
         // easy to do by creating the destination inside the open workspace.
@@ -788,7 +807,7 @@ impl AppState {
             );
         }
         if new_path.exists() {
-            bail!("{} already exists — choose a new location", new_path.display());
+            bail!("{} already exists; choose a new location", new_path.display());
         }
         if let Some(parent) = new_path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -1477,7 +1496,7 @@ impl AppState {
     pub fn list_issues(&self, project_id: &str) -> Result<Vec<agency_core::registry::Issue>> {
         let reg = self.registry.lock().unwrap();
         self.ensure_issue_files(&reg, project_id)?;
-        let (root, _) = self.issue_root(&reg, project_id)?;
+        let (root, key) = self.issue_root(&reg, project_id)?;
         // Reconcile only when the files' stat signature moved.
         let sig = agency_core::issuefs::scan_issue_stats(&root)?
             .iter()
@@ -1486,7 +1505,7 @@ impl AppState {
             .join("|");
         let mut sigs = self.issue_sigs.lock().unwrap();
         if sigs.get(project_id) != Some(&sig) {
-            let summary = agency_core::issuefs::reconcile(&reg, project_id, &root)?;
+            let summary = agency_core::issuefs::reconcile(&reg, project_id, &key, &root)?;
             if summary.imported + summary.updated + summary.dropped > 0 {
                 log::debug!(
                     "issues reconciled for {project_id}: +{} ~{} -{}",
@@ -1512,12 +1531,22 @@ impl AppState {
         }
         let reg = self.registry.lock().unwrap();
         self.ensure_issue_files(&reg, project_id)?;
+        // The counter only learns about hand-authored files at reconcile time
+        // (the list_issues poll), so a number it hands out may already be
+        // taken on disk — skip past those files rather than clobbering them.
+        let (root, prefix) = self.issue_root(&reg, project_id)?;
+        let seq = loop {
+            let seq = reg.alloc_issue_seq(project_id)?;
+            if !agency_core::issuefs::issue_path(&root, &format!("{prefix}-{seq}")).exists() {
+                break seq;
+            }
+        };
         let now = now_secs();
         let issue = agency_core::registry::Issue {
             id: uuid::Uuid::new_v4().to_string(),
             project_id: project_id.to_string(),
-            seq: reg.alloc_issue_seq(project_id)?,
-            title: title.trim().to_string(),
+            seq,
+            title: normalize_title(title),
             body: body.to_string(),
             status,
             priority: 0,
@@ -1543,7 +1572,7 @@ impl AppState {
         let mut next = reg.get_issue(id)?.ok_or_else(|| anyhow!("unknown issue: {id}"))?;
         self.ensure_issue_files(&reg, &next.project_id)?;
         if let Some(t) = &patch.title {
-            next.title = t.trim().to_string();
+            next.title = normalize_title(t);
         }
         if let Some(b) = &patch.body {
             next.body = b.clone();
@@ -1551,11 +1580,14 @@ impl AppState {
         if let Some(s) = patch.status {
             next.status = s;
         }
-        if let Some(p) = patch.priority {
-            next.priority = p;
-        }
         // Validate what the file parser would reject — the API must never
         // write a file that reconcile then skips as corrupt.
+        if let Some(p) = patch.priority {
+            if p > 4 {
+                bail!("invalid priority: {p}");
+            }
+            next.priority = p;
+        }
         if let Some(d) = &patch.due {
             next.due = d.as_deref().map(agency_core::issuefs::parse_date).transpose()?;
         }

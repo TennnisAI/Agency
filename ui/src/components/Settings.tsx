@@ -651,7 +651,7 @@ export default function Settings({
         <section className="settings-section">
           <div className="settings-section-label">Workspace</div>
           <p className="settings-section-hint">
-            Your home for journaling, planning, and cross-project notes — plain
+            Your home for journaling, planning, and cross-project notes: plain
             markdown files on disk. <kbd>⌘⇧D</kbd> opens today's journal note.
           </p>
           <div className="settings-group-card">
@@ -685,7 +685,7 @@ export default function Settings({
                   <div className="settings-notif-row">
                     <span className="settings-notif-label">
                       Git is off, so agents can't be dispatched on notes. Initialize a
-                      repository to enable them — nothing is ever pushed anywhere.
+                      repository to enable them; nothing is ever pushed anywhere.
                     </span>
                     <button className="settings-save" onClick={enableWorkspaceGit}>Enable git</button>
                   </div>
@@ -694,7 +694,7 @@ export default function Settings({
             ) : (
               <div className="settings-notif-row">
                 <span className="settings-notif-label">
-                  Not created yet — by default it will live at{" "}
+                  Not created yet. By default it will live at{" "}
                   <code className="settings-meta-val">{wsDefault || "~/Agency"}</code>.
                 </span>
                 <button

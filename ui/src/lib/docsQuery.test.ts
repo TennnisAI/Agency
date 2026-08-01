@@ -24,8 +24,22 @@ describe("parseDocsQuery", () => {
     });
   });
 
-  it("keeps a bare key: as a has-key filter", () => {
+  it("keeps a trailing bare key: as a has-key filter", () => {
     expect(parseDocsQuery("due:")).toEqual({ filters: [["due", ""]], text: "" });
+    expect(parseDocsQuery("budget due: ")).toEqual({ filters: [["due", ""]], text: "budget" });
+  });
+
+  it("leaves prose colons as text (searching literal 'error: timeout' works)", () => {
+    expect(parseDocsQuery("error: timeout")).toEqual({ filters: [], text: "error: timeout" });
+    expect(parseDocsQuery("error: timeout status:draft")).toEqual({
+      filters: [["status", "draft"]],
+      text: "error: timeout",
+    });
+  });
+
+  it("leaves URLs as text", () => {
+    expect(parseDocsQuery("http://example.com")).toEqual({ filters: [], text: "http://example.com" });
+    expect(parseDocsQuery("see https://x.dev docs")).toEqual({ filters: [], text: "see https://x.dev docs" });
   });
 
   it("leaves #tags in the text", () => {

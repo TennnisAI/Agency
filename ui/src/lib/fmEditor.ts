@@ -10,13 +10,15 @@
 
 import { EditorState, Extension, StateField } from "@codemirror/state";
 import { Decoration, DecorationSet, EditorView, WidgetType } from "@codemirror/view";
-import { isValidFmKey, parseFrontmatter, serializeFrontmatter } from "./docsIndex";
+import { isValidFmKey, parseFrontmatter, serializeFrontmatter, unquote } from "./docsIndex";
 import { docsIndexFacet, docsNavFacet } from "./livePreview";
 
 interface FmBlock {
   /** Raw text of the block, fences included, no trailing newline. */
   text: string;
   pairs: [string, string][];
+  /** Each value's raw scalar as written (quotes intact), parallel to pairs. */
+  raws: string[];
   /** Doc position just past the closing fence line (its line end). */
   to: number;
 }
@@ -30,7 +32,7 @@ function fmBlock(state: EditorState): FmBlock | null {
   const fm = parseFrontmatter(head);
   if (!fm) return null;
   const to = doc.line(fm.end).to;
-  return { text: doc.sliceString(0, to), pairs: fm.pairs, to };
+  return { text: doc.sliceString(0, to), pairs: fm.pairs, raws: fm.raws, to };
 }
 
 // Set by requestAddProperty before a transaction creates/rebuilds the widget;
@@ -133,10 +135,14 @@ function buildCard(view: EditorView, block: FmBlock): HTMLElement {
   };
 
   const readRows = (): [string, string][] =>
-    [...rows.querySelectorAll<HTMLElement>(".fmw-row")].map((r) => [
-      (r.querySelector<HTMLInputElement>(".fmw-key")!).value.trim(),
-      (r.querySelector<HTMLInputElement>(".fmw-val")!).value.trim(),
-    ]);
+    [...rows.querySelectorAll<HTMLElement>(".fmw-row")].map((r) => {
+      const key = (r.querySelector<HTMLInputElement>(".fmw-key")!).value.trim();
+      const val = (r.querySelector<HTMLInputElement>(".fmw-val")!).value.trim();
+      // An untouched value keeps its original scalar (quotes intact), so
+      // clicking through the card never rewrites the document.
+      const raw = (r as HTMLElement & { _fmwRaw?: string })._fmwRaw;
+      return [key, raw !== undefined && unquote(raw) === val ? raw : val];
+    });
 
   // One document change per editing session. Refuses while an invalid key is
   // present (committing it would demote the whole block to body text) — the
@@ -172,9 +178,10 @@ function buildCard(view: EditorView, block: FmBlock): HTMLElement {
     input.classList.toggle("invalid", k !== "" && !isValidFmKey(k));
   };
 
-  const addRow = (key: string, value: string, focus?: "key" | "value", draft = false) => {
+  const addRow = (key: string, value: string, focus?: "key" | "value", draft = false, raw?: string) => {
     const row = document.createElement("div");
     row.className = "fmw-row";
+    (row as HTMLElement & { _fmwRaw?: string })._fmwRaw = raw;
 
     const keyInput = document.createElement("input");
     keyInput.className = "fmw-key";
@@ -232,7 +239,7 @@ function buildCard(view: EditorView, block: FmBlock): HTMLElement {
     if (focus) (focus === "key" ? keyInput : valInput).focus();
   };
 
-  for (const [k, v] of block.pairs) addRow(k, v);
+  block.pairs.forEach(([k, v], i) => addRow(k, v, undefined, false, block.raws[i]));
 
   // Commit when focus leaves the card entirely (Tab between inputs stays in).
   card.addEventListener("focusout", (e) => {

@@ -624,7 +624,7 @@ pub async fn merge_pr(
     number: u64,
     method: String,
     delete_branch: bool,
-) -> Result<(), String> {
+) -> Result<agency_core::gh::PrMergeResult, String> {
     state.merge_pr(&project_id, number, &method, delete_branch).map_err(|e| e.to_string())
 }
 

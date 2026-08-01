@@ -632,10 +632,16 @@ export interface MergeMethods {
   rebase: boolean;
 }
 export type MergeMethod = "merge" | "squash" | "rebase";
+/** What happened to the head branch after a successful PR merge. */
+export interface PrMergeResult {
+  branchDeleted: string | null;
+  // Set when the merge landed but branch cleanup didn't; a note, not a failure.
+  warning: string | null;
+}
 export const prMergeMethods = (projectId: string) =>
   invoke<MergeMethods>("pr_merge_methods", { projectId });
 export const mergePr = (projectId: string, number: number, method: MergeMethod, deleteBranch: boolean) =>
-  invoke<void>("merge_pr", { projectId, number, method, deleteBranch });
+  invoke<PrMergeResult>("merge_pr", { projectId, number, method, deleteBranch });
 export const prDiff = (projectId: string, number: number) =>
   invoke<PrFileDiff[]>("pr_diff", { projectId, number });
 export const prReviewThreads = (projectId: string, number: number) =>

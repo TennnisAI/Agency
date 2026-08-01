@@ -14,7 +14,7 @@ import {
   submitPrReview,
   unresolvePrThread,
 } from "../../api";
-import { toastError, toastSuccess } from "../../lib/toast";
+import { toastError, toastInfo, toastSuccess } from "../../lib/toast";
 import Markdown from "../Markdown";
 import MergePrDialog from "./MergePrDialog";
 import PrDiffFile from "./PrDiffFile";
@@ -261,9 +261,12 @@ export default function PrReview({
           projectId={projectId}
           number={number}
           title={detail.title}
-          onMerged={() => {
+          onMerged={(result) => {
             setShowMerge(false);
             toastSuccess(`Merged #${number}`);
+            // Branch cleanup is best effort; the merge already landed, so this
+            // is a note rather than an error.
+            if (result.warning) toastInfo(result.warning);
             onMerged?.();
             load();
           }}

@@ -3245,7 +3245,13 @@ impl AppState {
 
     /// Merge a PR from the review view (the solo-dev path — you can't approve
     /// your own PR but can merge it).
-    pub fn merge_pr(&self, project_id: &str, number: u64, method: &str, delete_branch: bool) -> Result<()> {
+    pub fn merge_pr(
+        &self,
+        project_id: &str,
+        number: u64,
+        method: &str,
+        delete_branch: bool,
+    ) -> Result<agency_core::gh::PrMergeResult> {
         let repo = self.project_repo(project_id)?;
         agency_core::gh::GhCli::default().merge_pr(&repo, number, method, delete_branch)
     }

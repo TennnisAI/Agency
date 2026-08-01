@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { MergeMethod, MergeMethods, mergePr, prMergeMethods } from "../../api";
+import { MergeMethod, MergeMethods, PrMergeResult, mergePr, prMergeMethods } from "../../api";
 import { useModalKeys } from "../../hooks/useModalKeys";
 
 const METHOD_LABEL: Record<MergeMethod, string> = {
@@ -20,7 +20,8 @@ export default function MergePrDialog({
   projectId: string;
   number: number;
   title: string;
-  onMerged: () => void;
+  // Carries the merge result so the host can note branch cleanup that didn't run.
+  onMerged: (result: PrMergeResult) => void;
   onCancel: () => void;
 }) {
   const [methods, setMethods] = useState<MergeMethods | null>(null);
@@ -48,8 +49,7 @@ export default function MergePrDialog({
     setBusy(true);
     setError("");
     try {
-      await mergePr(projectId, number, method, deleteBranch);
-      onMerged();
+      onMerged(await mergePr(projectId, number, method, deleteBranch));
     } catch (e) {
       setError(String(e));
       setBusy(false);
@@ -78,9 +78,12 @@ export default function MergePrDialog({
                   <span>{METHOD_LABEL[k]}</span>
                 </label>
               ))}
-              <label className="merge-method">
+              <label
+                className="merge-method"
+                title="Deletes the branch on GitHub. The local branch and its worktree stay until the task is archived."
+              >
                 <input type="checkbox" checked={deleteBranch} onChange={(e) => setDeleteBranch(e.target.checked)} />
-                <span>Delete branch after merge</span>
+                <span>Delete remote branch after merge</span>
               </label>
             </div>
           )}

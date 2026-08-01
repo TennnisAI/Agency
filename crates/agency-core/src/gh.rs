@@ -210,6 +210,18 @@ pub struct MergeMethods {
     pub rebase: bool,
 }
 
+/// Outcome of a PR merge. The merge itself either succeeded or returned an
+/// error; this reports what happened to the head branch afterwards, so
+/// best-effort cleanup can be shown as a note rather than a failed merge.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrMergeResult {
+    /// The remote branch that was deleted, if any.
+    pub branch_deleted: Option<String>,
+    /// Set when the merge landed but branch cleanup did not.
+    pub warning: Option<String>,
+}
+
 pub struct GhCli {
     bin: String,
 }
@@ -467,21 +479,74 @@ impl GhCli {
     }
 
     /// Merge PR `number` with `method` (merge | squash | rebase), optionally
-    /// deleting the head branch after. gh's stderr (conflicts, required checks,
-    /// protected branch) is surfaced as-is on failure.
-    pub fn merge_pr(&self, repo: &Path, number: u64, method: &str, delete_branch: bool) -> Result<()> {
+    /// deleting the remote head branch after. gh's stderr (conflicts, required
+    /// checks, protected branch) is surfaced as-is on failure.
+    ///
+    /// Deliberately does NOT use `gh pr merge --delete-branch`: that flag also
+    /// deletes the LOCAL branch, and Agency keeps every agent branch checked out
+    /// in a worktree, which git refuses to delete out from under. gh reports that
+    /// as a command failure even though the merge already landed, so the UI would
+    /// show a merged PR as a failed merge. Branch cleanup runs separately here and
+    /// downgrades to a warning; the local branch stays put and is removed with the
+    /// worktree when the task is archived or discarded.
+    pub fn merge_pr(
+        &self,
+        repo: &Path,
+        number: u64,
+        method: &str,
+        delete_branch: bool,
+    ) -> Result<PrMergeResult> {
         let num = number.to_string();
         let flag = match method {
             "squash" => "--squash",
             "rebase" => "--rebase",
             _ => "--merge",
         };
-        let mut args: Vec<&str> = vec!["pr", "merge", num.as_str(), flag];
-        if delete_branch {
-            args.push("--delete-branch");
+        self.run_ok(repo, &["pr", "merge", num.as_str(), flag])?;
+        if !delete_branch {
+            return Ok(PrMergeResult::default());
         }
-        self.run_ok(repo, &args)?;
-        Ok(())
+        match self.delete_remote_head_branch(repo, number) {
+            Ok(Some(branch)) => Ok(PrMergeResult { branch_deleted: Some(branch), warning: None }),
+            Ok(None) => Ok(PrMergeResult {
+                branch_deleted: None,
+                warning: Some("The head branch is on a fork, so it was left in place.".into()),
+            }),
+            Err(e) => Ok(PrMergeResult {
+                branch_deleted: None,
+                warning: Some(format!("The remote branch could not be deleted: {e}")),
+            }),
+        }
+    }
+
+    /// Delete the PR's head branch on the remote. Returns the branch name, or
+    /// `None` when the PR comes from a fork (the ref lives in another repo, so
+    /// deleting it from the base repo is neither possible nor ours to do).
+    fn delete_remote_head_branch(&self, repo: &Path, number: u64) -> Result<Option<String>> {
+        let num = number.to_string();
+        let out = self.run_ok(
+            repo,
+            &["pr", "view", &num, "--json", "headRefName,isCrossRepository"],
+        )?;
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Head {
+            #[serde(default)]
+            head_ref_name: String,
+            #[serde(default)]
+            is_cross_repository: bool,
+        }
+        let head: Head = serde_json::from_str(&out)?;
+        if head.is_cross_repository {
+            return Ok(None);
+        }
+        if head.head_ref_name.is_empty() {
+            bail!("gh did not report a head branch for #{number}");
+        }
+        let (owner, name) = self.repo_slug(repo)?;
+        let path = format!("repos/{owner}/{name}/git/refs/heads/{}", head.head_ref_name);
+        self.run_ok(repo, &["api", "-X", "DELETE", &path])?;
+        Ok(Some(head.head_ref_name))
     }
 
     /// The authenticated gh user's login. Used to detect self-authored PRs —
@@ -1119,10 +1184,75 @@ esac
     fn merge_pr_builds_expected_args() {
         let dir = tempfile::tempdir().unwrap();
         let cap = dir.path().join("args.txt");
-        let bin = fake_gh(dir.path(), &format!(r#"echo "$@" > "{}""#, cap.display()));
-        GhCli::with_bin(bin).merge_pr(dir.path(), 3, "squash", true).unwrap();
+        // Log every gh invocation, and answer the two queries the cleanup makes.
+        let bin = fake_gh(
+            dir.path(),
+            &format!(
+                r#"echo "$@" >> "{}"
+case "$1 $2" in
+  "pr view") echo '{{"headRefName":"agent/agent-zek6","isCrossRepository":false}}' ;;
+  "repo view") echo "o/r" ;;
+esac"#,
+                cap.display()
+            ),
+        );
+        let res = GhCli::with_bin(bin).merge_pr(dir.path(), 3, "squash", true).unwrap();
+        assert_eq!(res.branch_deleted.as_deref(), Some("agent/agent-zek6"));
+        assert_eq!(res.warning, None);
         let args = std::fs::read_to_string(&cap).unwrap();
-        assert_eq!(args.trim(), "pr merge 3 --squash --delete-branch");
+        let lines: Vec<&str> = args.lines().collect();
+        // No --delete-branch: it would also delete the local branch, which is
+        // checked out in the task's worktree.
+        assert_eq!(lines[0], "pr merge 3 --squash");
+        assert_eq!(lines.last().copied(), Some("api -X DELETE repos/o/r/git/refs/heads/agent/agent-zek6"));
+    }
+
+    #[test]
+    fn merge_pr_without_delete_branch_only_merges() {
+        let dir = tempfile::tempdir().unwrap();
+        let cap = dir.path().join("args.txt");
+        let bin = fake_gh(dir.path(), &format!(r#"echo "$@" >> "{}""#, cap.display()));
+        let res = GhCli::with_bin(bin).merge_pr(dir.path(), 3, "merge", false).unwrap();
+        assert_eq!(res, PrMergeResult::default());
+        assert_eq!(std::fs::read_to_string(&cap).unwrap().trim(), "pr merge 3 --merge");
+    }
+
+    #[test]
+    fn merge_pr_reports_failed_branch_cleanup_as_warning() {
+        let dir = tempfile::tempdir().unwrap();
+        // The merge succeeds; every follow-up call fails. The merge must still
+        // come back Ok so a landed PR is never shown as a failed merge.
+        let bin = fake_gh(
+            dir.path(),
+            r#"if [ "$1 $2" = "pr merge" ]; then exit 0; fi
+echo "boom" >&2; exit 1"#,
+        );
+        let res = GhCli::with_bin(bin).merge_pr(dir.path(), 3, "merge", true).unwrap();
+        assert_eq!(res.branch_deleted, None);
+        assert!(res.warning.unwrap().contains("could not be deleted"));
+    }
+
+    #[test]
+    fn merge_pr_leaves_fork_branches_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = fake_gh(
+            dir.path(),
+            r#"case "$1 $2" in
+  "pr view") echo '{"headRefName":"feature","isCrossRepository":true}' ;;
+  "api -X") echo "should not delete a fork ref" >&2; exit 1 ;;
+esac"#,
+        );
+        let res = GhCli::with_bin(bin).merge_pr(dir.path(), 3, "merge", true).unwrap();
+        assert_eq!(res.branch_deleted, None);
+        assert!(res.warning.unwrap().contains("fork"));
+    }
+
+    #[test]
+    fn merge_pr_surfaces_merge_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = fake_gh(dir.path(), r#"echo "Pull request is not mergeable" >&2; exit 1"#);
+        let err = GhCli::with_bin(bin).merge_pr(dir.path(), 3, "merge", true).unwrap_err();
+        assert!(err.to_string().contains("not mergeable"));
     }
 
     #[test]

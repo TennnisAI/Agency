@@ -765,6 +765,19 @@ pub async fn create_run_from_pr(
     state.create_run_from_pr(&project_id, number, &agent).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+pub async fn create_pr_review_run(
+    state: State<'_, AppState>,
+    project_id: String,
+    number: u64,
+    agent: String,
+    post_comments: bool,
+) -> Result<crate::state::PrReviewRun, String> {
+    state
+        .create_pr_review_run(&project_id, number, &agent, post_comments)
+        .map_err(|e| e.to_string())
+}
+
 // ── issues (the local tracker; GitHub issues are create_run_from_issue) ─────
 
 #[tauri::command]
@@ -1380,7 +1393,7 @@ pub fn start_run_session(
     run_id: String,
     agent: Option<String>,
 ) -> Result<RunSessionInfo, String> {
-    state.start_run_session(&run_id, agent.as_deref()).map_err(|e| e.to_string())
+    state.start_run_session(&run_id, agent.as_deref(), "").map_err(|e| e.to_string())
 }
 
 #[tauri::command]

@@ -78,7 +78,7 @@ export default function AgentFocus({
 }: {
   onSpawn?: (agentId: string, opts?: { base: string; mergeTarget: string }) => void;
 }) {
-  const { runs, focusedRunId, setFocusedRun, refreshRuns, createAgent, createTerminal, selectedProjectId } = useRuns();
+  const { runs, focusedRunId, setFocusedRun, refreshRuns, createAgent, createTerminal, selectedProjectId, pendingSessionId, setPendingSession } = useRuns();
   const [showMerge, setShowMerge] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [confirmArchive, setConfirmArchive] = useState(false);
@@ -115,6 +115,17 @@ export default function AgentFocus({
     const iv = setInterval(load, 4000);
     return () => { live = false; clearInterval(iv); };
   }, [focusedRunId]);
+
+  // A run opened for a specific extra tab (an agent PR review that had to share
+  // this worktree) lands on that tab instead of the primary agent. Declared
+  // after the reset above so it wins on the render that focuses the run, and
+  // cleared once applied so returning here later is business as usual.
+  useEffect(() => {
+    if (!pendingSessionId || !focusedRunId) return;
+    if (!pendingSessionId.startsWith(`${focusedRunId}--`)) return;
+    setPanel(pendingSessionId);
+    setPendingSession(null);
+  }, [pendingSessionId, focusedRunId, setPendingSession]);
 
   const toggleAddMenu = () => {
     setAddOpen((o) => {

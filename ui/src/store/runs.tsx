@@ -26,6 +26,11 @@ interface RunStore {
   spawnProgress: CloneProgress | null;
   approveRunId: string | null;
   setApproveRun: (id: string | null) => void;
+  // An extra agent tab to open once its run is focused (a PR review that had to
+  // share an existing run's worktree). AgentFocus consumes and clears it, so a
+  // later visit to the same run lands on the primary agent as usual.
+  pendingSessionId: string | null;
+  setPendingSession: (id: string | null) => void;
 }
 
 const Ctx = createContext<RunStore | null>(null);
@@ -37,6 +42,7 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
   const [focusedRunId, setFocusedRun] = useState<string | null>(null);
   const [tab, setTabState] = useState<Tab>("agents");
   const [approveRunId, setApproveRun] = useState<string | null>(null);
+  const [pendingSessionId, setPendingSession] = useState<string | null>(null);
   // A count (not a flag) so overlapping creations can't clear each other.
   const [spawnCount, setSpawnCount] = useState(0);
   const [spawnProgress, setSpawnProgress] = useState<CloneProgress | null>(null);
@@ -122,8 +128,10 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
     // another lands you on that project's Files.
     if (id) setTabState(tabByProject.current[id] ?? "agents");
     // Clear any pending merge-approval so switching projects can't re-open the
-    // MergeModal for a run from the old project.
+    // MergeModal for a run from the old project. Same for a pending session tab:
+    // its run belongs to the project we just left.
     setApproveRun(null);
+    setPendingSession(null);
   }
 
   useEffect(() => {
@@ -134,7 +142,7 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <Ctx.Provider
-      value={{ runs, selectedProjectId, setSelectedProject, view, setView, focusedRunId, setFocusedRun, refreshRuns, tab, setTab, createAgent, createTerminal, spawning: spawnCount > 0, spawnProgress, approveRunId, setApproveRun }}
+      value={{ runs, selectedProjectId, setSelectedProject, view, setView, focusedRunId, setFocusedRun, refreshRuns, tab, setTab, createAgent, createTerminal, spawning: spawnCount > 0, spawnProgress, approveRunId, setApproveRun, pendingSessionId, setPendingSession }}
     >
       {children}
     </Ctx.Provider>

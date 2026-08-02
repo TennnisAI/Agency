@@ -109,6 +109,17 @@ pub struct RunSessionInfo {
     pub status: SessionStatus,
 }
 
+/// Where an agent PR review landed. `session_id` is set when the review had to
+/// run as an extra tab inside an existing run (the PR's branch was already
+/// checked out there); the UI focuses that tab instead of the run's primary
+/// agent. None means the review got a workspace of its own.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrReviewRun {
+    pub run: RunInfo,
+    pub session_id: Option<String>,
+}
+
 /// Everything create_run_spec needs to make a workspace + session. The public
 /// entry points (plain create, racing, from-issue, from-PR) differ only in
 /// which fields they fill.
@@ -239,6 +250,74 @@ fn agent_argv(
             .collect(),
     };
     agency_core::scripts::wrap_setup(setup, &profile.command, &base_args)
+}
+
+/// The (command, args) for a fresh agent session that should open with `prompt`
+/// already delivered. A non-empty prompt rides along as the trailing positional
+/// argument (claude/codex/cursor-agent/opencode all accept one) unless the
+/// profile places it itself with a `{{prompt}}` token. An empty prompt yields
+/// the plain promptless argv, so this is a drop-in for [`agent_argv`] on the
+/// fresh (non-resume) path.
+fn fresh_agent_argv(
+    profile: &AgentProfile,
+    prompt: &str,
+    setup: Option<&str>,
+) -> (String, Vec<String>) {
+    let mut args: Vec<String> = profile
+        .render_args(prompt)
+        .into_iter()
+        .filter(|a| !a.is_empty())
+        .collect();
+    if !prompt.trim().is_empty() && !profile.args.iter().any(|a| a.contains("{{prompt}}")) {
+        args.push(prompt.to_string());
+    }
+    agency_core::scripts::wrap_setup(setup, &profile.command, &args)
+}
+
+/// The prompt an agent PR review opens with. Pure so the wording is testable
+/// without a repo or a live agent. `post_comments` decides whether the agent
+/// publishes its findings to the PR on GitHub or only reports them in its own
+/// terminal; either way it is told to stay available for follow-up fixes.
+fn pr_review_prompt(
+    number: u64,
+    title: &str,
+    url: &str,
+    base: &str,
+    post_comments: bool,
+) -> String {
+    let mut p = format!(
+        "Review GitHub pull request #{number}: {title}\n\n\
+         The PR's head branch is checked out in this workspace. Read the change with \
+         `gh pr diff {number}`, or `git diff {base}...HEAD`, and review it for correctness, \
+         bugs, security problems, missing tests, and anything else that should block the \
+         merge. Read the surrounding code too, not just the diff.\n\n"
+    );
+    if post_comments {
+        p.push_str(&format!(
+            "When you are done, publish the review to GitHub with the `gh` CLI, posting the \
+             summary and every inline comment as a single review:\n\n\
+             SLUG=$(gh repo view --json nameWithOwner -q .nameWithOwner)\n\
+             gh api --method POST \"repos/$SLUG/pulls/{number}/reviews\" --input - <<'JSON'\n"
+        ));
+        // Not a format string: the JSON braces are literal.
+        p.push_str(
+            "{\"event\": \"COMMENT\", \"body\": \"<summary>\", \"comments\": [{\"path\": \"<file>\", \"line\": <line>, \"side\": \"RIGHT\", \"body\": \"<comment>\"}]}\n\
+             JSON\n\n\
+             Every comment's path and line must still be part of the diff. `side` is \"RIGHT\" \
+             for added and unchanged lines, \"LEFT\" for deleted ones. Use the COMMENT event: \
+             GitHub rejects approving or requesting changes on a PR you opened yourself.\n\n",
+        );
+    } else {
+        p.push_str(
+            "Report your findings here in the terminal. Do not post anything to GitHub \
+             unless I ask you to.\n\n",
+        );
+    }
+    p.push_str(&format!(
+        "Then stay available: I may ask you to fix what you found. Commit fixes to this \
+         branch and push to update the PR.\n\nPR link: {url}\n"
+    ));
+    p
 }
 
 /// The (command, args) for one headless loop attempt: the profile's loop
@@ -1051,21 +1130,10 @@ impl AppState {
             let mut env = self.provider_env()?;
             env.extend(profile.env.iter().cloned());
             env.extend(agency_core::scripts::script_env(&worktree.path, &repo, &id, Some(port)));
-            let mut args: Vec<String> = profile
-                .render_args(spec.prompt)
-                .into_iter()
-                .filter(|a| !a.is_empty())
-                .collect();
-            // Deliver a non-empty prompt as the agent's initial positional prompt
-            // (claude/codex/cursor-agent/opencode all accept one) unless the
-            // profile places it explicitly with a {{prompt}} token. The default
-            // flow passes "" and behaves exactly as before: the user types into
-            // the live terminal.
-            if !spec.prompt.trim().is_empty() && !profile.args.iter().any(|a| a.contains("{{prompt}}")) {
-                args.push(spec.prompt.to_string());
-            }
+            // The default flow passes "" and behaves exactly as before: the user
+            // types the real prompt into the live terminal.
             let (command, args) =
-                agency_core::scripts::wrap_setup(config.scripts.setup.as_deref(), &profile.command, &args);
+                fresh_agent_argv(&profile, spec.prompt, config.scripts.setup.as_deref());
             if let Err(e) = self.term.read().unwrap().start_session(
                 &session_name(&id),
                 &worktree.path,
@@ -1722,6 +1790,63 @@ impl AppState {
             loop_config: None,
             issue_id: None,
         }, &mut |_| {})
+    }
+
+    /// Start an agent that reviews an existing PR and then sticks around to fix
+    /// what it found. The agent works in the PR's head branch, so its fixes
+    /// commit and push straight onto the PR.
+    ///
+    /// When that branch is already checked out by another run (the usual case
+    /// for a PR an Agency agent opened from the Approve window), the review runs
+    /// as an extra agent tab inside that run: git allows a branch in only one
+    /// worktree, and fixes have to land on that branch anyway. The tab is still
+    /// a fresh agent with no memory of writing the code.
+    pub fn create_pr_review_run(
+        &self,
+        project_id: &str,
+        number: u64,
+        agent: &str,
+        post_comments: bool,
+    ) -> Result<PrReviewRun> {
+        let repo = self.project_repo(project_id)?;
+        let pr = agency_core::gh::GhCli::default()
+            .view_pr_by_number(&repo, number)?
+            .ok_or_else(|| anyhow!("PR #{number} not found"))?;
+        if pr.head_ref_name.is_empty() {
+            bail!("PR #{number} has no local head branch (cross-fork PRs aren't supported yet)");
+        }
+        let prompt =
+            pr_review_prompt(number, &pr.title, &pr.url, &pr.base_ref_name, post_comments);
+        // Only an unarchived agent run can host an extra tab; anything else
+        // holding the branch falls through and git reports the conflict.
+        let holder = self
+            .registry
+            .lock()
+            .unwrap()
+            .list_runs(project_id)?
+            .into_iter()
+            .find(|r| r.branch == pr.head_ref_name && r.kind == "agent");
+        if let Some(run) = holder {
+            let session = self.start_run_session(&run.id, Some(agent), &prompt)?;
+            return Ok(PrReviewRun { run: self.run_info(&run), session_id: Some(session.id) });
+        }
+        agency_core::git::fetch_branch(&repo, &pr.head_ref_name)?;
+        let run = self.create_run_spec(
+            NewRunSpec {
+                project_id,
+                prompt: &prompt,
+                agent,
+                base: &pr.base_ref_name,
+                merge_target: Some(&pr.base_ref_name),
+                race_id: None,
+                title: Some(format!("Review PR #{number}")),
+                existing_branch: Some(pr.head_ref_name.clone()),
+                loop_config: None,
+                issue_id: None,
+            },
+            &mut |_| {},
+        )?;
+        Ok(PrReviewRun { run, session_id: None })
     }
 
     /// Store the first prompt the user typed into the agent terminal as the
@@ -2562,10 +2687,17 @@ impl AppState {
     // ── Extra agent sessions (additional agent tabs sharing a run's worktree) ──
 
     /// Launch (or relaunch) an extra session's agent in the parent run's
-    /// worktree. Always a fresh, promptless launch — resume recipes pick the
-    /// cwd's most recent conversation, which in a shared worktree may belong
-    /// to a sibling tab, so extras never resume.
-    fn launch_run_session(&self, sid: &str, run: &agency_core::registry::Run, agent: &str) -> Result<()> {
+    /// worktree, opening with `prompt` (empty for the usual promptless tab).
+    /// Always a fresh launch — resume recipes pick the cwd's most recent
+    /// conversation, which in a shared worktree may belong to a sibling tab,
+    /// so extras never resume.
+    fn launch_run_session(
+        &self,
+        sid: &str,
+        run: &agency_core::registry::Run,
+        agent: &str,
+        prompt: &str,
+    ) -> Result<()> {
         let repo = self.project_repo(&run.project_id)?;
         let config = agency_core::config::load(&repo);
         let worktree = repo.join(".agency").join("worktrees").join(&run.id);
@@ -2598,7 +2730,7 @@ impl AppState {
         // Same env recipe as the run itself, ports included: extra sessions
         // are collaborators in the same workspace, not new workspaces.
         env.extend(agency_core::scripts::script_env(&worktree, &repo, &run.id, run.port_base));
-        let (command, args) = agent_argv(&profile, "", false, config.scripts.setup.as_deref());
+        let (command, args) = fresh_agent_argv(&profile, prompt, config.scripts.setup.as_deref());
         self.term
             .read()
             .unwrap()
@@ -2606,8 +2738,14 @@ impl AppState {
     }
 
     /// Open an additional agent tab in an existing run's worktree. `agent`
-    /// defaults to the run's own agent profile.
-    pub fn start_run_session(&self, run_id: &str, agent: Option<&str>) -> Result<RunSessionInfo> {
+    /// defaults to the run's own agent profile; `prompt` is empty for a plain
+    /// tab and set when the tab is opened for a specific job (a PR review).
+    pub fn start_run_session(
+        &self,
+        run_id: &str,
+        agent: Option<&str>,
+        prompt: &str,
+    ) -> Result<RunSessionInfo> {
         let run = self.run_record(run_id)?;
         if run.kind != "agent" {
             bail!("only agent runs can host extra sessions");
@@ -2633,7 +2771,7 @@ impl AppState {
             agent,
             created_at: now_secs(),
         };
-        self.launch_run_session(&session.id, &run, &session.agent)?;
+        self.launch_run_session(&session.id, &run, &session.agent, prompt)?;
         self.registry.lock().unwrap().insert_run_session(&session)?;
         Ok(self.run_session_info(&session))
     }
@@ -2699,7 +2837,9 @@ impl AppState {
                 reg.get_run_session(id)?.ok_or_else(|| anyhow!("unknown session: {id}"))?
             };
             let run = self.run_record(run_id)?;
-            return self.launch_run_session(id, &run, &session.agent);
+            // A relaunch is a blank slate, not a re-run of whatever job first
+            // opened the tab: the original prompt is not replayed.
+            return self.launch_run_session(id, &run, &session.agent, "");
         }
         let run = self.run_record(id)?;
         let repo = self.project_repo(&run.project_id)?;
@@ -3761,6 +3901,44 @@ mod tests {
         };
         let (_cmd, args) = agent_argv(&p, "fresh prompt", false, None);
         assert_eq!(args, vec!["fresh prompt".to_string()]);
+    }
+
+    #[test]
+    fn fresh_agent_argv_appends_prompt_only_without_a_token() {
+        let templated = AgentProfile {
+            name: "claude".into(), command: "claude".into(),
+            args: vec!["--flag".into(), "{{prompt}}".into()], env: vec![],
+            resume_args: None, loop_args: None,
+        };
+        // The token places the prompt; it must not also be appended.
+        let (cmd, args) = super::fresh_agent_argv(&templated, "review it", None);
+        assert_eq!(cmd, "claude");
+        assert_eq!(args, vec!["--flag".to_string(), "review it".to_string()]);
+
+        let plain = AgentProfile { args: vec!["--flag".into()], ..templated.clone() };
+        let (_cmd, args) = super::fresh_agent_argv(&plain, "review it", None);
+        assert_eq!(args, vec!["--flag".to_string(), "review it".to_string()]);
+
+        // An empty prompt is the promptless launch every ordinary tab uses.
+        let (_cmd, args) = super::fresh_agent_argv(&plain, "", None);
+        assert_eq!(args, vec!["--flag".to_string()]);
+    }
+
+    #[test]
+    fn pr_review_prompt_switches_on_post_comments() {
+        let quiet = super::pr_review_prompt(12, "Add widgets", "https://x/pull/12", "main", false);
+        assert!(quiet.contains("Review GitHub pull request #12: Add widgets"));
+        assert!(quiet.contains("git diff main...HEAD"));
+        assert!(quiet.contains("Do not post anything to GitHub"));
+        assert!(!quiet.contains("gh api"));
+        // Both modes promise the follow-up fixing session the review is for.
+        assert!(quiet.contains("stay available"));
+
+        let posting = super::pr_review_prompt(12, "Add widgets", "https://x/pull/12", "main", true);
+        assert!(posting.contains("repos/$SLUG/pulls/12/reviews"));
+        assert!(posting.contains("\"event\": \"COMMENT\""));
+        assert!(!posting.contains("Do not post anything to GitHub"));
+        assert!(posting.contains("stay available"));
     }
 
     #[test]

@@ -16,6 +16,7 @@ import {
 } from "../../api";
 import { toastError, toastInfo, toastSuccess } from "../../lib/toast";
 import Markdown from "../Markdown";
+import AgentReviewDialog from "./AgentReviewDialog";
 import MergePrDialog from "./MergePrDialog";
 import PrDiffFile from "./PrDiffFile";
 import type { DraftEntry } from "./anchor";
@@ -54,6 +55,7 @@ export default function PrReview({
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [showMerge, setShowMerge] = useState(false);
+  const [showAgentReview, setShowAgentReview] = useState(false);
 
   const reloadThreads = useCallback(async () => {
     setThreads(await prReviewThreads(projectId, number));
@@ -161,6 +163,13 @@ export default function PrReview({
               {detail.title} <span className="pr-review-num">#{detail.number}</span>
             </span>
             <span className="spacer" style={{ flex: 1 }} />
+            <button
+              className="git-iconbtn"
+              title="Have an agent review this PR, then work with it to fix what it finds."
+              onClick={() => setShowAgentReview(true)}
+            >
+              Review with agent
+            </button>
             {detail.state === "OPEN" && (
               <button
                 className="git-iconbtn pr-merge-btn"
@@ -255,6 +264,16 @@ export default function PrReview({
           </button>
         </div>
       </div>
+
+      {showAgentReview && (
+        <AgentReviewDialog
+          projectId={projectId}
+          number={number}
+          title={detail.title}
+          onStarted={() => setShowAgentReview(false)}
+          onCancel={() => setShowAgentReview(false)}
+        />
+      )}
 
       {showMerge && (
         <MergePrDialog

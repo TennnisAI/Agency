@@ -182,6 +182,7 @@ pub fn run() {
             commands::list_gh_prs,
             commands::create_run_from_issue,
             commands::create_run_from_pr,
+            commands::create_pr_review_run,
             commands::list_issues,
             commands::create_issue,
             commands::update_issue,

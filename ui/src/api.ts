@@ -612,6 +612,22 @@ export const createRunFromIssue = (projectId: string, number: number, agent: str
 export const createRunFromPr = (projectId: string, number: number, agent: string) =>
   invoke<RunInfo>("create_run_from_pr", { projectId, number, agent });
 
+// Where an agent PR review landed. `sessionId` is set when the review had to run
+// as an extra tab inside an existing run (the PR's branch was already checked
+// out there) — focus that tab rather than the run's primary agent.
+export interface PrReviewRun {
+  run: RunInfo;
+  sessionId: string | null;
+}
+// Start an agent that reviews a PR and then stays around to fix what it found.
+// `postComments` publishes the findings to the PR on GitHub.
+export const createPrReviewRun = (
+  projectId: string,
+  number: number,
+  agent: string,
+  postComments: boolean,
+) => invoke<PrReviewRun>("create_pr_review_run", { projectId, number, agent, postComments });
+
 export const ghReadiness = (projectId: string) =>
   invoke<GhReadiness>("gh_readiness", { projectId });
 // gh install + auth state without a repo — for the clone dialog's sign-in guidance.

@@ -144,17 +144,22 @@ export default function PrSection({
               #{pr.number} {pr.title}
             </span>
             <span className="spacer" />
-            {onReviewPr && (
+            {/* Opening a PR keeps you in Agency: the review panel is the richer
+                surface, and it carries its own link out to github.com. Without
+                a deep-link handler there's nowhere in-app to go, so fall back
+                to the browser. */}
+            {onReviewPr ? (
               <button className="settings-ghost-btn" onClick={() => onReviewPr(pr.number)}>
-                Review in Agency
+                Open PR
+              </button>
+            ) : (
+              <button
+                className="settings-ghost-btn"
+                onClick={() => openUrl(pr.url).catch((e) => toastError(e, "Couldn't open the pull request"))}
+              >
+                Open ↗
               </button>
             )}
-            <button
-              className="settings-ghost-btn"
-              onClick={() => openUrl(pr.url).catch((e) => toastError(e, "Couldn't open the pull request"))}
-            >
-              Open ↗
-            </button>
             <button className="settings-ghost-btn" onClick={refreshStatus} title="Refresh checks">
               ↻
             </button>

@@ -250,6 +250,42 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_restores_mouse_reporting_for_a_reattaching_client() {
+        // The scroll-wheel bug: an agent TUI turns on mouse tracking once at
+        // startup, so the client forwards wheel events to it. A client that
+        // attaches later has to be told, or it falls back to sending Up/Down
+        // arrows per wheel notch and the agent walks its prompt history — which
+        // is why it only ever misfired on the first scroll after switching back.
+        let s = Session::start(
+            "mouse1".into(),
+            std::env::temp_dir().as_path(),
+            "/bin/sh",
+            &[
+                "-c".into(),
+                "printf '\\033[?1049h\\033[?1002h\\033[?1006hPAINTED'; sleep 2".into(),
+            ],
+            &[],
+            80,
+            24,
+            None,
+        )
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+
+        let (tx, rx) = mpsc::channel();
+        s.subscribe(1, tx);
+        let snap = drain_until(&rx, |f| matches!(f, ServerFrame::Snapshot { .. }));
+        match snap {
+            ServerFrame::Snapshot { data, .. } => {
+                let text = String::from_utf8_lossy(&data);
+                assert!(text.contains("\x1b[?1002h"), "mouse tracking missing: {text:?}");
+                assert!(text.contains("\x1b[?1006h"), "SGR encoding missing: {text:?}");
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
     fn input_is_echoed_to_subscribers_and_capture() {
         let s = Session::start(
             "t2".into(),

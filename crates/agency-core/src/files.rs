@@ -269,6 +269,31 @@ pub fn write_file_bytes(root: &Path, rel: &str, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// Copy an outside file into `rel` under `root` — the drop/file-picker half of
+/// attaching, where the UI gets a path rather than bytes and so cannot call
+/// `write_file_bytes` itself.
+///
+/// The source is deliberately unconstrained: it is whatever the user dragged
+/// out of Finder or chose in the picker, which is consent enough to read it
+/// (the same consent the picker plugin already grants). Only the destination
+/// is jailed — it goes through `write_file_bytes`, inheriting containment, the
+/// no-clobber rule, and the size cap. `metadata` follows symlinks, so dropping
+/// a Finder alias imports what it points at, which is what the user sees.
+pub fn import_file(root: &Path, src: &Path, rel: &str) -> Result<()> {
+    let meta = std::fs::metadata(src)
+        .map_err(|e| anyhow!("cannot read {}: {e}", src.display()))?;
+    if !meta.is_file() {
+        bail!("not a file: {}", src.display());
+    }
+    // Checked here so an oversized file is rejected before it is read into
+    // memory; write_file_bytes checks again on what actually arrived.
+    if meta.len() > MAX_BINARY_BYTES {
+        bail!("file too large: {} bytes", meta.len());
+    }
+    let bytes = std::fs::read(src).map_err(|e| anyhow!("cannot read {}: {e}", src.display()))?;
+    write_file_bytes(root, rel, &bytes)
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DocFile {
@@ -647,6 +672,51 @@ mod corpus_stats_tests {
 
         // Jail escape is an error, not a silent skip.
         assert!(read_markdown_files(root, "docs", &["../a.md".to_string()]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod import_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn import_file_copies_in_and_refuses_to_clobber() {
+        let outside = tempdir().unwrap();
+        let src = outside.path().join("shot.png");
+        std::fs::write(&src, b"\x89PNGbytes").unwrap();
+
+        let root_dir = tempdir().unwrap();
+        let root = root_dir.path();
+        std::fs::create_dir_all(root.join(".agency/issues/assets")).unwrap();
+
+        import_file(root, &src, ".agency/issues/assets/age-1-shot.png").unwrap();
+        assert_eq!(
+            std::fs::read(root.join(".agency/issues/assets/age-1-shot.png")).unwrap(),
+            b"\x89PNGbytes"
+        );
+
+        // Second import to the same name fails rather than overwriting — the
+        // caller retries with a counter suffix.
+        assert!(import_file(root, &src, ".agency/issues/assets/age-1-shot.png").is_err());
+    }
+
+    #[test]
+    fn import_file_rejects_escapes_directories_and_missing_sources() {
+        let outside = tempdir().unwrap();
+        let src = outside.path().join("a.png");
+        std::fs::write(&src, b"x").unwrap();
+        let root_dir = tempdir().unwrap();
+        let root = root_dir.path();
+
+        // The destination is jailed even though the source is not.
+        assert!(import_file(root, &src, "../escaped.png").is_err());
+        assert!(import_file(root, &src, "/tmp/escaped.png").is_err());
+        // A dropped directory is not an attachment.
+        assert!(import_file(root, outside.path(), "dir.png").is_err());
+        // A source that isn't there reports rather than creating an empty file.
+        assert!(import_file(root, &outside.path().join("nope.png"), "nope.png").is_err());
+        assert!(!root.join("nope.png").exists());
     }
 }
 

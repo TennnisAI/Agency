@@ -20,6 +20,11 @@ use crate::registry::{Issue, IssueStatus, Registry};
 /// excluded, so issue files are versioned and land at merge like code.
 pub const ISSUES_DIR: &str = ".agency/issues";
 
+/// Attachments live one level down, so an issue body can reference them with a
+/// plain relative link (`assets/AGE-14-shot.png`) that resolves from the issue
+/// file's own directory — in the app, on GitHub, and in any markdown editor.
+pub const ASSETS_DIR: &str = "assets";
+
 /// One parsed issue file: the issue-shaped fields plus any frontmatter lines
 /// we don't understand, preserved verbatim and in order.
 #[derive(Debug, Clone, PartialEq)]
@@ -308,6 +313,35 @@ pub fn serialize_issue_file(f: &IssueFile) -> String {
     out
 }
 
+/// Repo-relative paths of the files an issue body attaches, deduped and in
+/// order of first mention. Attachments are ordinary markdown links into
+/// `assets/` — `![](assets/a.png)` or `[log](assets/a.txt)` — so this is a
+/// read over the body text, not a separate index that could fall out of step
+/// with it. Links that point anywhere else (http, a sibling note, `..`) are
+/// not attachments and are left alone.
+pub fn body_attachments(body: &str) -> Vec<String> {
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        regex::Regex::new(r"!?\[[^\]]*\]\(\s*(?:<([^>]+)>|([^)\s]+))\s*\)").unwrap()
+    });
+    let prefix = format!("{ASSETS_DIR}/");
+    let mut out: Vec<String> = Vec::new();
+    for caps in re.captures_iter(body) {
+        let target = caps.get(1).or_else(|| caps.get(2)).map_or("", |m| m.as_str());
+        // Percent-decoding is deliberately not attempted: the app never writes
+        // encoded names, and a path handed to an agent must be the literal one
+        // on disk or nothing.
+        if !target.starts_with(&prefix) || target.contains("..") {
+            continue;
+        }
+        let path = format!("{ISSUES_DIR}/{target}");
+        if !out.contains(&path) {
+            out.push(path);
+        }
+    }
+    out
+}
+
 // ---------------------------------------------------------------------------
 // File IO
 
@@ -449,6 +483,11 @@ Body markdown, wikilinks allowed.
   key. Numbers are never reused and never renumbered, even after deletion.
 - Timestamps are UTC RFC3339; `updated` should be bumped on edit (the app does
   this automatically; if you forget, file mtime is used).
+- Attachments live in `assets/`, referenced from the body by a relative link:
+  `![](assets/AGE-14-shot.png)` for images, `[label](assets/AGE-14-log.txt)`
+  for anything else. Relative to this directory, so the same link resolves in
+  the app, on GitHub, and in any markdown editor. Drop, paste, or pick a file
+  in the issue's detail pane to add one.
 - On an agent branch these files merge like code: edits land when the branch
   merges, and the app's board reads the main checkout. Merging a run also
   advances its linked issue to done automatically — but never backwards.
@@ -739,6 +778,34 @@ created: 2026-07-27T09:30:00Z\nupdated: 2026-07-27T14:02:00Z\n---\n\
         let fence = out.find("\n---\n# ").unwrap();
         assert!(assignee < labels && labels < fence, "order lost: {out}");
         assert_eq!(parse_issue_file("AGE-2", &out).unwrap(), f);
+    }
+
+    #[test]
+    fn body_attachments_finds_asset_links_only() {
+        let body = "\
+Steps:
+
+![crash](assets/AGE-14-crash.png)
+
+The log is [here](assets/AGE-14-log.txt), and the shot again:
+![](assets/AGE-14-crash.png)
+
+Not attachments: [docs](https://example.com/a.png), ![](../elsewhere/a.png),
+[up](assets/../../etc/passwd), [note](other/a.png), bare assets/a.png.
+";
+        assert_eq!(
+            body_attachments(body),
+            vec![
+                ".agency/issues/assets/AGE-14-crash.png".to_string(),
+                ".agency/issues/assets/AGE-14-log.txt".to_string(),
+            ]
+        );
+        assert!(body_attachments("no links at all").is_empty());
+        // Angle-bracket targets (what other editors write for spaced names).
+        assert_eq!(
+            body_attachments("![](<assets/a b.png>)"),
+            vec![".agency/issues/assets/a b.png".to_string()]
+        );
     }
 
     #[test]
@@ -1053,6 +1120,38 @@ created: 2026-07-27T09:30:00Z\nupdated: 2026-07-27T14:02:00Z\n---\n\
         let fresh = tempfile::tempdir().unwrap();
         let s = reconcile(&reg, "p2", "AGE", fresh.path()).unwrap();
         assert_eq!(s, ReconcileSummary::default());
+    }
+
+    #[test]
+    fn the_assets_dir_is_invisible_to_the_tracker() {
+        // Attachments live in a subdirectory of the issues dir, so every pass
+        // over that dir has to step around it: a stray `assets/AGE-9.md` must
+        // not become an issue, and the directory itself must not be read,
+        // reported as skipped, or counted in the poll signature.
+        let db = tempfile::tempdir().unwrap();
+        let reg = Registry::open(&db.path().join("r.db")).unwrap();
+        let root_dir = tempfile::tempdir().unwrap();
+        let root = root_dir.path();
+
+        write_issue(root, "AGE-1", "todo", "One");
+        let assets = root.join(ISSUES_DIR).join(ASSETS_DIR);
+        std::fs::create_dir_all(&assets).unwrap();
+        std::fs::write(assets.join("age-1-shot.png"), b"\x89PNG").unwrap();
+        std::fs::write(assets.join("AGE-9.md"), "---\nkey: AGE-9\nstatus: todo\n---\n# Nested\n")
+            .unwrap();
+
+        let read = read_issue_dir(root).unwrap();
+        assert_eq!(read.issues.iter().map(|f| f.key.as_str()).collect::<Vec<_>>(), vec!["AGE-1"]);
+        assert!(read.skipped.is_empty(), "assets reported as skipped: {:?}", read.skipped);
+
+        let stats = scan_issue_stats(root).unwrap();
+        assert_eq!(stats.iter().map(|s| s.path.as_str()).collect::<Vec<_>>(), vec!["AGE-1.md"]);
+
+        let s = reconcile(&reg, "p1", "AGE", root).unwrap();
+        assert_eq!((s.imported, s.updated, s.dropped), (1, 0, 0));
+        assert_eq!(reg.list_issues("p1").unwrap().len(), 1);
+        // The attachment is still on disk: reconcile never touches it.
+        assert!(assets.join("age-1-shot.png").exists());
     }
 
     #[test]

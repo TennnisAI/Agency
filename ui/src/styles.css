@@ -1692,7 +1692,9 @@ input, textarea, code,
   width: 360px; flex-shrink: 0; display: flex; flex-direction: column; gap: 10px;
   border-left: 1px solid var(--line); background: var(--mantle);
   padding: 12px 14px; overflow-y: auto;
+  position: relative; /* anchors the drop hint */
 }
+.issue-detail.drop-target { box-shadow: inset 0 0 0 2px var(--blue); }
 .issue-detail-head { display: flex; align-items: center; gap: 8px; }
 .issue-detail-head .spacer { flex: 1; }
 /* Title & description read as plain header/body text; clicking edits in place. */
@@ -1732,6 +1734,70 @@ input, textarea, code,
 .issue-detail-run-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .issue-detail-foot { display: flex; align-items: center; gap: 8px; color: var(--o0); font-size: 11px; margin-top: auto; }
 .issue-detail-foot .spacer { flex: 1; }
+
+/* Attachments: files the body links out of `.agency/issues/assets/`. Images
+   preview inline and open full size; anything else is a chip that reveals. */
+.issue-attachments h3 {
+  margin: 4px 0 6px; font-size: 11px; font-weight: 600; color: var(--o1);
+  text-transform: uppercase; letter-spacing: .06em;
+}
+.issue-attach-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; }
+.issue-attach { position: relative; min-width: 0; }
+.issue-attach-open {
+  display: flex; flex-direction: column; align-items: stretch; gap: 4px; width: 100%;
+  background: transparent; border: 1px solid var(--s1); border-radius: 8px;
+  color: var(--text); padding: 4px; cursor: pointer;
+  font-family: var(--sans); font-size: 11px; text-align: left;
+}
+.issue-attach-open:hover { background: var(--s0); border-color: var(--o0); }
+.issue-attach-thumb {
+  display: block; width: 100%; height: 64px; border-radius: 5px;
+  object-fit: cover; background: var(--s0);
+}
+.issue-attach-thumb.loading { background: var(--s0); }
+.issue-attach-thumb.missing {
+  display: flex; align-items: center; justify-content: center;
+  color: var(--o0); font-size: 18px;
+}
+.issue-attach-glyph {
+  display: flex; align-items: center; justify-content: center;
+  height: 64px; border-radius: 5px; background: var(--s0); color: var(--o1); font-size: 20px;
+}
+.issue-attach-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--sub0); }
+.issue-attach-remove {
+  position: absolute; top: 2px; right: 2px; visibility: hidden;
+  width: 18px; height: 18px; padding: 0; line-height: 1;
+  background: var(--mantle); border: 1px solid var(--s1); border-radius: 50%;
+  color: var(--o1); cursor: pointer; font-size: 10px;
+}
+.issue-attach:hover .issue-attach-remove { visibility: visible; }
+.issue-attach-remove:hover { color: var(--red); border-color: var(--red); }
+
+/* Drop/attach feedback. Sticky rather than `margin-top: auto`, which would
+   fight the footer for the pane's free space and shove the sections between
+   them down. */
+.issue-drop-hint {
+  position: sticky; bottom: 0; z-index: 1;
+  background: var(--s0); border: 1px dashed var(--o0); border-radius: 8px;
+  color: var(--sub0); padding: 8px; text-align: center; font-size: 12px;
+}
+
+/* Full-size attachment view. Fixed, not absolute: it covers the window rather
+   than the (scrolling) detail pane it is rendered inside. */
+.lightbox-backdrop {
+  position: fixed; inset: 0; z-index: 40; display: flex;
+  align-items: center; justify-content: center; padding: 32px;
+  background: var(--overlay); backdrop-filter: blur(3px);
+}
+.lightbox {
+  display: flex; flex-direction: column; gap: 8px; max-width: 100%; max-height: 100%;
+  background: var(--mantle); border: 1px solid var(--s1); border-radius: 12px;
+  box-shadow: 0 24px 64px var(--shadow); padding: 10px 12px 12px;
+}
+.lightbox-head { display: flex; align-items: center; gap: 8px; }
+.lightbox-head .spacer { flex: 1; }
+.lightbox-name { font-size: 12px; color: var(--sub0); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lightbox-img { min-height: 0; max-width: 100%; object-fit: contain; border-radius: 6px; }
 
 /* Cross-domain mentions (Phase 7): notes/issues whose text links here. */
 .mention-glyph { color: var(--o1); flex: none; }

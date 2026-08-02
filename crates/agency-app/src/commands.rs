@@ -1816,6 +1816,21 @@ pub fn write_file_base64(
     agency_core::files::write_file_bytes(&base, &rel_path, &bytes).map_err(|e| e.to_string())
 }
 
+/// Copy a file from outside the root into it (refuses to clobber). Used for
+/// attaching dropped or picked files to an issue, where the UI holds a path
+/// rather than the bytes.
+#[tauri::command]
+pub fn import_file(
+    state: State<'_, AppState>,
+    root: FileRoot,
+    src_path: String,
+    rel_path: String,
+) -> Result<(), String> {
+    let base = resolve_root(&state, &root)?;
+    agency_core::files::import_file(&base, std::path::Path::new(&src_path), &rel_path)
+        .map_err(|e| e.to_string())
+}
+
 /// Raw file bytes as base64, for the file browser's image/PDF previews.
 #[tauri::command]
 pub async fn read_file_base64(

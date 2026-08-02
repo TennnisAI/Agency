@@ -1351,6 +1351,23 @@ impl AppState {
         } else {
             format!("Work on issue {label}: {title}\n\n{body}", title = issue.title, body = issue.body)
         };
+        // Attachments are relative links in the body (`assets/…`), which reads
+        // as a dead path unless the agent is told what they resolve to. Stated
+        // as a repo path, not "in your worktree": like the issue files
+        // themselves, attachments only reach a run's checkout once they have
+        // been committed to the base branch.
+        let attached = agency_core::issuefs::body_attachments(&issue.body);
+        if !attached.is_empty() {
+            let list = attached
+                .iter()
+                .map(|p| format!("`{p}`"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            prompt.push_str(&format!(
+                "\n\nThe `assets/…` links in this issue are files attached to it, \
+                 stored in the repo at: {list}. Read them for context (images included)."
+            ));
+        }
         // The tracker is files: tell the agent where its issue lives and how
         // to work the tracker from its branch (edits land at merge).
         prompt.push_str(&format!(

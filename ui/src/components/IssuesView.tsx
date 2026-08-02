@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Issue, IssuePatch, IssueStatus, Project, createIssue, deleteIssue, getWorkspace, updateIssue } from "../api";
+import { FileRoot, Issue, IssuePatch, IssueStatus, Project, createIssue, deleteIssue, getWorkspace, updateIssue } from "../api";
 import { planReorder } from "../lib/issueRank";
 import { Corpus, LinkEdge, buildLinkIndex, mentionsOf } from "../lib/links";
 import { requestNavigate } from "../lib/navigate";
@@ -77,6 +77,9 @@ export default function IssuesView({
   );
   const selected = issues.find((i) => i.id === selectedId) ?? null;
   const runsFor = (issue: Issue) => runs.filter((r) => r.issueId === issue.id);
+  // Attachments are written beside the issue files, in the project's main
+  // checkout — never a run's worktree.
+  const fileRoot = useMemo<FileRoot>(() => ({ kind: "project", id: project.id }), [project.id]);
 
   // Mentions for the detail pane (one-stop Phase 7): notes and issues linking
   // to the selected issue. Corpora scanned: this project's docs plus the
@@ -385,6 +388,7 @@ export default function IssuesView({
         <IssueDetail
           issue={selected}
           label={issueLabel(project, selected)}
+          root={fileRoot}
           runs={runsFor(selected)}
           mentions={mentions}
           onPatch={(p) => patch(selected, p)}

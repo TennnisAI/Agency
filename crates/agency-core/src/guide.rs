@@ -73,6 +73,11 @@ follow-ups. Reference any issue from a note by its key, written like
 `[[AGE-14]]`, and that issue's detail pane will list the notes mentioning
 it. If the workspace uses git, you can dispatch agents on writing tasks the
 same way you would in a code project: they work on a branch, you merge.
+
+Drop a file onto an issue's detail pane, paste an image into its
+description, or use the ⊕ button to attach it. Attachments are copied in
+beside the issue files and linked from the description, so they travel with
+the issue, and an agent working the issue can read them.
 "#;
 
 /// Seed the guide note if it doesn't exist. Returns whether it was created.

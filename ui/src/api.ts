@@ -1017,3 +1017,9 @@ export const listFiles = (root: FileRoot, dir: string, maxFiles: number) =>
 // Write base64 bytes to a NEW file (fails on an existing path). For image paste.
 export const writeFileBase64 = (root: FileRoot, relPath: string, b64: string) =>
   invoke<void>("write_file_base64", { root, relPath, b64 });
+
+// Copy a file from anywhere on disk into a NEW path inside the root (fails on
+// an existing path). For attaching files dropped from Finder or picked in the
+// dialog, where the UI has a path but not the bytes.
+export const importFile = (root: FileRoot, srcPath: string, relPath: string) =>
+  invoke<void>("import_file", { root, srcPath, relPath });

@@ -267,6 +267,7 @@ pub fn run() {
             commands::search_files,
             commands::list_files,
             commands::write_file_base64,
+            commands::import_file,
             commands::confirm_quit,
             commands::agent_installed,
             commands::create_install_terminal,

@@ -111,6 +111,56 @@ button:hover { background: var(--lav); }
 /* Button variants (Task 9) */
 .btn-primary { background: var(--blue); color: var(--crust); font-weight: 600; border: none; border-radius: 8px; padding: 8px 13px; cursor: pointer; font-family: var(--sans); font-size: 12.5px; }
 .btn-primary:hover { background: var(--lav); }
+
+/* Split-label add button ("+ Agent ▾"). The parts are separate elements so the
+   header's density rules can drop the label without the caret ever wrapping
+   onto its own line. */
+.btn-add {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 30px; padding: 0 11px; white-space: nowrap;
+  font-weight: 550; letter-spacing: 0.005em;
+}
+.btn-add-plus { font-size: 14px; line-height: 1; opacity: 0.85; margin-right: -1px; }
+.btn-caret { font-size: var(--chev-sm); line-height: 1; opacity: 0.65; }
+.content-head.is-tight .btn-add-label { display: none; }
+.content-head.is-tight .btn-add { padding: 0 9px; }
+
+/* Approve — the one primary, irreversible-feeling action in the agent header.
+   Solid accent, hairline top highlight, and a quiet shortcut hint; it presses
+   in on click rather than just changing colour. */
+.btn-approve {
+  display: inline-flex; align-items: center; gap: 7px;
+  height: 30px; padding: 0 12px; flex-shrink: 0; white-space: nowrap;
+  background: var(--blue); color: var(--crust);
+  border: none; border-radius: 8px; cursor: pointer;
+  font-family: var(--sans); font-size: 12.5px; font-weight: 600; letter-spacing: 0.005em;
+  box-shadow: 0 1px 2px rgba(0,0,0,.22), inset 0 1px 0 rgba(255,255,255,.16);
+  transition: filter 0.12s, box-shadow 0.12s, transform 0.06s;
+}
+.btn-approve:hover {
+  background: var(--blue);
+  filter: brightness(1.08);
+  box-shadow: 0 2px 10px color-mix(in srgb, var(--blue) 34%, transparent), inset 0 1px 0 rgba(255,255,255,.2);
+}
+.btn-approve:active { transform: translateY(0.5px); filter: brightness(0.96); box-shadow: inset 0 1px 3px rgba(0,0,0,.2); }
+.btn-approve .btn-ico { margin: 0; }
+.btn-approve-kbd {
+  font-family: var(--sans); font-size: 10.5px; font-weight: 600; letter-spacing: 0.03em;
+  padding-left: 8px; margin-left: 1px; opacity: 0.6;
+  border-left: 1px solid color-mix(in srgb, var(--crust) 28%, transparent);
+}
+
+/* Header icon button: the quiet, square-ish affordance used for toggles and
+   the "…" overflow in a toolbar row. */
+.head-icon-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; padding: 0; flex-shrink: 0;
+  background: transparent; border: 1px solid transparent; border-radius: 7px;
+  color: var(--sub0); cursor: pointer;
+}
+.head-icon-btn:hover { background: var(--s0); color: var(--text); }
+.head-icon-btn.on { background: var(--s1); border-color: var(--s2); color: var(--text); }
+.head-icon-btn .btn-ico { margin: 0; }
 .btn-secondary { background: var(--base); border: 1px solid var(--s1); color: var(--text); border-radius: 8px; padding: 8px 13px; cursor: pointer; font-family: var(--sans); font-size: 12.5px; }
 .btn-secondary:hover { background: var(--s0); }
 .btn-danger { background: transparent; border: 1px solid rgba(243,139,168,.4); color: var(--red); border-radius: 8px; padding: 8px 13px; cursor: pointer; font-family: var(--sans); font-size: 12.5px; }
@@ -150,6 +200,16 @@ button:hover { background: var(--lav); }
 .agent-menu button { background: transparent; border: none; color: var(--text); text-align: left; padding: 8px 10px; border-radius: 6px; cursor: pointer; font-family: var(--sans); font-size: 12.5px; }
 .agent-menu button:hover { background: var(--s0); }
 .agent-menu-sep { height: 1px; background: var(--line); margin: 4px 2px; }
+
+/* Overflow ("…") menu — a header's secondary actions, icon + label rows. */
+.overflow-menu { min-width: 186px; }
+.overflow-menu button { display: flex; align-items: center; gap: 9px; width: 100%; }
+.overflow-menu button.danger { color: var(--red); }
+.overflow-menu button.danger:hover { background: color-mix(in srgb, var(--red) 12%, transparent); }
+.overflow-menu-ico { display: inline-flex; color: var(--o1); }
+.overflow-menu button:hover .overflow-menu-ico { color: inherit; }
+.overflow-menu button.danger .overflow-menu-ico { color: inherit; }
+.overflow-menu .btn-ico { margin: 0; }
 
 /* Tile actions (Task 9) */
 .tile-act { background: var(--base); border: 1px solid var(--s1); color: var(--sub0); border-radius: 6px; padding: 4px 8px; cursor: pointer; font-family: var(--sans); font-size: 11px; }
@@ -247,9 +307,18 @@ button > .btn-ico:not(:only-child) { margin-right: 4px; }
 .settings-section-label { font-size: 11px; font-weight: 600; letter-spacing: 0.12em; color: var(--o0); text-transform: uppercase; }
 /* Profile cards */
 .settings-card-list { display: flex; flex-direction: column; gap: 8px; }
-.settings-profile-card { background: var(--mantle); border: 1px solid var(--s0); border-radius: 10px; padding: 13px 15px; display: flex; flex-direction: column; gap: 9px; }
+.settings-profile-card { background: var(--mantle); border: 1px solid var(--s0); border-radius: 10px; padding: 13px 15px; display: flex; flex-direction: column; gap: 9px; transition: border-color 0.12s; }
+.settings-profile-card:hover { border-color: var(--s1); }
 .settings-profile-head { display: flex; align-items: center; gap: 8px; }
-.settings-profile-name { font-size: 13.5px; font-weight: 600; color: var(--text); flex: 1; }
+.settings-profile-head .spacer { flex: 1 1 auto; min-width: 8px; }
+.settings-profile-head > button { flex-shrink: 0; }
+.settings-profile-name { font-size: 13.5px; font-weight: 600; color: var(--text); flex-shrink: 0; }
+/* The command, right next to the name: the one thing you check at a glance. */
+.settings-profile-cmd {
+  font-family: var(--mono); font-size: 11px; color: var(--sub0);
+  background: var(--crust); border-radius: 5px; padding: 2px 7px;
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .settings-ghost-btn { background: transparent; border: 1px solid var(--s1); color: var(--sub0); font-size: 11.5px; font-weight: 400; padding: 4px 10px; border-radius: 6px; }
 .settings-ghost-btn:hover { background: var(--s0); color: var(--text); }
 .settings-del-btn { color: var(--red); border-color: transparent; }
@@ -266,15 +335,40 @@ button > .btn-ico:not(:only-child) { margin-right: 4px; }
 .settings-theme-name { font-size: 12.5px; color: var(--text); }
 .settings-theme-swatches { display: flex; gap: 5px; }
 .settings-theme-dot { width: 14px; height: 14px; border-radius: 50%; border: 1px solid var(--line); }
-.settings-profile-meta { display: grid; grid-template-columns: 72px 1fr; gap: 5px 10px; font-family: var(--mono); font-size: 11.5px; }
-.settings-meta-key { color: var(--o0); }
-.settings-meta-val { color: var(--sub1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.settings-profile-meta { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 6px 12px; align-items: baseline; font-size: 11.5px; }
+.settings-profile-meta:empty { display: none; }
+.settings-meta-key { color: var(--o0); font-family: var(--sans); }
+.settings-meta-val { color: var(--sub1); font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Profile form */
 .settings-form-label { font-size: 11px; color: var(--o0); font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; margin-top: 4px; }
-.profile-form { display: flex; flex-direction: column; gap: 6px; padding-top: 4px; }
 .settings-input { background: var(--mantle); border: 1px solid var(--s1); color: var(--text); border-radius: 7px; padding: 8px 10px; width: 100%; font-family: var(--sans); font-size: 13px; }
-.settings-input:focus { outline: none; border-color: var(--blue); }
+.settings-input:focus { outline: none; border-color: var(--blue); box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 16%, transparent); }
+.settings-input::placeholder { color: var(--o0); opacity: 0.75; }
+.settings-input.mono { font-family: var(--mono); font-size: 12px; }
 textarea.settings-input { min-height: 64px; resize: vertical; }
+
+/* ── Labelled form fields (settings dialogs) ───────────────────────── */
+.field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.field-head { display: flex; align-items: baseline; gap: 7px; }
+.field-label { font-size: 12.5px; font-weight: 600; color: var(--text); }
+.field-optional {
+  font-size: 10px; font-weight: 500; letter-spacing: 0.05em; text-transform: uppercase;
+  color: var(--o0); background: var(--s0); border-radius: 4px; padding: 1px 5px;
+}
+.field-hint { font-size: 11.5px; line-height: 1.5; color: var(--o1); margin-bottom: 1px; }
+.field-hint code { font-family: var(--mono); font-size: 11px; color: var(--sub0); background: var(--s0); border-radius: 4px; padding: 0 4px; }
+/* Two fields that belong together on one row; stacks when the dialog is narrow. */
+.field-split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr); gap: 14px; }
+@media (max-width: 620px) { .field-split { grid-template-columns: minmax(0, 1fr); } }
+
+/* Form dialog shell */
+.modal-form { width: 620px; display: flex; flex-direction: column; max-height: 88vh; }
+.modal-head-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.modal-sub { margin: 0; font-size: 12px; color: var(--o1); }
+.modal-form-body { display: flex; flex-direction: column; gap: 17px; overflow-y: auto; padding: 20px; }
+.modal-form .modal-foot { flex-shrink: 0; }
+.modal-form .btn-primary:disabled { opacity: 0.45; cursor: default; }
+.modal-form .btn-primary:disabled:hover { background: var(--blue); }
 /* Provider cards */
 .settings-providers { display: flex; flex-direction: column; gap: 8px; }
 .settings-provider-card { background: var(--mantle); border: 1px solid var(--s0); border-radius: 10px; padding: 13px 15px; display: flex; flex-direction: column; gap: 8px; }
@@ -503,6 +597,7 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
   padding: 2px 7px;
   background: var(--s0);
   color: var(--sub1);
+  white-space: nowrap;
 }
 .badge.claude { color: var(--agent-claude); }
 .badge.pi { color: var(--agent-pi); }
@@ -522,17 +617,24 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
   overflow: hidden;
 }
 
-/* Content header — segmented nav + actions */
+/* Content header — segmented nav + actions.
+   Single row, fixed height, never wraps: as the pane narrows the labels are
+   shed (see the density rules below) rather than folding a button onto a
+   second line. */
 .content-head {
   display: flex;
   align-items: center;
+  flex-wrap: nowrap;
   gap: 8px;
-  padding: 8px 14px;
+  padding: 0 14px;
+  height: 46px;
+  min-height: 46px;
   border-bottom: 1px solid var(--line);
   background: var(--mantle);
   flex-shrink: 0;
 }
-.content-head .spacer { flex: 1; }
+.content-head .spacer { flex: 1; min-width: 0; }
+.content-head > * { flex-shrink: 0; }
 .content-head > button {
   background: var(--s0);
   color: var(--text);
@@ -540,6 +642,7 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
   padding: 5px 12px;
   font-size: 12px;
   border-radius: 7px;
+  white-space: nowrap;
 }
 .content-head > button:hover { background: var(--s1); }
 /* The sidebar toggle (shown here only while the sidebar is hidden) keeps its
@@ -560,12 +663,17 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
   gap: 2px;
 }
 .seg button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   background: none;
   color: var(--o1);
   font-size: 12px;
   font-weight: 500;
-  padding: 4px 10px;
+  line-height: 18px;
+  padding: 3px 10px;
   border-radius: 6px;
+  white-space: nowrap;
   transition: background 0.1s, color 0.1s;
 }
 .seg button:hover { background: var(--s0); color: var(--text); }
@@ -573,6 +681,23 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
   background: var(--s1);
   color: var(--text);
 }
+/* Tab glyphs sit a touch quieter than their label until the tab is selected. */
+.seg-ico { font-size: 12px; line-height: 1; opacity: 0.72; }
+.seg button.on .seg-ico { opacity: 1; }
+/* Density ladder. `.seg-label-short` is the abbreviated form of the label that
+   follows it; it only appears once the header is too narrow for the long one.
+   At the tightest step anything with a glyph goes icon-only (every button keeps
+   a `title`, so the name stays one hover away) while glyph-less buttons fall
+   back to their short label instead of disappearing. */
+.seg-label-short { display: none; }
+.content-head.is-compact .seg-label-short,
+.content-head.is-tight .seg-label-short { display: inline; }
+.content-head.is-compact .seg-label-short ~ .seg-label,
+.content-head.is-tight .seg-label-short ~ .seg-label { display: none; }
+.content-head.is-tight .seg-ico ~ .seg-label,
+.content-head.is-tight .seg-ico ~ .seg-label-short { display: none; }
+.content-head.is-tight .seg button { padding: 3px 8px; }
+.content-head.is-tight .seg-ico { font-size: 13px; }
 
 /* Agents grid */
 .grid {
@@ -816,22 +941,42 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
   min-height: 0;
 }
 
+/* Agent header. Same contract as .content-head: one row, fixed height, no
+   wrapping. Only the identity group (title, branch, issue) may shrink, and it
+   truncates; the actions on the right always keep their full size. */
 .focus-head {
   display: flex;
   align-items: center;
+  flex-wrap: nowrap;
   gap: 8px;
-  padding: 8px 14px;
+  padding: 0 12px 0 14px;
+  height: 46px;
+  min-height: 46px;
   border-bottom: 1px solid var(--line);
   background: var(--mantle);
   flex-shrink: 0;
 }
-.focus-head .spacer { flex: 1; }
-.focus-head code { font-size: 12px; color: var(--blue); }
-.focus-name { font-size: 12.5px; font-weight: 550; color: var(--text); max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* The rename pencil stays quiet until the header is hovered. */
-.focus-head .tile-act.icon-only[title^="Rename"] { opacity: 0; transition: opacity 0.12s; }
-.focus-head:hover .tile-act.icon-only[title^="Rename"] { opacity: 0.75; }
-.focus-head .tile-act.icon-only[title^="Rename"]:hover { opacity: 1; }
+.focus-head > * { flex-shrink: 0; }
+.focus-head .spacer { flex: 1 1 auto; min-width: 8px; }
+.focus-name {
+  font-size: 12.5px; font-weight: 550; color: var(--text);
+  flex: 0 1 auto; min-width: 40px; max-width: 340px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* Branch + "in checkout" + issue chip: the elastic middle of the header. */
+.focus-head-meta {
+  display: flex; align-items: center; gap: 6px;
+  flex: 0 1 auto; min-width: 0; overflow: hidden;
+}
+.branch-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  min-width: 0; max-width: 260px;
+  padding: 3px 8px; border-radius: 6px;
+  background: var(--crust); border: 1px solid var(--s0);
+  color: var(--blue); font-family: var(--mono); font-size: 11px;
+}
+.branch-chip .btn-ico { margin: 0; opacity: 0.8; flex-shrink: 0; }
+.branch-chip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .focus-term {
   flex: 1;
@@ -843,13 +988,6 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
 
 /* ── Companion terminal (bottom panel in the agent focus view) ─────── */
 .focus-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.focus-shell-toggle {
-  padding: 2px 10px; border-radius: 6px; background: transparent;
-  color: var(--sub0); border: 1px solid transparent; cursor: pointer; font-size: 12px;
-}
-.focus-shell-toggle.icon-only { padding: 3px 7px; line-height: 0; }
-.focus-shell-toggle:hover { color: var(--text); background: var(--s0); }
-.focus-shell-toggle.on { background: var(--panel, #1d1f26); color: var(--text); border-color: var(--line); }
 .focus-shell {
   display: flex; flex-direction: column; min-height: 0;
   border-top: 1px solid var(--line); background: var(--crust);
@@ -1923,6 +2061,7 @@ input, textarea, code,
   background: var(--s0); border: 1px solid transparent; border-radius: 999px;
   color: var(--sub1); padding: 3px 9px; cursor: pointer;
   font-family: var(--mono); font-size: 11px; line-height: 1;
+  white-space: nowrap; flex-shrink: 0;
 }
 .issue-chip:hover { background: var(--s1); border-color: var(--s1); color: var(--text); }
 

@@ -43,6 +43,7 @@ import {
 } from "../api";
 import Toggle from "./Toggle";
 import ConfirmDialog from "./ConfirmDialog";
+import FormDialog, { Field } from "./FormDialog";
 import { toastError, toastSuccess } from "../lib/toast";
 import { agentColor, agentLabel } from "../agents";
 import { THEMES, ThemeId, applyTheme, getStoredTheme } from "../lib/themes";
@@ -467,51 +468,88 @@ export default function Settings({
     setFormOpen(false);
   }
 
-  function renderProfileForm() {
+  function renderProfileDialog() {
     return (
-      <div className="profile-form">
-        <div className="settings-form-label">{editing ? "Edit profile" : "Add profile"}</div>
-        <input
-          className="settings-input"
-          placeholder="name"
-          value={draft.name}
-          onChange={(e) => setDraft({ ...draft, name: e.target.value })}
-        />
-        <input
-          className="settings-input"
-          placeholder="command (e.g. claude)"
-          value={draft.command}
-          onChange={(e) => setDraft({ ...draft, command: e.target.value })}
-        />
-        <input
-          className="settings-input"
-          placeholder="args (space-separated, use {{prompt}})"
-          value={draft.args}
-          onChange={(e) => setDraft({ ...draft, args: e.target.value })}
-        />
-        <input
-          className="settings-input"
-          placeholder="resume args (e.g. --continue; empty = always start fresh)"
-          value={draft.resume}
-          onChange={(e) => setDraft({ ...draft, resume: e.target.value })}
-        />
-        <input
-          className="settings-input"
-          placeholder="loop args, headless one-shot (e.g. -p {{prompt}}; empty = can't loop)"
-          value={draft.loop}
-          onChange={(e) => setDraft({ ...draft, loop: e.target.value })}
-        />
-        <textarea
-          className="settings-input"
-          placeholder="env, one KEY=VALUE per line"
-          value={draft.env}
-          onChange={(e) => setDraft({ ...draft, env: e.target.value })}
-        />
-        <div className="row-actions">
-          <button onClick={addProfile}>Save profile</button>
-          <button className="ghost" onClick={closeForm}>Cancel</button>
-        </div>
-      </div>
+      <FormDialog
+        title={editing ? `Edit ${agentLabel(editing)}` : "New agent profile"}
+        subtitle="How Agency launches this coding agent in a worktree."
+        submitLabel={editing ? "Save changes" : "Create profile"}
+        submitDisabled={!draft.name.trim() || !draft.command.trim()}
+        onSubmit={addProfile}
+        onCancel={closeForm}
+      >
+        <Field
+          label="Name"
+          hint="What this agent is called in Agency's menus. Also its id, so keep it short and unique."
+        >
+          <input
+            className="settings-input"
+            autoFocus
+            placeholder="claude"
+            value={draft.name}
+            onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+          />
+        </Field>
+        <Field
+          label="Command"
+          hint={<>The executable Agency runs. It has to be on your <code>PATH</code>.</>}
+        >
+          <input
+            className="settings-input mono"
+            placeholder="claude"
+            value={draft.command}
+            onChange={(e) => setDraft({ ...draft, command: e.target.value })}
+          />
+        </Field>
+        <Field
+          label="Arguments"
+          optional
+          hint={<>Passed every time this agent starts. <code>{"{{prompt}}"}</code> is replaced with the task text.</>}
+        >
+          <input
+            className="settings-input mono"
+            placeholder="{{prompt}}"
+            value={draft.args}
+            onChange={(e) => setDraft({ ...draft, args: e.target.value })}
+          />
+        </Field>
+        <Field
+          label="Resume arguments"
+          optional
+          hint="Used in place of the arguments above when reopening an existing session. Leave empty to always start fresh."
+        >
+          <input
+            className="settings-input mono"
+            placeholder="--continue"
+            value={draft.resume}
+            onChange={(e) => setDraft({ ...draft, resume: e.target.value })}
+          />
+        </Field>
+        <Field
+          label="Loop arguments"
+          optional
+          hint="The headless, one-shot invocation used by Loop agent, where the agent runs unattended and exits. Leave empty if this agent can't do that."
+        >
+          <input
+            className="settings-input mono"
+            placeholder="-p {{prompt}} --permission-mode acceptEdits"
+            value={draft.loop}
+            onChange={(e) => setDraft({ ...draft, loop: e.target.value })}
+          />
+        </Field>
+        <Field
+          label="Environment variables"
+          optional
+          hint={<>Added to the agent's environment, one <code>KEY=VALUE</code> per line.</>}
+        >
+          <textarea
+            className="settings-input mono"
+            placeholder={"ANTHROPIC_MODEL=claude-opus-5\nMY_FLAG=1"}
+            value={draft.env}
+            onChange={(e) => setDraft({ ...draft, env: e.target.value })}
+          />
+        </Field>
+      </FormDialog>
     );
   }
 
@@ -750,76 +788,57 @@ export default function Settings({
           </p>
           <div className="settings-card-list">
             {profiles.map((p) => (
-              <Fragment key={p.name}>
-                <div className="settings-profile-card">
-                  <div className="settings-profile-head">
-                    <span className="agent-dot" style={{ background: agentColor(p.name) }} />
-                    <span className="settings-profile-name">{agentLabel(p.name)}</span>
-                    <span className="spacer" />
-                    <button className="settings-ghost-btn" onClick={() => editProfile(p)}>Edit</button>
-                    <button className="settings-ghost-btn settings-del-btn" onClick={() => deleteProfile(p.name).then(refresh).catch((e) => toastError(e, "Couldn't delete profile"))}>Delete</button>
-                  </div>
-                  <div className="settings-profile-meta">
-                    <span className="settings-meta-key">command</span>
-                    <code className="settings-meta-val">{p.command}</code>
-                    {p.args.length > 0 && (
-                      <>
-                        <span className="settings-meta-key">args</span>
-                        <code className="settings-meta-val">{p.args.join(" ")}</code>
-                      </>
-                    )}
-                    {(p.resume_args?.length ?? 0) > 0 && (
-                      <>
-                        <span className="settings-meta-key">resume</span>
-                        <code className="settings-meta-val">{p.resume_args?.join(" ")}</code>
-                      </>
-                    )}
-                    {(p.loop_args?.length ?? 0) > 0 && (
-                      <>
-                        <span className="settings-meta-key">loop</span>
-                        <code className="settings-meta-val">{p.loop_args?.join(" ")}</code>
-                      </>
-                    )}
-                    {p.env.length > 0 && (
-                      <>
-                        <span className="settings-meta-key">env</span>
-                        <code className="settings-meta-val">{p.env.map(([k]) => k).join(", ")}</code>
-                      </>
-                    )}
-                  </div>
+              <div key={p.name} className="settings-profile-card">
+                <div className="settings-profile-head">
+                  <span className="agent-dot" style={{ background: agentColor(p.name) }} />
+                  <span className="settings-profile-name">{agentLabel(p.name)}</span>
+                  <code className="settings-profile-cmd">{p.command}</code>
+                  <span className="spacer" />
+                  <button className="settings-ghost-btn" onClick={() => editProfile(p)}>Edit</button>
+                  <button className="settings-ghost-btn settings-del-btn" onClick={() => deleteProfile(p.name).then(refresh).catch((e) => toastError(e, "Couldn't delete profile"))}>Delete</button>
                 </div>
-                {formOpen && editing === p.name && renderProfileForm()}
-              </Fragment>
+                <div className="settings-profile-meta">
+                  {([
+                    ["Arguments", p.args.join(" ")],
+                    ["Resume", (p.resume_args ?? []).join(" ")],
+                    ["Loop", (p.loop_args ?? []).join(" ")],
+                    ["Environment", p.env.map(([k]) => k).join(", ")],
+                  ] as [string, string][])
+                    .filter(([, val]) => val)
+                    .map(([key, val]) => (
+                      <Fragment key={key}>
+                        <span className="settings-meta-key">{key}</span>
+                        <code className="settings-meta-val" title={val}>{val}</code>
+                      </Fragment>
+                    ))}
+                </div>
+              </div>
             ))}
           </div>
-          {formOpen && editing === null ? (
-            renderProfileForm()
-          ) : !formOpen ? (
-            <div className="settings-add-row">
-              {catalog.some((e) => !e.enabled) && (
-                <div className="settings-add-dropdown">
-                  <button className="settings-add-profile" onClick={() => setCatalogOpen((o) => !o)}>
-                    + Add agent ▾
-                  </button>
-                  {catalogOpen && (
-                    <>
-                      <div className="settings-menu-backdrop" onClick={() => setCatalogOpen(false)} />
-                      <div className="settings-menu">
-                        {catalog.filter((e) => !e.enabled).map((e) => (
-                          <button key={e.id} onClick={() => { setCatalogOpen(false); addFromCatalog(e.id); }}>
-                            <span className="agent-dot" style={{ background: agentColor(e.id) }} />
-                            <span className="settings-menu-name">{agentLabel(e.id)}</span>
-                            <code className="settings-menu-cmd">{e.command}</code>
-                          </button>
-                        ))}
-                      </div>
-                    </>
-                  )}
-                </div>
-              )}
-              <button className="settings-add-profile" onClick={openAddProfile}>+ Custom agent</button>
-            </div>
-          ) : null}
+          <div className="settings-add-row">
+            {catalog.some((e) => !e.enabled) && (
+              <div className="settings-add-dropdown">
+                <button className="settings-add-profile" onClick={() => setCatalogOpen((o) => !o)}>
+                  + Add agent ▾
+                </button>
+                {catalogOpen && (
+                  <>
+                    <div className="settings-menu-backdrop" onClick={() => setCatalogOpen(false)} />
+                    <div className="settings-menu">
+                      {catalog.filter((e) => !e.enabled).map((e) => (
+                        <button key={e.id} onClick={() => { setCatalogOpen(false); addFromCatalog(e.id); }}>
+                          <span className="agent-dot" style={{ background: agentColor(e.id) }} />
+                          <span className="settings-menu-name">{agentLabel(e.id)}</span>
+                          <code className="settings-menu-cmd">{e.command}</code>
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+            <button className="settings-add-profile" onClick={openAddProfile}>+ Custom agent</button>
+          </div>
         </section>
 
         <section className="settings-section">
@@ -902,82 +921,22 @@ export default function Settings({
               </div>
             ))}
           </div>
-          {mcpFormOpen ? (
-            <div className="profile-form">
-              <div className="settings-form-label">
-                {mcpServers.some((s) => s.name === mcpDraft.name.trim()) ? "Edit MCP server" : "Add MCP server"}
-              </div>
+          <div className="row-actions">
+            <button className="settings-add-profile" onClick={() => setMcpFormOpen(true)}>+ Add MCP server</button>
+            <label className="settings-add-profile" style={{ cursor: "pointer" }}>
+              Import mcp.json
               <input
-                className="settings-input"
-                placeholder="name"
-                value={mcpDraft.name}
-                onChange={(e) => setMcpDraft({ ...mcpDraft, name: e.target.value })}
+                type="file"
+                accept=".json,application/json"
+                style={{ display: "none" }}
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) importMcp(f);
+                  e.target.value = "";
+                }}
               />
-              <input
-                className="settings-input"
-                placeholder="command (stdio server, e.g. npx)"
-                value={mcpDraft.command}
-                onChange={(e) => setMcpDraft({ ...mcpDraft, command: e.target.value })}
-              />
-              <input
-                className="settings-input"
-                placeholder="args (space-separated)"
-                value={mcpDraft.args}
-                onChange={(e) => setMcpDraft({ ...mcpDraft, args: e.target.value })}
-              />
-              <input
-                className="settings-input"
-                placeholder="url (remote server; leave command empty)"
-                value={mcpDraft.url}
-                onChange={(e) => setMcpDraft({ ...mcpDraft, url: e.target.value })}
-              />
-              {mcpDraft.url.trim() && (
-                <>
-                  <select
-                    className="settings-input"
-                    value={mcpDraft.transport === "sse" ? "sse" : "http"}
-                    onChange={(e) => setMcpDraft({ ...mcpDraft, transport: e.target.value })}
-                  >
-                    <option value="http">transport: http (streamable)</option>
-                    <option value="sse">transport: sse</option>
-                  </select>
-                  <textarea
-                    className="settings-input"
-                    placeholder="headers (remote auth), one 'Authorization: Bearer …' per line"
-                    value={mcpDraft.headers}
-                    onChange={(e) => setMcpDraft({ ...mcpDraft, headers: e.target.value })}
-                  />
-                </>
-              )}
-              <textarea
-                className="settings-input"
-                placeholder="env, one KEY=VALUE per line"
-                value={mcpDraft.env}
-                onChange={(e) => setMcpDraft({ ...mcpDraft, env: e.target.value })}
-              />
-              <div className="row-actions">
-                <button onClick={addMcpServer}>Save server</button>
-                <button className="ghost" onClick={() => { setMcpFormOpen(false); setMcpDraft(emptyMcpDraft); setMcpEditing(null); }}>Cancel</button>
-              </div>
-            </div>
-          ) : (
-            <div className="row-actions">
-              <button className="settings-add-profile" onClick={() => setMcpFormOpen(true)}>+ Add MCP server</button>
-              <label className="settings-add-profile" style={{ cursor: "pointer" }}>
-                Import mcp.json
-                <input
-                  type="file"
-                  accept=".json,application/json"
-                  style={{ display: "none" }}
-                  onChange={(e) => {
-                    const f = e.target.files?.[0];
-                    if (f) importMcp(f);
-                    e.target.value = "";
-                  }}
-                />
-              </label>
-            </div>
-          )}
+            </label>
+          </div>
         </section>
 
         <section className="settings-section">
@@ -1197,6 +1156,99 @@ export default function Settings({
           </div>
         </section>
       </div>
+
+      {formOpen && renderProfileDialog()}
+
+      {mcpFormOpen && (
+        <FormDialog
+          title={mcpEditing ? `Edit ${mcpEditing}` : "New MCP server"}
+          subtitle="A tool server Agency writes into every agent workspace."
+          submitLabel={mcpEditing ? "Save changes" : "Add server"}
+          submitDisabled={!mcpDraft.name.trim() || (!mcpDraft.command.trim() && !mcpDraft.url.trim())}
+          onSubmit={addMcpServer}
+          onCancel={() => { setMcpFormOpen(false); setMcpDraft(emptyMcpDraft); setMcpEditing(null); }}
+        >
+          <Field label="Name" hint="Identifies the server in each agent's config file.">
+            <input
+              className="settings-input"
+              autoFocus
+              placeholder="linear"
+              value={mcpDraft.name}
+              onChange={(e) => setMcpDraft({ ...mcpDraft, name: e.target.value })}
+            />
+          </Field>
+          <div className="field-split">
+            <Field
+              label="Command"
+              hint="For a local server: the executable to run. Leave empty for a remote one."
+            >
+              <input
+                className="settings-input mono"
+                placeholder="npx"
+                value={mcpDraft.command}
+                onChange={(e) => setMcpDraft({ ...mcpDraft, command: e.target.value })}
+              />
+            </Field>
+            <Field label="Arguments" optional hint="Space separated, passed to the command.">
+              <input
+                className="settings-input mono"
+                placeholder="-y @modelcontextprotocol/server-github"
+                value={mcpDraft.args}
+                onChange={(e) => setMcpDraft({ ...mcpDraft, args: e.target.value })}
+              />
+            </Field>
+          </div>
+          <Field
+            label="URL"
+            hint="For a remote server: its endpoint. Leave empty when a command is set."
+          >
+            <input
+              className="settings-input mono"
+              placeholder="https://mcp.example.com/sse"
+              value={mcpDraft.url}
+              onChange={(e) => setMcpDraft({ ...mcpDraft, url: e.target.value })}
+            />
+          </Field>
+          {mcpDraft.url.trim() && (
+            <>
+              <Field label="Transport" hint="How the remote server streams responses.">
+                <select
+                  className="settings-input"
+                  value={mcpDraft.transport === "sse" ? "sse" : "http"}
+                  onChange={(e) => setMcpDraft({ ...mcpDraft, transport: e.target.value })}
+                >
+                  <option value="http">http (streamable)</option>
+                  <option value="sse">sse</option>
+                </select>
+              </Field>
+              <Field
+                label="Headers"
+                optional
+                hint={<>Sent with every request, one per line: <code>Authorization: Bearer …</code></>}
+              >
+                <textarea
+                  className="settings-input mono"
+                  placeholder="Authorization: Bearer sk-…"
+                  value={mcpDraft.headers}
+                  onChange={(e) => setMcpDraft({ ...mcpDraft, headers: e.target.value })}
+                />
+              </Field>
+            </>
+          )}
+          <Field
+            label="Environment variables"
+            optional
+            hint={<>Added to the server's environment, one <code>KEY=VALUE</code> per line.</>}
+          >
+            <textarea
+              className="settings-input mono"
+              placeholder="GITHUB_TOKEN=ghp_…"
+              value={mcpDraft.env}
+              onChange={(e) => setMcpDraft({ ...mcpDraft, env: e.target.value })}
+            />
+          </Field>
+        </FormDialog>
+      )}
 
       {wsSwitch && (
         <ConfirmDialog

@@ -145,7 +145,25 @@ export default function AgentAddMenu({
       ) : variant === "icon" ? (
         <button ref={btnRef} className="icon-btn" title={issue ? "Start agent…" : "Add agent"} disabled={spawning} onClick={(e) => { e.stopPropagation(); toggle(); }}>{issue ? "▾" : "+"}</button>
       ) : (
-        <button ref={btnRef} className="btn-primary" disabled={spawning} onClick={toggle}>{spawning ? "Starting…" : terminalOnly ? "+ Terminal ▾" : "+ Agent ▾"}</button>
+        // Parts, not one string: the label collapses away in a narrow header
+        // while the "+" and the caret stay, and nothing can wrap mid-button.
+        <button
+          ref={btnRef}
+          className="btn-primary btn-add"
+          title={terminalOnly ? "New terminal" : "New agent"}
+          disabled={spawning}
+          onClick={toggle}
+        >
+          {spawning ? (
+            <span className="btn-add-label">Starting…</span>
+          ) : (
+            <>
+              <span className="btn-add-plus" aria-hidden>+</span>
+              <span className="btn-add-label">{terminalOnly ? "Terminal" : "Agent"}</span>
+              <span className="btn-caret" aria-hidden>▾</span>
+            </>
+          )}
+        </button>
       )}
       {open && (
         <>

@@ -105,6 +105,24 @@ export default function DocsTree({
     return rootDir;
   }, [index, extraDirs]);
 
+  // Every folder in the tree, so the toolbar button can open them all at once.
+  const allDirs = useMemo(() => {
+    const out: string[] = [];
+    const walk = (d: TreeDir) => {
+      for (const sub of d.dirs.values()) {
+        out.push(sub.path);
+        walk(sub);
+      }
+    };
+    walk(tree);
+    return out;
+  }, [tree]);
+
+  // Drives the toolbar button's two directions. Measured against the live tree
+  // rather than `open.size`, so paths left over from deleted folders don't make
+  // a fully collapsed tree look open.
+  const anyOpen = allDirs.some((p) => open.has(p));
+
   // Keep the selected note's ancestors expanded (e.g. after wikilink navigation).
   useEffect(() => {
     if (!selected) return;
@@ -293,8 +311,13 @@ export default function DocsTree({
         <button className="files-tool-btn" title="New Folder" onClick={() => setDialog({ kind: "newFolder", dir: "" })}>
           <NewFolderGlyph />
         </button>
-        <button className="files-tool-btn" title="Collapse folders" onClick={() => setOpen(new Set())}>
-          <CollapseGlyph />
+        <button
+          className="files-tool-btn"
+          title={anyOpen ? "Collapse folders" : "Expand folders"}
+          disabled={allDirs.length === 0}
+          onClick={() => setOpen(anyOpen ? new Set() : new Set(allDirs))}
+        >
+          {anyOpen ? <CollapseGlyph /> : <ExpandGlyph />}
         </button>
       </div>
       <div className="files-tree-body" onContextMenu={(e) => { if (e.target === e.currentTarget) openMenu(e, null); }}>
@@ -380,6 +403,15 @@ function CollapseGlyph() {
     <svg {...gp}>
       <polyline points="8 4 12 8 16 4" />
       <polyline points="8 20 12 16 16 20" />
+    </svg>
+  );
+}
+// The collapse chevrons flipped outward.
+function ExpandGlyph() {
+  return (
+    <svg {...gp}>
+      <polyline points="8 8 12 4 16 8" />
+      <polyline points="8 16 12 20 16 16" />
     </svg>
   );
 }

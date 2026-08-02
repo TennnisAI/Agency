@@ -1,11 +1,17 @@
 // Issue attachments. Files dropped, pasted, or picked into an issue are copied
-// into `.agency/issues/assets/` — beside the issue files, inside the one part
-// of `.agency/` git tracks — and referenced from the issue body as a *relative*
-// markdown link: `![](assets/AGE-13-20260802-134501.png)`.
+// into `.agency/issues/assets/` — beside the issue files — and referenced from
+// the issue body as a *relative* markdown link:
+// `![](assets/AGE-13-20260802-134501.png)`.
 //
 // Relative to the issue file's own directory is the whole trick: the same link
-// resolves in the app, on GitHub, in VS Code, and in any markdown editor, and
-// the bytes merge onto main with the issue text when an agent branch lands.
+// resolves in the app, in VS Code, and in any markdown editor, without knowing
+// where the repo sits on disk.
+//
+// Issue files and their assets are local to a checkout, not tracked by git
+// (`issuefs::ISSUES_DIR`, `worktree::untrack_issue_files`), so attachments do
+// not travel with an agent branch and these links do not resolve on GitHub.
+// Both would change if the backlog ever becomes shareable — see
+// docs/tracked-issues.md.
 //
 // Everything here is pure string work so it can be tested without a webview;
 // the IO lives in IssueDetail.

@@ -1003,7 +1003,8 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
   background: none; border: none; text-align: left; cursor: pointer;
   color: var(--text); font-size: 12.5px; padding: 6px 9px; border-radius: 5px;
 }
-.ctx-item:hover:not(:disabled) { background: var(--s0); }
+.ctx-item:hover:not(:disabled), .ctx-item.open { background: var(--s0); }
+.ctx-more { color: var(--o0); font-size: 13px; line-height: 1; margin-left: 10px; }
 .ctx-item:disabled { color: var(--o0); cursor: default; }
 .ctx-item.danger { color: var(--red); }
 .ctx-glyph { width: 14px; display: inline-flex; justify-content: center; color: var(--sub0); flex: none; }
@@ -1192,7 +1193,16 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
 .run-term { flex: 1; min-width: 0; display: flex; }
 .run-preview { flex: 1; min-width: 0; border: 0; border-left: 1px solid var(--border, #2a2d36); background: #fff; }
 .archived { margin-top: 8px; border-top: 1px solid var(--border, #2a2d36); padding-top: 6px; }
-.archived-head { width: 100%; text-align: left; background: transparent; color: var(--muted, #9aa); padding: 4px 8px; border: 0; }
+.archived-head { display: flex; align-items: center; gap: 4px; }
+.archived-toggle { flex: 1; min-width: 0; text-align: left; background: transparent; color: var(--muted, #9aa); padding: 4px 8px; border: 0; }
+.archived-cleanup {
+  background: transparent; border: 0; color: var(--muted, #9aa);
+  padding: 2px 8px; margin-right: 4px; border-radius: 6px;
+  font-size: 11.5px; font-weight: 500; white-space: nowrap; cursor: pointer;
+}
+.archived-cleanup:hover { background: var(--s0); color: var(--red); }
+.archived-cleanup:disabled { opacity: 0.5; cursor: default; }
+.archived-cleanup:disabled:hover { background: transparent; color: var(--muted, #9aa); }
 .archived-row { display: flex; align-items: center; gap: 4px; padding: 2px 8px; }
 .archived-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted, #9aa); font-size: 12px; }
 .archived-empty { padding: 4px 8px; color: var(--muted, #9aa); font-size: 12px; }
@@ -2164,6 +2174,11 @@ input, textarea, code,
 .docs-editor-host .lp-code::before {
   content: ""; position: absolute; inset: 0; z-index: -3;
   background: var(--crust); border-radius: 4px;
+}
+.docs-editor-host .lp-highlight { position: relative; padding: 1px 1px; }
+.docs-editor-host .lp-highlight::before {
+  content: ""; position: absolute; inset: 0; z-index: -3;
+  background: color-mix(in srgb, var(--yellow) 30%, transparent); border-radius: 3px;
 }
 .docs-editor-host .lp-codeblock {
   font-family: var(--mono); font-size: 0.85em;

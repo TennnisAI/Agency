@@ -8,9 +8,16 @@ crates/agency-app/gen
 # Claude Code harness worktrees / local state
 .claude/
 
-# Agency's own worktrees + local state for this repo, issue files included.
-# The app rewrites .agency/issues/*.md on every status change, so tracking them
-# kept this checkout dirty (which is what merges refuse to start on) and put the
-# same frontmatter lines on both sides of every agent merge. One local copy,
-# shared by every worktree.
-.agency/
+# Agency's own worktrees + local state for this repo. Mirrors the exclude list
+# the app writes into .git/info/exclude for every project it manages
+# (worktree::ensure_agency_excludes) — deliberately per-path, not a blanket
+# .agency/, so the shared config file stays trackable.
+#
+# Issue files are local because the app rewrites .agency/issues/*.md on every
+# status change, so tracking them kept this checkout dirty (which is what merges
+# refuse to start on) and put the same frontmatter lines on both sides of every
+# agent merge. One local copy, shared by every worktree. See
+# docs/tracked-issues.md.
+.agency/worktrees/
+.agency/issues/
+.agency/agency.local.toml

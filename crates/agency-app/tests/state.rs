@@ -928,3 +928,60 @@ fn archive_without_worktree_does_not_commit_the_users_work() {
     assert_eq!(state.list_runs(&project.id).unwrap().len(), 1);
     session_gone_or_cleanup(&state, &info.id);
 }
+
+/// Cleaning up the archived list takes every archived run's branch and worktree
+/// with it, and leaves the live runs alone.
+#[test]
+fn discard_archived_runs_clears_the_archive_and_spares_live_runs() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let state = common::state(&dir);
+    state.register_profile(AgentProfile {
+        name: "noop".into(),
+        command: "sh".into(),
+        args: vec!["-c".into(), "sleep 1".into()],
+        env: vec![],
+        resume_args: None,
+        loop_args: None,
+    }).unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+
+    let mut runs = Vec::new();
+    for prompt in ["a", "b", "c"] {
+        runs.push(
+            state
+                .create_run_with_progress(&project.id, prompt, "noop", "HEAD", None, true, |_| {})
+                .unwrap(),
+        );
+    }
+    let live = runs.pop().unwrap();
+    for r in &runs {
+        state.archive_run(&r.id).unwrap();
+    }
+    assert_eq!(state.list_archived_runs(&project.id).unwrap().len(), 2);
+
+    let summary = state.discard_archived_runs(&project.id).unwrap();
+    assert_eq!(summary.discarded, 2);
+    assert!(summary.failed.is_empty(), "clean sweep: {:?}", summary.failed);
+
+    assert!(state.list_archived_runs(&project.id).unwrap().is_empty());
+    let branches = state.list_project_branches(&project.id).unwrap().branches;
+    for r in &runs {
+        assert!(!branches.contains(&r.branch), "{} was deleted", r.branch);
+        assert!(
+            !repo.join(".agency").join("worktrees").join(&r.id).exists(),
+            "worktree dir is gone"
+        );
+    }
+
+    // The un-archived run keeps its row, its branch, and its worktree.
+    let remaining = state.list_runs(&project.id).unwrap();
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].id, live.id);
+    assert!(branches.contains(&live.branch));
+    assert!(repo.join(".agency").join("worktrees").join(&live.id).exists());
+    session_gone_or_cleanup(&state, &live.id);
+}

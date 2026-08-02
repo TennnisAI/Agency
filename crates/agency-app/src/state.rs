@@ -191,6 +191,17 @@ pub struct MergePreview {
     pub dirty_files: Vec<String>,
 }
 
+/// Outcome of a bulk discard of a project's archived runs. Reported per-run
+/// rather than as one pass/fail so the UI can say how much actually went and
+/// still surface what didn't (see discard_archived_runs).
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscardSummary {
+    pub discarded: usize,
+    /// One message per run that couldn't be discarded; empty on a clean sweep.
+    pub failed: Vec<String>,
+}
+
 /// A run's PR plus check rollup, polled by the merge modal.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -2719,6 +2730,27 @@ impl AppState {
     pub fn list_archived_runs(&self, project_id: &str) -> Result<Vec<RunInfo>> {
         let runs = self.registry.lock().unwrap().list_archived_runs(project_id)?;
         Ok(runs.iter().map(|r| self.run_info(r)).collect())
+    }
+
+    /// Discard every archived run in a project in one sweep: each one's kept
+    /// branch, whatever is left of its worktree, and its record go for good.
+    ///
+    /// Best-effort per run — one run that won't go (a branch git refuses to
+    /// delete, say) must not strand the rest of the sweep, so failures are
+    /// collected and reported alongside the count that did go.
+    pub fn discard_archived_runs(&self, project_id: &str) -> Result<DiscardSummary> {
+        let mut summary = DiscardSummary { discarded: 0, failed: Vec::new() };
+        for run in self.list_archived_runs(project_id)? {
+            match self.discard_run(&run.id) {
+                Ok(()) => summary.discarded += 1,
+                Err(e) => {
+                    log::warn!("discard_archived_runs: couldn't discard {}: {e}", run.id);
+                    let label = run.title.clone().unwrap_or_else(|| run.branch.clone());
+                    summary.failed.push(format!("{label}: {e}"));
+                }
+            }
+        }
+        Ok(summary)
     }
 
     pub fn stop_run(&self, id: &str) -> Result<()> {

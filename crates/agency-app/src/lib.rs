@@ -237,6 +237,7 @@ pub fn run() {
             commands::archive_run,
             commands::restore_run,
             commands::list_archived_runs,
+            commands::discard_archived_runs,
             commands::set_ui_state,
             commands::set_menu_context,
             commands::get_notif_settings,

@@ -1,5 +1,5 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
-import { Compartment, EditorState } from "@codemirror/state";
+import { Compartment, EditorState, TransactionSpec } from "@codemirror/state";
 import { EditorView, drawSelection, dropCursor, keymap } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { FileRoot, createDir, readFile, writeFile, writeFileBase64 } from "../api";
@@ -10,6 +10,11 @@ import { CrossRefs } from "../lib/links";
 import { crossRefsFacet, docsCompletion, docsHighlight, docsIndexFacet, docsMarkdown, docsNavFacet, livePreview, DocsNav } from "../lib/livePreview";
 import { frontmatterEditor, requestAddProperty } from "../lib/fmEditor";
 import { joinPath } from "../lib/filePath";
+import {
+  blockState, clearFormatting, formatCommand, insertConstruct, setHeading,
+  toggleInline, toggleList, toggleQuote,
+} from "../lib/mdFormat";
+import Menu, { MenuEntry } from "./git/Menu";
 
 export interface DocsEditorHandle {
   /** Scroll the first heading whose text matches (case-insensitive) into view. */
@@ -66,6 +71,7 @@ export default forwardRef<DocsEditorHandle, {
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [errorMsg, setErrorMsg] = useState("");
   const [saveState, setSaveState] = useState<"clean" | "dirty" | "saving">("clean");
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const timerRef = useRef<number | null>(null);
   // The text most recently loaded from or written to disk, for clean checks.
   const savedTextRef = useRef("");
@@ -246,6 +252,13 @@ export default forwardRef<DocsEditorHandle, {
           }),
           keymap.of([
             { key: "Mod-s", preventDefault: true, run: () => { void flushRef.current(); return true; } },
+            // Bold/italic keys. preventDefault also keeps WebKit's own
+            // rich-text editing commands off the contenteditable, which would
+            // otherwise try to wrap the selection in <b>/<i> nodes CodeMirror
+            // never asked for. (⌘B usually never arrives: the native menu's
+            // Toggle Sidebar accelerator claims it first.)
+            { key: "Mod-b", preventDefault: true, run: formatCommand((s) => toggleInline(s, "bold")) },
+            { key: "Mod-i", preventDefault: true, run: formatCommand((s) => toggleInline(s, "italic")) },
             ...defaultKeymap,
             ...historyKeymap,
           ]),
@@ -299,6 +312,128 @@ export default forwardRef<DocsEditorHandle, {
     return () => window.removeEventListener("blur", onBlur);
   }, []);
 
+  // ── Right-click menu: markdown formatting, Obsidian-style ─────────────────
+
+  /** Run a formatting transform against the live view, then hand focus back. */
+  const apply = (f: (state: EditorState) => TransactionSpec | null) => () => {
+    const view = viewRef.current;
+    if (!view) return;
+    const spec = f(view.state);
+    if (spec) view.dispatch(spec);
+    view.focus();
+  };
+
+  const copySelection = async (andCut: boolean) => {
+    const view = viewRef.current;
+    if (!view) return;
+    const sel = view.state.selection.main;
+    if (sel.empty) return;
+    try {
+      await navigator.clipboard.writeText(view.state.sliceDoc(sel.from, sel.to));
+      if (andCut) {
+        view.dispatch({ changes: { from: sel.from, to: sel.to }, selection: { anchor: sel.from } });
+      }
+    } catch (e) {
+      toastError(e, andCut ? "Couldn't cut" : "Couldn't copy");
+    }
+    view.focus();
+  };
+
+  const pasteClipboard = async () => {
+    const view = viewRef.current;
+    if (!view) return;
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text) {
+        const sel = view.state.selection.main;
+        view.dispatch({
+          changes: { from: sel.from, to: sel.to, insert: text },
+          selection: { anchor: sel.from + text.length },
+        });
+      }
+    } catch (e) {
+      // Reading the clipboard can be refused by the webview; the key still works.
+      toastError(e, "Couldn't paste (⌘V still works)");
+    }
+    view.focus();
+  };
+
+  const menuItems = (): MenuEntry[] => {
+    const view = viewRef.current;
+    if (!view) return [];
+    const block = blockState(view.state);
+    const hasSelection = !view.state.selection.main.empty;
+    const heading = (level: number): MenuEntry => ({
+      label: `Heading ${level}`,
+      checked: block.heading === level,
+      onClick: apply((s) => setHeading(s, level)),
+    });
+    return [
+      {
+        kind: "submenu", label: "Format", items: [
+          // No shortcut hints: ⌘B is the native menu's Toggle Sidebar
+          // accelerator, and macOS gives the menu bar the key first.
+          { label: "Bold", onClick: apply((s) => toggleInline(s, "bold")) },
+          { label: "Italic", onClick: apply((s) => toggleInline(s, "italic")) },
+          { label: "Strikethrough", onClick: apply((s) => toggleInline(s, "strike")) },
+          { label: "Highlight", onClick: apply((s) => toggleInline(s, "highlight")) },
+          { kind: "separator" },
+          { label: "Code", onClick: apply((s) => toggleInline(s, "code")) },
+          { kind: "separator" },
+          { label: "Clear formatting", onClick: apply(clearFormatting) },
+        ],
+      },
+      {
+        kind: "submenu", label: "Paragraph", items: [
+          { label: "Bullet list", checked: block.list === "bullet", onClick: apply((s) => toggleList(s, "bullet")) },
+          { label: "Numbered list", checked: block.list === "ordered", onClick: apply((s) => toggleList(s, "ordered")) },
+          { label: "Task list", checked: block.list === "task", onClick: apply((s) => toggleList(s, "task")) },
+          { kind: "separator" },
+          ...[1, 2, 3, 4, 5, 6].map(heading),
+          { label: "Body", checked: block.heading === 0, onClick: apply((s) => setHeading(s, 0)) },
+          { kind: "separator" },
+          { label: "Quote", checked: block.quote, onClick: apply(toggleQuote) },
+        ],
+      },
+      {
+        kind: "submenu", label: "Insert", items: [
+          { label: "Wikilink", onClick: apply((s) => insertConstruct(s, "wikilink")) },
+          { label: "Link", onClick: apply((s) => insertConstruct(s, "link")) },
+          { kind: "separator" },
+          { label: "Table", onClick: apply((s) => insertConstruct(s, "table")) },
+          { label: "Callout", onClick: apply((s) => insertConstruct(s, "callout")) },
+          { label: "Horizontal rule", onClick: apply((s) => insertConstruct(s, "rule")) },
+          { label: "Code block", onClick: apply((s) => insertConstruct(s, "codeblock")) },
+        ],
+      },
+      { kind: "separator" },
+      { label: "Cut", hint: "⌘X", disabled: !hasSelection, onClick: () => void copySelection(true) },
+      { label: "Copy", hint: "⌘C", disabled: !hasSelection, onClick: () => void copySelection(false) },
+      { label: "Paste", hint: "⌘V", onClick: () => void pasteClipboard() },
+      { kind: "separator" },
+      {
+        label: "Select all",
+        hint: "⌘A",
+        onClick: apply((s) => ({ selection: { anchor: 0, head: s.doc.length } })),
+      },
+    ];
+  };
+
+  const openMenu = (e: React.MouseEvent) => {
+    const view = viewRef.current;
+    if (!view) return;
+    e.preventDefault();
+    // Right-clicking outside the selection moves the cursor there first, the
+    // way every text editor does — formatting then targets what was clicked.
+    const pos = view.posAtCoords({ x: e.clientX, y: e.clientY });
+    const sel = view.state.selection.main;
+    if (pos !== null && (pos < sel.from || pos > sel.to)) {
+      view.dispatch({ selection: { anchor: pos } });
+    }
+    view.focus();
+    setMenu({ x: e.clientX, y: e.clientY });
+  };
+
   // While clean, follow external edits surfaced by the corpus poll. A dirty
   // buffer wins (last-write-wins: our autosave lands within a second anyway).
   useEffect(() => {
@@ -351,7 +486,9 @@ export default forwardRef<DocsEditorHandle, {
       </div>
       {status === "loading" && <div className="diff-empty">loading…</div>}
       {status === "error" && <div className="git-error">{errorMsg}</div>}
-      <div ref={hostRef} className="docs-editor-host" style={{ display: status === "ready" ? "block" : "none" }} />
+      <div ref={hostRef} className="docs-editor-host" onContextMenu={openMenu}
+        style={{ display: status === "ready" ? "block" : "none" }} />
+      {menu && <Menu x={menu.x} y={menu.y} items={menuItems()} onClose={() => setMenu(null)} />}
     </div>
   );
 });

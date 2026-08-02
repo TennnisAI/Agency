@@ -11,7 +11,7 @@ use tauri::ipc::Channel;
 use tauri::State;
 
 use agency_core::title::fallback_title;
-use crate::state::{AppState, FilesConfigDto, KnowledgeConfigDto, McpImportResult, MergePreview, ProviderSettings, RunInfo, RunSessionInfo};
+use crate::state::{AppState, DiscardSummary, FilesConfigDto, KnowledgeConfigDto, McpImportResult, MergePreview, ProviderSettings, RunInfo, RunSessionInfo};
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -256,6 +256,17 @@ pub async fn list_runs(state: State<'_, AppState>, project_id: String) -> Result
 #[tauri::command]
 pub fn discard_run(state: State<'_, AppState>, id: String) -> Result<(), String> {
     state.discard_run(&id).map_err(|e| e.to_string())
+}
+
+/// Discard every archived run in a project at once. The UI confirms first; a
+/// partial sweep still returns Ok so the caller can report what went and what
+/// didn't (see AppState::discard_archived_runs).
+#[tauri::command]
+pub fn discard_archived_runs(
+    state: State<'_, AppState>,
+    project_id: String,
+) -> Result<DiscardSummary, String> {
+    state.discard_archived_runs(&project_id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

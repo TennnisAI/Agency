@@ -256,6 +256,10 @@ export const archiveRun = (id: string) => invoke<void>("archive_run", { id });
 export const restoreRun = (id: string) => invoke<RunInfo>("restore_run", { id });
 export const listArchivedRuns = (projectId: string) =>
   invoke<RunInfo[]>("list_archived_runs", { projectId });
+/** Result of a bulk discard: some runs can fail while the rest still go. */
+export type DiscardSummary = { discarded: number; failed: string[] };
+export const discardArchivedRuns = (projectId: string) =>
+  invoke<DiscardSummary>("discard_archived_runs", { projectId });
 
 export function attachRun(id: string, cols: number, rows: number, onBytes: (b: Uint8Array) => void): Promise<void> {
   const onChunk = new Channel<{ b64: string }>();

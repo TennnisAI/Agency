@@ -9,6 +9,7 @@ import { attachRun, detachRun, resizeRun, runInput, runPreview, ensureRunActive,
   attachShell, detachShell, resizeShell, shellInput, shellPreview, startShell } from "../api";
 import { currentXtermTheme, minContrastRatio, TERMINAL_FONT_FAMILY } from "../lib/themes";
 import { initialCapture, feed } from "../lib/firstPrompt";
+import { shouldSwallowWheel } from "../lib/termScroll";
 
 export interface TerminalStream {
   attach(id: string, cols: number, rows: number, onBytes: (b: Uint8Array) => void): Promise<void>;
@@ -17,11 +18,19 @@ export interface TerminalStream {
   input(id: string, data: string): Promise<void>;
   preview(id: string, lines: number): Promise<string>;
   ensureActive?: (id: string) => Promise<void>;
+  /**
+   * Allow xterm's alternate-scroll fallback (wheel notch -> Up/Down arrow) when
+   * the app is on the alternate screen without mouse reporting. Right for a
+   * pager or editor, wrong for an agent prompt, where the arrows walk history.
+   * Defaults to on; see lib/termScroll.
+   */
+  altScrollArrows?: boolean;
 }
 
 export const agentStream: TerminalStream = {
   attach: attachRun, detach: detachRun, resize: resizeRun, input: runInput, preview: runPreview,
   ensureActive: ensureRunActive,
+  altScrollArrows: false,
 };
 
 export const runStream: TerminalStream = {
@@ -81,6 +90,19 @@ export default function FocusTerminal(
         e.preventDefault();
         stream.input(runId, "\n");
         return false; // handled — don't let xterm also emit \r
+      }
+      return true;
+    });
+    // Scroll wheel. When the daemon snapshot restores mouse reporting, an agent
+    // that tracks the mouse keeps getting real wheel events and xterm never even
+    // consults this handler. Otherwise xterm falls back to alternate-scroll
+    // arrows, which an agent prompt reads as history — swallow the notch instead
+    // of typing into the prompt. This is also what makes the daemon-side fix safe
+    // to roll out without force-replacing a running daemon.
+    term.attachCustomWheelEventHandler((e) => {
+      if (shouldSwallowWheel(term.buffer.active.type, stream.altScrollArrows ?? true)) {
+        e.preventDefault(); // xterm skips its own default but not the browser's
+        return false;
       }
       return true;
     });

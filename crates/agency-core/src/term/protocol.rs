@@ -4,12 +4,15 @@ use std::io::{self, Read, Write};
 
 // v2: request/reply messages carry a `seq` tag so a reply that arrives after
 // its request timed out can be discarded instead of desyncing the channel.
-// v3: the reattach snapshot restores mouse/focus reporting. The frames are
-// wire-compatible with v2, but a surviving v2 daemon would keep handing out
-// mouse-blind snapshots — i.e. the scroll-wheel-types-arrows bug — for the
-// life of the machine, since the daemon outlives app restarts. Bumping is what
-// gets it replaced.
-pub const PROTOCOL_VERSION: u32 = 3;
+//
+// Bump this ONLY for a real wire change. A mismatch is not a polite upgrade
+// signal: the app shuts the running daemon down and every live session on it
+// dies. One socket is shared by the installed app and any dev build, so a bump
+// on a branch means launching `./dev.sh` kills the agents running in the
+// release app (and vice versa). Behaviour changes that are wire-compatible —
+// e.g. a snapshot that restores more terminal modes — ride along with the next
+// daemon start instead, and the client degrades gracefully until then.
+pub const PROTOCOL_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "camelCase")]

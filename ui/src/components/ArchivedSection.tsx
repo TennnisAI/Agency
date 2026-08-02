@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
-import { RunInfo, listArchivedRuns, restoreRun, discardRun } from "../api";
+import { RunInfo, listArchivedRuns, restoreRun, discardRun, discardArchivedRuns } from "../api";
 import { useRuns } from "../store/runs";
-import { toastError } from "../lib/toast";
+import { toastError, toastSuccess } from "../lib/toast";
 import ConfirmDialog from "./ConfirmDialog";
 import { TrashIcon } from "./icons";
 
@@ -9,9 +9,10 @@ export default function ArchivedSection() {
   const { selectedProjectId, refreshRuns, setFocusedRun } = useRuns();
   const [open, setOpen] = useState(false);
   const [items, setItems] = useState<RunInfo[]>([]);
-  // Permanent discard is gated behind a confirm; `busy` covers both restore
-  // and discard so a slow op can't be double-fired.
+  // Permanent discard is gated behind a confirm; `busy` covers restore,
+  // discard, and the bulk cleanup so a slow op can't be double-fired.
   const [confirmDiscard, setConfirmDiscard] = useState<RunInfo | null>(null);
+  const [confirmCleanup, setConfirmCleanup] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
@@ -58,11 +59,42 @@ export default function ArchivedSection() {
     }
   };
 
+  // Discard every archived run at once. Partially successful sweeps are
+  // reported rather than swallowed: some runs can go while another's branch
+  // refuses to delete.
+  const cleanUp = async () => {
+    setBusy(true);
+    try {
+      const { discarded, failed } = await discardArchivedRuns(selectedProjectId);
+      await load();
+      setConfirmCleanup(false);
+      if (discarded) toastSuccess(`Cleaned up ${discarded} archived agent${discarded === 1 ? "" : "s"}`);
+      if (failed.length) toastError(failed.join("; "), "Some agents could not be cleaned up");
+    } catch (e) {
+      toastError(e, "Cleanup failed");
+      setConfirmCleanup(false);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div className="archived">
-      <button className="archived-head" onClick={() => setOpen((o) => !o)}>
-        {open ? "▾" : "▸"} Archived{items.length ? ` (${items.length})` : ""}
-      </button>
+      <div className="archived-head">
+        <button className="archived-toggle" onClick={() => setOpen((o) => !o)}>
+          {open ? "▾" : "▸"} Archived{items.length ? ` (${items.length})` : ""}
+        </button>
+        {/* Bulk cleanup only while the list is expanded, so what the button is
+            about to delete is on screen next to it. */}
+        {open && items.length > 0 && (
+          <button
+            className="archived-cleanup"
+            title="Discard every archived agent and its worktree"
+            disabled={busy}
+            onClick={() => setConfirmCleanup(true)}
+          >Clean up</button>
+        )}
+      </div>
       {open &&
         items.map((r) => (
           <div key={r.id} className="archived-row">
@@ -91,6 +123,17 @@ export default function ArchivedSection() {
           busy={busy}
           onConfirm={() => discard(confirmDiscard)}
           onCancel={() => setConfirmDiscard(null)}
+        />
+      )}
+      {confirmCleanup && (
+        <ConfirmDialog
+          title="Clean up all archived agents?"
+          body={`Permanently delete ${items.length} archived agent${items.length === 1 ? "" : "s"}, along with ${items.length === 1 ? "its worktree and branch" : "their worktrees and branches"}. Any unmerged work on those branches is lost. This cannot be undone.`}
+          confirmLabel="Clean up"
+          danger
+          busy={busy}
+          onConfirm={cleanUp}
+          onCancel={() => setConfirmCleanup(false)}
         />
       )}
     </div>

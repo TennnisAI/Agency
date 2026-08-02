@@ -1003,7 +1003,8 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
   background: none; border: none; text-align: left; cursor: pointer;
   color: var(--text); font-size: 12.5px; padding: 6px 9px; border-radius: 5px;
 }
-.ctx-item:hover:not(:disabled) { background: var(--s0); }
+.ctx-item:hover:not(:disabled), .ctx-item.open { background: var(--s0); }
+.ctx-more { color: var(--o0); font-size: 13px; line-height: 1; margin-left: 10px; }
 .ctx-item:disabled { color: var(--o0); cursor: default; }
 .ctx-item.danger { color: var(--red); }
 .ctx-glyph { width: 14px; display: inline-flex; justify-content: center; color: var(--sub0); flex: none; }
@@ -2148,6 +2149,11 @@ input, textarea, code,
 .docs-editor-host .lp-code::before {
   content: ""; position: absolute; inset: 0; z-index: -3;
   background: var(--crust); border-radius: 4px;
+}
+.docs-editor-host .lp-highlight { position: relative; padding: 1px 1px; }
+.docs-editor-host .lp-highlight::before {
+  content: ""; position: absolute; inset: 0; z-index: -3;
+  background: color-mix(in srgb, var(--yellow) 30%, transparent); border-radius: 3px;
 }
 .docs-editor-host .lp-codeblock {
   font-family: var(--mono); font-size: 0.85em;

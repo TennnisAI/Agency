@@ -34,6 +34,11 @@ work on it together without leaving the page.
 
 Tag a note by writing #tags anywhere in its body, then search them with `#`.
 
+Right-click anywhere in a note for its formatting menu: Format (bold, italic,
+strikethrough, ==highlight==, code), Paragraph (lists, heading levels, quote)
+and Insert (links, tables, callouts, code blocks). Each acts on the selection,
+or on the word and line under the cursor when there is none.
+
 ## Properties
 
 The card at the top of this note is its properties (stored as plain

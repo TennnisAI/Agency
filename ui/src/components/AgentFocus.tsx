@@ -78,7 +78,7 @@ export default function AgentFocus({
 }: {
   onSpawn?: (agentId: string, opts?: SpawnOpts) => void;
 }) {
-  const { runs, focusedRunId, setFocusedRun, refreshRuns, createAgent, createTerminal, selectedProjectId, pendingSessionId, setPendingSession } = useRuns();
+  const { runs, focusedRunId, setFocusedRun, setView, refreshRuns, createAgent, createTerminal, selectedProjectId, pendingSessionId, setPendingSession } = useRuns();
   const [showMerge, setShowMerge] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [confirmArchive, setConfirmArchive] = useState(false);
@@ -404,8 +404,12 @@ export default function AgentFocus({
                 <MergeModal
                   taskId={focused.id}
                   onClose={() => setShowMerge(false)}
+                  // The agent this pane was showing is gone (archived or
+                  // deleted), so land on the project's agent grid rather than
+                  // an empty focus pane asking us to pick from the rail.
                   onRemoved={() => {
                     setFocusedRun(null);
+                    setView("grid");
                     refreshRuns();
                   }}
                 />

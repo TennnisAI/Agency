@@ -6,6 +6,12 @@
      shadows don't read as heavy black blocks on a pale background. */
   --overlay: rgba(17,17,27,.6);
   --shadow: rgba(0,0,0,.5);
+  /* Disclosure chevrons (AGE-21). The ▸/▾ glyphs only fill about half their
+     em box, so at 9-10px they read as smudges. Every twisty in the app sizes
+     off these two tokens: --chev for tree rows, section heads and fold
+     buttons, --chev-sm for the caret tucked inside a small pill or button. */
+  --chev: 13px;
+  --chev-sm: 11px;
 }
 /* Light theme (Paperback is the only scheme: "light" theme — see themes.ts). */
 :root[data-theme="paperback"] {
@@ -429,7 +435,7 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
 }
 .tree-row:hover { background: var(--s0); color: var(--text); }
 .tree-row.selected { background: var(--s1); color: var(--text); }
-.chev { font-size: 10px; color: var(--o0); width: 14px; flex-shrink: 0; }
+.chev { font-size: var(--chev); color: var(--o0); width: 14px; flex-shrink: 0; }
 .tree-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ghost-x {
   background: none; border: none; color: var(--o0); cursor: pointer;
@@ -910,7 +916,7 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
 .git-count { background: var(--s0); color: var(--sub0); border-radius: 9px; font-size: 10px; padding: 0 6px; }
 .git-group-actions { margin-left: auto; display: flex; gap: 2px; opacity: 0; }
 .git-group-head:hover .git-group-actions { opacity: 1; }
-.git-twisty { background: none; border: none; color: var(--o0); cursor: pointer; padding: 0; font-size: 11px; }
+.git-twisty { background: none; border: none; color: var(--o0); cursor: pointer; padding: 0; font-size: var(--chev); }
 .git-row { display: flex; align-items: center; gap: 8px; padding: 3px 6px 3px 20px; border-radius: 4px; cursor: pointer; font-size: 13px; }
 .git-row:hover { background: var(--s0); }
 .git-row.sel { background: var(--s1); }
@@ -1042,7 +1048,7 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
   text-transform: uppercase; text-align: left;
 }
 .git-section-head:not(.static) { cursor: pointer; }
-.git-section-head .chev { font-size: 10px; }
+.git-section-head .chev { font-size: var(--chev); }
 .git-section-history { border-top: 1px solid var(--line); }
 .git-section-history.folded { flex-shrink: 0; }
 
@@ -1252,7 +1258,7 @@ input.settings-notif-secs { width: 90px; flex: 0 0 auto; }
 .tree-icon { display: inline-flex; align-items: center; justify-content: center; width: 16px; flex: none; opacity: 0.7; }
 .tree-icon.file-icon { opacity: 1; }
 .tree-icon svg { display: block; }
-.tree-twistie-slot { display: inline-flex; align-items: center; justify-content: center; width: 12px; flex: none; }
+.tree-twistie-slot { display: inline-flex; align-items: center; justify-content: center; width: 14px; flex: none; }
 .tree-twistie { color: var(--sub0); transition: transform 0.1s ease; }
 .tree-twistie.open { transform: rotate(90deg); }
 .tree-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1314,7 +1320,7 @@ input, textarea, code,
 .agent-menu .branch-row .branch-select:hover { background: var(--crust); border-color: var(--s2); }
 .agent-menu .branch-row .branch-select:focus-visible { outline: none; border-color: var(--blue); }
 .branch-select-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.branch-select-caret { color: var(--o1); font-size: 9px; flex: none; }
+.branch-select-caret { color: var(--o1); font-size: var(--chev-sm); flex: none; }
 /* Above the agent menu it opens from, so a click outside lands on this
    backdrop and closes only the branch list. */
 .branch-menu-backdrop { position: fixed; inset: 0; z-index: 42; }
@@ -1386,7 +1392,7 @@ input, textarea, code,
 .home-group-head { display: flex; align-items: center; gap: 2px; margin: 0 -8px; }
 .home-fold {
   background: transparent; border: none; border-radius: 6px;
-  color: var(--o0); font-size: 10px; padding: 6px 7px; cursor: pointer;
+  color: var(--o0); font-size: var(--chev); padding: 6px 7px; cursor: pointer;
   flex-shrink: 0; line-height: 1;
 }
 .home-fold:hover { background: var(--s0); color: var(--text); }
@@ -1714,7 +1720,7 @@ input, textarea, code,
   font-family: var(--sans); font-size: 11px; font-weight: 600;
   text-transform: uppercase; letter-spacing: .06em;
 }
-.issue-group-chev { width: 10px; color: var(--o0); }
+.issue-group-chev { width: 12px; font-size: var(--chev); color: var(--o0); }
 .issue-group-count { color: var(--o0); font-weight: 400; }
 
 .issue-row {
@@ -1968,7 +1974,7 @@ input, textarea, code,
 }
 .filter-pill:hover { background: var(--s0); color: var(--text); }
 .filter-pill.active { background: var(--s0); color: var(--text); }
-.filter-caret { color: var(--o0); font-size: 9px; }
+.filter-caret { color: var(--o0); font-size: var(--chev-sm); }
 /* All option labels occupy the same grid cell; only the active one is
    visible. The pill is therefore as wide as its widest option and stays
    put when the selection changes (no filter-bar reflow). */
@@ -2015,7 +2021,7 @@ input, textarea, code,
 }
 .task-head-btn:hover { color: var(--text); border-color: var(--o0); background: var(--s0); }
 .task-note { padding: 1px 0; }
-.task-note-chev { width: 10px; color: var(--o1); flex-shrink: 0; }
+.task-note-chev { width: 12px; font-size: var(--chev); color: var(--o1); flex-shrink: 0; }
 .task-note-count {
   color: var(--sub0); font-size: 10.5px; font-weight: 400; flex-shrink: 0;
   background: var(--s0); border-radius: 999px; padding: 0 7px;
@@ -2240,7 +2246,7 @@ input, textarea, code,
   font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em;
 }
 .docs-side-head:hover { color: var(--sub0); }
-.docs-side-chev { width: 10px; display: inline-block; }
+.docs-side-chev { width: 12px; font-size: var(--chev); display: inline-block; }
 .docs-side-count { color: var(--o0); font-weight: 400; }
 .docs-side-section { display: flex; flex-direction: column; padding: 0 4px 6px; }
 .docs-side-none { color: var(--o0); font-size: 12px; padding: 2px 12px 4px; }
@@ -2292,7 +2298,7 @@ input, textarea, code,
 }
 .agent-side-pick:hover { background: var(--s0); color: var(--text); }
 .agent-side-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.agent-side-chev { color: var(--o0); font-size: 10px; flex-shrink: 0; }
+.agent-side-chev { color: var(--o0); font-size: var(--chev-sm); flex-shrink: 0; }
 .agent-side-menu { max-height: 60vh; overflow-y: auto; }
 .agent-side-menu button { display: flex; align-items: center; gap: 7px; }
 .agent-side-menu button.on { background: var(--s1); color: var(--text); }
@@ -2397,7 +2403,7 @@ input, textarea, code,
 /* Per-file diff. */
 .prdiff-file { border: 1px solid var(--line); border-radius: 8px; margin-bottom: 12px; overflow: hidden; }
 .prdiff-file-head { display: flex; align-items: center; gap: 8px; padding: 7px 10px; background: var(--mantle); cursor: pointer; font-family: var(--mono); font-size: 12px; }
-.prdiff-caret { color: var(--sub0); width: 12px; }
+.prdiff-caret { color: var(--sub0); width: 13px; font-size: var(--chev); }
 .prdiff-path { color: var(--text); }
 .prdiff-renamed { color: var(--sub0); }
 .prdiff-binary { margin-left: auto; color: var(--sub0); font-size: 10px; text-transform: uppercase; }

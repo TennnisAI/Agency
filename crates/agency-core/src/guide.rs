@@ -27,8 +27,10 @@ Delete this note whenever you like. It comes back only if you run
 
 Link a note by writing its name in double brackets, like [[My first note]].
 Cmd+click follows a link; if the note does not exist yet, Agency offers to
-create it. The panel on the right of every note lists its Backlinks (notes
-that link here) and Mentions (issues that link here).
+create it. The panel on the right of every note has two tabs. Note lists
+the note's Backlinks (notes that link here) and Mentions (issues that link
+here). Agents puts a live agent or terminal beside the note, so you can
+work on it together without leaving the page.
 
 Tag a note by writing #tags anywhere in its body, then search them with `#`.
 
@@ -73,6 +75,11 @@ follow-ups. Reference any issue from a note by its key, written like
 `[[AGE-14]]`, and that issue's detail pane will list the notes mentioning
 it. If the workspace uses git, you can dispatch agents on writing tasks the
 same way you would in a code project: they work on a branch, you merge.
+
+The Agents tab in a note's right panel is the same set of agents, shown
+next to what you are writing. Start one with + there, switch between them
+from the picker, and use the arrow to open the current one full size in
+the Agents tab.
 
 Drop a file onto an issue's detail pane, paste an image into its
 description, or use the ⊕ button to attach it. Attachments are copied in

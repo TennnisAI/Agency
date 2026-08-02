@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { FileRoot } from "../api";
+import { FileRoot, Project } from "../api";
 import Resizer from "./Resizer";
 import { usePaneWidth } from "../hooks/usePaneWidth";
 import FileTree from "./FileTree";
 import FileTabs from "./FileTabs";
 import FileEditor, { FileEditorHandle } from "./FileEditor";
+import AgentSidePanel from "./AgentSidePanel";
 import ConfirmDialog from "./ConfirmDialog";
 import {
   TabState, closeTab, deserializeTabs, emptyTabs, openTab, removeTab, renameTab,
@@ -14,17 +15,22 @@ import { bufferKey, dropBuffer, hasBuffer, stashBuffer, takeBuffer } from "../li
 import { consumePendingOpen, onOpenFile } from "../lib/openFile";
 import { baseName } from "../lib/filePath";
 import { recordActivation } from "../lib/recency";
+import { terminalHasFocus } from "../lib/terminalFocus";
 
 const tabsKey = (root: FileRoot) => `files:tabs:${root.kind}:${root.id}`;
 
-export default function FilesView({ root, projectId, projectName }: {
+export default function FilesView({ root, project, agentsOpen }: {
   root: FileRoot | null;
-  // Owning project even when `root` is a run worktree — recency keys need it
-  // so the palette can reopen the file later (it selects the project first).
-  projectId: string;
-  projectName: string;
+  // Owning project even when `root` is a run worktree — recency keys need its
+  // id so the palette can reopen the file later (it selects the project first),
+  // and the agents panel spawns into it.
+  project: Project;
+  // Show the agents panel on the right (toggled from the content header).
+  agentsOpen: boolean;
 }) {
+  const projectId = project.id;
   const treePane = usePaneWidth("files-tree", 280, 180, 560);
+  const agentsPane = usePaneWidth("files-agents", 420, 280, 900);
   // Tab state travels WITH the root key it belongs to. The persistence effect
   // below only writes when the state's own key matches the rendered root, so
   // it can never save one root's tabs under another's storage key — and
@@ -124,9 +130,12 @@ export default function FilesView({ root, projectId, projectName }: {
   requestCloseRef.current = requestClose;
 
   // ⌘W closes the active tab. Bound only while the Files tab is mounted, and
-  // menu.rs claims no ⌘W accelerator, so there is nothing to clash with.
+  // menu.rs claims no ⌘W accelerator, so there is nothing to clash with — except
+  // the agents panel's terminal, where Ctrl+W is delete-word and has to reach
+  // the shell.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (terminalHasFocus()) return;
       if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "w") {
         const active = tabsRef.current.active;
         if (active) {
@@ -189,7 +198,7 @@ export default function FilesView({ root, projectId, projectName }: {
     return <div className="board empty">Open a project to browse its files.</div>;
   }
 
-  const rootLabel = root.kind === "run" ? "Agent worktree" : `${projectName} · main`;
+  const rootLabel = root.kind === "run" ? "Agent worktree" : `${project.name} · main`;
 
   return (
     <div className="files-view">
@@ -233,6 +242,14 @@ export default function FilesView({ root, projectId, projectName }: {
         ))}
         {!tabs.active && <div className="diff-empty">Select a file to view.</div>}
       </div>
+      {agentsOpen && (
+        <>
+          <Resizer size={agentsPane.width} min={280} max={900} onChange={agentsPane.setWidth} side="right" />
+          <div className="side-pane" style={{ width: agentsPane.width }}>
+            <AgentSidePanel project={project} />
+          </div>
+        </>
+      )}
 
       {confirmClose !== null && (
         <ConfirmDialog

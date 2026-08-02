@@ -339,6 +339,8 @@ textarea.settings-input { min-height: 64px; resize: vertical; }
   font-size: 16px;
 }
 .icon-btn:hover { background: var(--s0); color: var(--text); }
+.icon-btn:disabled { color: var(--o0); cursor: default; }
+.icon-btn:disabled:hover { background: none; color: var(--o0); }
 .search-box {
   display: flex; align-items: center; gap: 6px;
   background: var(--crust); border: 1px solid var(--s1); border-radius: 8px;
@@ -538,6 +540,9 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
    ghost icon-button look despite the chip styling above. */
 .content-head > .icon-btn { background: none; color: var(--sub0); padding: 0; font-size: 16px; border-radius: 6px; }
 .content-head > .icon-btn:hover { background: var(--s0); color: var(--text); }
+/* Panel toggles in the header (source control, Files-tab agents) read as
+   pressed while their panel is open. */
+.content-head > .icon-btn.on { color: var(--blue); }
 
 /* Segmented control */
 .seg {
@@ -2148,9 +2153,27 @@ input, textarea, code,
 .docs-editor-host .fmw-tool:hover { background: var(--s1); color: var(--text); }
 .docs-editor-host .fmw-del:hover { color: var(--red); }
 
-/* ── Docs side panel (outline + backlinks) ────────────────────── */
-.docs-side { min-width: 180px; flex-shrink: 0; border-left: 1px solid var(--line); overflow-y: auto; }
-.docs-side-body { display: flex; flex-direction: column; padding: 4px 0 20px; }
+/* ── Right side pane (Docs: note info or agents; Files: agents) ─ */
+/* A flex column: any tab strip stays fixed and the panel below takes the rest
+   — the agents panel's terminal has to fill it, so the scroll lives on the
+   Note panel's own body rather than out here. */
+.side-pane {
+  min-width: 180px; flex-shrink: 0; border-left: 1px solid var(--line);
+  display: flex; flex-direction: column; min-height: 0; overflow: hidden;
+}
+.docs-side-tabs {
+  display: flex; flex-shrink: 0; border-bottom: 1px solid var(--line);
+  background: var(--mantle);
+}
+.docs-side-tabs button {
+  flex: 1; background: none; border: none; border-bottom: 2px solid transparent;
+  cursor: pointer; padding: 7px 8px; color: var(--o1);
+  font-family: var(--sans); font-size: 11.5px; font-weight: 600;
+  letter-spacing: .03em; white-space: nowrap; border-radius: 0;
+}
+.docs-side-tabs button:hover:not(.on) { color: var(--sub0); background: var(--s0); }
+.docs-side-tabs button.on { color: var(--text); border-bottom-color: var(--blue); }
+.docs-side-body { display: flex; flex-direction: column; padding: 4px 0 20px; flex: 1; min-height: 0; overflow-y: auto; }
 .docs-side-head {
   display: flex; align-items: center; gap: 6px; width: 100%;
   background: none; border: none; cursor: pointer; text-align: left;
@@ -2194,6 +2217,36 @@ input, textarea, code,
 .docs-backlink-title { font-size: 12px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .docs-backlink-snippet { font-size: 11px; color: var(--sub0); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-editor-btn.on { color: var(--blue); }
+
+/* ── Agents side panel (Docs / Files right sidebar) ───────────── */
+.agent-side { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--crust); }
+.agent-side-head {
+  display: flex; align-items: center; gap: 4px; padding: 5px 6px 5px 8px;
+  border-bottom: 1px solid var(--line); background: var(--mantle); flex-shrink: 0;
+}
+.agent-side-head .agent-add { display: flex; }
+.agent-side-pick {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 7px;
+  background: none; border: none; cursor: pointer; text-align: left;
+  color: var(--sub1); font-family: var(--sans); font-size: 12.5px;
+  padding: 3px 6px; border-radius: 6px;
+}
+.agent-side-pick:hover { background: var(--s0); color: var(--text); }
+.agent-side-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-side-chev { color: var(--o0); font-size: 10px; flex-shrink: 0; }
+.agent-side-menu { max-height: 60vh; overflow-y: auto; }
+.agent-side-menu button { display: flex; align-items: center; gap: 7px; }
+.agent-side-menu button.on { background: var(--s1); color: var(--text); }
+.agent-side-menu-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-side-menu-none { color: var(--o0); font-size: 12px; padding: 6px 10px; }
+.agent-side-sub {
+  display: flex; align-items: baseline; gap: 8px; flex-shrink: 0;
+  padding: 3px 10px 4px; border-bottom: 1px solid var(--line);
+  font-size: 11px; color: var(--o1);
+}
+.agent-side-agent { flex-shrink: 0; }
+.agent-side-sub code { font-size: 11px; color: var(--blue); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-side-empty { padding: 14px 12px; color: var(--o0); font-size: 12px; line-height: 1.5; }
 
 /* ── Docs images & callouts ───────────────────────────────────── */
 .docs-editor-host .lp-img-wrap { display: inline-block; max-width: 100%; }

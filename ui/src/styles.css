@@ -690,6 +690,10 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
   font-weight: 400;
 }
 .ghost:hover { background: var(--s1); }
+/* Destructive ghost: a secondary action that still removes something for good
+   (e.g. "Delete agent" sitting next to "Archive agent"). */
+.ghost.danger { color: var(--red); }
+.ghost.danger:hover { background: rgba(243,139,168,.12); }
 
 /* Row actions (new-task footer) */
 .row-actions {

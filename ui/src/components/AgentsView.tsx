@@ -286,9 +286,14 @@ export default function AgentsView({
             setSrcTab("prs");
             setReviewPr(number);
           }}
-          onArchived={() => {
+          // Archived or deleted: nothing is left to focus, so drop back to
+          // this project's agent grid (the same place switching projects
+          // lands) instead of an agents tab with no agent selected.
+          onRemoved={() => {
             setApproveRun(null);
             setFocusedRun(null);
+            setView("grid");
+            setTab("agents");
             refreshRuns();
           }}
         />

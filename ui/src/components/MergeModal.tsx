@@ -21,20 +21,21 @@ import {
   resolverClose,
 } from "../api";
 import PrSection from "./PrSection";
+import ConfirmDialog from "./ConfirmDialog";
 import { useRuns } from "../store/runs";
 import { useModalKeys } from "../hooks/useModalKeys";
 
-// `onArchived` fires after the post-merge "Archive workspace" action so the
-// host view can drop focus and refresh its rail.
+// `onRemoved` fires after a post-merge cleanup action (archive or delete) so
+// the host view can drop focus and refresh its rail.
 export default function MergeModal({
   taskId,
   onClose,
-  onArchived,
+  onRemoved,
   onReviewPr,
 }: {
   taskId: string;
   onClose: () => void;
-  onArchived?: () => void;
+  onRemoved?: () => void;
   // Deep-link handler for "Review in Agency" — opens the PR in the review panel.
   onReviewPr?: (number: number) => void;
 }) {
@@ -49,6 +50,8 @@ export default function MergeModal({
   const [state, setState] = useState<MergeState | null>(null);
   const [finishing, setFinishing] = useState(false);
   const [archiving, setArchiving] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [resolverProfile, setResolverProfile] = useState("claude");
   const [profileNames, setProfileNames] = useState<string[]>([]);
   const { runs } = useRuns();
@@ -64,9 +67,13 @@ export default function MergeModal({
   const timerRef = useRef<ReturnType<typeof window.setInterval> | null>(null);
   const roRef = useRef<ResizeObserver | null>(null);
 
-  // Escape mirrors the header ✕; disabled while archiving (the modal's other
+  // Cleanup in flight: archiving or deleting. Both tear the run down, so the
+  // modal's cancel affordances stay disabled until they land.
+  const busy = archiving || deleting;
+
+  // Escape mirrors the header ✕; disabled while cleaning up (the modal's other
   // cancel affordances are disabled then too).
-  useModalKeys(onClose, !archiving);
+  useModalKeys(onClose, !busy);
 
   // Load the preview first so we can explain what a merge would do instead of
   // silently running it the moment the modal opens.
@@ -102,11 +109,31 @@ export default function MergeModal({
         for (const l of losers) await discardRun(l.id);
       }
       await archiveRun(taskId);
-      onArchived?.();
+      onRemoved?.();
       onClose();
     } catch (e) {
       setError(String(e));
       setArchiving(false);
+    }
+  }
+
+  // Delete: the merged work is on the base branch now, so some users want the
+  // agent gone for good rather than filed away. Removes the worktree, the
+  // agent branch and the run record itself.
+  async function deleteWorkspace(discardLosers: boolean) {
+    setDeleting(true);
+    try {
+      if (discardLosers) {
+        for (const l of losers) await discardRun(l.id);
+      }
+      await discardRun(taskId);
+      onRemoved?.();
+      onClose();
+    } catch (e) {
+      setError(String(e));
+      setDeleting(false);
+      // Drop back to the merge modal so the error is the thing on screen.
+      setConfirmDelete(false);
     }
   }
 
@@ -254,7 +281,7 @@ export default function MergeModal({
   const nothingToMerge = !!preview && preview.commitsAhead === 0;
 
   return (
-    <div className="settings-overlay" onClick={() => { if (!archiving) onClose(); }}>
+    <div className="settings-overlay" onClick={() => { if (!busy) onClose(); }}>
       <div
         className="merge-modal"
         role="dialog"
@@ -332,25 +359,29 @@ export default function MergeModal({
             <p className="merge-note">
               The worktree and its <code>{preview?.branch ?? "agent"}</code> branch are no longer needed.
               Archiving stops the agent and removes the worktree (the branch is kept, so it can be restored).
+              Deleting removes the branch and the run too, which can't be undone.
             </p>
             <div className="git-actions">
               {losers.length > 0 ? (
-                <button disabled={archiving} onClick={() => archiveWorkspace(true)}>
+                <button disabled={busy} onClick={() => archiveWorkspace(true)}>
                   {archiving
                     ? "Cleaning up…"
                     : `Archive + discard ${losers.length} losing attempt${losers.length === 1 ? "" : "s"}`}
                 </button>
               ) : (
-                <button disabled={archiving} onClick={() => archiveWorkspace(false)}>
+                <button disabled={busy} onClick={() => archiveWorkspace(false)}>
                   {archiving ? "Archiving…" : "Archive agent"}
                 </button>
               )}
               {losers.length > 0 && (
-                <button className="ghost" disabled={archiving} onClick={() => archiveWorkspace(false)}>
+                <button className="ghost" disabled={busy} onClick={() => archiveWorkspace(false)}>
                   Archive, keep losers
                 </button>
               )}
-              <button className="ghost" disabled={archiving} onClick={onClose}>Keep agent</button>
+              <button className="ghost danger" disabled={busy} onClick={() => setConfirmDelete(true)}>
+                {deleting ? "Deleting…" : "Delete agent"}
+              </button>
+              <button className="ghost" disabled={busy} onClick={onClose}>Keep agent</button>
             </div>
           </div>
         )}
@@ -430,6 +461,29 @@ export default function MergeModal({
           </div>
         )}
       </div>
+
+      {/* Sibling of the modal card, not a child: the card scrolls its own
+          overflow, and the confirm has to cover the whole overlay. Its own
+          backdrop click stops propagating, so it never closes the merge modal
+          underneath. */}
+      {confirmDelete && (
+        <ConfirmDialog
+          title="Delete agent?"
+          body={`Stop this agent, remove its worktree, and delete the "${preview?.branch ?? "agent"}" branch and the run itself. The merged commit stays on ${preview?.base ?? "the base branch"}, so the work isn't lost, but the agent can't be restored.${
+            losers.length > 0
+              ? ` "Delete all" also discards ${losers.length} losing attempt${losers.length === 1 ? "" : "s"}.`
+              : ""
+          }`}
+          confirmLabel={losers.length > 0 ? `Delete all ${losers.length + 1}` : "Delete"}
+          danger
+          busy={deleting}
+          altLabel={losers.length > 0 ? "Delete this one" : undefined}
+          altDanger
+          onAlt={losers.length > 0 ? () => deleteWorkspace(false) : undefined}
+          onConfirm={() => deleteWorkspace(losers.length > 0)}
+          onCancel={() => setConfirmDelete(false)}
+        />
+      )}
     </div>
   );
 }

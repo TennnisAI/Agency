@@ -108,15 +108,17 @@ export default function FocusTerminal(
       }
       return true;
     });
-    // Scroll wheel. When the daemon snapshot restores mouse reporting, an agent
-    // that tracks the mouse keeps getting real wheel events and xterm never even
-    // consults this handler. Otherwise xterm would fall back to alternate-scroll
-    // arrows, which an agent prompt reads as history: send the page keys the
-    // agent asks for instead. That also means the daemon-side fix can roll out
-    // without force-replacing a running daemon (see term/protocol.rs).
+    // Scroll wheel. An agent tracking the mouse scrolls itself from the notch,
+    // so this handler steps aside and lets xterm deliver it (skipping that is
+    // what made agent panes sluggish, AGE-26). It only takes over where xterm
+    // would otherwise fall back to alternate-scroll arrows, which an agent
+    // prompt reads as history: send the page keys the agent asks for instead.
+    // That is also the path a pane gets from a daemon predating the snapshot
+    // fix that restores mouse reporting (see term/protocol.rs), so the
+    // daemon-side fix can roll out without force-replacing a running daemon.
     const pageScroll = createPageScroller();
     term.attachCustomWheelEventHandler((e) => {
-      if (shouldSwallowWheel(term.buffer.active.type, altScrollRef.current)) {
+      if (shouldSwallowWheel(term.buffer.active.type, term.modes.mouseTrackingMode, altScrollRef.current)) {
         e.preventDefault(); // xterm skips its own default but not the browser's
         const keys = pageScroll(e.deltaY, e.deltaMode);
         if (keys) stream.input(runId, keys);

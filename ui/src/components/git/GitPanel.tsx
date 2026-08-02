@@ -15,44 +15,57 @@ import GitSections from "./GitSections";
 import GitOutputModal from "./GitOutputModal";
 import Resizer from "../Resizer";
 import { usePaneWidth } from "../../hooks/usePaneWidth";
+import { useGitOp, setGitOp } from "./ops";
 
 export type GitSelection =
   | { kind: "file"; path: string; group: "index" | "workingTree" | "merge" | "untracked" }
   | { kind: "commit"; item: HistoryItem }
   | null;
 
-export default function GitPanel({
-  taskId,
-  layout,
-  selection,
-  onSelect,
-  width,
-  allowComments = true,
-}: {
+type Props = {
   taskId: string;
   layout: "compact" | "full";
   selection: GitSelection;
   onSelect: (sel: GitSelection) => void;
   width?: number;
   allowComments?: boolean;
-}) {
+};
+
+// Source control is per repo, but the panel sits at a fixed spot in the tree —
+// switching projects (or focusing another agent) only swaps `taskId`, so React
+// would otherwise keep the old repo's file list, errors and dialogs on screen
+// until the next poll. Keying on the repo remounts instead, and the in-flight
+// op lives in the per-repo store (./ops) so a running push isn't lost with it.
+export default function GitPanel(props: Props) {
+  return <GitRepoPanel key={props.taskId} {...props} />;
+}
+
+function GitRepoPanel({
+  taskId,
+  layout,
+  selection,
+  onSelect,
+  width,
+  allowComments = true,
+}: Props) {
   const [changes, setChanges] = useState<FileChange[]>([]);
   const [branch, setBranch] = useState<BranchInfo | null>(null);
   const [stashes, setStashes] = useState<StashEntry[]>([]);
   // `error` is the transient status-refresh error (re-evaluated every poll).
-  // `actionError` is sticky: it survives the follow-up refresh so a failed
+  // The op's `error` is sticky: it survives the follow-up refresh so a failed
   // commit/push/publish stays readable until dismissed or the next action.
   const [error, setError] = useState("");
-  const [actionError, setActionError] = useState("");
   const [commentsKey, setCommentsKey] = useState(0);
   // When set, the full git output (a long push error) is shown in a modal.
   const [outputText, setOutputText] = useState<string | null>(null);
-  // `busy` disables action buttons + shows the progress bar while a git op runs.
+  // The running op, from the per-repo store: `busy` disables action buttons and
+  // shows the progress bar, `progress` carries streamed push phase/percent.
+  const { busy, progress: pushProgress, error: actionError } = useGitOp(taskId);
+  const setPushProgress = useCallback(
+    (p: CloneProgress | null) => setGitOp(taskId, { progress: p }),
+    [taskId],
+  );
   // `historyKey` bumps after every action so the commit graph reloads.
-  const [busy, setBusy] = useState(false);
-  // Streamed push progress (phase/percent), shown as a determinate bar while a
-  // push uploads. Null when no push is in flight.
-  const [pushProgress, setPushProgress] = useState<CloneProgress | null>(null);
   const [historyKey, setHistoryKey] = useState(0);
   // When a Sync finds the branch diverged from upstream, prompt the user to
   // rebase-and-sync rather than silently merging or failing with a raw error.
@@ -98,23 +111,22 @@ export default function GitPanel({
   // Resolves true on success so callers can react (e.g. CommitBox only clears
   // the message once the commit actually landed); never rejects.
   const act = useCallback(async (fn: () => Promise<unknown>, label?: string): Promise<boolean> => {
-    setActionError("");
-    setBusy(true);
+    setGitOp(taskId, { busy: true, error: "" });
     let ok = false;
     try {
       await fn();
       ok = true;
       if (label) toastSuccess(label);
     } catch (e) {
-      setActionError(String(e));
+      setGitOp(taskId, { error: String(e) });
     } finally {
-      setBusy(false);
+      setGitOp(taskId, { busy: false });
     }
     await refresh();
     // New/changed commits: reload the history graph (it doesn't poll).
     setHistoryKey((k) => k + 1);
     return ok;
-  }, [refresh]);
+  }, [refresh, taskId]);
 
   // Push streams `--progress` into `pushProgress` so a big upload shows a
   // determinate bar instead of freezing (the command is async, off the main
@@ -124,7 +136,7 @@ export default function GitPanel({
     const ok = await act(() => gitPush(taskId, setPushProgress), "Pushed");
     setPushProgress(null);
     return ok;
-  }, [act, taskId]);
+  }, [act, taskId, setPushProgress]);
 
   // Sync = pull (fast-forward) + push, like VS Code's "Sync Changes". A diverged
   // branch can't fast-forward, so the backend reports it and we ask the user
@@ -140,7 +152,7 @@ export default function GitPanel({
     if (!ok) return;
     if (diverged) setDivergedPrompt(true);
     else toastSuccess("Synced");
-  }, [act, taskId]);
+  }, [act, taskId, setPushProgress]);
 
   // Chosen from the diverged prompt: replay local commits onto upstream, then push.
   const rebaseAndSync = useCallback(async () => {
@@ -151,7 +163,7 @@ export default function GitPanel({
       await gitPush(taskId, setPushProgress);
     }, "Synced (rebased)");
     setPushProgress(null);
-  }, [act, taskId]);
+  }, [act, taskId, setPushProgress]);
 
   const undoCommit = () => act(async () => {
     const message = await gitUndoLastCommit(taskId);
@@ -211,7 +223,7 @@ export default function GitPanel({
           onClick={() => setOutputText(fullError)}>Output</button>
       )}
       <button className="git-iconbtn" title="Dismiss" aria-label="Dismiss error"
-        onClick={() => { setActionError(""); setError(""); }}>✕</button>
+        onClick={() => { setGitOp(taskId, { error: "" }); setError(""); }}>✕</button>
     </div>
   );
   const outputModal = outputText != null && (

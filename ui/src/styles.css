@@ -1158,10 +1158,35 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
 /* ── RunPanel (Task 6) ────────────────────────── */
 
 .run-panel { display: flex; flex-direction: column; height: 100%; min-height: 0; }
-.run-panel.empty { padding: 24px; color: var(--muted, #9aa); display: block; }
-.run-panel.empty code { margin: 0 3px; }
 .run-controls { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-bottom: 1px solid var(--border, #2a2d36); }
 .run-url { color: var(--muted, #9aa); }
+.run-cmd { color: var(--sub0); font-size: 11px; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Run-script setup card: shown until a run command is configured, and behind
+   "Edit" afterwards. */
+.run-setup { flex: 1; min-height: 0; overflow: auto; padding: 22px; display: flex; justify-content: center; }
+.run-setup-card { width: 100%; max-width: 620px; align-self: flex-start; background: var(--mantle); border: 1px solid var(--s0); border-radius: 12px; padding: 18px 20px 16px; display: flex; flex-direction: column; gap: 14px; }
+.run-setup-title { font-size: 14px; font-weight: 600; color: var(--text); }
+.run-setup-lead { margin: -6px 0 0; color: var(--sub0); font-size: 12.5px; line-height: 1.65; }
+.run-setup-lead code, .run-setup-hint code, .run-setup-foot code { font-size: 11.5px; color: var(--sub1); background: var(--crust); border-radius: 4px; padding: 1px 5px; word-break: break-all; }
+.run-setup-field { display: flex; flex-direction: column; gap: 7px; }
+.run-setup-label { font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--o1); }
+.run-setup-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.run-setup-chip { display: flex; flex-direction: column; gap: 2px; text-align: left; background: var(--base); border: 1px solid var(--s1); border-radius: 8px; padding: 6px 10px; cursor: pointer; }
+.run-setup-chip:hover { background: var(--s0); }
+.run-setup-chip.on { border-color: var(--blue); background: rgba(137,180,250,.1); }
+.run-setup-chip-label { font-family: var(--mono); font-size: 11.5px; color: var(--text); }
+.run-setup-chip-detail { font-size: 10.5px; color: var(--o1); }
+.run-setup-input { background: var(--base); border: 1px solid var(--s1); color: var(--text); border-radius: 7px; padding: 9px 11px; width: 100%; font-family: var(--mono); font-size: 12.5px; }
+.run-setup-input:focus { outline: none; border-color: var(--blue); }
+.run-setup-hint { font-size: 11.5px; color: var(--o1); line-height: 1.55; }
+.run-setup-row { display: flex; align-items: center; gap: 16px; border-top: 1px solid var(--line); padding-top: 13px; }
+.run-setup-row-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.run-setup-error { color: var(--red); font-size: 12px; }
+.run-setup-actions { display: flex; align-items: center; gap: 8px; }
+.run-setup-actions .settings-save { align-self: auto; }
+.run-setup-actions button:disabled { opacity: .5; cursor: default; }
+.run-setup-foot { border-top: 1px solid var(--line); padding-top: 12px; font-size: 11.5px; color: var(--o1); line-height: 1.6; }
 .run-error { color: var(--red); font-size: 12px; }
 .run-body { flex: 1; display: flex; min-height: 0; }
 .run-term { flex: 1; min-width: 0; display: flex; }

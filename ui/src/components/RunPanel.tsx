@@ -1,11 +1,24 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { RunInfo, SessionStatus, runScriptStatus, runScriptConfigured, startRunScript, stopRunScript } from "../api";
+import {
+  RunInfo,
+  RunScriptConfig,
+  SessionStatus,
+  runScriptConfig,
+  runScriptStatus,
+  saveRunScript,
+  startRunScript,
+  stopRunScript,
+} from "../api";
 import FocusTerminal, { runStream } from "./FocusTerminal";
+import RunScriptSetup from "./RunScriptSetup";
 
 export default function RunPanel({ run }: { run: RunInfo }) {
   const [status, setStatus] = useState<SessionStatus>({ state: "gone" });
-  const [configured, setConfigured] = useState<boolean | null>(null);
+  const [config, setConfig] = useState<RunScriptConfig | null>(null);
+  // Setup is forced open while unconfigured, and opened on demand by "Edit"
+  // once a command exists.
+  const [editing, setEditing] = useState(false);
   const [started, setStarted] = useState(false);
   const [previewKey, setPreviewKey] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -13,11 +26,18 @@ export default function RunPanel({ run }: { run: RunInfo }) {
   const url = run.port != null ? `http://localhost:${run.port}` : null;
   const running = status.state === "running";
 
+  const loadConfig = useCallback(
+    () => runScriptConfig(run.id).then(setConfig).catch((e) => setError(String(e))),
+    [run.id],
+  );
+
   useEffect(() => {
     setStarted(false);
+    setEditing(false);
     setError(null);
-    runScriptConfigured(run.id).then(setConfigured).catch(() => setConfigured(false));
-  }, [run.id]);
+    setConfig(null);
+    loadConfig();
+  }, [run.id, loadConfig]);
 
   useEffect(() => {
     let alive = true;
@@ -47,11 +67,27 @@ export default function RunPanel({ run }: { run: RunInfo }) {
     }
   };
 
-  if (configured === false) {
+  // Save from the setup card, then optionally start straight away — the point
+  // of the card is that clicking Run leads somewhere, not to a dead end.
+  const save = async (command: string, nonconcurrent: boolean, thenRun: boolean) => {
+    await saveRunScript(run.id, command.trim() || null, nonconcurrent);
+    await loadConfig();
+    setEditing(false);
+    if (thenRun && command.trim()) await start();
+  };
+
+  // Config hasn't arrived yet: render nothing rather than flashing the setup
+  // card at someone who already has a run script.
+  if (!config) return <div className="run-panel" />;
+
+  if (!config.command || editing) {
     return (
-      <div className="run-panel empty">
-        No run script configured. Add a <code>[scripts]</code> <code>run</code> line to
-        <code> .agency/agency.toml</code> to launch this agent's app.
+      <div className="run-panel">
+        <RunScriptSetup
+          config={config}
+          onSave={save}
+          onCancel={config.command ? () => setEditing(false) : undefined}
+        />
       </div>
     );
   }
@@ -65,6 +101,8 @@ export default function RunPanel({ run }: { run: RunInfo }) {
         ) : (
           <button className="tile-act" onClick={start}>▶ Run</button>
         )}
+        <code className="run-cmd" title={config.command}>{config.command}</code>
+        <button className="tile-act" onClick={() => setEditing(true)}>Edit</button>
         {url && (
           <>
             <code className="run-url">{url}</code>

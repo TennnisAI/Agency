@@ -10,6 +10,7 @@ pub mod mcp;
 pub mod merge;
 pub mod profile;
 pub mod registry;
+pub mod runsetup;
 pub mod scripts;
 pub mod search;
 pub mod setup;

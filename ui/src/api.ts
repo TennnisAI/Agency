@@ -263,8 +263,29 @@ export function attachRun(id: string, cols: number, rows: number, onBytes: (b: U
   return invoke<void>("attach_run", { id, cols, rows, onChunk });
 }
 
-export const runScriptConfigured = (id: string) =>
-  invoke<boolean>("run_script_configured", { id });
+// One candidate run command detected in the project (package.json script,
+// Makefile target, …), offered by the Run tab's setup card.
+export type RunSuggestion = {
+  label: string;
+  command: string;
+  detail: string;
+};
+
+// The project's run script as the Run tab sees it. `command` is null when
+// nothing is configured yet — that's what the setup card renders for.
+export type RunScriptConfig = {
+  command: string | null;
+  nonconcurrent: boolean;
+  shared: boolean;
+  suggestions: RunSuggestion[];
+  workspace: string;
+  port: number | null;
+};
+
+export const runScriptConfig = (id: string) =>
+  invoke<RunScriptConfig>("run_script_config", { id });
+export const saveRunScript = (id: string, command: string | null, nonconcurrent: boolean) =>
+  invoke<void>("save_run_script", { id, command, nonconcurrent });
 export const startRunScript = (id: string) => invoke<void>("start_run_script", { id });
 export const stopRunScript = (id: string) => invoke<void>("stop_run_script", { id });
 export const runScriptStatus = (id: string) =>

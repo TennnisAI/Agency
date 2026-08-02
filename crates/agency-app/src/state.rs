@@ -65,6 +65,25 @@ pub struct FilesConfigDto {
     pub detected_env: Vec<String>,
 }
 
+/// Everything the Run tab needs to show a run script — and to set one up when
+/// there isn't one. `command` is the effective command (`None` = unconfigured,
+/// which is what the setup card renders for); `workspace` and `port` are the
+/// directory the command runs in and the `AGENCY_PORT` it will see, both shown
+/// so the user can tell what they're configuring.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunScriptConfigDto {
+    pub command: Option<String>,
+    /// `run_mode = "nonconcurrent"`: starting this app stops every other one.
+    pub nonconcurrent: bool,
+    /// The command comes from the tracked `agency.toml`, so it is shared with
+    /// the team. Edits still go to the local override, which shadows it.
+    pub shared: bool,
+    pub suggestions: Vec<agency_core::runsetup::RunSuggestion>,
+    pub workspace: String,
+    pub port: Option<u16>,
+}
+
 /// Result of importing an `mcp.json`: the full app-global list after the merge,
 /// plus how many servers the file contributed (so the UI can confirm the count).
 #[derive(Debug, Clone, serde::Serialize)]
@@ -2722,10 +2741,43 @@ impl AppState {
         Ok(())
     }
 
-    pub fn run_script_configured(&self, id: &str) -> Result<bool> {
+    /// The run script as the Run tab sees it, including detected candidates so
+    /// an unconfigured project can be set up from the panel itself.
+    pub fn run_script_config(&self, id: &str) -> Result<RunScriptConfigDto> {
         let run = self.run_record(id)?;
         let repo = self.project_repo(&run.project_id)?;
-        Ok(agency_core::config::load(&repo).scripts.run.is_some())
+        let config = agency_core::config::load(&repo);
+        Ok(RunScriptConfigDto {
+            command: config.scripts.run.clone(),
+            nonconcurrent: config.scripts.run_mode
+                == agency_core::config::RunMode::Nonconcurrent,
+            shared: agency_core::config::run_script_is_shared(&repo),
+            // Detection reads the project checkout, not this run's worktree:
+            // the config it prefills is project-wide, and a brand-new worktree
+            // may not have installed anything yet.
+            suggestions: agency_core::runsetup::suggest_run_commands(&repo),
+            workspace: workspace_dir(&repo, &run).display().to_string(),
+            port: run.port_base,
+        })
+    }
+
+    /// Persist the project's run script from the Run tab. An empty command
+    /// clears the local override rather than storing a blank line.
+    pub fn save_run_script(
+        &self,
+        id: &str,
+        command: Option<String>,
+        nonconcurrent: bool,
+    ) -> Result<()> {
+        let run = self.run_record(id)?;
+        let repo = self.project_repo(&run.project_id)?;
+        let mode = if nonconcurrent {
+            agency_core::config::RunMode::Nonconcurrent
+        } else {
+            agency_core::config::RunMode::Concurrent
+        };
+        agency_core::config::save_run_script(&repo, command.as_deref(), mode)?;
+        Ok(())
     }
 
     pub fn start_run_script(&self, id: &str) -> Result<()> {
@@ -2736,7 +2788,7 @@ impl AppState {
             .scripts
             .run
             .clone()
-            .ok_or_else(|| anyhow!("no run script configured in .agency/agency.toml"))?;
+            .ok_or_else(|| anyhow!("no run script configured for this project yet"))?;
         let worktree = workspace_dir(&repo, &run);
 
         // nonconcurrent: stop every other run-script session first.

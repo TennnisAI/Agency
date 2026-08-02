@@ -11,7 +11,7 @@ use tauri::ipc::Channel;
 use tauri::State;
 
 use agency_core::title::fallback_title;
-use crate::state::{AppState, DiscardSummary, FilesConfigDto, KnowledgeConfigDto, McpImportResult, MergePreview, ProviderSettings, RunInfo, RunSessionInfo};
+use crate::state::{AppState, DiscardSummary, FilesConfigDto, KnowledgeConfigDto, McpImportResult, MergePreview, ProviderSettings, RunInfo, RunScriptConfigDto, RunSessionInfo};
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1287,8 +1287,21 @@ pub fn git_revert_lines(
 }
 
 #[tauri::command]
-pub async fn run_script_configured(state: State<'_, AppState>, id: String) -> Result<bool, String> {
-    state.run_script_configured(&id).map_err(|e| e.to_string())
+pub async fn run_script_config(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<RunScriptConfigDto, String> {
+    state.run_script_config(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn save_run_script(
+    state: State<'_, AppState>,
+    id: String,
+    command: Option<String>,
+    nonconcurrent: bool,
+) -> Result<(), String> {
+    state.save_run_script(&id, command, nonconcurrent).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

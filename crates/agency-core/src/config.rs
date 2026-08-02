@@ -84,6 +84,16 @@ impl Default for RunMode {
     }
 }
 
+impl RunMode {
+    /// The TOML spelling, as `load` expects to read it back.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RunMode::Concurrent => "concurrent",
+            RunMode::Nonconcurrent => "nonconcurrent",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct PortsConfig {
     #[serde(default = "default_port_base")]
@@ -256,6 +266,58 @@ pub fn save_files(repo_path: &Path, f: &FilesConfig) -> std::io::Result<()> {
     let mut table = toml::value::Table::new();
     table.insert("copy".into(), toml::Value::Array(copy));
     doc.insert("files".into(), toml::Value::Table(table));
+
+    let text = toml::to_string_pretty(&toml::Value::Table(doc))
+        .map_err(std::io::Error::other)?;
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(&path, text)
+}
+
+/// True when the effective `[scripts] run` comes from the tracked
+/// `agency.toml` rather than the per-machine `agency.local.toml` — i.e. the
+/// whole team sees this command. False when it is local-only or unset. The UI
+/// uses it to say where the command being edited actually lives.
+pub fn run_script_is_shared(repo_path: &Path) -> bool {
+    let run_of = |name: &str| {
+        read_value(&repo_path.join(".agency").join(name))
+            .and_then(|v| v.get("scripts")?.get("run")?.as_str().map(str::to_string))
+    };
+    run_of("agency.local.toml").is_none() && run_of("agency.toml").is_some()
+}
+
+/// Persist the run script into the `[scripts]` section of
+/// `.agency/agency.local.toml` — the gitignored, per-machine override file, so
+/// configuring the Run tab never dirties the tracked `agency.toml` (and never
+/// rewrites its comments). `command = None` (or blank) removes the `run` key
+/// instead of writing an empty string, which lets a value from the tracked file
+/// apply again. Sibling `[scripts]` keys (`setup`, `archive`) are preserved.
+pub fn save_run_script(
+    repo_path: &Path,
+    command: Option<&str>,
+    run_mode: RunMode,
+) -> std::io::Result<()> {
+    let dir = repo_path.join(".agency");
+    let path = dir.join("agency.local.toml");
+    let mut doc = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|t| toml::from_str::<toml::Value>(&t).ok())
+        .and_then(|v| v.as_table().cloned())
+        .unwrap_or_default();
+
+    let mut scripts = doc
+        .get("scripts")
+        .and_then(|v| v.as_table().cloned())
+        .unwrap_or_default();
+    match command.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(cmd) => {
+            scripts.insert("run".into(), toml::Value::String(cmd.to_string()));
+        }
+        None => {
+            scripts.remove("run");
+        }
+    }
+    scripts.insert("run_mode".into(), toml::Value::String(run_mode.as_str().to_string()));
+    doc.insert("scripts".into(), toml::Value::Table(scripts));
 
     let text = toml::to_string_pretty(&toml::Value::Table(doc))
         .map_err(std::io::Error::other)?;
@@ -461,6 +523,30 @@ mod tests {
         // Clearing the list is durable (empty array written, not dropped).
         save_files(dir.path(), &FilesConfig { copy: vec![] }).unwrap();
         assert!(load(dir.path()).files.copy.is_empty());
+    }
+
+    #[test]
+    fn save_run_script_writes_local_and_keeps_sibling_scripts() {
+        let dir = tempdir().unwrap();
+        write(dir.path(), "agency.local.toml", "[scripts]\nsetup = \"pnpm install\"\n");
+        save_run_script(dir.path(), Some("  pnpm dev  "), RunMode::Nonconcurrent).unwrap();
+        let c = load(dir.path());
+        assert_eq!(c.scripts.run.as_deref(), Some("pnpm dev"));
+        assert_eq!(c.scripts.setup.as_deref(), Some("pnpm install"));
+        assert_eq!(c.scripts.run_mode, RunMode::Nonconcurrent);
+    }
+
+    #[test]
+    fn clearing_the_run_script_unshadows_the_tracked_one() {
+        let dir = tempdir().unwrap();
+        write(dir.path(), "agency.toml", "[scripts]\nrun = \"base-run\"\n");
+        save_run_script(dir.path(), Some("local-run"), RunMode::Concurrent).unwrap();
+        assert_eq!(load(dir.path()).scripts.run.as_deref(), Some("local-run"));
+
+        // A blank command removes the local key rather than persisting "", so
+        // the tracked value applies again.
+        save_run_script(dir.path(), Some("   "), RunMode::Concurrent).unwrap();
+        assert_eq!(load(dir.path()).scripts.run.as_deref(), Some("base-run"));
     }
 
     #[test]

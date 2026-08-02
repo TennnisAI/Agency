@@ -18,19 +18,11 @@ export interface TerminalStream {
   input(id: string, data: string): Promise<void>;
   preview(id: string, lines: number): Promise<string>;
   ensureActive?: (id: string) => Promise<void>;
-  /**
-   * Allow xterm's alternate-scroll fallback (wheel notch -> Up/Down arrow) when
-   * the app is on the alternate screen without mouse reporting. Right for a
-   * pager or editor, wrong for an agent prompt, where the arrows walk history.
-   * Defaults to on; see lib/termScroll.
-   */
-  altScrollArrows?: boolean;
 }
 
 export const agentStream: TerminalStream = {
   attach: attachRun, detach: detachRun, resize: resizeRun, input: runInput, preview: runPreview,
   ensureActive: ensureRunActive,
-  altScrollArrows: false,
 };
 
 export const runStream: TerminalStream = {
@@ -47,11 +39,20 @@ export const shellStream: TerminalStream = {
 };
 
 export default function FocusTerminal(
-  { runId, stream = agentStream, onFirstPrompt }: { runId: string; stream?: TerminalStream; onFirstPrompt?: (line: string) => void },
+  // `altScrollArrows` allows xterm's alternate-scroll fallback (wheel notch ->
+  // Up/Down arrow) for panes running a pager or an editor. It must be off for a
+  // pane running an agent, where those arrows walk the prompt history. It is a
+  // property of the pane, not of the stream: a "New terminal" tab is a shell on
+  // the same `agentStream` as an agent tab.
+  { runId, stream = agentStream, onFirstPrompt, altScrollArrows = true }:
+    { runId: string; stream?: TerminalStream; onFirstPrompt?: (line: string) => void; altScrollArrows?: boolean },
 ) {
   const ref = useRef<HTMLDivElement>(null);
   const onFirstPromptRef = useRef(onFirstPrompt);
   onFirstPromptRef.current = onFirstPrompt;
+  // Read through a ref: the wheel handler is installed once, with the terminal.
+  const altScrollRef = useRef(altScrollArrows);
+  altScrollRef.current = altScrollArrows;
   const captureRef = useRef(initialCapture());
   const searchAddonRef = useRef<SearchAddon | null>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -100,7 +101,7 @@ export default function FocusTerminal(
     // of typing into the prompt. This is also what makes the daemon-side fix safe
     // to roll out without force-replacing a running daemon.
     term.attachCustomWheelEventHandler((e) => {
-      if (shouldSwallowWheel(term.buffer.active.type, stream.altScrollArrows ?? true)) {
+      if (shouldSwallowWheel(term.buffer.active.type, altScrollRef.current)) {
         e.preventDefault(); // xterm skips its own default but not the browser's
         return false;
       }

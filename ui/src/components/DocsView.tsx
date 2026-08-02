@@ -10,14 +10,29 @@ import { useCrossRefs } from "../hooks/useCrossRefs";
 import DocsTree from "./DocsTree";
 import DocsEditor, { DocsEditorHandle } from "./DocsEditor";
 import DocsSidePanel from "./DocsSidePanel";
+import AgentSidePanel from "./AgentSidePanel";
 import DocsQuickSwitcher from "./DocsQuickSwitcher";
 import ConfirmDialog from "./ConfirmDialog";
 import { toastError, toastInfo } from "../lib/toast";
 import { joinPath } from "../lib/filePath";
 import { adjacentDailyPath, isDailyNotePath } from "../lib/dailyNote";
 import { recordActivation } from "../lib/recency";
+import { terminalHasFocus } from "../lib/terminalFocus";
 
 const lastNoteKey = (projectId: string) => `docs:last:${projectId}`;
+
+// Which side-panel tab is showing. Global (not per project): it's a working
+// mode — "I'm writing" vs "I'm pairing with an agent" — not a per-note fact.
+const SIDE_TAB_KEY = "docs:side-tab";
+type SideTab = "note" | "agents";
+
+function loadSideTab(): SideTab {
+  try {
+    return localStorage.getItem(SIDE_TAB_KEY) === "agents" ? "agents" : "note";
+  } catch {
+    return "note";
+  }
+}
 
 /**
  * The Docs tab: an Obsidian-lite over the project's `docs` folder. Always
@@ -26,7 +41,18 @@ const lastNoteKey = (projectId: string) => `docs:last:${projectId}`;
  */
 export default function DocsView({ project }: { project: Project }) {
   const treePane = usePaneWidth("docs-tree", 240, 180, 480);
-  const sidePane = usePaneWidth("docs-side", 240, 180, 420);
+  const notePane = usePaneWidth("docs-side", 240, 180, 420);
+  // The agents tab hosts a live terminal, so it remembers its own (wider)
+  // width — switching tabs shouldn't squeeze an agent into an outline column.
+  const agentsPane = usePaneWidth("docs-side-agents", 420, 280, 900);
+  const [sideTab, setSideTabState] = useState<SideTab>(loadSideTab);
+  const sidePane = sideTab === "agents" ? agentsPane : notePane;
+  const sideMin = sideTab === "agents" ? 280 : 180;
+  const sideMax = sideTab === "agents" ? 900 : 420;
+  const setSideTab = (t: SideTab) => {
+    setSideTabState(t);
+    try { localStorage.setItem(SIDE_TAB_KEY, t); } catch { /* storage unavailable */ }
+  };
   const root: FileRoot = { kind: "project", id: project.id };
   const { docsDir, index, refresh, createDocsDir } = useDocs(project.id, true);
   const { cross } = useCrossRefs(true);
@@ -39,8 +65,11 @@ export default function DocsView({ project }: { project: Project }) {
 
   // Cmd+P opens the quick switcher — active while the Docs tab is mounted,
   // including from inside the editor. (Verified free of menu/shortcut clashes.)
+  // Not from inside the agents panel's terminal, though: Ctrl+P is the shell's
+  // previous-command there.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (terminalHasFocus()) return;
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "p" && !e.shiftKey && !e.altKey) {
         e.preventDefault();
         setSwitcher((s) => !s);
@@ -234,24 +263,32 @@ export default function DocsView({ project }: { project: Project }) {
           <div className="diff-empty">Select or create a note.</div>
         )}
       </div>
-      {sideOpen && selected && (
+      {sideOpen && (selected || sideTab === "agents") && (
         <>
-          <Resizer size={sidePane.width} min={180} max={420} onChange={sidePane.setWidth} side="right" />
-          <div className="docs-side" style={{ width: sidePane.width }}>
-            <DocsSidePanel
-              index={index}
-              selected={selected}
-              mentions={mentions}
-              onJumpToHeading={(text) => editorRef.current?.scrollToHeading(text)}
-              onOpen={(path) => setSelected(path)}
-              onOpenMention={(m) => {
-                if (m.fromKind === "issue") {
-                  requestNavigate({ kind: "issue", projectId: m.fromProjectId, issueId: m.fromId });
-                }
-              }}
-              onFilter={(k, v) => setQuery(v ? (/\s/.test(v) ? `${k}:"${v}"` : `${k}:${v}`) : `${k}:`)}
-              onAddProperty={() => editorRef.current?.addProperty()}
-            />
+          <Resizer size={sidePane.width} min={sideMin} max={sideMax} onChange={sidePane.setWidth} side="right" />
+          <div className="side-pane docs-side" style={{ width: sidePane.width }}>
+            <div className="docs-side-tabs">
+              <button className={sideTab === "note" ? "on" : ""} onClick={() => setSideTab("note")}>▥ Note</button>
+              <button className={sideTab === "agents" ? "on" : ""} onClick={() => setSideTab("agents")}>▦ Agents</button>
+            </div>
+            {sideTab === "agents" ? (
+              <AgentSidePanel project={project} />
+            ) : (
+              <DocsSidePanel
+                index={index}
+                selected={selected}
+                mentions={mentions}
+                onJumpToHeading={(text) => editorRef.current?.scrollToHeading(text)}
+                onOpen={(path) => setSelected(path)}
+                onOpenMention={(m) => {
+                  if (m.fromKind === "issue") {
+                    requestNavigate({ kind: "issue", projectId: m.fromProjectId, issueId: m.fromId });
+                  }
+                }}
+                onFilter={(k, v) => setQuery(v ? (/\s/.test(v) ? `${k}:"${v}"` : `${k}:${v}`) : `${k}:`)}
+                onAddProperty={() => editorRef.current?.addProperty()}
+              />
+            )}
           </div>
         </>
       )}

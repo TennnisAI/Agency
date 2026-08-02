@@ -343,7 +343,7 @@ export default forwardRef<DocsEditorHandle, {
         </span>
         <button
           className={`file-editor-btn${sideOpen ? " on" : ""}`}
-          title={sideOpen ? "Hide outline & backlinks" : "Show outline & backlinks"}
+          title={sideOpen ? "Hide side panel" : "Show side panel (outline, backlinks, agents)"}
           onClick={onToggleSide}
         >
           <PanelGlyph />

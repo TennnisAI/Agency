@@ -10,7 +10,7 @@ import { issueLabel } from "../lib/issues";
 import { requestNavigate } from "../lib/navigate";
 import { toastError } from "../lib/toast";
 import { runStatus } from "../lib/runstate";
-import { runName, agentLabel } from "../agents";
+import { runListLabel, agentLabel } from "../agents";
 import FocusTerminal, { shellStream } from "./FocusTerminal";
 import RunPanel from "./RunPanel";
 import MergeModal from "./MergeModal";
@@ -235,11 +235,7 @@ export default function AgentFocus({
                 onDoubleClick={() => setRenaming(r)}
                 title="Double-click to rename">
                 <span className={`dot ${runStatus(r).cls}`} />
-                <span className="rail-name">
-                  {r.kind === "terminal"
-                    ? `≳ ${r.title || "terminal"}`
-                    : `${r.loopConfig ? "⟳ " : r.raceId ? "∥ " : ""}${r.agent}: ${runName(r)}`}
-                </span>
+                <span className="rail-name">{runListLabel(r)}</span>
               </button>
             ))}
             <ArchivedSection />

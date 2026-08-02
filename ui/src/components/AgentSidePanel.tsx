@@ -1,0 +1,138 @@
+import { useEffect, useRef, useState } from "react";
+import { Project, setRunTitle } from "../api";
+import { useRuns } from "../store/runs";
+import { runStatus } from "../lib/runstate";
+import { agentLabel, runListLabel } from "../agents";
+import { useRepoReadiness, isGitlessWorkspace } from "../hooks/useRepoReadiness";
+import { useSpawnAgent } from "../hooks/useSpawnAgent";
+import AgentAddMenu from "./AgentAddMenu";
+import FocusTerminal from "./FocusTerminal";
+
+/**
+ * Agents and terminals in a side panel, so a note (or a file) can be edited
+ * with a live agent next to it instead of behind a tab switch. Selection is the
+ * store's focused run — the same agent you left in the Agents tab is the one
+ * waiting here, and picking one here focuses it there too.
+ *
+ * Only one copy of this ever mounts at a time (the host views are rendered
+ * exclusively by tab), so its terminal never competes with the Agents tab's for
+ * the same session.
+ */
+export default function AgentSidePanel({ project }: { project: Project }) {
+  const { runs, focusedRunId, setFocusedRun, createTerminal, setTab, setView, spawning } = useRuns();
+  const { readiness, refresh } = useRepoReadiness(project);
+  const { spawn, error, dialogs } = useSpawnAgent(project, refresh);
+  const terminalOnly = isGitlessWorkspace(project, readiness);
+
+  const focused = runs.find((r) => r.id === focusedRunId) ?? null;
+  // Picker menu, anchored in viewport coordinates so the panel's own overflow
+  // can't clip it (same trick as AgentAddMenu).
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerCoords, setPickerCoords] = useState<{ top: number; left: number; width: number }>();
+  const pickerRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => { setPickerOpen(false); }, [focusedRunId, project.id]);
+
+  const togglePicker = () => {
+    setPickerOpen((o) => {
+      const next = !o;
+      if (next && pickerRef.current) {
+        const r = pickerRef.current.getBoundingClientRect();
+        setPickerCoords({ top: r.bottom + 4, left: r.left, width: Math.max(r.width, 200) });
+      }
+      return next;
+    });
+  };
+
+  const openInAgentsTab = () => {
+    setTab("agents");
+    setView("focus");
+  };
+
+  const st = focused ? runStatus(focused) : null;
+
+  return (
+    <div className="agent-side">
+      <div className="agent-side-head">
+        <button
+          ref={pickerRef}
+          className="agent-side-pick"
+          title={focused ? "Switch agent" : "Pick an agent"}
+          onClick={togglePicker}
+        >
+          {st && <span className={`dot ${st.cls}`} />}
+          <span className="agent-side-name">
+            {focused ? runListLabel(focused) : runs.length ? "Pick an agent…" : "No agents"}
+          </span>
+          <span className="agent-side-chev" aria-hidden>▾</span>
+        </button>
+        <AgentAddMenu
+          variant="icon"
+          projectId={project.id}
+          onSpawn={spawn}
+          onTerminal={createTerminal}
+          terminalOnly={terminalOnly}
+        />
+        <button
+          className="icon-btn"
+          title="Open this agent in the Agents tab"
+          disabled={!focused}
+          onClick={openInAgentsTab}
+        >↗</button>
+      </div>
+
+      {pickerOpen && (
+        <>
+          <div className="agent-menu-backdrop" onClick={() => setPickerOpen(false)} />
+          <div className="agent-menu agent-side-menu" style={{ position: "fixed", ...pickerCoords }}>
+            {runs.length === 0 ? (
+              <div className="agent-side-menu-none">Nothing running yet.</div>
+            ) : (
+              runs.map((r) => (
+                <button
+                  key={r.id}
+                  className={r.id === focusedRunId ? "on" : ""}
+                  onClick={() => { setFocusedRun(r.id); setPickerOpen(false); }}
+                >
+                  <span className={`dot ${runStatus(r).cls}`} />
+                  <span className="agent-side-menu-name">{runListLabel(r)}</span>
+                </button>
+              ))
+            )}
+          </div>
+        </>
+      )}
+
+      {error && <div className="git-error">{error}</div>}
+
+      {focused ? (
+        <>
+          {focused.kind === "agent" && (
+            <div className="agent-side-sub">
+              <span className="agent-side-agent">{agentLabel(focused.agent)}</span>
+              <code>{focused.branch}</code>
+            </div>
+          )}
+          <FocusTerminal
+            key={focused.id}
+            runId={focused.id}
+            onFirstPrompt={focused.kind === "agent" && !focused.title
+              ? (line) => { setRunTitle(focused.id, line).catch(() => {}); }
+              : undefined}
+          />
+        </>
+      ) : (
+        <div className="agent-side-empty">
+          {spawning
+            ? "starting…"
+            : runs.length
+              ? "Pick an agent above to work with it here."
+              : terminalOnly
+                ? "Agents need git to work in isolated branches. Open a terminal with \"+\", or initialize a repository in Settings ▸ Workspace."
+                : "No agents in this project yet. Start one with \"+\"."}
+        </div>
+      )}
+
+      {dialogs}
+    </div>
+  );
+}

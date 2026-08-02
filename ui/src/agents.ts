@@ -80,3 +80,12 @@ export function agentLabel(name: string): string {
 export function runName(run: Pick<RunInfo, "title" | "prompt" | "branch">): string {
   return run.title || run.prompt || run.branch;
 }
+
+// One-line label for a run in a picker list — the focus rail and the docs/files
+// agents panel share it, so a run reads the same wherever it's listed.
+export function runListLabel(
+  run: Pick<RunInfo, "kind" | "title" | "prompt" | "branch" | "agent" | "loopConfig" | "raceId">,
+): string {
+  if (run.kind === "terminal") return `≳ ${run.title || "terminal"}`;
+  return `${run.loopConfig ? "⟳ " : run.raceId ? "∥ " : ""}${run.agent}: ${runName(run)}`;
+}

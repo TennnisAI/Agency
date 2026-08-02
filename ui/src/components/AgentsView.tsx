@@ -1,23 +1,24 @@
 import { useEffect, useRef, useState } from "react";
-import { Issue, Project, inspectRepo, RepoReadiness, FileRoot, agentInstalled, startIssueRun } from "../api";
+import { Project, FileRoot } from "../api";
 import { fileRootKey, requestOpenFile } from "../lib/openFile";
+import { terminalHasFocus } from "../lib/terminalFocus";
 import { useRuns } from "../store/runs";
 import AgentTile from "./AgentTile";
 import AgentFocus from "./AgentFocus";
 import MergeModal from "./MergeModal";
 import GitPanel, { GitSelection } from "./git/GitPanel";
 import PrReviewPanel from "./pr/PrReviewPanel";
-import RepoSetupDialog from "./RepoSetupDialog";
 import AgentAddMenu from "./AgentAddMenu";
 import Resizer from "./Resizer";
 import { usePaneWidth } from "../hooks/usePaneWidth";
+import { useRepoReadiness, isGitlessWorkspace } from "../hooks/useRepoReadiness";
+import { useSpawnAgent } from "../hooks/useSpawnAgent";
 import FilesView from "./FilesView";
 import DocsView from "./DocsView";
 import HomeView from "./HomeView";
 import IssuesView from "./IssuesView";
 import SidebarToggle from "./SidebarToggle";
 import RightPanelToggle from "./RightPanelToggle";
-import InstallAgentDialog from "./InstallAgentDialog";
 import QuickOpen from "./QuickOpen";
 
 // Main content area. With a project selected this is that project's agents /
@@ -36,12 +37,11 @@ export default function AgentsView({
   onOpenRun: (project: Project, runId: string) => void;
   onOpenProject: (project: Project) => void;
 }) {
-  const { runs, view, setView, focusedRunId, tab, setTab, approveRunId, setApproveRun, createAgent, createTerminal, spawning, spawnProgress, setFocusedRun, refreshRuns } = useRuns();
+  const { runs, view, setView, focusedRunId, tab, setTab, approveRunId, setApproveRun, createTerminal, spawning, spawnProgress, setFocusedRun, refreshRuns } = useRuns();
   const focused = runs.find((r) => r.id === focusedRunId) ?? null;
   const [review, setReview] = useState(false);
-  const [error, setError] = useState("");
-  const [pendingSpawn, setPendingSpawn] = useState<{ agentId: string; readiness: RepoReadiness; repoPath: string; opts?: { base: string; mergeTarget: string }; issue?: Issue } | null>(null);
-  const [missingAgent, setMissingAgent] = useState<string | null>(null);
+  // Agents alongside the file tree, the Files-tab twin of the Docs side panel.
+  const [filesAgents, setFilesAgents] = useState(false);
   const [gitSel, setGitSel] = useState<GitSelection>(null);
   // Source Control has two sub-views: Changes (the git panel) and Pull Requests
   // (in-app review). `reviewPr` deep-links a specific PR from the Approve window.
@@ -53,23 +53,11 @@ export default function AgentsView({
   // The workspace can decline git; everything git-shaped (Source Control, the
   // review panel, agent spawn — agents need worktrees) hides for it then.
   // Terminals stay: they run in the checkout, no branch required.
-  const [projReadiness, setProjReadiness] = useState<RepoReadiness | null>(null);
-  // Request token: a slow inspectRepo from a previous project (or an older
-  // refresh) must not land over the current one's readiness.
-  const readinessSeq = useRef(0);
-  const refreshReadiness = () => {
-    const seq = ++readinessSeq.current;
-    if (!project) { setProjReadiness(null); return; }
-    inspectRepo(project.repo_path).then((r) => {
-      if (seq === readinessSeq.current) setProjReadiness(r);
-    }).catch(() => {});
-  };
-  useEffect(() => {
-    setProjReadiness(null);
-    refreshReadiness();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [project?.id]);
-  const gitlessWorkspace = project?.kind === "workspace" && projReadiness?.state === "notARepo";
+  const { readiness: projReadiness, refresh: refreshReadiness } = useRepoReadiness(project);
+  const gitlessWorkspace = isGitlessWorkspace(project, projReadiness);
+  // The spawn pre-flight (missing CLI, unready repo) and its dialogs, shared
+  // with the agents side panel in the Docs / Files tabs.
+  const { spawn, error, dialogs: spawnDialogs } = useSpawnAgent(project, refreshReadiness);
   // The workspace is a markdown vault: the Files tab would duplicate Docs
   // (with a manual-save editor, no less), so it's hidden there entirely.
   const isWorkspace = project?.kind === "workspace";
@@ -107,7 +95,9 @@ export default function AgentsView({
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "p") {
-        if (!quickOpenGate.current.enabled) return;
+        // Ctrl+P belongs to the shell whenever a terminal has focus — the
+        // Files tab's agents panel hosts one.
+        if (!quickOpenGate.current.enabled || terminalHasFocus()) return;
         e.preventDefault();
         setQuickOpen((s) => !s);
       }
@@ -116,39 +106,6 @@ export default function AgentsView({
     return () => window.removeEventListener("keydown", onKey);
   }, []);
   useEffect(() => { setQuickOpen(false); }, [project?.id, tab]);
-
-  async function spawn(agentId: string, opts?: { base: string; mergeTarget: string }, issue?: Issue) {
-    if (!project) return;
-    setError("");
-    try {
-      // A preconfigured agent whose CLI is missing would spawn a session that
-      // dies instantly; intercept and offer the install flow instead.
-      const installed = await agentInstalled(agentId).catch(() => true);
-      if (!installed) {
-        setMissingAgent(agentId);
-        return;
-      }
-      const r = await inspectRepo(project.repo_path);
-      if (r.state === "ready" && !r.dirty) {
-        if (issue) await startIssue(issue, agentId, opts);
-        else await createAgent(agentId, opts);
-      } else {
-        setPendingSpawn({ agentId, readiness: r, repoPath: project.repo_path, opts, issue });
-      }
-    } catch (e) {
-      setError(String(e));
-    }
-  }
-
-  // Dispatch an issue to an agent, then jump to the run — the issue-flavored
-  // tail of the same flow createAgent handles for promptless runs.
-  async function startIssue(issue: Issue, agentId: string, opts?: { base: string; mergeTarget: string }) {
-    const run = await startIssueRun(issue.id, agentId, opts?.base, opts?.mergeTarget);
-    await refreshRuns();
-    setFocusedRun(run.id);
-    setView("focus");
-    setTab("agents");
-  }
 
   return (
     <main className="agents">
@@ -180,6 +137,13 @@ export default function AgentsView({
         <div className="spacer" />
         {project && tab === "agents" && !gitlessWorkspace && (
           <RightPanelToggle open={review} onToggle={() => setReview((r) => !r)} />
+        )}
+        {project && tab === "files" && (
+          <button
+            className={`icon-btn${filesAgents ? " on" : ""}`}
+            title={filesAgents ? "Hide agents" : "Show agents alongside the files"}
+            onClick={() => setFilesAgents((a) => !a)}
+          >▦</button>
         )}
         {project && tab === "agents" && (
           <AgentAddMenu
@@ -233,7 +197,7 @@ export default function AgentsView({
 
           {tab === "files" && (
             <div className="source-wrap">
-              <FilesView root={filesRoot} projectId={project.id} projectName={project.name} />
+              <FilesView root={filesRoot} project={project} agentsOpen={filesAgents} />
             </div>
           )}
 
@@ -309,39 +273,7 @@ export default function AgentsView({
         />
       )}
 
-      {pendingSpawn && (
-        <RepoSetupDialog
-          readiness={pendingSpawn.readiness}
-          context="spawn"
-          repoPath={pendingSpawn.repoPath}
-          onResolved={async () => {
-            const { agentId, opts, issue } = pendingSpawn;
-            setPendingSpawn(null);
-            refreshReadiness();
-            try {
-              if (issue) await startIssue(issue, agentId, opts);
-              else await createAgent(agentId, opts);
-            } catch (e) {
-              setError(String(e));
-            }
-          }}
-          onCancel={() => setPendingSpawn(null)}
-        />
-      )}
-
-      {missingAgent && project && (
-        <InstallAgentDialog
-          agent={missingAgent}
-          projectId={project.id}
-          onInstalling={async (run) => {
-            setMissingAgent(null);
-            await refreshRuns();
-            setFocusedRun(run.id);
-            setView("focus");
-          }}
-          onCancel={() => setMissingAgent(null)}
-        />
-      )}
+      {spawnDialogs}
 
       {approveRunId && approveRunId === focusedRunId && focused?.kind === "agent" && (
         <MergeModal

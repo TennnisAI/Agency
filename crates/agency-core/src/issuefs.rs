@@ -133,9 +133,14 @@ fn days_in_month(y: i64, m: i64) -> i64 {
 /// `AGE-14` → `("AGE", 14)`. The shape every issue key and filename stem must
 /// match: uppercase alphanumeric prefix, dash, positive number with no leading
 /// zero.
+///
+/// The prefix may start with a digit: `derive_issue_key` builds keys from the
+/// project name's initials, so a project called `1bit-launcher` gets `1LB`.
+/// Requiring a leading letter here made every one of its issue files invisible
+/// to the filename filter — and reconcile then deleted the rows behind them.
 pub fn parse_key(key: &str) -> Option<(&str, i64)> {
     static RE: OnceLock<regex::Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| regex::Regex::new(r"^([A-Z][A-Z0-9]*)-([1-9][0-9]*)$").unwrap());
+    let re = RE.get_or_init(|| regex::Regex::new(r"^([A-Z0-9]+)-([1-9][0-9]*)$").unwrap());
     let caps = re.captures(key)?;
     let seq: i64 = caps.get(2)?.as_str().parse().ok()?;
     Some((caps.get(1).unwrap().as_str(), seq))
@@ -735,6 +740,9 @@ Body markdown, wikilinks allowed.\n";
     fn parse_key_shapes() {
         assert_eq!(parse_key("AGE-14"), Some(("AGE", 14)));
         assert_eq!(parse_key("A2C-1"), Some(("A2C", 1)));
+        // Digit-leading prefixes are real: "1bit-launcher" derives 1LB.
+        assert_eq!(parse_key("1LB-1"), Some(("1LB", 1)));
+        assert_eq!(parse_key("123-7"), Some(("123", 7)));
         for bad in ["age-14", "AGE-0", "AGE-01", "AGE", "AGE-", "-14", "AGE-14.md", "AGE_14"] {
             assert_eq!(parse_key(bad), None, "accepted {bad}");
         }

@@ -77,6 +77,33 @@ const wikilinkExtension: MarkdownConfig = {
   }],
 };
 
+// ── Highlight syntax: ==marked text== (not GFM; Obsidian's, and ours) ────────
+
+const highlightExtension: MarkdownConfig = {
+  defineNodes: [
+    { name: "Highlight" },
+    { name: "HighlightMark" },
+  ],
+  parseInline: [{
+    name: "Highlight",
+    parse(cx: InlineContext, next: number, pos: number): number {
+      if (next !== 61 /* = */ || cx.char(pos + 1) !== 61) return -1;
+      let end = -1;
+      for (let i = pos + 2; i < cx.end - 1; i++) {
+        const ch = cx.char(i);
+        if (ch === 10 /* \n */) return -1;
+        if (ch === 61 && cx.char(i + 1) === 61) { end = i; break; }
+      }
+      if (end < 0 || end === pos + 2) return -1;
+      return cx.addElement(cx.elt("Highlight", pos, end + 2, [
+        cx.elt("HighlightMark", pos, pos + 2),
+        cx.elt("HighlightMark", end, end + 2),
+      ]));
+    },
+    before: "Emphasis",
+  }],
+};
+
 const codeLanguages = [
   LanguageDescription.of({
     name: "javascript",
@@ -92,7 +119,7 @@ const codeLanguages = [
 
 /** Markdown language for docs notes: GFM base + wikilinks + fenced-code langs. */
 export const docsMarkdown = () =>
-  markdown({ base: markdownLanguage, codeLanguages, extensions: [wikilinkExtension] });
+  markdown({ base: markdownLanguage, codeLanguages, extensions: [wikilinkExtension, highlightExtension] });
 
 /**
  * Token colors for the docs editor. Mirrors cmTheme's editorHighlight for code
@@ -424,6 +451,12 @@ class LivePreviewPlugin {
               const markName = name === "Strikethrough" ? "StrikethroughMark" : "EmphasisMark";
               for (const m of node.node.getChildren(markName)) markOrHide(m.from, m.to, rev);
               return;
+            }
+            case "Highlight": {
+              decos.push(Decoration.mark({ class: "lp-highlight" }).range(node.from, node.to));
+              const rev = revealed(node.from, node.to);
+              for (const m of node.node.getChildren("HighlightMark")) markOrHide(m.from, m.to, rev);
+              return false; // marks handled; the inner text parses as plain
             }
             case "InlineCode": {
               decos.push(Decoration.mark({ class: "lp-code" }).range(node.from, node.to));

@@ -1,6 +1,7 @@
 mod activity;
 mod agent_catalog;
 mod commands;
+mod datadir;
 mod lifecycle;
 mod looper;
 mod menu;
@@ -40,8 +41,13 @@ fn log_plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
         .level(log::LevelFilter::Info)
         .clear_targets()
         // OS log dir (macOS: ~/Library/Logs/<bundle-id>), rotated so it
-        // cannot grow without bound.
-        .target(Target::new(TargetKind::LogDir { file_name: None }))
+        // cannot grow without bound. The log dir comes from the bundle
+        // identifier, which a dev build shares, so dev writes to a file of its
+        // own: otherwise the two interleave and either one's rotation discards
+        // the other's history (KeepOne).
+        .target(Target::new(TargetKind::LogDir {
+            file_name: tauri::is_dev().then(|| "Agency-dev".to_string()),
+        }))
         .max_file_size(5 * 1024 * 1024)
         .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepOne);
     #[cfg(debug_assertions)]
@@ -320,9 +326,10 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         let _ = notify_rust::set_application(&app.config().identifier);
     }
 
-    let data_dir = app.path().app_data_dir()?;
-    std::fs::create_dir_all(&data_dir)?;
-    let db_path = data_dir.join("agency.db");
+    // A `tauri dev` build takes a data dir of its own so it cannot share (and
+    // fight over) the installed app's DB and terminal daemon — see datadir.
+    let data_dir = datadir::prepare(&app.path().app_data_dir()?, tauri::is_dev())?;
+    let db_path = data_dir.join(datadir::DB_NAME);
     // Snapshot the DB once per app-version change before migrations touch it.
     // Best-effort: a failed backup is worth a log line, not a failed launch.
     let app_version = app.package_info().version.to_string();

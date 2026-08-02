@@ -44,21 +44,18 @@ mkdir -p "$REPO_ROOT/target/release"
 cp "$REPO_ROOT/target/debug/agency-termd" "$SIDECAR"
 echo "Staged dev sidecar: $SIDECAR"
 
-# The daemon is shared, not per-build: one socket in Application Support, and
-# whoever spawns it first owns the binary that serves everyone. If the installed
-# app (or its daemon) is already up, the dev build attaches to *that* daemon and
-# any daemon-side change you just built is not in play. Say so instead of
-# letting it look like the change did nothing.
-SOCK="$HOME/Library/Application Support/build.agency.app/termd.sock"
-if pgrep -f "Agency.app/Contents/MacOS/agency-termd" >/dev/null 2>&1; then
-  echo
-  echo "NOTE: a daemon from the installed Agency.app is running and owns $SOCK."
-  echo "      This dev build will attach to it, so daemon changes won't apply."
-  echo "      To test them: quit Agency.app, then"
-  echo "        pkill -f 'Agency.app/Contents/MacOS/agency-termd'"
-  echo "      (this ends the sessions that daemon hosts) and re-run ./dev.sh."
-  echo
-fi
+# A dev build keeps its own data dir (crates/agency-app/src/datadir.rs), so it
+# runs the daemon binary just built, on its own socket, and cannot disturb the
+# installed app's sessions. Different DB too: the dev one is seeded from the
+# installed app's projects on first launch, and its runs are its own.
+DEV_DIR="$HOME/Library/Application Support/build.agency.app.dev"
+echo
+echo "Dev data dir: $DEV_DIR"
+echo "  own agency.db and termd.sock; the installed Agency.app is untouched."
+echo "  To end this build's daemon (and its sessions):"
+echo "    pkill -f 'agency-termd .*build.agency.app.dev'"
+echo "  Delete the dir to start over; the next launch re-seeds it."
+echo
 
 # Each git worktree is a separate checkout with its own empty ui/node_modules,
 # so the tauri CLI (a devDependency) is absent until deps are installed. Install

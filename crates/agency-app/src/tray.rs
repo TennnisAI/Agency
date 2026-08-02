@@ -125,7 +125,10 @@ pub fn refresh(app: &AppHandle, runs: &[TrayRun]) -> tauri::Result<()> {
         .item(&MenuItemBuilder::with_id("quit", "Quit Agency").build(app)?);
 
     tray.set_menu(Some(menu.build()?))?;
-    let _ = tray.set_tooltip(Some(format!("Agency — {running} running")));
+    // Dev builds now run alongside the installed app rather than replacing its
+    // daemon, so two identical icons can sit in the menu bar; name which is which.
+    let name = if tauri::is_dev() { "Agency (dev)" } else { "Agency" };
+    let _ = tray.set_tooltip(Some(format!("{name} — {running} running")));
     // macOS: show the active-agent count next to the menu-bar icon.
     #[cfg(target_os = "macos")]
     {

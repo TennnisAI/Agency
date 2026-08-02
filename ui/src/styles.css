@@ -1303,6 +1303,17 @@ input, textarea, code,
   cursor: pointer; padding: 0 2px; font-size: 13px;
 }
 .agent-menu .branch-reset:hover { color: var(--text); }
+/* Worktree opt-out: a checkbox row, and the note that replaces the from/into
+   selects when the agent is going to work in the checkout instead. */
+.agent-menu .branch-row.branch-check { gap: 6px; cursor: pointer; }
+.agent-menu .branch-row.branch-check > span {
+  width: auto; font-size: 12px; color: var(--text); text-transform: none;
+}
+.agent-menu .branch-row.branch-check input { accent-color: var(--blue); cursor: pointer; margin: 0; }
+.agent-menu .branch-note {
+  font-size: 11px; line-height: 1.45; color: var(--o1); padding: 1px 0 2px;
+}
+.agent-menu .branch-note code { font-family: var(--mono); color: var(--sub1); }
 
 /* ── Home overview (no project selected) ─────────────────────── */
 .home {

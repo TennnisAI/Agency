@@ -744,3 +744,168 @@ fn send_review_comments_errors_when_session_not_running() {
     assert_eq!(unsent.len(), 1, "comment count should be unchanged");
     assert!(!unsent[0].sent, "comment must NOT be marked sent after failed send");
 }
+
+// ── runs without a worktree (started directly in the project checkout) ───────
+
+/// The headline of the feature: with `worktree = false` the agent runs in the
+/// project's own checkout, on the branch already there, and nothing new is cut.
+#[test]
+fn create_run_without_worktree_uses_the_project_checkout() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo); // repo on `main` with a commit
+
+    let state = common::state(&dir);
+    state.register_profile(AgentProfile {
+        name: "pwds".into(),
+        command: "/bin/sh".into(),
+        args: vec!["-c".into(), "pwd; sleep 5".into()],
+        env: vec![],
+        resume_args: None,
+        loop_args: None,
+    }).unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+
+    let info = state
+        .create_run_with_progress(&project.id, "p", "pwds", "HEAD", None, false, |_| {})
+        .unwrap();
+    assert!(!info.worktree);
+    assert_eq!(info.branch, "main", "adopts the checkout's branch");
+    // Canonicalized on both sides: on macOS the temp dir is reached through a
+    // /var -> /private/var symlink, and the registry stores the path as given.
+    assert_eq!(
+        state.worktree_path(&info.id).unwrap().canonicalize().unwrap(),
+        repo.canonicalize().unwrap(),
+    );
+    assert!(
+        !repo.join(".agency").join("worktrees").join(&info.id).exists(),
+        "no worktree directory was created"
+    );
+
+    // The agent's cwd really is the checkout.
+    let mut cwd_ok = false;
+    for _ in 0..150 {
+        let cap = state.run_preview(&info.id, 10).unwrap_or_default();
+        if cap.contains(&repo.canonicalize().unwrap().to_string_lossy().to_string()) {
+            cwd_ok = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    assert!(cwd_ok, "agent did not report the project checkout as cwd");
+
+    // No branch of its own means nothing to merge or open a PR for.
+    let err = state.merge_preview(&info.id).unwrap_err().to_string();
+    assert!(err.contains("project checkout"), "got: {err}");
+    assert!(state.create_pr(&info.id).unwrap_err().to_string().contains("project checkout"));
+
+    session_gone_or_cleanup(&state, &info.id);
+}
+
+/// Discarding such a run must not touch git: `main` is the user's branch, and
+/// the worktree-removal path would try to delete it.
+#[test]
+fn discard_without_worktree_leaves_the_checkout_and_its_branch_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let state = common::state(&dir);
+    state.register_profile(AgentProfile {
+        name: "noop".into(),
+        command: "sh".into(),
+        args: vec!["-c".into(), "sleep 1".into()],
+        env: vec![],
+        resume_args: None,
+        loop_args: None,
+    }).unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+    let info = state
+        .create_run_with_progress(&project.id, "p", "noop", "HEAD", None, false, |_| {})
+        .unwrap();
+
+    // The run follows the checkout: switching branches under it renames the run
+    // rather than leaving the branch it was started on showing.
+    assert!(Command::new("git")
+        .args(["checkout", "-q", "-b", "side"])
+        .current_dir(&repo)
+        .status()
+        .unwrap()
+        .success());
+    assert_eq!(state.list_runs(&project.id).unwrap()[0].branch, "side");
+
+    // Uncommitted work in the checkout, as a user mid-task would have.
+    std::fs::write(repo.join("scratch.txt"), "work in progress").unwrap();
+
+    state.discard_run(&info.id).unwrap();
+
+    assert!(repo.join("README.md").exists(), "checkout survived");
+    assert_eq!(
+        std::fs::read_to_string(repo.join("scratch.txt")).unwrap(),
+        "work in progress",
+        "uncommitted work untouched"
+    );
+    let branches = state.list_project_branches(&project.id).unwrap();
+    assert!(branches.branches.contains(&"main".to_string()), "main still exists");
+    assert_eq!(state.list_runs(&project.id).unwrap().len(), 0);
+}
+
+/// Archiving one is only the teardown and the stamp: no auto-commit sweeping
+/// the user's uncommitted work onto their branch, and restore is a no-op.
+#[test]
+fn archive_without_worktree_does_not_commit_the_users_work() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let state = common::state(&dir);
+    state.register_profile(AgentProfile {
+        name: "noop".into(),
+        command: "sh".into(),
+        args: vec!["-c".into(), "sleep 1".into()],
+        env: vec![],
+        resume_args: None,
+        loop_args: None,
+    }).unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+    let info = state
+        .create_run_with_progress(&project.id, "p", "noop", "HEAD", None, false, |_| {})
+        .unwrap();
+    std::fs::write(repo.join("scratch.txt"), "work in progress").unwrap();
+
+    let head_before = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(&repo)
+        .output()
+        .unwrap()
+        .stdout;
+
+    state.archive_run(&info.id).unwrap();
+    assert_eq!(state.list_archived_runs(&project.id).unwrap().len(), 1);
+
+    let head_after = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(&repo)
+        .output()
+        .unwrap()
+        .stdout;
+    assert_eq!(head_before, head_after, "archive must not commit anything");
+    let status = Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&status.stdout).contains("scratch.txt"),
+        "the uncommitted file is still uncommitted"
+    );
+
+    // Restoring brings the row back live without re-creating anything on disk.
+    let restored = state.restore_run(&info.id).unwrap();
+    assert!(!restored.worktree);
+    assert_eq!(state.list_runs(&project.id).unwrap().len(), 1);
+    session_gone_or_cleanup(&state, &info.id);
+}

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { AgentProfile, Issue, listProfiles, listProjectBranches } from "../api";
 import { agentLabel } from "../agents";
-import { useRuns } from "../store/runs";
+import { useRuns, SpawnOpts } from "../store/runs";
 import { effectiveMergeTarget } from "../lib/branchTargets";
 import RaceDialog from "./RaceDialog";
 import LoopDialog from "./LoopDialog";
@@ -16,7 +16,7 @@ export default function AgentAddMenu({
   issueLabel,
   terminalOnly = false,
 }: {
-  onSpawn: (agentId: string, opts?: { base: string; mergeTarget: string }) => void;
+  onSpawn: (agentId: string, opts?: SpawnOpts) => void;
   // Required (not optional) so every call site exposes the same options — the two
   // add-menus (top-right "+ Agent" and the rail "Agents +" header) cannot drift
   // out of sync.
@@ -54,8 +54,14 @@ export default function AgentAddMenu({
 
   // Branch-picker state (only used when projectId is supplied).
   const [branches, setBranches] = useState<string[]>([]);
+  const [current, setCurrent] = useState<string>("");
   const [base, setBase] = useState<string>("");
   const [targetOverride, setTargetOverride] = useState<string | null>(null);
+  // Isolate the agent in its own worktree + branch, or let it work in the
+  // project checkout as it stands. On by default, and reset to on every time
+  // the menu opens: skipping isolation is the deliberate exception, never
+  // something a forgotten setting does to the next agent you start.
+  const [worktree, setWorktree] = useState(true);
 
   const showPicker = !!projectId;
   const mergeTarget = effectiveMergeTarget(base, targetOverride);
@@ -69,6 +75,7 @@ export default function AgentAddMenu({
       .then((pb) => {
         if (!live) return;
         setBranches(pb.branches);
+        setCurrent(pb.current);
         setBase((b) => (b && pb.branches.includes(b) ? b : pb.current));
       })
       .catch(() => { /* leave selects empty; spawn falls back to HEAD */ });
@@ -82,7 +89,10 @@ export default function AgentAddMenu({
   const toggle = () => {
     setOpen((o) => {
       const next = !o;
-      if (next) loadAgents();
+      if (next) {
+        loadAgents();
+        setWorktree(true);
+      }
       if (next && btnRef.current) {
         const r = btnRef.current.getBoundingClientRect();
         // Icon/header triggers open rightward, but near the right edge (e.g. an
@@ -102,7 +112,11 @@ export default function AgentAddMenu({
 
   const choose = (id: string) => {
     setOpen(false);
-    if (showPicker && base) onSpawn(id, { base, mergeTarget });
+    if (!showPicker) onSpawn(id);
+    // Without a worktree the branch selects are hidden and unused, but opts
+    // still has to carry the flag, so base falls back to the live branch.
+    else if (!worktree) onSpawn(id, { base: current || "HEAD", mergeTarget, worktree: false });
+    else if (base) onSpawn(id, { base, mergeTarget });
     else onSpawn(id);
   };
   const chooseTerminal = () => { setOpen(false); onTerminal(); };
@@ -146,34 +160,55 @@ export default function AgentAddMenu({
               <>
                 <div className="agent-menu-sep" />
                 <div className="branch-picker">
-                  <label className="branch-row">
-                    <span>from</span>
-                    <select
-                      value={base}
-                      onChange={(e) => setBase(e.target.value)}
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      {branches.map((b) => <option key={b} value={b}>{b}</option>)}
-                    </select>
-                  </label>
-                  <label className="branch-row">
-                    <span>into</span>
-                    <select
-                      value={mergeTarget}
-                      onChange={(e) => setTargetOverride(e.target.value === base ? null : e.target.value)}
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      {branches.map((b) => <option key={b} value={b}>{b}</option>)}
-                    </select>
-                    {diverged && (
-                      <button
-                        type="button"
-                        className="branch-reset"
-                        title="Sync merge target to base"
-                        onClick={(e) => { e.stopPropagation(); setTargetOverride(null); }}
-                      >↺</button>
-                    )}
-                  </label>
+                  {/* Issue dispatch stays worktree-only: merging the run's
+                      branch is what closes the issue. */}
+                  {!issue && (
+                    <label className="branch-row branch-check" onClick={(e) => e.stopPropagation()}>
+                      <input
+                        type="checkbox"
+                        checked={worktree}
+                        onChange={(e) => setWorktree(e.target.checked)}
+                      />
+                      <span>Own worktree</span>
+                    </label>
+                  )}
+                  {worktree ? (
+                    <>
+                      <label className="branch-row">
+                        <span>from</span>
+                        <select
+                          value={base}
+                          onChange={(e) => setBase(e.target.value)}
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          {branches.map((b) => <option key={b} value={b}>{b}</option>)}
+                        </select>
+                      </label>
+                      <label className="branch-row">
+                        <span>into</span>
+                        <select
+                          value={mergeTarget}
+                          onChange={(e) => setTargetOverride(e.target.value === base ? null : e.target.value)}
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          {branches.map((b) => <option key={b} value={b}>{b}</option>)}
+                        </select>
+                        {diverged && (
+                          <button
+                            type="button"
+                            className="branch-reset"
+                            title="Sync merge target to base"
+                            onClick={(e) => { e.stopPropagation(); setTargetOverride(null); }}
+                          >↺</button>
+                        )}
+                      </label>
+                    </>
+                  ) : (
+                    <div className="branch-note">
+                      Works in the project checkout on <code>{current || "the current branch"}</code>.
+                      No branch to merge; commit from Source Control.
+                    </div>
+                  )}
                 </div>
               </>
             )}

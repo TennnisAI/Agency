@@ -48,7 +48,12 @@ export default function AgentTile({ run }: { run: RunInfo }) {
       {!isTerminal && (
         <div className="tile-meta">
           <code>{run.branch}</code>
-          <span className="diffstat"><span className="add">+{run.added}</span> <span className="del">−{run.deleted}</span> · {run.files}f</span>
+          {/* Without a worktree the stat is uncommitted work in the checkout,
+              not a branch's diff against its base. */}
+          <span className="diffstat" title={run.worktree ? "Changes on this branch" : "Uncommitted changes in the checkout"}>
+            <span className="add">+{run.added}</span> <span className="del">−{run.deleted}</span> · {run.files}f
+          </span>
+          {!run.worktree && <span className="badge" title="Works in the project checkout, not an isolated worktree">in checkout</span>}
         </div>
       )}
       <pre className="tile-preview">{preview}</pre>
@@ -59,7 +64,11 @@ export default function AgentTile({ run }: { run: RunInfo }) {
       {confirmDiscard && (
         <ConfirmDialog
           title={isTerminal ? "Close terminal?" : "Discard agent?"}
-          body={isTerminal ? "Stop the shell and remove this terminal session." : `Stop "${run.agent}", remove its worktree, and delete the run. This cannot be undone.`}
+          body={isTerminal
+            ? "Stop the shell and remove this terminal session."
+            : run.worktree
+              ? `Stop "${run.agent}", remove its worktree, and delete the run. This cannot be undone.`
+              : `Stop "${run.agent}" and delete the run. Your checkout and its changes are left exactly as they are.`}
           confirmLabel={isTerminal ? "Close" : "Discard"}
           danger
           busy={discarding}

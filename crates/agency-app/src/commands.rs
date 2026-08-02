@@ -129,6 +129,9 @@ pub async fn create_run(
     agent: String,
     base: String,
     merge_target: Option<String>,
+    // Absent = the historical behaviour: cut a worktree. `false` runs the agent
+    // in the project's own checkout on its current branch.
+    worktree: Option<bool>,
     on_progress: Channel<agency_core::setup::CloneProgress>,
 ) -> Result<RunInfo, String> {
     state
@@ -138,6 +141,7 @@ pub async fn create_run(
             &agent,
             &base,
             merge_target.as_deref(),
+            worktree.unwrap_or(true),
             move |p| {
                 let _ = on_progress.send(p);
             },

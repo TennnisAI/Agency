@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Issue, Project, inspectRepo, RepoReadiness, FileRoot, agentInstalled, startIssueRun } from "../api";
+import type { SpawnOpts } from "../store/runs";
 import { fileRootKey, requestOpenFile } from "../lib/openFile";
 import { useRuns } from "../store/runs";
 import AgentTile from "./AgentTile";
@@ -40,7 +41,7 @@ export default function AgentsView({
   const focused = runs.find((r) => r.id === focusedRunId) ?? null;
   const [review, setReview] = useState(false);
   const [error, setError] = useState("");
-  const [pendingSpawn, setPendingSpawn] = useState<{ agentId: string; readiness: RepoReadiness; repoPath: string; opts?: { base: string; mergeTarget: string }; issue?: Issue } | null>(null);
+  const [pendingSpawn, setPendingSpawn] = useState<{ agentId: string; readiness: RepoReadiness; repoPath: string; opts?: SpawnOpts; issue?: Issue } | null>(null);
   const [missingAgent, setMissingAgent] = useState<string | null>(null);
   const [gitSel, setGitSel] = useState<GitSelection>(null);
   // Source Control has two sub-views: Changes (the git panel) and Pull Requests
@@ -117,7 +118,7 @@ export default function AgentsView({
   }, []);
   useEffect(() => { setQuickOpen(false); }, [project?.id, tab]);
 
-  async function spawn(agentId: string, opts?: { base: string; mergeTarget: string }, issue?: Issue) {
+  async function spawn(agentId: string, opts?: SpawnOpts, issue?: Issue) {
     if (!project) return;
     setError("");
     try {
@@ -129,7 +130,11 @@ export default function AgentsView({
         return;
       }
       const r = await inspectRepo(project.repo_path);
-      if (r.state === "ready" && !r.dirty) {
+      // A dirty checkout only blocks cutting a worktree (the new branch would
+      // miss the uncommitted work). An agent that stays in the checkout is
+      // being started *because* there is work in progress there.
+      const dirtyBlocks = opts?.worktree !== false;
+      if (r.state === "ready" && !(r.dirty && dirtyBlocks)) {
         if (issue) await startIssue(issue, agentId, opts);
         else await createAgent(agentId, opts);
       } else {
@@ -142,7 +147,7 @@ export default function AgentsView({
 
   // Dispatch an issue to an agent, then jump to the run — the issue-flavored
   // tail of the same flow createAgent handles for promptless runs.
-  async function startIssue(issue: Issue, agentId: string, opts?: { base: string; mergeTarget: string }) {
+  async function startIssue(issue: Issue, agentId: string, opts?: SpawnOpts) {
     const run = await startIssueRun(issue.id, agentId, opts?.base, opts?.mergeTarget);
     await refreshRuns();
     setFocusedRun(run.id);
@@ -343,7 +348,7 @@ export default function AgentsView({
         />
       )}
 
-      {approveRunId && approveRunId === focusedRunId && focused?.kind === "agent" && (
+      {approveRunId && approveRunId === focusedRunId && focused?.kind === "agent" && focused.worktree && (
         <MergeModal
           taskId={approveRunId}
           onClose={() => setApproveRun(null)}

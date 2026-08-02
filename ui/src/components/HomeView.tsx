@@ -297,6 +297,7 @@ function HomeTile({ run, onOpen }: { run: RunInfo; onOpen: () => void }) {
         <div className="tile-meta">
           <code>{run.branch}</code>
           <span className="diffstat"><span className="add">+{run.added}</span> <span className="del">−{run.deleted}</span> · {run.files}f</span>
+          {!run.worktree && <span className="badge" title="Works in the project checkout, not an isolated worktree">in checkout</span>}
         </div>
       )}
       {preview && <pre className="tile-preview">{preview}</pre>}

@@ -102,6 +102,7 @@ fn move_workspace_refuses_while_agent_runs_are_live() {
         loop_config: None,
         loop_state: None,
         issue_id: None,
+        worktree: true,
     };
     reg.insert_run(&run).unwrap();
 

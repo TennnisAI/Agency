@@ -271,7 +271,18 @@ pub struct DiffStat {
 
 pub fn diff_stat(worktree: &Path, base: &str) -> Result<DiffStat> {
     let range = format!("{base}...HEAD");
-    let out = git(worktree, &["diff", "--numstat", &range])?;
+    Ok(numstat(&git(worktree, &["diff", "--numstat", &range])?))
+}
+
+/// What is currently uncommitted (staged and unstaged, tracked files) against
+/// HEAD. The counterpart of [`diff_stat`] for a run that works in the project's
+/// main checkout: it has no branch of its own to diff against a base, so its
+/// visible progress is the pending changes sitting in the checkout.
+pub fn uncommitted_stat(dir: &Path) -> Result<DiffStat> {
+    Ok(numstat(&git(dir, &["diff", "--numstat", "HEAD"])?))
+}
+
+fn numstat(out: &str) -> DiffStat {
     let mut stat = DiffStat { added: 0, deleted: 0, files: 0 };
     for line in out.lines() {
         let mut parts = line.split('\t');
@@ -282,7 +293,7 @@ pub fn diff_stat(worktree: &Path, base: &str) -> Result<DiffStat> {
         stat.deleted += d.parse::<u32>().unwrap_or(0);
         stat.files += 1;
     }
-    Ok(stat)
+    stat
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -577,6 +577,10 @@ const PENDING_OPEN_TTL: std::time::Duration = std::time::Duration::from_secs(300
 #[derive(Default)]
 struct UiState {
     focused: bool,
+    /// The run whose agent pane the UI currently has on screen (not merely
+    /// selected — see the frontend's `onScreenRunId`). With `focused`, this is
+    /// the whole basis for staying quiet: notifications skip this one run and
+    /// nothing else.
     active_run: Option<String>,
     pending_open: Option<PendingOpen>,
 }

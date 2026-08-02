@@ -16,8 +16,13 @@ pub struct NotifSettings {
     /// toasts are always suppressed for looping runs — these are the signal.
     #[serde(default = "d_true")]
     pub loop_events: bool,
-    #[serde(default = "d_true")]
-    pub only_when_unfocused: bool,
+    /// Stay quiet about the run the user is already watching. Scoped to that
+    /// one run, not the whole app: every other agent notifies even while
+    /// Agency is in the foreground, because an agent in another tab is
+    /// precisely the one you can't see finish. The alias keeps settings saved
+    /// under the old app-wide name (`onlyWhenUnfocused`) loading.
+    #[serde(default = "d_true", alias = "onlyWhenUnfocused")]
+    pub only_when_watching: bool,
     #[serde(default = "d_idle")]
     pub idle_secs: u64,
 }
@@ -33,7 +38,7 @@ impl Default for NotifSettings {
             run_crashed: true,
             merge_attention: true,
             loop_events: true,
-            only_when_unfocused: true,
+            only_when_watching: true,
             idle_secs: 30,
         }
     }
@@ -145,6 +150,20 @@ pub fn step(
     (watch, events)
 }
 
+/// Whether to hold back a notification about `run_id`.
+///
+/// The only run we stay quiet about is the one the user is watching right now:
+/// its pane is on screen in a focused window, so a toast would just repeat
+/// what they can already see. Everything else notifies, app focused or not — a
+/// run in another tab is exactly the one whose turn ending you'd otherwise
+/// miss, and a run left selected while the user is off in another app is not
+/// being watched at all.
+///
+/// `focused` is the window's focus state, `active` the run the UI has open.
+pub fn suppressed(settings: &NotifSettings, focused: bool, active: Option<&str>, run_id: &str) -> bool {
+    settings.only_when_watching && focused && active == Some(run_id)
+}
+
 /// Notification (title, body) for an event about the run labelled `label`.
 pub fn message(kind: &NotifyKind, label: &str) -> (String, String) {
     match kind {
@@ -175,7 +194,7 @@ mod tests {
     #[test]
     fn settings_default_is_all_on_idle_30() {
         let s = NotifSettings::default();
-        assert!(s.agent_finished && s.agent_idle && s.run_crashed && s.merge_attention && s.only_when_unfocused);
+        assert!(s.agent_finished && s.agent_idle && s.run_crashed && s.merge_attention && s.only_when_watching);
         assert_eq!(s.idle_secs, 30);
     }
 
@@ -184,6 +203,34 @@ mod tests {
         let s: NotifSettings = serde_json::from_str("{}").unwrap();
         assert!(s.agent_finished);
         assert_eq!(s.idle_secs, 30);
+    }
+
+    #[test]
+    fn settings_saved_under_the_old_focus_key_still_load() {
+        let s: NotifSettings =
+            serde_json::from_str(r#"{"onlyWhenUnfocused":false,"idleSecs":45}"#).unwrap();
+        assert!(!s.only_when_watching, "old app-wide toggle must carry over");
+        assert_eq!(s.idle_secs, 45);
+    }
+
+    #[test]
+    fn only_the_watched_run_is_suppressed() {
+        let s = NotifSettings::default();
+        let watched = |focused, active: Option<&str>| suppressed(&s, focused, active, "run-a");
+        // Focused window, this run open: the user is looking at it.
+        assert!(watched(true, Some("run-a")));
+        // Focused window, some other run open — the whole point of AGE-14.
+        assert!(!watched(true, Some("run-b")));
+        // Focused window, no run open (grid view): nothing is being watched.
+        assert!(!watched(true, None));
+        // App in the background: even the selected run is unwatched.
+        assert!(!watched(false, Some("run-a")));
+    }
+
+    #[test]
+    fn toggle_off_notifies_even_for_the_watched_run() {
+        let s = NotifSettings { only_when_watching: false, ..Default::default() };
+        assert!(!suppressed(&s, true, Some("run-a"), "run-a"));
     }
 
     #[test]

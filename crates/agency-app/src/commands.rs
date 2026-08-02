@@ -539,8 +539,10 @@ pub fn merge_task(
     let outcome = state.merge_task(&task_id).map_err(|e| e.to_string())?;
     if let MergeOutcome::Conflicts { files } = &outcome {
         let settings = state.notif_settings().unwrap_or_default();
-        let (focused, _active) = state.ui_snapshot();
-        if settings.merge_attention && !(settings.only_when_unfocused && focused) {
+        let (focused, active) = state.ui_snapshot();
+        let suppressed =
+            crate::notifier::suppressed(&settings, focused, active.as_deref(), &task_id);
+        if settings.merge_attention && !suppressed {
             use tauri_plugin_notification::NotificationExt;
             let _ = app
                 .notification()

@@ -18,6 +18,14 @@ interface RunStore {
   setView: (v: View) => void;
   focusedRunId: string | null;
   setFocusedRun: (id: string | null) => void;
+  // The run whose agent pane is mounted on screen right now — the one run
+  // notifications stay quiet about. Deliberately not `focusedRunId`: a run
+  // stays focused while you're in the grid, on the Issues tab, or in another
+  // app, and a turn ending out of sight is exactly the one worth a toast.
+  // Set by FocusTerminal itself, so it tracks what is rendered, not what is
+  // selected.
+  onScreenRunId: string | null;
+  setOnScreenRun: React.Dispatch<React.SetStateAction<string | null>>;
   refreshRuns: () => Promise<void>;
   tab: Tab;
   setTab: (t: Tab) => void;
@@ -45,6 +53,7 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [view, setView] = useState<View>("grid");
   const [focusedRunId, setFocusedRun] = useState<string | null>(null);
+  const [onScreenRunId, setOnScreenRun] = useState<string | null>(null);
   const [tab, setTabState] = useState<Tab>("agents");
   const [approveRunId, setApproveRun] = useState<string | null>(null);
   const [pendingSessionId, setPendingSession] = useState<string | null>(null);
@@ -152,7 +161,7 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <Ctx.Provider
-      value={{ runs, selectedProjectId, setSelectedProject, view, setView, focusedRunId, setFocusedRun, refreshRuns, tab, setTab, createAgent, createTerminal, spawning: spawnCount > 0, spawnProgress, approveRunId, setApproveRun, pendingSessionId, setPendingSession }}
+      value={{ runs, selectedProjectId, setSelectedProject, view, setView, focusedRunId, setFocusedRun, onScreenRunId, setOnScreenRun, refreshRuns, tab, setTab, createAgent, createTerminal, spawning: spawnCount > 0, spawnProgress, approveRunId, setApproveRun, pendingSessionId, setPendingSession }}
     >
       {children}
     </Ctx.Provider>

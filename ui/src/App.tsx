@@ -27,7 +27,7 @@ import RepoSetupDialog from "./components/RepoSetupDialog";
 const REPO_URL = "https://github.com/nic123/Agency";
 
 function Shell() {
-  const { selectedProjectId, setSelectedProject, createAgent, createTerminal, refreshRuns, setTab, focusedRunId, setApproveRun, setFocusedRun, setView, runs } = useRuns();
+  const { selectedProjectId, setSelectedProject, createAgent, createTerminal, refreshRuns, setTab, focusedRunId, onScreenRunId, setApproveRun, setFocusedRun, setView, runs } = useRuns();
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [project, setProject] = useState<Project | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -267,8 +267,11 @@ function Shell() {
     };
   }, []);
 
+  // Keep the backend's picture of "what the user can see" current: the window's
+  // focus plus the run whose pane is on screen. Together they decide the one
+  // run that stays quiet — every other agent notifies, in-app or not.
   useEffect(() => {
-    const report = () => setUiState(document.hasFocus(), focusedRunId).catch(() => {});
+    const report = () => setUiState(document.hasFocus(), onScreenRunId).catch(() => {});
     report();
     window.addEventListener("focus", report);
     window.addEventListener("blur", report);
@@ -276,7 +279,7 @@ function Shell() {
       window.removeEventListener("focus", report);
       window.removeEventListener("blur", report);
     };
-  }, [focusedRunId]);
+  }, [onScreenRunId]);
 
   // Keep the native menu's context items (New Agent/Terminal, Source, and the
   // Agent menu) enabled only when they'd actually do something, so they aren't

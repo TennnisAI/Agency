@@ -11,6 +11,7 @@ import { useRuns } from "../store/runs";
 import { currentXtermTheme, minContrastRatio, TERMINAL_FONT_FAMILY } from "../lib/themes";
 import { initialCapture, feed } from "../lib/firstPrompt";
 import { shouldSwallowWheel, createPageScroller } from "../lib/termScroll";
+import { follow, GESTURE_MS } from "../lib/termFollow";
 
 export interface TerminalStream {
   attach(id: string, cols: number, rows: number, onBytes: (b: Uint8Array) => void): Promise<void>;
@@ -58,6 +59,11 @@ export default function FocusTerminal(
   const searchAddonRef = useRef<SearchAddon | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  // Claims a viewport move as deliberate for the follow policy (lib/termFollow).
+  // Held on the component so search, which scrolls to its match, can claim one
+  // too instead of being pinned straight back down. Installed by the terminal
+  // effect; a no-op until then.
+  const markGestureRef = useRef<() => void>(() => {});
   const [showSearch, setShowSearch] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [dragOver, setDragOver] = useState(false);
@@ -126,6 +132,71 @@ export default function FocusTerminal(
       }
       return true;
     });
+    // Stay on the newest output (see lib/termFollow). One scroll the user never
+    // made parks a pane for good: xterm latches "the user is scrolling" and only
+    // a scroll that lands back at the bottom clears it, so the pane keeps the
+    // window it was left on while the agent writes past it, and each further
+    // phantom drags it further back — eventually onto the opening prompt with
+    // the agent still working (AGE-19). So a scroll counts as the user's only if
+    // a gesture is behind it, and the pane is pinned back down otherwise, which
+    // clears the latch with it.
+    let following = true;
+    let dragging = false;
+    let repinning = false;
+    let gestureAt = -Infinity;
+    let torn = false;
+    const timers: number[] = [];
+    const atBottom = () => {
+      const buf = term.buffer.active;
+      return buf.viewportY >= buf.baseY;
+    };
+    // xterm suppresses the scroll event for everything the viewport drives, so
+    // a wheel or a drag is never reported: read the position once the gesture
+    // has landed instead. Twice, a frame apart, since the DOM scroll it goes
+    // through can be a frame late.
+    const sample = () => { if (!torn) following = atBottom(); };
+    const markGesture = () => {
+      gestureAt = performance.now();
+      requestAnimationFrame(sample);
+      timers.push(window.setTimeout(sample, GESTURE_MS));
+    };
+    markGestureRef.current = markGesture;
+    const onPointerDown = () => { dragging = true; markGesture(); };
+    // The gesture outlives the button: a drag-selection past the top edge keeps
+    // auto-scrolling for as long as it is held.
+    const onPointerUp = () => { dragging = false; markGesture(); };
+    const onScrollKey = (e: KeyboardEvent) => {
+      if (e.key === "PageUp" || e.key === "PageDown" || e.key === "Home" || e.key === "End") markGesture();
+    };
+    container.addEventListener("wheel", markGesture, { capture: true, passive: true });
+    container.addEventListener("touchstart", markGesture, { capture: true, passive: true });
+    container.addEventListener("touchmove", markGesture, { capture: true, passive: true });
+    container.addEventListener("keydown", onScrollKey, true);
+    container.addEventListener("pointerdown", onPointerDown, true);
+    // On window: a drag that ends outside the pane still has to release it.
+    window.addEventListener("pointerup", onPointerUp, true);
+    window.addEventListener("pointercancel", onPointerUp, true);
+    // Fires when output scrolls the buffer, which is where a pane that was left
+    // behind finds out: the phantom scroll itself is silent.
+    const scrollWatch = term.onScroll(() => {
+      if (repinning) return; // our own scrollToBottom, re-entering this handler
+      const buf = term.buffer.active;
+      const next = follow({
+        viewportY: buf.viewportY,
+        baseY: buf.baseY,
+        gesture: dragging || performance.now() - gestureAt < GESTURE_MS,
+        following,
+      });
+      following = next.following;
+      if (!next.repin) return;
+      repinning = true;
+      try {
+        term.scrollToBottom();
+      } finally {
+        repinning = false;
+      }
+    });
+
     // Fit xterm to its container, then push the new size to the backend so the
     // PTY (and thus the daemon emulator) reflows to match. resize_run is a no-op until the
     // attach lands, so it's safe to call before/while attaching.
@@ -209,6 +280,16 @@ export default function FocusTerminal(
       disposed = true;
       ro.disconnect();
       window.removeEventListener("themechange", onThemeChange);
+      torn = true;
+      timers.forEach(clearTimeout);
+      container.removeEventListener("wheel", markGesture, true);
+      container.removeEventListener("touchstart", markGesture, true);
+      container.removeEventListener("touchmove", markGesture, true);
+      container.removeEventListener("keydown", onScrollKey, true);
+      container.removeEventListener("pointerdown", onPointerDown, true);
+      window.removeEventListener("pointerup", onPointerUp, true);
+      window.removeEventListener("pointercancel", onPointerUp, true);
+      scrollWatch.dispose();
       onData?.dispose();
       stream.detach(runId);
       term.dispose();
@@ -276,6 +357,9 @@ export default function FocusTerminal(
   const onSearch = (q: string, prev = false) => {
     const addon = searchAddonRef.current;
     if (!addon || !q) return;
+    // Jumping to a match is a scroll the user asked for: claim it, or the
+    // follow policy reads it as drift and pins the pane straight back down.
+    markGestureRef.current();
     prev ? addon.findPrevious(q) : addon.findNext(q);
   };
 

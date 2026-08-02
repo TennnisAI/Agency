@@ -8,5 +8,8 @@ crates/agency-app/gen
 # Claude Code harness worktrees / local state
 .claude/
 
-# Agency's own worktrees + local state for this repo
-.agency/
+# Agency's own worktrees + local state for this repo. Ignore the directory
+# contents but keep .agency/issues/ tracked: the issue files are the tracker,
+# so git is what protects them (and lets them merge on agent branches).
+.agency/*
+!.agency/issues/

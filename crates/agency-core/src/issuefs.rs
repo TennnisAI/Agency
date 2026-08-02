@@ -15,9 +15,12 @@ use anyhow::{anyhow, bail, Result};
 
 use crate::registry::{Issue, IssueStatus, Registry};
 
-/// Issue files live here, relative to the project root. Deliberately inside
-/// `.agency/` but *tracked*: only `worktrees/` and `agency.local.toml` are
-/// excluded, so issue files are versioned and land at merge like code.
+/// Issue files live here, relative to the project root, and are *not* tracked
+/// by git (see `worktree::untrack_issue_files`). The app rewrites them on every
+/// status change; tracking them kept the project's checkout dirty, which is
+/// exactly what a merge refuses to start on, and put the same frontmatter lines
+/// on both sides of every agent merge. One shared copy, in the project's own
+/// checkout, is what every worktree reads and writes.
 pub const ISSUES_DIR: &str = ".agency/issues";
 
 /// Attachments live one level down, so an issue body can reference them with a
@@ -486,11 +489,14 @@ Body markdown, wikilinks allowed.
 - Attachments live in `assets/`, referenced from the body by a relative link:
   `![](assets/AGE-14-shot.png)` for images, `[label](assets/AGE-14-log.txt)`
   for anything else. Relative to this directory, so the same link resolves in
-  the app, on GitHub, and in any markdown editor. Drop, paste, or pick a file
-  in the issue's detail pane to add one.
-- On an agent branch these files merge like code: edits land when the branch
-  merges, and the app's board reads the main checkout. Merging a run also
-  advances its linked issue to done automatically — but never backwards.
+  the app and in any markdown editor. Drop, paste, or pick a file in the
+  issue's detail pane to add one.
+- These files are not tracked by git. There is one copy, here in the project's
+  own checkout, shared by every agent worktree; an agent working an issue is
+  given this absolute path and edits the file in place. Edits take effect as
+  soon as they are written, with no commit or merge involved.
+- Merging an agent run advances its linked issue to done automatically, but
+  never backwards.
 ";
 
 /// Export every index row that has no file yet, plus the README. Files that
@@ -530,13 +536,20 @@ pub fn export_project(reg: &Registry, project_id: &str, issue_key: &str, root: &
 /// Write the README into an *existing* issues dir if it's missing. Called
 /// wherever the dir may have just been created (export, first create) so the
 /// rules travel with the files, but never creates the dir by itself.
+///
+/// An existing README that still opens with our own heading is refreshed: it
+/// states the rules agents are told to follow, and a stale copy (issue files
+/// used to be tracked and to merge with a branch) is worse than none. A README
+/// someone has made their own, heading and all, is left alone.
 pub fn ensure_readme(root: &Path) -> Result<()> {
     let dir = root.join(ISSUES_DIR);
     if !dir.is_dir() {
         return Ok(());
     }
     let readme = dir.join("README.md");
-    if !readme.exists() {
+    let current = std::fs::read_to_string(&readme).unwrap_or_default();
+    let ours = current.is_empty() || current.starts_with("# Issues\n");
+    if ours && current != ISSUES_README {
         atomic_write(&readme, ISSUES_README)?;
     }
     Ok(())

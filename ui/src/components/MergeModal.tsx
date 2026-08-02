@@ -6,11 +6,14 @@ import { currentXtermTheme, minContrastRatio, TERMINAL_FONT_FAMILY } from "../li
 import {
   MergeOutcome,
   MergePreview,
+  MergeState,
   abortMergeTask,
   archiveRun,
   discardRun,
+  finishMergeTask,
   listProfiles,
   mergePreview,
+  mergeStatus,
   mergeTask,
   resolveMerge,
   resolverResize,
@@ -41,6 +44,10 @@ export default function MergeModal({
   const [error, setError] = useState("");
   const [resolving, setResolving] = useState(false);
   const [resolverDone, setResolverDone] = useState(false);
+  // What git says about the merge after a resolver has had a go at it. Null
+  // until the first check.
+  const [state, setState] = useState<MergeState | null>(null);
+  const [finishing, setFinishing] = useState(false);
   const [archiving, setArchiving] = useState(false);
   const [resolverProfile, setResolverProfile] = useState("claude");
   const [profileNames, setProfileNames] = useState<string[]>([]);
@@ -65,6 +72,15 @@ export default function MergeModal({
   // silently running it the moment the modal opens.
   useEffect(() => {
     mergePreview(taskId).then(setPreview).catch((e) => setError(String(e)));
+    // A merge left in progress by an earlier visit (the modal was closed
+    // mid-resolution) resumes where it stopped instead of offering a fresh
+    // merge that can only fail while the old one is unfinished.
+    mergeStatus(taskId)
+      .then((s) => {
+        setState(s);
+        if (s.merging) setOutcome({ kind: "conflicts", files: s.unresolved });
+      })
+      .catch(() => {});
     // Conflict-resolver choices: any agent profile.
     listProfiles()
       .then((ps) => {
@@ -116,7 +132,37 @@ export default function MergeModal({
 
   function startResolver() {
     setResolverDone(false);
+    setState(null);
     setResolving(true);
+  }
+
+  // Ask git where the merge stands. Never re-runs the merge: a merge in
+  // progress is a dirty checkout, so a second attempt could only report that
+  // as an error (which is exactly what it used to do).
+  async function checkState() {
+    setError("");
+    try {
+      setState(await mergeStatus(taskId));
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  // Commit the resolved merge (or accept the one the resolver committed) and
+  // land on the same "done" screen a clean merge reaches.
+  async function finish() {
+    setError("");
+    setFinishing(true);
+    try {
+      setOutcome(await finishMergeTask(taskId));
+    } catch (e) {
+      setError(String(e));
+      // The failure is usually "still conflicted"; re-read so the file list
+      // shown next to the error is the current one.
+      await checkState();
+    } finally {
+      setFinishing(false);
+    }
   }
 
   // The resolver terminal's container div only exists once the `resolving`
@@ -178,11 +224,23 @@ export default function MergeModal({
     // frozen once resolving starts (the picker is hidden), taskId can't change.
   }, [resolving]);
 
+  // The moment the resolver exits, ask git what it left behind — that answer,
+  // not the exit itself, decides what the user can do next.
+  useEffect(() => {
+    if (resolverDone) checkState();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- checkState only
+    // closes over taskId, which can't change.
+  }, [resolverDone]);
+
   const conflicts = outcome?.kind === "conflicts";
+  // Finishing is possible once nothing is unmerged and there is a merge to
+  // finish: either uncommitted (we commit it) or already committed by the
+  // resolver (we just record it and restore the branch).
+  const canFinish = !!state && state.unresolved.length === 0 && (state.merging || state.merged);
   const step = outcome?.kind === "clean"
     ? "done"
     : conflicts
-      ? (resolverDone ? "done" : resolving ? "resolve" : "merge")
+      ? (resolving ? "resolve" : "merge")
       : merging
         ? "merge"
         : "review";
@@ -299,17 +357,30 @@ export default function MergeModal({
 
         {outcome?.kind === "conflicts" && (
           <div>
-            <p className="merge-warn">Conflicts in {outcome.files.length} file(s):</p>
-            <ul className="profile-list">
-              {outcome.files.map((f) => (
-                <li key={f}>
-                  <code>{f}</code>
-                </li>
-              ))}
-            </ul>
+            <p className="merge-warn">
+              {outcome.files.length > 0
+                ? `Conflicts in ${outcome.files.length} file(s):`
+                : "A merge is in progress in the project's checkout."}
+            </p>
+            {outcome.files.length > 0 && (
+              <ul className="profile-list">
+                {outcome.files.map((f) => (
+                  <li key={f}>
+                    <code>{f}</code>
+                  </li>
+                ))}
+              </ul>
+            )}
             {!resolving ? (
               <div className="git-actions">
-                <button onClick={startResolver}>Resolve with agent</button>
+                {canFinish && (
+                  <button disabled={finishing} onClick={finish}>
+                    {finishing ? "Finishing…" : "Finish merge"}
+                  </button>
+                )}
+                <button className={canFinish ? "ghost" : undefined} onClick={startResolver}>
+                  Resolve with agent
+                </button>
                 {profileNames.length > 1 && (
                   <select
                     className="merge-resolver-pick"
@@ -327,11 +398,32 @@ export default function MergeModal({
             ) : (
               <div className="resolver">
                 <div className="terminal merge-term" ref={termRef} />
+                {state && state.unresolved.length > 0 && (
+                  <p className="merge-warn">
+                    Still conflicted: {state.unresolved.join(", ")}. Finish these in Source Control,
+                    then check again.
+                  </p>
+                )}
+                {canFinish && (
+                  <p className="merge-note">
+                    {state?.merging
+                      ? "Conflicts resolved. Finishing commits the merge."
+                      : "The resolver committed the merge itself. Finishing records it and puts your checkout back."}
+                  </p>
+                )}
+                {state && !state.merging && !state.merged && (
+                  <p className="merge-warn">
+                    No merge in progress. It was aborted or undone, so nothing is left to finish.
+                  </p>
+                )}
                 <div className="git-actions">
-                  <button disabled={!resolverDone} onClick={attempt}>
-                    Re-check merge
+                  <button disabled={!canFinish || finishing} onClick={finish}>
+                    {finishing ? "Finishing…" : "Finish merge"}
                   </button>
-                  <button className="ghost" onClick={abortAndClose}>Abort merge</button>
+                  <button className="ghost" disabled={finishing} onClick={checkState}>
+                    Check again
+                  </button>
+                  <button className="ghost" disabled={finishing} onClick={abortAndClose}>Abort merge</button>
                 </div>
               </div>
             )}

@@ -60,7 +60,7 @@ fn conflicting_merge_detected_and_abortable() {
     }
     assert!(merge::is_merging(dir.path()).unwrap());
 
-    merge::abort_merge(dir.path()).unwrap();
+    merge::abort_merge(dir.path(), None).unwrap();
     assert!(!merge::is_merging(dir.path()).unwrap());
     // main's content restored.
     assert_eq!(std::fs::read_to_string(dir.path().join("f.txt")).unwrap(), "main-change\n");
@@ -190,6 +190,109 @@ fn clean_merge_restores_original_checkout() {
     assert_eq!(String::from_utf8_lossy(&head.stdout).trim(), "dev");
 }
 
+/// The whole point of `merge_state`/`finish_merge`: the three states a
+/// resolver can leave behind are told apart, and the merge is completed
+/// without re-running it.
+#[test]
+fn resolved_conflicts_are_finished_not_re_merged() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    run(dir.path(), &["checkout", "-q", "-b", "agent/f"]);
+    std::fs::write(dir.path().join("f.txt"), "branch-change\n").unwrap();
+    run(dir.path(), &["commit", "-qam", "branch edit"]);
+    run(dir.path(), &["checkout", "-q", "main"]);
+    std::fs::write(dir.path().join("f.txt"), "main-change\n").unwrap();
+    run(dir.path(), &["commit", "-qam", "main edit"]);
+    // The user was parked elsewhere when they hit merge.
+    run(dir.path(), &["checkout", "-q", "-b", "dev"]);
+
+    assert!(matches!(
+        merge::merge(dir.path(), "agent/f", "main").unwrap(),
+        MergeOutcome::Conflicts { .. }
+    ));
+
+    // Mid-merge: unresolved, and nothing has landed.
+    let s = merge::merge_state(dir.path(), "agent/f", "main").unwrap();
+    assert!(s.merging && !s.merged);
+    assert_eq!(s.unresolved, vec!["f.txt".to_string()]);
+    // Finishing now refuses rather than committing conflict markers.
+    let err = merge::finish_merge(dir.path(), None).unwrap_err();
+    assert!(err.to_string().contains("still conflicted"), "got: {err}");
+
+    // A resolver edits the file but forgets to `git add`: still unmerged.
+    std::fs::write(dir.path().join("f.txt"), "reconciled\n").unwrap();
+    assert_eq!(
+        merge::merge_state(dir.path(), "agent/f", "main").unwrap().unresolved,
+        vec!["f.txt".to_string()]
+    );
+
+    run(dir.path(), &["add", "f.txt"]);
+    let s = merge::merge_state(dir.path(), "agent/f", "main").unwrap();
+    assert!(s.merging && s.unresolved.is_empty() && !s.merged);
+
+    let commit = merge::finish_merge(dir.path(), Some("dev")).unwrap();
+    assert!(!commit.is_empty());
+    assert!(!merge::is_merging(dir.path()).unwrap());
+    // The merge landed, and the checkout is back where the user left it.
+    let s = merge::merge_state(dir.path(), "agent/f", "main").unwrap();
+    assert!(s.merged && !s.merging);
+    let head = Command::new("git")
+        .args(["symbolic-ref", "--short", "HEAD"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&head.stdout).trim(), "dev");
+    assert_eq!(std::fs::read_to_string(dir.path().join("f.txt")).unwrap(), "main-change\n");
+}
+
+/// A resolver that commits the merge itself leaves nothing to commit, and
+/// finishing is still the right (idempotent) call.
+#[test]
+fn finish_accepts_a_merge_the_resolver_already_committed() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    run(dir.path(), &["checkout", "-q", "-b", "agent/g"]);
+    std::fs::write(dir.path().join("f.txt"), "branch-change\n").unwrap();
+    run(dir.path(), &["commit", "-qam", "branch edit"]);
+    run(dir.path(), &["checkout", "-q", "main"]);
+    std::fs::write(dir.path().join("f.txt"), "main-change\n").unwrap();
+    run(dir.path(), &["commit", "-qam", "main edit"]);
+
+    assert!(matches!(
+        merge::merge(dir.path(), "agent/g", "main").unwrap(),
+        MergeOutcome::Conflicts { .. }
+    ));
+    // What the resolver agent is told to do, done in full.
+    std::fs::write(dir.path().join("f.txt"), "reconciled\n").unwrap();
+    run(dir.path(), &["add", "f.txt"]);
+    run(dir.path(), &["commit", "--no-edit", "-q"]);
+
+    let s = merge::merge_state(dir.path(), "agent/g", "main").unwrap();
+    assert!(!s.merging && s.merged && s.unresolved.is_empty());
+    let commit = merge::finish_merge(dir.path(), None).unwrap();
+    assert!(!commit.is_empty());
+    assert!(merge::merge_state(dir.path(), "agent/g", "main").unwrap().merged);
+}
+
+/// An unfinished merge is a dirty checkout, so the dirty-tree guard used to
+/// fire on it and send the user off to stash a half-done merge.
+#[test]
+fn merge_reports_an_in_progress_merge_as_such() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    run(dir.path(), &["checkout", "-q", "-b", "agent/h"]);
+    std::fs::write(dir.path().join("f.txt"), "branch-change\n").unwrap();
+    run(dir.path(), &["commit", "-qam", "branch edit"]);
+    run(dir.path(), &["checkout", "-q", "main"]);
+    std::fs::write(dir.path().join("f.txt"), "main-change\n").unwrap();
+    run(dir.path(), &["commit", "-qam", "main edit"]);
+    merge::merge(dir.path(), "agent/h", "main").unwrap();
+
+    let err = merge::merge(dir.path(), "agent/h", "main").unwrap_err();
+    assert!(err.to_string().contains("merge is already in progress"), "got: {err}");
+    merge::abort_merge(dir.path(), None).unwrap();
+}
+
 #[test]
 fn conflicting_merge_stays_on_base_for_resolution() {
     let dir = tempfile::tempdir().unwrap();
@@ -211,5 +314,5 @@ fn conflicting_merge_stays_on_base_for_resolution() {
         .output()
         .unwrap();
     assert_eq!(String::from_utf8_lossy(&head.stdout).trim(), "main");
-    merge::abort_merge(dir.path()).unwrap();
+    merge::abort_merge(dir.path(), None).unwrap();
 }

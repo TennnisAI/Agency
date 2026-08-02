@@ -30,7 +30,7 @@ fn issues_dir(repo: &Path) -> std::path::PathBuf {
 }
 
 #[test]
-fn migration_exports_sqlite_issues_to_commitable_files_once() {
+fn migration_exports_sqlite_issues_to_local_files_once() {
     let dir = tempfile::tempdir().unwrap();
     let repo = dir.path().join("repo");
     std::fs::create_dir_all(&repo).unwrap();
@@ -60,19 +60,59 @@ fn migration_exports_sqlite_issues_to_commitable_files_once() {
     assert!(std::fs::read_to_string(d.join("DEM-2.md")).unwrap().contains("status: done"));
     assert!(d.join("README.md").exists());
 
-    // Commit-able, not excluded: git sees the new files.
+    // Invisible to git: the app rewrites these files constantly, and a merge
+    // refuses to start on a checkout they have dirtied.
     let out = Command::new("git").args(["status", "--porcelain"]).current_dir(&repo).output().unwrap();
     let status = String::from_utf8_lossy(&out.stdout).into_owned();
-    assert!(status.contains(".agency/"), "issue files invisible to git: {status}");
+    assert_eq!(status.trim(), "", "issue files left the checkout dirty");
 
     // Second pass is a no-op (no duplicate export, same rows).
     let again = state.list_issues(&project_id).unwrap();
     assert_eq!(again.len(), 2);
     assert_eq!(again[0].id, issues[0].id);
 
-    // Removing the project leaves the files: they are repo content.
+    // Removing the project leaves the files: they are the tracker, not an
+    // artifact of the app's database.
     state.delete_project(&project_id).unwrap();
     assert!(d.join("DEM-1.md").exists());
+}
+
+/// A project carried over from when issue files were committed: the first
+/// issue-touching call untracks them, in a commit of its own, leaving the
+/// checkout clean and the files on disk.
+#[test]
+fn previously_tracked_issue_files_are_untracked_on_first_use() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let git = |args: &[&str]| {
+        let out = Command::new("git").args(args).current_dir(&repo).output().unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    let d = issues_dir(&repo);
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(
+        d.join("DEM-1.md"),
+        "---\nkey: DEM-1\nstatus: todo\npriority: 2\n---\n# Committed issue\n",
+    )
+    .unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "issues"]);
+    assert!(git(&["ls-files", "--", ".agency/issues"]).contains("DEM-1.md"));
+
+    let state = common::state(&dir);
+    let p = state.add_project("demo", &repo).unwrap();
+    let issues = state.list_issues(&p.id).unwrap();
+    assert_eq!(issues.len(), 1, "the committed file is still the tracker");
+
+    assert!(git(&["ls-files", "--", ".agency/issues"]).trim().is_empty());
+    assert!(d.join("DEM-1.md").exists());
+    assert_eq!(git(&["status", "--porcelain"]).trim(), "");
+    // Exactly one migration commit, and it only touched the issues dir.
+    assert_eq!(git(&["rev-list", "--count", "HEAD"]).trim(), "3");
 }
 
 #[test]

@@ -10,6 +10,25 @@ pub enum MergeOutcome {
     Conflicts { files: Vec<String> },
 }
 
+/// Where a conflicted merge stands right now, asked of git rather than
+/// remembered from the attempt that started it. What a resolver (agent or
+/// human) leaves behind is one of three states, and the caller needs to tell
+/// them apart: still conflicted, resolved but uncommitted, or already
+/// committed. Re-running the merge cannot answer that question, because a
+/// merge in progress is by definition a dirty checkout.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MergeState {
+    /// `MERGE_HEAD` exists: a merge is started but not yet committed.
+    pub merging: bool,
+    /// Paths git still considers unmerged, either because conflict markers
+    /// remain or because the resolution was never `git add`ed.
+    pub unresolved: Vec<String>,
+    /// The branch tip is already an ancestor of the base branch, i.e. the
+    /// merge landed (whoever committed it).
+    pub merged: bool,
+}
+
 fn git(repo: &Path, args: &[&str]) -> Result<std::process::Output> {
     Ok(Command::new("git").args(args).current_dir(repo).output()?)
 }
@@ -71,8 +90,14 @@ pub fn commits_behind(repo: &Path, branch: &str, base: &str) -> Result<usize> {
     Ok(out.trim().parse().unwrap_or(0))
 }
 
-pub fn abort_merge(repo: &Path) -> Result<()> {
+/// Undo an in-progress merge and, when given one, put the checkout back on the
+/// branch it was on before the merge started. Restoring is best-effort: the
+/// abort itself is what the caller asked for.
+pub fn abort_merge(repo: &Path, restore_to: Option<&str>) -> Result<()> {
     git_ok(repo, &["merge", "--abort"])?;
+    if let Some(orig) = restore_to.filter(|o| !o.is_empty()) {
+        let _ = git(repo, &["checkout", orig]);
+    }
     Ok(())
 }
 
@@ -81,7 +106,67 @@ fn unmerged_files(repo: &Path) -> Result<Vec<String>> {
     Ok(out.lines().map(|l| l.to_string()).collect())
 }
 
+/// The branch the checkout is on, or `None` on detached HEAD.
+pub fn current_branch(repo: &Path) -> Option<String> {
+    git(repo, &["symbolic-ref", "--short", "-q", "HEAD"])
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Whether `branch` is already contained in `base` (the merge landed).
+fn is_ancestor(repo: &Path, branch: &str, base: &str) -> bool {
+    git(repo, &["merge-base", "--is-ancestor", branch, base])
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+pub fn merge_state(repo: &Path, branch: &str, base: &str) -> Result<MergeState> {
+    let merging = is_merging(repo)?;
+    Ok(MergeState {
+        merging,
+        unresolved: if merging { unmerged_files(repo)? } else { Vec::new() },
+        merged: is_ancestor(repo, branch, base),
+    })
+}
+
+/// Commit an in-progress merge whose conflicts have been resolved, then
+/// restore the checkout's original branch. Already-committed merges (the
+/// resolver ran `git commit` itself) fall through to the same restore-and-
+/// report path, so both endings look the same to the caller.
+pub fn finish_merge(repo: &Path, restore_to: Option<&str>) -> Result<String> {
+    if is_merging(repo)? {
+        let unresolved = unmerged_files(repo)?;
+        if !unresolved.is_empty() {
+            bail!(
+                "{} file(s) still conflicted: {}",
+                unresolved.len(),
+                unresolved.join(", ")
+            );
+        }
+        // `--no-edit` keeps git's own merge message; `--no-verify` keeps a
+        // repo's commit hooks from blocking the completion of a merge the
+        // user has already resolved.
+        let out = git(repo, &["commit", "--no-edit", "--no-verify"])?;
+        if !out.status.success() {
+            bail!("completing the merge failed: {}", String::from_utf8_lossy(&out.stderr));
+        }
+    }
+    let commit = git_ok(repo, &["rev-parse", "HEAD"])?.trim().to_string();
+    if let Some(orig) = restore_to.filter(|o| !o.is_empty()) {
+        let _ = git(repo, &["checkout", orig]);
+    }
+    Ok(commit)
+}
+
 pub fn merge(repo: &Path, branch: &str, base: &str) -> Result<MergeOutcome> {
+    // An unfinished merge is dirty by construction, so check for it first:
+    // otherwise it reports as "uncommitted changes" and sends the user off to
+    // stash work that is actually a half-done merge.
+    if is_merging(repo)? {
+        bail!("a merge is already in progress in the project's main checkout; finish or abort it first");
+    }
     let dirty = git_ok(repo, &["status", "--porcelain"])?;
     if !dirty.trim().is_empty() {
         bail!("the project's main checkout has uncommitted changes; commit or stash them there before merging");
@@ -89,11 +174,7 @@ pub fn merge(repo: &Path, branch: &str, base: &str) -> Result<MergeOutcome> {
     // Remember which branch the main checkout was on so a clean merge can put
     // it back — merging shouldn't hijack the user's checkout as a side effect.
     // Detached HEAD yields nothing and skips the restore.
-    let original = git(repo, &["symbolic-ref", "--short", "-q", "HEAD"])
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
+    let original = current_branch(repo);
     git_ok(repo, &["checkout", base])?;
     let out = git(repo, &["merge", "--no-ff", branch])?;
     if out.status.success() {

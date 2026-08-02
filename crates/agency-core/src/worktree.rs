@@ -366,13 +366,17 @@ impl WorktreeManager {
 /// free function so callers without a manager (the issues-as-files migration)
 /// can fix a repo's excludes too. Idempotent; a repo without `.git` is left
 /// alone.
+///
+/// `.agency/issues/` is excluded too since the tracker stopped being a tracked
+/// part of the repo (see [`untrack_issue_files`]); only `.agency/agency.toml`,
+/// the project's shared config, stays visible to git.
 pub fn ensure_agency_excludes(repo_path: &std::path::Path) -> Result<()> {
     if !repo_path.join(".git").exists() {
         return Ok(());
     }
     let exclude = repo_path.join(".git").join("info").join("exclude");
     let current = std::fs::read_to_string(&exclude).unwrap_or_default();
-    let wanted = [".agency/worktrees/", ".agency/agency.local.toml"];
+    let wanted = [".agency/worktrees/", ".agency/agency.local.toml", ".agency/issues/"];
 
     let had_legacy = current.lines().any(|l| l.trim() == ".agency/");
     let mut lines: Vec<String> = current
@@ -398,6 +402,75 @@ pub fn ensure_agency_excludes(repo_path: &std::path::Path) -> Result<()> {
         std::fs::write(&exclude, out)?;
     }
     Ok(())
+}
+
+/// Stop tracking `.agency/issues/` in git, once per project. Returns whether
+/// anything was untracked.
+///
+/// Issue files were tracked so the tracker travelled with the repo and agent
+/// edits landed at merge. In practice the app writes issue state into the main
+/// checkout on every dispatch and every merge, which left that checkout
+/// permanently dirty (merges refuse to start on a dirty checkout) and put the
+/// same frontmatter lines on both sides of every agent merge. One shared,
+/// untracked tracker is what makes both stop.
+///
+/// The removal is committed, not left staged: staged deletions are exactly the
+/// dirt this is meant to remove. `--cached` keeps every file on disk, and
+/// [`ensure_agency_excludes`] should run first so the files are ignored the
+/// moment they stop being tracked.
+pub fn untrack_issue_files(repo_path: &std::path::Path) -> Result<bool> {
+    let issues = crate::issuefs::ISSUES_DIR;
+    if !repo_path.join(".git").exists() {
+        return Ok(false);
+    }
+    let git = |args: &[&str]| -> Result<std::process::Output> {
+        Ok(std::process::Command::new("git")
+            .args(args)
+            .current_dir(repo_path)
+            .output()?)
+    };
+    let tracked = git(&["ls-files", "--", issues])?;
+    if !tracked.status.success() || String::from_utf8_lossy(&tracked.stdout).trim().is_empty() {
+        return Ok(false);
+    }
+    // Both of these would make the migration commit sweep up work that isn't
+    // ours. Erroring (rather than skipping) leaves the project unmarked, so the
+    // next issue-touching call tries again.
+    if repo_path.join(".git").join("MERGE_HEAD").exists() {
+        bail!("a merge is in progress; finish or abort it first");
+    }
+    if !git(&["diff", "--cached", "--quiet"])?.status.success() {
+        bail!("the checkout has staged changes; commit or unstage them first");
+    }
+
+    let rm = git(&["rm", "-r", "--cached", "--quiet", "--", issues])?;
+    if !rm.status.success() {
+        bail!("git rm --cached failed: {}", String::from_utf8_lossy(&rm.stderr));
+    }
+    let msg = "Stop tracking issue files\n\n\
+               Agency keeps .agency/issues/ local to each checkout: the app writes\n\
+               issue state there continuously, which kept the checkout dirty and\n\
+               conflicted with agent branches editing the same files.";
+    // `--no-verify`: a repo's commit hooks have no say in a bookkeeping commit
+    // that only removes paths from the index.
+    let commit = git(&["commit", "--no-verify", "-q", "-m", msg])?;
+    if !commit.status.success() {
+        // Put the index back rather than leaving the deletions staged.
+        let _ = git(&["reset", "-q", "--", issues]);
+        bail!("committing the untrack failed: {}", String::from_utf8_lossy(&commit.stderr));
+    }
+    // A repo whose own .gitignore explicitly un-ignores the issues directory
+    // outranks .git/info/exclude, so the files would come back as untracked
+    // noise. Worth saying out loud; nothing here can safely edit a user's
+    // .gitignore.
+    let left = git(&["status", "--porcelain", "--", issues])?;
+    if !String::from_utf8_lossy(&left.stdout).trim().is_empty() {
+        log::warn!(
+            "{issues} is untracked but still visible to git in {} — a .gitignore rule is un-ignoring it",
+            repo_path.display()
+        );
+    }
+    Ok(true)
 }
 
 /// Best-effort recursive count of regular files under `dir` (directories are
@@ -485,5 +558,93 @@ mod tests {
         mgr.ensure_excluded().unwrap();
         let second = fs::read_to_string(exclude_path(&repo)).unwrap();
         assert_eq!(first, second);
+    }
+
+    fn git(repo: &std::path::Path, args: &[&str]) {
+        assert!(
+            Command::new("git").args(args).current_dir(repo).status().unwrap().success(),
+            "git {args:?}"
+        );
+    }
+
+    /// A repo whose issue files a previous version committed: the migration
+    /// removes them from the index in one commit, leaves every file on disk,
+    /// and leaves the checkout clean (the whole reason it exists).
+    #[test]
+    fn untrack_issue_files_commits_the_removal_and_keeps_the_files() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path();
+        git(repo, &["init", "-q", "-b", "main"]);
+        git(repo, &["config", "user.email", "t@e.com"]);
+        git(repo, &["config", "user.name", "T"]);
+        fs::create_dir_all(repo.join(crate::issuefs::ISSUES_DIR)).unwrap();
+        fs::write(repo.join(crate::issuefs::ISSUES_DIR).join("AGE-1.md"), "# one\n").unwrap();
+        fs::write(repo.join("code.rs"), "fn main() {}\n").unwrap();
+        git(repo, &["add", "-A"]);
+        git(repo, &["commit", "-q", "-m", "init"]);
+
+        ensure_agency_excludes(repo).unwrap();
+        assert!(untrack_issue_files(repo).unwrap());
+
+        assert!(repo.join(crate::issuefs::ISSUES_DIR).join("AGE-1.md").exists());
+        let tracked = Command::new("git")
+            .args(["ls-files", "--", crate::issuefs::ISSUES_DIR])
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        assert!(String::from_utf8_lossy(&tracked.stdout).trim().is_empty());
+        let status = Command::new("git")
+            .args(["status", "--porcelain"])
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&status.stdout).trim(), "");
+        // Second pass has nothing left to do, and makes no second commit.
+        assert!(!untrack_issue_files(repo).unwrap());
+    }
+
+    /// Staged work belongs to the user; the migration commit must not sweep it
+    /// up, so it steps aside and is retried later.
+    #[test]
+    fn untrack_issue_files_refuses_over_staged_work() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path();
+        git(repo, &["init", "-q", "-b", "main"]);
+        git(repo, &["config", "user.email", "t@e.com"]);
+        git(repo, &["config", "user.name", "T"]);
+        fs::create_dir_all(repo.join(crate::issuefs::ISSUES_DIR)).unwrap();
+        fs::write(repo.join(crate::issuefs::ISSUES_DIR).join("AGE-1.md"), "# one\n").unwrap();
+        fs::write(repo.join("code.rs"), "fn main() {}\n").unwrap();
+        git(repo, &["add", "-A"]);
+        git(repo, &["commit", "-q", "-m", "init"]);
+        fs::write(repo.join("code.rs"), "fn main() { todo!() }\n").unwrap();
+        git(repo, &["add", "code.rs"]);
+
+        let err = untrack_issue_files(repo).unwrap_err();
+        assert!(err.to_string().contains("staged changes"), "got: {err}");
+        // The index is untouched: the issue file is still tracked.
+        let tracked = Command::new("git")
+            .args(["ls-files", "--", crate::issuefs::ISSUES_DIR])
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        assert!(String::from_utf8_lossy(&tracked.stdout).contains("AGE-1.md"));
+    }
+
+    /// A repo that never tracked its issues (or has none) is left alone.
+    #[test]
+    fn untrack_issue_files_is_a_no_op_when_nothing_is_tracked() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path();
+        git(repo, &["init", "-q", "-b", "main"]);
+        git(repo, &["config", "user.email", "t@e.com"]);
+        git(repo, &["config", "user.name", "T"]);
+        fs::write(repo.join("code.rs"), "fn main() {}\n").unwrap();
+        git(repo, &["add", "-A"]);
+        git(repo, &["commit", "-q", "-m", "init"]);
+        fs::create_dir_all(repo.join(crate::issuefs::ISSUES_DIR)).unwrap();
+        fs::write(repo.join(crate::issuefs::ISSUES_DIR).join("AGE-1.md"), "# one\n").unwrap();
+
+        assert!(!untrack_issue_files(repo).unwrap());
     }
 }

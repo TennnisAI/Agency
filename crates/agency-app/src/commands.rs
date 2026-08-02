@@ -550,6 +550,19 @@ pub fn merge_task(
 }
 
 #[tauri::command]
+pub fn merge_status(
+    state: State<'_, AppState>,
+    task_id: String,
+) -> Result<agency_core::merge::MergeState, String> {
+    state.merge_status(&task_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn finish_merge_task(state: State<'_, AppState>, task_id: String) -> Result<MergeOutcome, String> {
+    state.finish_merge_task(&task_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub fn abort_merge_task(state: State<'_, AppState>, task_id: String) -> Result<(), String> {
     state.abort_merge_task(&task_id).map_err(|e| e.to_string())
 }

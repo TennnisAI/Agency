@@ -8,8 +8,9 @@ crates/agency-app/gen
 # Claude Code harness worktrees / local state
 .claude/
 
-# Agency's own worktrees + local state for this repo. Ignore the directory
-# contents but keep .agency/issues/ tracked: the issue files are the tracker,
-# so git is what protects them (and lets them merge on agent branches).
-.agency/*
-!.agency/issues/
+# Agency's own worktrees + local state for this repo, issue files included.
+# The app rewrites .agency/issues/*.md on every status change, so tracking them
+# kept this checkout dirty (which is what merges refuse to start on) and put the
+# same frontmatter lines on both sides of every agent merge. One local copy,
+# shared by every worktree.
+.agency/

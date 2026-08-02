@@ -546,6 +546,12 @@ pub struct AppState {
     term: RwLock<TermClient>,
     data_dir: PathBuf,
     resolvers: Mutex<HashMap<String, AgentHandle>>,
+    /// Run id → the branch the main checkout was on when that run's merge hit
+    /// conflicts, so finishing or aborting the merge can put it back. Only
+    /// `merge()`'s own clean path restores by itself; a conflicted merge stays
+    /// on the base branch until resolution ends. In-memory: an app restart
+    /// mid-merge just means the checkout is left on the base branch.
+    merge_origins: Mutex<HashMap<String, String>>,
     ui: Mutex<UiState>,
     /// Run ids that have received user input since their last "waiting for input"
     /// notification. Drives idle-notification gating (see `notifier::step`).
@@ -662,6 +668,7 @@ impl AppState {
             term: RwLock::new(TermClient::connect_or_spawn(termd_socket(data_dir), termd_bin())?),
             data_dir: data_dir.to_path_buf(),
             resolvers: Mutex::new(HashMap::new()),
+            merge_origins: Mutex::new(HashMap::new()),
             ui: Mutex::new(UiState { focused: true, active_run: None, pending_open: None }),
             input_seen: Mutex::new(HashSet::new()),
             activity: Mutex::new(HashMap::new()),
@@ -1331,7 +1338,7 @@ impl AppState {
     /// labeled with the project's issue key ("AGE-14 Fix login"). One place
     /// composes these so run, race, and loop dispatch can't drift.
     fn issue_dispatch(&self, issue_id: &str) -> Result<(agency_core::registry::Issue, String, String)> {
-        let (issue, key) = {
+        let (issue, key, root) = {
             let reg = self.registry.lock().unwrap();
             let issue = reg
                 .get_issue(issue_id)?
@@ -1339,12 +1346,14 @@ impl AppState {
             // Dispatch is an issue-touching path: make sure the file exists
             // before an agent is told where to find it.
             self.ensure_issue_files(&reg, &issue.project_id)?;
-            let key = reg
-                .get_project(&issue.project_id)?
-                .and_then(|p| p.issue_key)
-                .unwrap_or_else(|| "ISSUE".to_string());
-            (issue, key)
+            let (root, key) = self.issue_root(&reg, &issue.project_id)?;
+            (issue, key, root)
         };
+        // Issue files are not tracked by git, so they exist only in the
+        // project's own checkout: a run working in `.agency/worktrees/<id>/`
+        // has no copy of its own. Every path an agent is given here is
+        // therefore absolute, pointing at the one shared tracker.
+        let issues_dir = root.join(agency_core::issuefs::ISSUES_DIR);
         let label = format!("{key}-{}", issue.seq);
         let mut prompt = if issue.body.trim().is_empty() {
             format!("Work on issue {label}: {title}", title = issue.title)
@@ -1352,30 +1361,31 @@ impl AppState {
             format!("Work on issue {label}: {title}\n\n{body}", title = issue.title, body = issue.body)
         };
         // Attachments are relative links in the body (`assets/…`), which reads
-        // as a dead path unless the agent is told what they resolve to. Stated
-        // as a repo path, not "in your worktree": like the issue files
-        // themselves, attachments only reach a run's checkout once they have
-        // been committed to the base branch.
+        // as a dead path unless the agent is told what they resolve to.
         let attached = agency_core::issuefs::body_attachments(&issue.body);
         if !attached.is_empty() {
             let list = attached
                 .iter()
-                .map(|p| format!("`{p}`"))
+                .map(|p| format!("`{}`", root.join(p).display()))
                 .collect::<Vec<_>>()
                 .join(", ");
             prompt.push_str(&format!(
                 "\n\nThe `assets/…` links in this issue are files attached to it, \
-                 stored in the repo at: {list}. Read them for context (images included)."
+                 stored at: {list}. Read them for context (images included)."
             ));
         }
-        // The tracker is files: tell the agent where its issue lives and how
-        // to work the tracker from its branch (edits land at merge).
+        // The tracker is files, shared and untracked: tell the agent where its
+        // issue actually lives and that edits there take effect at once.
         prompt.push_str(&format!(
-            "\n\nThis issue is the file `.agency/issues/{label}.md` (frontmatter \
-             `status:`/`priority:`, H1 title, markdown body). You may update it, or file \
-             follow-up issues as `.agency/issues/{key}-<n>.md` using the next unused \
-             number — see `.agency/issues/README.md`. Your edits land when this branch \
-             merges; merging also marks {label} done automatically."
+            "\n\nThis issue is the file `{issue_file}` (frontmatter \
+             `status:`/`priority:`, H1 title, markdown body). It lives in the project's \
+             tracker, outside your worktree, and is not tracked by git, so edit it there, \
+             in place; changes take effect immediately, with no commit or merge involved. \
+             File follow-up issues in the same folder as `{key}-<n>.md` using the next \
+             unused number; see `{readme}`. Merging this run marks {label} done \
+             automatically.",
+            issue_file = issues_dir.join(format!("{label}.md")).display(),
+            readme = issues_dir.join("README.md").display(),
         ));
         let title = format!("{label} {}", issue.title);
         Ok((issue, prompt, title))
@@ -1505,6 +1515,7 @@ impl AppState {
         reg: &agency_core::registry::Registry,
         project_id: &str,
     ) -> Result<()> {
+        self.ensure_issues_untracked(reg, project_id);
         if reg.project_issues_migrated(project_id)? {
             return Ok(());
         }
@@ -1520,6 +1531,46 @@ impl AppState {
             log::info!("exported {written} issues to files for project {project_id}");
         }
         Ok(())
+    }
+
+    /// One-shot per project: exclude `.agency/issues/` from git and commit the
+    /// removal of any issue files a previous version had tracked. Issue files
+    /// are local to a checkout now, so the app's constant writes to them can't
+    /// dirty the tree a merge needs clean, and agent branches can't conflict on
+    /// them. Cheap ever after (one settings read).
+    ///
+    /// Never fails a caller: a repo that can't be migrated right now (staged
+    /// changes, a merge in progress) is simply left unmarked and retried on the
+    /// next issue-touching call.
+    fn ensure_issues_untracked(&self, reg: &agency_core::registry::Registry, project_id: &str) {
+        let flag = format!("issues_untracked:{project_id}");
+        match reg.get_setting(&flag) {
+            Ok(Some(_)) => return,
+            Ok(None) => {}
+            Err(e) => {
+                log::warn!("reading {flag}: {e}");
+                return;
+            }
+        }
+        let Ok((root, _)) = self.issue_root(reg, project_id) else { return };
+        if let Err(e) = agency_core::worktree::ensure_agency_excludes(&root) {
+            log::warn!("updating git excludes for {}: {e}", root.display());
+            return;
+        }
+        match agency_core::worktree::untrack_issue_files(&root) {
+            Ok(untracked) => {
+                if untracked {
+                    log::info!("stopped tracking issue files in {}", root.display());
+                }
+                if let Err(e) = reg.set_setting(&flag, "1") {
+                    log::warn!("marking {flag}: {e}");
+                }
+            }
+            Err(e) => log::warn!(
+                "cannot untrack issue files in {} yet: {e}",
+                root.display()
+            ),
+        }
     }
 
     /// Serialize an issue to its file, carrying over any unknown frontmatter
@@ -3294,27 +3345,70 @@ impl AppState {
         }
         let repo = self.project_repo(&run.project_id)?;
         let base = agency_core::merge::resolve_target(run.merge_target.as_deref(), &repo)?;
+        // Captured before the merge moves the checkout: on the conflict path
+        // `merge()` deliberately stays on `base`, so this is the only record of
+        // where to return once resolution ends.
+        let original = agency_core::merge::current_branch(&repo);
         let outcome = agency_core::merge::merge(&repo, &run.branch, &base)?;
-        if matches!(outcome, agency_core::merge::MergeOutcome::Clean { .. }) {
-            self.maybe_rebuild_knowledge_graph(&repo);
-            // A merged run completes its issue. Best-effort: the merge itself
-            // already succeeded and must not report failure. If the branch
-            // edited the issue file, that edit just landed too — the forward-
-            // only guard keeps this from regressing anything.
-            if let Some(issue_id) = &run.issue_id {
-                let reg = self.registry.lock().unwrap();
-                if let Err(e) = self.advance_issue(&reg, issue_id, IssueStatus::Done) {
-                    log::warn!("closing issue {issue_id} after merge: {e}");
+        match &outcome {
+            agency_core::merge::MergeOutcome::Clean { .. } => self.after_merge_landed(&run, &repo),
+            agency_core::merge::MergeOutcome::Conflicts { .. } => {
+                if let Some(orig) = original.filter(|o| o != &base) {
+                    self.merge_origins.lock().unwrap().insert(id.to_string(), orig);
                 }
             }
         }
         Ok(outcome)
     }
 
+    /// Bookkeeping for a merge that landed, however it landed: first try, or
+    /// after conflicts were resolved. Best-effort throughout — the merge itself
+    /// already succeeded and must not be reported as a failure.
+    fn after_merge_landed(&self, run: &agency_core::registry::Run, repo: &std::path::Path) {
+        self.maybe_rebuild_knowledge_graph(repo);
+        // A merged run completes its issue; the forward-only guard in
+        // `advance_issue` keeps this from regressing anything.
+        if let Some(issue_id) = &run.issue_id {
+            let reg = self.registry.lock().unwrap();
+            if let Err(e) = self.advance_issue(&reg, issue_id, IssueStatus::Done) {
+                log::warn!("closing issue {issue_id} after merge: {e}");
+            }
+        }
+    }
+
+    /// Where this run's conflicted merge stands right now. The modal asks git
+    /// after a resolver exits instead of re-running the merge: a merge in
+    /// progress is a dirty checkout, so a second `merge_task` could only ever
+    /// report that as an error.
+    pub fn merge_status(&self, id: &str) -> anyhow::Result<agency_core::merge::MergeState> {
+        let run = self.run_record(id)?;
+        let repo = self.project_repo(&run.project_id)?;
+        let base = agency_core::merge::resolve_target(run.merge_target.as_deref(), &repo)?;
+        agency_core::merge::merge_state(&repo, &run.branch, &base)
+    }
+
+    /// Commit a resolved merge (or accept one the resolver already committed)
+    /// and restore the checkout's original branch, then do the same
+    /// bookkeeping a clean first-try merge does.
+    pub fn finish_merge_task(&self, id: &str) -> anyhow::Result<agency_core::merge::MergeOutcome> {
+        let run = self.run_record(id)?;
+        let repo = self.project_repo(&run.project_id)?;
+        let base = agency_core::merge::resolve_target(run.merge_target.as_deref(), &repo)?;
+        let state = agency_core::merge::merge_state(&repo, &run.branch, &base)?;
+        if !state.merging && !state.merged {
+            bail!("no merge in progress for this run, and its branch hasn't landed on {base}");
+        }
+        let restore = self.merge_origins.lock().unwrap().remove(id);
+        let commit = agency_core::merge::finish_merge(&repo, restore.as_deref())?;
+        self.after_merge_landed(&run, &repo);
+        Ok(agency_core::merge::MergeOutcome::Clean { commit })
+    }
+
     pub fn abort_merge_task(&self, id: &str) -> anyhow::Result<()> {
         let run = self.run_record(id)?;
         let repo = self.project_repo(&run.project_id)?;
-        agency_core::merge::abort_merge(&repo)
+        let restore = self.merge_origins.lock().unwrap().remove(id);
+        agency_core::merge::abort_merge(&repo, restore.as_deref())
     }
 
     // ── pull requests (gh CLI) ─────────────────────────────────────────────────

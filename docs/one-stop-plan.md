@@ -224,6 +224,10 @@ files are keyed by `key`, which is already stable and never reused.
   file-mode (a `projects.issues_migrated` column). `.agency/issues/` must NOT
   be gitignored — check `.gitignore` handling around `agency.local.toml` and
   ensure only `*.local.toml` is excluded.
+  *(Superseded: issue files are gitignored and untracked. The app rewrites them
+  on every status change, which kept the project's checkout dirty — the one
+  thing a merge refuses to start on — and put the same frontmatter lines on
+  both sides of every agent merge. See `worktree::untrack_issue_files`.)*
 - **Write path:** all existing mutations (`create_issue`, `update_issue`,
   `advance_issue_status`, delete) write the file first, then refresh the index
   row. The Tauri command surface and `api.ts` types stay **unchanged** — the

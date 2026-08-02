@@ -576,7 +576,7 @@ fn extra_session_lifecycle_shares_worktree_and_cascades() {
     let wt = state.worktree_path(&run.id).unwrap();
 
     // First extra tab: defaults to the run's agent, gets the --2 suffix.
-    let s2 = state.start_run_session(&run.id, None).unwrap();
+    let s2 = state.start_run_session(&run.id, None, "").unwrap();
     assert_eq!(s2.id, format!("{}--2", run.id));
     assert_eq!(s2.agent, "pwds");
 
@@ -590,7 +590,7 @@ fn extra_session_lifecycle_shares_worktree_and_cascades() {
     assert!(cwd_ok, "extra session did not report the run's worktree as cwd");
 
     // Second tab (explicit agent) takes the next number; both are listed.
-    let s3 = state.start_run_session(&run.id, Some("pwds")).unwrap();
+    let s3 = state.start_run_session(&run.id, Some("pwds"), "").unwrap();
     assert_eq!(s3.id, format!("{}--3", run.id));
     assert_eq!(state.run_sessions(&run.id).unwrap().len(), 2);
 
@@ -642,7 +642,7 @@ fn shell_tab_needs_no_profile_and_runs_in_the_worktree() {
     let wt = state.worktree_path(&run.id).unwrap();
     assert!(state.profile_names().unwrap().iter().all(|n| n != "shell"));
 
-    let tab = state.start_run_session(&run.id, Some("shell")).unwrap();
+    let tab = state.start_run_session(&run.id, Some("shell"), "").unwrap();
     assert_eq!(tab.agent, "shell");
 
     // Prove it's a live shell rooted in the run's worktree.
@@ -678,7 +678,7 @@ fn ensure_run_active_revives_a_dead_extra_session() {
     let project = state.add_project("demo", &repo).unwrap();
     let run = state.create_run(&project.id, "p", "pwds", "HEAD", None).unwrap();
     let wt = state.worktree_path(&run.id).unwrap();
-    let tab = state.start_run_session(&run.id, None).unwrap();
+    let tab = state.start_run_session(&run.id, None, "").unwrap();
 
     state.stop_run(&tab.id).unwrap();
     let mut gone = false;
@@ -714,7 +714,7 @@ fn extra_session_rejects_terminal_runs() {
     let state = common::state(&dir);
     let project = state.add_project("demo", &repo).unwrap();
     let term = state.create_terminal(&project.id).unwrap();
-    let err = state.start_run_session(&term.id, None).unwrap_err().to_string();
+    let err = state.start_run_session(&term.id, None, "").unwrap_err().to_string();
     assert!(err.contains("only agent runs"), "unexpected error: {err}");
     state.discard_run(&term.id).unwrap();
 }

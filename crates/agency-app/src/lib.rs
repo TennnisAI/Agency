@@ -150,6 +150,8 @@ pub fn run() {
             commands::save_settings,
             commands::merge_preview,
             commands::merge_task,
+            commands::merge_status,
+            commands::finish_merge_task,
             commands::abort_merge_task,
             commands::gh_readiness,
             commands::gh_auth_readiness,

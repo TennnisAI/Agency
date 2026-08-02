@@ -688,6 +688,18 @@ export const createPrFromBranch = (
 export const mergePreview = (taskId: string) =>
   invoke<MergePreview>("merge_preview", { taskId });
 export const mergeTask = (taskId: string) => invoke<MergeOutcome>("merge_task", { taskId });
+/** Where a conflicted merge stands, asked of git rather than re-run. */
+export interface MergeState {
+  merging: boolean;
+  unresolved: string[];
+  merged: boolean;
+}
+export const mergeStatus = (taskId: string) =>
+  invoke<MergeState>("merge_status", { taskId });
+// Commit a resolved merge (or accept one the resolver committed itself) and
+// put the checkout back on the branch it was on.
+export const finishMergeTask = (taskId: string) =>
+  invoke<MergeOutcome>("finish_merge_task", { taskId });
 export const abortMergeTask = (taskId: string) =>
   invoke<void>("abort_merge_task", { taskId });
 export const resolverInput = (taskId: string, data: string) =>

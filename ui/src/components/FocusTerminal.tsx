@@ -9,7 +9,7 @@ import { attachRun, detachRun, resizeRun, runInput, runPreview, ensureRunActive,
   attachShell, detachShell, resizeShell, shellInput, shellPreview, startShell } from "../api";
 import { currentXtermTheme, minContrastRatio, TERMINAL_FONT_FAMILY } from "../lib/themes";
 import { initialCapture, feed } from "../lib/firstPrompt";
-import { shouldSwallowWheel } from "../lib/termScroll";
+import { shouldSwallowWheel, createPageScroller } from "../lib/termScroll";
 
 export interface TerminalStream {
   attach(id: string, cols: number, rows: number, onBytes: (b: Uint8Array) => void): Promise<void>;
@@ -96,13 +96,16 @@ export default function FocusTerminal(
     });
     // Scroll wheel. When the daemon snapshot restores mouse reporting, an agent
     // that tracks the mouse keeps getting real wheel events and xterm never even
-    // consults this handler. Otherwise xterm falls back to alternate-scroll
-    // arrows, which an agent prompt reads as history — swallow the notch instead
-    // of typing into the prompt. This is also what makes the daemon-side fix safe
-    // to roll out without force-replacing a running daemon.
+    // consults this handler. Otherwise xterm would fall back to alternate-scroll
+    // arrows, which an agent prompt reads as history: send the page keys the
+    // agent asks for instead. That also means the daemon-side fix can roll out
+    // without force-replacing a running daemon (see term/protocol.rs).
+    const pageScroll = createPageScroller();
     term.attachCustomWheelEventHandler((e) => {
       if (shouldSwallowWheel(term.buffer.active.type, altScrollRef.current)) {
         e.preventDefault(); // xterm skips its own default but not the browser's
+        const keys = pageScroll(e.deltaY, e.deltaMode);
+        if (keys) stream.input(runId, keys);
         return false;
       }
       return true;

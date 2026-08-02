@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FileRoot, Project, createFile, writeFile } from "../api";
-import { SearchHit } from "../lib/docsIndex";
+import { SearchHit, stripExt } from "../lib/docsIndex";
 import { buildLinkIndex, mentionsOf, noteId, resolveTarget } from "../lib/links";
 import { requestNavigate } from "../lib/navigate";
 import Resizer from "./Resizer";
@@ -8,17 +8,26 @@ import { usePaneWidth } from "../hooks/usePaneWidth";
 import { useDocs } from "../hooks/useDocs";
 import { useCrossRefs } from "../hooks/useCrossRefs";
 import DocsTree from "./DocsTree";
+import FileTabs from "./FileTabs";
 import DocsEditor, { DocsEditorHandle } from "./DocsEditor";
 import DocsSidePanel from "./DocsSidePanel";
 import AgentSidePanel from "./AgentSidePanel";
 import DocsQuickSwitcher from "./DocsQuickSwitcher";
 import ConfirmDialog from "./ConfirmDialog";
 import { toastError, toastInfo } from "../lib/toast";
-import { joinPath } from "../lib/filePath";
+import {
+  TabState, closeTab, deserializeTabs, emptyTabs, openTab, removeTab, renameTab,
+  retargetPath, serializeTabs,
+} from "../lib/fileTabs";
+import { baseName, joinPath } from "../lib/filePath";
 import { adjacentDailyPath, isDailyNotePath } from "../lib/dailyNote";
 import { recordActivation } from "../lib/recency";
 import { terminalHasFocus } from "../lib/terminalFocus";
 
+const tabsKey = (projectId: string) => `docs:tabs:${projectId}`;
+// The open note, kept as its own key because it doubles as a handoff: the
+// palette, the menu, and cross-domain navigation stamp it before switching to
+// the Docs tab so a freshly mounting view restores straight to that note.
 const lastNoteKey = (projectId: string) => `docs:last:${projectId}`;
 
 // Which side-panel tab is showing. Global (not per project): it's a working
@@ -56,12 +65,38 @@ export default function DocsView({ project }: { project: Project }) {
   const root: FileRoot = { kind: "project", id: project.id };
   const { docsDir, index, refresh, createDocsDir } = useDocs(project.id, true);
   const { cross } = useCrossRefs(true);
-  const [selected, setSelectedState] = useState<string | null>(null);
+  // Tab state travels WITH the project it belongs to, so a project switch can
+  // never persist one project's tabs under another's key (same guard as
+  // FilesView). The key is only stamped once the restore below has run.
+  const [projectTabs, setProjectTabs] = useState<{ key: string | null; tabs: TabState }>(
+    () => ({ key: null, tabs: emptyTabs() }),
+  );
+  // Tabs that have mounted an editor this session. Restored tabs are cold — no
+  // file read, no CodeMirror instance — until first activation.
+  const [warm, setWarm] = useState<Set<string>>(new Set());
   const [query, setQuery] = useState("");
   const [sideOpen, setSideOpen] = useState(true);
   const [switcher, setSwitcher] = useState(false);
-  const editorRef = useRef<DocsEditorHandle | null>(null);
+  const editorRefs = useRef(new Map<string, DocsEditorHandle>());
   const restoredRef = useRef(false);
+  // Notes asked for before the restore ran (the index has to load first). They
+  // are folded in there rather than dropped.
+  const pendingRef = useRef<string[]>([]);
+
+  // Never another project's tabs: the frame between a project switch and its
+  // restore renders empty instead of stale state.
+  const tabs = projectTabs.key === project.id ? projectTabs.tabs : emptyTabs();
+  const tabsRef = useRef(tabs);
+  tabsRef.current = tabs;
+  const selected = tabs.active;
+
+  // Every mutation is scoped to the current project; one sneaking in before the
+  // restore is dropped rather than corrupting the outgoing project's state.
+  const updateTabs = (fn: (s: TabState) => TabState) =>
+    setProjectTabs((r) => (r.key === project.id ? { ...r, tabs: fn(r.tabs) } : r));
+
+  const dropWarm = (gone: (path: string) => boolean) =>
+    setWarm((w) => new Set([...w].filter((p) => !gone(p))));
 
   // Cmd+P opens the quick switcher — active while the Docs tab is mounted,
   // including from inside the editor. (Verified free of menu/shortcut clashes.)
@@ -79,40 +114,98 @@ export default function DocsView({ project }: { project: Project }) {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  const setSelected = (path: string | null) => {
-    setSelectedState(path);
-    try {
-      if (path) localStorage.setItem(lastNoteKey(project.id), path);
-      else localStorage.removeItem(lastNoteKey(project.id));
-    } catch { /* storage unavailable */ }
+  /** Open a note in a tab (or activate the one it already has). */
+  const openNote = (path: string) => {
+    if (restoredRef.current) updateTabs((s) => openTab(s, path));
+    else pendingRef.current.push(path);
+    setWarm((w) => (w.has(path) ? w : new Set(w).add(path)));
     // Feed the palette's recents. Only user-driven opens land here — the
-    // last-note restore uses setSelectedState directly and stays silent.
-    if (path) {
-      recordActivation(`note:${project.id}:${path}`, index?.docs.get(path)?.title ?? path, path);
-    }
+    // restore below folds tabs in silently.
+    recordActivation(`note:${project.id}:${path}`, index?.docs.get(path)?.title ?? path, path);
   };
+  const openRef = useRef(openNote);
+  openRef.current = openNote;
 
-  // Reset on project switch; the last-open note is restored once the index has
-  // loaded (so a stale path can be validated and dropped).
+  const closeNote = (path: string) => {
+    // The editor flushes any pending autosave as it unmounts, so closing a tab
+    // never loses edits and needs no confirmation.
+    updateTabs((s) => closeTab(s, path));
+    dropWarm((p) => p === path);
+  };
+  const closeRef = useRef(closeNote);
+  closeRef.current = closeNote;
+
+  // Reset on project switch; tabs are restored once the index has loaded (so
+  // stale paths can be validated and dropped).
   useEffect(() => {
-    setSelectedState(null);
+    setProjectTabs({ key: null, tabs: emptyTabs() });
+    setWarm(new Set());
     setQuery("");
+    editorRefs.current.clear();
+    pendingRef.current = [];
     restoredRef.current = false;
   }, [project.id]);
 
   useEffect(() => {
     if (restoredRef.current || !index) return;
     restoredRef.current = true;
+    let raw: string | null = null;
     let stored: string | null = null;
-    try { stored = localStorage.getItem(lastNoteKey(project.id)); } catch { /* ignore */ }
-    if (stored && index.docs.has(stored)) {
-      setSelectedState(stored);
-      return;
+    try {
+      raw = localStorage.getItem(tabsKey(project.id));
+      stored = localStorage.getItem(lastNoteKey(project.id));
+    } catch { /* storage unavailable */ }
+    const saved = deserializeTabs(raw);
+    let s: TabState = {
+      ...emptyTabs(),
+      open: saved.open.filter((p) => index.docs.has(p)),
+    };
+    s.active = saved.active !== null && s.open.includes(saved.active) ? saved.active : null;
+    // The last-note stamp wins: it's both this view's own last selection and the
+    // handoff other views use to point the Docs tab at a specific note.
+    if (stored && index.docs.has(stored)) s = openTab(s, stored);
+    // Pending opens are explicit user intent (a palette hit, a just-created
+    // note), so they aren't index-checked — the note may be newer than it.
+    for (const p of pendingRef.current) s = openTab(s, p);
+    pendingRef.current = [];
+    if (!s.active) {
+      // First visit (or every stored note is gone): open the first by title.
+      const first = [...index.docs.values()].sort((a, b) => a.title.localeCompare(b.title))[0];
+      if (first) s = openTab(s, first.path);
     }
-    // First visit (or the stored note is gone): open the first note by title.
-    const first = [...index.docs.values()].sort((a, b) => a.title.localeCompare(b.title))[0];
-    if (first) setSelectedState(first.path);
+    setProjectTabs({ key: project.id, tabs: s });
+    setWarm((w) => (s.active ? new Set(w).add(s.active) : w));
   }, [index, project.id]);
+
+  // Persist per project, only once the state actually belongs to it (before the
+  // restore, `key` is null and a write here would clobber the stored tabs).
+  useEffect(() => {
+    if (projectTabs.key !== project.id) return;
+    try {
+      localStorage.setItem(tabsKey(project.id), serializeTabs(projectTabs.tabs));
+      const active = projectTabs.tabs.active;
+      if (active) localStorage.setItem(lastNoteKey(project.id), active);
+      else localStorage.removeItem(lastNoteKey(project.id));
+    } catch { /* storage unavailable */ }
+  }, [projectTabs, project.id]);
+
+  // ⌘W closes the active note. Same binding as the Files tab (menu.rs claims no
+  // ⌘W accelerator), minus the agents panel's terminal where Ctrl+W is
+  // delete-word and has to reach the shell.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (terminalHasFocus()) return;
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "w") {
+        const active = tabsRef.current.active;
+        if (active) {
+          e.preventDefault();
+          closeRef.current(active);
+        }
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   // "Today's note" (⌘⇧D / menu / palette) lands here when this view is already
   // mounted; a fresh mount is covered by the docs:last localStorage restore.
@@ -122,7 +215,7 @@ export default function DocsView({ project }: { project: Project }) {
     const onOpen = (e: Event) => {
       const d = (e as CustomEvent<{ projectId: string; path: string }>).detail;
       if (!d || d.projectId !== project.id) return;
-      void refreshRef.current().then(() => setSelected(d.path));
+      void refreshRef.current().then(() => openRef.current(d.path));
     };
     window.addEventListener("agency:open-note", onOpen);
     return () => window.removeEventListener("agency:open-note", onOpen);
@@ -137,8 +230,9 @@ export default function DocsView({ project }: { project: Project }) {
     const res = resolveTarget(index, cross, target);
     switch (res.kind) {
       case "note":
-        setSelected(res.path);
-        if (heading) setTimeout(() => editorRef.current?.scrollToHeading(heading), 150);
+        openNote(res.path);
+        // Best-effort: give a freshly opened tab a beat to mount and load.
+        if (heading) setTimeout(() => editorRefs.current.get(res.path)?.scrollToHeading(heading), 150);
         return;
       case "issue":
         requestNavigate({ kind: "issue", projectId: res.ref.project.id, issueId: res.ref.issue.id });
@@ -168,7 +262,7 @@ export default function DocsView({ project }: { project: Project }) {
       await createFile(root, joinPath(docsDir, path));
       await writeFile(root, joinPath(docsDir, path), `# ${target.split("/").pop()}\n\n`);
       await refresh();
-      setSelected(path);
+      openNote(path);
     } catch (e) {
       toastError(e, "Couldn't create note");
     }
@@ -187,14 +281,18 @@ export default function DocsView({ project }: { project: Project }) {
   );
 
   const openHit = (hit: SearchHit) => {
-    setSelected(hit.path);
+    openNote(hit.path);
     // A line hit scrolls once the editor has the note open; heading text is a
     // best-effort anchor, so only title hits (-1) skip it.
     if (hit.line >= 0) {
       const heading = /^#{1,6}\s+(.+)$/.exec(hit.snippet)?.[1];
-      if (heading) setTimeout(() => editorRef.current?.scrollToHeading(heading), 150);
+      if (heading) setTimeout(() => editorRefs.current.get(hit.path)?.scrollToHeading(heading), 150);
     }
   };
+
+  // Tab captions match the tree: the note's H1 title, else its filename.
+  const noteLabel = (path: string) =>
+    index?.docs.get(path)?.title ?? stripExt(baseName(path));
 
   if (docsDir === undefined) {
     return <div className="board empty">loading…</div>;
@@ -223,45 +321,59 @@ export default function DocsView({ project }: { project: Project }) {
           selected={selected}
           query={query}
           onQuery={setQuery}
-          onSelect={(p) => { setQuery(""); setSelected(p); }}
+          onSelect={(p) => { setQuery(""); if (p) openNote(p); }}
           onOpenHit={openHit}
           onRenamed={(from, to) => {
-            if (selected === from) setSelected(to);
-            else if (selected && selected.startsWith(from + "/")) setSelected(to + selected.slice(from.length));
+            updateTabs((s) => renameTab(s, from, to));
+            setWarm((w) => new Set([...w].map((p) => retargetPath(p, from, to))));
           }}
           onDeleted={(path) => {
-            if (selected === path || (selected && selected.startsWith(path + "/"))) setSelected(null);
+            updateTabs((s) => removeTab(s, path));
+            dropWarm((p) => p === path || p.startsWith(path + "/"));
           }}
           refresh={refresh}
         />
       </div>
       <Resizer size={treePane.width} min={180} max={480} onChange={treePane.setWidth} />
       <div className="files-editor">
-        {selected ? (
-          <DocsEditor
-            key={`${project.id}:${selected}`}
-            ref={editorRef}
-            root={root}
-            docsDir={docsDir}
-            path={selected}
-            diskText={index?.docs.get(selected)?.text}
-            index={index}
-            cross={cross}
-            onSaved={() => void refresh()}
-            onNavigate={navigate}
-            onTagClick={(tag) => setQuery(tag.startsWith("#") ? tag : `#${tag}`)}
-            onFilter={(k, v) => setQuery(v ? (/\s/.test(v) ? `${k}:"${v}"` : `${k}:${v}`) : `${k}:`)}
-            sideOpen={sideOpen}
-            onToggleSide={() => setSideOpen((o) => !o)}
-            daily={index && isDailyNotePath(selected) ? {
-              prev: adjacentDailyPath(index.docs.keys(), selected, "prev"),
-              next: adjacentDailyPath(index.docs.keys(), selected, "next"),
-              onOpen: setSelected,
-            } : null}
+        {tabs.open.length > 0 && (
+          <FileTabs
+            open={tabs.open}
+            active={tabs.active}
+            labelFor={noteLabel}
+            onActivate={openNote}
+            onClose={closeNote}
           />
-        ) : (
-          <div className="diff-empty">Select or create a note.</div>
         )}
+        {tabs.open.filter((p) => warm.has(p)).map((p) => (
+          <div
+            key={`${project.id}:${p}`}
+            className="files-editor-pane"
+            style={{ display: p === tabs.active ? "flex" : "none" }}
+          >
+            <DocsEditor
+              ref={(h) => { if (h) editorRefs.current.set(p, h); else editorRefs.current.delete(p); }}
+              root={root}
+              docsDir={docsDir}
+              path={p}
+              diskText={index?.docs.get(p)?.text}
+              index={index}
+              cross={cross}
+              onSaved={() => void refresh()}
+              onNavigate={navigate}
+              onTagClick={(tag) => setQuery(tag.startsWith("#") ? tag : `#${tag}`)}
+              onFilter={(k, v) => setQuery(v ? (/\s/.test(v) ? `${k}:"${v}"` : `${k}:${v}`) : `${k}:`)}
+              sideOpen={sideOpen}
+              onToggleSide={() => setSideOpen((o) => !o)}
+              daily={index && isDailyNotePath(p) ? {
+                prev: adjacentDailyPath(index.docs.keys(), p, "prev"),
+                next: adjacentDailyPath(index.docs.keys(), p, "next"),
+                onOpen: openNote,
+              } : null}
+            />
+          </div>
+        ))}
+        {!tabs.active && <div className="diff-empty">Select or create a note.</div>}
       </div>
       {sideOpen && (selected || sideTab === "agents") && (
         <>
@@ -278,15 +390,15 @@ export default function DocsView({ project }: { project: Project }) {
                 index={index}
                 selected={selected}
                 mentions={mentions}
-                onJumpToHeading={(text) => editorRef.current?.scrollToHeading(text)}
-                onOpen={(path) => setSelected(path)}
+                onJumpToHeading={(text) => { if (selected) editorRefs.current.get(selected)?.scrollToHeading(text); }}
+                onOpen={openNote}
                 onOpenMention={(m) => {
                   if (m.fromKind === "issue") {
                     requestNavigate({ kind: "issue", projectId: m.fromProjectId, issueId: m.fromId });
                   }
                 }}
                 onFilter={(k, v) => setQuery(v ? (/\s/.test(v) ? `${k}:"${v}"` : `${k}:${v}`) : `${k}:`)}
-                onAddProperty={() => editorRef.current?.addProperty()}
+                onAddProperty={() => { if (selected) editorRefs.current.get(selected)?.addProperty(); }}
               />
             )}
           </div>
@@ -296,7 +408,7 @@ export default function DocsView({ project }: { project: Project }) {
       {switcher && (
         <DocsQuickSwitcher
           index={index}
-          onOpen={(path) => setSelected(path)}
+          onOpen={openNote}
           onCreate={(name) => void createNote(name)}
           onClose={() => setSwitcher(false)}
         />

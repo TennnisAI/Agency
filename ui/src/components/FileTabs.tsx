@@ -2,19 +2,23 @@ import { useEffect, useRef, useState } from "react";
 import { baseName, parentPath } from "../lib/filePath";
 
 /**
- * The editor tab strip. Duplicate basenames get their parent folder as a
- * dimmed suffix; dirty tabs show a dot; middle-click or the hover × closes.
- * When tabs overflow, arrow buttons appear at the ends (VS Code-style); the
- * strip also scrolls with the wheel/trackpad and keeps the active tab in view.
+ * The editor tab strip, shared by the Files and Docs tabs. Duplicate labels get
+ * their parent folder as a dimmed suffix; dirty tabs show a dot; middle-click or
+ * the hover × closes. When tabs overflow, arrow buttons appear at the ends (VS
+ * Code-style); the strip also scrolls with the wheel/trackpad and keeps the
+ * active tab in view.
  */
 export default function FileTabs({
-  open, active, dirty, onActivate, onClose,
+  open, active, dirty, onActivate, onClose, labelFor = baseName,
 }: {
   open: string[];
   active: string | null;
-  dirty: Set<string>;
+  /** Omitted where the editor autosaves (Docs) — there is no unsaved state. */
+  dirty?: Set<string>;
   onActivate: (path: string) => void;
   onClose: (path: string) => void;
+  /** Tab caption for a path; defaults to the basename (Docs passes note titles). */
+  labelFor?: (path: string) => string;
 }) {
   const scrollerRef = useRef<HTMLDivElement>(null);
   const [overflow, setOverflow] = useState(false);
@@ -59,7 +63,7 @@ export default function FileTabs({
 
   const counts = new Map<string, number>();
   for (const p of open) {
-    const b = baseName(p);
+    const b = labelFor(p);
     counts.set(b, (counts.get(b) ?? 0) + 1);
   }
 
@@ -89,7 +93,7 @@ export default function FileTabs({
         }}
       >
         {open.map((p) => {
-          const name = baseName(p);
+          const name = labelFor(p);
           return (
             <div
               key={p}
@@ -105,7 +109,7 @@ export default function FileTabs({
               {(counts.get(name) ?? 0) > 1 && (
                 <span className="file-tab-dir">{parentPath(p) || "/"}</span>
               )}
-              {dirty.has(p) && <span className="file-tab-dirty">●</span>}
+              {dirty?.has(p) && <span className="file-tab-dirty">●</span>}
               <button
                 className="file-tab-close"
                 title="Close (⌘W)"

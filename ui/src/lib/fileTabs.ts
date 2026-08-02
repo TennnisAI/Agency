@@ -1,6 +1,6 @@
-// Pure tab-state transitions for the Files editor (one-stop Phase 3). The
-// component owns rendering and persistence; every rule that can be unit-tested
-// lives here.
+// Pure tab-state transitions for the Files editor (one-stop Phase 3), reused by
+// the Docs tab. The components own rendering and persistence; every rule that
+// can be unit-tested lives here.
 
 export interface TabState {
   /** Strip order = open order. */

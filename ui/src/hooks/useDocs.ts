@@ -18,7 +18,11 @@ import { toastError } from "../lib/toast";
  */
 export function useDocs(projectId: string | null, active: boolean) {
   const [docsDir, setDocsDir] = useState<string | null | undefined>(undefined);
-  const [index, setIndex] = useState<DocsIndex | null>(null);
+  // Tagged with the project it was built from: the reset effect below can only
+  // clear it one commit late, and consumers that key work off the index (tab
+  // restore, the tree) must never see the outgoing project's corpus.
+  const [indexed, setIndexed] = useState<{ pid: string; index: DocsIndex } | null>(null);
+  const index = indexed !== null && indexed.pid === projectId ? indexed.index : null;
   const projectRef = useRef(projectId);
   projectRef.current = projectId;
   const dirRef = useRef(docsDir);
@@ -75,7 +79,7 @@ export function useDocs(projectId: string | null, active: boolean) {
         // Ship-gate probe: an idle corpus logs nothing.
         console.debug(`[docs] corpus refresh: ${changed.length} read, ${removed.length} removed`);
       }
-      setIndex(buildIndex([...filesRef.current.values()]));
+      setIndexed({ pid, index: buildIndex([...filesRef.current.values()]) });
     } catch {
       /* transient IPC errors: keep the last good index */
     }
@@ -83,7 +87,7 @@ export function useDocs(projectId: string | null, active: boolean) {
 
   useEffect(() => {
     setDocsDir(undefined);
-    setIndex(null);
+    setIndexed(null);
     filesRef.current = new Map();
     sigRef.current = new Map();
     builtRef.current = false;

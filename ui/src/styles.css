@@ -1303,13 +1303,19 @@ input, textarea, code,
   cursor: pointer; padding: 0 2px; font-size: 13px;
 }
 .agent-menu .branch-reset:hover { color: var(--text); }
-/* Worktree opt-out: a checkbox row, and the note that replaces the from/into
-   selects when the agent is going to work in the checkout instead. */
+/* Worktree opt-out: a checkbox row, and the note that stands in for the
+   from/into selects when the agent is going to work in the checkout instead. */
 .agent-menu .branch-row.branch-check { gap: 6px; cursor: pointer; }
 .agent-menu .branch-row.branch-check > span {
   width: auto; font-size: 12px; color: var(--text); text-transform: none;
 }
 .agent-menu .branch-row.branch-check input { accent-color: var(--blue); cursor: pointer; margin: 0; }
+/* Selects and note share one grid cell, so the cell is as tall as the taller
+   of the two and ticking the box doesn't resize the menu under the cursor. */
+.agent-menu .branch-swap { display: grid; }
+.agent-menu .branch-swap > * { grid-area: 1 / 1; align-self: start; }
+.agent-menu .branch-swap > .off { visibility: hidden; }
+.agent-menu .branch-fields { display: flex; flex-direction: column; gap: 4px; }
 .agent-menu .branch-note {
   font-size: 11px; line-height: 1.45; color: var(--o1); padding: 1px 0 2px;
 }

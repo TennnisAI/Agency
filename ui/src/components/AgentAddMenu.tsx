@@ -71,6 +71,9 @@ export default function AgentAddMenu({
   useEffect(() => { loadWorktreeDefault(); }, []);
 
   const showPicker = !!projectId;
+  // Issue dispatch merges the run's branch to close the issue, so it is always
+  // isolated and the checkbox is hidden for it.
+  const wantsWorktree = !!issue || worktree;
   const mergeTarget = effectiveMergeTarget(base, targetOverride);
   const diverged = targetOverride !== null && targetOverride !== base;
 
@@ -123,12 +126,13 @@ export default function AgentAddMenu({
     if (!showPicker) return onSpawn(id);
     // The flag is always stated, never left to the Settings default: the box
     // in front of the user is what this spawn does, whichever way it was set.
-    // Without a worktree the branch selects are hidden and unused, so base
-    // falls back to the live branch.
+    // Issue dispatch has no box (it always cuts a worktree), so a default of
+    // "off" must not leak into it. Without a worktree the branch selects are
+    // inert, so base falls back to the live branch.
     onSpawn(id, {
-      base: (worktree ? base : current) || "HEAD",
+      base: (wantsWorktree ? base : current) || "HEAD",
       mergeTarget,
-      worktree,
+      worktree: wantsWorktree,
     });
   };
   const chooseTerminal = () => { setOpen(false); onTerminal(); };
@@ -184,8 +188,12 @@ export default function AgentAddMenu({
                       <span>Own worktree</span>
                     </label>
                   )}
-                  {worktree ? (
-                    <>
+                  {/* Both states occupy the same grid cell, so the menu keeps
+                      the taller one's height and doesn't resize as the box is
+                      ticked. `visibility` also takes the inert one out of the
+                      tab order. */}
+                  <div className="branch-swap">
+                    <div className={`branch-fields${wantsWorktree ? "" : " off"}`}>
                       <label className="branch-row">
                         <span>from</span>
                         <select
@@ -214,13 +222,12 @@ export default function AgentAddMenu({
                           >↺</button>
                         )}
                       </label>
-                    </>
-                  ) : (
-                    <div className="branch-note">
-                      Works in the project checkout on <code>{current || "the current branch"}</code>.
-                      No branch to merge; commit from Source Control.
                     </div>
-                  )}
+                    <div className={`branch-note${wantsWorktree ? " off" : ""}`}>
+                      Works in your checkout on <code>{current || "the current branch"}</code>,
+                      nothing to merge.
+                    </div>
+                  </div>
                 </div>
               </>
             )}

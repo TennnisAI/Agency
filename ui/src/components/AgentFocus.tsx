@@ -166,6 +166,12 @@ export default function AgentFocus({
       ?.querySelector(".session-tab.on")
       ?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [panel, sessions.length]);
+  // Is the visible pane an agent, or a plain shell? Session tabs carry both:
+  // "New terminal" spawns the reserved "shell" profile. Only a shell wants
+  // xterm's wheel-to-arrow fallback; in an agent those arrows walk the prompt
+  // history (AGE-15).
+  const panelIsShell = panel !== "agent"
+    && sessions.some((s) => s.id === panel && s.agent === "shell");
   const [railOpen, setRailOpen] = useState(true);
   const rail = usePaneWidth("rail", 312, 220, 520);
   // Companion terminal (bottom panel) — height shared across runs, but the
@@ -374,6 +380,7 @@ export default function AgentFocus({
                 <div className="focus-body">
                   <FocusTerminal key={panel === "agent" ? focused.id : panel}
                     runId={panel === "agent" ? focused.id : panel}
+                    altScrollArrows={panelIsShell}
                     onFirstPrompt={panel === "agent" && !focused.title ? (line) => { setRunTitle(focused.id, line).catch(() => {}); } : undefined} />
                   {shellOpen && (
                     <>

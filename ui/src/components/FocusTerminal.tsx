@@ -9,6 +9,7 @@ import { attachRun, detachRun, resizeRun, runInput, runPreview, ensureRunActive,
   attachShell, detachShell, resizeShell, shellInput, shellPreview, startShell } from "../api";
 import { currentXtermTheme, minContrastRatio, TERMINAL_FONT_FAMILY } from "../lib/themes";
 import { initialCapture, feed } from "../lib/firstPrompt";
+import { shouldSwallowWheel, createPageScroller } from "../lib/termScroll";
 
 export interface TerminalStream {
   attach(id: string, cols: number, rows: number, onBytes: (b: Uint8Array) => void): Promise<void>;
@@ -38,11 +39,20 @@ export const shellStream: TerminalStream = {
 };
 
 export default function FocusTerminal(
-  { runId, stream = agentStream, onFirstPrompt }: { runId: string; stream?: TerminalStream; onFirstPrompt?: (line: string) => void },
+  // `altScrollArrows` allows xterm's alternate-scroll fallback (wheel notch ->
+  // Up/Down arrow) for panes running a pager or an editor. It must be off for a
+  // pane running an agent, where those arrows walk the prompt history. It is a
+  // property of the pane, not of the stream: a "New terminal" tab is a shell on
+  // the same `agentStream` as an agent tab.
+  { runId, stream = agentStream, onFirstPrompt, altScrollArrows = true }:
+    { runId: string; stream?: TerminalStream; onFirstPrompt?: (line: string) => void; altScrollArrows?: boolean },
 ) {
   const ref = useRef<HTMLDivElement>(null);
   const onFirstPromptRef = useRef(onFirstPrompt);
   onFirstPromptRef.current = onFirstPrompt;
+  // Read through a ref: the wheel handler is installed once, with the terminal.
+  const altScrollRef = useRef(altScrollArrows);
+  altScrollRef.current = altScrollArrows;
   const captureRef = useRef(initialCapture());
   const searchAddonRef = useRef<SearchAddon | null>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -81,6 +91,22 @@ export default function FocusTerminal(
         e.preventDefault();
         stream.input(runId, "\n");
         return false; // handled — don't let xterm also emit \r
+      }
+      return true;
+    });
+    // Scroll wheel. When the daemon snapshot restores mouse reporting, an agent
+    // that tracks the mouse keeps getting real wheel events and xterm never even
+    // consults this handler. Otherwise xterm would fall back to alternate-scroll
+    // arrows, which an agent prompt reads as history: send the page keys the
+    // agent asks for instead. That also means the daemon-side fix can roll out
+    // without force-replacing a running daemon (see term/protocol.rs).
+    const pageScroll = createPageScroller();
+    term.attachCustomWheelEventHandler((e) => {
+      if (shouldSwallowWheel(term.buffer.active.type, altScrollRef.current)) {
+        e.preventDefault(); // xterm skips its own default but not the browser's
+        const keys = pageScroll(e.deltaY, e.deltaMode);
+        if (keys) stream.input(runId, keys);
+        return false;
       }
       return true;
     });

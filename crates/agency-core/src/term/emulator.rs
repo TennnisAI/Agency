@@ -222,6 +222,33 @@ impl Emulator {
         if mode.contains(TermMode::BRACKETED_PASTE) {
             data.extend_from_slice(b"\x1b[?2004h");
         }
+        // Mouse reporting, same story as the alt screen: the child turns it on
+        // once at startup and never re-announces it. Losing it on reattach is
+        // what made the scroll wheel type into the agent — a client that doesn't
+        // know the app wants mouse events falls back to "alternate scroll",
+        // translating each wheel notch into an Up/Down arrow, which a TUI reads
+        // as prompt-history navigation. Order matters: protocol first, then the
+        // encoding, mirroring how a child sets them up.
+        if mode.contains(TermMode::MOUSE_REPORT_CLICK) {
+            data.extend_from_slice(b"\x1b[?1000h");
+        }
+        if mode.contains(TermMode::MOUSE_DRAG) {
+            data.extend_from_slice(b"\x1b[?1002h");
+        }
+        if mode.contains(TermMode::MOUSE_MOTION) {
+            data.extend_from_slice(b"\x1b[?1003h");
+        }
+        if mode.contains(TermMode::UTF8_MOUSE) {
+            data.extend_from_slice(b"\x1b[?1005h");
+        }
+        if mode.contains(TermMode::SGR_MOUSE) {
+            data.extend_from_slice(b"\x1b[?1006h");
+        }
+        // Focus reporting: without it the child stops being told when the
+        // window regains focus and can leave itself dimmed/paused.
+        if mode.contains(TermMode::FOCUS_IN_OUT) {
+            data.extend_from_slice(b"\x1b[?1004h");
+        }
 
         let cur = self.term.grid().cursor.point;
         let cx = cur.column.0 as u16;
@@ -377,6 +404,49 @@ mod tests {
         e.feed(b"\x1b[?2004hprompt");
         let snap = e.snapshot();
         assert!(String::from_utf8_lossy(&snap.data).contains("\x1b[?2004h"));
+    }
+
+    #[test]
+    fn snapshot_reasserts_mouse_reporting() {
+        // The wheel-scrolls-history bug: an agent TUI enables mouse reporting at
+        // startup, so the client sends wheel events. If the snapshot drops those
+        // modes, the reattached client falls back to alternate-scroll arrow keys
+        // and every scroll walks the prompt history instead.
+        // (The three tracking protocols are mutually exclusive — 1002 replaces
+        // 1000 — so this is what a client that sends wheel + drag looks like.)
+        let mut e = Emulator::new(40, 6);
+        e.feed(b"\x1b[?1049h\x1b[?1002h\x1b[?1006h\x1b[?1004hprompt");
+        let snap = e.snapshot();
+        let text = String::from_utf8_lossy(&snap.data);
+        for seq in ["\x1b[?1002h", "\x1b[?1006h", "\x1b[?1004h"] {
+            assert!(text.contains(seq), "mouse/focus mode {seq:?} missing: {text:?}");
+        }
+        let mut b = Emulator::new(snap.cols, snap.rows);
+        b.feed(&snap.data);
+        let m = *b.term.mode();
+        assert!(m.contains(TermMode::MOUSE_DRAG));
+        assert!(m.contains(TermMode::SGR_MOUSE));
+        assert!(m.contains(TermMode::FOCUS_IN_OUT));
+
+        // Plain click reporting (1000) survives on its own too.
+        let mut e = Emulator::new(40, 6);
+        e.feed(b"\x1b[?1000h\x1b[?1006hprompt");
+        let snap = e.snapshot();
+        let text = String::from_utf8_lossy(&snap.data);
+        assert!(text.contains("\x1b[?1000h"), "click reporting missing: {text:?}");
+        let mut b = Emulator::new(snap.cols, snap.rows);
+        b.feed(&snap.data);
+        assert!(b.term.mode().contains(TermMode::MOUSE_REPORT_CLICK));
+    }
+
+    #[test]
+    fn snapshot_omits_mouse_reporting_when_the_child_never_asked() {
+        // A plain shell gets no mouse modes forced on it: enabling reporting
+        // would swallow click-drag text selection in the client.
+        let mut e = Emulator::new(40, 6);
+        e.feed(b"$ ls");
+        let text = String::from_utf8_lossy(&e.snapshot().data).to_string();
+        assert!(!text.contains("\x1b[?100"), "unexpected mouse mode: {text:?}");
     }
 
     #[test]

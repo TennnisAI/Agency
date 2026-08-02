@@ -304,12 +304,16 @@ function Shell() {
   }
 
   // Open a specific agent straight into its focus view. setSelectedProject
-  // resets view/focus, so the focus + view calls must follow it; React batches
-  // them in this handler, leaving the run focused.
+  // resets view/focus *and* restores the project's last-viewed tab, so the tab,
+  // focus and view calls must all follow it; React batches them in this handler,
+  // leaving the run focused in the Agents tab. Without the setTab, opening a run
+  // from the sidebar while the project last sat on Docs or Files looked like a
+  // dead click: the run was focused behind a tab the user couldn't see.
   function openRun(p: Project, runId: string) {
     setShowSettings(false);
     setProject(p);
     setSelectedProject(p.id);
+    setTab("agents");
     setFocusedRun(runId);
     setView("focus");
   }

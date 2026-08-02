@@ -3,6 +3,7 @@ import { AgentProfile, Issue, getSettings, listProfiles, listProjectBranches } f
 import { agentLabel } from "../agents";
 import { useRuns, SpawnOpts } from "../store/runs";
 import { effectiveMergeTarget } from "../lib/branchTargets";
+import BranchSelect from "./BranchSelect";
 import RaceDialog from "./RaceDialog";
 import LoopDialog from "./LoopDialog";
 import GhImportDialog from "./GhImportDialog";
@@ -194,25 +195,23 @@ export default function AgentAddMenu({
                       tab order. */}
                   <div className="branch-swap">
                     <div className={`branch-fields${wantsWorktree ? "" : " off"}`}>
-                      <label className="branch-row">
+                      <div className="branch-row">
                         <span>from</span>
-                        <select
+                        <BranchSelect
                           value={base}
-                          onChange={(e) => setBase(e.target.value)}
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          {branches.map((b) => <option key={b} value={b}>{b}</option>)}
-                        </select>
-                      </label>
-                      <label className="branch-row">
+                          options={branches}
+                          onChange={setBase}
+                          label="base branch"
+                        />
+                      </div>
+                      <div className="branch-row">
                         <span>into</span>
-                        <select
+                        <BranchSelect
                           value={mergeTarget}
-                          onChange={(e) => setTargetOverride(e.target.value === base ? null : e.target.value)}
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          {branches.map((b) => <option key={b} value={b}>{b}</option>)}
-                        </select>
+                          options={branches}
+                          onChange={(b) => setTargetOverride(b === base ? null : b)}
+                          label="merge target"
+                        />
                         {diverged && (
                           <button
                             type="button"
@@ -221,7 +220,7 @@ export default function AgentAddMenu({
                             onClick={(e) => { e.stopPropagation(); setTargetOverride(null); }}
                           >↺</button>
                         )}
-                      </label>
+                      </div>
                     </div>
                     <div className={`branch-note${wantsWorktree ? " off" : ""}`}>
                       Works in your checkout on <code>{current || "the current branch"}</code>,

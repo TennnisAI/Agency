@@ -1292,9 +1292,15 @@ input, textarea, code,
 .agent-menu .branch-picker { display: flex; flex-direction: column; gap: 4px; padding: 4px 6px 2px; }
 .agent-menu .branch-row { display: flex; align-items: center; gap: 8px; }
 .agent-menu .branch-row > span { color: var(--o1); font-size: 11px; width: 30px; text-transform: lowercase; }
-.agent-menu .branch-row select {
+/* The picker trigger (BranchSelect.tsx). `min-width: 0` plus a clipped label is
+   what keeps a long branch name inside the menu instead of widening it: the
+   name is cropped to the row and the full one is on the hover tooltip. */
+.agent-menu .branch-row .branch-select {
   flex: 1;
   min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
   background: var(--crust);
   border: 1px solid var(--s1);
   color: var(--text);
@@ -1302,8 +1308,25 @@ input, textarea, code,
   padding: 4px 6px;
   font-family: var(--sans);
   font-size: 12px;
+  text-align: left;
+  cursor: pointer;
 }
-.agent-menu .branch-row select:focus { outline: none; border-color: var(--blue); }
+.agent-menu .branch-row .branch-select:hover { background: var(--crust); border-color: var(--s2); }
+.agent-menu .branch-row .branch-select:focus-visible { outline: none; border-color: var(--blue); }
+.branch-select-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.branch-select-caret { color: var(--o1); font-size: 9px; flex: none; }
+/* Above the agent menu it opens from, so a click outside lands on this
+   backdrop and closes only the branch list. */
+.branch-menu-backdrop { position: fixed; inset: 0; z-index: 42; }
+.branch-menu {
+  z-index: 43;
+  max-width: min(340px, calc(100vw - 16px));
+  max-height: min(260px, 60vh);
+  overflow-y: auto;
+}
+.branch-menu button { display: flex; align-items: center; gap: 8px; padding: 6px 8px; font-size: 12px; }
+.branch-menu button.on { color: var(--blue); }
+.branch-menu-tick { flex: none; font-size: 11px; }
 .agent-menu .branch-reset {
   background: transparent; border: none; color: var(--o1);
   cursor: pointer; padding: 0 2px; font-size: 13px;
@@ -1321,7 +1344,18 @@ input, textarea, code,
 .agent-menu .branch-swap { display: grid; }
 .agent-menu .branch-swap > * { grid-area: 1 / 1; align-self: start; }
 .agent-menu .branch-swap > .off { visibility: hidden; }
-.agent-menu .branch-fields { display: flex; flex-direction: column; gap: 4px; }
+.agent-menu .branch-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  /* Same zero-width-plus-100%-floor as the note below: the rows take whatever
+     width the rest of the menu settles on, and a long branch name inside them
+     can't feed back out and widen the menu. Without this the row's own
+     min-content (the full name) sets the grid track and the pickers spill out
+     the side of the menu. */
+  width: 0;
+  min-width: 100%;
+}
 .agent-menu .branch-note {
   /* Zero width plus a 100% floor: the note fills whatever width the rest of
      the menu settles on and wraps inside it, instead of widening the menu to

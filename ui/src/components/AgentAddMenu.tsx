@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { AgentProfile, Issue, listProfiles, listProjectBranches } from "../api";
+import { AgentProfile, Issue, getSettings, listProfiles, listProjectBranches } from "../api";
 import { agentLabel } from "../agents";
 import { useRuns, SpawnOpts } from "../store/runs";
 import { effectiveMergeTarget } from "../lib/branchTargets";
@@ -58,10 +58,17 @@ export default function AgentAddMenu({
   const [base, setBase] = useState<string>("");
   const [targetOverride, setTargetOverride] = useState<string | null>(null);
   // Isolate the agent in its own worktree + branch, or let it work in the
-  // project checkout as it stands. On by default, and reset to on every time
-  // the menu opens: skipping isolation is the deliberate exception, never
-  // something a forgotten setting does to the next agent you start.
+  // project checkout as it stands. Reset to the Settings default every time the
+  // menu opens, so a box ticked for one spawn never carries silently into the
+  // next. The last known default is kept in a ref as the fallback for a
+  // re-read that fails.
   const [worktree, setWorktree] = useState(true);
+  const defaultWorktree = useRef(true);
+  const loadWorktreeDefault = () =>
+    getSettings()
+      .then((s) => { defaultWorktree.current = s.defaultWorktree; setWorktree(s.defaultWorktree); })
+      .catch(() => setWorktree(defaultWorktree.current));
+  useEffect(() => { loadWorktreeDefault(); }, []);
 
   const showPicker = !!projectId;
   const mergeTarget = effectiveMergeTarget(base, targetOverride);
@@ -91,7 +98,8 @@ export default function AgentAddMenu({
       const next = !o;
       if (next) {
         loadAgents();
-        setWorktree(true);
+        // Re-read: Settings may have changed since this menu last mounted.
+        loadWorktreeDefault();
       }
       if (next && btnRef.current) {
         const r = btnRef.current.getBoundingClientRect();
@@ -112,12 +120,16 @@ export default function AgentAddMenu({
 
   const choose = (id: string) => {
     setOpen(false);
-    if (!showPicker) onSpawn(id);
-    // Without a worktree the branch selects are hidden and unused, but opts
-    // still has to carry the flag, so base falls back to the live branch.
-    else if (!worktree) onSpawn(id, { base: current || "HEAD", mergeTarget, worktree: false });
-    else if (base) onSpawn(id, { base, mergeTarget });
-    else onSpawn(id);
+    if (!showPicker) return onSpawn(id);
+    // The flag is always stated, never left to the Settings default: the box
+    // in front of the user is what this spawn does, whichever way it was set.
+    // Without a worktree the branch selects are hidden and unused, so base
+    // falls back to the live branch.
+    onSpawn(id, {
+      base: (worktree ? base : current) || "HEAD",
+      mergeTarget,
+      worktree,
+    });
   };
   const chooseTerminal = () => { setOpen(false); onTerminal(); };
 

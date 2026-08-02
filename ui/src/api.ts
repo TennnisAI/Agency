@@ -395,6 +395,9 @@ export interface ProviderSettings {
   lmStudioBaseUrl: string;
   // Agent id "New Agent" spawns; null = auto (project's last-used agent).
   defaultAgent: string | null;
+  // Whether the add-agent menu starts with "Own worktree" ticked. A default
+  // only: the menu still offers both on every spawn.
+  defaultWorktree: boolean;
 }
 
 export type McpTransport = "stdio" | "http" | "sse";

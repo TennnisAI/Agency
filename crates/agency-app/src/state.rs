@@ -21,6 +21,9 @@ const SETTING_MCP: &str = "mcp_servers";
 const SETTING_AGENT_ONBOARDING: &str = "agent_onboarding_completed";
 /// "0" disables the passive update check. Unset = enabled (the beta default).
 const SETTING_UPDATE_CHECK: &str = "update_check_enabled";
+/// "0" makes the add-agent menu default to working in the project checkout
+/// instead of cutting a worktree. Unset = worktrees on, the isolated default.
+const SETTING_DEFAULT_WORKTREE: &str = "default_worktree";
 
 const MERGE_RESOLVER_SKILL: &str = include_str!("../../../skills/merge-resolver/SKILL.md");
 
@@ -31,6 +34,10 @@ pub struct ProviderSettings {
     /// Agent id the "New Agent" menu/shortcut spawns. `None` = auto (fall back
     /// to the project's last-used agent).
     pub default_agent: Option<String>,
+    /// Whether the add-agent menu starts with "Own worktree" ticked. Off means
+    /// new agents work in the project checkout unless the user ticks the box
+    /// for that spawn. A default only: every menu still offers both.
+    pub default_worktree: bool,
 }
 
 /// A project's effective knowledge-graph config for the settings UI. Command
@@ -837,6 +844,8 @@ impl AppState {
                 .unwrap_or_else(|| DEFAULT_LM_STUDIO_URL.to_string()),
             // Stored as "" when unset; surface that as None so the UI shows "Auto".
             default_agent: reg.get_setting(SETTING_DEFAULT_AGENT)?.filter(|s| !s.is_empty()),
+            // Unset = on, so existing installs keep cutting worktrees.
+            default_worktree: reg.get_setting(SETTING_DEFAULT_WORKTREE)? != Some("0".to_string()),
         })
     }
 
@@ -845,6 +854,7 @@ impl AppState {
         let reg = self.registry.lock().unwrap();
         reg.set_setting(SETTING_LM_STUDIO_URL, &s.lm_studio_base_url)?;
         reg.set_setting(SETTING_DEFAULT_AGENT, s.default_agent.as_deref().unwrap_or(""))?;
+        reg.set_setting(SETTING_DEFAULT_WORKTREE, if s.default_worktree { "1" } else { "0" })?;
         Ok(())
     }
 

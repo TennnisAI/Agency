@@ -65,6 +65,7 @@ export default function Settings({
   const [settings, setSettings] = useState<ProviderSettings>({
     lmStudioBaseUrl: "",
     defaultAgent: null,
+    defaultWorktree: true,
   });
   const [profiles, setProfiles] = useState<AgentProfile[]>([]);
   const [catalog, setCatalog] = useState<CatalogEntry[]>([]);
@@ -374,6 +375,7 @@ export default function Settings({
     }
   }, []);
 
+  // Save what is in state now: the text fields' explicit Save button.
   async function persistSettings() {
     try {
       await saveSettings(settings);
@@ -383,14 +385,19 @@ export default function Settings({
     }
   }
 
-  // The default-agent dropdown saves immediately (unlike the text fields, which
-  // flush on blur/exit). Empty value = "auto", persisted as null.
-  function pickDefaultAgent(name: string) {
-    const next = { ...settings, defaultAgent: name || null };
+  // Save-on-change for the controls with no blur to flush on (the default-agent
+  // select, the worktree toggle), keeping `loadedRef` in step so the exit flush
+  // sees nothing left to do.
+  function persistSettingsNow(next: ProviderSettings) {
     setSettings(next);
     saveSettings(next)
       .then(() => { loadedRef.current = next; })
       .catch((e) => toastError(e, "Couldn't save settings"));
+  }
+
+  // Empty value = "auto", persisted as null.
+  function pickDefaultAgent(name: string) {
+    persistSettingsNow({ ...settings, defaultAgent: name || null });
   }
 
   async function persistNotif(next: NotifSettings) {
@@ -727,7 +734,20 @@ export default function Settings({
                 ))}
               </select>
             </div>
+            <div className="settings-notif-row">
+              <span className="settings-notif-label">Give new agents their own worktree</span>
+              <Toggle
+                checked={settings.defaultWorktree}
+                onChange={(next) => persistSettingsNow({ ...settings, defaultWorktree: next })}
+              />
+            </div>
           </div>
+          <p className="settings-section-hint">
+            Off means new agents work in the project checkout, on the branch you
+            have open, with no branch of their own to merge. This sets how the
+            add-agent menu starts; the Own worktree box there still decides each
+            spawn. Races, loops and issue dispatch always take a worktree.
+          </p>
           <div className="settings-card-list">
             {profiles.map((p) => (
               <Fragment key={p.name}>

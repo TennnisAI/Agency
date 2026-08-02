@@ -190,11 +190,15 @@ fn settings_default_and_roundtrip() {
     assert_eq!(s.lm_studio_base_url, "http://localhost:1234/v1");
     // Unset by default (empty string surfaces as None, i.e. "auto").
     assert_eq!(s.default_agent, None);
+    // Unset means worktrees on, so an upgrade doesn't silently change where
+    // the next agent runs.
+    assert!(s.default_worktree);
 
     state
         .save_settings(&agency_app_lib::ProviderSettings {
             lm_studio_base_url: "http://localhost:9999/v1".into(),
             default_agent: Some("codex".into()),
+            default_worktree: true,
         })
         .unwrap();
     let s2 = state.get_settings().unwrap();
@@ -206,9 +210,20 @@ fn settings_default_and_roundtrip() {
         .save_settings(&agency_app_lib::ProviderSettings {
             lm_studio_base_url: "http://localhost:9999/v1".into(),
             default_agent: None,
+            default_worktree: false,
         })
         .unwrap();
     assert_eq!(state.get_settings().unwrap().default_agent, None);
+    // Turning worktrees off persists, and turning them back on clears it.
+    assert!(!state.get_settings().unwrap().default_worktree);
+    state
+        .save_settings(&agency_app_lib::ProviderSettings {
+            lm_studio_base_url: "http://localhost:9999/v1".into(),
+            default_agent: None,
+            default_worktree: true,
+        })
+        .unwrap();
+    assert!(state.get_settings().unwrap().default_worktree);
 }
 
 #[test]
@@ -223,6 +238,7 @@ fn create_run_injects_provider_env() {
     state.save_settings(&agency_app_lib::ProviderSettings {
         lm_studio_base_url: "http://localhost:1234/v1".into(),
         default_agent: None,
+        default_worktree: true,
     }).unwrap();
     // Profile echoes env vars and then sleeps so we can capture output.
     state.register_profile(AgentProfile {
@@ -311,12 +327,14 @@ fn save_settings_rejects_bad_provider_url() {
     let bad = agency_app_lib::ProviderSettings {
         lm_studio_base_url: "http://evil.example.com/v1".into(),
         default_agent: None,
+        default_worktree: true,
     };
     assert!(state.save_settings(&bad).is_err());
     // embedded credentials are rejected
     let creds = agency_app_lib::ProviderSettings {
         lm_studio_base_url: "http://user:pass@localhost:1234/v1".into(),
         default_agent: None,
+        default_worktree: true,
     };
     assert!(state.save_settings(&creds).is_err());
     // localhost, IPv6 loopback http, and https are allowed
@@ -324,6 +342,7 @@ fn save_settings_rejects_bad_provider_url() {
         let s = agency_app_lib::ProviderSettings {
             lm_studio_base_url: ok.into(),
             default_agent: None,
+            default_worktree: true,
         };
         assert!(state.save_settings(&s).is_ok(), "should accept {ok}");
     }

@@ -50,14 +50,21 @@ impl TermClient {
         // sessions are incompatible anyway, so replace it: ask it to shut down
         // (Shutdown exists in every protocol version), wait for the socket to
         // die, spawn a fresh daemon. One recovery attempt, then give up.
+        //
+        // Only ever the daemon on *our* socket: a dev build resolves a data dir
+        // of its own (see the app's `datadir` module), so a protocol bump on a
+        // branch cannot reach the installed app's daemon. The socket is named in
+        // the log lines because it identifies whose sessions just died.
+        let sock = socket_path.display();
         match client.daemon_version() {
             Ok(version) if version == PROTOCOL_VERSION => return Ok(client),
             Ok(version) => log::warn!(
-                "termd protocol mismatch: app speaks {PROTOCOL_VERSION}, daemon speaks {version}; \
-                 shutting the old daemon down (its sessions are lost) and spawning a fresh one"
+                "termd protocol mismatch on {sock}: app speaks {PROTOCOL_VERSION}, daemon speaks \
+                 {version}; shutting the old daemon down (its sessions are lost) and spawning a \
+                 fresh one"
             ),
             Err(e) => log::warn!(
-                "termd handshake failed ({e}); shutting the old daemon down \
+                "termd handshake failed on {sock} ({e}); shutting the old daemon down \
                  (its sessions are lost) and spawning a fresh one"
             ),
         }

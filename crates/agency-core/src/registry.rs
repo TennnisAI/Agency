@@ -1092,6 +1092,42 @@ impl Registry {
         }
         Ok(out)
     }
+
+    /// Drop every run and the rows hanging off runs, leaving projects, agent
+    /// profiles, settings and issues intact. Only used when seeding a fresh DB
+    /// from another one (see [`copy_without_runs`]) — a run is bound to a live
+    /// daemon session, a worktree and a branch that belong to the app that
+    /// created it, so a copy must not carry them.
+    pub fn clear_runs(&self) -> Result<()> {
+        self.conn.execute_batch(
+            "DELETE FROM review_comments; DELETE FROM run_sessions; DELETE FROM runs;",
+        )?;
+        Ok(())
+    }
+}
+
+/// Seed the database at `dst` from the one at `src`, minus every run.
+///
+/// This is how a `tauri dev` build starts life with the installed app's
+/// projects, agent profiles and settings instead of an empty window. Runs are
+/// deliberately left behind: each one owns a daemon session, a worktree and a
+/// branch that the installed app is still driving, so a second app that knew
+/// about them could discard or merge work out from under it — and every one of
+/// them would show as dead in a build that does not host their sessions.
+///
+/// `VACUUM INTO` rather than a file copy: it takes a transactionally
+/// consistent snapshot even while the other app has the DB open. It refuses to
+/// write an existing file, so `dst` must not exist yet.
+pub fn copy_without_runs(src: &Path, dst: &Path) -> Result<()> {
+    {
+        let conn = Connection::open_with_flags(src, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .with_context(|| format!("opening db at {} to copy from", src.display()))?;
+        conn.execute("VACUUM INTO ?1", [dst.to_string_lossy().as_ref()])
+            .with_context(|| format!("copying {} to {}", src.display(), dst.display()))?;
+    }
+    // Through Registry::open so the copy lands fully migrated: `src` may come
+    // from an older build whose schema predates columns this one reads.
+    Registry::open(dst)?.clear_runs()
 }
 
 /// Snapshot `agency.db` to `agency.db.bak` once per app-version change, before
@@ -1349,6 +1385,57 @@ mod tests {
             restored.list_projects().unwrap().into_iter().map(|p| p.name).collect();
         assert!(names.contains(&"Agency".to_string()));
         assert!(names.contains(&"Second".to_string()));
+    }
+
+    #[test]
+    fn copy_without_runs_keeps_the_workspace_and_drops_the_runs() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("agency.db");
+        {
+            let reg = Registry::open(&src).unwrap();
+            let project = reg.add_project("Agency", dir.path()).unwrap();
+            reg.set_setting("theme", "mocha").unwrap();
+            let mut run = sample_run("run-1", None);
+            run.project_id = project.id.clone();
+            reg.insert_run(&run).unwrap();
+            reg.insert_run_session(&RunSession {
+                id: "run-1--2".into(),
+                run_id: "run-1".into(),
+                agent: "claude".into(),
+                created_at: 1,
+            })
+            .unwrap();
+            reg.insert_review_comment(&ReviewComment {
+                id: "c1".into(),
+                run_id: "run-1".into(),
+                path: "src/lib.rs".into(),
+                line_start: 1,
+                line_end: 1,
+                body: "look here".into(),
+                sent: false,
+                created_at: 1,
+            })
+            .unwrap();
+        }
+
+        let dst = dir.path().join("dev/agency.db");
+        std::fs::create_dir_all(dst.parent().unwrap()).unwrap();
+        copy_without_runs(&src, &dst).unwrap();
+
+        let copy = Registry::open(&dst).unwrap();
+        let projects = copy.list_projects().unwrap();
+        assert_eq!(projects.len(), 1, "the seeded db opens on the same projects");
+        assert_eq!(copy.get_setting("theme").unwrap().as_deref(), Some("mocha"));
+        assert!(
+            copy.list_runs(&projects[0].id).unwrap().is_empty(),
+            "a run's session, worktree and branch belong to the app that started it"
+        );
+        assert!(copy.list_run_sessions("run-1").unwrap().is_empty());
+        assert!(copy.list_review_comments("run-1").unwrap().is_empty());
+
+        // The source is untouched — this is a copy, not a move.
+        let orig = Registry::open(&src).unwrap();
+        assert_eq!(orig.list_runs(&projects[0].id).unwrap().len(), 1);
     }
 
     fn sample_run(id: &str, port: Option<u16>) -> Run {

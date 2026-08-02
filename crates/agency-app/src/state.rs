@@ -21,6 +21,9 @@ const SETTING_MCP: &str = "mcp_servers";
 const SETTING_AGENT_ONBOARDING: &str = "agent_onboarding_completed";
 /// "0" disables the passive update check. Unset = enabled (the beta default).
 const SETTING_UPDATE_CHECK: &str = "update_check_enabled";
+/// "0" makes the add-agent menu default to working in the project checkout
+/// instead of cutting a worktree. Unset = worktrees on, the isolated default.
+const SETTING_DEFAULT_WORKTREE: &str = "default_worktree";
 
 const MERGE_RESOLVER_SKILL: &str = include_str!("../../../skills/merge-resolver/SKILL.md");
 
@@ -31,6 +34,10 @@ pub struct ProviderSettings {
     /// Agent id the "New Agent" menu/shortcut spawns. `None` = auto (fall back
     /// to the project's last-used agent).
     pub default_agent: Option<String>,
+    /// Whether the add-agent menu starts with "Own worktree" ticked. Off means
+    /// new agents work in the project checkout unless the user ticks the box
+    /// for that spawn. A default only: every menu still offers both.
+    pub default_worktree: bool,
 }
 
 /// A project's effective knowledge-graph config for the settings UI. Command
@@ -86,6 +93,9 @@ pub struct RunInfo {
     pub files: u32,
     pub port: Option<u16>,
     pub kind: String,
+    /// False = the run works in the project's main checkout rather than an
+    /// isolated worktree, so the UI hides merge/PR/archive-the-worktree.
+    pub worktree: bool,
     pub race_id: Option<String>,
     pub loop_config: Option<agency_core::loops::LoopConfig>,
     pub loop_state: Option<agency_core::loops::LoopState>,
@@ -136,6 +146,10 @@ struct NewRunSpec<'a> {
     /// Present = create a looping run: spawn the agent headless (profile
     /// loop_args) and let the loop driver re-run it until checks pass.
     loop_config: Option<agency_core::loops::LoopConfig>,
+    /// False = skip the worktree entirely and run the agent in the project's
+    /// main checkout, on whatever branch is already there. Only the plain
+    /// single-agent flow offers this; races and loops always want isolation.
+    worktree: bool,
     /// Local issue this run is dispatched from (see start_issue_*): stored on
     /// the run so merge/PR/discard can drive the issue's status.
     issue_id: Option<String>,
@@ -403,6 +417,38 @@ fn validate_provider_url(raw: &str) -> Result<()> {
 /// name, so it stays restricted to `[a-z0-9-]`, which is safe for all three.
 pub fn new_task_id(prompt: &str) -> String {
     format!("{}-{}", slugify(prompt), short_suffix())
+}
+
+/// The directory a run's agent, scripts and git commands operate in: its own
+/// worktree when it has one, else the project's main checkout.
+///
+/// Every call site that used to spell `repo/.agency/worktrees/<id>` inline goes
+/// through this, so worktree-less runs (terminals, and agents started directly
+/// on the checked-out branch) land in the repo root instead of a path that
+/// doesn't exist.
+fn workspace_dir(repo: &Path, run: &agency_core::registry::Run) -> std::path::PathBuf {
+    if run.worktree {
+        repo.join(".agency").join("worktrees").join(&run.id)
+    } else {
+        repo.to_path_buf()
+    }
+}
+
+/// Reject a branch-level operation (merge, PR) on a run that has no branch of
+/// its own — its commits are already on the checkout's branch, so "landing"
+/// them is meaningless and would target whatever the user is working on.
+///
+/// The UI hides these controls for such runs; this is the backstop that keeps
+/// a stale window or a scripted call from acting on the wrong branch.
+fn require_own_branch(run: &agency_core::registry::Run, action: &str) -> Result<()> {
+    if run.worktree {
+        return Ok(());
+    }
+    bail!(
+        "this agent works directly in the project checkout on {}, so there is nothing to {action}; \
+         use Source Control to commit, publish or open a PR from that branch",
+        run.branch
+    )
 }
 
 /// Lowercase the prompt, keep ASCII alphanumerics, collapse every other run of
@@ -798,6 +844,8 @@ impl AppState {
                 .unwrap_or_else(|| DEFAULT_LM_STUDIO_URL.to_string()),
             // Stored as "" when unset; surface that as None so the UI shows "Auto".
             default_agent: reg.get_setting(SETTING_DEFAULT_AGENT)?.filter(|s| !s.is_empty()),
+            // Unset = on, so existing installs keep cutting worktrees.
+            default_worktree: reg.get_setting(SETTING_DEFAULT_WORKTREE)? != Some("0".to_string()),
         })
     }
 
@@ -806,6 +854,7 @@ impl AppState {
         let reg = self.registry.lock().unwrap();
         reg.set_setting(SETTING_LM_STUDIO_URL, &s.lm_studio_base_url)?;
         reg.set_setting(SETTING_DEFAULT_AGENT, s.default_agent.as_deref().unwrap_or(""))?;
+        reg.set_setting(SETTING_DEFAULT_WORKTREE, if s.default_worktree { "1" } else { "0" })?;
         Ok(())
     }
 
@@ -1015,18 +1064,37 @@ impl AppState {
         let wt = self
             .project_repo(&run.project_id)
             .ok()
-            .map(|repo| repo.join(".agency").join("worktrees").join(&run.id));
+            .map(|repo| workspace_dir(&repo, run))
+            .filter(|p| p.exists());
+        // A run on its own branch is measured by what that branch added over its
+        // base. A run in the main checkout has no branch of its own, so the
+        // honest measure is what is currently uncommitted there.
         let stat = wt
-            .filter(|p| p.exists())
-            .and_then(|p| agency_core::git::diff_stat(&p, &run.base).ok())
+            .as_ref()
+            .and_then(|p| {
+                if run.worktree {
+                    agency_core::git::diff_stat(p, &run.base).ok()
+                } else {
+                    agency_core::git::uncommitted_stat(p).ok()
+                }
+            })
             .unwrap_or(agency_core::git::DiffStat { added: 0, deleted: 0, files: 0 });
+        // A worktree's branch is fixed for its life, so the stored name is the
+        // truth. A run in the main checkout follows whatever the user checks
+        // out there, so read it live rather than showing a stale name.
+        let branch = match (run.worktree, &wt) {
+            (false, Some(p)) => {
+                agency_core::merge::current_branch(p).unwrap_or_else(|| run.branch.clone())
+            }
+            _ => run.branch.clone(),
+        };
         RunInfo {
             id: run.id.clone(),
             project_id: run.project_id.clone(),
             agent: run.agent.clone(),
             prompt: run.prompt.clone(),
             title: run.title.clone(),
-            branch: run.branch.clone(),
+            branch,
             status,
             activity: self.activity.lock().unwrap().get(&run.id).map(|e| {
                 // Loops drive themselves — a quiet attempt isn't waiting on
@@ -1040,6 +1108,7 @@ impl AppState {
             files: stat.files,
             port: run.port_base,
             kind: run.kind.clone(),
+            worktree: run.worktree,
             race_id: run.race_id.clone(),
             loop_config: run.loop_config.clone(),
             loop_state: run.loop_state.clone(),
@@ -1058,12 +1127,16 @@ impl AppState {
     }
 
     pub fn create_run(&self, project_id: &str, prompt: &str, agent: &str, base: &str, merge_target: Option<&str>) -> Result<RunInfo> {
-        self.create_run_with_progress(project_id, prompt, agent, base, merge_target, |_| {})
+        self.create_run_with_progress(project_id, prompt, agent, base, merge_target, true, |_| {})
     }
 
     /// Like [`create_run`], but streams workspace-setup progress to `on_progress`
     /// (worktree checkout + essential-file copy). Used by the async `create_run`
     /// Tauri command so the UI shows movement instead of freezing on a large repo.
+    ///
+    /// `worktree = false` skips the worktree and runs the agent in the project's
+    /// main checkout on its current branch; `base`/`merge_target` are then
+    /// ignored, since there is no branch to cut or land.
     pub fn create_run_with_progress(
         &self,
         project_id: &str,
@@ -1071,6 +1144,7 @@ impl AppState {
         agent: &str,
         base: &str,
         merge_target: Option<&str>,
+        worktree: bool,
         mut on_progress: impl FnMut(agency_core::setup::CloneProgress),
     ) -> Result<RunInfo> {
         self.create_run_spec(
@@ -1085,6 +1159,7 @@ impl AppState {
                 existing_branch: None,
                 loop_config: None,
                 issue_id: None,
+                worktree,
             },
             &mut on_progress,
         )
@@ -1111,24 +1186,42 @@ impl AppState {
         };
         let id = new_task_id(spec.prompt);
         let manager = WorktreeManager::new(repo.clone());
-        // Default: cut agent/<id> from the base. PR-review runs instead check
-        // out the PR's existing head branch.
-        let worktree = match &spec.existing_branch {
-            Some(branch) => manager.create_on_branch_with_progress(&id, branch, on_progress)?,
-            None => manager.create_with_progress(&id, spec.base, on_progress)?,
+        // Three shapes: cut agent/<id> from the base (the default), check out a
+        // PR's existing head branch, or skip the worktree entirely and work in
+        // the project's own checkout on whatever branch is there.
+        let workspace = if !spec.worktree {
+            let branch = agency_core::merge::current_branch(&repo)
+                .ok_or_else(|| anyhow!("the project checkout is not on a branch, so an agent can't work in it directly; create a worktree instead"))?;
+            agency_core::worktree::Worktree { task_id: id.clone(), path: repo.clone(), branch }
+        } else {
+            match &spec.existing_branch {
+                Some(branch) => manager.create_on_branch_with_progress(&id, branch, on_progress)?,
+                None => manager.create_with_progress(&id, spec.base, on_progress)?,
+            }
         };
-        // Untracked essentials (.env etc.) don't come with a worktree; copy the
-        // configured list plus auto-detected root .env files. Best-effort: a bad
-        // entry shouldn't block the run.
-        on_progress(agency_core::setup::CloneProgress {
-            phase: "Copying files".into(),
-            percent: None,
-            detail: String::new(),
-        });
-        if let Err(e) = manager.copy_essentials(&id, &config.files.copy) {
-            log::warn!("copying essentials into worktree {id}: {e}");
+        if spec.worktree {
+            // Untracked essentials (.env etc.) don't come with a worktree; copy the
+            // configured list plus auto-detected root .env files. Best-effort: a bad
+            // entry shouldn't block the run. A run in the main checkout already has
+            // them, by definition.
+            on_progress(agency_core::setup::CloneProgress {
+                phase: "Copying files".into(),
+                percent: None,
+                detail: String::new(),
+            });
+            if let Err(e) = manager.copy_essentials(&id, &config.files.copy) {
+                log::warn!("copying essentials into worktree {id}: {e}");
+            }
+            self.emit_mcp(spec.agent, &repo, &workspace.path, &config);
+        } else if !self.merged_mcp_servers(&repo, &config).is_empty() {
+            // Emitting would rewrite `.mcp.json` (or the agent's equivalent) in
+            // the user's own checkout — a tracked file in most repos. Dirtying
+            // the working copy is not ours to do, so say why they're missing.
+            log::info!(
+                "run {id} works in the project checkout: MCP servers not emitted, \
+                 since that would modify a file in the checkout"
+            );
         }
-        self.emit_mcp(spec.agent, &repo, &worktree.path, &config);
 
         // Looping runs are spawned below via spawn_loop_attempt — the same
         // path the driver uses for every respawn — so there is exactly one
@@ -1136,14 +1229,14 @@ impl AppState {
         if spec.loop_config.is_none() {
             let mut env = self.provider_env()?;
             env.extend(profile.env.iter().cloned());
-            env.extend(agency_core::scripts::script_env(&worktree.path, &repo, &id, Some(port)));
+            env.extend(agency_core::scripts::script_env(&workspace.path, &repo, &id, Some(port)));
             // The default flow passes "" and behaves exactly as before: the user
             // types the real prompt into the live terminal.
             let (command, args) =
                 fresh_agent_argv(&profile, spec.prompt, config.scripts.setup.as_deref());
             if let Err(e) = self.term.read().unwrap().start_session(
                 &session_name(&id),
-                &worktree.path,
+                &workspace.path,
                 &command,
                 &args,
                 &env,
@@ -1153,7 +1246,11 @@ impl AppState {
                 // Roll back the worktree + branch we just cut: the run record is
                 // inserted below, so on a spawn failure nothing references them —
                 // leaving them would orphan a worktree/branch on every failure.
-                let _ = manager.remove(&id);
+                // Nothing was cut for a run in the main checkout, and `remove`
+                // would delete the branch the user is sitting on.
+                if spec.worktree {
+                    let _ = manager.remove(&id);
+                }
                 return Err(e.into());
             }
         }
@@ -1171,14 +1268,18 @@ impl AppState {
             project_id: spec.project_id.to_string(),
             agent: spec.agent.to_string(),
             prompt: spec.prompt.to_string(),
-            base: spec.base.to_string(),
-            branch: worktree.branch.clone(),
+            // A run in the main checkout has no branch cut off a base; recording
+            // the branch it works on keeps `base` meaningful rather than storing
+            // a picker value that was never used.
+            base: if spec.worktree { spec.base.to_string() } else { workspace.branch.clone() },
+            branch: workspace.branch.clone(),
             created_at: now_secs(),
             port_base: Some(port),
             archived_at: None,
             title,
             kind: "agent".to_string(),
-            merge_target: spec.merge_target.map(|s| s.to_string()),
+            // Nothing to land, so no target to remember.
+            merge_target: spec.worktree.then(|| spec.merge_target.map(|s| s.to_string())).flatten(),
             race_id: spec.race_id.clone(),
             loop_state: spec
                 .loop_config
@@ -1186,6 +1287,7 @@ impl AppState {
                 .map(|_| agency_core::loops::LoopState::new(now_secs())),
             loop_config: spec.loop_config.clone(),
             issue_id: spec.issue_id.clone(),
+            worktree: spec.worktree,
         };
         {
             let reg = self.registry.lock().unwrap();
@@ -1262,6 +1364,7 @@ impl AppState {
                 existing_branch: None,
                 loop_config: None,
                 issue_id: issue_id.clone(),
+                worktree: true,
             }, &mut |_| {})?);
         }
         Ok(out)
@@ -1331,6 +1434,7 @@ impl AppState {
             existing_branch: None,
             loop_config: Some(cfg),
             issue_id,
+            worktree: true,
         }, &mut |_| {})
     }
 
@@ -1423,6 +1527,7 @@ impl AppState {
             existing_branch: None,
             loop_config: None,
             issue_id: Some(issue.id.clone()),
+            worktree: true,
         }, &mut |_| {})?;
         {
             let reg = self.registry.lock().unwrap();
@@ -1812,6 +1917,7 @@ impl AppState {
             existing_branch: None,
             loop_config: None,
             issue_id: None,
+            worktree: true,
         }, &mut |_| {})
     }
 
@@ -1857,6 +1963,7 @@ impl AppState {
             existing_branch: Some(pr.head_ref_name.clone()),
             loop_config: None,
             issue_id: None,
+            worktree: true,
         }, &mut |_| {})
     }
 
@@ -1911,6 +2018,7 @@ impl AppState {
                 existing_branch: Some(pr.head_ref_name.clone()),
                 loop_config: None,
                 issue_id: None,
+                worktree: true,
             },
             &mut |_| {},
         )?;
@@ -2154,6 +2262,7 @@ impl AppState {
             loop_config: None,
             loop_state: None,
             issue_id: None,
+            worktree: false,
         };
         self.registry.lock().unwrap().insert_run(&run)?;
         Ok(self.run_info(&run))
@@ -2350,6 +2459,7 @@ impl AppState {
             loop_config: None,
             loop_state: None,
             issue_id: None,
+            worktree: false,
         };
         self.registry.lock().unwrap().insert_run(&run)?;
         Ok(self.run_info(&run))
@@ -2447,7 +2557,10 @@ impl AppState {
         self.shell_attaches.lock().unwrap().remove(id);
         let _ = self.term.read().unwrap().kill(&shell_session_name(id));
         self.kill_extra_sessions(id);
-        if run.kind == "agent" {
+        // Only a run that owns a worktree has one to remove. For a run in the
+        // main checkout `remove` would try to delete the branch the user is
+        // standing on, so discarding is purely dropping the record.
+        if run.kind == "agent" && run.worktree {
             if let Ok(repo) = self.project_repo(&run.project_id) {
                 let _ = WorktreeManager::new(repo).remove(id);
             }
@@ -2466,6 +2579,10 @@ impl AppState {
     /// Archive a run: stop its sessions, run the optional archive cleanup script,
     /// remove the worktree but KEEP the branch, and stamp `archived_at`. The run
     /// record is kept so it can be restored.
+    ///
+    /// A run without a worktree owns nothing on disk, so archiving it is only
+    /// the session teardown and the stamp: its changes stay in the checkout,
+    /// uncommitted, exactly as the user left them.
     pub fn archive_run(&self, id: &str) -> Result<()> {
         let run = self.run_record(id)?;
         let repo = self.project_repo(&run.project_id)?;
@@ -2486,7 +2603,10 @@ impl AppState {
         // before killing sessions / deleting session rows means a failed commit
         // leaves the run fully intact instead of half-archived (sessions gone
         // but archived_at still null).
-        if run.kind == "agent" {
+        // A worktree-less run's changes live in the user's own checkout on their
+        // own branch. Nothing is about to be removed, so there is nothing to
+        // preserve — and auto-committing there would sweep up their work.
+        if run.kind == "agent" && run.worktree {
             WorktreeManager::new(repo.clone())
                 .commit_all_if_dirty(id, "WIP: uncommitted changes auto-committed by Agency on archive")
                 .map_err(|e| anyhow!("couldn't preserve uncommitted changes before archiving: {e}"))?;
@@ -2504,16 +2624,19 @@ impl AppState {
         self.registry.lock().unwrap().delete_run_sessions(id)?;
 
         // Best-effort archive cleanup script, before the worktree disappears.
+        // It tears down a workspace; a run that never had one has nothing to
+        // tear down, and the script would run against the live checkout.
         let config = agency_core::config::load(&repo);
-        if let Some(script) = config.scripts.archive.as_deref() {
-            let worktree = repo.join(".agency").join("worktrees").join(&run.id);
-            if worktree.exists() {
-                let env = agency_core::scripts::script_env(&worktree, &repo, &run.id, run.port_base);
-                let _ = agency_core::scripts::run_blocking(script, &worktree, &env);
+        if run.worktree {
+            if let Some(script) = config.scripts.archive.as_deref() {
+                let worktree = workspace_dir(&repo, &run);
+                if worktree.exists() {
+                    let env = agency_core::scripts::script_env(&worktree, &repo, &run.id, run.port_base);
+                    let _ = agency_core::scripts::run_blocking(script, &worktree, &env);
+                }
             }
+            WorktreeManager::new(repo).remove_keep_branch(id)?;
         }
-
-        WorktreeManager::new(repo).remove_keep_branch(id)?;
         self.registry.lock().unwrap().set_archived(id, Some(now_secs()))?;
         // Archiving an unmerged run abandons it from the issue's point of
         // view. A merged run's issue is already done, which rollback skips.
@@ -2541,10 +2664,14 @@ impl AppState {
             }
         }
         let manager = WorktreeManager::new(repo.clone());
-        manager.restore(id)?;
         let config = agency_core::config::load(&repo);
-        if let Err(e) = manager.copy_essentials(id, &config.files.copy) {
-            log::warn!("copying essentials into restored worktree {id}: {e}");
+        // Nothing was removed for a worktree-less run, so nothing is re-created:
+        // restoring it just makes the row live again.
+        if run.worktree {
+            manager.restore(id)?;
+            if let Err(e) = manager.copy_essentials(id, &config.files.copy) {
+                log::warn!("copying essentials into restored worktree {id}: {e}");
+            }
         }
         // Reallocate the port block if another active run claimed it while this
         // one was archived (list_port_bases excludes archived rows, so a live
@@ -2558,8 +2685,9 @@ impl AppState {
                 self.registry.lock().unwrap().set_port_base(id, Some(fresh))?;
             }
         }
-        let worktree = repo.join(".agency").join("worktrees").join(id);
-        self.emit_mcp(&run.agent, &repo, &worktree, &config);
+        if run.worktree {
+            self.emit_mcp(&run.agent, &repo, &workspace_dir(&repo, &run), &config);
+        }
         self.registry.lock().unwrap().set_archived(id, None)?;
         let refreshed = self.run_record(id)?;
         Ok(self.run_info(&refreshed))
@@ -2605,7 +2733,7 @@ impl AppState {
             .run
             .clone()
             .ok_or_else(|| anyhow!("no run script configured in .agency/agency.toml"))?;
-        let worktree = repo.join(".agency").join("worktrees").join(&run.id);
+        let worktree = workspace_dir(&repo, &run);
 
         // nonconcurrent: stop every other run-script session first.
         if config.scripts.run_mode == agency_core::config::RunMode::Nonconcurrent {
@@ -2690,7 +2818,7 @@ impl AppState {
         }
         let run = self.run_record(id)?;
         let repo = self.project_repo(&run.project_id)?;
-        // Agents run in their worktree; terminals map to the repo root.
+        // A run with a worktree gets it; everything else the repo root.
         let cwd = self.worktree_path(id)?;
         let shell = login_shell();
         let args = vec!["-l".to_string()];
@@ -2768,7 +2896,7 @@ impl AppState {
     ) -> Result<()> {
         let repo = self.project_repo(&run.project_id)?;
         let config = agency_core::config::load(&repo);
-        let worktree = repo.join(".agency").join("worktrees").join(&run.id);
+        let worktree = workspace_dir(&repo, &run);
         // A terminal tab is not an agent: no profile, no MCP config, no argv
         // recipe — just the user's login shell in the worktree, matching what
         // `start_shell` and `create_terminal` do.
@@ -2792,7 +2920,11 @@ impl AppState {
         };
         // The extra tab may run a different agent than the one the worktree
         // was created for; make sure MCP config exists in its native format.
-        self.emit_mcp(agent, &repo, &worktree, &config);
+        // Skipped without a worktree, for the same reason as at creation: the
+        // target file would be one in the user's own checkout.
+        if run.worktree {
+            self.emit_mcp(agent, &repo, &worktree, &config);
+        }
         let mut env = self.provider_env()?;
         env.extend(profile.env.iter().cloned());
         // Same env recipe as the run itself, ports included: extra sessions
@@ -2944,7 +3076,7 @@ impl AppState {
         }
 
         let config = agency_core::config::load(&repo);
-        let worktree = repo.join(".agency").join("worktrees").join(&run.id);
+        let worktree = workspace_dir(&repo, &run);
         let profile = {
             let reg = self.registry.lock().unwrap();
             reg.get_profile(&run.agent)?
@@ -2987,7 +3119,7 @@ impl AppState {
         }
         let repo = self.project_repo(&run.project_id)?;
         let config = agency_core::config::load(&repo);
-        let worktree = repo.join(".agency").join("worktrees").join(&run.id);
+        let worktree = workspace_dir(&repo, &run);
         let profile = {
             let reg = self.registry.lock().unwrap();
             reg.get_profile(&run.agent)?
@@ -3013,7 +3145,7 @@ impl AppState {
     fn spawn_loop_attempt(&self, run: &agency_core::registry::Run) -> Result<()> {
         let repo = self.project_repo(&run.project_id)?;
         let config = agency_core::config::load(&repo);
-        let worktree = repo.join(".agency").join("worktrees").join(&run.id);
+        let worktree = workspace_dir(&repo, &run);
         let attempt = run.loop_state.as_ref().map(|s| s.attempt).unwrap_or(1);
         match agency_core::git::status(&worktree) {
             Ok(changes) if !changes.is_empty() => {
@@ -3043,7 +3175,7 @@ impl AppState {
     /// child is killed at the config's timeout (counted as a failed check).
     fn start_loop_check(&self, run: &agency_core::registry::Run, cfg: &agency_core::loops::LoopConfig) -> Result<()> {
         let repo = self.project_repo(&run.project_id)?;
-        let worktree = repo.join(".agency").join("worktrees").join(&run.id);
+        let worktree = workspace_dir(&repo, &run);
         let slot = std::sync::Arc::new(CheckSlot {
             status: Mutex::new(CheckStatus::Running),
             cancelled: std::sync::atomic::AtomicBool::new(false),
@@ -3261,17 +3393,14 @@ impl AppState {
 
     /// The working directory the run's git/file commands operate on.
     ///
-    /// For agents this is the run's isolated worktree
-    /// (`<repo>/.agency/worktrees/<id>`). For terminals — which have no worktree
-    /// and run the user's shell in the project's main checkout — it is the
-    /// project repo root, so Source Control / Files act on the live branch.
+    /// For a run with its own worktree this is `<repo>/.agency/worktrees/<id>`.
+    /// For terminals, and for agents started directly on the checked-out branch,
+    /// it is the project repo root, so Source Control / Files act on the live
+    /// branch.
     pub fn worktree_path(&self, id: &str) -> Result<std::path::PathBuf> {
         let run = self.run_record(id)?;
         let repo = self.project_repo(&run.project_id)?;
-        if run.kind == "terminal" {
-            return Ok(repo);
-        }
-        Ok(repo.join(".agency").join("worktrees").join(id))
+        Ok(workspace_dir(&repo, &run))
     }
 
     /// Resolve a git-root token to a working directory. A `project:<id>` token
@@ -3308,11 +3437,12 @@ impl AppState {
     /// whether the agent's worktree still has uncommitted changes.
     pub fn merge_preview(&self, id: &str) -> anyhow::Result<MergePreview> {
         let run = self.run_record(id)?;
+        require_own_branch(&run, "merge")?;
         let repo = self.project_repo(&run.project_id)?;
         let base = agency_core::merge::resolve_target(run.merge_target.as_deref(), &repo)?;
         let commits_ahead = agency_core::merge::commits_ahead(&repo, &run.branch, &base)?;
         let commits_behind = agency_core::merge::commits_behind(&repo, &run.branch, &base)?;
-        let worktree = repo.join(".agency").join("worktrees").join(&run.id);
+        let worktree = workspace_dir(&repo, &run);
         let dirty_files: Vec<String> = if worktree.exists() {
             agency_core::git::status(&worktree)
                 .map(|cs| cs.into_iter().map(|c| c.path).collect())
@@ -3338,6 +3468,7 @@ impl AppState {
             .try_lock()
             .map_err(|_| anyhow!("another merge is already in progress"))?;
         let run = self.run_record(id)?;
+        require_own_branch(&run, "merge")?;
         // An active loop is still committing attempts onto this branch; merging
         // mid-flight would take a half-done attempt and keep drifting after.
         if has_active_loop(&run) {
@@ -3382,6 +3513,7 @@ impl AppState {
     /// report that as an error.
     pub fn merge_status(&self, id: &str) -> anyhow::Result<agency_core::merge::MergeState> {
         let run = self.run_record(id)?;
+        require_own_branch(&run, "merge")?;
         let repo = self.project_repo(&run.project_id)?;
         let base = agency_core::merge::resolve_target(run.merge_target.as_deref(), &repo)?;
         agency_core::merge::merge_state(&repo, &run.branch, &base)
@@ -3392,6 +3524,7 @@ impl AppState {
     /// bookkeeping a clean first-try merge does.
     pub fn finish_merge_task(&self, id: &str) -> anyhow::Result<agency_core::merge::MergeOutcome> {
         let run = self.run_record(id)?;
+        require_own_branch(&run, "merge")?;
         let repo = self.project_repo(&run.project_id)?;
         let base = agency_core::merge::resolve_target(run.merge_target.as_deref(), &repo)?;
         let state = agency_core::merge::merge_state(&repo, &run.branch, &base)?;
@@ -3406,6 +3539,7 @@ impl AppState {
 
     pub fn abort_merge_task(&self, id: &str) -> anyhow::Result<()> {
         let run = self.run_record(id)?;
+        require_own_branch(&run, "merge")?;
         let repo = self.project_repo(&run.project_id)?;
         let restore = self.merge_origins.lock().unwrap().remove(id);
         agency_core::merge::abort_merge(&repo, restore.as_deref())
@@ -3427,8 +3561,9 @@ impl AppState {
         if run.kind != "agent" {
             bail!("only agent runs have a branch to open a PR for");
         }
+        require_own_branch(&run, "open a PR for")?;
         let repo = self.project_repo(&run.project_id)?;
-        let worktree = repo.join(".agency").join("worktrees").join(&run.id);
+        let worktree = workspace_dir(&repo, &run);
         if !worktree.exists() {
             bail!("workspace is archived — restore it before creating a PR");
         }
@@ -3461,6 +3596,11 @@ impl AppState {
     /// The run's PR (if any) plus its check rollup, polled by the UI.
     pub fn pr_status(&self, id: &str) -> Result<PrStatus> {
         let run = self.run_record(id)?;
+        // A run in the main checkout shares the user's branch; any PR open on
+        // it belongs to them, not to this run.
+        if !run.worktree {
+            return Ok(PrStatus { pr: None, checks: Vec::new() });
+        }
         let repo = self.project_repo(&run.project_id)?;
         let gh = agency_core::gh::GhCli::default();
         let pr = gh.view_pr(&repo, &run.branch)?;
@@ -3598,6 +3738,11 @@ impl AppState {
     /// Approve window deep-link into the review view.
     pub fn pr_number_for_run(&self, id: &str) -> Result<Option<u64>> {
         let run = self.run_record(id)?;
+        // Same reasoning as `pr_status`: the checkout's branch is not this
+        // run's, so a PR on it isn't this run's either.
+        if !run.worktree {
+            return Ok(None);
+        }
         let repo = self.project_repo(&run.project_id)?;
         Ok(agency_core::gh::GhCli::default()
             .view_pr(&repo, &run.branch)?
@@ -4225,6 +4370,7 @@ mod tests {
             loop_config: None,
             loop_state: None,
             issue_id: None,
+            worktree: false,
         };
         assert_eq!(run.kind, "terminal");
         assert!(run.branch.is_empty());

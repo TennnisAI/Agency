@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Issue, Project, RepoReadiness, agentInstalled, inspectRepo, startIssueRun } from "../api";
-import { useRuns } from "../store/runs";
+import { useRuns, SpawnOpts } from "../store/runs";
 import RepoSetupDialog from "../components/RepoSetupDialog";
 import InstallAgentDialog from "../components/InstallAgentDialog";
 
@@ -8,7 +8,7 @@ type Pending = {
   agentId: string;
   readiness: RepoReadiness;
   repoPath: string;
-  opts?: { base: string; mergeTarget: string };
+  opts?: SpawnOpts;
   issue?: Issue;
 };
 
@@ -30,7 +30,7 @@ export function useSpawnAgent(project: Project | null, onRepoResolved?: () => vo
 
   // Dispatch an issue to an agent, then jump to the run — the issue-flavored
   // tail of the same flow createAgent handles for promptless runs.
-  async function startIssue(issue: Issue, agentId: string, opts?: { base: string; mergeTarget: string }) {
+  async function startIssue(issue: Issue, agentId: string, opts?: SpawnOpts) {
     const run = await startIssueRun(issue.id, agentId, opts?.base, opts?.mergeTarget);
     await refreshRuns();
     setFocusedRun(run.id);
@@ -38,7 +38,7 @@ export function useSpawnAgent(project: Project | null, onRepoResolved?: () => vo
     setTab("agents");
   }
 
-  async function spawn(agentId: string, opts?: { base: string; mergeTarget: string }, issue?: Issue) {
+  async function spawn(agentId: string, opts?: SpawnOpts, issue?: Issue) {
     if (!project) return;
     setError("");
     try {
@@ -48,7 +48,11 @@ export function useSpawnAgent(project: Project | null, onRepoResolved?: () => vo
         return;
       }
       const r = await inspectRepo(project.repo_path);
-      if (r.state === "ready" && !r.dirty) {
+      // A dirty checkout only blocks cutting a worktree (the new branch would
+      // miss the uncommitted work). An agent that stays in the checkout is
+      // being started *because* there is work in progress there.
+      const dirtyBlocks = opts?.worktree !== false;
+      if (r.state === "ready" && !(r.dirty && dirtyBlocks)) {
         if (issue) await startIssue(issue, agentId, opts);
         else await createAgent(agentId, opts);
       } else {

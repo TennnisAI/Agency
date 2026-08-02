@@ -275,7 +275,7 @@ export default function AgentsView({
 
       {spawnDialogs}
 
-      {approveRunId && approveRunId === focusedRunId && focused?.kind === "agent" && (
+      {approveRunId && approveRunId === focusedRunId && focused?.kind === "agent" && focused.worktree && (
         <MergeModal
           taskId={approveRunId}
           onClose={() => setApproveRun(null)}

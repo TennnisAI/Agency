@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useRuns } from "../store/runs";
+import { useRuns, SpawnOpts } from "../store/runs";
 import {
   discardRun, archiveRun, setRunTitle, renameRun,
   listProfiles, AgentProfile,
@@ -76,7 +76,7 @@ function LoopStrip({ run, onChanged }: { run: RunInfo; onChanged: () => void }) 
 export default function AgentFocus({
   onSpawn,
 }: {
-  onSpawn?: (agentId: string, opts?: { base: string; mergeTarget: string }) => void;
+  onSpawn?: (agentId: string, opts?: SpawnOpts) => void;
 }) {
   const { runs, focusedRunId, setFocusedRun, refreshRuns, createAgent, createTerminal, selectedProjectId, pendingSessionId, setPendingSession } = useRuns();
   const [showMerge, setShowMerge] = useState(false);
@@ -289,6 +289,11 @@ export default function AgentFocus({
                 {focused.title && <span className="focus-name">{focused.title}</span>}
                 <button className="tile-act icon-only" title="Rename agent" onClick={() => setRenaming(focused)}><PencilIcon /></button>
                 <code>{focused.branch}</code>
+                {!focused.worktree && (
+                  <span className="badge" title="Works in the project checkout, not an isolated worktree">
+                    in checkout
+                  </span>
+                )}
                 {issueChip && (
                   <button
                     className="issue-chip"
@@ -301,14 +306,16 @@ export default function AgentFocus({
                 {panel !== "run" && (
                   <button
                     className={`focus-shell-toggle icon-only ${shellOpen ? "on" : ""}`}
-                    title="Toggle terminal in this worktree"
+                    title={focused.worktree ? "Toggle terminal in this worktree" : "Toggle terminal in the project checkout"}
                     onClick={toggleShell}
                   ><TerminalIcon /></button>
                 )}
                 <span className="spacer" />
                 <button className="tile-act danger icon-only" title="Discard agent" onClick={() => setConfirmDiscard(true)}><TrashIcon /></button>
                 <button className="tile-act icon-only" title="Archive agent" onClick={() => setConfirmArchive(true)}><InboxIcon /></button>
-                <button onClick={() => setShowMerge(true)}>Approve →</button>
+                {/* Nothing to approve without a branch of its own: the work is
+                    already on the checkout's branch, reviewed in Source Control. */}
+                {focused.worktree && <button onClick={() => setShowMerge(true)}>Approve →</button>}
               </div>
               <LoopStrip run={focused} onChanged={refreshRuns} />
               <div className="session-tabs">
@@ -324,8 +331,8 @@ export default function AgentFocus({
                       key={s.id}
                       className={`session-tab ${panel === s.id ? "on" : ""}`}
                       title={s.agent === "shell"
-                        ? "Terminal: extra shell in this worktree"
-                        : `${agentLabel(s.agent)}: extra agent in this worktree`}
+                        ? "Terminal: extra shell in this workspace"
+                        : `${agentLabel(s.agent)}: extra agent in this workspace`}
                       onClick={() => setPanel(s.id)}
                     >
                       {s.agent === "shell" ? "≳ terminal" : agentLabel(s.agent)} · {s.id.split("--").pop()}
@@ -340,7 +347,7 @@ export default function AgentFocus({
                 <button
                   ref={addBtnRef}
                   className="session-tab-add"
-                  title="New agent tab in this worktree"
+                  title="New agent tab in this workspace"
                   onClick={toggleAddMenu}
                 >+</button>
                 <span className="spacer" />
@@ -399,7 +406,7 @@ export default function AgentFocus({
               {confirmCloseTab && (
                 <ConfirmDialog
                   title="Close agent tab?"
-                  body="Stop this extra agent session. The worktree, branch and other tabs are untouched."
+                  body="Stop this extra agent session. The workspace, its branch and the other tabs are untouched."
                   confirmLabel="Close"
                   danger
                   onConfirm={async () => {
@@ -419,7 +426,9 @@ export default function AgentFocus({
               {confirmDiscard && (
                 <ConfirmDialog
                   title="Discard agent?"
-                  body={`Stop "${focused.agent}", remove its worktree, and delete the run. This cannot be undone.`}
+                  body={focused.worktree
+                    ? `Stop "${focused.agent}", remove its worktree, and delete the run. This cannot be undone.`
+                    : `Stop "${focused.agent}" and delete the run. Your checkout and its changes are left exactly as they are.`}
                   confirmLabel="Discard"
                   danger
                   onConfirm={async () => {
@@ -439,7 +448,9 @@ export default function AgentFocus({
               {confirmArchive && (
                 <ConfirmDialog
                   title="Archive agent?"
-                  body={`Stop "${focused.agent}" and remove its worktree. Any uncommitted work is auto-committed to its "${focused.branch}" branch first.`}
+                  body={focused.worktree
+                    ? `Stop "${focused.agent}" and remove its worktree. Any uncommitted work is auto-committed to its "${focused.branch}" branch first.`
+                    : `Stop "${focused.agent}" and file the run away. Nothing in your checkout is committed or removed.`}
                   confirmLabel="Archive"
                   onConfirm={async () => {
                     const id = focused.id;

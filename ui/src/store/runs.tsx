@@ -1,8 +1,13 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
-import { CloneProgress, RunInfo, createRun, createTerminal as createTerminalApi, listRuns } from "../api";
+import { CloneProgress, RunInfo, createRun, createTerminal as createTerminalApi, getSettings, listRuns } from "../api";
 import { toastError } from "../lib/toast";
 
 type View = "grid" | "focus";
+// What the add-menu hands to a spawn. `worktree: false` means "run in the
+// project checkout on its current branch", which makes base/mergeTarget moot.
+// Omitting it (the menu-bar shortcut, which has no picker) defers to the
+// Settings default.
+export type SpawnOpts = { base: string; mergeTarget: string; worktree?: boolean };
 type Tab = "agents" | "source" | "files" | "issues" | "docs";
 
 interface RunStore {
@@ -16,7 +21,7 @@ interface RunStore {
   refreshRuns: () => Promise<void>;
   tab: Tab;
   setTab: (t: Tab) => void;
-  createAgent: (agentId: string, opts?: { base: string; mergeTarget: string }) => Promise<void>;
+  createAgent: (agentId: string, opts?: SpawnOpts) => Promise<void>;
   createTerminal: () => Promise<void>;
   // True while a workspace is being created (worktree + spawn — the slowest
   // first-session op). Drives the add-menu disable + placeholder tile.
@@ -76,18 +81,23 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  const createAgent = useCallback(async (agentId: string, opts?: { base: string; mergeTarget: string }) => {
+  const createAgent = useCallback(async (agentId: string, opts?: SpawnOpts) => {
     const pid = projectRef.current;
     if (!pid) return;
     const base = opts?.base ?? "HEAD";
     const mergeTarget = opts?.mergeTarget ?? null;
+    // The add-menu always states its choice. Callers with no picker (the
+    // menu-bar / shortcut "New Agent") take the Settings default, falling back
+    // to an isolated worktree if that read fails.
+    const worktree =
+      opts?.worktree ?? (await getSettings().then((s) => s.defaultWorktree).catch(() => true));
     setSpawnCount((c) => c + 1);
     setSpawnProgress(null);
     try {
       // Runs start promptless by design — the user types the real prompt into
       // the live agent terminal, and the first line is captured as the run's
       // prompt + title (see set_run_title).
-      const run = await createRun(pid, "", agentId, base, mergeTarget, setSpawnProgress).catch((e) => {
+      const run = await createRun(pid, "", agentId, base, mergeTarget, setSpawnProgress, worktree).catch((e) => {
         toastError(e, `Couldn't start ${agentId}`);
         return null;
       });

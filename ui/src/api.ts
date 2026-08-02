@@ -64,6 +64,10 @@ export interface RunInfo {
   files: number;
   port: number | null;
   kind: "agent" | "terminal";
+  // False = the run works in the project's main checkout on its current branch
+  // instead of an isolated worktree, so it has no branch of its own to merge or
+  // open a PR from, and discarding it leaves the checkout untouched.
+  worktree: boolean;
   // Epoch seconds; archivedAt is null for live runs.
   createdAt: number;
   archivedAt: number | null;
@@ -193,6 +197,8 @@ export const deleteProject = (id: string) => invoke<void>("delete_project", { id
 // Creates an agent workspace (git worktree + first session). `onProgress`, if
 // given, is called as the worktree is checked out and essentials copied — a
 // large repo takes a while, so the UI shows movement instead of freezing.
+// `worktree: false` starts the agent in the project's own checkout, on the
+// branch already there; `base`/`mergeTarget` are then ignored.
 export function createRun(
   projectId: string,
   prompt: string,
@@ -200,11 +206,13 @@ export function createRun(
   base: string,
   mergeTarget?: string | null,
   onProgress?: (p: CloneProgress) => void,
+  worktree = true,
 ): Promise<RunInfo> {
   const onProgressChannel = new Channel<CloneProgress>();
   if (onProgress) onProgressChannel.onmessage = onProgress;
   return invoke<RunInfo>("create_run", {
-    projectId, prompt, agent, base, mergeTarget: mergeTarget ?? null, onProgress: onProgressChannel,
+    projectId, prompt, agent, base, mergeTarget: mergeTarget ?? null, worktree,
+    onProgress: onProgressChannel,
   });
 }
 export const createLoop = (
@@ -387,6 +395,9 @@ export interface ProviderSettings {
   lmStudioBaseUrl: string;
   // Agent id "New Agent" spawns; null = auto (project's last-used agent).
   defaultAgent: string | null;
+  // Whether the add-agent menu starts with "Own worktree" ticked. A default
+  // only: the menu still offers both on every spawn.
+  defaultWorktree: boolean;
 }
 
 export type McpTransport = "stdio" | "http" | "sse";

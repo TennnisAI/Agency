@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { AgentProfile, Issue, listProfiles, listProjectBranches } from "../api";
+import { AgentProfile, Issue, getSettings, listProfiles, listProjectBranches } from "../api";
 import { agentLabel } from "../agents";
-import { useRuns } from "../store/runs";
+import { useRuns, SpawnOpts } from "../store/runs";
 import { effectiveMergeTarget } from "../lib/branchTargets";
 import RaceDialog from "./RaceDialog";
 import LoopDialog from "./LoopDialog";
@@ -16,7 +16,7 @@ export default function AgentAddMenu({
   issueLabel,
   terminalOnly = false,
 }: {
-  onSpawn: (agentId: string, opts?: { base: string; mergeTarget: string }) => void;
+  onSpawn: (agentId: string, opts?: SpawnOpts) => void;
   // Required (not optional) so every call site exposes the same options — the two
   // add-menus (top-right "+ Agent" and the rail "Agents +" header) cannot drift
   // out of sync.
@@ -54,10 +54,26 @@ export default function AgentAddMenu({
 
   // Branch-picker state (only used when projectId is supplied).
   const [branches, setBranches] = useState<string[]>([]);
+  const [current, setCurrent] = useState<string>("");
   const [base, setBase] = useState<string>("");
   const [targetOverride, setTargetOverride] = useState<string | null>(null);
+  // Isolate the agent in its own worktree + branch, or let it work in the
+  // project checkout as it stands. Reset to the Settings default every time the
+  // menu opens, so a box ticked for one spawn never carries silently into the
+  // next. The last known default is kept in a ref as the fallback for a
+  // re-read that fails.
+  const [worktree, setWorktree] = useState(true);
+  const defaultWorktree = useRef(true);
+  const loadWorktreeDefault = () =>
+    getSettings()
+      .then((s) => { defaultWorktree.current = s.defaultWorktree; setWorktree(s.defaultWorktree); })
+      .catch(() => setWorktree(defaultWorktree.current));
+  useEffect(() => { loadWorktreeDefault(); }, []);
 
   const showPicker = !!projectId;
+  // Issue dispatch merges the run's branch to close the issue, so it is always
+  // isolated and the checkbox is hidden for it.
+  const wantsWorktree = !!issue || worktree;
   const mergeTarget = effectiveMergeTarget(base, targetOverride);
   const diverged = targetOverride !== null && targetOverride !== base;
 
@@ -69,6 +85,7 @@ export default function AgentAddMenu({
       .then((pb) => {
         if (!live) return;
         setBranches(pb.branches);
+        setCurrent(pb.current);
         setBase((b) => (b && pb.branches.includes(b) ? b : pb.current));
       })
       .catch(() => { /* leave selects empty; spawn falls back to HEAD */ });
@@ -82,7 +99,11 @@ export default function AgentAddMenu({
   const toggle = () => {
     setOpen((o) => {
       const next = !o;
-      if (next) loadAgents();
+      if (next) {
+        loadAgents();
+        // Re-read: Settings may have changed since this menu last mounted.
+        loadWorktreeDefault();
+      }
       if (next && btnRef.current) {
         const r = btnRef.current.getBoundingClientRect();
         // Icon/header triggers open rightward, but near the right edge (e.g. an
@@ -102,8 +123,17 @@ export default function AgentAddMenu({
 
   const choose = (id: string) => {
     setOpen(false);
-    if (showPicker && base) onSpawn(id, { base, mergeTarget });
-    else onSpawn(id);
+    if (!showPicker) return onSpawn(id);
+    // The flag is always stated, never left to the Settings default: the box
+    // in front of the user is what this spawn does, whichever way it was set.
+    // Issue dispatch has no box (it always cuts a worktree), so a default of
+    // "off" must not leak into it. Without a worktree the branch selects are
+    // inert, so base falls back to the live branch.
+    onSpawn(id, {
+      base: (wantsWorktree ? base : current) || "HEAD",
+      mergeTarget,
+      worktree: wantsWorktree,
+    });
   };
   const chooseTerminal = () => { setOpen(false); onTerminal(); };
 
@@ -146,34 +176,58 @@ export default function AgentAddMenu({
               <>
                 <div className="agent-menu-sep" />
                 <div className="branch-picker">
-                  <label className="branch-row">
-                    <span>from</span>
-                    <select
-                      value={base}
-                      onChange={(e) => setBase(e.target.value)}
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      {branches.map((b) => <option key={b} value={b}>{b}</option>)}
-                    </select>
-                  </label>
-                  <label className="branch-row">
-                    <span>into</span>
-                    <select
-                      value={mergeTarget}
-                      onChange={(e) => setTargetOverride(e.target.value === base ? null : e.target.value)}
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      {branches.map((b) => <option key={b} value={b}>{b}</option>)}
-                    </select>
-                    {diverged && (
-                      <button
-                        type="button"
-                        className="branch-reset"
-                        title="Sync merge target to base"
-                        onClick={(e) => { e.stopPropagation(); setTargetOverride(null); }}
-                      >↺</button>
-                    )}
-                  </label>
+                  {/* Issue dispatch stays worktree-only: merging the run's
+                      branch is what closes the issue. */}
+                  {!issue && (
+                    <label className="branch-row branch-check" onClick={(e) => e.stopPropagation()}>
+                      <input
+                        type="checkbox"
+                        checked={worktree}
+                        onChange={(e) => setWorktree(e.target.checked)}
+                      />
+                      <span>Own worktree</span>
+                    </label>
+                  )}
+                  {/* Both states occupy the same grid cell, so the menu keeps
+                      the taller one's height and doesn't resize as the box is
+                      ticked. `visibility` also takes the inert one out of the
+                      tab order. */}
+                  <div className="branch-swap">
+                    <div className={`branch-fields${wantsWorktree ? "" : " off"}`}>
+                      <label className="branch-row">
+                        <span>from</span>
+                        <select
+                          value={base}
+                          onChange={(e) => setBase(e.target.value)}
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          {branches.map((b) => <option key={b} value={b}>{b}</option>)}
+                        </select>
+                      </label>
+                      <label className="branch-row">
+                        <span>into</span>
+                        <select
+                          value={mergeTarget}
+                          onChange={(e) => setTargetOverride(e.target.value === base ? null : e.target.value)}
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          {branches.map((b) => <option key={b} value={b}>{b}</option>)}
+                        </select>
+                        {diverged && (
+                          <button
+                            type="button"
+                            className="branch-reset"
+                            title="Sync merge target to base"
+                            onClick={(e) => { e.stopPropagation(); setTargetOverride(null); }}
+                          >↺</button>
+                        )}
+                      </label>
+                    </div>
+                    <div className={`branch-note${wantsWorktree ? " off" : ""}`}>
+                      Works in your checkout on <code>{current || "the current branch"}</code>,
+                      nothing to merge.
+                    </div>
+                  </div>
                 </div>
               </>
             )}

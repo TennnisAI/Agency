@@ -59,6 +59,15 @@ pub struct Run {
     /// The local issue this run was dispatched from. Many runs may share one
     /// issue (races, retries), so the link lives on the run.
     pub issue_id: Option<String>,
+    /// Whether this run owns an isolated worktree at
+    /// `<repo>/.agency/worktrees/<id>` on its own `agent/<id>` branch.
+    ///
+    /// `false` means the run works directly in the project's main checkout, on
+    /// whatever branch is checked out there — the "just let me work on main"
+    /// flow. Such a run has nothing of its own to tear down or merge, so
+    /// discard/archive never touch git and merge/PR are refused. Terminals have
+    /// always behaved this way and carry `false` too.
+    pub worktree: bool,
 }
 
 /// A local issue: the tracker is per-project and agent-native — dispatching
@@ -309,6 +318,11 @@ impl Registry {
         }
         if !column_exists(&conn, "runs", "issue_id")? {
             conn.execute("ALTER TABLE runs ADD COLUMN issue_id TEXT", [])?;
+        }
+        if !column_exists(&conn, "runs", "worktree")? {
+            // Every pre-existing agent run has a worktree; terminals never did.
+            conn.execute("ALTER TABLE runs ADD COLUMN worktree INTEGER NOT NULL DEFAULT 1", [])?;
+            conn.execute("UPDATE runs SET worktree = 0 WHERE kind = 'terminal'", [])?;
         }
         if !column_exists(&conn, "projects", "issue_key")? {
             conn.execute("ALTER TABLE projects ADD COLUMN issue_key TEXT", [])?;
@@ -664,12 +678,12 @@ impl Registry {
             None => None,
         };
         self.conn.execute(
-            "INSERT INTO runs (id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+            "INSERT INTO runs (id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             rusqlite::params![
                 run.id, run.project_id, run.agent, run.prompt, run.base, run.branch,
                 run.created_at, run.port_base.map(|p| p as i64), run.archived_at, run.title, run.kind,
-                run.merge_target, run.race_id, loop_config, loop_state, run.issue_id
+                run.merge_target, run.race_id, loop_config, loop_state, run.issue_id, run.worktree as i64
             ],
         )?;
         Ok(())
@@ -688,7 +702,7 @@ impl Registry {
 
     pub fn get_run(&self, id: &str) -> Result<Option<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id FROM runs WHERE id = ?1",
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree FROM runs WHERE id = ?1",
         )?;
         let mut rows = stmt.query([id])?;
         match rows.next()? {
@@ -699,7 +713,7 @@ impl Registry {
 
     pub fn list_runs(&self, project_id: &str) -> Result<Vec<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree
              FROM runs WHERE project_id = ?1 AND archived_at IS NULL ORDER BY created_at DESC",
         )?;
         let rows = stmt.query_map([project_id], |row| Ok(row_to_run(row)))?;
@@ -712,7 +726,7 @@ impl Registry {
 
     pub fn list_archived_runs(&self, project_id: &str) -> Result<Vec<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree
              FROM runs WHERE project_id = ?1 AND archived_at IS NOT NULL ORDER BY archived_at DESC",
         )?;
         let rows = stmt.query_map([project_id], |row| Ok(row_to_run(row)))?;
@@ -1068,7 +1082,7 @@ impl Registry {
     /// runs" list; also drives the last-run-abandoned rollback check).
     pub fn runs_for_issue(&self, issue_id: &str) -> Result<Vec<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree
              FROM runs WHERE issue_id = ?1 AND archived_at IS NULL ORDER BY created_at DESC",
         )?;
         let rows = stmt.query_map([issue_id], |row| Ok(row_to_run(row)))?;
@@ -1255,6 +1269,7 @@ fn row_to_run(row: &rusqlite::Row) -> Result<Run> {
             None => None,
         },
         issue_id: row.get(15)?,
+        worktree: row.get::<_, i64>(16)? != 0,
     })
 }
 
@@ -1354,6 +1369,7 @@ mod tests {
             loop_config: None,
             loop_state: None,
             issue_id: None,
+            worktree: true,
         }
     }
 
@@ -1713,10 +1729,27 @@ mod tests {
             loop_config: None,
             loop_state: None,
             issue_id: None,
+            worktree: true,
         };
         reg.insert_run(&run).unwrap();
         let got = reg.get_run("t1").unwrap().unwrap();
         assert_eq!(got.merge_target.as_deref(), Some("develop"));
+    }
+
+    /// A run created without a worktree round-trips as one: the flag is what
+    /// every teardown/merge guard keys off, so a lost `false` would let discard
+    /// delete the branch the user is working on.
+    #[test]
+    fn run_worktree_flag_round_trips() {
+        let dir = tempdir().unwrap();
+        let reg = Registry::open(&dir.path().join("worktree-flag.db")).unwrap();
+        let mut in_repo = sample_run("in-repo", None);
+        in_repo.worktree = false;
+        in_repo.branch = "main".into();
+        reg.insert_run(&in_repo).unwrap();
+        reg.insert_run(&sample_run("isolated", None)).unwrap();
+        assert!(!reg.get_run("in-repo").unwrap().unwrap().worktree);
+        assert!(reg.get_run("isolated").unwrap().unwrap().worktree);
     }
 
     // ── issues ─────────────────────────────────────────────────────────────

@@ -1237,7 +1237,9 @@ input.settings-notif-secs { width: 90px; flex: 0 0 auto; }
 .file-tab { flex: none; display: flex; align-items: center; gap: 6px; padding: 5px 6px 5px 12px; font-size: 12px; color: var(--sub0); border-right: 1px solid var(--line); white-space: nowrap; cursor: pointer; user-select: none; }
 .file-tab:hover { background: var(--s0); color: var(--text); }
 .file-tab.on { background: var(--base); color: var(--text); box-shadow: inset 0 2px 0 var(--blue); }
-.file-tab-dir { color: var(--o0); font-size: 11px; }
+/* Note titles can be a whole sentence; clip rather than let one tab own the strip. */
+.file-tab-name { max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+.file-tab-dir { color: var(--o0); font-size: 11px; max-width: 140px; overflow: hidden; text-overflow: ellipsis; }
 .file-tab-dirty { color: var(--yellow); font-size: 9px; line-height: 1; }
 .file-tab-close { background: transparent; border: none; color: var(--o0); cursor: pointer; font-size: 13px; padding: 0 4px; border-radius: 4px; line-height: 1; font-family: inherit; visibility: hidden; }
 .file-tab:hover .file-tab-close, .file-tab.on .file-tab-close { visibility: visible; }

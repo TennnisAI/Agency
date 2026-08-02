@@ -84,7 +84,7 @@ export default function Settings({
     runCrashed: true,
     mergeAttention: true,
     loopEvents: true,
-    onlyWhenUnfocused: true,
+    onlyWhenWatching: true,
     idleSecs: 30,
   });
   const [themeId, setThemeId] = useState<ThemeId>(getStoredTheme());
@@ -1124,10 +1124,14 @@ export default function Settings({
               ["runCrashed", "Run script crashed"],
               ["mergeAttention", "Merge needs attention"],
               ["loopEvents", "Loop complete or stalled"],
-              ["onlyWhenUnfocused", "Only when app is not focused"],
-            ] as [keyof NotifSettings, string][]).map(([key, label]) => (
+              [
+                "onlyWhenWatching",
+                "Skip the agent you're watching",
+                "No notification for the agent open in front of you. Every other agent still notifies, even while you're using Agency.",
+              ],
+            ] as [keyof NotifSettings, string, string?][]).map(([key, label, hint]) => (
               <div key={key} className="settings-notif-row">
-                <span className="settings-notif-label">{label}</span>
+                <span className="settings-notif-label" title={hint}>{label}</span>
                 <Toggle
                   checked={notif[key] as boolean}
                   onChange={(next) => persistNotif({ ...notif, [key]: next })}

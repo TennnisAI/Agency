@@ -7,6 +7,7 @@ import "@xterm/xterm/css/xterm.css";
 import { attachRun, detachRun, resizeRun, runInput, runPreview, ensureRunActive,
   attachRunScript, detachRunScript, resizeRunScript, runScriptInput, runScriptPreview,
   attachShell, detachShell, resizeShell, shellInput, shellPreview, startShell } from "../api";
+import { useRuns } from "../store/runs";
 import { currentXtermTheme, minContrastRatio, TERMINAL_FONT_FAMILY } from "../lib/themes";
 import { initialCapture, feed } from "../lib/firstPrompt";
 import { shouldSwallowWheel, createPageScroller } from "../lib/termScroll";
@@ -60,6 +61,19 @@ export default function FocusTerminal(
   const [showSearch, setShowSearch] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [dragOver, setDragOver] = useState(false);
+
+  // Tell the shell which run is actually visible, so notifications can skip it
+  // (see `onScreenRunId`). Only the agent pane counts: a run's companion shell
+  // or dev-server pane doesn't show its agent's turn ending. The functional
+  // clear keeps a pane swap (old unmounts after the new one mounts) from
+  // blanking the run that just took over.
+  const { setOnScreenRun } = useRuns();
+  const isAgentPane = stream === agentStream;
+  useEffect(() => {
+    if (!isAgentPane) return;
+    setOnScreenRun(runId);
+    return () => setOnScreenRun((cur) => (cur === runId ? null : cur));
+  }, [isAgentPane, runId, setOnScreenRun]);
 
   useEffect(() => {
     const container = ref.current;

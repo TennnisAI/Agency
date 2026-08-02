@@ -847,7 +847,9 @@ export interface NotifSettings {
   runCrashed: boolean;
   mergeAttention: boolean;
   loopEvents: boolean;
-  onlyWhenUnfocused: boolean;
+  /** Skip notifications for the run that's open in a focused window; every
+   *  other run still notifies while you work in the app. */
+  onlyWhenWatching: boolean;
   idleSecs: number;
 }
 

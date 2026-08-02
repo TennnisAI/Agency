@@ -392,8 +392,8 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                             crate::notifier::NotifyKind::RunCrashed => settings.run_crashed,
                             crate::notifier::NotifyKind::Idle => settings.agent_idle,
                         };
-                        let suppressed = (settings.only_when_unfocused && focused)
-                            || active.as_deref() == Some(snap.id.as_str());
+                        let suppressed = crate::notifier::suppressed(
+                            &settings, focused, active.as_deref(), &snap.id);
                         if enabled && !suppressed {
                             let (title, body) = crate::notifier::message(ev, &snap.label);
                             let _ = handle.notification().builder().title(title).body(body).show();
@@ -448,8 +448,7 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                 let (focused, active) = state.ui_snapshot();
                 for n in notices {
                     let suppressed = !settings.loop_events
-                        || (settings.only_when_unfocused && focused)
-                        || active.as_deref() == Some(n.run_id.as_str());
+                        || crate::notifier::suppressed(&settings, focused, active.as_deref(), &n.run_id);
                     if suppressed {
                         continue;
                     }

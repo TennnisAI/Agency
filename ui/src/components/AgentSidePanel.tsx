@@ -115,6 +115,10 @@ export default function AgentSidePanel({ project }: { project: Project }) {
           <FocusTerminal
             key={focused.id}
             runId={focused.id}
+            // Same wheel policy as the Agents tab: only a plain shell wants
+            // xterm's wheel-to-arrow fallback, which an agent prompt would read
+            // as history (see lib/termScroll).
+            altScrollArrows={focused.agent === "shell"}
             onFirstPrompt={focused.kind === "agent" && !focused.title
               ? (line) => { setRunTitle(focused.id, line).catch(() => {}); }
               : undefined}

@@ -2,14 +2,14 @@
  * Wheel policy for the embedded terminals.
  *
  * xterm.js has three wheel behaviours, picked in this order:
- *   1. the app asked for mouse reporting -> real wheel events are sent to it
- *      (our custom handler is never consulted in this case);
+ *   1. the app is tracking the mouse and its protocol carries wheel events ->
+ *      the notch is sent to the app, which scrolls itself;
  *   2. the buffer has scrollback (normal screen) -> the viewport scrolls;
- *   3. otherwise (alternate screen, no mouse reporting) -> "alternate scroll":
+ *   3. otherwise (alternate screen, no wheel tracking) -> "alternate scroll":
  *      every wheel notch is translated into an Up/Down arrow key.
  *
  * Case 3 is the bug behind AGE-15. Agent TUIs live on the alternate screen and
- * read Up/Down as prompt-history navigation, so scrolling silently rewrites the
+ * read Up/Down as prompt-history navigation, so scrolling silently rewrote the
  * prompt; Claude Code even detects the burst and warns "Scroll wheel is sending
  * arrow keys · use PgUp/PgDn to scroll". A pager or editor, on the other hand,
  * scrolls correctly from those arrows, which is why case 3 is left alone for the
@@ -17,10 +17,39 @@
  *
  * What replaces it: the page keys the agent itself asks for. They are what a TUI
  * binds its scrollback to, and unlike arrows they are not history keys, so the
- * worst case in an agent that ignores them is that nothing happens. This is the
- * path taken when the daemon serving this pane predates the snapshot fix that
- * restores mouse reporting, and for agents that never track the mouse at all.
+ * worst case in an agent that ignores them is that nothing happens.
+ *
+ * Only case 3 is ours, though, and that is AGE-26: this first shipped keyed on
+ * the alternate screen alone, which also swallowed case 1. Agents do track the
+ * mouse (a live pane running Claude Code reports `?1049h ?1003h ?1006h`), so in
+ * practice every notch was being turned into a page key. That is a page of
+ * travel before anything moves and then a jump, where the agent's own wheel
+ * handling scrolls a line or two at a time: exactly the "slow and sluggish"
+ * scrolling the issue describes. An app that asked for wheel events gets them.
  */
+
+/**
+ * True when the app is tracking the mouse under a protocol that carries wheel
+ * events, so xterm hands it the notch and it scrolls itself. X10 reports button
+ * presses only (xterm filters the wheel out of it), so it still falls through to
+ * the alternate-scroll arrows and still needs guarding.
+ */
+export function appTracksWheel(mouseTrackingMode: string): boolean {
+  return mouseTrackingMode === "vt200" || mouseTrackingMode === "drag" || mouseTrackingMode === "any";
+}
+
+/**
+ * True when this pane must not let xterm turn the wheel into arrow keys, i.e.
+ * an agent pane showing an alternate-screen app that isn't tracking the wheel.
+ */
+export function shouldSwallowWheel(
+  bufferType: string,
+  mouseTrackingMode: string,
+  altScrollArrows: boolean,
+): boolean {
+  if (altScrollArrows || appTracksWheel(mouseTrackingMode)) return false;
+  return bufferType === "alternate";
+}
 
 /** Wheel distance that makes one page key, in CSS pixels (~2 notches). */
 export const PAGE_PX = 240;
@@ -56,12 +85,4 @@ export function createPageScroller(pagePx = PAGE_PX) {
     }
     return out;
   };
-}
-
-/**
- * True when this pane must not let xterm turn the wheel into arrow keys, i.e.
- * an agent pane showing an alternate-screen app that isn't tracking the mouse.
- */
-export function shouldSwallowWheel(bufferType: string, altScrollArrows: boolean): boolean {
-  return !altScrollArrows && bufferType === "alternate";
 }

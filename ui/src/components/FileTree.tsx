@@ -22,9 +22,9 @@ type Dialog =
 // Small disclosure triangle; rotates from ▸ (closed) to ▾ (open) via CSS.
 function Twistie({ open }: { open: boolean }) {
   return (
-    <svg className={`tree-twistie ${open ? "open" : ""}`} width="10" height="10" viewBox="0 0 24 24"
+    <svg className={`tree-twistie ${open ? "open" : ""}`} width="13" height="13" viewBox="0 0 24 24"
       fill="currentColor" aria-hidden>
-      <path d="M8 5l8 7-8 7z" />
+      <path d="M7 4l10 8-10 8z" />
     </svg>
   );
 }

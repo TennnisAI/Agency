@@ -131,6 +131,11 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
 
   function setSelectedProject(id: string | null) {
     setSelectedProjectId(id);
+    // Point the ref at the incoming project immediately, before React re-renders.
+    // Callers routinely follow this with setTab (open an agent, an issue, a note),
+    // and that call must record the tab against the project being opened — not
+    // the one being left, whose remembered tab would otherwise be overwritten.
+    projectRef.current = id;
     setView("grid");
     setFocusedRun(null);
     // Restore this project's last-viewed tab (defaults to "agents" the first

@@ -404,7 +404,7 @@ export default function AgentFocus({
                 <MergeModal
                   taskId={focused.id}
                   onClose={() => setShowMerge(false)}
-                  onArchived={() => {
+                  onRemoved={() => {
                     setFocusedRun(null);
                     refreshRuns();
                   }}

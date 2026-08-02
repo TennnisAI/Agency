@@ -286,7 +286,7 @@ export default function AgentsView({
             setSrcTab("prs");
             setReviewPr(number);
           }}
-          onArchived={() => {
+          onRemoved={() => {
             setApproveRun(null);
             setFocusedRun(null);
             refreshRuns();

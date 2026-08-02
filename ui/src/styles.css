@@ -1317,6 +1317,13 @@ input, textarea, code,
 .agent-menu .branch-swap > .off { visibility: hidden; }
 .agent-menu .branch-fields { display: flex; flex-direction: column; gap: 4px; }
 .agent-menu .branch-note {
+  /* Zero width plus a 100% floor: the note fills whatever width the rest of
+     the menu settles on and wraps inside it, instead of widening the menu to
+     fit itself on one line. `anywhere` keeps a long branch name from setting
+     a wide floor of its own. */
+  width: 0;
+  min-width: 100%;
+  overflow-wrap: anywhere;
   font-size: 11px; line-height: 1.45; color: var(--o1); padding: 1px 0 2px;
 }
 .agent-menu .branch-note code { font-family: var(--mono); color: var(--sub1); }

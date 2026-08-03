@@ -272,8 +272,11 @@ fn create_run_injects_provider_env() {
 
 use agency_core::merge::MergeOutcome;
 
+/// "Fix with agent" only makes sense while git is mid-merge: with no
+/// `MERGE_HEAD` there is nothing to describe, and sending a prompt anyway would
+/// hand the agent an empty conflict.
 #[test]
-fn resolve_merge_spawns_resolver_in_repo_and_streams() {
+fn send_merge_conflict_requires_a_merge_in_progress() {
     let dir = tempfile::tempdir().unwrap();
     let repo = dir.path().join("repo");
     std::fs::create_dir_all(&repo).unwrap();
@@ -288,34 +291,12 @@ fn resolve_merge_spawns_resolver_in_repo_and_streams() {
         resume_args: None,
         loop_args: None,
     }).unwrap();
-    state.register_profile(AgentProfile {
-        name: "fakeresolver".into(),
-        command: "/bin/sh".into(),
-        args: vec!["-c".into(), "echo RESOLVING; pwd; echo DONE".into()],
-        env: vec![],
-        resume_args: None,
-        loop_args: None,
-    }).unwrap();
     let project = state.add_project("demo", &repo).unwrap();
     let info = state.create_run(&project.id, "p", "noop", "HEAD", None).unwrap();
 
-    let buf = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
-    let b = buf.clone();
-    state.resolve_merge(&info.id, "fakeresolver", move |bytes| {
-        b.lock().unwrap().push_str(&String::from_utf8_lossy(&bytes));
-    }).unwrap();
+    let err = state.send_merge_conflict(&info.id).unwrap_err().to_string();
+    assert!(err.contains("no merge is in progress"), "got: {err}");
 
-    let start = std::time::Instant::now();
-    while start.elapsed() < std::time::Duration::from_secs(5) {
-        if buf.lock().unwrap().contains("DONE") { break; }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-    let out = buf.lock().unwrap().clone();
-    assert!(out.contains("RESOLVING"), "got: {out}");
-    // The resolver ran with cwd = repo root (its `pwd` contains the repo dir name).
-    assert!(out.contains("repo"), "expected repo cwd in: {out}");
-
-    // cleanup
     state.discard_run(&info.id).unwrap();
 }
 

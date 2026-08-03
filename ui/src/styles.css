@@ -403,7 +403,6 @@ textarea.settings-input { min-height: 64px; resize: vertical; }
 .merge-note { color: var(--sub0); }
 .merge-review { display: flex; flex-direction: column; gap: 8px; }
 .merge-summary { color: var(--text); font-weight: 600; }
-.merge-term { min-height: 280px; }
 /* Status dot */
 .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
 .dot.running { background: var(--running); box-shadow: 0 0 8px var(--running); animation: pulse 1.6s ease-in-out infinite; }
@@ -1791,13 +1790,6 @@ input, textarea, code,
   background: none; border: none; color: var(--sub0); cursor: pointer;
   padding: 0 2px; font-size: 11px; flex: none;
 }
-
-/* Resolver-profile picker in the merge modal's conflict actions. */
-.merge-resolver-pick {
-  background: var(--s0); color: var(--text); border: 1px solid var(--line);
-  border-radius: 4px; font-size: 12px; padding: 3px 6px; max-width: 140px;
-}
-.merge-resolver-pick:focus { outline: none; border-color: var(--blue); }
 
 /* PR section inside the merge modal (PrSection.tsx). */
 .pr-section { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--line); }

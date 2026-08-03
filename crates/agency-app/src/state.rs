@@ -1,6 +1,5 @@
 use agency_core::profile::AgentProfile;
 use agency_core::registry::{IssueStatus, Project, Registry};
-use agency_core::supervisor::AgentHandle;
 use agency_core::term::client::{Subscription, TermClient};
 use agency_core::term::SessionStatus;
 use agency_core::worktree::WorktreeManager;
@@ -24,8 +23,6 @@ const SETTING_UPDATE_CHECK: &str = "update_check_enabled";
 /// "0" makes the add-agent menu default to working in the project checkout
 /// instead of cutting a worktree. Unset = worktrees on, the isolated default.
 const SETTING_DEFAULT_WORKTREE: &str = "default_worktree";
-
-const MERGE_RESOLVER_SKILL: &str = include_str!("../../../skills/merge-resolver/SKILL.md");
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -226,6 +223,61 @@ fn compose_feedback(comments: &[agency_core::registry::ReviewComment]) -> String
         })
         .collect();
     format!("Please address these review comments: {}", parts.join(" | "))
+}
+
+/// How many conflicted paths the prompt names before it summarizes the rest.
+/// The message is typed into a live agent session, so it has to stay readable;
+/// an agent that has the first 40 has plenty to start on and can run `git
+/// status` itself for the tail.
+const MERGE_CONFLICT_FILE_CAP: usize = 40;
+
+/// The unmerged paths of a conflicted merge, in `git status --short` form
+/// (`UU src/a.rs`). Only the unmerged ones: a merge in progress also stages
+/// every cleanly merged file, and listing those would bury the conflicts.
+fn conflict_status(repo: &Path) -> Vec<String> {
+    agency_core::git::status(repo)
+        .unwrap_or_default()
+        .into_iter()
+        // The seven unmerged porcelain states: DD, AU, UD, UA, DU, AA, UU.
+        .filter(|c| {
+            c.index == "U"
+                || c.worktree == "U"
+                || (c.index == "D" && c.worktree == "D")
+                || (c.index == "A" && c.worktree == "A")
+        })
+        .map(|c| {
+            let path = c.path.replace(['\n', '\r'], " ");
+            format!("{}{} {}", c.index, c.worktree, path)
+        })
+        .collect()
+}
+
+/// The prompt typed into an agent's session when its merge conflicts. Single
+/// line by construction: `send_text` terminates with a carriage return, so an
+/// embedded newline would submit half a message. The checkout path is spelled
+/// out because the merge is in progress in the project's main checkout, not in
+/// the agent's worktree; an agent that assumed its own cwd would "resolve"
+/// files the merge never touched.
+fn compose_merge_conflict(repo: &Path, branch: &str, base: &str, status: &[String]) -> String {
+    let git_output = if status.is_empty() {
+        "(git reports no unmerged files; check `git status` yourself)".to_string()
+    } else if status.len() > MERGE_CONFLICT_FILE_CAP {
+        format!(
+            "{} and {} more (run `git status` for the full list)",
+            status[..MERGE_CONFLICT_FILE_CAP].join(" | "),
+            status.len() - MERGE_CONFLICT_FILE_CAP,
+        )
+    } else {
+        status.join(" | ")
+    };
+    format!(
+        "Help me fix this merge conflict: {git_output}. That is `git status --short` in {repo}, \
+         the project's main checkout, where a merge of {branch} into {base} is in progress. It is \
+         not this worktree, so point git at that path. Please resolve every conflict, remove all \
+         conflict markers, and `git add` each file you fix. Do not commit; Agency completes the \
+         merge once nothing is left unmerged.",
+        repo = repo.display(),
+    )
 }
 
 /// Socket the terminal daemon listens on, derived from the app data dir.
@@ -625,7 +677,6 @@ pub struct AppState {
     shell_attaches: Mutex<HashMap<String, Subscription>>,
     term: RwLock<TermClient>,
     data_dir: PathBuf,
-    resolvers: Mutex<HashMap<String, AgentHandle>>,
     /// Run id → the branch the main checkout was on when that run's merge hit
     /// conflicts, so finishing or aborting the merge can put it back. Only
     /// `merge()`'s own clean path restores by itself; a conflicted merge stays
@@ -747,7 +798,6 @@ impl AppState {
             shell_attaches: Mutex::new(HashMap::new()),
             term: RwLock::new(TermClient::connect_or_spawn(termd_socket(data_dir), termd_bin())?),
             data_dir: data_dir.to_path_buf(),
-            resolvers: Mutex::new(HashMap::new()),
             merge_origins: Mutex::new(HashMap::new()),
             ui: Mutex::new(UiState { focused: true, active_run: None, pending_open: None }),
             input_seen: Mutex::new(HashSet::new()),
@@ -3873,82 +3923,23 @@ impl AppState {
         Ok(())
     }
 
-    pub fn resolve_merge<F>(
-        &self,
-        id: &str,
-        resolver_profile: &str,
-        on_output: F,
-    ) -> anyhow::Result<()>
-    where
-        F: Fn(Vec<u8>) + Send + 'static,
-    {
+    /// Hand a conflicted merge to the run's own agent by typing a prompt into
+    /// its live session, the same delivery path as review comments and CI
+    /// feedback. Replaces the old one-shot resolver process, which spawned a
+    /// second, context-free agent that had no idea what the branch was for.
+    pub fn send_merge_conflict(&self, id: &str) -> anyhow::Result<()> {
         let run = self.run_record(id)?;
         let repo = self.project_repo(&run.project_id)?;
         let base = agency_core::merge::resolve_target(run.merge_target.as_deref(), &repo)
             .unwrap_or_else(|_| "main".to_string());
-        let branch = run.branch.clone();
-        let conflicts = agency_core::git::status(&repo)
-            .map(|cs| {
-                cs.into_iter()
-                    .filter(|c| c.index == "U" || c.worktree == "U")
-                    .map(|c| c.path)
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-
-        let prompt = format!(
-            "{skill}\n\n## This merge\n- Base branch: {base}\n- Feature branch: {branch}\n- Conflicted files: {files}\n",
-            skill = MERGE_RESOLVER_SKILL,
-            files = if conflicts.is_empty() { "(detect with `git status`)".to_string() } else { conflicts.join(", ") },
-        );
-
-        let mut profile = {
-            let reg = self.registry.lock().unwrap();
-            reg.get_profile(resolver_profile)?
-                .ok_or_else(|| anyhow!("unknown resolver profile: {resolver_profile}"))?
-        };
-
-        let mut env = self.provider_env()?;
-        env.extend(profile.env.iter().cloned());
-        profile.env = env;
-
-        let handle = agency_core::supervisor::spawn_agent(&profile, &repo, &prompt, on_output)?;
-        self.resolvers.lock().unwrap().insert(id.to_string(), handle);
-        Ok(())
-    }
-
-    /// Tear down a merge resolver: dropping its handle kills the agent child
-    /// (see `AgentHandle`'s Drop) and frees the map slot. Called when the merge
-    /// modal closes or the resolver exits; a no-op if none is running, so it is
-    /// safe to call unconditionally.
-    pub fn resolver_close(&self, id: &str) {
-        self.resolvers.lock().unwrap().remove(id);
-    }
-
-    pub fn resolver_input(&self, id: &str, data: &[u8]) -> anyhow::Result<()> {
-        let resolvers = self.resolvers.lock().unwrap();
-        let handle = resolvers
-            .get(id)
-            .ok_or_else(|| anyhow!("no resolver for task: {id}"))?;
-        handle.write_input(data)
-    }
-
-    pub fn resolver_status(&self, id: &str) -> anyhow::Result<agency_core::supervisor::AgentStatus> {
-        let resolvers = self.resolvers.lock().unwrap();
-        let handle = resolvers
-            .get(id)
-            .ok_or_else(|| anyhow!("no resolver for task: {id}"))?;
-        Ok(handle.status())
-    }
-
-    /// Resize the resolver PTY so its agent reflows to the visible terminal.
-    /// A no-op when no resolver is running (resize events can arrive before the
-    /// resolver is spawned or after it has exited).
-    pub fn resolver_resize(&self, id: &str, cols: u16, rows: u16) -> anyhow::Result<()> {
-        let resolvers = self.resolvers.lock().unwrap();
-        if let Some(handle) = resolvers.get(id) {
-            handle.resize(rows, cols)?;
+        if !agency_core::merge::is_merging(&repo)? {
+            bail!("no merge is in progress, so there is no conflict to send");
         }
+        if !matches!(self.term.read().unwrap().status(&session_name(id)), Ok(SessionStatus::Running)) {
+            bail!("agent session {id} is not running");
+        }
+        let msg = compose_merge_conflict(&repo, &run.branch, &base, &conflict_status(&repo));
+        self.term.read().unwrap().send_text(&session_name(id), &msg)?;
         Ok(())
     }
 
@@ -4409,8 +4400,9 @@ mod tests {
         assert_eq!(super::run_session_name("fix-login-a3k2"), "agency-run-fix-login-a3k2");
     }
 
-    use super::compose_feedback;
+    use super::{compose_feedback, compose_merge_conflict};
     use agency_core::registry::ReviewComment;
+    use std::path::Path;
 
     fn rc(path: &str, a: u32, b: u32, body: &str) -> ReviewComment {
         ReviewComment {
@@ -4431,6 +4423,38 @@ mod tests {
         assert!(!msg.contains("src/b.rs:5-5"), "equal start/end shows one number");
         assert!(msg.contains("rename this"));
         assert!(msg.contains("remove dead code"));
+    }
+
+    #[test]
+    fn compose_merge_conflict_is_single_line_and_names_the_checkout() {
+        let msg = compose_merge_conflict(
+            Path::new("/tmp/demo"),
+            "agent/feature",
+            "main",
+            &["UU src/a.rs".to_string(), "UU src/b.rs".to_string()],
+        );
+        // A newline would submit the prompt half-typed: send_text appends the
+        // carriage return itself.
+        assert!(!msg.contains('\n') && !msg.contains('\r'), "must be single-line");
+        assert!(msg.starts_with("Help me fix this merge conflict: "), "got: {msg}");
+        assert!(msg.contains("UU src/a.rs | UU src/b.rs"), "got: {msg}");
+        assert!(msg.contains("/tmp/demo"), "names the checkout the merge is in: {msg}");
+        assert!(msg.contains("agent/feature") && msg.contains("main"), "got: {msg}");
+    }
+
+    #[test]
+    fn compose_merge_conflict_survives_an_empty_status() {
+        let msg = compose_merge_conflict(Path::new("/tmp/demo"), "b", "main", &[]);
+        assert!(msg.contains("no unmerged files"), "got: {msg}");
+    }
+
+    #[test]
+    fn compose_merge_conflict_caps_a_huge_file_list() {
+        let files: Vec<String> = (0..60).map(|i| format!("UU src/f{i}.rs")).collect();
+        let msg = compose_merge_conflict(Path::new("/tmp/demo"), "b", "main", &files);
+        assert!(msg.contains("UU src/f39.rs"), "keeps the first 40: {msg}");
+        assert!(!msg.contains("UU src/f40.rs"), "drops the rest: {msg}");
+        assert!(msg.contains("and 20 more"), "says how many it dropped: {msg}");
     }
 
     #[test]

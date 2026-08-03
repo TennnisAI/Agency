@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRuns, SpawnOpts } from "../store/runs";
 import {
-  discardRun, archiveRun, setRunTitle, renameRun,
+  setRunTitle, renameRun,
   listProfiles, AgentProfile,
   listRunSessions, startRunSession, closeRunSession, RunSessionInfo,
   RunInfo, stopLoop, listIssues, listProjects,
 } from "../api";
+import { Removal, removalLabel, removalsFor } from "../lib/runRemoval";
 import { issueLabel } from "../lib/issues";
 import { requestNavigate } from "../lib/navigate";
 import { toastError } from "../lib/toast";
@@ -15,6 +16,7 @@ import FocusTerminal, { shellStream } from "./FocusTerminal";
 import RunPanel from "./RunPanel";
 import MergeModal from "./MergeModal";
 import ConfirmDialog from "./ConfirmDialog";
+import RunRemoveDialog from "./RunRemoveDialog";
 import PromptDialog from "./PromptDialog";
 import Resizer from "./Resizer";
 import ArchivedSection from "./ArchivedSection";
@@ -72,6 +74,57 @@ function LoopStrip({ run, onChanged }: { run: RunInfo; onChanged: () => void }) 
   );
 }
 
+// One entry in the agents rail. Hovering it (or tabbing to its control) reveals
+// a close button, and the menu behind that is where a run ends without first
+// having to open it: archived, so its branch survives and the Archived section
+// can restore it, or discarded outright. A terminal only closes.
+function RailRow({
+  run,
+  on,
+  onSelect,
+  onRename,
+}: {
+  run: RunInfo;
+  on: boolean;
+  onSelect: () => void;
+  onRename: () => void;
+}) {
+  const [pending, setPending] = useState<Removal | null>(null);
+  const isTerminal = run.kind === "terminal";
+  return (
+    <div className="rail-row-wrap">
+      <button
+        className={`rail-row ${on ? "on" : ""}`}
+        onClick={onSelect}
+        onDoubleClick={onRename}
+        title="Double-click to rename"
+      >
+        <span className={`dot ${runStatus(run).cls}`} />
+        <span className="rail-name">{runListLabel(run)}</span>
+        {run.runScriptsLive && (
+          <span className="run-dot" title="A run script is running in this workspace" />
+        )}
+      </button>
+      {/* Sibling of the row rather than a child of it: a button inside a button
+          is invalid markup, and the row keeps its own click target intact. */}
+      <OverflowMenu
+        buttonClass="rail-row-close"
+        icon={<span aria-hidden>✕</span>}
+        title={isTerminal ? "Close terminal" : "Archive or discard this agent"}
+        items={removalsFor(run).map((action) => ({
+          label: removalLabel(run, action),
+          icon: action === "archive" ? <InboxIcon /> : <TrashIcon />,
+          danger: action === "discard",
+          onSelect: () => setPending(action),
+        }))}
+      />
+      {pending && (
+        <RunRemoveDialog run={run} action={pending} onClose={() => setPending(null)} />
+      )}
+    </div>
+  );
+}
+
 // `onSpawn` lets the host view wrap agent creation with its pre-flight checks
 // (missing-CLI install offer, repo readiness); without it the rail's add menu
 // falls back to the raw store spawn.
@@ -82,8 +135,8 @@ export default function AgentFocus({
 }) {
   const { runs, focusedRunId, setFocusedRun, setView, refreshRuns, createAgent, createTerminal, selectedProjectId, pendingSessionId, setPendingSession } = useRuns();
   const [showMerge, setShowMerge] = useState(false);
-  const [confirmDiscard, setConfirmDiscard] = useState(false);
-  const [confirmArchive, setConfirmArchive] = useState(false);
+  // Archive / discard of the focused run, awaiting its confirm dialog.
+  const [pendingRemoval, setPendingRemoval] = useState<Removal | null>(null);
   // Run being renamed (its display title). Any run — agent or terminal.
   const [renaming, setRenaming] = useState<RunInfo | null>(null);
   // "agent" (primary terminal), "run" (RunPanel), or an extra-session id —
@@ -113,6 +166,7 @@ export default function AgentFocus({
   const addBtnRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     setShowMerge(false);
+    setPendingRemoval(null);
     setAddOpen(false);
     setSessions([]);
     // Reopen this run on its last-used tab. The strip isn't loaded yet, so the
@@ -275,16 +329,13 @@ export default function AgentFocus({
               <button className="icon-btn" onClick={() => setRailOpen(false)}>«</button>
             </div>
             {runs.map((r) => (
-              <button key={r.id} className={`rail-row ${r.id === focusedRunId ? "on" : ""}`}
-                onClick={() => setFocusedRun(r.id)}
-                onDoubleClick={() => setRenaming(r)}
-                title="Double-click to rename">
-                <span className={`dot ${runStatus(r).cls}`} />
-                <span className="rail-name">{runListLabel(r)}</span>
-                {r.runScriptsLive && (
-                  <span className="run-dot" title="A run script is running in this workspace" />
-                )}
-              </button>
+              <RailRow
+                key={r.id}
+                run={r}
+                on={r.id === focusedRunId}
+                onSelect={() => setFocusedRun(r.id)}
+                onRename={() => setRenaming(r)}
+              />
             ))}
             <ArchivedSection />
           </div>
@@ -308,31 +359,11 @@ export default function AgentFocus({
                 <OverflowMenu
                   items={[
                     { label: "Rename terminal", icon: <PencilIcon />, onSelect: () => setRenaming(focused) },
-                    { label: "Close terminal", icon: <TrashIcon />, danger: true, separator: true, onSelect: () => setConfirmDiscard(true) },
+                    { label: "Close terminal", icon: <TrashIcon />, danger: true, separator: true, onSelect: () => setPendingRemoval("discard") },
                   ]}
                 />
               </div>
               <FocusTerminal key={focused.id} runId={focused.id} />
-              {confirmDiscard && (
-                <ConfirmDialog
-                  title="Close terminal?"
-                  body="Stop the shell and remove this terminal session."
-                  confirmLabel="Close"
-                  danger
-                  onConfirm={async () => {
-                    const id = focused.id;
-                    setConfirmDiscard(false);
-                    try {
-                      await discardRun(id);
-                      setFocusedRun(null);
-                      await refreshRuns();
-                    } catch (e) {
-                      toastError(e, "Close failed");
-                    }
-                  }}
-                  onCancel={() => setConfirmDiscard(false)}
-                />
-              )}
             </>
           ) : (
             <>
@@ -374,8 +405,8 @@ export default function AgentFocus({
                 <OverflowMenu
                   items={[
                     { label: "Rename agent", icon: <PencilIcon />, onSelect: () => setRenaming(focused) },
-                    { label: "Archive agent", icon: <InboxIcon />, separator: true, onSelect: () => setConfirmArchive(true) },
-                    { label: "Discard agent", icon: <TrashIcon />, danger: true, onSelect: () => setConfirmDiscard(true) },
+                    { label: "Archive agent", icon: <InboxIcon />, separator: true, onSelect: () => setPendingRemoval("archive") },
+                    { label: "Discard agent", icon: <TrashIcon />, danger: true, onSelect: () => setPendingRemoval("discard") },
                   ]}
                 />
                 {/* Nothing to approve without a branch of its own: the work is
@@ -514,55 +545,18 @@ export default function AgentFocus({
                   onCancel={() => setConfirmCloseTab(null)}
                 />
               )}
-              {confirmDiscard && (
-                <ConfirmDialog
-                  title="Discard agent?"
-                  body={focused.worktree
-                    ? `Stop "${focused.agent}", remove its worktree, and delete the run. This cannot be undone.`
-                    : `Stop "${focused.agent}" and delete the run. Your checkout and its changes are left exactly as they are.`}
-                  confirmLabel="Discard"
-                  danger
-                  onConfirm={async () => {
-                    const id = focused.id;
-                    setConfirmDiscard(false);
-                    try {
-                      await discardRun(id);
-                      setFocusedRun(null);
-                      await refreshRuns();
-                    } catch (e) {
-                      toastError(e, "Discard failed");
-                    }
-                  }}
-                  onCancel={() => setConfirmDiscard(false)}
-                />
-              )}
-              {confirmArchive && (
-                <ConfirmDialog
-                  title="Archive agent?"
-                  body={focused.worktree
-                    ? `Stop "${focused.agent}" and remove its worktree. Any uncommitted work is auto-committed to its "${focused.branch}" branch first.`
-                    : `Stop "${focused.agent}" and file the run away. Nothing in your checkout is committed or removed.`}
-                  confirmLabel="Archive"
-                  onConfirm={async () => {
-                    const id = focused.id;
-                    setConfirmArchive(false);
-                    try {
-                      await archiveRun(id);
-                      setFocusedRun(null);
-                      await refreshRuns();
-                    } catch (e) {
-                      toastError(e, "Archive failed");
-                    }
-                  }}
-                  onCancel={() => setConfirmArchive(false)}
-                />
-              )}
             </>
           )
         ) : (
           <div className="board empty">Select an agent from the rail.</div>
         )}
       </div>
+
+      {/* Shared by both header menus (agent and terminal): the run being removed
+          is always the focused one. */}
+      {focused && pendingRemoval && (
+        <RunRemoveDialog run={focused} action={pendingRemoval} onClose={() => setPendingRemoval(null)} />
+      )}
 
       {renaming && (
         <PromptDialog

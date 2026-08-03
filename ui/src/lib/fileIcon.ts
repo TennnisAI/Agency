@@ -1,7 +1,9 @@
 // Map a file name to a tree icon shape + a theme-accent color var. Colors are
 // drawn from the active theme's tokens (theme.css) rather than fixed hex, so
 // file-type icons stay in-palette and adapt to light ("Paperback") and dark
-// themes automatically. Modeled on lib/cmLanguage.ts.
+// themes automatically. Modeled on lib/fileLanguage.ts.
+
+import { languageIdForPath } from "./fileLanguage";
 
 export type FileIconKind =
   | "code" // languages: ts/js/py/rs/go/…
@@ -45,7 +47,9 @@ const BY_NAME: Record<string, FileIconSpec> = {
   "yarn.lock": { kind: "lock", color: "var(--sub1)" },
 };
 
-// Extension → spec. Keep in step with cmLanguage.ts where they overlap.
+// Extension → spec. Keep in step with fileLanguage.ts where they overlap; any
+// language that file knows but this one doesn't still gets a code icon (see
+// the fallback in fileIcon()), so only add an entry to pick a color.
 const BY_EXT: Record<string, FileIconSpec> = {
   ts: { kind: "code", color: "var(--blue)" },
   tsx: { kind: "code", color: "var(--blue)" },
@@ -63,6 +67,23 @@ const BY_EXT: Record<string, FileIconSpec> = {
   cpp: { kind: "code", color: "var(--blue)" },
   swift: { kind: "code", color: "var(--peach)" },
   php: { kind: "code", color: "var(--mauve)" },
+  kt: { kind: "code", color: "var(--mauve)" },
+  kts: { kind: "code", color: "var(--mauve)" },
+  cs: { kind: "code", color: "var(--green)" },
+  scala: { kind: "code", color: "var(--red)" },
+  ex: { kind: "code", color: "var(--mauve)" },
+  exs: { kind: "code", color: "var(--mauve)" },
+  lua: { kind: "code", color: "var(--blue)" },
+  zig: { kind: "code", color: "var(--peach)" },
+  dart: { kind: "code", color: "var(--teal)" },
+  hs: { kind: "code", color: "var(--mauve)" },
+  sql: { kind: "code", color: "var(--peach)" },
+  graphql: { kind: "code", color: "var(--pink)" },
+  gql: { kind: "code", color: "var(--pink)" },
+  prisma: { kind: "code", color: "var(--teal)" },
+  tf: { kind: "code", color: "var(--mauve)" },
+  tfvars: { kind: "code", color: "var(--mauve)" },
+  nix: { kind: "code", color: "var(--blue)" },
 
   json: { kind: "braces", color: "var(--peach)" },
   jsonc: { kind: "braces", color: "var(--peach)" },
@@ -86,6 +107,11 @@ const BY_EXT: Record<string, FileIconSpec> = {
   mdx: { kind: "doc", color: "var(--green)" },
   txt: { kind: "doc", color: "var(--sub1)" },
   rst: { kind: "doc", color: "var(--green)" },
+  log: { kind: "doc", color: "var(--sub1)" },
+  diff: { kind: "doc", color: "var(--sub1)" },
+  patch: { kind: "doc", color: "var(--sub1)" },
+  csv: { kind: "braces", color: "var(--green)" },
+  tsv: { kind: "braces", color: "var(--green)" },
 
   png: { kind: "image", color: "var(--teal)" },
   jpg: { kind: "image", color: "var(--teal)" },
@@ -158,11 +184,18 @@ const BY_EXT: Record<string, FileIconSpec> = {
 
 export function fileIcon(name: string): FileIconSpec {
   const lower = name.toLowerCase();
-  if (lower in BY_NAME) return BY_NAME[lower];
+  // Own-property checks only, so a file named "constructor" can't inherit a
+  // match from Object.prototype.
+  if (Object.prototype.hasOwnProperty.call(BY_NAME, lower)) return BY_NAME[lower];
   // .env, .env.local, .env.production, … are secrets.
   if (lower === ".env" || lower.startsWith(".env.")) {
     return { kind: "lock", color: "var(--yellow)" };
   }
   const ext = lower.includes(".") ? lower.split(".").pop()! : "";
-  return BY_EXT[ext] ?? DEFAULT;
+  if (Object.prototype.hasOwnProperty.call(BY_EXT, ext)) return BY_EXT[ext];
+  // Source the editor can highlight but that has no color of its own above:
+  // still a code file, just an uncolored one. Keeps the tree honest as the
+  // language list in fileLanguage.ts grows.
+  if (languageIdForPath(lower)) return { kind: "code", color: "var(--sub1)" };
+  return DEFAULT;
 }

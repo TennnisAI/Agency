@@ -2,21 +2,16 @@ import { Extension, Facet, Range, RangeSet } from "@codemirror/state";
 import {
   Decoration, DecorationSet, EditorView, ViewPlugin, ViewUpdate, WidgetType,
 } from "@codemirror/view";
-import { HighlightStyle, LanguageDescription, syntaxHighlighting, syntaxTree } from "@codemirror/language";
+import { HighlightStyle, syntaxHighlighting, syntaxTree } from "@codemirror/language";
 import { tags as t } from "@lezer/highlight";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import type { MarkdownConfig, InlineContext } from "@lezer/markdown";
-import { javascript } from "@codemirror/lang-javascript";
-import { json } from "@codemirror/lang-json";
-import { rust } from "@codemirror/lang-rust";
-import { css } from "@codemirror/lang-css";
-import { html } from "@codemirror/lang-html";
-import { python } from "@codemirror/lang-python";
 import { autocompletion, CompletionContext, CompletionResult } from "@codemirror/autocomplete";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { FileRoot, readFileBase64 } from "../api";
 import { DocsIndex, parseFrontmatter, stripExt } from "./docsIndex";
 import { CrossRefs, issueCompletionOptions, wikilinkView } from "./links";
+import { languageForFence } from "./cmLanguage";
 import { joinPath } from "./filePath";
 
 // Obsidian-style live preview for the Docs tab: one CodeMirror pane where
@@ -104,22 +99,15 @@ const highlightExtension: MarkdownConfig = {
   }],
 };
 
-const codeLanguages = [
-  LanguageDescription.of({
-    name: "javascript",
-    alias: ["js", "jsx", "ts", "tsx", "typescript"],
-    load: async () => javascript({ typescript: true, jsx: true }),
-  }),
-  LanguageDescription.of({ name: "json", load: async () => json() }),
-  LanguageDescription.of({ name: "rust", alias: ["rs"], load: async () => rust() }),
-  LanguageDescription.of({ name: "css", load: async () => css() }),
-  LanguageDescription.of({ name: "html", load: async () => html() }),
-  LanguageDescription.of({ name: "python", alias: ["py"], load: async () => python() }),
-];
-
-/** Markdown language for docs notes: GFM base + wikilinks + fenced-code langs. */
+/** Markdown language for docs notes: GFM base + wikilinks + fenced-code langs.
+ *  Fenced blocks resolve through the same registry the file editor uses, so
+ *  ```go and ```sql color in a note exactly as they do in a source file. */
 export const docsMarkdown = () =>
-  markdown({ base: markdownLanguage, codeLanguages, extensions: [wikilinkExtension, highlightExtension] });
+  markdown({
+    base: markdownLanguage,
+    codeLanguages: languageForFence,
+    extensions: [wikilinkExtension, highlightExtension],
+  });
 
 /**
  * Token colors for the docs editor. Mirrors cmTheme's editorHighlight for code

@@ -1,16 +1,13 @@
-import { createHighlighter, type Highlighter, type ThemeRegistrationRaw } from "shiki";
+import { bundledLanguages, createHighlighter, type BundledLanguage, type Highlighter, type ThemeRegistrationRaw } from "shiki";
 import { currentThemeId, THEMES, type Theme } from "../../lib/themes";
+import { languageIdForPath } from "../../lib/fileLanguage";
 
-const LANGS = ["typescript", "tsx", "javascript", "jsx", "json", "rust", "css", "html", "markdown", "python", "bash", "toml", "yaml"];
-const EXT: Record<string, string> = {
-  ts: "typescript", tsx: "tsx", js: "javascript", jsx: "jsx", json: "json",
-  rs: "rust", css: "css", html: "html", md: "markdown", py: "python",
-  sh: "bash", toml: "toml", yml: "yaml", yaml: "yaml",
-};
-
+/** Shiki language id for a diffed file, or "text" when it has no grammar.
+ *  Shiki carries VS Code's own TextMate grammars, so the ids in
+ *  lib/fileLanguage.ts are the ids it is keyed by. */
 export function langForPath(path: string): string {
-  const ext = path.split(".").pop()?.toLowerCase() ?? "";
-  return EXT[ext] ?? "text";
+  const id = languageIdForPath(path);
+  return id && id in bundledLanguages ? id : "text";
 }
 
 // A Shiki TextMate theme built from the app theme's own palette. The bundled
@@ -61,12 +58,30 @@ export function ensureHighlighter(): Promise<void> {
   if (hl) return Promise.resolve();
   if (!loading) {
     // Register a theme per app theme up front so a runtime theme switch needs no
-    // async reload — the matching theme is already loaded by id.
-    loading = createHighlighter({ themes: THEMES.map(shikiThemeFor), langs: LANGS }).then((h) => {
+    // async reload — the matching theme is already loaded by id. Grammars, by
+    // contrast, are fetched per language on first use: there are 200-odd of
+    // them, and loading the set eagerly would cost more than every diff the app
+    // will ever show.
+    loading = createHighlighter({ themes: THEMES.map(shikiThemeFor), langs: [] }).then((h) => {
       hl = h;
     });
   }
   return loading;
+}
+
+// One load attempt per language, shared by every line that needs it.
+const grammars = new Map<string, Promise<boolean>>();
+
+function ensureGrammar(lang: string): Promise<boolean> {
+  let p = grammars.get(lang);
+  if (!p) {
+    // A failure sticks for the session on purpose: every line of a diff asks
+    // for the same language in turn, so retrying would mean thousands of
+    // failed fetches for one file instead of one.
+    p = hl!.loadLanguage(lang as BundledLanguage).then(() => true, () => false);
+    grammars.set(lang, p);
+  }
+  return p;
 }
 
 function shikiTheme(): string {
@@ -78,7 +93,8 @@ function shikiTheme(): string {
 export async function highlightLine(code: string, lang: string): Promise<string> {
   try {
     await ensureHighlighter();
-    if (!hl || lang === "text" || !LANGS.includes(lang)) return escapeHtml(code);
+    if (!hl || lang === "text" || !(lang in bundledLanguages)) return escapeHtml(code);
+    if (!(await ensureGrammar(lang))) return escapeHtml(code);
     const html = hl.codeToHtml(code, { lang, theme: shikiTheme() });
     // Extract inner spans of the single <span class="line">…</span>.
     const m = html.match(/<span class="line">(.*)<\/span>/s);

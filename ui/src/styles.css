@@ -1903,7 +1903,18 @@ input, textarea, code,
 /* Empty board: the + is the hero, centered above the hint. */
 .issues-empty { gap: 12px; }
 .quickadd-toggle.big { width: 36px; height: 36px; font-size: 19px; }
+/* Search + filters, one row under quick capture. The bar itself is the shared
+   .issues-filterbar (same as the cross-project board, so both boards read the
+   same); only the gutter changes, to line up with the rows below. */
+.issues-filterbar.issues-toolbar { padding: 0 16px; margin: 2px 0 0; }
+
 .issues-list { flex: 1; overflow-y: auto; padding: 8px 16px 24px; }
+/* Nothing survived the filters — offered with the way out, not just a shrug. */
+.issues-nomatch {
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  padding: 48px 16px; color: var(--o0); font-size: 12.5px;
+}
+.issues-nomatch-title { font-size: 13px; color: var(--sub0); }
 
 .issue-group { margin-top: 10px; }
 .issue-group-head {
@@ -1927,6 +1938,10 @@ input, textarea, code,
 .issue-key { color: var(--o1); font-size: 11px; flex-shrink: 0; }
 .issue-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .issue-title.cancelled { color: var(--o0); text-decoration: line-through; }
+/* Search hit inside a key or title. Colored, not filled: a highlighter block
+   behind every match turns a scan into a wall of boxes, and the rows have to
+   stay readable while you skim them. */
+.issue-hit { background: none; color: var(--yellow); font-weight: 600; }
 
 .issue-prio { display: inline-flex; align-items: flex-end; gap: 1.5px; width: 14px; height: 12px; flex-shrink: 0; justify-content: center; }
 .issue-prio i { width: 3px; border-radius: 1px; background: var(--s1); }
@@ -2139,7 +2154,8 @@ input, textarea, code,
 .home-issues { display: flex; flex-direction: column; padding: 2px 4px 6px; }
 .issue-row.home-issue .issue-status-pill { visibility: visible; }
 
-/* Cross-project board: one 28px-tall row — search pill left, filter pills
+/* The issue filter bar, shared by both boards (cross-project home and the
+   per-project Issues tab): one 28px-tall row — search pill left, filter pills
    right, everything the same height and radius so nothing towers. */
 .issues-filterbar { display: flex; gap: 6px; align-items: center; margin: 2px 0 18px; }
 .issues-filterbar .spacer { flex: 1; }
@@ -2160,6 +2176,16 @@ input, textarea, code,
   cursor: pointer; font-size: 10px; line-height: 1;
 }
 .filter-clear:hover { color: var(--text); }
+/* "12 of 40", beside the search field, only while something is filtering. */
+.filter-count { color: var(--o0); font-size: 11.5px; flex-shrink: 0; }
+/* The way back to the whole board. Borderless so it doesn't read as a fourth
+   pill; it only exists while there is something to reset. */
+.filter-reset {
+  flex-shrink: 0; height: 28px; padding: 0 11px; border-radius: 999px;
+  background: transparent; border: 1px solid transparent;
+  color: var(--o1); font-family: var(--sans); font-size: 12px; cursor: pointer;
+}
+.filter-reset:hover { background: var(--s0); color: var(--text); }
 .filter-pill {
   display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0;
   height: 28px; padding: 0 10px 0 12px; border-radius: 999px;

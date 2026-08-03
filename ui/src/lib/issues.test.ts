@@ -1,6 +1,17 @@
 import { describe, expect, it } from "vitest";
 import { Issue } from "../api";
-import { compareIssues, fmtDate, isOverdue, todayIssues } from "./issues";
+import {
+  NO_FILTERS,
+  compareIssues,
+  filtersActive,
+  fmtDate,
+  isOverdue,
+  issueSorter,
+  matchRanges,
+  matchesFilters,
+  searchTerms,
+  todayIssues,
+} from "./issues";
 
 const TODAY = "2026-07-30";
 
@@ -39,6 +50,91 @@ describe("compareIssues", () => {
     expect([low, urgent, older].sort(compareIssues).map((i) => i.id)).toEqual([
       older.id, urgent.id, low.id,
     ]);
+  });
+});
+
+describe("searchTerms", () => {
+  it("splits on whitespace and lowercases", () => {
+    expect(searchTerms("  Auth   Flake ")).toEqual(["auth", "flake"]);
+    expect(searchTerms("   ")).toEqual([]);
+  });
+});
+
+describe("filtersActive", () => {
+  it("is false only for the untouched bar", () => {
+    expect(filtersActive(NO_FILTERS)).toBe(false);
+    expect(filtersActive({ ...NO_FILTERS, terms: ["x"] })).toBe(true);
+    expect(filtersActive({ ...NO_FILTERS, status: "open" })).toBe(true);
+    expect(filtersActive({ ...NO_FILTERS, priority: 0 })).toBe(true);
+  });
+});
+
+describe("matchesFilters", () => {
+  const f = (over: Partial<typeof NO_FILTERS>) => ({ ...NO_FILTERS, ...over });
+
+  it("passes everything when nothing is set", () => {
+    expect(matchesFilters(issue({ status: "cancelled" }), "AGE-1", NO_FILTERS)).toBe(true);
+  });
+
+  it("open hides done and cancelled; a status pins exactly one", () => {
+    expect(matchesFilters(issue({ status: "done" }), "AGE-1", f({ status: "open" }))).toBe(false);
+    expect(matchesFilters(issue({ status: "todo" }), "AGE-1", f({ status: "open" }))).toBe(true);
+    expect(matchesFilters(issue({ status: "done" }), "AGE-1", f({ status: "done" }))).toBe(true);
+    expect(matchesFilters(issue({ status: "todo" }), "AGE-1", f({ status: "done" }))).toBe(false);
+  });
+
+  it("matches priority exactly, -1 meaning any", () => {
+    expect(matchesFilters(issue({ priority: 4 }), "AGE-1", f({ priority: 4 }))).toBe(true);
+    expect(matchesFilters(issue({ priority: 3 }), "AGE-1", f({ priority: 4 }))).toBe(false);
+    expect(matchesFilters(issue({ priority: 0 }), "AGE-1", f({ priority: 0 }))).toBe(true);
+  });
+
+  it("searches key, title and body, all terms required, case-insensitive", () => {
+    const i = issue({ title: "Flaky login test", body: "Fails on CI only" });
+    expect(matchesFilters(i, "AGE-14", f({ terms: ["flaky"] }))).toBe(true);
+    expect(matchesFilters(i, "AGE-14", f({ terms: ["age-14"] }))).toBe(true);
+    expect(matchesFilters(i, "AGE-14", f({ terms: ["14"] }))).toBe(true);
+    expect(matchesFilters(i, "AGE-14", f({ terms: ["ci"] }))).toBe(true);
+    expect(matchesFilters(i, "AGE-14", f({ terms: ["flaky", "ci"] }))).toBe(true);
+    expect(matchesFilters(i, "AGE-14", f({ terms: ["flaky", "nope"] }))).toBe(false);
+  });
+});
+
+describe("matchRanges", () => {
+  it("finds every occurrence, case-insensitively", () => {
+    expect(matchRanges("Test the test", ["test"])).toEqual([[0, 4], [9, 13]]);
+  });
+
+  it("merges overlapping terms into one span", () => {
+    expect(matchRanges("logging", ["log", "ogg"])).toEqual([[0, 4]]);
+  });
+
+  it("is empty with no terms or no hit", () => {
+    expect(matchRanges("anything", [])).toEqual([]);
+    expect(matchRanges("anything", ["zzz"])).toEqual([]);
+  });
+});
+
+describe("issueSorter", () => {
+  it("board order runs status first, then the board compare", () => {
+    const doing = issue({ status: "in_progress" });
+    const back = issue({ status: "backlog" });
+    expect([doing, back].sort(issueSorter("board")).map((i) => i.id)).toEqual([back.id, doing.id]);
+  });
+
+  it("due order puts dateless issues last", () => {
+    const soon = issue({ due: "2026-08-01" });
+    const later = issue({ due: "2026-09-01" });
+    const none = issue({});
+    expect([none, later, soon].sort(issueSorter("due")).map((i) => i.id)).toEqual([
+      soon.id, later.id, none.id,
+    ]);
+  });
+
+  it("updated order is newest first", () => {
+    const old = issue({ updatedAt: 10 });
+    const fresh = issue({ updatedAt: 99 });
+    expect([old, fresh].sort(issueSorter("updated")).map((i) => i.id)).toEqual([fresh.id, old.id]);
   });
 });
 

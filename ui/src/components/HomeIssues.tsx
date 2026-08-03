@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import {
   Issue,
   IssuePatch,
-  IssueStatus,
   Project,
   RepoReadiness,
   RunInfo,
@@ -17,12 +16,16 @@ import {
 import { projectAccent } from "../agents";
 import {
   ISSUE_STATUSES,
+  IssueSort,
   PENDING_ISSUE_KEY,
   PRIORITY_LABELS,
   STATUS_LABELS,
-  compareIssues,
+  StatusFilter,
   isClosed,
   issueLabel,
+  issueSorter,
+  matchesFilters,
+  searchTerms,
   todayIssues,
 } from "../lib/issues";
 import { dateStamp } from "../lib/dailyNote";
@@ -40,9 +43,6 @@ import RepoSetupDialog from "./RepoSetupDialog";
 import InstallAgentDialog from "./InstallAgentDialog";
 import PillSelect from "./PillSelect";
 import { Stat } from "./HomeView";
-
-type StatusFilter = "open" | IssueStatus;
-type Sort = "board" | "due" | "updated";
 
 // Notes shown in the Tasks section before the explicit "N more" line.
 // Collapsed groups are one row each, so this can be generous.
@@ -101,7 +101,7 @@ export default function HomeIssues({
   const [fStatus, setFStatus] = useState<StatusFilter>("open");
   const [fPriority, setFPriority] = useState(-1);
   const [fProject, setFProject] = useState("");
-  const [sort, setSort] = useState<Sort>("board");
+  const [sort, setSort] = useState<IssueSort>("board");
 
   const [confirmDelete, setConfirmDelete] = useState<{ project: Project; issue: Issue } | null>(null);
   const [pendingSpawn, setPendingSpawn] = useState<{
@@ -113,24 +113,13 @@ export default function HomeIssues({
   } | null>(null);
   const [missingAgent, setMissingAgent] = useState<{ project: Project; agentId: string } | null>(null);
 
-  const needle = q.trim().toLowerCase();
-  const matches = (i: Issue) =>
-    (fStatus === "open" ? !isClosed(i.status) : i.status === fStatus) &&
-    (fPriority < 0 || i.priority === fPriority) &&
-    (!needle || i.title.toLowerCase().includes(needle) || i.body.toLowerCase().includes(needle));
+  const terms = searchTerms(q);
+  const filters = { terms, status: fStatus, priority: fPriority };
 
   const shownProjects = projects.filter((p) => !fProject || p.id === fProject);
-  const compare = (a: Issue, b: Issue): number => {
-    if (sort === "due") {
-      const da = a.due ?? "9999";
-      const db = b.due ?? "9999";
-      if (da !== db) return da < db ? -1 : 1;
-      return compareIssues(a, b);
-    }
-    if (sort === "updated") return b.updatedAt - a.updatedAt;
-    return ISSUE_STATUSES.indexOf(a.status) - ISSUE_STATUSES.indexOf(b.status) || compareIssues(a, b);
-  };
-  const issuesOf = (p: Project) => (issuesBy[p.id] ?? []).filter(matches).sort(compare);
+  const compare = issueSorter(sort);
+  const issuesOf = (p: Project) =>
+    (issuesBy[p.id] ?? []).filter((i) => matchesFilters(i, issueLabel(p, i), filters)).sort(compare);
 
   const byProject = new Map(projects.map((p) => [p.id, p] as const));
   // Today spans the filtered set; each entry keeps its project for labels.
@@ -327,10 +316,11 @@ export default function HomeIssues({
       onSpawnAgent={(agentId, opts) => { dispatch(project, issue, agentId, opts); }}
       onPatch={(p) => patch(issue, p)}
       onDelete={() => setConfirmDelete({ project, issue })}
+      terms={terms}
     />
   );
 
-  const filtered = fStatus !== "open" || fPriority >= 0 || !!fProject || !!needle;
+  const filtered = fStatus !== "open" || fPriority >= 0 || !!fProject || terms.length > 0;
   const shownCount = ordered.reduce((n, p) => n + issuesOf(p).length, 0);
 
   return (
@@ -368,6 +358,7 @@ export default function HomeIssues({
           onChange={setFStatus}
           options={[
             { value: "open", label: "Open" },
+            { value: "all", label: "All statuses" },
             ...ISSUE_STATUSES.map((s) => ({ value: s, label: STATUS_LABELS[s] })),
           ]}
         />
@@ -391,7 +382,7 @@ export default function HomeIssues({
             ...projects.map((p) => ({ value: p.id, label: p.name })),
           ]}
         />
-        <PillSelect<Sort>
+        <PillSelect<IssueSort>
           value={sort}
           defaultValue="board"
           title="Sort"

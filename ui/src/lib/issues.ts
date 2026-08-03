@@ -101,3 +101,11 @@ export const PENDING_ISSUE_KEY = "issues:pending-select";
 // Same handoff trick for the palette's "New Issue": the Issues tab focuses
 // quick-add when this flag is waiting.
 export const PENDING_QUICKADD_KEY = "issues:focus-quickadd";
+
+// The board remembers per project whether the detail pane is expanded (the
+// list compressed to a sidebar). Per-project because how much room the detail
+// wants depends on how long that tracker's descriptions run. Stored beside the
+// other pane-layout prefs (loadFold/saveFold prefix these with "pane:").
+export function issuesExpandedKey(projectId: string): string {
+  return `issues-expanded:${projectId}`;
+}

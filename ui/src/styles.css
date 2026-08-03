@@ -932,6 +932,41 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
 .rail-row:hover { background: var(--s0); color: var(--text); }
 .rail-row.on { background: var(--s1); color: var(--text); }
 
+/* A rail entry is the row plus the close control that appears over its right
+   edge on hover. The row reserves the space permanently, so revealing the
+   control never reflows the name, and hovering the control keeps the row lit
+   (it reads as one target). */
+.rail-row-wrap { position: relative; }
+.rail-row-wrap .rail-row { padding-right: 32px; }
+.rail-row-wrap:hover .rail-row { background: var(--s0); color: var(--text); }
+.rail-row-wrap:hover .rail-row.on { background: var(--s1); }
+.rail-row-close {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--o1);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.1s, background 0.1s, color 0.1s;
+}
+.rail-row-wrap:hover .rail-row-close,
+.rail-row-close:focus-visible,
+.rail-row-close.on { opacity: 1; }
+.rail-row-close:hover,
+.rail-row-close.on { background: var(--s2); color: var(--text); }
+
 .rail-name {
   flex: 1;
   overflow: hidden;

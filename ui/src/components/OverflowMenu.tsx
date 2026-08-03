@@ -19,9 +19,15 @@ export type OverflowItem = {
 export default function OverflowMenu({
   items,
   title = "More actions",
+  icon,
+  buttonClass = "head-icon-btn",
 }: {
   items: OverflowItem[];
   title?: string;
+  /** Trigger glyph, when the host wants something other than the "…". */
+  icon?: ReactNode;
+  /** Trigger class. Gains " on" while the menu is open, either way. */
+  buttonClass?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [coords, setCoords] = useState<{ top: number; right: number }>();
@@ -43,12 +49,12 @@ export default function OverflowMenu({
     <>
       <button
         ref={btnRef}
-        className={`head-icon-btn${open ? " on" : ""}`}
+        className={`${buttonClass}${open ? " on" : ""}`}
         title={title}
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={toggle}
-      ><MoreIcon /></button>
+      >{icon ?? <MoreIcon />}</button>
       {open && (
         <>
           <div className="agent-menu-backdrop" onClick={() => setOpen(false)} />

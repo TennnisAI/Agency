@@ -1,10 +1,9 @@
 import { useEffect, useState } from "react";
-import { RunInfo, runPreview, discardRun } from "../api";
+import { RunInfo, runPreview } from "../api";
 import { useRuns } from "../store/runs";
 import { runName } from "../agents";
-import { toastError } from "../lib/toast";
 import { runStatus } from "../lib/runstate";
-import ConfirmDialog from "./ConfirmDialog";
+import RunRemoveDialog from "./RunRemoveDialog";
 import { TrashIcon } from "./icons";
 
 function badgeClass(agent: string): string {
@@ -15,10 +14,9 @@ function badgeClass(agent: string): string {
 }
 
 export default function AgentTile({ run }: { run: RunInfo }) {
-  const { setFocusedRun, setView, refreshRuns, focusedRunId } = useRuns();
+  const { setFocusedRun, setView } = useRuns();
   const [preview, setPreview] = useState("");
   const [confirmDiscard, setConfirmDiscard] = useState(false);
-  const [discarding, setDiscarding] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -67,31 +65,7 @@ export default function AgentTile({ run }: { run: RunInfo }) {
         <button className="tile-act danger" title={isTerminal ? "Close terminal" : "Discard agent"} onClick={(e) => { e.stopPropagation(); setConfirmDiscard(true); }}><TrashIcon /></button>
       </div>
       {confirmDiscard && (
-        <ConfirmDialog
-          title={isTerminal ? "Close terminal?" : "Discard agent?"}
-          body={isTerminal
-            ? "Stop the shell and remove this terminal session."
-            : run.worktree
-              ? `Stop "${run.agent}", remove its worktree, and delete the run. This cannot be undone.`
-              : `Stop "${run.agent}" and delete the run. Your checkout and its changes are left exactly as they are.`}
-          confirmLabel={isTerminal ? "Close" : "Discard"}
-          danger
-          busy={discarding}
-          onConfirm={async () => {
-            setDiscarding(true);
-            try {
-              await discardRun(run.id);
-              if (focusedRunId === run.id) setFocusedRun(null);
-              await refreshRuns();
-            } catch (e) {
-              toastError(e, isTerminal ? "Close failed" : "Discard failed");
-            } finally {
-              setDiscarding(false);
-              setConfirmDiscard(false);
-            }
-          }}
-          onCancel={() => setConfirmDiscard(false)}
-        />
+        <RunRemoveDialog run={run} action="discard" onClose={() => setConfirmDiscard(false)} />
       )}
     </div>
   );

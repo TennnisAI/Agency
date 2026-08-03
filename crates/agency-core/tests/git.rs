@@ -191,8 +191,69 @@ fn branch_info_reports_branch_and_no_upstream() {
     let info = git::branch_info(dir.path()).unwrap();
     assert!(info.branch == "master" || info.branch == "main");
     assert!(info.upstream.is_none());
-    assert_eq!(info.ahead, 0);
+    // Nothing is published in a repo with no remote, so the initial commit counts
+    // as ahead — see branch_info_counts_all_commits_when_there_is_no_origin.
+    assert_eq!(info.ahead, 1);
     assert_eq!(info.behind, 0);
+    assert!(!info.has_remote);
+}
+
+/// A brand-new repo has no `origin`, so there is no base to measure the default
+/// branch against. Counting from nothing left `ahead` at 0, which hid the one
+/// button that case needs: "Add Remote & Publish…".
+#[test]
+fn branch_info_counts_all_commits_when_there_is_no_origin() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    commit_file(dir.path(), "second.txt", "b", "second");
+
+    let info = git::branch_info(dir.path()).unwrap();
+    assert!(!info.has_remote);
+    assert!(info.upstream.is_none());
+    assert_eq!(info.ahead, 2, "every commit is unpublished when there is no remote");
+
+    // A branch off the local default still measures from its own fork point,
+    // so it reports its own work rather than the whole history.
+    run(dir.path(), &["checkout", "-q", "-b", "feature"]);
+    commit_file(dir.path(), "third.txt", "c", "branch work");
+    assert_eq!(git::branch_info(dir.path()).unwrap().ahead, 1);
+}
+
+/// What "Add Remote & Publish…" actually does: set origin, then push. Afterwards
+/// the branch has an upstream and nothing left to publish.
+#[test]
+fn publishing_a_repo_with_no_origin_sets_upstream_and_clears_ahead() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    let remote_parent = tempfile::tempdir().unwrap();
+    let remote = remote_parent.path().join("remote.git");
+    run(remote_parent.path(), &["init", "-q", "--bare", remote.to_str().unwrap()]);
+
+    git::set_origin(dir.path(), remote.to_str().unwrap()).unwrap();
+    git::push(dir.path()).unwrap();
+
+    let info = git::branch_info(dir.path()).unwrap();
+    assert!(info.has_remote);
+    assert_eq!(info.upstream.as_deref(), Some(format!("origin/{}", info.branch).as_str()));
+    assert_eq!(info.ahead, 0, "everything is published now");
+}
+
+/// A repo with no commits at all: HEAD is unborn, so `rev-parse HEAD` and `log`
+/// both fail. The panel still needs a branch name and an empty history instead
+/// of a raw "fatal: ambiguous argument 'HEAD'" banner.
+#[test]
+fn branch_info_and_log_survive_a_repo_with_no_commits() {
+    let dir = tempfile::tempdir().unwrap();
+    run(dir.path(), &["init", "-q"]);
+
+    let info = git::branch_info(dir.path()).unwrap();
+    assert!(info.branch == "master" || info.branch == "main", "branch: {}", info.branch);
+    assert!(info.upstream.is_none());
+    assert_eq!(info.ahead, 0, "no commits means nothing to publish");
+    assert_eq!(info.behind, 0);
+    assert!(info.base.is_none());
+
+    assert!(git::log_graph(dir.path(), 10).unwrap().is_empty());
 }
 
 use agency_core::git::{stage_hunk, unstage_hunk};

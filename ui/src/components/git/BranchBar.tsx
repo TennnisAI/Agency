@@ -81,9 +81,15 @@ export default function BranchBar({ taskId, info, busy = false, onAct, onPush, o
         <span className="git-aheadbehind">
           {info.behind > 0 && <span title={`${info.behind} behind upstream`}>{info.behind}↓</span>}
           {/* Without an upstream, ahead is measured from the branch's fork point
-              instead — the commits this branch alone adds. */}
+              instead — the commits this branch alone adds. With no base either
+              (a repo that has no origin at all) it's the whole history, none of
+              which has been published. */}
           {info.ahead > 0 && (
-            <span title={`${info.ahead} ahead of ${info.upstream ?? "the base branch"}`}>{info.ahead}↑</span>
+            <span title={
+              info.upstream ? `${info.ahead} ahead of ${info.upstream}`
+                : info.base ? `${info.ahead} ahead of the base branch`
+                : `${info.ahead} commit${info.ahead === 1 ? "" : "s"} not published anywhere`
+            }>{info.ahead}↑</span>
           )}
         </span>
       )}

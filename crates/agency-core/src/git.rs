@@ -430,7 +430,15 @@ pub struct BranchInfo {
 pub fn log_graph(worktree: &Path, limit: usize) -> Result<Vec<HistoryItem>> {
     let limit_arg = format!("-n{limit}");
     let format = "--format=%H%x1f%P%x1f%an%x1f%ae%x1f%at%x1f%s%x1f%D";
-    let out = git(worktree, &["log", &limit_arg, format])?;
+    let out = match git(worktree, &["log", &limit_arg, format]) {
+        Ok(out) => out,
+        // A repo with no commits yet: `log` fails on the unborn branch. An
+        // empty history is the honest answer there, not an error banner.
+        Err(_) if git(worktree, &["rev-parse", "--verify", "--quiet", "HEAD"]).is_err() => {
+            return Ok(Vec::new())
+        }
+        Err(e) => return Err(e),
+    };
     let mut items = Vec::new();
     for line in out.lines() {
         let f: Vec<&str> = line.split('\u{1f}').collect();
@@ -470,7 +478,11 @@ fn local_default_branch(worktree: &Path) -> Option<&'static str> {
 }
 
 pub fn branch_info(worktree: &Path) -> Result<BranchInfo> {
-    let branch = git(worktree, &["rev-parse", "--abbrev-ref", "HEAD"])?
+    // `rev-parse HEAD` fails in a repo with no commits yet (HEAD points at an
+    // unborn branch), so fall back to the ref name git is holding for it: a
+    // brand-new repo should show its branch, not an error banner.
+    let branch = git(worktree, &["rev-parse", "--abbrev-ref", "HEAD"])
+        .or_else(|_| git(worktree, &["branch", "--show-current"]))?
         .trim()
         .to_string();
     let upstream = git(worktree, &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
@@ -506,6 +518,16 @@ pub fn branch_info(worktree: &Path) -> Result<BranchInfo> {
         // its base — the work Publish would put on a new remote branch. Lets the
         // UI hide Publish when there is nothing to publish.
         if let Ok(count) = git(worktree, &["rev-list", "--count", &format!("{base}..HEAD")]) {
+            ahead = count.trim().parse().unwrap_or(0);
+        }
+    } else {
+        // No upstream and nothing to measure against: a repo with no `origin`
+        // at all, or one whose remote-tracking refs were never fetched. None of
+        // this history has been published, so every commit counts as ahead —
+        // otherwise the one case where "add a remote" is exactly what the user
+        // wants is the case where the UI would never offer it. Still 0 in a
+        // repo with no commits (`rev-list` fails on an unborn HEAD).
+        if let Ok(count) = git(worktree, &["rev-list", "--count", "HEAD"]) {
             ahead = count.trim().parse().unwrap_or(0);
         }
     }

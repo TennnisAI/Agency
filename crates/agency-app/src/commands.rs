@@ -42,6 +42,12 @@ fn readiness_dto(r: agency_core::setup::RepoReadiness) -> ReadinessDto {
 // after them (IPC responses, tray, window chrome) for up to a second. Mutating
 // commands stay sync on purpose: the main thread serializes them, which
 // doubles as a lock against concurrent git index writes.
+//
+// A mutating command may go async once something else provides that mutual
+// exclusion: `create_run` and the teardowns hold `worktree_gate`, `stop_run`
+// and `ensure_run_active` write no index at all. The merge family (`merge_task`,
+// `finish_merge_task`, `abort_merge_task`) and `rerun` are the ones still
+// waiting on a gate — see AGE-54.
 #[tauri::command]
 pub async fn list_projects(state: State<'_, AppState>) -> Result<Vec<Project>, String> {
     state.list_projects().map_err(|e| e.to_string())
@@ -88,14 +94,39 @@ pub fn move_workspace(state: State<'_, AppState>, new_path: String) -> Result<Pr
         .map_err(|e| e.to_string())
 }
 
+// async (not sync): closing a project kills every agent's session, shell and
+// extra tabs, one daemon round-trip each. On the main thread a busy project
+// froze the window until the last kill came back (see the main-thread note
+// above); `on_progress` names the agent it is stopping meanwhile.
 #[tauri::command]
-pub fn close_project(state: State<'_, AppState>, id: String) -> Result<(), String> {
-    state.close_project(&id).map_err(|e| e.to_string())
+pub async fn close_project(
+    state: State<'_, AppState>,
+    id: String,
+    on_progress: Channel<agency_core::setup::CloneProgress>,
+) -> Result<(), String> {
+    state
+        .close_project_with_progress(&id, &mut |p| {
+            let _ = on_progress.send(p);
+        })
+        .map_err(|e| e.to_string())
 }
 
+// async + progress for the same reason `discard_run` is, only more so: this is
+// that teardown once per agent in the project — worktree removal and all — so
+// it is the slowest one in the app. `delete_project_with_progress` takes the
+// worktree_gate per run, standing in for the main-thread serialization it used
+// to get for free.
 #[tauri::command]
-pub fn delete_project(state: State<'_, AppState>, id: String) -> Result<(), String> {
-    state.delete_project(&id).map_err(|e| e.to_string())
+pub async fn delete_project(
+    state: State<'_, AppState>,
+    id: String,
+    on_progress: Channel<agency_core::setup::CloneProgress>,
+) -> Result<(), String> {
+    state
+        .delete_project_with_progress(&id, &mut |p| {
+            let _ = on_progress.send(p);
+        })
+        .map_err(|e| e.to_string())
 }
 
 /// Recolor a project's sidebar icon. `color` must be a palette accent name
@@ -279,8 +310,13 @@ pub async fn discard_archived_runs(
         .map_err(|e| e.to_string())
 }
 
+// async for the same reason `ensure_run_active` is: stopping a looping run
+// takes `loop_gate`, which the loop watcher can hold across a slow daemon
+// spawn, and the kills themselves are daemon round-trips. It creates no
+// worktree and writes no git index — the loop transition it does make is
+// already covered by `loop_gate` — so it is safe off the main thread.
 #[tauri::command]
-pub fn stop_run(state: State<'_, AppState>, id: String) -> Result<(), String> {
+pub async fn stop_run(state: State<'_, AppState>, id: String) -> Result<(), String> {
     state.stop_run(&id).map_err(|e| e.to_string())
 }
 

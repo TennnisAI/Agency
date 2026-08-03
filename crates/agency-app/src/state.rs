@@ -477,6 +477,19 @@ fn step(on_progress: &mut dyn FnMut(agency_core::setup::CloneProgress), phase: &
     });
 }
 
+/// Detail line for a teardown that walks a list of runs: which one of how many
+/// it is on, and what that one is called. Position first — over a sweep the
+/// phases repeat, and without the count they read as one teardown restarting.
+fn sweep_detail(label: &str, i: usize, total: usize) -> String {
+    format!("{} of {total}: {label}", i + 1)
+}
+
+/// What to call a run in the UI: its title once one has been derived, its
+/// branch until then.
+fn run_label(run: &agency_core::registry::Run) -> String {
+    run.title.clone().unwrap_or_else(|| run.branch.clone())
+}
+
 /// Daemon session for one run script. Keyed by (workspace, script name), so a
 /// project can have `dev` serving while `build` runs, and the same script runs
 /// independently in every agent's workspace. `target` is a run id or the
@@ -1166,45 +1179,88 @@ impl AppState {
     }
 
     pub fn close_project(&self, id: &str) -> Result<()> {
+        self.close_project_with_progress(id, &mut |_| {})
+    }
+
+    /// [`close_project`] reporting which agent it is stopping. Every kill is a
+    /// round-trip to the terminal daemon, and a busy project has one per agent
+    /// plus its shell and extra tabs, so the count says how far through the
+    /// list it is rather than leaving the dialog looking stuck.
+    pub fn close_project_with_progress(
+        &self,
+        id: &str,
+        on_progress: &mut dyn FnMut(agency_core::setup::CloneProgress),
+    ) -> Result<()> {
         // Kill live terminals, then hide the project from the list. Project +
         // run records (and extra-session rows) and the worktrees on disk are
         // all kept — re-adding the same repo path revives everything.
         let runs = self.registry.lock().unwrap().list_runs(id)?;
-        for run in &runs {
-            self.attaches.lock().unwrap().remove(&run.id);
-            let _ = self.term.read().unwrap().kill(&session_name(&run.id));
-            self.kill_run_sessions(&run.id);
-            self.shell_attaches.lock().unwrap().remove(&run.id);
-            let _ = self.term.read().unwrap().kill(&shell_session_name(&run.id));
-            self.kill_extra_sessions(&run.id);
+        let total = runs.len();
+        for (i, run) in runs.iter().enumerate() {
+            step(on_progress, "Stopping the agents", &sweep_detail(&run_label(run), i, total));
+            self.kill_run_terminals(&run.id);
         }
+        step(on_progress, "Closing the project", "");
         self.registry.lock().unwrap().set_project_closed(id, true)?;
         Ok(())
     }
 
     pub fn delete_project(&self, id: &str) -> Result<()> {
+        self.delete_project_with_progress(id, &mut |_| {})
+    }
+
+    /// [`delete_project`] reporting where the teardown is. This is the slowest
+    /// one in the app: it is [`discard_run_with_progress`] once per agent in
+    /// the project, worktree removal and all, so on a dozen agents it runs for
+    /// tens of seconds and the caller is a modal the user is staring at.
+    pub fn delete_project_with_progress(
+        &self,
+        id: &str,
+        on_progress: &mut dyn FnMut(agency_core::setup::CloneProgress),
+    ) -> Result<()> {
         let runs = self.registry.lock().unwrap().list_runs(id)?;
         let repo = self.project_repo(id).ok();
-        for run in &runs {
-            self.attaches.lock().unwrap().remove(&run.id);
-            let _ = self.term.read().unwrap().kill(&session_name(&run.id));
-            self.kill_run_sessions(&run.id);
-            self.shell_attaches.lock().unwrap().remove(&run.id);
-            let _ = self.term.read().unwrap().kill(&shell_session_name(&run.id));
-            self.kill_extra_sessions(&run.id);
+        let total = runs.len();
+        for (i, run) in runs.iter().enumerate() {
+            // Position in the sweep, not the branch name: how far through the
+            // project's agents it is matters more here, and without it the
+            // phases look like a single teardown restarting over and over.
+            let detail = sweep_detail(&run_label(run), i, total);
+            step(on_progress, "Stopping the agents", &detail);
+            self.kill_run_terminals(&run.id);
             if let Some(repo) = &repo {
+                step(on_progress, "Removing the worktrees", &detail);
+                // Same mutual exclusion `create_run` takes: this command is
+                // async now (off the main thread), so nothing else serializes
+                // it against a concurrent worktree add on the same repo. Held
+                // per run, not across the sweep, so one long project deletion
+                // doesn't block every spawn for its whole duration.
+                let _gate = self.worktree_gate.lock().unwrap();
                 let _ = WorktreeManager::new(repo.clone()).remove(&run.id);
             }
             let reg = self.registry.lock().unwrap();
             reg.delete_run_sessions(&run.id)?;
             reg.delete_run(&run.id)?;
         }
+        step(on_progress, "Cleaning up", "");
         {
             let reg = self.registry.lock().unwrap();
             reg.delete_project_issues(id)?;
             reg.remove_project(id)?;
         }
         Ok(())
+    }
+
+    /// Drop every live terminal a run owns: the agent session, its run scripts,
+    /// its shell and any extra tabs. Shared by the two project teardowns, which
+    /// differ only in what they do with the worktree afterwards.
+    fn kill_run_terminals(&self, run_id: &str) {
+        self.attaches.lock().unwrap().remove(run_id);
+        let _ = self.term.read().unwrap().kill(&session_name(run_id));
+        self.kill_run_sessions(run_id);
+        self.shell_attaches.lock().unwrap().remove(run_id);
+        let _ = self.term.read().unwrap().kill(&shell_session_name(run_id));
+        self.kill_extra_sessions(run_id);
     }
 
     pub fn project_repo_path(&self, project_id: &str) -> anyhow::Result<std::path::PathBuf> {
@@ -2962,9 +3018,8 @@ impl AppState {
         for (i, run) in archived.iter().enumerate() {
             let label = run.title.clone().unwrap_or_else(|| run.branch.clone());
             // The sweep's position replaces each run's own detail line: how far
-            // through the list it is matters more here than one branch's name,
-            // and without it the phases look like a single teardown restarting.
-            let detail = format!("{} of {total}: {label}", i + 1);
+            // through the list it is matters more here than one branch's name.
+            let detail = sweep_detail(&label, i, total);
             let mut relay = |p: agency_core::setup::CloneProgress| {
                 on_progress(agency_core::setup::CloneProgress { detail: detail.clone(), ..p });
             };

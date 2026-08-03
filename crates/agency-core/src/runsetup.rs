@@ -14,10 +14,28 @@ use std::path::Path;
 pub struct RunSuggestion {
     /// Short chip label, e.g. "pnpm dev".
     pub label: String,
+    /// The name to save the script under, e.g. "dev". Short, because it is what
+    /// the Run tab lists and what the user picks between.
+    pub name: String,
     /// The full command written to the config, e.g. "pnpm dev --port $AGENCY_PORT".
     pub command: String,
     /// Where the guess came from, e.g. "package.json script".
     pub detail: String,
+    /// Whether this candidate serves a web app, and so should come with the
+    /// URL and preview pane. A build or a one-shot task does not.
+    pub web: bool,
+}
+
+impl RunSuggestion {
+    fn new(label: &str, name: &str, command: &str, detail: &str, web: bool) -> RunSuggestion {
+        RunSuggestion {
+            label: label.into(),
+            name: name.into(),
+            command: command.into(),
+            detail: detail.into(),
+            web,
+        }
+    }
 }
 
 /// Ordered candidates for starting a project's app, best guess first. Empty
@@ -29,56 +47,51 @@ pub fn suggest_run_commands(repo: &Path) -> Vec<RunSuggestion> {
 
     // A repo-root dev script is a strong signal, but the package manager entry
     // above is usually the more familiar one, so it comes second.
-    for name in ["dev.sh", "run.sh", "start.sh"] {
-        if repo.join(name).is_file() {
-            out.push(RunSuggestion {
-                label: format!("./{name}"),
-                command: format!("./{name}"),
-                detail: "script in the repo root".into(),
-            });
+    for file in ["dev.sh", "run.sh", "start.sh"] {
+        if repo.join(file).is_file() {
+            let stem = file.trim_end_matches(".sh");
+            out.push(RunSuggestion::new(
+                &format!("./{file}"),
+                stem,
+                &format!("./{file}"),
+                "script in the repo root",
+                true,
+            ));
         }
     }
 
     if repo.join("manage.py").is_file() {
-        out.push(RunSuggestion {
-            label: "manage.py runserver".into(),
-            command: "python manage.py runserver 0.0.0.0:$AGENCY_PORT".into(),
-            detail: "Django project".into(),
-        });
+        out.push(RunSuggestion::new(
+            "manage.py runserver",
+            "runserver",
+            "python manage.py runserver 0.0.0.0:$AGENCY_PORT",
+            "Django project",
+            true,
+        ));
     }
     if repo.join("Cargo.toml").is_file() {
-        out.push(RunSuggestion {
-            label: "cargo run".into(),
-            command: "cargo run".into(),
-            detail: "Cargo project".into(),
-        });
+        out.push(RunSuggestion::new("cargo run", "run", "cargo run", "Cargo project", false));
     }
     if repo.join("go.mod").is_file() {
-        out.push(RunSuggestion {
-            label: "go run .".into(),
-            command: "go run .".into(),
-            detail: "Go module".into(),
-        });
+        out.push(RunSuggestion::new("go run .", "run", "go run .", "Go module", false));
     }
     if has_make_target(repo, "dev") {
-        out.push(RunSuggestion {
-            label: "make dev".into(),
-            command: "make dev".into(),
-            detail: "Makefile target".into(),
-        });
+        out.push(RunSuggestion::new("make dev", "dev", "make dev", "Makefile target", true));
     }
-    for name in ["compose.yaml", "compose.yml", "docker-compose.yml", "docker-compose.yaml"] {
-        if repo.join(name).is_file() {
-            out.push(RunSuggestion {
-                label: "docker compose up".into(),
-                command: "docker compose up".into(),
-                detail: name.into(),
-            });
+    for file in ["compose.yaml", "compose.yml", "docker-compose.yml", "docker-compose.yaml"] {
+        if repo.join(file).is_file() {
+            out.push(RunSuggestion::new(
+                "docker compose up",
+                "compose",
+                "docker compose up",
+                file,
+                true,
+            ));
             break;
         }
     }
 
-    out.truncate(5);
+    out.truncate(6);
     out
 }
 
@@ -96,20 +109,37 @@ fn node_suggestions(repo: &Path) -> Vec<RunSuggestion> {
     let pm = package_manager(repo, &pkg);
     let port_style = port_style(&pkg);
 
+    let Some(scripts) = scripts else { return Vec::new() };
+
     let mut out = Vec::new();
     for name in ["dev", "start", "serve", "develop"] {
-        let Some(scripts) = scripts else { break };
         if !scripts.contains_key(name) {
             continue;
         }
-        out.push(RunSuggestion {
-            label: format!("{pm} {name}"),
-            command: node_command(pm, name, port_style),
-            detail: "package.json script".into(),
-        });
+        out.push(RunSuggestion::new(
+            &format!("{pm} {name}"),
+            name,
+            &node_command(pm, name, port_style),
+            "package.json script",
+            true,
+        ));
         if out.len() == 2 {
             break;
         }
+    }
+    // A build is the other half of what a project wants to run, and the reason
+    // the Run tab holds a list rather than one command. It takes no port and
+    // opens no browser.
+    if scripts.contains_key("build") {
+        let command =
+            if pm == "npm" || pm == "bun" { format!("{pm} run build") } else { format!("{pm} build") };
+        out.push(RunSuggestion::new(
+            &format!("{pm} build"),
+            "build",
+            &command,
+            "package.json script",
+            false,
+        ));
     }
     out
 }
@@ -248,7 +278,7 @@ mod tests {
     }
 
     #[test]
-    fn at_most_two_package_json_scripts_are_offered() {
+    fn at_most_two_dev_package_json_scripts_are_offered() {
         let dir = tempdir().unwrap();
         write(
             dir.path(),
@@ -256,6 +286,22 @@ mod tests {
             r#"{"scripts":{"dev":"x","start":"y","serve":"z","develop":"w"}}"#,
         );
         assert_eq!(suggest_run_commands(dir.path()).len(), 2);
+    }
+
+    #[test]
+    fn a_build_script_is_offered_without_a_browser_preview() {
+        let dir = tempdir().unwrap();
+        write(
+            dir.path(),
+            "package.json",
+            r#"{"scripts":{"dev":"vite","build":"vite build"},"devDependencies":{"vite":"^5"}}"#,
+        );
+        write(dir.path(), "pnpm-lock.yaml", "lockfileVersion: '9.0'\n");
+        let s = suggest_run_commands(dir.path());
+        let build = s.iter().find(|c| c.name == "build").expect("build offered");
+        assert_eq!(build.command, "pnpm build");
+        assert!(!build.web, "a build has nothing to open in a browser");
+        assert!(s[0].web, "the dev server does");
     }
 
     #[test]

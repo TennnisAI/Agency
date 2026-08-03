@@ -17,12 +17,26 @@ window.addEventListener("contextmenu", (e) => {
   e.preventDefault();
 });
 
+// Benign browser noise that must never reach the user as an error. WebKit
+// reports "ResizeObserver loop completed with undelivered notifications"
+// whenever an observer callback resizes its own subject and the work spills
+// past the frame — which is what a terminal fitting itself inside a pane that
+// is still settling does. Nothing is broken and nothing is dropped: the
+// browser simply delivers the rest next frame. It is not catchable at the
+// observer (the spec dispatches it as a window error), so it is filtered here.
+const isBenign = (v: unknown) => {
+  const text = typeof v === "string" ? v : v instanceof Error ? v.message : "";
+  return text.startsWith("ResizeObserver loop");
+};
+
 // Surface errors that escape every component handler. The toast bus dedupes
 // identical messages, so a rejecting poll loop can't stack toasts.
 window.addEventListener("error", (e) => {
+  if (isBenign(e.error ?? e.message)) return;
   toastError(e.error ?? e.message, "Unexpected error");
 });
 window.addEventListener("unhandledrejection", (e) => {
+  if (isBenign(e.reason)) return;
   toastError(e.reason, "Unexpected error");
 });
 

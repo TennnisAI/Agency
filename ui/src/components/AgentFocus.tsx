@@ -465,7 +465,8 @@ export default function AgentFocus({
               ) : (
                 <RunPanel
                   key={`run-${focused.id}`}
-                  run={focused}
+                  target={focused.id}
+                  where="this agent's workspace"
                   onClose={() => selectPanel(beforeRun.current)}
                 />
               )}

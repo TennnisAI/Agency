@@ -1,5 +1,6 @@
 use agency_core::term::SessionStatus;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -59,7 +60,10 @@ pub struct RunSnapshot {
     /// Run-script crashes still notify.
     pub is_loop: bool,
     pub agent: SessionStatus,
-    pub run_script: SessionStatus,
+    /// One entry per configured run script, keyed by script name. A project
+    /// runs several (a dev server, a release build), and each crashes on its
+    /// own — so the edge is detected per script, and the toast can name it.
+    pub run_scripts: BTreeMap<String, SessionStatus>,
     pub pane_hash: u64,
     /// True when the user has submitted a turn (pressed Enter) in this run since
     /// the last turn-finished notification. Gates the idle notification so we
@@ -71,7 +75,7 @@ pub struct RunSnapshot {
 #[derive(Clone)]
 pub struct RunWatch {
     pub agent: SessionStatus,
-    pub run_script: SessionStatus,
+    pub run_scripts: BTreeMap<String, SessionStatus>,
     pub pane_hash: u64,
     pub quiet_since_tick: u64,
     pub idle_fired: bool,
@@ -80,7 +84,8 @@ pub struct RunWatch {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NotifyKind {
     Finished,
-    RunCrashed,
+    /// The named run script went from running to a non-zero exit.
+    RunCrashed(String),
     Idle,
 }
 
@@ -107,11 +112,16 @@ pub fn step(
                 events.push(NotifyKind::Finished);
             }
         }
-        // Run script crashed: running -> exited non-zero.
-        if matches!(p.run_script, SessionStatus::Running) {
-            if let SessionStatus::Exited { code } = snap.run_script {
-                if code != 0 {
-                    events.push(NotifyKind::RunCrashed);
+        // Run script crashed: running -> exited non-zero, per script. A script
+        // that has since been renamed or deleted simply has no new status, so
+        // it drops out rather than reporting a phantom crash.
+        for (name, was) in &p.run_scripts {
+            if !matches!(was, SessionStatus::Running) {
+                continue;
+            }
+            if let Some(SessionStatus::Exited { code }) = snap.run_scripts.get(name) {
+                if *code != 0 {
+                    events.push(NotifyKind::RunCrashed(name.clone()));
                 }
             }
         }
@@ -137,7 +147,7 @@ pub fn step(
 
     let watch = RunWatch {
         agent: snap.agent.clone(),
-        run_script: snap.run_script.clone(),
+        run_scripts: snap.run_scripts.clone(),
         pane_hash: snap.pane_hash,
         quiet_since_tick,
         idle_fired,
@@ -168,7 +178,9 @@ pub fn suppressed(settings: &NotifSettings, focused: bool, active: Option<&str>,
 pub fn message(kind: &NotifyKind, label: &str) -> (String, String) {
     match kind {
         NotifyKind::Finished => ("Agent exited".to_string(), format!("{label} — done")),
-        NotifyKind::RunCrashed => ("Run script crashed".to_string(), format!("{label} — dev server exited")),
+        NotifyKind::RunCrashed(script) => {
+            ("Run script crashed".to_string(), format!("{label} — \"{script}\" exited"))
+        }
         NotifyKind::Idle => ("Agent finished a turn".to_string(), format!("{label} — ready for you")),
     }
 }
@@ -185,8 +197,13 @@ mod tests {
     fn snap_input(agent: SessionStatus, run_script: SessionStatus, pane_hash: u64, user_input_pending: bool) -> RunSnapshot {
         RunSnapshot {
             id: "x".into(), project_id: "proj".into(), label: "claude: fix".into(),
-            is_terminal: false, is_loop: false, agent, run_script, pane_hash, user_input_pending,
+            is_terminal: false, is_loop: false, agent, run_scripts: one(run_script),
+            pane_hash, user_input_pending,
         }
+    }
+    /// A one-script project, under the name the tests refer to.
+    fn one(status: SessionStatus) -> BTreeMap<String, SessionStatus> {
+        BTreeMap::from([("dev".to_string(), status)])
     }
     fn running() -> SessionStatus { SessionStatus::Running }
     fn exited(code: i32) -> SessionStatus { SessionStatus::Exited { code } }
@@ -250,7 +267,7 @@ mod tests {
     fn run_script_nonzero_exit_emits_crash_but_zero_does_not() {
         let (p1, _) = step(None, &snap(running(), running(), 1), 0, 2, 30);
         let (_w, events) = step(Some(&p1), &snap(running(), exited(1), 1), 1, 2, 30);
-        assert_eq!(events, vec![NotifyKind::RunCrashed]);
+        assert_eq!(events, vec![NotifyKind::RunCrashed("dev".into())]);
 
         let (p2, _) = step(None, &snap(running(), running(), 1), 0, 2, 30);
         let (_w2, events2) = step(Some(&p2), &snap(running(), exited(0), 1), 1, 2, 30);
@@ -295,7 +312,7 @@ mod tests {
     fn terminals_never_notify() {
         let term = |agent: SessionStatus, hash: u64| RunSnapshot {
             id: "t".into(), project_id: "proj".into(), label: "terminal".into(),
-            is_terminal: true, is_loop: false, agent, run_script: SessionStatus::Gone,
+            is_terminal: true, is_loop: false, agent, run_scripts: one(SessionStatus::Gone),
             pane_hash: hash, user_input_pending: true,
         };
         // Exit edge: running -> exited must stay silent for terminals.
@@ -315,7 +332,7 @@ mod tests {
     fn looping_runs_suppress_finished_and_idle_but_not_run_crash() {
         let lsnap = |agent: SessionStatus, run_script: SessionStatus, hash: u64| RunSnapshot {
             id: "l".into(), project_id: "proj".into(), label: "claude: loop".into(),
-            is_terminal: false, is_loop: true, agent, run_script,
+            is_terminal: false, is_loop: true, agent, run_scripts: one(run_script),
             pane_hash: hash, user_input_pending: true,
         };
         // Attempt exit (running -> exited) must not toast.
@@ -331,7 +348,7 @@ mod tests {
         }
         // A crashing run script still notifies.
         let (_w, ev) = step(Some(&w), &lsnap(running(), exited(1), 2), 41, 2, 30);
-        assert_eq!(ev, vec![NotifyKind::RunCrashed]);
+        assert_eq!(ev, vec![NotifyKind::RunCrashed("dev".into())]);
     }
 
     #[test]
@@ -339,6 +356,36 @@ mod tests {
         let (p, _) = step(None, &snap(exited(0), SessionStatus::Gone, 1), 0, 2, 30);
         let (_w, ev) = step(Some(&p), &snap(exited(0), SessionStatus::Gone, 1), 100, 2, 30);
         assert!(!ev.contains(&NotifyKind::Idle));
+    }
+
+    #[test]
+    fn each_script_crashes_on_its_own() {
+        let two = |dev: SessionStatus, build: SessionStatus| RunSnapshot {
+            id: "x".into(), project_id: "proj".into(), label: "claude: fix".into(),
+            is_terminal: false, is_loop: false, agent: running(),
+            run_scripts: BTreeMap::from([("dev".into(), dev), ("build".into(), build)]),
+            pane_hash: 1, user_input_pending: true,
+        };
+        let (w, _) = step(None, &two(running(), running()), 0, 2, 30);
+        // The build fails while the dev server keeps serving: one toast, named.
+        let (w, ev) = step(Some(&w), &two(running(), exited(2)), 1, 2, 30);
+        assert_eq!(ev, vec![NotifyKind::RunCrashed("build".into())]);
+        // Still exited on the next tick — the edge already fired, so it stays quiet.
+        let (w, ev) = step(Some(&w), &two(running(), exited(2)), 2, 2, 30);
+        assert!(ev.is_empty());
+        // A script deleted from the config drops out instead of crashing.
+        let gone = RunSnapshot {
+            run_scripts: BTreeMap::from([("dev".into(), running())]),
+            ..two(running(), running())
+        };
+        let (_w, ev) = step(Some(&w), &gone, 3, 2, 30);
+        assert!(ev.is_empty());
+    }
+
+    #[test]
+    fn message_names_the_script_that_crashed() {
+        let (_title, body) = message(&NotifyKind::RunCrashed("build mac".into()), "claude: fix");
+        assert!(body.contains("build mac"));
     }
 
     #[test]

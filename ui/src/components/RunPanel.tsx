@@ -172,6 +172,9 @@ export default function RunPanel({
     return <div className="run-panel">{editorFor(editing)}</div>;
   }
 
+  // Whether this script has anything to show: it is running, it was just
+  // started, or it ran and left its output behind. Until then the pane has no
+  // logs to fill itself with, and shows the script's start card instead.
   const hasLogs = !!script && (running || started.has(script.name) || status?.state === "exited");
   const showPreview = !!script?.web && !!url && running;
 
@@ -201,17 +204,24 @@ export default function RunPanel({
         <span className="run-where" title={config.workspace}>{where}</span>
       </div>
 
-      {script && (
+      {error && <div className="run-error">{error}</div>}
+
+      {/* The toolbar drives a script that is already on screen. A script with
+          nothing to show carries its own start button in the body, so Start is
+          never offered twice at once. */}
+      {script && hasLogs && (
         <div className="run-controls">
           {running ? (
             <button className="tile-act" onClick={() => stop(script.name)}>■ Stop</button>
           ) : (
-            <button className="tile-act" onClick={() => start(script.name)}>▶ Run</button>
+            <button className="tile-act" onClick={() => start(script.name)}>▶ Start</button>
           )}
           <code className="run-cmd" title={script.command}>{script.command}</code>
-          <button className="tile-act" onClick={() => setEditing({ mode: "edit", name: script.name })}>
-            Edit
-          </button>
+          {status?.state === "exited" && (
+            <span className={`run-exit ${status.code === 0 ? "" : "bad"}`}>
+              {status.code === 0 ? "finished" : `exited ${status.code}`}
+            </span>
+          )}
           {script.web && url && (
             <>
               <code className="run-url">{url}</code>
@@ -219,16 +229,15 @@ export default function RunPanel({
                 className="tile-act"
                 title="Reload the preview"
                 onClick={() => setPreviewKey((k) => k + 1)}
-              >⟳ Refresh</button>
-              <button className="tile-act" onClick={() => openUrl(url)}>Open in browser ↗</button>
+              >⟳ Reload</button>
+              <button className="tile-act" title={`Open ${url} in your browser`} onClick={() => openUrl(url)}>
+                Open ↗
+              </button>
             </>
           )}
-          {status?.state === "exited" && (
-            <span className={`run-exit ${status.code === 0 ? "" : "bad"}`}>
-              {status.code === 0 ? "finished" : `exited ${status.code}`}
-            </span>
-          )}
-          {error && <span className="run-error">{error}</span>}
+          <button className="tile-act" onClick={() => setEditing({ mode: "edit", name: script.name })}>
+            Edit
+          </button>
         </div>
       )}
 
@@ -241,11 +250,19 @@ export default function RunPanel({
               stream={runStream}
             />
           </div>
-        ) : (
+        ) : script ? (
           <div className="run-idle">
-            {script ? <>Not running. Press <b>Run</b> to start <code>{script.name}</code>.</> : null}
+            <button className="run-start" onClick={() => start(script.name)}>▶ Start</button>
+            <code className="run-idle-cmd" title={script.command}>{script.command}</code>
+            {script.web && url && (
+              <div className="run-idle-note">Serves a web app; the preview opens beside the logs.</div>
+            )}
+            <button
+              className="run-idle-edit"
+              onClick={() => setEditing({ mode: "edit", name: script.name })}
+            >Edit this script</button>
           </div>
-        )}
+        ) : null}
         {showPreview && (
           <>
             <Resizer

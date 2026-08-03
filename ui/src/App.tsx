@@ -14,7 +14,7 @@ import Resizer from "./components/Resizer";
 import Toasts from "./components/Toasts";
 import { useShortcuts } from "./hooks/useShortcuts";
 import { usePaneWidth } from "./hooks/usePaneWidth";
-import { CloneProgress, FileRoot, Project, RepoReadiness, RunInfo, agentOnboardingNeeded, archiveRun, checkForUpdate, confirmQuit, createDir, createFile, createRun, discardRun, ensureWorkspaceGuide, getUpdateCheckEnabled, getWorkspace, gitLogGraph, inspectRepo, listArchivedRuns, listIssues, listProjects, readFile, setMenuContext, setUiState, writeFile } from "./api";
+import { FileRoot, Project, RepoReadiness, RunInfo, agentOnboardingNeeded, checkForUpdate, confirmQuit, createDir, createFile, createRun, ensureWorkspaceGuide, getUpdateCheckEnabled, getWorkspace, gitLogGraph, inspectRepo, listArchivedRuns, listIssues, listProjects, readFile, setMenuContext, setUiState, writeFile } from "./api";
 import { pickDefaultAgent } from "./lib/defaultAgent";
 import { PENDING_ISSUE_KEY, PENDING_QUICKADD_KEY, isClosed, issueLabel } from "./lib/issues";
 import { NAVIGATE_EVENT, NavTarget } from "./lib/navigate";
@@ -22,12 +22,14 @@ import { DAILY_TEMPLATE_PATH, JOURNAL_DIR, dailyNotePath, defaultDailyContent, r
 import { WEEKLY_DIR, buildWeeklyNote, isoWeekStamp, isoWeekStart, weeklyNotePath } from "./lib/weeklyNote";
 import { toastError, toastInfo } from "./lib/toast";
 import { workspaceHidden } from "./lib/workspacePref";
+import { Removal } from "./lib/runRemoval";
 import RepoSetupDialog from "./components/RepoSetupDialog";
+import RunRemoveDialog from "./components/RunRemoveDialog";
 
 const REPO_URL = "https://github.com/nic123/Agency";
 
 function Shell() {
-  const { selectedProjectId, setSelectedProject, createAgent, createTerminal, refreshRuns, setTab, focusedRunId, onScreenRunId, setApproveRun, setFocusedRun, setView, runs } = useRuns();
+  const { selectedProjectId, setSelectedProject, createAgent, createTerminal, setTab, focusedRunId, onScreenRunId, setApproveRun, setFocusedRun, setView, runs } = useRuns();
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [project, setProject] = useState<Project | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -35,14 +37,10 @@ function Shell() {
   // A newer release exists on GitHub. Dots the Settings button; the actual
   // download link lives in Settings ▸ Diagnostics.
   const [updateAvailable, setUpdateAvailable] = useState(false);
-  // Menu-driven archive/discard of the focused agent, gated behind a confirm
-  // dialog (matching the tile-level action). null = no confirmation showing.
-  const [agentAction, setAgentAction] = useState<{ kind: "archive" | "discard"; run: RunInfo } | null>(null);
-  // The teardown in flight, and which step it is on. Removing an agent stops
-  // its session and unlinks its worktree, so on a large repo it runs for
-  // seconds; the dialog stays up and says so rather than looking hung.
-  const [agentActionBusy, setAgentActionBusy] = useState(false);
-  const [agentActionProgress, setAgentActionProgress] = useState<CloneProgress | null>(null);
+  // Menu-driven archive/discard of the focused agent, awaiting the same
+  // confirm dialog the tile, the rail and the focus header use.
+  // null = no confirmation showing.
+  const [agentAction, setAgentAction] = useState<{ action: Removal; run: RunInfo } | null>(null);
   // Sessions the quit would stop (from the backend's quit-requested event);
   // null = no quit confirmation showing.
   const [quitPrompt, setQuitPrompt] = useState<number | null>(null);
@@ -361,12 +359,12 @@ function Shell() {
       }
       case "archive": {
         const focused = runs.find((r) => r.id === focusedRunId);
-        if (focused?.kind === "agent") setAgentAction({ kind: "archive", run: focused });
+        if (focused?.kind === "agent") setAgentAction({ action: "archive", run: focused });
         break;
       }
       case "discard": {
         const focused = runs.find((r) => r.id === focusedRunId);
-        if (focused) setAgentAction({ kind: "discard", run: focused });
+        if (focused) setAgentAction({ action: "discard", run: focused });
         break;
       }
       case "report-issue": openUrl(`${REPO_URL}/issues/new`).catch(() => {}); break;
@@ -448,26 +446,6 @@ function Shell() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Run the confirmed archive/discard, then clear focus (if it was this run)
-  // and refresh so the tile disappears.
-  async function runAgentAction() {
-    if (!agentAction || agentActionBusy) return;
-    const { kind, run } = agentAction;
-    setAgentActionBusy(true);
-    setAgentActionProgress(null);
-    try {
-      if (kind === "archive") await archiveRun(run.id, setAgentActionProgress);
-      else await discardRun(run.id, setAgentActionProgress);
-      if (focusedRunId === run.id) { setFocusedRun(null); setView("grid"); }
-      await refreshRuns();
-    } catch {
-      /* the backend surfaces failures; keep the dialog dismissal simple */
-    }
-    setAgentActionBusy(false);
-    setAgentActionProgress(null);
-    setAgentAction(null);
-  }
-
   return (
     <div className="shell">
       <TitleBar onOpenPalette={() => setPaletteOpen(true)} />
@@ -523,18 +501,14 @@ function Shell() {
         />
       )}
       {agentAction && (
-        <ConfirmDialog
-          title={agentAction.kind === "archive" ? "Archive agent?" : "Discard agent?"}
-          body={agentAction.kind === "archive"
-            ? `Move "${agentAction.run.agent}" to the archived list. You can restore it later.`
-            : `Stop "${agentAction.run.agent}", remove its worktree, and delete the run. This cannot be undone.`}
-          confirmLabel={agentAction.kind === "archive" ? "Archive" : "Discard"}
-          danger={agentAction.kind === "discard"}
-          busy={agentActionBusy}
-          progress={agentActionProgress}
-          progressLabel={agentAction.kind === "archive" ? "Archiving…" : "Discarding…"}
-          onConfirm={() => { runAgentAction(); }}
-          onCancel={() => setAgentAction(null)}
+        <RunRemoveDialog
+          run={agentAction.run}
+          action={agentAction.action}
+          onClose={() => setAgentAction(null)}
+          // The menu only ever acts on the focused run, and the dialog has just
+          // unfocused it: land on the project's agent grid rather than a focus
+          // pane asking us to pick from the rail.
+          onRemoved={() => setView("grid")}
         />
       )}
       {weeklyNarrate && (

@@ -3,8 +3,10 @@ import { RunInfo, runPreview } from "../api";
 import { useRuns } from "../store/runs";
 import { runName } from "../agents";
 import { runStatus } from "../lib/runstate";
+import { Removal, removalLabel, removalsFor } from "../lib/runRemoval";
 import RunRemoveDialog from "./RunRemoveDialog";
-import { TrashIcon } from "./icons";
+import OverflowMenu from "./OverflowMenu";
+import { TrashIcon, InboxIcon } from "./icons";
 
 function badgeClass(agent: string): string {
   if (agent === "claude") return "badge claude";
@@ -16,7 +18,8 @@ function badgeClass(agent: string): string {
 export default function AgentTile({ run }: { run: RunInfo }) {
   const { setFocusedRun, setView } = useRuns();
   const [preview, setPreview] = useState("");
-  const [confirmDiscard, setConfirmDiscard] = useState(false);
+  // Archive / discard of this run, awaiting its confirm dialog.
+  const [pending, setPending] = useState<Removal | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -62,10 +65,27 @@ export default function AgentTile({ run }: { run: RunInfo }) {
       <pre className="tile-preview">{preview}</pre>
       <div className="tile-foot">
         <span title={st.title}>{st.text}</span>
-        <button className="tile-act danger" title={isTerminal ? "Close terminal" : "Discard agent"} onClick={(e) => { e.stopPropagation(); setConfirmDiscard(true); }}><TrashIcon /></button>
+        {/* The same close button and menu the agents rail carries, so an agent
+            offers the same ways out wherever it is listed: archived, keeping
+            its branch for the Archived section, or discarded outright. The
+            wrapper swallows clicks — on the button, the menu, or its backdrop —
+            that would otherwise open the tile. */}
+        <span className="tile-close-wrap" onClick={(e) => e.stopPropagation()}>
+          <OverflowMenu
+            buttonClass="hover-close tile-close"
+            icon={<span aria-hidden>✕</span>}
+            title={isTerminal ? "Close terminal" : "Archive or discard this agent"}
+            items={removalsFor(run).map((action) => ({
+              label: removalLabel(run, action),
+              icon: action === "archive" ? <InboxIcon /> : <TrashIcon />,
+              danger: action === "discard",
+              onSelect: () => setPending(action),
+            }))}
+          />
+        </span>
       </div>
-      {confirmDiscard && (
-        <RunRemoveDialog run={run} action="discard" onClose={() => setConfirmDiscard(false)} />
+      {pending && (
+        <RunRemoveDialog run={run} action={pending} onClose={() => setPending(null)} />
       )}
     </div>
   );

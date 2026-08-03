@@ -108,7 +108,7 @@ function RailRow({
       {/* Sibling of the row rather than a child of it: a button inside a button
           is invalid markup, and the row keeps its own click target intact. */}
       <OverflowMenu
-        buttonClass="rail-row-close"
+        buttonClass="hover-close rail-row-close"
         icon={<span aria-hidden>✕</span>}
         title={isTerminal ? "Close terminal" : "Archive or discard this agent"}
         items={removalsFor(run).map((action) => ({

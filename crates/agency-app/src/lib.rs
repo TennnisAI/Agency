@@ -6,6 +6,8 @@ mod datadir;
 mod lifecycle;
 mod looper;
 mod menu;
+#[cfg(target_os = "macos")]
+mod notif_macos;
 mod notifier;
 mod pathenv;
 mod resume_probe;
@@ -324,6 +326,10 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_os = "macos")]
     {
         let _ = notify_rust::set_application(&app.config().identifier);
+        // And let banners through while Agency itself is the app in front —
+        // otherwise macOS files them away unseen and only the ones raised
+        // while the app is in the background are ever visible (AGE-33).
+        crate::notif_macos::present_while_frontmost();
     }
 
     // A `tauri dev` build takes a data dir of its own so it cannot share (and

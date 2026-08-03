@@ -1362,6 +1362,7 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
 /* The project's run scripts, one tab each — the row above the controls, so
    switching script and driving the selected one never share a click target. */
 .run-scripts { display: flex; align-items: center; gap: 2px; padding: 5px 8px; border-bottom: 1px solid var(--line); overflow-x: auto; }
+.run-scripts .spacer { flex: 1; min-width: 8px; }
 .run-script-tab {
   display: flex; align-items: center; gap: 6px; flex: 0 0 auto;
   background: transparent; border: 1px solid transparent; border-radius: 7px;
@@ -1372,48 +1373,61 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
 .run-script-add { flex: 0 0 auto; background: transparent; border: 0; color: var(--o1); font-size: 14px; line-height: 1; padding: 4px 9px; border-radius: 7px; cursor: pointer; }
 .run-script-add:hover { background: var(--s0); color: var(--text); }
 .run-where { flex: 0 0 auto; font-size: 11px; color: var(--o1); padding-right: 4px; }
-.run-controls { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-bottom: 1px solid var(--border, #2a2d36); }
-.run-url { color: var(--muted, #9aa); }
+.run-controls { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+.run-url { flex: 0 0 auto; font-size: 11px; color: var(--sub0); }
 .run-cmd { flex: 1; min-width: 0; color: var(--sub0); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.run-exit { font-size: 11.5px; color: var(--o1); }
+.run-exit { flex: 0 0 auto; font-size: 11.5px; color: var(--o1); }
 .run-exit.bad { color: var(--red); }
-/* Nothing running yet: the pane says so rather than sitting empty. */
-.run-idle { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--o1); font-size: 12.5px; gap: 4px; }
-.run-idle code { font-family: var(--mono); color: var(--sub1); }
+/* Nothing to show yet: the pane offers the one thing to do with the script
+   rather than describing it. This is the only Start on screen in this state,
+   which is why the toolbar above is left out entirely. */
+.run-idle { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 24px; }
+.run-start {
+  display: flex; align-items: center; gap: 8px;
+  background: var(--blue); border: none; color: var(--crust); border-radius: 8px;
+  font-family: var(--sans); font-size: 13px; font-weight: 500; padding: 9px 20px; cursor: pointer;
+}
+.run-start:hover { filter: brightness(1.08); }
+.run-idle-cmd { max-width: 100%; font-size: 11.5px; color: var(--sub0); background: var(--crust); border-radius: 5px; padding: 3px 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.run-idle-note { font-size: 11.5px; color: var(--o1); text-align: center; }
+.run-idle-edit { background: transparent; border: 0; color: var(--o1); font-size: 11.5px; padding: 2px 4px; cursor: pointer; }
+.run-idle-edit:hover { color: var(--text); text-decoration: underline; }
 
 /* Run-script editor: shown until the project has a script, and behind "Edit"
    or "+" afterwards. */
-.run-setup { flex: 1; min-height: 0; overflow: auto; padding: 22px; display: flex; justify-content: center; }
-.run-setup-card { width: 100%; max-width: 620px; align-self: flex-start; background: var(--mantle); border: 1px solid var(--s0); border-radius: 12px; padding: 18px 20px 16px; display: flex; flex-direction: column; gap: 14px; }
-.run-setup-title { font-size: 14px; font-weight: 600; color: var(--text); }
-.run-setup-lead { margin: -6px 0 0; color: var(--sub0); font-size: 12.5px; line-height: 1.65; }
-.run-setup-lead code, .run-setup-hint code, .run-setup-foot code { font-size: 11.5px; color: var(--sub1); background: var(--crust); border-radius: 4px; padding: 1px 5px; word-break: break-all; }
-.run-setup-field { display: flex; flex-direction: column; gap: 7px; }
+.run-setup { flex: 1; min-height: 0; overflow: auto; padding: 20px; display: flex; justify-content: center; }
+.run-setup-card { width: 100%; max-width: 520px; align-self: flex-start; background: var(--mantle); border: 1px solid var(--s0); border-radius: 12px; padding: 16px 18px 14px; display: flex; flex-direction: column; gap: 13px; }
+.run-setup-title { font-size: 13.5px; font-weight: 600; color: var(--text); }
+.run-setup-lead { margin: -5px 0 0; color: var(--sub0); font-size: 12px; line-height: 1.6; }
+.run-setup-lead code, .run-setup-hint code, .run-setup-foot code { font-size: 11px; color: var(--sub1); background: var(--crust); border-radius: 4px; padding: 1px 5px; word-break: break-all; }
+.run-setup-field { display: flex; flex-direction: column; gap: 6px; }
 .run-setup-label { font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--o1); }
-.run-setup-chips { display: flex; flex-wrap: wrap; gap: 8px; }
-.run-setup-chip { display: flex; flex-direction: column; gap: 2px; text-align: left; background: var(--base); border: 1px solid var(--s1); border-radius: 8px; padding: 6px 10px; cursor: pointer; }
-.run-setup-chip:hover { background: var(--s0); }
-.run-setup-chip.on { border-color: var(--blue); background: rgba(137,180,250,.1); }
-.run-setup-chip-label { font-family: var(--mono); font-size: 11.5px; color: var(--text); }
-.run-setup-chip-detail { font-size: 10.5px; color: var(--o1); }
-.run-setup-input { background: var(--base); border: 1px solid var(--s1); color: var(--text); border-radius: 7px; padding: 9px 11px; width: 100%; font-family: var(--mono); font-size: 12.5px; }
+/* Detected commands, offered as fills for the field above rather than as a
+   choice: clicking one writes it in, and the form never holds a selection the
+   user then has to undo. */
+.run-setup-picks { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.run-setup-picks-label { font-size: 11px; color: var(--o1); margin-right: 1px; }
+.run-setup-pick { background: var(--base); border: 1px solid var(--s1); border-radius: 6px; color: var(--sub1); font-family: var(--mono); font-size: 11px; padding: 3px 8px; cursor: pointer; }
+.run-setup-pick:hover { background: var(--s0); color: var(--text); border-color: var(--s2); }
+.run-setup-input { background: var(--base); border: 1px solid var(--s1); color: var(--text); border-radius: 7px; padding: 8px 10px; width: 100%; font-family: var(--mono); font-size: 12.5px; }
 .run-setup-input:focus { outline: none; border-color: var(--blue); }
 /* A script name is short; a full-width field invites a sentence. */
-.run-setup-name { max-width: 260px; }
+.run-setup-name { max-width: 200px; }
 .run-setup-clash { color: var(--red); }
-.run-setup-hint { font-size: 11.5px; color: var(--o1); line-height: 1.55; }
-/* The "for this agent that is …" line belongs to the lead paragraph above it,
-   so it sits closer than the card's regular gap. */
-.run-setup-lead + .run-setup-hint { margin-top: -9px; }
-.run-setup-row { display: flex; align-items: center; gap: 16px; border-top: 1px solid var(--line); padding-top: 13px; }
-.run-setup-row-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.run-setup-hint { font-size: 11.5px; color: var(--o1); line-height: 1.5; }
+.run-setup-row { display: flex; align-items: center; gap: 16px; border-top: 1px solid var(--line); padding-top: 11px; }
+.run-setup-row-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.run-setup-row-label { font-size: 12.5px; color: var(--text); }
 .run-setup-error { color: var(--red); font-size: 12px; }
 .run-setup-actions { display: flex; align-items: center; gap: 8px; }
+.run-setup-actions .spacer { flex: 1; min-width: 8px; }
 .run-setup-actions .settings-save { align-self: auto; }
 .run-setup-actions button:disabled { opacity: .5; cursor: default; }
 .run-setup-actions .tile-act.danger:hover { color: var(--red); }
-.run-setup-foot { border-top: 1px solid var(--line); padding-top: 12px; font-size: 11.5px; color: var(--o1); line-height: 1.6; }
-.run-error { color: var(--red); font-size: 12px; }
+/* Where the script runs and where it is stored: true, occasionally needed, and
+   never the thing you came to the card to do, so it sits last and quiet. */
+.run-setup-foot { display: flex; flex-direction: column; gap: 4px; border-top: 1px solid var(--line); padding-top: 10px; font-size: 11px; color: var(--o1); line-height: 1.55; }
+.run-error { padding: 6px 10px; border-bottom: 1px solid var(--line); color: var(--red); font-size: 12px; }
 .run-body { flex: 1; display: flex; min-height: 0; }
 .run-term { flex: 1; min-width: 0; display: flex; }
 /* Width comes from the pane resizer beside it, so no flex basis here. */

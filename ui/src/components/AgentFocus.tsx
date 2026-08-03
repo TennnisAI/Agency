@@ -14,7 +14,6 @@ import { runStatus } from "../lib/runstate";
 import { runListLabel, agentLabel } from "../agents";
 import FocusTerminal, { shellStream } from "./FocusTerminal";
 import RunPanel from "./RunPanel";
-import MergeModal from "./MergeModal";
 import ConfirmDialog from "./ConfirmDialog";
 import RunRemoveDialog from "./RunRemoveDialog";
 import PromptDialog from "./PromptDialog";
@@ -134,8 +133,7 @@ export default function AgentFocus({
 }: {
   onSpawn?: (agentId: string, opts?: SpawnOpts) => void;
 }) {
-  const { runs, focusedRunId, setFocusedRun, setView, refreshRuns, createAgent, createTerminal, selectedProjectId, pendingSessionId, setPendingSession } = useRuns();
-  const [showMerge, setShowMerge] = useState(false);
+  const { runs, focusedRunId, setFocusedRun, refreshRuns, createAgent, createTerminal, selectedProjectId, pendingSessionId, setPendingSession, setApproveRun } = useRuns();
   // Archive / discard of the focused run, awaiting its confirm dialog.
   const [pendingRemoval, setPendingRemoval] = useState<Removal | null>(null);
   // Run being renamed (its display title). Any run — agent or terminal.
@@ -166,7 +164,7 @@ export default function AgentFocus({
   const [profiles, setProfiles] = useState<AgentProfile[]>([]);
   const addBtnRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
-    setShowMerge(false);
+    setApproveRun(null);
     setPendingRemoval(null);
     setAddOpen(false);
     setSessions([]);
@@ -208,7 +206,7 @@ export default function AgentFocus({
     load();
     const iv = setInterval(load, 4000);
     return () => { live = false; clearInterval(iv); };
-  }, [focusedRunId, selectPanel]);
+  }, [focusedRunId, selectPanel, setApproveRun]);
 
   // A run opened for a specific extra tab (an agent PR review that had to share
   // this worktree) lands on that tab instead of the one it remembers. Declared
@@ -414,9 +412,13 @@ export default function AgentFocus({
                   ]}
                 />
                 {/* Nothing to approve without a branch of its own: the work is
-                    already on the checkout's branch, reviewed in Source Control. */}
+                    already on the checkout's branch, reviewed in Source Control.
+                    Routed through the store rather than a local modal so this
+                    button and ⌘↵ open the one Approve window AgentsView owns
+                    (AGE-59): the one wired to deep-link a created PR into Source
+                    Control instead of out to github.com. */}
                 {focused.worktree && (
-                  <button className="btn-approve" title="Approve & merge this agent's branch" onClick={() => setShowMerge(true)}>
+                  <button className="btn-approve" title="Approve & merge this agent's branch" onClick={() => setApproveRun(focused.id)}>
                     <CheckIcon />
                     <span>Approve</span>
                     <kbd className="btn-approve-kbd">⌘↵</kbd>
@@ -512,20 +514,6 @@ export default function AgentFocus({
                   target={focused.id}
                   where="this agent's workspace"
                   onClose={() => selectPanel(beforeRun.current)}
-                />
-              )}
-              {showMerge && (
-                <MergeModal
-                  taskId={focused.id}
-                  onClose={() => setShowMerge(false)}
-                  // The agent this pane was showing is gone (archived or
-                  // deleted), so land on the project's agent grid rather than
-                  // an empty focus pane asking us to pick from the rail.
-                  onRemoved={() => {
-                    setFocusedRun(null);
-                    setView("grid");
-                    refreshRuns();
-                  }}
                 />
               )}
               {confirmCloseTab && (

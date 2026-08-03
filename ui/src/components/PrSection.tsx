@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useState } from "react";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   CheckItem,
   GhReadiness,
@@ -34,9 +33,10 @@ export default function PrSection({
   projectId: string;
   canCreate: boolean;
   onLeave: () => void;
-  // When set, shows a "Review in Agency" action that deep-links to the PR
-  // review panel for the created/existing PR.
-  onReviewPr?: (number: number) => void;
+  // Deep-links "Open PR" to the review panel for the created/existing PR.
+  // Required, not optional: a missing handler is how this button silently
+  // regressed to opening github.com instead (AGE-59).
+  onReviewPr: (number: number) => void;
 }) {
   const [readiness, setReadiness] = useState<GhReadiness | null>(null);
   const [pr, setPr] = useState<PrInfo | null>(null);
@@ -154,21 +154,10 @@ export default function PrSection({
             </span>
             <span className="spacer" />
             {/* Opening a PR keeps you in Agency: the review panel is the richer
-                surface, and it carries its own link out to github.com. Without
-                a deep-link handler there's nowhere in-app to go, so fall back
-                to the browser. */}
-            {onReviewPr ? (
-              <button className="settings-ghost-btn" onClick={() => onReviewPr(pr.number)}>
-                Open PR
-              </button>
-            ) : (
-              <button
-                className="settings-ghost-btn"
-                onClick={() => openUrl(pr.url).catch((e) => toastError(e, "Couldn't open the pull request"))}
-              >
-                Open ↗
-              </button>
-            )}
+                surface, and it carries its own link out to github.com. */}
+            <button className="settings-ghost-btn" onClick={() => onReviewPr(pr.number)}>
+              Open PR
+            </button>
             <button className="settings-ghost-btn" onClick={refreshStatus} title="Refresh checks">
               ↻
             </button>

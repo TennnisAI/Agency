@@ -8,12 +8,21 @@ import { ISSUE_STATUSES, PRIORITY_LABELS, STATUS_LABELS, fmtDate, isOverdue } fr
 import { Attachment, insertAttachment, parseAttachments, removeAttachment } from "../lib/attachments";
 import { Attached, attachBlob, attachPath } from "../lib/issueAttach";
 import { dateStamp } from "../lib/dailyNote";
+import { MenuCoords, anchorMenu } from "../lib/menuAnchor";
 import { toastError } from "../lib/toast";
+import { useDismissOnResize } from "../hooks/useDismissOnResize";
 import { PriorityGlyph, StatusDot } from "./IssueRow";
 import IssueAttachments, { forgetAttachment } from "./IssueAttachments";
 import AgentAddMenu from "./AgentAddMenu";
 import DatePicker from "./DatePicker";
 import { ContractIcon, ExpandIcon } from "./icons";
+
+// The property menus, for anchoring: `.agent-menu`'s min-width (no status or
+// priority label comes near its 300px max), one button's height, and the
+// menu's own padding.
+const MENU_W = 220;
+const MENU_ROW_H = 33;
+const MENU_PAD = 10;
 
 function ts(secs: number): string {
   return new Date(secs * 1000).toLocaleString(undefined, {
@@ -44,21 +53,14 @@ function DateProp({
   onChange: (v: string | null) => void;
 }) {
   const pillRef = useRef<HTMLSpanElement>(null);
-  const [picker, setPicker] = useState<{ top: number; left?: number; right?: number } | null>(null);
+  const [picker, setPicker] = useState<MenuCoords | null>(null);
   const today = dateStamp(new Date());
 
   // Same edge-flip anchoring as the row menus: the detail pane hugs the
   // window's right edge, so the popover usually opens leftward.
   const openPicker = () => {
     const r = pillRef.current?.getBoundingClientRect();
-    if (!r) return;
-    const MENU_W = 240; // .date-picker width
-    const fitsRight = r.left + MENU_W <= window.innerWidth - 8;
-    setPicker(
-      fitsRight
-        ? { top: r.bottom + 4, left: r.left }
-        : { top: r.bottom + 4, right: window.innerWidth - r.right },
-    );
+    if (r) setPicker(anchorMenu(r, 240, 260)); // .date-picker's width, and its rendered height
   };
 
   return (
@@ -149,7 +151,7 @@ export default function IssueDetail({
   const bodyRef = useRef<HTMLTextAreaElement>(null);
   const asideRef = useRef<HTMLElement>(null);
   const [menu, setMenu] = useState<"status" | "priority" | null>(null);
-  const [coords, setCoords] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
+  const [coords, setCoords] = useState<MenuCoords>({ top: 0, left: 0 });
   const statusRef = useRef<HTMLButtonElement>(null);
   const priorityRef = useRef<HTMLButtonElement>(null);
   // A file being dragged over this pane, and an attach already in flight.
@@ -158,11 +160,19 @@ export default function IssueDetail({
   // Where to put the caret once an inserted attachment has rendered.
   const pendingCaret = useRef<number | null>(null);
 
+  // Expanded, these pills sit in the meta rail at the far right of the window,
+  // where a left-anchored menu would open past the edge — anchorMenu flips it.
+  // The row count decides the height: statuses and priorities differ by one.
   const openMenu = (which: "status" | "priority", ref: React.RefObject<HTMLButtonElement>) => {
     const r = ref.current?.getBoundingClientRect();
-    if (r) setCoords({ top: r.bottom + 4, left: r.left });
+    const rows = which === "status" ? ISSUE_STATUSES.length : PRIORITY_LABELS.length;
+    if (r) setCoords(anchorMenu(r, MENU_W, rows * MENU_ROW_H + MENU_PAD));
     setMenu(which);
   };
+
+  // Rather than leave the menu stranded where the pill used to be. (The date
+  // popover does the same from inside DatePicker.)
+  useDismissOnResize(menu !== null, () => setMenu(null));
 
   // What this pane last sent to (or loaded from) the tracker. The `issue` prop
   // lags a write by a save + refresh round-trip, so it can't answer "is this

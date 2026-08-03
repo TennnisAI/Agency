@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { monthGrid, monthLabel, shiftMonth } from "../lib/calendar";
 import { dateStamp } from "../lib/dailyNote";
+import { MenuCoords } from "../lib/menuAnchor";
+import { useDismissOnResize } from "../hooks/useDismissOnResize";
 import { useModalKeys } from "../hooks/useModalKeys";
 
 // In-app calendar popover — the native date picker can't be dismissed without
@@ -14,7 +16,7 @@ export default function DatePicker({
   onClose,
 }: {
   value: string | null;
-  coords: { top: number; left?: number; right?: number };
+  coords: MenuCoords;
   // onPick/onClear also close — the caller owns the open state.
   onPick: (date: string) => void;
   onClear: () => void;
@@ -27,6 +29,7 @@ export default function DatePicker({
     Number(anchor.slice(5, 7)),
   ]);
   useModalKeys(onClose);
+  useDismissOnResize(true, onClose);
 
   return (
     <>

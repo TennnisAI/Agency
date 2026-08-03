@@ -1,4 +1,5 @@
 import { Fragment, ReactNode, useRef, useState } from "react";
+import { useDismissOnResize } from "../hooks/useDismissOnResize";
 import { MoreIcon } from "./icons";
 
 export type OverflowItem = {
@@ -43,6 +44,9 @@ export default function OverflowMenu({
       return next;
     });
   };
+
+  // The header this hangs off shifts under a resize; the menu's coords don't.
+  useDismissOnResize(open, () => setOpen(false));
 
   if (items.length === 0) return null;
   return (

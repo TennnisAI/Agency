@@ -4,6 +4,7 @@ import { AgentProfile, Issue, getSettings, listProfiles, listProjectBranches } f
 import { agentLabel } from "../agents";
 import { useRuns, SpawnOpts } from "../store/runs";
 import { effectiveMergeTarget } from "../lib/branchTargets";
+import { useDismissOnResize } from "../hooks/useDismissOnResize";
 import BranchSelect from "./BranchSelect";
 import RaceDialog from "./RaceDialog";
 import LoopDialog from "./LoopDialog";
@@ -135,6 +136,10 @@ export default function AgentAddMenu({
       return next;
     });
   };
+
+  // Those coords are measured once, at open. Rather than let a resize leave the
+  // menu behind where its trigger used to be, close it.
+  useDismissOnResize(open, () => setOpen(false));
 
   const choose = (id: string) => {
     setOpen(false);

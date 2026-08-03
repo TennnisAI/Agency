@@ -165,6 +165,50 @@ fn start_subscribe_input_capture_kill() {
     assert_eq!(client.list().unwrap().len(), 0);
 }
 
+/// The Enter that `send_text` appends has to reach the session as input of its
+/// own, a beat after the message: a TUI agent that reads the whole thing in one
+/// go treats it as a paste, and the carriage return lands in its prompt box as a
+/// newline instead of submitting the turn.
+#[test]
+fn send_text_submits_the_line_after_a_pause() {
+    let (_dir, client) = server_and_client();
+    client
+        .start_session("st", std::env::temp_dir().as_path(), "/bin/cat", &[], &[], 80, 24)
+        .unwrap();
+
+    let (tx, rx) = mpsc::channel();
+    let sub = client
+        .subscribe("st", 80, 24, move |bytes| {
+            let _ = tx.send(bytes);
+        })
+        .unwrap();
+    rx.recv_timeout(Duration::from_secs(2)).unwrap(); // snapshot
+
+    let started = std::time::Instant::now();
+    client.send_text("st", "sentinel-line").unwrap();
+    assert!(
+        started.elapsed() >= Duration::from_millis(100),
+        "the carriage return must trail the text, not ride along with it"
+    );
+
+    // The pty echoes what was typed; `cat` writes the line back only once the
+    // carriage return has ended it. Two copies is the proof it was submitted.
+    let mut seen = String::new();
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while std::time::Instant::now() < deadline {
+        if let Ok(b) = rx.recv_timeout(Duration::from_millis(200)) {
+            seen.push_str(&String::from_utf8_lossy(&b));
+            if seen.matches("sentinel-line").count() >= 2 {
+                break;
+            }
+        }
+    }
+    assert!(seen.matches("sentinel-line").count() >= 2, "line was never submitted, got: {seen:?}");
+
+    drop(sub);
+    client.kill("st").unwrap();
+}
+
 #[test]
 fn start_session_with_fallback_runs_fresh_on_fast_primary_exit() {
     let (_dir, client) = server_and_client();

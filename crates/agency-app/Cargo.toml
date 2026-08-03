@@ -40,5 +40,15 @@ agency-core = { path = "../agency-core" }
 log = "0.4"
 uuid = { version = "1", features = ["v4"] }
 
+# Reading the whole macOS pasteboard (every item, not just the first, which is
+# all WebKit's paste gives the webview — see clipboard.rs). Same objc2 stack
+# tauri/wry already build against.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSPasteboard", "NSPasteboardItem"] }
+# Named explicitly (not left to feature unification with tauri's own objc2 use):
+# iterating the pasteboard's NSArray needs NSEnumerator, and dropping it turns
+# into a type error here rather than anywhere near the code that wants it.
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSEnumerator", "NSString"] }
+
 [dev-dependencies]
 tempfile = "3"

@@ -1,5 +1,6 @@
 mod activity;
 mod agent_catalog;
+mod clipboard;
 mod commands;
 mod datadir;
 mod lifecycle;
@@ -91,6 +92,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            clipboard::read_clipboard_text,
             commands::list_projects,
             commands::add_project,
             commands::get_workspace,

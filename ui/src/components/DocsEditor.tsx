@@ -4,6 +4,7 @@ import { EditorView, drawSelection, dropCursor, keymap } from "@codemirror/view"
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { FileRoot, createDir, readFile, writeFile, writeFileBase64 } from "../api";
 import { toastError } from "../lib/toast";
+import { clipboardText } from "../lib/clipboard";
 import { editorChromeTheme } from "../lib/cmTheme";
 import { DocsIndex } from "../lib/docsIndex";
 import { CrossRefs } from "../lib/links";
@@ -343,7 +344,9 @@ export default forwardRef<DocsEditorHandle, {
     const view = viewRef.current;
     if (!view) return;
     try {
-      const text = await navigator.clipboard.readText();
+      // Not navigator.clipboard: on a multi-item clipboard the webview's own
+      // reader can only see the first item (see lib/clipboard.ts).
+      const text = await clipboardText();
       if (text) {
         const sel = view.state.selection.main;
         view.dispatch({

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   RunScript,
@@ -44,9 +44,13 @@ export default function RunPanel({
   const [statuses, setStatuses] = useState<Record<string, SessionStatus>>({});
   const [selected, setSelected] = useState<string | null>(null);
   const [editing, setEditing] = useState<Editing>(null);
-  // Scripts started since this panel mounted, so the log pane appears on the
-  // click rather than on the next status poll a second and a half later.
-  const [started, setStarted] = useState<Set<string>>(new Set());
+  // How many times each script has been started in this panel. Starting kills
+  // the previous session and spawns a new one under the same name, so a pane
+  // already on screen is left holding a subscription to a session that no
+  // longer exists: it shows nothing further and reads as a run that hung. The
+  // count rides in the terminal's key, so a start remounts the pane onto the
+  // session it actually spawned.
+  const [runCount, setRunCount] = useState<Record<string, number>>({});
   const [previewKey, setPreviewKey] = useState(0);
   const [error, setError] = useState<string | null>(null);
   // The preview is the point of a web script, so it gets the larger half by
@@ -63,24 +67,33 @@ export default function RunPanel({
     setStatuses({});
     setSelected(null);
     setEditing(null);
-    setStarted(new Set());
+    setRunCount({});
     setError(null);
     loadConfig();
   }, [target, loadConfig]);
 
-  useEffect(() => {
-    let alive = true;
-    const tick = () =>
-      runScriptsStatus(target)
-        .then((list) => {
-          if (!alive) return;
-          setStatuses(Object.fromEntries(list.map((s) => [s.name, s.status])));
-        })
-        .catch(() => {});
-    tick();
-    const t = setInterval(tick, 1500);
-    return () => { alive = false; clearInterval(t); };
+  // Starting and stopping change the answer there and then, so both refresh
+  // rather than wait out the poll. `seq` keeps the newest request the one that
+  // wins: a reply already in flight when the click landed describes the state
+  // before it, and would otherwise put the stale answer back for a poll.
+  const seq = useRef(0);
+  const refresh = useCallback(async () => {
+    const mine = ++seq.current;
+    try {
+      const list = await runScriptsStatus(target);
+      if (mine === seq.current) {
+        setStatuses(Object.fromEntries(list.map((s) => [s.name, s.status])));
+      }
+    } catch { /* transient; the next poll asks again */ }
   }, [target]);
+
+  useEffect(() => {
+    refresh();
+    const t = setInterval(refresh, 1500);
+    // Bumping the seq drops whatever is in flight: on a target change it
+    // describes the workspace we just left, and on unmount nobody wants it.
+    return () => { seq.current++; clearInterval(t); };
+  }, [refresh]);
 
   const scripts = useMemo(() => config?.scripts ?? [], [config]);
 
@@ -100,17 +113,22 @@ export default function RunPanel({
     setError(null);
     try {
       await startRunScript(target, name);
-      setStarted((s) => new Set(s).add(name));
+      setRunCount((c) => ({ ...c, [name]: (c[name] ?? 0) + 1 }));
+      await refresh();
     } catch (e) {
       setError(String(e));
     }
   };
 
+  // Stop a running script, and clear a finished one: both are the same call,
+  // which takes the session down and with it everything the panel shows for
+  // that script. A finished script leaves its session behind precisely so its
+  // output survives; this is how you say you are done reading it.
   const stop = async (name: string) => {
     setError(null);
     try {
       await stopRunScript(target, name);
-      setStarted((s) => { const next = new Set(s); next.delete(name); return next; });
+      await refresh();
     } catch (e) {
       // Stop failed: the script is still running, so leave the pane as it is.
       setError(String(e));
@@ -172,10 +190,10 @@ export default function RunPanel({
     return <div className="run-panel">{editorFor(editing)}</div>;
   }
 
-  // Whether this script has anything to show: it is running, it was just
-  // started, or it ran and left its output behind. Until then the pane has no
-  // logs to fill itself with, and shows the script's start card instead.
-  const hasLogs = !!script && (running || started.has(script.name) || status?.state === "exited");
+  // Whether this script has anything to show: it is running, or it ran and left
+  // its output behind. Anything else — never started here, or cleared — has no
+  // logs to fill the pane with, and shows the script's start card instead.
+  const hasLogs = !!script && (running || status?.state === "exited");
   const showPreview = !!script?.web && !!url && running;
 
   return (
@@ -218,9 +236,16 @@ export default function RunPanel({
           )}
           <code className="run-cmd" title={script.command}>{script.command}</code>
           {status?.state === "exited" && (
-            <span className={`run-exit ${status.code === 0 ? "" : "bad"}`}>
-              {status.code === 0 ? "finished" : `exited ${status.code}`}
-            </span>
+            <>
+              <span className={`run-exit ${status.code === 0 ? "" : "bad"}`}>
+                {status.code === 0 ? "finished" : `exited ${status.code}`}
+              </span>
+              <button
+                className="tile-act"
+                title="Clear this finished run and its output"
+                onClick={() => stop(script.name)}
+              >✕ Clear</button>
+            </>
           )}
           {script.web && url && (
             <>
@@ -245,7 +270,7 @@ export default function RunPanel({
         {script && hasLogs ? (
           <div className="run-term">
             <FocusTerminal
-              key={runScriptKey(target, script.name)}
+              key={`${runScriptKey(target, script.name)}:${runCount[script.name] ?? 0}`}
               runId={runScriptKey(target, script.name)}
               stream={runStream}
             />

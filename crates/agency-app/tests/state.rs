@@ -967,6 +967,80 @@ fn discard_archived_runs_clears_the_archive_and_spares_live_runs() {
     session_gone_or_cleanup(&state, &live.id);
 }
 
+/// AGE-49: removing an agent stops its session and hands git a worktree to
+/// unlink, which on a real repo runs for seconds. Both teardowns now report the
+/// step they are on so the confirm dialog can show it instead of freezing —
+/// this pins the steps actually being emitted, in order, with the worktree
+/// removal (the slow one) named among them.
+#[test]
+fn removing_an_agent_reports_each_teardown_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let state = common::state(&dir);
+    state.register_profile(AgentProfile {
+        name: "noop".into(),
+        command: "sh".into(),
+        args: vec!["-c".into(), "sleep 1".into()],
+        env: vec![],
+        resume_args: None,
+        loop_args: None,
+    }).unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+
+    let archived = state
+        .create_run_with_progress(&project.id, "a", "noop", "HEAD", None, true, |_| {})
+        .unwrap();
+    let mut steps = Vec::new();
+    state
+        .archive_run_with_progress(&archived.id, &mut |p| steps.push(p.phase))
+        .unwrap();
+    assert_eq!(
+        steps,
+        vec![
+            "Saving uncommitted changes",
+            "Stopping the agent",
+            "Removing the worktree",
+            "Cleaning up",
+        ],
+    );
+
+    let doomed = state
+        .create_run_with_progress(&project.id, "b", "noop", "HEAD", None, true, |_| {})
+        .unwrap();
+    let mut steps = Vec::new();
+    state
+        .discard_run_with_progress(&doomed.id, &mut |p| steps.push((p.phase, p.detail)))
+        .unwrap();
+    assert_eq!(
+        steps.iter().map(|(phase, _)| phase.as_str()).collect::<Vec<_>>(),
+        vec!["Stopping the agent", "Removing the worktree", "Cleaning up"],
+    );
+    // The detail line names the branch, so a race tearing down five attempts
+    // says which one it is on.
+    assert!(steps.iter().all(|(_, detail)| *detail == doomed.branch), "{steps:?}");
+
+    // A sweep relays each run's steps, with its own position as the detail so
+    // the bar doesn't look like one teardown restarting over and over.
+    let swept = state
+        .create_run_with_progress(&project.id, "c", "noop", "HEAD", None, true, |_| {})
+        .unwrap();
+    state.archive_run(&swept.id).unwrap();
+    let mut details = Vec::new();
+    let summary = state
+        .discard_archived_runs_with_progress(&project.id, &mut |p| details.push(p.detail))
+        .unwrap();
+    // Both archived runs: the one archived above, and `swept`.
+    assert_eq!(summary.discarded, 2);
+    assert!(
+        details.iter().all(|d| d.starts_with("1 of 2: ") || d.starts_with("2 of 2: ")),
+        "{details:?}",
+    );
+    session_gone_or_cleanup(&state, &swept.id);
+}
+
 /// Wait for `f` to hold, polling for up to ~4s. Sessions start and exit
 /// asynchronously in the daemon, so nothing about a run script is immediate.
 fn eventually(mut f: impl FnMut() -> bool) -> bool {

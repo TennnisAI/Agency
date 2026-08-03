@@ -243,20 +243,40 @@ pub async fn list_runs(state: State<'_, AppState>, project_id: String) -> Result
     state.list_runs(&project_id).map_err(|e| e.to_string())
 }
 
+// async (not sync): tearing an agent down stops its session, waits on the
+// terminal daemon and hands git a worktree that can be a whole dependency tree
+// to unlink — seconds to tens of seconds. Sync ran that on the main thread, so
+// the entire window froze with no repaint until it finished (see the
+// main-thread note at the top of this file). `on_progress` streams the step it
+// is on, the same channel shape clone and push report through.
 #[tauri::command]
-pub fn discard_run(state: State<'_, AppState>, id: String) -> Result<(), String> {
-    state.discard_run(&id).map_err(|e| e.to_string())
+pub async fn discard_run(
+    state: State<'_, AppState>,
+    id: String,
+    on_progress: Channel<agency_core::setup::CloneProgress>,
+) -> Result<(), String> {
+    state
+        .discard_run_with_progress(&id, &mut |p| {
+            let _ = on_progress.send(p);
+        })
+        .map_err(|e| e.to_string())
 }
 
 /// Discard every archived run in a project at once. The UI confirms first; a
 /// partial sweep still returns Ok so the caller can report what went and what
-/// didn't (see AppState::discard_archived_runs).
+/// didn't (see AppState::discard_archived_runs). Async for the same reason
+/// `discard_run` is, only more so — this is that teardown once per archived run.
 #[tauri::command]
-pub fn discard_archived_runs(
+pub async fn discard_archived_runs(
     state: State<'_, AppState>,
     project_id: String,
+    on_progress: Channel<agency_core::setup::CloneProgress>,
 ) -> Result<DiscardSummary, String> {
-    state.discard_archived_runs(&project_id).map_err(|e| e.to_string())
+    state
+        .discard_archived_runs_with_progress(&project_id, &mut |p| {
+            let _ = on_progress.send(p);
+        })
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1441,9 +1461,20 @@ pub fn close_run_session(state: State<'_, AppState>, id: String) -> Result<(), S
     state.close_run_session(&id).map_err(|e| e.to_string())
 }
 
+// async + progress for the same reason `discard_run` is: archiving auto-commits
+// the worktree, may run the project's archive script, and then removes the
+// worktree. On the main thread that froze the window until it was done.
 #[tauri::command]
-pub fn archive_run(state: State<'_, AppState>, id: String) -> Result<(), String> {
-    state.archive_run(&id).map_err(|e| e.to_string())
+pub async fn archive_run(
+    state: State<'_, AppState>,
+    id: String,
+    on_progress: Channel<agency_core::setup::CloneProgress>,
+) -> Result<(), String> {
+    state
+        .archive_run_with_progress(&id, &mut |p| {
+            let _ = on_progress.send(p);
+        })
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]

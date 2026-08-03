@@ -465,6 +465,18 @@ fn has_active_loop(run: &agency_core::registry::Run) -> bool {
         && run.loop_state.as_ref().map(|s| !s.status.is_terminal()).unwrap_or(false)
 }
 
+/// Announce a teardown step on the same channel shape clone/push/spawn report
+/// through, so the UI can render all of them with one progress readout. No
+/// percent: git says nothing about how far through removing a worktree it is,
+/// and a determinate bar frozen at 50% reads worse than an honest sweep.
+fn step(on_progress: &mut dyn FnMut(agency_core::setup::CloneProgress), phase: &str, detail: &str) {
+    on_progress(agency_core::setup::CloneProgress {
+        phase: phase.to_string(),
+        percent: None,
+        detail: detail.to_string(),
+    });
+}
+
 /// Daemon session for one run script. Keyed by (workspace, script name), so a
 /// project can have `dev` serving while `build` runs, and the same script runs
 /// independently in every agent's workspace. `target` is a run id or the
@@ -2728,10 +2740,24 @@ impl AppState {
     }
 
     pub fn discard_run(&self, id: &str) -> Result<()> {
+        self.discard_run_with_progress(id, &mut |_| {})
+    }
+
+    /// [`discard_run`] reporting each teardown step. Deleting an agent is not
+    /// one quick write: it stops a live session, waits on the terminal daemon,
+    /// and hands git a worktree that can hold a whole `node_modules` to unlink.
+    /// Seconds to tens of seconds, and the caller is a modal the user is
+    /// staring at, so it says which step it is on rather than nothing at all.
+    pub fn discard_run_with_progress(
+        &self,
+        id: &str,
+        on_progress: &mut dyn FnMut(agency_core::setup::CloneProgress),
+    ) -> Result<()> {
         self.attaches.lock().unwrap().remove(id);
         self.input_seen.lock().unwrap().remove(id);
         self.prompted.lock().unwrap().remove(id);
         let run = self.run_record(id)?;
+        step(on_progress, "Stopping the agent", &run.branch);
         // End an active loop first (best-effort): once delete_run removes the
         // row, nothing could ever stop a session the driver respawned into
         // the deleted worktree.
@@ -2750,9 +2776,15 @@ impl AppState {
         // standing on, so discarding is purely dropping the record.
         if run.kind == "agent" && run.worktree {
             if let Ok(repo) = self.project_repo(&run.project_id) {
+                step(on_progress, "Removing the worktree", &run.branch);
+                // Same mutual exclusion `create_run` takes: this command is
+                // async now (off the main thread), so nothing else serializes
+                // it against a concurrent worktree add on the same repo.
+                let _gate = self.worktree_gate.lock().unwrap();
                 let _ = WorktreeManager::new(repo).remove(id);
             }
         }
+        step(on_progress, "Cleaning up", &run.branch);
         {
             let reg = self.registry.lock().unwrap();
             reg.delete_run_sessions(id)?;
@@ -2772,6 +2804,17 @@ impl AppState {
     /// the session teardown and the stamp: its changes stay in the checkout,
     /// uncommitted, exactly as the user left them.
     pub fn archive_run(&self, id: &str) -> Result<()> {
+        self.archive_run_with_progress(id, &mut |_| {})
+    }
+
+    /// [`archive_run`] reporting each teardown step, for the same reason
+    /// [`discard_run_with_progress`] does: the auto-commit, the cleanup script
+    /// and the worktree removal are each long enough to look like a hang.
+    pub fn archive_run_with_progress(
+        &self,
+        id: &str,
+        on_progress: &mut dyn FnMut(agency_core::setup::CloneProgress),
+    ) -> Result<()> {
         let run = self.run_record(id)?;
         let repo = self.project_repo(&run.project_id)?;
 
@@ -2795,11 +2838,13 @@ impl AppState {
         // own branch. Nothing is about to be removed, so there is nothing to
         // preserve — and auto-committing there would sweep up their work.
         if run.kind == "agent" && run.worktree {
+            step(on_progress, "Saving uncommitted changes", &run.branch);
             WorktreeManager::new(repo.clone())
                 .commit_all_if_dirty(id, "WIP: uncommitted changes auto-committed by Agency on archive")
                 .map_err(|e| anyhow!("couldn't preserve uncommitted changes before archiving: {e}"))?;
         }
 
+        step(on_progress, "Stopping the agent", &run.branch);
         // Stop all sessions and drop attach handles. Extra tabs are purged for
         // good: the worktree they live in is about to disappear.
         self.attaches.lock().unwrap().remove(id);
@@ -2818,12 +2863,18 @@ impl AppState {
             if let Some(script) = config.scripts.archive.as_deref() {
                 let worktree = workspace_dir(&repo, &run);
                 if worktree.exists() {
+                    step(on_progress, "Running the archive script", script);
                     let env = agency_core::scripts::script_env(&worktree, &repo, &run.id, run.port_base);
                     let _ = agency_core::scripts::run_blocking(script, &worktree, &env);
                 }
             }
+            step(on_progress, "Removing the worktree", &run.branch);
+            // See discard_run_with_progress: async command, so the gate stands
+            // in for the main-thread serialization this used to get for free.
+            let _gate = self.worktree_gate.lock().unwrap();
             WorktreeManager::new(repo).remove_keep_branch(id)?;
         }
+        step(on_progress, "Cleaning up", &run.branch);
         self.registry.lock().unwrap().set_archived(id, Some(now_secs()))?;
         // Archiving an unmerged run abandons it from the issue's point of
         // view. A merged run's issue is already done, which rollback skips.
@@ -2893,13 +2944,34 @@ impl AppState {
     /// delete, say) must not strand the rest of the sweep, so failures are
     /// collected and reported alongside the count that did go.
     pub fn discard_archived_runs(&self, project_id: &str) -> Result<DiscardSummary> {
+        self.discard_archived_runs_with_progress(project_id, &mut |_| {})
+    }
+
+    /// [`discard_archived_runs`] reporting where the sweep is. A whole
+    /// project's worth of archived worktrees is the slowest teardown of the
+    /// lot, so the count carries the position and each run's own step names
+    /// what it is waiting on.
+    pub fn discard_archived_runs_with_progress(
+        &self,
+        project_id: &str,
+        on_progress: &mut dyn FnMut(agency_core::setup::CloneProgress),
+    ) -> Result<DiscardSummary> {
         let mut summary = DiscardSummary { discarded: 0, failed: Vec::new() };
-        for run in self.list_archived_runs(project_id)? {
-            match self.discard_run(&run.id) {
+        let archived = self.list_archived_runs(project_id)?;
+        let total = archived.len();
+        for (i, run) in archived.iter().enumerate() {
+            let label = run.title.clone().unwrap_or_else(|| run.branch.clone());
+            // The sweep's position replaces each run's own detail line: how far
+            // through the list it is matters more here than one branch's name,
+            // and without it the phases look like a single teardown restarting.
+            let detail = format!("{} of {total}: {label}", i + 1);
+            let mut relay = |p: agency_core::setup::CloneProgress| {
+                on_progress(agency_core::setup::CloneProgress { detail: detail.clone(), ..p });
+            };
+            match self.discard_run_with_progress(&run.id, &mut relay) {
                 Ok(()) => summary.discarded += 1,
                 Err(e) => {
                     log::warn!("discard_archived_runs: couldn't discard {}: {e}", run.id);
-                    let label = run.title.clone().unwrap_or_else(|| run.branch.clone());
                     summary.failed.push(format!("{label}: {e}"));
                 }
             }

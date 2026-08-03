@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { RunInfo, listArchivedRuns, restoreRun, discardRun, discardArchivedRuns } from "../api";
+import { CloneProgress, RunInfo, listArchivedRuns, restoreRun, discardRun, discardArchivedRuns } from "../api";
 import { useRuns } from "../store/runs";
 import { toastError, toastSuccess } from "../lib/toast";
 import ConfirmDialog from "./ConfirmDialog";
@@ -14,6 +14,10 @@ export default function ArchivedSection() {
   const [confirmDiscard, setConfirmDiscard] = useState<RunInfo | null>(null);
   const [confirmCleanup, setConfirmCleanup] = useState(false);
   const [busy, setBusy] = useState(false);
+  // Teardown step of the discard or sweep in flight. A whole project's worth of
+  // archived worktrees is the slowest removal in the app, and it used to show
+  // nothing at all until it finished.
+  const [progress, setProgress] = useState<CloneProgress | null>(null);
 
   const load = useCallback(async () => {
     if (!selectedProjectId) return setItems([]);
@@ -47,8 +51,9 @@ export default function ArchivedSection() {
 
   const discard = async (r: RunInfo) => {
     setBusy(true);
+    setProgress(null);
     try {
-      await discardRun(r.id);
+      await discardRun(r.id, setProgress);
       await load();
       setConfirmDiscard(null);
     } catch (e) {
@@ -64,8 +69,9 @@ export default function ArchivedSection() {
   // refuses to delete.
   const cleanUp = async () => {
     setBusy(true);
+    setProgress(null);
     try {
-      const { discarded, failed } = await discardArchivedRuns(selectedProjectId);
+      const { discarded, failed } = await discardArchivedRuns(selectedProjectId, setProgress);
       await load();
       setConfirmCleanup(false);
       if (discarded) toastSuccess(`Cleaned up ${discarded} archived agent${discarded === 1 ? "" : "s"}`);
@@ -121,6 +127,8 @@ export default function ArchivedSection() {
           confirmLabel="Discard"
           danger
           busy={busy}
+          progress={progress}
+          progressLabel="Discarding…"
           onConfirm={() => discard(confirmDiscard)}
           onCancel={() => setConfirmDiscard(null)}
         />
@@ -132,6 +140,8 @@ export default function ArchivedSection() {
           confirmLabel="Clean up"
           danger
           busy={busy}
+          progress={progress}
+          progressLabel="Cleaning up…"
           onConfirm={cleanUp}
           onCancel={() => setConfirmCleanup(false)}
         />

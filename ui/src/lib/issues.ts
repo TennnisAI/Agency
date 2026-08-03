@@ -37,7 +37,6 @@ export function issueLabel(project: Pick<Project, "issue_key"> | null, issue: Pi
   return `${project?.issue_key ?? "ISSUE"}-${issue.seq}`;
 }
 
-// Groups are collapsed by default once an issue is finished.
 export function isClosed(status: IssueStatus): boolean {
   return status === "done" || status === "cancelled";
 }
@@ -186,4 +185,32 @@ export const PENDING_QUICKADD_KEY = "issues:focus-quickadd";
 // other pane-layout prefs (loadFold/saveFold prefix these with "pane:").
 export function issuesExpandedKey(projectId: string): string {
   return `issues-expanded:${projectId}`;
+}
+
+// Every status group folds, not just the finished ones — a long backlog buries
+// the work in flight just as thoroughly as a long Done list does. Only the
+// finished ones start folded, which is where the board began.
+export const DEFAULT_COLLAPSED: IssueStatus[] = ISSUE_STATUSES.filter(isClosed);
+
+// Which groups are folded, remembered per project (same reasoning as the
+// expanded layout: a tracker's shape is its own).
+export function issuesCollapsedKey(projectId: string): string {
+  return `issues-collapsed:${projectId}`;
+}
+
+// Stored as a comma-joined status list beside the other pane prefs. Nothing
+// stored means a first visit, not "everything open"; unknown names are dropped
+// so a renamed status can't fold a group nobody can reach.
+export function loadCollapsed(storage: Pick<Storage, "getItem">, key: string): Set<IssueStatus> {
+  const raw = storage.getItem("pane:" + key);
+  if (raw === null) return new Set(DEFAULT_COLLAPSED);
+  return new Set(ISSUE_STATUSES.filter((s) => raw.split(",").includes(s)));
+}
+
+export function saveCollapsed(
+  storage: Pick<Storage, "setItem">,
+  key: string,
+  collapsed: Set<IssueStatus>,
+): void {
+  storage.setItem("pane:" + key, ISSUE_STATUSES.filter((s) => collapsed.has(s)).join(","));
 }

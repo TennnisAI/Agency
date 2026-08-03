@@ -18,6 +18,7 @@ import ConfirmDialog from "./ConfirmDialog";
 import ProgressReadout from "./ProgressReadout";
 import { useRuns } from "../store/runs";
 import { useModalKeys } from "../hooks/useModalKeys";
+import { useHushed } from "../lib/hushed";
 
 // `onRemoved` fires after a post-merge cleanup action (archive or delete) so
 // the host view can drop focus and refresh its rail.
@@ -54,6 +55,12 @@ export default function MergeModal({
   // and hand git a worktree to unlink, which on a large repo runs long enough
   // that a bare "Deleting…" label reads as a frozen app.
   const [cleanup, setCleanup] = useState<CloneProgress | null>(null);
+  // Both post-merge explanations can be switched off once the workflow is
+  // habit, and switched back on from Settings ▸ Hidden messages.
+  const [hushNote, setHushNote] = useHushed("merge-cleanup");
+  const [hushConfirm, setHushConfirm] = useHushed("merge-delete");
+  // Ticked inside the confirm; only applied if the delete goes ahead.
+  const [hushNext, setHushNext] = useState(false);
   const { runs } = useRuns();
   const me = runs.find((r) => r.id === taskId);
   const projectId = me?.projectId ?? null;
@@ -118,6 +125,7 @@ export default function MergeModal({
   async function deleteWorkspace(withLosers: boolean) {
     setDeleting(true);
     setCleanup(null);
+    if (hushNext) setHushConfirm(true);
     try {
       if (withLosers) await discardLosers();
       await discardRun(taskId, setCleanup);
@@ -328,13 +336,16 @@ export default function MergeModal({
 
         {outcome?.kind === "clean" && (
           <div>
-            <p className="merge-ok">✓ Merged cleanly into {preview?.base ?? "main"}.</p>
-            <code>{outcome.commit.slice(0, 10)}</code>
-            <p className="merge-note">
-              The worktree and its <code>{preview?.branch ?? "agent"}</code> branch are no longer needed.
-              Archiving stops the agent and removes the worktree (the branch is kept, so it can be restored).
-              Deleting removes the branch and the run too, which can't be undone.
+            <p className="merge-ok">
+              ✓ Merged cleanly into {preview?.base ?? "main"} · <code>{outcome.commit.slice(0, 10)}</code>
             </p>
+            {!hushNote && (
+              <p className="merge-note">
+                Tidy up the agent? Archiving keeps its branch, so you can bring it back later. Deleting clears
+                the branch and the run out for good. Either way the merged commit stays put.{" "}
+                <button className="hush-link" onClick={() => setHushNote(true)}>Don't show this again</button>
+              </p>
+            )}
             <div className="git-actions">
               {losers.length > 0 ? (
                 <button disabled={busy} onClick={() => archiveWorkspace(true)}>
@@ -343,7 +354,11 @@ export default function MergeModal({
                     : `Archive + discard ${losers.length} losing attempt${losers.length === 1 ? "" : "s"}`}
                 </button>
               ) : (
-                <button disabled={busy} onClick={() => archiveWorkspace(false)}>
+                <button
+                  disabled={busy}
+                  title="Stop the agent and remove its worktree. The branch is kept, so the agent can be restored."
+                  onClick={() => archiveWorkspace(false)}
+                >
                   {archiving ? "Archiving…" : "Archive agent"}
                 </button>
               )}
@@ -352,14 +367,30 @@ export default function MergeModal({
                   Archive, keep losers
                 </button>
               )}
-              <button className="ghost danger" disabled={busy} onClick={() => setConfirmDelete(true)}>
+              <button
+                className="ghost danger"
+                disabled={busy}
+                title="Remove the worktree, the branch and the run. The merged commit stays on the base branch."
+                // Hushed and nothing else to decide: go straight to the delete.
+                // With losing attempts around, the confirm carries a real
+                // choice (all of them, or just this one), so it still opens.
+                onClick={() => {
+                  if (hushConfirm && losers.length === 0) deleteWorkspace(false);
+                  else { setHushNext(false); setConfirmDelete(true); }
+                }}
+              >
                 {deleting ? "Deleting…" : "Delete agent"}
               </button>
-              <button className="ghost" disabled={busy} onClick={onClose}>Keep agent</button>
+              <button className="ghost" disabled={busy} onClick={onClose} title="Leave the agent as it is">
+                Keep agent
+              </button>
             </div>
-            {/* Archiving has no confirm step of its own, so its progress lands
-                here. Deleting shows the same readout inside its confirm. */}
-            {archiving && <ProgressReadout progress={cleanup} fallback="Archiving…" />}
+            {/* Archiving has no confirm step of its own, and a hushed delete
+                skips its own; either way the teardown says where it is. When
+                the confirm is up it shows the same readout, so not twice. */}
+            {busy && !confirmDelete && (
+              <ProgressReadout progress={cleanup} fallback={archiving ? "Archiving…" : "Deleting…"} />
+            )}
           </div>
         )}
 
@@ -482,13 +513,15 @@ export default function MergeModal({
       {/* Sibling of the modal card, not a child: the card scrolls its own
           overflow, and the confirm has to cover the whole overlay. Its own
           backdrop click stops propagating, so it never closes the merge modal
-          underneath. */}
+          underneath. "Don't ask again" is offered only when this dialog is the
+          whole question: with losing attempts to decide about, there is more
+          here than a yes/no worth skipping. */}
       {confirmDelete && (
         <ConfirmDialog
           title="Delete agent?"
-          body={`Stop this agent, remove its worktree, and delete the "${preview?.branch ?? "agent"}" branch and the run itself. The merged commit stays on ${preview?.base ?? "the base branch"}, so the work isn't lost, but the agent can't be restored.${
+          body={`The merged work stays on ${preview?.base ?? "the base branch"}. This clears out the worktree, the "${preview?.branch ?? "agent"}" branch and the run.${
             losers.length > 0
-              ? ` "Delete all" also discards ${losers.length} losing attempt${losers.length === 1 ? "" : "s"}.`
+              ? ` "Delete all" clears ${losers.length} losing attempt${losers.length === 1 ? "" : "s"} too.`
               : ""
           }`}
           confirmLabel={losers.length > 0 ? `Delete all ${losers.length + 1}` : "Delete"}
@@ -499,6 +532,9 @@ export default function MergeModal({
           altLabel={losers.length > 0 ? "Delete this one" : undefined}
           altDanger
           onAlt={losers.length > 0 ? () => deleteWorkspace(false) : undefined}
+          hushLabel={losers.length === 0 ? "Don't ask again" : undefined}
+          hushed={hushNext}
+          onHush={losers.length === 0 ? setHushNext : undefined}
           onConfirm={() => deleteWorkspace(losers.length > 0)}
           onCancel={() => setConfirmDelete(false)}
         />

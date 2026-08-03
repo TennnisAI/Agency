@@ -174,6 +174,10 @@ button:hover { background: var(--lav); }
 .modal-head h3 { margin: 0; font-size: 15px; font-weight: 600; color: var(--text); }
 .modal-body { padding: 18px; color: var(--sub1); line-height: 1.6; font-size: 13px; }
 .modal-foot { display: flex; gap: 10px; justify-content: flex-end; padding: 14px 18px; border-top: 1px solid var(--line); background: var(--crust); border-radius: 0 0 15px 15px; }
+/* "Don't ask again", pinned left of the confirm's buttons. */
+.modal-hush { margin-right: auto; display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--sub0); cursor: pointer; }
+.modal-hush input { accent-color: var(--green); }
+.modal-hush:hover { color: var(--sub1); }
 .modal-x { background: transparent; border: none; color: var(--o0); cursor: pointer; font-size: 14px; }
 .modal-x:hover { color: var(--text); }
 
@@ -401,6 +405,10 @@ textarea.settings-input { min-height: 64px; resize: vertical; }
 .merge-ok { color: var(--green); }
 .merge-warn { color: var(--yellow); }
 .merge-note { color: var(--sub0); }
+/* Inline "Don't show this again" at the end of an explanation. Quiet enough
+   not to compete with the actions under it. */
+.hush-link { background: none; border: none; padding: 0; font: inherit; color: var(--o0); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.hush-link:hover { color: var(--text); }
 .merge-review { display: flex; flex-direction: column; gap: 8px; }
 .merge-summary { color: var(--text); font-weight: 600; }
 /* Status dot */

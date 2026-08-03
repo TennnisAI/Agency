@@ -49,6 +49,7 @@ import { agentColor, agentLabel } from "../agents";
 import { THEMES, ThemeId, applyTheme, getStoredTheme } from "../lib/themes";
 import { getWordWrap, setWordWrap } from "../lib/editorPrefs";
 import { setWorkspaceHidden, workspaceHidden } from "../lib/workspacePref";
+import { HUSHABLE, HushId, isHushed, setHushed } from "../lib/hushed";
 
 // Full-view settings page (design handoff: settings takes over the main area,
 // entered from the ⚙ button at the bottom of the Projects pane).
@@ -90,6 +91,12 @@ export default function Settings({
   });
   const [themeId, setThemeId] = useState<ThemeId>(getStoredTheme());
   const [wordWrap, setWrap] = useState<boolean>(getWordWrap());
+  // Which explanations the user has switched off, mirrored into state so the
+  // toggles move. The rows read "show this message", so a ticked row is one
+  // that is *not* hushed.
+  const [hushed, setHushedState] = useState<HushId[]>(
+    () => HUSHABLE.filter((h) => isHushed(h.id)).map((h) => h.id),
+  );
   const [mcpServers, setMcpServers] = useState<McpServer[]>([]);
   const emptyMcpDraft = { name: "", command: "", args: "", env: "", url: "", transport: "stdio", headers: "" };
   const [mcpDraft, setMcpDraft] = useState(emptyMcpDraft);
@@ -153,6 +160,11 @@ export default function Settings({
   function pickWordWrap(on: boolean) {
     setWrap(on);
     setWordWrap(on);
+  }
+
+  function pickMessage(id: HushId, show: boolean) {
+    setHushedState((prev) => (show ? prev.filter((h) => h !== id) : [...prev, id]));
+    setHushed(id, !show);
   }
 
   function pickTheme(id: ThemeId) {
@@ -1071,6 +1083,25 @@ export default function Settings({
               <span className="settings-notif-label">Word wrap in file viewer</span>
               <Toggle checked={wordWrap} onChange={pickWordWrap} />
             </div>
+          </div>
+        </section>
+
+        <section className="settings-section">
+          <div className="settings-section-label">Messages</div>
+          <p className="settings-section-hint">
+            Explanations you can switch off once you know the workflow, and switch back on here.
+            Warnings about work that can't be recovered always show.
+          </p>
+          <div className="settings-group-card">
+            {HUSHABLE.map((h) => (
+              <div key={h.id} className="settings-notif-row">
+                <span className="settings-notif-label" title={h.hint}>{h.label}</span>
+                <Toggle
+                  checked={!hushed.includes(h.id)}
+                  onChange={(next) => pickMessage(h.id, next)}
+                />
+              </div>
+            ))}
           </div>
         </section>
 

@@ -3844,6 +3844,9 @@ impl AppState {
         let repo = self.project_repo(&run.project_id)?;
         let base = agency_core::merge::resolve_target(run.merge_target.as_deref(), &repo)?;
         let state = agency_core::merge::merge_state(&repo, &run.branch, &base)?;
+        if let Some(other) = &state.blocked_by {
+            bail!("the merge in progress is {other}'s, not this run's — finish or abort it there");
+        }
         if !state.merging && !state.merged {
             bail!("no merge in progress for this run, and its branch hasn't landed on {base}");
         }
@@ -3857,6 +3860,14 @@ impl AppState {
         let run = self.run_record(id)?;
         require_own_branch(&run, "merge")?;
         let repo = self.project_repo(&run.project_id)?;
+        // Aborting throws away whatever resolution has been done so far, so it
+        // must never reach across runs: the shared checkout means this run's
+        // Abort would otherwise discard another run's half-resolved merge.
+        if let Some(m) = agency_core::merge::in_progress_merge(&repo) {
+            if !agency_core::merge::owns_merge(&repo, &run.branch) {
+                bail!("the merge in progress is {}'s, not this run's — abort it there", m.branch);
+            }
+        }
         let restore = self.merge_origins.lock().unwrap().remove(id);
         agency_core::merge::abort_merge(&repo, restore.as_deref())
     }
@@ -4106,8 +4117,14 @@ impl AppState {
         let repo = self.project_repo(&run.project_id)?;
         let base = agency_core::merge::resolve_target(run.merge_target.as_deref(), &repo)
             .unwrap_or_else(|_| "main".to_string());
-        if !agency_core::merge::is_merging(&repo)? {
-            bail!("no merge is in progress, so there is no conflict to send");
+        match agency_core::merge::in_progress_merge(&repo) {
+            None => bail!("no merge is in progress, so there is no conflict to send"),
+            // Another run's conflict describes files this agent never touched;
+            // handing it that prompt would send it off editing someone else's work.
+            Some(m) if !agency_core::merge::owns_merge(&repo, &run.branch) => {
+                bail!("the merge in progress is {}'s, not this run's", m.branch)
+            }
+            Some(_) => {}
         }
         if !matches!(self.term.read().unwrap().status(&session_name(id)), Ok(SessionStatus::Running)) {
             bail!("agent session {id} is not running");

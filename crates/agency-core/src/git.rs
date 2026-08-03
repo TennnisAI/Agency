@@ -461,6 +461,14 @@ pub fn log_graph(worktree: &Path, limit: usize) -> Result<Vec<HistoryItem>> {
     Ok(items)
 }
 
+/// The repo's default branch as it exists *locally* (`main` or `master`), or
+/// `None` in a repo that has neither.
+fn local_default_branch(worktree: &Path) -> Option<&'static str> {
+    ["main", "master"].into_iter().find(|b| {
+        git(worktree, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{b}")]).is_ok()
+    })
+}
+
 pub fn branch_info(worktree: &Path) -> Result<BranchInfo> {
     let branch = git(worktree, &["rev-parse", "--abbrev-ref", "HEAD"])?
         .trim()
@@ -469,8 +477,18 @@ pub fn branch_info(worktree: &Path) -> Result<BranchInfo> {
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
-    // Base = merge-base with the first reachable default branch.
-    let base = ["origin/HEAD", "main", "master"].iter().find_map(|cand| {
+    // Base = where this branch's own work starts, so "ahead" counts only its
+    // commits. On a feature branch that's the fork point from the *local*
+    // default branch: worktrees share one object store and one `main`, so
+    // measuring against `origin/main` instead would fold main's unpushed
+    // commits into every branch and show the same count on all of them.
+    // On the default branch itself there is no fork point, so fall back to
+    // origin's copy — there, "ahead of base" does mean "not pushed yet".
+    let base_candidates: Vec<String> = match local_default_branch(worktree) {
+        Some(d) if d != branch => vec![d.to_string()],
+        _ => ["origin/HEAD", "origin/main", "origin/master"].iter().map(|c| c.to_string()).collect(),
+    };
+    let base = base_candidates.iter().find_map(|cand| {
         git(worktree, &["merge-base", "HEAD", cand])
             .ok()
             .map(|s| s.trim().to_string())
@@ -484,9 +502,9 @@ pub fn branch_info(worktree: &Path) -> Result<BranchInfo> {
             ahead = p.next().and_then(|s| s.parse().ok()).unwrap_or(0);
         }
     } else if let Some(base) = &base {
-        // No upstream yet: "ahead" means local commits not on the base branch —
-        // i.e. the commits Publish would push. Lets the UI hide Publish when
-        // there is nothing to publish.
+        // No upstream yet: "ahead" means the commits this branch adds on top of
+        // its base — the work Publish would put on a new remote branch. Lets the
+        // UI hide Publish when there is nothing to publish.
         if let Ok(count) = git(worktree, &["rev-list", "--count", &format!("{base}..HEAD")]) {
             ahead = count.trim().parse().unwrap_or(0);
         }

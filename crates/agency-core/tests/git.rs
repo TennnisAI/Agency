@@ -449,6 +449,35 @@ fn commit_file(dir: &Path, name: &str, contents: &str, msg: &str) {
     run(dir, &["commit", "-q", "-m", msg]);
 }
 
+/// Worktrees share one object store and one local default branch, so "ahead"
+/// has to be measured from each branch's own fork point. Measuring against
+/// origin instead folds the default branch's unpushed commits into every
+/// branch and shows the same count on all of them.
+#[test]
+fn branch_info_ahead_excludes_the_default_branchs_unpushed_commits() {
+    let (_keep, _remote, clone) = clone_with_upstream();
+    // The shared checkout accumulates commits that were never pushed…
+    commit_file(&clone, "a.txt", "a", "main work 1");
+    commit_file(&clone, "b.txt", "b", "main work 2");
+
+    // …and an agent worktree branches off it with one commit of its own.
+    let busy = clone.parent().unwrap().join("busy");
+    run(&clone, &["worktree", "add", "-q", "-b", "agent/busy", busy.to_str().unwrap()]);
+    commit_file(&busy, "c.txt", "c", "branch work");
+    let info = git::branch_info(&busy).unwrap();
+    assert_eq!(info.branch, "agent/busy");
+    assert!(info.upstream.is_none());
+    assert_eq!(info.ahead, 1, "1, not 3: main's unpushed commits aren't this branch's work");
+
+    // A sibling that has committed nothing is 0 ahead, so Publish stays hidden.
+    let idle = clone.parent().unwrap().join("idle");
+    run(&clone, &["worktree", "add", "-q", "-b", "agent/idle", idle.to_str().unwrap()]);
+    assert_eq!(git::branch_info(&idle).unwrap().ahead, 0);
+
+    // The shared checkout still reports its own backlog against origin.
+    assert_eq!(git::branch_info(&clone).unwrap().ahead, 2);
+}
+
 #[test]
 fn sync_pushes_when_only_ahead() {
     let (_keep, remote, clone) = clone_with_upstream();

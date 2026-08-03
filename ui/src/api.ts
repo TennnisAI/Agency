@@ -776,6 +776,9 @@ export interface MergeState {
   merging: boolean;
   unresolved: string[];
   merged: boolean;
+  // Set when the project's checkout is mid-merge of another run's branch. All
+  // runs merge in the same checkout, so one unfinished merge blocks the rest.
+  blockedBy: string | null;
 }
 export const mergeStatus = (taskId: string) =>
   invoke<MergeState>("merge_status", { taskId });

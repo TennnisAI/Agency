@@ -11,6 +11,11 @@ use std::time::{Duration, Instant};
 
 type OutputCb = Arc<dyn Fn(Vec<u8>) + Send + Sync>;
 
+/// How long [`TermClient::send_text`] waits between the message and the Enter
+/// that submits it. Long enough that the agent's reader sees two reads rather
+/// than one pasted blob, short enough to feel instant.
+const SUBMIT_DELAY: Duration = Duration::from_millis(150);
+
 struct Shared {
     write: Mutex<UnixStream>,
     callbacks: Mutex<HashMap<String, OutputCb>>,
@@ -192,10 +197,18 @@ impl TermClient {
         write_frame(&mut *w, &payload).map_err(Into::into)
     }
 
+    /// Type `text` into the session and submit it.
+    ///
+    /// The carriage return goes out in a write of its own, a beat after the
+    /// text. TUI agents treat a burst of input that lands in a single read as a
+    /// paste, and a paste's trailing `\r` becomes a newline *inside* the prompt
+    /// box instead of sending it: the message just sits there, composed but
+    /// never submitted. Arriving on its own, the `\r` reads as an Enter
+    /// keystroke again, which is what actually submits the turn.
     pub fn send_text(&self, id: &str, text: &str) -> Result<()> {
-        let mut bytes = text.as_bytes().to_vec();
-        bytes.push(b'\r');
-        self.input(id, &bytes)
+        self.input(id, text.as_bytes())?;
+        std::thread::sleep(SUBMIT_DELAY);
+        self.input(id, b"\r")
     }
 
     pub fn resize(&self, id: &str, cols: u16, rows: u16) -> Result<()> {

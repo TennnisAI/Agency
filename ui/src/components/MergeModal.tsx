@@ -35,13 +35,15 @@ export default function MergeModal({
   const [outcome, setOutcome] = useState<MergeOutcome | null>(null);
   const [merging, setMerging] = useState(false);
   const [error, setError] = useState("");
-  // "Fix with agent": the prompt is typed into this run's own agent session, so
-  // there is nothing to stream here — only whether the hand-off has happened.
+  // "Fix with agent": the prompt is typed into this run's own agent session and
+  // submitted there, so there is nothing to stream here, only whether the
+  // hand-off has happened.
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState(false);
   // What git says about the merge after a resolver has had a go at it. Null
-  // until the first check.
+  // until the first check; `probeError` is why, when it stays null.
   const [state, setState] = useState<MergeState | null>(null);
+  const [probeError, setProbeError] = useState("");
   const [finishing, setFinishing] = useState(false);
   const [archiving, setArchiving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -125,6 +127,10 @@ export default function MergeModal({
   async function attempt() {
     setError("");
     setMerging(true);
+    // Whatever an earlier check said predates this merge. Clearing it keeps the
+    // conflict panel from rendering a stale "nothing in progress" for the frame
+    // between the merge landing and the first poll answering.
+    setState(null);
     try {
       setOutcome(await mergeTask(taskId));
     } catch (e) {
@@ -139,6 +145,8 @@ export default function MergeModal({
 
   // Hand the conflict to the agent that produced the branch: it already has the
   // context for the change, and it is a session the user can watch and talk to.
+  // The backend submits the prompt, so this really does start the agent working
+  // rather than leaving a composed message sitting in its prompt box.
   async function fixWithAgent() {
     setError("");
     setSending(true);
@@ -149,18 +157,6 @@ export default function MergeModal({
       setError(String(e));
     } finally {
       setSending(false);
-    }
-  }
-
-  // Ask git where the merge stands. Never re-runs the merge: a merge in
-  // progress is a dirty checkout, so a second attempt could only report that
-  // as an error (which is exactly what it used to do).
-  async function checkState() {
-    setError("");
-    try {
-      setState(await mergeStatus(taskId));
-    } catch (e) {
-      setError(String(e));
     }
   }
 
@@ -175,24 +171,40 @@ export default function MergeModal({
       setError(String(e));
       // The failure is usually "still conflicted"; re-read so the file list
       // shown next to the error is the current one.
-      await checkState();
+      mergeStatus(taskId).then(setState).catch(() => {});
     } finally {
       setFinishing(false);
     }
   }
 
-  // While the agent works on the conflict, keep asking git where the merge
-  // stands so "Finish merge" lights up on its own instead of waiting for the
-  // user to guess when to press "Check again".
-  useEffect(() => {
-    if (!sent) return;
-    const timer = window.setInterval(() => {
-      mergeStatus(taskId).then(setState).catch(() => {});
-    }, 3000);
-    return () => window.clearInterval(timer);
-  }, [sent, taskId]);
-
   const conflicts = outcome?.kind === "conflicts";
+
+  // Once a merge is in progress, keep asking git where it stands: the resolver
+  // is the agent (or the user, by hand, in the project's checkout), so this
+  // panel only learns of a resolution by looking. Polling unconditionally, not
+  // just after a hand-off, is what makes a reopened window show the merge as it
+  // is now rather than as it was when the conflict first appeared.
+  useEffect(() => {
+    if (!conflicts) return;
+    const poll = () =>
+      mergeStatus(taskId)
+        .then((s) => {
+          setProbeError("");
+          setState(s);
+        })
+        // Kept apart from the modal's own error line: a blip here (the index
+        // locked while the agent commits, say) clears itself on the next tick,
+        // and it must not sit on top of a real failure from Finish or Abort.
+        // Shown only while there is no answer at all to show instead.
+        .catch((e) => setProbeError(String(e)));
+    poll();
+    const timer = window.setInterval(poll, 3000);
+    return () => window.clearInterval(timer);
+  }, [conflicts, taskId]);
+
+  // git's answer wins once it has one; the merge attempt's own file list stands
+  // in only for the moment before the first poll lands.
+  const unresolved = state ? state.unresolved : outcome?.kind === "conflicts" ? outcome.files : [];
   // Finishing is possible once nothing is unmerged and there is a merge to
   // finish: either uncommitted (we commit it) or already committed by the agent
   // (we just record it and restore the branch).
@@ -200,7 +212,7 @@ export default function MergeModal({
   const step = outcome?.kind === "clean"
     ? "done"
     : conflicts
-      ? (sent ? "resolve" : "merge")
+      ? "resolve"
       : merging
         ? "merge"
         : "review";
@@ -332,64 +344,118 @@ export default function MergeModal({
           </div>
         )}
 
-        {outcome?.kind === "conflicts" && (
+        {/* Where the merge actually stands, and only the buttons that state can
+            act on. Offering all four moves at once (finish / hand off / recheck
+            / abort) made the ones that were dead weight in any given state the
+            loudest thing on screen, and read as advice about what to do. */}
+        {conflicts && (
           <div>
-            <p className="merge-warn">
-              {outcome.files.length > 0
-                ? `Conflicts in ${outcome.files.length} file(s):`
-                : "A merge is in progress in the project's checkout."}
-            </p>
-            {outcome.files.length > 0 && (
-              <ul className="profile-list">
-                {outcome.files.map((f) => (
-                  <li key={f}>
-                    <code>{f}</code>
-                  </li>
-                ))}
-              </ul>
+            {unresolved.length > 0 ? (
+              <>
+                <p className="merge-warn">Conflicts in {unresolved.length} file(s):</p>
+                <ul className="profile-list">
+                  {unresolved.map((f) => (
+                    <li key={f}>
+                      <code>{f}</code>
+                    </li>
+                  ))}
+                </ul>
+                {sent ? (
+                  <p className="merge-note">
+                    Sent to this agent's session, with git's status of the merge. Close this window
+                    to watch it work; the merge is in the project's checkout, not the agent's
+                    worktree, so the prompt points git there. Reopen this window when it's done, or
+                    leave it open: it rechecks git every few seconds either way.
+                  </p>
+                ) : (
+                  <p className="merge-note">
+                    Nothing has been committed. Hand the conflict to this agent, or resolve it
+                    yourself in the project's checkout and come back here to finish.
+                  </p>
+                )}
+                <div className="git-actions">
+                  {sent ? (
+                    <button autoFocus onClick={onClose}>Close and watch</button>
+                  ) : (
+                    <button autoFocus disabled={sending} onClick={fixWithAgent}>
+                      {sending ? "Sending…" : "Fix with agent"}
+                    </button>
+                  )}
+                  {sent && (
+                    <button className="ghost" disabled={sending} onClick={fixWithAgent}>
+                      {sending ? "Sending…" : "Send again"}
+                    </button>
+                  )}
+                  <button
+                    className="ghost"
+                    onClick={abortAndClose}
+                    title="Undo the merge and put the project's checkout back"
+                  >
+                    Abort merge
+                  </button>
+                </div>
+              </>
+            ) : !state ? (
+              <>
+                {probeError ? (
+                  <p className="merge-warn">Couldn't read the merge from git: {probeError}</p>
+                ) : (
+                  <p>Checking the merge…</p>
+                )}
+                <div className="git-actions">
+                  <button className="ghost" onClick={onClose}>Close</button>
+                </div>
+              </>
+            ) : canFinish ? (
+              <>
+                <p className="merge-ok">✓ No conflicts remain.</p>
+                <p className="merge-note">
+                  {state.merging ? (
+                    <>
+                      {preview && (
+                        <>
+                          {preview.commitsAhead} commit{preview.commitsAhead === 1 ? "" : "s"} ahead
+                          of <code>{preview.base}</code>, resolved and staged.{" "}
+                        </>
+                      )}
+                      Finishing commits the merge and puts your checkout back.
+                    </>
+                  ) : (
+                    "The agent committed the merge itself. Finishing records it and puts your checkout back."
+                  )}
+                </p>
+                <div className="git-actions">
+                  <button autoFocus disabled={finishing} onClick={finish}>
+                    {finishing ? "Finishing…" : "Finish merge"}
+                  </button>
+                  <button className="ghost" disabled={finishing} onClick={onClose}>Close</button>
+                  <button
+                    className="ghost"
+                    disabled={finishing}
+                    onClick={abortAndClose}
+                    title="Undo the merge, and with it the resolution that was just done"
+                  >
+                    Abort merge
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <p className="merge-warn">
+                  {state.blockedBy
+                    ? `The merge in the project's checkout is ${state.blockedBy}'s now, not this agent's. Finish or abort it from its own Approve window.`
+                    : "No merge in progress. It was aborted or undone, so nothing is left to finish."}
+                </p>
+                <div className="git-actions">
+                  <button autoFocus onClick={onClose}>Close</button>
+                  {!state.blockedBy && (
+                    <button className="ghost" onClick={() => { setOutcome(null); setError(""); }}>
+                      Back to review
+                    </button>
+                  )}
+                </div>
+              </>
             )}
-            {sent && (
-              <p className="merge-note">
-                Sent to this agent's session, with git's status of the merge. Close this window to
-                watch it work; the merge is in the project's checkout, not the agent's worktree, so
-                the prompt points git there. This panel rechecks git every few seconds.
-              </p>
-            )}
-            {sent && state && state.unresolved.length > 0 && (
-              <p className="merge-warn">
-                Still conflicted: {state.unresolved.join(", ")}.
-              </p>
-            )}
-            {sent && canFinish && (
-              <p className="merge-note">
-                {state?.merging
-                  ? "Conflicts resolved. Finishing commits the merge."
-                  : "The agent committed the merge itself. Finishing records it and puts your checkout back."}
-              </p>
-            )}
-            {sent && state && !state.merging && !state.merged && (
-              <p className="merge-warn">
-                No merge in progress. It was aborted or undone, so nothing is left to finish.
-              </p>
-            )}
-            <div className="git-actions">
-              <button disabled={!canFinish || finishing} onClick={finish}>
-                {finishing ? "Finishing…" : "Finish merge"}
-              </button>
-              {/* The primary move on a fresh conflict; once the merge can be
-                  finished (or the prompt is already sent) it steps back. */}
-              <button
-                className={canFinish || sent ? "ghost" : undefined}
-                disabled={sending}
-                onClick={fixWithAgent}
-              >
-                {sending ? "Sending…" : sent ? "Send again" : "Fix with agent"}
-              </button>
-              <button className="ghost" disabled={finishing} onClick={checkState}>
-                Check again
-              </button>
-              <button className="ghost" disabled={finishing} onClick={abortAndClose}>Abort merge</button>
-            </div>
           </div>
         )}
       </div>

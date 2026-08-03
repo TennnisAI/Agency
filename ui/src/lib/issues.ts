@@ -214,3 +214,35 @@ export function saveCollapsed(
 ): void {
   storage.setItem("pane:" + key, ISSUE_STATUSES.filter((s) => collapsed.has(s)).join(","));
 }
+
+// The issue whose detail pane was open, remembered per project: leaving the
+// tab to look at an agent, a diff or a note and coming back should return to
+// the ticket being read, not to a blank pane. Stored beside the layout prefs
+// above, so a board comes back in one piece — this issue, in the layout it
+// was being read in.
+export function issuesSelectedKey(projectId: string): string {
+  return `issues-selected:${projectId}`;
+}
+
+// A stored selection is only honored while its issue is still there: it can
+// be deleted from another window, or its file removed by hand, between two
+// visits to the board.
+export function loadSelected(
+  storage: Pick<Storage, "getItem">,
+  key: string,
+  issues: Pick<Issue, "id">[],
+): string | null {
+  const raw = storage.getItem("pane:" + key);
+  return raw !== null && issues.some((i) => i.id === raw) ? raw : null;
+}
+
+// Nothing open clears the key rather than storing a blank, so a closed pane
+// and a first visit read the same on the way back in.
+export function saveSelected(
+  storage: Pick<Storage, "setItem" | "removeItem">,
+  key: string,
+  id: string | null,
+): void {
+  if (id === null) storage.removeItem("pane:" + key);
+  else storage.setItem("pane:" + key, id);
+}

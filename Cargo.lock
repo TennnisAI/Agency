@@ -17,6 +17,8 @@ dependencies = [
  "base64 0.22.1",
  "log",
  "notify-rust",
+ "objc2-app-kit",
+ "objc2-foundation",
  "rfd",
  "serde",
  "serde_json",

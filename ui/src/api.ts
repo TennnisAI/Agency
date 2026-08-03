@@ -1091,3 +1091,7 @@ export const writeFileBase64 = (root: FileRoot, relPath: string, b64: string) =>
 // dialog, where the UI has a path but not the bytes.
 export const importFile = (root: FileRoot, srcPath: string, relPath: string) =>
   invoke<void>("import_file", { root, srcPath, relPath });
+
+// The whole system clipboard as text (every pasteboard item, newline-joined).
+// The webview's own copy of a paste is not trustworthy — see lib/clipboard.ts.
+export const readClipboardText = () => invoke<string | null>("read_clipboard_text");

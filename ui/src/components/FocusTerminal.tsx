@@ -12,6 +12,7 @@ import { currentXtermTheme, minContrastRatio, TERMINAL_FONT_FAMILY } from "../li
 import { initialCapture, feed } from "../lib/firstPrompt";
 import { shouldSwallowWheel, createPageScroller } from "../lib/termScroll";
 import { follow, GESTURE_MS } from "../lib/termFollow";
+import { fullClipboardText } from "../lib/clipboard";
 
 export interface TerminalStream {
   attach(id: string, cols: number, rows: number, onBytes: (b: Uint8Array) => void): Promise<void>;
@@ -197,6 +198,23 @@ export default function FocusTerminal(
       }
     });
 
+    // Paste. xterm pastes whatever the paste event's `clipboardData` holds, and
+    // WebKit fills that from the first pasteboard item alone: a multi-row copy
+    // out of Xcode (one item per row) reaches the pane as its first line only,
+    // and a clipboard carrying file URLs arrives as "Files" with no text at all
+    // (see lib/clipboard.ts). So read the whole pasteboard from the backend and
+    // paste that. `term.paste` still frames it as a bracketed paste, so the
+    // agent sees one paste rather than a line of typing per row.
+    const onPaste = (e: ClipboardEvent) => {
+      const fromWebview = e.clipboardData?.getData("text/plain") ?? "";
+      e.preventDefault();
+      e.stopPropagation(); // xterm's own handler would paste the truncated text
+      void fullClipboardText(fromWebview).then((text) => {
+        if (!torn && text) term.paste(text);
+      });
+    };
+    container.addEventListener("paste", onPaste, true);
+
     // Fit xterm to its container, then push the new size to the backend so the
     // PTY (and thus the daemon emulator) reflows to match. resize_run is a no-op until the
     // attach lands, so it's safe to call before/while attaching.
@@ -301,6 +319,7 @@ export default function FocusTerminal(
       container.removeEventListener("touchmove", markGesture, true);
       container.removeEventListener("keydown", onScrollKey, true);
       container.removeEventListener("pointerdown", onPointerDown, true);
+      container.removeEventListener("paste", onPaste, true);
       window.removeEventListener("pointerup", onPointerUp, true);
       window.removeEventListener("pointercancel", onPointerUp, true);
       scrollWatch.dispose();

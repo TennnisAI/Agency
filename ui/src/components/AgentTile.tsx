@@ -42,6 +42,11 @@ export default function AgentTile({ run }: { run: RunInfo }) {
       <div className="tile-head">
         <span className={`dot ${st.cls}`} />
         <span className="tile-title">{runName(run)}</span>
+        {/* A run script is live in this workspace — a dev server, a build. The
+            Run tab says which; here it is only "something is running". */}
+        {run.runScriptsLive && (
+          <span className="run-dot" title="A run script is running in this workspace" />
+        )}
         {run.raceId && <span className="badge race" title="Racing: same prompt, parallel attempts">∥</span>}
         <span className={isTerminal ? "badge" : badgeClass(run.agent)}>{isTerminal ? "terminal" : run.agent}</span>
       </div>

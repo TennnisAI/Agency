@@ -124,6 +124,10 @@ pub struct RunInfo {
     pub files: u32,
     pub port: Option<u16>,
     pub kind: String,
+    /// True while at least one of the project's run scripts is still running in
+    /// this run's workspace, so the board can show it without anyone opening
+    /// the Run tab. Which script it is lives in the Run tab; this is the dot.
+    pub run_scripts_live: bool,
     /// False = the run works in the project's main checkout rather than an
     /// isolated worktree, so the UI hides merge/PR/archive-the-worktree.
     pub worktree: bool,
@@ -504,6 +508,16 @@ fn run_script_statuses_from(
             }
         })
         .collect()
+}
+
+/// Whether any run script is still running in `target`'s workspace — the board's
+/// "something is live here" dot. Reads a session listing the caller already has,
+/// so a whole project's worth of runs costs one daemon round-trip rather than a
+/// listing per run (the reason AGE-34 left this off the board).
+fn any_run_script_live(target: &str, live: &[(String, SessionStatus)]) -> bool {
+    run_script_statuses_from(target, live)
+        .values()
+        .any(|s| matches!(s, SessionStatus::Running))
 }
 
 /// Daemon session for a run's companion shell — an interactive terminal the user
@@ -1201,8 +1215,25 @@ impl AppState {
     }
 
     fn run_info(&self, run: &agency_core::registry::Run) -> RunInfo {
+        let live = self.term.read().unwrap().list().unwrap_or_default();
+        self.run_info_from(run, &live)
+    }
+
+    /// `run_info` against a session listing the caller already fetched. Both the
+    /// agent's status and the run-script dot come out of it, so listing every
+    /// run in a project is one daemon round-trip for the lot — the listing the
+    /// daemon returns is the same map its per-session `status` reads from.
+    fn run_info_from(
+        &self,
+        run: &agency_core::registry::Run,
+        live: &[(String, SessionStatus)],
+    ) -> RunInfo {
         let name = session_name(&run.id);
-        let status = self.term.read().unwrap().status(&name).unwrap_or(SessionStatus::Gone);
+        let status = live
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, s)| s.clone())
+            .unwrap_or(SessionStatus::Gone);
         let wt = self
             .project_repo(&run.project_id)
             .ok()
@@ -1250,6 +1281,7 @@ impl AppState {
             files: stat.files,
             port: run.port_base,
             kind: run.kind.clone(),
+            run_scripts_live: any_run_script_live(&run.id, live),
             worktree: run.worktree,
             race_id: run.race_id.clone(),
             loop_config: run.loop_config.clone(),
@@ -2414,9 +2446,20 @@ impl AppState {
         Ok(self.run_info(&run))
     }
 
+    /// Every live run in the project, as the board polls it (every 1.5s). One
+    /// session listing serves the whole list: per-run daemon calls would scale
+    /// with the size of the board on every tick.
     pub fn list_runs(&self, project_id: &str) -> Result<Vec<RunInfo>> {
         let runs = self.registry.lock().unwrap().list_runs(project_id)?;
-        Ok(runs.iter().map(|r| self.run_info(r)).collect())
+        let live = self.term.read().unwrap().list().unwrap_or_default();
+        Ok(runs.iter().map(|r| self.run_info_from(r, &live)).collect())
+    }
+
+    /// Whether any run script is live in a workspace — for the project's own
+    /// checkout (`project:<id>`), which has no `RunInfo` to carry the flag.
+    pub fn run_scripts_live(&self, target: &str) -> Result<bool> {
+        let live = self.term.read().unwrap().list().unwrap_or_default();
+        Ok(any_run_script_live(target, &live))
     }
 
     /// Every non-archived run across all projects, grouped by project in
@@ -2839,7 +2882,8 @@ impl AppState {
 
     pub fn list_archived_runs(&self, project_id: &str) -> Result<Vec<RunInfo>> {
         let runs = self.registry.lock().unwrap().list_archived_runs(project_id)?;
-        Ok(runs.iter().map(|r| self.run_info(r)).collect())
+        let live = self.term.read().unwrap().list().unwrap_or_default();
+        Ok(runs.iter().map(|r| self.run_info_from(r, &live)).collect())
     }
 
     /// Discard every archived run in a project in one sweep: each one's kept
@@ -4606,6 +4650,25 @@ mod tests {
         // A workspace with nothing started reports nothing, so the crash
         // detector has no edge to invent.
         assert!(super::run_script_statuses_from("never-run", &live).is_empty());
+    }
+
+    #[test]
+    fn run_scripts_live_only_while_something_is_running() {
+        use agency_core::term::SessionStatus;
+        let live = vec![
+            ("agency-run-fix-a1#dev".to_string(), SessionStatus::Running),
+            ("agency-run-fix-a1#build".to_string(), SessionStatus::Exited { code: 0 }),
+            // A workspace whose only script has finished: the dot goes out.
+            ("agency-run-fix-b2#build".to_string(), SessionStatus::Exited { code: 0 }),
+            ("agency-run-project:p1#dev".to_string(), SessionStatus::Running),
+            // The agent's own session — never a run script.
+            ("agency-fix-c3".to_string(), SessionStatus::Running),
+        ];
+        assert!(super::any_run_script_live("fix-a1", &live));
+        assert!(!super::any_run_script_live("fix-b2", &live));
+        assert!(super::any_run_script_live("project:p1", &live));
+        assert!(!super::any_run_script_live("fix-c3", &live));
+        assert!(!super::any_run_script_live("never-run", &live));
     }
 
     use super::{compose_feedback, compose_merge_conflict};

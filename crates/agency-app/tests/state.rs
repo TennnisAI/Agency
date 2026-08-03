@@ -1029,6 +1029,9 @@ fn run_scripts_are_per_script_and_run_at_project_level() {
             .map(|s| s.status)
     };
 
+    // Nothing started, so the board's dot is out (AGE-39).
+    assert!(!state.run_scripts_live(&target).unwrap());
+
     // Both run at once: the build finishing must not disturb the server.
     state.start_run_script(&target, "serve").unwrap();
     state.start_run_script(&target, "build").unwrap();
@@ -1053,7 +1056,65 @@ fn run_scripts_are_per_script_and_run_at_project_level() {
     // An unknown name is refused rather than silently starting nothing.
     assert!(state.start_run_script(&target, "nope").is_err());
 
+    // The server is still up, so the dot stays lit even though the build has
+    // finished and been stopped; it goes out only once nothing is running.
+    assert!(state.run_scripts_live(&target).unwrap());
     state.stop_run_script(&target, "serve").unwrap();
+    assert!(!state.run_scripts_live(&target).unwrap());
+}
+
+// AGE-39: the board polls `list_runs`, so the "a script is live here" dot has
+// to come back on the run itself — one workspace's script must not light up
+// another agent's tile.
+#[test]
+fn list_runs_reports_which_workspace_has_a_script_live() {
+    use agency_core::config::RunScript;
+
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let state = common::state(&dir);
+    state
+        .register_profile(AgentProfile {
+            name: "stay".into(),
+            command: "sh".into(),
+            args: vec!["-c".into(), "sleep 30".into()],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+    let a = state.create_run(&project.id, "a", "stay", "HEAD", None).unwrap();
+    let b = state.create_run(&project.id, "b", "stay", "HEAD", None).unwrap();
+    state
+        .save_run_scripts(
+            &format!("project:{}", project.id),
+            vec![RunScript {
+                name: "serve".into(),
+                command: "sleep 30".into(),
+                web: false,
+                nonconcurrent: false,
+            }],
+        )
+        .unwrap();
+
+    let live_of = |id: &str| {
+        state.list_runs(&project.id).unwrap().into_iter().find(|r| r.id == id).unwrap().run_scripts_live
+    };
+    assert!(!live_of(&a.id));
+    assert!(!live_of(&b.id));
+
+    state.start_run_script(&a.id, "serve").unwrap();
+    assert!(eventually(|| live_of(&a.id)));
+    assert!(!live_of(&b.id), "b's tile stays dark: the script runs in a's workspace");
+
+    state.stop_run_script(&a.id, "serve").unwrap();
+    assert!(!live_of(&a.id));
+
+    state.discard_run(&a.id).unwrap();
+    state.discard_run(&b.id).unwrap();
 }
 
 #[test]

@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
-import { CloneProgress, RunInfo, createRun, createTerminal as createTerminalApi, getSettings, listRuns } from "../api";
+import { CloneProgress, RunInfo, createRun, createTerminal as createTerminalApi, getSettings, listRuns, projectTarget, runScriptsLive } from "../api";
 import { toastError } from "../lib/toast";
 
 type View = "grid" | "focus";
@@ -12,6 +12,10 @@ type Tab = "agents" | "source" | "files" | "issues" | "docs" | "run";
 
 interface RunStore {
   runs: RunInfo[];
+  // A run script is running in the selected project's own checkout (each agent
+  // carries its own flag on `RunInfo.runScriptsLive`). Refreshed on the same
+  // tick as the runs, so the project's Run tab can show a dot too.
+  projectRunLive: boolean;
   selectedProjectId: string | null;
   setSelectedProject: (id: string | null) => void;
   view: View;
@@ -50,6 +54,7 @@ const Ctx = createContext<RunStore | null>(null);
 
 export function RunStoreProvider({ children }: { children: React.ReactNode }) {
   const [runs, setRuns] = useState<RunInfo[]>([]);
+  const [projectRunLive, setProjectRunLive] = useState(false);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [view, setView] = useState<View>("grid");
   const [focusedRunId, setFocusedRun] = useState<string | null>(null);
@@ -77,14 +82,22 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
     const pid = projectRef.current;
     if (!pid) {
       setRuns([]);
+      setProjectRunLive(false);
       return;
     }
     try {
-      const next = await listRuns(pid);
+      // The checkout's run scripts ride along on the runs tick rather than
+      // polling on their own. Its failure is swallowed separately: a hiccup
+      // reading the daemon should cost the dot, not the whole board.
+      const [next, live] = await Promise.all([
+        listRuns(pid),
+        runScriptsLive(projectTarget(pid)).catch(() => false),
+      ]);
       // Drop stale responses: if the selected project changed while awaiting,
       // a late reply from the old project must not overwrite the current runs.
       if (projectRef.current !== pid) return;
       setRuns(next);
+      setProjectRunLive(live);
     } catch {
       /* ignore transient errors */
     }
@@ -147,6 +160,9 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
     projectRef.current = id;
     setView("grid");
     setFocusedRun(null);
+    // The dot belongs to the project we just left; the next tick sets this
+    // project's own.
+    setProjectRunLive(false);
     // Restore this project's last-viewed tab (defaults to "agents" the first
     // time a project is opened). Viewing Files for one project and clicking
     // another lands you on that project's Files.
@@ -166,7 +182,7 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <Ctx.Provider
-      value={{ runs, selectedProjectId, setSelectedProject, view, setView, focusedRunId, setFocusedRun, onScreenRunId, setOnScreenRun, refreshRuns, tab, setTab, createAgent, createTerminal, spawning: spawnCount > 0, spawnProgress, approveRunId, setApproveRun, pendingSessionId, setPendingSession }}
+      value={{ runs, projectRunLive, selectedProjectId, setSelectedProject, view, setView, focusedRunId, setFocusedRun, onScreenRunId, setOnScreenRun, refreshRuns, tab, setTab, createAgent, createTerminal, spawning: spawnCount > 0, spawnProgress, approveRunId, setApproveRun, pendingSessionId, setPendingSession }}
     >
       {children}
     </Ctx.Provider>

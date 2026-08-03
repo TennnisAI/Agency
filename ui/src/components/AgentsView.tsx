@@ -39,7 +39,7 @@ export default function AgentsView({
   onOpenRun: (project: Project, runId: string) => void;
   onOpenProject: (project: Project) => void;
 }) {
-  const { runs, view, setView, focusedRunId, tab, setTab, approveRunId, setApproveRun, createTerminal, spawning, spawnProgress, setFocusedRun, refreshRuns } = useRuns();
+  const { runs, projectRunLive, view, setView, focusedRunId, tab, setTab, approveRunId, setApproveRun, createTerminal, spawning, spawnProgress, setFocusedRun, refreshRuns } = useRuns();
   const focused = runs.find((r) => r.id === focusedRunId) ?? null;
   const [review, setReview] = useState(false);
   // Agents alongside the file tree, the Files-tab twin of the Docs side panel.
@@ -148,10 +148,16 @@ export default function AgentsView({
           {!isWorkspace && (
             <button
               className={tab === "run" ? "on" : ""}
-              title="Run the project's scripts in your own checkout"
+              title={projectRunLive
+                ? "Run: a script is running in your checkout"
+                : "Run the project's scripts in your own checkout"}
               onClick={() => setTab("run")}
             >
               <span className="seg-ico" aria-hidden>▷</span><span className="seg-label">Run</span>
+              {/* The checkout's own scripts, not any agent's — those show on
+                  their tiles. Survives the density ladder: at the tightest step
+                  the label goes, the dot stays. */}
+              {projectRunLive && <span className="run-dot" aria-hidden />}
             </button>
           )}
         </div>

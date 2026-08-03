@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRuns, SpawnOpts } from "../store/runs";
 import {
   discardRun, archiveRun, setRunTitle, renameRun,
@@ -19,6 +19,7 @@ import PromptDialog from "./PromptDialog";
 import Resizer from "./Resizer";
 import ArchivedSection from "./ArchivedSection";
 import { usePaneWidth, loadFold, saveFold } from "../hooks/usePaneWidth";
+import { loadFocusTab, saveFocusTab, resolveFocusTab, PRIMARY_TAB } from "../lib/focusTab";
 import AgentAddMenu from "./AgentAddMenu";
 import OverflowMenu from "./OverflowMenu";
 import { TrashIcon, InboxIcon, TerminalIcon, PencilIcon, CheckIcon, BranchIcon } from "./icons";
@@ -87,10 +88,21 @@ export default function AgentFocus({
   const [renaming, setRenaming] = useState<RunInfo | null>(null);
   // "agent" (primary terminal), "run" (RunPanel), or an extra-session id —
   // extra agent tabs sharing this run's worktree.
-  const [panel, setPanel] = useState<string>("agent");
+  const [panel, setPanel] = useState<string>(PRIMARY_TAB);
+  // Read-only mirror of `panel` for effects that need the value at the moment
+  // an await settles, not the one captured when they started.
+  const panelRef = useRef(panel);
+  panelRef.current = panel;
+  // Every deliberate tab change goes through here so the run remembers where
+  // you left it (AGE-31): with several agents in one worktree, coming back to
+  // it should reopen the agent you were using, not always the primary one.
+  const selectPanel = useCallback((next: string) => {
+    setPanel(next);
+    if (focusedRunId && typeof localStorage !== "undefined") saveFocusTab(localStorage, focusedRunId, next);
+  }, [focusedRunId]);
   // The tab Run was opened from, so backing out of the run setup card returns
   // where you came from instead of dumping you on the primary agent.
-  const beforeRun = useRef<string>("agent");
+  const beforeRun = useRef<string>(PRIMARY_TAB);
   const [sessions, setSessions] = useState<RunSessionInfo[]>([]);
   const [confirmCloseTab, setConfirmCloseTab] = useState<string | null>(null);
   // "+" tab menu: agent profiles to open as an extra tab. Anchored in viewport
@@ -101,10 +113,16 @@ export default function AgentFocus({
   const addBtnRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     setShowMerge(false);
-    setPanel("agent");
-    beforeRun.current = "agent";
     setAddOpen(false);
     setSessions([]);
+    // Reopen this run on its last-used tab. The strip isn't loaded yet, so the
+    // remembered id is taken on trust here and vetted against the sessions
+    // below; an unknown run remembers nothing and lands on the primary agent.
+    const remembered = focusedRunId && typeof localStorage !== "undefined"
+      ? loadFocusTab(localStorage, focusedRunId)
+      : PRIMARY_TAB;
+    setPanel(remembered);
+    beforeRun.current = remembered === "run" ? PRIMARY_TAB : remembered;
     if (!focusedRunId) return;
     // `live` drops a response that lands after the run changed (a slow fetch for
     // the previous run must not repopulate this one's tab strip). The interval
@@ -112,25 +130,41 @@ export default function AgentFocus({
     // and reopened — updates its status and drops out of the strip on its own,
     // instead of lingering as a dead tab until the next focus change.
     let live = true;
+    // Only the first response vets the restored tab. Later polls leave the
+    // visible tab alone: a session that dies while you're watching it keeps its
+    // pane until you close the tab.
+    let vet = true;
     const load = () =>
       listRunSessions(focusedRunId)
-        .then((s) => { if (live) setSessions(s); })
+        .then((s) => {
+          if (!live) return;
+          setSessions(s);
+          if (!vet) return;
+          vet = false;
+          // Only correct the tab we restored — anything the user (or a pending
+          // session hand-off) has since picked stands.
+          if (panelRef.current !== remembered) return;
+          const resolved = resolveFocusTab(remembered, s);
+          if (resolved === remembered) return;
+          selectPanel(resolved);
+          if (beforeRun.current === remembered) beforeRun.current = resolved;
+        })
         .catch(() => {});
     load();
     const iv = setInterval(load, 4000);
     return () => { live = false; clearInterval(iv); };
-  }, [focusedRunId]);
+  }, [focusedRunId, selectPanel]);
 
   // A run opened for a specific extra tab (an agent PR review that had to share
-  // this worktree) lands on that tab instead of the primary agent. Declared
-  // after the reset above so it wins on the render that focuses the run, and
-  // cleared once applied so returning here later is business as usual.
+  // this worktree) lands on that tab instead of the one it remembers. Declared
+  // after the restore above so it wins on the render that focuses the run, and
+  // cleared once applied — from here on it is simply this run's last-used tab.
   useEffect(() => {
     if (!pendingSessionId || !focusedRunId) return;
     if (!pendingSessionId.startsWith(`${focusedRunId}--`)) return;
-    setPanel(pendingSessionId);
+    selectPanel(pendingSessionId);
     setPendingSession(null);
-  }, [pendingSessionId, focusedRunId, setPendingSession]);
+  }, [pendingSessionId, focusedRunId, setPendingSession, selectPanel]);
 
   const toggleAddMenu = () => {
     setAddOpen((o) => {
@@ -154,7 +188,7 @@ export default function AgentFocus({
     try {
       const s = await startRunSession(focusedRunId, agent);
       setSessions((prev) => [...prev, s]);
-      setPanel(s.id);
+      selectPanel(s.id);
     } catch (e) {
       toastError(e, "Couldn't open agent tab");
     }
@@ -175,7 +209,7 @@ export default function AgentFocus({
   // "New terminal" spawns the reserved "shell" profile. Only a shell wants
   // xterm's wheel-to-arrow fallback; in an agent those arrows walk the prompt
   // history (AGE-15).
-  const panelIsShell = panel !== "agent"
+  const panelIsShell = panel !== PRIMARY_TAB
     && sessions.some((s) => s.id === panel && s.agent === "shell");
   const [railOpen, setRailOpen] = useState(true);
   const rail = usePaneWidth("rail", 312, 220, 520);
@@ -355,8 +389,8 @@ export default function AgentFocus({
               <div className="session-tabs">
                 <div className="session-tabs-scroll" ref={tabsScrollRef} onWheel={onTabsWheel}>
                   <button
-                    className={`session-tab ${panel === "agent" ? "on" : ""}`}
-                    onClick={() => setPanel("agent")}
+                    className={`session-tab ${panel === PRIMARY_TAB ? "on" : ""}`}
+                    onClick={() => selectPanel(PRIMARY_TAB)}
                   >{agentLabel(focused.agent)}</button>
                   {sessions
                     .filter((s) => s.status.state !== "gone" || s.id === panel)
@@ -367,7 +401,7 @@ export default function AgentFocus({
                       title={s.agent === "shell"
                         ? "Terminal: extra shell in this workspace"
                         : `${agentLabel(s.agent)}: extra agent in this workspace`}
-                      onClick={() => setPanel(s.id)}
+                      onClick={() => selectPanel(s.id)}
                     >
                       {s.agent === "shell" ? "≳ terminal" : agentLabel(s.agent)} · {s.id.split("--").pop()}
                       <span
@@ -389,7 +423,7 @@ export default function AgentFocus({
                   className={`session-tab run-tab ${panel === "run" ? "on" : ""}`}
                   onClick={() => {
                     if (panel !== "run") beforeRun.current = panel;
-                    setPanel("run");
+                    selectPanel("run");
                   }}
                 >Run</button>
               </div>
@@ -409,10 +443,10 @@ export default function AgentFocus({
               )}
               {panel !== "run" ? (
                 <div className="focus-body">
-                  <FocusTerminal key={panel === "agent" ? focused.id : panel}
-                    runId={panel === "agent" ? focused.id : panel}
+                  <FocusTerminal key={panel === PRIMARY_TAB ? focused.id : panel}
+                    runId={panel === PRIMARY_TAB ? focused.id : panel}
                     altScrollArrows={panelIsShell}
-                    onFirstPrompt={panel === "agent" && !focused.title ? (line) => { setRunTitle(focused.id, line).catch(() => {}); } : undefined} />
+                    onFirstPrompt={panel === PRIMARY_TAB && !focused.title ? (line) => { setRunTitle(focused.id, line).catch(() => {}); } : undefined} />
                   {shellOpen && (
                     <>
                       <Resizer orientation="horizontal" side="right"
@@ -432,7 +466,7 @@ export default function AgentFocus({
                 <RunPanel
                   key={`run-${focused.id}`}
                   run={focused}
-                  onClose={() => setPanel(beforeRun.current)}
+                  onClose={() => selectPanel(beforeRun.current)}
                 />
               )}
               {showMerge && (
@@ -461,8 +495,8 @@ export default function AgentFocus({
                     try {
                       await closeRunSession(sid);
                       setSessions((prev) => prev.filter((s) => s.id !== sid));
-                      setPanel((p) => (p === sid ? "agent" : p));
-                      if (beforeRun.current === sid) beforeRun.current = "agent";
+                      if (panel === sid) selectPanel(PRIMARY_TAB);
+                      if (beforeRun.current === sid) beforeRun.current = PRIMARY_TAB;
                     } catch (e) {
                       toastError(e, "Close failed");
                     }

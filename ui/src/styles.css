@@ -1950,6 +1950,22 @@ input, textarea, code,
 .issue-row:hover .issue-row-actions, .issue-row.selected .issue-row-actions { visibility: visible; }
 .issue-row-actions .issue-status-pill { visibility: visible; }
 
+/* Sidebar list (detail expanded). The actions reserve their own width in the
+   normal layout, which would leave almost nothing for the title at 288px — so
+   here they lift out of the flow and float over the row's right edge on hover,
+   fading in over the row's own hover fill. The due pill drops; it is a click
+   away in the detail pane. */
+.issues-list.compact { padding: 8px 10px 24px; }
+.issues-list.compact .issue-row { gap: 6px; padding: 5px 7px; position: relative; }
+.issues-list.compact .issue-due { display: none; }
+.issues-list.compact .issue-row-actions {
+  position: absolute; right: 5px; top: 50%; transform: translateY(-50%);
+  display: none; padding-left: 20px; border-radius: 7px;
+  background: linear-gradient(to right, transparent, var(--s0) 20px);
+}
+.issues-list.compact .issue-row:hover .issue-row-actions,
+.issues-list.compact .issue-row.selected .issue-row-actions { display: flex; }
+
 /* Detail pane */
 .issue-detail {
   width: 360px; flex-shrink: 0; display: flex; flex-direction: column; gap: 10px;
@@ -1997,6 +2013,55 @@ input, textarea, code,
 .issue-detail-run-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .issue-detail-foot { display: flex; align-items: center; gap: 8px; color: var(--o0); font-size: 11px; margin-top: auto; }
 .issue-detail-foot .spacer { flex: 1; }
+
+/* ── expanded detail ──────────────────────────────────────────────────────
+   The expand button in the detail head hands the view over to one issue: the board
+   compresses to a sidebar (remembered per project) and the pane splits into a
+   reading column and a meta rail. The description is the thing that gains —
+   it stops being a 120px box and fills the height. */
+.issues-wrap.expanded .issues-main { border-right: 1px solid var(--line); }
+.issues-wrap.expanded .issue-detail { flex: 1; width: auto; min-width: 0; }
+.issue-detail.expanded {
+  gap: 0; padding: 0; overflow: hidden;
+  background: var(--base); border-left: none;
+}
+.issue-detail.expanded .issue-detail-head {
+  flex-shrink: 0; padding: 9px 14px 9px 20px; border-bottom: 1px solid var(--line);
+}
+.issue-detail-cols { flex: 1; display: flex; min-height: 0; }
+/* Reading column: centred measure, so a wide window doesn't stretch the
+   description into unreadably long lines. */
+.issue-detail-read { flex: 1; min-width: 0; display: flex; justify-content: center; padding: 26px 32px 22px; }
+.issue-detail-reading {
+  flex: 1; min-width: 0; max-width: 780px;
+  display: flex; flex-direction: column; min-height: 0; gap: 14px;
+}
+.issue-detail.expanded .issue-detail-title { font-size: 27px; line-height: 1.25; letter-spacing: -.01em; }
+.issue-detail.expanded .issue-detail-body {
+  flex: 1; min-height: 0; overflow-y: auto;
+  font-size: 14.5px; line-height: 1.7;
+}
+.issue-detail.expanded .issue-attachments { flex-shrink: 0; max-height: 38%; overflow-y: auto; }
+/* Meta rail: the properties and links that were stacked under the title in the
+   narrow layout, as a labelled column beside the description. */
+.issue-detail-rail {
+  width: 292px; flex-shrink: 0; display: flex; flex-direction: column; gap: 14px;
+  border-left: 1px solid var(--line); background: var(--mantle);
+  padding: 22px 16px 14px; overflow-y: auto;
+}
+.issue-meta h3 {
+  margin: 0 0 8px; font-size: 11px; font-weight: 600; color: var(--o1);
+  text-transform: uppercase; letter-spacing: .06em;
+}
+.issue-meta-row { display: flex; align-items: center; gap: 8px; min-height: 28px; }
+.issue-meta-label { width: 76px; flex-shrink: 0; color: var(--o1); font-size: 12px; }
+.issue-meta-row .issue-prop-pill { min-width: 0; }
+.issue-detail.expanded .issue-detail-foot { padding-top: 10px; border-top: 1px solid var(--line); }
+/* The pane no longer scrolls as one column, so the hint can't ride its bottom
+   edge on `sticky` — float it over the reading column instead. */
+.issue-detail.expanded .issue-drop-hint {
+  position: absolute; bottom: 18px; left: 50%; transform: translateX(-50%);
+}
 
 /* Attachments: files the body links out of `.agency/issues/assets/`. Images
    preview inline and open full size; anything else is a chip that reveals. */

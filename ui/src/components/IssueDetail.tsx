@@ -12,6 +12,7 @@ import { toastError } from "../lib/toast";
 import { PriorityGlyph, StatusDot } from "./IssueRow";
 import IssueAttachments, { forgetAttachment } from "./IssueAttachments";
 import DatePicker from "./DatePicker";
+import { ContractIcon, ExpandIcon } from "./icons";
 
 function ts(secs: number): string {
   return new Date(secs * 1000).toLocaleString(undefined, {
@@ -23,17 +24,22 @@ function ts(secs: number): string {
 // opens the in-app calendar popover (native pickers can't be dismissed
 // without choosing a date in this webview). Unset renders a ghost prompt;
 // clearing is the ✕ that appears once a date is set.
+//
+// `bare` drops the label from the pill's own text, for the expanded layout's
+// meta rail where the row already carries it ("Due    ◷ Aug 1").
 function DateProp({
   glyph,
   label,
   value,
   overdue,
+  bare,
   onChange,
 }: {
   glyph: string;
   label: string;
   value: string | null;
   overdue?: boolean;
+  bare?: boolean;
   onChange: (v: string | null) => void;
 }) {
   const pillRef = useRef<HTMLSpanElement>(null);
@@ -66,7 +72,7 @@ function DateProp({
         onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openPicker(); } }}
       >
         <span aria-hidden>{glyph}</span>
-        {value ? `${label} ${fmtDate(value, today)}` : label}
+        {value ? (bare ? fmtDate(value, today) : `${label} ${fmtDate(value, today)}`) : bare ? "Set date" : label}
         {value && (
           <button
             className="date-clear"
@@ -92,16 +98,24 @@ function DateProp({
 
 // Right-hand detail pane of the Issues view. Title/body commit on blur (and
 // Enter for the title); status/priority commit immediately.
+//
+// Two layouts, same content and same editing model. Contracted, it is the
+// 360px rail beside the board: one column, everything stacked. Expanded, it
+// takes over the view and splits into a reading column (title + description,
+// which grows to fill the height) and a meta rail (properties, agents,
+// mentions, attachments) — see `.issue-detail.expanded` in styles.css.
 export default function IssueDetail({
   issue,
   label,
   root,
   runs,
   mentions,
+  expanded,
   onPatch,
   onDelete,
   onOpenRun,
   onOpenMention,
+  onToggleExpand,
   onClose,
 }: {
   issue: Issue;
@@ -112,10 +126,12 @@ export default function IssueDetail({
   runs: RunInfo[];
   // Notes and issues whose text links here ([[AGE-14]]), via lib/links.
   mentions: LinkEdge[];
+  expanded: boolean;
   onPatch: (patch: IssuePatch) => void;
   onDelete: () => void;
   onOpenRun: (runId: string) => void;
   onOpenMention: (edge: LinkEdge) => void;
+  onToggleExpand: () => void;
   onClose: () => void;
 }) {
   const [title, setTitle] = useState(issue.title);
@@ -148,12 +164,14 @@ export default function IssueDetail({
   }, [issue.id]);
 
   // Grow the title textarea to fit its wrapped content (no scroll, no clip).
+  // Re-measured on a layout switch too: the same title wraps to fewer lines
+  // once the pane is expanded.
   useLayoutEffect(() => {
     const el = titleRef.current;
     if (!el) return;
     el.style.height = "auto";
     el.style.height = `${el.scrollHeight}px`;
-  }, [title]);
+  }, [title, expanded]);
 
   const commitTitle = () => {
     const t = title.trim();
@@ -306,133 +324,219 @@ export default function IssueDetail({
     el.setSelectionRange(pos, pos);
   }, [body]);
 
-  return (
-    <aside ref={asideRef} className={`issue-detail${dragOver ? " drop-target" : ""}`}>
-      <div className="issue-detail-head">
-        <code className="issue-key">{label}</code>
-        <div className="spacer" />
-        <button
-          className="icon-btn"
-          title="Attach a file"
-          disabled={attaching}
-          onClick={() => { void pickFiles(); }}
-        >
-          ⊕
-        </button>
-        <button className="icon-btn" title="Close" onClick={onClose}>✕</button>
-      </div>
-      <textarea
-        ref={titleRef}
-        className="issue-detail-title"
-        rows={1}
-        placeholder="Issue title"
-        value={title}
-        onChange={(e) => setTitle(e.target.value)}
-        onBlur={commitTitle}
-        onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); (e.target as HTMLTextAreaElement).blur(); } }}
-      />
-      <div className="issue-detail-props">
-        <button
-          ref={statusRef}
-          className="issue-prop-pill"
-          title="Change status"
-          onClick={() => openMenu("status", statusRef)}
-        >
-          <StatusDot status={issue.status} />
-          {STATUS_LABELS[issue.status]}
-        </button>
-        <button
-          ref={priorityRef}
-          className="issue-prop-pill"
-          title="Change priority"
-          onClick={() => openMenu("priority", priorityRef)}
-        >
-          <PriorityGlyph priority={issue.priority} />
-          {PRIORITY_LABELS[issue.priority]}
-        </button>
-        <DateProp
-          glyph="◷"
-          label="Due"
-          value={issue.due}
-          overdue={isOverdue(issue, dateStamp(new Date()))}
-          onChange={(due) => onPatch({ due })}
-        />
-        <DateProp
-          glyph="⧖"
-          label="Scheduled"
-          value={issue.scheduled}
-          onChange={(scheduled) => onPatch({ scheduled })}
-        />
-      </div>
+  // ── the pieces, arranged differently by each layout ──────────────────────
 
-      {menu && (
-        <>
-          <div className="agent-menu-backdrop" onClick={() => setMenu(null)} />
-          <div className="agent-menu" style={{ position: "fixed", ...coords }}>
-            {menu === "status" &&
-              ISSUE_STATUSES.map((s) => (
-                <button key={s} onClick={() => { setMenu(null); if (s !== issue.status) onPatch({ status: s }); }}>
-                  <StatusDot status={s} /> {STATUS_LABELS[s]}{s === issue.status ? " ✓" : ""}
-                </button>
-              ))}
-            {menu === "priority" &&
-              PRIORITY_LABELS.map((p, n) => (
-                <button key={p} onClick={() => { setMenu(null); if (n !== issue.priority) onPatch({ priority: n }); }}>
-                  <PriorityGlyph priority={n} /> {p}{n === issue.priority ? " ✓" : ""}
-                </button>
-              ))}
-          </div>
-        </>
-      )}
-      <textarea
-        ref={bodyRef}
-        className="issue-detail-body"
-        placeholder="Add description…  (paste or drop a file to attach)"
-        value={body}
-        onChange={(e) => setBody(e.target.value)}
-        onPaste={onPasteBody}
-        onBlur={commitBody}
-      />
-      <IssueAttachments root={root} attachments={attachments} onRemove={(a) => { void removeAt(a); }} />
-      {(dragOver || attaching) && (
-        <div className="issue-drop-hint">{attaching ? "Attaching…" : `Drop to attach to ${label}`}</div>
-      )}
-      {runs.length > 0 && (
-        <div className="issue-detail-runs">
-          <h3>Agents on this issue</h3>
-          {runs.map((r) => (
-            <button key={r.id} className="issue-detail-run" onClick={() => onOpenRun(r.id)}>
-              <span className={`dot ${r.status.state === "running" ? "running" : "exited"}`} />
-              <span className="issue-detail-run-name">{runName(r)}</span>
-              <span className="badge">{r.agent}</span>
+  const head = (
+    <div className="issue-detail-head">
+      <code className="issue-key">{label}</code>
+      <div className="spacer" />
+      <button
+        className="icon-btn"
+        title="Attach a file"
+        disabled={attaching}
+        onClick={() => { void pickFiles(); }}
+      >
+        ⊕
+      </button>
+      <button
+        className="icon-btn"
+        title={expanded ? "Contract: back to the full board" : "Expand: give this issue the view"}
+        onClick={onToggleExpand}
+      >
+        {expanded ? <ContractIcon /> : <ExpandIcon />}
+      </button>
+      <button className="icon-btn" title="Close" onClick={onClose}>✕</button>
+    </div>
+  );
+
+  const titleField = (
+    <textarea
+      ref={titleRef}
+      className="issue-detail-title"
+      rows={1}
+      placeholder="Issue title"
+      value={title}
+      onChange={(e) => setTitle(e.target.value)}
+      onBlur={commitTitle}
+      onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); (e.target as HTMLTextAreaElement).blur(); } }}
+    />
+  );
+
+  const statusPill = (
+    <button
+      ref={statusRef}
+      className="issue-prop-pill"
+      title="Change status"
+      onClick={() => openMenu("status", statusRef)}
+    >
+      <StatusDot status={issue.status} />
+      {STATUS_LABELS[issue.status]}
+    </button>
+  );
+  const priorityPill = (
+    <button
+      ref={priorityRef}
+      className="issue-prop-pill"
+      title="Change priority"
+      onClick={() => openMenu("priority", priorityRef)}
+    >
+      <PriorityGlyph priority={issue.priority} />
+      {PRIORITY_LABELS[issue.priority]}
+    </button>
+  );
+  const duePill = (
+    <DateProp
+      glyph="◷"
+      label="Due"
+      value={issue.due}
+      overdue={isOverdue(issue, dateStamp(new Date()))}
+      bare={expanded}
+      onChange={(due) => onPatch({ due })}
+    />
+  );
+  const scheduledPill = (
+    <DateProp
+      glyph="⧖"
+      label="Scheduled"
+      value={issue.scheduled}
+      bare={expanded}
+      onChange={(scheduled) => onPatch({ scheduled })}
+    />
+  );
+
+  const bodyField = (
+    <textarea
+      ref={bodyRef}
+      className="issue-detail-body"
+      placeholder="Add description…  (paste or drop a file to attach)"
+      value={body}
+      onChange={(e) => setBody(e.target.value)}
+      onPaste={onPasteBody}
+      onBlur={commitBody}
+    />
+  );
+
+  const attachmentsList = (
+    <IssueAttachments root={root} attachments={attachments} onRemove={(a) => { void removeAt(a); }} />
+  );
+
+  const runsList = runs.length > 0 && (
+    <div className="issue-detail-runs">
+      <h3>Agents on this issue</h3>
+      {runs.map((r) => (
+        <button key={r.id} className="issue-detail-run" onClick={() => onOpenRun(r.id)}>
+          <span className={`dot ${r.status.state === "running" ? "running" : "exited"}`} />
+          <span className="issue-detail-run-name">{runName(r)}</span>
+          <span className="badge">{r.agent}</span>
+        </button>
+      ))}
+    </div>
+  );
+
+  const mentionsList = mentions.length > 0 && (
+    <div className="issue-detail-runs issue-detail-mentions">
+      <h3>Mentions</h3>
+      {mentions.map((m, i) => (
+        <button
+          key={`${m.fromKind}:${m.fromProjectId}:${m.fromId}:${m.line}:${i}`}
+          className="issue-detail-run issue-detail-mention"
+          title={m.snippet}
+          onClick={() => onOpenMention(m)}
+        >
+          <span className="mention-glyph" aria-hidden>{m.fromKind === "issue" ? "▧" : "▥"}</span>
+          <span className="issue-detail-run-name">
+            {m.fromLabel ? `${m.fromLabel} ` : ""}{m.fromTitle}
+          </span>
+          <span className="mention-snippet">{m.snippet}</span>
+        </button>
+      ))}
+    </div>
+  );
+
+  const foot = (
+    <div className="issue-detail-foot">
+      <span title={`Updated ${ts(issue.updatedAt)}`}>Created {ts(issue.createdAt)}</span>
+      <div className="spacer" />
+      <button className="ghost" onClick={onDelete}>Delete</button>
+    </div>
+  );
+
+  // Both pickers render from here so the fixed-position menu isn't clipped by
+  // either layout's scrolling column.
+  const propMenu = menu && (
+    <>
+      <div className="agent-menu-backdrop" onClick={() => setMenu(null)} />
+      <div className="agent-menu" style={{ position: "fixed", ...coords }}>
+        {menu === "status" &&
+          ISSUE_STATUSES.map((s) => (
+            <button key={s} onClick={() => { setMenu(null); if (s !== issue.status) onPatch({ status: s }); }}>
+              <StatusDot status={s} /> {STATUS_LABELS[s]}{s === issue.status ? " ✓" : ""}
             </button>
           ))}
-        </div>
-      )}
-      {mentions.length > 0 && (
-        <div className="issue-detail-runs issue-detail-mentions">
-          <h3>Mentions</h3>
-          {mentions.map((m, i) => (
-            <button
-              key={`${m.fromKind}:${m.fromProjectId}:${m.fromId}:${m.line}:${i}`}
-              className="issue-detail-run issue-detail-mention"
-              title={m.snippet}
-              onClick={() => onOpenMention(m)}
-            >
-              <span className="mention-glyph" aria-hidden>{m.fromKind === "issue" ? "▧" : "▥"}</span>
-              <span className="issue-detail-run-name">
-                {m.fromLabel ? `${m.fromLabel} ` : ""}{m.fromTitle}
-              </span>
-              <span className="mention-snippet">{m.snippet}</span>
+        {menu === "priority" &&
+          PRIORITY_LABELS.map((p, n) => (
+            <button key={p} onClick={() => { setMenu(null); if (n !== issue.priority) onPatch({ priority: n }); }}>
+              <PriorityGlyph priority={n} /> {p}{n === issue.priority ? " ✓" : ""}
             </button>
           ))}
-        </div>
-      )}
-      <div className="issue-detail-foot">
-        <span title={`Updated ${ts(issue.updatedAt)}`}>Created {ts(issue.createdAt)}</span>
-        <div className="spacer" />
-        <button className="ghost" onClick={onDelete}>Delete</button>
       </div>
+    </>
+  );
+
+  const dropHint = (dragOver || attaching) && (
+    <div className="issue-drop-hint">{attaching ? "Attaching…" : `Drop to attach to ${label}`}</div>
+  );
+
+  const cls = `issue-detail${expanded ? " expanded" : ""}${dragOver ? " drop-target" : ""}`;
+
+  if (expanded) {
+    return (
+      <aside ref={asideRef} className={cls}>
+        {head}
+        <div className="issue-detail-cols">
+          <div className="issue-detail-read">
+            <div className="issue-detail-reading">
+              {titleField}
+              {bodyField}
+              {attachmentsList}
+            </div>
+          </div>
+          <div className="issue-detail-rail">
+            <div className="issue-meta">
+              <h3>Properties</h3>
+              <div className="issue-meta-row"><span className="issue-meta-label">Status</span>{statusPill}</div>
+              <div className="issue-meta-row"><span className="issue-meta-label">Priority</span>{priorityPill}</div>
+              <div className="issue-meta-row"><span className="issue-meta-label">Due</span>{duePill}</div>
+              <div className="issue-meta-row"><span className="issue-meta-label">Scheduled</span>{scheduledPill}</div>
+            </div>
+            {runsList}
+            {mentionsList}
+            {foot}
+          </div>
+        </div>
+        {propMenu}
+        {dropHint}
+      </aside>
+    );
+  }
+
+  return (
+    <aside ref={asideRef} className={cls}>
+      {head}
+      {titleField}
+      <div className="issue-detail-props">
+        {statusPill}
+        {priorityPill}
+        {duePill}
+        {scheduledPill}
+      </div>
+      {propMenu}
+      {bodyField}
+      {attachmentsList}
+      {dropHint}
+      {runsList}
+      {mentionsList}
+      {foot}
     </aside>
   );
 }

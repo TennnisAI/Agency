@@ -19,7 +19,9 @@ pub enum MergeOutcome {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MergeState {
-    /// `MERGE_HEAD` exists: a merge is started but not yet committed.
+    /// `MERGE_HEAD` exists *and* names this branch: a merge of it is started
+    /// but not yet committed. See [`blocked_by`](Self::blocked_by) for why the
+    /// second half of that matters.
     pub merging: bool,
     /// Paths git still considers unmerged, either because conflict markers
     /// remain or because the resolution was never `git add`ed.
@@ -27,6 +29,10 @@ pub struct MergeState {
     /// The branch tip is already an ancestor of the base branch, i.e. the
     /// merge landed (whoever committed it).
     pub merged: bool,
+    /// Set when the project's checkout is mid-merge of a *different* branch.
+    /// Every run merges in the one shared checkout, so an unfinished merge is
+    /// visible from all of them; without this they'd each read it as their own.
+    pub blocked_by: Option<String>,
 }
 
 fn git(repo: &Path, args: &[&str]) -> Result<std::process::Output> {
@@ -68,6 +74,45 @@ pub fn resolve_target(explicit: Option<&str>, repo: &Path) -> Result<String> {
 
 pub fn is_merging(repo: &Path) -> Result<bool> {
     Ok(ref_exists(repo, "MERGE_HEAD"))
+}
+
+/// Resolve a revision to a commit hash, or `None` if it doesn't exist.
+fn rev(repo: &Path, r: &str) -> Option<String> {
+    git(repo, &["rev-parse", "--verify", "--quiet", &format!("{r}^{{commit}}")])
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// The merge the project's checkout is currently in the middle of: the commit
+/// being merged in (`MERGE_HEAD`) and, for the UI, a branch name for it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InProgressMerge {
+    pub commit: String,
+    /// A branch pointing at `commit`, or its short hash if none does.
+    pub branch: String,
+}
+
+pub fn in_progress_merge(repo: &Path) -> Option<InProgressMerge> {
+    let commit = rev(repo, "MERGE_HEAD")?;
+    let branch = git(repo, &["branch", "--points-at", &commit, "--format=%(refname:short)"])
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .and_then(|out| out.lines().map(str::trim).find(|l| !l.is_empty()).map(str::to_string))
+        .unwrap_or_else(|| commit[..commit.len().min(10)].to_string());
+    Some(InProgressMerge { commit, branch })
+}
+
+/// Whether the in-progress merge (if any) is `branch`'s. The project checkout
+/// is shared by every run, so `MERGE_HEAD` on its own only says *somebody* is
+/// mid-merge; matching it against the branch tip is what says who.
+pub fn owns_merge(repo: &Path, branch: &str) -> bool {
+    match (in_progress_merge(repo), rev(repo, branch)) {
+        (Some(m), Some(tip)) => m.commit == tip,
+        _ => false,
+    }
 }
 
 /// Number of commits on `branch` that are not yet on `base` (i.e. what a merge
@@ -123,11 +168,17 @@ fn is_ancestor(repo: &Path, branch: &str, base: &str) -> bool {
 }
 
 pub fn merge_state(repo: &Path, branch: &str, base: &str) -> Result<MergeState> {
-    let merging = is_merging(repo)?;
+    let in_progress = in_progress_merge(repo);
+    // Ownership, not just existence: an unfinished merge belonging to another
+    // run would otherwise read as this run's own conflict in every window that
+    // asks — and "Finish merge" there would commit that other merge and close
+    // this run's issue for work it never landed.
+    let mine = in_progress.as_ref().is_some_and(|m| rev(repo, branch).as_deref() == Some(&m.commit));
     Ok(MergeState {
-        merging,
-        unresolved: if merging { unmerged_files(repo)? } else { Vec::new() },
+        merging: mine,
+        unresolved: if mine { unmerged_files(repo)? } else { Vec::new() },
         merged: is_ancestor(repo, branch, base),
+        blocked_by: in_progress.filter(|_| !mine).map(|m| m.branch),
     })
 }
 
@@ -164,8 +215,11 @@ pub fn merge(repo: &Path, branch: &str, base: &str) -> Result<MergeOutcome> {
     // An unfinished merge is dirty by construction, so check for it first:
     // otherwise it reports as "uncommitted changes" and sends the user off to
     // stash work that is actually a half-done merge.
-    if is_merging(repo)? {
-        bail!("a merge is already in progress in the project's main checkout; finish or abort it first");
+    if let Some(m) = in_progress_merge(repo) {
+        bail!(
+            "the project's main checkout is mid-merge of {}; finish or abort that merge first",
+            m.branch
+        );
     }
     let dirty = git_ok(repo, &["status", "--porcelain"])?;
     if !dirty.trim().is_empty() {

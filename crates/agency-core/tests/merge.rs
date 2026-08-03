@@ -289,8 +289,61 @@ fn merge_reports_an_in_progress_merge_as_such() {
     merge::merge(dir.path(), "agent/h", "main").unwrap();
 
     let err = merge::merge(dir.path(), "agent/h", "main").unwrap_err();
-    assert!(err.to_string().contains("merge is already in progress"), "got: {err}");
+    assert!(err.to_string().contains("mid-merge of agent/h"), "got: {err}");
     merge::abort_merge(dir.path(), None).unwrap();
+}
+
+/// Every run merges in the one project checkout, so an unfinished merge is
+/// visible from all of them. Only the run whose branch is actually being merged
+/// may see it as its own — otherwise the next run to open Approve inherits the
+/// conflict, and finishing it there commits the wrong merge under the wrong
+/// run's name.
+#[test]
+fn an_unfinished_merge_belongs_to_one_branch_not_every_branch() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    // Two agents, each with a commit that collides with main's.
+    run(dir.path(), &["checkout", "-q", "-b", "agent/one"]);
+    std::fs::write(dir.path().join("f.txt"), "one\n").unwrap();
+    run(dir.path(), &["commit", "-qam", "one"]);
+    run(dir.path(), &["checkout", "-q", "main"]);
+    run(dir.path(), &["checkout", "-q", "-b", "agent/two"]);
+    std::fs::write(dir.path().join("g.txt"), "two\n").unwrap();
+    run(dir.path(), &["add", "-A"]);
+    run(dir.path(), &["commit", "-qm", "two"]);
+    run(dir.path(), &["checkout", "-q", "main"]);
+    std::fs::write(dir.path().join("f.txt"), "main\n").unwrap();
+    run(dir.path(), &["commit", "-qam", "main edit"]);
+
+    // Agent one conflicts and the user walks away without aborting.
+    assert!(matches!(
+        merge::merge(dir.path(), "agent/one", "main").unwrap(),
+        MergeOutcome::Conflicts { .. }
+    ));
+
+    let one = merge::merge_state(dir.path(), "agent/one", "main").unwrap();
+    assert!(one.merging, "the run being merged owns the conflict");
+    assert_eq!(one.unresolved, vec!["f.txt".to_string()]);
+    assert_eq!(one.blocked_by, None);
+
+    // Approving agent two must not show it agent one's conflict…
+    let two = merge::merge_state(dir.path(), "agent/two", "main").unwrap();
+    assert!(!two.merging && !two.merged);
+    assert!(two.unresolved.is_empty());
+    // …but must say why it can't merge yet, naming the run that's holding it up.
+    assert_eq!(two.blocked_by.as_deref(), Some("agent/one"));
+
+    assert!(merge::owns_merge(dir.path(), "agent/one"));
+    assert!(!merge::owns_merge(dir.path(), "agent/two"));
+
+    // And its own merge is refused, rather than joining the one in flight.
+    let err = merge::merge(dir.path(), "agent/two", "main").unwrap_err();
+    assert!(err.to_string().contains("mid-merge of agent/one"), "got: {err}");
+
+    merge::abort_merge(dir.path(), None).unwrap();
+    // With the checkout free again, agent two is unblocked.
+    let two = merge::merge_state(dir.path(), "agent/two", "main").unwrap();
+    assert_eq!(two.blocked_by, None);
 }
 
 #[test]

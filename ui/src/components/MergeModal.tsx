@@ -129,6 +129,9 @@ export default function MergeModal({
       setOutcome(await mergeTask(taskId));
     } catch (e) {
       setError(String(e));
+      // Re-read rather than leave the failure as a bare string: if another run
+      // is mid-merge, this is what turns it into the explanation above.
+      mergeStatus(taskId).then(setState).catch(() => {});
     } finally {
       setMerging(false);
     }
@@ -209,6 +212,9 @@ export default function MergeModal({
   ];
 
   const nothingToMerge = !!preview && preview.commitsAhead === 0;
+  // Another run left a merge unfinished in the shared project checkout. Nothing
+  // here can proceed until that one is finished or aborted, from its own window.
+  const blockedBy = state?.blockedBy ?? null;
 
   return (
     <div className="settings-overlay anchor-top" onClick={() => { if (!busy) onClose(); }}>
@@ -261,9 +267,19 @@ export default function MergeModal({
                   work is merged. Commit them in Source Control first to include them.
                 </p>
               )}
+              {blockedBy && (
+                <p className="merge-warn">
+                  <code>{blockedBy}</code> is part-way through a merge in the project's checkout, and every agent
+                  merges there. Finish or abort that one from its own Approve window first; this branch is untouched
+                  in the meantime.
+                </p>
+              )}
               {!nothingToMerge && (
                 <div className="git-actions">
-                  <button autoFocus onClick={attempt}>Merge into {preview.base}</button>
+                  <button autoFocus onClick={attempt} disabled={!!blockedBy}
+                    title={blockedBy ? `Blocked: ${blockedBy} is mid-merge` : undefined}>
+                    Merge into {preview.base}
+                  </button>
                   <button className="ghost" onClick={onClose}>Cancel</button>
                 </div>
               )}

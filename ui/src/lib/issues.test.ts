@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Issue } from "../api";
+import { Issue, IssueStatus } from "../api";
 import {
   NO_FILTERS,
   compareIssues,
@@ -7,8 +7,11 @@ import {
   fmtDate,
   isOverdue,
   issueSorter,
+  issuesCollapsedKey,
+  loadCollapsed,
   matchRanges,
   matchesFilters,
+  saveCollapsed,
   searchTerms,
   todayIssues,
 } from "./issues";
@@ -178,5 +181,40 @@ describe("todayIssues", () => {
     const later = issue({ due: "2026-07-25" });
     const picked = todayIssues([wip, wipUrgent, later, late], TODAY);
     expect(picked.map((i) => i.id)).toEqual([late.id, later.id, wipUrgent.id, wip.id]);
+  });
+});
+
+describe("collapsed groups", () => {
+  function makeStorage(): Pick<Storage, "getItem" | "setItem"> {
+    const map = new Map<string, string>();
+    return {
+      getItem: (key: string) => map.get(key) ?? null,
+      setItem: (key: string, value: string) => { map.set(key, value); },
+    };
+  }
+  const KEY = issuesCollapsedKey("p1");
+
+  it("starts with the finished groups folded", () => {
+    expect([...loadCollapsed(makeStorage(), KEY)]).toEqual(["done", "cancelled"]);
+  });
+
+  it("round-trips a choice, including folding nothing", () => {
+    const storage = makeStorage();
+    saveCollapsed(storage, KEY, new Set<IssueStatus>(["backlog", "done"]));
+    expect([...loadCollapsed(storage, KEY)]).toEqual(["backlog", "done"]);
+    saveCollapsed(storage, KEY, new Set<IssueStatus>());
+    expect([...loadCollapsed(storage, KEY)]).toEqual([]);
+  });
+
+  it("keeps its own key per project", () => {
+    const storage = makeStorage();
+    saveCollapsed(storage, KEY, new Set<IssueStatus>(["todo"]));
+    expect([...loadCollapsed(storage, issuesCollapsedKey("p2"))]).toEqual(["done", "cancelled"]);
+  });
+
+  it("drops names that are no longer statuses", () => {
+    const storage = makeStorage();
+    storage.setItem("pane:" + KEY, "todo,archived");
+    expect([...loadCollapsed(storage, KEY)]).toEqual(["todo"]);
   });
 });

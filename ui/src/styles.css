@@ -1965,11 +1965,15 @@ input, textarea, code,
 .issue-group { margin-top: 10px; }
 .issue-group-head {
   display: flex; align-items: center; gap: 8px; width: 100%;
-  background: transparent; border: none; cursor: default; text-align: left;
+  background: transparent; border: none; cursor: pointer; text-align: left;
   padding: 4px 6px; color: var(--o1);
   font-family: var(--sans); font-size: 11px; font-weight: 600;
   text-transform: uppercase; letter-spacing: .06em;
 }
+/* Search and filters pin every group open, so the head stops being a control. */
+.issue-group-head.static { cursor: default; }
+.issue-group-head:not(.static):hover { color: var(--text); }
+.issue-group-head:not(.static):hover .issue-group-chev { color: var(--o1); }
 .issue-group-chev { width: 12px; font-size: var(--chev); color: var(--o0); }
 .issue-group-count { color: var(--o0); font-weight: 400; }
 

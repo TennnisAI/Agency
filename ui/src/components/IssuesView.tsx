@@ -8,6 +8,7 @@ import { useIssues } from "../hooks/useIssues";
 import { useCrossRefs } from "../hooks/useCrossRefs";
 import { useDocs } from "../hooks/useDocs";
 import {
+  DEFAULT_COLLAPSED,
   ISSUE_STATUSES,
   IssueSort,
   PENDING_ISSUE_KEY,
@@ -16,11 +17,13 @@ import {
   STATUS_LABELS,
   StatusFilter,
   filtersActive,
-  isClosed,
   issueLabel,
   issueSorter,
+  issuesCollapsedKey,
   issuesExpandedKey,
+  loadCollapsed,
   matchesFilters,
+  saveCollapsed,
   searchTerms,
 } from "../lib/issues";
 import { pickDefaultAgent } from "../lib/defaultAgent";
@@ -52,8 +55,8 @@ export default function IssuesView({
   const [quick, setQuick] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<Issue | null>(null);
-  // done/cancelled fold away by default; an open group stays open.
-  const [openClosed, setOpenClosed] = useState<Set<string>>(new Set());
+  // Any status group folds; done/cancelled are the ones that start folded.
+  const [collapsed, setCollapsed] = useState<Set<IssueStatus>>(() => new Set(DEFAULT_COLLAPSED));
   // Quick-add rests as a + button and expands into an inline input on demand.
   const [quickOpen, setQuickOpen] = useState(false);
   const quickRef = useRef<HTMLInputElement>(null);
@@ -92,6 +95,25 @@ export default function IssuesView({
   // The compressed list's width is a plain machine-wide pane pref, like every
   // other resizable pane — only the expanded/contracted choice is per project.
   const sidebar = usePaneWidth("issues-sidebar", 288, SIDEBAR_MIN, SIDEBAR_MAX);
+
+  // Folded groups are remembered per project too: which parts of the board
+  // are worth seeing is a property of the tracker, not of this visit.
+  const collapsedKey = issuesCollapsedKey(project.id);
+  useEffect(() => {
+    setCollapsed(
+      typeof localStorage === "undefined" ? new Set(DEFAULT_COLLAPSED) : loadCollapsed(localStorage, collapsedKey),
+    );
+  }, [collapsedKey]);
+  function toggleGroup(status: IssueStatus) {
+    const next = new Set(collapsed);
+    if (next.has(status)) next.delete(status); else next.add(status);
+    setCollapsed(next);
+    try {
+      if (typeof localStorage !== "undefined") saveCollapsed(localStorage, collapsedKey, next);
+    } catch {
+      /* storage unavailable */
+    }
+  }
 
   useEffect(() => { setSelectedId(null); setQuick(""); setQuickOpen(false); clearFilters(); }, [project.id]);
   useEffect(() => { if (quickOpen) quickRef.current?.focus(); }, [quickOpen]);
@@ -141,13 +163,13 @@ export default function IssuesView({
   // Mouse handlers commit against the freshest grouping, not their closure's.
   const groupsRef = useRef(groups);
   groupsRef.current = groups;
-  // A hit inside a folded done/cancelled group would otherwise be a match the
-  // board never shows, so filtering opens every group.
-  const groupOpen = (status: IssueStatus) => filtered || !isClosed(status) || openClosed.has(status);
+  // A hit inside a folded group would otherwise be a match the board never
+  // shows, so filtering opens every group.
+  const groupOpen = (status: IssueStatus) => filtered || !collapsed.has(status);
   const visible = useMemo(
     () => groups.flatMap((g) => (groupOpen(g.status) ? g.issues : [])),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [groups, openClosed, filtered],
+    [groups, collapsed, filtered],
   );
   const matched = groups.reduce((n, g) => n + g.issues.length, 0);
   const selected = issues.find((i) => i.id === selectedId) ?? null;
@@ -489,23 +511,20 @@ export default function IssuesView({
             )}
             {groups.map(({ status, issues: group }) => {
               if (group.length === 0) return null;
-              const closed = isClosed(status);
               const open = groupOpen(status);
               return (
                 <section key={status} className="issue-group">
                   <button
-                    className="issue-group-head"
+                    className={`issue-group-head${filtered ? " static" : ""}`}
+                    aria-expanded={open}
+                    title={filtered ? undefined : `${open ? "Collapse" : "Expand"} ${STATUS_LABELS[status]}`}
                     onClick={() => {
                       // Filtering pins every group open, so folding is off.
-                      if (!closed || filtered) return;
-                      setOpenClosed((prev) => {
-                        const next = new Set(prev);
-                        if (next.has(status)) next.delete(status); else next.add(status);
-                        return next;
-                      });
+                      if (filtered) return;
+                      toggleGroup(status);
                     }}
                   >
-                    {closed && !filtered && <span className="issue-group-chev">{open ? "▾" : "▸"}</span>}
+                    {!filtered && <span className="issue-group-chev">{open ? "▾" : "▸"}</span>}
                     <span className="issue-group-name">{STATUS_LABELS[status]}</span>
                     <span className="issue-group-count">{group.length}</span>
                   </button>

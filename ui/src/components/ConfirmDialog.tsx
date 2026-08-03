@@ -1,4 +1,6 @@
 import { useModalKeys } from "../hooks/useModalKeys";
+import { CloneProgress } from "../api";
+import ProgressReadout from "./ProgressReadout";
 
 export default function ConfirmDialog({
   title,
@@ -6,6 +8,8 @@ export default function ConfirmDialog({
   confirmLabel,
   danger,
   busy,
+  progress,
+  progressLabel,
   altLabel,
   altDanger,
   onAlt,
@@ -18,6 +22,14 @@ export default function ConfirmDialog({
   danger?: boolean;
   /** Disables both buttons (and Escape) while the confirmed action runs. */
   busy?: boolean;
+  /**
+   * Latest step of the confirmed action, when it streams progress. Rendered
+   * with `progressLabel` while `busy`, so a slow one (an agent teardown, say)
+   * says what it is doing instead of sitting on a disabled dialog.
+   */
+  progress?: CloneProgress | null;
+  /** Phase to show until the first `progress` update lands. */
+  progressLabel?: string;
   /** Optional second action rendered between Cancel and the confirm button. */
   altLabel?: string;
   altDanger?: boolean;
@@ -36,7 +48,12 @@ export default function ConfirmDialog({
           <h3>{title}</h3>
           <button className="modal-x" disabled={busy} onClick={onCancel}>✕</button>
         </div>
-        <div className="modal-body">{body}</div>
+        <div className="modal-body">
+          {body}
+          {busy && progressLabel && (
+            <ProgressReadout progress={progress ?? null} fallback={progressLabel} />
+          )}
+        </div>
         <div className="modal-foot">
           {/* Autofocused so Enter/Escape act immediately — and Enter lands on
               the safe option, not the (possibly destructive) confirm. */}

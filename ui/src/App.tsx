@@ -14,7 +14,7 @@ import Resizer from "./components/Resizer";
 import Toasts from "./components/Toasts";
 import { useShortcuts } from "./hooks/useShortcuts";
 import { usePaneWidth } from "./hooks/usePaneWidth";
-import { FileRoot, Project, RepoReadiness, RunInfo, agentOnboardingNeeded, archiveRun, checkForUpdate, confirmQuit, createDir, createFile, createRun, discardRun, ensureWorkspaceGuide, getUpdateCheckEnabled, getWorkspace, gitLogGraph, inspectRepo, listArchivedRuns, listIssues, listProjects, readFile, setMenuContext, setUiState, writeFile } from "./api";
+import { CloneProgress, FileRoot, Project, RepoReadiness, RunInfo, agentOnboardingNeeded, archiveRun, checkForUpdate, confirmQuit, createDir, createFile, createRun, discardRun, ensureWorkspaceGuide, getUpdateCheckEnabled, getWorkspace, gitLogGraph, inspectRepo, listArchivedRuns, listIssues, listProjects, readFile, setMenuContext, setUiState, writeFile } from "./api";
 import { pickDefaultAgent } from "./lib/defaultAgent";
 import { PENDING_ISSUE_KEY, PENDING_QUICKADD_KEY, isClosed, issueLabel } from "./lib/issues";
 import { NAVIGATE_EVENT, NavTarget } from "./lib/navigate";
@@ -38,6 +38,11 @@ function Shell() {
   // Menu-driven archive/discard of the focused agent, gated behind a confirm
   // dialog (matching the tile-level action). null = no confirmation showing.
   const [agentAction, setAgentAction] = useState<{ kind: "archive" | "discard"; run: RunInfo } | null>(null);
+  // The teardown in flight, and which step it is on. Removing an agent stops
+  // its session and unlinks its worktree, so on a large repo it runs for
+  // seconds; the dialog stays up and says so rather than looking hung.
+  const [agentActionBusy, setAgentActionBusy] = useState(false);
+  const [agentActionProgress, setAgentActionProgress] = useState<CloneProgress | null>(null);
   // Sessions the quit would stop (from the backend's quit-requested event);
   // null = no quit confirmation showing.
   const [quitPrompt, setQuitPrompt] = useState<number | null>(null);
@@ -446,16 +451,20 @@ function Shell() {
   // Run the confirmed archive/discard, then clear focus (if it was this run)
   // and refresh so the tile disappears.
   async function runAgentAction() {
-    if (!agentAction) return;
+    if (!agentAction || agentActionBusy) return;
     const { kind, run } = agentAction;
+    setAgentActionBusy(true);
+    setAgentActionProgress(null);
     try {
-      if (kind === "archive") await archiveRun(run.id);
-      else await discardRun(run.id);
+      if (kind === "archive") await archiveRun(run.id, setAgentActionProgress);
+      else await discardRun(run.id, setAgentActionProgress);
       if (focusedRunId === run.id) { setFocusedRun(null); setView("grid"); }
       await refreshRuns();
     } catch {
       /* the backend surfaces failures; keep the dialog dismissal simple */
     }
+    setAgentActionBusy(false);
+    setAgentActionProgress(null);
     setAgentAction(null);
   }
 
@@ -521,6 +530,9 @@ function Shell() {
             : `Stop "${agentAction.run.agent}", remove its worktree, and delete the run. This cannot be undone.`}
           confirmLabel={agentAction.kind === "archive" ? "Archive" : "Discard"}
           danger={agentAction.kind === "discard"}
+          busy={agentActionBusy}
+          progress={agentActionProgress}
+          progressLabel={agentAction.kind === "archive" ? "Archiving…" : "Discarding…"}
           onConfirm={() => { runAgentAction(); }}
           onCancel={() => setAgentAction(null)}
         />

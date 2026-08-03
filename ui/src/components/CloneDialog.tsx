@@ -3,6 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { cloneRepo, ghAuthReadiness, GhReadiness, CloneProgress } from "../api";
 import { useModalKeys } from "../hooks/useModalKeys";
+import ProgressReadout from "./ProgressReadout";
 
 type Props = {
   // Called with the freshly cloned repo's absolute path once the clone succeeds.
@@ -97,27 +98,7 @@ export default function CloneDialog({ onCloned, onCancel }: Props) {
           {parentDir && name && !busy && (
             <p className="modal-note">Clones into <code>{parentDir}/{name}</code></p>
           )}
-          {busy && (
-            <div className="clone-progress" role="status" aria-live="polite">
-              <div className="clone-progress-head">
-                <span className="clone-progress-phase">
-                  {progress ? progress.phase : "Starting clone…"}
-                </span>
-                {progress?.percent != null && (
-                  <span className="clone-progress-pct">{progress.percent}%</span>
-                )}
-              </div>
-              <div className="clone-progress-track">
-                <div
-                  className={`clone-progress-bar${progress?.percent == null ? " indeterminate" : ""}`}
-                  style={progress?.percent != null ? { width: `${progress.percent}%` } : undefined}
-                />
-              </div>
-              {progress?.detail && (
-                <div className="clone-progress-detail">{progress.detail}</div>
-              )}
-            </div>
-          )}
+          {busy && <ProgressReadout progress={progress} fallback="Starting clone…" />}
           {error && <div className="git-error">{error}</div>}
           {authHelp && authHelp !== "ready" && (
             <div className="clone-auth-help">

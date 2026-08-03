@@ -256,18 +256,36 @@ export const runInput = (id: string, data: string) => invoke<void>("run_input", 
 export const resizeRun = (id: string, cols: number, rows: number) =>
   invoke<void>("resize_run", { id, cols, rows });
 export const runStatus = (id: string) => invoke<SessionStatus>("run_status", { id });
-export const discardRun = (id: string) => invoke<void>("discard_run", { id });
+// Tearing an agent down stops its session and hands git a whole worktree to
+// unlink, which on a big repo takes long enough to look like a hang. All three
+// report their step through the same progress channel clone and push use, so
+// the confirm dialog can say what it is waiting on.
+export function discardRun(id: string, onProgress?: (p: CloneProgress) => void): Promise<void> {
+  const onProgressChannel = new Channel<CloneProgress>();
+  if (onProgress) onProgressChannel.onmessage = onProgress;
+  return invoke<void>("discard_run", { id, onProgress: onProgressChannel });
+}
 export const stopRun = (id: string) => invoke<void>("stop_run", { id });
 export const rerun = (id: string) => invoke<RunInfo>("rerun", { id });
 export const ensureRunActive = (id: string) => invoke<void>("ensure_run_active", { id });
-export const archiveRun = (id: string) => invoke<void>("archive_run", { id });
+export function archiveRun(id: string, onProgress?: (p: CloneProgress) => void): Promise<void> {
+  const onProgressChannel = new Channel<CloneProgress>();
+  if (onProgress) onProgressChannel.onmessage = onProgress;
+  return invoke<void>("archive_run", { id, onProgress: onProgressChannel });
+}
 export const restoreRun = (id: string) => invoke<RunInfo>("restore_run", { id });
 export const listArchivedRuns = (projectId: string) =>
   invoke<RunInfo[]>("list_archived_runs", { projectId });
 /** Result of a bulk discard: some runs can fail while the rest still go. */
 export type DiscardSummary = { discarded: number; failed: string[] };
-export const discardArchivedRuns = (projectId: string) =>
-  invoke<DiscardSummary>("discard_archived_runs", { projectId });
+export function discardArchivedRuns(
+  projectId: string,
+  onProgress?: (p: CloneProgress) => void,
+): Promise<DiscardSummary> {
+  const onProgressChannel = new Channel<CloneProgress>();
+  if (onProgress) onProgressChannel.onmessage = onProgress;
+  return invoke<DiscardSummary>("discard_archived_runs", { projectId, onProgress: onProgressChannel });
+}
 
 export function attachRun(id: string, cols: number, rows: number, onBytes: (b: Uint8Array) => void): Promise<void> {
   const onChunk = new Channel<{ b64: string }>();

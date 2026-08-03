@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import {
+  CloneProgress,
   MergeOutcome,
   MergePreview,
   MergeState,
@@ -14,6 +15,7 @@ import {
 } from "../api";
 import PrSection from "./PrSection";
 import ConfirmDialog from "./ConfirmDialog";
+import ProgressReadout from "./ProgressReadout";
 import { useRuns } from "../store/runs";
 import { useModalKeys } from "../hooks/useModalKeys";
 
@@ -48,6 +50,10 @@ export default function MergeModal({
   const [archiving, setArchiving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  // Latest teardown step of the archive/delete in flight. Both stop a session
+  // and hand git a worktree to unlink, which on a large repo runs long enough
+  // that a bare "Deleting…" label reads as a frozen app.
+  const [cleanup, setCleanup] = useState<CloneProgress | null>(null);
   const { runs } = useRuns();
   const me = runs.find((r) => r.id === taskId);
   const projectId = me?.projectId ?? null;
@@ -79,38 +85,48 @@ export default function MergeModal({
       .catch(() => {});
   }, [taskId]);
 
-  async function archiveWorkspace(discardLosers: boolean) {
+  // Losers are torn down one at a time before the winner, so their progress is
+  // labelled with their position: otherwise a five-attempt race looks like one
+  // teardown that restarts its phases over and over.
+  async function discardLosers() {
+    for (const [i, l] of losers.entries()) {
+      await discardRun(l.id, (p) =>
+        setCleanup({ ...p, detail: `losing attempt ${i + 1} of ${losers.length}` }));
+    }
+  }
+
+  async function archiveWorkspace(withLosers: boolean) {
     setArchiving(true);
+    setCleanup(null);
     try {
-      if (discardLosers) {
-        // The merged branch won; the other attempts' work is unwanted by
-        // definition, so a full discard (worktree + branch) is right.
-        for (const l of losers) await discardRun(l.id);
-      }
-      await archiveRun(taskId);
+      // The merged branch won; the other attempts' work is unwanted by
+      // definition, so a full discard (worktree + branch) is right.
+      if (withLosers) await discardLosers();
+      await archiveRun(taskId, setCleanup);
       onRemoved?.();
       onClose();
     } catch (e) {
       setError(String(e));
       setArchiving(false);
+      setCleanup(null);
     }
   }
 
   // Delete: the merged work is on the base branch now, so some users want the
   // agent gone for good rather than filed away. Removes the worktree, the
   // agent branch and the run record itself.
-  async function deleteWorkspace(discardLosers: boolean) {
+  async function deleteWorkspace(withLosers: boolean) {
     setDeleting(true);
+    setCleanup(null);
     try {
-      if (discardLosers) {
-        for (const l of losers) await discardRun(l.id);
-      }
-      await discardRun(taskId);
+      if (withLosers) await discardLosers();
+      await discardRun(taskId, setCleanup);
       onRemoved?.();
       onClose();
     } catch (e) {
       setError(String(e));
       setDeleting(false);
+      setCleanup(null);
       // Drop back to the merge modal so the error is the thing on screen.
       setConfirmDelete(false);
     }
@@ -341,6 +357,9 @@ export default function MergeModal({
               </button>
               <button className="ghost" disabled={busy} onClick={onClose}>Keep agent</button>
             </div>
+            {/* Archiving has no confirm step of its own, so its progress lands
+                here. Deleting shows the same readout inside its confirm. */}
+            {archiving && <ProgressReadout progress={cleanup} fallback="Archiving…" />}
           </div>
         )}
 
@@ -475,6 +494,8 @@ export default function MergeModal({
           confirmLabel={losers.length > 0 ? `Delete all ${losers.length + 1}` : "Delete"}
           danger
           busy={deleting}
+          progress={cleanup}
+          progressLabel="Deleting…"
           altLabel={losers.length > 0 ? "Delete this one" : undefined}
           altDanger
           onAlt={losers.length > 0 ? () => deleteWorkspace(false) : undefined}

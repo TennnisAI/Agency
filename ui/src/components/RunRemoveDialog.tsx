@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { RunInfo, archiveRun, discardRun } from "../api";
+import { CloneProgress, RunInfo, archiveRun, discardRun } from "../api";
 import { useRuns } from "../store/runs";
 import { toastError } from "../lib/toast";
 import { Removal, removalCopy } from "../lib/runRemoval";
@@ -22,6 +22,9 @@ export default function RunRemoveDialog({
 }) {
   const { focusedRunId, setFocusedRun, refreshRuns } = useRuns();
   const [busy, setBusy] = useState(false);
+  // Which teardown step the backend is on. Both actions stop a session and
+  // hand git a worktree to unlink, so on a big repo they run for seconds.
+  const [progress, setProgress] = useState<CloneProgress | null>(null);
   const copy = removalCopy(run, action);
   return (
     <ConfirmDialog
@@ -30,10 +33,15 @@ export default function RunRemoveDialog({
       confirmLabel={copy.confirmLabel}
       danger={copy.danger}
       busy={busy}
+      progress={progress}
+      progressLabel={action === "archive" ? "Archiving…" : "Deleting…"}
       onConfirm={async () => {
         setBusy(true);
+        setProgress(null);
         try {
-          await (action === "archive" ? archiveRun(run.id) : discardRun(run.id));
+          await (action === "archive"
+            ? archiveRun(run.id, setProgress)
+            : discardRun(run.id, setProgress));
           if (focusedRunId === run.id) setFocusedRun(null);
           await refreshRuns();
         } catch (e) {

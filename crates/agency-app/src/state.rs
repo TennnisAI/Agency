@@ -62,23 +62,38 @@ pub struct FilesConfigDto {
     pub detected_env: Vec<String>,
 }
 
-/// Everything the Run tab needs to show a run script — and to set one up when
-/// there isn't one. `command` is the effective command (`None` = unconfigured,
-/// which is what the setup card renders for); `workspace` and `port` are the
-/// directory the command runs in and the `AGENCY_PORT` it will see, both shown
-/// so the user can tell what they're configuring.
+/// Everything the Run tab needs to list a project's run scripts — and to set
+/// the first one up when there are none. `workspace` and `port` are the
+/// directory the commands run in and the `AGENCY_PORT` they will see, both
+/// shown so the user can tell what they're configuring.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunScriptConfigDto {
-    pub command: Option<String>,
-    /// `run_mode = "nonconcurrent"`: starting this app stops every other one.
-    pub nonconcurrent: bool,
-    /// The command comes from the tracked `agency.toml`, so it is shared with
-    /// the team. Edits still go to the local override, which shadows it.
+    pub scripts: Vec<agency_core::config::RunScript>,
+    /// The scripts come from the tracked `agency.toml`, so they are shared with
+    /// the team. Edits still go to the local override, which shadows them.
     pub shared: bool,
     pub suggestions: Vec<agency_core::runsetup::RunSuggestion>,
     pub workspace: String,
     pub port: Option<u16>,
+}
+
+/// One script's live session state, as `run_scripts_status` reports it.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunScriptStatusDto {
+    pub name: String,
+    pub status: SessionStatus,
+}
+
+/// The workspace a run script runs in, resolved from the Run tab's target
+/// token. `name` is what the command sees as `AGENCY_WORKSPACE_NAME`.
+struct RunTarget {
+    project_id: String,
+    name: String,
+    repo: std::path::PathBuf,
+    cwd: std::path::PathBuf,
+    port: Option<u16>,
 }
 
 /// Result of importing an `mcp.json`: the full app-global list after the merge,
@@ -446,8 +461,49 @@ fn has_active_loop(run: &agency_core::registry::Run) -> bool {
         && run.loop_state.as_ref().map(|s| !s.status.is_terminal()).unwrap_or(false)
 }
 
-fn run_session_name(id: &str) -> String {
-    format!("agency-run-{id}")
+/// Daemon session for one run script. Keyed by (workspace, script name), so a
+/// project can have `dev` serving while `build` runs, and the same script runs
+/// independently in every agent's workspace. `target` is a run id or the
+/// `project:<id>` token for the project's own checkout — neither can contain
+/// `#`, so the split back out is unambiguous.
+fn run_session_name(target: &str, script: &str) -> String {
+    format!("agency-run-{target}#{script}")
+}
+
+/// Every run-script session belonging to `target`. The bare `agency-run-<id>`
+/// form is the pre-AGE-34 name, from before scripts were named: it is matched
+/// too so an app update doesn't strand a running dev server no UI can reach.
+/// The `#` separator keeps `agency-run-fix-a1#dev` out of `fix`'s sessions.
+fn run_session_names_for(target: &str, live: &[String]) -> Vec<String> {
+    let legacy = format!("agency-run-{target}");
+    let prefix = format!("{legacy}#");
+    live.iter()
+        .filter(|n| **n == legacy || n.starts_with(&prefix))
+        .cloned()
+        .collect()
+}
+
+/// Live status of every run script started in `target`'s workspace, keyed by
+/// script name, read out of one daemon session listing. A script that was never
+/// started has no session and so no entry — which is exactly what the crash
+/// detector wants, since it only watches for a *running* script exiting.
+fn run_script_statuses_from(
+    target: &str,
+    live: &[(String, SessionStatus)],
+) -> std::collections::BTreeMap<String, SessionStatus> {
+    let legacy = format!("agency-run-{target}");
+    let prefix = format!("{legacy}#");
+    live.iter()
+        .filter_map(|(name, status)| {
+            if let Some(script) = name.strip_prefix(&prefix) {
+                Some((script.to_string(), status.clone()))
+            } else if *name == legacy {
+                Some((agency_core::config::DEFAULT_RUN_NAME.to_string(), status.clone()))
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 /// Daemon session for a run's companion shell — an interactive terminal the user
@@ -1091,8 +1147,7 @@ impl AppState {
         for run in &runs {
             self.attaches.lock().unwrap().remove(&run.id);
             let _ = self.term.read().unwrap().kill(&session_name(&run.id));
-            self.run_attaches.lock().unwrap().remove(&run.id);
-            let _ = self.term.read().unwrap().kill(&run_session_name(&run.id));
+            self.kill_run_sessions(&run.id);
             self.shell_attaches.lock().unwrap().remove(&run.id);
             let _ = self.term.read().unwrap().kill(&shell_session_name(&run.id));
             self.kill_extra_sessions(&run.id);
@@ -1107,8 +1162,7 @@ impl AppState {
         for run in &runs {
             self.attaches.lock().unwrap().remove(&run.id);
             let _ = self.term.read().unwrap().kill(&session_name(&run.id));
-            self.run_attaches.lock().unwrap().remove(&run.id);
-            let _ = self.term.read().unwrap().kill(&run_session_name(&run.id));
+            self.kill_run_sessions(&run.id);
             self.shell_attaches.lock().unwrap().remove(&run.id);
             let _ = self.term.read().unwrap().kill(&shell_session_name(&run.id));
             self.kill_extra_sessions(&run.id);
@@ -1209,8 +1263,12 @@ impl AppState {
     // ── run lifecycle ──────────────────────────────────────────────────────────
 
     fn allocate_port(&self, base: u16, block_size: u16) -> Result<u16> {
-        let used: std::collections::HashSet<u16> =
+        let mut used: std::collections::HashSet<u16> =
             self.registry.lock().unwrap().list_port_bases()?.into_iter().collect();
+        // `base` itself belongs to the project's own checkout, whose Run tab
+        // hands it to `$AGENCY_PORT` (see `run_target`). Agents start a block
+        // above so their dev server never fights the one you started yourself.
+        used.insert(base);
         pick_port(&used, base, block_size).ok_or_else(|| anyhow!("no free port block available"))
     }
 
@@ -2640,8 +2698,7 @@ impl AppState {
             }
         }
         let _ = self.term.read().unwrap().kill(&session_name(id));
-        self.run_attaches.lock().unwrap().remove(id);
-        let _ = self.term.read().unwrap().kill(&run_session_name(id));
+        self.kill_run_sessions(id);
         self.shell_attaches.lock().unwrap().remove(id);
         let _ = self.term.read().unwrap().kill(&shell_session_name(id));
         self.kill_extra_sessions(id);
@@ -2704,8 +2761,7 @@ impl AppState {
         // good: the worktree they live in is about to disappear.
         self.attaches.lock().unwrap().remove(id);
         let _ = self.term.read().unwrap().kill(&session_name(id));
-        self.run_attaches.lock().unwrap().remove(id);
-        let _ = self.term.read().unwrap().kill(&run_session_name(id));
+        self.kill_run_sessions(id);
         self.shell_attaches.lock().unwrap().remove(id);
         let _ = self.term.read().unwrap().kill(&shell_session_name(id));
         self.kill_extra_sessions(id);
@@ -2822,128 +2878,202 @@ impl AppState {
         }
         self.attaches.lock().unwrap().remove(id);
         let _ = self.term.read().unwrap().kill(&session_name(id));
-        self.run_attaches.lock().unwrap().remove(id);
-        let _ = self.term.read().unwrap().kill(&run_session_name(id));
+        self.kill_run_sessions(id);
         Ok(())
     }
 
-    /// The run script as the Run tab sees it, including detected candidates so
-    /// an unconfigured project can be set up from the panel itself.
-    pub fn run_script_config(&self, id: &str) -> Result<RunScriptConfigDto> {
-        let run = self.run_record(id)?;
+    /// Resolve a run-script target to the workspace its scripts run in. A
+    /// `project:<id>` token means the project's own checkout — the same token
+    /// [`git_root`] takes, so "run it at project level" needs no separate set
+    /// of commands. Anything else is a run id.
+    fn run_target(&self, target: &str) -> Result<RunTarget> {
+        if let Some(pid) = target.strip_prefix("project:") {
+            let repo = self.project_repo(pid)?;
+            let config = agency_core::config::load(&repo);
+            return Ok(RunTarget {
+                project_id: pid.to_string(),
+                name: pid.to_string(),
+                cwd: repo.clone(),
+                repo,
+                // The checkout's own block. `allocate_port` skips it, so an
+                // agent's dev server never lands on the same port as yours.
+                port: Some(config.ports.base),
+            });
+        }
+        let run = self.run_record(target)?;
         let repo = self.project_repo(&run.project_id)?;
-        let config = agency_core::config::load(&repo);
-        Ok(RunScriptConfigDto {
-            command: config.scripts.run.clone(),
-            nonconcurrent: config.scripts.run_mode
-                == agency_core::config::RunMode::Nonconcurrent,
-            shared: agency_core::config::run_script_is_shared(&repo),
-            // Detection reads the project checkout, not this run's worktree:
-            // the config it prefills is project-wide, and a brand-new worktree
-            // may not have installed anything yet.
-            suggestions: agency_core::runsetup::suggest_run_commands(&repo),
-            workspace: workspace_dir(&repo, &run).display().to_string(),
+        let cwd = workspace_dir(&repo, &run);
+        Ok(RunTarget {
+            project_id: run.project_id.clone(),
+            name: run.id.clone(),
+            repo,
+            cwd,
             port: run.port_base,
         })
     }
 
-    /// Persist the project's run script from the Run tab. An empty command
-    /// clears the local override rather than storing a blank line.
-    pub fn save_run_script(
+    /// Every live run-script session name for `target`, newest daemon view.
+    fn live_run_sessions(&self, target: &str) -> Vec<String> {
+        let live: Vec<String> = self
+            .term
+            .read()
+            .unwrap()
+            .list()
+            .map(|v| v.into_iter().map(|(name, _)| name).collect())
+            .unwrap_or_default();
+        run_session_names_for(target, &live)
+    }
+
+    /// Stop every run script running in `target`'s workspace. Used wherever a
+    /// workspace goes away (archive, discard, project close) and by the
+    /// "one app at a time" mode.
+    fn kill_run_sessions(&self, target: &str) {
+        for name in self.live_run_sessions(target) {
+            self.run_attaches.lock().unwrap().remove(&name);
+            let _ = self.term.read().unwrap().kill(&name);
+        }
+    }
+
+    /// The project's run scripts as the Run tab sees them, including detected
+    /// candidates so an unconfigured project can be set up from the panel.
+    pub fn run_script_config(&self, target: &str) -> Result<RunScriptConfigDto> {
+        let t = self.run_target(target)?;
+        let config = agency_core::config::load(&t.repo);
+        Ok(RunScriptConfigDto {
+            scripts: config.scripts.run_list(),
+            shared: agency_core::config::run_scripts_are_shared(&t.repo),
+            // Detection reads the project checkout, not an agent's worktree:
+            // the config it prefills is project-wide, and a brand-new worktree
+            // may not have installed anything yet.
+            suggestions: agency_core::runsetup::suggest_run_commands(&t.repo),
+            workspace: t.cwd.display().to_string(),
+            port: t.port,
+        })
+    }
+
+    /// Persist the project's run list from the Run tab. The list is
+    /// project-wide however it was reached: editing it from an agent's Run tab
+    /// and from the project's own are the same edit.
+    pub fn save_run_scripts(
         &self,
-        id: &str,
-        command: Option<String>,
-        nonconcurrent: bool,
+        target: &str,
+        scripts: Vec<agency_core::config::RunScript>,
     ) -> Result<()> {
-        let run = self.run_record(id)?;
-        let repo = self.project_repo(&run.project_id)?;
-        let mode = if nonconcurrent {
-            agency_core::config::RunMode::Nonconcurrent
-        } else {
-            agency_core::config::RunMode::Concurrent
-        };
-        agency_core::config::save_run_script(&repo, command.as_deref(), mode)?;
+        let t = self.run_target(target)?;
+        agency_core::config::save_run_scripts(&t.repo, &scripts)?;
         Ok(())
     }
 
-    pub fn start_run_script(&self, id: &str) -> Result<()> {
-        let run = self.run_record(id)?;
-        let repo = self.project_repo(&run.project_id)?;
-        let config = agency_core::config::load(&repo);
-        let run_cmd = config
+    pub fn start_run_script(&self, target: &str, script_name: &str) -> Result<()> {
+        let t = self.run_target(target)?;
+        let config = agency_core::config::load(&t.repo);
+        let script = config
             .scripts
-            .run
-            .clone()
-            .ok_or_else(|| anyhow!("no run script configured for this project yet"))?;
-        let worktree = workspace_dir(&repo, &run);
+            .run_list()
+            .into_iter()
+            .find(|s| s.name == script_name)
+            .ok_or_else(|| anyhow!("this project has no run script called \"{script_name}\""))?;
 
-        // nonconcurrent: stop every other run-script session first.
-        if config.scripts.run_mode == agency_core::config::RunMode::Nonconcurrent {
-            let others = self.registry.lock().unwrap().list_runs(&run.project_id)?;
-            for other in others {
-                if other.id != run.id {
-                    self.run_attaches.lock().unwrap().remove(&other.id);
-                    let _ = self.term.read().unwrap().kill(&run_session_name(&other.id));
-                }
+        // "One app at a time": every other run script in the project stops,
+        // including the other scripts in this very workspace. The command binds
+        // a fixed port, so a second copy of anything would just fail to bind.
+        if script.nonconcurrent {
+            let mut targets: Vec<String> = self
+                .registry
+                .lock()
+                .unwrap()
+                .list_runs(&t.project_id)?
+                .into_iter()
+                .map(|r| r.id)
+                .collect();
+            targets.push(format!("project:{}", t.project_id));
+            for other in targets {
+                self.kill_run_sessions(&other);
             }
         }
 
         let mut env = self.provider_env()?;
-        env.extend(agency_core::scripts::script_env(&worktree, &repo, &run.id, run.port_base));
+        env.extend(agency_core::scripts::script_env(&t.cwd, &t.repo, &t.name, t.port));
 
-        // Restart cleanly if a previous run session is still around.
-        let _ = self.term.read().unwrap().kill(&run_session_name(id));
+        // Restart cleanly if this script's previous session is still around.
+        let session = run_session_name(target, &script.name);
+        self.run_attaches.lock().unwrap().remove(&session);
+        let _ = self.term.read().unwrap().kill(&session);
         self.term.read().unwrap().start_session(
-            &run_session_name(id),
-            &worktree,
+            &session,
+            &t.cwd,
             "sh",
-            &["-lc".to_string(), run_cmd],
+            &["-lc".to_string(), script.command],
             &env,
             220,
             50,
         )
     }
 
-    pub fn stop_run_script(&self, id: &str) -> Result<()> {
-        self.run_attaches.lock().unwrap().remove(id);
-        let _ = self.term.read().unwrap().kill(&run_session_name(id));
+    pub fn stop_run_script(&self, target: &str, script_name: &str) -> Result<()> {
+        let session = run_session_name(target, script_name);
+        self.run_attaches.lock().unwrap().remove(&session);
+        let _ = self.term.read().unwrap().kill(&session);
         Ok(())
     }
 
-    pub fn run_script_status(&self, id: &str) -> Result<SessionStatus> {
+    /// One status per configured script, so the Run tab polls once however many
+    /// scripts a project has.
+    pub fn run_scripts_status(&self, target: &str) -> Result<Vec<RunScriptStatusDto>> {
+        let t = self.run_target(target)?;
+        let config = agency_core::config::load(&t.repo);
+        let term = self.term.read().unwrap();
+        Ok(config
+            .scripts
+            .run_list()
+            .into_iter()
+            .map(|s| {
+                let status = term
+                    .status(&run_session_name(target, &s.name))
+                    .unwrap_or(SessionStatus::Gone);
+                RunScriptStatusDto { name: s.name, status }
+            })
+            .collect())
+    }
+
+    pub fn run_script_preview(&self, target: &str, script: &str, lines: usize) -> Result<String> {
         Ok(self
             .term
             .read()
             .unwrap()
-            .status(&run_session_name(id))
-            .unwrap_or(SessionStatus::Gone))
+            .capture(&run_session_name(target, script), lines)
+            .unwrap_or_default())
     }
 
-    pub fn run_script_preview(&self, id: &str, lines: usize) -> Result<String> {
-        Ok(self.term.read().unwrap().capture(&run_session_name(id), lines).unwrap_or_default())
-    }
-
-    pub fn attach_run_script<F>(&self, id: &str, cols: u16, rows: u16, on_output: F) -> Result<()>
+    pub fn attach_run_script<F>(
+        &self,
+        target: &str,
+        script: &str,
+        cols: u16,
+        rows: u16,
+        on_output: F,
+    ) -> Result<()>
     where
         F: Fn(Vec<u8>) + Send + Sync + 'static,
     {
-        let sub = self.term.read().unwrap().subscribe(&run_session_name(id), cols, rows, on_output)?;
-        self.run_attaches.lock().unwrap().insert(id.to_string(), sub);
+        let session = run_session_name(target, script);
+        let sub = self.term.read().unwrap().subscribe(&session, cols, rows, on_output)?;
+        self.run_attaches.lock().unwrap().insert(session, sub);
         Ok(())
     }
 
-    pub fn detach_run_script(&self, id: &str) {
+    pub fn detach_run_script(&self, target: &str, script: &str) {
         // Dropping the Subscription sends Unsubscribe; the run-script session keeps
         // running server-side. See detach_run.
-        self.run_attaches.lock().unwrap().remove(id);
+        self.run_attaches.lock().unwrap().remove(&run_session_name(target, script));
     }
 
-    pub fn run_script_input(&self, id: &str, data: &[u8]) -> Result<()> {
-        self.term.read().unwrap().input(&run_session_name(id), data)
+    pub fn run_script_input(&self, target: &str, script: &str, data: &[u8]) -> Result<()> {
+        self.term.read().unwrap().input(&run_session_name(target, script), data)
     }
 
-    pub fn resize_run_script(&self, id: &str, cols: u16, rows: u16) -> Result<()> {
-        self.term.read().unwrap().resize(&run_session_name(id), cols, rows)
+    pub fn resize_run_script(&self, target: &str, script: &str, cols: u16, rows: u16) -> Result<()> {
+        self.term.read().unwrap().resize(&run_session_name(target, script), cols, rows)
     }
 
     /// Start (or reuse) the run's companion shell: an interactive login shell
@@ -4098,13 +4228,35 @@ impl AppState {
                 Err(e) => log::error!("termd unavailable (agents may have stopped): {e}"),
             }
         }
+        // One daemon round-trip for every run script in the app: each workspace
+        // can have several, and asking per script per run would multiply this
+        // tick by the size of the board.
+        let live = self.term.read().unwrap().list().unwrap_or_default();
+        let run_scripts_of = |target: &str| run_script_statuses_from(target, &live);
+
         let projects = self.registry.lock().unwrap().list_projects()?;
         let mut out = Vec::new();
         for proj in projects {
+            // The project's own checkout runs scripts too (its Run tab), and a
+            // release build failing while you're off in another app is exactly
+            // the thing worth a toast. It has no agent, so only the run-script
+            // edge can fire for it.
+            let project_target = format!("project:{}", proj.id);
+            out.push(notifier::RunSnapshot {
+                run_scripts: run_scripts_of(&project_target),
+                id: project_target,
+                project_id: proj.id.clone(),
+                label: proj.name.clone(),
+                is_terminal: false,
+                is_loop: false,
+                agent: SessionStatus::Gone,
+                pane_hash: 0,
+                user_input_pending: false,
+            });
             let runs = self.registry.lock().unwrap().list_runs(&proj.id)?;
             for run in runs {
                 let agent = self.term.read().unwrap().status(&session_name(&run.id)).unwrap_or(SessionStatus::Gone);
-                let run_script = self.term.read().unwrap().status(&run_session_name(&run.id)).unwrap_or(SessionStatus::Gone);
+                let run_scripts = run_scripts_of(&run.id);
                 let pane = self.term.read().unwrap().capture(&session_name(&run.id), 50).unwrap_or_default();
                 let mut hasher = std::collections::hash_map::DefaultHasher::new();
                 std::hash::Hash::hash(&pane, &mut hasher);
@@ -4130,7 +4282,7 @@ impl AppState {
                     is_terminal: run.kind == "terminal",
                     is_loop,
                     agent,
-                    run_script,
+                    run_scripts,
                     pane_hash,
                     user_input_pending,
                 });
@@ -4396,8 +4548,64 @@ mod tests {
     }
 
     #[test]
-    fn run_session_name_is_namespaced() {
-        assert_eq!(super::run_session_name("fix-login-a3k2"), "agency-run-fix-login-a3k2");
+    fn run_session_name_is_namespaced_per_workspace_and_script() {
+        assert_eq!(
+            super::run_session_name("fix-login-a3k2", "dev"),
+            "agency-run-fix-login-a3k2#dev"
+        );
+        assert_eq!(super::run_session_name("project:p1", "build"), "agency-run-project:p1#build");
+    }
+
+    #[test]
+    fn run_sessions_for_a_workspace_exclude_its_neighbours() {
+        let live: Vec<String> = [
+            // This workspace: the current form, plus the pre-AGE-34 unnamed one.
+            "agency-run-fix-a1#dev",
+            "agency-run-fix-a1#build mac",
+            "agency-run-fix-a1",
+            // A different run whose id merely starts the same way.
+            "agency-run-fix-a12#dev",
+            // The project's own checkout, and unrelated session kinds.
+            "agency-run-project:p1#dev",
+            "agency-fix-a1",
+            "agency-shell-fix-a1",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+
+        let mut mine = super::run_session_names_for("fix-a1", &live);
+        mine.sort();
+        assert_eq!(mine, vec![
+            "agency-run-fix-a1".to_string(),
+            "agency-run-fix-a1#build mac".to_string(),
+            "agency-run-fix-a1#dev".to_string(),
+        ]);
+        assert_eq!(
+            super::run_session_names_for("project:p1", &live),
+            vec!["agency-run-project:p1#dev".to_string()]
+        );
+    }
+
+    #[test]
+    fn run_script_statuses_key_by_script_name() {
+        use agency_core::term::SessionStatus;
+        let live = vec![
+            ("agency-run-fix-a1#dev".to_string(), SessionStatus::Running),
+            ("agency-run-fix-a1#build".to_string(), SessionStatus::Exited { code: 2 }),
+            // Pre-AGE-34, before scripts had names.
+            ("agency-run-fix-a1".to_string(), SessionStatus::Running),
+            ("agency-run-other#dev".to_string(), SessionStatus::Running),
+            ("agency-fix-a1".to_string(), SessionStatus::Running),
+        ];
+        let map = super::run_script_statuses_from("fix-a1", &live);
+        assert_eq!(map.len(), 3);
+        assert!(matches!(map["dev"], SessionStatus::Running));
+        assert!(matches!(map["build"], SessionStatus::Exited { code: 2 }));
+        assert!(matches!(map[agency_core::config::DEFAULT_RUN_NAME], SessionStatus::Running));
+        // A workspace with nothing started reports nothing, so the crash
+        // detector has no edge to invent.
+        assert!(super::run_script_statuses_from("never-run", &live).is_empty());
     }
 
     use super::{compose_feedback, compose_merge_conflict};

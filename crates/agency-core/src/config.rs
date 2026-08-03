@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -65,10 +65,89 @@ pub struct FilesConfig {
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct ScriptsConfig {
     pub setup: Option<String>,
+    /// The single run command, as projects configured before named scripts
+    /// spell it. Superseded by `runs` whenever that list has entries; still
+    /// read (and still the shorthand a hand-written `agency.toml` can use).
     pub run: Option<String>,
     pub archive: Option<String>,
     #[serde(default)]
     pub run_mode: RunMode,
+    /// Named run scripts, `[[scripts.runs]]`. A project usually has more than
+    /// one thing worth starting — a dev server, a release build, a test watch
+    /// — so the Run tab lists them rather than holding one command.
+    #[serde(default)]
+    pub runs: Vec<RunScript>,
+}
+
+/// One entry in a project's run list: a named command the Run tab can start in
+/// an agent's workspace or in the project's own checkout.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct RunScript {
+    pub name: String,
+    pub command: String,
+    /// The command serves something over HTTP on `$AGENCY_PORT`. Only these
+    /// get a URL, the preview pane and "Open in browser": a release build or a
+    /// test run has nothing to point a browser at, and opening one for it was
+    /// the whole complaint behind AGE-34.
+    #[serde(default)]
+    pub web: bool,
+    /// Starting this one stops every other run script in the project. For
+    /// commands that bind a fixed port instead of `$AGENCY_PORT`.
+    #[serde(default)]
+    pub nonconcurrent: bool,
+}
+
+/// The name given to a legacy single `run =` command when it is lifted into
+/// the list.
+pub const DEFAULT_RUN_NAME: &str = "Run";
+
+/// Whether a command looks like it serves a web app — it threads the port
+/// Agency hands it. Only ever a prefill for the "opens in a browser" toggle;
+/// what gets saved is the answer the user actually left on screen.
+pub fn command_looks_web(command: &str) -> bool {
+    command.contains("AGENCY_PORT")
+}
+
+impl ScriptsConfig {
+    /// The project's run scripts. The `[[scripts.runs]]` list when it has
+    /// entries, else the legacy single `run =` command lifted into a one-entry
+    /// list so a project configured before named scripts keeps working with no
+    /// edit at all.
+    pub fn run_list(&self) -> Vec<RunScript> {
+        if !self.runs.is_empty() {
+            return dedupe_by_name(self.runs.clone());
+        }
+        self.run
+            .as_deref()
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+            .map(|command| {
+                vec![RunScript {
+                    name: DEFAULT_RUN_NAME.to_string(),
+                    command: command.to_string(),
+                    web: command_looks_web(command),
+                    nonconcurrent: self.run_mode == RunMode::Nonconcurrent,
+                }]
+            })
+            .unwrap_or_default()
+    }
+}
+
+/// Drop blank entries and later duplicates of a name. The name keys the script's
+/// daemon session, so two entries sharing one would fight over the same running
+/// process; first-wins keeps that impossible however the TOML was written.
+fn dedupe_by_name(scripts: Vec<RunScript>) -> Vec<RunScript> {
+    let mut seen = std::collections::HashSet::new();
+    scripts
+        .into_iter()
+        .map(|mut s| {
+            s.name = s.name.trim().to_string();
+            s.command = s.command.trim().to_string();
+            s
+        })
+        .filter(|s| !s.name.is_empty() && !s.command.is_empty())
+        .filter(|s| seen.insert(s.name.clone()))
+        .collect()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -273,29 +352,37 @@ pub fn save_files(repo_path: &Path, f: &FilesConfig) -> std::io::Result<()> {
     std::fs::write(&path, text)
 }
 
-/// True when the effective `[scripts] run` comes from the tracked
-/// `agency.toml` rather than the per-machine `agency.local.toml` — i.e. the
-/// whole team sees this command. False when it is local-only or unset. The UI
-/// uses it to say where the command being edited actually lives.
-pub fn run_script_is_shared(repo_path: &Path) -> bool {
-    let run_of = |name: &str| {
+/// True when the effective run list comes from the tracked `agency.toml`
+/// rather than the per-machine `agency.local.toml` — i.e. the whole team sees
+/// these commands. False when they are local-only or unset. The UI uses it to
+/// say where the scripts being edited actually live.
+pub fn run_scripts_are_shared(repo_path: &Path) -> bool {
+    let defines_runs = |name: &str| {
         read_value(&repo_path.join(".agency").join(name))
-            .and_then(|v| v.get("scripts")?.get("run")?.as_str().map(str::to_string))
+            .and_then(|v| v.get("scripts").cloned())
+            .map(|s| {
+                let listed = s
+                    .get("runs")
+                    .and_then(|r| r.as_array())
+                    .is_some_and(|a| !a.is_empty());
+                listed || s.get("run").and_then(|r| r.as_str()).is_some()
+            })
+            .unwrap_or(false)
     };
-    run_of("agency.local.toml").is_none() && run_of("agency.toml").is_some()
+    !defines_runs("agency.local.toml") && defines_runs("agency.toml")
 }
 
-/// Persist the run script into the `[scripts]` section of
+/// Persist the run list into the `[scripts]` section of
 /// `.agency/agency.local.toml` — the gitignored, per-machine override file, so
 /// configuring the Run tab never dirties the tracked `agency.toml` (and never
-/// rewrites its comments). `command = None` (or blank) removes the `run` key
-/// instead of writing an empty string, which lets a value from the tracked file
-/// apply again. Sibling `[scripts]` keys (`setup`, `archive`) are preserved.
-pub fn save_run_script(
-    repo_path: &Path,
-    command: Option<&str>,
-    run_mode: RunMode,
-) -> std::io::Result<()> {
+/// rewrites its comments). An empty list removes the keys entirely instead of
+/// writing an empty array, which lets the tracked file's scripts apply again.
+/// Sibling `[scripts]` keys (`setup`, `archive`) are preserved.
+///
+/// The legacy single-command keys are dropped from the local file whenever a
+/// list is written: leaving `run =` behind would resurrect the old command the
+/// moment the list was emptied.
+pub fn save_run_scripts(repo_path: &Path, scripts: &[RunScript]) -> std::io::Result<()> {
     let dir = repo_path.join(".agency");
     let path = dir.join("agency.local.toml");
     let mut doc = std::fs::read_to_string(&path)
@@ -304,20 +391,35 @@ pub fn save_run_script(
         .and_then(|v| v.as_table().cloned())
         .unwrap_or_default();
 
-    let mut scripts = doc
+    let mut table = doc
         .get("scripts")
         .and_then(|v| v.as_table().cloned())
         .unwrap_or_default();
-    match command.map(str::trim).filter(|s| !s.is_empty()) {
-        Some(cmd) => {
-            scripts.insert("run".into(), toml::Value::String(cmd.to_string()));
-        }
-        None => {
-            scripts.remove("run");
-        }
+    table.remove("run");
+    table.remove("run_mode");
+
+    let entries: Vec<toml::Value> = dedupe_by_name(scripts.to_vec())
+        .into_iter()
+        .map(|s| {
+            let mut t = toml::value::Table::new();
+            t.insert("name".into(), toml::Value::String(s.name));
+            t.insert("command".into(), toml::Value::String(s.command));
+            t.insert("web".into(), toml::Value::Boolean(s.web));
+            t.insert("nonconcurrent".into(), toml::Value::Boolean(s.nonconcurrent));
+            toml::Value::Table(t)
+        })
+        .collect();
+    if entries.is_empty() {
+        table.remove("runs");
+    } else {
+        table.insert("runs".into(), toml::Value::Array(entries));
     }
-    scripts.insert("run_mode".into(), toml::Value::String(run_mode.as_str().to_string()));
-    doc.insert("scripts".into(), toml::Value::Table(scripts));
+
+    if table.is_empty() {
+        doc.remove("scripts");
+    } else {
+        doc.insert("scripts".into(), toml::Value::Table(table));
+    }
 
     let text = toml::to_string_pretty(&toml::Value::Table(doc))
         .map_err(std::io::Error::other)?;
@@ -525,28 +627,134 @@ mod tests {
         assert!(load(dir.path()).files.copy.is_empty());
     }
 
-    #[test]
-    fn save_run_script_writes_local_and_keeps_sibling_scripts() {
-        let dir = tempdir().unwrap();
-        write(dir.path(), "agency.local.toml", "[scripts]\nsetup = \"pnpm install\"\n");
-        save_run_script(dir.path(), Some("  pnpm dev  "), RunMode::Nonconcurrent).unwrap();
-        let c = load(dir.path());
-        assert_eq!(c.scripts.run.as_deref(), Some("pnpm dev"));
-        assert_eq!(c.scripts.setup.as_deref(), Some("pnpm install"));
-        assert_eq!(c.scripts.run_mode, RunMode::Nonconcurrent);
+    fn script(name: &str, command: &str) -> RunScript {
+        RunScript { name: name.into(), command: command.into(), web: false, nonconcurrent: false }
     }
 
     #[test]
-    fn clearing_the_run_script_unshadows_the_tracked_one() {
+    fn save_run_scripts_writes_local_and_keeps_sibling_scripts() {
         let dir = tempdir().unwrap();
-        write(dir.path(), "agency.toml", "[scripts]\nrun = \"base-run\"\n");
-        save_run_script(dir.path(), Some("local-run"), RunMode::Concurrent).unwrap();
-        assert_eq!(load(dir.path()).scripts.run.as_deref(), Some("local-run"));
+        write(dir.path(), "agency.local.toml", "[scripts]\nsetup = \"pnpm install\"\n");
+        save_run_scripts(
+            dir.path(),
+            &[
+                RunScript {
+                    name: "  dev  ".into(),
+                    command: "  pnpm dev  ".into(),
+                    web: true,
+                    nonconcurrent: true,
+                },
+                script("build mac", "./scripts/release.sh"),
+            ],
+        )
+        .unwrap();
+        let c = load(dir.path());
+        let list = c.scripts.run_list();
+        assert_eq!(list.len(), 2);
+        // Names and commands are trimmed on the way in.
+        assert_eq!(list[0], RunScript {
+            name: "dev".into(),
+            command: "pnpm dev".into(),
+            web: true,
+            nonconcurrent: true,
+        });
+        assert_eq!(list[1].name, "build mac");
+        assert!(!list[1].web, "a build script must not claim a browser preview");
+        assert_eq!(c.scripts.setup.as_deref(), Some("pnpm install"));
+    }
 
-        // A blank command removes the local key rather than persisting "", so
-        // the tracked value applies again.
-        save_run_script(dir.path(), Some("   "), RunMode::Concurrent).unwrap();
-        assert_eq!(load(dir.path()).scripts.run.as_deref(), Some("base-run"));
+    #[test]
+    fn a_legacy_single_run_command_becomes_a_one_entry_list() {
+        let dir = tempdir().unwrap();
+        write(
+            dir.path(),
+            "agency.toml",
+            "[scripts]\nrun = \"pnpm dev --port $AGENCY_PORT\"\nrun_mode = \"nonconcurrent\"\n",
+        );
+        let list = load(dir.path()).scripts.run_list();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].name, DEFAULT_RUN_NAME);
+        assert_eq!(list[0].command, "pnpm dev --port $AGENCY_PORT");
+        // It threads AGENCY_PORT, so it is a server worth previewing.
+        assert!(list[0].web);
+        assert!(list[0].nonconcurrent);
+    }
+
+    #[test]
+    fn the_list_supersedes_the_legacy_command() {
+        let dir = tempdir().unwrap();
+        write(
+            dir.path(),
+            "agency.toml",
+            r#"
+                [scripts]
+                run = "old-single"
+
+                [[scripts.runs]]
+                name = "dev"
+                command = "pnpm dev"
+            "#,
+        );
+        let list = load(dir.path()).scripts.run_list();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].command, "pnpm dev");
+    }
+
+    #[test]
+    fn saving_a_list_drops_the_local_legacy_command() {
+        let dir = tempdir().unwrap();
+        write(dir.path(), "agency.local.toml", "[scripts]\nrun = \"old-single\"\n");
+        save_run_scripts(dir.path(), &[script("dev", "pnpm dev")]).unwrap();
+        let c = load(dir.path());
+        assert_eq!(c.scripts.run, None, "the superseded key must not linger");
+        assert_eq!(c.scripts.run_list().len(), 1);
+    }
+
+    #[test]
+    fn clearing_the_run_scripts_unshadows_the_tracked_ones() {
+        let dir = tempdir().unwrap();
+        write(
+            dir.path(),
+            "agency.toml",
+            "[[scripts.runs]]\nname = \"dev\"\ncommand = \"base-run\"\n",
+        );
+        save_run_scripts(dir.path(), &[script("dev", "local-run")]).unwrap();
+        assert_eq!(load(dir.path()).scripts.run_list()[0].command, "local-run");
+
+        // An empty list removes the local key rather than persisting `[]`, so
+        // the tracked scripts apply again.
+        save_run_scripts(dir.path(), &[]).unwrap();
+        assert_eq!(load(dir.path()).scripts.run_list()[0].command, "base-run");
+    }
+
+    #[test]
+    fn duplicate_and_blank_entries_are_dropped() {
+        let dir = tempdir().unwrap();
+        save_run_scripts(
+            dir.path(),
+            &[
+                script("dev", "first"),
+                script("dev", "second"),
+                script("", "nameless"),
+                script("empty", "   "),
+            ],
+        )
+        .unwrap();
+        let list = load(dir.path()).scripts.run_list();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].command, "first", "first entry wins its name");
+    }
+
+    #[test]
+    fn shared_tracks_which_file_defines_the_scripts() {
+        let dir = tempdir().unwrap();
+        assert!(!run_scripts_are_shared(dir.path()), "nothing configured is not shared");
+
+        write(dir.path(), "agency.toml", "[[scripts.runs]]\nname = \"dev\"\ncommand = \"x\"\n");
+        assert!(run_scripts_are_shared(dir.path()));
+
+        save_run_scripts(dir.path(), &[script("dev", "mine")]).unwrap();
+        assert!(!run_scripts_are_shared(dir.path()), "a local override is not shared");
     }
 
     #[test]

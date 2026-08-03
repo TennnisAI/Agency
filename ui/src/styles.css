@@ -1308,13 +1308,33 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
 
 /* ── RunPanel (Task 6) ────────────────────────── */
 
-.run-panel { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+/* Fills whichever column hosts it: the focus pane's tab body, or the content
+   area directly when it is the project's own Run tab. */
+.run-panel { flex: 1; display: flex; flex-direction: column; height: 100%; min-height: 0; }
+/* The project's run scripts, one tab each — the row above the controls, so
+   switching script and driving the selected one never share a click target. */
+.run-scripts { display: flex; align-items: center; gap: 2px; padding: 5px 8px; border-bottom: 1px solid var(--line); overflow-x: auto; }
+.run-script-tab {
+  display: flex; align-items: center; gap: 6px; flex: 0 0 auto;
+  background: transparent; border: 1px solid transparent; border-radius: 7px;
+  color: var(--sub0); font-size: 12px; padding: 4px 10px; cursor: pointer; white-space: nowrap;
+}
+.run-script-tab:hover { background: var(--s0); }
+.run-script-tab.on { background: var(--s0); border-color: var(--s1); color: var(--text); }
+.run-script-add { flex: 0 0 auto; background: transparent; border: 0; color: var(--o1); font-size: 14px; line-height: 1; padding: 4px 9px; border-radius: 7px; cursor: pointer; }
+.run-script-add:hover { background: var(--s0); color: var(--text); }
+.run-where { flex: 0 0 auto; font-size: 11px; color: var(--o1); padding-right: 4px; }
 .run-controls { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-bottom: 1px solid var(--border, #2a2d36); }
 .run-url { color: var(--muted, #9aa); }
-.run-cmd { color: var(--sub0); font-size: 11px; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.run-cmd { flex: 1; min-width: 0; color: var(--sub0); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.run-exit { font-size: 11.5px; color: var(--o1); }
+.run-exit.bad { color: var(--red); }
+/* Nothing running yet: the pane says so rather than sitting empty. */
+.run-idle { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--o1); font-size: 12.5px; gap: 4px; }
+.run-idle code { font-family: var(--mono); color: var(--sub1); }
 
-/* Run-script setup card: shown until a run command is configured, and behind
-   "Edit" afterwards. */
+/* Run-script editor: shown until the project has a script, and behind "Edit"
+   or "+" afterwards. */
 .run-setup { flex: 1; min-height: 0; overflow: auto; padding: 22px; display: flex; justify-content: center; }
 .run-setup-card { width: 100%; max-width: 620px; align-self: flex-start; background: var(--mantle); border: 1px solid var(--s0); border-radius: 12px; padding: 18px 20px 16px; display: flex; flex-direction: column; gap: 14px; }
 .run-setup-title { font-size: 14px; font-weight: 600; color: var(--text); }
@@ -1330,6 +1350,9 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
 .run-setup-chip-detail { font-size: 10.5px; color: var(--o1); }
 .run-setup-input { background: var(--base); border: 1px solid var(--s1); color: var(--text); border-radius: 7px; padding: 9px 11px; width: 100%; font-family: var(--mono); font-size: 12.5px; }
 .run-setup-input:focus { outline: none; border-color: var(--blue); }
+/* A script name is short; a full-width field invites a sentence. */
+.run-setup-name { max-width: 260px; }
+.run-setup-clash { color: var(--red); }
 .run-setup-hint { font-size: 11.5px; color: var(--o1); line-height: 1.55; }
 /* The "for this agent that is …" line belongs to the lead paragraph above it,
    so it sits closer than the card's regular gap. */
@@ -1340,11 +1363,13 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
 .run-setup-actions { display: flex; align-items: center; gap: 8px; }
 .run-setup-actions .settings-save { align-self: auto; }
 .run-setup-actions button:disabled { opacity: .5; cursor: default; }
+.run-setup-actions .tile-act.danger:hover { color: var(--red); }
 .run-setup-foot { border-top: 1px solid var(--line); padding-top: 12px; font-size: 11.5px; color: var(--o1); line-height: 1.6; }
 .run-error { color: var(--red); font-size: 12px; }
 .run-body { flex: 1; display: flex; min-height: 0; }
 .run-term { flex: 1; min-width: 0; display: flex; }
-.run-preview { flex: 1; min-width: 0; border: 0; border-left: 1px solid var(--border, #2a2d36); background: #fff; }
+/* Width comes from the pane resizer beside it, so no flex basis here. */
+.run-preview { min-width: 0; border: 0; background: #fff; }
 .archived { margin-top: 8px; border-top: 1px solid var(--border, #2a2d36); padding-top: 6px; }
 .archived-head { display: flex; align-items: center; gap: 4px; }
 .archived-toggle { flex: 1; min-width: 0; text-align: left; background: transparent; color: var(--muted, #9aa); padding: 4px 8px; border: 0; }

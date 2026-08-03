@@ -966,3 +966,136 @@ fn discard_archived_runs_clears_the_archive_and_spares_live_runs() {
     assert!(repo.join(".agency").join("worktrees").join(&live.id).exists());
     session_gone_or_cleanup(&state, &live.id);
 }
+
+/// Wait for `f` to hold, polling for up to ~4s. Sessions start and exit
+/// asynchronously in the daemon, so nothing about a run script is immediate.
+fn eventually(mut f: impl FnMut() -> bool) -> bool {
+    for _ in 0..200 {
+        if f() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    false
+}
+
+#[test]
+fn run_scripts_are_per_script_and_run_at_project_level() {
+    use agency_core::config::RunScript;
+
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let state = common::state(&dir);
+    let project = state.add_project("demo", &repo).unwrap();
+    // The project's own checkout, no agent involved — AGE-34's "what if I just
+    // want to run it from the project level?".
+    let target = format!("project:{}", project.id);
+
+    // Nothing configured yet: the tab has an empty list to set up from.
+    let config = state.run_script_config(&target).unwrap();
+    assert!(config.scripts.is_empty());
+    assert_eq!(config.workspace, repo.display().to_string());
+
+    let script = |name: &str, command: &str| RunScript {
+        name: name.into(),
+        command: command.into(),
+        web: false,
+        nonconcurrent: false,
+    };
+    state
+        .save_run_scripts(
+            &target,
+            vec![
+                script("serve", "sleep 30"),
+                // Writes a file and exits 0 — a build, the case that must not
+                // get a browser preview.
+                script("build", "echo built > built.txt"),
+            ],
+        )
+        .unwrap();
+
+    let config = state.run_script_config(&target).unwrap();
+    assert_eq!(config.scripts.len(), 2);
+    assert!(!config.shared, "saved locally, so not the team's copy");
+
+    let status_of = |name: &str| {
+        state
+            .run_scripts_status(&target)
+            .unwrap()
+            .into_iter()
+            .find(|s| s.name == name)
+            .map(|s| s.status)
+    };
+
+    // Both run at once: the build finishing must not disturb the server.
+    state.start_run_script(&target, "serve").unwrap();
+    state.start_run_script(&target, "build").unwrap();
+    assert!(
+        eventually(|| repo.join("built.txt").exists()),
+        "the build ran in the project checkout"
+    );
+    assert!(eventually(|| matches!(
+        status_of("build"),
+        Some(agency_core::term::SessionStatus::Exited { .. })
+    )));
+    assert!(
+        matches!(status_of("serve"), Some(agency_core::term::SessionStatus::Running)),
+        "the server keeps running while the build finishes"
+    );
+
+    // Logs are per script, not shared.
+    state.stop_run_script(&target, "build").unwrap();
+    assert!(matches!(status_of("build"), Some(agency_core::term::SessionStatus::Gone)));
+    assert!(matches!(status_of("serve"), Some(agency_core::term::SessionStatus::Running)));
+
+    // An unknown name is refused rather than silently starting nothing.
+    assert!(state.start_run_script(&target, "nope").is_err());
+
+    state.stop_run_script(&target, "serve").unwrap();
+}
+
+#[test]
+fn one_app_at_a_time_stops_every_other_script_in_the_project() {
+    use agency_core::config::RunScript;
+
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let state = common::state(&dir);
+    let project = state.add_project("demo", &repo).unwrap();
+    let target = format!("project:{}", project.id);
+
+    state
+        .save_run_scripts(
+            &target,
+            vec![
+                RunScript { name: "a".into(), command: "sleep 30".into(), web: false, nonconcurrent: false },
+                RunScript { name: "fixed".into(), command: "sleep 30".into(), web: false, nonconcurrent: true },
+            ],
+        )
+        .unwrap();
+
+    let running = |name: &str| {
+        matches!(
+            state
+                .run_scripts_status(&target)
+                .unwrap()
+                .into_iter()
+                .find(|s| s.name == name)
+                .map(|s| s.status),
+            Some(agency_core::term::SessionStatus::Running)
+        )
+    };
+
+    state.start_run_script(&target, "a").unwrap();
+    assert!(eventually(|| running("a")));
+    // "fixed" binds a fixed port, so starting it clears the field first.
+    state.start_run_script(&target, "fixed").unwrap();
+    assert!(eventually(|| running("fixed")));
+    assert!(!running("a"), "the concurrent script was stopped for the exclusive one");
+
+    state.stop_run_script(&target, "fixed").unwrap();
+}

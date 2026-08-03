@@ -10,7 +10,7 @@ use tauri::ipc::Channel;
 use tauri::State;
 
 use agency_core::title::fallback_title;
-use crate::state::{AppState, DiscardSummary, FilesConfigDto, KnowledgeConfigDto, McpImportResult, MergePreview, ProviderSettings, RunInfo, RunScriptConfigDto, RunSessionInfo};
+use crate::state::{AppState, DiscardSummary, FilesConfigDto, KnowledgeConfigDto, McpImportResult, MergePreview, ProviderSettings, RunInfo, RunScriptConfigDto, RunScriptStatusDto, RunSessionInfo};
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1243,82 +1243,106 @@ pub fn git_revert_lines(
     agency_core::git::revert_lines(&wt, &path, hunk_index, &lines).map_err(|e| e.to_string())
 }
 
+// ── Run scripts ──────────────────────────────────────────────────────────────
+//
+// `target` is the workspace the scripts run in: a run id for an agent's
+// workspace, or `project:<id>` for the project's own checkout. `script` is the
+// entry's name in the project's run list.
+
 #[tauri::command]
 pub async fn run_script_config(
     state: State<'_, AppState>,
-    id: String,
+    target: String,
 ) -> Result<RunScriptConfigDto, String> {
-    state.run_script_config(&id).map_err(|e| e.to_string())
+    state.run_script_config(&target).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub async fn save_run_script(
+pub async fn save_run_scripts(
     state: State<'_, AppState>,
-    id: String,
-    command: Option<String>,
-    nonconcurrent: bool,
+    target: String,
+    scripts: Vec<agency_core::config::RunScript>,
 ) -> Result<(), String> {
-    state.save_run_script(&id, command, nonconcurrent).map_err(|e| e.to_string())
+    state.save_run_scripts(&target, scripts).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn start_run_script(state: State<'_, AppState>, id: String) -> Result<(), String> {
-    state.start_run_script(&id).map_err(|e| e.to_string())
+pub fn start_run_script(
+    state: State<'_, AppState>,
+    target: String,
+    script: String,
+) -> Result<(), String> {
+    state.start_run_script(&target, &script).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn stop_run_script(state: State<'_, AppState>, id: String) -> Result<(), String> {
-    state.stop_run_script(&id).map_err(|e| e.to_string())
+pub fn stop_run_script(
+    state: State<'_, AppState>,
+    target: String,
+    script: String,
+) -> Result<(), String> {
+    state.stop_run_script(&target, &script).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub async fn run_script_status(state: State<'_, AppState>, id: String) -> Result<SessionStatus, String> {
-    state.run_script_status(&id).map_err(|e| e.to_string())
+pub async fn run_scripts_status(
+    state: State<'_, AppState>,
+    target: String,
+) -> Result<Vec<RunScriptStatusDto>, String> {
+    state.run_scripts_status(&target).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn run_script_preview(
     state: State<'_, AppState>,
-    id: String,
+    target: String,
+    script: String,
     lines: usize,
 ) -> Result<String, String> {
-    state.run_script_preview(&id, lines).map_err(|e| e.to_string())
+    state.run_script_preview(&target, &script, lines).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn attach_run_script(
     state: State<'_, AppState>,
-    id: String,
+    target: String,
+    script: String,
     cols: u16,
     rows: u16,
     on_chunk: Channel<TerminalChunk>,
 ) -> Result<(), String> {
     state
         // See attach_run: attach at the frontend's real FitAddon dims.
-        .attach_run_script(&id, cols.max(1), rows.max(1), move |bytes| {
+        .attach_run_script(&target, &script, cols.max(1), rows.max(1), move |bytes| {
             let _ = on_chunk.send(TerminalChunk { b64: STANDARD.encode(&bytes) });
         })
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn detach_run_script(state: State<'_, AppState>, id: String) {
-    state.detach_run_script(&id);
+pub fn detach_run_script(state: State<'_, AppState>, target: String, script: String) {
+    state.detach_run_script(&target, &script);
 }
 
 #[tauri::command]
-pub fn run_script_input(state: State<'_, AppState>, id: String, data: String) -> Result<(), String> {
-    state.run_script_input(&id, data.as_bytes()).map_err(|e| e.to_string())
+pub fn run_script_input(
+    state: State<'_, AppState>,
+    target: String,
+    script: String,
+    data: String,
+) -> Result<(), String> {
+    state.run_script_input(&target, &script, data.as_bytes()).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn resize_run_script(
     state: State<'_, AppState>,
-    id: String,
+    target: String,
+    script: String,
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
-    state.resize_run_script(&id, cols, rows).map_err(|e| e.to_string())
+    state.resize_run_script(&target, &script, cols, rows).map_err(|e| e.to_string())
 }
 
 // ── Companion shell (per-run interactive terminal in the run's worktree) ──────

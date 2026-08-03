@@ -217,10 +217,10 @@ pub fn run() {
             commands::git_unstage_lines,
             commands::git_revert_lines,
             commands::run_script_config,
-            commands::save_run_script,
+            commands::save_run_scripts,
             commands::start_run_script,
             commands::stop_run_script,
-            commands::run_script_status,
+            commands::run_scripts_status,
             commands::run_script_preview,
             commands::attach_run_script,
             commands::detach_run_script,
@@ -395,7 +395,7 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                         }
                         let enabled = match ev {
                             crate::notifier::NotifyKind::Finished => settings.agent_finished,
-                            crate::notifier::NotifyKind::RunCrashed => settings.run_crashed,
+                            crate::notifier::NotifyKind::RunCrashed(_) => settings.run_crashed,
                             crate::notifier::NotifyKind::Idle => settings.agent_idle,
                         };
                         let suppressed = crate::notifier::suppressed(
@@ -407,8 +407,10 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                             // focus edge in set_ui_state deep-links to this run.
                             // Only armed while unfocused — a notification seen
                             // while already in the app shouldn't cause a jump
-                            // on some later blur/refocus.
-                            if !focused {
+                            // on some later blur/refocus. A `project:` snapshot
+                            // (the checkout's own run scripts) names no run, so
+                            // it opens the project without deep-linking.
+                            if !focused && !snap.id.starts_with("project:") {
                                 state.note_notification(&snap.project_id, &snap.id);
                             }
                         }

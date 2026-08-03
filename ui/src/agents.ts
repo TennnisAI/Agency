@@ -63,6 +63,11 @@ export function projectColor(id: string): string {
   return `var(${PROJECT_PALETTE[h % PROJECT_PALETTE.length]})`;
 }
 
+// The palette as bare accent names ("blue", "mauve", …) — the form stored on a
+// project and offered in the color picker. Must stay in step with
+// PROJECT_COLORS in registry.rs, which is what validates a pick.
+export const PROJECT_COLOR_NAMES = PROJECT_PALETTE.map((v) => v.slice(2));
+
 // Preferred accent: the color assigned at add time (least-used palette entry,
 // so new projects never collide while unused colors remain). The id-hash is
 // only the fallback for rows predating the color column.

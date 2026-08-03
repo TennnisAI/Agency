@@ -1029,6 +1029,10 @@ impl AppState {
         self.registry.lock().unwrap().list_projects()
     }
 
+    pub fn set_project_color(&self, id: &str, color: &str) -> Result<()> {
+        self.registry.lock().unwrap().set_project_color(id, color)
+    }
+
     pub fn close_project(&self, id: &str) -> Result<()> {
         // Kill live terminals, then hide the project from the list. Project +
         // run records (and extra-session rows) and the worktrees on disk are

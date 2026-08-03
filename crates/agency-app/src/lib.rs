@@ -99,6 +99,7 @@ pub fn run() {
             commands::move_workspace,
             commands::close_project,
             commands::delete_project,
+            commands::set_project_color,
             commands::create_run,
             commands::create_loop,
             commands::stop_loop,

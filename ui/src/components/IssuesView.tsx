@@ -273,6 +273,11 @@ export default function IssuesView({
     if (e.button !== 0) return;
     // Grabs must start on the row itself — not its buttons and menus.
     if ((e.target as HTMLElement).closest("button, input, textarea")) return;
+    // Retire the focused editor by hand: preventDefault below suppresses the
+    // blur that would otherwise commit an edit in the detail pane, and the
+    // click that follows swaps the pane to another issue.
+    const focused = document.activeElement as HTMLElement | null;
+    if (focused && (focused.tagName === "TEXTAREA" || focused.tagName === "INPUT")) focused.blur();
     // Stop WebKit starting a text selection on the key/title — the selection
     // begins at mousedown, long before the drag threshold; the click that
     // selects the row is unaffected.
@@ -582,6 +587,8 @@ export default function IssuesView({
             expanded={wide}
             onToggleExpand={() => setExpanded(!expanded)}
             onPatch={(p) => patch(selected, p)}
+            onStart={() => { startDefault(selected); }}
+            onSpawnAgent={(agentId, opts) => { onStartIssue(selected, agentId, opts); }}
             onDelete={() => setConfirmDelete(selected)}
             onOpenRun={openRun}
             onOpenMention={openMention}

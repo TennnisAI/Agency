@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Issue, IssuePatch, IssueStatus, RunInfo } from "../api";
 import { ISSUE_STATUSES, PRIORITY_LABELS, STATUS_COLORS, STATUS_LABELS, fmtDate, isOverdue, matchRanges } from "../lib/issues";
 import { dateStamp } from "../lib/dailyNote";
@@ -90,10 +91,14 @@ export default function IssueRow({
   // Active search terms, lit up in the key and title.
   terms?: string[];
 }) {
-  const [menu, setMenu] = useState<"status" | "more" | null>(null);
+  const [menu, setMenu] = useState<"status" | "priority" | "more" | null>(null);
   const [coords, setCoords] = useState<{ top: number; left?: number; right?: number }>({ top: 0, left: 0 });
   const statusRef = useRef<HTMLButtonElement>(null);
   const moreRef = useRef<HTMLButtonElement>(null);
+  const prioRef = useRef<HTMLButtonElement>(null);
+  // The agent menu lives inside AgentAddMenu; the row only needs to know it is
+  // open so the actions don't fade out from under it.
+  const [agentOpen, setAgentOpen] = useState(false);
 
   const activity = runActivity(runs);
   const startable = issue.status !== "done" && issue.status !== "cancelled";
@@ -102,7 +107,7 @@ export default function IssueRow({
   // These triggers sit at the far right of the row, so left-anchoring would run
   // the menu off the right edge (worse when the sidebar is closed and the row is
   // wide). Flip to right-anchor (open leftward) whenever there isn't room.
-  const openMenu = (which: "status" | "more", ref: React.RefObject<HTMLButtonElement>) => {
+  const openMenu = (which: "status" | "priority" | "more", ref: React.RefObject<HTMLButtonElement>) => {
     const r = ref.current?.getBoundingClientRect();
     if (r) {
       const MENU_W = 300; // .agent-menu max-width
@@ -120,13 +125,20 @@ export default function IssueRow({
 
   return (
     <div
-      className={`issue-row${selected ? " selected" : ""}${drag?.over ? ` drop-${drag.over}` : ""}${drag?.source ? " dragging" : ""}`}
+      className={`issue-row${selected ? " selected" : ""}${menu || agentOpen ? " menu-open" : ""}${drag?.over ? ` drop-${drag.over}` : ""}${drag?.source ? " dragging" : ""}`}
       onClick={onSelect}
       onMouseDown={drag?.onMouseDown}
       data-issue-idx={drag?.idx}
       data-issue-status={drag?.status}
     >
-      <PriorityGlyph priority={issue.priority} />
+      <button
+        ref={prioRef}
+        className="issue-prio-btn"
+        title="Change priority"
+        onClick={(e) => { e.stopPropagation(); openMenu("priority", prioRef); }}
+      >
+        <PriorityGlyph priority={issue.priority} />
+      </button>
       <code className="issue-key"><Hits text={label} terms={terms} /></code>
       <span className={`issue-title${issue.status === "cancelled" ? " cancelled" : ""}`}>
         <Hits text={issue.title} terms={terms} />
@@ -151,6 +163,7 @@ export default function IssueRow({
               issueLabel={label}
               onSpawn={onSpawnAgent}
               onTerminal={() => {}}
+              onOpenChange={setAgentOpen}
             />
           </>
         )}
@@ -166,7 +179,13 @@ export default function IssueRow({
         <button ref={moreRef} className="icon-btn" title="More" onClick={() => openMenu("more", moreRef)}>⋯</button>
       </span>
 
-      {menu && (
+      {/* Into the body, not the row. The sidebar list floats its actions strip
+          with a `transform`, and a transformed ancestor becomes the containing
+          block for `position: fixed` — viewport coords would be read against
+          that little box and the menu would open off in the weeds. The strip
+          also hides itself once the pointer leaves the row, which the menu's
+          own backdrop causes. */}
+      {menu && createPortal(
         <>
           <div className="agent-menu-backdrop" onClick={(e) => { e.stopPropagation(); setMenu(null); }} />
           <div className="agent-menu" style={{ position: "fixed", ...coords }} onClick={(e) => e.stopPropagation()}>
@@ -176,11 +195,17 @@ export default function IssueRow({
                   <StatusDot status={s} /> {STATUS_LABELS[s]}{s === issue.status ? " ✓" : ""}
                 </button>
               ))}
+            {menu === "priority" &&
+              PRIORITY_LABELS.map((p, n) => (
+                <button key={p} onClick={() => { setMenu(null); if (n !== issue.priority) onPatch({ priority: n }); }}>
+                  <PriorityGlyph priority={n} /> {p}{n === issue.priority ? " ✓" : ""}
+                </button>
+              ))}
             {menu === "more" && (
               <>
                 {PRIORITY_LABELS.map((p, n) => (
                   <button key={p} onClick={() => { setMenu(null); if (n !== issue.priority) onPatch({ priority: n }); }}>
-                    {p}{n === issue.priority ? " ✓" : ""}
+                    <PriorityGlyph priority={n} /> {p}{n === issue.priority ? " ✓" : ""}
                   </button>
                 ))}
                 <div className="agent-menu-sep" />
@@ -188,7 +213,8 @@ export default function IssueRow({
               </>
             )}
           </div>
-        </>
+        </>,
+        document.body,
       )}
     </div>
   );

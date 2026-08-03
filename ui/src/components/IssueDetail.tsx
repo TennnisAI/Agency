@@ -11,6 +11,7 @@ import { dateStamp } from "../lib/dailyNote";
 import { toastError } from "../lib/toast";
 import { PriorityGlyph, StatusDot } from "./IssueRow";
 import IssueAttachments, { forgetAttachment } from "./IssueAttachments";
+import AgentAddMenu from "./AgentAddMenu";
 import DatePicker from "./DatePicker";
 import { ContractIcon, ExpandIcon } from "./icons";
 
@@ -112,6 +113,8 @@ export default function IssueDetail({
   mentions,
   expanded,
   onPatch,
+  onStart,
+  onSpawnAgent,
   onDelete,
   onOpenRun,
   onOpenMention,
@@ -127,7 +130,13 @@ export default function IssueDetail({
   // Notes and issues whose text links here ([[AGE-14]]), via lib/links.
   mentions: LinkEdge[];
   expanded: boolean;
-  onPatch: (patch: IssuePatch) => void;
+  // Awaited before an agent is dispatched, so the run reads the issue the user
+  // is looking at rather than the one still on disk.
+  onPatch: (patch: IssuePatch) => void | Promise<void>;
+  // Same pair as the list rows: ▶ starts the project's default agent, the
+  // caret beside it picks another (or races/loops them).
+  onStart: () => void;
+  onSpawnAgent: (agentId: string, opts?: { base: string; mergeTarget: string }) => void;
   onDelete: () => void;
   onOpenRun: (runId: string) => void;
   onOpenMention: (edge: LinkEdge) => void;
@@ -155,11 +164,21 @@ export default function IssueDetail({
     setMenu(which);
   };
 
+  // What this pane last sent to (or loaded from) the tracker. The `issue` prop
+  // lags a write by a save + refresh round-trip, so it can't answer "is this
+  // draft already saved?" — this can.
+  const saved = useRef({ title: issue.title, body: issue.body });
+  // The freshest drafts, for the flush that runs as the pane is torn down: by
+  // then the props have already moved on to the next issue.
+  const draft = useRef({ title, body });
+  draft.current = { title, body };
+
   // Reset drafts when another issue is selected — but never clobber an edit
   // in progress with poll results for the same issue.
   useEffect(() => {
     setTitle(issue.title);
     setBody(issue.body);
+    saved.current = { title: issue.title, body: issue.body };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [issue.id]);
 
@@ -173,13 +192,58 @@ export default function IssueDetail({
     el.style.height = `${el.scrollHeight}px`;
   }, [title, expanded]);
 
+  // What is typed but not yet written. Titles are trimmed and may not be
+  // emptied; an empty description is a legitimate edit.
+  const pending = (d: { title: string; body: string }): IssuePatch | null => {
+    const p: IssuePatch = {};
+    const t = d.title.trim();
+    if (t && t !== saved.current.title) p.title = t;
+    if (d.body !== saved.current.body) p.body = d.body;
+    return Object.keys(p).length > 0 ? p : null;
+  };
+
+  // The write in flight, so a dispatch can wait on it: an agent started from
+  // this pane's head bar reads the issue back off disk, and the blur that
+  // commits the description lands in the same tick as the click.
+  const inflight = useRef<Promise<unknown>>(Promise.resolve());
+  const send = (p: IssuePatch) => {
+    saved.current = { title: p.title ?? saved.current.title, body: p.body ?? saved.current.body };
+    // Failures are reported by the caller's toast; here they only need to stop
+    // being unhandled, and to let a dispatch waiting on this write proceed.
+    inflight.current = Promise.resolve(onPatch(p)).catch(() => {});
+  };
+
   const commitTitle = () => {
     const t = title.trim();
-    if (t && t !== issue.title) onPatch({ title: t });
-    else setTitle(issue.title);
+    if (t && t !== saved.current.title) send({ title: t });
+    // Whitespace-only is not a title; anything else just loses its padding.
+    else setTitle(t || saved.current.title);
   };
   const commitBody = () => {
-    if (body !== issue.body) onPatch({ body });
+    if (body !== saved.current.body) send({ body });
+  };
+
+  // Edits commit on blur, but a click can take the pane away before any blur
+  // fires: the list rows call preventDefault on mousedown (to stop WebKit
+  // starting a text selection mid-row), and that suppresses the blur outright.
+  // So whatever is still uncommitted is written as the pane switches issues or
+  // closes. The effect's own closure is what carries the outgoing issue — its
+  // `onPatch` still points at the issue being left behind.
+  useEffect(() => {
+    return () => {
+      const p = pending(draft.current);
+      if (p) onPatch(p);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [issue.id]);
+
+  // Dispatching an agent reads the issue off disk, so every edit has to land
+  // first: the one the blur just sent, and anything the blur missed.
+  const startAfterSave = async (run: () => void) => {
+    const p = pending({ title, body });
+    if (p) send(p);
+    await inflight.current;
+    run();
   };
 
   // ── attachments ───────────────────────────────────────────────────────────
@@ -202,7 +266,7 @@ export default function IssueDetail({
   const saveBody = (next: string) => {
     bodyDraft.current = next;
     setBody(next);
-    if (next !== issue.body) onPatch({ body: next });
+    if (next !== saved.current.body) send({ body: next });
   };
 
   // Guards the drop listener, which is subscribed once per issue and so would
@@ -326,10 +390,33 @@ export default function IssueDetail({
 
   // ── the pieces, arranged differently by each layout ──────────────────────
 
+  // Dispatch lives in the head bar, which both layouts render — so an issue
+  // being read has the same ▶ as an issue in the list, expanded or not.
+  const startable = issue.status !== "done" && issue.status !== "cancelled";
+
   const head = (
     <div className="issue-detail-head">
       <code className="issue-key">{label}</code>
       <div className="spacer" />
+      {startable && (
+        <span className="issue-detail-start">
+          <button
+            className="icon-btn"
+            title="Start agent on this issue"
+            onClick={() => { void startAfterSave(onStart); }}
+          >
+            ▶
+          </button>
+          <AgentAddMenu
+            variant="icon"
+            projectId={issue.projectId}
+            issue={issue}
+            issueLabel={label}
+            onSpawn={(agentId, opts) => { void startAfterSave(() => onSpawnAgent(agentId, opts)); }}
+            onTerminal={() => {}}
+          />
+        </span>
+      )}
       <button
         className="icon-btn"
         title="Attach a file"

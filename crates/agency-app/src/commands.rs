@@ -115,6 +115,13 @@ pub fn delete_project(state: State<'_, AppState>, id: String) -> Result<(), Stri
     state.delete_project(&id).map_err(|e| e.to_string())
 }
 
+/// Recolor a project's sidebar icon. `color` must be a palette accent name
+/// (see `PROJECT_COLORS`); anything else is rejected by the registry.
+#[tauri::command]
+pub fn set_project_color(state: State<'_, AppState>, id: String, color: String) -> Result<(), String> {
+    state.set_project_color(&id, &color).map_err(|e| e.to_string())
+}
+
 // async: creating a workspace shells out to `git worktree add`, which checks
 // out the whole tree — seconds to minutes on a large repo. As a sync command
 // that ran on the main thread and froze the entire UI until it finished. Async

@@ -115,6 +115,11 @@ export interface IssuePatch {
 
 export const listProjects = () => invoke<Project[]>("list_projects");
 
+// `color` must be a palette accent name (see PROJECT_COLOR_NAMES); the backend
+// rejects anything else.
+export const setProjectColor = (id: string, color: string) =>
+  invoke<void>("set_project_color", { id, color });
+
 export const listIssues = (projectId: string) => invoke<Issue[]>("list_issues", { projectId });
 export const createIssue = (projectId: string, title: string, body: string, status: IssueStatus) =>
   invoke<Issue>("create_issue", { projectId, title, body, status });

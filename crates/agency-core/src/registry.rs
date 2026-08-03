@@ -7,8 +7,10 @@ use uuid::Uuid;
 use crate::profile::AgentProfile;
 
 /// Theme accent names the UI resolves to CSS vars (`var(--<name>)`). Order is
-/// the assignment preference for new projects.
-const PROJECT_COLORS: [&str; 9] =
+/// the assignment preference for new projects. Public so the color a user picks
+/// can be validated against it: the name is interpolated into a CSS var, so
+/// only these may ever reach the database.
+pub const PROJECT_COLORS: [&str; 9] =
     ["blue", "mauve", "green", "peach", "teal", "pink", "yellow", "lav", "red"];
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -518,6 +520,21 @@ impl Registry {
         Ok(pick.to_string())
     }
 
+    /// Recolor a project by hand, overriding the color picked at add time.
+    /// Only palette names are accepted — the value ends up inside a CSS
+    /// `var(--<name>)` in the UI, and an unknown name would silently render
+    /// nothing rather than a color.
+    pub fn set_project_color(&self, id: &str, color: &str) -> Result<()> {
+        if !PROJECT_COLORS.contains(&color) {
+            anyhow::bail!("unknown project color: {color}");
+        }
+        self.conn.execute(
+            "UPDATE projects SET color = ?2 WHERE id = ?1",
+            rusqlite::params![id, color],
+        )?;
+        Ok(())
+    }
+
     pub fn get_project(&self, id: &str) -> Result<Option<Project>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, repo_path, default_agent, default_provider, color, issue_key, kind
@@ -532,8 +549,11 @@ impl Registry {
 
     pub fn list_projects(&self) -> Result<Vec<Project>> {
         let mut stmt = self.conn.prepare(
+            // NOCASE so the sidebar reads alphabetically the way a person does:
+            // plain `ORDER BY name` is byte order, which files every uppercase
+            // name ahead of every lowercase one.
             "SELECT id, name, repo_path, default_agent, default_provider, color, issue_key, kind
-             FROM projects WHERE closed = 0 ORDER BY name",
+             FROM projects WHERE closed = 0 ORDER BY name COLLATE NOCASE",
         )?;
         let rows = stmt.query_map([], |row| Ok(row_to_project(row)))?;
         let mut out = Vec::new();
@@ -2005,6 +2025,32 @@ mod tests {
         }
         let reg = Registry::open(&db).unwrap();
         assert_eq!(reg.get_project("old").unwrap().unwrap().issue_key.as_deref(), Some("ZEB"));
+    }
+
+    #[test]
+    fn list_projects_sorts_case_insensitively() {
+        let dir = tempdir().unwrap();
+        let reg = Registry::open(&dir.path().join("order.db")).unwrap();
+        for (name, path) in [("zebra", "/tmp/z"), ("Apple", "/tmp/a"), ("banana", "/tmp/b")] {
+            reg.add_project(name, std::path::Path::new(path)).unwrap();
+        }
+        let names: Vec<String> = reg.list_projects().unwrap().into_iter().map(|p| p.name).collect();
+        assert_eq!(names, ["Apple", "banana", "zebra"]);
+    }
+
+    #[test]
+    fn set_project_color_accepts_only_palette_names() {
+        let dir = tempdir().unwrap();
+        let reg = Registry::open(&dir.path().join("color.db")).unwrap();
+        let p = reg.add_project("Agency", std::path::Path::new("/tmp/a")).unwrap();
+
+        reg.set_project_color(&p.id, "teal").unwrap();
+        assert_eq!(reg.get_project(&p.id).unwrap().unwrap().color.as_deref(), Some("teal"));
+
+        // A non-palette name would render as an undefined CSS var; rejected,
+        // and the stored color is left alone.
+        assert!(reg.set_project_color(&p.id, "chartreuse").is_err());
+        assert_eq!(reg.get_project(&p.id).unwrap().unwrap().color.as_deref(), Some("teal"));
     }
 
     #[test]

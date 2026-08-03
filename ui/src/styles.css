@@ -187,6 +187,14 @@ button:hover { background: var(--lav); }
 .icon-add.on { background: var(--s1); border-color: var(--s2); color: var(--blue); }
 /* Background is set per-project inline via projectColor(); var(--blue) is just a fallback. */
 .proj-icon { width: 24px; height: 24px; border-radius: 7px; background: var(--blue); color: var(--crust); font-size: 12px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+/* Double-clicking a project icon opens the color palette; the hover ring is
+   the only hint that the square is more than decoration. */
+.proj-icon.recolorable { cursor: pointer; box-shadow: 0 0 0 0 transparent; transition: box-shadow .12s ease; }
+.proj-icon.recolorable:hover { box-shadow: 0 0 0 2px var(--s1); }
+.color-menu { z-index: 41; background: var(--mantle); border: 1px solid var(--s1); border-radius: 9px; box-shadow: 0 12px 32px var(--shadow); padding: 8px; width: 132px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.color-swatch { width: 28px; height: 28px; border-radius: 8px; border: 1px solid var(--s1); padding: 0; cursor: pointer; transition: transform .1s ease; }
+.color-swatch:hover { transform: scale(1.08); }
+.color-swatch.on { box-shadow: 0 0 0 2px var(--mantle), 0 0 0 4px var(--text); }
 .row-act { opacity: 0; border: none; background: transparent; color: var(--o0); cursor: pointer; font-size: 13px; padding: 0 2px; }
 .tree-row:hover .row-act { opacity: 1; }
 .row-act:hover { color: var(--text); }

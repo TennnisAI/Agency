@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Project, RunInfo, RepoReadiness, addProject, closeProject, deleteProject, inspectRepo, listProjects, listRuns } from "../api";
+import { Project, RunInfo, RepoReadiness, addProject, closeProject, deleteProject, inspectRepo, listProjects, listRuns, setProjectColor } from "../api";
 import { projectAccent, runName } from "../agents";
 import { useRuns } from "../store/runs";
 import { toastError } from "../lib/toast";
 import { runStatus } from "../lib/runstate";
 import ConfirmDialog from "./ConfirmDialog";
+import ProjectColorPicker from "./ProjectColorPicker";
 import RepoSetupDialog from "./RepoSetupDialog";
 import CloneDialog from "./CloneDialog";
 import SidebarToggle from "./SidebarToggle";
@@ -52,6 +53,8 @@ export default function ProjectTree({
   // an `agency:workspace-ready` event once the workspace exists, so the flow
   // that needed it (⌘⇧D on first use) can resume.
   const [wsCreate, setWsCreate] = useState<{ intent: string | null } | null>(null);
+  // Open color picker: the project being recolored plus the icon rect it hangs off.
+  const [recolor, setRecolor] = useState<{ project: Project; anchor: DOMRect } | null>(null);
 
   // The pinned workspace is a project row flagged `kind: "workspace"` — shown
   // above the list, never part of the active filter, not closable. Users who
@@ -210,6 +213,28 @@ export default function ProjectTree({
     setSetup(null);
   }
 
+  // Double-clicking a project's icon opens the palette over it. The rect is
+  // captured here rather than from a ref because every row shares one picker.
+  function openRecolor(e: React.MouseEvent, p: Project) {
+    e.stopPropagation();
+    setRecolor({ project: p, anchor: e.currentTarget.getBoundingClientRect() });
+  }
+
+  async function pickColor(color: string) {
+    if (!recolor) return;
+    const { project } = recolor;
+    setRecolor(null);
+    // Paint the new color straight away; refresh() then re-reads the row so a
+    // rejected write can't leave the sidebar showing a color the DB never took.
+    setProjects((ps) => ps.map((p) => (p.id === project.id ? { ...p, color } : p)));
+    try {
+      await setProjectColor(project.id, color);
+    } catch (e) {
+      toastError(e, "Couldn't change the project color");
+    }
+    await refresh();
+  }
+
   async function confirmPending(kind: "close" | "delete") {
     if (!pending) return;
     const { project } = pending;
@@ -259,7 +284,13 @@ export default function ProjectTree({
             <span className="chev" onClick={(e) => { e.stopPropagation(); if (workspace) toggle(workspace); }}>
               {workspace && openIds.has(workspace.id) ? "▾" : "▸"}
             </span>
-            <span className="proj-icon ws-icon" aria-hidden style={workspace ? { background: projectAccent(workspace) } : undefined}>◈</span>
+            <span
+              className={`proj-icon ws-icon${workspace ? " recolorable" : ""}`}
+              aria-hidden
+              title={workspace ? "Double-click to change color" : undefined}
+              style={workspace ? { background: projectAccent(workspace) } : undefined}
+              onDoubleClick={(e) => { if (workspace) openRecolor(e, workspace); }}
+            >◈</span>
             <span className="tree-name tl">{workspace?.name ?? "Workspace"}</span>
           </div>
           {workspace && openIds.has(workspace.id) && (
@@ -292,7 +323,13 @@ export default function ProjectTree({
               <span className="chev" onClick={(e) => { e.stopPropagation(); toggle(p); }}>
                 {openIds.has(p.id) ? "▾" : "▸"}
               </span>
-              <span className="proj-icon" aria-hidden style={{ background: projectAccent(p) }}>{p.name.slice(0, 1).toUpperCase()}</span>
+              <span
+                className="proj-icon recolorable"
+                aria-hidden
+                title="Double-click to change color"
+                style={{ background: projectAccent(p) }}
+                onDoubleClick={(e) => openRecolor(e, p)}
+              >{p.name.slice(0, 1).toUpperCase()}</span>
               <span className="tree-name tl">{p.name}</span>
               {readiness[p.id]?.state === "noCommits" && (
                 <button
@@ -333,6 +370,14 @@ export default function ProjectTree({
           {updateAvailable && <span className="tree-settings-dot" aria-hidden="true" />}
         </button>
       </div>
+      {recolor && (
+        <ProjectColorPicker
+          anchor={recolor.anchor}
+          current={recolor.project.color ?? null}
+          onPick={(c) => { void pickColor(c); }}
+          onClose={() => setRecolor(null)}
+        />
+      )}
       {setup && (
         <RepoSetupDialog
           readiness={setup.readiness}

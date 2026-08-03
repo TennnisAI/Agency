@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Project, FileRoot } from "../api";
+import { Project, FileRoot, projectTarget } from "../api";
 import { fileRootKey, requestOpenFile } from "../lib/openFile";
 import { terminalHasFocus } from "../lib/terminalFocus";
 import { useRuns } from "../store/runs";
@@ -17,6 +17,7 @@ import FilesView from "./FilesView";
 import DocsView from "./DocsView";
 import HomeView from "./HomeView";
 import IssuesView from "./IssuesView";
+import RunPanel from "./RunPanel";
 import SidebarToggle from "./SidebarToggle";
 import RightPanelToggle from "./RightPanelToggle";
 import QuickOpen from "./QuickOpen";
@@ -67,7 +68,7 @@ export default function AgentsView({
   // or "files" from before the workspace hid it.
   useEffect(() => {
     if (gitlessWorkspace && tab === "source") setTab("agents");
-    if (isWorkspace && tab === "files") setTab("docs");
+    if (isWorkspace && (tab === "files" || tab === "run")) setTab("docs");
   }, [gitlessWorkspace, isWorkspace, tab, setTab]);
 
   // Which working tree source control operates on: the focused run's worktree
@@ -113,9 +114,10 @@ export default function AgentsView({
   // button keeps a title, so the name is a hover away).
   const [headRef, headWidth] = useElementWidth<HTMLDivElement>();
   // 0 = not measured yet: assume roomy so the first paint isn't collapsed.
-  // Thresholds sit just under what each step needs: ~735px for the full row,
-  // ~680 once the long labels shorten, ~500 once the tabs are glyphs only.
-  const density = headWidth === 0 ? "" : headWidth < 700 ? " is-tight" : headWidth < 800 ? " is-compact" : "";
+  // Thresholds sit just under what each step needs: ~785px for the full row
+  // (the Run tab added one more), ~730 once the long labels shorten, ~540 once
+  // the tabs are glyphs only.
+  const density = headWidth === 0 ? "" : headWidth < 750 ? " is-tight" : headWidth < 850 ? " is-compact" : "";
 
   return (
     <main className="agents">
@@ -141,6 +143,15 @@ export default function AgentsView({
           {!isWorkspace && (
             <button className={tab === "files" ? "on" : ""} title="Files" onClick={() => setTab("files")}>
               <span className="seg-ico" aria-hidden>▤</span><span className="seg-label">Files</span>
+            </button>
+          )}
+          {!isWorkspace && (
+            <button
+              className={tab === "run" ? "on" : ""}
+              title="Run the project's scripts in your own checkout"
+              onClick={() => setTab("run")}
+            >
+              <span className="seg-ico" aria-hidden>▷</span><span className="seg-label">Run</span>
             </button>
           )}
         </div>
@@ -198,7 +209,9 @@ export default function AgentsView({
               ? "Select a project to browse its source control."
               : tab === "docs"
                 ? "Select a project to browse its docs."
-                : "Select a project to browse its files."}
+                : tab === "run"
+                  ? "Select a project to run its scripts."
+                  : "Select a project to browse its files."}
           </div>
         )
       ) : (
@@ -231,6 +244,17 @@ export default function AgentsView({
             <div className="source-wrap">
               <FilesView root={filesRoot} project={project} agentsOpen={filesAgents} />
             </div>
+          )}
+
+          {/* The project's own checkout, not any agent's worktree: the same run
+              scripts, run where you work. Keyed by project so switching one
+              tears the panel (and its log pane) down rather than reusing it. */}
+          {tab === "run" && (
+            <RunPanel
+              key={`run-${project.id}`}
+              target={projectTarget(project.id)}
+              where="the project checkout"
+            />
           )}
 
           {tab === "agents" && (

@@ -8,7 +8,7 @@ type View = "grid" | "focus";
 // Omitting it (the menu-bar shortcut, which has no picker) defers to the
 // Settings default.
 export type SpawnOpts = { base: string; mergeTarget: string; worktree?: boolean };
-type Tab = "agents" | "source" | "files" | "issues" | "docs";
+type Tab = "agents" | "source" | "files" | "issues" | "docs" | "run";
 
 interface RunStore {
   runs: RunInfo[];

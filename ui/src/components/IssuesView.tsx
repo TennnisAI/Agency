@@ -19,15 +19,22 @@ import {
   isClosed,
   issueLabel,
   issueSorter,
+  issuesExpandedKey,
   matchesFilters,
   searchTerms,
 } from "../lib/issues";
 import { pickDefaultAgent } from "../lib/defaultAgent";
+import { loadFold, saveFold, usePaneWidth } from "../hooks/usePaneWidth";
 import IssueRow from "./IssueRow";
 import IssueDetail from "./IssueDetail";
 import ConfirmDialog from "./ConfirmDialog";
 import PillSelect from "./PillSelect";
+import Resizer from "./Resizer";
 import { toastError } from "../lib/toast";
+
+// How narrow the list may get once the detail pane takes over the view.
+const SIDEBAR_MIN = 200;
+const SIDEBAR_MAX = 460;
 
 // The project's issue board: a status-grouped list (Linear's default view),
 // quick capture on top, detail pane on the right. Dispatching an issue to an
@@ -65,6 +72,26 @@ export default function IssuesView({
     setFPriority(-1);
     setSort("board");
   }
+
+  // Expanded mode: the detail pane takes over the view and the list compresses
+  // to a sidebar. Remembered per project, so coming back to a tracker restores
+  // the reading layout it was left in.
+  const expandKey = issuesExpandedKey(project.id);
+  const [expanded, setExpandedState] = useState(false);
+  useEffect(() => {
+    setExpandedState(typeof localStorage === "undefined" ? false : loadFold(localStorage, expandKey, false));
+  }, [expandKey]);
+  const setExpanded = (next: boolean) => {
+    setExpandedState(next);
+    try {
+      if (typeof localStorage !== "undefined") saveFold(localStorage, expandKey, next);
+    } catch {
+      /* storage unavailable */
+    }
+  };
+  // The compressed list's width is a plain machine-wide pane pref, like every
+  // other resizable pane — only the expanded/contracted choice is per project.
+  const sidebar = usePaneWidth("issues-sidebar", 288, SIDEBAR_MIN, SIDEBAR_MAX);
 
   useEffect(() => { setSelectedId(null); setQuick(""); setQuickOpen(false); clearFilters(); }, [project.id]);
   useEffect(() => { if (quickOpen) quickRef.current?.focus(); }, [quickOpen]);
@@ -329,9 +356,12 @@ export default function IssuesView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, visible, selectedId, selected]);
 
+  // The list only compresses while there is a detail pane to give the room to.
+  const wide = expanded && selected != null;
+
   return (
-    <div className="issues-wrap">
-      <div className="issues-main">
+    <div className={`issues-wrap${wide ? " expanded" : ""}`}>
+      <div className="issues-main" style={wide ? { width: sidebar.width, flex: "0 0 auto" } : undefined}>
         <div className={`issues-quickadd${quickOpen ? " open" : ""}`}>
           <button
             className="quickadd-toggle"
@@ -370,7 +400,10 @@ export default function IssuesView({
           />
         </div>
         {issues.length > 0 && (
-          <div className="issues-filterbar issues-toolbar">
+          // Compressed to a sidebar there is no room for the pills, so the bar
+          // keeps what a narrow list needs most — the search, and the way back
+          // to the whole board if a filter is still on from before the expand.
+          <div className={`issues-filterbar issues-toolbar${wide ? " compact" : ""}`}>
             <span className="filter-search">
               <span className="filter-search-glyph">⌕</span>
               <input
@@ -388,7 +421,7 @@ export default function IssuesView({
               />
               {q && <button className="filter-clear" title="Clear search" onClick={() => setQ("")}>✕</button>}
             </span>
-            {narrowed && (
+            {narrowed && !wide && (
               <span className="filter-count">{matched} of {issues.length}</span>
             )}
             <div className="spacer" />
@@ -397,38 +430,42 @@ export default function IssuesView({
                 Reset
               </button>
             )}
-            <PillSelect<StatusFilter>
-              value={fStatus}
-              defaultValue="all"
-              title="Status"
-              onChange={setFStatus}
-              options={[
-                { value: "all", label: "All statuses" },
-                { value: "open", label: "Open" },
-                ...ISSUE_STATUSES.map((s) => ({ value: s, label: STATUS_LABELS[s] })),
-              ]}
-            />
-            <PillSelect
-              value={fPriority}
-              defaultValue={-1}
-              title="Priority"
-              onChange={setFPriority}
-              options={[
-                { value: -1, label: "Any priority" },
-                ...PRIORITY_LABELS.map((p, n) => ({ value: n, label: p })),
-              ]}
-            />
-            <PillSelect<IssueSort>
-              value={sort}
-              defaultValue="board"
-              title="Sort"
-              onChange={setSort}
-              options={[
-                { value: "board", label: "Board order" },
-                { value: "due", label: "Due date" },
-                { value: "updated", label: "Recently updated" },
-              ]}
-            />
+            {!wide && (
+              <>
+                <PillSelect<StatusFilter>
+                  value={fStatus}
+                  defaultValue="all"
+                  title="Status"
+                  onChange={setFStatus}
+                  options={[
+                    { value: "all", label: "All statuses" },
+                    { value: "open", label: "Open" },
+                    ...ISSUE_STATUSES.map((s) => ({ value: s, label: STATUS_LABELS[s] })),
+                  ]}
+                />
+                <PillSelect
+                  value={fPriority}
+                  defaultValue={-1}
+                  title="Priority"
+                  onChange={setFPriority}
+                  options={[
+                    { value: -1, label: "Any priority" },
+                    ...PRIORITY_LABELS.map((p, n) => ({ value: n, label: p })),
+                  ]}
+                />
+                <PillSelect<IssueSort>
+                  value={sort}
+                  defaultValue="board"
+                  title="Sort"
+                  onChange={setSort}
+                  options={[
+                    { value: "board", label: "Board order" },
+                    { value: "due", label: "Due date" },
+                    { value: "updated", label: "Recently updated" },
+                  ]}
+                />
+              </>
+            )}
           </div>
         )}
         {loaded && issues.length === 0 ? (
@@ -443,7 +480,7 @@ export default function IssuesView({
             <div>Capture your first issues. Agents can pick up issues from here.</div>
           </div>
         ) : (
-          <div className={`issues-list${drag ? " reordering" : ""}`}>
+          <div className={`issues-list${drag ? " reordering" : ""}${wide ? " compact" : ""}`}>
             {issues.length > 0 && matched === 0 && (
               <div className="issues-nomatch">
                 <div className="issues-nomatch-title">No issues match</div>
@@ -507,18 +544,31 @@ export default function IssuesView({
         )}
       </div>
       {selected && (
-        <IssueDetail
-          issue={selected}
-          label={issueLabel(project, selected)}
-          root={fileRoot}
-          runs={runsFor(selected)}
-          mentions={mentions}
-          onPatch={(p) => patch(selected, p)}
-          onDelete={() => setConfirmDelete(selected)}
-          onOpenRun={openRun}
-          onOpenMention={openMention}
-          onClose={() => setSelectedId(null)}
-        />
+        <>
+          {wide && (
+            <Resizer
+              size={sidebar.width}
+              min={SIDEBAR_MIN}
+              max={SIDEBAR_MAX}
+              onChange={sidebar.setWidth}
+              side="left"
+            />
+          )}
+          <IssueDetail
+            issue={selected}
+            label={issueLabel(project, selected)}
+            root={fileRoot}
+            runs={runsFor(selected)}
+            mentions={mentions}
+            expanded={wide}
+            onToggleExpand={() => setExpanded(!expanded)}
+            onPatch={(p) => patch(selected, p)}
+            onDelete={() => setConfirmDelete(selected)}
+            onOpenRun={openRun}
+            onOpenMention={openMention}
+            onClose={() => setSelectedId(null)}
+          />
+        </>
       )}
       {confirmDelete && (
         <ConfirmDialog

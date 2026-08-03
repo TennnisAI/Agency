@@ -207,7 +207,20 @@ export default function FocusTerminal(
       } catch { /* not laid out */ }
     };
     requestAnimationFrame(() => { doFit(); term.focus(); });
-    const ro = new ResizeObserver(doFit);
+    // Fit on the next frame, never inside the observer callback. `fit.fit()`
+    // resizes the very element being observed, so doing it synchronously feeds
+    // the observer its own output and the loop overruns the frame — WebKit then
+    // reports "ResizeObserver loop completed with undelivered notifications" as
+    // a window error (AGE-34: it surfaced as an error toast whenever the Run
+    // pane opened alongside the preview). Deferring keeps each fit in its own
+    // frame, and coalescing means a drag-resize fits once per frame, not per
+    // pixel.
+    let fitFrame = 0;
+    const scheduleFit = () => {
+      if (fitFrame) return;
+      fitFrame = requestAnimationFrame(() => { fitFrame = 0; doFit(); });
+    };
+    const ro = new ResizeObserver(scheduleFit);
     ro.observe(container);
 
     const onThemeChange = () => {
@@ -279,6 +292,7 @@ export default function FocusTerminal(
     return () => {
       disposed = true;
       ro.disconnect();
+      if (fitFrame) cancelAnimationFrame(fitFrame);
       window.removeEventListener("themechange", onThemeChange);
       torn = true;
       timers.forEach(clearTimeout);

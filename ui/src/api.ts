@@ -273,44 +273,78 @@ export function attachRun(id: string, cols: number, rows: number, onBytes: (b: U
 }
 
 // One candidate run command detected in the project (package.json script,
-// Makefile target, …), offered by the Run tab's setup card.
+// Makefile target, …), offered when adding a script.
 export type RunSuggestion = {
   label: string;
+  name: string;
   command: string;
   detail: string;
+  web: boolean;
 };
 
-// The project's run script as the Run tab sees it. `command` is null when
-// nothing is configured yet — that's what the setup card renders for.
-export type RunScriptConfig = {
-  command: string | null;
+// One entry in the project's run list.
+export type RunScript = {
+  name: string;
+  command: string;
+  // Serves a web app on $AGENCY_PORT, so it gets a URL, the preview pane and
+  // "Open in browser". A build or a test run doesn't.
+  web: boolean;
+  // Starting this one stops every other run script in the project.
   nonconcurrent: boolean;
+};
+
+// The project's run scripts as the Run tab sees them. Empty `scripts` is what
+// the setup card renders for.
+export type RunScriptConfig = {
+  scripts: RunScript[];
   shared: boolean;
   suggestions: RunSuggestion[];
   workspace: string;
   port: number | null;
 };
 
-export const runScriptConfig = (id: string) =>
-  invoke<RunScriptConfig>("run_script_config", { id });
-export const saveRunScript = (id: string, command: string | null, nonconcurrent: boolean) =>
-  invoke<void>("save_run_script", { id, command, nonconcurrent });
-export const startRunScript = (id: string) => invoke<void>("start_run_script", { id });
-export const stopRunScript = (id: string) => invoke<void>("stop_run_script", { id });
-export const runScriptStatus = (id: string) =>
-  invoke<SessionStatus>("run_script_status", { id });
-export const runScriptPreview = (id: string, lines: number) =>
-  invoke<string>("run_script_preview", { id, lines });
-export const detachRunScript = (id: string) => invoke<void>("detach_run_script", { id });
-export const runScriptInput = (id: string, data: string) =>
-  invoke<void>("run_script_input", { id, data });
-export const resizeRunScript = (id: string, cols: number, rows: number) =>
-  invoke<void>("resize_run_script", { id, cols, rows });
+export type RunScriptStatus = { name: string; status: SessionStatus };
 
-export function attachRunScript(id: string, cols: number, rows: number, onBytes: (b: Uint8Array) => void): Promise<void> {
+// Which workspace a run script runs in: an agent's (its run id) or the
+// project's own checkout. The same token shape Source Control takes.
+export const projectTarget = (projectId: string) => `project:${projectId}`;
+
+export const runScriptConfig = (target: string) =>
+  invoke<RunScriptConfig>("run_script_config", { target });
+export const saveRunScripts = (target: string, scripts: RunScript[]) =>
+  invoke<void>("save_run_scripts", { target, scripts });
+export const startRunScript = (target: string, script: string) =>
+  invoke<void>("start_run_script", { target, script });
+export const stopRunScript = (target: string, script: string) =>
+  invoke<void>("stop_run_script", { target, script });
+export const runScriptsStatus = (target: string) =>
+  invoke<RunScriptStatus[]>("run_scripts_status", { target });
+
+// A terminal pane carries a single id, but a run script is addressed by
+// workspace *and* script name. These pack the pair into one key for the
+// FocusTerminal stream and unpack it again at the IPC boundary. Neither a run
+// id nor `project:<id>` can contain "#", so the first one always splits them.
+export const runScriptKey = (target: string, script: string) => `${target}#${script}`;
+function splitRunScriptKey(key: string): { target: string; script: string } {
+  const at = key.indexOf("#");
+  return at < 0
+    ? { target: key, script: "" }
+    : { target: key.slice(0, at), script: key.slice(at + 1) };
+}
+
+export const runScriptPreview = (key: string, lines: number) =>
+  invoke<string>("run_script_preview", { ...splitRunScriptKey(key), lines });
+export const detachRunScript = (key: string) =>
+  invoke<void>("detach_run_script", splitRunScriptKey(key));
+export const runScriptInput = (key: string, data: string) =>
+  invoke<void>("run_script_input", { ...splitRunScriptKey(key), data });
+export const resizeRunScript = (key: string, cols: number, rows: number) =>
+  invoke<void>("resize_run_script", { ...splitRunScriptKey(key), cols, rows });
+
+export function attachRunScript(key: string, cols: number, rows: number, onBytes: (b: Uint8Array) => void): Promise<void> {
   const onChunk = new Channel<{ b64: string }>();
   onChunk.onmessage = (m) => onBytes(b64ToBytes(m.b64));
-  return invoke<void>("attach_run_script", { id, cols, rows, onChunk });
+  return invoke<void>("attach_run_script", { ...splitRunScriptKey(key), cols, rows, onChunk });
 }
 
 // Companion shell: a per-run interactive terminal sharing the run's worktree,

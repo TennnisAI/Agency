@@ -87,3 +87,28 @@ export function BranchIcon({ size = 12 }: IconProps) {
     </svg>
   );
 }
+
+// Expand / contract for a pane that grows to take over its view. Diagonal
+// arrows out of the corners when there is room to grow, back into them when
+// the pane is already wide.
+export function ExpandIcon({ size = 14 }: IconProps) {
+  return (
+    <svg {...base(size)}>
+      <path d="M14 4h6v6" />
+      <path d="M20 4l-7 7" />
+      <path d="M10 20H4v-6" />
+      <path d="M4 20l7-7" />
+    </svg>
+  );
+}
+
+export function ContractIcon({ size = 14 }: IconProps) {
+  return (
+    <svg {...base(size)}>
+      <path d="M20 10h-6V4" />
+      <path d="M14 10l7-7" />
+      <path d="M4 14h6v6" />
+      <path d="M10 14l-7 7" />
+    </svg>
+  );
+}

@@ -13,6 +13,9 @@ export default function ConfirmDialog({
   altLabel,
   altDanger,
   onAlt,
+  hushLabel,
+  hushed,
+  onHush,
   onConfirm,
   onCancel,
 }: {
@@ -34,6 +37,14 @@ export default function ConfirmDialog({
   altLabel?: string;
   altDanger?: boolean;
   onAlt?: () => void;
+  /**
+   * Offers to stop asking this question. The box only takes effect if the user
+   * goes through with the action, so ticking it and then cancelling changes
+   * nothing: the caller reads `hushed` in its own onConfirm.
+   */
+  hushLabel?: string;
+  hushed?: boolean;
+  onHush?: (next: boolean) => void;
   onConfirm: () => void;
   onCancel: () => void;
 }) {
@@ -55,6 +66,17 @@ export default function ConfirmDialog({
           )}
         </div>
         <div className="modal-foot">
+          {hushLabel && onHush && (
+            <label className="modal-hush">
+              <input
+                type="checkbox"
+                checked={!!hushed}
+                disabled={busy}
+                onChange={(e) => onHush(e.target.checked)}
+              />
+              <span>{hushLabel}</span>
+            </label>
+          )}
           {/* Autofocused so Enter/Escape act immediately — and Enter lands on
               the safe option, not the (possibly destructive) confirm. */}
           <button className="btn-secondary" autoFocus disabled={busy} onClick={onCancel}>Cancel</button>

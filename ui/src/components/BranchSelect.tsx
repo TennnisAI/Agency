@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useDismissOnResize } from "../hooks/useDismissOnResize";
 
 // Branch picker for the agent menu. A native <select> can't be trusted here:
 // WebKit sizes it from its widest <option>, so one long branch name pushes the
@@ -59,6 +60,9 @@ export default function BranchSelect({
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
   }, [open]);
+
+  // Same for a resize: the list is placed against the trigger's old rect.
+  useDismissOnResize(open, () => setOpen(false));
 
   const { minWidth, ...pos } = coords;
 

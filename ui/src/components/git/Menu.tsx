@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useDismissOnResize } from "../../hooks/useDismissOnResize";
 
 export type MenuEntry =
   | { kind?: "item"; label: string; glyph?: React.ReactNode; hint?: string; danger?: boolean; disabled?: boolean; checked?: boolean; onClick: () => void }
@@ -23,14 +24,11 @@ export default function Menu({ x, y, items, onClose }: {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", onKey);
-    // A resize would strand the menu at coordinates measured against the old
-    // window; it's anchored to a row that has moved anyway, so just close it.
-    window.addEventListener("resize", onClose);
-    return () => {
-      window.removeEventListener("keydown", onKey);
-      window.removeEventListener("resize", onClose);
-    };
+    return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
+  // A resize would strand the menu at coordinates measured against the old
+  // window; it's anchored to a row that has moved anyway, so just close it.
+  useDismissOnResize(true, onClose);
 
   return (
     <div className="menu-overlay" onMouseDown={onClose} onContextMenu={(e) => { e.preventDefault(); onClose(); }}>

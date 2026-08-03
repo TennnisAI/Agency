@@ -20,6 +20,7 @@ import RunRemoveDialog from "./RunRemoveDialog";
 import PromptDialog from "./PromptDialog";
 import Resizer from "./Resizer";
 import ArchivedSection from "./ArchivedSection";
+import { useDismissOnResize } from "../hooks/useDismissOnResize";
 import { usePaneWidth, loadFold, saveFold } from "../hooks/usePaneWidth";
 import { loadFocusTab, saveFocusTab, resolveFocusTab, PRIMARY_TAB } from "../lib/focusTab";
 import AgentAddMenu from "./AgentAddMenu";
@@ -235,6 +236,9 @@ export default function AgentFocus({
       return next;
     });
   };
+
+  // Anchored to where the + was when it was clicked; a resize moves it.
+  useDismissOnResize(addOpen, () => setAddOpen(false));
 
   const spawnTab = async (agent: string) => {
     setAddOpen(false);

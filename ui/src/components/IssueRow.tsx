@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { Issue, IssuePatch, IssueStatus, RunInfo } from "../api";
 import { ISSUE_STATUSES, PRIORITY_LABELS, STATUS_COLORS, STATUS_LABELS, fmtDate, isOverdue, matchRanges } from "../lib/issues";
 import { dateStamp } from "../lib/dailyNote";
+import { useDismissOnResize } from "../hooks/useDismissOnResize";
 import AgentAddMenu from "./AgentAddMenu";
 
 // Priority as Linear-style signal bars: 1-3 bars for low/medium/high, an
@@ -120,6 +121,10 @@ export default function IssueRow({
     }
     setMenu(which);
   };
+
+  // The coords above are a snapshot of where the trigger was; a resize moves
+  // the row out from under the menu, so close it instead of leaving it hanging.
+  useDismissOnResize(menu !== null, () => setMenu(null));
 
   const today = dateStamp(new Date());
 

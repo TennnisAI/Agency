@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { PROJECT_COLOR_NAMES } from "../agents";
+import { useDismissOnResize } from "../hooks/useDismissOnResize";
 
 // Swatch popover for a project's sidebar icon, opened by double-clicking the
 // icon. The choices are the theme's accent palette rather than a free-form
@@ -22,6 +23,10 @@ export default function ProjectColorPicker({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
+
+  // The anchor rect below is from when the icon was double-clicked, so a resize
+  // would strand the swatches away from their project.
+  useDismissOnResize(true, onClose);
 
   // Fixed coordinates, like the agent menu: an ancestor's `overflow: hidden`
   // (the scrolling tree) would otherwise clip it. Nudged back inside the

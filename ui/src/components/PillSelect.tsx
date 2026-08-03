@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { useDismissOnResize } from "../hooks/useDismissOnResize";
 
 // A quiet pill that opens an in-app menu — replaces native <select>, whose
 // popup renders at the OS layer and lands wherever it pleases in the webview.
@@ -37,6 +38,9 @@ export default function PillSelect<T extends string | number>({
     }
     setOpen(true);
   };
+
+  // A resize moves the pill without moving the menu, so close rather than drift.
+  useDismissOnResize(open, () => setOpen(false));
 
   return (
     <>

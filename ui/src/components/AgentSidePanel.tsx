@@ -3,6 +3,7 @@ import { Project, setRunTitle } from "../api";
 import { useRuns } from "../store/runs";
 import { runStatus } from "../lib/runstate";
 import { agentLabel, runListLabel } from "../agents";
+import { useDismissOnResize } from "../hooks/useDismissOnResize";
 import { useRepoReadiness, isGitlessWorkspace } from "../hooks/useRepoReadiness";
 import { useSpawnAgent } from "../hooks/useSpawnAgent";
 import AgentAddMenu from "./AgentAddMenu";
@@ -42,6 +43,9 @@ export default function AgentSidePanel({ project }: { project: Project }) {
       return next;
     });
   };
+
+  // Those coords stop being true the moment the window changes size.
+  useDismissOnResize(pickerOpen, () => setPickerOpen(false));
 
   const openInAgentsTab = () => {
     setTab("agents");

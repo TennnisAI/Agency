@@ -49,7 +49,9 @@ Everything Agency spawns goes through a Unix login shell today:
   `state.rs merged_mcp_servers`) must quote for spaces/backslashes.
 - **Notifications / tray / titlebar overlay** — Tauri abstracts most of it,
   but the notification click-deeplink workaround in `state.rs` is tuned to
-  macOS notification-center behavior.
+  macOS notification-center behavior, and `notif_macos.rs` exists only to get
+  a banner shown while Agency itself is frontmost — Windows toasts already do
+  that, so the module stays macOS-gated rather than growing a port.
 - **`command_on_path`** (`state.rs`) — checks executability Unix-style;
   Windows needs PATHEXT-aware lookup (`gh` → `gh.exe`).
 

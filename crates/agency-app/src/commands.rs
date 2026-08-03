@@ -2,7 +2,6 @@ use agency_core::git::{self, CommitFile, FileDiff, FileChange};
 use agency_core::merge::MergeOutcome;
 use agency_core::profile::AgentProfile;
 use agency_core::registry::{Issue, IssuePatch, IssueStatus, Project, ReviewComment};
-use agency_core::supervisor::AgentStatus;
 use agency_core::term::SessionStatus;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
@@ -21,13 +20,6 @@ pub struct TerminalChunk {
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct StatusDto {
-    pub state: String,
-    pub code: Option<i32>,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct ReadinessDto {
     pub state: String,
     pub stageable: bool,
@@ -40,15 +32,6 @@ fn readiness_dto(r: agency_core::setup::RepoReadiness) -> ReadinessDto {
         NotARepo => ReadinessDto { state: "notARepo".into(), stageable: false, dirty: false },
         NoCommits { stageable } => ReadinessDto { state: "noCommits".into(), stageable, dirty: false },
         Ready { dirty } => ReadinessDto { state: "ready".into(), stageable: false, dirty },
-    }
-}
-
-fn agent_status_dto(status: AgentStatus) -> StatusDto {
-    match status {
-        AgentStatus::Running => StatusDto { state: "running".into(), code: None },
-        AgentStatus::Idle => StatusDto { state: "idle".into(), code: None },
-        AgentStatus::Exited(c) => StatusDto { state: "exited".into(), code: Some(c) },
-        AgentStatus::Crashed => StatusDto { state: "crashed".into(), code: None },
     }
 }
 
@@ -969,44 +952,11 @@ pub fn save_files_config(
     state.save_files_config(&project_id, copy).map_err(|e| e.to_string())
 }
 
+/// "Fix with agent" on a conflicted merge: type the conflict into this run's
+/// own agent session rather than spawning a separate resolver.
 #[tauri::command]
-pub fn resolve_merge(
-    state: State<'_, AppState>,
-    task_id: String,
-    resolver_profile: String,
-    on_chunk: Channel<TerminalChunk>,
-) -> Result<(), String> {
-    state
-        .resolve_merge(&task_id, &resolver_profile, move |bytes| {
-            let _ = on_chunk.send(TerminalChunk { b64: STANDARD.encode(&bytes) });
-        })
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn resolver_input(state: State<'_, AppState>, task_id: String, data: String) -> Result<(), String> {
-    state.resolver_input(&task_id, data.as_bytes()).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn resolver_status(state: State<'_, AppState>, task_id: String) -> Result<StatusDto, String> {
-    state.resolver_status(&task_id).map(agent_status_dto).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn resolver_resize(
-    state: State<'_, AppState>,
-    task_id: String,
-    cols: u16,
-    rows: u16,
-) -> Result<(), String> {
-    state.resolver_resize(&task_id, cols, rows).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn resolver_close(state: State<'_, AppState>, task_id: String) -> Result<(), String> {
-    state.resolver_close(&task_id);
-    Ok(())
+pub fn send_merge_conflict(state: State<'_, AppState>, task_id: String) -> Result<(), String> {
+    state.send_merge_conflict(&task_id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

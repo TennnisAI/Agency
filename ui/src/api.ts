@@ -743,31 +743,10 @@ export const finishMergeTask = (taskId: string) =>
   invoke<MergeOutcome>("finish_merge_task", { taskId });
 export const abortMergeTask = (taskId: string) =>
   invoke<void>("abort_merge_task", { taskId });
-export const resolverInput = (taskId: string, data: string) =>
-  invoke<void>("resolver_input", { taskId, data });
-export interface StatusDto {
-  state: "running" | "idle" | "exited" | "crashed";
-  code: number | null;
-}
-
-export const resolverStatus = (taskId: string) =>
-  invoke<StatusDto>("resolver_status", { taskId });
-export const resolverResize = (taskId: string, cols: number, rows: number) =>
-  invoke<void>("resolver_resize", { taskId, cols, rows });
-// Tear down a merge resolver (kills its agent child) — called when the merge
-// modal closes or the resolver exits so the handle doesn't leak.
-export const resolverClose = (taskId: string) =>
-  invoke<void>("resolver_close", { taskId });
-
-export function resolveMerge(
-  taskId: string,
-  resolverProfile: string,
-  onBytes: (bytes: Uint8Array) => void,
-): Promise<void> {
-  const onChunk = new Channel<{ b64: string }>();
-  onChunk.onmessage = (msg) => onBytes(b64ToBytes(msg.b64));
-  return invoke<void>("resolve_merge", { taskId, resolverProfile, onChunk });
-}
+// "Fix with agent": types the conflict, with git's own status output, into this
+// run's live agent session.
+export const sendMergeConflict = (taskId: string) =>
+  invoke<void>("send_merge_conflict", { taskId });
 
 export interface Hunk {
   header: string;

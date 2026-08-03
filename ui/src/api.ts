@@ -199,8 +199,19 @@ export function commitRepo(
   return invoke<void>("commit_repo", { repoPath, addGitignore, onProgress: onProgressChannel });
 }
 
-export const closeProject = (id: string) => invoke<void>("close_project", { id });
-export const deleteProject = (id: string) => invoke<void>("delete_project", { id });
+// Both project teardowns stop every agent in the project, and deleting also
+// hands git each worktree to unlink — seconds to tens of seconds on a busy
+// project, so `onProgress`, if given, is called with the step they are on.
+export function closeProject(id: string, onProgress?: (p: CloneProgress) => void): Promise<void> {
+  const onProgressChannel = new Channel<CloneProgress>();
+  if (onProgress) onProgressChannel.onmessage = onProgress;
+  return invoke<void>("close_project", { id, onProgress: onProgressChannel });
+}
+export function deleteProject(id: string, onProgress?: (p: CloneProgress) => void): Promise<void> {
+  const onProgressChannel = new Channel<CloneProgress>();
+  if (onProgress) onProgressChannel.onmessage = onProgress;
+  return invoke<void>("delete_project", { id, onProgress: onProgressChannel });
+}
 
 // Creates an agent workspace (git worktree + first session). `onProgress`, if
 // given, is called as the worktree is checked out and essentials copied — a

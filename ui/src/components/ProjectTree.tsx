@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Project, RunInfo, RepoReadiness, addProject, closeProject, deleteProject, inspectRepo, listProjects, listRuns, setProjectColor } from "../api";
+import { CloneProgress, Project, RunInfo, RepoReadiness, addProject, closeProject, deleteProject, inspectRepo, listProjects, listRuns, setProjectColor } from "../api";
 import { projectAccent, runName } from "../agents";
 import { useRuns } from "../store/runs";
 import { toastError } from "../lib/toast";
@@ -45,6 +45,11 @@ export default function ProjectTree({
   const [projectRuns, setProjectRuns] = useState<Record<string, RunInfo[]>>({});
   const [filter, setFilter] = useState<Filter>("all");
   const [pending, setPending] = useState<Pending>(null);
+  // Which of the confirm dialog's two actions is running, and the step the
+  // backend is on: both stop every agent in the project, and "Delete worktrees"
+  // also unlinks each one, so on a busy project they run for seconds.
+  const [busy, setBusy] = useState<"close" | "delete" | null>(null);
+  const [progress, setProgress] = useState<CloneProgress | null>(null);
   const [error, setError] = useState("");
   const [setup, setSetup] = useState<{ path: string; name: string; readiness: RepoReadiness; existing: boolean } | null>(null);
   const [cloning, setCloning] = useState(false);
@@ -236,16 +241,20 @@ export default function ProjectTree({
   }
 
   async function confirmPending(kind: "close" | "delete") {
-    if (!pending) return;
+    if (!pending || busy) return;
     const { project } = pending;
+    setBusy(kind);
+    setProgress(null);
     try {
-      if (kind === "close") await closeProject(project.id);
-      else await deleteProject(project.id);
+      if (kind === "close") await closeProject(project.id, setProgress);
+      else await deleteProject(project.id, setProgress);
       await refresh();
     } catch (e) {
       toastError(e, "Couldn't close project");
     } finally {
       // Always drop the dialog — a failure must not leave it frozen open.
+      setBusy(null);
+      setProgress(null);
       setPending(null);
     }
   }
@@ -403,6 +412,9 @@ export default function ProjectTree({
           confirmLabel="Close project"
           altLabel="Delete worktrees & close"
           altDanger
+          busy={busy !== null}
+          progress={progress}
+          progressLabel={busy === "delete" ? "Deleting worktrees…" : "Closing…"}
           onAlt={() => confirmPending("delete")}
           onConfirm={() => confirmPending("close")}
           onCancel={() => setPending(null)}

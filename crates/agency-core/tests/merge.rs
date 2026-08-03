@@ -369,3 +369,54 @@ fn conflicting_merge_stays_on_base_for_resolution() {
     assert_eq!(String::from_utf8_lossy(&head.stdout).trim(), "main");
     merge::abort_merge(dir.path(), None).unwrap();
 }
+
+#[test]
+fn merge_with_progress_names_each_step_it_takes() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    run(dir.path(), &["checkout", "-q", "-b", "agent/p"]);
+    std::fs::write(dir.path().join("new.txt"), "hi\n").unwrap();
+    run(dir.path(), &["add", "-A"]);
+    run(dir.path(), &["commit", "-q", "-m", "add new"]);
+    // Start somewhere other than the base so the restore step happens too.
+    run(dir.path(), &["checkout", "-q", "main"]);
+    run(dir.path(), &["checkout", "-q", "-b", "dev"]);
+
+    let mut steps = Vec::new();
+    let outcome = merge::merge_with_progress(dir.path(), "agent/p", "main", &mut |p| {
+        steps.push(p.phase)
+    })
+    .unwrap();
+    assert!(matches!(outcome, MergeOutcome::Clean { .. }));
+    assert_eq!(
+        steps,
+        vec![
+            "Checking the project's checkout",
+            "Switching to main",
+            "Merging agent/p",
+            "Switching back to dev",
+        ],
+        "the readout must name the slow steps, not just bracket them"
+    );
+}
+
+#[test]
+fn merge_with_progress_stops_reporting_when_it_refuses_to_start() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    run(dir.path(), &["checkout", "-q", "-b", "agent/q"]);
+    std::fs::write(dir.path().join("new.txt"), "hi\n").unwrap();
+    run(dir.path(), &["add", "-A"]);
+    run(dir.path(), &["commit", "-q", "-m", "add new"]);
+    run(dir.path(), &["checkout", "-q", "main"]);
+    // A dirty checkout is refused before anything is touched.
+    std::fs::write(dir.path().join("f.txt"), "uncommitted\n").unwrap();
+
+    let mut steps = Vec::new();
+    let err = merge::merge_with_progress(dir.path(), "agent/q", "main", &mut |p| {
+        steps.push(p.phase)
+    })
+    .unwrap_err();
+    assert!(err.to_string().contains("uncommitted changes"), "{err}");
+    assert_eq!(steps, vec!["Checking the project's checkout"]);
+}

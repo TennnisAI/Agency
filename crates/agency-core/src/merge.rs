@@ -211,7 +211,30 @@ pub fn finish_merge(repo: &Path, restore_to: Option<&str>) -> Result<String> {
     Ok(commit)
 }
 
+fn step(on_progress: &mut dyn FnMut(crate::setup::CloneProgress), phase: &str, detail: &str) {
+    on_progress(crate::setup::CloneProgress {
+        phase: phase.to_string(),
+        percent: None,
+        detail: detail.to_string(),
+    });
+}
+
 pub fn merge(repo: &Path, branch: &str, base: &str) -> Result<MergeOutcome> {
+    merge_with_progress(repo, branch, base, &mut |_| {})
+}
+
+/// [`merge`] reporting the step it is on. The slow parts are git's, not ours:
+/// checking out the base branch rewrites the working tree, and the merge then
+/// rewrites it again. On a large repo that is seconds each, and the caller is a
+/// modal with nothing else to say meanwhile. No percentages: git reports none
+/// for either, so the readout sweeps rather than lying about a fraction.
+pub fn merge_with_progress(
+    repo: &Path,
+    branch: &str,
+    base: &str,
+    on_progress: &mut dyn FnMut(crate::setup::CloneProgress),
+) -> Result<MergeOutcome> {
+    step(on_progress, "Checking the project's checkout", base);
     // An unfinished merge is dirty by construction, so check for it first:
     // otherwise it reports as "uncommitted changes" and sends the user off to
     // stash work that is actually a half-done merge.
@@ -229,7 +252,9 @@ pub fn merge(repo: &Path, branch: &str, base: &str) -> Result<MergeOutcome> {
     // it back — merging shouldn't hijack the user's checkout as a side effect.
     // Detached HEAD yields nothing and skips the restore.
     let original = current_branch(repo);
+    step(on_progress, &format!("Switching to {base}"), "");
     git_ok(repo, &["checkout", base])?;
+    step(on_progress, &format!("Merging {branch}"), &format!("into {base}"));
     let out = git(repo, &["merge", "--no-ff", branch])?;
     if out.status.success() {
         let commit = git_ok(repo, &["rev-parse", "HEAD"])?.trim().to_string();
@@ -237,6 +262,7 @@ pub fn merge(repo: &Path, branch: &str, base: &str) -> Result<MergeOutcome> {
         // an error. On conflicts we intentionally stay on `base` — resolution
         // (manual or agent-driven) happens there.
         if let Some(orig) = original.filter(|o| o != base) {
+            step(on_progress, &format!("Switching back to {orig}"), "");
             let _ = git(repo, &["checkout", &orig]);
         }
         return Ok(MergeOutcome::Clean { commit });

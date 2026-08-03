@@ -799,7 +799,14 @@ export const createPrFromBranch = (
 
 export const mergePreview = (taskId: string) =>
   invoke<MergePreview>("merge_preview", { taskId });
-export const mergeTask = (taskId: string) => invoke<MergeOutcome>("merge_task", { taskId });
+// The merge family streams progress like the teardowns do: it runs `git merge`
+// in the project's shared checkout, which is a branch checkout plus a merge, and
+// on a large repo that is seconds with nothing else to show.
+export const mergeTask = (taskId: string, onProgress?: (p: CloneProgress) => void) => {
+  const onProgressChannel = new Channel<CloneProgress>();
+  if (onProgress) onProgressChannel.onmessage = onProgress;
+  return invoke<MergeOutcome>("merge_task", { taskId, onProgress: onProgressChannel });
+};
 /** Where a conflicted merge stands, asked of git rather than re-run. */
 export interface MergeState {
   merging: boolean;
@@ -813,10 +820,16 @@ export const mergeStatus = (taskId: string) =>
   invoke<MergeState>("merge_status", { taskId });
 // Commit a resolved merge (or accept one the resolver committed itself) and
 // put the checkout back on the branch it was on.
-export const finishMergeTask = (taskId: string) =>
-  invoke<MergeOutcome>("finish_merge_task", { taskId });
-export const abortMergeTask = (taskId: string) =>
-  invoke<void>("abort_merge_task", { taskId });
+export const finishMergeTask = (taskId: string, onProgress?: (p: CloneProgress) => void) => {
+  const onProgressChannel = new Channel<CloneProgress>();
+  if (onProgress) onProgressChannel.onmessage = onProgress;
+  return invoke<MergeOutcome>("finish_merge_task", { taskId, onProgress: onProgressChannel });
+};
+export const abortMergeTask = (taskId: string, onProgress?: (p: CloneProgress) => void) => {
+  const onProgressChannel = new Channel<CloneProgress>();
+  if (onProgress) onProgressChannel.onmessage = onProgress;
+  return invoke<void>("abort_merge_task", { taskId, onProgress: onProgressChannel });
+};
 // "Fix with agent": types the conflict, with git's own status output, into this
 // run's live agent session.
 export const sendMergeConflict = (taskId: string) =>

@@ -127,6 +127,15 @@ describe("language id coverage", () => {
       ["a.proto", "ProtoBuf"],
       ["a.f90", "Fortran"],
       ["a.mm", "Objective-C++"],
+      ["README.rst", "reStructuredText"],
+      ["rows.csv", "CSV"],
+      ["build.bat", "Batch"],
+      [".vimrc", "Vim script"],
+      ["flow.mmd", "Mermaid"],
+      ["main.nim", "Nim"],
+      ["app.marko", "HTML"],
+      ["COMMIT_EDITMSG", "Git commit"],
+      ["server.log", "Log"],
     ];
     for (const [path, name] of cases) {
       expect(languageDescription(path)?.name, path).toBe(name);
@@ -177,9 +186,20 @@ describe("language id coverage", () => {
     expect(await loadLanguage("notes.txt")).toEqual([]);
   });
 
-  // An id may legitimately have no CodeMirror grammar (Shiki still colors it
-  // in diffs), but a redirect that points at a grammar name which does not
-  // exist is always a bug.
+  // The two views used to disagree: Shiki ships VS Code's grammars for every
+  // id, while CodeMirror covered about 150 of them, so the tail (rst, csv,
+  // viml, mermaid, …) opened as flat text in the editor even though the diff
+  // colored it. lib/cmModes.ts closes that gap, and this keeps it closed: a
+  // new id needs a CodeMirror grammar, a redirect, or neither view gets it.
+  it("gives the editor a grammar for every id the diff view colors", () => {
+    const uncovered = knownLanguageIds().filter(
+      (id) => !LanguageDescription.matchLanguageName(CM_REGISTRY, CM_LANGUAGE_NAMES[id] ?? id, false),
+    );
+    expect(uncovered).toEqual([]);
+  });
+
+  // A redirect that points at a grammar name which does not exist is always a
+  // bug, even for an id nothing currently produces.
   it("has no redirect pointing at a missing grammar", () => {
     const broken = Object.entries(CM_LANGUAGE_NAMES)
       .filter(([, name]) => !LanguageDescription.matchLanguageName(CM_REGISTRY, name, false))

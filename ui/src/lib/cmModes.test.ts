@@ -109,11 +109,112 @@ describe("Nix mode", () => {
   });
 });
 
+// The long tail. One or two sample lines per grammar, asserting the tokens
+// that prove the file's shape is understood — and, through `tokens`, that the
+// tokenizer always advances (a rule that can match the empty string hangs the
+// editor rather than mis-coloring it).
+const TAIL_CASES: Array<[keyof typeof TEST_MODES, string, Array<[string, string]>]> = [
+  ["RST", "See ``code`` and *emph* here", [["``code``", "string"], ["*emph*", "emphasis"]]],
+  ["RST", ".. note:: careful", [[".. note:: careful", "definitionKeyword"]]],
+  ["RST", "=======", [["=======", "heading"]]],
+  ["ASCIIDOC", "== Section", [["== Section", "heading"]]],
+  ["ASCIIDOC", "Use `code` and *bold* text", [["`code`", "string"], ["*bold*", "strong"]]],
+  ["ASCIIDOC", ":toc: left", [[":toc: left", "propertyName"]]],
+  ["TYPST", "#let x = 1 // note", [["#let", "controlKeyword"], ["1", "number"], ["// note", "comment"]]],
+  ["TYPST", "= Heading", [["= Heading", "heading"]]],
+  ["WIKITEXT", "== Head ==", [["== Head ==", "heading"]]],
+  ["WIKITEXT", "'''bold''' and [[Link]]", [["'''bold'''", "strong"], ["[[Link", "link"]]],
+  ["BIBTEX", "@article{key,", [["@article", "definitionKeyword"], ["key", "variableName"]]],
+  ["BIBTEX", "title = {Hi},", [["title", "propertyName"]]],
+  ["PO", 'msgid "Hello"', [["msgid", "keyword"], ['"Hello"', "string"]]],
+  ["PO", "#. translator note", [["#. translator note", "comment"]]],
+  ["HAML", "%div.foo{:id => 'x'}", [["%div", "tagName"], [".foo", "attributeName"], [":id", "atom"]]],
+  ["CSV", 'a,"b,c",3', [["a", "variableName"], ['"b,c"', "string"], [",", "separator"], ["3", "number"]]],
+  ["HJSON", "{ rate: 3, ok: true } # note", [
+    ["rate", "propertyName"], ["3", "number"], ["true", "atom"], ["# note", "comment"],
+  ]],
+  ["CUE", "#Schema: { name: string, n: 3 }", [
+    ["#Schema", "typeName"], ["name", "propertyName"], ["string", "typeName"], ["3", "number"],
+  ]],
+  ["JSONNET", "local x = { a:: 1 } // note", [
+    ["local", "controlKeyword"], ["a", "propertyName"], ["1", "number"], ["// note", "comment"],
+  ]],
+  ["REG", '"Version"=dword:00000001', [
+    ['"Version"', "propertyName"], ["dword", "keyword"], ["00000001", "number"],
+  ]],
+  ["APACHE", "<Directory /var/www>", [["<Directory", "tagName"]]],
+  ["APACHE", "ServerName example.com", [["ServerName", "keyword"]]],
+  ["CODEOWNERS", "*.ts @nic team@x.com", [
+    ["*.ts", "string"], ["@nic", "constName"], ["team@x.com", "link"],
+  ]],
+  ["BAT", "REM build it", [["REM build it", "comment"]]],
+  ["BAT", "if not defined X goto :end", [["if", "controlKeyword"], ["goto", "keyword"]]],
+  ["BAT", "set PATH=%PATH%", [["set", "keyword"], ["%PATH%", "constName"]]],
+  ["VIML", '" a comment', [['" a comment', "comment"]]],
+  ["VIML", "let g:x = 'hi'", [["let", "controlKeyword"], ["g:x", "constName"], ["'hi'", "string"]]],
+  ["NUSHELL", "def main [] { ls | where size > 1kb } # c", [
+    ["def", "controlKeyword"], ["|", "operator"], ["1kb", "number"], ["# c", "comment"],
+  ]],
+  ["AWK", "/^foo/ { print $1 }", [["/^foo/", "regexp"], ["print", "controlKeyword"], ["$1", "constName"]]],
+  ["AWK", 'BEGIN { FS = "," }', [["BEGIN", "definitionKeyword"], ["FS", "constName"]]],
+  ["APPLESCRIPT", 'tell application "Finder" -- go', [
+    ["tell", "controlKeyword"], ["application", "typeName"], ['"Finder"', "string"], ["-- go", "comment"],
+  ]],
+  ["KUSTO", 'Events | where Level == "Error" | summarize count()', [
+    ["|", "operator"], ["where", "controlKeyword"], ['"Error"', "string"],
+  ]],
+  ["CODEQL", 'from Function f where f.getName() = "main" select f', [
+    ["from", "controlKeyword"], ["Function", "typeName"], ['"main"', "string"], ["select", "controlKeyword"],
+  ]],
+  ["POLAR", "default allow = false # note", [
+    ["default", "controlKeyword"], ["false", "atom"], ["# note", "comment"],
+  ]],
+  ["MERMAID", "graph LR", [["graph", "definitionKeyword"], ["LR", "atom"]]],
+  ["MERMAID", "A[Start] --> B %% note", [["-->", "operator"], ["%% note", "comment"], ["[", "bracket"]]],
+  ["LOG", "2026-08-03T14:20:00Z ERROR [main] failed after 3 retries", [
+    ["2026-08-03T14:20:00Z", "number"], ["ERROR", "invalid"], ["[main]", "propertyName"],
+  ]],
+  ["LOG", "12:00:01 DEBUG cache warm", [["DEBUG", "comment"]]],
+  ["GIT_COMMIT", "feat(ui): color the tail", [["feat(ui):", "definitionKeyword"]]],
+  ["GIT_COMMIT", "# Please enter the commit message", [["# Please enter the commit message", "comment"]]],
+  ["GIT_COMMIT", "Fixes: #12", [["Fixes:", "propertyName"], ["#12", "constName"]]],
+  ["GIT_REBASE", "pick a1b2c3d fix the thing", [["pick", "controlKeyword"], ["a1b2c3d", "number"]]],
+  ["NIM", "proc greet(name: string) =", [
+    ["proc", "definitionKeyword"], ["greet", "fnName"], ["string", "typeName"],
+  ]],
+  ["NIM", "let x = 1 # c", [["let", "definitionKeyword"], ["1", "number"], ["# c", "comment"]]],
+  ["GLEAM", "pub fn main() -> Nil {", [
+    ["pub", "definitionKeyword"], ["main", "fnName"], ["->", "operator"], ["Nil", "atom"],
+  ]],
+  ["ADA", "procedure Main is -- go", [["procedure", "definitionKeyword"], ["-- go", "comment"]]],
+  ["ADA", 'Put_Line ("Hello");', [['"Hello"', "string"]]],
+  ["QML", "Rectangle { width: 100 }", [
+    ["Rectangle", "typeName"], ["width", "propertyName"], ["100", "number"],
+  ]],
+];
+
+describe("long-tail grammars", () => {
+  it.each(TAIL_CASES)("%s colors %s", (mode, line, expected) => {
+    const got = tokens(TEST_MODES[mode], line);
+    for (const [text, token] of expected) has(got, text, token);
+  });
+
+  it("covers every long-tail grammar", () => {
+    const covered = new Set(TAIL_CASES.map(([mode]) => mode));
+    expect(Object.keys(TEST_MODES).filter((m) => !covered.has(m as keyof typeof TEST_MODES)))
+      .toEqual(["MAKE", "HCL", "GRAPHQL", "PRISMA", "ELIXIR", "NIX"]);
+  });
+});
+
 describe("extra language descriptions", () => {
   // A token name CodeMirror can't resolve is styled as nothing at all, and the
   // only symptom is a console warning, so check every name up front.
   it("only emits token names the highlighter knows", () => {
-    const known = new Set([...Object.keys(tags), ...Object.keys(TOKEN_TABLE)]);
+    // Modifiers ("function", "constant", …) are functions on `tags`, not tags,
+    // so they resolve to nothing on their own; TOKEN_TABLE is where a modified
+    // tag gets a name.
+    const plainTags = Object.entries(tags).filter(([, tag]) => typeof tag !== "function").map(([name]) => name);
+    const known = new Set([...plainTags, ...Object.keys(TOKEN_TABLE)]);
     const used = new Set<string>();
     for (const states of Object.values(TEST_MODES)) {
       for (const rules of Object.values(states)) {

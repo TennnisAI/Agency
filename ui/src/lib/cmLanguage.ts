@@ -13,9 +13,9 @@ import { languageIdForPath } from "./fileLanguage";
 export const CM_REGISTRY = [...languages, ...EXTRA_LANGUAGES];
 
 // Ids whose grammar lives under a different name in language-data, plus the
-// ones we deliberately serve with a near neighbour: Svelte/Astro/Razor are
-// HTML with an embedded script block, GDScript and Vyper are Python-shaped,
-// and systemd/desktop units are INI files.
+// ones we deliberately serve with a near neighbour: Svelte/Astro/Razor/Marko
+// are HTML with an embedded script block, GDScript and Vyper are
+// Python-shaped, and systemd/desktop units are INI files.
 export const CM_LANGUAGE_NAMES: Record<string, string> = {
   "asm": "gas",
   "astro": "html",
@@ -34,6 +34,7 @@ export const CM_LANGUAGE_NAMES: Record<string, string> = {
   "jsonc": "json",
   "jsonl": "json",
   "luau": "lua",
+  "marko": "html",
   "mdx": "markdown",
   "objective-cpp": "objective-c++",
   "postcss": "css",

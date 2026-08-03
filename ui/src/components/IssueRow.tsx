@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { Issue, IssuePatch, IssueStatus, RunInfo } from "../api";
-import { ISSUE_STATUSES, PRIORITY_LABELS, STATUS_COLORS, STATUS_LABELS, fmtDate, isOverdue } from "../lib/issues";
+import { ISSUE_STATUSES, PRIORITY_LABELS, STATUS_COLORS, STATUS_LABELS, fmtDate, isOverdue, matchRanges } from "../lib/issues";
 import { dateStamp } from "../lib/dailyNote";
 import AgentAddMenu from "./AgentAddMenu";
 
@@ -16,6 +16,22 @@ export function PriorityGlyph({ priority }: { priority: number }) {
       ))}
     </span>
   );
+}
+
+// Text with the active search terms lit up. No terms (or no hit) renders the
+// plain string, so a row costs nothing extra when nobody is searching.
+function Hits({ text, terms }: { text: string; terms?: string[] }) {
+  const ranges = terms && terms.length > 0 ? matchRanges(text, terms) : [];
+  if (ranges.length === 0) return <>{text}</>;
+  const out: React.ReactNode[] = [];
+  let at = 0;
+  ranges.forEach(([start, end], i) => {
+    if (start > at) out.push(text.slice(at, start));
+    out.push(<mark key={i} className="issue-hit">{text.slice(start, end)}</mark>);
+    at = end;
+  });
+  if (at < text.length) out.push(text.slice(at));
+  return <>{out}</>;
 }
 
 export function StatusDot({ status }: { status: IssueStatus }) {
@@ -47,6 +63,7 @@ export default function IssueRow({
   onPatch,
   onDelete,
   drag,
+  terms,
 }: {
   issue: Issue;
   label: string;
@@ -70,6 +87,8 @@ export default function IssueRow({
     status: IssueStatus;
     onMouseDown: (e: React.MouseEvent) => void;
   };
+  // Active search terms, lit up in the key and title.
+  terms?: string[];
 }) {
   const [menu, setMenu] = useState<"status" | "more" | null>(null);
   const [coords, setCoords] = useState<{ top: number; left?: number; right?: number }>({ top: 0, left: 0 });
@@ -108,8 +127,10 @@ export default function IssueRow({
       data-issue-status={drag?.status}
     >
       <PriorityGlyph priority={issue.priority} />
-      <code className="issue-key">{label}</code>
-      <span className={`issue-title${issue.status === "cancelled" ? " cancelled" : ""}`}>{issue.title}</span>
+      <code className="issue-key"><Hits text={label} terms={terms} /></code>
+      <span className={`issue-title${issue.status === "cancelled" ? " cancelled" : ""}`}>
+        <Hits text={issue.title} terms={terms} />
+      </span>
       {issue.due && (
         <span
           className={`issue-due${isOverdue(issue, today) ? " overdue" : ""}`}

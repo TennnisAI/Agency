@@ -7,12 +7,28 @@ import { useRuns } from "../store/runs";
 import { useIssues } from "../hooks/useIssues";
 import { useCrossRefs } from "../hooks/useCrossRefs";
 import { useDocs } from "../hooks/useDocs";
-import { ISSUE_STATUSES, PENDING_ISSUE_KEY, PENDING_QUICKADD_KEY, STATUS_LABELS, compareIssues, isClosed, issueLabel, issuesExpandedKey } from "../lib/issues";
+import {
+  ISSUE_STATUSES,
+  IssueSort,
+  PENDING_ISSUE_KEY,
+  PENDING_QUICKADD_KEY,
+  PRIORITY_LABELS,
+  STATUS_LABELS,
+  StatusFilter,
+  filtersActive,
+  isClosed,
+  issueLabel,
+  issueSorter,
+  issuesExpandedKey,
+  matchesFilters,
+  searchTerms,
+} from "../lib/issues";
 import { pickDefaultAgent } from "../lib/defaultAgent";
 import { loadFold, saveFold, usePaneWidth } from "../hooks/usePaneWidth";
 import IssueRow from "./IssueRow";
 import IssueDetail from "./IssueDetail";
 import ConfirmDialog from "./ConfirmDialog";
+import PillSelect from "./PillSelect";
 import Resizer from "./Resizer";
 import { toastError } from "../lib/toast";
 
@@ -41,6 +57,21 @@ export default function IssuesView({
   // Quick-add rests as a + button and expands into an inline input on demand.
   const [quickOpen, setQuickOpen] = useState(false);
   const quickRef = useRef<HTMLInputElement>(null);
+  // Search and filters. Same controls as the cross-project home board, and
+  // they live only for this visit — a hidden filter left over from last time
+  // reads as a broken board.
+  const [q, setQ] = useState("");
+  const [fStatus, setFStatus] = useState<StatusFilter>("all");
+  const [fPriority, setFPriority] = useState(-1);
+  const [sort, setSort] = useState<IssueSort>("board");
+  const searchRef = useRef<HTMLInputElement>(null);
+
+  function clearFilters() {
+    setQ("");
+    setFStatus("all");
+    setFPriority(-1);
+    setSort("board");
+  }
 
   // Expanded mode: the detail pane takes over the view and the list compresses
   // to a sidebar. Remembered per project, so coming back to a tracker restores
@@ -62,7 +93,7 @@ export default function IssuesView({
   // other resizable pane — only the expanded/contracted choice is per project.
   const sidebar = usePaneWidth("issues-sidebar", 288, SIDEBAR_MIN, SIDEBAR_MAX);
 
-  useEffect(() => { setSelectedId(null); setQuick(""); setQuickOpen(false); }, [project.id]);
+  useEffect(() => { setSelectedId(null); setQuick(""); setQuickOpen(false); clearFilters(); }, [project.id]);
   useEffect(() => { if (quickOpen) quickRef.current?.focus(); }, [quickOpen]);
 
   // The palette's "New Issue" lands here: open quick-add on tab activation.
@@ -86,21 +117,39 @@ export default function IssuesView({
     }
   }, [issues]);
 
-  const groups = useMemo(
-    () =>
-      ISSUE_STATUSES.map((status) => ({
-        status,
-        issues: issues.filter((i) => i.status === status).sort(compareIssues),
-      })),
-    [issues],
+  const terms = useMemo(() => searchTerms(q), [q]);
+  const filters = useMemo(
+    () => ({ terms, status: fStatus, priority: fPriority }),
+    [terms, fStatus, fPriority],
   );
+  const filtered = filtersActive(filters);
+  // Anything the user has touched up top, including a sort — what "Reset" and
+  // the match count answer to.
+  const narrowed = filtered || sort !== "board";
+  // Manual order only means something over the whole, board-sorted group: a
+  // rank computed from a filtered subset would reshuffle the hidden rows.
+  const reorderable = !narrowed;
+  const groups = useMemo(() => {
+    const sorter = issueSorter(sort);
+    return ISSUE_STATUSES.map((status) => ({
+      status,
+      issues: issues
+        .filter((i) => i.status === status && matchesFilters(i, issueLabel(project, i), filters))
+        .sort(sorter),
+    }));
+  }, [issues, filters, sort, project]);
   // Mouse handlers commit against the freshest grouping, not their closure's.
   const groupsRef = useRef(groups);
   groupsRef.current = groups;
+  // A hit inside a folded done/cancelled group would otherwise be a match the
+  // board never shows, so filtering opens every group.
+  const groupOpen = (status: IssueStatus) => filtered || !isClosed(status) || openClosed.has(status);
   const visible = useMemo(
-    () => groups.flatMap((g) => (isClosed(g.status) && !openClosed.has(g.status) ? [] : g.issues)),
-    [groups, openClosed],
+    () => groups.flatMap((g) => (groupOpen(g.status) ? g.issues : [])),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [groups, openClosed, filtered],
   );
+  const matched = groups.reduce((n, g) => n + g.issues.length, 0);
   const selected = issues.find((i) => i.id === selectedId) ?? null;
   const runsFor = (issue: Issue) => runs.filter((r) => r.issueId === issue.id);
   // Attachments are written beside the issue files, in the project's main
@@ -270,8 +319,8 @@ export default function IssuesView({
     setTab("agents");
   }
 
-  // Linear-flavored keys: `c` captures, arrows move, Enter opens, 0-4 set
-  // priority. Skipped while typing in any field or when a dialog is up.
+  // Linear-flavored keys: `c` captures, `/` searches, arrows move, Enter
+  // opens, 0-4 set priority. Skipped while typing in any field.
   useEffect(() => {
     if (tab !== "issues") return;
     const onKey = (e: KeyboardEvent) => {
@@ -282,6 +331,10 @@ export default function IssuesView({
         e.preventDefault();
         setQuickOpen(true);
         quickRef.current?.focus();
+      } else if (e.key === "/") {
+        e.preventDefault();
+        searchRef.current?.focus();
+        searchRef.current?.select();
       } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
         if (visible.length === 0) return;
         e.preventDefault();
@@ -346,6 +399,75 @@ export default function IssuesView({
             onBlur={() => { if (!quick.trim()) setQuickOpen(false); }}
           />
         </div>
+        {issues.length > 0 && (
+          // Compressed to a sidebar there is no room for the pills, so the bar
+          // keeps what a narrow list needs most — the search, and the way back
+          // to the whole board if a filter is still on from before the expand.
+          <div className={`issues-filterbar issues-toolbar${wide ? " compact" : ""}`}>
+            <span className="filter-search">
+              <span className="filter-search-glyph">⌕</span>
+              <input
+                ref={searchRef}
+                placeholder="Search issues…"
+                title="Search issues (/)"
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key !== "Escape") return;
+                  // First Escape empties a query, the next leaves the field.
+                  if (q) setQ("");
+                  else (e.target as HTMLInputElement).blur();
+                }}
+              />
+              {q && <button className="filter-clear" title="Clear search" onClick={() => setQ("")}>✕</button>}
+            </span>
+            {narrowed && !wide && (
+              <span className="filter-count">{matched} of {issues.length}</span>
+            )}
+            <div className="spacer" />
+            {narrowed && (
+              <button className="filter-reset" title="Clear search and filters" onClick={clearFilters}>
+                Reset
+              </button>
+            )}
+            {!wide && (
+              <>
+                <PillSelect<StatusFilter>
+                  value={fStatus}
+                  defaultValue="all"
+                  title="Status"
+                  onChange={setFStatus}
+                  options={[
+                    { value: "all", label: "All statuses" },
+                    { value: "open", label: "Open" },
+                    ...ISSUE_STATUSES.map((s) => ({ value: s, label: STATUS_LABELS[s] })),
+                  ]}
+                />
+                <PillSelect
+                  value={fPriority}
+                  defaultValue={-1}
+                  title="Priority"
+                  onChange={setFPriority}
+                  options={[
+                    { value: -1, label: "Any priority" },
+                    ...PRIORITY_LABELS.map((p, n) => ({ value: n, label: p })),
+                  ]}
+                />
+                <PillSelect<IssueSort>
+                  value={sort}
+                  defaultValue="board"
+                  title="Sort"
+                  onChange={setSort}
+                  options={[
+                    { value: "board", label: "Board order" },
+                    { value: "due", label: "Due date" },
+                    { value: "updated", label: "Recently updated" },
+                  ]}
+                />
+              </>
+            )}
+          </div>
+        )}
         {loaded && issues.length === 0 ? (
           <div className="board empty issues-empty">
             <button
@@ -359,16 +481,23 @@ export default function IssuesView({
           </div>
         ) : (
           <div className={`issues-list${drag ? " reordering" : ""}${wide ? " compact" : ""}`}>
+            {issues.length > 0 && matched === 0 && (
+              <div className="issues-nomatch">
+                <div className="issues-nomatch-title">No issues match</div>
+                <button className="ghost" onClick={clearFilters}>Clear search and filters</button>
+              </div>
+            )}
             {groups.map(({ status, issues: group }) => {
               if (group.length === 0) return null;
               const closed = isClosed(status);
-              const open = !closed || openClosed.has(status);
+              const open = groupOpen(status);
               return (
                 <section key={status} className="issue-group">
                   <button
                     className="issue-group-head"
                     onClick={() => {
-                      if (!closed) return;
+                      // Filtering pins every group open, so folding is off.
+                      if (!closed || filtered) return;
                       setOpenClosed((prev) => {
                         const next = new Set(prev);
                         if (next.has(status)) next.delete(status); else next.add(status);
@@ -376,7 +505,7 @@ export default function IssuesView({
                       });
                     }}
                   >
-                    {closed && <span className="issue-group-chev">{open ? "▾" : "▸"}</span>}
+                    {closed && !filtered && <span className="issue-group-chev">{open ? "▾" : "▸"}</span>}
                     <span className="issue-group-name">{STATUS_LABELS[status]}</span>
                     <span className="issue-group-count">{group.length}</span>
                   </button>
@@ -395,7 +524,8 @@ export default function IssuesView({
                       onSpawnAgent={(agentId, opts) => { onStartIssue(issue, agentId, opts); }}
                       onPatch={(p) => patch(issue, p)}
                       onDelete={() => setConfirmDelete(issue)}
-                      drag={{
+                      terms={terms}
+                      drag={!reorderable ? undefined : {
                         over:
                           drag && drag.status === status && drag.to === idx && drag.from !== idx
                             ? (drag.to > drag.from ? "below" : "above")

@@ -54,6 +54,84 @@ export function compareIssues(a: Issue, b: Issue): number {
   return a.createdAt - b.createdAt || a.seq - b.seq;
 }
 
+// ── search & filters ────────────────────────────────────────────────────────
+// Shared by both boards (the per-project Issues tab and the cross-project home
+// overview) so a query behaves the same wherever it's typed.
+
+// "all" shows every status, "open" hides done/cancelled, anything else pins
+// one status.
+export type StatusFilter = "all" | "open" | IssueStatus;
+
+// Sort within whatever grouping the board applies. "board" is the default:
+// workflow order, then the manual rank / priority / age chain.
+export type IssueSort = "board" | "due" | "updated";
+
+export interface IssueFilters {
+  // Search terms from `searchTerms()` — every one of them must match.
+  terms: string[];
+  status: StatusFilter;
+  // -1 = any priority.
+  priority: number;
+}
+
+export const NO_FILTERS: IssueFilters = { terms: [], status: "all", priority: -1 };
+
+// Whitespace-separated terms, lowercased. Multiple terms read as AND, so
+// "auth flake" finds the issue that mentions both in any order.
+export function searchTerms(query: string): string[] {
+  return query.toLowerCase().split(/\s+/).filter(Boolean);
+}
+
+export function filtersActive(f: IssueFilters): boolean {
+  return f.terms.length > 0 || f.status !== "all" || f.priority >= 0;
+}
+
+// `label` is the issue's display key ("AGE-14") so searching for it — or for
+// the bare number — finds the issue.
+export function matchesFilters(issue: Issue, label: string, f: IssueFilters): boolean {
+  if (f.status === "open" ? isClosed(issue.status) : f.status !== "all" && issue.status !== f.status) return false;
+  if (f.priority >= 0 && issue.priority !== f.priority) return false;
+  if (f.terms.length === 0) return true;
+  const hay = `${label}\n${issue.title}\n${issue.body}`.toLowerCase();
+  return f.terms.every((t) => hay.includes(t));
+}
+
+// Ranges of `text` covered by any search term, merged and left-to-right — the
+// highlight behind a matching title. Case-insensitive; empty when nothing hits.
+export function matchRanges(text: string, terms: string[]): [number, number][] {
+  const hay = text.toLowerCase();
+  const spans: [number, number][] = [];
+  for (const term of terms) {
+    if (!term) continue;
+    for (let at = hay.indexOf(term); at >= 0; at = hay.indexOf(term, at + 1)) {
+      spans.push([at, at + term.length]);
+    }
+  }
+  spans.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const merged: [number, number][] = [];
+  for (const [start, end] of spans) {
+    const last = merged[merged.length - 1];
+    if (last && start <= last[1]) last[1] = Math.max(last[1], end);
+    else merged.push([start, end]);
+  }
+  return merged;
+}
+
+// The board's sort comparator. Status order leads so a flat cross-project list
+// still reads in workflow order; inside a status group that term is a no-op.
+export function issueSorter(sort: IssueSort): (a: Issue, b: Issue) => number {
+  if (sort === "due") {
+    return (a, b) => {
+      const da = a.due ?? "9999";
+      const db = b.due ?? "9999";
+      if (da !== db) return da < db ? -1 : 1;
+      return compareIssues(a, b);
+    };
+  }
+  if (sort === "updated") return (a, b) => b.updatedAt - a.updatedAt;
+  return (a, b) => ISSUE_STATUSES.indexOf(a.status) - ISSUE_STATUSES.indexOf(b.status) || compareIssues(a, b);
+}
+
 // ── dates ───────────────────────────────────────────────────────────────────
 // Dates are "YYYY-MM-DD" strings throughout (the storage format); `today`
 // comes from `dateStamp(new Date())` at the call site so all of these stay

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { AgentProfile, Issue, getSettings, listProfiles, listProjectBranches } from "../api";
 import { agentLabel } from "../agents";
 import { useRuns, SpawnOpts } from "../store/runs";
@@ -16,6 +17,7 @@ export default function AgentAddMenu({
   issue,
   issueLabel,
   terminalOnly = false,
+  onOpenChange,
 }: {
   onSpawn: (agentId: string, opts?: SpawnOpts) => void;
   // Required (not optional) so every call site exposes the same options — the two
@@ -32,6 +34,9 @@ export default function AgentAddMenu({
   // Git-less workspace: everything that needs a worktree/branch is hidden, so
   // the menu collapses to the terminal entry.
   terminalOnly?: boolean;
+  // Lets a host that hides its controls on hover (the issue rows) keep them up
+  // while this menu is open.
+  onOpenChange?: (open: boolean) => void;
 }) {
   // While a workspace is being created, the triggers are disabled so the
   // slow first spawn can't be double-fired.
@@ -43,6 +48,15 @@ export default function AgentAddMenu({
   const [loopOpen, setLoopOpen] = useState(false);
   const [importMode, setImportMode] = useState<"issue" | "pr" | null>(null);
   const btnRef = useRef<HTMLButtonElement>(null);
+
+  // Kept in a ref so a host passing a fresh closure each render doesn't
+  // re-announce the same state.
+  const announce = useRef(onOpenChange);
+  announce.current = onOpenChange;
+  useEffect(() => {
+    announce.current?.(open);
+    return () => { if (open) announce.current?.(false); };
+  }, [open]);
 
   // Agent options are derived from the defined profiles (not hardcoded) so newly
   // added definitions show up. Both add-menus read the same source, so they stay
@@ -165,7 +179,13 @@ export default function AgentAddMenu({
           )}
         </button>
       )}
-      {open && (
+      {/* Into the body, so nothing between here and the viewport can move or
+          hide the menu. The coords are the viewport's, and any transformed
+          ancestor would become the containing block for `position: fixed` and
+          re-read them as its own — which is exactly what the sidebar issue
+          list's floated actions strip does to the trigger sitting in it. React
+          events still bubble along the component tree. */}
+      {open && createPortal(
         <>
           <div className="agent-menu-backdrop" onClick={() => setOpen(false)} />
           <div className="agent-menu" style={{ position: "fixed", ...coords }}>
@@ -249,7 +269,8 @@ export default function AgentAddMenu({
               </>
             )}
           </div>
-        </>
+        </>,
+        document.body,
       )}
       {raceOpen && <RaceDialog onClose={() => setRaceOpen(false)} issue={issue} issueLabel={issueLabel} />}
       {loopOpen && <LoopDialog onClose={() => setLoopOpen(false)} issue={issue} issueLabel={issueLabel} />}

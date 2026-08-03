@@ -2028,6 +2028,15 @@ input, textarea, code,
    stay readable while you skim them. */
 .issue-hit { background: none; color: var(--yellow); font-weight: 600; }
 
+/* The glyph is the control: clicking it opens the priority picker. Padding
+   buys a real hit target; the negative margin keeps the row's metrics. */
+.issue-prio-btn {
+  display: inline-flex; flex-shrink: 0; align-items: center;
+  background: transparent; border: none; border-radius: 4px;
+  padding: 3px; margin: -3px; cursor: pointer;
+}
+.issue-prio-btn:hover { background: var(--s1); }
+
 .issue-prio { display: inline-flex; align-items: flex-end; gap: 1.5px; width: 14px; height: 12px; flex-shrink: 0; justify-content: center; }
 .issue-prio i { width: 3px; border-radius: 1px; background: var(--s1); }
 .issue-prio i.on { background: var(--o1); }
@@ -2045,18 +2054,23 @@ input, textarea, code,
 .issue-status-pill:hover { background: var(--s0); color: var(--text); }
 .issue-status-pill.static { pointer-events: none; }
 
-/* Row actions surface on hover/selection, like tile buttons. */
+/* Row actions surface on hover/selection, like tile buttons. A menu opened
+   from one of them holds the strip up: its backdrop takes the pointer, so the
+   row stops being hovered the moment it opens. */
 .issue-row-actions { display: flex; align-items: center; gap: 4px; visibility: hidden; }
-.issue-row:hover .issue-row-actions, .issue-row.selected .issue-row-actions { visibility: visible; }
+.issue-row:hover .issue-row-actions,
+.issue-row.selected .issue-row-actions,
+.issue-row.menu-open .issue-row-actions { visibility: visible; }
 .issue-row-actions .issue-status-pill { visibility: visible; }
 
 /* Sidebar list (detail expanded). The actions reserve their own width in the
    normal layout, which would leave almost nothing for the title at 288px — so
    here they lift out of the flow and float over the row's right edge on hover,
    fading in over the row's own hover fill. The due pill drops; it is a click
-   away in the detail pane. */
+   away in the detail pane. Type and row metrics are untouched: the list is
+   narrower here, not smaller. */
 .issues-list.compact { padding: 8px 10px 24px; }
-.issues-list.compact .issue-row { gap: 6px; padding: 5px 7px; position: relative; }
+.issues-list.compact .issue-row { position: relative; }
 .issues-list.compact .issue-due { display: none; }
 .issues-list.compact .issue-row-actions {
   position: absolute; right: 5px; top: 50%; transform: translateY(-50%);
@@ -2064,7 +2078,8 @@ input, textarea, code,
   background: linear-gradient(to right, transparent, var(--s0) 20px);
 }
 .issues-list.compact .issue-row:hover .issue-row-actions,
-.issues-list.compact .issue-row.selected .issue-row-actions { display: flex; }
+.issues-list.compact .issue-row.selected .issue-row-actions,
+.issues-list.compact .issue-row.menu-open .issue-row-actions { display: flex; }
 
 /* Detail pane */
 .issue-detail {
@@ -2076,6 +2091,12 @@ input, textarea, code,
 .issue-detail.drop-target { box-shadow: inset 0 0 0 2px var(--blue); }
 .issue-detail-head { display: flex; align-items: center; gap: 8px; }
 .issue-detail-head .spacer { flex: 1; }
+/* Dispatch pair: ▶ and the agent picker read as one control, ruled off from
+   the pane's own buttons (attach, expand, close). */
+.issue-detail-start {
+  display: inline-flex; align-items: center; gap: 2px;
+  padding-right: 8px; margin-right: -2px; border-right: 1px solid var(--line);
+}
 /* Title & description read as plain header/body text; clicking edits in place. */
 .issue-detail-title, .issue-detail-body {
   width: 100%; background: transparent; border: 0; border-radius: 6px;

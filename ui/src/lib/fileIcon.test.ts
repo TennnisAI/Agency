@@ -49,5 +49,16 @@ describe("fileIcon", () => {
   it("falls back to a generic file for unknown types", () => {
     expect(fileIcon("mystery")).toEqual({ kind: "file", color: "var(--sub1)" });
     expect(fileIcon("archive.xyz")).toEqual({ kind: "file", color: "var(--sub1)" });
+    // Inherited Object keys are not file types.
+    expect(fileIcon("constructor")).toEqual({ kind: "file", color: "var(--sub1)" });
+    expect(fileIcon("a.__proto__")).toEqual({ kind: "file", color: "var(--sub1)" });
+  });
+
+  it("shows a code icon for languages it has no color for", () => {
+    // Anything fileLanguage.ts recognizes is source, even without an entry of
+    // its own here (e.g. Haxe, Gleam).
+    expect(fileIcon("Main.hx").kind).toBe("code");
+    expect(fileIcon("main.gleam").kind).toBe("code");
+    expect(fileIcon("notes.txt").kind).toBe("doc");
   });
 });

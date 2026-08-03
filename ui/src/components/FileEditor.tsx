@@ -5,7 +5,7 @@ import { basicSetup } from "codemirror";
 import { defaultKeymap } from "@codemirror/commands";
 import { marked } from "marked";
 import { FileRoot, readFile, readFileBase64, writeFile } from "../api";
-import { languageExtension } from "../lib/cmLanguage";
+import { loadLanguage } from "../lib/cmLanguage";
 import { editorChromeTheme, editorHighlight } from "../lib/cmTheme";
 import { getWordWrap } from "../lib/editorPrefs";
 import { bufferKey, dropBuffer, stashBuffer, takeBuffer } from "../lib/editorBuffers";
@@ -86,6 +86,9 @@ const FileEditor = forwardRef<FileEditorHandle, {
   const viewRef = useRef<EditorView | null>(null);
   // Compartment so the word-wrap toggle reconfigures the live editor in place.
   const wrapRef = useRef(new Compartment());
+  // Ditto for the language: grammars load as dynamic chunks, so the editor
+  // mounts on plain text and swaps the grammar in when its chunk arrives.
+  const langRef = useRef(new Compartment());
   const [status, setStatus] = useState<"loading" | "binary" | "tooLarge" | "ready" | "error">("loading");
   const [dirty, setDirty] = useState(false);
   // Mirror of `dirty` for unmount cleanup + a change-only owner callback.
@@ -211,7 +214,7 @@ const FileEditor = forwardRef<FileEditorHandle, {
           editorChromeTheme,
           editorHighlight,
           wrapRef.current.of(getWordWrap() ? EditorView.lineWrapping : []),
-          ...languageExtension(path),
+          langRef.current.of([]),
           keymap.of([
             { key: "Mod-s", preventDefault: true, run: () => { void save.current(); return true; } },
             ...defaultKeymap,
@@ -219,8 +222,16 @@ const FileEditor = forwardRef<FileEditorHandle, {
           EditorView.updateListener.of((u) => { if (u.docChanged) markDirtyRef.current(true); }),
         ],
       });
-      viewRef.current = new EditorView({ state, parent: host });
+      const view = new EditorView({ state, parent: host });
+      viewRef.current = view;
       if (stashed !== null) markDirtyRef.current(true);
+      // The first line lets shebang scripts (scripts/deploy, no extension)
+      // resolve. Guarded on the live view so a fast tab switch can't drop a
+      // stale grammar into the next file's editor.
+      void loadLanguage(path, fc.text.slice(0, 200).split("\n", 1)[0]).then((lang) => {
+        if (cancelled || viewRef.current !== view || lang.length === 0) return;
+        view.dispatch({ effects: langRef.current.reconfigure(lang) });
+      });
     }).catch((e) => {
       if (cancelled) return;
       setErrorMsg(String(e));

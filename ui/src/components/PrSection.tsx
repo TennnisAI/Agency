@@ -44,6 +44,10 @@ export default function PrSection({
   const [busy, setBusy] = useState(false);
   const [sent, setSent] = useState(false);
   const [error, setError] = useState("");
+  // True until the opening probe (gh readiness, then the PR's current state)
+  // has settled. Rendering the section's real content before then shows
+  // "Create pull request" for a run that turns out to already have one.
+  const [probing, setProbing] = useState(true);
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -58,12 +62,15 @@ export default function PrSection({
   useEffect(() => {
     let live = true;
     ghReadiness(projectId)
-      .then((r) => {
+      .then(async (r) => {
         if (!live) return;
         setReadiness(r);
-        if (r === "ready") refreshStatus();
+        if (r === "ready") await refreshStatus();
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => {
+        if (live) setProbing(false);
+      });
     return () => {
       live = false;
     };
@@ -100,10 +107,12 @@ export default function PrSection({
 
   const failing = checks.filter((c) => c.bucket === "fail" || c.bucket === "cancel");
 
-  // Render the section (with its label and border) from the first frame so the
-  // Merge button above it never shifts. While the gh readiness probe is in
-  // flight we hold the space with a spinner instead of popping in a beat later.
-  if (readiness === null) {
+  // Render the section (with its label and border) from the first frame, and
+  // hold it at a spinner until the whole opening probe has settled — the
+  // section's real content arrives at its final shape rather than in two hops.
+  // The modal is top-anchored, so it grows downward and leaves the Merge button
+  // above it alone.
+  if (probing || readiness === null) {
     return (
       <div className="pr-section">
         <div className="pr-section-label">Pull request</div>

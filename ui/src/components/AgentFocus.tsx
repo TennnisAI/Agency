@@ -20,7 +20,8 @@ import Resizer from "./Resizer";
 import ArchivedSection from "./ArchivedSection";
 import { usePaneWidth, loadFold, saveFold } from "../hooks/usePaneWidth";
 import AgentAddMenu from "./AgentAddMenu";
-import { TrashIcon, InboxIcon, TerminalIcon, PencilIcon } from "./icons";
+import OverflowMenu from "./OverflowMenu";
+import { TrashIcon, InboxIcon, TerminalIcon, PencilIcon, CheckIcon, BranchIcon } from "./icons";
 
 const SHELL_MIN = 120;
 const SHELL_MAX = 640;
@@ -261,10 +262,14 @@ export default function AgentFocus({
             <>
               <div className="focus-head">
                 <span className="badge">terminal</span>
-                <span className="focus-name">{focused.title || "terminal"}</span>
-                <button className="tile-act icon-only" title="Rename" onClick={() => setRenaming(focused)}><PencilIcon /></button>
+                <span className="focus-name" title={focused.title || "terminal"}>{focused.title || "terminal"}</span>
                 <span className="spacer" />
-                <button className="tile-act danger icon-only" title="Close terminal" onClick={() => setConfirmDiscard(true)}><TrashIcon /></button>
+                <OverflowMenu
+                  items={[
+                    { label: "Rename terminal", icon: <PencilIcon />, onSelect: () => setRenaming(focused) },
+                    { label: "Close terminal", icon: <TrashIcon />, danger: true, separator: true, onSelect: () => setConfirmDiscard(true) },
+                  ]}
+                />
               </div>
               <FocusTerminal key={focused.id} runId={focused.id} />
               {confirmDiscard && (
@@ -290,38 +295,57 @@ export default function AgentFocus({
             </>
           ) : (
             <>
+              {/* One row, always: identity on the left, the one primary action
+                  on the right, everything else behind "…". The middle group is
+                  the only thing allowed to shrink, and it truncates rather than
+                  wrapping the header onto a second line. */}
               <div className="focus-head">
                 <span className={badgeClass(focused.agent)}>{focused.agent}</span>
-                {focused.title && <span className="focus-name">{focused.title}</span>}
-                <button className="tile-act icon-only" title="Rename agent" onClick={() => setRenaming(focused)}><PencilIcon /></button>
-                <code>{focused.branch}</code>
-                {!focused.worktree && (
-                  <span className="badge" title="Works in the project checkout, not an isolated worktree">
-                    in checkout
+                {focused.title && <span className="focus-name" title={focused.title}>{focused.title}</span>}
+                <div className="focus-head-meta">
+                  <span className="branch-chip" title={`Branch: ${focused.branch}`}>
+                    <BranchIcon />
+                    <span className="branch-chip-name">{focused.branch}</span>
                   </span>
-                )}
-                {issueChip && (
-                  <button
-                    className="issue-chip"
-                    title={issueChip.title}
-                    onClick={() => requestNavigate({ kind: "issue", projectId: issueChip.projectId, issueId: issueChip.issueId })}
-                  >
-                    <span aria-hidden>▧</span> {issueChip.label}
-                  </button>
-                )}
+                  {!focused.worktree && (
+                    <span className="badge" title="Works in the project checkout, not an isolated worktree">
+                      in checkout
+                    </span>
+                  )}
+                  {issueChip && (
+                    <button
+                      className="issue-chip"
+                      title={issueChip.title}
+                      onClick={() => requestNavigate({ kind: "issue", projectId: issueChip.projectId, issueId: issueChip.issueId })}
+                    >
+                      <span aria-hidden>▧</span> {issueChip.label}
+                    </button>
+                  )}
+                </div>
+                <span className="spacer" />
                 {panel !== "run" && (
                   <button
-                    className={`focus-shell-toggle icon-only ${shellOpen ? "on" : ""}`}
+                    className={`head-icon-btn ${shellOpen ? "on" : ""}`}
                     title={focused.worktree ? "Toggle terminal in this worktree" : "Toggle terminal in the project checkout"}
                     onClick={toggleShell}
                   ><TerminalIcon /></button>
                 )}
-                <span className="spacer" />
-                <button className="tile-act danger icon-only" title="Discard agent" onClick={() => setConfirmDiscard(true)}><TrashIcon /></button>
-                <button className="tile-act icon-only" title="Archive agent" onClick={() => setConfirmArchive(true)}><InboxIcon /></button>
+                <OverflowMenu
+                  items={[
+                    { label: "Rename agent", icon: <PencilIcon />, onSelect: () => setRenaming(focused) },
+                    { label: "Archive agent", icon: <InboxIcon />, separator: true, onSelect: () => setConfirmArchive(true) },
+                    { label: "Discard agent", icon: <TrashIcon />, danger: true, onSelect: () => setConfirmDiscard(true) },
+                  ]}
+                />
                 {/* Nothing to approve without a branch of its own: the work is
                     already on the checkout's branch, reviewed in Source Control. */}
-                {focused.worktree && <button onClick={() => setShowMerge(true)}>Approve →</button>}
+                {focused.worktree && (
+                  <button className="btn-approve" title="Approve & merge this agent's branch" onClick={() => setShowMerge(true)}>
+                    <CheckIcon />
+                    <span>Approve</span>
+                    <kbd className="btn-approve-kbd">⌘↵</kbd>
+                  </button>
+                )}
               </div>
               <LoopStrip run={focused} onChanged={refreshRuns} />
               <div className="session-tabs">

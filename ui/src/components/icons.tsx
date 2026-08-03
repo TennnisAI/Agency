@@ -55,3 +55,35 @@ export function InboxIcon({ size = 13 }: IconProps) {
     </svg>
   );
 }
+
+export function CheckIcon({ size = 13 }: IconProps) {
+  return (
+    <svg {...base(size)} strokeWidth={2.6}>
+      <polyline points="4 12.5 9.5 18 20 6.5" />
+    </svg>
+  );
+}
+
+// Horizontal "…" affordance for an overflow menu. Dots are filled, not stroked,
+// so they stay round at 14px instead of collapsing into dashes.
+export function MoreIcon({ size = 14 }: IconProps) {
+  return (
+    <svg {...base(size)} fill="currentColor" stroke="none">
+      <circle cx="5" cy="12" r="1.85" />
+      <circle cx="12" cy="12" r="1.85" />
+      <circle cx="19" cy="12" r="1.85" />
+    </svg>
+  );
+}
+
+export function BranchIcon({ size = 12 }: IconProps) {
+  return (
+    <svg {...base(size)}>
+      <circle cx="6" cy="5" r="2.5" />
+      <circle cx="6" cy="19" r="2.5" />
+      <circle cx="18" cy="8" r="2.5" />
+      <path d="M18 10.5v1A3.5 3.5 0 0 1 14.5 15H6" />
+      <path d="M6 7.5v9" />
+    </svg>
+  );
+}

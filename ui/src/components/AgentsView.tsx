@@ -20,6 +20,7 @@ import IssuesView from "./IssuesView";
 import SidebarToggle from "./SidebarToggle";
 import RightPanelToggle from "./RightPanelToggle";
 import QuickOpen from "./QuickOpen";
+import { useElementWidth } from "../hooks/useElementWidth";
 
 // Main content area. With a project selected this is that project's agents /
 // source control / files; with none it hosts the all-projects overview under
@@ -107,31 +108,62 @@ export default function AgentsView({
   }, []);
   useEffect(() => { setQuickOpen(false); }, [project?.id, tab]);
 
+  // Toolbar density. The header never wraps; as it narrows it drops the long
+  // form of a label, then the labels themselves, leaving the glyphs (each
+  // button keeps a title, so the name is a hover away).
+  const [headRef, headWidth] = useElementWidth<HTMLDivElement>();
+  // 0 = not measured yet: assume roomy so the first paint isn't collapsed.
+  // Thresholds sit just under what each step needs: ~735px for the full row,
+  // ~680 once the long labels shorten, ~500 once the tabs are glyphs only.
+  const density = headWidth === 0 ? "" : headWidth < 700 ? " is-tight" : headWidth < 800 ? " is-compact" : "";
+
   return (
     <main className="agents">
-      <div className="content-head">
+      <div className={`content-head${density}`} ref={headRef}>
         {!sidebarOpen && <SidebarToggle open={false} onToggle={onToggleSidebar} />}
         <div className="seg">
-          <button className={tab === "agents" ? "on" : ""} onClick={() => setTab("agents")}>▦ Agents</button>
-          <button className={tab === "issues" ? "on" : ""} onClick={() => setTab("issues")}>▧ Issues</button>
-          <button className={tab === "docs" ? "on" : ""} onClick={() => setTab("docs")}>▥ Docs</button>
+          <button className={tab === "agents" ? "on" : ""} title="Agents" onClick={() => setTab("agents")}>
+            <span className="seg-ico" aria-hidden>▦</span><span className="seg-label">Agents</span>
+          </button>
+          <button className={tab === "issues" ? "on" : ""} title="Issues" onClick={() => setTab("issues")}>
+            <span className="seg-ico" aria-hidden>▧</span><span className="seg-label">Issues</span>
+          </button>
+          <button className={tab === "docs" ? "on" : ""} title="Docs" onClick={() => setTab("docs")}>
+            <span className="seg-ico" aria-hidden>▥</span><span className="seg-label">Docs</span>
+          </button>
           {!gitlessWorkspace && (
-            <button className={tab === "source" ? "on" : ""} onClick={() => setTab("source")}>⎇ Source Control</button>
+            <button className={tab === "source" ? "on" : ""} title="Source Control" onClick={() => setTab("source")}>
+              <span className="seg-ico" aria-hidden>⎇</span>
+              <span className="seg-label-short">Source</span>
+              <span className="seg-label">Source Control</span>
+            </button>
           )}
           {!isWorkspace && (
-            <button className={tab === "files" ? "on" : ""} onClick={() => setTab("files")}>▤ Files</button>
+            <button className={tab === "files" ? "on" : ""} title="Files" onClick={() => setTab("files")}>
+              <span className="seg-ico" aria-hidden>▤</span><span className="seg-label">Files</span>
+            </button>
           )}
         </div>
         {project && tab === "agents" && (
           <div className="seg">
-            <button className={view === "grid" ? "on" : ""} onClick={() => setView("grid")}>▦ Grid</button>
-            <button className={view === "focus" ? "on" : ""} onClick={() => setView("focus")}>▭ Focus</button>
+            <button className={view === "grid" ? "on" : ""} title="Grid view" onClick={() => setView("grid")}>
+              <span className="seg-ico" aria-hidden>▦</span><span className="seg-label">Grid</span>
+            </button>
+            <button className={view === "focus" ? "on" : ""} title="Focus view" onClick={() => setView("focus")}>
+              <span className="seg-ico" aria-hidden>▭</span><span className="seg-label">Focus</span>
+            </button>
           </div>
         )}
         {project && tab === "source" && (
           <div className="seg">
-            <button className={srcTab === "changes" ? "on" : ""} onClick={() => setSrcTab("changes")}>Changes</button>
-            <button className={srcTab === "prs" ? "on" : ""} onClick={() => setSrcTab("prs")}>Pull Requests</button>
+            <button className={srcTab === "changes" ? "on" : ""} title="Changes" onClick={() => setSrcTab("changes")}>
+              <span className="seg-label-short">Diff</span>
+              <span className="seg-label">Changes</span>
+            </button>
+            <button className={srcTab === "prs" ? "on" : ""} title="Pull Requests" onClick={() => setSrcTab("prs")}>
+              <span className="seg-label-short">PRs</span>
+              <span className="seg-label">Pull Requests</span>
+            </button>
           </div>
         )}
         <div className="spacer" />

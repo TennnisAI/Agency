@@ -291,6 +291,9 @@ function HomeTile({ run, onOpen }: { run: RunInfo; onOpen: () => void }) {
       <div className="tile-head">
         <span className={`dot ${st.cls}`} />
         <span className="tile-title">{runName(run)}</span>
+        {run.runScriptsLive && (
+          <span className="run-dot" title="A run script is running in this workspace" />
+        )}
         <span className={isTerminal ? "badge" : badgeClass(run.agent)}>{isTerminal ? "terminal" : run.agent}</span>
       </div>
       {!isTerminal && (

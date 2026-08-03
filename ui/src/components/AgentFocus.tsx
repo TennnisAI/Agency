@@ -281,6 +281,9 @@ export default function AgentFocus({
                 title="Double-click to rename">
                 <span className={`dot ${runStatus(r).cls}`} />
                 <span className="rail-name">{runListLabel(r)}</span>
+                {r.runScriptsLive && (
+                  <span className="run-dot" title="A run script is running in this workspace" />
+                )}
               </button>
             ))}
             <ArchivedSection />
@@ -421,11 +424,17 @@ export default function AgentFocus({
                 <span className="spacer" />
                 <button
                   className={`session-tab run-tab ${panel === "run" ? "on" : ""}`}
+                  title={focused.runScriptsLive
+                    ? "Run: a script is running in this workspace"
+                    : "Run this project's scripts in this agent's workspace"}
                   onClick={() => {
                     if (panel !== "run") beforeRun.current = panel;
                     selectPanel("run");
                   }}
-                >Run</button>
+                >
+                  Run
+                  {focused.runScriptsLive && <span className="run-dot" aria-hidden />}
+                </button>
               </div>
               {addOpen && (
                 <>

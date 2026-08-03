@@ -221,6 +221,7 @@ pub fn run() {
             commands::start_run_script,
             commands::stop_run_script,
             commands::run_scripts_status,
+            commands::run_scripts_live,
             commands::run_script_preview,
             commands::attach_run_script,
             commands::detach_run_script,

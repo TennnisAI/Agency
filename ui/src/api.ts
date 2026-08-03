@@ -64,6 +64,9 @@ export interface RunInfo {
   files: number;
   port: number | null;
   kind: "agent" | "terminal";
+  // True while one of the project's run scripts is still running in this run's
+  // workspace — the dot on the tile and on the Run tab.
+  runScriptsLive: boolean;
   // False = the run works in the project's main checkout on its current branch
   // instead of an isolated worktree, so it has no branch of its own to merge or
   // open a PR from, and discarding it leaves the checkout untouched.
@@ -319,6 +322,11 @@ export const stopRunScript = (target: string, script: string) =>
   invoke<void>("stop_run_script", { target, script });
 export const runScriptsStatus = (target: string) =>
   invoke<RunScriptStatus[]>("run_scripts_status", { target });
+// Just the "something is running here" bit, for the dot on the project's Run
+// tab. Agents carry the same flag on their RunInfo (`runScriptsLive`), so the
+// board never asks per agent.
+export const runScriptsLive = (target: string) =>
+  invoke<boolean>("run_scripts_live", { target });
 
 // A terminal pane carries a single id, but a run script is addressed by
 // workspace *and* script name. These pack the pair into one key for the

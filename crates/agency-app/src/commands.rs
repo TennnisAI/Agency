@@ -1292,6 +1292,14 @@ pub async fn run_scripts_status(
     state.run_scripts_status(&target).map_err(|e| e.to_string())
 }
 
+/// Whether anything is running in this workspace's run scripts, for the dot on
+/// the project's Run tab. Agents carry the same flag on their `RunInfo`, so the
+/// board doesn't need a call per agent.
+#[tauri::command]
+pub async fn run_scripts_live(state: State<'_, AppState>, target: String) -> Result<bool, String> {
+    state.run_scripts_live(&target).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn run_script_preview(
     state: State<'_, AppState>,

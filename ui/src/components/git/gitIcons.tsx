@@ -37,6 +37,20 @@ export function CloudIcon({ size = 11 }: { size?: number }) {
   );
 }
 
+/** Cloud with an up-arrow: publishing a branch to the remote. Sized to sit
+ *  beside button text rather than inside a ref pill, hence the larger default. */
+export function CloudUploadIcon({ size = 15 }: { size?: number }) {
+  const p = base(size);
+  return (
+    <svg {...p}>
+      {/* The CloudIcon outline, minus its bottom edge so the arrow passes through. */}
+      <path d="M6.2 12.5H4.5A3.2 3.2 0 0 1 4.17 5.68a4 4 0 0 1 7.83.86 3 3 0 0 1-.5 5.96H9.8" />
+      <path d="M8 14.6V7.5" />
+      <path d="M5.9 9.6 8 7.5l2.1 2.1" />
+    </svg>
+  );
+}
+
 /** Tag glyph. */
 export function TagIcon({ size = 11 }: { size?: number }) {
   const p = base(size);

@@ -80,7 +80,11 @@ export default function BranchBar({ taskId, info, busy = false, onAct, onPush, o
       {(info.ahead > 0 || info.behind > 0) && (
         <span className="git-aheadbehind">
           {info.behind > 0 && <span title={`${info.behind} behind upstream`}>{info.behind}↓</span>}
-          {info.ahead > 0 && <span title={`${info.ahead} ahead of upstream`}>{info.ahead}↑</span>}
+          {/* Without an upstream, ahead is measured from the branch's fork point
+              instead — the commits this branch alone adds. */}
+          {info.ahead > 0 && (
+            <span title={`${info.ahead} ahead of ${info.upstream ?? "the base branch"}`}>{info.ahead}↑</span>
+          )}
         </span>
       )}
       <span className="spacer" style={{ flex: 1 }} />

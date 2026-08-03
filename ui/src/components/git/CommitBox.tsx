@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { CloudUploadIcon } from "./gitIcons";
 
 // In-progress commit messages outlive the commit box being unmounted (switching
 // tabs, toggling the review pane). Keyed by repo so each keeps its own draft for
@@ -81,9 +82,14 @@ export default function CommitBox({
             <button className="git-secondary" onClick={onSync} disabled={busy}>⟳ Sync {behind ? `↓${behind}` : ""} {ahead ? `↑${ahead}` : ""}</button>
           // No upstream: only offer Publish when there are commits to push.
           : ahead > 0 && (hasRemote
-            ? <button className="git-secondary" onClick={onPublish} disabled={busy}>{"☁︎"} Publish Branch ↑{ahead}</button>
-            : <button className="git-secondary" onClick={() => setAddingRemote((o) => !o)} disabled={busy}
-                title="No 'origin' remote configured. Add one to publish.">{"☁︎"} Add Remote &amp; Publish…</button>)}
+            ? <button className="git-secondary git-iconlabel" onClick={onPublish} disabled={busy}
+                title={`Push ${ahead} commit${ahead === 1 ? "" : "s"} to a new origin/${branch}`}>
+                <CloudUploadIcon />
+                <span>Publish Branch ↑{ahead}</span></button>
+            : <button className="git-secondary git-iconlabel" onClick={() => setAddingRemote((o) => !o)} disabled={busy}
+                title="No 'origin' remote configured. Add one to publish.">
+                <CloudUploadIcon />
+                <span>Add Remote &amp; Publish…</span></button>)}
       </div>
       {addingRemote && !hasRemote && (
         <div className="git-remote-row">

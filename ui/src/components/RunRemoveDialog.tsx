@@ -7,18 +7,22 @@ import ConfirmDialog from "./ConfirmDialog";
 
 /**
  * Confirm-and-perform for archiving or discarding a run. Every place a run can
- * be removed from (the grid tile, the focus header, the agents rail) shares
- * this, so the wording and the aftermath are the same everywhere: the run that
- * just went away stops being the focused one, and the list refreshes.
+ * be removed from (the grid tile, the focus header, the agents rail, the Agent
+ * menu) shares this, so the wording and the aftermath are the same everywhere:
+ * the run that just went away stops being the focused one, and the list
+ * refreshes. `onRemoved` is for whatever else the caller has to put back after
+ * the run is gone; it runs only when the removal actually succeeded.
  */
 export default function RunRemoveDialog({
   run,
   action,
   onClose,
+  onRemoved,
 }: {
   run: RunInfo;
   action: Removal;
   onClose: () => void;
+  onRemoved?: () => void;
 }) {
   const { focusedRunId, setFocusedRun, refreshRuns } = useRuns();
   const [busy, setBusy] = useState(false);
@@ -43,6 +47,7 @@ export default function RunRemoveDialog({
             ? archiveRun(run.id, setProgress)
             : discardRun(run.id, setProgress));
           if (focusedRunId === run.id) setFocusedRun(null);
+          onRemoved?.();
           await refreshRuns();
         } catch (e) {
           toastError(e, copy.failTitle);

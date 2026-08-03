@@ -1861,6 +1861,12 @@ input, textarea, code,
   display: flex; align-items: center; justify-content: center;
   padding: 32px;
 }
+/* Vertical centring moves everything in the card whenever it grows, and the
+   merge modal grows after it opens (the GitHub PR and its checks land a beat
+   later, below the Merge button). Anchoring the top edge instead lets the late
+   content extend downward while the button stays exactly where it was. */
+.settings-overlay.anchor-top { align-items: flex-start; padding-top: 8vh; }
+.settings-overlay.anchor-top > .merge-modal { max-height: min(86vh, calc(92vh - 32px)); }
 .settings-head { display: flex; align-items: center; gap: 10px; }
 .settings-head h2 { margin: 0; font-size: 15px; font-weight: 600; flex: 1; }
 .merge-modal.race-dialog { width: 480px; }

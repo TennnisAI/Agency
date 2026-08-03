@@ -211,7 +211,7 @@ export default function MergeModal({
   const nothingToMerge = !!preview && preview.commitsAhead === 0;
 
   return (
-    <div className="settings-overlay" onClick={() => { if (!busy) onClose(); }}>
+    <div className="settings-overlay anchor-top" onClick={() => { if (!busy) onClose(); }}>
       <div
         className="merge-modal"
         role="dialog"

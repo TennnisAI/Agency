@@ -8,10 +8,13 @@ import {
   isOverdue,
   issueSorter,
   issuesCollapsedKey,
+  issuesSelectedKey,
   loadCollapsed,
+  loadSelected,
   matchRanges,
   matchesFilters,
   saveCollapsed,
+  saveSelected,
   searchTerms,
   todayIssues,
 } from "./issues";
@@ -216,5 +219,49 @@ describe("collapsed groups", () => {
     const storage = makeStorage();
     storage.setItem("pane:" + KEY, "todo,archived");
     expect([...loadCollapsed(storage, KEY)]).toEqual(["todo"]);
+  });
+});
+
+describe("remembered selection", () => {
+  function makeStorage(): Pick<Storage, "getItem" | "setItem" | "removeItem"> {
+    const map = new Map<string, string>();
+    return {
+      getItem: (key: string) => map.get(key) ?? null,
+      setItem: (key: string, value: string) => { map.set(key, value); },
+      removeItem: (key: string) => { map.delete(key); },
+    };
+  }
+  const KEY = issuesSelectedKey("p1");
+
+  it("has nothing open on a first visit", () => {
+    expect(loadSelected(makeStorage(), KEY, [issue({})])).toBeNull();
+  });
+
+  it("round-trips the open issue", () => {
+    const storage = makeStorage();
+    const open = issue({});
+    saveSelected(storage, KEY, open.id);
+    expect(loadSelected(storage, KEY, [issue({}), open])).toBe(open.id);
+  });
+
+  it("forgets the selection once the pane is closed", () => {
+    const storage = makeStorage();
+    const open = issue({});
+    saveSelected(storage, KEY, open.id);
+    saveSelected(storage, KEY, null);
+    expect(loadSelected(storage, KEY, [open])).toBeNull();
+  });
+
+  it("drops an issue that is no longer there", () => {
+    const storage = makeStorage();
+    saveSelected(storage, KEY, issue({}).id);
+    expect(loadSelected(storage, KEY, [issue({})])).toBeNull();
+  });
+
+  it("keeps its own key per project", () => {
+    const storage = makeStorage();
+    const open = issue({});
+    saveSelected(storage, KEY, open.id);
+    expect(loadSelected(storage, issuesSelectedKey("p2"), [open])).toBeNull();
   });
 });

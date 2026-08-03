@@ -21,9 +21,12 @@ import {
   issueSorter,
   issuesCollapsedKey,
   issuesExpandedKey,
+  issuesSelectedKey,
   loadCollapsed,
+  loadSelected,
   matchesFilters,
   saveCollapsed,
+  saveSelected,
   searchTerms,
 } from "../lib/issues";
 import { pickDefaultAgent } from "../lib/defaultAgent";
@@ -53,7 +56,7 @@ export default function IssuesView({
   const { runs, tab, setTab, setView, setFocusedRun } = useRuns();
   const { issues, loaded, refresh } = useIssues(project.id, tab === "issues");
   const [quick, setQuick] = useState("");
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedIdState] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<Issue | null>(null);
   // Any status group folds; done/cancelled are the ones that start folded.
   const [collapsed, setCollapsed] = useState<Set<IssueStatus>>(() => new Set(DEFAULT_COLLAPSED));
@@ -115,7 +118,45 @@ export default function IssuesView({
     }
   }
 
-  useEffect(() => { setSelectedId(null); setQuick(""); setQuickOpen(false); clearFilters(); }, [project.id]);
+  // Which issue is open is remembered per project as well, so a trip to the
+  // agents, a diff or a note and back lands on the ticket being read. Only
+  // deliberate opens and closes are recorded — a project switch clears the
+  // pane through the raw setter below, and must not erase the selection
+  // stored for the project being switched to.
+  const selectedKey = issuesSelectedKey(project.id);
+  const setSelectedId = (id: string | null) => {
+    setSelectedIdState(id);
+    try {
+      if (typeof localStorage !== "undefined") saveSelected(localStorage, selectedKey, id);
+    } catch {
+      /* storage unavailable */
+    }
+  };
+  // Which project's stored selection has been restored already: without it,
+  // a pane the user just closed would spring back open on the next poll.
+  const restoredFor = useRef<string | null>(null);
+  useEffect(() => {
+    // On the commit where the project changes, the list is still the previous
+    // project's, and an empty list says nothing about whose it is: restore
+    // only against issues that are demonstrably this project's, so a stale
+    // list can't burn the one restore this board gets.
+    if (issues.length === 0 || issues[0].projectId !== project.id) return;
+    if (restoredFor.current === project.id) return;
+    restoredFor.current = project.id;
+    // A handoff from elsewhere (the home overview, the palette) is fresher
+    // intent than the stored selection; the effect below applies it.
+    if (sessionStorage.getItem(PENDING_ISSUE_KEY)) return;
+    let stored: string | null = null;
+    try {
+      if (typeof localStorage !== "undefined") stored = loadSelected(localStorage, selectedKey, issues);
+    } catch {
+      /* storage unavailable */
+    }
+    if (stored) setSelectedIdState(stored);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [issues, project.id, selectedKey]);
+
+  useEffect(() => { setSelectedIdState(null); setQuick(""); setQuickOpen(false); clearFilters(); }, [project.id]);
   useEffect(() => { if (quickOpen) quickRef.current?.focus(); }, [quickOpen]);
 
   // The palette's "New Issue" lands here: open quick-add on tab activation.

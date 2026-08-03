@@ -3,6 +3,7 @@ mod agent_catalog;
 mod clipboard;
 mod commands;
 mod datadir;
+mod gates;
 mod lifecycle;
 mod looper;
 mod menu;

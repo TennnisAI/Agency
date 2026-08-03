@@ -44,10 +44,21 @@ fn readiness_dto(r: agency_core::setup::RepoReadiness) -> ReadinessDto {
 // doubles as a lock against concurrent git index writes.
 //
 // A mutating command may go async once something else provides that mutual
-// exclusion: `create_run` and the teardowns hold `worktree_gate`, `stop_run`
-// and `ensure_run_active` write no index at all. The merge family (`merge_task`,
-// `finish_merge_task`, `abort_merge_task`) and `rerun` are the ones still
-// waiting on a gate — see AGE-54.
+// exclusion. The gates that stand in for the main thread, and what each covers:
+//
+//   worktree_gate  one at a time across the app: `create_run` and the
+//                  teardowns, which add and remove git worktrees.
+//   repo_gates     per project: the merge family, and every mutating `git_*`
+//                  command pointed at that project's own checkout (a
+//                  `project:<id>` target, a terminal, an agent with no worktree
+//                  of its own). They all write the one index the merge moves.
+//   spawn_gates    per session: `rerun`, `ensure_run_active` and `stop_run`,
+//                  which kill and respawn a session the daemon registers by id.
+//   loop_gate      one at a time across the app: every loop transition,
+//                  including the driver's own spawns.
+//
+// A mutating command that writes no index and spawns nothing (`stop_loop`,
+// settings, the registry-only commands) needs none of them.
 #[tauri::command]
 pub async fn list_projects(state: State<'_, AppState>) -> Result<Vec<Project>, String> {
     state.list_projects().map_err(|e| e.to_string())
@@ -370,8 +381,13 @@ pub async fn run_status(state: State<'_, AppState>, id: String) -> Result<Sessio
     state.run_status(&id).map_err(|e| e.to_string())
 }
 
+// async: a rerun is a kill plus a spawn, two daemon round-trips, and on the
+// main thread the window sat still for both. `AppState::rerun` holds this
+// session's `spawn_gates` entry, which is the mutual exclusion the main thread
+// used to provide: without it two overlapping reruns would leave two agent
+// processes with only the second one registered.
 #[tauri::command]
-pub fn rerun(state: State<'_, AppState>, id: String) -> Result<RunInfo, String> {
+pub async fn rerun(state: State<'_, AppState>, id: String) -> Result<RunInfo, String> {
     state.rerun(&id).map_err(|e| e.to_string())
 }
 
@@ -402,59 +418,61 @@ pub async fn git_diff(
     git::diff(&wt, &path, staged).map_err(|e| e.to_string())
 }
 
+// The mutating git commands below are async and go through `git_mutate` rather
+// than `git_root`. Every one of them can be pointed at the project's own
+// checkout (a `project:<id>` target, a terminal, an agent working without a
+// worktree), and that is the checkout the merge family moves between branches,
+// so `git_mutate` holds the project's gate for exactly those targets. An
+// agent's private worktree has an index of its own and is written unguarded,
+// the way it always was.
 #[tauri::command]
-pub fn git_stage(state: State<'_, AppState>, task_id: String, path: String) -> Result<(), String> {
-    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
-    git::stage(&wt, &path).map_err(|e| e.to_string())
+pub async fn git_stage(state: State<'_, AppState>, task_id: String, path: String) -> Result<(), String> {
+    state.git_mutate(&task_id, |wt| git::stage(wt, &path)).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn git_unstage(
+pub async fn git_unstage(
     state: State<'_, AppState>,
     task_id: String,
     path: String,
 ) -> Result<(), String> {
-    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
-    git::unstage(&wt, &path).map_err(|e| e.to_string())
+    state.git_mutate(&task_id, |wt| git::unstage(wt, &path)).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn git_stage_all(state: State<'_, AppState>, task_id: String) -> Result<(), String> {
-    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
-    agency_core::git::stage_all(&wt).map_err(|e| e.to_string())
+pub async fn git_stage_all(state: State<'_, AppState>, task_id: String) -> Result<(), String> {
+    state.git_mutate(&task_id, agency_core::git::stage_all).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn git_unstage_all(state: State<'_, AppState>, task_id: String) -> Result<(), String> {
-    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
-    agency_core::git::unstage_all(&wt).map_err(|e| e.to_string())
+pub async fn git_unstage_all(state: State<'_, AppState>, task_id: String) -> Result<(), String> {
+    state.git_mutate(&task_id, agency_core::git::unstage_all).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn git_discard(
+pub async fn git_discard(
     state: State<'_, AppState>,
     task_id: String,
     path: String,
     untracked: bool,
 ) -> Result<(), String> {
-    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
-    agency_core::git::discard(&wt, &path, untracked).map_err(|e| e.to_string())
+    state
+        .git_mutate(&task_id, |wt| agency_core::git::discard(wt, &path, untracked))
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn git_discard_all(state: State<'_, AppState>, task_id: String) -> Result<(), String> {
-    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
-    agency_core::git::discard_all(&wt).map_err(|e| e.to_string())
+pub async fn git_discard_all(state: State<'_, AppState>, task_id: String) -> Result<(), String> {
+    state.git_mutate(&task_id, agency_core::git::discard_all).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn git_commit(
+pub async fn git_commit(
     state: State<'_, AppState>,
     task_id: String,
     message: String,
 ) -> Result<(), String> {
-    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
-    git::commit(&wt, &message).map_err(|e| e.to_string())
+    state.git_mutate(&task_id, |wt| git::commit(wt, &message)).map_err(|e| e.to_string())
 }
 
 // async (not sync): a push round-trips the network for as long as the upload
@@ -477,27 +495,33 @@ pub async fn git_push(
 // async, streamed: same as `git_push`, but reconciles both directions before
 // pushing (VS Code-style "Sync Changes"). Returns `Diverged` when the branch
 // can't fast-forward so the UI can offer to rebase instead of failing outright.
+// Gated, unlike push: the pull half rewrites the working tree.
 #[tauri::command]
 pub async fn git_sync(
     state: State<'_, AppState>,
     task_id: String,
     on_progress: Channel<agency_core::setup::CloneProgress>,
 ) -> Result<git::SyncOutcome, String> {
-    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
-    git::sync(&wt, move |p| {
-        let _ = on_progress.send(p);
-    })
-    .map_err(|e| e.to_string())
+    state
+        .git_mutate(&task_id, |wt| {
+            git::sync(wt, move |p| {
+                let _ = on_progress.send(p);
+            })
+        })
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn git_set_remote(state: State<'_, AppState>, task_id: String, url: String) -> Result<(), String> {
-    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
-    git::set_origin(&wt, url.trim()).map_err(|e| e.to_string())
+pub async fn git_set_remote(state: State<'_, AppState>, task_id: String, url: String) -> Result<(), String> {
+    state
+        .git_mutate(&task_id, |wt| git::set_origin(wt, url.trim()))
+        .map_err(|e| e.to_string())
 }
 
 // async: both round-trip the network (fetch/pull), which must never run on the
-// main thread — a slow or offline remote would freeze the UI otherwise.
+// main thread — a slow or offline remote would freeze the UI otherwise. Only
+// `pull` takes the checkout gate: a fetch writes refs, not the working tree, and
+// gating it would park a merge behind a slow remote for nothing.
 #[tauri::command]
 pub async fn git_fetch(state: State<'_, AppState>, task_id: String) -> Result<(), String> {
     let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
@@ -506,8 +530,7 @@ pub async fn git_fetch(state: State<'_, AppState>, task_id: String) -> Result<()
 
 #[tauri::command]
 pub async fn git_pull(state: State<'_, AppState>, task_id: String) -> Result<(), String> {
-    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
-    git::pull(&wt).map_err(|e| e.to_string())
+    state.git_mutate(&task_id, git::pull).map_err(|e| e.to_string())
 }
 
 #[derive(Serialize)]
@@ -587,13 +610,25 @@ pub async fn merge_preview(state: State<'_, AppState>, task_id: String) -> Resul
     state.merge_preview(&task_id).map_err(|e| e.to_string())
 }
 
+// async + progress: `git merge` runs in the project's shared primary checkout —
+// a checkout of the base branch and then the merge itself, seconds each on a
+// large repo — and on the main thread the window froze for all of it behind a
+// modal that could only say "Merging…". The three merge commands hold that
+// project's `repo_gates` entry, which is the mutual exclusion the main thread
+// used to provide (see the note at the top of this file), and it is shared with
+// every mutating `git_*` command pointed at the same checkout.
 #[tauri::command]
-pub fn merge_task(
+pub async fn merge_task(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     task_id: String,
+    on_progress: Channel<agency_core::setup::CloneProgress>,
 ) -> Result<MergeOutcome, String> {
-    let outcome = state.merge_task(&task_id).map_err(|e| e.to_string())?;
+    let outcome = state
+        .merge_task_with_progress(&task_id, &mut |p| {
+            let _ = on_progress.send(p);
+        })
+        .map_err(|e| e.to_string())?;
     if let MergeOutcome::Conflicts { files } = &outcome {
         let settings = state.notif_settings().unwrap_or_default();
         let (focused, active) = state.ui_snapshot();
@@ -612,22 +647,45 @@ pub fn merge_task(
     Ok(outcome)
 }
 
+// async: read-only, and polled every 3s while a conflict is open — exactly the
+// shape the note at the top of this file says must stay off the main thread.
 #[tauri::command]
-pub fn merge_status(
+pub async fn merge_status(
     state: State<'_, AppState>,
     task_id: String,
 ) -> Result<agency_core::merge::MergeState, String> {
     state.merge_status(&task_id).map_err(|e| e.to_string())
 }
 
+// async + progress, under the same gate as `merge_task`: committing a resolved
+// merge and putting the checkout back on its old branch both rewrite the
+// working tree.
 #[tauri::command]
-pub fn finish_merge_task(state: State<'_, AppState>, task_id: String) -> Result<MergeOutcome, String> {
-    state.finish_merge_task(&task_id).map_err(|e| e.to_string())
+pub async fn finish_merge_task(
+    state: State<'_, AppState>,
+    task_id: String,
+    on_progress: Channel<agency_core::setup::CloneProgress>,
+) -> Result<MergeOutcome, String> {
+    state
+        .finish_merge_task_with_progress(&task_id, &mut |p| {
+            let _ = on_progress.send(p);
+        })
+        .map_err(|e| e.to_string())
 }
 
+// async + progress, under the same gate: undoing a merge rewrites the working
+// tree back, which is as slow as making it.
 #[tauri::command]
-pub fn abort_merge_task(state: State<'_, AppState>, task_id: String) -> Result<(), String> {
-    state.abort_merge_task(&task_id).map_err(|e| e.to_string())
+pub async fn abort_merge_task(
+    state: State<'_, AppState>,
+    task_id: String,
+    on_progress: Channel<agency_core::setup::CloneProgress>,
+) -> Result<(), String> {
+    state
+        .abort_merge_task_with_progress(&task_id, &mut |p| {
+            let _ = on_progress.send(p);
+        })
+        .map_err(|e| e.to_string())
 }
 
 // PR commands are async: each one shells out to `gh` (network calls that can
@@ -1028,25 +1086,27 @@ pub async fn git_parse_diff(
 }
 
 #[tauri::command]
-pub fn git_stage_hunk(
+pub async fn git_stage_hunk(
     state: State<'_, AppState>,
     task_id: String,
     path: String,
     hunk_index: usize,
 ) -> Result<(), String> {
-    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
-    agency_core::git::stage_hunk(&wt, &path, hunk_index).map_err(|e| e.to_string())
+    state
+        .git_mutate(&task_id, |wt| agency_core::git::stage_hunk(wt, &path, hunk_index))
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn git_unstage_hunk(
+pub async fn git_unstage_hunk(
     state: State<'_, AppState>,
     task_id: String,
     path: String,
     hunk_index: usize,
 ) -> Result<(), String> {
-    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
-    agency_core::git::unstage_hunk(&wt, &path, hunk_index).map_err(|e| e.to_string())
+    state
+        .git_mutate(&task_id, |wt| agency_core::git::unstage_hunk(wt, &path, hunk_index))
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1123,55 +1183,61 @@ pub async fn git_commit_diff(
 }
 
 #[tauri::command]
-pub fn git_commit_amend(
+pub async fn git_commit_amend(
     state: State<'_, AppState>,
     task_id: String,
     message: String,
 ) -> Result<(), String> {
-    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
-    agency_core::git::commit_amend(&wt, &message).map_err(|e| e.to_string())
+    state
+        .git_mutate(&task_id, |wt| agency_core::git::commit_amend(wt, &message))
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn git_checkout_branch(state: State<'_, AppState>, task_id: String, name: String) -> Result<(), String> {
-    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
-    agency_core::git::checkout_branch(&wt, &name).map_err(|e| e.to_string())
+pub async fn git_checkout_branch(state: State<'_, AppState>, task_id: String, name: String) -> Result<(), String> {
+    state
+        .git_mutate(&task_id, |wt| agency_core::git::checkout_branch(wt, &name))
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn git_create_branch(
+pub async fn git_create_branch(
     state: State<'_, AppState>,
     task_id: String,
     name: String,
     from: Option<String>,
     checkout: bool,
 ) -> Result<(), String> {
-    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
-    agency_core::git::create_branch(&wt, &name, from.as_deref(), checkout).map_err(|e| e.to_string())
+    state
+        .git_mutate(&task_id, |wt| {
+            agency_core::git::create_branch(wt, &name, from.as_deref(), checkout)
+        })
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn git_delete_branch(
+pub async fn git_delete_branch(
     state: State<'_, AppState>,
     task_id: String,
     name: String,
     force: bool,
 ) -> Result<(), String> {
-    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
-    agency_core::git::delete_branch(&wt, &name, force).map_err(|e| e.to_string())
+    state
+        .git_mutate(&task_id, |wt| agency_core::git::delete_branch(wt, &name, force))
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn git_list_branches(state: State<'_, AppState>, task_id: String) -> Result<agency_core::git::ProjectBranches, String> {
+pub async fn git_list_branches(state: State<'_, AppState>, task_id: String) -> Result<agency_core::git::ProjectBranches, String> {
     let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
     agency_core::git::list_branches(&wt).map_err(|e| e.to_string())
 }
 
-// async: round-trips the network, must never block the main thread.
+// async: round-trips the network, must never block the main thread. Gated like
+// `git_pull` (and unlike `git_push_force`): a rebase rewrites the working tree.
 #[tauri::command]
 pub async fn git_pull_rebase(state: State<'_, AppState>, task_id: String) -> Result<(), String> {
-    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
-    agency_core::git::pull_rebase(&wt).map_err(|e| e.to_string())
+    state.git_mutate(&task_id, agency_core::git::pull_rebase).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1181,67 +1247,79 @@ pub async fn git_push_force(state: State<'_, AppState>, task_id: String) -> Resu
 }
 
 #[tauri::command]
-pub fn git_undo_last_commit(state: State<'_, AppState>, task_id: String) -> Result<String, String> {
-    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
-    agency_core::git::undo_last_commit(&wt).map_err(|e| e.to_string())
+pub async fn git_undo_last_commit(state: State<'_, AppState>, task_id: String) -> Result<String, String> {
+    state
+        .git_mutate(&task_id, agency_core::git::undo_last_commit)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn git_reset_to(
+pub async fn git_reset_to(
     state: State<'_, AppState>,
     task_id: String,
     hash: String,
     mode: String,
 ) -> Result<(), String> {
-    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
-    agency_core::git::reset_to(&wt, &hash, &mode).map_err(|e| e.to_string())
+    state
+        .git_mutate(&task_id, |wt| agency_core::git::reset_to(wt, &hash, &mode))
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn git_revert_commit(state: State<'_, AppState>, task_id: String, hash: String) -> Result<(), String> {
-    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
-    agency_core::git::revert_commit(&wt, &hash).map_err(|e| e.to_string())
+pub async fn git_revert_commit(state: State<'_, AppState>, task_id: String, hash: String) -> Result<(), String> {
+    state
+        .git_mutate(&task_id, |wt| agency_core::git::revert_commit(wt, &hash))
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn git_cherry_pick(state: State<'_, AppState>, task_id: String, hash: String) -> Result<(), String> {
-    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
-    agency_core::git::cherry_pick(&wt, &hash).map_err(|e| e.to_string())
+pub async fn git_cherry_pick(state: State<'_, AppState>, task_id: String, hash: String) -> Result<(), String> {
+    state
+        .git_mutate(&task_id, |wt| agency_core::git::cherry_pick(wt, &hash))
+        .map_err(|e| e.to_string())
 }
 
+// Read-only, so no gate and no thread of its own to fight for: it only lists
+// what `stash push` left behind.
 #[tauri::command]
-pub fn git_stash_list(state: State<'_, AppState>, task_id: String) -> Result<Vec<agency_core::git::StashEntry>, String> {
+pub async fn git_stash_list(state: State<'_, AppState>, task_id: String) -> Result<Vec<agency_core::git::StashEntry>, String> {
     let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
     agency_core::git::stash_list(&wt).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn git_stash_push(
+pub async fn git_stash_push(
     state: State<'_, AppState>,
     task_id: String,
     message: Option<String>,
     include_untracked: bool,
 ) -> Result<(), String> {
-    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
-    agency_core::git::stash_push(&wt, message.as_deref(), include_untracked).map_err(|e| e.to_string())
+    state
+        .git_mutate(&task_id, |wt| {
+            agency_core::git::stash_push(wt, message.as_deref(), include_untracked)
+        })
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn git_stash_apply(state: State<'_, AppState>, task_id: String, index: usize) -> Result<(), String> {
-    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
-    agency_core::git::stash_apply(&wt, index).map_err(|e| e.to_string())
+pub async fn git_stash_apply(state: State<'_, AppState>, task_id: String, index: usize) -> Result<(), String> {
+    state
+        .git_mutate(&task_id, |wt| agency_core::git::stash_apply(wt, index))
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn git_stash_pop(state: State<'_, AppState>, task_id: String, index: usize) -> Result<(), String> {
-    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
-    agency_core::git::stash_pop(&wt, index).map_err(|e| e.to_string())
+pub async fn git_stash_pop(state: State<'_, AppState>, task_id: String, index: usize) -> Result<(), String> {
+    state
+        .git_mutate(&task_id, |wt| agency_core::git::stash_pop(wt, index))
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn git_stash_drop(state: State<'_, AppState>, task_id: String, index: usize) -> Result<(), String> {
-    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
-    agency_core::git::stash_drop(&wt, index).map_err(|e| e.to_string())
+pub async fn git_stash_drop(state: State<'_, AppState>, task_id: String, index: usize) -> Result<(), String> {
+    state
+        .git_mutate(&task_id, |wt| agency_core::git::stash_drop(wt, index))
+        .map_err(|e| e.to_string())
 }
 
 // async (not sync): the initial commit on a folder that isn't a repo yet means
@@ -1264,39 +1342,42 @@ pub async fn commit_repo(
 }
 
 #[tauri::command]
-pub fn git_stage_lines(
+pub async fn git_stage_lines(
     state: State<'_, AppState>,
     task_id: String,
     path: String,
     hunk_index: usize,
     lines: Vec<usize>,
 ) -> Result<(), String> {
-    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
-    agency_core::git::stage_lines(&wt, &path, hunk_index, &lines).map_err(|e| e.to_string())
+    state
+        .git_mutate(&task_id, |wt| agency_core::git::stage_lines(wt, &path, hunk_index, &lines))
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn git_unstage_lines(
+pub async fn git_unstage_lines(
     state: State<'_, AppState>,
     task_id: String,
     path: String,
     hunk_index: usize,
     lines: Vec<usize>,
 ) -> Result<(), String> {
-    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
-    agency_core::git::unstage_lines(&wt, &path, hunk_index, &lines).map_err(|e| e.to_string())
+    state
+        .git_mutate(&task_id, |wt| agency_core::git::unstage_lines(wt, &path, hunk_index, &lines))
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn git_revert_lines(
+pub async fn git_revert_lines(
     state: State<'_, AppState>,
     task_id: String,
     path: String,
     hunk_index: usize,
     lines: Vec<usize>,
 ) -> Result<(), String> {
-    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
-    agency_core::git::revert_lines(&wt, &path, hunk_index, &lines).map_err(|e| e.to_string())
+    state
+        .git_mutate(&task_id, |wt| agency_core::git::revert_lines(wt, &path, hunk_index, &lines))
+        .map_err(|e| e.to_string())
 }
 
 // ── Run scripts ──────────────────────────────────────────────────────────────

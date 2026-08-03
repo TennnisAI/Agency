@@ -96,6 +96,14 @@ struct RunTarget {
     port: Option<u16>,
 }
 
+/// The directory a git command works in, resolved from a Source Control target
+/// token, plus the project whose own checkout that directory is (`None` when it
+/// is an agent's private worktree). See [`AppState::git_target`].
+struct GitTarget {
+    path: std::path::PathBuf,
+    primary: Option<String>,
+}
+
 /// Result of importing an `mcp.json`: the full app-global list after the merge,
 /// plus how many servers the file contributed (so the UI can confirm the count).
 #[derive(Debug, Clone, serde::Serialize)]
@@ -477,6 +485,14 @@ fn step(on_progress: &mut dyn FnMut(agency_core::setup::CloneProgress), phase: &
     });
 }
 
+/// What a merge, finish or abort says when the project's checkout gate is
+/// already held. Every one of them fails fast rather than queueing: whatever
+/// has the gate is rewriting the very checkout they were about to inspect, so
+/// what they read before waiting is stale by the time their turn comes.
+fn busy_checkout_error() -> &'static str {
+    "the project's checkout is busy: another merge or git command is running there. Try again once it finishes."
+}
+
 /// Detail line for a teardown that walks a list of runs: which one of how many
 /// it is on, and what that one is called. Position first — over a sweep the
 /// phases repeat, and without the count they read as one teardown restarting.
@@ -791,11 +807,29 @@ pub struct AppState {
     /// separates "waiting on the user" from "idle, never prompted" in
     /// `activity::classify`. In-memory: forgotten runs just show idle.
     prompted: Mutex<HashSet<String>>,
-    /// Serializes merges. The merge sequence (status check → checkout →
-    /// merge) runs in the shared primary checkout and is not atomic, so a
-    /// second concurrent merge (double-click, another run's Approve) must
-    /// fail fast instead of interleaving.
-    merge_gate: Mutex<()>,
+    /// Per-project lock on the project's own checkout: its index, its working
+    /// tree, and the branch it stands on. Held by the merge family (whose
+    /// status check → checkout → merge sequence is not atomic) and by every
+    /// mutating `git_*` command whose target resolves to that checkout — a
+    /// `project:<id>` token, a terminal, or an agent working without a
+    /// worktree. All of those are async now, so this gate is the mutual
+    /// exclusion the main thread used to provide for free (see the note at the
+    /// top of `commands.rs`), and being per project means merging one repo no
+    /// longer makes another one's Source Control panel wait.
+    ///
+    /// An agent's own worktree has its own index and gets no gate: the agent
+    /// process commits there whenever it likes, outside anything Agency holds,
+    /// so serializing our writes against each other would buy nothing.
+    repo_gates: crate::gates::KeyedGates,
+    /// Per-session lock on kill-then-spawn. The terminal daemon's registry
+    /// inserts by session id, so two overlapping spawns of one id leave two
+    /// agent processes running with only the second registered — the first
+    /// keeps its pty and can never be killed again. `rerun`, `ensure_run_active`
+    /// and `stop_run` are all async, so this is what makes that impossible now
+    /// that the main thread doesn't. Looping runs are covered by `loop_gate`
+    /// instead; both are taken in that order (spawn gate first) wherever a path
+    /// needs the two, and `drive_loops` never takes this one.
+    spawn_gates: crate::gates::KeyedGates,
     /// Serializes workspace creation (worktree add + branch cut). `create_run`
     /// is async so a large checkout can't freeze the UI; this replaces the
     /// main-thread serialization that previously kept concurrent creates from
@@ -898,7 +932,8 @@ impl AppState {
             input_seen: Mutex::new(HashSet::new()),
             activity: Mutex::new(HashMap::new()),
             prompted: Mutex::new(HashSet::new()),
-            merge_gate: Mutex::new(()),
+            repo_gates: crate::gates::KeyedGates::new(),
+            spawn_gates: crate::gates::KeyedGates::new(),
             worktree_gate: Mutex::new(()),
             checks: Mutex::new(HashMap::new()),
             loop_gate: Mutex::new(()),
@@ -3035,6 +3070,12 @@ impl AppState {
     }
 
     pub fn stop_run(&self, id: &str) -> Result<()> {
+        // Under the spawn gate so a Stop can't land between a rerun's kill and
+        // its spawn, which would leave the session the user just stopped alive.
+        self.spawn_gates.with(id, || self.stop_run_locked(id))
+    }
+
+    fn stop_run_locked(&self, id: &str) -> Result<()> {
         // Stopping a looping run ends the loop too, or the driver would just
         // respawn the session on the next tick. Best-effort throughout: a
         // failed loop-state write must not abort the teardown below (the
@@ -3469,6 +3510,14 @@ impl AppState {
     /// agent's prior context; falls back to a fresh start; terminals get a fresh
     /// shell. No-op if a session already exists.
     pub fn ensure_run_active(&self, id: &str) -> Result<()> {
+        // Under the spawn gate, with the Gone check inside it: the check and
+        // the spawn are not one step, and two attach paths (or one of them and
+        // a rerun) could otherwise both read Gone and both spawn. See
+        // `spawn_gates` for why a second process is worse than a slow one.
+        self.spawn_gates.with(id, || self.ensure_run_active_locked(id))
+    }
+
+    fn ensure_run_active_locked(&self, id: &str) -> Result<()> {
         if !matches!(self.run_status(id)?, SessionStatus::Gone) {
             return Ok(());
         }
@@ -3556,6 +3605,15 @@ impl AppState {
     }
 
     pub fn rerun(&self, id: &str) -> Result<RunInfo> {
+        // Under the spawn gate: the kill and the spawn below are two daemon
+        // round-trips, and the registry inserts by session id, so two
+        // overlapping reruns would start two agent processes and register only
+        // the second. Waiting (rather than refusing) keeps a double-click doing
+        // what it did on the main thread: two reruns, one after the other.
+        self.spawn_gates.with(id, || self.rerun_locked(id))
+    }
+
+    fn rerun_locked(&self, id: &str) -> Result<RunInfo> {
         let run = self.run_record(id)?;
         if has_active_loop(&run) {
             bail!("this run is looping — stop the loop before rerunning it manually");
@@ -3852,10 +3910,43 @@ impl AppState {
     /// repo root). Lets the git commands operate at project level, not just per
     /// run, without changing their IPC signatures.
     pub fn git_root(&self, token: &str) -> Result<std::path::PathBuf> {
+        Ok(self.git_target(token)?.path)
+    }
+
+    /// [`git_root`], plus which project's *own* checkout that directory is —
+    /// the thing `repo_gates` is keyed by. `primary` is set for a
+    /// `project:<id>` token, for a terminal, and for an agent started without a
+    /// worktree, because all three resolve to the one checkout the merge family
+    /// moves between branches. It is `None` for an agent's private worktree,
+    /// which has an index of its own.
+    fn git_target(&self, token: &str) -> Result<GitTarget> {
         if let Some(pid) = token.strip_prefix("project:") {
-            return self.project_repo_path(pid);
+            return Ok(GitTarget { path: self.project_repo(pid)?, primary: Some(pid.to_string()) });
         }
-        self.worktree_path(token)
+        let run = self.run_record(token)?;
+        let repo = self.project_repo(&run.project_id)?;
+        Ok(GitTarget {
+            path: workspace_dir(&repo, &run),
+            primary: (!run.worktree).then(|| run.project_id.clone()),
+        })
+    }
+
+    /// Run a git command that writes its target — the index, the working tree,
+    /// a ref, the config — holding that project's checkout gate when the target
+    /// *is* the project's checkout. Every mutating `git_*` command goes through
+    /// this rather than [`git_root`]: they are async now, so this is what keeps
+    /// a stage or a checkout from landing in the middle of a merge. See
+    /// `repo_gates` for why an agent's own worktree isn't gated.
+    pub fn git_mutate<T>(
+        &self,
+        token: &str,
+        f: impl FnOnce(&Path) -> Result<T>,
+    ) -> Result<T> {
+        let target = self.git_target(token)?;
+        match &target.primary {
+            Some(project_id) => self.repo_gates.with(project_id, || f(&target.path)),
+            None => f(&target.path),
+        }
     }
 
     /// Source and destination branch names for a run, for the status bar.
@@ -3904,12 +3995,18 @@ impl AppState {
     }
 
     pub fn merge_task(&self, id: &str) -> anyhow::Result<agency_core::merge::MergeOutcome> {
-        // try_lock, not lock: a second merge racing the first should fail
-        // fast with a clear message, not queue up and re-merge afterwards.
-        let _gate = self
-            .merge_gate
-            .try_lock()
-            .map_err(|_| anyhow!("another merge is already in progress"))?;
+        self.merge_task_with_progress(id, &mut |_| {})
+    }
+
+    /// [`merge_task`] reporting each step it is on. `git merge` runs in the
+    /// project's shared checkout and takes seconds on a large repo — a checkout
+    /// of the base branch, then the merge itself — behind a modal that could
+    /// otherwise only sit there.
+    pub fn merge_task_with_progress(
+        &self,
+        id: &str,
+        on_progress: &mut dyn FnMut(agency_core::setup::CloneProgress),
+    ) -> anyhow::Result<agency_core::merge::MergeOutcome> {
         let run = self.run_record(id)?;
         require_own_branch(&run, "merge")?;
         // An active loop is still committing attempts onto this branch; merging
@@ -3919,20 +4016,32 @@ impl AppState {
         }
         let repo = self.project_repo(&run.project_id)?;
         let base = agency_core::merge::resolve_target(run.merge_target.as_deref(), &repo)?;
-        // Captured before the merge moves the checkout: on the conflict path
-        // `merge()` deliberately stays on `base`, so this is the only record of
-        // where to return once resolution ends.
-        let original = agency_core::merge::current_branch(&repo);
-        let outcome = agency_core::merge::merge(&repo, &run.branch, &base)?;
-        match &outcome {
-            agency_core::merge::MergeOutcome::Clean { .. } => self.after_merge_landed(&run, &repo),
-            agency_core::merge::MergeOutcome::Conflicts { .. } => {
-                if let Some(orig) = original.filter(|o| o != &base) {
-                    self.merge_origins.lock().unwrap().insert(id.to_string(), orig);
+        // try_with, not with: a merge that queued behind whatever else is
+        // writing this checkout would go on to run against a repo it never
+        // looked at, and a second merge of the same branch would land as a
+        // no-op that reports as a fresh success. Fail fast and let the user
+        // retry once they can see what the checkout is doing.
+        let merged = self.repo_gates.try_with(&run.project_id, || {
+            // Captured before the merge moves the checkout: on the conflict path
+            // `merge()` deliberately stays on `base`, so this is the only record of
+            // where to return once resolution ends.
+            let original = agency_core::merge::current_branch(&repo);
+            let outcome =
+                agency_core::merge::merge_with_progress(&repo, &run.branch, &base, on_progress)?;
+            match &outcome {
+                agency_core::merge::MergeOutcome::Clean { .. } => {
+                    step(on_progress, "Tidying up", &run.branch);
+                    self.after_merge_landed(&run, &repo);
+                }
+                agency_core::merge::MergeOutcome::Conflicts { .. } => {
+                    if let Some(orig) = original.filter(|o| o != &base) {
+                        self.merge_origins.lock().unwrap().insert(id.to_string(), orig);
+                    }
                 }
             }
-        }
-        Ok(outcome)
+            Ok(outcome)
+        });
+        merged.unwrap_or_else(|| Err(anyhow!(busy_checkout_error())))
     }
 
     /// Bookkeeping for a merge that landed, however it landed: first try, or
@@ -3966,37 +4075,70 @@ impl AppState {
     /// and restore the checkout's original branch, then do the same
     /// bookkeeping a clean first-try merge does.
     pub fn finish_merge_task(&self, id: &str) -> anyhow::Result<agency_core::merge::MergeOutcome> {
+        self.finish_merge_task_with_progress(id, &mut |_| {})
+    }
+
+    /// [`finish_merge_task`] reporting each step, and holding the project's
+    /// checkout gate for the same reason [`merge_task_with_progress`] does:
+    /// committing a merge and putting the checkout back on its old branch both
+    /// rewrite the working tree.
+    pub fn finish_merge_task_with_progress(
+        &self,
+        id: &str,
+        on_progress: &mut dyn FnMut(agency_core::setup::CloneProgress),
+    ) -> anyhow::Result<agency_core::merge::MergeOutcome> {
         let run = self.run_record(id)?;
         require_own_branch(&run, "merge")?;
         let repo = self.project_repo(&run.project_id)?;
         let base = agency_core::merge::resolve_target(run.merge_target.as_deref(), &repo)?;
-        let state = agency_core::merge::merge_state(&repo, &run.branch, &base)?;
-        if let Some(other) = &state.blocked_by {
-            bail!("the merge in progress is {other}'s, not this run's — finish or abort it there");
-        }
-        if !state.merging && !state.merged {
-            bail!("no merge in progress for this run, and its branch hasn't landed on {base}");
-        }
-        let restore = self.merge_origins.lock().unwrap().remove(id);
-        let commit = agency_core::merge::finish_merge(&repo, restore.as_deref())?;
-        self.after_merge_landed(&run, &repo);
-        Ok(agency_core::merge::MergeOutcome::Clean { commit })
+        let finished = self.repo_gates.try_with(&run.project_id, || {
+            step(on_progress, "Checking the merge", &run.branch);
+            let state = agency_core::merge::merge_state(&repo, &run.branch, &base)?;
+            if let Some(other) = &state.blocked_by {
+                bail!("the merge in progress is {other}'s, not this run's — finish or abort it there");
+            }
+            if !state.merging && !state.merged {
+                bail!("no merge in progress for this run, and its branch hasn't landed on {base}");
+            }
+            let restore = self.merge_origins.lock().unwrap().remove(id);
+            step(on_progress, "Completing the merge", &run.branch);
+            let commit = agency_core::merge::finish_merge(&repo, restore.as_deref())?;
+            step(on_progress, "Tidying up", &run.branch);
+            self.after_merge_landed(&run, &repo);
+            Ok(agency_core::merge::MergeOutcome::Clean { commit })
+        });
+        finished.unwrap_or_else(|| Err(anyhow!(busy_checkout_error())))
     }
 
     pub fn abort_merge_task(&self, id: &str) -> anyhow::Result<()> {
+        self.abort_merge_task_with_progress(id, &mut |_| {})
+    }
+
+    /// [`abort_merge_task`] reporting each step, under the same gate: undoing a
+    /// merge rewrites the working tree back, which is as slow as making it.
+    pub fn abort_merge_task_with_progress(
+        &self,
+        id: &str,
+        on_progress: &mut dyn FnMut(agency_core::setup::CloneProgress),
+    ) -> anyhow::Result<()> {
         let run = self.run_record(id)?;
         require_own_branch(&run, "merge")?;
         let repo = self.project_repo(&run.project_id)?;
-        // Aborting throws away whatever resolution has been done so far, so it
-        // must never reach across runs: the shared checkout means this run's
-        // Abort would otherwise discard another run's half-resolved merge.
-        if let Some(m) = agency_core::merge::in_progress_merge(&repo) {
-            if !agency_core::merge::owns_merge(&repo, &run.branch) {
-                bail!("the merge in progress is {}'s, not this run's — abort it there", m.branch);
+        let aborted = self.repo_gates.try_with(&run.project_id, || {
+            step(on_progress, "Checking the merge", &run.branch);
+            // Aborting throws away whatever resolution has been done so far, so it
+            // must never reach across runs: the shared checkout means this run's
+            // Abort would otherwise discard another run's half-resolved merge.
+            if let Some(m) = agency_core::merge::in_progress_merge(&repo) {
+                if !agency_core::merge::owns_merge(&repo, &run.branch) {
+                    bail!("the merge in progress is {}'s, not this run's — abort it there", m.branch);
+                }
             }
-        }
-        let restore = self.merge_origins.lock().unwrap().remove(id);
-        agency_core::merge::abort_merge(&repo, restore.as_deref())
+            let restore = self.merge_origins.lock().unwrap().remove(id);
+            step(on_progress, "Undoing the merge", &run.branch);
+            agency_core::merge::abort_merge(&repo, restore.as_deref())
+        });
+        aborted.unwrap_or_else(|| Err(anyhow!(busy_checkout_error())))
     }
 
     // ── pull requests (gh CLI) ─────────────────────────────────────────────────

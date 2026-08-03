@@ -48,6 +48,11 @@ export default function MergeModal({
   const [state, setState] = useState<MergeState | null>(null);
   const [probeError, setProbeError] = useState("");
   const [finishing, setFinishing] = useState(false);
+  const [aborting, setAborting] = useState(false);
+  // Latest step of whichever git operation is in flight (merge, finish, abort).
+  // All three run in the project's shared checkout and move it between
+  // branches, which on a large repo is seconds of nothing to look at.
+  const [gitStep, setGitStep] = useState<CloneProgress | null>(null);
   const [archiving, setArchiving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -72,10 +77,14 @@ export default function MergeModal({
   // Cleanup in flight: archiving or deleting. Both tear the run down, so the
   // modal's cancel affordances stay disabled until they land.
   const busy = archiving || deleting;
+  // A git operation is running in the project's shared checkout. Closing the
+  // window wouldn't stop it, and leaving mid-merge is how a half-finished merge
+  // gets forgotten about, so the exits are shut for the few seconds it takes.
+  const gitBusy = merging || finishing || aborting;
 
-  // Escape mirrors the header ✕; disabled while cleaning up (the modal's other
-  // cancel affordances are disabled then too).
-  useModalKeys(onClose, !busy);
+  // Escape mirrors the header ✕; disabled while cleaning up or mid-git (the
+  // modal's other cancel affordances are disabled then too).
+  useModalKeys(onClose, !busy && !gitBusy);
 
   // Load the preview first so we can explain what a merge would do instead of
   // silently running it the moment the modal opens.
@@ -142,21 +151,30 @@ export default function MergeModal({
 
   // Failure keeps the modal open with the error visible instead of silently
   // dropping the rejection and leaving the merge half-aborted.
-  function abortAndClose() {
-    abortMergeTask(taskId)
-      .then(onClose)
-      .catch((e) => setError(String(e)));
+  async function abortAndClose() {
+    setError("");
+    setAborting(true);
+    setGitStep(null);
+    try {
+      await abortMergeTask(taskId, setGitStep);
+      onClose();
+    } catch (e) {
+      setError(String(e));
+      setAborting(false);
+      setGitStep(null);
+    }
   }
 
   async function attempt() {
     setError("");
     setMerging(true);
+    setGitStep(null);
     // Whatever an earlier check said predates this merge. Clearing it keeps the
     // conflict panel from rendering a stale "nothing in progress" for the frame
     // between the merge landing and the first poll answering.
     setState(null);
     try {
-      setOutcome(await mergeTask(taskId));
+      setOutcome(await mergeTask(taskId, setGitStep));
     } catch (e) {
       setError(String(e));
       // Re-read rather than leave the failure as a bare string: if another run
@@ -164,6 +182,7 @@ export default function MergeModal({
       mergeStatus(taskId).then(setState).catch(() => {});
     } finally {
       setMerging(false);
+      setGitStep(null);
     }
   }
 
@@ -189,8 +208,9 @@ export default function MergeModal({
   async function finish() {
     setError("");
     setFinishing(true);
+    setGitStep(null);
     try {
-      setOutcome(await finishMergeTask(taskId));
+      setOutcome(await finishMergeTask(taskId, setGitStep));
     } catch (e) {
       setError(String(e));
       // The failure is usually "still conflicted"; re-read so the file list
@@ -198,6 +218,7 @@ export default function MergeModal({
       mergeStatus(taskId).then(setState).catch(() => {});
     } finally {
       setFinishing(false);
+      setGitStep(null);
     }
   }
 
@@ -253,7 +274,7 @@ export default function MergeModal({
   const blockedBy = state?.blockedBy ?? null;
 
   return (
-    <div className="settings-overlay anchor-top" onClick={() => { if (!busy) onClose(); }}>
+    <div className="settings-overlay anchor-top" onClick={() => { if (!busy && !gitBusy) onClose(); }}>
       <div
         className="merge-modal"
         role="dialog"
@@ -332,7 +353,7 @@ export default function MergeModal({
           ) : null
         )}
 
-        {merging && <p>Merging…</p>}
+        {merging && <ProgressReadout progress={gitStep} fallback="Merging…" />}
 
         {outcome?.kind === "clean" && (
           <div>
@@ -438,10 +459,11 @@ export default function MergeModal({
                   )}
                   <button
                     className="ghost"
+                    disabled={aborting}
                     onClick={abortAndClose}
                     title="Undo the merge and put the project's checkout back"
                   >
-                    Abort merge
+                    {aborting ? "Aborting…" : "Abort merge"}
                   </button>
                 </div>
               </>
@@ -475,17 +497,17 @@ export default function MergeModal({
                   )}
                 </p>
                 <div className="git-actions">
-                  <button autoFocus disabled={finishing} onClick={finish}>
+                  <button autoFocus disabled={finishing || aborting} onClick={finish}>
                     {finishing ? "Finishing…" : "Finish merge"}
                   </button>
-                  <button className="ghost" disabled={finishing} onClick={onClose}>Close</button>
+                  <button className="ghost" disabled={finishing || aborting} onClick={onClose}>Close</button>
                   <button
                     className="ghost"
-                    disabled={finishing}
+                    disabled={finishing || aborting}
                     onClick={abortAndClose}
                     title="Undo the merge, and with it the resolution that was just done"
                   >
-                    Abort merge
+                    {aborting ? "Aborting…" : "Abort merge"}
                   </button>
                 </div>
               </>
@@ -505,6 +527,14 @@ export default function MergeModal({
                   )}
                 </div>
               </>
+            )}
+            {/* Both of these move the shared checkout between branches, so
+                they say where they are rather than sitting on a button label. */}
+            {(finishing || aborting) && (
+              <ProgressReadout
+                progress={gitStep}
+                fallback={aborting ? "Undoing the merge…" : "Finishing the merge…"}
+              />
             )}
           </div>
         )}

@@ -976,9 +976,14 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
   display: flex; align-items: center; gap: 6px;
   flex: 0 1 auto; min-width: 0; overflow: hidden;
 }
+/* Shrinks by truncating the name, down to an icon-only chip and no further:
+   30px is the 12px icon plus its 8px padding and 1px border either side. The
+   icon can't shrink, so without that floor a narrow header pushed it out
+   through the right edge of the rounded box; overflow keeps the collapsed
+   name's gap from doing the same. */
 .branch-chip {
   display: inline-flex; align-items: center; gap: 5px;
-  min-width: 0; max-width: 260px;
+  min-width: 30px; max-width: 260px; overflow: hidden;
   padding: 3px 8px; border-radius: 6px;
   background: var(--crust); border: 1px solid var(--s0);
   color: var(--blue); font-family: var(--mono); font-size: 11px;

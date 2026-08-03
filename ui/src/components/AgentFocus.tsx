@@ -88,6 +88,9 @@ export default function AgentFocus({
   // "agent" (primary terminal), "run" (RunPanel), or an extra-session id —
   // extra agent tabs sharing this run's worktree.
   const [panel, setPanel] = useState<string>("agent");
+  // The tab Run was opened from, so backing out of the run setup card returns
+  // where you came from instead of dumping you on the primary agent.
+  const beforeRun = useRef<string>("agent");
   const [sessions, setSessions] = useState<RunSessionInfo[]>([]);
   const [confirmCloseTab, setConfirmCloseTab] = useState<string | null>(null);
   // "+" tab menu: agent profiles to open as an extra tab. Anchored in viewport
@@ -99,6 +102,7 @@ export default function AgentFocus({
   useEffect(() => {
     setShowMerge(false);
     setPanel("agent");
+    beforeRun.current = "agent";
     setAddOpen(false);
     setSessions([]);
     if (!focusedRunId) return;
@@ -383,7 +387,10 @@ export default function AgentFocus({
                 <span className="spacer" />
                 <button
                   className={`session-tab run-tab ${panel === "run" ? "on" : ""}`}
-                  onClick={() => setPanel("run")}
+                  onClick={() => {
+                    if (panel !== "run") beforeRun.current = panel;
+                    setPanel("run");
+                  }}
                 >Run</button>
               </div>
               {addOpen && (
@@ -422,7 +429,11 @@ export default function AgentFocus({
                   )}
                 </div>
               ) : (
-                <RunPanel key={`run-${focused.id}`} run={focused} />
+                <RunPanel
+                  key={`run-${focused.id}`}
+                  run={focused}
+                  onClose={() => setPanel(beforeRun.current)}
+                />
               )}
               {showMerge && (
                 <MergeModal
@@ -451,6 +462,7 @@ export default function AgentFocus({
                       await closeRunSession(sid);
                       setSessions((prev) => prev.filter((s) => s.id !== sid));
                       setPanel((p) => (p === sid ? "agent" : p));
+                      if (beforeRun.current === sid) beforeRun.current = "agent";
                     } catch (e) {
                       toastError(e, "Close failed");
                     }

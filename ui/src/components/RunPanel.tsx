@@ -13,7 +13,10 @@ import {
 import FocusTerminal, { runStream } from "./FocusTerminal";
 import RunScriptSetup from "./RunScriptSetup";
 
-export default function RunPanel({ run }: { run: RunInfo }) {
+// `onClose` leaves the Run tab entirely. The setup card needs it: an
+// unconfigured project has no run panel to fall back to, so without it the card
+// is a dead end with no way out but picking another tab.
+export default function RunPanel({ run, onClose }: { run: RunInfo; onClose: () => void }) {
   const [status, setStatus] = useState<SessionStatus>({ state: "gone" });
   const [config, setConfig] = useState<RunScriptConfig | null>(null);
   // Setup is forced open while unconfigured, and opened on demand by "Edit"
@@ -86,7 +89,7 @@ export default function RunPanel({ run }: { run: RunInfo }) {
         <RunScriptSetup
           config={config}
           onSave={save}
-          onCancel={config.command ? () => setEditing(false) : undefined}
+          onCancel={config.command ? () => setEditing(false) : onClose}
         />
       </div>
     );

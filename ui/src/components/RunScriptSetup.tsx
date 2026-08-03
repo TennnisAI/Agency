@@ -12,8 +12,9 @@ export default function RunScriptSetup({
 }: {
   config: RunScriptConfig;
   onSave: (command: string, nonconcurrent: boolean, thenRun: boolean) => Promise<void>;
-  // Absent while unconfigured: there is nothing to go back to.
-  onCancel?: () => void;
+  // Backs out of the card: to the run panel when a command already exists,
+  // otherwise to whichever tab the Run tab was opened from.
+  onCancel: () => void;
 }) {
   // Prefill with the best guess so the common case is one click, not typing.
   const [command, setCommand] = useState(config.command ?? config.suggestions[0]?.command ?? "");
@@ -38,22 +39,25 @@ export default function RunScriptSetup({
     <div className="run-setup">
       <div className="run-setup-card">
         <div className="run-setup-title">
-          {config.command ? "Edit the run script" : "Set up the run script"}
+          {config.command ? "Edit the project's run script" : "Set up the project's run script"}
         </div>
         <p className="run-setup-lead">
-          The run script starts your app inside this agent's own workspace, so you can try its
-          changes here without disturbing your checkout. Agency runs it in{" "}
-          <code>{config.workspace}</code>
+          One command for the whole project: every agent here uses it to start your app. Each agent
+          runs it in its own workspace, <code>$AGENCY_WORKSPACE_PATH</code>, so trying an agent's
+          changes never disturbs your checkout.
           {port != null ? (
             <>
-              {" "}with <code>AGENCY_PORT={port}</code> exported, so every agent gets its own port.
-              Use that variable in the command and the preview pane opens{" "}
-              <code>http://localhost:{port}</code> beside the logs.
+              {" "}Each one also gets its own port in <code>$AGENCY_PORT</code>. Use that variable
+              in the command and the preview pane opens the app beside the logs.
             </>
           ) : (
-            <>. This agent has no port block, so only the logs are shown.</>
+            <> This agent has no port block, so only the logs are shown.</>
           )}
         </p>
+        <div className="run-setup-hint">
+          For this agent that is <code>{config.workspace}</code>
+          {port != null && <> on port <code>{port}</code></>}.
+        </div>
 
         {config.suggestions.length > 0 && (
           <div className="run-setup-field">
@@ -85,7 +89,7 @@ export default function RunScriptSetup({
             onChange={(e) => setCommand(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter" && command.trim() && !saving) save(true);
-              if (e.key === "Escape" && onCancel) onCancel();
+              if (e.key === "Escape") onCancel();
             }}
           />
           <div className="run-setup-hint">
@@ -113,9 +117,7 @@ export default function RunScriptSetup({
           <button className="tile-act" disabled={saving} onClick={() => save(false)}>
             Save only
           </button>
-          {onCancel && (
-            <button className="tile-act" disabled={saving} onClick={onCancel}>Cancel</button>
-          )}
+          <button className="tile-act" disabled={saving} onClick={onCancel}>Cancel</button>
         </div>
 
         <div className="run-setup-foot">

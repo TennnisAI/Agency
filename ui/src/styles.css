@@ -1319,6 +1319,9 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
 .run-setup-input { background: var(--base); border: 1px solid var(--s1); color: var(--text); border-radius: 7px; padding: 9px 11px; width: 100%; font-family: var(--mono); font-size: 12.5px; }
 .run-setup-input:focus { outline: none; border-color: var(--blue); }
 .run-setup-hint { font-size: 11.5px; color: var(--o1); line-height: 1.55; }
+/* The "for this agent that is …" line belongs to the lead paragraph above it,
+   so it sits closer than the card's regular gap. */
+.run-setup-lead + .run-setup-hint { margin-top: -9px; }
 .run-setup-row { display: flex; align-items: center; gap: 16px; border-top: 1px solid var(--line); padding-top: 13px; }
 .run-setup-row-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .run-setup-error { color: var(--red); font-size: 12px; }

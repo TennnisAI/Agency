@@ -2,20 +2,22 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { FileRoot, Issue, IssuePatch, RunInfo, trashPath } from "../api";
-import { LinkEdge } from "../lib/links";
+import { CrossRefs, LinkEdge } from "../lib/links";
+import { DocsIndex } from "../lib/docsIndex";
 import { runName } from "../agents";
 import { ISSUE_STATUSES, PRIORITY_LABELS, STATUS_LABELS, fmtDate, isOverdue } from "../lib/issues";
-import { Attachment, insertAttachment, parseAttachments, removeAttachment } from "../lib/attachments";
+import { ISSUES_DIR, Attachment, insertAttachment, parseAttachments, removeAttachment } from "../lib/attachments";
 import { Attached, attachBlob, attachPath } from "../lib/issueAttach";
 import { dateStamp } from "../lib/dailyNote";
 import { MenuCoords, anchorMenu } from "../lib/menuAnchor";
 import { toastError } from "../lib/toast";
 import { FindRank } from "../lib/findBus";
-import { textareaFindEngine } from "../lib/textareaFind";
+import { cmFindEngine } from "../lib/cmFind";
 import { useFind } from "../hooks/useFind";
 import { useDismissOnResize } from "../hooks/useDismissOnResize";
 import { PriorityGlyph, StatusDot } from "./IssueRow";
 import IssueAttachments, { forgetAttachment } from "./IssueAttachments";
+import MarkdownEditor, { MarkdownEditorHandle } from "./MarkdownEditor";
 import AgentAddMenu from "./AgentAddMenu";
 import DatePicker from "./DatePicker";
 import { ContractIcon, ExpandIcon } from "./icons";
@@ -116,6 +118,8 @@ export default function IssueDetail({
   root,
   runs,
   mentions,
+  index,
+  cross,
   expanded,
   onPatch,
   onStart,
@@ -123,6 +127,8 @@ export default function IssueDetail({
   onDelete,
   onOpenRun,
   onOpenMention,
+  onFollowLink,
+  onTagClick,
   onToggleExpand,
   onClose,
 }: {
@@ -134,6 +140,10 @@ export default function IssueDetail({
   runs: RunInfo[];
   // Notes and issues whose text links here ([[AGE-14]]), via lib/links.
   mentions: LinkEdge[];
+  // What the description's wikilinks resolve against: this project's notes,
+  // and every project's issues and runs.
+  index: DocsIndex | null;
+  cross: CrossRefs | null;
   expanded: boolean;
   // Awaited before an agent is dispatched, so the run reads the issue the user
   // is looking at rather than the one still on disk.
@@ -145,13 +155,16 @@ export default function IssueDetail({
   onDelete: () => void;
   onOpenRun: (runId: string) => void;
   onOpenMention: (edge: LinkEdge) => void;
+  // ⌘-click on a wikilink in the description, and a click on a #tag.
+  onFollowLink: (target: string, heading: string | null) => void;
+  onTagClick: (tag: string) => void;
   onToggleExpand: () => void;
   onClose: () => void;
 }) {
   const [title, setTitle] = useState(issue.title);
   const [body, setBody] = useState(issue.body);
   const titleRef = useRef<HTMLTextAreaElement>(null);
-  const bodyRef = useRef<HTMLTextAreaElement>(null);
+  const bodyRef = useRef<MarkdownEditorHandle>(null);
   const asideRef = useRef<HTMLElement>(null);
   const [menu, setMenu] = useState<"status" | "priority" | null>(null);
   const [coords, setCoords] = useState<MenuCoords>({ top: 0, left: 0 });
@@ -160,8 +173,6 @@ export default function IssueDetail({
   // A file being dragged over this pane, and an attach already in flight.
   const [dragOver, setDragOver] = useState(false);
   const [attaching, setAttaching] = useState(false);
-  // Where to put the caret once an inserted attachment has rendered.
-  const pendingCaret = useRef<number | null>(null);
 
   // Expanded, these pills sit in the meta rail at the far right of the window,
   // where a left-anchored menu would open past the edge — anchorMenu flips it.
@@ -185,10 +196,22 @@ export default function IssueDetail({
   // then the props have already moved on to the next issue.
   const draft = useRef({ title, body });
   draft.current = { title, body };
+  // Which issue the drafts above belong to. For the one commit between a
+  // selection change and the reset effect they are still the previous issue's,
+  // and what the pane renders has to come from the props instead — the
+  // description editor is keyed by issue and would otherwise open on the
+  // outgoing text.
+  const draftsFor = useRef(issue.id);
+  const current = draftsFor.current === issue.id;
+  const shownTitle = current ? title : issue.title;
+  const shownBody = current ? body : issue.body;
 
   // Reset drafts when another issue is selected — but never clobber an edit
-  // in progress with poll results for the same issue.
+  // in progress with poll results for the same issue. The reset has to stay an
+  // effect: the flush below is one too, and its cleanup reads the outgoing
+  // issue's drafts before this runs.
   useEffect(() => {
+    draftsFor.current = issue.id;
     setTitle(issue.title);
     setBody(issue.body);
     saved.current = { title: issue.title, body: issue.body };
@@ -203,7 +226,7 @@ export default function IssueDetail({
     if (!el) return;
     el.style.height = "auto";
     el.style.height = `${el.scrollHeight}px`;
-  }, [title, expanded]);
+  }, [shownTitle, expanded]);
 
   // What is typed but not yet written. Titles are trimmed and may not be
   // emptied; an empty description is a legitimate edit.
@@ -232,8 +255,10 @@ export default function IssueDetail({
     // Whitespace-only is not a title; anything else just loses its padding.
     else setTitle(t || saved.current.title);
   };
-  const commitBody = () => {
-    if (body !== saved.current.body) send({ body });
+  // The editor hands its own text over: the blur can land before React has
+  // processed the keystroke that preceded it.
+  const commitBody = (text: string) => {
+    if (text !== saved.current.body) send({ body: text });
   };
 
   // Edits commit on blur, but a click can take the pane away before any blur
@@ -266,31 +291,27 @@ export default function IssueDetail({
   // same link renders on GitHub and in any markdown editor, and the bytes
   // merge onto main with the issue text.
 
-  const attachments = useMemo(() => parseAttachments(body), [body]);
+  const attachments = useMemo(() => parseAttachments(shownBody), [shownBody]);
 
   // The freshest body for async handlers to splice into: an attach that
   // resolves after a keystroke must not write back the body it started with.
-  const bodyDraft = useRef(body);
-  bodyDraft.current = body;
+  const bodyDraft = useRef(shownBody);
+  bodyDraft.current = shownBody;
 
   // Unlike a typed edit, an attachment saves immediately: the bytes are
   // already on disk, and a body left uncommitted (pane closed, app quit)
-  // would orphan them.
-  const saveBody = (next: string) => {
+  // would orphan them. `caret` parks the cursor after a splice.
+  const saveBody = (next: string, caret?: number) => {
     bodyDraft.current = next;
     setBody(next);
+    bodyRef.current?.setText(next, caret);
     if (next !== saved.current.body) send({ body: next });
   };
 
-  // ⌘F in the description: the same bar the note and file editors get, driven
-  // over a plain textarea. The board's own filter outranks this (see
-  // FindRank), so ⌘F only lands here once the description holds focus.
-  const saveBodyRef = useRef(saveBody);
-  saveBodyRef.current = saveBody;
-  const findEngine = useMemo(
-    () => textareaFindEngine(() => bodyRef.current, (next) => saveBodyRef.current(next)),
-    [],
-  );
+  // ⌘F in the description: the same bar the note and file editors get, over
+  // the same editor. The board's own filter outranks this (see FindRank), so
+  // ⌘F only lands here once the description holds focus.
+  const findEngine = useMemo(() => cmFindEngine(() => bodyRef.current?.view() ?? null), []);
   const { bar: findBar, onContentChange: onBodyChange } = useFind({
     host: asideRef,
     engine: findEngine,
@@ -310,7 +331,7 @@ export default function IssueDetail({
   // Failures are reported per file; the ones that landed still get written.
   const runAttach = async (
     jobs: Array<() => Promise<Attached>>,
-    at: { from: number; to: number; body: string } | null,
+    at: { from: number; to: number; text: string } | null,
   ) => {
     if (jobs.length === 0 || attachingRef.current) return;
     attachingRef.current = true;
@@ -326,14 +347,13 @@ export default function IssueDetail({
       }
       if (done.length === 0) return;
       const md = done.map((d) => d.markdown).join("\n");
-      const cur = bodyDraft.current;
+      const cur = bodyRef.current?.text() ?? bodyDraft.current;
       // Offsets only survive if nothing was typed while the bytes were being
       // written; otherwise they point into text that has moved, so fall back
       // to appending rather than splicing mid-word.
-      if (at && at.body === cur) {
+      if (at && at.text === cur) {
         const next = insertAttachment(cur, at.from, at.to, md);
-        pendingCaret.current = next.cursor;
-        saveBody(next.body);
+        saveBody(next.body, next.cursor);
       } else {
         // Appended attachments start their own paragraph at the end.
         saveBody(cur.trim() ? `${cur.replace(/\n+$/, "")}\n\n${md}\n` : `${md}\n`);
@@ -342,17 +362,6 @@ export default function IssueDetail({
       attachingRef.current = false;
       setAttaching(false);
     }
-  };
-
-  // Paste: images only. Anything else on the clipboard is text the textarea
-  // should keep handling itself.
-  const onPasteBody = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
-    const files = [...(e.clipboardData?.files ?? [])].filter((f) => f.type.startsWith("image/"));
-    if (files.length === 0) return;
-    e.preventDefault();
-    const el = e.currentTarget;
-    const at = { from: el.selectionStart, to: el.selectionEnd, body: bodyDraft.current };
-    void runAttach(files.map((f) => () => attachBlob(root, label, f)), at);
   };
 
   const pickFiles = async () => {
@@ -409,16 +418,6 @@ export default function IssueDetail({
     }
   };
 
-  // Put the caret back after an inserted attachment re-renders the textarea.
-  useLayoutEffect(() => {
-    const el = bodyRef.current;
-    const pos = pendingCaret.current;
-    if (!el || pos == null) return;
-    pendingCaret.current = null;
-    el.focus();
-    el.setSelectionRange(pos, pos);
-  }, [body]);
-
   // ── the pieces, arranged differently by each layout ──────────────────────
 
   // Dispatch lives in the head bar, which both layouts render — so an issue
@@ -473,7 +472,7 @@ export default function IssueDetail({
       className="issue-detail-title"
       rows={1}
       placeholder="Issue title"
-      value={title}
+      value={shownTitle}
       onChange={(e) => setTitle(e.target.value)}
       onBlur={commitTitle}
       onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); (e.target as HTMLTextAreaElement).blur(); } }}
@@ -522,17 +521,30 @@ export default function IssueDetail({
     />
   );
 
+  // The description renders as markdown the way a note does: live preview,
+  // raw syntax revealed on the line the caret is on. Keyed by issue so
+  // switching tickets starts a fresh document (and a fresh undo history).
   const bodyField = (
     <>
       {findBar}
-      <textarea
+      <MarkdownEditor
+        key={issue.id}
         ref={bodyRef}
-        className="issue-detail-body"
+        className="issue-detail-body md-live"
+        value={shownBody}
         placeholder="Add description…  (paste or drop a file to attach)"
-        value={body}
-        onChange={(e) => { setBody(e.target.value); onBodyChange(); }}
-        onPaste={onPasteBody}
+        root={root}
+        dir={ISSUES_DIR}
+        path={`${label}.md`}
+        index={index}
+        cross={cross}
+        onChange={(text) => { bodyDraft.current = text; setBody(text); onBodyChange(); }}
         onBlur={commitBody}
+        onNavigate={onFollowLink}
+        onTagClick={onTagClick}
+        onPasteFiles={(files, at) => {
+          void runAttach(files.map((f) => () => attachBlob(root, label, f)), at);
+        }}
       />
     </>
   );

@@ -1,10 +1,9 @@
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
-import { Compartment, EditorState, TransactionSpec } from "@codemirror/state";
+import { Compartment, EditorState } from "@codemirror/state";
 import { EditorView, drawSelection, dropCursor, keymap } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { FileRoot, createDir, readFile, writeFile, writeFileBase64 } from "../api";
 import { toastError } from "../lib/toast";
-import { clipboardText } from "../lib/clipboard";
 import { editorChromeTheme } from "../lib/cmTheme";
 import { cmFindEngine, cmFindExtensions } from "../lib/cmFind";
 import { FindRank } from "../lib/findBus";
@@ -14,11 +13,9 @@ import { CrossRefs } from "../lib/links";
 import { crossRefsFacet, docsCompletion, docsHighlight, docsIndexFacet, docsMarkdown, docsNavFacet, livePreview, DocsNav } from "../lib/livePreview";
 import { frontmatterEditor, requestAddProperty } from "../lib/fmEditor";
 import { joinPath } from "../lib/filePath";
-import {
-  blockState, clearFormatting, formatCommand, insertConstruct, setHeading,
-  toggleInline, toggleList, toggleQuote,
-} from "../lib/mdFormat";
-import Menu, { MenuEntry } from "./git/Menu";
+import { formatCommand, toggleInline } from "../lib/mdFormat";
+import Menu from "./git/Menu";
+import { caretToPointer, markdownMenuItems } from "./mdMenu";
 
 export interface DocsEditorHandle {
   /** Scroll the first heading whose text matches (case-insensitive) into view. */
@@ -334,126 +331,13 @@ export default forwardRef<DocsEditorHandle, {
   }, []);
 
   // ── Right-click menu: markdown formatting, Obsidian-style ─────────────────
-
-  /** Run a formatting transform against the live view, then hand focus back. */
-  const apply = (f: (state: EditorState) => TransactionSpec | null) => () => {
-    const view = viewRef.current;
-    if (!view) return;
-    const spec = f(view.state);
-    if (spec) view.dispatch(spec);
-    view.focus();
-  };
-
-  const copySelection = async (andCut: boolean) => {
-    const view = viewRef.current;
-    if (!view) return;
-    const sel = view.state.selection.main;
-    if (sel.empty) return;
-    try {
-      await navigator.clipboard.writeText(view.state.sliceDoc(sel.from, sel.to));
-      if (andCut) {
-        view.dispatch({ changes: { from: sel.from, to: sel.to }, selection: { anchor: sel.from } });
-      }
-    } catch (e) {
-      toastError(e, andCut ? "Couldn't cut" : "Couldn't copy");
-    }
-    view.focus();
-  };
-
-  const pasteClipboard = async () => {
-    const view = viewRef.current;
-    if (!view) return;
-    try {
-      // Not navigator.clipboard: on a multi-item clipboard the webview's own
-      // reader can only see the first item (see lib/clipboard.ts).
-      const text = await clipboardText();
-      if (text) {
-        const sel = view.state.selection.main;
-        view.dispatch({
-          changes: { from: sel.from, to: sel.to, insert: text },
-          selection: { anchor: sel.from + text.length },
-        });
-      }
-    } catch (e) {
-      // Reading the clipboard can be refused by the webview; the key still works.
-      toastError(e, "Couldn't paste (⌘V still works)");
-    }
-    view.focus();
-  };
-
-  const menuItems = (): MenuEntry[] => {
-    const view = viewRef.current;
-    if (!view) return [];
-    const block = blockState(view.state);
-    const hasSelection = !view.state.selection.main.empty;
-    const heading = (level: number): MenuEntry => ({
-      label: `Heading ${level}`,
-      checked: block.heading === level,
-      onClick: apply((s) => setHeading(s, level)),
-    });
-    return [
-      {
-        kind: "submenu", label: "Format", items: [
-          // No shortcut hints: ⌘B is the native menu's Toggle Sidebar
-          // accelerator, and macOS gives the menu bar the key first.
-          { label: "Bold", onClick: apply((s) => toggleInline(s, "bold")) },
-          { label: "Italic", onClick: apply((s) => toggleInline(s, "italic")) },
-          { label: "Strikethrough", onClick: apply((s) => toggleInline(s, "strike")) },
-          { label: "Highlight", onClick: apply((s) => toggleInline(s, "highlight")) },
-          { kind: "separator" },
-          { label: "Code", onClick: apply((s) => toggleInline(s, "code")) },
-          { kind: "separator" },
-          { label: "Clear formatting", onClick: apply(clearFormatting) },
-        ],
-      },
-      {
-        kind: "submenu", label: "Paragraph", items: [
-          { label: "Bullet list", checked: block.list === "bullet", onClick: apply((s) => toggleList(s, "bullet")) },
-          { label: "Numbered list", checked: block.list === "ordered", onClick: apply((s) => toggleList(s, "ordered")) },
-          { label: "Task list", checked: block.list === "task", onClick: apply((s) => toggleList(s, "task")) },
-          { kind: "separator" },
-          ...[1, 2, 3, 4, 5, 6].map(heading),
-          { label: "Body", checked: block.heading === 0, onClick: apply((s) => setHeading(s, 0)) },
-          { kind: "separator" },
-          { label: "Quote", checked: block.quote, onClick: apply(toggleQuote) },
-        ],
-      },
-      {
-        kind: "submenu", label: "Insert", items: [
-          { label: "Wikilink", onClick: apply((s) => insertConstruct(s, "wikilink")) },
-          { label: "Link", onClick: apply((s) => insertConstruct(s, "link")) },
-          { kind: "separator" },
-          { label: "Table", onClick: apply((s) => insertConstruct(s, "table")) },
-          { label: "Callout", onClick: apply((s) => insertConstruct(s, "callout")) },
-          { label: "Horizontal rule", onClick: apply((s) => insertConstruct(s, "rule")) },
-          { label: "Code block", onClick: apply((s) => insertConstruct(s, "codeblock")) },
-        ],
-      },
-      { kind: "separator" },
-      { label: "Cut", hint: "⌘X", disabled: !hasSelection, onClick: () => void copySelection(true) },
-      { label: "Copy", hint: "⌘C", disabled: !hasSelection, onClick: () => void copySelection(false) },
-      { label: "Paste", hint: "⌘V", onClick: () => void pasteClipboard() },
-      { kind: "separator" },
-      {
-        label: "Select all",
-        hint: "⌘A",
-        onClick: apply((s) => ({ selection: { anchor: 0, head: s.doc.length } })),
-      },
-    ];
-  };
+  // Shared with the issue description (components/mdMenu).
 
   const openMenu = (e: React.MouseEvent) => {
     const view = viewRef.current;
     if (!view) return;
     e.preventDefault();
-    // Right-clicking outside the selection moves the cursor there first, the
-    // way every text editor does — formatting then targets what was clicked.
-    const pos = view.posAtCoords({ x: e.clientX, y: e.clientY });
-    const sel = view.state.selection.main;
-    if (pos !== null && (pos < sel.from || pos > sel.to)) {
-      view.dispatch({ selection: { anchor: pos } });
-    }
-    view.focus();
+    caretToPointer(view, e.clientX, e.clientY);
     setMenu({ x: e.clientX, y: e.clientY });
   };
 
@@ -510,9 +394,11 @@ export default forwardRef<DocsEditorHandle, {
       </div>
       {status === "loading" && <div className="diff-empty">loading…</div>}
       {status === "error" && <div className="git-error">{errorMsg}</div>}
-      <div ref={hostRef} className="docs-editor-host" onContextMenu={openMenu}
+      <div ref={hostRef} className="docs-editor-host md-live" onContextMenu={openMenu}
         style={{ display: status === "ready" ? "block" : "none" }} />
-      {menu && <Menu x={menu.x} y={menu.y} items={menuItems()} onClose={() => setMenu(null)} />}
+      {menu && viewRef.current && (
+        <Menu x={menu.x} y={menu.y} items={markdownMenuItems(viewRef.current)} onClose={() => setMenu(null)} />
+      )}
     </div>
   );
 });

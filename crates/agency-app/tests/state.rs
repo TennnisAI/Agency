@@ -1234,3 +1234,145 @@ fn one_app_at_a_time_stops_every_other_script_in_the_project() {
 
     state.stop_run_script(&target, "fixed").unwrap();
 }
+
+// --- automatic fetch -------------------------------------------------------
+//
+// The Source Control panel no longer waits for someone to press ⟲: it asks for
+// a fetch when it opens and when the window is focused, and a background sweep
+// covers projects nobody is looking at. Both go through
+// `fetch_project_if_due`, so what matters is that it fetches, that it refuses
+// to fetch again straight away, and that a dead remote backs off instead of
+// being retried by every trigger.
+
+/// A project repo wired to a bare origin that is one commit ahead of it, so a
+/// successful fetch is visible as `origin/main` moving. Returns (repo, ahead).
+fn repo_behind_its_origin(dir: &Path) -> (std::path::PathBuf, String) {
+    let repo = dir.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let remote = dir.join("remote.git");
+    let git = |cwd: &Path, args: &[&str]| {
+        let out = Command::new("git").args(args).current_dir(cwd).output().unwrap();
+        assert!(out.status.success(), "git {:?}: {}", args, String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    git(dir, &["init", "--bare", "-q", remote.to_str().unwrap()]);
+    git(&repo, &["remote", "add", "origin", remote.to_str().unwrap()]);
+    git(&repo, &["push", "-q", "-u", "origin", "main"]);
+
+    // A second clone pushes a commit, leaving `repo`'s remote-tracking ref stale
+    // — exactly the state a merged PR leaves behind.
+    let other = dir.join("other");
+    git(dir, &["clone", "-q", remote.to_str().unwrap(), other.to_str().unwrap()]);
+    git(&other, &["config", "user.email", "t@e.com"]);
+    git(&other, &["config", "user.name", "T"]);
+    std::fs::write(other.join("README.md"), "moved on").unwrap();
+    git(&other, &["commit", "-qam", "upstream work"]);
+    git(&other, &["push", "-q", "origin", "main"]);
+
+    (repo, git(&other, &["rev-parse", "HEAD"]))
+}
+
+fn rev(repo: &Path, r: &str) -> String {
+    let out = Command::new("git").args(["rev-parse", r]).current_dir(repo).output().unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+#[test]
+fn auto_fetch_updates_tracking_refs_then_throttles() {
+    let dir = tempfile::tempdir().unwrap();
+    let (repo, upstream) = repo_behind_its_origin(dir.path());
+    let state = common::state(&dir);
+    let project = state.add_project("demo", &repo).unwrap();
+
+    assert_ne!(rev(&repo, "origin/main"), upstream, "precondition: tracking ref is stale");
+
+    let long = std::time::Duration::from_secs(300);
+    assert!(state.fetch_project_if_due(&project.id, long).unwrap(), "first request fetches");
+    assert_eq!(rev(&repo, "origin/main"), upstream, "origin/main caught up");
+
+    // A second panel opening (or the window regaining focus) a moment later must
+    // not hit the network again.
+    assert!(!state.fetch_project_if_due(&project.id, long).unwrap(), "throttled");
+    // …but a caller that accepts any staleness still gets one.
+    assert!(state.fetch_project_if_due(&project.id, std::time::Duration::ZERO).unwrap());
+}
+
+#[test]
+fn auto_fetch_backs_off_a_broken_remote() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let missing = dir.path().join("not-a-remote.git");
+    assert!(Command::new("git")
+        .args(["remote", "add", "origin", missing.to_str().unwrap()])
+        .current_dir(&repo)
+        .status()
+        .unwrap()
+        .success());
+
+    let state = common::state(&dir);
+    let project = state.add_project("demo", &repo).unwrap();
+
+    assert!(state.fetch_project_if_due(&project.id, std::time::Duration::ZERO).is_err());
+    // Backoff outranks the caller's staleness tolerance: without this, every
+    // panel open would retry an unreachable origin and stall on it.
+    assert!(
+        !state.fetch_project_if_due(&project.id, std::time::Duration::ZERO).unwrap(),
+        "an unreachable origin is left alone until its backoff expires"
+    );
+}
+
+#[test]
+fn auto_fetch_is_a_noop_without_an_origin() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let state = common::state(&dir);
+    let project = state.add_project("demo", &repo).unwrap();
+
+    assert!(!state.fetch_project_if_due(&project.id, std::time::Duration::ZERO).unwrap());
+}
+
+#[test]
+fn background_sweep_fetches_every_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let (repo, upstream) = repo_behind_its_origin(dir.path());
+    let state = common::state(&dir);
+    state.add_project("demo", &repo).unwrap();
+
+    state.sweep_project_fetches(std::time::Duration::ZERO);
+    assert_eq!(rev(&repo, "origin/main"), upstream);
+}
+
+#[test]
+fn project_of_resolves_both_token_shapes() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let state = common::state(&dir);
+    state.register_profile(AgentProfile {
+        name: "noop".into(),
+        command: "sh".into(),
+        args: vec!["-c".into(), "sleep 1".into()],
+        env: vec![],
+        resume_args: None,
+        loop_args: None,
+    }).unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+
+    assert_eq!(state.project_of(&format!("project:{}", project.id)).unwrap(), project.id);
+
+    // An agent's worktree fetches through the project it was cut from: the two
+    // share an object store, so fetching per run would be the same fetch twice.
+    let run = state.create_run(&project.id, "p", "noop", "HEAD", None).unwrap();
+    assert_eq!(state.project_of(&run.id).unwrap(), project.id);
+    state.discard_run(&run.id).unwrap();
+
+    assert!(state.project_of("nope").is_err());
+}

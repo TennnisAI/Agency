@@ -456,6 +456,12 @@ export function gitPush(
   return invoke<void>("git_push", { taskId, onProgress: onProgressChannel });
 }
 export const gitFetch = (taskId: string) => invoke<void>("git_fetch", { taskId });
+// Fetch this repo's origin *if* it hasn't been fetched recently — the backend
+// throttles and backs off per project, so callers fire it at moments the user
+// is about to read ahead/behind (panel open, window focus) without thinking
+// about cadence. Resolves to whether a fetch actually ran; never rejects for a
+// remote that is down, since nobody asked for this one.
+export const gitAutoFetch = (taskId: string) => invoke<boolean>("git_auto_fetch", { taskId });
 export const gitPull = (taskId: string) => invoke<void>("git_pull", { taskId });
 
 // VS Code-style "Sync Changes": fetch, fast-forward in incoming commits, then

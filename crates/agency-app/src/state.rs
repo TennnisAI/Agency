@@ -8,6 +8,7 @@ use crate::notifier;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, RwLock};
+use std::time::{Duration, Instant};
 use uuid;
 
 const SETTING_LM_STUDIO_URL: &str = "lm_studio_base_url";
@@ -23,6 +24,20 @@ const SETTING_UPDATE_CHECK: &str = "update_check_enabled";
 /// "0" makes the add-agent menu default to working in the project checkout
 /// instead of cutting a worktree. Unset = worktrees on, the isolated default.
 const SETTING_DEFAULT_WORKTREE: &str = "default_worktree";
+
+/// How long a failing origin is left alone before the next automatic fetch,
+/// doubling per consecutive failure up to [`FETCH_BACKOFF_MAX`]. Also the
+/// starting point after any success.
+const FETCH_BACKOFF_BASE: Duration = Duration::from_secs(300);
+const FETCH_BACKOFF_MAX: Duration = Duration::from_secs(1800);
+/// Ceiling on how stale remote-tracking refs can get while the app is open:
+/// the background sweep fetches any project not contacted this recently.
+pub const FETCH_SWEEP_AGE: Duration = Duration::from_secs(300);
+/// Freshness the Source Control panel asks for when it opens or the window is
+/// focused. Short, because those are the moments the user is about to *read*
+/// ahead/behind; long enough that clicking between agents in one project
+/// doesn't fetch per click.
+pub const FETCH_ON_VIEW_AGE: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -860,6 +875,36 @@ pub struct AppState {
     /// digest). `list_issues` reconciles the index from the files only when
     /// this changes, so an idle Issues-tab poll costs one readdir.
     issue_sigs: Mutex<HashMap<String, String>>,
+    /// Per-project `git fetch` bookkeeping, shared by every automatic fetch —
+    /// the background sweep and the UI's on-open/on-focus requests. See
+    /// [`AppState::fetch_project_if_due`]. In-memory: an app restart just means
+    /// the first request for each project fetches.
+    fetches: Mutex<HashMap<String, FetchSched>>,
+}
+
+/// When a project's origin was last contacted, and when it may be again.
+struct FetchSched {
+    /// Start of the last attempt, successful or not. `None` = never fetched,
+    /// so the next request goes through whatever its `min_age`.
+    last_attempt: Option<Instant>,
+    /// Set only while a remote is failing: nothing is attempted before it.
+    retry_after: Option<Instant>,
+    /// Delay the *next* consecutive failure earns, doubling to the cap.
+    backoff: Duration,
+    /// A fetch is running now. Requests are dropped rather than queued: they
+    /// all want the same thing, and the one in flight is already delivering it.
+    in_flight: bool,
+}
+
+impl Default for FetchSched {
+    fn default() -> Self {
+        FetchSched {
+            last_attempt: None,
+            retry_after: None,
+            backoff: FETCH_BACKOFF_BASE,
+            in_flight: false,
+        }
+    }
 }
 
 /// Progress of a loop's check command. `Done(None)` = killed on timeout or
@@ -940,6 +985,7 @@ impl AppState {
             loops_active: std::sync::atomic::AtomicBool::new(true),
             loop_generation: std::sync::atomic::AtomicU64::new(0),
             issue_sigs: Mutex::new(HashMap::new()),
+            fetches: Mutex::new(HashMap::new()),
         };
         // Rehydrate: any run the daemon still hosts is adopted as-is; the watch
         // loop (watch_snapshot) then reports live status. Nothing to spawn here —
@@ -2497,6 +2543,10 @@ impl AppState {
     /// going stale. Returns `Ok(false)` when the project has no remote (nothing
     /// to fetch). Runs no git under any lock — the network call happens after
     /// the repo path is resolved and the registry lock released.
+    ///
+    /// Unthrottled: everything that fetches on its own goes through
+    /// [`fetch_project_if_due`] instead, so the sweep and the UI share one
+    /// cadence per origin.
     pub fn fetch_project(&self, project_id: &str) -> Result<bool> {
         let repo = self.project_repo(project_id)?;
         if !agency_core::git::has_origin(&repo) {
@@ -2504,6 +2554,77 @@ impl AppState {
         }
         agency_core::git::fetch(&repo)?;
         Ok(true)
+    }
+
+    /// [`fetch_project`], but only if this project's origin hasn't been
+    /// contacted in the last `min_age` and isn't being fetched right now.
+    /// Returns whether a fetch actually ran.
+    ///
+    /// Every automatic fetch shares this bookkeeping, which is what lets the
+    /// slow background sweep and the UI's on-open/on-focus requests coexist:
+    /// two triggers a second apart cost one fetch, and a remote that is offline
+    /// or unauthenticated backs off for both at once instead of being retried
+    /// on every panel open. Holds no lock across the network call.
+    pub fn fetch_project_if_due(&self, project_id: &str, min_age: Duration) -> Result<bool> {
+        let start = Instant::now();
+        {
+            let mut sched = self.fetches.lock().unwrap();
+            let entry = sched.entry(project_id.to_string()).or_default();
+            let too_soon = entry
+                .last_attempt
+                .is_some_and(|t| start.duration_since(t) < min_age);
+            if entry.in_flight || too_soon || entry.retry_after.is_some_and(|t| start < t) {
+                return Ok(false);
+            }
+            entry.in_flight = true;
+            entry.last_attempt = Some(start);
+        }
+
+        let result = self.fetch_project(project_id);
+
+        let mut sched = self.fetches.lock().unwrap();
+        // The entry can be gone if the project was removed mid-fetch; re-inserting
+        // it would leak, and there is nothing left to schedule for.
+        if let Some(entry) = sched.get_mut(project_id) {
+            entry.in_flight = false;
+            match result {
+                Ok(_) => {
+                    entry.retry_after = None;
+                    entry.backoff = FETCH_BACKOFF_BASE;
+                }
+                Err(_) => {
+                    entry.retry_after = Some(Instant::now() + entry.backoff);
+                    entry.backoff = (entry.backoff * 2).min(FETCH_BACKOFF_MAX);
+                }
+            }
+        }
+        result
+    }
+
+    /// One pass of the background fetch sweep: fetch every project whose origin
+    /// hasn't been contacted in `min_age`, and forget the bookkeeping for
+    /// projects that no longer exist. Failures are logged rather than
+    /// propagated — one unreachable remote must not stop the others, and
+    /// [`fetch_project_if_due`] has already backed that project off.
+    pub fn sweep_project_fetches(&self, min_age: Duration) {
+        let projects = self.list_projects().unwrap_or_default();
+        let live: HashSet<&str> = projects.iter().map(|p| p.id.as_str()).collect();
+        self.fetches.lock().unwrap().retain(|id, _| live.contains(id.as_str()));
+        for p in &projects {
+            if let Err(e) = self.fetch_project_if_due(&p.id, min_age) {
+                log::warn!("background fetch for project {}: {e}", p.id);
+            }
+        }
+    }
+
+    /// The project a git token belongs to — `project:<id>` names it outright,
+    /// any other token is a run id. Used by the auto-fetch command, which is
+    /// handed whatever token the Source Control panel is showing.
+    pub fn project_of(&self, token: &str) -> Result<String> {
+        if let Some(pid) = token.strip_prefix("project:") {
+            return Ok(pid.to_string());
+        }
+        Ok(self.run_record(token)?.project_id)
     }
 
     pub fn list_project_branches(&self, project_id: &str) -> Result<agency_core::git::ProjectBranches> {

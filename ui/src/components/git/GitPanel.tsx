@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   FileChange, BranchInfo, HistoryItem, StashEntry, CloneProgress,
   gitStatus, gitBranchInfo, gitStashList, gitUndoLastCommit, gitPush, gitSync, gitPullRebase,
+  gitAutoFetch,
 } from "../../api";
 import { toastSuccess } from "../../lib/toast";
 import ConfirmDialog from "../ConfirmDialog";
@@ -106,6 +107,24 @@ function GitRepoPanel({
     timer = setTimeout(tick, 2000);
     return () => { stopped = true; clearTimeout(timer); };
   }, [refresh]);
+
+  // Keep origin fresh without anyone pressing ⟲. The status poll above only
+  // re-reads local refs, so "3 behind" would stay whatever it was when the
+  // remote-tracking refs were last written — a branch merged on GitHub an hour
+  // ago still reads as up to date. Fetching when the panel opens and when the
+  // window comes back covers the two moments the user is about to *read* those
+  // counts; the backend throttles per project (and backs a failing remote off),
+  // so these are cheap to fire and a no-op when something else just fetched.
+  // Silent by design: no busy state, no error banner, no toast — the next poll
+  // simply shows truer numbers. The manual actions stay for "fetch now".
+  useEffect(() => {
+    // Errors are swallowed backend-side; this catch is for the IPC call itself
+    // (e.g. the run vanished while the panel was closing).
+    const fetchNow = () => { gitAutoFetch(taskId).catch(() => {}); };
+    fetchNow();
+    window.addEventListener("focus", fetchNow);
+    return () => window.removeEventListener("focus", fetchNow);
+  }, [taskId]);
 
   // `label`, when given, raises a success toast once the op resolves.
   // Resolves true on success so callers can react (e.g. CommitBox only clears

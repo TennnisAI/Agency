@@ -528,6 +528,30 @@ pub async fn git_fetch(state: State<'_, AppState>, task_id: String) -> Result<()
     git::fetch(&wt).map_err(|e| e.to_string())
 }
 
+/// The fetch half of "refresh", done for the user instead of by them: the
+/// Source Control panel calls this when it opens and when the window regains
+/// focus, so ahead/behind is already current by the time it is read. Throttled
+/// and backed off per project in `AppState` (shared with the background sweep),
+/// which is why the panel can call it freely.
+///
+/// A worktree shares its project's object store and remote-tracking refs, so
+/// this fetches the project once however many agents are running in it.
+/// Deliberately quiet: it reports whether a fetch ran, and swallows the failure
+/// otherwise. Nobody asked for this fetch, so a remote that is offline or
+/// unauthenticated must not put an error banner over the panel — the manual
+/// Fetch/⟲ action still surfaces those.
+#[tauri::command]
+pub async fn git_auto_fetch(state: State<'_, AppState>, task_id: String) -> Result<bool, String> {
+    let project = state.project_of(&task_id).map_err(|e| e.to_string())?;
+    match state.fetch_project_if_due(&project, crate::state::FETCH_ON_VIEW_AGE) {
+        Ok(fetched) => Ok(fetched),
+        Err(e) => {
+            log::warn!("auto fetch for project {project}: {e}");
+            Ok(false)
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn git_pull(state: State<'_, AppState>, task_id: String) -> Result<(), String> {
     state.git_mutate(&task_id, git::pull).map_err(|e| e.to_string())

@@ -133,6 +133,7 @@ pub fn run() {
             commands::git_push,
             commands::git_sync,
             commands::git_fetch,
+            commands::git_auto_fetch,
             commands::git_pull,
             commands::git_set_remote,
             commands::git_checkout_branch,
@@ -490,51 +491,25 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     })?;
 
     // Background remote fetch: without this, ahead/behind compares against
-    // local tracking refs that never move, so "behind" is stale forever. Fetch
-    // each project's origin on a slow cadence (5 min), with capped exponential
-    // backoff per project so a persistently-offline/unauthenticated remote isn't
-    // retried every tick. Its own thread — `git fetch` blocks on the network and
-    // must not stall the notifier/tray or loop-driver ticks; it holds no lock
-    // across the network call.
+    // local tracking refs that never move, so "behind" is stale forever. This
+    // is the floor — every project's origin is contacted at least every 5 min
+    // whether or not anyone is looking at it; the Source Control panel asks for
+    // something fresher when it opens (`git_auto_fetch`), and both share the
+    // per-project schedule and backoff in `AppState`. Its own thread —
+    // `git fetch` blocks on the network and must not stall the notifier/tray or
+    // loop-driver ticks; it holds no lock across the network call.
     let fetch_handle = app.handle().clone();
     std::thread::Builder::new().name("remote-fetch".into()).spawn(move || {
         use tauri::Manager;
-        use std::collections::{HashMap, HashSet};
-        use std::time::{Duration, Instant};
+        use std::time::Duration;
 
-        struct Sched { next_due: Instant, backoff: Duration }
-        let base = Duration::from_secs(300);
-        let max_backoff = Duration::from_secs(1800);
-        let mut sched: HashMap<String, Sched> = HashMap::new();
         // Let startup (window, first poll, daemon spawns) settle before the
-        // first fetch so it doesn't contend with launch work.
+        // first sweep so it doesn't contend with launch work. A panel opened
+        // during that window fetches its own project immediately anyway.
         std::thread::sleep(Duration::from_secs(20));
         loop {
             let tick_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let state = fetch_handle.state::<AppState>();
-                let projects = state.list_projects().unwrap_or_default();
-                let now = Instant::now();
-                let live: HashSet<String> = projects.iter().map(|p| p.id.clone()).collect();
-                sched.retain(|id, _| live.contains(id));
-                for p in projects {
-                    // No entry yet = never fetched = due now.
-                    if sched.get(&p.id).map(|s| now < s.next_due).unwrap_or(false) {
-                        continue;
-                    }
-                    match state.fetch_project(&p.id) {
-                        // Fetched, or nothing to fetch (no remote): recheck at the
-                        // base cadence with backoff reset.
-                        Ok(_) => {
-                            sched.insert(p.id, Sched { next_due: now + base, backoff: base });
-                        }
-                        Err(e) => {
-                            let prev = sched.get(&p.id).map(|s| s.backoff).unwrap_or(base);
-                            let next = (prev * 2).min(max_backoff);
-                            log::warn!("background fetch for project {}: {e}", p.id);
-                            sched.insert(p.id, Sched { next_due: now + next, backoff: next });
-                        }
-                    }
-                }
+                fetch_handle.state::<AppState>().sweep_project_fetches(state::FETCH_SWEEP_AGE);
             }));
             if tick_result.is_err() {
                 log::error!("remote-fetch tick panicked; continuing");

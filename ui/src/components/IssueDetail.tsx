@@ -10,6 +10,9 @@ import { Attached, attachBlob, attachPath } from "../lib/issueAttach";
 import { dateStamp } from "../lib/dailyNote";
 import { MenuCoords, anchorMenu } from "../lib/menuAnchor";
 import { toastError } from "../lib/toast";
+import { FindRank } from "../lib/findBus";
+import { textareaFindEngine } from "../lib/textareaFind";
+import { useFind } from "../hooks/useFind";
 import { useDismissOnResize } from "../hooks/useDismissOnResize";
 import { PriorityGlyph, StatusDot } from "./IssueRow";
 import IssueAttachments, { forgetAttachment } from "./IssueAttachments";
@@ -279,6 +282,24 @@ export default function IssueDetail({
     if (next !== saved.current.body) send({ body: next });
   };
 
+  // ⌘F in the description: the same bar the note and file editors get, driven
+  // over a plain textarea. The board's own filter outranks this (see
+  // FindRank), so ⌘F only lands here once the description holds focus.
+  const saveBodyRef = useRef(saveBody);
+  saveBodyRef.current = saveBody;
+  const findEngine = useMemo(
+    () => textareaFindEngine(() => bodyRef.current, (next) => saveBodyRef.current(next)),
+    [],
+  );
+  const { bar: findBar, onContentChange: onBodyChange } = useFind({
+    host: asideRef,
+    engine: findEngine,
+    canReplace: true,
+    rank: FindRank.editor,
+    variant: "inline",
+    resetKey: issue.id,
+  });
+
   // Guards the drop listener, which is subscribed once per issue and so would
   // otherwise read `attaching` from the render that installed it.
   const attachingRef = useRef(attaching);
@@ -502,15 +523,18 @@ export default function IssueDetail({
   );
 
   const bodyField = (
-    <textarea
-      ref={bodyRef}
-      className="issue-detail-body"
-      placeholder="Add description…  (paste or drop a file to attach)"
-      value={body}
-      onChange={(e) => setBody(e.target.value)}
-      onPaste={onPasteBody}
-      onBlur={commitBody}
-    />
+    <>
+      {findBar}
+      <textarea
+        ref={bodyRef}
+        className="issue-detail-body"
+        placeholder="Add description…  (paste or drop a file to attach)"
+        value={body}
+        onChange={(e) => { setBody(e.target.value); onBodyChange(); }}
+        onPaste={onPasteBody}
+        onBlur={commitBody}
+      />
+    </>
   );
 
   const attachmentsList = (

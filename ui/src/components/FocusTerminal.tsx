@@ -13,6 +13,7 @@ import { initialCapture, feed } from "../lib/firstPrompt";
 import { shouldSwallowWheel, createPageScroller } from "../lib/termScroll";
 import { follow, GESTURE_MS } from "../lib/termFollow";
 import { fullClipboardText } from "../lib/clipboard";
+import { FindRank, registerFindTarget } from "../lib/findBus";
 
 export interface TerminalStream {
   attach(id: string, cols: number, rows: number, onBytes: (b: Uint8Array) => void): Promise<void>;
@@ -60,6 +61,9 @@ export default function FocusTerminal(
   const searchAddonRef = useRef<SearchAddon | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  // The terminal plus its search box — what "does this surface have focus?"
+  // has to cover once ⌘F is routed centrally (see lib/findBus).
+  const wrapRef = useRef<HTMLDivElement>(null);
   // Claims a viewport move as deliberate for the follow policy (lib/termFollow).
   // Held on the component so search, which scrolls to its match, can claim one
   // too instead of being pinned straight back down. Installed by the terminal
@@ -370,23 +374,6 @@ export default function FocusTerminal(
     return () => { disposed = true; unlisten?.(); };
   }, [runId, stream]);
 
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === "f") {
-        // Multiple FocusTerminals mount at once (agent + companion shell). This handler
-        // is window-global, so without a guard every instance opens its search box on
-        // Cmd+F. Only respond when this instance's xterm container actually holds focus
-        // (xterm keeps focus in a .xterm-helper-textarea inside the container).
-        if (!ref.current?.contains(document.activeElement)) return;
-        e.preventDefault();
-        setShowSearch(true);
-        requestAnimationFrame(() => searchInputRef.current?.focus());
-      }
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, []);
-
   const onSearch = (q: string, prev = false) => {
     const addon = searchAddonRef.current;
     if (!addon || !q) return;
@@ -411,8 +398,33 @@ export default function FocusTerminal(
     }
   };
 
+  // ⌘F belongs to the Edit menu now, and a menu click carries no DOM target,
+  // so this pane registers rather than listening for the key itself.
+  // `requiresFocus` is the same guard the old handler had: several terminals
+  // are mounted at once (agent grid, companion shell) and only the one that
+  // was clicked into should answer. Scrollback has nothing to replace.
+  const findRef = useRef<{ open: () => void; step: (back: boolean) => void }>({ open: () => {}, step: () => {} });
+  findRef.current = {
+    open: () => {
+      setShowSearch(true);
+      requestAnimationFrame(() => {
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
+      });
+    },
+    step: (back: boolean) => onSearch(searchQuery, back),
+  };
+  useEffect(() => registerFindTarget({
+    host: () => wrapRef.current,
+    open: () => findRef.current.open(),
+    step: (back) => findRef.current.step(back),
+    canReplace: false,
+    rank: FindRank.terminal,
+    requiresFocus: true,
+  }), []);
+
   return (
-    <div className="term-search-wrap">
+    <div className="term-search-wrap" ref={wrapRef}>
       <div className={`terminal focus-term${dragOver ? " term-drag-over" : ""}`} ref={ref} />
       {showSearch && (
         <div className="term-search-box">

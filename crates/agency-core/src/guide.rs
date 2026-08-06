@@ -39,6 +39,11 @@ strikethrough, ==highlight==, code), Paragraph (lists, heading levels, quote)
 and Insert (links, tables, callouts, code blocks). Each acts on the selection,
 or on the word and line under the cursor when there is none.
 
+Cmd+F searches the note you are in, with match case, whole word and regular
+expression options; Option+Cmd+F adds the replace field. Both live in the Edit
+menu, and both work the same way on a file in the Files tab or on an issue
+description. On an issue board, Cmd+F goes to the board's own search instead.
+
 ## Properties
 
 The card at the top of this note is its properties (stored as plain

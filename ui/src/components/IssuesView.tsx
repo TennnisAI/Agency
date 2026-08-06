@@ -37,6 +37,7 @@ import ConfirmDialog from "./ConfirmDialog";
 import PillSelect from "./PillSelect";
 import Resizer from "./Resizer";
 import { toastError } from "../lib/toast";
+import { FindRank, registerFindTarget } from "../lib/findBus";
 
 // How narrow the list may get once the detail pane takes over the view.
 const SIDEBAR_MIN = 200;
@@ -71,6 +72,20 @@ export default function IssuesView({
   const [fPriority, setFPriority] = useState(-1);
   const [sort, setSort] = useState<IssueSort>("board");
   const searchRef = useRef<HTMLInputElement>(null);
+
+  // ⌘F / Edit ▸ Find over a board means "narrow it", so it lands in the search
+  // field rather than opening a text-scanning bar over a list of rows. The
+  // field is the registered host, which self-gates: on an empty tracker there
+  // is no filter bar, the ref is null, and ⌘F falls through to the description.
+  useEffect(() => registerFindTarget({
+    host: () => searchRef.current,
+    open: () => {
+      searchRef.current?.focus();
+      searchRef.current?.select();
+    },
+    canReplace: false,
+    rank: FindRank.list,
+  }), []);
 
   function clearFilters() {
     setQ("");

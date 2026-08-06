@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { Compartment, EditorState, TransactionSpec } from "@codemirror/state";
 import { EditorView, drawSelection, dropCursor, keymap } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
@@ -6,6 +6,9 @@ import { FileRoot, createDir, readFile, writeFile, writeFileBase64 } from "../ap
 import { toastError } from "../lib/toast";
 import { clipboardText } from "../lib/clipboard";
 import { editorChromeTheme } from "../lib/cmTheme";
+import { cmFindEngine, cmFindExtensions } from "../lib/cmFind";
+import { FindRank } from "../lib/findBus";
+import { useFind } from "../hooks/useFind";
 import { DocsIndex } from "../lib/docsIndex";
 import { CrossRefs } from "../lib/links";
 import { crossRefsFacet, docsCompletion, docsHighlight, docsIndexFacet, docsMarkdown, docsNavFacet, livePreview, DocsNav } from "../lib/livePreview";
@@ -68,6 +71,9 @@ export default forwardRef<DocsEditorHandle, {
   daily?: { prev: string | null; next: string | null; onOpen: (path: string) => void } | null;
 }>(function DocsEditor({ root, docsDir, path, diskText, index, cross, onSaved, onNavigate, onTagClick, onFilter, sideOpen, onToggleSide, daily }, ref) {
   const hostRef = useRef<HTMLDivElement>(null);
+  // The whole column, not just the editor host: ⌘F resolution asks which
+  // surface holds focus, and the find bar has to count as part of this one.
+  const colRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [errorMsg, setErrorMsg] = useState("");
@@ -78,6 +84,18 @@ export default forwardRef<DocsEditorHandle, {
   const savedTextRef = useRef("");
   const saveStateRef = useRef(saveState);
   saveStateRef.current = saveState;
+
+  // ⌘F / Edit ▸ Find. One engine per editor instance (there is one per open
+  // tab), reading whichever view is live through the ref.
+  const findEngine = useMemo(() => cmFindEngine(() => viewRef.current), []);
+  const { bar: findBar, onContentChange } = useFind({
+    host: colRef,
+    engine: findEngine,
+    canReplace: true,
+    rank: FindRank.editor,
+  });
+  const onFindContentChange = useRef(onContentChange);
+  onFindContentChange.current = onContentChange;
 
   const repoRel = joinPath(docsDir, path);
   const onSavedRef = useRef(onSaved);
@@ -229,6 +247,7 @@ export default forwardRef<DocsEditorHandle, {
           docsMarkdown(),
           livePreview,
           docsCompletion,
+          cmFindExtensions,
           indexCompRef.current.of(docsIndexFacet.of(indexRef.current)),
           crossCompRef.current.of(crossRefsFacet.of(crossRef.current)),
           // A stable nav facade reading live refs, so callback identity churn
@@ -265,6 +284,7 @@ export default forwardRef<DocsEditorHandle, {
           ]),
           EditorView.updateListener.of((u) => {
             if (!u.docChanged) return;
+            onFindContentChange.current();
             setSaveState((s) => (s === "saving" ? s : "dirty"));
             if (timerRef.current !== null) window.clearTimeout(timerRef.current);
             timerRef.current = window.setTimeout(() => {
@@ -456,7 +476,8 @@ export default forwardRef<DocsEditorHandle, {
   }, [diskText, status, saveState]);
 
   return (
-    <div className="docs-editor-col">
+    <div className="docs-editor-col" ref={colRef}>
+      {findBar}
       <div className="docs-editor-head">
         {daily && (
           <span className="daily-nav">

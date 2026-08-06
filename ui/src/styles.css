@@ -1091,6 +1091,74 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
 .term-search-close { background: transparent; border: none; color: var(--o0); cursor: pointer; font-size: 11px; padding: 2px 5px; border-radius: 4px; font-family: inherit; }
 .term-search-close:hover { background: var(--s0); color: var(--text); }
 
+/* ── Find & replace (AGE-63) ──────────────────────────────────────────────
+   One bar for every searchable surface — notes, files, issue descriptions.
+   `float` hangs over the top-right of an editor so nothing reflows while you
+   search; `inline` sits in flow (and sticks) for panes that scroll their own
+   content and would otherwise scroll the bar out of reach. */
+.find-bar {
+  /* Below the editor's own head bar, not over it — the path, the save state
+     and the side-panel toggle all live up there and stay clickable. */
+  position: absolute; top: 34px; right: 14px; z-index: 12;
+  display: flex; flex-direction: column; gap: 5px;
+  background: var(--mantle); border: 1px solid var(--s1); border-radius: 9px;
+  padding: 6px 8px; box-shadow: 0 6px 20px var(--shadow);
+}
+.find-bar.inline {
+  position: sticky; top: 0; right: auto; z-index: 5;
+  margin-bottom: 2px; box-shadow: none; background: var(--crust);
+}
+.find-row { display: flex; align-items: center; gap: 4px; }
+.find-bar.inline .find-row { flex-wrap: wrap; }
+.find-input {
+  width: 190px; background: var(--crust); color: var(--text);
+  border: 1px solid transparent; border-radius: 6px; outline: none;
+  font-family: var(--sans); font-size: 12.5px; padding: 4px 7px;
+}
+.find-bar.inline .find-input { flex: 1 1 130px; width: auto; min-width: 0; background: var(--base); }
+.find-input::placeholder { color: var(--o0); }
+.find-input:focus { border-color: var(--s1); }
+.find-input.invalid { border-color: var(--red); color: var(--red); }
+/* Fixed width so the row doesn't jitter as the count changes while typing. */
+.find-count {
+  min-width: 76px; text-align: right; color: var(--o0);
+  font-family: var(--mono); font-size: 10.5px; white-space: nowrap;
+}
+.find-opts { display: inline-flex; gap: 2px; margin-left: 2px; }
+.find-opt {
+  min-width: 21px; background: transparent; border: 1px solid transparent;
+  border-radius: 5px; color: var(--o0); cursor: pointer;
+  font-family: var(--mono); font-size: 11px; line-height: 1; padding: 4px 4px;
+}
+.find-opt:hover { background: var(--s0); color: var(--text); }
+.find-opt.on { background: var(--s1); color: var(--text); }
+.find-opt-word { text-decoration: underline; text-underline-offset: 2px; }
+.find-btn {
+  background: transparent; border: none; color: var(--sub0); cursor: pointer;
+  font-size: 13px; padding: 2px 6px; border-radius: 5px; line-height: 1; font-family: inherit;
+}
+.find-btn:hover { background: var(--s0); color: var(--text); }
+.find-btn.on { background: var(--s1); color: var(--text); }
+.find-close {
+  background: transparent; border: none; color: var(--o0); cursor: pointer;
+  font-size: 11px; padding: 3px 5px; border-radius: 5px; font-family: inherit;
+}
+.find-close:hover { background: var(--s0); color: var(--text); }
+.find-action {
+  background: var(--s0); border: 1px solid var(--s1); border-radius: 6px;
+  color: var(--text); cursor: pointer; font-family: var(--sans);
+  font-size: 11.5px; padding: 4px 9px; line-height: 1.2;
+}
+.find-action:hover:not(:disabled) { background: var(--s1); }
+.find-action:disabled { opacity: .45; cursor: default; }
+/* Match paint for the CodeMirror surfaces (lib/cmFind.ts). Mixed from theme
+   colors so both stay legible over syntax highlighting on every theme. */
+:root {
+  --find-match: color-mix(in srgb, var(--yellow) 30%, transparent);
+  --find-current: color-mix(in srgb, var(--peach) 48%, transparent);
+  --find-current-edge: color-mix(in srgb, var(--peach) 75%, transparent);
+}
+
 .diff-empty { color: var(--o0); font-size: 12px; padding: 4px 0; }
 
 /* ── Command Palette (Task 7c-3) ────────────────────────────── */
@@ -1582,7 +1650,8 @@ input, textarea, code,
 }
 
 /* ── File editor (CodeMirror) ────────────────────────────────── */
-.file-editor-wrap { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+/* position: anchors the floating find bar (AGE-63). */
+.file-editor-wrap { position: relative; display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .file-editor-bar { display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-bottom: 1px solid var(--line); font-size: 12px; }
 .file-editor-path { opacity: 0.85; }
 /* Icon buttons in the editor bar (save / revert). */
@@ -2531,7 +2600,8 @@ input, textarea, code,
 .docs-search-hit-title { font-size: 12px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .docs-search-hit-snippet { font-size: 11px; color: var(--sub0); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-.docs-editor-col { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+/* position: anchors the floating find bar (AGE-63). */
+.docs-editor-col { position: relative; display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .docs-editor-head { display: flex; align-items: center; gap: 8px; padding: 4px 10px; border-bottom: 1px solid var(--line); font-size: 12px; }
 .docs-editor-path { opacity: 0.85; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .docs-save-state { font-size: 11px; color: var(--o0); }

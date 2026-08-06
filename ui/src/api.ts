@@ -510,9 +510,11 @@ export interface ProviderSettings {
 export type McpTransport = "stdio" | "http" | "sse";
 
 // One MCP server definition: either stdio (command/args/env) or remote (url).
-// `transport` is inferred when null; `headers` carry auth for remote servers;
-// `userScope` marks a server registered/authenticated with the agent CLI itself
-// (Authenticate flow) so Agency stops emitting it into per-worktree config.
+// `transport` is inferred when null; `headers` carry auth for remote servers.
+// `userScopeAgents` lists the agent CLIs the server is registered with directly
+// (Authenticate flow) — Agency stops emitting it into those agents' per-worktree
+// config, since their own user config already holds the signed-in session, and
+// keeps emitting it for every other agent.
 export interface McpServer {
   name: string;
   command: string | null;
@@ -521,7 +523,7 @@ export interface McpServer {
   url: string | null;
   transport: McpTransport | null;
   headers: Record<string, string>;
-  userScope: boolean;
+  userScopeAgents: string[];
 }
 
 // Result of importing an mcp.json: the full list after merge, plus how many
@@ -538,8 +540,8 @@ export const importMcpJson = (text: string) =>
   invoke<McpImportResult>("import_mcp_json", { text });
 export const authenticateMcpServer = (projectId: string, agent: string, name: string) =>
   invoke<RunInfo>("authenticate_mcp_server", { projectId, agent, name });
-export const deauthenticateMcpServer = (name: string) =>
-  invoke<void>("deauthenticate_mcp_server", { name });
+export const deauthenticateMcpServer = (agent: string, name: string) =>
+  invoke<void>("deauthenticate_mcp_server", { agent, name });
 
 // Per-project graphify knowledge-graph config (persisted to the project's
 // gitignored .agency/agency.local.toml). *_command are null when unset, in
@@ -591,6 +593,8 @@ export interface CatalogEntry {
   installed: boolean;
   /** Whether Agency emits per-workspace MCP config for this agent. */
   supportsMcp: boolean;
+  /** Whether Agency can register an OAuth MCP server with this agent's own CLI. */
+  supportsMcpAuth: boolean;
 }
 
 export const agentOnboardingNeeded = () => invoke<boolean>("agent_onboarding_needed");

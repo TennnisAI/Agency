@@ -35,7 +35,11 @@ pub struct McpServerDef {
     pub transport: Option<crate::mcp::McpTransport>,
     #[serde(default)]
     pub headers: std::collections::BTreeMap<String, String>,
-    /// Registered at the agent CLI's user scope; not re-emitted per worktree.
+    /// Agent CLIs this server is registered with at their own user scope; not
+    /// re-emitted into those agents' per-worktree config (see mcp.rs).
+    #[serde(default)]
+    pub user_scope_agents: Vec<String>,
+    /// Legacy global form of the field above, folded into it on load.
     #[serde(default)]
     pub user_scope: bool,
 }

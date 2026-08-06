@@ -1048,8 +1048,12 @@ pub fn authenticate_mcp_server(
 }
 
 #[tauri::command]
-pub fn deauthenticate_mcp_server(state: State<'_, AppState>, name: String) -> Result<(), String> {
-    state.deauthenticate_mcp_server(&name).map_err(|e| e.to_string())
+pub fn deauthenticate_mcp_server(
+    state: State<'_, AppState>,
+    agent: String,
+    name: String,
+) -> Result<(), String> {
+    state.deauthenticate_mcp_server(&agent, &name).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

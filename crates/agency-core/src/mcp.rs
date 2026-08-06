@@ -3,13 +3,19 @@
 //! Agency keeps one canonical list of MCP servers (global app settings merged
 //! with the project's `[mcp.servers.*]` in `.agency/agency.toml`) and emits it
 //! into each new worktree in the *native* format of the agent that will run
-//! there — `.mcp.json` for Claude Code and Copilot CLI (Copilot discovers
-//! project-level `.mcp.json` and applies it once the user confirms folder
-//! trust), `.cursor/mcp.json` for Cursor, `opencode.json` for OpenCode.
-//! Existing files are merged into (our entries upserted by name), never
-//! replaced, so repo-committed server definitions survive. Agents whose MCP
-//! config is global-only (Codex's ~/.codex/config.toml) are intentionally
+//! there — `.mcp.json` for Claude Code and Copilot CLI (Copilot lists
+//! `.mcp.json` as a workspace config source and applies it once the user
+//! confirms folder trust), `.cursor/mcp.json` for Cursor, `opencode.json` for
+//! OpenCode. Existing files are merged into (our entries upserted by name),
+//! never replaced, so repo-committed server definitions survive. Agents whose
+//! MCP config is global-only (Codex's ~/.codex/config.toml) are intentionally
 //! skipped: Agency never mutates files outside the workspace.
+//!
+//! OAuth servers can't live in per-worktree config — their signed-in session is
+//! held by the agent CLI at *its* user scope. The Authenticate flow registers
+//! such a server with one agent CLI and records that in `user_scope_agents`, so
+//! emission is suppressed **only for that agent**. Every other agent keeps
+//! getting the server written into its workspace config.
 
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
@@ -47,14 +53,42 @@ pub struct McpServer {
     /// HTTP headers for remote transports (e.g. `Authorization`). Ignored for stdio.
     #[serde(default)]
     pub headers: BTreeMap<String, String>,
-    /// True when the server is registered at the agent CLI's own user scope (via
-    /// the Authenticate flow) — its OAuth session lives there and persists across
-    /// worktrees, so Agency must NOT re-emit it into per-worktree config.
+    /// Agent CLIs this server is registered with at *their* own user scope (via
+    /// the Authenticate flow). The OAuth session lives there and persists across
+    /// worktrees, so Agency must not re-emit the server into that agent's
+    /// per-worktree config — but every other agent still gets it.
     #[serde(default)]
+    pub user_scope_agents: Vec<String>,
+    /// Legacy shape of the field above, from when Agency could only authenticate
+    /// with Claude and the flag was global. Read on load and folded into
+    /// `user_scope_agents` by [`normalize`]; never written back.
+    #[serde(default, skip_serializing_if = "is_false")]
     pub user_scope: bool,
 }
 
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
 impl McpServer {
+    /// Whether `agent` gets this server from its own user-scope config rather
+    /// than from the per-worktree file Agency writes.
+    pub fn is_user_scope_for(&self, agent: &str) -> bool {
+        self.user_scope_agents.iter().any(|a| a == agent)
+    }
+
+    /// Fold the legacy global `user_scope` flag into the per-agent list. A
+    /// server saved before per-agent scope existed was necessarily registered
+    /// with Claude — that was the only agent Authenticate supported.
+    pub fn normalize(&mut self) {
+        if self.user_scope {
+            self.user_scope = false;
+            if !self.is_user_scope_for("claude") {
+                self.user_scope_agents.push("claude".into());
+            }
+        }
+    }
+
     pub fn validate(&self) -> Result<()> {
         if self.name.trim().is_empty() {
             bail!("MCP server needs a name");
@@ -81,15 +115,20 @@ impl McpServer {
 pub fn from_config(cfg: &crate::config::McpConfig) -> Vec<McpServer> {
     cfg.servers
         .iter()
-        .map(|(name, def)| McpServer {
-            name: name.clone(),
-            command: def.command.clone(),
-            args: def.args.clone(),
-            env: def.env.clone(),
-            url: def.url.clone(),
-            transport: def.transport,
-            headers: def.headers.clone(),
-            user_scope: def.user_scope,
+        .map(|(name, def)| {
+            let mut s = McpServer {
+                name: name.clone(),
+                command: def.command.clone(),
+                args: def.args.clone(),
+                env: def.env.clone(),
+                url: def.url.clone(),
+                transport: def.transport,
+                headers: def.headers.clone(),
+                user_scope_agents: def.user_scope_agents.clone(),
+                user_scope: def.user_scope,
+            };
+            s.normalize();
+            s
         })
         .collect()
 }
@@ -142,7 +181,7 @@ pub fn import_json(text: &str) -> Result<Vec<McpServer>> {
             url: str_at("url"),
             transport,
             headers: map_at("headers"),
-            user_scope: false,
+            ..Default::default()
         };
         if server.command.is_some() || server.url.is_some() {
             out.push(server);
@@ -182,15 +221,76 @@ pub fn agent_supported(agent: &str) -> bool {
     emit_target(agent).is_some()
 }
 
+/// Agent CLIs whose own user-scope MCP registration Agency can drive (the
+/// Authenticate flow). Both take a remote server on the command line and hold
+/// the resulting OAuth session in their user config; the interactive sign-in
+/// itself happens in the agent's own `/mcp` UI.
+pub const AUTH_AGENTS: &[&str] = &["claude", "copilot"];
+
+/// Whether [`auth_argv`] knows how to register a server with `agent`'s CLI.
+pub fn auth_supported(agent: &str) -> bool {
+    AUTH_AGENTS.contains(&agent)
+}
+
+/// The argv that registers `server` with `agent`'s CLI at that CLI's user
+/// scope, ready to spawn without a shell (so user-supplied values need no
+/// quoting). Errors for agents with no such command, or for a stdio server —
+/// Authenticate exists for remote servers that need an interactive sign-in.
+pub fn auth_argv(agent: &str, server: &McpServer) -> Result<(String, Vec<String>)> {
+    let url = server
+        .url
+        .as_deref()
+        .map(str::trim)
+        .filter(|u| !u.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Authenticate is for remote (url) servers; '{}' is a stdio server",
+                server.name
+            )
+        })?;
+    let transport = match server.effective_transport() {
+        McpTransport::Sse => "sse",
+        _ => "http",
+    };
+    let (command, mut args) = match agent {
+        // `--scope user` is Claude's opt-in; Copilot's `mcp add` is user-scoped
+        // already (its help: "Add a new MCP server to the user configuration").
+        "claude" => (
+            "claude",
+            vec![
+                "mcp".to_string(), "add".into(),
+                "--scope".into(), "user".into(),
+                "--transport".into(), transport.into(),
+            ],
+        ),
+        "copilot" => (
+            "copilot",
+            vec!["mcp".to_string(), "add".into(), "--transport".into(), transport.into()],
+        ),
+        _ => bail!(
+            "Agency can't register MCP servers with {agent}; add '{}' using {agent}'s own CLI",
+            server.name
+        ),
+    };
+    args.push(server.name.clone());
+    args.push(url.to_string());
+    for (k, v) in &server.headers {
+        args.push("--header".into());
+        args.push(format!("{k}: {v}"));
+    }
+    Ok((command.to_string(), args))
+}
+
 /// Write the servers into `worktree` in `agent`'s native config format.
 /// Returns false (and writes nothing) for agents Agency can't configure
 /// per-workspace. Invalid entries are skipped rather than failing the run.
 pub fn emit_for_agent(agent: &str, worktree: &Path, servers: &[McpServer]) -> Result<bool> {
-    // Skip user-scope servers: they're registered with the agent CLI directly
-    // (Authenticate flow) so its persisted OAuth session applies, and re-emitting
-    // a project-scoped copy would only trigger an untrusted-server approval.
+    // Skip servers registered with *this* agent's CLI directly (Authenticate
+    // flow) so its persisted OAuth session applies, and re-emitting a
+    // project-scoped copy would only trigger an untrusted-server approval.
+    // Servers authenticated with a *different* agent still get emitted here.
     let valid: Vec<&McpServer> =
-        servers.iter().filter(|s| !s.user_scope && s.validate().is_ok()).collect();
+        servers.iter().filter(|s| !s.is_user_scope_for(agent) && s.validate().is_ok()).collect();
     if valid.is_empty() {
         return Ok(false);
     }
@@ -417,7 +517,7 @@ mod tests {
             name: "atlassian".into(),
             url: Some("https://mcp.atlassian.com/v1/sse".into()),
             transport: Some(McpTransport::Sse),
-            user_scope: true,
+            user_scope_agents: vec!["claude".into()],
             ..Default::default()
         };
         // Only the user-scope server is present → nothing to write.
@@ -430,6 +530,104 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(dir.path().join(".mcp.json")).unwrap()).unwrap();
         assert!(root["mcpServers"].get("atlassian").is_none());
         assert_eq!(root["mcpServers"]["kg"]["command"], "graphify");
+    }
+
+    /// The AGE-61 bug: authenticating a server with Claude used to set one
+    /// global flag, which silently stopped Agency emitting that server for
+    /// *every* other agent — so a Copilot user who pressed Authenticate lost
+    /// the server entirely. Scope is per-agent now.
+    #[test]
+    fn user_scope_for_one_agent_still_emits_for_the_others() {
+        let dir = tempfile::tempdir().unwrap();
+        let server = McpServer {
+            name: "atlassian".into(),
+            url: Some("https://mcp.atlassian.com/v1/mcp".into()),
+            user_scope_agents: vec!["claude".into()],
+            ..Default::default()
+        };
+        // Claude reads it from its own user config → nothing to emit.
+        assert!(!emit_for_agent("claude", dir.path(), &[server.clone()]).unwrap());
+        assert!(!dir.path().join(".mcp.json").exists());
+        // Copilot never registered it → it must still land in the worktree.
+        assert!(emit_for_agent("copilot", dir.path(), &[server.clone()]).unwrap());
+        let root: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join(".mcp.json")).unwrap()).unwrap();
+        assert_eq!(root["mcpServers"]["atlassian"]["url"], "https://mcp.atlassian.com/v1/mcp");
+        // …as must Cursor, in its own format.
+        assert!(emit_for_agent("cursor", dir.path(), &[server]).unwrap());
+        assert!(dir.path().join(".cursor/mcp.json").exists());
+    }
+
+    #[test]
+    fn legacy_global_user_scope_migrates_to_claude_only() {
+        // Servers persisted before per-agent scope existed carry `userScope`.
+        let mut s: McpServer = serde_json::from_str(
+            r#"{"name":"atlassian","url":"https://x/mcp","userScope":true}"#,
+        )
+        .unwrap();
+        assert!(s.user_scope);
+        s.normalize();
+        assert!(!s.user_scope, "legacy flag is consumed");
+        assert_eq!(s.user_scope_agents, vec!["claude".to_string()]);
+        assert!(s.is_user_scope_for("claude"));
+        assert!(!s.is_user_scope_for("copilot"));
+        // Normalizing twice must not duplicate the entry.
+        s.normalize();
+        assert_eq!(s.user_scope_agents, vec!["claude".to_string()]);
+        // The legacy flag is not written back out.
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(!json.contains("userScope\":true"), "{json}");
+    }
+
+    #[test]
+    fn auth_argv_is_agent_specific() {
+        let mut server = remote("atlassian", "https://mcp.atlassian.com/v1/mcp");
+        server.headers.insert("Authorization".into(), "Bearer tok".into());
+
+        let (cmd, args) = auth_argv("claude", &server).unwrap();
+        assert_eq!(cmd, "claude");
+        assert_eq!(
+            args,
+            vec![
+                "mcp", "add", "--scope", "user", "--transport", "http",
+                "atlassian", "https://mcp.atlassian.com/v1/mcp",
+                "--header", "Authorization: Bearer tok",
+            ]
+        );
+
+        // Copilot's `mcp add` writes its user config already — no scope flag.
+        let (cmd, args) = auth_argv("copilot", &server).unwrap();
+        assert_eq!(cmd, "copilot");
+        assert_eq!(
+            args,
+            vec![
+                "mcp", "add", "--transport", "http",
+                "atlassian", "https://mcp.atlassian.com/v1/mcp",
+                "--header", "Authorization: Bearer tok",
+            ]
+        );
+
+        // SSE servers keep their transport.
+        let sse = McpServer { transport: Some(McpTransport::Sse), ..remote("a", "https://x/sse") };
+        let (_, args) = auth_argv("copilot", &sse).unwrap();
+        assert!(args.windows(2).any(|w| w == ["--transport", "sse"]), "{args:?}");
+
+        // Agents with no known command, and stdio servers, are rejected.
+        assert!(auth_argv("cursor", &server).is_err());
+        assert!(auth_argv("claude", &stdio("kg", "graphify")).is_err());
+    }
+
+    #[test]
+    fn auth_supported_matches_auth_argv() {
+        let server = remote("a", "https://x/mcp");
+        for agent in AUTH_AGENTS {
+            assert!(auth_supported(agent));
+            assert!(auth_argv(agent, &server).is_ok(), "{agent}");
+        }
+        for agent in ["cursor", "opencode", "codex", "gemini"] {
+            assert!(!auth_supported(agent));
+            assert!(auth_argv(agent, &server).is_err(), "{agent}");
+        }
     }
 
     #[test]

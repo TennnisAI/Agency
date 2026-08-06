@@ -32,6 +32,9 @@ pub struct CatalogEntryInfo {
     pub installed: bool,
     /// Whether Agency emits per-workspace MCP config for this agent.
     pub supports_mcp: bool,
+    /// Whether Agency can register an OAuth MCP server with this agent's own
+    /// CLI at user scope (the Authenticate flow).
+    pub supports_mcp_auth: bool,
 }
 
 /// All built-in agent profiles Agency ships recipes for.

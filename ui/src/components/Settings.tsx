@@ -9,6 +9,7 @@ import {
   FilesConfig,
   KnowledgeConfig,
   McpServer,
+  McpTransport,
   Project,
   ProviderSettings,
   NotifSettings,
@@ -50,6 +51,84 @@ import { THEMES, ThemeId, applyTheme, getStoredTheme } from "../lib/themes";
 import { getWordWrap, setWordWrap } from "../lib/editorPrefs";
 import { setWorkspaceHidden, workspaceHidden } from "../lib/workspacePref";
 import { HUSHABLE, HushId, isHushed, setHushed } from "../lib/hushed";
+
+// One editable row of an MCP server's headers or environment. Kept as an
+// ordered pair list rather than a Record while editing so a half-typed row
+// (blank key, or two rows briefly sharing a key) survives the next keystroke.
+type KeyValue = { key: string; value: string };
+
+const recordToPairs = (r: Record<string, string>): KeyValue[] =>
+  Object.entries(r).map(([key, value]) => ({ key, value }));
+
+// Blank-keyed rows are dropped; later rows win on a duplicate key.
+const pairsToRecord = (pairs: KeyValue[]): Record<string, string> =>
+  Object.fromEntries(
+    pairs.map(({ key, value }) => [key.trim(), value.trim()]).filter(([k]) => k),
+  );
+
+// The three shapes an MCP server can take, as offered by the transport picker.
+// "Local" spawns a command over stdio; the other two are remote endpoints.
+const MCP_TRANSPORTS: { id: McpTransport; label: string }[] = [
+  { id: "stdio", label: "Local" },
+  { id: "http", label: "HTTP" },
+  { id: "sse", label: "SSE" },
+];
+
+// Editable key/value list for MCP headers and environment variables. Beats a
+// free-text box: no separator to get wrong, and a secret with a colon or an "="
+// in it round-trips intact. Rows are addressed by index so editing a key does
+// not re-key the row and steal focus mid-keystroke.
+function KeyValueRows({
+  pairs,
+  onChange,
+  keyPlaceholder,
+  valuePlaceholder,
+  addLabel,
+}: {
+  pairs: KeyValue[];
+  onChange: (pairs: KeyValue[]) => void;
+  keyPlaceholder: string;
+  valuePlaceholder: string;
+  addLabel: string;
+}) {
+  const edit = (i: number, patch: Partial<KeyValue>) =>
+    onChange(pairs.map((p, n) => (n === i ? { ...p, ...patch } : p)));
+  return (
+    <div className="kv-rows">
+      {pairs.map((p, i) => (
+        <div className="kv-row" key={i}>
+          <input
+            className="settings-input mono"
+            placeholder={keyPlaceholder}
+            value={p.key}
+            onChange={(e) => edit(i, { key: e.target.value })}
+          />
+          <input
+            className="settings-input mono"
+            placeholder={valuePlaceholder}
+            value={p.value}
+            onChange={(e) => edit(i, { value: e.target.value })}
+          />
+          <button
+            type="button"
+            className="settings-ghost-btn kv-del"
+            aria-label="Remove"
+            onClick={() => onChange(pairs.filter((_, n) => n !== i))}
+          >
+            ✕
+          </button>
+        </div>
+      ))}
+      <button
+        type="button"
+        className="kv-add"
+        onClick={() => onChange([...pairs, { key: "", value: "" }])}
+      >
+        + {addLabel}
+      </button>
+    </div>
+  );
+}
 
 // Full-view settings page (design handoff: settings takes over the main area,
 // entered from the ⚙ button at the bottom of the Projects pane).
@@ -98,9 +177,24 @@ export default function Settings({
     () => HUSHABLE.filter((h) => isHushed(h.id)).map((h) => h.id),
   );
   const [mcpServers, setMcpServers] = useState<McpServer[]>([]);
-  const emptyMcpDraft = { name: "", command: "", args: "", env: "", url: "", transport: "stdio", headers: "" };
+  // The draft mirrors the form: `transport` is the single source of truth for
+  // whether this is a local (stdio) or remote server, so the form shows one
+  // coherent set of fields instead of asking for a command *and* a URL and
+  // inferring which the user meant. Headers and env are ordered pairs so blank
+  // rows can exist while typing (a Record would collapse them).
+  const emptyMcpDraft = {
+    name: "",
+    transport: "stdio" as McpTransport,
+    command: "",
+    args: "",
+    url: "",
+    headers: [] as KeyValue[],
+    env: [] as KeyValue[],
+  };
   const [mcpDraft, setMcpDraft] = useState(emptyMcpDraft);
   const [mcpFormOpen, setMcpFormOpen] = useState(false);
+  // Name of the server whose "Authenticate with…" agent menu is open.
+  const [mcpAuthMenu, setMcpAuthMenu] = useState<string | null>(null);
   // Original name of the MCP server being edited (null when adding). A rename
   // must drop the old-named entry, not just upsert the new name — otherwise the
   // list keeps both and the server is duplicated.
@@ -219,33 +313,22 @@ export default function Settings({
   async function addMcpServer() {
     const name = mcpDraft.name.trim();
     if (!name) return;
+    const remote = mcpDraft.transport !== "stdio";
     const url = mcpDraft.url.trim();
     const command = mcpDraft.command.trim();
-    const env: Record<string, string> = {};
-    for (const line of mcpDraft.env.split("\n").map((l) => l.trim()).filter(Boolean)) {
-      const i = line.indexOf("=");
-      if (i > 0) env[line.slice(0, i)] = line.slice(i + 1);
-    }
-    // Headers accept "Key: value" or "Key=value"; only meaningful for remote servers.
-    const headers: Record<string, string> = {};
-    for (const line of mcpDraft.headers.split("\n").map((l) => l.trim()).filter(Boolean)) {
-      const i = line.search(/[:=]/);
-      if (i > 0) headers[line.slice(0, i).trim()] = line.slice(i + 1).trim();
-    }
-    // Only remote servers carry a transport; stdio is inferred from `command`.
-    const transport: McpServer["transport"] = url
-      ? (mcpDraft.transport === "sse" ? "sse" : "http")
-      : null;
+    // Only the fields the chosen transport actually uses are persisted, so
+    // switching Local → HTTP mid-edit can't leave a stale command behind that
+    // would make the entry fail validation (a server is command *or* url).
     const server: McpServer = {
       name,
-      command: command || null,
-      args: mcpDraft.args.trim() ? mcpDraft.args.trim().split(/\s+/) : [],
-      env,
-      url: url || null,
-      transport,
-      headers,
-      // Preserve the authenticated flag across edits of the same server.
-      userScope: mcpServers.find((s) => s.name === mcpEditing)?.userScope ?? false,
+      command: remote ? null : command || null,
+      args: remote || !mcpDraft.args.trim() ? [] : mcpDraft.args.trim().split(/\s+/),
+      env: remote ? {} : pairsToRecord(mcpDraft.env),
+      url: remote ? url || null : null,
+      transport: remote ? mcpDraft.transport : null,
+      headers: remote ? pairsToRecord(mcpDraft.headers) : {},
+      // Preserve which agents this server is already registered with across edits.
+      userScopeAgents: mcpServers.find((s) => s.name === mcpEditing)?.userScopeAgents ?? [],
     };
     // Drop both the new name and the original (on a rename they differ) so an
     // edit replaces the entry instead of leaving a stale duplicate behind.
@@ -265,10 +348,10 @@ export default function Settings({
       name: s.name,
       command: s.command ?? "",
       args: s.args.join(" "),
-      env: Object.entries(s.env).map(([k, v]) => `${k}=${v}`).join("\n"),
+      env: recordToPairs(s.env),
       url: s.url ?? "",
       transport: s.transport ?? (s.url ? "http" : "stdio"),
-      headers: Object.entries(s.headers).map(([k, v]) => `${k}: ${v}`).join("\n"),
+      headers: recordToPairs(s.headers),
     });
     setMcpEditing(s.name);
     setMcpFormOpen(true);
@@ -286,13 +369,15 @@ export default function Settings({
     }
   }
 
-  // Register the server with the Claude CLI at user scope (synchronously, so a
-  // failure surfaces here instead of silently flagging it), then open a terminal
-  // to complete the interactive /mcp OAuth sign-in.
-  async function authenticateMcp(name: string) {
+  // Register the server with `agent`'s own CLI at that CLI's user scope
+  // (synchronously, so a failure surfaces here instead of silently recording
+  // it), then open a terminal to complete the interactive /mcp OAuth sign-in.
+  // Agency keeps emitting the server into every *other* agent's workspace.
+  async function authenticateMcp(agent: string, name: string) {
     if (!projectId) return;
+    setMcpAuthMenu(null);
     try {
-      const run = await authenticateMcpServer(projectId, "claude", name);
+      const run = await authenticateMcpServer(projectId, agent, name);
       setMcpServers(await listMcpServers());
       // Jump straight into the terminal so the user can run /mcp and sign in.
       if (onOpenTerminal) onOpenTerminal(run.id);
@@ -302,11 +387,12 @@ export default function Settings({
     }
   }
 
-  // Clear the user-scope flag so Agency emits the server per-worktree again — the
-  // recovery path if registration failed or the user wants Agency to manage it.
-  async function deauthenticateMcp(name: string) {
+  // Drop one agent's user-scope registration so Agency emits the server into
+  // that agent's worktrees again — the recovery path if registration failed or
+  // the user wants Agency to manage it.
+  async function deauthenticateMcp(agent: string, name: string) {
     try {
-      await deauthenticateMcpServer(name);
+      await deauthenticateMcpServer(agent, name);
       setMcpServers(await listMcpServers());
     } catch (e) {
       toastError(e, "Couldn't un-authenticate server");
@@ -860,10 +946,11 @@ export default function Settings({
             {catalog.filter((e) => e.supportsMcp).map((e) => agentLabel(e.id)).join(", ") ||
               "Claude Code, Copilot CLI, Cursor, OpenCode"}
             ). Copilot loads workspace servers after you approve folder trust on first launch.
-            Remote servers support <code>http</code>/<code>sse</code> transports and auth
-            headers; OAuth servers (e.g. Atlassian) use <b>Authenticate</b> to sign in via the Claude
-            CLI at user scope. Projects can add their own via <code>[mcp.servers]</code> in{" "}
-            <code>.agency/agency.toml</code>; project entries win on name conflicts.
+            Servers that need an OAuth sign-in can't live in workspace config; use{" "}
+            <b>Authenticate</b> to register one with an agent's own CLI instead. That agent then
+            reads it from its user config, and Agency keeps emitting it for the others. Projects
+            can add their own via <code>[mcp.servers]</code> in <code>.agency/agency.toml</code>;
+            project entries win on name conflicts.
           </p>
           {catalog.some((e) => e.enabled && !e.supportsMcp) && (
             <p className="settings-section-hint">
@@ -872,30 +959,56 @@ export default function Settings({
             </p>
           )}
           <div className="settings-card-list">
-            {mcpServers.map((s) => (
+            {mcpServers.map((s) => {
+              // Agents that could still take this server at their own user scope:
+              // remote servers only, minus the ones already registered with it.
+              const authable = s.url
+                ? catalog.filter((e) => e.supportsMcpAuth && !s.userScopeAgents.includes(e.id))
+                : [];
+              return (
               <div key={s.name} className="settings-profile-card">
                 <div className="settings-profile-head">
                   <span className="settings-profile-name">{s.name}</span>
-                  {s.userScope && <span className="settings-meta-key">user scope · not emitted per-worktree</span>}
+                  <span className="mcp-transport-tag">{s.url ? (s.transport ?? "http") : "local"}</span>
                   <span className="spacer" />
-                  {s.url && !s.userScope && (
-                    <button
-                      className="settings-ghost-btn"
-                      disabled={!projectId}
-                      title={projectId ? "Register & sign in with the Claude CLI" : "Select a project first"}
-                      onClick={() => authenticateMcp(s.name)}
-                    >
-                      Authenticate
-                    </button>
-                  )}
-                  {s.url && s.userScope && (
-                    <button
-                      className="settings-ghost-btn"
-                      title="Stop treating this as user-scope; Agency will emit it into worktrees again"
-                      onClick={() => deauthenticateMcp(s.name)}
-                    >
-                      Un-authenticate
-                    </button>
+                  {authable.length > 0 && (
+                    <div className="settings-add-dropdown">
+                      <button
+                        className="settings-ghost-btn"
+                        disabled={!projectId}
+                        title={
+                          projectId
+                            ? "Register this server with an agent's own CLI and sign in"
+                            : "Select a project first"
+                        }
+                        onClick={() => setMcpAuthMenu((n) => (n === s.name ? null : s.name))}
+                      >
+                        Authenticate ▾
+                      </button>
+                      {mcpAuthMenu === s.name && (
+                        <>
+                          <div className="settings-menu-backdrop" onClick={() => setMcpAuthMenu(null)} />
+                          <div className="settings-menu">
+                            {authable.map((e) => (
+                              <button
+                                key={e.id}
+                                // Registering shells out to the agent's own CLI, so
+                                // an uninstalled one can only fail — say so up front.
+                                disabled={!e.installed}
+                                title={e.installed ? undefined : `${e.command} is not on PATH`}
+                                onClick={() => authenticateMcp(e.id, s.name)}
+                              >
+                                <span className="agent-dot" style={{ background: agentColor(e.id) }} />
+                                <span className="settings-menu-name">{agentLabel(e.id)}</span>
+                                <code className="settings-menu-cmd">
+                                  {e.installed ? `${e.command} mcp add` : "not installed"}
+                                </code>
+                              </button>
+                            ))}
+                          </div>
+                        </>
+                      )}
+                    </div>
                   )}
                   <button className="settings-ghost-btn" onClick={() => editMcpServer(s)}>Edit</button>
                   <button
@@ -908,7 +1021,7 @@ export default function Settings({
                 <div className="settings-profile-meta">
                   {s.url ? (
                     <>
-                      <span className="settings-meta-key">{s.transport ?? "http"}</span>
+                      <span className="settings-meta-key">url</span>
                       <code className="settings-meta-val">{s.url}</code>
                     </>
                   ) : (
@@ -930,8 +1043,26 @@ export default function Settings({
                     </>
                   )}
                 </div>
+                {s.userScopeAgents.length > 0 && (
+                  <div className="mcp-auth-row">
+                    <span className="settings-meta-key">signed in via</span>
+                    {s.userScopeAgents.map((id) => (
+                      <button
+                        key={id}
+                        className="mcp-auth-chip"
+                        title={`Registered with ${agentLabel(id)} at user scope, so Agency does not write it into ${agentLabel(id)} worktrees. Click to undo.`}
+                        onClick={() => deauthenticateMcp(id, s.name)}
+                      >
+                        <span className="agent-dot" style={{ background: agentColor(id) }} />
+                        {agentLabel(id)}
+                        <span className="mcp-auth-chip-x">✕</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
-            ))}
+              );
+            })}
           </div>
           <div className="row-actions">
             <button className="settings-add-profile" onClick={() => setMcpFormOpen(true)}>+ Add MCP server</button>
@@ -1195,89 +1326,106 @@ export default function Settings({
           title={mcpEditing ? `Edit ${mcpEditing}` : "New MCP server"}
           subtitle="A tool server Agency writes into every agent workspace."
           submitLabel={mcpEditing ? "Save changes" : "Add server"}
-          submitDisabled={!mcpDraft.name.trim() || (!mcpDraft.command.trim() && !mcpDraft.url.trim())}
+          submitDisabled={
+            !mcpDraft.name.trim() ||
+            (mcpDraft.transport === "stdio" ? !mcpDraft.command.trim() : !mcpDraft.url.trim())
+          }
           onSubmit={addMcpServer}
           onCancel={() => { setMcpFormOpen(false); setMcpDraft(emptyMcpDraft); setMcpEditing(null); }}
         >
-          <Field label="Name" hint="Identifies the server in each agent's config file.">
-            <input
-              className="settings-input"
-              autoFocus
-              placeholder="linear"
-              value={mcpDraft.name}
-              onChange={(e) => setMcpDraft({ ...mcpDraft, name: e.target.value })}
-            />
-          </Field>
-          <div className="field-split">
-            <Field
-              label="Command"
-              hint="For a local server: the executable to run. Leave empty for a remote one."
-            >
+          {/* Name and transport share a row: the transport picker decides which
+              fields follow, so it belongs beside the name, not buried below. */}
+          <Field label="Server name" hint="Identifies the server in each agent's config file.">
+            <div className="mcp-name-row">
               <input
-                className="settings-input mono"
-                placeholder="npx"
-                value={mcpDraft.command}
-                onChange={(e) => setMcpDraft({ ...mcpDraft, command: e.target.value })}
+                className="settings-input"
+                autoFocus
+                placeholder="linear"
+                value={mcpDraft.name}
+                onChange={(e) => setMcpDraft({ ...mcpDraft, name: e.target.value })}
               />
-            </Field>
-            <Field label="Arguments" optional hint="Space separated, passed to the command.">
-              <input
-                className="settings-input mono"
-                placeholder="-y @modelcontextprotocol/server-github"
-                value={mcpDraft.args}
-                onChange={(e) => setMcpDraft({ ...mcpDraft, args: e.target.value })}
-              />
-            </Field>
-          </div>
-          <Field
-            label="URL"
-            hint="For a remote server: its endpoint. Leave empty when a command is set."
-          >
-            <input
-              className="settings-input mono"
-              placeholder="https://mcp.example.com/sse"
-              value={mcpDraft.url}
-              onChange={(e) => setMcpDraft({ ...mcpDraft, url: e.target.value })}
-            />
+              <div className="mcp-seg" role="group" aria-label="Transport">
+                {MCP_TRANSPORTS.map((t) => (
+                  <button
+                    key={t.id}
+                    type="button"
+                    className={mcpDraft.transport === t.id ? "on" : ""}
+                    aria-pressed={mcpDraft.transport === t.id}
+                    onClick={() => setMcpDraft({ ...mcpDraft, transport: t.id })}
+                  >
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+            </div>
           </Field>
-          {mcpDraft.url.trim() && (
+
+          {mcpDraft.transport === "stdio" ? (
             <>
-              <Field label="Transport" hint="How the remote server streams responses.">
-                <select
-                  className="settings-input"
-                  value={mcpDraft.transport === "sse" ? "sse" : "http"}
-                  onChange={(e) => setMcpDraft({ ...mcpDraft, transport: e.target.value })}
-                >
-                  <option value="http">http (streamable)</option>
-                  <option value="sse">sse</option>
-                </select>
-              </Field>
-              <Field
-                label="Headers"
-                optional
-                hint={<>Sent with every request, one per line: <code>Authorization: Bearer …</code></>}
-              >
-                <textarea
-                  className="settings-input mono"
-                  placeholder="Authorization: Bearer sk-…"
-                  value={mcpDraft.headers}
-                  onChange={(e) => setMcpDraft({ ...mcpDraft, headers: e.target.value })}
+              <div className="field-split">
+                <Field label="Command" hint="The executable Agency tells the agent to run.">
+                  <input
+                    className="settings-input mono"
+                    placeholder="npx"
+                    value={mcpDraft.command}
+                    onChange={(e) => setMcpDraft({ ...mcpDraft, command: e.target.value })}
+                  />
+                </Field>
+                <Field label="Arguments" optional hint="Space separated, passed to the command.">
+                  <input
+                    className="settings-input mono"
+                    placeholder="-y @modelcontextprotocol/server-github"
+                    value={mcpDraft.args}
+                    onChange={(e) => setMcpDraft({ ...mcpDraft, args: e.target.value })}
+                  />
+                </Field>
+              </div>
+              <Field label="Environment variables" optional hint="Added to the server's environment.">
+                <KeyValueRows
+                  pairs={mcpDraft.env}
+                  onChange={(env) => setMcpDraft({ ...mcpDraft, env })}
+                  keyPlaceholder="GITHUB_TOKEN"
+                  valuePlaceholder="ghp_…"
+                  addLabel="Add variable"
                 />
               </Field>
             </>
+          ) : (
+            <>
+              <Field
+                label="URL"
+                hint={
+                  mcpDraft.transport === "sse"
+                    ? "The server's SSE endpoint."
+                    : "The server's streamable-HTTP endpoint."
+                }
+              >
+                <input
+                  className="settings-input mono"
+                  placeholder={
+                    mcpDraft.transport === "sse"
+                      ? "https://mcp.example.com/sse"
+                      : "https://mcp.example.com/mcp"
+                  }
+                  value={mcpDraft.url}
+                  onChange={(e) => setMcpDraft({ ...mcpDraft, url: e.target.value })}
+                />
+              </Field>
+              <Field label="Headers" optional hint="Sent with every request to the server.">
+                <KeyValueRows
+                  pairs={mcpDraft.headers}
+                  onChange={(headers) => setMcpDraft({ ...mcpDraft, headers })}
+                  keyPlaceholder="Authorization"
+                  valuePlaceholder="Bearer sk-…"
+                  addLabel="Add header"
+                />
+              </Field>
+              <p className="settings-section-hint">
+                Signing in with OAuth instead of a header? Add the server, then use{" "}
+                <b>Authenticate</b> on its card to register it with an agent's own CLI.
+              </p>
+            </>
           )}
-          <Field
-            label="Environment variables"
-            optional
-            hint={<>Added to the server's environment, one <code>KEY=VALUE</code> per line.</>}
-          >
-            <textarea
-              className="settings-input mono"
-              placeholder="GITHUB_TOKEN=ghp_…"
-              value={mcpDraft.env}
-              onChange={(e) => setMcpDraft({ ...mcpDraft, env: e.target.value })}
-            />
-          </Field>
         </FormDialog>
       )}
 

@@ -1060,6 +1060,7 @@ impl AppState {
                 enabled,
                 installed: command_on_path(entry.command),
                 supports_mcp: agency_core::mcp::agent_supported(entry.id),
+                supports_mcp_auth: agency_core::mcp::auth_supported(entry.id),
             })
             .collect())
     }
@@ -2363,7 +2364,14 @@ impl AppState {
     /// App-global MCP servers, configured in Settings.
     pub fn list_mcp_servers(&self) -> Result<Vec<agency_core::mcp::McpServer>> {
         let raw = self.registry.lock().unwrap().get_setting(SETTING_MCP)?;
-        Ok(raw.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default())
+        let mut servers: Vec<agency_core::mcp::McpServer> =
+            raw.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        // Fold the pre-per-agent `userScope` flag into `userScopeAgents` so
+        // callers never have to know the legacy shape.
+        for s in &mut servers {
+            s.normalize();
+        }
+        Ok(servers)
     }
 
     /// Replace the app-global MCP server list. Every entry must validate.
@@ -2740,20 +2748,19 @@ impl AppState {
         self.spawn_terminal(project_id, &format!("install {agent}"), script)
     }
 
-    /// Register a remote MCP `server` with Claude at user scope, then open a
-    /// terminal so the user can complete the interactive OAuth handshake (which
-    /// needs a browser Agency can't drive headlessly). Registering at user scope
-    /// means the session persists across every worktree, so the server is flagged
-    /// `user_scope` and Agency stops emitting a project-scoped copy of it.
+    /// Register a remote MCP `server` with `agent`'s own CLI at that CLI's user
+    /// scope, then open a terminal so the user can complete the interactive OAuth
+    /// handshake (which needs a browser Agency can't drive headlessly). A
+    /// user-scope session persists across every worktree, so the agent is recorded
+    /// in the server's `user_scope_agents` and Agency stops emitting a
+    /// project-scoped copy *for that agent only* — every other agent keeps
+    /// getting the server written into its workspace config.
     ///
-    /// `claude mcp add` is run synchronously and its exit status checked *before*
-    /// flagging: a failed registration (e.g. the Claude CLI isn't installed) must
-    /// not silently flag the server, which would remove it from every worktree
-    /// while never actually registering it. Only Claude is supported today.
+    /// The `mcp add` command is run synchronously and its exit status checked
+    /// *before* recording: a failed registration (e.g. the CLI isn't installed)
+    /// must not silently mark the server, which would remove it from that agent's
+    /// worktrees while never actually registering it.
     pub fn authenticate_mcp_server(&self, project_id: &str, agent: &str, name: &str) -> Result<RunInfo> {
-        if agent != "claude" {
-            bail!("Authenticate currently supports Claude only; add the server to {agent} via its own CLI");
-        }
         let repo = self.project_repo(project_id)?;
         let mut servers = self.list_mcp_servers()?;
         let idx = servers
@@ -2761,64 +2768,50 @@ impl AppState {
             .position(|s| s.name == name)
             .ok_or_else(|| anyhow!("unknown MCP server: {name}"))?;
         let server = servers[idx].clone();
-        let url = server
-            .url
-            .clone()
-            .filter(|u| !u.trim().is_empty())
-            .ok_or_else(|| anyhow!("Authenticate is for remote (url) servers; '{name}' is a stdio server"))?;
+        // Builds the argv and rejects unsupported agents / stdio servers.
+        let (command, args) = agency_core::mcp::auth_argv(agent, &server)?;
 
-        // Register at user scope unless it already is — `claude mcp add` errors on
-        // a duplicate name, and re-flagging an already-flagged server is a no-op.
-        if !server.user_scope {
-            let transport = match server.effective_transport() {
-                agency_core::mcp::McpTransport::Sse => "sse",
-                _ => "http",
-            };
+        // Register unless it already is — `mcp add` errors on a duplicate name,
+        // and re-recording an already-recorded agent is a no-op.
+        if !server.is_user_scope_for(agent) {
             // Pass argv directly (no shell) so user-supplied values need no quoting.
-            let mut args: Vec<String> = vec![
-                "mcp".into(), "add".into(),
-                "--scope".into(), "user".into(),
-                "--transport".into(), transport.into(),
-                name.into(), url.clone(),
-            ];
-            for (k, v) in &server.headers {
-                args.push("--header".into());
-                args.push(format!("{k}: {v}"));
-            }
-            let out = std::process::Command::new("claude")
+            let out = std::process::Command::new(&command)
                 .args(&args)
                 .current_dir(&repo)
                 .output()
-                .map_err(|e| anyhow!("running `claude mcp add` (is the Claude CLI installed and on PATH?): {e}"))?;
+                .map_err(|e| {
+                    anyhow!("running `{command} mcp add` (is the {command} CLI installed and on PATH?): {e}")
+                })?;
             if !out.status.success() {
                 let stderr = String::from_utf8_lossy(&out.stderr);
-                bail!("`claude mcp add` failed: {}", stderr.trim());
+                bail!("`{command} mcp add` failed: {}", stderr.trim());
             }
-            // Registration succeeded — now it's safe to flag.
-            servers[idx].user_scope = true;
+            // Registration succeeded — now it's safe to record.
+            servers[idx].user_scope_agents.push(agent.to_string());
             self.save_mcp_servers(&servers)?;
         }
 
         // Drop the user into a terminal to finish the interactive OAuth step.
         let hint = format!(
-            "echo; echo 'Registered \"{name}\" with Claude (user scope). To finish OAuth: run  claude  then  /mcp  and choose Authenticate.'; echo"
+            "echo; echo 'Registered \"{name}\" with {agent} at user scope. To finish OAuth: run  {command}  then  /mcp  and choose Authenticate.'; echo"
         );
         let script = format!("{hint}\nexec \"$SHELL\" -l");
         self.spawn_terminal(project_id, &format!("authenticate {name}"), script)
     }
 
-    /// Clear a server's `user_scope` flag so Agency resumes emitting it into
-    /// per-worktree config. The recovery path when a registration failed (or the
-    /// user wants Agency to manage the server again); the Claude user-scope
-    /// registration, if any, is left in place — remove it with `claude mcp remove`.
-    pub fn deauthenticate_mcp_server(&self, name: &str) -> Result<()> {
+    /// Drop `agent` from a server's `user_scope_agents` so Agency resumes emitting
+    /// it into that agent's per-worktree config. The recovery path when a
+    /// registration failed (or the user wants Agency to manage the server again);
+    /// the agent's own user-scope registration, if any, is left in place — remove
+    /// it with `<agent> mcp remove`.
+    pub fn deauthenticate_mcp_server(&self, agent: &str, name: &str) -> Result<()> {
         let mut servers = self.list_mcp_servers()?;
         let s = servers
             .iter_mut()
             .find(|s| s.name == name)
             .ok_or_else(|| anyhow!("unknown MCP server: {name}"))?;
-        if s.user_scope {
-            s.user_scope = false;
+        if s.is_user_scope_for(agent) {
+            s.user_scope_agents.retain(|a| a != agent);
             self.save_mcp_servers(&servers)?;
         }
         Ok(())

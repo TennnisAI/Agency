@@ -302,6 +302,8 @@ button > .btn-ico:not(:only-child) { margin-right: 4px; }
   color: var(--text); font-size: 12.5px;
 }
 .settings-menu button:hover { background: var(--s0); }
+.settings-menu button:disabled { opacity: 0.5; }
+.settings-menu button:disabled:hover { background: transparent; }
 .settings-menu-name { flex-shrink: 0; }
 .settings-menu-cmd { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--o0); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Stacked field: label above a full-width control (for tall inputs like textareas). */
@@ -372,6 +374,42 @@ textarea.settings-input { min-height: 64px; resize: vertical; }
 /* Two fields that belong together on one row; stacks when the dialog is narrow. */
 .field-split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr); gap: 14px; }
 @media (max-width: 620px) { .field-split { grid-template-columns: minmax(0, 1fr); } }
+
+/* ── MCP server form ───────────────────────────────────────────────── */
+/* Name input with the transport picker riding alongside it: picking Local vs
+   HTTP/SSE swaps the fields below, so it reads as part of naming the server. */
+.mcp-name-row { display: flex; gap: 10px; align-items: center; }
+.mcp-name-row .settings-input { min-width: 0; }
+.mcp-seg { display: flex; flex-shrink: 0; background: var(--crust); border: 1px solid var(--s1); border-radius: 7px; padding: 2px; gap: 2px; }
+.mcp-seg button {
+  background: transparent; border: 0; color: var(--o1); font-family: var(--sans);
+  font-size: 11.5px; font-weight: 500; padding: 5px 11px; border-radius: 5px;
+}
+.mcp-seg button:hover { color: var(--text); }
+.mcp-seg button.on { background: var(--s1); color: var(--text); }
+/* Key/value editor for headers and env vars. */
+.kv-rows { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.kv-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) auto; gap: 6px; width: 100%; }
+.kv-del { padding: 4px 8px; color: var(--o0); border-color: transparent; flex-shrink: 0; }
+.kv-del:hover { background: rgba(243,139,168,.10); color: var(--red); }
+.kv-add { background: transparent; border: 0; color: var(--blue); font-family: var(--sans); font-size: 11.5px; font-weight: 500; padding: 3px 0; }
+.kv-add:hover { text-decoration: underline; }
+/* Transport tag next to a server's name in the list. */
+.mcp-transport-tag {
+  flex-shrink: 0; font-family: var(--mono); font-size: 10px; letter-spacing: 0.04em;
+  text-transform: uppercase; color: var(--o1); background: var(--crust);
+  border-radius: 4px; padding: 2px 6px;
+}
+/* Agents this server is signed into at their own user scope; click to undo. */
+.mcp-auth-row { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin-top: 9px; font-size: 11.5px; }
+.mcp-auth-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--s0); border: 1px solid var(--s1); border-radius: 999px;
+  color: var(--sub1); font-family: var(--sans); font-size: 11.5px; padding: 3px 9px;
+}
+.mcp-auth-chip:hover { border-color: var(--red); color: var(--text); }
+.mcp-auth-chip-x { color: var(--o0); font-size: 9px; }
+.mcp-auth-chip:hover .mcp-auth-chip-x { color: var(--red); }
 
 /* Form dialog shell */
 .modal-form { width: 620px; display: flex; flex-direction: column; max-height: 88vh; }

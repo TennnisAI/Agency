@@ -1376,3 +1376,33 @@ fn project_of_resolves_both_token_shapes() {
 
     assert!(state.project_of("nope").is_err());
 }
+
+/// AGE-61: a server saved before Agency could authenticate with more than one
+/// agent carries the old global `userScope` flag. Reading it back must fold that
+/// into the per-agent list — pinned to Claude, the only agent the old flow could
+/// have registered with — so the server keeps flowing to every other agent.
+#[test]
+fn legacy_user_scope_flag_survives_a_save_load_roundtrip() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = common::state(&dir);
+
+    let legacy = agency_core::mcp::McpServer {
+        name: "atlassian".into(),
+        url: Some("https://mcp.atlassian.com/v1/mcp".into()),
+        user_scope: true,
+        ..Default::default()
+    };
+    state.save_mcp_servers(&[legacy]).unwrap();
+
+    let loaded = state.list_mcp_servers().unwrap();
+    assert_eq!(loaded.len(), 1);
+    assert!(!loaded[0].user_scope, "legacy flag is consumed on load");
+    assert_eq!(loaded[0].user_scope_agents, vec!["claude".to_string()]);
+    assert!(loaded[0].is_user_scope_for("claude"));
+    assert!(!loaded[0].is_user_scope_for("copilot"), "Copilot still gets it emitted");
+
+    // Un-authenticating Claude hands the server back to Agency for every agent.
+    state.deauthenticate_mcp_server("claude", "atlassian").unwrap();
+    let after = state.list_mcp_servers().unwrap();
+    assert!(after[0].user_scope_agents.is_empty());
+}

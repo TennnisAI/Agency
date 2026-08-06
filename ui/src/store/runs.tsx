@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { CloneProgress, RunInfo, createRun, createTerminal as createTerminalApi, getSettings, listRuns, projectTarget, runScriptsLive } from "../api";
+import { loadFold, saveFold } from "../hooks/usePaneWidth";
 import { toastError } from "../lib/toast";
 
 type View = "grid" | "focus";
@@ -22,6 +23,19 @@ interface RunStore {
   setView: (v: View) => void;
   focusedRunId: string | null;
   setFocusedRun: (id: string | null) => void;
+  // The run whose working tree the app is actually in: source control, the
+  // status bar's branch and the Files tab follow this, not `focusedRunId`.
+  // The grid selects nothing — every tile is an equal there — so it goes null
+  // and those views fall back to the project's own checkout, which is where
+  // merged work sits waiting to be pushed.
+  selectedRunId: string | null;
+  // Whether the Agents tab shows the source-control panel on the right,
+  // remembered across launches. It lives here rather than in AgentsView because
+  // finishing with an agent (approve ▸ archive/delete) opens it: landing back in
+  // the grid with the checkout's unpushed commits in sight is what keeps a
+  // merge from being forgotten.
+  sourcePanelOpen: boolean;
+  setSourcePanelOpen: (open: boolean) => void;
   // The run whose agent pane is mounted on screen right now — the one run
   // notifications stay quiet about. Deliberately not `focusedRunId`: a run
   // stays focused while you're in the grid, on the Issues tab, or in another
@@ -52,6 +66,10 @@ interface RunStore {
 
 const Ctx = createContext<RunStore | null>(null);
 
+// One preference for the whole app, not per project: the source-control panel
+// is part of how someone works, not something about a particular repo.
+const SOURCE_PANEL_KEY = "source-panel";
+
 export function RunStoreProvider({ children }: { children: React.ReactNode }) {
   const [runs, setRuns] = useState<RunInfo[]>([]);
   const [projectRunLive, setProjectRunLive] = useState(false);
@@ -62,6 +80,9 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
   const [tab, setTabState] = useState<Tab>("agents");
   const [approveRunId, setApproveRun] = useState<string | null>(null);
   const [pendingSessionId, setPendingSession] = useState<string | null>(null);
+  const [sourcePanelOpen, setSourcePanelOpenState] = useState<boolean>(() =>
+    typeof localStorage === "undefined" ? false : loadFold(localStorage, SOURCE_PANEL_KEY, false),
+  );
   // A count (not a flag) so overlapping creations can't clear each other.
   const [spawnCount, setSpawnCount] = useState(0);
   const [spawnProgress, setSpawnProgress] = useState<CloneProgress | null>(null);
@@ -71,6 +92,15 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
   // restores where you left off. A ref (not state) because it only needs to be
   // read on project switch — the visible `tab` state drives rendering.
   const tabByProject = useRef<Record<string, Tab>>({});
+
+  const setSourcePanelOpen = useCallback((open: boolean) => {
+    setSourcePanelOpenState(open);
+    try {
+      if (typeof localStorage !== "undefined") saveFold(localStorage, SOURCE_PANEL_KEY, open);
+    } catch {
+      // ignore quota / security errors
+    }
+  }, []);
 
   const setTab = useCallback((t: Tab) => {
     setTabState(t);
@@ -180,9 +210,12 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
     return () => window.clearInterval(t);
   }, [selectedProjectId, refreshRuns]);
 
+  // Focus view works inside one run; the grid stands outside all of them.
+  const selectedRunId = view === "focus" ? focusedRunId : null;
+
   return (
     <Ctx.Provider
-      value={{ runs, projectRunLive, selectedProjectId, setSelectedProject, view, setView, focusedRunId, setFocusedRun, onScreenRunId, setOnScreenRun, refreshRuns, tab, setTab, createAgent, createTerminal, spawning: spawnCount > 0, spawnProgress, approveRunId, setApproveRun, pendingSessionId, setPendingSession }}
+      value={{ runs, projectRunLive, selectedProjectId, setSelectedProject, view, setView, focusedRunId, setFocusedRun, selectedRunId, sourcePanelOpen, setSourcePanelOpen, onScreenRunId, setOnScreenRun, refreshRuns, tab, setTab, createAgent, createTerminal, spawning: spawnCount > 0, spawnProgress, approveRunId, setApproveRun, pendingSessionId, setPendingSession }}
     >
       {children}
     </Ctx.Provider>

@@ -95,7 +95,10 @@ export default function AgentSidePanel({ project }: { project: Project }) {
                 <button
                   key={r.id}
                   className={r.id === focusedRunId ? "on" : ""}
-                  onClick={() => { setFocusedRun(r.id); setPickerOpen(false); }}
+                  // Focus view too, not just the id: that is what makes this
+                  // run the one the app is working in, so the file tree and
+                  // source control follow the agent picked here.
+                  onClick={() => { setFocusedRun(r.id); setView("focus"); setPickerOpen(false); }}
                 >
                   <span className={`dot ${runStatus(r).cls}`} />
                   <span className="agent-side-menu-name">{runListLabel(r)}</span>

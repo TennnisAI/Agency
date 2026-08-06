@@ -412,6 +412,57 @@ fn fresh_agent_argv(
     agency_core::scripts::wrap_setup(setup, &profile.command, &args)
 }
 
+/// The prompt an agent opens with when a local issue is dispatched to it: the
+/// issue itself, then the least the agent needs to know about the tracker.
+/// Pure so the wording is testable without a repo or a live agent.
+///
+/// Issue files are not tracked by git, so they exist only in the project's own
+/// checkout: a run working in `.agency/worktrees/<id>/` has no copy of its own.
+/// Every path here is therefore absolute, pointing at the one shared tracker.
+///
+/// The closing paragraph is deliberately spare. Measured over ~170 real
+/// dispatched sessions, the older wording ("this issue is the file X",
+/// frontmatter schema, follow-up numbering, README pointer) sent 36% of agents
+/// to Read a file whose entire body was already in the prompt — in every case
+/// within the first three tool calls — and 31% to list or grep the issues
+/// folder that early too. Naming a file invites opening it, so the text now
+/// says outright that the issue is already here, and holds back the tracker's
+/// conventions for the one case that needs them: filing a follow-up.
+fn issue_prompt(label: &str, title: &str, body: &str, root: &Path) -> String {
+    let mut prompt = if body.trim().is_empty() {
+        format!("Work on issue {label}: {title}")
+    } else {
+        format!("Work on issue {label}: {title}\n\n{body}")
+    };
+    // Attachments are relative links in the body (`assets/…`), which reads
+    // as a dead path unless the agent is told what they resolve to.
+    let attached = agency_core::issuefs::body_attachments(body);
+    if !attached.is_empty() {
+        let list = attached
+            .iter()
+            .map(|p| format!("`{}`", root.join(p).display()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        prompt.push_str(&format!(
+            "\n\nThe `assets/…` links in this issue are files attached to it, \
+             stored at: {list}. Read them for context (images included)."
+        ));
+    }
+    let issues_dir = root.join(agency_core::issuefs::ISSUES_DIR);
+    prompt.push_str(&format!(
+        "\n\nThat is the whole of {label}, so there is nothing to go and read. The issue \
+         is the file `{issue_file}`, which lives in the project's tracker outside your \
+         worktree and is untracked by git: edit it in place if you have something to \
+         change there, and the change takes effect at once, with no commit or merge \
+         involved. Merging this run marks {label} done automatically, so you do not have \
+         to. To file a follow-up issue, read `{readme}` first; that is the only reason to \
+         open that folder.",
+        issue_file = issues_dir.join(format!("{label}.md")).display(),
+        readme = issues_dir.join("README.md").display(),
+    ));
+    prompt
+}
+
 /// The prompt an agent PR review opens with. Pure so the wording is testable
 /// without a repo or a live agent. `post_comments` decides whether the agent
 /// publishes its findings to the PR on GitHub or only reports them in its own
@@ -1781,44 +1832,8 @@ impl AppState {
             let (root, key) = self.issue_root(&reg, &issue.project_id)?;
             (issue, key, root)
         };
-        // Issue files are not tracked by git, so they exist only in the
-        // project's own checkout: a run working in `.agency/worktrees/<id>/`
-        // has no copy of its own. Every path an agent is given here is
-        // therefore absolute, pointing at the one shared tracker.
-        let issues_dir = root.join(agency_core::issuefs::ISSUES_DIR);
         let label = format!("{key}-{}", issue.seq);
-        let mut prompt = if issue.body.trim().is_empty() {
-            format!("Work on issue {label}: {title}", title = issue.title)
-        } else {
-            format!("Work on issue {label}: {title}\n\n{body}", title = issue.title, body = issue.body)
-        };
-        // Attachments are relative links in the body (`assets/…`), which reads
-        // as a dead path unless the agent is told what they resolve to.
-        let attached = agency_core::issuefs::body_attachments(&issue.body);
-        if !attached.is_empty() {
-            let list = attached
-                .iter()
-                .map(|p| format!("`{}`", root.join(p).display()))
-                .collect::<Vec<_>>()
-                .join(", ");
-            prompt.push_str(&format!(
-                "\n\nThe `assets/…` links in this issue are files attached to it, \
-                 stored at: {list}. Read them for context (images included)."
-            ));
-        }
-        // The tracker is files, shared and untracked: tell the agent where its
-        // issue actually lives and that edits there take effect at once.
-        prompt.push_str(&format!(
-            "\n\nThis issue is the file `{issue_file}` (frontmatter \
-             `status:`/`priority:`, H1 title, markdown body). It lives in the project's \
-             tracker, outside your worktree, and is not tracked by git, so edit it there, \
-             in place; changes take effect immediately, with no commit or merge involved. \
-             File follow-up issues in the same folder as `{key}-<n>.md` using the next \
-             unused number; see `{readme}`. Merging this run marks {label} done \
-             automatically.",
-            issue_file = issues_dir.join(format!("{label}.md")).display(),
-            readme = issues_dir.join("README.md").display(),
-        ));
+        let prompt = issue_prompt(&label, &issue.title, &issue.body, &root);
         let title = format!("{label} {}", issue.title);
         Ok((issue, prompt, title))
     }
@@ -4874,6 +4889,35 @@ mod tests {
         assert!(posting.contains("\"event\": \"COMMENT\""));
         assert!(!posting.contains("Do not post anything to GitHub"));
         assert!(posting.contains("stay available"));
+    }
+
+    #[test]
+    fn issue_prompt_carries_the_issue_and_does_not_send_the_agent_reading() {
+        let root = Path::new("/repo");
+        let p = super::issue_prompt("AGE-14", "Fix login", "The button does nothing.", root);
+        assert!(p.starts_with("Work on issue AGE-14: Fix login\n\nThe button does nothing."));
+        // The body is already in the prompt, so the agent must be told not to
+        // go fetch it — this is what stopped a third of runs opening the file
+        // as their very first tool call.
+        assert!(p.contains("nothing to go and read"), "{p}");
+        assert!(p.contains("/repo/.agency/issues/AGE-14.md"), "{p}");
+        // The README is worth naming, but only as the follow-up path — never
+        // as something to read on the way in.
+        assert!(p.contains("To file a follow-up issue, read `/repo/.agency/issues/README.md`"), "{p}");
+        assert!(p.contains("marks AGE-14 done automatically"), "{p}");
+    }
+
+    #[test]
+    fn issue_prompt_handles_an_empty_body_and_resolves_attachments() {
+        let root = Path::new("/repo");
+        let bare = super::issue_prompt("AGE-9", "Just a title", "  ", root);
+        assert!(bare.starts_with("Work on issue AGE-9: Just a title\n\nThat is the whole of AGE-9"), "{bare}");
+
+        // Relative `assets/…` links are dead paths from inside a worktree, so
+        // the prompt resolves them against the project checkout.
+        let shot = super::issue_prompt("AGE-9", "T", "before ![](assets/AGE-9-shot.png) after", root);
+        assert!(shot.contains("`/repo/.agency/issues/assets/AGE-9-shot.png`"), "{shot}");
+        assert!(!bare.contains("assets/"), "{bare}");
     }
 
     #[test]

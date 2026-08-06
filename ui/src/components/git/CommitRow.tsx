@@ -34,10 +34,9 @@ function RefPill({ r }: { r: string }) {
   );
 }
 
-export default function CommitRow({ item, graphRow, lanes, isHead, aheadOfBase, selected, onSelect, onContextMenu }: {
+export default function CommitRow({ item, graphRow, isHead, aheadOfBase, selected, onSelect, onContextMenu }: {
   item: HistoryItem;
   graphRow: GraphRow;
-  lanes: number;
   isHead: boolean;
   aheadOfBase: boolean;
   selected: boolean;
@@ -47,7 +46,7 @@ export default function CommitRow({ item, graphRow, lanes, isHead, aheadOfBase, 
   return (
     <div className={`git-commitrow ${selected ? "sel" : ""} ${aheadOfBase ? "ahead" : "base"}`}
       onClick={onSelect} onContextMenu={onContextMenu}>
-      <Graph row={graphRow} lanes={lanes} head={isHead} />
+      <Graph row={graphRow} head={isHead} />
       <div className="git-commit-main">
         <div className="git-commit-line">
           <span className="git-commit-subject" title={item.subject}>{item.subject}</span>

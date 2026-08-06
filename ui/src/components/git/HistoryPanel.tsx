@@ -38,9 +38,6 @@ export default function HistoryPanel({ taskId, base, onSelectCommit, selectedHas
   }, [load]);
 
   const graph = computeGraph(items.map((i) => ({ hash: i.hash, parents: i.parents })));
-  // Every row shares the widest row's column count so the gutter (and thus
-  // every rail) lines up vertically from row to row.
-  const lanes = graph.reduce((m, r) => Math.max(m, r.lanes), 1);
   // commits before the base hash (newest-first) are "ahead of base"
   const baseIdx = base ? items.findIndex((i) => i.hash.startsWith(base) || base.startsWith(i.hash)) : -1;
   const headIdx = items.findIndex((i) => i.refs.some((r) => r === "HEAD" || r.startsWith("HEAD -> ")));
@@ -84,7 +81,7 @@ export default function HistoryPanel({ taskId, base, onSelectCommit, selectedHas
   return (
     <div className="git-history">
       {items.map((item, i) => (
-        <CommitRow key={item.hash} item={item} graphRow={graph[i]} lanes={lanes}
+        <CommitRow key={item.hash} item={item} graphRow={graph[i]}
           isHead={i === (headIdx < 0 ? 0 : headIdx)}
           aheadOfBase={baseIdx < 0 ? false : i < baseIdx}
           selected={selectedHash === item.hash}

@@ -78,6 +78,34 @@ describe("computeGraph", () => {
     expect(rows[1].lanes).toBe(2);
   });
 
+  it("each row's lane count covers its own rails and meets its neighbours'", () => {
+    // Each row's gutter is sized from its own `lanes`, so a row must (a) fit
+    // every column its rails touch and (b) hand its bottom-edge columns to the
+    // next row unchanged — otherwise rails break where the widths differ.
+    const rows = computeGraph([
+      { hash: "m", parents: ["a", "b"] },
+      { hash: "a", parents: ["c", "d"] },
+      { hash: "b", parents: ["e"] },
+      { hash: "c", parents: ["e"] },
+      { hash: "d", parents: ["e"] },
+      { hash: "e", parents: [] },
+    ]);
+    // A row is narrower than the widest row, yet still fits its own rails.
+    expect(Math.min(...rows.map((r) => r.lanes))).toBeLessThan(Math.max(...rows.map((r) => r.lanes)));
+    for (const r of rows) {
+      for (const s of r.segments) {
+        expect(Math.max(s.from, s.to)).toBeLessThan(r.lanes);
+      }
+    }
+    const bottomCols = (r: (typeof rows)[number]) =>
+      r.segments.filter((s) => s.kind !== "enter").map((s) => s.to).sort();
+    const topCols = (r: (typeof rows)[number]) =>
+      r.segments.filter((s) => s.kind !== "exit").map((s) => s.from).sort();
+    for (let i = 0; i < rows.length - 1; i++) {
+      expect(bottomCols(rows[i])).toEqual(topCols(rows[i + 1]));
+    }
+  });
+
   it("a lane right of a collapsed lane shifts left via a pass segment", () => {
     // x is a second root tip so a third lane exists while lanes 0+1 converge.
     const rows = computeGraph([

@@ -16,14 +16,16 @@ function seg(s: Segment, y1: number, y2: number): string {
   return `M ${x1} ${y1} C ${x1} ${ym}, ${x2} ${ym}, ${x2} ${y2}`;
 }
 
-export default function Graph({ row, lanes, head = false }: {
+export default function Graph({ row, head = false }: {
   row: GraphRow;
-  /** Shared column count across all rows so every row's gutter aligns. */
-  lanes: number;
   /** Draw a highlight ring (this commit is HEAD). */
   head?: boolean;
 }) {
-  const width = LANE_W * (lanes + 1);
+  // Only as wide as this row's own columns. Columns are absolute (x() maps a
+  // column to the same pixel in every row), so rails still meet across rows —
+  // but a tangled row deep in the history no longer indents every other row's
+  // text. The commit text then sits just past the rails the row actually has.
+  const width = LANE_W * (row.lanes + 1);
   const cx = x(row.circleIndex);
   const cy = ROW_H / 2;
   const paths = row.segments.map((s, i) => {

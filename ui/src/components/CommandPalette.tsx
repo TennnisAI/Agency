@@ -57,7 +57,7 @@ export default function CommandPalette({
   onOpenProject: (p: Project) => void;
   onOpenRun: (p: Project, runId: string) => void;
 }) {
-  const { runs, selectedProjectId, focusedRunId, setTab } = useRuns();
+  const { runs, selectedProjectId, focusedRunId, selectedRunId, setTab } = useRuns();
   const [projects, setProjects] = useState<Project[] | null>(null);
   const [query, setQuery] = useState("");
   useModalKeys(onClose);
@@ -117,11 +117,11 @@ export default function CommandPalette({
   }, [mode, docsState, projects, scope?.id]);
 
   // ── "/": debounced content search over the Files root ─────────────────────
-  // Same root the Files tab shows: the focused run's worktree, else the scope
+  // Same root the Files tab shows: the selected run's worktree, else the scope
   // project's checkout.
   const contentRoot: FileRoot | null = selectedProject
-    ? focusedRunId
-      ? { kind: "run", id: focusedRunId }
+    ? selectedRunId
+      ? { kind: "run", id: selectedRunId }
       : { kind: "project", id: selectedProject.id }
     : workspace
       ? { kind: "project", id: workspace.id }
@@ -177,10 +177,10 @@ export default function CommandPalette({
     // worktree root "/" just searched) — only switch when actually elsewhere.
     const sameProject = selectedProjectId === project.id;
     if (!sameProject) onOpenProject(project);
-    // The root the Files tab will show: the focused run's worktree only while
+    // The root the Files tab will show: the selected run's worktree only while
     // staying inside the current project.
-    const rootKey = sameProject && focusedRunId
-      ? fileRootKey({ kind: "run", id: focusedRunId })
+    const rootKey = sameProject && selectedRunId
+      ? fileRootKey({ kind: "run", id: selectedRunId })
       : fileRootKey({ kind: "project", id: project.id });
     setTab("files");
     requestOpenFile({ rootKey, path, line });
@@ -357,7 +357,7 @@ export default function CommandPalette({
       .map((x) => x.r);
     return filterEntries(term, ranked).slice(0, MAX_ROWS);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, term, projects, runs, selectedProjectId, focusedRunId, issueData, docsIdx, docsState, hits]);
+  }, [mode, term, projects, runs, selectedProjectId, focusedRunId, selectedRunId, issueData, docsIdx, docsState, hits]);
 
   const { hi, setHi, onKey } = useListNav(rows.length, (i) => rows[i].activate(), query);
 

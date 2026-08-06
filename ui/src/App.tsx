@@ -29,7 +29,7 @@ import RunRemoveDialog from "./components/RunRemoveDialog";
 const REPO_URL = "https://github.com/nic123/Agency";
 
 function Shell() {
-  const { selectedProjectId, setSelectedProject, createAgent, createTerminal, setTab, focusedRunId, onScreenRunId, setApproveRun, setFocusedRun, setView, runs } = useRuns();
+  const { selectedProjectId, setSelectedProject, createAgent, createTerminal, setTab, focusedRunId, selectedRunId, onScreenRunId, setApproveRun, setFocusedRun, setView, runs } = useRuns();
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [project, setProject] = useState<Project | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -490,7 +490,16 @@ function Shell() {
           />
         )}
       </div>
-      <StatusBar projectName={project?.name ?? null} focusedRunId={focusedRunId} />
+      <StatusBar
+        projectName={project?.name ?? null}
+        runId={selectedRunId}
+        projectId={selectedProjectId}
+        onOpenSource={() => setTab("source")}
+        // Unpushed commits are on the checkout's branch, so this has to leave
+        // the agent first: the grid is what points source control there. The
+        // run stays focused, so the Focus button goes straight back to it.
+        onOpenCheckout={() => { setView("grid"); setTab("source"); }}
+      />
       <Toasts />
       {paletteOpen && (
         <CommandPalette
@@ -500,15 +509,13 @@ function Shell() {
           onOpenRun={(p, runId) => openRun(p, runId)}
         />
       )}
+      {/* The menu only ever acts on the focused run, so the dialog's own
+          aftermath (unfocus, back to the grid, source control up) applies. */}
       {agentAction && (
         <RunRemoveDialog
           run={agentAction.run}
           action={agentAction.action}
           onClose={() => setAgentAction(null)}
-          // The menu only ever acts on the focused run, and the dialog has just
-          // unfocused it: land on the project's agent grid rather than a focus
-          // pane asking us to pick from the rail.
-          onRemoved={() => setView("grid")}
         />
       )}
       {weeklyNarrate && (

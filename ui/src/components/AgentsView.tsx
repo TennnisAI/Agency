@@ -39,9 +39,10 @@ export default function AgentsView({
   onOpenRun: (project: Project, runId: string) => void;
   onOpenProject: (project: Project) => void;
 }) {
-  const { runs, projectRunLive, view, setView, focusedRunId, tab, setTab, approveRunId, setApproveRun, createTerminal, spawning, spawnProgress, setFocusedRun, refreshRuns } = useRuns();
+  const { runs, projectRunLive, view, setView, focusedRunId, selectedRunId, sourcePanelOpen, setSourcePanelOpen, tab, setTab, approveRunId, setApproveRun, createTerminal, spawning, spawnProgress, setFocusedRun, refreshRuns } = useRuns();
   const focused = runs.find((r) => r.id === focusedRunId) ?? null;
-  const [review, setReview] = useState(false);
+  // The run whose worktree this view works in — nothing while the grid is up.
+  const selected = runs.find((r) => r.id === selectedRunId) ?? null;
   // Agents alongside the file tree, the Files-tab twin of the Docs side panel.
   const [filesAgents, setFilesAgents] = useState(false);
   const [gitSel, setGitSel] = useState<GitSelection>(null);
@@ -49,7 +50,6 @@ export default function AgentsView({
   // (in-app review). `reviewPr` deep-links a specific PR from the Approve window.
   const [srcTab, setSrcTab] = useState<"changes" | "prs">("changes");
   const [reviewPr, setReviewPr] = useState<number | null>(null);
-  useEffect(() => { setGitSel(null); }, [focusedRunId, project?.id]);
   const reviewPane = usePaneWidth("review", 360, 280, 640);
 
   // The workspace can decline git; everything git-shaped (Source Control, the
@@ -71,18 +71,21 @@ export default function AgentsView({
     if (isWorkspace && (tab === "files" || tab === "run")) setTab("docs");
   }, [gitlessWorkspace, isWorkspace, tab, setTab]);
 
-  // Which working tree source control operates on: the focused run's worktree
-  // (terminals share the project checkout) or, with no run selected, the
-  // project's main checkout via a "project:<id>" token. Null only at the
-  // all-projects home screen.
-  const gitRoot = focusedRunId ?? (project ? `project:${project.id}` : null);
-  const allowComments = focused?.kind === "agent";
+  // Which working tree source control operates on: the selected run's worktree
+  // (terminals share the project checkout) or, standing in the grid with no run
+  // selected, the project's own checkout via a "project:<id>" token. Null only
+  // at the all-projects home screen.
+  const gitRoot = selectedRunId ?? (project ? `project:${project.id}` : null);
+  const allowComments = selected?.kind === "agent";
+  // A different working tree means a different file list and history, so the
+  // open diff doesn't survive the switch.
+  useEffect(() => { setGitSel(null); }, [gitRoot]);
 
-  // The root the Files tab shows (and quick-open must list): the focused run's
-  // worktree, else the project's main checkout.
+  // The root the Files tab shows (and quick-open must list): the selected run's
+  // worktree, else the project's own checkout.
   const filesRoot: FileRoot | null = project
-    ? focusedRunId
-      ? { kind: "run", id: focusedRunId }
+    ? selectedRunId
+      ? { kind: "run", id: selectedRunId }
       : { kind: "project", id: project.id }
     : null;
 
@@ -185,7 +188,7 @@ export default function AgentsView({
         )}
         <div className="spacer" />
         {project && tab === "agents" && !gitlessWorkspace && (
-          <RightPanelToggle open={review} onToggle={() => setReview((r) => !r)} />
+          <RightPanelToggle open={sourcePanelOpen} onToggle={() => setSourcePanelOpen(!sourcePanelOpen)} />
         )}
         {project && tab === "files" && (
           <button
@@ -306,7 +309,7 @@ export default function AgentsView({
                 )}
                 {view === "focus" && <AgentFocus onSpawn={spawn} />}
               </div>
-              {review && gitRoot && !gitlessWorkspace && (
+              {sourcePanelOpen && gitRoot && !gitlessWorkspace && (
                 <>
                   <Resizer size={reviewPane.width} min={280} max={640} onChange={reviewPane.setWidth} side="right" />
                   <GitPanel
@@ -350,12 +353,16 @@ export default function AgentsView({
           }}
           // Archived or deleted: nothing is left to focus, so drop back to
           // this project's agent grid (the same place switching projects
-          // lands) instead of an agents tab with no agent selected.
+          // lands) instead of an agents tab with no agent selected. The grid
+          // points source control at your own checkout, and the panel comes up
+          // with it: the merge that just landed is sitting there unpushed, and
+          // that is the whole reminder to push it.
           onRemoved={() => {
             setApproveRun(null);
             setFocusedRun(null);
             setView("grid");
             setTab("agents");
+            setSourcePanelOpen(true);
             refreshRuns();
           }}
         />

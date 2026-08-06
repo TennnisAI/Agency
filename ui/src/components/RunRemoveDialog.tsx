@@ -10,8 +10,12 @@ import ConfirmDialog from "./ConfirmDialog";
  * be removed from (the grid tile, the focus header, the agents rail, the Agent
  * menu) shares this, so the wording and the aftermath are the same everywhere:
  * the run that just went away stops being the focused one, and the list
- * refreshes. `onRemoved` is for whatever else the caller has to put back after
- * the run is gone; it runs only when the removal actually succeeded.
+ * refreshes. Removing the run you were working in also steps back out to the
+ * grid — there is no worktree left to stand in — which points source control at
+ * your own checkout; for an agent the panel is opened too, so a merge that has
+ * just been archived is visibly sitting there unpushed rather than forgotten.
+ * `onRemoved` is for whatever else the caller has to put back after the run is
+ * gone; it runs only when the removal actually succeeded.
  */
 export default function RunRemoveDialog({
   run,
@@ -24,7 +28,7 @@ export default function RunRemoveDialog({
   onClose: () => void;
   onRemoved?: () => void;
 }) {
-  const { focusedRunId, setFocusedRun, refreshRuns } = useRuns();
+  const { focusedRunId, setFocusedRun, setView, setSourcePanelOpen, refreshRuns } = useRuns();
   const [busy, setBusy] = useState(false);
   // Which teardown step the backend is on. Both actions stop a session and
   // hand git a worktree to unlink, so on a big repo they run for seconds.
@@ -46,7 +50,13 @@ export default function RunRemoveDialog({
           await (action === "archive"
             ? archiveRun(run.id, setProgress)
             : discardRun(run.id, setProgress));
-          if (focusedRunId === run.id) setFocusedRun(null);
+          if (focusedRunId === run.id) {
+            setFocusedRun(null);
+            setView("grid");
+            // Only for agents: closing a terminal ends nothing that could be
+            // waiting to be pushed, and the panel would just be in the way.
+            if (run.kind === "agent") setSourcePanelOpen(true);
+          }
           onRemoved?.();
           await refreshRuns();
         } catch (e) {

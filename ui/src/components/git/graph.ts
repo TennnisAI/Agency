@@ -24,7 +24,7 @@ export type GraphRow = {
   /** Merge commit (2+ parents) — rendered as a hollow dot. */
   isMerge: boolean;
   segments: Segment[];
-  /** Columns this row actually occupies (for computing the shared gutter width). */
+  /** Columns this row actually occupies (the width its graph gutter needs). */
   lanes: number;
 };
 

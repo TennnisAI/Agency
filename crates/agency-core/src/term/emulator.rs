@@ -15,6 +15,10 @@ use alacritty_terminal::vte::ansi::{Color, NamedColor, Processor, StdSyncHandler
 
 const SCROLLBACK: usize = 10_000;
 
+/// The line-breaking controls xterm.js's `convertEol` applies to: LF, VT, FF.
+/// See [`Emulator::feed`].
+const LINE_BREAKS: [u8; 3] = [b'\n', 0x0b, 0x0c];
+
 pub struct Snapshot {
     pub cols: u16,
     pub rows: u16,
@@ -63,8 +67,46 @@ impl Emulator {
         }
     }
 
+    /// Feed PTY output, returning the carriage on every line break.
+    ///
+    /// The client is xterm.js with `convertEol` on, which resets the column on
+    /// LF, VT and FF; alacritty, faithful to a real terminal, only moves down.
+    /// The difference is invisible while a pane is live — the client is the
+    /// only thing drawing — and surfaces the moment the pane is re-opened,
+    /// because the reattach snapshot is generated from *this* grid. So a child
+    /// that emits a bare LF (any TUI in raw mode, or a shell whose tty was left
+    /// with `-onlcr` by one that died without restoring it) writes clean lines
+    /// in the pane and a staircase in here:
+    ///
+    /// ```text
+    /// one
+    ///    two
+    ///       three
+    /// ```
+    ///
+    /// and the staircase is what the snapshot paints on return — the "banding"
+    /// of AGE-67. It takes the cursor with it, too: the position the snapshot
+    /// restores is the end of the staircase rather than where the child left
+    /// it, so the child's next cursor-relative redraw lands somewhere else
+    /// again. Matching the client is what keeps live and reattached agreeing.
+    ///
+    /// ANSI mode 20 (LNM) would be the tidy way to ask for this, but alacritty
+    /// 0.26 only honours it for NEL — vte dispatches a C0 line feed straight to
+    /// `linefeed()`, which doesn't consult the mode. Hence the carriage return
+    /// spliced into the stream. It is safe to splice in mid-sequence: CR is a
+    /// C0 control, so both parsers ignore it inside an OSC/DCS/APC string
+    /// exactly as they ignore the LF it follows, and it can never fall inside a
+    /// UTF-8 sequence (no continuation byte is 0x0a).
     pub fn feed(&mut self, bytes: &[u8]) {
-        self.parser.advance(&mut self.term, bytes);
+        let mut start = 0;
+        for (i, b) in bytes.iter().enumerate() {
+            if LINE_BREAKS.contains(b) {
+                self.parser.advance(&mut self.term, &bytes[start..=i]);
+                self.parser.advance(&mut self.term, b"\r");
+                start = i + 1;
+            }
+        }
+        self.parser.advance(&mut self.term, &bytes[start..]);
     }
 
     pub fn resize(&mut self, cols: u16, rows: u16) {
@@ -222,6 +264,15 @@ impl Emulator {
         if mode.contains(TermMode::BRACKETED_PASTE) {
             data.extend_from_slice(b"\x1b[?2004h");
         }
+        // Autowrap (DECAWM). On by default, so this only ever has to turn it
+        // *off*, and it matters because a child turns it off to write into the
+        // last cell of a row without the cursor spilling onto the next one —
+        // Copilot CLI does exactly that for the corner of a box. A client left
+        // wrapping puts that glyph on a row of its own and every row below it
+        // is one out.
+        if !mode.contains(TermMode::LINE_WRAP) {
+            data.extend_from_slice(b"\x1b[?7l");
+        }
         // Mouse reporting, same story as the alt screen: the child turns it on
         // once at startup and never re-announces it. Losing it on reattach is
         // what made the scroll wheel type into the agent — a client that doesn't
@@ -323,6 +374,86 @@ mod tests {
         let mut e = Emulator::new(80, 24);
         e.feed(b"hello world");
         assert!(e.capture(5).contains("hello world"));
+    }
+
+    #[test]
+    fn bare_line_feed_returns_the_carriage() {
+        // AGE-67: the client (xterm.js, convertEol) resets the column on every
+        // LF. Without matching it here, output from a child in raw mode walks
+        // right across the grid — and the snapshot replays that staircase into
+        // the pane the next time it is opened.
+        let mut e = Emulator::new(40, 6);
+        e.feed(b"one\ntwo\nthree");
+        let cap = e.capture(6);
+        let rows: Vec<&str> = cap.lines().take(3).collect();
+        assert_eq!(rows, vec!["one", "two", "three"], "bare LF staircased");
+    }
+
+    #[test]
+    fn line_feed_returns_the_carriage_across_reads_and_resets() {
+        // Nothing about this may depend on where the PTY reads happen to split,
+        // and `reset` (RIS) must not switch it off — the client's convertEol is
+        // an option rather than a mode and survives its own reset.
+        let mut e = Emulator::new(40, 6);
+        e.feed(b"\x1bcon");
+        e.feed(b"e\n");
+        e.feed(b"two");
+        let cap = e.capture(6);
+        let rows: Vec<&str> = cap.lines().take(2).collect();
+        assert_eq!(rows, vec!["one", "two"]);
+    }
+
+    #[test]
+    fn a_repaint_reads_the_same_however_the_pty_chunks_it() {
+        // The daemon reads 4096 bytes at a time and a repaint can be split
+        // anywhere in it — mid-sequence, mid-UTF-8. Splicing the carriage
+        // returns in must not care where.
+        let stream: &[u8] = "\x1b[?1049h\x1b[H\x1b[1;38;5;196mheader\x1b[0m\r\n\
+             ╭─────╮\nrow \u{2502}two\u{2502}\x1b[K\n\x1b]0;title\x07\x1b[3;5Hx"
+            .as_bytes();
+        let mut whole = Emulator::new(30, 8);
+        whole.feed(stream);
+        let mut drip = Emulator::new(30, 8);
+        for b in stream {
+            drip.feed(std::slice::from_ref(b));
+        }
+        assert_eq!(whole.capture(8), drip.capture(8));
+        assert_eq!(whole.snapshot().data, drip.snapshot().data);
+    }
+
+    #[test]
+    fn a_line_feed_inside_an_osc_string_stays_inert() {
+        // The carriage return is spliced in without parsing, so it has to be
+        // harmless where the line feed it follows is: both are C0 controls the
+        // parser ignores inside a string. A title set either side of one must
+        // still land on screen unchanged.
+        let mut e = Emulator::new(40, 6);
+        e.feed(b"\x1b]0;ti\ntle\x07after");
+        assert_eq!(e.capture(6).lines().next(), Some("after"));
+    }
+
+    #[test]
+    fn snapshot_of_bare_line_feed_output_is_not_a_staircase() {
+        let mut e = Emulator::new(60, 6);
+        e.feed(b"Recycle mTLS Workloads 0:36\nRecycle mTLS Workloads 0:37\n");
+        let snap = e.snapshot();
+        let text = String::from_utf8_lossy(&snap.data);
+        assert!(
+            !text.contains("  Recycle"),
+            "snapshot indents a line the pane drew at column 0: {text:?}",
+        );
+    }
+
+    #[test]
+    fn snapshot_reasserts_autowrap_when_the_child_turned_it_off() {
+        let mut e = Emulator::new(40, 6);
+        e.feed(b"\x1b[?7lcorner");
+        let snap = e.snapshot();
+        assert!(String::from_utf8_lossy(&snap.data).contains("\x1b[?7l"));
+        // On (the default) it stays unsaid — nothing to restore.
+        let mut e = Emulator::new(40, 6);
+        e.feed(b"plain");
+        assert!(!String::from_utf8_lossy(&e.snapshot().data).contains("\x1b[?7"));
     }
 
     #[test]

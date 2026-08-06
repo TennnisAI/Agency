@@ -12,6 +12,7 @@ import { currentXtermTheme, minContrastRatio, TERMINAL_FONT_FAMILY } from "../li
 import { initialCapture, feed } from "../lib/firstPrompt";
 import { shouldSwallowWheel, createPageScroller } from "../lib/termScroll";
 import { follow, GESTURE_MS } from "../lib/termFollow";
+import { createInputWriter, type InputWriter } from "../lib/termInput";
 import { fullClipboardText } from "../lib/clipboard";
 import { FindRank, registerFindTarget } from "../lib/findBus";
 
@@ -69,6 +70,11 @@ export default function FocusTerminal(
   // too instead of being pinned straight back down. Installed by the terminal
   // effect; a no-op until then.
   const markGestureRef = useRef<() => void>(() => {});
+  // Everything this pane types at its session goes through here, so a frame's
+  // worth of it travels as one write (see lib/termInput). Owned by the terminal
+  // effect; the drag-drop effect, which has a mount of its own, writes through
+  // the ref.
+  const inputRef = useRef<InputWriter | null>(null);
   const [showSearch, setShowSearch] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [dragOver, setDragOver] = useState(false);
@@ -89,6 +95,12 @@ export default function FocusTerminal(
   useEffect(() => {
     const container = ref.current;
     if (!container) return;
+    // The catch covers the frame of slack the writer buys: a write can now land
+    // just after the session it was typed into went away (the pane is closing,
+    // the run was discarded), and "you typed at a terminal that is no longer
+    // there" is not something to raise a toast over.
+    const input = createInputWriter((data) => { stream.input(runId, data).catch(() => {}); });
+    inputRef.current = input;
     // Large scrollback: this is the live scroll depth (xterm accumulates the
     // streamed output into its own buffer), so a small cap is what makes long
     // agent conversations "stop" scrolling well before their start. xterm
@@ -114,7 +126,7 @@ export default function FocusTerminal(
         // Returning false only makes xterm skip the event; WebKit's own default
         // for Ctrl+Return (show the context menu) still runs without this.
         e.preventDefault();
-        stream.input(runId, "\n");
+        input.write("\n");
         return false; // handled — don't let xterm also emit \r
       }
       return true;
@@ -132,7 +144,7 @@ export default function FocusTerminal(
       if (shouldSwallowWheel(term.buffer.active.type, term.modes.mouseTrackingMode, altScrollRef.current)) {
         e.preventDefault(); // xterm skips its own default but not the browser's
         const keys = pageScroll(e.deltaY, e.deltaMode);
-        if (keys) stream.input(runId, keys);
+        if (keys) input.write(keys);
         return false;
       }
       return true;
@@ -295,7 +307,7 @@ export default function FocusTerminal(
       }).then(() => {
         if (disposed) return;
         onData = term.onData((d) => {
-          stream.input(runId, d);
+          input.write(d);
           const cb = onFirstPromptRef.current;
           if (cb && !captureRef.current.done) {
             const r = feed(captureRef.current, d);
@@ -328,6 +340,10 @@ export default function FocusTerminal(
       window.removeEventListener("pointercancel", onPointerUp, true);
       scrollWatch.dispose();
       onData?.dispose();
+      // Before the detach, so a keystroke queued on this frame still reaches
+      // the session rather than dying with the pane.
+      input.dispose();
+      inputRef.current = null;
       stream.detach(runId);
       term.dispose();
       captureRef.current = initialCapture();
@@ -364,7 +380,7 @@ export default function FocusTerminal(
       } else if (p.type === "drop") {
         setDragOver(false);
         if (hit(p.position) && p.paths.length) {
-          stream.input(runId, p.paths.map(quote).join(" ") + " ");
+          inputRef.current?.write(p.paths.map(quote).join(" ") + " ");
           termRef.current?.focus();
         }
       } else {

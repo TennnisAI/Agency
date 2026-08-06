@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FileChange {
@@ -18,6 +19,12 @@ fn git(worktree: &Path, args: &[&str]) -> Result<String> {
     let output = Command::new("git")
         .args(args)
         .current_dir(worktree)
+        // No TTY in the app: a network command must fail fast rather than block
+        // forever on a credential prompt no one can answer. When Agency is
+        // launched from a terminal it *does* inherit that terminal, so without
+        // this a fetch for an unauthenticated remote would sit on a hidden
+        // password prompt and never return.
+        .env("GIT_TERMINAL_PROMPT", "0")
         .output()?;
     if !output.status.success() {
         bail!(
@@ -177,12 +184,75 @@ pub fn has_origin(repo: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// How long a fetch may run before it is killed. Fetches happen on their own
+/// now (see the auto-fetch scheduler in the app), so a wedged one must not sit
+/// there forever: the scheduler treats a project as "fetch in flight" until the
+/// call returns, and would never fetch it again.
+const FETCH_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// Fetch from `origin`, updating remote-tracking refs (and pruning branches
 /// deleted upstream) so ahead/behind reflects reality instead of a stale local
 /// snapshot. Nothing is checked out or merged.
 pub fn fetch(repo: &Path) -> Result<()> {
-    git(repo, &["fetch", "--prune", "origin"])?;
+    git_capped(repo, &["fetch", "--prune", "origin"], FETCH_TIMEOUT)?;
     Ok(())
+}
+
+/// [`git`] with a wall-clock cap: the child is killed if it outlives `limit`.
+/// `Command::output()` waits forever, which is fine for the local commands but
+/// not for one that talks to a remote — an unreachable host, a stalled TLS
+/// handshake or a credential helper waiting on the keychain can all hang far
+/// longer than any caller wants to wait.
+fn git_capped(worktree: &Path, args: &[&str], limit: Duration) -> Result<String> {
+    use std::io::Read;
+
+    let mut child = Command::new("git")
+        .args(args)
+        .current_dir(worktree)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+
+    // Drain both pipes on their own threads: a child that fills a pipe buffer
+    // blocks on the write and would never reach the exit we are polling for.
+    fn reader<R: Read + Send + 'static>(mut r: Option<R>) -> std::thread::JoinHandle<String> {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(r) = r.as_mut() {
+                let _ = r.read_to_end(&mut buf);
+            }
+            String::from_utf8_lossy(&buf).into_owned()
+        })
+    }
+    let out_thread = reader(child.stdout.take());
+    let err_thread = reader(child.stderr.take());
+
+    let deadline = std::time::Instant::now() + limit;
+    let status = loop {
+        match child.try_wait()? {
+            Some(status) => break status,
+            None if std::time::Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                // Return without joining the readers. Killing git does not kill
+                // whatever it spawned (`git-remote-https`, `ssh`), and those
+                // hold the write ends of these pipes — joining here would wait
+                // out the very hang the cap exists to escape. The threads end
+                // on their own once the last writer goes.
+                bail!("git {:?} timed out after {}s", args, limit.as_secs());
+            }
+            None => std::thread::sleep(Duration::from_millis(50)),
+        }
+    };
+
+    let stdout = out_thread.join().unwrap_or_default();
+    let stderr = err_thread.join().unwrap_or_default();
+    if !status.success() {
+        bail!("git {:?} failed: {}", args, stderr);
+    }
+    Ok(stdout)
 }
 
 /// Fast-forward the current branch to its upstream. `--ff-only` on purpose: a
@@ -1061,5 +1131,57 @@ mod branch_tests {
         assert_eq!(pb.branches[0], "main", "current branch must be first");
         assert!(pb.branches.contains(&"main".to_string()));
         assert!(pb.branches.contains(&"develop".to_string()));
+    }
+}
+
+#[cfg(test)]
+mod capped_tests {
+    use super::*;
+    use std::process::Command;
+    use tempfile::tempdir;
+
+    fn repo() -> tempfile::TempDir {
+        let dir = tempdir().unwrap();
+        let ok = Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(dir.path())
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok, "git init failed");
+        dir
+    }
+
+    #[test]
+    fn returns_stdout_when_the_command_finishes() {
+        let dir = repo();
+        let out = git_capped(dir.path(), &["rev-parse", "--is-inside-work-tree"], Duration::from_secs(30)).unwrap();
+        assert_eq!(out.trim(), "true");
+    }
+
+    #[test]
+    fn carries_stderr_when_the_command_fails() {
+        let dir = repo();
+        let err = git_capped(dir.path(), &["rev-parse", "--verify", "nope"], Duration::from_secs(30))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("failed"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn kills_a_command_that_outlives_its_budget() {
+        let dir = repo();
+        // A shell alias stands in for a fetch that never returns. Without the
+        // cap this call would block for 30s (and a real one, forever).
+        let started = std::time::Instant::now();
+        let err = git_capped(
+            dir.path(),
+            &["-c", "alias.stall=!sleep 30", "stall"],
+            Duration::from_millis(300),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("timed out"), "unexpected error: {err}");
+        assert!(started.elapsed() < Duration::from_secs(10), "did not return promptly");
     }
 }

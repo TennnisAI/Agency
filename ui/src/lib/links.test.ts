@@ -13,6 +13,7 @@ const issue = (over: Partial<LinkIssue> & Pick<LinkIssue, "id" | "projectId" | "
   title: `Issue ${over.seq}`,
   body: "",
   status: "todo",
+  links: [],
   ...over,
 });
 

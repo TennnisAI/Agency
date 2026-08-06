@@ -2047,6 +2047,7 @@ impl AppState {
             due: issue.due.clone(),
             scheduled: issue.scheduled.clone(),
             rank: issue.rank,
+            links: issue.links.clone(),
             created_at: issue.created_at,
             updated_at: issue.updated_at,
             extra,
@@ -2137,6 +2138,7 @@ impl AppState {
             due: None,
             scheduled: None,
             rank: None,
+            links: Vec::new(),
             created_at: now,
             updated_at: now,
         };
@@ -2183,6 +2185,14 @@ impl AppState {
                 bail!("invalid rank");
             }
             next.rank = r;
+        }
+        if let Some(links) = &patch.links {
+            // Through the file parser's own normalization (upper-case, deduped,
+            // self-link dropped), so what the API accepts is exactly what the
+            // frontmatter can hold.
+            let (_, prefix) = self.issue_root(&reg, &next.project_id)?;
+            let own = format!("{prefix}-{}", next.seq);
+            next.links = agency_core::issuefs::parse_links(&links.join(","), &own)?;
         }
         next.updated_at = now_secs();
         self.write_issue_file(&reg, &next)?;

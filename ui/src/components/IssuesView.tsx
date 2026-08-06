@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FileRoot, Issue, IssuePatch, IssueStatus, Project, createIssue, deleteIssue, getWorkspace, updateIssue } from "../api";
 import { planReorder } from "../lib/issueRank";
-import { Corpus, LinkEdge, buildLinkIndex, mentionsOf, resolveTarget } from "../lib/links";
+import { Corpus, IssueRef, LinkEdge, buildLinkIndex, mentionsOf, resolveTarget } from "../lib/links";
+import { IssueLink, hasLink, issueLinks, linkCandidates, withLink, withoutLink } from "../lib/issueLinks";
 import { requestNavigate } from "../lib/navigate";
 import { useRuns } from "../store/runs";
 import { useIssues } from "../hooks/useIssues";
@@ -248,7 +249,7 @@ export default function IssuesView({
   const active = tab === "issues";
   const ownDocs = useDocs(project.id, active);
   const wsDocs = useDocs(wsId, active);
-  const { cross } = useCrossRefs(active);
+  const { cross, refresh: refreshCross } = useCrossRefs(active);
   const linkTable = useMemo(() => {
     if (!cross) return null;
     const corpora: Corpus[] = [];
@@ -260,6 +261,53 @@ export default function IssuesView({
     () => (linkTable && selected ? mentionsOf(linkTable, "issue", selected.id) : []),
     [linkTable, selected],
   );
+
+  // The selected issue's `links:` relations, and what is left to link it to.
+  // Both read from the cross-project rows, so an issue in another tracker is
+  // as linkable as one in this project.
+  const selectedLabel = selected ? issueLabel(project, selected) : "";
+  const links = useMemo(
+    () => (selected ? issueLinks(selected, selectedLabel, cross) : []),
+    [selected, selectedLabel, cross],
+  );
+  const candidates = useMemo(
+    () => linkCandidates(cross, project.id, selectedLabel, links),
+    [cross, project.id, selectedLabel, links],
+  );
+
+  // Linking writes both sides: the relation is undirected, and an issue file
+  // read on its own (by an agent, or in any markdown editor) should say what
+  // it is linked to without having to grep the rest of the tracker. The other
+  // side's row comes from the cross-project poll, so its refresh is what makes
+  // the new link show up on the issue it was made from.
+  async function addLink(ref: IssueRef) {
+    if (!selected) return;
+    const other = issueLabel(ref.project, ref.issue);
+    try {
+      await updateIssue(selected.id, { links: withLink(selected.links, other) });
+      await updateIssue(ref.issue.id, { links: withLink(ref.issue.links, selectedLabel) });
+      await Promise.all([refresh(), refreshCross()]);
+    } catch (e) {
+      toastError(e, `Couldn't link ${other}`);
+    }
+  }
+
+  // Unlinking clears whichever sides hold it — including a link only the other
+  // issue's file says (a hand edit, or a write that failed halfway).
+  async function removeLink(link: IssueLink) {
+    if (!selected) return;
+    try {
+      if (hasLink(selected.links, link.label)) {
+        await updateIssue(selected.id, { links: withoutLink(selected.links, link.label) });
+      }
+      if (link.ref && hasLink(link.ref.issue.links, selectedLabel)) {
+        await updateIssue(link.ref.issue.id, { links: withoutLink(link.ref.issue.links, selectedLabel) });
+      }
+      await Promise.all([refresh(), refreshCross()]);
+    } catch (e) {
+      toastError(e, `Couldn't unlink ${link.label}`);
+    }
+  }
 
   // A wikilink ⌘-clicked in a description. Notes resolve against this project's
   // docs; issues and runs against every project. Nothing is created from here —
@@ -671,6 +719,8 @@ export default function IssuesView({
             root={fileRoot}
             runs={runsFor(selected)}
             mentions={mentions}
+            links={links}
+            linkCandidates={candidates}
             index={ownDocs.index}
             cross={cross}
             expanded={wide}
@@ -681,6 +731,10 @@ export default function IssuesView({
             onDelete={() => setConfirmDelete(selected)}
             onOpenRun={openRun}
             onOpenMention={openMention}
+            onOpenIssue={(ref) =>
+              requestNavigate({ kind: "issue", projectId: ref.project.id, issueId: ref.issue.id })}
+            onAddLink={(ref) => { void addLink(ref); }}
+            onRemoveLink={(link) => { void removeLink(link); }}
             onFollowLink={followLink}
             // A tag in a description narrows the board to the issues carrying
             // it — the same "show me these" the docs tab gives its search.

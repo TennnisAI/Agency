@@ -100,6 +100,10 @@ export interface Issue {
   scheduled: string | null;
   // Manual board order within a status group, ascending.
   rank: number | null;
+  // Keys of the issues this one is linked to ("AGE-12"), any project's. Links
+  // are undirected — the app writes both sides — and a key with no issue
+  // behind it is kept (see lib/issueLinks).
+  links: string[];
   createdAt: number;
   updatedAt: number;
 }
@@ -114,6 +118,8 @@ export interface IssuePatch {
   due?: string | null;
   scheduled?: string | null;
   rank?: number | null;
+  // The whole link set, replaced wholesale: add and remove are the same call.
+  links?: string[];
 }
 
 export const listProjects = () => invoke<Project[]>("list_projects");

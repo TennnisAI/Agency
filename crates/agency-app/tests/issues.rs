@@ -308,3 +308,65 @@ fn dates_and_rank_patch_set_clear_and_validate() {
     let after = state.list_issues(&p.id).unwrap();
     assert_eq!(after[0].scheduled.as_deref(), Some("2026-07-30"), "failed patch mutated state");
 }
+
+#[test]
+fn links_patch_writes_the_file_and_survives_reconcile() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let state = common::state(&dir);
+    let p = state.add_project("demo", &repo).unwrap();
+    let d = issues_dir(&repo);
+    let issue = state.create_issue(&p.id, "Linked", "", IssueStatus::Todo).unwrap();
+    let other = state.create_issue(&p.id, "Other", "", IssueStatus::Todo).unwrap();
+    assert!(issue.links.is_empty());
+
+    // The patch replaces the whole set, and lands normalized in the file.
+    let updated = state
+        .update_issue(&issue.id, &agency_core::registry::IssuePatch {
+            // Own key and a duplicate are dropped; case is normalized.
+            links: Some(vec!["dem-2".into(), "AGE-9".into(), "DEM-2".into(), "DEM-1".into()]),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(updated.links, vec!["DEM-2".to_string(), "AGE-9".to_string()]);
+    let text = std::fs::read_to_string(d.join("DEM-1.md")).unwrap();
+    assert!(text.contains("links: DEM-2, AGE-9"), "{text}");
+
+    // A link to an issue in another project (AGE-9 here, in no project at all)
+    // is kept as written — the target may live in a tracker this app can't see.
+    assert_eq!(state.list_issues(&p.id).unwrap()[0].links, vec!["DEM-2", "AGE-9"]);
+    // And the other side of a link is just its own file's `links:` — nothing
+    // in the index infers it.
+    assert!(state.list_issues(&p.id).unwrap()[1].links.is_empty());
+    assert_eq!(other.seq, 2);
+
+    // Emptying the set removes the key from the file.
+    let cleared = state
+        .update_issue(&issue.id, &agency_core::registry::IssuePatch {
+            links: Some(vec![]),
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(cleared.links.is_empty());
+    let text = std::fs::read_to_string(d.join("DEM-1.md")).unwrap();
+    assert!(!text.contains("links:"), "cleared key still in file: {text}");
+
+    // A malformed key is refused before anything is written.
+    assert!(state
+        .update_issue(&issue.id, &agency_core::registry::IssuePatch {
+            links: Some(vec!["not a key".into()]),
+            ..Default::default()
+        })
+        .is_err());
+
+    // Files are truth: a link written by hand reaches the board through
+    // reconcile, on the next list.
+    let path = d.join("DEM-1.md");
+    let text = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, text.replace("status: todo", "status: todo\nlinks: dem-2")).unwrap();
+    let listed = state.list_issues(&p.id).unwrap();
+    assert_eq!(listed[0].links, vec!["DEM-2"], "hand-written link not indexed");
+}

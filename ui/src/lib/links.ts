@@ -11,7 +11,7 @@ import { issueLabel } from "./issues";
 // Narrow structural views so tests (and the palette-style fan-out) can feed
 // this without fabricating full API objects.
 export type LinkProject = Pick<Project, "id" | "name" | "issue_key">;
-export type LinkIssue = Pick<Issue, "id" | "projectId" | "seq" | "title" | "body" | "status">;
+export type LinkIssue = Pick<Issue, "id" | "projectId" | "seq" | "title" | "body" | "status" | "links">;
 export type LinkRun = Pick<RunInfo, "id" | "projectId" | "issueId">;
 
 /** One project's rows, as fetched by the useCrossRefs fan-out. */

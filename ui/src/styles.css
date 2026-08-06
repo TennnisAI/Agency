@@ -2413,16 +2413,23 @@ input, textarea, code,
 /* The description is the same live-preview markdown editor the Docs tab runs
    (components/MarkdownEditor) — the type scale is the pane's, not the code
    editor's, so `inherit` is how the CodeMirror theme's own sizing is undone.
-   No fixed height here: the editor grows with the text and the pane scrolls. */
+   The description is what this pane is for, so it takes the room: it grows
+   with its text, and grows again into whatever height the sections below it
+   leave over (`flex-grow`, never shrinking past the floor). Only a description
+   longer than the pane scrolls it. */
 .issue-detail-body {
-  min-height: 120px; flex-shrink: 0; margin: 0 -6px; border-radius: 6px;
+  /* The floor only bites in a pane too crowded to give the description any of
+     the free space (many agents, links and mentions under a short body). */
+  flex: 1 0 auto; min-height: 200px; margin: 0 -6px; border-radius: 6px;
   /* The editor fills the box (never just its own text), so clicking anywhere
      in an empty description puts the caret in. */
   display: flex; flex-direction: column;
   font-size: 13.5px; line-height: 1.5;
 }
 .issue-detail-body:hover, .issue-detail-body:focus-within { background: var(--s0); }
-.issue-detail-body .cm-editor { flex: 1; min-height: 0; background: transparent; font-size: inherit; }
+/* `flex-basis: auto` — the editor's own content height is what makes the box
+   grow; a `flex: 1` here would zero the basis and clip the text at the floor. */
+.issue-detail-body .cm-editor { flex: 1 0 auto; min-height: 0; background: transparent; font-size: inherit; }
 .issue-detail-body .cm-editor.cm-focused { outline: none; }
 .issue-detail-body .cm-scroller { line-height: inherit; }
 .issue-detail-body .cm-content { user-select: text; -webkit-user-select: text; }
@@ -2445,6 +2452,47 @@ input, textarea, code,
 }
 .issue-detail-run:hover { background: var(--s0); border-color: var(--s1); }
 .issue-detail-run-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A section heading with its own control on the right (Links and its "+"). */
+.issue-detail-section-head { display: flex; align-items: center; gap: 6px; }
+.issue-detail-section-head h3 { flex: 1; min-width: 0; }
+.issue-detail-section-head .icon-btn { font-size: 14px; line-height: 1; padding: 0 4px; }
+.issue-detail-empty { color: var(--o0); font-size: 12px; padding: 2px 8px 4px; }
+
+/* ── links between issues ─────────────────────────────────────────────────
+   Rows read like the agent rows above them: dot, key, title. The ✕ rides on
+   hover so a list of links stays a list, not a column of controls. */
+.issue-detail-link-row { display: flex; align-items: center; }
+.issue-detail-link { flex: 1; min-width: 0; }
+.issue-link-key { color: var(--o1); font-family: var(--mono); font-size: 11px; flex-shrink: 0; }
+.issue-detail-link.unresolved { cursor: default; opacity: .6; }
+.issue-detail-link.unresolved:hover { background: transparent; border-color: transparent; }
+.issue-link-ghost { color: var(--o0); font-size: 10px; width: 8px; text-align: center; }
+.issue-link-remove {
+  flex-shrink: 0; visibility: hidden;
+  background: transparent; border: 0; border-radius: 5px;
+  color: var(--o0); padding: 3px 5px; cursor: pointer; font-size: 11px;
+}
+.issue-detail-link-row:hover .issue-link-remove { visibility: visible; }
+.issue-link-remove:hover { background: var(--s1); color: var(--text); }
+/* The picker: the shared menu box, with a search field over a scrolling list. */
+.issue-link-menu {
+  /* Wider than the menu default (`max-width` included): these rows carry a
+     key and a title, and a clipped title makes the list unusable. */
+  width: 320px; max-width: min(320px, calc(100vw - 16px));
+  max-height: 300px; display: flex; flex-direction: column;
+}
+/* The keyboard cursor, which the pointer follows on hover. */
+.issue-link-menu .issue-link-options button.on { background: var(--s0); }
+.issue-link-search {
+  flex-shrink: 0; width: 100%; background: var(--s0); border: 1px solid var(--s1);
+  border-radius: 6px; color: var(--text); padding: 5px 8px; outline: none;
+  font-family: var(--sans); font-size: 12px; margin-bottom: 4px;
+}
+.issue-link-search:focus { border-color: var(--o0); }
+.issue-link-options { flex: 1; min-height: 0; overflow-y: auto; }
+.issue-link-options button { display: flex; align-items: center; gap: 8px; }
+.issue-link-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.issue-link-empty { color: var(--o0); font-size: 12px; padding: 6px 8px; }
 .issue-detail-foot { display: flex; align-items: center; gap: 8px; color: var(--o0); font-size: 11px; margin-top: auto; }
 .issue-detail-foot .spacer { flex: 1; }
 
@@ -2477,6 +2525,9 @@ input, textarea, code,
   flex: 1; min-height: 0; overflow: hidden;
   font-size: 14.5px; line-height: 1.7;
 }
+/* Here the box's height comes from the column, not from the text, so the
+   editor takes a zero basis and scrolls instead of overflowing. */
+.issue-detail.expanded .issue-detail-body .cm-editor { flex: 1 1 0; }
 .issue-detail.expanded .issue-detail-body .cm-scroller { overflow: auto; }
 .issue-detail.expanded .issue-attachments { flex-shrink: 0; max-height: 38%; overflow-y: auto; }
 /* Meta rail: the properties and links that were stacked under the title in the

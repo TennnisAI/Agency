@@ -46,6 +46,12 @@ pub struct IssueFile {
     /// Manual board order within a status group, ascending. Finite by
     /// construction (NaN/inf rejects the file).
     pub rank: Option<f64>,
+    /// Keys of the issues this one is linked to (`AGE-12`), in file order,
+    /// deduped, never including this issue's own key. Any project's key may
+    /// appear — links cross trackers. A key with no file behind it is kept:
+    /// the target may be an issue that hasn't been written yet, or one in a
+    /// project this checkout can't see.
+    pub links: Vec<String>,
     /// Epoch seconds; 0 = the file didn't say (reconcile substitutes mtime).
     pub created_at: i64,
     /// Epoch seconds; 0 = the file didn't say (reconcile substitutes mtime).
@@ -154,8 +160,33 @@ pub fn issue_path(root: &Path, key: &str) -> PathBuf {
 // ---------------------------------------------------------------------------
 // Parse / serialize
 
-const KNOWN_KEYS: [&str; 8] =
-    ["key", "status", "priority", "due", "scheduled", "rank", "created", "updated"];
+const KNOWN_KEYS: [&str; 9] =
+    ["key", "status", "priority", "due", "scheduled", "rank", "links", "created", "updated"];
+
+/// Parse a `links:` value — a comma-separated list of issue keys. Keys are
+/// upper-cased (a hand-written `age-12` means AGE-12), deduped, and kept in
+/// the order written; `own_key` is dropped, since an issue linking to itself
+/// says nothing. Anything that isn't `KEY-n` shaped is an error, like every
+/// other malformed frontmatter value here — the app's own writes are always
+/// well-formed, so a bad value is a hand edit worth reporting.
+pub fn parse_links(value: &str, own_key: &str) -> Result<Vec<String>> {
+    let mut out: Vec<String> = Vec::new();
+    for raw in value.split(',') {
+        let token = raw.trim();
+        if token.is_empty() {
+            continue;
+        }
+        let key = token.to_ascii_uppercase();
+        if parse_key(&key).is_none() {
+            bail!("invalid link: {token}");
+        }
+        if key == own_key || out.contains(&key) {
+            continue;
+        }
+        out.push(key);
+    }
+    Ok(out)
+}
 
 /// Parse an issue file. `file_key` is the filename stem (`AGE-14`) — the
 /// frontmatter `key` must agree with it or the file is rejected; a file's name
@@ -172,6 +203,7 @@ pub fn parse_issue_file(file_key: &str, text: &str) -> Result<IssueFile> {
     let mut due = None;
     let mut scheduled = None;
     let mut rank: Option<f64> = None;
+    let mut links: Option<Vec<String>> = None;
     let mut created = None;
     let mut updated = None;
     let mut extra = Vec::new();
@@ -236,6 +268,12 @@ pub fn parse_issue_file(file_key: &str, text: &str) -> Result<IssueFile> {
                 }
                 continue;
             }
+            "links" => {
+                if links.replace(parse_links(v, file_key)?).is_some() {
+                    bail!("duplicate frontmatter key: links");
+                }
+                continue;
+            }
             "created" => &mut created,
             "updated" => &mut updated,
             _ => unreachable!(),
@@ -280,6 +318,7 @@ pub fn parse_issue_file(file_key: &str, text: &str) -> Result<IssueFile> {
         due,
         scheduled,
         rank,
+        links: links.unwrap_or_default(),
         created_at,
         updated_at,
         extra,
@@ -304,6 +343,9 @@ pub fn serialize_issue_file(f: &IssueFile) -> String {
     }
     if let Some(r) = f.rank {
         out.push_str(&format!("rank: {r}\n"));
+    }
+    if !f.links.is_empty() {
+        out.push_str(&format!("links: {}\n", f.links.join(", ")));
     }
     out.push_str(&format!("created: {}\n", epoch_to_rfc3339(f.created_at)));
     out.push_str(&format!("updated: {}\n", epoch_to_rfc3339(f.updated_at)));
@@ -489,6 +531,10 @@ Body markdown, wikilinks allowed.
 - To change status, edit `status:`. To close an issue, set `status: done`.
 - To file a new issue, add `<KEY>-<n>.md` using the next unused number for the
   key. Numbers are never reused and never renumbered, even after deletion.
+- To link issues, list their keys in `links:` (`links: AGE-12, LBH-3`, any
+  project's key). Links are undirected: the app writes the other side too, and
+  shows them in the issue's Links section. A link to an issue that doesn't
+  exist is kept, not pruned.
 - Timestamps are UTC RFC3339; `updated` should be bumped on edit (the app does
   this automatically; if you forget, file mtime is used).
 - Attachments live in `assets/`, referenced from the body by a relative link:
@@ -527,6 +573,7 @@ pub fn export_project(reg: &Registry, project_id: &str, issue_key: &str, root: &
             due: row.due,
             scheduled: row.scheduled,
             rank: row.rank,
+            links: row.links,
             created_at: row.created_at,
             updated_at: row.updated_at,
             extra: vec![],
@@ -662,6 +709,7 @@ pub fn reconcile(
             due: f.due.clone(),
             scheduled: f.scheduled.clone(),
             rank: f.rank,
+            links: f.links.clone(),
             created_at,
             updated_at,
         };
@@ -773,6 +821,7 @@ Body markdown, wikilinks allowed.\n";
             due: None,
             scheduled: None,
             rank: None,
+            links: vec![],
             created_at: 1_785_144_600,
             updated_at: 1_785_160_920,
             extra: vec![],
@@ -786,6 +835,33 @@ created: 2026-07-27T09:30:00Z\nupdated: 2026-07-27T14:02:00Z\n---\n\
         // Round-trip: canonical text parses back to the same value.
         let back = parse_issue_file("AGE-14", &serialize_issue_file(&f)).unwrap();
         assert_eq!(back, f);
+    }
+
+    #[test]
+    fn parses_and_writes_links() {
+        let text = "---\nkey: AGE-5\nstatus: todo\n\
+links: AGE-12, lbh-3, AGE-12, AGE-5\n---\n# T\n";
+        let f = parse_issue_file("AGE-5", text).unwrap();
+        // Upper-cased, deduped, self-link dropped, order kept.
+        assert_eq!(f.links, vec!["AGE-12".to_string(), "LBH-3".to_string()]);
+        let out = serialize_issue_file(&f);
+        assert!(out.contains("links: AGE-12, LBH-3\n"), "{out}");
+        assert_eq!(parse_issue_file("AGE-5", &out).unwrap(), f);
+        // No links, no line — the frontmatter of an unlinked issue is unchanged.
+        let plain = parse_issue_file("AGE-5", "---\nkey: AGE-5\nstatus: todo\n---\n# T\n").unwrap();
+        assert!(plain.links.is_empty());
+        assert!(!serialize_issue_file(&plain).contains("links:"));
+    }
+
+    #[test]
+    fn rejects_malformed_links() {
+        for bad in [
+            "---\nkey: AGE-1\nstatus: todo\nlinks: not a key\n---\n# T\n",
+            "---\nkey: AGE-1\nstatus: todo\nlinks: AGE-0\n---\n# T\n",
+            "---\nkey: AGE-1\nstatus: todo\nlinks: AGE-2\nlinks: AGE-3\n---\n# T\n",
+        ] {
+            assert!(parse_issue_file("AGE-1", bad).is_err(), "accepted {bad}");
+        }
     }
 
     #[test]

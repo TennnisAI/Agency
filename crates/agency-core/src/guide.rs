@@ -85,7 +85,10 @@ follow-ups. An issue's description is the same editor a note is: markdown
 renders as you write it, right-click gives the formatting menu, and
 [[links]] and #tags work the same way. Reference any issue from a note by
 its key, written like `[[AGE-14]]`, and that issue's detail pane will list
-the notes mentioning it. If the workspace uses git, you can dispatch agents on writing tasks the
+the notes mentioning it. Issues can also be linked to each other: the Links
+section in the detail pane, + to pick another issue (any project's). Links
+go both ways and are clickable, so either issue leads to the other. If the
+workspace uses git, you can dispatch agents on writing tasks the
 same way you would in a code project: they work on a branch, you merge.
 
 The Agents tab in a note's right panel is the same set of agents, shown

@@ -35,6 +35,7 @@ function issue(over: Partial<Issue>): Issue {
     due: null,
     scheduled: null,
     rank: null,
+    links: [],
     createdAt: seq,
     updatedAt: seq,
     ...over,

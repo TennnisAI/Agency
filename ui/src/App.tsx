@@ -595,7 +595,7 @@ export default function App() {
     // than a blank window so launch doesn't flash empty.
     return (
       <div className="shell">
-        <TitleBar onOpenPalette={() => {}} />
+        <TitleBar onOpenPalette={() => {}} bare />
         <div className="app-loading">
           <span className="spinner" />
         </div>
@@ -605,7 +605,7 @@ export default function App() {
   if (needsOnboarding) {
     return (
       <div className="shell">
-        <TitleBar onOpenPalette={() => {}} />
+        <TitleBar onOpenPalette={() => {}} bare />
         <AgentOnboarding onDone={() => setNeedsOnboarding(false)} />
         <Toasts />
       </div>

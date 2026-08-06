@@ -81,9 +81,11 @@ with a Notes section you can ask an agent to narrate.
 ## Issues and agents
 
 The Issues tab here is a tracker for personal work: plans, errands,
-follow-ups. Reference any issue from a note by its key, written like
-`[[AGE-14]]`, and that issue's detail pane will list the notes mentioning
-it. If the workspace uses git, you can dispatch agents on writing tasks the
+follow-ups. An issue's description is the same editor a note is: markdown
+renders as you write it, right-click gives the formatting menu, and
+[[links]] and #tags work the same way. Reference any issue from a note by
+its key, written like `[[AGE-14]]`, and that issue's detail pane will list
+the notes mentioning it. If the workspace uses git, you can dispatch agents on writing tasks the
 same way you would in a code project: they work on a branch, you merge.
 
 The Agents tab in a note's right panel is the same set of agents, shown

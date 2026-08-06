@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FileRoot, Issue, IssuePatch, IssueStatus, Project, createIssue, deleteIssue, getWorkspace, updateIssue } from "../api";
 import { planReorder } from "../lib/issueRank";
-import { Corpus, LinkEdge, buildLinkIndex, mentionsOf } from "../lib/links";
+import { Corpus, LinkEdge, buildLinkIndex, mentionsOf, resolveTarget } from "../lib/links";
 import { requestNavigate } from "../lib/navigate";
 import { useRuns } from "../store/runs";
 import { useIssues } from "../hooks/useIssues";
@@ -36,7 +36,7 @@ import IssueDetail from "./IssueDetail";
 import ConfirmDialog from "./ConfirmDialog";
 import PillSelect from "./PillSelect";
 import Resizer from "./Resizer";
-import { toastError } from "../lib/toast";
+import { toastError, toastInfo } from "../lib/toast";
 import { FindRank, registerFindTarget } from "../lib/findBus";
 
 // How narrow the list may get once the detail pane takes over the view.
@@ -261,6 +261,34 @@ export default function IssuesView({
     [linkTable, selected],
   );
 
+  // A wikilink ⌘-clicked in a description. Notes resolve against this project's
+  // docs; issues and runs against every project. Nothing is created from here —
+  // an issue is no place to be told "⌘-click to create a note".
+  function followLink(target: string) {
+    const res = resolveTarget(ownDocs.index, cross, target);
+    switch (res.kind) {
+      case "note":
+        // A "#heading" suffix opens the note; scrolling to the heading is a
+        // docs-editor trick that cross-tab navigation doesn't carry.
+        requestNavigate({ kind: "note", projectId: project.id, path: res.path });
+        return;
+      case "issue":
+        requestNavigate({ kind: "issue", projectId: res.ref.project.id, issueId: res.ref.issue.id });
+        return;
+      case "run":
+        requestNavigate({ kind: "run", projectId: res.ref.project.id, runId: res.ref.run.id });
+        return;
+      case "unresolvedIssue":
+        toastInfo(`No issue ${res.label} in any project.`);
+        return;
+      case "unresolvedRun":
+        toastInfo("That run doesn't exist anymore.");
+        return;
+      case "unresolvedNote":
+        toastInfo(`No note "${target}" in this project.`);
+    }
+  }
+
   function openMention(m: LinkEdge) {
     if (m.fromKind === "note") {
       requestNavigate({ kind: "note", projectId: m.fromProjectId, path: m.fromId });
@@ -332,8 +360,11 @@ export default function IssuesView({
     // Retire the focused editor by hand: preventDefault below suppresses the
     // blur that would otherwise commit an edit in the detail pane, and the
     // click that follows swaps the pane to another issue.
+    // (The description is a CodeMirror contenteditable, not a textarea.)
     const focused = document.activeElement as HTMLElement | null;
-    if (focused && (focused.tagName === "TEXTAREA" || focused.tagName === "INPUT")) focused.blur();
+    if (focused && (focused.tagName === "TEXTAREA" || focused.tagName === "INPUT" || focused.isContentEditable)) {
+      focused.blur();
+    }
     // Stop WebKit starting a text selection on the key/title — the selection
     // begins at mousedown, long before the drag threshold; the click that
     // selects the row is unaffected.
@@ -640,6 +671,8 @@ export default function IssuesView({
             root={fileRoot}
             runs={runsFor(selected)}
             mentions={mentions}
+            index={ownDocs.index}
+            cross={cross}
             expanded={wide}
             onToggleExpand={() => setExpanded(!expanded)}
             onPatch={(p) => patch(selected, p)}
@@ -648,6 +681,10 @@ export default function IssuesView({
             onDelete={() => setConfirmDelete(selected)}
             onOpenRun={openRun}
             onOpenMention={openMention}
+            onFollowLink={followLink}
+            // A tag in a description narrows the board to the issues carrying
+            // it — the same "show me these" the docs tab gives its search.
+            onTagClick={(tag) => setQ(tag.startsWith("#") ? tag : `#${tag}`)}
             onClose={() => setSelectedId(null)}
           />
         </>

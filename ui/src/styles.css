@@ -2400,22 +2400,33 @@ input, textarea, code,
   padding-right: 8px; margin-right: -2px; border-right: 1px solid var(--line);
 }
 /* Title & description read as plain header/body text; clicking edits in place. */
-.issue-detail-title, .issue-detail-body {
+.issue-detail-title {
   width: 100%; background: transparent; border: 0; border-radius: 6px;
   color: var(--text); font-family: var(--sans); resize: none;
   padding: 4px 6px; margin: 0 -6px; outline: none;
   overflow-wrap: break-word; word-break: break-word;
-}
-.issue-detail-title {
   font-size: 21px; font-weight: 700; line-height: 1.3;
   overflow: hidden; /* height is managed in JS to fit wrapped content */
 }
+.issue-detail-title::placeholder { color: var(--o0); }
+.issue-detail-title:hover, .issue-detail-title:focus { background: var(--s0); }
+/* The description is the same live-preview markdown editor the Docs tab runs
+   (components/MarkdownEditor) — the type scale is the pane's, not the code
+   editor's, so `inherit` is how the CodeMirror theme's own sizing is undone.
+   No fixed height here: the editor grows with the text and the pane scrolls. */
 .issue-detail-body {
-  min-height: 120px; font-size: 13.5px; line-height: 1.5;
+  min-height: 120px; flex-shrink: 0; margin: 0 -6px; border-radius: 6px;
+  /* The editor fills the box (never just its own text), so clicking anywhere
+     in an empty description puts the caret in. */
+  display: flex; flex-direction: column;
+  font-size: 13.5px; line-height: 1.5;
 }
-.issue-detail-title::placeholder, .issue-detail-body::placeholder { color: var(--o0); }
-.issue-detail-title:hover, .issue-detail-body:hover,
-.issue-detail-title:focus, .issue-detail-body:focus { background: var(--s0); }
+.issue-detail-body:hover, .issue-detail-body:focus-within { background: var(--s0); }
+.issue-detail-body .cm-editor { flex: 1; min-height: 0; background: transparent; font-size: inherit; }
+.issue-detail-body .cm-editor.cm-focused { outline: none; }
+.issue-detail-body .cm-scroller { line-height: inherit; }
+.issue-detail-body .cm-content { user-select: text; -webkit-user-select: text; }
+.issue-detail-body .cm-placeholder { color: var(--o0); }
 /* Linear-style property chips: icon + label pills that open a picker menu. */
 .issue-detail-props { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .issue-prop-pill {
@@ -2460,10 +2471,13 @@ input, textarea, code,
   display: flex; flex-direction: column; min-height: 0; gap: 14px;
 }
 .issue-detail.expanded .issue-detail-title { font-size: 27px; line-height: 1.25; letter-spacing: -.01em; }
+/* Expanded, the description stops growing the column and becomes the column:
+   the editor fills the height and scrolls inside itself. */
 .issue-detail.expanded .issue-detail-body {
-  flex: 1; min-height: 0; overflow-y: auto;
+  flex: 1; min-height: 0; overflow: hidden;
   font-size: 14.5px; line-height: 1.7;
 }
+.issue-detail.expanded .issue-detail-body .cm-scroller { overflow: auto; }
 .issue-detail.expanded .issue-attachments { flex-shrink: 0; max-height: 38%; overflow-y: auto; }
 /* Meta rail: the properties and links that were stacked under the title in the
    narrow layout, as a labelled column beside the description. */
@@ -2802,120 +2816,122 @@ input, textarea, code,
 .docs-editor-host .cm-scroller { overflow: auto; }
 .docs-editor-host .cm-content { user-select: text; -webkit-user-select: text; }
 
-/* ── Docs live preview (CodeMirror decorations) ───────────────── */
-.docs-editor-host .lp-h { font-weight: 650; line-height: 1.3; }
-.docs-editor-host .lp-h1 { font-size: 1.6em; font-weight: 700; padding: 0.5em 0 0.2em; }
-.docs-editor-host .lp-h2 { font-size: 1.35em; padding: 0.45em 0 0.15em; }
-.docs-editor-host .lp-h3 { font-size: 1.18em; padding: 0.4em 0 0.1em; }
-.docs-editor-host .lp-h4 { font-size: 1.06em; padding: 0.3em 0 0.1em; }
-.docs-editor-host .lp-h5 { font-size: 1em; padding: 0.25em 0 0.05em; }
-.docs-editor-host .lp-h6 { font-size: 0.95em; color: var(--sub0); padding: 0.25em 0 0.05em; }
-.docs-editor-host .lp-mark { color: var(--o0); }
-.docs-editor-host .lp-em { font-style: italic; }
-.docs-editor-host .lp-strong { font-weight: 700; }
-.docs-editor-host .lp-strike { text-decoration: line-through; color: var(--sub0); }
+/* ── Live-preview markdown (CodeMirror decorations) ───────────────
+   Shared by the Docs note editor and the issue description: both hosts carry
+   .md-live, so a note and a ticket render markdown identically. */
+.md-live .lp-h { font-weight: 650; line-height: 1.3; }
+.md-live .lp-h1 { font-size: 1.6em; font-weight: 700; padding: 0.5em 0 0.2em; }
+.md-live .lp-h2 { font-size: 1.35em; padding: 0.45em 0 0.15em; }
+.md-live .lp-h3 { font-size: 1.18em; padding: 0.4em 0 0.1em; }
+.md-live .lp-h4 { font-size: 1.06em; padding: 0.3em 0 0.1em; }
+.md-live .lp-h5 { font-size: 1em; padding: 0.25em 0 0.05em; }
+.md-live .lp-h6 { font-size: 0.95em; color: var(--sub0); padding: 0.25em 0 0.05em; }
+.md-live .lp-mark { color: var(--o0); }
+.md-live .lp-em { font-style: italic; }
+.md-live .lp-strong { font-weight: 700; }
+.md-live .lp-strike { text-decoration: line-through; color: var(--sub0); }
 /* Code (and callout) backgrounds live on ::before pseudo-elements at
    z-index -3 so drawSelection's selection layer (z-index -1 in the scroller's
    stacking context) paints ABOVE them — a plain background on the span/line
    is in-flow and would occlude the selection (the "can't see selection over
    code" bug; WebKit also paints native ::selection behind such backgrounds,
    which is why drawSelection + layered backgrounds is the only working combo). */
-.docs-editor-host .lp-code {
+.md-live .lp-code {
   font-family: var(--mono); font-size: 0.88em;
   padding: 1px 2px; position: relative;
 }
-.docs-editor-host .lp-code::before {
+.md-live .lp-code::before {
   content: ""; position: absolute; inset: 0; z-index: -3;
   background: var(--crust); border-radius: 4px;
 }
-.docs-editor-host .lp-highlight { position: relative; padding: 1px 1px; }
-.docs-editor-host .lp-highlight::before {
+.md-live .lp-highlight { position: relative; padding: 1px 1px; }
+.md-live .lp-highlight::before {
   content: ""; position: absolute; inset: 0; z-index: -3;
   background: color-mix(in srgb, var(--yellow) 30%, transparent); border-radius: 3px;
 }
-.docs-editor-host .lp-codeblock {
+.md-live .lp-codeblock {
   font-family: var(--mono); font-size: 0.85em;
   position: relative;
 }
-.docs-editor-host .lp-codeblock::before {
+.md-live .lp-codeblock::before {
   content: ""; position: absolute; inset: 0; z-index: -3;
   background: var(--crust);
 }
-.docs-editor-host .lp-fence { color: var(--o0); }
-.docs-editor-host .lp-quote {
+.md-live .lp-fence { color: var(--o0); }
+.md-live .lp-quote {
   border-left: 3px solid var(--s1); padding-left: 12px; color: var(--sub0);
 }
-.docs-editor-host .lp-link { color: var(--teal); cursor: pointer; }
-.docs-editor-host .lp-link:hover { text-decoration: underline; }
-.docs-editor-host .lp-wikilink { color: var(--blue); cursor: pointer; }
-.docs-editor-host .lp-wikilink:hover { text-decoration: underline; }
-.docs-editor-host .lp-wikilink.unresolved {
+.md-live .lp-link { color: var(--teal); cursor: pointer; }
+.md-live .lp-link:hover { text-decoration: underline; }
+.md-live .lp-wikilink { color: var(--blue); cursor: pointer; }
+.md-live .lp-wikilink:hover { text-decoration: underline; }
+.md-live .lp-wikilink.unresolved {
   color: var(--o1); text-decoration: underline dashed; text-underline-offset: 3px;
 }
-.docs-editor-host .lp-tag {
+.md-live .lp-tag {
   color: var(--sub0); padding: 1px 7px; font-size: 0.85em;
   cursor: pointer; position: relative;
 }
-.docs-editor-host .lp-tag::before {
+.md-live .lp-tag::before {
   content: ""; position: absolute; inset: 0; z-index: -3;
   background: var(--s1); border-radius: 999px;
 }
-.docs-editor-host .lp-tag:hover { color: var(--text); }
-.docs-editor-host .lp-checkbox {
+.md-live .lp-tag:hover { color: var(--text); }
+.md-live .lp-checkbox {
   display: inline-flex; align-items: center; justify-content: center;
   width: 14px; height: 14px; border-radius: 4px; margin: 0 2px;
   border: 1.5px solid var(--s1); vertical-align: -2px; cursor: pointer;
   background: var(--mantle); color: var(--crust);
 }
-.docs-editor-host .lp-checkbox.checked { background: var(--blue); border-color: var(--blue); }
-.docs-editor-host .lp-bullet { color: var(--sub0); }
-.docs-editor-host .lp-hr {
+.md-live .lp-checkbox.checked { background: var(--blue); border-color: var(--blue); }
+.md-live .lp-bullet { color: var(--sub0); }
+.md-live .lp-hr {
   display: inline-block; width: 100%; height: 0;
   border-top: 1px solid var(--line); vertical-align: middle;
 }
 /* Frontmatter properties card (fmEditor.ts): an editable block widget that
    replaces the raw fences in the note's flow. Inputs are quiet until
    hovered/focused so the resting state reads like a rendered table. */
-.docs-editor-host .fmw {
+.md-live .fmw {
   margin: 2px 0 20px; padding: 9px 12px 7px;
   background: var(--mantle); border: 1px solid var(--line); border-radius: 10px;
   font-family: -apple-system, system-ui, sans-serif; font-size: 13px;
 }
-.docs-editor-host .fmw-head {
+.md-live .fmw-head {
   display: flex; align-items: center; gap: 7px;
   color: var(--o1); font-size: 10px; font-weight: 600;
   text-transform: uppercase; letter-spacing: .07em; padding: 0 6px 4px;
 }
 /* The add affordance lives in the head, revealed on hover with a small
    overshoot pop so it reads as arriving, not just unhiding. */
-.docs-editor-host .fmw-head-add {
+.md-live .fmw-head-add {
   background: none; border: none; cursor: pointer; border-radius: 5px;
   color: var(--sub0); font-size: 15px; line-height: 1; padding: 1px 5px;
   opacity: 0; transform: translateX(-4px) scale(.7);
   transition: opacity .16s ease, transform .2s cubic-bezier(.2, .9, .3, 1.35);
 }
-.docs-editor-host .fmw-head:hover .fmw-head-add { opacity: 1; transform: none; }
-.docs-editor-host .fmw-head-add:hover { background: var(--s1); color: var(--text); }
-.docs-editor-host .fmw-row { display: flex; align-items: center; gap: 6px; }
-.docs-editor-host .fmw-row input {
+.md-live .fmw-head:hover .fmw-head-add { opacity: 1; transform: none; }
+.md-live .fmw-head-add:hover { background: var(--s1); color: var(--text); }
+.md-live .fmw-row { display: flex; align-items: center; gap: 6px; }
+.md-live .fmw-row input {
   background: none; border: none; outline: none; border-radius: 6px;
   font: inherit; padding: 3px 6px; color: var(--text);
 }
-.docs-editor-host .fmw-row input::placeholder { color: var(--o0); }
-.docs-editor-host .fmw-row input:hover { background: var(--s0); }
-.docs-editor-host .fmw-row input:focus { background: var(--s0); box-shadow: inset 0 0 0 1px var(--s1); }
-.docs-editor-host .fmw-key { width: 132px; flex-shrink: 0; color: var(--sub0) !important; }
-.docs-editor-host .fmw-key.invalid { color: var(--red) !important; box-shadow: inset 0 0 0 1px var(--red); }
-.docs-editor-host .fmw-val { flex: 1; min-width: 0; }
-.docs-editor-host .fmw-tool {
+.md-live .fmw-row input::placeholder { color: var(--o0); }
+.md-live .fmw-row input:hover { background: var(--s0); }
+.md-live .fmw-row input:focus { background: var(--s0); box-shadow: inset 0 0 0 1px var(--s1); }
+.md-live .fmw-key { width: 132px; flex-shrink: 0; color: var(--sub0) !important; }
+.md-live .fmw-key.invalid { color: var(--red) !important; box-shadow: inset 0 0 0 1px var(--red); }
+.md-live .fmw-val { flex: 1; min-width: 0; }
+.md-live .fmw-tool {
   background: none; border: none; cursor: pointer; border-radius: 5px;
   color: var(--sub0); font-size: 15.5px; line-height: 1; padding: 2px 4px;
   visibility: hidden;
 }
-.docs-editor-host .fmw-row:hover .fmw-tool,
-.docs-editor-host .fmw-row:focus-within .fmw-tool { visibility: visible; }
-.docs-editor-host .fmw-tool:hover { background: var(--s1); color: var(--text); }
-.docs-editor-host .fmw-del:hover { color: var(--red); }
+.md-live .fmw-row:hover .fmw-tool,
+.md-live .fmw-row:focus-within .fmw-tool { visibility: visible; }
+.md-live .fmw-tool:hover { background: var(--s1); color: var(--text); }
+.md-live .fmw-del:hover { color: var(--red); }
 
 /* ── Right side pane (Docs: note info or agents; Files: agents) ─ */
 /* A flex column: any tab strip stays fixed and the panel below takes the rest
@@ -3012,41 +3028,44 @@ input, textarea, code,
 .agent-side-sub code { font-size: 11px; color: var(--blue); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agent-side-empty { padding: 14px 12px; color: var(--o0); font-size: 12px; line-height: 1.5; }
 
-/* ── Docs images & callouts ───────────────────────────────────── */
-.docs-editor-host .lp-img-wrap { display: inline-block; max-width: 100%; }
-.docs-editor-host .lp-img-wrap.loading,
-.docs-editor-host .lp-img-wrap.missing { color: var(--o0); font-size: 0.85em; font-style: italic; }
-.docs-editor-host .lp-img-wrap.missing::after { content: " (image not found)"; }
-.docs-editor-host .lp-img { max-width: 100%; max-height: 480px; border-radius: 5px; display: block; margin: 4px 0; }
-.docs-editor-host .lp-callout { border-left-width: 3px; border-left-style: solid; padding-left: 12px; color: var(--text); position: relative; }
-.docs-editor-host .lp-callout::before { content: ""; position: absolute; inset: 0; z-index: -3; }
-.docs-editor-host .lp-callout-note { border-left-color: var(--blue); }
-.docs-editor-host .lp-callout-note::before { background: color-mix(in srgb, var(--blue) 8%, transparent); }
-.docs-editor-host .lp-callout-tip { border-left-color: var(--green); }
-.docs-editor-host .lp-callout-tip::before { background: color-mix(in srgb, var(--green) 8%, transparent); }
-.docs-editor-host .lp-callout-warning { border-left-color: var(--yellow); }
-.docs-editor-host .lp-callout-warning::before { background: color-mix(in srgb, var(--yellow) 8%, transparent); }
-.docs-editor-host .lp-callout-danger { border-left-color: var(--red); }
-.docs-editor-host .lp-callout-danger::before { background: color-mix(in srgb, var(--red) 8%, transparent); }
-.docs-editor-host .lp-callout-title { font-weight: 650; }
-.docs-editor-host .lp-callout-title-note { color: var(--blue); }
-.docs-editor-host .lp-callout-title-tip { color: var(--green); }
-.docs-editor-host .lp-callout-title-warning { color: var(--yellow); }
-.docs-editor-host .lp-callout-title-danger { color: var(--red); }
+/* ── Live-preview images & callouts (both .md-live hosts) ────────── */
+.md-live .lp-img-wrap { display: inline-block; max-width: 100%; }
+.md-live .lp-img-wrap.loading,
+.md-live .lp-img-wrap.missing { color: var(--o0); font-size: 0.85em; font-style: italic; }
+.md-live .lp-img-wrap.missing::after { content: " (image not found)"; }
+.md-live .lp-img { max-width: 100%; max-height: 480px; border-radius: 5px; display: block; margin: 4px 0; }
+.md-live .lp-callout { border-left-width: 3px; border-left-style: solid; padding-left: 12px; color: var(--text); position: relative; }
+.md-live .lp-callout::before { content: ""; position: absolute; inset: 0; z-index: -3; }
+.md-live .lp-callout-note { border-left-color: var(--blue); }
+.md-live .lp-callout-note::before { background: color-mix(in srgb, var(--blue) 8%, transparent); }
+.md-live .lp-callout-tip { border-left-color: var(--green); }
+.md-live .lp-callout-tip::before { background: color-mix(in srgb, var(--green) 8%, transparent); }
+.md-live .lp-callout-warning { border-left-color: var(--yellow); }
+.md-live .lp-callout-warning::before { background: color-mix(in srgb, var(--yellow) 8%, transparent); }
+.md-live .lp-callout-danger { border-left-color: var(--red); }
+.md-live .lp-callout-danger::before { background: color-mix(in srgb, var(--red) 8%, transparent); }
+.md-live .lp-callout-title { font-weight: 650; }
+.md-live .lp-callout-title-note { color: var(--blue); }
+.md-live .lp-callout-title-tip { color: var(--green); }
+.md-live .lp-callout-title-warning { color: var(--yellow); }
+.md-live .lp-callout-title-danger { color: var(--red); }
 
 /* CodeMirror classes our editors as "light" (no theme passes {dark:true}), so
    its light base theme paints the FOCUSED selection #d7d4f0 (near-white) with a
    5-class selector that out-specifies editorChromeTheme's var(--s1) rule —
    white-on-white on dark themes. Pin the selection layer to the theme tone for
-   both the Files and Docs editors, focused or not. */
+   every editor (Files, and both live-preview hosts), focused or not. */
 .file-editor-host .cm-selectionLayer .cm-selectionBackground,
-.docs-editor-host .cm-selectionLayer .cm-selectionBackground { background: var(--s1) !important; }
+.md-live .cm-selectionLayer .cm-selectionBackground { background: var(--s1) !important; }
 
-/* Prose font for docs notes. The shared CM chrome theme pins the editor to
-   --mono via injected styles that tie on specificity, so these need !important
-   to win; code spans then re-claim the mono font the same way. */
+/* Prose font. The shared CM chrome theme pins the editor to --mono via
+   injected styles that tie on specificity, so these need !important to win;
+   code spans then re-claim the mono font the same way. A note reads as a
+   document (the system font); an issue description sits under a title in the
+   app's own face and keeps it. */
 .docs-editor-host .cm-scroller, .docs-editor-host .cm-content { font-family: -apple-system, system-ui, sans-serif !important; }
-.docs-editor-host .lp-code, .docs-editor-host .lp-codeblock, .docs-editor-host .lp-fence { font-family: var(--mono) !important; }
+.issue-detail-body .cm-scroller, .issue-detail-body .cm-content { font-family: var(--sans) !important; }
+.md-live .lp-code, .md-live .lp-codeblock, .md-live .lp-fence { font-family: var(--mono) !important; }
 
 /* ── In-app PR review ─────────────────────────────────────────────────────── */
 

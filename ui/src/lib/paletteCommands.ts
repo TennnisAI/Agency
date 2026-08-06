@@ -26,6 +26,11 @@ export const PALETTE_COMMANDS: PaletteCommand[] = [
   { id: "go-docs", label: "Go to Docs", sublabel: "Show this project's docs", when: "project" },
   { id: "go-files", label: "Go to Files", sublabel: "Show this project's files", when: "project" },
   { id: "source", label: "Source & Diff", sublabel: "Show source control", when: "project" },
+  // Always offered: find works on whatever is on screen, project or not.
+  { id: "find", label: "Find…", sublabel: "Search the note, file, or board in front of you", when: "always" },
+  { id: "replace", label: "Find and Replace…", sublabel: "Search and replace in the text you're editing", when: "always" },
+  { id: "find-next", label: "Find Next", sublabel: "Jump to the next match", when: "always" },
+  { id: "find-prev", label: "Find Previous", sublabel: "Jump to the previous match", when: "always" },
   { id: "approve", label: "Approve & Merge", sublabel: "Merge the focused agent's branch", when: "focusedAgent" },
   { id: "archive", label: "Archive Agent", sublabel: "Move the focused agent to the archive", when: "focusedAgent" },
   { id: "discard", label: "Discard Agent", sublabel: "Stop the focused agent and delete its run", when: "focusedAgent" },

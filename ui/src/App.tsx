@@ -18,6 +18,7 @@ import { FileRoot, Project, RepoReadiness, RunInfo, agentOnboardingNeeded, check
 import { pickDefaultAgent } from "./lib/defaultAgent";
 import { PENDING_ISSUE_KEY, PENDING_QUICKADD_KEY, isClosed, issueLabel } from "./lib/issues";
 import { NAVIGATE_EVENT, NavTarget } from "./lib/navigate";
+import { requestFind, requestFindStep } from "./lib/findBus";
 import { DAILY_TEMPLATE_PATH, JOURNAL_DIR, dailyNotePath, defaultDailyContent, renderDailyTemplate } from "./lib/dailyNote";
 import { WEEKLY_DIR, buildWeeklyNote, isoWeekStamp, isoWeekStart, weeklyNotePath } from "./lib/weeklyNote";
 import { toastError, toastInfo } from "./lib/toast";
@@ -253,6 +254,22 @@ function Shell() {
     onSettings: () => setShowSettings(true),
   });
 
+  // ⌘F / ⌥⌘F normally arrive as Edit-menu actions — macOS gives the menu bar
+  // the key before the webview ever sees it. This is the fallback for the paths
+  // that don't go through the menu, and it listens in the capture phase on
+  // purpose: CodeMirror binds ⌘F too, and stopping the event here is what keeps
+  // its own search panel from opening behind the app's find bar.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || e.shiftKey || e.key.toLowerCase() !== "f") return;
+      if (!requestFind(e.altKey ? "replace" : "find")) return;
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, []);
+
   // One passive release check per launch, when the user hasn't opted out. It
   // only lights the dot on Settings — Agency never downloads or installs
   // anything on its own, so this can't disturb running agents. Failures are
@@ -339,6 +356,13 @@ function Shell() {
       case "add-project": window.dispatchEvent(new CustomEvent("agency:add-project")); break;
       case "clone-project": window.dispatchEvent(new CustomEvent("agency:clone-project")); break;
       case "source": setTab("source"); break;
+      // Find routes to whichever surface is on screen and focused — the notes
+      // editor, the file editor, an issue description, the issue board's
+      // filter, or a terminal's scrollback (see lib/findBus).
+      case "find": requestFind("find"); break;
+      case "replace": requestFind("replace"); break;
+      case "find-next": requestFindStep(false); break;
+      case "find-prev": requestFindStep(true); break;
       case "daily-note": openDailyNote(); break;
       case "weekly-note": void generateWeeklyNote(); break;
       case "workspace-guide": void openWorkspaceGuide(); break;

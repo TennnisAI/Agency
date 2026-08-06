@@ -84,6 +84,14 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         .build()?;
 
     // Predefined so the OS provides native text editing inside inputs/editors.
+    // Find is ours: the frontend routes it to whichever surface is on screen
+    // and focused (notes, files, an issue description, the issue board's
+    // filter, a terminal's scrollback) — see lib/findBus.ts. Claiming the
+    // accelerator here is also what keeps CodeMirror's own search panel from
+    // opening instead: on macOS the menu bar sees the key before the webview.
+    //
+    // Find Next/Previous carry no accelerator: ⌘G is already Source & Diff in
+    // the View menu, and stepping happens on Enter/⇧Enter in the find field.
     let edit_menu = SubmenuBuilder::new(app, "Edit")
         .undo()
         .redo()
@@ -92,6 +100,19 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         .copy()
         .paste()
         .select_all()
+        .separator()
+        .item(
+            &MenuItemBuilder::with_id("menu:find", "Find…")
+                .accelerator("CmdOrCtrl+F")
+                .build(app)?,
+        )
+        .item(
+            &MenuItemBuilder::with_id("menu:replace", "Find and Replace…")
+                .accelerator("CmdOrCtrl+Alt+F")
+                .build(app)?,
+        )
+        .item(&MenuItemBuilder::with_id("menu:find-next", "Find Next").build(app)?)
+        .item(&MenuItemBuilder::with_id("menu:find-prev", "Find Previous").build(app)?)
         .build()?;
 
     let view_menu = SubmenuBuilder::new(app, "View")

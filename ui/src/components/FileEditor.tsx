@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { Compartment, EditorState } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { basicSetup } from "codemirror";
@@ -7,6 +7,9 @@ import { marked } from "marked";
 import { FileRoot, readFile, readFileBase64, writeFile } from "../api";
 import { loadLanguage } from "../lib/cmLanguage";
 import { editorChromeTheme, editorHighlight } from "../lib/cmTheme";
+import { cmFindEngine, cmFindExtensions } from "../lib/cmFind";
+import { FindRank } from "../lib/findBus";
+import { useFind } from "../hooks/useFind";
 import { getWordWrap } from "../lib/editorPrefs";
 import { bufferKey, dropBuffer, stashBuffer, takeBuffer } from "../lib/editorBuffers";
 import ConfirmDialog from "./ConfirmDialog";
@@ -83,6 +86,9 @@ const FileEditor = forwardRef<FileEditorHandle, {
   onDirtyChange?: (dirty: boolean) => void;
 }>(function FileEditor({ root, path, onDirtyChange }, ref) {
   const hostRef = useRef<HTMLDivElement>(null);
+  // The whole pane, so the find bar counts as part of this surface when ⌘F
+  // works out which one holds focus.
+  const wrapRefEl = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   // Compartment so the word-wrap toggle reconfigures the live editor in place.
   const wrapRef = useRef(new Compartment());
@@ -114,6 +120,20 @@ const FileEditor = forwardRef<FileEditorHandle, {
   const [confirmRevert, setConfirmRevert] = useState(false);
 
   const vk = viewKind(path);
+
+  // ⌘F / Edit ▸ Find, over whichever view is live in this tab.
+  const findEngine = useMemo(() => cmFindEngine(() => viewRef.current), []);
+  const { bar: findBar, onContentChange } = useFind({
+    host: wrapRefEl,
+    engine: findEngine,
+    canReplace: true,
+    rank: FindRank.editor,
+    // Images, PDFs, media and the rendered preview have no text buffer to
+    // search — ⌘F should reach past them, not open a bar over nothing.
+    enabled: vk.kind === "text" && !previewing,
+  });
+  const onFindContentChange = useRef(onContentChange);
+  onFindContentChange.current = onContentChange;
 
   // Keep a stable save handler that reads the current doc from the live view.
   const save = useRef(async () => {});
@@ -211,6 +231,7 @@ const FileEditor = forwardRef<FileEditorHandle, {
         doc: stashed ?? fc.text,
         extensions: [
           basicSetup,
+          cmFindExtensions,
           editorChromeTheme,
           editorHighlight,
           wrapRef.current.of(getWordWrap() ? EditorView.lineWrapping : []),
@@ -219,7 +240,11 @@ const FileEditor = forwardRef<FileEditorHandle, {
             { key: "Mod-s", preventDefault: true, run: () => { void save.current(); return true; } },
             ...defaultKeymap,
           ]),
-          EditorView.updateListener.of((u) => { if (u.docChanged) markDirtyRef.current(true); }),
+          EditorView.updateListener.of((u) => {
+            if (!u.docChanged) return;
+            markDirtyRef.current(true);
+            onFindContentChange.current();
+          }),
         ],
       });
       const view = new EditorView({ state, parent: host });
@@ -281,7 +306,8 @@ const FileEditor = forwardRef<FileEditorHandle, {
   const previewable = vk.kind === "text" && vk.preview !== null;
 
   return (
-    <div className="file-editor-wrap">
+    <div className="file-editor-wrap" ref={wrapRefEl}>
+      {findBar}
       <div className="file-editor-bar">
         <span className="file-editor-path">{path}{dirty ? " ●" : ""}</span>
         <span className="spacer" style={{ flex: 1 }} />

@@ -369,17 +369,33 @@ fn split_session_id(id: &str) -> (&str, Option<u32>) {
     }
 }
 
+/// Agency's own additions to an agent's argv: the flags that make it read the
+/// MCP config Agency emitted into `worktree`. Kept apart from the profile's
+/// user-edited args (`so_far`, the argv built for this launch) so the two can't
+/// clobber each other, and dropped entirely when `so_far` already carries the
+/// same flag. Empty for every agent that finds the emitted file unaided — today
+/// only Copilot needs telling, because its workspace config is gated behind a
+/// folder-trust prompt that every fresh worktree re-triggers.
+///
+/// Keyed on the profile *name* (the agent id, e.g. "copilot"), not the command:
+/// that is what MCP emission is keyed on too, so a custom profile named after a
+/// known agent gets both halves or neither.
+fn mcp_launch_args(profile: &AgentProfile, worktree: &Path, so_far: &[String]) -> Vec<String> {
+    agency_core::mcp::launch_args_unless_set(&profile.name, worktree, so_far)
+}
+
 /// Decide the (command, args) to launch for an agent run. With `use_resume` and a
 /// resume recipe present, launch the resume args (no prompt). Otherwise launch a
 /// fresh session from the rendered prompt. The optional setup script wraps the
 /// command in both cases (same as create_run/rerun).
 fn agent_argv(
     profile: &AgentProfile,
+    worktree: &Path,
     prompt: &str,
     use_resume: bool,
     setup: Option<&str>,
 ) -> (String, Vec<String>) {
-    let base_args: Vec<String> = match (use_resume, &profile.resume_args) {
+    let mut base_args: Vec<String> = match (use_resume, &profile.resume_args) {
         (true, Some(resume)) => resume.clone(),
         _ => profile
             .render_args(prompt)
@@ -387,6 +403,8 @@ fn agent_argv(
             .filter(|a| !a.is_empty())
             .collect(),
     };
+    let mcp = mcp_launch_args(profile, worktree, &base_args);
+    base_args.extend(mcp);
     agency_core::scripts::wrap_setup(setup, &profile.command, &base_args)
 }
 
@@ -398,6 +416,7 @@ fn agent_argv(
 /// fresh (non-resume) path.
 fn fresh_agent_argv(
     profile: &AgentProfile,
+    worktree: &Path,
     prompt: &str,
     setup: Option<&str>,
 ) -> (String, Vec<String>) {
@@ -406,6 +425,10 @@ fn fresh_agent_argv(
         .into_iter()
         .filter(|a| !a.is_empty())
         .collect();
+    // Ahead of the trailing prompt below: a flag after a positional argument is
+    // the shape most CLIs are least happy with.
+    let mcp = mcp_launch_args(profile, worktree, &args);
+    args.extend(mcp);
     if !prompt.trim().is_empty() && !profile.args.iter().any(|a| a.contains("{{prompt}}")) {
         args.push(prompt.to_string());
     }
@@ -534,6 +557,7 @@ fn pr_review_prompt(
 /// Errors when the profile has no loop recipe — such agents can't loop.
 fn loop_argv(
     profile: &AgentProfile,
+    worktree: &Path,
     prompt: &str,
     setup: Option<&str>,
 ) -> Result<(String, Vec<String>)> {
@@ -541,6 +565,15 @@ fn loop_argv(
         anyhow!("agent '{}' has no loop recipe — set the profile's loop args first", profile.name)
     })?;
     let mut args: Vec<String> = recipe.iter().map(|a| a.replace("{{prompt}}", prompt)).collect();
+    // Ahead of wherever the prompt lands, for the same reason as the
+    // interactive path: keep Agency's flags out from behind a positional.
+    let mcp = mcp_launch_args(profile, worktree, &args);
+    match recipe.iter().position(|a| a.contains("{{prompt}}")) {
+        Some(i) => {
+            args.splice(i..i, mcp);
+        }
+        None => args.extend(mcp),
+    }
     // A recipe without a {{prompt}} token still gets the prompt, as the final
     // positional arg — mirroring the interactive path. Attempts must never
     // silently launch promptless: the loop would burn its whole budget on
@@ -1631,8 +1664,12 @@ impl AppState {
             env.extend(agency_core::scripts::script_env(&workspace.path, &repo, &id, Some(port)));
             // The default flow passes "" and behaves exactly as before: the user
             // types the real prompt into the live terminal.
-            let (command, args) =
-                fresh_agent_argv(&profile, spec.prompt, config.scripts.setup.as_deref());
+            let (command, args) = fresh_agent_argv(
+                &profile,
+                &workspace.path,
+                spec.prompt,
+                config.scripts.setup.as_deref(),
+            );
             if let Err(e) = self.term.read().unwrap().start_session(
                 &session_name(&id),
                 &workspace.path,
@@ -3692,7 +3729,8 @@ impl AppState {
         // Same env recipe as the run itself, ports included: extra sessions
         // are collaborators in the same workspace, not new workspaces.
         env.extend(agency_core::scripts::script_env(&worktree, &repo, &run.id, run.port_base));
-        let (command, args) = fresh_agent_argv(&profile, prompt, config.scripts.setup.as_deref());
+        let (command, args) =
+            fresh_agent_argv(&profile, &worktree, prompt, config.scripts.setup.as_deref());
         self.term
             .read()
             .unwrap()
@@ -3865,9 +3903,9 @@ impl AppState {
             .unwrap_or(crate::resume_probe::ResumeProbe::Unknown);
         let use_resume =
             profile.resume_args.is_some() && probe != crate::resume_probe::ResumeProbe::None;
-        let (command, args) = agent_argv(&profile, &run.prompt, use_resume, setup);
+        let (command, args) = agent_argv(&profile, &worktree, &run.prompt, use_resume, setup);
         let fallback = if use_resume {
-            let (fresh_cmd, fresh_args) = agent_argv(&profile, &run.prompt, false, setup);
+            let (fresh_cmd, fresh_args) = agent_argv(&profile, &worktree, &run.prompt, false, setup);
             Some(agency_core::term::protocol::FallbackSpec {
                 command: fresh_cmd,
                 args: fresh_args,
@@ -3907,9 +3945,15 @@ impl AppState {
         let mut env = self.provider_env()?;
         env.extend(profile.env.iter().cloned());
         env.extend(agency_core::scripts::script_env(&worktree, &repo, &run.id, run.port_base));
-        let args = profile.render_args(&run.prompt);
-        let (command, args) =
-            agency_core::scripts::wrap_setup(config.scripts.setup.as_deref(), &profile.command, &args);
+        // A rerun is a fresh launch by definition, so it takes the same argv the
+        // fresh side of `agent_argv` builds (never the resume recipe).
+        let (command, args) = agent_argv(
+            &profile,
+            &worktree,
+            &run.prompt,
+            false,
+            config.scripts.setup.as_deref(),
+        );
         let _ = self.term.read().unwrap().kill(&session_name(id));
         self.term.read().unwrap().start_session(&session_name(id), &worktree, &command, &args, &env, 220, 50)?;
         Ok(self.run_info(&run))
@@ -3941,7 +3985,8 @@ impl AppState {
         let mut env = self.provider_env()?;
         env.extend(profile.env.iter().cloned());
         env.extend(agency_core::scripts::script_env(&worktree, &repo, &run.id, run.port_base));
-        let (command, args) = loop_argv(&profile, &run.prompt, config.scripts.setup.as_deref())?;
+        let (command, args) =
+            loop_argv(&profile, &worktree, &run.prompt, config.scripts.setup.as_deref())?;
         let _ = self.term.read().unwrap().kill(&session_name(&run.id));
         self.term
             .read()
@@ -4964,6 +5009,12 @@ mod tests {
         assert!(!command_on_path("/nonexistent/path/to/agent"));
     }
 
+    /// A path with no MCP config in it, for argv tests about everything else:
+    /// with no file to point at, the MCP launch flags stay out of the way.
+    fn no_worktree() -> &'static Path {
+        Path::new("/nonexistent/agency-argv-test-worktree")
+    }
+
     #[test]
     fn agent_argv_uses_resume_args_when_available() {
         let p = AgentProfile {
@@ -4972,7 +5023,7 @@ mod tests {
             resume_args: Some(vec!["--continue".into()]),
             loop_args: None,
         };
-        let (cmd, args) = agent_argv(&p, "do the thing", true, None);
+        let (cmd, args) = agent_argv(&p, no_worktree(), "do the thing", true, None);
         assert_eq!(cmd, "claude");
         assert_eq!(args, vec!["--continue".to_string()]);
     }
@@ -4985,7 +5036,7 @@ mod tests {
             resume_args: None,
             loop_args: None,
         };
-        let (cmd, args) = agent_argv(&p, "hello", true, None);
+        let (cmd, args) = agent_argv(&p, no_worktree(), "hello", true, None);
         assert_eq!(cmd, "cursor-agent");
         assert_eq!(args, vec!["hello".to_string()]);
     }
@@ -4998,7 +5049,7 @@ mod tests {
             resume_args: Some(vec!["--continue".into()]),
             loop_args: None,
         };
-        let (_cmd, args) = agent_argv(&p, "fresh prompt", false, None);
+        let (_cmd, args) = agent_argv(&p, no_worktree(), "fresh prompt", false, None);
         assert_eq!(args, vec!["fresh prompt".to_string()]);
     }
 
@@ -5010,17 +5061,78 @@ mod tests {
             resume_args: None, loop_args: None,
         };
         // The token places the prompt; it must not also be appended.
-        let (cmd, args) = super::fresh_agent_argv(&templated, "review it", None);
+        let (cmd, args) = super::fresh_agent_argv(&templated, no_worktree(), "review it", None);
         assert_eq!(cmd, "claude");
         assert_eq!(args, vec!["--flag".to_string(), "review it".to_string()]);
 
         let plain = AgentProfile { args: vec!["--flag".into()], ..templated.clone() };
-        let (_cmd, args) = super::fresh_agent_argv(&plain, "review it", None);
+        let (_cmd, args) = super::fresh_agent_argv(&plain, no_worktree(), "review it", None);
         assert_eq!(args, vec!["--flag".to_string(), "review it".to_string()]);
 
         // An empty prompt is the promptless launch every ordinary tab uses.
-        let (_cmd, args) = super::fresh_agent_argv(&plain, "", None);
+        let (_cmd, args) = super::fresh_agent_argv(&plain, no_worktree(), "", None);
         assert_eq!(args, vec!["--flag".to_string()]);
+    }
+
+    /// AGE-71: Copilot ignores the `.mcp.json` Agency wrote until the user
+    /// approves folder trust, and every run gets a brand-new worktree, so the
+    /// file has to be handed over on the command line instead.
+    #[test]
+    fn copilot_argv_carries_the_emitted_mcp_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let copilot = AgentProfile {
+            name: "copilot".into(), command: "copilot".into(),
+            args: vec![], env: vec![],
+            resume_args: Some(vec!["--continue".into()]),
+            loop_args: None,
+        };
+        let flag = "--additional-mcp-config".to_string();
+        let arg = format!("@{}", dir.path().join(".mcp.json").display());
+
+        // Nothing emitted yet → no flag pointing at a file that isn't there.
+        let (_cmd, args) = super::fresh_agent_argv(&copilot, dir.path(), "", None);
+        assert!(args.is_empty(), "{args:?}");
+
+        agency_core::mcp::emit_for_agent(
+            "copilot",
+            dir.path(),
+            &[agency_core::mcp::McpServer {
+                name: "kg".into(),
+                command: Some("graphify".into()),
+                ..Default::default()
+            }],
+        )
+        .unwrap();
+
+        // Fresh launch: flags first, prompt still last.
+        let (cmd, args) = super::fresh_agent_argv(&copilot, dir.path(), "go", None);
+        assert_eq!(cmd, "copilot");
+        assert_eq!(args, vec![flag.clone(), arg.clone(), "go".to_string()]);
+
+        // Resume launch: the recipe keeps its own args and gains the config.
+        let (_cmd, args) = agent_argv(&copilot, dir.path(), "go", true, None);
+        assert_eq!(args, vec!["--continue".to_string(), flag.clone(), arg.clone()]);
+
+        // A loop recipe gets it ahead of wherever it places the prompt.
+        let looping = AgentProfile {
+            loop_args: Some(vec!["-p".into(), "{{prompt}}".into()]),
+            ..copilot.clone()
+        };
+        let (_cmd, args) = super::loop_argv(&looping, dir.path(), "go", None).unwrap();
+        assert_eq!(args, vec!["-p".to_string(), flag.clone(), arg.clone(), "go".to_string()]);
+
+        // The user's own flag wins: Agency doesn't add a rival copy.
+        let hand_rolled = AgentProfile {
+            args: vec![flag.clone(), "@/my/own.json".into()],
+            ..copilot.clone()
+        };
+        let (_cmd, args) = super::fresh_agent_argv(&hand_rolled, dir.path(), "", None);
+        assert_eq!(args, vec![flag.clone(), "@/my/own.json".to_string()]);
+
+        // Agents that read the emitted file unaided get no extra flags.
+        let claude = AgentProfile { name: "claude".into(), command: "claude".into(), ..copilot };
+        let (_cmd, args) = super::fresh_agent_argv(&claude, dir.path(), "", None);
+        assert!(args.is_empty(), "{args:?}");
     }
 
     #[test]
@@ -5077,17 +5189,17 @@ mod tests {
             resume_args: None,
             loop_args: Some(vec!["-p".into(), "{{prompt}}".into(), "--permission-mode".into(), "acceptEdits".into()]),
         };
-        let (cmd, args) = super::loop_argv(&p, "fix the tests", None).unwrap();
+        let (cmd, args) = super::loop_argv(&p, no_worktree(), "fix the tests", None).unwrap();
         assert_eq!(cmd, "claude");
         assert_eq!(args, vec!["-p", "fix the tests", "--permission-mode", "acceptEdits"]);
 
         let no_recipe = AgentProfile { loop_args: None, ..p.clone() };
-        assert!(super::loop_argv(&no_recipe, "x", None).is_err());
+        assert!(super::loop_argv(&no_recipe, no_worktree(), "x", None).is_err());
 
         // An empty recipe is no recipe — Settings saves None for an empty
         // field, but a hand-edited profile must not slip through.
         let empty_recipe = AgentProfile { loop_args: Some(vec![]), ..p };
-        assert!(super::loop_argv(&empty_recipe, "x", None).is_err());
+        assert!(super::loop_argv(&empty_recipe, no_worktree(), "x", None).is_err());
     }
 
     #[test]
@@ -5101,7 +5213,7 @@ mod tests {
             resume_args: None,
             loop_args: Some(vec!["exec".into(), "--full-auto".into()]),
         };
-        let (cmd, args) = super::loop_argv(&p, "fix the tests", None).unwrap();
+        let (cmd, args) = super::loop_argv(&p, no_worktree(), "fix the tests", None).unwrap();
         assert_eq!(cmd, "codex");
         assert_eq!(args, vec!["exec", "--full-auto", "fix the tests"]);
     }

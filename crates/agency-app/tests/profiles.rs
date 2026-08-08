@@ -50,6 +50,33 @@ fn enable_catalog_profiles_writes_recipes() {
     assert!(get("gemini").args.is_empty());
 }
 
+/// AGE-79: Copilot's headless mode was verified, so the catalog now carries a
+/// loop recipe for it. Installs that already have a Copilot profile must be
+/// retrofitted on open, since theirs was written when the recipe was None.
+#[test]
+fn copilot_gains_its_loop_recipe_on_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let state = common::state(&dir);
+        state
+            .register_profile(agency_core::profile::AgentProfile {
+                name: "copilot".into(),
+                command: "copilot".into(),
+                args: vec![],
+                env: vec![],
+                resume_args: Some(vec!["--continue".into()]),
+                loop_args: None,
+            })
+            .unwrap();
+    }
+    let state = common::state(&dir);
+    let copilot = state.list_profiles().unwrap().into_iter().find(|p| p.name == "copilot").unwrap();
+    assert_eq!(
+        copilot.loop_args,
+        Some(vec!["-p".into(), "{{prompt}}".into(), "--allow-all-tools".into()])
+    );
+}
+
 #[test]
 fn deleted_builtin_stays_gone_across_reopen() {
     let dir = tempfile::tempdir().unwrap();

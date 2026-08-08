@@ -913,6 +913,13 @@ export default function Settings({
               </div>
             ))}
           </div>
+          {catalog.some((e) => e.enabled && !e.acceptsPrompt) && (
+            <p className="settings-section-hint">
+              {catalog.filter((e) => e.enabled && !e.acceptsPrompt).map((e) => agentLabel(e.id)).join(", ")}{" "}
+              take no opening prompt on the command line, so a dispatched issue or review starts
+              them promptless in the worktree and the ask has to go into their terminal by hand.
+            </p>
+          )}
           <div className="settings-add-row">
             {catalog.some((e) => !e.enabled) && (
               <div className="settings-add-dropdown">
@@ -945,7 +952,8 @@ export default function Settings({
             Emitted into each agent workspace, in the agent's native config format (
             {catalog.filter((e) => e.supportsMcp).map((e) => agentLabel(e.id)).join(", ") ||
               "Claude Code, Copilot CLI, Cursor, OpenCode"}
-            ). Copilot loads workspace servers after you approve folder trust on first launch.
+            ). Copilot is handed its file on the command line, since it waits for folder trust
+            before reading workspace config on its own.
             Servers that need an OAuth sign-in can't live in workspace config; use{" "}
             <b>Authenticate</b> to register one with an agent's own CLI instead. That agent then
             reads it from its user config, and Agency keeps emitting it for the others. Projects

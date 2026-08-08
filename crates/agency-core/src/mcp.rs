@@ -3,13 +3,17 @@
 //! Agency keeps one canonical list of MCP servers (global app settings merged
 //! with the project's `[mcp.servers.*]` in `.agency/agency.toml`) and emits it
 //! into each new worktree in the *native* format of the agent that will run
-//! there — `.mcp.json` for Claude Code and Copilot CLI (Copilot lists
-//! `.mcp.json` as a workspace config source and applies it once the user
-//! confirms folder trust), `.cursor/mcp.json` for Cursor, `opencode.json` for
-//! OpenCode. Existing files are merged into (our entries upserted by name),
-//! never replaced, so repo-committed server definitions survive. Agents whose
-//! MCP config is global-only (Codex's ~/.codex/config.toml) are intentionally
-//! skipped: Agency never mutates files outside the workspace.
+//! there — `.mcp.json` for Claude Code and Copilot CLI, `.cursor/mcp.json` for
+//! Cursor, `opencode.json` for OpenCode. Existing files are merged into (our
+//! entries upserted by name), never replaced, so repo-committed server
+//! definitions survive. Agents whose MCP config is global-only (Codex's
+//! ~/.codex/config.toml) are intentionally skipped: Agency never mutates files
+//! outside the workspace.
+//!
+//! Writing the file is not always enough to have it read: [`launch_args`] adds
+//! whatever the agent needs on its command line to actually load what we wrote
+//! (Copilot, whose workspace config is gated behind folder trust, is handed the
+//! file with `--additional-mcp-config`).
 //!
 //! OAuth servers can't live in per-worktree config — their signed-in session is
 //! held by the agent CLI at *its* user scope. The Authenticate flow registers
@@ -219,6 +223,72 @@ fn emit_target(
 /// Whether Agency can emit per-workspace MCP config for this agent.
 pub fn agent_supported(agent: &str) -> bool {
     emit_target(agent).is_some()
+}
+
+/// The flag `agent` takes to be handed an MCP config file outright, instead of
+/// discovering the workspace file on its own. `None` (every agent but Copilot)
+/// means the emitted file is picked up without help.
+///
+/// Copilot CLI reads workspace config (`.mcp.json`) only once the user approves
+/// folder trust for that directory, and Agency cuts a fresh, never-trusted
+/// worktree per run — so the servers it wrote sit there ignored until the user
+/// notices the trust prompt and accepts it, which reads as "MCP isn't working".
+/// `--additional-mcp-config` takes "JSON string or file path (prefix with @)"
+/// per `copilot --help`, is honoured regardless of trust, and takes precedence
+/// over the file sources.
+///
+/// Read out of Copilot CLI 1.0.78's own bundle, where one config load takes both
+/// and gates only the workspace half on trust:
+/// `includeWorkspaceSources: COPILOT_ALLOW_ALL === "true" || folderTrustIsTrusted(cwd)`,
+/// while `additionalConfig` is passed unconditionally and merged in last. (The
+/// env var is the other way to unlock the workspace file, and not one worth
+/// taking: it turns off every permission prompt Copilot has.)
+fn launch_flag(agent: &str) -> Option<&'static str> {
+    match agent {
+        "copilot" => Some("--additional-mcp-config"),
+        _ => None,
+    }
+}
+
+/// Extra launch arguments that point `agent` at the workspace MCP config in
+/// `worktree`, for the agents that need to be told (see [`launch_flag`]). Empty
+/// for everyone else, and empty when the file isn't there — an `@path` naming a
+/// missing file is worse than no flag at all: Copilot reads it eagerly at
+/// startup and dies on the read error ("Failed to read MCP config file").
+///
+/// That file is the one [`emit_for_agent`] writes, so it holds Agency's servers
+/// and any the repo committed alongside them; handing it over covers both,
+/// which is what the agent would have read anyway once trust was granted.
+///
+/// This is Agency's own slice of the argv, kept apart from the profile's
+/// user-edited `args` so neither can clobber the other. Callers skip it when
+/// the user already passes the same flag themselves; see
+/// [`launch_args_unless_set`].
+pub fn launch_args(agent: &str, worktree: &Path) -> Vec<String> {
+    let Some(flag) = launch_flag(agent) else {
+        return Vec::new();
+    };
+    let Some((segments, ..)) = emit_target(agent) else {
+        return Vec::new();
+    };
+    let path = segments.iter().fold(worktree.to_path_buf(), |p, s| p.join(s));
+    if !path.is_file() {
+        return Vec::new();
+    }
+    vec![flag.to_string(), format!("@{}", path.display())]
+}
+
+/// [`launch_args`], unless `existing` (the profile's own args, a resume recipe,
+/// a loop recipe) already carries the flag — a user who set it by hand meant
+/// their value, and a second copy would either be ignored or fight it.
+pub fn launch_args_unless_set(agent: &str, worktree: &Path, existing: &[String]) -> Vec<String> {
+    match launch_flag(agent) {
+        // Matches `--flag=value` as well as the separate-argument spelling.
+        Some(flag) if existing.iter().any(|a| a == flag || a.starts_with(&format!("{flag}="))) => {
+            Vec::new()
+        }
+        _ => launch_args(agent, worktree),
+    }
 }
 
 /// Agent CLIs whose own user-scope MCP registration Agency can drive (the
@@ -481,6 +551,46 @@ mod tests {
         assert_eq!(root["mcpServers"]["kg"]["command"], "graphify");
         assert_eq!(root["mcpServers"]["api"]["type"], "http");
         assert_eq!(root["mcpServers"]["api"]["url"], "https://mcp.example");
+    }
+
+    /// AGE-71: Copilot gates workspace `.mcp.json` behind folder trust, and a
+    /// fresh worktree is never trusted, so the file has to be handed to it.
+    #[test]
+    fn copilot_launch_args_point_at_the_emitted_file() {
+        let dir = tempfile::tempdir().unwrap();
+        // Nothing written yet: an `@path` to a missing file is worse than no flag.
+        assert!(launch_args("copilot", dir.path()).is_empty());
+
+        emit_for_agent("copilot", dir.path(), &[stdio("kg", "graphify")]).unwrap();
+        let path = dir.path().join(".mcp.json");
+        assert_eq!(
+            launch_args("copilot", dir.path()),
+            vec!["--additional-mcp-config".to_string(), format!("@{}", path.display())]
+        );
+
+        // Every other agent reads what Agency wrote without being told.
+        for agent in ["claude", "cursor", "opencode", "codex", "gemini"] {
+            assert!(launch_args(agent, dir.path()).is_empty(), "{agent}");
+        }
+    }
+
+    #[test]
+    fn launch_args_yield_to_a_flag_the_user_set_themselves() {
+        let dir = tempfile::tempdir().unwrap();
+        emit_for_agent("copilot", dir.path(), &[stdio("kg", "graphify")]).unwrap();
+        assert!(!launch_args_unless_set("copilot", dir.path(), &[]).is_empty());
+        for existing in [
+            vec!["--additional-mcp-config".to_string(), "@/my/own.json".to_string()],
+            vec!["--additional-mcp-config=@/my/own.json".to_string()],
+        ] {
+            assert!(
+                launch_args_unless_set("copilot", dir.path(), &existing).is_empty(),
+                "{existing:?}"
+            );
+        }
+        // An unrelated flag is no reason to stand down.
+        let unrelated = vec!["--allow-all-tools".to_string()];
+        assert!(!launch_args_unless_set("copilot", dir.path(), &unrelated).is_empty());
     }
 
     #[test]

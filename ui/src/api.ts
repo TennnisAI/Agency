@@ -625,6 +625,11 @@ export interface CatalogEntry {
   supportsMcp: boolean;
   /** Whether Agency can register an OAuth MCP server with this agent's own CLI. */
   supportsMcpAuth: boolean;
+  /**
+   * Whether this CLI can be handed an opening prompt when the run is created.
+   * False means a dispatched issue or review starts the agent promptless.
+   */
+  acceptsPrompt: boolean;
 }
 
 export const agentOnboardingNeeded = () => invoke<boolean>("agent_onboarding_needed");

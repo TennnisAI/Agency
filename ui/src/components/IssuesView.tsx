@@ -1,5 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { FileRoot, Issue, IssuePatch, IssueStatus, Project, createIssue, deleteIssue, getWorkspace, updateIssue } from "../api";
+import {
+  FileRoot, Issue, IssuePatch, IssueStatus, Project,
+  addIssueComment, createIssue, deleteIssue, deleteIssueComment, getWorkspace, updateIssue,
+  updateIssueComment,
+} from "../api";
 import { planReorder } from "../lib/issueRank";
 import { Corpus, IssueRef, LinkEdge, buildLinkIndex, mentionsOf, resolveTarget } from "../lib/links";
 import { IssueLink, hasLink, issueLinks, linkCandidates, withLink, withoutLink } from "../lib/issueLinks";
@@ -307,6 +311,14 @@ export default function IssuesView({
     } catch (e) {
       toastError(e, `Couldn't unlink ${link.label}`);
     }
+  }
+
+  // The comment thread. Each call returns the issue as the file now has it,
+  // but the board's own list is what the pane renders, so a refresh follows;
+  // failures propagate so the section can keep the text that didn't post.
+  async function comment(write: () => Promise<unknown>) {
+    await write();
+    await refresh();
   }
 
   // A wikilink ⌘-clicked in a description. Notes resolve against this project's
@@ -735,6 +747,9 @@ export default function IssuesView({
               requestNavigate({ kind: "issue", projectId: ref.project.id, issueId: ref.issue.id })}
             onAddLink={(ref) => { void addLink(ref); }}
             onRemoveLink={(link) => { void removeLink(link); }}
+            onPostComment={(body) => comment(() => addIssueComment(selected.id, body))}
+            onEditComment={(at, body) => comment(() => updateIssueComment(selected.id, at, body))}
+            onDeleteComment={(at) => comment(() => deleteIssueComment(selected.id, at))}
             onFollowLink={followLink}
             // A tag in a description narrows the board to the issues carrying
             // it — the same "show me these" the docs tab gives its search.

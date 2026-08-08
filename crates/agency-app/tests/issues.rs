@@ -310,6 +310,63 @@ fn dates_and_rank_patch_set_clear_and_validate() {
 }
 
 #[test]
+fn comments_are_written_to_the_file_and_survive_edits_from_both_sides() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let state = common::state(&dir);
+    let p = state.add_project("demo", &repo).unwrap();
+    let d = issues_dir(&repo);
+    let issue = state.create_issue(&p.id, "Discussed", "The description.", IssueStatus::Todo).unwrap();
+    assert!(issue.comments.is_empty());
+
+    let after = state.add_issue_comment(&issue.id, "  First thought.  ").unwrap();
+    assert_eq!(after.comments.len(), 1);
+    assert_eq!(after.comments[0].body, "First thought.");
+    assert!(!after.comments[0].author.is_empty(), "comment went unsigned");
+    let path = d.join("DEM-1.md");
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains("First thought."), "{text}");
+    // The description is untouched by a comment, and still reads as the body.
+    assert_eq!(after.body, "The description.");
+
+    // A comment appended to the file by hand (an agent working the issue) is
+    // read back, and is not lost by an edit made in the app meanwhile.
+    let ts = "2026-08-08T09:00:00Z";
+    std::fs::write(&path, format!("{}\n## agent · {ts}\n\nFrom the worktree.\n", text.trim_end())).unwrap();
+    let listed = state.list_issues(&p.id).unwrap();
+    assert_eq!(listed[0].comments.len(), 2, "hand-written comment not indexed");
+    assert_eq!(listed[0].comments[1].author, "agent");
+
+    let edited = state
+        .update_issue(&issue.id, &agency_core::registry::IssuePatch {
+            body: Some("Rewritten description.".into()),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(edited.comments.len(), 2, "a body edit dropped the thread");
+    assert_eq!(edited.body, "Rewritten description.");
+
+    // Edit and delete address a comment by its timestamp.
+    let at = edited.comments[0].created_at;
+    let updated = state.update_issue_comment(&issue.id, at, "Second thought.").unwrap();
+    assert_eq!(updated.comments[0].body, "Second thought.");
+    assert!(std::fs::read_to_string(&path).unwrap().contains("Second thought."));
+
+    let deleted = state.delete_issue_comment(&issue.id, at).unwrap();
+    assert_eq!(deleted.comments.len(), 1);
+    assert_eq!(deleted.comments[0].author, "agent");
+    assert!(!std::fs::read_to_string(&path).unwrap().contains("Second thought."));
+
+    // Nothing to address, nothing written.
+    assert!(state.update_issue_comment(&issue.id, at, "again").is_err());
+    assert!(state.delete_issue_comment(&issue.id, at).is_err());
+    assert!(state.add_issue_comment(&issue.id, "   ").is_err());
+}
+
+#[test]
 fn links_patch_writes_the_file_and_survives_reconcile() {
     let dir = tempfile::tempdir().unwrap();
     let repo = dir.path().join("repo");

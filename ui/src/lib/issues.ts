@@ -91,7 +91,11 @@ export function matchesFilters(issue: Issue, label: string, f: IssueFilters): bo
   if (f.status === "open" ? isClosed(issue.status) : f.status !== "all" && issue.status !== f.status) return false;
   if (f.priority >= 0 && issue.priority !== f.priority) return false;
   if (f.terms.length === 0) return true;
-  const hay = `${label}\n${issue.title}\n${issue.body}`.toLowerCase();
+  // The thread is searched with the issue: half of what a tracker knows about
+  // a ticket ends up in its discussion, and "where did we talk about X" is the
+  // same question as "which issue is about X".
+  const comments = issue.comments.map((c) => `${c.author}\n${c.body}`).join("\n");
+  const hay = `${label}\n${issue.title}\n${issue.body}\n${comments}`.toLowerCase();
   return f.terms.every((t) => hay.includes(t));
 }
 
@@ -138,6 +142,15 @@ export function issueSorter(sort: IssueSort): (a: Issue, b: Issue) => number {
 
 export function isOverdue(issue: Issue, today: string): boolean {
   return issue.due != null && issue.due < today && !isClosed(issue.status);
+}
+
+// "Aug 6 at 03:43 PM" — an instant (epoch seconds), in the user's locale and
+// zone. For the things that happen at a time rather than on a day: when an
+// issue was created, when a comment was posted.
+export function fmtStamp(secs: number): string {
+  return new Date(secs * 1000).toLocaleString(undefined, {
+    month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+  });
 }
 
 // "Aug 1", with the year appended when it isn't `today`'s. Invalid input

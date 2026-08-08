@@ -2426,6 +2426,10 @@ input, textarea, code,
   display: flex; flex-direction: column;
   font-size: 13.5px; line-height: 1.5;
 }
+/* Once there is a thread, the spare height belongs to it: the description
+   keeps its own text's height (and its floor) so the discussion sits in view
+   under it rather than below the fold. */
+.issue-detail.has-comments .issue-detail-body { flex-grow: 0; }
 .issue-detail-body:hover, .issue-detail-body:focus-within { background: var(--s0); }
 /* `flex-basis: auto` — the editor's own content height is what makes the box
    grow; a `flex: 1` here would zero the basis and clip the text at the floor. */
@@ -2452,6 +2456,48 @@ input, textarea, code,
 }
 .issue-detail-run:hover { background: var(--s0); border-color: var(--s1); }
 .issue-detail-run-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* ── the discussion ───────────────────────────────────────────────────────
+   Comments live in the issue file below the description and read as a thread
+   under it: author, when, markdown body. The composer sits at the bottom and
+   only grows its buttons once something has been typed. */
+.issue-comments { display: flex; flex-direction: column; gap: 8px; }
+.issue-comment-count {
+  color: var(--o1); font-size: 11px; background: var(--s0);
+  border-radius: 999px; padding: 1px 7px;
+}
+.issue-comment {
+  background: var(--s0); border: 1px solid transparent; border-radius: 9px;
+  padding: 8px 10px 2px;
+}
+.issue-comment-meta { display: flex; align-items: baseline; gap: 8px; font-size: 11px; }
+.issue-comment-meta .spacer { flex: 1; }
+.issue-comment-author { color: var(--text); font-weight: 600; }
+.issue-comment-when { color: var(--o0); }
+/* Row actions stay out of the way until the comment is hovered, like the
+   unlink ✕ above. */
+.issue-comment-actions { display: flex; gap: 2px; visibility: hidden; }
+.issue-comment:hover .issue-comment-actions { visibility: visible; }
+.issue-comment-actions button {
+  background: transparent; border: 0; color: var(--o0);
+  padding: 1px 5px; border-radius: 5px; font-size: 11px; font-weight: 400;
+}
+.issue-comment-actions button:hover { background: var(--s1); color: var(--text); }
+.issue-comment-body { padding-bottom: 6px; }
+.issue-comment-input {
+  width: 100%; min-height: 62px; resize: vertical;
+  background: var(--crust); border: 1px solid var(--s1); border-radius: 8px;
+  color: var(--text); padding: 8px 10px; outline: none;
+  font-family: var(--sans); font-size: 13px; line-height: 1.5;
+}
+.issue-comment-input::placeholder { color: var(--o0); }
+.issue-comment-input:focus { border-color: var(--o0); }
+.issue-comment-edit { display: flex; flex-direction: column; gap: 6px; padding-bottom: 8px; }
+.issue-comment-compose { display: flex; flex-direction: column; gap: 6px; }
+.issue-comment-buttons { display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
+.issue-comment-hint { flex: 1; color: var(--o0); font-size: 11px; }
+.issue-comment-buttons button { padding: 5px 11px; font-size: 12px; }
+.issue-comment-post:disabled { opacity: .5; cursor: default; }
+
 /* A section heading with its own control on the right (Links and its "+"). */
 .issue-detail-section-head { display: flex; align-items: center; gap: 6px; }
 .issue-detail-section-head h3 { flex: 1; min-width: 0; }
@@ -2513,23 +2559,25 @@ input, textarea, code,
 .issue-detail-cols { flex: 1; display: flex; min-height: 0; }
 /* Reading column: centred measure, so a wide window doesn't stretch the
    description into unreadably long lines. */
-.issue-detail-read { flex: 1; min-width: 0; display: flex; justify-content: center; padding: 26px 32px 22px; }
+/* The column scrolls as one document — description, attachments, then the
+   comment thread — rather than each part scrolling inside itself. */
+.issue-detail-read {
+  flex: 1; min-width: 0; display: flex; align-items: flex-start; justify-content: center;
+  padding: 26px 32px 22px; overflow-y: auto;
+}
 .issue-detail-reading {
-  flex: 1; min-width: 0; max-width: 780px;
-  display: flex; flex-direction: column; min-height: 0; gap: 14px;
+  flex: 1; min-width: 0; max-width: 780px; min-height: 100%;
+  display: flex; flex-direction: column; gap: 14px;
 }
 .issue-detail.expanded .issue-detail-title { font-size: 27px; line-height: 1.25; letter-spacing: -.01em; }
-/* Expanded, the description stops growing the column and becomes the column:
-   the editor fills the height and scrolls inside itself. */
+/* Expanded, the description is the column: it takes the height nothing else
+   claims, on a floor of about a screenful, and grows with its own text past
+   that (the column scrolls, the editor doesn't). */
 .issue-detail.expanded .issue-detail-body {
-  flex: 1; min-height: 0; overflow: hidden;
+  min-height: 320px;
   font-size: 14.5px; line-height: 1.7;
 }
-/* Here the box's height comes from the column, not from the text, so the
-   editor takes a zero basis and scrolls instead of overflowing. */
-.issue-detail.expanded .issue-detail-body .cm-editor { flex: 1 1 0; }
-.issue-detail.expanded .issue-detail-body .cm-scroller { overflow: auto; }
-.issue-detail.expanded .issue-attachments { flex-shrink: 0; max-height: 38%; overflow-y: auto; }
+.issue-detail.expanded .issue-attachments { flex-shrink: 0; }
 /* Meta rail: the properties and links that were stacked under the title in the
    narrow layout, as a labelled column beside the description. */
 .issue-detail-rail {

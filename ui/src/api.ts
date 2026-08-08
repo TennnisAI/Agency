@@ -104,8 +104,20 @@ export interface Issue {
   // are undirected — the app writes both sides — and a key with no issue
   // behind it is kept (see lib/issueLinks).
   links: string[];
+  // The discussion, oldest first. Stored in the issue file below the body, so
+  // an agent dispatched on the issue is handed the thread with it.
+  comments: IssueComment[];
   createdAt: number;
   updatedAt: number;
+}
+
+export interface IssueComment {
+  // The repo's git user for comments written here; whatever an agent signs its
+  // own with otherwise.
+  author: string;
+  // Epoch seconds, and the comment's id within its issue.
+  createdAt: number;
+  body: string;
 }
 
 // Partial update: omitted fields keep their values. For the nullable fields
@@ -135,6 +147,18 @@ export const createIssue = (projectId: string, title: string, body: string, stat
 export const updateIssue = (id: string, patch: IssuePatch) =>
   invoke<Issue>("update_issue", { id, patch });
 export const deleteIssue = (id: string) => invoke<void>("delete_issue", { id });
+
+// Comments are their own calls rather than a field of the patch: the thread
+// lives in the issue file and an agent may be appending to it at the same
+// time, so each call re-reads the file and applies only its own change.
+// `createdAt` addresses a comment within its issue. All three return the issue
+// as it now stands.
+export const addIssueComment = (issueId: string, body: string) =>
+  invoke<Issue>("add_issue_comment", { issueId, body });
+export const updateIssueComment = (issueId: string, createdAt: number, body: string) =>
+  invoke<Issue>("update_issue_comment", { issueId, createdAt, body });
+export const deleteIssueComment = (issueId: string, createdAt: number) =>
+  invoke<Issue>("delete_issue_comment", { issueId, createdAt });
 export const startIssueRun = (issueId: string, agent: string, base?: string | null, mergeTarget?: string | null) =>
   invoke<RunInfo>("start_issue_run", { issueId, agent, base: base ?? null, mergeTarget: mergeTarget ?? null });
 export const startIssueRace = (issueId: string, agents: string[], base?: string | null, mergeTarget?: string | null) =>

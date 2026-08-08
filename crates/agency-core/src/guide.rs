@@ -87,7 +87,13 @@ renders as you write it, right-click gives the formatting menu, and
 its key, written like `[[AGE-14]]`, and that issue's detail pane will list
 the notes mentioning it. Issues can also be linked to each other: the Links
 section in the detail pane, + to pick another issue (any project's). Links
-go both ways and are clickable, so either issue leads to the other. If the
+go both ways and are clickable, so either issue leads to the other.
+
+Comments go under the description, in the same pane. They are markdown too,
+they are stored in the issue's own file, and an agent dispatched on the
+issue is handed the thread along with the description, so a comment is a
+way to correct or narrow the ask before you start one. Agents can write
+comments back the same way. If the
 workspace uses git, you can dispatch agents on writing tasks the
 same way you would in a code project: they work on a branch, you merge.
 

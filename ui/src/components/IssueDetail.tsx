@@ -6,7 +6,7 @@ import { CrossRefs, IssueRef, LinkEdge } from "../lib/links";
 import { IssueLink } from "../lib/issueLinks";
 import { DocsIndex } from "../lib/docsIndex";
 import { runName } from "../agents";
-import { ISSUE_STATUSES, PRIORITY_LABELS, STATUS_LABELS, fmtDate, isOverdue } from "../lib/issues";
+import { ISSUE_STATUSES, PRIORITY_LABELS, STATUS_LABELS, fmtDate, fmtStamp, isOverdue } from "../lib/issues";
 import { ISSUES_DIR, Attachment, insertAttachment, parseAttachments, removeAttachment } from "../lib/attachments";
 import { Attached, attachBlob, attachPath } from "../lib/issueAttach";
 import { dateStamp } from "../lib/dailyNote";
@@ -20,6 +20,7 @@ import { PriorityGlyph, StatusDot } from "./IssueRow";
 import IssueAttachments, { forgetAttachment } from "./IssueAttachments";
 import MarkdownEditor, { MarkdownEditorHandle } from "./MarkdownEditor";
 import AgentAddMenu from "./AgentAddMenu";
+import IssueComments from "./IssueComments";
 import IssueLinkMenu from "./IssueLinkMenu";
 import DatePicker from "./DatePicker";
 import { ContractIcon, ExpandIcon } from "./icons";
@@ -30,12 +31,6 @@ import { ContractIcon, ExpandIcon } from "./icons";
 const MENU_W = 220;
 const MENU_ROW_H = 33;
 const MENU_PAD = 10;
-
-function ts(secs: number): string {
-  return new Date(secs * 1000).toLocaleString(undefined, {
-    month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
-  });
-}
 
 // A date as a quiet property pill: reads as text ("◷ Due Aug 1"), the click
 // opens the in-app calendar popover (native pickers can't be dismissed
@@ -134,6 +129,9 @@ export default function IssueDetail({
   onOpenIssue,
   onAddLink,
   onRemoveLink,
+  onPostComment,
+  onEditComment,
+  onDeleteComment,
   onFollowLink,
   onTagClick,
   onToggleExpand,
@@ -172,6 +170,11 @@ export default function IssueDetail({
   onOpenIssue: (ref: IssueRef) => void;
   onAddLink: (ref: IssueRef) => void;
   onRemoveLink: (link: IssueLink) => void;
+  // The comment thread's three writes. They resolve once the issue has been
+  // written and re-read, so the section can keep a failed draft in the box.
+  onPostComment: (body: string) => Promise<void>;
+  onEditComment: (createdAt: number, body: string) => Promise<void>;
+  onDeleteComment: (createdAt: number) => Promise<void>;
   // ⌘-click on a wikilink in the description, and a click on a #tag.
   onFollowLink: (target: string, heading: string | null) => void;
   onTagClick: (tag: string) => void;
@@ -583,6 +586,18 @@ export default function IssueDetail({
     </div>
   );
 
+  // The discussion, under the description in both layouts: it is read with
+  // the issue, not filed beside it like the agents and links.
+  const commentsList = (
+    <IssueComments
+      key={issue.id}
+      comments={issue.comments}
+      onPost={onPostComment}
+      onEdit={onEditComment}
+      onDelete={onDeleteComment}
+    />
+  );
+
   // Linked issues. Always rendered, empty or not: the "+" beside the heading
   // is the only way to make a link without hand-editing frontmatter, and a
   // section that appears only once it has content can't be found.
@@ -643,7 +658,7 @@ export default function IssueDetail({
 
   const foot = (
     <div className="issue-detail-foot">
-      <span title={`Updated ${ts(issue.updatedAt)}`}>Created {ts(issue.createdAt)}</span>
+      <span title={`Updated ${fmtStamp(issue.updatedAt)}`}>Created {fmtStamp(issue.createdAt)}</span>
       <div className="spacer" />
       <button className="ghost" onClick={onDelete}>Delete</button>
     </div>
@@ -675,7 +690,11 @@ export default function IssueDetail({
     <div className="issue-drop-hint">{attaching ? "Attaching…" : `Drop to attach to ${label}`}</div>
   );
 
-  const cls = `issue-detail${expanded ? " expanded" : ""}${dragOver ? " drop-target" : ""}`;
+  // `has-comments` stops the description growing into the pane's spare height
+  // (see styles.css): with a thread under it, that height is what keeps the
+  // discussion in view instead of below the fold.
+  const cls = `issue-detail${expanded ? " expanded" : ""}${dragOver ? " drop-target" : ""}`
+    + (issue.comments.length > 0 ? " has-comments" : "");
 
   if (expanded) {
     return (
@@ -687,6 +706,7 @@ export default function IssueDetail({
               {titleField}
               {bodyField}
               {attachmentsList}
+              {commentsList}
             </div>
           </div>
           <div className="issue-detail-rail">
@@ -723,6 +743,7 @@ export default function IssueDetail({
       {bodyField}
       {attachmentsList}
       {dropHint}
+      {commentsList}
       {runsList}
       {linksList}
       {mentionsList}

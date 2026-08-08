@@ -408,12 +408,32 @@ fn agent_argv(
     agency_core::scripts::wrap_setup(setup, &profile.command, &base_args)
 }
 
+/// How `prompt` is handed to `agent` on a fresh launch: the arguments to append,
+/// per that CLI's own recipe (see [`crate::agent_catalog::PromptDelivery`]).
+/// Empty when the CLI can't be given an opening prompt at all — the session
+/// still comes up in the worktree, and the prompt stays on the run for the user
+/// to hand over in the live terminal, which beats an argv the CLI rejects.
+fn prompt_args(agent: &str, prompt: &str) -> Vec<String> {
+    match crate::agent_catalog::prompt_delivery(agent) {
+        crate::agent_catalog::PromptDelivery::Positional => vec![prompt.to_string()],
+        crate::agent_catalog::PromptDelivery::Args(recipe) => {
+            recipe.iter().map(|a| a.replace("{{prompt}}", prompt)).collect()
+        }
+        crate::agent_catalog::PromptDelivery::Unsupported => {
+            log::warn!(
+                "{agent} takes no opening prompt on the command line; starting it promptless \
+                 (paste the prompt into its terminal)"
+            );
+            Vec::new()
+        }
+    }
+}
+
 /// The (command, args) for a fresh agent session that should open with `prompt`
-/// already delivered. A non-empty prompt rides along as the trailing positional
-/// argument (claude/codex/cursor-agent/opencode all accept one) unless the
-/// profile places it itself with a `{{prompt}}` token. An empty prompt yields
-/// the plain promptless argv, so this is a drop-in for [`agent_argv`] on the
-/// fresh (non-resume) path.
+/// already delivered — positionally, behind a flag, or not at all, depending on
+/// the agent (see [`prompt_args`]) — unless the profile places it itself with a
+/// `{{prompt}}` token. An empty prompt yields the plain promptless argv, so this
+/// is a drop-in for [`agent_argv`] on the fresh (non-resume) path.
 fn fresh_agent_argv(
     profile: &AgentProfile,
     worktree: &Path,
@@ -425,12 +445,12 @@ fn fresh_agent_argv(
         .into_iter()
         .filter(|a| !a.is_empty())
         .collect();
-    // Ahead of the trailing prompt below: a flag after a positional argument is
-    // the shape most CLIs are least happy with.
+    // Ahead of the prompt below: a flag after a positional argument is the shape
+    // most CLIs are least happy with.
     let mcp = mcp_launch_args(profile, worktree, &args);
     args.extend(mcp);
     if !prompt.trim().is_empty() && !profile.args.iter().any(|a| a.contains("{{prompt}}")) {
-        args.push(prompt.to_string());
+        args.extend(prompt_args(&profile.name, prompt));
     }
     agency_core::scripts::wrap_setup(setup, &profile.command, &args)
 }
@@ -1165,6 +1185,8 @@ impl AppState {
                 installed: command_on_path(entry.command),
                 supports_mcp: agency_core::mcp::agent_supported(entry.id),
                 supports_mcp_auth: agency_core::mcp::auth_supported(entry.id),
+                accepts_prompt: entry.prompt
+                    != crate::agent_catalog::PromptDelivery::Unsupported,
             })
             .collect())
     }
@@ -5074,6 +5096,45 @@ mod tests {
         assert_eq!(args, vec!["--flag".to_string()]);
     }
 
+    /// AGE-79: the prompt only rides as a positional argument for the CLIs that
+    /// actually take one. Copilot rejects the whole launch without `-i`, and
+    /// opencode reads a positional as a directory to open.
+    #[test]
+    fn fresh_argv_delivers_the_prompt_the_way_each_cli_takes_it() {
+        let profile = |name: &str| AgentProfile {
+            name: name.into(), command: name.into(),
+            args: vec![], env: vec![],
+            resume_args: None, loop_args: None,
+        };
+        let args_for = |name: &str, prompt: &str| {
+            super::fresh_agent_argv(&profile(name), no_worktree(), prompt, None).1
+        };
+
+        assert_eq!(args_for("claude", "go"), vec!["go".to_string()]);
+        assert_eq!(args_for("cursor", "go"), vec!["go".to_string()]);
+        assert_eq!(args_for("copilot", "go"), vec!["-i".to_string(), "go".to_string()]);
+        assert_eq!(args_for("opencode", "go"), vec!["--prompt".to_string(), "go".to_string()]);
+        // crush parses a prompt as a subcommand and has no flag for one, so the
+        // session comes up promptless rather than dying on "Unknown command".
+        assert!(args_for("crush", "go").is_empty());
+        // A custom profile Agency knows nothing about keeps the positional default.
+        assert_eq!(args_for("my-agent", "go"), vec!["go".to_string()]);
+
+        // None of it fires for a promptless launch: no stray `-i` with no value.
+        for agent in ["claude", "copilot", "opencode", "crush"] {
+            assert!(args_for(agent, "").is_empty(), "{agent}");
+            assert!(args_for(agent, "   ").is_empty(), "{agent}");
+        }
+
+        // A `{{prompt}}` token in the user's own args still wins outright.
+        let hand_rolled = AgentProfile {
+            args: vec!["--interactive".into(), "{{prompt}}".into()],
+            ..profile("copilot")
+        };
+        let (_cmd, args) = super::fresh_agent_argv(&hand_rolled, no_worktree(), "go", None);
+        assert_eq!(args, vec!["--interactive".to_string(), "go".to_string()]);
+    }
+
     /// AGE-71: Copilot ignores the `.mcp.json` Agency wrote until the user
     /// approves folder trust, and every run gets a brand-new worktree, so the
     /// file has to be handed over on the command line instead.
@@ -5104,10 +5165,10 @@ mod tests {
         )
         .unwrap();
 
-        // Fresh launch: flags first, prompt still last.
+        // Fresh launch: flags first, prompt still last (behind `-i`, per AGE-79).
         let (cmd, args) = super::fresh_agent_argv(&copilot, dir.path(), "go", None);
         assert_eq!(cmd, "copilot");
-        assert_eq!(args, vec![flag.clone(), arg.clone(), "go".to_string()]);
+        assert_eq!(args, vec![flag.clone(), arg.clone(), "-i".to_string(), "go".to_string()]);
 
         // Resume launch: the recipe keeps its own args and gains the config.
         let (_cmd, args) = agent_argv(&copilot, dir.path(), "go", true, None);

@@ -913,6 +913,13 @@ export default function Settings({
               </div>
             ))}
           </div>
+          {catalog.some((e) => e.enabled && !e.acceptsPrompt) && (
+            <p className="settings-section-hint">
+              {catalog.filter((e) => e.enabled && !e.acceptsPrompt).map((e) => agentLabel(e.id)).join(", ")}{" "}
+              take no opening prompt on the command line, so a dispatched issue or review starts
+              them promptless in the worktree and the ask has to go into their terminal by hand.
+            </p>
+          )}
           <div className="settings-add-row">
             {catalog.some((e) => !e.enabled) && (
               <div className="settings-add-dropdown">

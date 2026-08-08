@@ -36,6 +36,14 @@ fn git(worktree: &Path, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
+/// The name git would sign a commit here with, if it has one. Used to sign
+/// issue comments: whoever the repo says you are is who you are on its issues.
+/// A directory git doesn't manage (the git-less workspace) has none.
+pub fn user_name(repo: &Path) -> Option<String> {
+    let name = git(repo, &["config", "user.name"]).ok()?.trim().to_string();
+    (!name.is_empty()).then_some(name)
+}
+
 pub fn status(worktree: &Path) -> Result<Vec<FileChange>> {
     // `-z` gives NUL-separated, unquoted paths: without it git C-quotes any
     // path with spaces/unicode (core.quotePath default) and every downstream

@@ -92,8 +92,30 @@ pub struct Issue {
     pub scheduled: Option<String>,
     /// Manual board order within a status group, ascending. Finite.
     pub rank: Option<f64>,
+    /// Keys of the issues this one is linked to (`AGE-12`), any project's.
+    /// Undirected in practice — the app writes both sides — but stored per
+    /// issue, so a hand edit that only writes one side still reads as a link.
+    #[serde(default)]
+    pub links: Vec<String>,
+    /// The discussion, oldest first. Stored in the issue file below the body
+    /// (see issuefs), so an agent handed the issue reads the thread with it.
+    #[serde(default)]
+    pub comments: Vec<IssueComment>,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+/// One comment on an issue. `created_at` is the comment's identity within its
+/// issue — the app keeps two comments from landing on the same second — which
+/// is what edit and delete address it by.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IssueComment {
+    /// Who wrote it: the repo's git user for comments made in the app, and
+    /// whatever an agent signs its own with.
+    pub author: String,
+    pub created_at: i64,
+    pub body: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -168,6 +190,9 @@ pub struct IssuePatch {
     pub scheduled: Option<Option<String>>,
     #[serde(default, deserialize_with = "double_option")]
     pub rank: Option<Option<f64>>,
+    /// The whole link set, replaced wholesale — the caller sends the list it
+    /// wants the issue to end up with, so add and remove are the same call.
+    pub links: Option<Vec<String>>,
 }
 
 /// Deserialize a present-but-maybe-null field as `Some(inner)`; combined with
@@ -352,6 +377,15 @@ impl Registry {
         }
         if !column_exists(&conn, "issues", "rank")? {
             conn.execute("ALTER TABLE issues ADD COLUMN rank REAL", [])?;
+        }
+        // Comma-joined issue keys; the files are canonical, so an empty column
+        // on an older database is filled by the next reconcile.
+        if !column_exists(&conn, "issues", "links")? {
+            conn.execute("ALTER TABLE issues ADD COLUMN links TEXT", [])?;
+        }
+        // JSON array of comments, same story: the file is where they live.
+        if !column_exists(&conn, "issues", "comments")? {
+            conn.execute("ALTER TABLE issues ADD COLUMN comments TEXT", [])?;
         }
         let reg = Registry { conn };
         reg.backfill_project_colors()?;
@@ -965,11 +999,12 @@ impl Registry {
     /// the row is new. Returns the stored row.
     pub fn upsert_issue_row(&self, issue: &Issue) -> Result<Issue> {
         self.conn.execute(
-            "INSERT INTO issues (id, project_id, seq, title, body, status, priority, created_at, updated_at, due, scheduled, rank)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            "INSERT INTO issues (id, project_id, seq, title, body, status, priority, created_at, updated_at, due, scheduled, rank, links, comments)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
              ON CONFLICT(project_id, seq) DO UPDATE SET
                 title = ?4, body = ?5, status = ?6, priority = ?7,
-                created_at = ?8, updated_at = ?9, due = ?10, scheduled = ?11, rank = ?12",
+                created_at = ?8, updated_at = ?9, due = ?10, scheduled = ?11, rank = ?12,
+                links = ?13, comments = ?14",
             rusqlite::params![
                 issue.id,
                 issue.project_id,
@@ -982,11 +1017,13 @@ impl Registry {
                 issue.updated_at,
                 issue.due,
                 issue.scheduled,
-                issue.rank
+                issue.rank,
+                issue.links.join(","),
+                serde_json::to_string(&issue.comments)?
             ],
         )?;
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, seq, title, body, status, priority, created_at, updated_at, due, scheduled, rank
+            "SELECT id, project_id, seq, title, body, status, priority, created_at, updated_at, due, scheduled, rank, links, comments
              FROM issues WHERE project_id = ?1 AND seq = ?2",
         )?;
         let mut rows = stmt.query(rusqlite::params![issue.project_id, issue.seq])?;
@@ -1035,7 +1072,7 @@ impl Registry {
 
     pub fn get_issue(&self, id: &str) -> Result<Option<Issue>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, seq, title, body, status, priority, created_at, updated_at, due, scheduled, rank
+            "SELECT id, project_id, seq, title, body, status, priority, created_at, updated_at, due, scheduled, rank, links, comments
              FROM issues WHERE id = ?1",
         )?;
         let mut rows = stmt.query([id])?;
@@ -1048,7 +1085,7 @@ impl Registry {
     /// Every issue of the project, all statuses — the UI groups and collapses.
     pub fn list_issues(&self, project_id: &str) -> Result<Vec<Issue>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, seq, title, body, status, priority, created_at, updated_at, due, scheduled, rank
+            "SELECT id, project_id, seq, title, body, status, priority, created_at, updated_at, due, scheduled, rank, links, comments
              FROM issues WHERE project_id = ?1 ORDER BY seq",
         )?;
         let rows = stmt.query_map([project_id], |row| Ok(row_to_issue(row)))?;
@@ -1250,6 +1287,9 @@ pub fn derive_issue_key(name: &str, used: &[String]) -> String {
 
 fn row_to_issue(row: &rusqlite::Row) -> Result<Issue> {
     let status: String = row.get(5)?;
+    // NULL on rows written before the column existed, "" for no links.
+    let links: Option<String> = row.get(12)?;
+    let comments: Option<String> = row.get(13)?;
     Ok(Issue {
         id: row.get(0)?,
         project_id: row.get(1)?,
@@ -1263,6 +1303,19 @@ fn row_to_issue(row: &rusqlite::Row) -> Result<Issue> {
         due: row.get(9)?,
         scheduled: row.get(10)?,
         rank: row.get(11)?,
+        links: links
+            .unwrap_or_default()
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect(),
+        // The index is rebuildable from the files, so unreadable JSON here is
+        // an empty thread until the next reconcile, not a failed read.
+        comments: comments
+            .filter(|s| !s.is_empty())
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default(),
     })
 }
 
@@ -2187,6 +2240,8 @@ mod tests {
             due: None,
             scheduled: None,
             rank: None,
+            links: vec!["AGE-9".into()],
+            comments: vec![],
             created_at: 10,
             updated_at: 10,
         };

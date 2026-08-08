@@ -13,7 +13,7 @@ use std::sync::OnceLock;
 
 use anyhow::{anyhow, bail, Result};
 
-use crate::registry::{Issue, IssueStatus, Registry};
+use crate::registry::{Issue, IssueComment, IssueStatus, Registry};
 
 /// Issue files live here, relative to the project root, and are *not* tracked
 /// by git (see `worktree::untrack_issue_files`). The app rewrites them on every
@@ -46,6 +46,15 @@ pub struct IssueFile {
     /// Manual board order within a status group, ascending. Finite by
     /// construction (NaN/inf rejects the file).
     pub rank: Option<f64>,
+    /// The discussion, in file order (oldest first). Each comment is a
+    /// `## <author> · <RFC3339>` section below the body — see `split_body`.
+    pub comments: Vec<IssueComment>,
+    /// Keys of the issues this one is linked to (`AGE-12`), in file order,
+    /// deduped, never including this issue's own key. Any project's key may
+    /// appear — links cross trackers. A key with no file behind it is kept:
+    /// the target may be an issue that hasn't been written yet, or one in a
+    /// project this checkout can't see.
+    pub links: Vec<String>,
     /// Epoch seconds; 0 = the file didn't say (reconcile substitutes mtime).
     pub created_at: i64,
     /// Epoch seconds; 0 = the file didn't say (reconcile substitutes mtime).
@@ -154,8 +163,78 @@ pub fn issue_path(root: &Path, key: &str) -> PathBuf {
 // ---------------------------------------------------------------------------
 // Parse / serialize
 
-const KNOWN_KEYS: [&str; 8] =
-    ["key", "status", "priority", "due", "scheduled", "rank", "created", "updated"];
+const KNOWN_KEYS: [&str; 9] =
+    ["key", "status", "priority", "due", "scheduled", "rank", "links", "created", "updated"];
+
+/// Parse a `links:` value — a comma-separated list of issue keys. Keys are
+/// upper-cased (a hand-written `age-12` means AGE-12), deduped, and kept in
+/// the order written; `own_key` is dropped, since an issue linking to itself
+/// says nothing. Anything that isn't `KEY-n` shaped is an error, like every
+/// other malformed frontmatter value here — the app's own writes are always
+/// well-formed, so a bad value is a hand edit worth reporting.
+pub fn parse_links(value: &str, own_key: &str) -> Result<Vec<String>> {
+    let mut out: Vec<String> = Vec::new();
+    for raw in value.split(',') {
+        let token = raw.trim();
+        if token.is_empty() {
+            continue;
+        }
+        let key = token.to_ascii_uppercase();
+        if parse_key(&key).is_none() {
+            bail!("invalid link: {token}");
+        }
+        if key == own_key || out.contains(&key) {
+            continue;
+        }
+        out.push(key);
+    }
+    Ok(out)
+}
+
+/// A comment's opening line: `## <author> · <RFC3339>`. Returns the author
+/// and the timestamp when the line is one, and `None` for every other heading
+/// — the body owns its own `##` sections, and only this exact shape is a
+/// comment. The separator is the last ` · ` on the line, so an author may
+/// contain one.
+fn comment_head(line: &str) -> Option<(String, i64)> {
+    let (author, at) = line.strip_prefix("## ")?.trim_end().rsplit_once(" · ")?;
+    let author = author.trim();
+    if author.is_empty() {
+        return None;
+    }
+    Some((author.to_string(), rfc3339_to_epoch(at.trim()).ok()?))
+}
+
+/// Split the text under the H1 into the body and the comment thread. The body
+/// runs to the first comment heading (all of it, when there is none); each
+/// heading opens a comment that runs to the next one. Both sides are trimmed,
+/// which is what makes the split round-trip through `serialize_issue_file`.
+fn split_body(lines: &[&str]) -> (String, Vec<IssueComment>) {
+    let start = lines.iter().position(|l| comment_head(l).is_some());
+    let Some(start) = start else {
+        return (lines.join("\n").trim().to_string(), Vec::new());
+    };
+    let body = lines[..start].join("\n").trim().to_string();
+    let mut comments: Vec<IssueComment> = Vec::new();
+    let mut open: Option<(String, i64, Vec<&str>)> = None;
+    let close = |c: (String, i64, Vec<&str>), out: &mut Vec<IssueComment>| {
+        out.push(IssueComment { author: c.0, created_at: c.1, body: c.2.join("\n").trim().to_string() });
+    };
+    for line in &lines[start..] {
+        if let Some((author, at)) = comment_head(line) {
+            if let Some(c) = open.take() {
+                close(c, &mut comments);
+            }
+            open = Some((author, at, Vec::new()));
+        } else if let Some(c) = open.as_mut() {
+            c.2.push(line);
+        }
+    }
+    if let Some(c) = open.take() {
+        close(c, &mut comments);
+    }
+    (body, comments)
+}
 
 /// Parse an issue file. `file_key` is the filename stem (`AGE-14`) — the
 /// frontmatter `key` must agree with it or the file is rejected; a file's name
@@ -172,6 +251,7 @@ pub fn parse_issue_file(file_key: &str, text: &str) -> Result<IssueFile> {
     let mut due = None;
     let mut scheduled = None;
     let mut rank: Option<f64> = None;
+    let mut links: Option<Vec<String>> = None;
     let mut created = None;
     let mut updated = None;
     let mut extra = Vec::new();
@@ -236,6 +316,12 @@ pub fn parse_issue_file(file_key: &str, text: &str) -> Result<IssueFile> {
                 }
                 continue;
             }
+            "links" => {
+                if links.replace(parse_links(v, file_key)?).is_some() {
+                    bail!("duplicate frontmatter key: links");
+                }
+                continue;
+            }
             "created" => &mut created,
             "updated" => &mut updated,
             _ => unreachable!(),
@@ -268,18 +354,20 @@ pub fn parse_issue_file(file_key: &str, text: &str) -> Result<IssueFile> {
         .filter(|t| !t.is_empty())
         .ok_or_else(|| anyhow!("missing H1 title"))?
         .to_string();
-    let body = rest.get(idx + 1..).unwrap_or(&[]).join("\n").trim().to_string();
+    let (body, comments) = split_body(rest.get(idx + 1..).unwrap_or(&[]));
 
     Ok(IssueFile {
         key,
         seq,
         title,
         body,
+        comments,
         status,
         priority: priority.unwrap_or(0),
         due,
         scheduled,
         rank,
+        links: links.unwrap_or_default(),
         created_at,
         updated_at,
         extra,
@@ -305,6 +393,9 @@ pub fn serialize_issue_file(f: &IssueFile) -> String {
     if let Some(r) = f.rank {
         out.push_str(&format!("rank: {r}\n"));
     }
+    if !f.links.is_empty() {
+        out.push_str(&format!("links: {}\n", f.links.join(", ")));
+    }
     out.push_str(&format!("created: {}\n", epoch_to_rfc3339(f.created_at)));
     out.push_str(&format!("updated: {}\n", epoch_to_rfc3339(f.updated_at)));
     for line in &f.extra {
@@ -317,6 +408,15 @@ pub fn serialize_issue_file(f: &IssueFile) -> String {
         out.push('\n');
         out.push_str(&f.body);
         out.push('\n');
+    }
+    // The thread, below the body it discusses, in the shape `split_body` reads.
+    for c in &f.comments {
+        out.push_str(&format!("\n## {} · {}\n", c.author, epoch_to_rfc3339(c.created_at)));
+        if !c.body.is_empty() {
+            out.push('\n');
+            out.push_str(&c.body);
+            out.push('\n');
+        }
     }
     out
 }
@@ -484,11 +584,24 @@ updated: 2026-07-27T14:02:00Z
 # Issue title
 
 Body markdown, wikilinks allowed.
+
+## Sam · 2026-07-27T15:10:00Z
+
+A comment. Everything below the first heading of this shape is the
+issue's discussion, not its description.
 ```
 
 - To change status, edit `status:`. To close an issue, set `status: done`.
 - To file a new issue, add `<KEY>-<n>.md` using the next unused number for the
   key. Numbers are never reused and never renumbered, even after deletion.
+- To comment, append a `## <author> · <UTC RFC3339>` section to the end of the
+  file and write under it. The body is everything between the H1 and the first
+  such heading, so a comment never eats the description. Sign it with your own
+  name; the app signs yours with the repo's git user.
+- To link issues, list their keys in `links:` (`links: AGE-12, LBH-3`, any
+  project's key). Links are undirected: the app writes the other side too, and
+  shows them in the issue's Links section. A link to an issue that doesn't
+  exist is kept, not pruned.
 - Timestamps are UTC RFC3339; `updated` should be bumped on edit (the app does
   this automatically; if you forget, file mtime is used).
 - Attachments live in `assets/`, referenced from the body by a relative link:
@@ -522,11 +635,13 @@ pub fn export_project(reg: &Registry, project_id: &str, issue_key: &str, root: &
             seq: row.seq,
             title: row.title,
             body: row.body,
+            comments: row.comments,
             status: row.status,
             priority: row.priority,
             due: row.due,
             scheduled: row.scheduled,
             rank: row.rank,
+            links: row.links,
             created_at: row.created_at,
             updated_at: row.updated_at,
             extra: vec![],
@@ -562,6 +677,35 @@ pub fn ensure_readme(root: &Path) -> Result<()> {
 
 // ---------------------------------------------------------------------------
 // Reconcile — files are truth, index rows follow
+
+/// The index row a parsed file describes. `id` is the row's own uuid (minted
+/// at import and stable for the life of the file, so `runs.issue_id` holds);
+/// the timestamps are passed in because a file that omits them is dated by its
+/// mtime instead.
+pub fn issue_from_file(
+    f: &IssueFile,
+    id: String,
+    project_id: &str,
+    created_at: i64,
+    updated_at: i64,
+) -> Issue {
+    Issue {
+        id,
+        project_id: project_id.to_string(),
+        seq: f.seq,
+        title: f.title.clone(),
+        body: f.body.clone(),
+        status: f.status,
+        priority: f.priority,
+        due: f.due.clone(),
+        scheduled: f.scheduled.clone(),
+        rank: f.rank,
+        links: f.links.clone(),
+        comments: f.comments.clone(),
+        created_at,
+        updated_at,
+    }
+}
 
 /// What a reconcile pass did, for logging.
 #[derive(Debug, Default, PartialEq)]
@@ -651,20 +795,8 @@ pub fn reconcile(
             (f.created_at, f.updated_at)
         };
         let prev = existing.get(&f.seq);
-        let issue = Issue {
-            id: prev.map_or_else(|| uuid::Uuid::new_v4().to_string(), |p| p.id.clone()),
-            project_id: project_id.to_string(),
-            seq: f.seq,
-            title: f.title.clone(),
-            body: f.body.clone(),
-            status: f.status,
-            priority: f.priority,
-            due: f.due.clone(),
-            scheduled: f.scheduled.clone(),
-            rank: f.rank,
-            created_at,
-            updated_at,
-        };
+        let id = prev.map_or_else(|| uuid::Uuid::new_v4().to_string(), |p| p.id.clone());
+        let issue = issue_from_file(f, id, project_id, created_at, updated_at);
         match prev {
             None => {
                 reg.upsert_issue_row(&issue)?;
@@ -768,11 +900,13 @@ Body markdown, wikilinks allowed.\n";
             seq: 14,
             title: "Fix terminal resize on reattach".into(),
             body: "Body markdown, wikilinks allowed.".into(),
+            comments: vec![],
             status: IssueStatus::InProgress,
             priority: 2,
             due: None,
             scheduled: None,
             rank: None,
+            links: vec![],
             created_at: 1_785_144_600,
             updated_at: 1_785_160_920,
             extra: vec![],
@@ -786,6 +920,69 @@ created: 2026-07-27T09:30:00Z\nupdated: 2026-07-27T14:02:00Z\n---\n\
         // Round-trip: canonical text parses back to the same value.
         let back = parse_issue_file("AGE-14", &serialize_issue_file(&f)).unwrap();
         assert_eq!(back, f);
+    }
+
+    #[test]
+    fn splits_the_body_from_the_comment_thread_and_round_trips() {
+        let text = "---\nkey: AGE-5\nstatus: todo\n---\n# T\n\n\
+Body prose.\n\n\
+## Notes on the body\n\n\
+Still the body: no timestamp, so not a comment.\n\n\
+## Sam · 2026-07-27T15:10:00Z\n\n\
+First comment.\n\n\
+### Even this heading is comment text\n\n\
+## agent · 2026-07-27T16:00:00Z\n\n\
+Second.\n";
+        let f = parse_issue_file("AGE-5", text).unwrap();
+        assert!(f.body.starts_with("Body prose."), "{}", f.body);
+        assert!(f.body.ends_with("not a comment."), "{}", f.body);
+        assert_eq!(f.comments.len(), 2);
+        assert_eq!(f.comments[0].author, "Sam");
+        assert_eq!(f.comments[0].created_at, rfc3339_to_epoch("2026-07-27T15:10:00Z").unwrap());
+        assert!(f.comments[0].body.contains("### Even this heading"), "{:?}", f.comments[0]);
+        assert_eq!(f.comments[1].author, "agent");
+        assert_eq!(f.comments[1].body, "Second.");
+        // What the app writes parses back to the same value.
+        assert_eq!(parse_issue_file("AGE-5", &serialize_issue_file(&f)).unwrap(), f);
+    }
+
+    #[test]
+    fn comment_heads_are_only_the_exact_shape() {
+        // Not comments: no timestamp, an unparseable one, no author.
+        for line in ["## Sam", "## Sam · yesterday", "##  · 2026-07-27T15:10:00Z", "# Sam · 2026-07-27T15:10:00Z"] {
+            assert_eq!(comment_head(line), None, "accepted {line}");
+        }
+        // An author may itself contain the separator: the last one wins.
+        let (author, at) = comment_head("## a · b · 2026-07-27T15:10:00Z").unwrap();
+        assert_eq!(author, "a · b");
+        assert_eq!(at, rfc3339_to_epoch("2026-07-27T15:10:00Z").unwrap());
+    }
+
+    #[test]
+    fn parses_and_writes_links() {
+        let text = "---\nkey: AGE-5\nstatus: todo\n\
+links: AGE-12, lbh-3, AGE-12, AGE-5\n---\n# T\n";
+        let f = parse_issue_file("AGE-5", text).unwrap();
+        // Upper-cased, deduped, self-link dropped, order kept.
+        assert_eq!(f.links, vec!["AGE-12".to_string(), "LBH-3".to_string()]);
+        let out = serialize_issue_file(&f);
+        assert!(out.contains("links: AGE-12, LBH-3\n"), "{out}");
+        assert_eq!(parse_issue_file("AGE-5", &out).unwrap(), f);
+        // No links, no line — the frontmatter of an unlinked issue is unchanged.
+        let plain = parse_issue_file("AGE-5", "---\nkey: AGE-5\nstatus: todo\n---\n# T\n").unwrap();
+        assert!(plain.links.is_empty());
+        assert!(!serialize_issue_file(&plain).contains("links:"));
+    }
+
+    #[test]
+    fn rejects_malformed_links() {
+        for bad in [
+            "---\nkey: AGE-1\nstatus: todo\nlinks: not a key\n---\n# T\n",
+            "---\nkey: AGE-1\nstatus: todo\nlinks: AGE-0\n---\n# T\n",
+            "---\nkey: AGE-1\nstatus: todo\nlinks: AGE-2\nlinks: AGE-3\n---\n# T\n",
+        ] {
+            assert!(parse_issue_file("AGE-1", bad).is_err(), "accepted {bad}");
+        }
     }
 
     #[test]

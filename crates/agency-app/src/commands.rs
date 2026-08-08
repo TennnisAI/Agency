@@ -971,6 +971,43 @@ pub fn delete_issue(state: State<'_, AppState>, id: String) -> Result<(), String
     state.delete_issue(&id).map_err(|e| e.to_string())
 }
 
+// Comments live in the issue file and have more than one writer, so they are
+// their own three calls rather than a field of `update_issue`: each one reads
+// the file, applies just its change, and returns the issue as it now stands.
+// `created_at` is the comment's id within its issue.
+
+#[tauri::command]
+pub fn add_issue_comment(
+    state: State<'_, AppState>,
+    issue_id: String,
+    body: String,
+) -> Result<Issue, String> {
+    state.add_issue_comment(&issue_id, &body).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn update_issue_comment(
+    state: State<'_, AppState>,
+    issue_id: String,
+    created_at: i64,
+    body: String,
+) -> Result<Issue, String> {
+    state
+        .update_issue_comment(&issue_id, created_at, &body)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_issue_comment(
+    state: State<'_, AppState>,
+    issue_id: String,
+    created_at: i64,
+) -> Result<Issue, String> {
+    state
+        .delete_issue_comment(&issue_id, created_at)
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn start_issue_run(
     state: State<'_, AppState>,

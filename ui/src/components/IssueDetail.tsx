@@ -2,10 +2,11 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { FileRoot, Issue, IssuePatch, RunInfo, trashPath } from "../api";
-import { CrossRefs, LinkEdge } from "../lib/links";
+import { CrossRefs, IssueRef, LinkEdge } from "../lib/links";
+import { IssueLink } from "../lib/issueLinks";
 import { DocsIndex } from "../lib/docsIndex";
 import { runName } from "../agents";
-import { ISSUE_STATUSES, PRIORITY_LABELS, STATUS_LABELS, fmtDate, isOverdue } from "../lib/issues";
+import { ISSUE_STATUSES, PRIORITY_LABELS, STATUS_LABELS, fmtDate, fmtStamp, isOverdue } from "../lib/issues";
 import { ISSUES_DIR, Attachment, insertAttachment, parseAttachments, removeAttachment } from "../lib/attachments";
 import { Attached, attachBlob, attachPath } from "../lib/issueAttach";
 import { dateStamp } from "../lib/dailyNote";
@@ -19,6 +20,8 @@ import { PriorityGlyph, StatusDot } from "./IssueRow";
 import IssueAttachments, { forgetAttachment } from "./IssueAttachments";
 import MarkdownEditor, { MarkdownEditorHandle } from "./MarkdownEditor";
 import AgentAddMenu from "./AgentAddMenu";
+import IssueComments from "./IssueComments";
+import IssueLinkMenu from "./IssueLinkMenu";
 import DatePicker from "./DatePicker";
 import { ContractIcon, ExpandIcon } from "./icons";
 
@@ -28,12 +31,6 @@ import { ContractIcon, ExpandIcon } from "./icons";
 const MENU_W = 220;
 const MENU_ROW_H = 33;
 const MENU_PAD = 10;
-
-function ts(secs: number): string {
-  return new Date(secs * 1000).toLocaleString(undefined, {
-    month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
-  });
-}
 
 // A date as a quiet property pill: reads as text ("◷ Due Aug 1"), the click
 // opens the in-app calendar popover (native pickers can't be dismissed
@@ -118,6 +115,8 @@ export default function IssueDetail({
   root,
   runs,
   mentions,
+  links,
+  linkCandidates,
   index,
   cross,
   expanded,
@@ -127,6 +126,12 @@ export default function IssueDetail({
   onDelete,
   onOpenRun,
   onOpenMention,
+  onOpenIssue,
+  onAddLink,
+  onRemoveLink,
+  onPostComment,
+  onEditComment,
+  onDeleteComment,
   onFollowLink,
   onTagClick,
   onToggleExpand,
@@ -140,6 +145,10 @@ export default function IssueDetail({
   runs: RunInfo[];
   // Notes and issues whose text links here ([[AGE-14]]), via lib/links.
   mentions: LinkEdge[];
+  // The Links section: issues this one is linked to, either side's `links:`
+  // having said so (lib/issueLinks), and what the "+" can still offer.
+  links: IssueLink[];
+  linkCandidates: IssueRef[];
   // What the description's wikilinks resolve against: this project's notes,
   // and every project's issues and runs.
   index: DocsIndex | null;
@@ -155,6 +164,17 @@ export default function IssueDetail({
   onDelete: () => void;
   onOpenRun: (runId: string) => void;
   onOpenMention: (edge: LinkEdge) => void;
+  // A linked issue opened from the Links section, and the two writes behind
+  // that section — both sides of a link are written, so either file read on
+  // its own tells the whole relation.
+  onOpenIssue: (ref: IssueRef) => void;
+  onAddLink: (ref: IssueRef) => void;
+  onRemoveLink: (link: IssueLink) => void;
+  // The comment thread's three writes. They resolve once the issue has been
+  // written and re-read, so the section can keep a failed draft in the box.
+  onPostComment: (body: string) => Promise<void>;
+  onEditComment: (createdAt: number, body: string) => Promise<void>;
+  onDeleteComment: (createdAt: number) => Promise<void>;
   // ⌘-click on a wikilink in the description, and a click on a #tag.
   onFollowLink: (target: string, heading: string | null) => void;
   onTagClick: (tag: string) => void;
@@ -566,6 +586,56 @@ export default function IssueDetail({
     </div>
   );
 
+  // The discussion, under the description in both layouts: it is read with
+  // the issue, not filed beside it like the agents and links.
+  const commentsList = (
+    <IssueComments
+      key={issue.id}
+      comments={issue.comments}
+      onPost={onPostComment}
+      onEdit={onEditComment}
+      onDelete={onDeleteComment}
+    />
+  );
+
+  // Linked issues. Always rendered, empty or not: the "+" beside the heading
+  // is the only way to make a link without hand-editing frontmatter, and a
+  // section that appears only once it has content can't be found.
+  const linksList = (
+    <div className="issue-detail-runs issue-detail-links">
+      <div className="issue-detail-section-head">
+        <h3>Links</h3>
+        <IssueLinkMenu candidates={linkCandidates} onPick={onAddLink} />
+      </div>
+      {links.length === 0 && <div className="issue-detail-empty">No linked issues</div>}
+      {links.map((l) => (
+        <div key={l.label} className="issue-detail-link-row">
+          <button
+            className={`issue-detail-run issue-detail-link${l.ref ? "" : " unresolved"}`}
+            title={
+              l.ref
+                ? `${l.ref.project.name} · ${l.ref.issue.title}`
+                : `No issue ${l.label} in any project (linked anyway)`
+            }
+            disabled={!l.ref}
+            onClick={() => { if (l.ref) onOpenIssue(l.ref); }}
+          >
+            {l.ref ? <StatusDot status={l.ref.issue.status} /> : <span className="issue-link-ghost" aria-hidden>◌</span>}
+            <code className="issue-link-key">{l.label}</code>
+            <span className="issue-detail-run-name">{l.ref?.issue.title ?? "Not in this workspace"}</span>
+          </button>
+          <button
+            className="issue-link-remove"
+            title={`Unlink ${l.label}`}
+            onClick={() => onRemoveLink(l)}
+          >
+            ✕
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+
   const mentionsList = mentions.length > 0 && (
     <div className="issue-detail-runs issue-detail-mentions">
       <h3>Mentions</h3>
@@ -588,7 +658,7 @@ export default function IssueDetail({
 
   const foot = (
     <div className="issue-detail-foot">
-      <span title={`Updated ${ts(issue.updatedAt)}`}>Created {ts(issue.createdAt)}</span>
+      <span title={`Updated ${fmtStamp(issue.updatedAt)}`}>Created {fmtStamp(issue.createdAt)}</span>
       <div className="spacer" />
       <button className="ghost" onClick={onDelete}>Delete</button>
     </div>
@@ -620,7 +690,11 @@ export default function IssueDetail({
     <div className="issue-drop-hint">{attaching ? "Attaching…" : `Drop to attach to ${label}`}</div>
   );
 
-  const cls = `issue-detail${expanded ? " expanded" : ""}${dragOver ? " drop-target" : ""}`;
+  // `has-comments` stops the description growing into the pane's spare height
+  // (see styles.css): with a thread under it, that height is what keeps the
+  // discussion in view instead of below the fold.
+  const cls = `issue-detail${expanded ? " expanded" : ""}${dragOver ? " drop-target" : ""}`
+    + (issue.comments.length > 0 ? " has-comments" : "");
 
   if (expanded) {
     return (
@@ -632,6 +706,7 @@ export default function IssueDetail({
               {titleField}
               {bodyField}
               {attachmentsList}
+              {commentsList}
             </div>
           </div>
           <div className="issue-detail-rail">
@@ -643,6 +718,7 @@ export default function IssueDetail({
               <div className="issue-meta-row"><span className="issue-meta-label">Scheduled</span>{scheduledPill}</div>
             </div>
             {runsList}
+            {linksList}
             {mentionsList}
             {foot}
           </div>
@@ -667,7 +743,9 @@ export default function IssueDetail({
       {bodyField}
       {attachmentsList}
       {dropHint}
+      {commentsList}
       {runsList}
+      {linksList}
       {mentionsList}
       {foot}
     </aside>

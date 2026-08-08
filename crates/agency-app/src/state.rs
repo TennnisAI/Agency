@@ -428,12 +428,32 @@ fn fresh_agent_argv(
 /// folder that early too. Naming a file invites opening it, so the text now
 /// says outright that the issue is already here, and holds back the tracker's
 /// conventions for the one case that needs them: filing a follow-up.
-fn issue_prompt(label: &str, title: &str, body: &str, root: &Path) -> String {
+fn issue_prompt(
+    label: &str,
+    title: &str,
+    body: &str,
+    comments: &[agency_core::registry::IssueComment],
+    root: &Path,
+) -> String {
     let mut prompt = if body.trim().is_empty() {
         format!("Work on issue {label}: {title}")
     } else {
         format!("Work on issue {label}: {title}\n\n{body}")
     };
+    // The thread is part of the ask: it is where the issue gets corrected,
+    // narrowed, or argued with after it was filed. Same reasoning as the body
+    // — it travels in the prompt so nobody has to go and open the file.
+    if !comments.is_empty() {
+        prompt.push_str(&format!("\n\nComments on {label}, oldest first:\n"));
+        for c in comments {
+            prompt.push_str(&format!(
+                "\n{} ({}):\n{}\n",
+                c.author,
+                agency_core::issuefs::epoch_to_rfc3339(c.created_at),
+                c.body.trim(),
+            ));
+        }
+    }
     // Attachments are relative links in the body (`assets/…`), which reads
     // as a dead path unless the agent is told what they resolve to.
     let attached = agency_core::issuefs::body_attachments(body);
@@ -1833,7 +1853,7 @@ impl AppState {
             (issue, key, root)
         };
         let label = format!("{key}-{}", issue.seq);
-        let prompt = issue_prompt(&label, &issue.title, &issue.body, &root);
+        let prompt = issue_prompt(&label, &issue.title, &issue.body, &issue.comments, &root);
         let title = format!("{label} {}", issue.title);
         Ok((issue, prompt, title))
     }
@@ -2032,21 +2052,28 @@ impl AppState {
         let (root, prefix) = self.issue_root(reg, &issue.project_id)?;
         let key = format!("{prefix}-{}", issue.seq);
         let path = issuefs::issue_path(&root, &key);
-        let extra = std::fs::read_to_string(&path)
+        let current = std::fs::read_to_string(&path)
             .ok()
-            .and_then(|t| issuefs::parse_issue_file(&key, &t).ok())
-            .map(|f| f.extra)
-            .unwrap_or_default();
+            .and_then(|t| issuefs::parse_issue_file(&key, &t).ok());
+        let extra = current.as_ref().map(|f| f.extra.clone()).unwrap_or_default();
+        // The thread belongs to the file, not to the index row: an agent can
+        // append a comment while the app has the issue open, and every write
+        // from here (title, body, status, links) carries over what the file
+        // says rather than the row's possibly older copy. Comments are written
+        // only by `edit_issue_comments`, which parses the file first.
+        let comments = current.map_or_else(|| issue.comments.clone(), |f| f.comments);
         let file = issuefs::IssueFile {
             key,
             seq: issue.seq,
             title: issue.title.clone(),
             body: issue.body.clone(),
+            comments,
             status: issue.status,
             priority: issue.priority,
             due: issue.due.clone(),
             scheduled: issue.scheduled.clone(),
             rank: issue.rank,
+            links: issue.links.clone(),
             created_at: issue.created_at,
             updated_at: issue.updated_at,
             extra,
@@ -2054,6 +2081,118 @@ impl AppState {
         issuefs::atomic_write(&path, &issuefs::serialize_issue_file(&file))?;
         issuefs::ensure_readme(&root)?;
         Ok(())
+    }
+
+    /// Who a comment written in the app is signed by: the repo's git user,
+    /// then the OS user, and "You" for a checkout that answers neither.
+    fn comment_author(root: &Path) -> String {
+        agency_core::git::user_name(root)
+            .or_else(|| std::env::var("USER").ok().filter(|u| !u.trim().is_empty()))
+            .unwrap_or_else(|| "You".to_string())
+    }
+
+    /// Mutate an issue's comment thread, file first. Unlike every other issue
+    /// write, this reads the file rather than the index row: the thread has
+    /// more than one writer (an agent working the issue can append to it), and
+    /// the row is only as fresh as the last reconcile. The mutation gets the
+    /// parsed file and the name to sign new comments with; the row is then
+    /// rewritten from what was actually written to disk.
+    fn edit_issue_comments<F>(&self, id: &str, mutate: F) -> Result<agency_core::registry::Issue>
+    where
+        F: FnOnce(&mut Vec<agency_core::registry::IssueComment>, &str) -> Result<()>,
+    {
+        use agency_core::issuefs;
+        let reg = self.registry.lock().unwrap();
+        let row = reg.get_issue(id)?.ok_or_else(|| anyhow!("unknown issue: {id}"))?;
+        self.ensure_issue_files(&reg, &row.project_id)?;
+        let (root, prefix) = self.issue_root(&reg, &row.project_id)?;
+        let key = format!("{prefix}-{}", row.seq);
+        let path = issuefs::issue_path(&root, &key);
+        // A file that is missing or unparseable falls back to the row, which is
+        // the same recovery `write_issue_file` performs: better a rewritten
+        // file than a comment that cannot be posted at all.
+        let mut file = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|t| issuefs::parse_issue_file(&key, &t).ok())
+            .unwrap_or_else(|| issuefs::IssueFile {
+                key: key.clone(),
+                seq: row.seq,
+                title: row.title.clone(),
+                body: row.body.clone(),
+                comments: row.comments.clone(),
+                status: row.status,
+                priority: row.priority,
+                due: row.due.clone(),
+                scheduled: row.scheduled.clone(),
+                rank: row.rank,
+                links: row.links.clone(),
+                created_at: row.created_at,
+                updated_at: row.updated_at,
+                extra: Vec::new(),
+            });
+        mutate(&mut file.comments, &Self::comment_author(&root))?;
+        file.updated_at = now_secs();
+        issuefs::atomic_write(&path, &issuefs::serialize_issue_file(&file))?;
+        issuefs::ensure_readme(&root)?;
+        let next = issuefs::issue_from_file(&file, row.id, &row.project_id, file.created_at, file.updated_at);
+        reg.upsert_issue_row(&next)
+    }
+
+    /// Post a comment, signed by whoever this checkout says is writing.
+    pub fn add_issue_comment(&self, id: &str, body: &str) -> Result<agency_core::registry::Issue> {
+        let text = body.trim().to_string();
+        if text.is_empty() {
+            bail!("a comment needs some text");
+        }
+        self.edit_issue_comments(id, move |comments, author| {
+            // A comment is addressed by its timestamp, so two posted inside the
+            // same second are nudged apart rather than made ambiguous.
+            let mut at = now_secs();
+            while comments.iter().any(|c| c.created_at == at) {
+                at += 1;
+            }
+            comments.push(agency_core::registry::IssueComment {
+                author: author.to_string(),
+                created_at: at,
+                body: text,
+            });
+            Ok(())
+        })
+    }
+
+    pub fn update_issue_comment(
+        &self,
+        id: &str,
+        created_at: i64,
+        body: &str,
+    ) -> Result<agency_core::registry::Issue> {
+        let text = body.trim().to_string();
+        if text.is_empty() {
+            bail!("a comment needs some text");
+        }
+        self.edit_issue_comments(id, move |comments, _| {
+            let c = comments
+                .iter_mut()
+                .find(|c| c.created_at == created_at)
+                .ok_or_else(|| anyhow!("that comment is no longer there"))?;
+            c.body = text;
+            Ok(())
+        })
+    }
+
+    pub fn delete_issue_comment(
+        &self,
+        id: &str,
+        created_at: i64,
+    ) -> Result<agency_core::registry::Issue> {
+        self.edit_issue_comments(id, move |comments, _| {
+            let before = comments.len();
+            comments.retain(|c| c.created_at != created_at);
+            if comments.len() == before {
+                bail!("that comment is no longer there");
+            }
+            Ok(())
+        })
     }
 
     /// Automation path: move the issue strictly forward (see
@@ -2137,6 +2276,8 @@ impl AppState {
             due: None,
             scheduled: None,
             rank: None,
+            links: Vec::new(),
+            comments: Vec::new(),
             created_at: now,
             updated_at: now,
         };
@@ -2183,6 +2324,14 @@ impl AppState {
                 bail!("invalid rank");
             }
             next.rank = r;
+        }
+        if let Some(links) = &patch.links {
+            // Through the file parser's own normalization (upper-case, deduped,
+            // self-link dropped), so what the API accepts is exactly what the
+            // frontmatter can hold.
+            let (_, prefix) = self.issue_root(&reg, &next.project_id)?;
+            let own = format!("{prefix}-{}", next.seq);
+            next.links = agency_core::issuefs::parse_links(&links.join(","), &own)?;
         }
         next.updated_at = now_secs();
         self.write_issue_file(&reg, &next)?;
@@ -4894,7 +5043,7 @@ mod tests {
     #[test]
     fn issue_prompt_carries_the_issue_and_does_not_send_the_agent_reading() {
         let root = Path::new("/repo");
-        let p = super::issue_prompt("AGE-14", "Fix login", "The button does nothing.", root);
+        let p = super::issue_prompt("AGE-14", "Fix login", "The button does nothing.", &[], root);
         assert!(p.starts_with("Work on issue AGE-14: Fix login\n\nThe button does nothing."));
         // The body is already in the prompt, so the agent must be told not to
         // go fetch it — this is what stopped a third of runs opening the file
@@ -4910,12 +5059,12 @@ mod tests {
     #[test]
     fn issue_prompt_handles_an_empty_body_and_resolves_attachments() {
         let root = Path::new("/repo");
-        let bare = super::issue_prompt("AGE-9", "Just a title", "  ", root);
+        let bare = super::issue_prompt("AGE-9", "Just a title", "  ", &[], root);
         assert!(bare.starts_with("Work on issue AGE-9: Just a title\n\nThat is the whole of AGE-9"), "{bare}");
 
         // Relative `assets/…` links are dead paths from inside a worktree, so
         // the prompt resolves them against the project checkout.
-        let shot = super::issue_prompt("AGE-9", "T", "before ![](assets/AGE-9-shot.png) after", root);
+        let shot = super::issue_prompt("AGE-9", "T", "before ![](assets/AGE-9-shot.png) after", &[], root);
         assert!(shot.contains("`/repo/.agency/issues/assets/AGE-9-shot.png`"), "{shot}");
         assert!(!bare.contains("assets/"), "{bare}");
     }

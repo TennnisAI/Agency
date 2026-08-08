@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
+import { openUrl } from "@tauri-apps/plugin-opener";
 
 // Inline markdown renderer for PR descriptions and comment bodies. This content
 // comes from GitHub users, so it is untrusted and must be sanitized before it
@@ -19,7 +20,25 @@ function sanitize(html: string): string {
   return DOMPurify.sanitize(html, { USE_PROFILES: { html: true } });
 }
 
+// A link in rendered markdown must not navigate the webview: the app is the
+// page, and following a link inside it replaces the whole UI with no way back.
+// http(s) and mailto open in the user's browser (the same route the live
+// preview takes); anything else is inert.
+function onLinkClick(e: React.MouseEvent<HTMLDivElement>) {
+  const a = (e.target as HTMLElement).closest("a");
+  const href = a?.getAttribute("href");
+  if (!a || !href) return;
+  e.preventDefault();
+  if (/^(https?|mailto):/i.test(href)) void openUrl(href).catch(() => {});
+}
+
 export default function Markdown({ text, className }: { text: string; className?: string }) {
   const html = useMemo(() => sanitize(marked.parse(text ?? "", { async: false }) as string), [text]);
-  return <div className={`md${className ? ` ${className}` : ""}`} dangerouslySetInnerHTML={{ __html: html }} />;
+  return (
+    <div
+      className={`md${className ? ` ${className}` : ""}`}
+      onClick={onLinkClick}
+      dangerouslySetInnerHTML={{ __html: html }}
+    />
+  );
 }

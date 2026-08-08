@@ -35,6 +35,8 @@ function issue(over: Partial<Issue>): Issue {
     due: null,
     scheduled: null,
     rank: null,
+    links: [],
+    comments: [],
     createdAt: seq,
     updatedAt: seq,
     ...over,
@@ -103,6 +105,18 @@ describe("matchesFilters", () => {
     expect(matchesFilters(i, "AGE-14", f({ terms: ["ci"] }))).toBe(true);
     expect(matchesFilters(i, "AGE-14", f({ terms: ["flaky", "ci"] }))).toBe(true);
     expect(matchesFilters(i, "AGE-14", f({ terms: ["flaky", "nope"] }))).toBe(false);
+  });
+
+  it("searches the comment thread too, author and text", () => {
+    const i = issue({
+      title: "Flaky login test",
+      body: "Fails on CI only",
+      comments: [{ author: "Sam", createdAt: 1, body: "It's the clock skew." }],
+    });
+    expect(matchesFilters(i, "AGE-14", f({ terms: ["skew"] }))).toBe(true);
+    expect(matchesFilters(i, "AGE-14", f({ terms: ["sam"] }))).toBe(true);
+    expect(matchesFilters(i, "AGE-14", f({ terms: ["flaky", "skew"] }))).toBe(true);
+    expect(matchesFilters(i, "AGE-14", f({ terms: ["nowhere"] }))).toBe(false);
   });
 });
 

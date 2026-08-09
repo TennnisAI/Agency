@@ -27,17 +27,14 @@ cargo build -p agency-core --bin agency-termd \
 echo "Daemon binary: $REPO_ROOT/target/debug/agency-termd"
 
 # Tauri's externalBin (tauri.conf.json) requires the triple-suffixed sidecar to
-# exist at target/release/agency-termd-<triple> even in dev — its build script
-# validates the resource and aborts if missing. build-termd.sh normally produces
-# it via a full release build, but a fresh git worktree has an empty target/ and
-# has never run it, so `tauri dev` fails with "resource path ... doesn't exist".
-# Stage the just-built debug binary under that name so dev works with no separate
-# release build. (A later `pnpm tauri build` still uses build-termd.sh for the
-# real release sidecar.)
+# exist at target/release/agency-termd-<triple> even in dev, and tauri-build
+# copies it next to the app executable — which is the binary the app actually
+# spawns. crates/agency-app/build.rs stages one when it is missing (so plain
+# cargo commands work on a fresh worktree), but only when it is missing.
 #
-# Copy every run, not just when the file is missing: this is the binary the app
-# actually spawns, so a stale copy means daemon-side changes silently don't run
-# and you debug the old code.
+# So copy every run, not just when the file is absent: a stale copy means
+# daemon-side changes silently don't run and you debug the old code. (A later
+# `pnpm tauri build` still uses build-termd.sh for the real release sidecar.)
 TRIPLE="$(rustc -vV | sed -n 's/host: //p')"
 SIDECAR="$REPO_ROOT/target/release/agency-termd-$TRIPLE"
 mkdir -p "$REPO_ROOT/target/release"

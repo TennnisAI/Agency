@@ -604,6 +604,9 @@ export const saveKnowledgeConfig = (
 ) => invoke<void>("save_knowledge_config", { projectId, graph, serveCommand, buildCommand });
 export const buildKnowledgeGraph = (projectId: string) =>
   invoke<void>("build_knowledge_graph", { projectId });
+// Opens a terminal running `install_command`; returns it so the caller can jump in.
+export const installKnowledgeTooling = (projectId: string) =>
+  invoke<RunInfo>("install_knowledge_tooling", { projectId });
 
 // Per-project list of files copied into every new agent worktree (persisted to
 // the project's gitignored .agency/agency.local.toml). `detectedEnv` is the set

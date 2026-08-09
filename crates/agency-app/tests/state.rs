@@ -1452,14 +1452,14 @@ fn a_failed_graph_build_reports_why() {
     assert!(!cfg.graph_built);
     assert_eq!(cfg.last_build_error.as_deref(), Some("graphify: no parser for this repo"));
 
-    // A build whose command isn't installed at all is refused up front, with the
-    // install line the settings panel tells the user to run.
+    // A build whose command isn't installed at all is refused up front, and
+    // pointed at the install the settings panel offers to run.
     state
         .save_knowledge_config(&p.id, true, None, Some("definitely-not-a-real-binary-4k2x .".into()))
         .unwrap();
     let err = state.build_knowledge_graph(&p.id).unwrap_err().to_string();
-    assert!(err.contains("is not installed"), "{err}");
-    assert!(err.contains("uv tool install graphifyy"), "{err}");
+    assert!(err.contains("'definitely-not-a-real-binary-4k2x' is not installed"), "{err}");
+    assert!(err.contains("Install the graphify tooling"), "{err}");
 }
 
 /// Poll the knowledge config until the background build thread has finished.

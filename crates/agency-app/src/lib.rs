@@ -188,6 +188,7 @@ pub fn run() {
             commands::get_knowledge_config,
             commands::save_knowledge_config,
             commands::build_knowledge_graph,
+            commands::install_knowledge_tooling,
             commands::get_files_config,
             commands::save_files_config,
             commands::import_mcp_json,

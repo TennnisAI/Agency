@@ -2657,7 +2657,7 @@ impl AppState {
             graph_path: graph.display().to_string(),
             building: build_state.running,
             last_build_error: build_state.error,
-            install_command: agency_core::config::GRAPHIFY_INSTALL_COMMAND.to_string(),
+            install_command: graphify_install_script(),
         })
     }
 
@@ -2696,6 +2696,14 @@ impl AppState {
         self.start_knowledge_build(&repo)
     }
 
+    /// Install the graphify tooling in a visible Agency terminal, the same way
+    /// a missing agent CLI is installed: the user watches it run and can answer
+    /// anything it asks, rather than Agency mutating their machine silently.
+    /// Returns the terminal run to jump into.
+    pub fn install_knowledge_tooling(&self, project_id: &str) -> Result<RunInfo> {
+        self.create_install_terminal(project_id, "graphify", &graphify_install_script())
+    }
+
     /// Spawn the project's build command in the primary checkout, tracking it in
     /// `kg_builds` so the UI can show progress and failures. Returns an error
     /// (without spawning) when the tooling is missing or a build is already
@@ -2713,10 +2721,7 @@ impl AppState {
             .ok_or_else(|| anyhow!("the build command is empty"))?
             .to_string();
         if !command_on_path(&cmd) {
-            return Err(anyhow!(
-                "'{cmd}' is not installed. Run `{}` and try again.",
-                agency_core::config::GRAPHIFY_INSTALL_COMMAND
-            ));
+            return Err(anyhow!("'{cmd}' is not installed. Install the graphify tooling and try again."));
         }
         {
             let mut builds = self.kg_builds.lock().unwrap();
@@ -5034,6 +5039,13 @@ impl AppState {
         }
         Ok(out)
     }
+}
+
+/// The install script for the graphify tooling, adapted to this machine: it
+/// picks up uv first when uv isn't there yet. Probed at call time rather than
+/// cached, so a uv installed since app start is noticed.
+fn graphify_install_script() -> String {
+    agency_core::config::graphify_install_script(command_on_path("uv"))
 }
 
 /// The graphify MCP server to hand a workspace, or `Err(reason)` explaining why

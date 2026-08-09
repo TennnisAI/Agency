@@ -1121,6 +1121,16 @@ pub fn build_knowledge_graph(state: State<'_, AppState>, project_id: String) -> 
     state.build_knowledge_graph(&project_id).map_err(|e| e.to_string())
 }
 
+/// Open a terminal that installs the graphify tooling. Returns the run so the
+/// UI can jump into it and watch the install.
+#[tauri::command]
+pub fn install_knowledge_tooling(
+    state: State<'_, AppState>,
+    project_id: String,
+) -> Result<RunInfo, String> {
+    state.install_knowledge_tooling(&project_id).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn get_files_config(
     state: State<'_, AppState>,

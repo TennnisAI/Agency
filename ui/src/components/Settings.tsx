@@ -37,6 +37,7 @@ import {
   saveFilesConfig,
   saveKnowledgeConfig,
   buildKnowledgeGraph,
+  installKnowledgeTooling,
   saveMcpServers,
   saveProfile,
   saveSettings,
@@ -441,6 +442,21 @@ export default function Settings({
       setKgBuildError(String(e));
     }
     await loadKnowledge(projectId);
+  }
+
+  // Install the tooling the way a missing agent CLI is installed: in a visible
+  // terminal the user is dropped into, so they see what runs on their machine
+  // and can answer anything it asks.
+  async function installKgTooling() {
+    if (!projectId) return;
+    setKgBuildError(null);
+    try {
+      const run = await installKnowledgeTooling(projectId);
+      if (onOpenTerminal) onOpenTerminal(run.id);
+      else onClose();
+    } catch (e) {
+      toastError(e, "Couldn't start the install");
+    }
   }
 
   // Worktree copy-list is per-project — same lifecycle as the knowledge config.
@@ -1138,13 +1154,21 @@ export default function Settings({
                 <>
                   {(!kg.serve_installed || !kg.build_installed) && (
                     <div className="settings-kg-warn">
-                      {!kg.serve_installed && !kg.build_installed
-                        ? "The serve and build commands aren't on your PATH"
-                        : !kg.serve_installed
-                        ? "The serve command isn't on your PATH"
-                        : "The build command isn't on your PATH"}
-                      . The graph is enabled but will be skipped until you install the tooling:{" "}
-                      <code>{kg.install_command}</code>
+                      <div>
+                        {!kg.serve_installed && !kg.build_installed
+                          ? "The serve and build commands aren't on your PATH"
+                          : !kg.serve_installed
+                          ? "The serve command isn't on your PATH"
+                          : "The build command isn't on your PATH"}
+                        . The graph is enabled but will be skipped until the tooling is installed.
+                        Agency can install it for you in a terminal:
+                      </div>
+                      <pre className="install-cmd">{kg.install_command}</pre>
+                      <div className="settings-kg-actions">
+                        <button className="settings-secondary" onClick={installKgTooling}>
+                          Install tooling
+                        </button>
+                      </div>
                     </div>
                   )}
                   {kg.build_installed && (

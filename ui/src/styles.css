@@ -432,8 +432,9 @@ textarea.settings-input { min-height: 64px; resize: vertical; }
 .settings-field-key { font-family: var(--mono); font-size: 11.5px; color: var(--o0); white-space: nowrap; flex-shrink: 0; min-width: 58px; }
 .settings-field-input { background: var(--crust); border: 1px solid var(--s0); color: var(--sub1); border-radius: 6px; padding: 4px 9px; font-family: var(--mono); font-size: 11.5px; flex: 1; min-width: 0; }
 .settings-field-input:focus { outline: none; border-color: var(--blue); }
-.settings-kg-warn { color: var(--yellow); font-size: 11.5px; line-height: 1.4; background: rgba(249,226,175,.08); border-radius: 6px; padding: 6px 9px; }
-.settings-kg-warn code { font-family: var(--mono); color: var(--yellow); }
+.settings-kg-warn { color: var(--yellow); font-size: 11.5px; line-height: 1.4; background: rgba(249,226,175,.08); border-radius: 6px; padding: 6px 9px; display: flex; flex-direction: column; gap: 7px; }
+.settings-kg-warn .install-cmd { font-size: 11.5px; }
+.settings-kg-actions { display: flex; justify-content: flex-end; }
 /* Same shape as the warning, for the settled/no-action-needed state. */
 .settings-kg-note { color: var(--o0); font-size: 11.5px; line-height: 1.4; background: var(--crust); border-radius: 6px; padding: 6px 9px; word-break: break-all; }
 /* Legacy */

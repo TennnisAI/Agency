@@ -181,11 +181,7 @@ impl TermClient {
     where
         F: Fn(Vec<u8>) + Send + Sync + 'static,
     {
-        self.shared
-            .callbacks
-            .lock()
-            .unwrap()
-            .insert(id.to_string(), Arc::new(on_output));
+        self.shared.callbacks.lock().unwrap().insert(id.to_string(), Arc::new(on_output));
         send_msg(&self.shared, &ClientMsg::Resize { id: id.into(), cols, rows })?;
         send_msg(&self.shared, &ClientMsg::Subscribe { id: id.into() })?;
         Ok(Subscription { id: id.into(), shared: self.shared.clone() })

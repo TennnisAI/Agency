@@ -36,10 +36,7 @@ pub fn request_quit(app: &tauri::AppHandle) {
     app.dialog()
         .message(message)
         .title("Quit Agency")
-        .buttons(MessageDialogButtons::OkCancelCustom(
-            "Quit".into(),
-            "Cancel".into(),
-        ))
+        .buttons(MessageDialogButtons::OkCancelCustom("Quit".into(), "Cancel".into()))
         .show(move |confirmed| {
             if confirmed {
                 confirm_quit(&app2);

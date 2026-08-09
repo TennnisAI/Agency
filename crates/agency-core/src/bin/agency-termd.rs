@@ -19,10 +19,7 @@ fn main() {
     let _ = std::fs::remove_file(&sock);
 
     // Detach BEFORE spawning any threads (fork + threads do not mix).
-    daemonize::Daemonize::new()
-        .working_directory(std::env::temp_dir())
-        .start()
-        .expect("daemonize");
+    daemonize::Daemonize::new().working_directory(std::env::temp_dir()).start().expect("daemonize");
 
     if let Err(e) = agency_core::term::server::run(&sock) {
         eprintln!("agency-termd exited: {e}");

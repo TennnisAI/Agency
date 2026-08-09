@@ -35,7 +35,11 @@ pub struct FallbackSpec {
 // message reads as seq 0, which the client treats as "untagged".
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ClientMsg {
-    Hello { version: u32, #[serde(default)] seq: u64 },
+    Hello {
+        version: u32,
+        #[serde(default)]
+        seq: u64,
+    },
     StartSession {
         id: String,
         cwd: String,
@@ -49,25 +53,77 @@ pub enum ClientMsg {
         #[serde(default)]
         seq: u64,
     },
-    Subscribe { id: String },
-    Unsubscribe { id: String },
-    Resize { id: String, cols: u16, rows: u16 },
-    Capture { id: String, lines: usize, #[serde(default)] seq: u64 },
-    Status { id: String, #[serde(default)] seq: u64 },
-    Kill { id: String },
-    List { #[serde(default)] seq: u64 },
+    Subscribe {
+        id: String,
+    },
+    Unsubscribe {
+        id: String,
+    },
+    Resize {
+        id: String,
+        cols: u16,
+        rows: u16,
+    },
+    Capture {
+        id: String,
+        lines: usize,
+        #[serde(default)]
+        seq: u64,
+    },
+    Status {
+        id: String,
+        #[serde(default)]
+        seq: u64,
+    },
+    Kill {
+        id: String,
+    },
+    List {
+        #[serde(default)]
+        seq: u64,
+    },
     Shutdown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ServerMsg {
-    Hello { version: u32, #[serde(default)] seq: u64 },
-    Started { id: String, #[serde(default)] seq: u64 },
-    Captured { id: String, text: String, #[serde(default)] seq: u64 },
-    Status { id: String, status: SessionStatus, #[serde(default)] seq: u64 },
-    List { sessions: Vec<(String, SessionStatus)>, #[serde(default)] seq: u64 },
-    Exited { id: String, code: i32 },
-    Error { id: Option<String>, message: String, #[serde(default)] seq: u64 },
+    Hello {
+        version: u32,
+        #[serde(default)]
+        seq: u64,
+    },
+    Started {
+        id: String,
+        #[serde(default)]
+        seq: u64,
+    },
+    Captured {
+        id: String,
+        text: String,
+        #[serde(default)]
+        seq: u64,
+    },
+    Status {
+        id: String,
+        status: SessionStatus,
+        #[serde(default)]
+        seq: u64,
+    },
+    List {
+        sessions: Vec<(String, SessionStatus)>,
+        #[serde(default)]
+        seq: u64,
+    },
+    Exited {
+        id: String,
+        code: i32,
+    },
+    Error {
+        id: Option<String>,
+        message: String,
+        #[serde(default)]
+        seq: u64,
+    },
 }
 
 impl ServerMsg {
@@ -134,8 +190,12 @@ fn encode_id_bytes(t: u8, id: &str, bytes: &[u8]) -> Vec<u8> {
     out
 }
 
-pub fn encode_output(id: &str, bytes: &[u8]) -> Vec<u8> { encode_id_bytes(T_OUTPUT, id, bytes) }
-pub fn encode_input(id: &str, bytes: &[u8]) -> Vec<u8> { encode_id_bytes(T_INPUT, id, bytes) }
+pub fn encode_output(id: &str, bytes: &[u8]) -> Vec<u8> {
+    encode_id_bytes(T_OUTPUT, id, bytes)
+}
+pub fn encode_input(id: &str, bytes: &[u8]) -> Vec<u8> {
+    encode_id_bytes(T_INPUT, id, bytes)
+}
 
 pub fn encode_snapshot(id: &str, cols: u16, rows: u16, cx: u16, cy: u16, data: &[u8]) -> Vec<u8> {
     let mut out = vec![T_SNAPSHOT];
@@ -149,12 +209,18 @@ pub fn encode_snapshot(id: &str, cols: u16, rows: u16, cx: u16, cy: u16, data: &
     out
 }
 
-fn err(msg: &str) -> io::Error { io::Error::new(io::ErrorKind::InvalidData, msg) }
+fn err(msg: &str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, msg)
+}
 
 fn split_id(rest: &[u8]) -> io::Result<(String, &[u8])> {
-    if rest.len() < 4 { return Err(err("short id frame")); }
+    if rest.len() < 4 {
+        return Err(err("short id frame"));
+    }
     let idlen = u32::from_le_bytes(rest[0..4].try_into().unwrap()) as usize;
-    if rest.len() < 4 + idlen { return Err(err("truncated id")); }
+    if rest.len() < 4 + idlen {
+        return Err(err("truncated id"));
+    }
     let id = String::from_utf8_lossy(&rest[4..4 + idlen]).to_string();
     Ok((id, &rest[4 + idlen..]))
 }
@@ -183,7 +249,9 @@ pub fn decode_server(payload: &[u8]) -> io::Result<ServerFrame> {
         }
         Some(T_SNAPSHOT) => {
             let (id, rest) = split_id(&payload[1..])?;
-            if rest.len() < 8 { return Err(err("short snapshot header")); }
+            if rest.len() < 8 {
+                return Err(err("short snapshot header"));
+            }
             let cols = u16::from_le_bytes(rest[0..2].try_into().unwrap());
             let rows = u16::from_le_bytes(rest[2..4].try_into().unwrap());
             let cx = u16::from_le_bytes(rest[4..6].try_into().unwrap());
@@ -250,11 +318,14 @@ mod tests {
     #[test]
     fn start_session_carries_fallback() {
         let msg = ClientMsg::StartSession {
-            id: "r".into(), cwd: "/tmp".into(), command: "claude".into(),
-            args: vec!["--continue".into()], env: vec![], cols: 80, rows: 24,
-            fallback: Some(FallbackSpec {
-                command: "claude".into(), args: vec![], grace_ms: 3000,
-            }),
+            id: "r".into(),
+            cwd: "/tmp".into(),
+            command: "claude".into(),
+            args: vec!["--continue".into()],
+            env: vec![],
+            cols: 80,
+            rows: 24,
+            fallback: Some(FallbackSpec { command: "claude".into(), args: vec![], grace_ms: 3000 }),
             seq: 1,
         };
         let payload = encode_json(&msg);

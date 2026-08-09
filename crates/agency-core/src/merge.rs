@@ -173,7 +173,8 @@ pub fn merge_state(repo: &Path, branch: &str, base: &str) -> Result<MergeState> 
     // run would otherwise read as this run's own conflict in every window that
     // asks — and "Finish merge" there would commit that other merge and close
     // this run's issue for work it never landed.
-    let mine = in_progress.as_ref().is_some_and(|m| rev(repo, branch).as_deref() == Some(&m.commit));
+    let mine =
+        in_progress.as_ref().is_some_and(|m| rev(repo, branch).as_deref() == Some(&m.commit));
     Ok(MergeState {
         merging: mine,
         unresolved: if mine { unmerged_files(repo)? } else { Vec::new() },
@@ -190,11 +191,7 @@ pub fn finish_merge(repo: &Path, restore_to: Option<&str>) -> Result<String> {
     if is_merging(repo)? {
         let unresolved = unmerged_files(repo)?;
         if !unresolved.is_empty() {
-            bail!(
-                "{} file(s) still conflicted: {}",
-                unresolved.len(),
-                unresolved.join(", ")
-            );
+            bail!("{} file(s) still conflicted: {}", unresolved.len(), unresolved.join(", "));
         }
         // `--no-edit` keeps git's own merge message; `--no-verify` keeps a
         // repo's commit hooks from blocking the completion of a merge the
@@ -272,9 +269,6 @@ pub fn merge_with_progress(
     if !conflicts.is_empty() {
         Ok(MergeOutcome::Conflicts { files: conflicts })
     } else {
-        bail!(
-            "merge failed: {}",
-            String::from_utf8_lossy(&out.stderr)
-        )
+        bail!("merge failed: {}", String::from_utf8_lossy(&out.stderr))
     }
 }

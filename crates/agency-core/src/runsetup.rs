@@ -131,8 +131,11 @@ fn node_suggestions(repo: &Path) -> Vec<RunSuggestion> {
     // the Run tab holds a list rather than one command. It takes no port and
     // opens no browser.
     if scripts.contains_key("build") {
-        let command =
-            if pm == "npm" || pm == "bun" { format!("{pm} run build") } else { format!("{pm} build") };
+        let command = if pm == "npm" || pm == "bun" {
+            format!("{pm} run build")
+        } else {
+            format!("{pm} build")
+        };
         out.push(RunSuggestion::new(
             &format!("{pm} build"),
             "build",
@@ -209,10 +212,7 @@ fn has_make_target(repo: &Path, target: &str) -> bool {
     let Ok(text) = std::fs::read_to_string(repo.join("Makefile")) else {
         return false;
     };
-    text.lines().any(|l| {
-        l.strip_prefix(target)
-            .is_some_and(|rest| rest.starts_with(':'))
-    })
+    text.lines().any(|l| l.strip_prefix(target).is_some_and(|rest| rest.starts_with(':')))
 }
 
 #[cfg(test)]
@@ -309,7 +309,8 @@ mod tests {
         let dir = tempdir().unwrap();
         write(dir.path(), "Cargo.toml", "[package]\nname = \"x\"\n");
         write(dir.path(), "Makefile", "build:\n\tcargo build\ndev:\n\tcargo run\n");
-        let cmds: Vec<String> = suggest_run_commands(dir.path()).into_iter().map(|s| s.command).collect();
+        let cmds: Vec<String> =
+            suggest_run_commands(dir.path()).into_iter().map(|s| s.command).collect();
         assert!(cmds.contains(&"cargo run".to_string()));
         assert!(cmds.contains(&"make dev".to_string()));
     }

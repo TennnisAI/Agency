@@ -43,12 +43,7 @@ impl AgentHandle {
     /// Resize the PTY. This delivers SIGWINCH to the child so it reflows to
     /// the new size.
     pub fn resize(&self, rows: u16, cols: u16) -> Result<()> {
-        self.master.resize(PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        })?;
+        self.master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })?;
         Ok(())
     }
 
@@ -69,12 +64,8 @@ where
     F: Fn(Vec<u8>) + Send + 'static,
 {
     let pty_system = native_pty_system();
-    let pair = pty_system.openpty(PtySize {
-        rows: 24,
-        cols: 80,
-        pixel_width: 0,
-        pixel_height: 0,
-    })?;
+    let pair =
+        pty_system.openpty(PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 })?;
 
     let mut cmd = CommandBuilder::new(&profile.command);
     cmd.args(profile.render_args(prompt));
@@ -123,10 +114,5 @@ where
         *status_for_wait.lock().unwrap() = AgentStatus::Exited(code);
     });
 
-    Ok(AgentHandle {
-        writer: Arc::new(Mutex::new(writer)),
-        status,
-        killer,
-        master: pair.master,
-    })
+    Ok(AgentHandle { writer: Arc::new(Mutex::new(writer)), status, killer, master: pair.master })
 }

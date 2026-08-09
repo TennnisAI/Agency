@@ -1,10 +1,10 @@
+use crate::notifier;
 use agency_core::profile::AgentProfile;
 use agency_core::registry::{IssueStatus, Project, Registry};
 use agency_core::term::client::{Subscription, TermClient};
 use agency_core::term::SessionStatus;
 use agency_core::worktree::WorktreeManager;
 use anyhow::{anyhow, bail, Context, Result};
-use crate::notifier;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, RwLock};
@@ -418,11 +418,7 @@ fn agent_argv(
 ) -> (String, Vec<String>) {
     let mut base_args: Vec<String> = match (use_resume, &profile.resume_args) {
         (true, Some(resume)) => resume.clone(),
-        _ => profile
-            .render_args(prompt)
-            .into_iter()
-            .filter(|a| !a.is_empty())
-            .collect(),
+        _ => profile.render_args(prompt).into_iter().filter(|a| !a.is_empty()).collect(),
     };
     let mcp = mcp_launch_args(profile, worktree, &base_args);
     base_args.extend(mcp);
@@ -461,11 +457,8 @@ fn fresh_agent_argv(
     prompt: &str,
     setup: Option<&str>,
 ) -> (String, Vec<String>) {
-    let mut args: Vec<String> = profile
-        .render_args(prompt)
-        .into_iter()
-        .filter(|a| !a.is_empty())
-        .collect();
+    let mut args: Vec<String> =
+        profile.render_args(prompt).into_iter().filter(|a| !a.is_empty()).collect();
     // Ahead of the prompt below: a flag after a positional argument is the shape
     // most CLIs are least happy with.
     let mcp = mcp_launch_args(profile, worktree, &args);
@@ -682,10 +675,7 @@ fn run_session_name(target: &str, script: &str) -> String {
 fn run_session_names_for(target: &str, live: &[String]) -> Vec<String> {
     let legacy = format!("agency-run-{target}");
     let prefix = format!("{legacy}#");
-    live.iter()
-        .filter(|n| **n == legacy || n.starts_with(&prefix))
-        .cloned()
-        .collect()
+    live.iter().filter(|n| **n == legacy || n.starts_with(&prefix)).cloned().collect()
 }
 
 /// Live status of every run script started in `target`'s workspace, keyed by
@@ -716,9 +706,7 @@ fn run_script_statuses_from(
 /// so a whole project's worth of runs costs one daemon round-trip rather than a
 /// listing per run (the reason AGE-34 left this off the board).
 fn any_run_script_live(target: &str, live: &[(String, SessionStatus)]) -> bool {
-    run_script_statuses_from(target, live)
-        .values()
-        .any(|s| matches!(s, SessionStatus::Running))
+    run_script_statuses_from(target, live).values().any(|s| matches!(s, SessionStatus::Running))
 }
 
 /// Daemon session for a run's companion shell — an interactive terminal the user
@@ -737,10 +725,7 @@ pub const SHELL_AGENT: &str = "shell";
 /// helper so the fallback can't drift between spawn sites (it previously varied
 /// between `/bin/zsh` and `/bin/bash` for the same feature).
 fn login_shell() -> String {
-    std::env::var("SHELL")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "/bin/zsh".to_string())
+    std::env::var("SHELL").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "/bin/zsh".to_string())
 }
 
 fn validate_provider_url(raw: &str) -> Result<()> {
@@ -836,10 +821,8 @@ fn short_suffix() -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0);
+    let nanos =
+        SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
     let mut v = nanos.rotate_left(21) ^ n.wrapping_mul(0x9E37_79B9_7F4A_7C15);
     const DIGITS: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
@@ -910,7 +893,6 @@ fn fmt_bytes(data: &[u8]) -> String {
     let hex: Vec<String> = data.iter().map(|b| format!("{b:02x}")).collect();
     format!("[{}] {:?}", hex.join(" "), String::from_utf8_lossy(data))
 }
-
 
 /// The run the most recent notification was about. macOS gives us no
 /// notification-click callback (the plugin's actions API is mobile-only), but
@@ -1108,10 +1090,8 @@ impl AppState {
         // Existing installs already have agent profiles — mark onboarding done
         // so they aren't interrupted by the picker. Fresh DBs have no profiles
         // at all, so the flag stays unset and onboarding shows on first launch.
-        let onboarding_done = registry
-            .get_setting(SETTING_AGENT_ONBOARDING)?
-            .as_deref()
-            == Some("1");
+        let onboarding_done =
+            registry.get_setting(SETTING_AGENT_ONBOARDING)?.as_deref() == Some("1");
         if !onboarding_done && !registry.list_profiles()?.is_empty() {
             registry.set_setting(SETTING_AGENT_ONBOARDING, "1")?;
         }
@@ -1163,14 +1143,7 @@ impl AppState {
     }
 
     pub fn profile_names(&self) -> Result<Vec<String>> {
-        Ok(self
-            .registry
-            .lock()
-            .unwrap()
-            .list_profiles()?
-            .into_iter()
-            .map(|p| p.name)
-            .collect())
+        Ok(self.registry.lock().unwrap().list_profiles()?.into_iter().map(|p| p.name).collect())
     }
 
     pub fn list_profiles(&self) -> Result<Vec<AgentProfile>> {
@@ -1195,10 +1168,7 @@ impl AppState {
         // across ~10 syscall-heavy lookups.
         let enabled: Vec<bool> = {
             let reg = self.registry.lock().unwrap();
-            builtins
-                .iter()
-                .map(|e| Ok(reg.get_profile(e.id)?.is_some()))
-                .collect::<Result<_>>()?
+            builtins.iter().map(|e| Ok(reg.get_profile(e.id)?.is_some())).collect::<Result<_>>()?
         };
         Ok(builtins
             .iter()
@@ -1212,8 +1182,7 @@ impl AppState {
                 installed: command_on_path(entry.command),
                 supports_mcp: agency_core::mcp::agent_supported(entry.id),
                 supports_mcp_auth: agency_core::mcp::auth_supported(entry.id),
-                accepts_prompt: entry.prompt
-                    != crate::agent_catalog::PromptDelivery::Unsupported,
+                accepts_prompt: entry.prompt != crate::agent_catalog::PromptDelivery::Unsupported,
             })
             .collect())
     }
@@ -1243,10 +1212,7 @@ impl AppState {
         } else {
             self.enable_agent_profiles(ids)?;
         }
-        self.registry
-            .lock()
-            .unwrap()
-            .set_setting(SETTING_AGENT_ONBOARDING, "1")?;
+        self.registry.lock().unwrap().set_setting(SETTING_AGENT_ONBOARDING, "1")?;
         Ok(())
     }
 
@@ -1575,8 +1541,8 @@ impl AppState {
             activity: self.activity.lock().unwrap().get(&run.id).map(|e| {
                 // Loops drive themselves — a quiet attempt isn't waiting on
                 // the user, so it classifies as idle at most.
-                let turn_driven = run.loop_config.is_none()
-                    && self.prompted.lock().unwrap().contains(&run.id);
+                let turn_driven =
+                    run.loop_config.is_none() && self.prompted.lock().unwrap().contains(&run.id);
                 crate::activity::classify(e, turn_driven, crate::activity::now_ms())
             }),
             added: stat.added,
@@ -1607,7 +1573,14 @@ impl AppState {
         pick_port(&used, base, block_size).ok_or_else(|| anyhow!("no free port block available"))
     }
 
-    pub fn create_run(&self, project_id: &str, prompt: &str, agent: &str, base: &str, merge_target: Option<&str>) -> Result<RunInfo> {
+    pub fn create_run(
+        &self,
+        project_id: &str,
+        prompt: &str,
+        agent: &str,
+        base: &str,
+        merge_target: Option<&str>,
+    ) -> Result<RunInfo> {
         self.create_run_with_progress(project_id, prompt, agent, base, merge_target, true, |_| {})
     }
 
@@ -1838,19 +1811,22 @@ impl AppState {
         let race_id = uuid::Uuid::new_v4().to_string();
         let mut out = Vec::new();
         for agent in agents {
-            out.push(self.create_run_spec(NewRunSpec {
-                project_id,
-                prompt,
-                agent,
-                base,
-                merge_target,
-                race_id: Some(race_id.clone()),
-                title: title.clone(),
-                existing_branch: None,
-                loop_config: None,
-                issue_id: issue_id.clone(),
-                worktree: true,
-            }, &mut |_| {})?);
+            out.push(self.create_run_spec(
+                NewRunSpec {
+                    project_id,
+                    prompt,
+                    agent,
+                    base,
+                    merge_target,
+                    race_id: Some(race_id.clone()),
+                    title: title.clone(),
+                    existing_branch: None,
+                    loop_config: None,
+                    issue_id: issue_id.clone(),
+                    worktree: true,
+                },
+                &mut |_| {},
+            )?);
         }
         Ok(out)
     }
@@ -1869,7 +1845,17 @@ impl AppState {
         check_command: &str,
         max_attempts: u32,
     ) -> Result<RunInfo> {
-        self.create_loop_inner(project_id, prompt, agent, base, merge_target, check_command, max_attempts, None, None)
+        self.create_loop_inner(
+            project_id,
+            prompt,
+            agent,
+            base,
+            merge_target,
+            check_command,
+            max_attempts,
+            None,
+            None,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1908,30 +1894,35 @@ impl AppState {
             max_attempts: max_attempts.clamp(1, 100),
             check_timeout_secs: 600,
         };
-        self.create_run_spec(NewRunSpec {
-            project_id,
-            prompt,
-            agent,
-            base,
-            merge_target,
-            race_id: None,
-            title,
-            existing_branch: None,
-            loop_config: Some(cfg),
-            issue_id,
-            worktree: true,
-        }, &mut |_| {})
+        self.create_run_spec(
+            NewRunSpec {
+                project_id,
+                prompt,
+                agent,
+                base,
+                merge_target,
+                race_id: None,
+                title,
+                existing_branch: None,
+                loop_config: Some(cfg),
+                issue_id,
+                worktree: true,
+            },
+            &mut |_| {},
+        )
     }
 
     /// The prompt, run title, and default base for dispatching a local issue,
     /// labeled with the project's issue key ("AGE-14 Fix login"). One place
     /// composes these so run, race, and loop dispatch can't drift.
-    fn issue_dispatch(&self, issue_id: &str) -> Result<(agency_core::registry::Issue, String, String)> {
+    fn issue_dispatch(
+        &self,
+        issue_id: &str,
+    ) -> Result<(agency_core::registry::Issue, String, String)> {
         let (issue, key, root) = {
             let reg = self.registry.lock().unwrap();
-            let issue = reg
-                .get_issue(issue_id)?
-                .ok_or_else(|| anyhow!("unknown issue: {issue_id}"))?;
+            let issue =
+                reg.get_issue(issue_id)?.ok_or_else(|| anyhow!("unknown issue: {issue_id}"))?;
             // Dispatch is an issue-touching path: make sure the file exists
             // before an agent is told where to find it.
             self.ensure_issue_files(&reg, &issue.project_id)?;
@@ -1965,19 +1956,22 @@ impl AppState {
     ) -> Result<RunInfo> {
         let (issue, prompt, title) = self.issue_dispatch(issue_id)?;
         let base = self.issue_base(&issue.project_id, base)?;
-        let info = self.create_run_spec(NewRunSpec {
-            project_id: &issue.project_id,
-            prompt: &prompt,
-            agent,
-            base: &base,
-            merge_target,
-            race_id: None,
-            title: Some(title),
-            existing_branch: None,
-            loop_config: None,
-            issue_id: Some(issue.id.clone()),
-            worktree: true,
-        }, &mut |_| {})?;
+        let info = self.create_run_spec(
+            NewRunSpec {
+                project_id: &issue.project_id,
+                prompt: &prompt,
+                agent,
+                base: &base,
+                merge_target,
+                race_id: None,
+                title: Some(title),
+                existing_branch: None,
+                loop_config: None,
+                issue_id: Some(issue.id.clone()),
+                worktree: true,
+            },
+            &mut |_| {},
+        )?;
         {
             let reg = self.registry.lock().unwrap();
             self.advance_issue(&reg, &issue.id, IssueStatus::InProgress)?;
@@ -2053,9 +2047,8 @@ impl AppState {
         reg: &agency_core::registry::Registry,
         project_id: &str,
     ) -> Result<(std::path::PathBuf, String)> {
-        let p = reg
-            .get_project(project_id)?
-            .ok_or_else(|| anyhow!("unknown project: {project_id}"))?;
+        let p =
+            reg.get_project(project_id)?.ok_or_else(|| anyhow!("unknown project: {project_id}"))?;
         let key = p.issue_key.unwrap_or_else(|| "ISSUE".to_string());
         Ok((p.repo_path, key))
     }
@@ -2120,10 +2113,7 @@ impl AppState {
                     log::warn!("marking {flag}: {e}");
                 }
             }
-            Err(e) => log::warn!(
-                "cannot untrack issue files in {} yet: {e}",
-                root.display()
-            ),
+            Err(e) => log::warn!("cannot untrack issue files in {} yet: {e}", root.display()),
         }
     }
 
@@ -2220,7 +2210,13 @@ impl AppState {
         file.updated_at = now_secs();
         issuefs::atomic_write(&path, &issuefs::serialize_issue_file(&file))?;
         issuefs::ensure_readme(&root)?;
-        let next = issuefs::issue_from_file(&file, row.id, &row.project_id, file.created_at, file.updated_at);
+        let next = issuefs::issue_from_file(
+            &file,
+            row.id,
+            &row.project_id,
+            file.created_at,
+            file.updated_at,
+        );
         reg.upsert_issue_row(&next)
     }
 
@@ -2474,7 +2470,12 @@ impl AppState {
 
     /// Spawn a workspace for a GitHub issue: the issue becomes the run's
     /// prompt (delivered to the agent at launch) and its title.
-    pub fn create_run_from_issue(&self, project_id: &str, number: u64, agent: &str) -> Result<RunInfo> {
+    pub fn create_run_from_issue(
+        &self,
+        project_id: &str,
+        number: u64,
+        agent: &str,
+    ) -> Result<RunInfo> {
         let repo = self.project_repo(project_id)?;
         let issue = agency_core::gh::GhCli::default().view_issue(&repo, number)?;
         let base = agency_core::merge::detect_base(&repo)?;
@@ -2484,25 +2485,33 @@ impl AppState {
             body = issue.body,
             url = issue.url,
         );
-        self.create_run_spec(NewRunSpec {
-            project_id,
-            prompt: &prompt,
-            agent,
-            base: &base,
-            merge_target: None,
-            race_id: None,
-            title: Some(format!("#{number} {}", issue.title)),
-            existing_branch: None,
-            loop_config: None,
-            issue_id: None,
-            worktree: true,
-        }, &mut |_| {})
+        self.create_run_spec(
+            NewRunSpec {
+                project_id,
+                prompt: &prompt,
+                agent,
+                base: &base,
+                merge_target: None,
+                race_id: None,
+                title: Some(format!("#{number} {}", issue.title)),
+                existing_branch: None,
+                loop_config: None,
+                issue_id: None,
+                worktree: true,
+            },
+            &mut |_| {},
+        )
     }
 
     /// Check an existing PR's head branch out into a workspace for review.
     /// The local branch is fast-forwarded from origin first; a diverged local
     /// branch fails loudly rather than being clobbered.
-    pub fn create_run_from_pr(&self, project_id: &str, number: u64, agent: &str) -> Result<RunInfo> {
+    pub fn create_run_from_pr(
+        &self,
+        project_id: &str,
+        number: u64,
+        agent: &str,
+    ) -> Result<RunInfo> {
         let repo = self.project_repo(project_id)?;
         let pr = agency_core::gh::GhCli::default()
             .view_pr_by_number(&repo, number)?
@@ -2530,19 +2539,22 @@ impl AppState {
             title = pr.title,
             url = pr.url,
         );
-        self.create_run_spec(NewRunSpec {
-            project_id,
-            prompt: &prompt,
-            agent,
-            base: &pr.base_ref_name,
-            merge_target: Some(&pr.base_ref_name),
-            race_id: None,
-            title: Some(format!("PR #{number} {}", pr.title)),
-            existing_branch: Some(pr.head_ref_name.clone()),
-            loop_config: None,
-            issue_id: None,
-            worktree: true,
-        }, &mut |_| {})
+        self.create_run_spec(
+            NewRunSpec {
+                project_id,
+                prompt: &prompt,
+                agent,
+                base: &pr.base_ref_name,
+                merge_target: Some(&pr.base_ref_name),
+                race_id: None,
+                title: Some(format!("PR #{number} {}", pr.title)),
+                existing_branch: Some(pr.head_ref_name.clone()),
+                loop_config: None,
+                issue_id: None,
+                worktree: true,
+            },
+            &mut |_| {},
+        )
     }
 
     /// Start an agent that reviews an existing PR and then sticks around to fix
@@ -2568,8 +2580,7 @@ impl AppState {
         if pr.head_ref_name.is_empty() {
             bail!("PR #{number} has no local head branch (cross-fork PRs aren't supported yet)");
         }
-        let prompt =
-            pr_review_prompt(number, &pr.title, &pr.url, &pr.base_ref_name, post_comments);
+        let prompt = pr_review_prompt(number, &pr.title, &pr.url, &pr.base_ref_name, post_comments);
         // Only an unarchived agent run can host an extra tab; anything else
         // holding the branch falls through and git reports the conflict.
         let holder = self
@@ -2721,7 +2732,9 @@ impl AppState {
             .ok_or_else(|| anyhow!("the build command is empty"))?
             .to_string();
         if !command_on_path(&cmd) {
-            return Err(anyhow!("'{cmd}' is not installed. Install the graphify tooling and try again."));
+            return Err(anyhow!(
+                "'{cmd}' is not installed. Install the graphify tooling and try again."
+            ));
         }
         {
             let mut builds = self.kg_builds.lock().unwrap();
@@ -2800,7 +2813,9 @@ impl AppState {
         if config.knowledge.graph {
             match graphify_server(repo, &config.knowledge, |p| p.is_file(), command_on_path) {
                 Ok(server) => auto.push(server),
-                Err(reason) => log::warn!("knowledge graph enabled but {reason}; skipping MCP injection"),
+                Err(reason) => {
+                    log::warn!("knowledge graph enabled but {reason}; skipping MCP injection")
+                }
             }
         }
         agency_core::mcp::merge(&[global, project, auto])
@@ -2875,9 +2890,7 @@ impl AppState {
         {
             let mut sched = self.fetches.lock().unwrap();
             let entry = sched.entry(project_id.to_string()).or_default();
-            let too_soon = entry
-                .last_attempt
-                .is_some_and(|t| start.duration_since(t) < min_age);
+            let too_soon = entry.last_attempt.is_some_and(|t| start.duration_since(t) < min_age);
             if entry.in_flight || too_soon || entry.retry_after.is_some_and(|t| start < t) {
                 return Ok(false);
             }
@@ -2932,7 +2945,10 @@ impl AppState {
         Ok(self.run_record(token)?.project_id)
     }
 
-    pub fn list_project_branches(&self, project_id: &str) -> Result<agency_core::git::ProjectBranches> {
+    pub fn list_project_branches(
+        &self,
+        project_id: &str,
+    ) -> Result<agency_core::git::ProjectBranches> {
         let repo = self.project_repo(project_id)?;
         agency_core::git::list_branches(&repo)
     }
@@ -2947,10 +2963,15 @@ impl AppState {
         // Login shell so the user's prompt/profile loads.
         let args = vec!["-l".to_string()];
         pty_debug(&format!("create_terminal id={id} shell={shell} args={args:?}"));
-        self.term
-            .read()
-            .unwrap()
-            .start_session(&session_name(&id), &repo, &shell, &args, &[], 220, 50)?;
+        self.term.read().unwrap().start_session(
+            &session_name(&id),
+            &repo,
+            &shell,
+            &args,
+            &[],
+            220,
+            50,
+        )?;
 
         let run = agency_core::registry::Run {
             id: id.clone(),
@@ -3000,13 +3021,19 @@ impl AppState {
         for proj in projects {
             let runs = self.registry.lock().unwrap().list_runs(&proj.id)?;
             for run in runs {
-                let status =
-                    self.term.read().unwrap().status(&session_name(&run.id)).unwrap_or(SessionStatus::Gone);
-                let name = run
-                    .title
-                    .clone()
-                    .filter(|t| !t.is_empty())
-                    .unwrap_or_else(|| if run.prompt.is_empty() { run.branch.clone() } else { run.prompt.clone() });
+                let status = self
+                    .term
+                    .read()
+                    .unwrap()
+                    .status(&session_name(&run.id))
+                    .unwrap_or(SessionStatus::Gone);
+                let name = run.title.clone().filter(|t| !t.is_empty()).unwrap_or_else(|| {
+                    if run.prompt.is_empty() {
+                        run.branch.clone()
+                    } else {
+                        run.prompt.clone()
+                    }
+                });
                 out.push(crate::tray::TrayRun {
                     run_id: run.id,
                     project_id: proj.id.clone(),
@@ -3040,7 +3067,12 @@ impl AppState {
     /// Spawn a terminal session in the project repo that first runs `command`
     /// (an agent install line), then execs the user's login shell so they can
     /// verify the result — and immediately use the freshly installed CLI.
-    pub fn create_install_terminal(&self, project_id: &str, agent: &str, command: &str) -> Result<RunInfo> {
+    pub fn create_install_terminal(
+        &self,
+        project_id: &str,
+        agent: &str,
+        command: &str,
+    ) -> Result<RunInfo> {
         let script = format!("{command}\nexec \"$SHELL\" -l");
         self.spawn_terminal(project_id, &format!("install {agent}"), script)
     }
@@ -3057,7 +3089,12 @@ impl AppState {
     /// *before* recording: a failed registration (e.g. the CLI isn't installed)
     /// must not silently mark the server, which would remove it from that agent's
     /// worktrees while never actually registering it.
-    pub fn authenticate_mcp_server(&self, project_id: &str, agent: &str, name: &str) -> Result<RunInfo> {
+    pub fn authenticate_mcp_server(
+        &self,
+        project_id: &str,
+        agent: &str,
+        name: &str,
+    ) -> Result<RunInfo> {
         let repo = self.project_repo(project_id)?;
         let mut servers = self.list_mcp_servers()?;
         let idx = servers
@@ -3140,10 +3177,15 @@ impl AppState {
         // Login shell (-l) so the user's profile (PATH etc.) is loaded first.
         let args = vec!["-lc".to_string(), script];
         let env = vec![("SHELL".to_string(), shell.clone())];
-        self.term
-            .read()
-            .unwrap()
-            .start_session(&session_name(&id), &repo, &shell, &args, &env, 220, 50)?;
+        self.term.read().unwrap().start_session(
+            &session_name(&id),
+            &repo,
+            &shell,
+            &args,
+            &env,
+            220,
+            50,
+        )?;
 
         let run = agency_core::registry::Run {
             id: id.clone(),
@@ -3342,8 +3384,13 @@ impl AppState {
         if run.kind == "agent" && run.worktree {
             step(on_progress, "Saving uncommitted changes", &run.branch);
             WorktreeManager::new(repo.clone())
-                .commit_all_if_dirty(id, "WIP: uncommitted changes auto-committed by Agency on archive")
-                .map_err(|e| anyhow!("couldn't preserve uncommitted changes before archiving: {e}"))?;
+                .commit_all_if_dirty(
+                    id,
+                    "WIP: uncommitted changes auto-committed by Agency on archive",
+                )
+                .map_err(|e| {
+                    anyhow!("couldn't preserve uncommitted changes before archiving: {e}")
+                })?;
         }
 
         step(on_progress, "Stopping the agent", &run.branch);
@@ -3366,7 +3413,8 @@ impl AppState {
                 let worktree = workspace_dir(&repo, &run);
                 if worktree.exists() {
                     step(on_progress, "Running the archive script", script);
-                    let env = agency_core::scripts::script_env(&worktree, &repo, &run.id, run.port_base);
+                    let env =
+                        agency_core::scripts::script_env(&worktree, &repo, &run.id, run.port_base);
                     let _ = agency_core::scripts::run_blocking(script, &worktree, &env);
                 }
             }
@@ -3590,12 +3638,10 @@ impl AppState {
     pub fn start_run_script(&self, target: &str, script_name: &str) -> Result<()> {
         let t = self.run_target(target)?;
         let config = agency_core::config::load(&t.repo);
-        let script = config
-            .scripts
-            .run_list()
-            .into_iter()
-            .find(|s| s.name == script_name)
-            .ok_or_else(|| anyhow!("this project has no run script called \"{script_name}\""))?;
+        let script =
+            config.scripts.run_list().into_iter().find(|s| s.name == script_name).ok_or_else(
+                || anyhow!("this project has no run script called \"{script_name}\""),
+            )?;
 
         // "One app at a time": every other run script in the project stops,
         // including the other scripts in this very workspace. The command binds
@@ -3651,9 +3697,8 @@ impl AppState {
             .run_list()
             .into_iter()
             .map(|s| {
-                let status = term
-                    .status(&run_session_name(target, &s.name))
-                    .unwrap_or(SessionStatus::Gone);
+                let status =
+                    term.status(&run_session_name(target, &s.name)).unwrap_or(SessionStatus::Gone);
                 RunScriptStatusDto { name: s.name, status }
             })
             .collect())
@@ -3695,7 +3740,13 @@ impl AppState {
         self.term.read().unwrap().input(&run_session_name(target, script), data)
     }
 
-    pub fn resize_run_script(&self, target: &str, script: &str, cols: u16, rows: u16) -> Result<()> {
+    pub fn resize_run_script(
+        &self,
+        target: &str,
+        script: &str,
+        cols: u16,
+        rows: u16,
+    ) -> Result<()> {
         self.term.read().unwrap().resize(&run_session_name(target, script), cols, rows)
     }
 
@@ -3740,12 +3791,7 @@ impl AppState {
     }
 
     pub fn shell_status(&self, id: &str) -> Result<SessionStatus> {
-        Ok(self
-            .term
-            .read()
-            .unwrap()
-            .status(&shell_session_name(id))
-            .unwrap_or(SessionStatus::Gone))
+        Ok(self.term.read().unwrap().status(&shell_session_name(id)).unwrap_or(SessionStatus::Gone))
     }
 
     pub fn shell_preview(&self, id: &str, lines: usize) -> Result<String> {
@@ -3756,7 +3802,8 @@ impl AppState {
     where
         F: Fn(Vec<u8>) + Send + Sync + 'static,
     {
-        let sub = self.term.read().unwrap().subscribe(&shell_session_name(id), cols, rows, on_output)?;
+        let sub =
+            self.term.read().unwrap().subscribe(&shell_session_name(id), cols, rows, on_output)?;
         self.shell_attaches.lock().unwrap().insert(id.to_string(), sub);
         Ok(())
     }
@@ -3810,8 +3857,7 @@ impl AppState {
         }
         let profile = {
             let reg = self.registry.lock().unwrap();
-            reg.get_profile(agent)?
-                .ok_or_else(|| anyhow!("unknown agent profile: {agent}"))?
+            reg.get_profile(agent)?.ok_or_else(|| anyhow!("unknown agent profile: {agent}"))?
         };
         // The extra tab may run a different agent than the one the worktree
         // was created for; make sure MCP config exists in its native format.
@@ -3827,10 +3873,15 @@ impl AppState {
         env.extend(agency_core::scripts::script_env(&worktree, &repo, &run.id, run.port_base));
         let (command, args) =
             fresh_agent_argv(&profile, &worktree, prompt, config.scripts.setup.as_deref());
-        self.term
-            .read()
-            .unwrap()
-            .start_session(&session_name(sid), &worktree, &command, &args, &env, 220, 50)
+        self.term.read().unwrap().start_session(
+            &session_name(sid),
+            &worktree,
+            &command,
+            &args,
+            &env,
+            220,
+            50,
+        )
     }
 
     /// Open an additional agent tab in an existing run's worktree. `agent`
@@ -3974,7 +4025,13 @@ impl AppState {
         if run.kind == "terminal" {
             let shell = login_shell();
             self.term.read().unwrap().start_session(
-                &session_name(id), &repo, &shell, &["-l".to_string()], &[], 220, 50,
+                &session_name(id),
+                &repo,
+                &shell,
+                &["-l".to_string()],
+                &[],
+                220,
+                50,
             )?;
             return Ok(());
         }
@@ -3995,13 +4052,20 @@ impl AppState {
         // fallback can't save them); other resume-capable agents fall through to
         // the resume-with-fallback path (the fallback catches their fast exits).
         let probe = std::env::var_os("HOME")
-            .map(|h| crate::resume_probe::resume_probe(std::path::Path::new(&h), &profile.command, &worktree))
+            .map(|h| {
+                crate::resume_probe::resume_probe(
+                    std::path::Path::new(&h),
+                    &profile.command,
+                    &worktree,
+                )
+            })
             .unwrap_or(crate::resume_probe::ResumeProbe::Unknown);
         let use_resume =
             profile.resume_args.is_some() && probe != crate::resume_probe::ResumeProbe::None;
         let (command, args) = agent_argv(&profile, &worktree, &run.prompt, use_resume, setup);
         let fallback = if use_resume {
-            let (fresh_cmd, fresh_args) = agent_argv(&profile, &worktree, &run.prompt, false, setup);
+            let (fresh_cmd, fresh_args) =
+                agent_argv(&profile, &worktree, &run.prompt, false, setup);
             Some(agency_core::term::protocol::FallbackSpec {
                 command: fresh_cmd,
                 args: fresh_args,
@@ -4011,7 +4075,14 @@ impl AppState {
             None
         };
         self.term.read().unwrap().start_session_with_fallback(
-            &session_name(id), &worktree, &command, &args, &env, 220, 50, fallback,
+            &session_name(id),
+            &worktree,
+            &command,
+            &args,
+            &env,
+            220,
+            50,
+            fallback,
         )?;
         Ok(())
     }
@@ -4043,15 +4114,18 @@ impl AppState {
         env.extend(agency_core::scripts::script_env(&worktree, &repo, &run.id, run.port_base));
         // A rerun is a fresh launch by definition, so it takes the same argv the
         // fresh side of `agent_argv` builds (never the resume recipe).
-        let (command, args) = agent_argv(
-            &profile,
-            &worktree,
-            &run.prompt,
-            false,
-            config.scripts.setup.as_deref(),
-        );
+        let (command, args) =
+            agent_argv(&profile, &worktree, &run.prompt, false, config.scripts.setup.as_deref());
         let _ = self.term.read().unwrap().kill(&session_name(id));
-        self.term.read().unwrap().start_session(&session_name(id), &worktree, &command, &args, &env, 220, 50)?;
+        self.term.read().unwrap().start_session(
+            &session_name(id),
+            &worktree,
+            &command,
+            &args,
+            &env,
+            220,
+            50,
+        )?;
         Ok(self.run_info(&run))
     }
 
@@ -4084,16 +4158,25 @@ impl AppState {
         let (command, args) =
             loop_argv(&profile, &worktree, &run.prompt, config.scripts.setup.as_deref())?;
         let _ = self.term.read().unwrap().kill(&session_name(&run.id));
-        self.term
-            .read()
-            .unwrap()
-            .start_session(&session_name(&run.id), &worktree, &command, &args, &env, 220, 50)
+        self.term.read().unwrap().start_session(
+            &session_name(&run.id),
+            &worktree,
+            &command,
+            &args,
+            &env,
+            220,
+            50,
+        )
     }
 
     /// Run the loop's check command in the worktree on its own thread; the
     /// result lands in the run's check slot for `drive_loops` to drain. The
     /// child is killed at the config's timeout (counted as a failed check).
-    fn start_loop_check(&self, run: &agency_core::registry::Run, cfg: &agency_core::loops::LoopConfig) -> Result<()> {
+    fn start_loop_check(
+        &self,
+        run: &agency_core::registry::Run,
+        cfg: &agency_core::loops::LoopConfig,
+    ) -> Result<()> {
         let repo = self.project_repo(&run.project_id)?;
         let worktree = workspace_dir(&repo, &run);
         let slot = std::sync::Arc::new(CheckSlot {
@@ -4208,7 +4291,8 @@ impl AppState {
                 let Some(run) = self.registry.lock().unwrap().get_run(&run.id)? else {
                     continue;
                 };
-                let (Some(cfg), Some(prev)) = (run.loop_config.clone(), run.loop_state.clone()) else {
+                let (Some(cfg), Some(prev)) = (run.loop_config.clone(), run.loop_state.clone())
+                else {
                     continue;
                 };
                 if prev.status.is_terminal() || run.archived_at.is_some() {
@@ -4245,7 +4329,10 @@ impl AppState {
                 let label = format!(
                     "{}: {}",
                     run.agent,
-                    run.title.clone().filter(|t| !t.is_empty()).unwrap_or_else(|| run.prompt.clone())
+                    run.title
+                        .clone()
+                        .filter(|t| !t.is_empty())
+                        .unwrap_or_else(|| run.prompt.clone())
                 );
                 for action in actions {
                     match action {
@@ -4356,11 +4443,7 @@ impl AppState {
     /// this rather than [`git_root`]: they are async now, so this is what keeps
     /// a stage or a checkout from landing in the middle of a merge. See
     /// `repo_gates` for why an agent's own worktree isn't gated.
-    pub fn git_mutate<T>(
-        &self,
-        token: &str,
-        f: impl FnOnce(&Path) -> Result<T>,
-    ) -> Result<T> {
+    pub fn git_mutate<T>(&self, token: &str, f: impl FnOnce(&Path) -> Result<T>) -> Result<T> {
         let target = self.git_target(token)?;
         match &target.primary {
             Some(project_id) => self.repo_gates.with(project_id, || f(&target.path)),
@@ -4377,9 +4460,7 @@ impl AppState {
         let repo = self.project_repo(&run.project_id)?;
         let base = agency_core::merge::resolve_target(run.merge_target.as_deref(), &repo)?;
         let wt = self.worktree_path(id)?;
-        let branch = agency_core::git::branch_info(&wt)
-            .map(|b| b.branch)
-            .unwrap_or_default();
+        let branch = agency_core::git::branch_info(&wt).map(|b| b.branch).unwrap_or_default();
         Ok((branch, base))
     }
 
@@ -4514,7 +4595,9 @@ impl AppState {
             step(on_progress, "Checking the merge", &run.branch);
             let state = agency_core::merge::merge_state(&repo, &run.branch, &base)?;
             if let Some(other) = &state.blocked_by {
-                bail!("the merge in progress is {other}'s, not this run's — finish or abort it there");
+                bail!(
+                    "the merge in progress is {other}'s, not this run's — finish or abort it there"
+                );
             }
             if !state.merging && !state.merged {
                 bail!("no merge in progress for this run, and its branch hasn't landed on {base}");
@@ -4550,7 +4633,10 @@ impl AppState {
             // Abort would otherwise discard another run's half-resolved merge.
             if let Some(m) = agency_core::merge::in_progress_merge(&repo) {
                 if !agency_core::merge::owns_merge(&repo, &run.branch) {
-                    bail!("the merge in progress is {}'s, not this run's — abort it there", m.branch);
+                    bail!(
+                        "the merge in progress is {}'s, not this run's — abort it there",
+                        m.branch
+                    );
                 }
             }
             let restore = self.merge_origins.lock().unwrap().remove(id);
@@ -4632,7 +4718,11 @@ impl AppState {
     // window resolves its number once via `pr_number_for_run`.
 
     /// Full PR detail (description, head SHA, mergeable, review decision).
-    pub fn pr_detail(&self, project_id: &str, number: u64) -> Result<Option<agency_core::gh::PrDetail>> {
+    pub fn pr_detail(
+        &self,
+        project_id: &str,
+        number: u64,
+    ) -> Result<Option<agency_core::gh::PrDetail>> {
         let repo = self.project_repo(project_id)?;
         agency_core::gh::GhCli::default().view_pr_detail(&repo, number)
     }
@@ -4663,13 +4753,21 @@ impl AppState {
     }
 
     /// The PR's full multi-file diff, split per file for the diff renderer.
-    pub fn pr_diff(&self, project_id: &str, number: u64) -> Result<Vec<agency_core::gh::PrFileDiff>> {
+    pub fn pr_diff(
+        &self,
+        project_id: &str,
+        number: u64,
+    ) -> Result<Vec<agency_core::gh::PrFileDiff>> {
         let repo = self.project_repo(project_id)?;
         agency_core::gh::GhCli::default().pr_diff(&repo, number)
     }
 
     /// The PR's review threads (with resolution state) for inline rendering.
-    pub fn pr_review_threads(&self, project_id: &str, number: u64) -> Result<Vec<agency_core::gh::ReviewThread>> {
+    pub fn pr_review_threads(
+        &self,
+        project_id: &str,
+        number: u64,
+    ) -> Result<Vec<agency_core::gh::ReviewThread>> {
         let repo = self.project_repo(project_id)?;
         agency_core::gh::GhCli::default().pr_review_threads(&repo, number)
     }
@@ -4687,15 +4785,20 @@ impl AppState {
     ) -> Result<()> {
         let repo = self.project_repo(project_id)?;
         let gh = agency_core::gh::GhCli::default();
-        let detail = gh
-            .view_pr_detail(&repo, number)?
-            .ok_or_else(|| anyhow!("PR #{number} not found"))?;
+        let detail =
+            gh.view_pr_detail(&repo, number)?.ok_or_else(|| anyhow!("PR #{number} not found"))?;
         gh.submit_pr_review(&repo, number, &detail.head_ref_oid, event, body, comments)
     }
 
     /// Reply into an existing review thread. `in_reply_to` is a comment's
     /// `database_id` from `pr_review_threads`.
-    pub fn reply_pr_comment(&self, project_id: &str, number: u64, in_reply_to: u64, body: &str) -> Result<()> {
+    pub fn reply_pr_comment(
+        &self,
+        project_id: &str,
+        number: u64,
+        in_reply_to: u64,
+        body: &str,
+    ) -> Result<()> {
         let repo = self.project_repo(project_id)?;
         agency_core::gh::GhCli::default().reply_review_comment(&repo, number, in_reply_to, body)
     }
@@ -4759,27 +4862,26 @@ impl AppState {
             return Ok(None);
         }
         let repo = self.project_repo(&run.project_id)?;
-        Ok(agency_core::gh::GhCli::default()
-            .view_pr(&repo, &run.branch)?
-            .map(|p| p.number))
+        Ok(agency_core::gh::GhCli::default().view_pr(&repo, &run.branch)?.map(|p| p.number))
     }
 
     /// Type the PR's failing checks into the agent's live session so it can
     /// investigate — same delivery path as review comments.
     pub fn send_check_feedback(&self, id: &str) -> Result<()> {
         let status = self.pr_status(id)?;
-        let failing: Vec<_> = status
-            .checks
-            .iter()
-            .filter(|c| c.bucket == "fail" || c.bucket == "cancel")
-            .collect();
+        let failing: Vec<_> =
+            status.checks.iter().filter(|c| c.bucket == "fail" || c.bucket == "cancel").collect();
         if failing.is_empty() {
             bail!("no failing checks to send");
         }
-        if !matches!(self.term.read().unwrap().status(&session_name(id)), Ok(SessionStatus::Running)) {
+        if !matches!(
+            self.term.read().unwrap().status(&session_name(id)),
+            Ok(SessionStatus::Running)
+        ) {
             bail!("agent session {id} is not running");
         }
-        let mut msg = format!("CI feedback: {} check(s) failing on this branch's PR — ", failing.len());
+        let mut msg =
+            format!("CI feedback: {} check(s) failing on this branch's PR — ", failing.len());
         let parts: Vec<String> = failing
             .iter()
             .map(|c| {
@@ -4791,7 +4893,9 @@ impl AppState {
             })
             .collect();
         msg.push_str(&parts.join("; "));
-        msg.push_str(". Please investigate the failures, fix them, commit, and push to update the PR.");
+        msg.push_str(
+            ". Please investigate the failures, fix them, commit, and push to update the PR.",
+        );
         self.term.read().unwrap().send_text(&session_name(id), &msg)?;
         Ok(())
     }
@@ -4814,7 +4918,10 @@ impl AppState {
             }
             Some(_) => {}
         }
-        if !matches!(self.term.read().unwrap().status(&session_name(id)), Ok(SessionStatus::Running)) {
+        if !matches!(
+            self.term.read().unwrap().status(&session_name(id)),
+            Ok(SessionStatus::Running)
+        ) {
             bail!("agent session {id} is not running");
         }
         let msg = compose_merge_conflict(&repo, &run.branch, &base, &conflict_status(&repo));
@@ -4825,7 +4932,11 @@ impl AppState {
     /// Update focus/active-run state. On an unfocused→focused edge, hand back a
     /// still-fresh pending notification target (consuming it) so the caller can
     /// deep-link the UI to the run the user was just notified about.
-    pub fn set_ui_state(&self, focused: bool, active_run: Option<String>) -> Option<(String, String)> {
+    pub fn set_ui_state(
+        &self,
+        focused: bool,
+        active_run: Option<String>,
+    ) -> Option<(String, String)> {
         let mut ui = self.ui.lock().unwrap();
         let was_focused = ui.focused;
         ui.focused = focused;
@@ -4877,7 +4988,10 @@ impl AppState {
         Ok(comment)
     }
 
-    pub fn list_review_comments(&self, run_id: &str) -> Result<Vec<agency_core::registry::ReviewComment>> {
+    pub fn list_review_comments(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<agency_core::registry::ReviewComment>> {
         self.registry.lock().unwrap().list_review_comments(run_id)
     }
 
@@ -4891,7 +5005,10 @@ impl AppState {
         if unsent.is_empty() {
             bail!("no unsent review comments");
         }
-        if !matches!(self.term.read().unwrap().status(&session_name(run_id)), Ok(SessionStatus::Running)) {
+        if !matches!(
+            self.term.read().unwrap().status(&session_name(run_id)),
+            Ok(SessionStatus::Running)
+        ) {
             bail!("agent session {run_id} is not running");
         }
         let message = compose_feedback(&unsent);
@@ -5004,9 +5121,19 @@ impl AppState {
             });
             let runs = self.registry.lock().unwrap().list_runs(&proj.id)?;
             for run in runs {
-                let agent = self.term.read().unwrap().status(&session_name(&run.id)).unwrap_or(SessionStatus::Gone);
+                let agent = self
+                    .term
+                    .read()
+                    .unwrap()
+                    .status(&session_name(&run.id))
+                    .unwrap_or(SessionStatus::Gone);
                 let run_scripts = run_scripts_of(&run.id);
-                let pane = self.term.read().unwrap().capture(&session_name(&run.id), 50).unwrap_or_default();
+                let pane = self
+                    .term
+                    .read()
+                    .unwrap()
+                    .capture(&session_name(&run.id), 50)
+                    .unwrap_or_default();
                 let mut hasher = std::collections::hash_map::DefaultHasher::new();
                 std::hash::Hash::hash(&pane, &mut hasher);
                 let pane_hash = std::hash::Hasher::finish(&hasher);
@@ -5014,7 +5141,11 @@ impl AppState {
                     "{}: {}",
                     run.agent,
                     run.title.clone().filter(|t| !t.is_empty()).unwrap_or_else(|| {
-                        if run.prompt.is_empty() { run.branch.clone() } else { run.prompt.clone() }
+                        if run.prompt.is_empty() {
+                            run.branch.clone()
+                        } else {
+                            run.prompt.clone()
+                        }
                     })
                 );
                 let user_input_pending = self.input_seen.lock().unwrap().contains(&run.id);
@@ -5098,7 +5229,8 @@ fn failure_tail(stderr: &[u8], stdout: &[u8]) -> Option<String> {
     const LINES: usize = 4;
     [stderr, stdout].into_iter().find_map(|bytes| {
         let text = String::from_utf8_lossy(bytes);
-        let lines: Vec<&str> = text.lines().map(str::trim_end).filter(|l| !l.trim().is_empty()).collect();
+        let lines: Vec<&str> =
+            text.lines().map(str::trim_end).filter(|l| !l.trim().is_empty()).collect();
         let tail = lines[lines.len().saturating_sub(LINES)..].join("\n");
         (!tail.is_empty()).then_some(tail)
     })
@@ -5110,11 +5242,7 @@ fn failure_tail(stderr: &[u8], stdout: &[u8]) -> Option<String> {
 /// executable on PATH (or a runnable absolute/relative path). Command overrides
 /// and the graphify defaults are full command lines, not bare binaries.
 fn first_token_on_path(command_line: &str) -> bool {
-    command_line
-        .split_whitespace()
-        .next()
-        .map(command_on_path)
-        .unwrap_or(false)
+    command_line.split_whitespace().next().map(command_on_path).unwrap_or(false)
 }
 
 fn command_on_path(command: &str) -> bool {
@@ -5122,7 +5250,8 @@ fn command_on_path(command: &str) -> bool {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            p.is_file() && p.metadata().map(|m| m.permissions().mode() & 0o111 != 0).unwrap_or(false)
+            p.is_file()
+                && p.metadata().map(|m| m.permissions().mode() & 0o111 != 0).unwrap_or(false)
         }
         #[cfg(not(unix))]
         {
@@ -5232,8 +5361,10 @@ mod tests {
     #[test]
     fn agent_argv_uses_resume_args_when_available() {
         let p = AgentProfile {
-            name: "claude".into(), command: "claude".into(),
-            args: vec!["{{prompt}}".into()], env: vec![],
+            name: "claude".into(),
+            command: "claude".into(),
+            args: vec!["{{prompt}}".into()],
+            env: vec![],
             resume_args: Some(vec!["--continue".into()]),
             loop_args: None,
         };
@@ -5245,8 +5376,10 @@ mod tests {
     #[test]
     fn agent_argv_falls_back_to_prompt_without_resume_args() {
         let p = AgentProfile {
-            name: "cursor".into(), command: "cursor-agent".into(),
-            args: vec!["{{prompt}}".into()], env: vec![],
+            name: "cursor".into(),
+            command: "cursor-agent".into(),
+            args: vec!["{{prompt}}".into()],
+            env: vec![],
             resume_args: None,
             loop_args: None,
         };
@@ -5258,8 +5391,10 @@ mod tests {
     #[test]
     fn agent_argv_fresh_ignores_resume_args() {
         let p = AgentProfile {
-            name: "claude".into(), command: "claude".into(),
-            args: vec!["{{prompt}}".into()], env: vec![],
+            name: "claude".into(),
+            command: "claude".into(),
+            args: vec!["{{prompt}}".into()],
+            env: vec![],
             resume_args: Some(vec!["--continue".into()]),
             loop_args: None,
         };
@@ -5270,9 +5405,12 @@ mod tests {
     #[test]
     fn fresh_agent_argv_appends_prompt_only_without_a_token() {
         let templated = AgentProfile {
-            name: "claude".into(), command: "claude".into(),
-            args: vec!["--flag".into(), "{{prompt}}".into()], env: vec![],
-            resume_args: None, loop_args: None,
+            name: "claude".into(),
+            command: "claude".into(),
+            args: vec!["--flag".into(), "{{prompt}}".into()],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
         };
         // The token places the prompt; it must not also be appended.
         let (cmd, args) = super::fresh_agent_argv(&templated, no_worktree(), "review it", None);
@@ -5294,9 +5432,12 @@ mod tests {
     #[test]
     fn fresh_argv_delivers_the_prompt_the_way_each_cli_takes_it() {
         let profile = |name: &str| AgentProfile {
-            name: name.into(), command: name.into(),
-            args: vec![], env: vec![],
-            resume_args: None, loop_args: None,
+            name: name.into(),
+            command: name.into(),
+            args: vec![],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
         };
         let args_for = |name: &str, prompt: &str| {
             super::fresh_agent_argv(&profile(name), no_worktree(), prompt, None).1
@@ -5334,8 +5475,10 @@ mod tests {
     fn copilot_argv_carries_the_emitted_mcp_config() {
         let dir = tempfile::tempdir().unwrap();
         let copilot = AgentProfile {
-            name: "copilot".into(), command: "copilot".into(),
-            args: vec![], env: vec![],
+            name: "copilot".into(),
+            command: "copilot".into(),
+            args: vec![],
+            env: vec![],
             resume_args: Some(vec!["--continue".into()]),
             loop_args: None,
         };
@@ -5375,10 +5518,8 @@ mod tests {
         assert_eq!(args, vec!["-p".to_string(), flag.clone(), arg.clone(), "go".to_string()]);
 
         // The user's own flag wins: Agency doesn't add a rival copy.
-        let hand_rolled = AgentProfile {
-            args: vec![flag.clone(), "@/my/own.json".into()],
-            ..copilot.clone()
-        };
+        let hand_rolled =
+            AgentProfile { args: vec![flag.clone(), "@/my/own.json".into()], ..copilot.clone() };
         let (_cmd, args) = super::fresh_agent_argv(&hand_rolled, dir.path(), "", None);
         assert_eq!(args, vec![flag.clone(), "@/my/own.json".to_string()]);
 
@@ -5417,7 +5558,10 @@ mod tests {
         assert!(p.contains("/repo/.agency/issues/AGE-14.md"), "{p}");
         // The README is worth naming, but only as the follow-up path — never
         // as something to read on the way in.
-        assert!(p.contains("To file a follow-up issue, read `/repo/.agency/issues/README.md`"), "{p}");
+        assert!(
+            p.contains("To file a follow-up issue, read `/repo/.agency/issues/README.md`"),
+            "{p}"
+        );
         assert!(p.contains("marks AGE-14 done automatically"), "{p}");
     }
 
@@ -5425,11 +5569,15 @@ mod tests {
     fn issue_prompt_handles_an_empty_body_and_resolves_attachments() {
         let root = Path::new("/repo");
         let bare = super::issue_prompt("AGE-9", "Just a title", "  ", &[], root);
-        assert!(bare.starts_with("Work on issue AGE-9: Just a title\n\nThat is the whole of AGE-9"), "{bare}");
+        assert!(
+            bare.starts_with("Work on issue AGE-9: Just a title\n\nThat is the whole of AGE-9"),
+            "{bare}"
+        );
 
         // Relative `assets/…` links are dead paths from inside a worktree, so
         // the prompt resolves them against the project checkout.
-        let shot = super::issue_prompt("AGE-9", "T", "before ![](assets/AGE-9-shot.png) after", &[], root);
+        let shot =
+            super::issue_prompt("AGE-9", "T", "before ![](assets/AGE-9-shot.png) after", &[], root);
         assert!(shot.contains("`/repo/.agency/issues/assets/AGE-9-shot.png`"), "{shot}");
         assert!(!bare.contains("assets/"), "{bare}");
     }
@@ -5437,10 +5585,17 @@ mod tests {
     #[test]
     fn loop_argv_renders_prompt_and_requires_recipe() {
         let p = AgentProfile {
-            name: "claude".into(), command: "claude".into(),
-            args: vec![], env: vec![],
+            name: "claude".into(),
+            command: "claude".into(),
+            args: vec![],
+            env: vec![],
             resume_args: None,
-            loop_args: Some(vec!["-p".into(), "{{prompt}}".into(), "--permission-mode".into(), "acceptEdits".into()]),
+            loop_args: Some(vec![
+                "-p".into(),
+                "{{prompt}}".into(),
+                "--permission-mode".into(),
+                "acceptEdits".into(),
+            ]),
         };
         let (cmd, args) = super::loop_argv(&p, no_worktree(), "fix the tests", None).unwrap();
         assert_eq!(cmd, "claude");
@@ -5461,8 +5616,10 @@ mod tests {
         // final positional arg, like the interactive path) — never launch
         // promptless attempts that burn the loop budget doing nothing.
         let p = AgentProfile {
-            name: "codex".into(), command: "codex".into(),
-            args: vec![], env: vec![],
+            name: "codex".into(),
+            command: "codex".into(),
+            args: vec![],
+            env: vec![],
             resume_args: None,
             loop_args: Some(vec!["exec".into(), "--full-auto".into()]),
         };
@@ -5578,11 +5735,14 @@ mod tests {
 
         let mut mine = super::run_session_names_for("fix-a1", &live);
         mine.sort();
-        assert_eq!(mine, vec![
-            "agency-run-fix-a1".to_string(),
-            "agency-run-fix-a1#build mac".to_string(),
-            "agency-run-fix-a1#dev".to_string(),
-        ]);
+        assert_eq!(
+            mine,
+            vec![
+                "agency-run-fix-a1".to_string(),
+                "agency-run-fix-a1#build mac".to_string(),
+                "agency-run-fix-a1#dev".to_string(),
+            ]
+        );
         assert_eq!(
             super::run_session_names_for("project:p1", &live),
             vec!["agency-run-project:p1#dev".to_string()]
@@ -5635,8 +5795,14 @@ mod tests {
 
     fn rc(path: &str, a: u32, b: u32, body: &str) -> ReviewComment {
         ReviewComment {
-            id: "x".into(), run_id: "r".into(), path: path.into(),
-            line_start: a, line_end: b, body: body.into(), sent: false, created_at: 0,
+            id: "x".into(),
+            run_id: "r".into(),
+            path: path.into(),
+            line_start: a,
+            line_end: b,
+            body: body.into(),
+            sent: false,
+            created_at: 0,
         }
     }
 

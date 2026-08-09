@@ -1,4 +1,4 @@
-use agency_core::git::{self, CommitFile, FileDiff, FileChange};
+use agency_core::git::{self, CommitFile, FileChange, FileDiff};
 use agency_core::merge::MergeOutcome;
 use agency_core::profile::AgentProfile;
 use agency_core::registry::{Issue, IssuePatch, IssueStatus, Project, ReviewComment};
@@ -9,8 +9,11 @@ use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
 use tauri::State;
 
+use crate::state::{
+    AppState, DiscardSummary, FilesConfigDto, KnowledgeConfigDto, McpImportResult, MergePreview,
+    ProviderSettings, RunInfo, RunScriptConfigDto, RunScriptStatusDto, RunSessionInfo,
+};
 use agency_core::title::fallback_title;
-use crate::state::{AppState, DiscardSummary, FilesConfigDto, KnowledgeConfigDto, McpImportResult, MergePreview, ProviderSettings, RunInfo, RunScriptConfigDto, RunScriptStatusDto, RunSessionInfo};
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -30,7 +33,9 @@ fn readiness_dto(r: agency_core::setup::RepoReadiness) -> ReadinessDto {
     use agency_core::setup::RepoReadiness::*;
     match r {
         NotARepo => ReadinessDto { state: "notARepo".into(), stageable: false, dirty: false },
-        NoCommits { stageable } => ReadinessDto { state: "noCommits".into(), stageable, dirty: false },
+        NoCommits { stageable } => {
+            ReadinessDto { state: "noCommits".into(), stageable, dirty: false }
+        }
         Ready { dirty } => ReadinessDto { state: "ready".into(), stageable: false, dirty },
     }
 }
@@ -70,9 +75,7 @@ pub fn add_project(
     name: String,
     repo_path: String,
 ) -> Result<Project, String> {
-    state
-        .add_project(&name, std::path::Path::new(&repo_path))
-        .map_err(|e| e.to_string())
+    state.add_project(&name, std::path::Path::new(&repo_path)).map_err(|e| e.to_string())
 }
 
 // ── workspace (the pinned notes/journal project) ────────────────────────────
@@ -93,16 +96,12 @@ pub fn create_workspace(
     path: String,
     use_git: bool,
 ) -> Result<Project, String> {
-    state
-        .create_workspace(std::path::Path::new(&path), use_git)
-        .map_err(|e| e.to_string())
+    state.create_workspace(std::path::Path::new(&path), use_git).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn move_workspace(state: State<'_, AppState>, new_path: String) -> Result<Project, String> {
-    state
-        .move_workspace(std::path::Path::new(&new_path))
-        .map_err(|e| e.to_string())
+    state.move_workspace(std::path::Path::new(&new_path)).map_err(|e| e.to_string())
 }
 
 // async (not sync): closing a project kills every agent's session, shell and
@@ -143,7 +142,11 @@ pub async fn delete_project(
 /// Recolor a project's sidebar icon. `color` must be a palette accent name
 /// (see `PROJECT_COLORS`); anything else is rejected by the registry.
 #[tauri::command]
-pub fn set_project_color(state: State<'_, AppState>, id: String, color: String) -> Result<(), String> {
+pub fn set_project_color(
+    state: State<'_, AppState>,
+    id: String,
+    color: String,
+) -> Result<(), String> {
     state.set_project_color(&id, &color).map_err(|e| e.to_string())
 }
 
@@ -224,10 +227,7 @@ pub async fn list_project_branches(
 }
 
 #[tauri::command]
-pub fn create_terminal(
-    state: State<'_, AppState>,
-    project_id: String,
-) -> Result<RunInfo, String> {
+pub fn create_terminal(state: State<'_, AppState>, project_id: String) -> Result<RunInfo, String> {
     state.create_terminal(&project_id).map_err(|e| e.to_string())
 }
 
@@ -243,9 +243,7 @@ pub fn create_install_terminal(
     agent: String,
     command: String,
 ) -> Result<RunInfo, String> {
-    state
-        .create_install_terminal(&project_id, &agent, &command)
-        .map_err(|e| e.to_string())
+    state.create_install_terminal(&project_id, &agent, &command).map_err(|e| e.to_string())
 }
 
 /// Quit for real: invoked by the frontend once the user confirms the styled
@@ -281,7 +279,10 @@ pub fn set_run_title(
 }
 
 #[tauri::command]
-pub async fn list_runs(state: State<'_, AppState>, project_id: String) -> Result<Vec<RunInfo>, String> {
+pub async fn list_runs(
+    state: State<'_, AppState>,
+    project_id: String,
+) -> Result<Vec<RunInfo>, String> {
     state.list_runs(&project_id).map_err(|e| e.to_string())
 }
 
@@ -332,7 +333,11 @@ pub async fn stop_run(state: State<'_, AppState>, id: String) -> Result<(), Stri
 }
 
 #[tauri::command]
-pub async fn run_preview(state: State<'_, AppState>, id: String, lines: usize) -> Result<String, String> {
+pub async fn run_preview(
+    state: State<'_, AppState>,
+    id: String,
+    lines: usize,
+) -> Result<String, String> {
     state.run_preview(&id, lines).map_err(|e| e.to_string())
 }
 
@@ -402,7 +407,10 @@ pub async fn ensure_run_active(state: State<'_, AppState>, id: String) -> Result
 }
 
 #[tauri::command]
-pub async fn git_status(state: State<'_, AppState>, task_id: String) -> Result<Vec<FileChange>, String> {
+pub async fn git_status(
+    state: State<'_, AppState>,
+    task_id: String,
+) -> Result<Vec<FileChange>, String> {
     let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
     git::status(&wt).map_err(|e| e.to_string())
 }
@@ -426,7 +434,11 @@ pub async fn git_diff(
 // agent's private worktree has an index of its own and is written unguarded,
 // the way it always was.
 #[tauri::command]
-pub async fn git_stage(state: State<'_, AppState>, task_id: String, path: String) -> Result<(), String> {
+pub async fn git_stage(
+    state: State<'_, AppState>,
+    task_id: String,
+    path: String,
+) -> Result<(), String> {
     state.git_mutate(&task_id, |wt| git::stage(wt, &path)).map_err(|e| e.to_string())
 }
 
@@ -512,10 +524,12 @@ pub async fn git_sync(
 }
 
 #[tauri::command]
-pub async fn git_set_remote(state: State<'_, AppState>, task_id: String, url: String) -> Result<(), String> {
-    state
-        .git_mutate(&task_id, |wt| git::set_origin(wt, url.trim()))
-        .map_err(|e| e.to_string())
+pub async fn git_set_remote(
+    state: State<'_, AppState>,
+    task_id: String,
+    url: String,
+) -> Result<(), String> {
+    state.git_mutate(&task_id, |wt| git::set_origin(wt, url.trim())).map_err(|e| e.to_string())
 }
 
 // async: both round-trip the network (fetch/pull), which must never run on the
@@ -567,7 +581,10 @@ pub struct RunBranches {
 }
 
 #[tauri::command]
-pub async fn run_branches(state: State<'_, AppState>, task_id: String) -> Result<RunBranches, String> {
+pub async fn run_branches(
+    state: State<'_, AppState>,
+    task_id: String,
+) -> Result<RunBranches, String> {
     let (branch, base) = state.run_branches(&task_id).map_err(|e| e.to_string())?;
     Ok(RunBranches { branch, base })
 }
@@ -625,12 +642,18 @@ pub async fn get_settings(state: State<'_, AppState>) -> Result<ProviderSettings
 }
 
 #[tauri::command]
-pub async fn save_settings(state: State<'_, AppState>, settings: ProviderSettings) -> Result<(), String> {
+pub async fn save_settings(
+    state: State<'_, AppState>,
+    settings: ProviderSettings,
+) -> Result<(), String> {
     state.save_settings(&settings).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub async fn merge_preview(state: State<'_, AppState>, task_id: String) -> Result<MergePreview, String> {
+pub async fn merge_preview(
+    state: State<'_, AppState>,
+    task_id: String,
+) -> Result<MergePreview, String> {
     state.merge_preview(&task_id).map_err(|e| e.to_string())
 }
 
@@ -747,7 +770,10 @@ pub async fn pr_status(
 }
 
 #[tauri::command]
-pub async fn send_check_feedback(state: State<'_, AppState>, task_id: String) -> Result<(), String> {
+pub async fn send_check_feedback(
+    state: State<'_, AppState>,
+    task_id: String,
+) -> Result<(), String> {
     state.send_check_feedback(&task_id).map_err(|e| e.to_string())
 }
 
@@ -763,7 +789,10 @@ pub async fn pr_detail(
 }
 
 #[tauri::command]
-pub async fn gh_current_login(state: State<'_, AppState>, project_id: String) -> Result<String, String> {
+pub async fn gh_current_login(
+    state: State<'_, AppState>,
+    project_id: String,
+) -> Result<String, String> {
     state.gh_current_login(&project_id).map_err(|e| e.to_string())
 }
 
@@ -826,9 +855,7 @@ pub async fn reply_pr_comment(
     in_reply_to: u64,
     body: String,
 ) -> Result<(), String> {
-    state
-        .reply_pr_comment(&project_id, number, in_reply_to, &body)
-        .map_err(|e| e.to_string())
+    state.reply_pr_comment(&project_id, number, in_reply_to, &body).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -867,7 +894,13 @@ pub async fn create_pr_from_branch(
     body: Option<String>,
 ) -> Result<agency_core::gh::PrInfo, String> {
     state
-        .create_pr_from_branch(&project_id, &head, base.as_deref(), title.as_deref(), body.as_deref())
+        .create_pr_from_branch(
+            &project_id,
+            &head,
+            base.as_deref(),
+            title.as_deref(),
+            body.as_deref(),
+        )
         .map_err(|e| e.to_string())
 }
 
@@ -992,9 +1025,7 @@ pub fn update_issue_comment(
     created_at: i64,
     body: String,
 ) -> Result<Issue, String> {
-    state
-        .update_issue_comment(&issue_id, created_at, &body)
-        .map_err(|e| e.to_string())
+    state.update_issue_comment(&issue_id, created_at, &body).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1003,9 +1034,7 @@ pub fn delete_issue_comment(
     issue_id: String,
     created_at: i64,
 ) -> Result<Issue, String> {
-    state
-        .delete_issue_comment(&issue_id, created_at)
-        .map_err(|e| e.to_string())
+    state.delete_issue_comment(&issue_id, created_at).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1045,7 +1074,14 @@ pub fn start_issue_loop(
     merge_target: Option<String>,
 ) -> Result<RunInfo, String> {
     state
-        .start_issue_loop(&issue_id, &agent, &check_command, max_attempts, base.as_deref(), merge_target.as_deref())
+        .start_issue_loop(
+            &issue_id,
+            &agent,
+            &check_command,
+            max_attempts,
+            base.as_deref(),
+            merge_target.as_deref(),
+        )
         .map_err(|e| e.to_string())
 }
 
@@ -1079,9 +1115,7 @@ pub fn authenticate_mcp_server(
     agent: String,
     name: String,
 ) -> Result<RunInfo, String> {
-    state
-        .authenticate_mcp_server(&project_id, &agent, &name)
-        .map_err(|e| e.to_string())
+    state.authenticate_mcp_server(&project_id, &agent, &name).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1186,11 +1220,7 @@ pub struct BlobSidesDto {
 }
 
 fn blob_side_dto(side: git::BlobSide) -> BlobSideDto {
-    BlobSideDto {
-        b64: STANDARD.encode(&side.bytes),
-        size: side.size,
-        too_large: side.too_large,
-    }
+    BlobSideDto { b64: STANDARD.encode(&side.bytes), size: side.size, too_large: side.too_large }
 }
 
 /// The two sides of a binary file's change, so the diff viewer can show an image
@@ -1263,7 +1293,10 @@ pub async fn git_branch_info(
 }
 
 #[tauri::command]
-pub async fn inspect_repo(state: State<'_, AppState>, repo_path: String) -> Result<ReadinessDto, String> {
+pub async fn inspect_repo(
+    state: State<'_, AppState>,
+    repo_path: String,
+) -> Result<ReadinessDto, String> {
     Ok(readiness_dto(state.inspect_repo(std::path::Path::new(&repo_path))))
 }
 
@@ -1328,7 +1361,11 @@ pub async fn git_commit_amend(
 }
 
 #[tauri::command]
-pub async fn git_checkout_branch(state: State<'_, AppState>, task_id: String, name: String) -> Result<(), String> {
+pub async fn git_checkout_branch(
+    state: State<'_, AppState>,
+    task_id: String,
+    name: String,
+) -> Result<(), String> {
     state
         .git_mutate(&task_id, |wt| agency_core::git::checkout_branch(wt, &name))
         .map_err(|e| e.to_string())
@@ -1362,7 +1399,10 @@ pub async fn git_delete_branch(
 }
 
 #[tauri::command]
-pub async fn git_list_branches(state: State<'_, AppState>, task_id: String) -> Result<agency_core::git::ProjectBranches, String> {
+pub async fn git_list_branches(
+    state: State<'_, AppState>,
+    task_id: String,
+) -> Result<agency_core::git::ProjectBranches, String> {
     let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
     agency_core::git::list_branches(&wt).map_err(|e| e.to_string())
 }
@@ -1381,10 +1421,11 @@ pub async fn git_push_force(state: State<'_, AppState>, task_id: String) -> Resu
 }
 
 #[tauri::command]
-pub async fn git_undo_last_commit(state: State<'_, AppState>, task_id: String) -> Result<String, String> {
-    state
-        .git_mutate(&task_id, agency_core::git::undo_last_commit)
-        .map_err(|e| e.to_string())
+pub async fn git_undo_last_commit(
+    state: State<'_, AppState>,
+    task_id: String,
+) -> Result<String, String> {
+    state.git_mutate(&task_id, agency_core::git::undo_last_commit).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1400,14 +1441,22 @@ pub async fn git_reset_to(
 }
 
 #[tauri::command]
-pub async fn git_revert_commit(state: State<'_, AppState>, task_id: String, hash: String) -> Result<(), String> {
+pub async fn git_revert_commit(
+    state: State<'_, AppState>,
+    task_id: String,
+    hash: String,
+) -> Result<(), String> {
     state
         .git_mutate(&task_id, |wt| agency_core::git::revert_commit(wt, &hash))
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub async fn git_cherry_pick(state: State<'_, AppState>, task_id: String, hash: String) -> Result<(), String> {
+pub async fn git_cherry_pick(
+    state: State<'_, AppState>,
+    task_id: String,
+    hash: String,
+) -> Result<(), String> {
     state
         .git_mutate(&task_id, |wt| agency_core::git::cherry_pick(wt, &hash))
         .map_err(|e| e.to_string())
@@ -1416,7 +1465,10 @@ pub async fn git_cherry_pick(state: State<'_, AppState>, task_id: String, hash: 
 // Read-only, so no gate and no thread of its own to fight for: it only lists
 // what `stash push` left behind.
 #[tauri::command]
-pub async fn git_stash_list(state: State<'_, AppState>, task_id: String) -> Result<Vec<agency_core::git::StashEntry>, String> {
+pub async fn git_stash_list(
+    state: State<'_, AppState>,
+    task_id: String,
+) -> Result<Vec<agency_core::git::StashEntry>, String> {
     let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
     agency_core::git::stash_list(&wt).map_err(|e| e.to_string())
 }
@@ -1436,21 +1488,33 @@ pub async fn git_stash_push(
 }
 
 #[tauri::command]
-pub async fn git_stash_apply(state: State<'_, AppState>, task_id: String, index: usize) -> Result<(), String> {
+pub async fn git_stash_apply(
+    state: State<'_, AppState>,
+    task_id: String,
+    index: usize,
+) -> Result<(), String> {
     state
         .git_mutate(&task_id, |wt| agency_core::git::stash_apply(wt, index))
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub async fn git_stash_pop(state: State<'_, AppState>, task_id: String, index: usize) -> Result<(), String> {
+pub async fn git_stash_pop(
+    state: State<'_, AppState>,
+    task_id: String,
+    index: usize,
+) -> Result<(), String> {
     state
         .git_mutate(&task_id, |wt| agency_core::git::stash_pop(wt, index))
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub async fn git_stash_drop(state: State<'_, AppState>, task_id: String, index: usize) -> Result<(), String> {
+pub async fn git_stash_drop(
+    state: State<'_, AppState>,
+    task_id: String,
+    index: usize,
+) -> Result<(), String> {
     state
         .git_mutate(&task_id, |wt| agency_core::git::stash_drop(wt, index))
         .map_err(|e| e.to_string())
@@ -1803,7 +1867,10 @@ pub fn get_notif_settings(state: State<'_, AppState>) -> Result<NotifSettings, S
 }
 
 #[tauri::command]
-pub fn save_notif_settings(state: State<'_, AppState>, settings: NotifSettings) -> Result<(), String> {
+pub fn save_notif_settings(
+    state: State<'_, AppState>,
+    settings: NotifSettings,
+) -> Result<(), String> {
     state.save_notif_settings(&settings).map_err(|e| e.to_string())
 }
 
@@ -1816,9 +1883,7 @@ pub fn add_review_comment(
     line_end: u32,
     body: String,
 ) -> Result<ReviewComment, String> {
-    state
-        .add_review_comment(&run_id, &path, line_start, line_end, &body)
-        .map_err(|e| e.to_string())
+    state.add_review_comment(&run_id, &path, line_start, line_end, &body).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1964,20 +2029,14 @@ pub fn reveal_path(
     use tauri_plugin_opener::OpenerExt;
     let base = resolve_root(&state, &root)?;
     let p = agency_core::files::abs_path(&base, &rel_path).map_err(|e| e.to_string())?;
-    app.opener()
-        .reveal_item_in_dir(p)
-        .map_err(|e| e.to_string())
+    app.opener().reveal_item_in_dir(p).map_err(|e| e.to_string())
 }
 
 /// Rename a run: overwrite its display title unconditionally (unlike
 /// set_run_title, which only fills an empty title from the first prompt). An
 /// empty/whitespace title clears it, so the name falls back to prompt/branch.
 #[tauri::command]
-pub fn rename_run(
-    state: State<'_, AppState>,
-    id: String,
-    title: String,
-) -> Result<(), String> {
+pub fn rename_run(state: State<'_, AppState>, id: String, title: String) -> Result<(), String> {
     state.store_run_title(&id, title.trim()).map_err(|e| e.to_string())
 }
 

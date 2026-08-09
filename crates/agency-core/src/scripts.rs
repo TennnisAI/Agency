@@ -60,9 +60,7 @@ pub fn shell_quote(s: &str) -> String {
     if s.is_empty() {
         return "''".to_string();
     }
-    let safe = s
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || "-_./=:@%+,".contains(c));
+    let safe = s.chars().all(|c| c.is_ascii_alphanumeric() || "-_./=:@%+,".contains(c));
     if safe {
         s.to_string()
     } else {
@@ -84,7 +82,10 @@ mod tests {
             None,
         );
         let get = |k: &str| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
-        assert_eq!(get("AGENCY_WORKSPACE_PATH").as_deref(), Some("/repo/.agency/worktrees/fix-login-a3k2"));
+        assert_eq!(
+            get("AGENCY_WORKSPACE_PATH").as_deref(),
+            Some("/repo/.agency/worktrees/fix-login-a3k2")
+        );
         assert_eq!(get("AGENCY_ROOT_PATH").as_deref(), Some("/repo"));
         assert_eq!(get("AGENCY_WORKSPACE_NAME").as_deref(), Some("fix-login-a3k2"));
         assert!(get("AGENCY_PORT").is_none());
@@ -99,7 +100,8 @@ mod tests {
 
     #[test]
     fn wrap_setup_none_returns_command_unchanged() {
-        let (cmd, args) = wrap_setup(None, "claude", &["--print".to_string(), "hi there".to_string()]);
+        let (cmd, args) =
+            wrap_setup(None, "claude", &["--print".to_string(), "hi there".to_string()]);
         assert_eq!(cmd, "claude");
         assert_eq!(args, vec!["--print".to_string(), "hi there".to_string()]);
     }
@@ -152,5 +154,7 @@ mod tests {
 
     // keep PathBuf import used
     #[allow(dead_code)]
-    fn _p() -> PathBuf { PathBuf::new() }
+    fn _p() -> PathBuf {
+        PathBuf::new()
+    }
 }

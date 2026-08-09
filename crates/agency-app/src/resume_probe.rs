@@ -18,10 +18,7 @@ pub enum ResumeProbe {
 /// `home` is the user's home dir (injected for testability). `command` is the
 /// agent launch command (e.g. "claude", "pi"); only the basename is matched.
 pub fn resume_probe(home: &Path, command: &str, worktree: &Path) -> ResumeProbe {
-    let base = Path::new(command)
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or(command);
+    let base = Path::new(command).file_name().and_then(|s| s.to_str()).unwrap_or(command);
     match base {
         "claude" => dir_probe(&home.join(".claude").join("projects").join(claude_enc(worktree))),
         "pi" => dir_probe(&home.join(".pi").join("agent").join("sessions").join(pi_enc(worktree))),
@@ -32,7 +29,11 @@ pub fn resume_probe(home: &Path, command: &str, worktree: &Path) -> ResumeProbe 
 fn dir_probe(dir: &Path) -> ResumeProbe {
     match std::fs::read_dir(dir) {
         Ok(mut entries) => {
-            if entries.next().is_some() { ResumeProbe::Has } else { ResumeProbe::None }
+            if entries.next().is_some() {
+                ResumeProbe::Has
+            } else {
+                ResumeProbe::None
+            }
         }
         Err(_) => ResumeProbe::None,
     }
@@ -40,11 +41,7 @@ fn dir_probe(dir: &Path) -> ResumeProbe {
 
 /// Claude encodes a cwd by replacing every '/' and '.' with '-'.
 fn claude_enc(worktree: &Path) -> String {
-    worktree
-        .to_string_lossy()
-        .chars()
-        .map(|c| if c == '/' || c == '.' { '-' } else { c })
-        .collect()
+    worktree.to_string_lossy().chars().map(|c| if c == '/' || c == '.' { '-' } else { c }).collect()
 }
 
 /// Pi strips a leading '/', replaces '/' with '-' (dots kept), wraps in '--'..'--'.
@@ -97,7 +94,10 @@ mod tests {
     fn unknown_agents_are_unknown() {
         let home = tempfile::tempdir().unwrap();
         assert_eq!(resume_probe(home.path(), "opencode", Path::new("/x")), ResumeProbe::Unknown);
-        assert_eq!(resume_probe(home.path(), "cursor-agent", Path::new("/x")), ResumeProbe::Unknown);
+        assert_eq!(
+            resume_probe(home.path(), "cursor-agent", Path::new("/x")),
+            ResumeProbe::Unknown
+        );
         assert_eq!(resume_probe(home.path(), "hermes", Path::new("/x")), ResumeProbe::Unknown);
     }
 }

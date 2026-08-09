@@ -122,25 +122,13 @@ fn resolve_target_prefers_explicit_then_falls_back() {
     run(&["commit", "-qm", "init"]);
 
     // Explicit wins.
-    assert_eq!(
-        agency_core::merge::resolve_target(Some("develop"), repo).unwrap(),
-        "develop"
-    );
+    assert_eq!(agency_core::merge::resolve_target(Some("develop"), repo).unwrap(), "develop");
     // None falls back to detect_base → "main".
-    assert_eq!(
-        agency_core::merge::resolve_target(None, repo).unwrap(),
-        "main"
-    );
+    assert_eq!(agency_core::merge::resolve_target(None, repo).unwrap(), "main");
     // Empty string is treated as "no target" → falls back to detect_base.
-    assert_eq!(
-        agency_core::merge::resolve_target(Some(""), repo).unwrap(),
-        "main"
-    );
+    assert_eq!(agency_core::merge::resolve_target(Some(""), repo).unwrap(), "main");
     // Whitespace-only likewise.
-    assert_eq!(
-        agency_core::merge::resolve_target(Some("  "), repo).unwrap(),
-        "main"
-    );
+    assert_eq!(agency_core::merge::resolve_target(Some("  "), repo).unwrap(), "main");
 }
 
 #[test]
@@ -383,10 +371,9 @@ fn merge_with_progress_names_each_step_it_takes() {
     run(dir.path(), &["checkout", "-q", "-b", "dev"]);
 
     let mut steps = Vec::new();
-    let outcome = merge::merge_with_progress(dir.path(), "agent/p", "main", &mut |p| {
-        steps.push(p.phase)
-    })
-    .unwrap();
+    let outcome =
+        merge::merge_with_progress(dir.path(), "agent/p", "main", &mut |p| steps.push(p.phase))
+            .unwrap();
     assert!(matches!(outcome, MergeOutcome::Clean { .. }));
     assert_eq!(
         steps,
@@ -413,10 +400,9 @@ fn merge_with_progress_stops_reporting_when_it_refuses_to_start() {
     std::fs::write(dir.path().join("f.txt"), "uncommitted\n").unwrap();
 
     let mut steps = Vec::new();
-    let err = merge::merge_with_progress(dir.path(), "agent/q", "main", &mut |p| {
-        steps.push(p.phase)
-    })
-    .unwrap_err();
+    let err =
+        merge::merge_with_progress(dir.path(), "agent/q", "main", &mut |p| steps.push(p.phase))
+            .unwrap_err();
     assert!(err.to_string().contains("uncommitted changes"), "{err}");
     assert_eq!(steps, vec!["Checking the project's checkout"]);
 }

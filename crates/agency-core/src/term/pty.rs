@@ -35,7 +35,12 @@ impl PtyProcess {
     }
 
     pub fn resize(&self, rows: u16, cols: u16) -> Result<()> {
-        self.master.lock().unwrap().resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })?;
+        self.master.lock().unwrap().resize(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })?;
         Ok(())
     }
 
@@ -132,15 +137,21 @@ mod tests {
             &[],
             80,
             24,
-            move |bytes| { let _ = tx.send(bytes); },
-            move |code| { let _ = etx.send(code); },
+            move |bytes| {
+                let _ = tx.send(bytes);
+            },
+            move |code| {
+                let _ = etx.send(code);
+            },
         )
         .unwrap();
 
         let mut seen = String::new();
         while let Ok(chunk) = rx.recv_timeout(Duration::from_secs(2)) {
             seen.push_str(&String::from_utf8_lossy(&chunk));
-            if seen.contains("hi-there") { break; }
+            if seen.contains("hi-there") {
+                break;
+            }
         }
         assert!(seen.contains("hi-there"), "got: {seen:?}");
         assert_eq!(erx.recv_timeout(Duration::from_secs(2)).unwrap(), 0);

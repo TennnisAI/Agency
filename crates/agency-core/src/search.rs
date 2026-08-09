@@ -458,7 +458,13 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let git = |args: &[&str]| {
-            assert!(Command::new("git").args(args).current_dir(root).output().unwrap().status.success());
+            assert!(Command::new("git")
+                .args(args)
+                .current_dir(root)
+                .output()
+                .unwrap()
+                .status
+                .success());
         };
         git(&["init", "-q"]);
         std::fs::write(root.join(".gitignore"), "ignored.txt\n").unwrap();
@@ -475,7 +481,10 @@ mod tests {
             .map(|h| h.path)
             .collect();
         assert!(paths.contains(&"tracked.txt".to_string()));
-        assert!(paths.contains(&"untracked.txt".to_string()), "untracked-not-ignored is searchable");
+        assert!(
+            paths.contains(&"untracked.txt".to_string()),
+            "untracked-not-ignored is searchable"
+        );
         assert!(!paths.contains(&"ignored.txt".to_string()), "gitignored files are not");
     }
 
@@ -492,7 +501,13 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let git = |args: &[&str]| {
-            assert!(Command::new("git").args(args).current_dir(root).output().unwrap().status.success());
+            assert!(Command::new("git")
+                .args(args)
+                .current_dir(root)
+                .output()
+                .unwrap()
+                .status
+                .success());
         };
         git(&["init", "-q"]);
         std::fs::write(root.join(".gitignore"), "ignored.txt\n").unwrap();
@@ -589,7 +604,8 @@ mod tests {
 
         if let Some(rg) = rg_on_path() {
             let started = Instant::now();
-            let hits = search_rg(&rg, dir.path(), &q("needle-500"), Instant::now() + TIMEOUT).unwrap();
+            let hits =
+                search_rg(&rg, dir.path(), &q("needle-500"), Instant::now() + TIMEOUT).unwrap();
             let rg_ms = started.elapsed().as_millis();
             assert!(!hits.is_empty());
             assert!(started.elapsed() < TIMEOUT + Duration::from_millis(500), "rg took {rg_ms}ms");

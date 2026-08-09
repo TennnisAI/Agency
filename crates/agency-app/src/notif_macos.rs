@@ -48,7 +48,12 @@ extern "C" {
     fn objc_getClass(name: *const c_char) -> *mut c_void;
     fn sel_registerName(name: *const c_char) -> Sel;
     fn class_getInstanceMethod(cls: *mut c_void, sel: Sel) -> *const c_void;
-    fn class_replaceMethod(cls: *mut c_void, sel: Sel, imp: Imp, types: *const c_char) -> *const c_void;
+    fn class_replaceMethod(
+        cls: *mut c_void,
+        sel: Sel,
+        imp: Imp,
+        types: *const c_char,
+    ) -> *const c_void;
 }
 
 /// Always present. Whether this particular run deserves a banner was settled
@@ -82,9 +87,16 @@ pub fn present_while_frontmost() -> bool {
         if !class_getInstanceMethod(cls, sel).is_null() {
             // The backend grew its own answer. Ours still wins (see the
             // suppression rules above), but it is worth knowing about.
-            log::info!("notification delegate already answers shouldPresentNotification:; overriding");
+            log::info!(
+                "notification delegate already answers shouldPresentNotification:; overriding"
+            );
         }
-        class_replaceMethod(cls, sel, std::mem::transmute::<ShouldPresentFn, Imp>(should_present), SIGNATURE.as_ptr());
+        class_replaceMethod(
+            cls,
+            sel,
+            std::mem::transmute::<ShouldPresentFn, Imp>(should_present),
+            SIGNATURE.as_ptr(),
+        );
         true
     }
 }
@@ -129,11 +141,20 @@ mod tests {
         // (ignored by our implementation, hence null) and returns BOOL.
         unsafe {
             let cls = objc_getClass(DELEGATE_CLASS.as_ptr());
-            let new: extern "C" fn(Id, Sel) -> Id = std::mem::transmute(objc_msgSend as *const c_void);
-            let delegate = new(new(cls, sel_registerName(c"alloc".as_ptr())), sel_registerName(c"init".as_ptr()));
+            let new: extern "C" fn(Id, Sel) -> Id =
+                std::mem::transmute(objc_msgSend as *const c_void);
+            let delegate = new(
+                new(cls, sel_registerName(c"alloc".as_ptr())),
+                sel_registerName(c"init".as_ptr()),
+            );
             let ask: extern "C" fn(Id, Sel, Id, Id) -> bool =
                 std::mem::transmute(objc_msgSend as *const c_void);
-            assert!(ask(delegate, sel_registerName(SELECTOR.as_ptr()), std::ptr::null_mut(), std::ptr::null_mut()));
+            assert!(ask(
+                delegate,
+                sel_registerName(SELECTOR.as_ptr()),
+                std::ptr::null_mut(),
+                std::ptr::null_mut()
+            ));
         }
     }
 }

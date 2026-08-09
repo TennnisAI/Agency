@@ -94,16 +94,15 @@ fn stage_commit_then_log_and_push_to_local_remote() {
 fn diff_stat_counts_added_deleted_files() {
     let dir = tempfile::tempdir().unwrap();
     init_repo(dir.path()); // existing helper: repo on a branch with tracked.txt = "one\n"
-    // Branch off and make changes: modify tracked.txt, add new file.
+                           // Branch off and make changes: modify tracked.txt, add new file.
     run(dir.path(), &["checkout", "-q", "-b", "feat"]);
     std::fs::write(dir.path().join("tracked.txt"), "one\ntwo\nthree\n").unwrap();
     std::fs::write(dir.path().join("new.txt"), "a\nb\n").unwrap();
     run(dir.path(), &["add", "-A"]);
     run(dir.path(), &["commit", "-q", "-m", "changes"]);
 
-    let stat = git::diff_stat(dir.path(), "master").unwrap_or_else(|_| {
-        git::diff_stat(dir.path(), "main").unwrap()
-    });
+    let stat = git::diff_stat(dir.path(), "master")
+        .unwrap_or_else(|_| git::diff_stat(dir.path(), "main").unwrap());
     assert_eq!(stat.files, 2);
     assert_eq!(stat.added, 4); // +two +three (tracked) + a + b (new)
     assert_eq!(stat.deleted, 0);
@@ -180,8 +179,14 @@ fn log_graph_captures_refs() {
     let dir = tempfile::tempdir().unwrap();
     init_repo(dir.path());
     let items = git::log_graph(dir.path(), 10).unwrap();
-    assert!(items[0].refs.iter().any(|r| r.contains("HEAD") || r.contains("master") || r.contains("main")),
-        "head commit carries a ref: {:?}", items[0].refs);
+    assert!(
+        items[0]
+            .refs
+            .iter()
+            .any(|r| r.contains("HEAD") || r.contains("master") || r.contains("main")),
+        "head commit carries a ref: {:?}",
+        items[0].refs
+    );
 }
 
 #[test]
@@ -322,8 +327,10 @@ fn stage_all_stages_everything() {
     std::fs::write(dir.path().join("new.txt"), "hi\n").unwrap();
     git::stage_all(dir.path()).unwrap();
     let changes = git::status(dir.path()).unwrap();
-    assert!(changes.iter().all(|c| c.index != " " && c.index != "?"),
-        "all changes staged: {changes:?}");
+    assert!(
+        changes.iter().all(|c| c.index != " " && c.index != "?"),
+        "all changes staged: {changes:?}"
+    );
 }
 
 #[test]
@@ -467,7 +474,8 @@ fn blob_sides_for_a_commit_compares_against_its_parent() {
     assert!(old.is_none(), "an added file has no parent-side blob");
     assert_eq!(new.unwrap().bytes, binary_bytes(1));
     let root = log[2].hash.clone();
-    let (old, _) = git::blob_sides(dir.path(), "tracked.txt", &git::BlobMode::Commit(root)).unwrap();
+    let (old, _) =
+        git::blob_sides(dir.path(), "tracked.txt", &git::BlobMode::Commit(root)).unwrap();
     assert!(old.is_none(), "the root commit has no parent");
 }
 
@@ -702,14 +710,20 @@ fn sync_reports_diverged_without_touching_anything() {
     commit_file(&clone, "local.txt", "a", "local commit");
 
     let head_before = std::process::Command::new("git")
-        .args(["rev-parse", "HEAD"]).current_dir(&clone).output().unwrap();
+        .args(["rev-parse", "HEAD"])
+        .current_dir(&clone)
+        .output()
+        .unwrap();
 
     let outcome = git::sync(&clone, |_| {}).unwrap();
     assert_eq!(outcome, git::SyncOutcome::Diverged);
 
     // Nothing changed locally: no merge, no rebase, no lost work.
     let head_after = std::process::Command::new("git")
-        .args(["rev-parse", "HEAD"]).current_dir(&clone).output().unwrap();
+        .args(["rev-parse", "HEAD"])
+        .current_dir(&clone)
+        .output()
+        .unwrap();
     assert_eq!(head_before.stdout, head_after.stdout);
     assert!(clone.join("local.txt").exists());
     assert!(!clone.join("remote.txt").exists());

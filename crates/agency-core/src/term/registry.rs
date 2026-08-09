@@ -37,12 +37,7 @@ impl Registry {
     }
 
     pub fn list(&self) -> Vec<(String, SessionStatus)> {
-        self.sessions
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|(id, s)| (id.clone(), s.status()))
-            .collect()
+        self.sessions.lock().unwrap().iter().map(|(id, s)| (id.clone(), s.status())).collect()
     }
 
     pub fn kill(&self, id: &str) {

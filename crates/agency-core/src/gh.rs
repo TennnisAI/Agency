@@ -322,7 +322,10 @@ impl GhCli {
         let out = self.run(
             repo,
             &[
-                "pr", "view", branch, "--json",
+                "pr",
+                "view",
+                branch,
+                "--json",
                 "number,url,title,state,isDraft,baseRefName,headRefName",
             ],
         )?;
@@ -342,7 +345,10 @@ impl GhCli {
         let out = self.run(
             repo,
             &[
-                "pr", "view", &num, "--json",
+                "pr",
+                "view",
+                &num,
+                "--json",
                 "number,url,title,state,isDraft,baseRefName,headRefName",
             ],
         )?;
@@ -363,7 +369,11 @@ impl GhCli {
         let out = self.run_ok(
             repo,
             &[
-                "pr", "list", "--limit", "30", "--json",
+                "pr",
+                "list",
+                "--limit",
+                "30",
+                "--json",
                 "number,url,title,state,isDraft,baseRefName,headRefName",
             ],
         )?;
@@ -372,7 +382,8 @@ impl GhCli {
 
     /// Open issues, newest first (capped at 30 for the picker).
     pub fn list_issues(&self, repo: &Path) -> Result<Vec<IssueItem>> {
-        let out = self.run_ok(repo, &["issue", "list", "--limit", "30", "--json", "number,title"])?;
+        let out =
+            self.run_ok(repo, &["issue", "list", "--limit", "30", "--json", "number,title"])?;
         Ok(serde_json::from_str(&out)?)
     }
 
@@ -392,9 +403,7 @@ impl GhCli {
     ) -> Result<PrInfo> {
         self.run_ok(
             repo,
-            &[
-                "pr", "create", "--head", branch, "--base", base, "--title", title, "--body", body,
-            ],
+            &["pr", "create", "--head", branch, "--base", base, "--title", title, "--body", body],
         )?;
         self.view_pr(repo, branch)?
             .ok_or_else(|| anyhow::anyhow!("PR was created but could not be read back"))
@@ -405,10 +414,8 @@ impl GhCli {
     /// and the exit code is ignored when it parses. A PR with no checks
     /// configured reports as an empty list.
     pub fn pr_checks(&self, repo: &Path, branch: &str) -> Result<Vec<CheckItem>> {
-        let out = self.run(
-            repo,
-            &["pr", "checks", branch, "--json", "name,bucket,link,description"],
-        )?;
+        let out =
+            self.run(repo, &["pr", "checks", branch, "--json", "name,bucket,link,description"])?;
         if let Ok(items) = serde_json::from_slice::<Vec<CheckItem>>(&out.stdout) {
             return Ok(items);
         }
@@ -446,7 +453,8 @@ impl GhCli {
     /// the slug as GraphQL variables, and explicit interpolation keeps the
     /// fake-gh tests deterministic.
     fn repo_slug(&self, repo: &Path) -> Result<(String, String)> {
-        let out = self.run_ok(repo, &["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"])?;
+        let out = self
+            .run_ok(repo, &["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"])?;
         let slug = out.trim();
         let (owner, name) = slug
             .split_once('/')
@@ -524,10 +532,8 @@ impl GhCli {
     /// deleting it from the base repo is neither possible nor ours to do).
     fn delete_remote_head_branch(&self, repo: &Path, number: u64) -> Result<Option<String>> {
         let num = number.to_string();
-        let out = self.run_ok(
-            repo,
-            &["pr", "view", &num, "--json", "headRefName,isCrossRepository"],
-        )?;
+        let out =
+            self.run_ok(repo, &["pr", "view", &num, "--json", "headRefName,isCrossRepository"])?;
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase")]
         struct Head {
@@ -571,7 +577,10 @@ impl GhCli {
         if !out.status.success() {
             let err = String::from_utf8_lossy(&out.stderr);
             let e = err.to_lowercase();
-            if e.contains("no pull requests found") || e.contains("could not find") || e.contains("not found") {
+            if e.contains("no pull requests found")
+                || e.contains("could not find")
+                || e.contains("not found")
+            {
                 return Ok(None);
             }
             bail!("gh pr view failed: {err}");
@@ -609,15 +618,23 @@ impl GhCli {
         let out = self.run(
             repo,
             &[
-                "api", "graphql",
-                "-f", &owner_arg,
-                "-f", &name_arg,
-                "-F", &number_arg, // -F: typed, so GraphQL sees Int! not a string
-                "-f", &query_arg,
+                "api",
+                "graphql",
+                "-f",
+                &owner_arg,
+                "-f",
+                &name_arg,
+                "-F",
+                &number_arg, // -F: typed, so GraphQL sees Int! not a string
+                "-f",
+                &query_arg,
             ],
         )?;
         if !out.status.success() {
-            bail!("gh api graphql (reviewThreads) failed: {}", String::from_utf8_lossy(&out.stderr));
+            bail!(
+                "gh api graphql (reviewThreads) failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
         }
         let resp: GqlThreadsResp = serde_json::from_slice(&out.stdout)?;
         let nodes = resp
@@ -713,7 +730,13 @@ impl GhCli {
     /// Post a reply into an existing review thread. `in_reply_to` is a comment's
     /// `database_id` (the REST integer id), not the GraphQL node id. The FE
     /// refetches threads after, so the created comment isn't returned.
-    pub fn reply_review_comment(&self, repo: &Path, number: u64, in_reply_to: u64, body: &str) -> Result<()> {
+    pub fn reply_review_comment(
+        &self,
+        repo: &Path,
+        number: u64,
+        in_reply_to: u64,
+        body: &str,
+    ) -> Result<()> {
         let (owner, name) = self.repo_slug(repo)?;
         let path = format!("repos/{owner}/{name}/pulls/{number}/comments");
         let body_arg = format!("body={body}");
@@ -934,10 +957,7 @@ mod tests {
     #[test]
     fn readiness_not_authenticated_when_auth_status_fails() {
         let dir = tempfile::tempdir().unwrap();
-        let bin = fake_gh(
-            dir.path(),
-            r#"case "$1" in --version) exit 0;; auth) exit 1;; esac"#,
-        );
+        let bin = fake_gh(dir.path(), r#"case "$1" in --version) exit 0;; auth) exit 1;; esac"#);
         assert_eq!(GhCli::with_bin(bin).readiness(dir.path()), GhReadiness::NotAuthenticated);
     }
 
@@ -1010,7 +1030,8 @@ esac
     #[test]
     fn pr_checks_maps_no_checks_to_empty() {
         let dir = tempfile::tempdir().unwrap();
-        let bin = fake_gh(dir.path(), r#"echo "no checks reported on the 'agent/x' branch" >&2; exit 1"#);
+        let bin =
+            fake_gh(dir.path(), r#"echo "no checks reported on the 'agent/x' branch" >&2; exit 1"#);
         assert!(GhCli::with_bin(bin).pr_checks(dir.path(), "agent/x").unwrap().is_empty());
     }
 
@@ -1146,7 +1167,14 @@ esac
             },
         ];
         GhCli::with_bin(bin)
-            .submit_pr_review(dir.path(), 7, "deadbeef", "REQUEST_CHANGES", Some("please fix"), &comments)
+            .submit_pr_review(
+                dir.path(),
+                7,
+                "deadbeef",
+                "REQUEST_CHANGES",
+                Some("please fix"),
+                &comments,
+            )
             .unwrap();
         let sent = std::fs::read_to_string(&cap).unwrap();
         assert!(sent.contains(r#""commit_id":"deadbeef""#), "sent: {sent}");
@@ -1204,7 +1232,10 @@ esac"#,
         // No --delete-branch: it would also delete the local branch, which is
         // checked out in the task's worktree.
         assert_eq!(lines[0], "pr merge 3 --squash");
-        assert_eq!(lines.last().copied(), Some("api -X DELETE repos/o/r/git/refs/heads/agent/agent-zek6"));
+        assert_eq!(
+            lines.last().copied(),
+            Some("api -X DELETE repos/o/r/git/refs/heads/agent/agent-zek6")
+        );
     }
 
     #[test]

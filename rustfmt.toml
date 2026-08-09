@@ -1,0 +1,7 @@
+# Chosen to match the style the codebase was already written in by hand, so
+# adopting rustfmt reshuffled as little as possible. "Max" is the load-bearing
+# setting: rustfmt's default small-item heuristics cap struct literals, calls
+# and chains at a fraction of max_width and would explode compact one-liners
+# like `Foo { a: x, b: y }` across four lines each.
+max_width = 100
+use_small_heuristics = "Max"

@@ -355,10 +355,7 @@ impl Registry {
             conn.execute("ALTER TABLE projects ADD COLUMN issue_key TEXT", [])?;
         }
         if !column_exists(&conn, "projects", "closed")? {
-            conn.execute(
-                "ALTER TABLE projects ADD COLUMN closed INTEGER NOT NULL DEFAULT 0",
-                [],
-            )?;
+            conn.execute("ALTER TABLE projects ADD COLUMN closed INTEGER NOT NULL DEFAULT 0", [])?;
         }
         if !column_exists(&conn, "projects", "kind")? {
             conn.execute("ALTER TABLE projects ADD COLUMN kind TEXT", [])?;
@@ -398,9 +395,8 @@ impl Registry {
     /// `add_project`. Idempotent: no-op once every project has a color.
     fn backfill_project_colors(&self) -> Result<()> {
         let ids: Vec<String> = {
-            let mut stmt = self
-                .conn
-                .prepare("SELECT id FROM projects WHERE color IS NULL ORDER BY name")?;
+            let mut stmt =
+                self.conn.prepare("SELECT id FROM projects WHERE color IS NULL ORDER BY name")?;
             let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
             rows.filter_map(|r| r.ok()).collect()
         };
@@ -428,7 +424,8 @@ impl Registry {
                      WHERE issue_key IS NULL
                      ORDER BY name",
                 )?;
-            let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+            let rows =
+                stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
             rows.filter_map(|r| r.ok()).collect()
         };
         for (id, name) in rows {
@@ -442,9 +439,8 @@ impl Registry {
     }
 
     fn used_issue_keys(&self) -> Result<Vec<String>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT issue_key FROM projects WHERE issue_key IS NOT NULL")?;
+        let mut stmt =
+            self.conn.prepare("SELECT issue_key FROM projects WHERE issue_key IS NOT NULL")?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
@@ -543,10 +539,8 @@ impl Registry {
     /// project gets a color no other project has until the palette runs out.
     fn pick_project_color(&self) -> Result<String> {
         let mut stmt = self.conn.prepare("SELECT color FROM projects WHERE color IS NOT NULL")?;
-        let used: Vec<String> = stmt
-            .query_map([], |row| row.get::<_, String>(0))?
-            .filter_map(|r| r.ok())
-            .collect();
+        let used: Vec<String> =
+            stmt.query_map([], |row| row.get::<_, String>(0))?.filter_map(|r| r.ok()).collect();
         let pick = PROJECT_COLORS
             .iter()
             .min_by_key(|c| used.iter().filter(|u| u == *c).count())
@@ -621,8 +615,7 @@ impl Registry {
     }
 
     pub fn remove_project(&self, id: &str) -> Result<()> {
-        self.conn
-            .execute("DELETE FROM projects WHERE id = ?1", [id])?;
+        self.conn.execute("DELETE FROM projects WHERE id = ?1", [id])?;
         Ok(())
     }
 
@@ -647,7 +640,11 @@ impl Registry {
 
     /// Set a profile's resume recipe ONLY if it is currently NULL (so a user's
     /// customization is never clobbered). No-op if the profile does not exist.
-    pub fn ensure_profile_resume_args(&self, name: &str, resume_args: &Option<Vec<String>>) -> Result<()> {
+    pub fn ensure_profile_resume_args(
+        &self,
+        name: &str,
+        resume_args: &Option<Vec<String>>,
+    ) -> Result<()> {
         let resume = match resume_args {
             Some(r) => Some(serde_json::to_string(r)?),
             None => None,
@@ -661,7 +658,11 @@ impl Registry {
 
     /// Set a profile's loop (headless one-shot) recipe ONLY if it is currently
     /// NULL — same never-clobber rule as `ensure_profile_resume_args`.
-    pub fn ensure_profile_loop_args(&self, name: &str, loop_args: &Option<Vec<String>>) -> Result<()> {
+    pub fn ensure_profile_loop_args(
+        &self,
+        name: &str,
+        loop_args: &Option<Vec<String>>,
+    ) -> Result<()> {
         let l = match loop_args {
             Some(r) => Some(serde_json::to_string(r)?),
             None => None,
@@ -674,9 +675,9 @@ impl Registry {
     }
 
     pub fn get_profile(&self, name: &str) -> Result<Option<AgentProfile>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT name, command, args, env, resume_args, loop_args FROM profiles WHERE name = ?1")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT name, command, args, env, resume_args, loop_args FROM profiles WHERE name = ?1",
+        )?;
         let mut rows = stmt.query([name])?;
         match rows.next()? {
             Some(row) => Ok(Some(row_to_profile(row)?)),
@@ -685,9 +686,9 @@ impl Registry {
     }
 
     pub fn list_profiles(&self) -> Result<Vec<AgentProfile>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT name, command, args, env, resume_args, loop_args FROM profiles ORDER BY name")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT name, command, args, env, resume_args, loop_args FROM profiles ORDER BY name",
+        )?;
         let rows = stmt.query_map([], |row| Ok(row_to_profile(row)))?;
         let mut out = Vec::new();
         for r in rows {
@@ -697,15 +698,12 @@ impl Registry {
     }
 
     pub fn delete_profile(&self, name: &str) -> Result<()> {
-        self.conn
-            .execute("DELETE FROM profiles WHERE name = ?1", [name])?;
+        self.conn.execute("DELETE FROM profiles WHERE name = ?1", [name])?;
         Ok(())
     }
 
     pub fn get_setting(&self, key: &str) -> Result<Option<String>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT value FROM settings WHERE key = ?1")?;
+        let mut stmt = self.conn.prepare("SELECT value FROM settings WHERE key = ?1")?;
         let mut rows = stmt.query([key])?;
         match rows.next()? {
             Some(row) => Ok(Some(row.get(0)?)),
@@ -792,10 +790,8 @@ impl Registry {
     }
 
     pub fn set_run_title(&self, id: &str, title: &str) -> Result<()> {
-        self.conn.execute(
-            "UPDATE runs SET title = ?2 WHERE id = ?1",
-            rusqlite::params![id, title],
-        )?;
+        self.conn
+            .execute("UPDATE runs SET title = ?2 WHERE id = ?1", rusqlite::params![id, title])?;
         Ok(())
     }
 
@@ -843,9 +839,9 @@ impl Registry {
     }
 
     pub fn list_port_bases(&self) -> Result<Vec<u16>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT port_base FROM runs WHERE port_base IS NOT NULL AND archived_at IS NULL")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT port_base FROM runs WHERE port_base IS NOT NULL AND archived_at IS NULL",
+        )?;
         let rows = stmt.query_map([], |row| row.get::<_, i64>(0))?;
         let mut out = Vec::new();
         for r in rows {
@@ -863,9 +859,9 @@ impl Registry {
     }
 
     pub fn get_run_session(&self, id: &str) -> Result<Option<RunSession>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, run_id, agent, created_at FROM run_sessions WHERE id = ?1",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, run_id, agent, created_at FROM run_sessions WHERE id = ?1")?;
         let mut rows = stmt.query([id])?;
         match rows.next()? {
             Some(row) => Ok(Some(row_to_run_session(row)?)),
@@ -1045,10 +1041,7 @@ impl Registry {
     }
 
     pub fn mark_issues_migrated(&self, project_id: &str) -> Result<()> {
-        self.conn.execute(
-            "UPDATE projects SET issues_migrated = 1 WHERE id = ?1",
-            [project_id],
-        )?;
+        self.conn.execute("UPDATE projects SET issues_migrated = 1 WHERE id = ?1", [project_id])?;
         Ok(())
     }
 
@@ -1632,9 +1625,11 @@ mod tests {
         reg.insert_run(&sample_run("x-2", Some(5210))).unwrap();
         reg.set_archived("x-1", Some(1000)).unwrap();
 
-        let active: Vec<String> = reg.list_runs("proj").unwrap().into_iter().map(|r| r.id).collect();
+        let active: Vec<String> =
+            reg.list_runs("proj").unwrap().into_iter().map(|r| r.id).collect();
         assert_eq!(active, vec!["x-2"]);
-        let archived: Vec<String> = reg.list_archived_runs("proj").unwrap().into_iter().map(|r| r.id).collect();
+        let archived: Vec<String> =
+            reg.list_archived_runs("proj").unwrap().into_iter().map(|r| r.id).collect();
         assert_eq!(archived, vec!["x-1"]);
     }
 
@@ -1657,7 +1652,8 @@ mod tests {
         reg.insert_run(&sample_run("x-1", Some(5200))).unwrap();
         reg.set_archived("x-1", Some(1000)).unwrap();
         reg.set_archived("x-1", None).unwrap();
-        let active: Vec<String> = reg.list_runs("proj").unwrap().into_iter().map(|r| r.id).collect();
+        let active: Vec<String> =
+            reg.list_runs("proj").unwrap().into_iter().map(|r| r.id).collect();
         assert_eq!(active, vec!["x-1"]);
     }
 
@@ -1669,9 +1665,11 @@ mod tests {
         reg.insert_review_comment(&sample_comment("c2", "run-1", true)).unwrap();
         reg.insert_review_comment(&sample_comment("c3", "run-2", false)).unwrap();
 
-        let all: Vec<String> = reg.list_review_comments("run-1").unwrap().into_iter().map(|c| c.id).collect();
+        let all: Vec<String> =
+            reg.list_review_comments("run-1").unwrap().into_iter().map(|c| c.id).collect();
         assert_eq!(all, vec!["c1", "c2"]);
-        let unsent: Vec<String> = reg.list_unsent_review_comments("run-1").unwrap().into_iter().map(|c| c.id).collect();
+        let unsent: Vec<String> =
+            reg.list_unsent_review_comments("run-1").unwrap().into_iter().map(|c| c.id).collect();
         assert_eq!(unsent, vec!["c1"]);
 
         let got = reg.list_review_comments("run-1").unwrap();
@@ -1688,10 +1686,7 @@ mod tests {
         reg.insert_run(&sample_run("x-1", Some(5200))).unwrap();
         assert_eq!(reg.get_run("x-1").unwrap().unwrap().title, None);
         reg.set_run_title("x-1", "Add hunk staging").unwrap();
-        assert_eq!(
-            reg.get_run("x-1").unwrap().unwrap().title.as_deref(),
-            Some("Add hunk staging"),
-        );
+        assert_eq!(reg.get_run("x-1").unwrap().unwrap().title.as_deref(), Some("Add hunk staging"),);
     }
 
     #[test]
@@ -1745,7 +1740,8 @@ mod tests {
         assert!(reg.list_unsent_review_comments("run-1").unwrap().is_empty());
 
         reg.delete_review_comment("c1").unwrap();
-        let ids: Vec<String> = reg.list_review_comments("run-1").unwrap().into_iter().map(|c| c.id).collect();
+        let ids: Vec<String> =
+            reg.list_review_comments("run-1").unwrap().into_iter().map(|c| c.id).collect();
         assert_eq!(ids, vec!["c2"]);
     }
 
@@ -1783,15 +1779,26 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let reg = Registry::open(&dir.path().join("a.db")).unwrap();
         reg.upsert_profile(&AgentProfile {
-            name: "claude".into(), command: "claude".into(),
-            args: vec![], env: vec![], resume_args: None, loop_args: None,
-        }).unwrap();
+            name: "claude".into(),
+            command: "claude".into(),
+            args: vec![],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
         // Unset -> gets set.
         reg.ensure_profile_resume_args("claude", &Some(vec!["--continue".into()])).unwrap();
-        assert_eq!(reg.get_profile("claude").unwrap().unwrap().resume_args, Some(vec!["--continue".into()]));
+        assert_eq!(
+            reg.get_profile("claude").unwrap().unwrap().resume_args,
+            Some(vec!["--continue".into()])
+        );
         // Already set -> not clobbered.
         reg.ensure_profile_resume_args("claude", &Some(vec!["--other".into()])).unwrap();
-        assert_eq!(reg.get_profile("claude").unwrap().unwrap().resume_args, Some(vec!["--continue".into()]));
+        assert_eq!(
+            reg.get_profile("claude").unwrap().unwrap().resume_args,
+            Some(vec!["--continue".into()])
+        );
     }
 
     #[test]
@@ -1815,12 +1822,18 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let reg = Registry::open(&dir.path().join("a.db")).unwrap();
         reg.upsert_profile(&AgentProfile {
-            name: "claude".into(), command: "claude".into(),
-            args: vec![], env: vec![], resume_args: None, loop_args: None,
-        }).unwrap();
+            name: "claude".into(),
+            command: "claude".into(),
+            args: vec![],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
         assert_eq!(reg.get_profile("claude").unwrap().unwrap().loop_args, None);
         // Unset -> gets seeded.
-        reg.ensure_profile_loop_args("claude", &Some(vec!["-p".into(), "{{prompt}}".into()])).unwrap();
+        reg.ensure_profile_loop_args("claude", &Some(vec!["-p".into(), "{{prompt}}".into()]))
+            .unwrap();
         assert_eq!(
             reg.get_profile("claude").unwrap().unwrap().loop_args,
             Some(vec!["-p".into(), "{{prompt}}".into()])
@@ -1918,7 +1931,9 @@ mod tests {
     fn issue_crud_roundtrip() {
         let dir = tempdir().unwrap();
         let reg = Registry::open(&dir.path().join("issues.db")).unwrap();
-        let a = reg.create_issue("proj", "Fix login", "steps to repro", IssueStatus::Todo, 100).unwrap();
+        let a = reg
+            .create_issue("proj", "Fix login", "steps to repro", IssueStatus::Todo, 100)
+            .unwrap();
         assert_eq!((a.seq, a.priority, a.status), (1, 0, IssueStatus::Todo));
         assert_eq!((a.created_at, a.updated_at), (100, 100));
         let b = reg.create_issue("proj", "Add board", "", IssueStatus::Backlog, 101).unwrap();
@@ -2032,10 +2047,14 @@ mod tests {
         reg.insert_run(&sample_run("x-3", None)).unwrap(); // unlinked
 
         assert_eq!(reg.runs_for_issue(&issue.id).unwrap().len(), 2);
-        assert_eq!(reg.get_run("x-1").unwrap().unwrap().issue_id.as_deref(), Some(issue.id.as_str()));
+        assert_eq!(
+            reg.get_run("x-1").unwrap().unwrap().issue_id.as_deref(),
+            Some(issue.id.as_str())
+        );
 
         reg.set_archived("x-1", Some(1000)).unwrap();
-        let active: Vec<String> = reg.runs_for_issue(&issue.id).unwrap().into_iter().map(|r| r.id).collect();
+        let active: Vec<String> =
+            reg.runs_for_issue(&issue.id).unwrap().into_iter().map(|r| r.id).collect();
         assert_eq!(active, vec!["x-2"]);
     }
 

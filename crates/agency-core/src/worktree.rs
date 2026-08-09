@@ -42,11 +42,7 @@ impl WorktreeManager {
     fn git_at(dir: &std::path::Path, args: &[&str]) -> Result<String> {
         let output = Command::new("git").args(args).current_dir(dir).output()?;
         if !output.status.success() {
-            bail!(
-                "git {:?} failed: {}",
-                args,
-                String::from_utf8_lossy(&output.stderr)
-            );
+            bail!("git {:?} failed: {}", args, String::from_utf8_lossy(&output.stderr));
         }
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
@@ -82,9 +78,7 @@ impl WorktreeManager {
         for rel in rel_paths {
             let rel_path = std::path::Path::new(rel);
             if rel_path.is_absolute()
-                || rel_path
-                    .components()
-                    .any(|c| matches!(c, std::path::Component::ParentDir))
+                || rel_path.components().any(|c| matches!(c, std::path::Component::ParentDir))
             {
                 continue;
             }
@@ -196,11 +190,7 @@ impl WorktreeManager {
             &path,
             on_progress,
         )?;
-        Ok(Worktree {
-            task_id: task_id.to_string(),
-            path,
-            branch,
-        })
+        Ok(Worktree { task_id: task_id.to_string(), path, branch })
     }
 
     /// Run a `git worktree add …` command, polling the destination's file count
@@ -216,9 +206,7 @@ impl WorktreeManager {
         let total = self.tracked_file_count();
         let emit = |on_progress: &mut dyn FnMut(CloneProgress), n: u64| {
             let (percent, detail) = match total {
-                Some(t) if t > 0 => {
-                    (Some(((n * 100 / t).min(99)) as u8), format!("{n}/{t} files"))
-                }
+                Some(t) if t > 0 => (Some(((n * 100 / t).min(99)) as u8), format!("{n}/{t} files")),
                 _ => (None, format!("{n} files")),
             };
             on_progress(CloneProgress { phase: "Setting up workspace".into(), percent, detail });
@@ -278,19 +266,20 @@ impl WorktreeManager {
         let mut cur_path: Option<PathBuf> = None;
         let mut cur_branch: Option<String> = None;
 
-        let flush = |path: &mut Option<PathBuf>, branch: &mut Option<String>, acc: &mut Vec<Worktree>| {
-            if let (Some(p), Some(b)) = (path.take(), branch.take()) {
-                if p.starts_with(&root) {
-                    if let Some(task_id) = p.file_name().and_then(|s| s.to_str()) {
-                        acc.push(Worktree {
-                            task_id: task_id.to_string(),
-                            path: p.clone(),
-                            branch: b,
-                        });
+        let flush =
+            |path: &mut Option<PathBuf>, branch: &mut Option<String>, acc: &mut Vec<Worktree>| {
+                if let (Some(p), Some(b)) = (path.take(), branch.take()) {
+                    if p.starts_with(&root) {
+                        if let Some(task_id) = p.file_name().and_then(|s| s.to_str()) {
+                            acc.push(Worktree {
+                                task_id: task_id.to_string(),
+                                path: p.clone(),
+                                branch: b,
+                            });
+                        }
                     }
                 }
-            }
-        };
+            };
 
         for line in out.lines() {
             if let Some(rest) = line.strip_prefix("worktree ") {
@@ -344,11 +333,7 @@ impl WorktreeManager {
         let path = self.worktrees_root().join(task_id);
         let path_str = path.to_string_lossy().to_string();
         self.run_worktree_add(&["worktree", "add", &path_str, branch], &path, on_progress)?;
-        Ok(Worktree {
-            task_id: task_id.to_string(),
-            path,
-            branch: branch.to_string(),
-        })
+        Ok(Worktree { task_id: task_id.to_string(), path, branch: branch.to_string() })
     }
 
     /// Re-create a worktree for `task_id` on its existing branch `agent/<id>`.
@@ -379,11 +364,8 @@ pub fn ensure_agency_excludes(repo_path: &std::path::Path) -> Result<()> {
     let wanted = [".agency/worktrees/", ".agency/agency.local.toml", ".agency/issues/"];
 
     let had_legacy = current.lines().any(|l| l.trim() == ".agency/");
-    let mut lines: Vec<String> = current
-        .lines()
-        .filter(|l| l.trim() != ".agency/")
-        .map(|l| l.to_string())
-        .collect();
+    let mut lines: Vec<String> =
+        current.lines().filter(|l| l.trim() != ".agency/").map(|l| l.to_string()).collect();
 
     let mut changed = had_legacy;
     for w in wanted {
@@ -424,10 +406,7 @@ pub fn untrack_issue_files(repo_path: &std::path::Path) -> Result<bool> {
         return Ok(false);
     }
     let git = |args: &[&str]| -> Result<std::process::Output> {
-        Ok(std::process::Command::new("git")
-            .args(args)
-            .current_dir(repo_path)
-            .output()?)
+        Ok(std::process::Command::new("git").args(args).current_dir(repo_path).output()?)
     };
     let tracked = git(&["ls-files", "--", issues])?;
     if !tracked.status.success() || String::from_utf8_lossy(&tracked.stdout).trim().is_empty() {
@@ -593,11 +572,8 @@ mod tests {
             .output()
             .unwrap();
         assert!(String::from_utf8_lossy(&tracked.stdout).trim().is_empty());
-        let status = Command::new("git")
-            .args(["status", "--porcelain"])
-            .current_dir(repo)
-            .output()
-            .unwrap();
+        let status =
+            Command::new("git").args(["status", "--porcelain"]).current_dir(repo).output().unwrap();
         assert_eq!(String::from_utf8_lossy(&status.stdout).trim(), "");
         // Second pass has nothing left to do, and makes no second commit.
         assert!(!untrack_issue_files(repo).unwrap());

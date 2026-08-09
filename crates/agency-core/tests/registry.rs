@@ -129,12 +129,25 @@ fn list_runs_newest_first() {
     let reg = Registry::open(&dir.path().join("agency.db")).unwrap();
     for (id, ts) in [("a", 1), ("b", 3), ("c", 2)] {
         reg.insert_run(&Run {
-            id: id.into(), project_id: "p".into(), agent: "shell".into(),
-            prompt: "".into(), base: "main".into(), branch: format!("agent/{id}"), created_at: ts,
-            port_base: None, archived_at: None, title: None, kind: "agent".into(),
-            merge_target: None, race_id: None, loop_config: None, loop_state: None, issue_id: None,
+            id: id.into(),
+            project_id: "p".into(),
+            agent: "shell".into(),
+            prompt: "".into(),
+            base: "main".into(),
+            branch: format!("agent/{id}"),
+            created_at: ts,
+            port_base: None,
+            archived_at: None,
+            title: None,
+            kind: "agent".into(),
+            merge_target: None,
+            race_id: None,
+            loop_config: None,
+            loop_state: None,
+            issue_id: None,
             worktree: true,
-        }).unwrap();
+        })
+        .unwrap();
     }
     let ids: Vec<String> = reg.list_runs("p").unwrap().into_iter().map(|r| r.id).collect();
     assert_eq!(ids, vec!["b", "c", "a"]); // created_at desc
@@ -146,9 +159,7 @@ fn new_projects_get_distinct_colors_until_palette_exhausts() {
     let reg = Registry::open(&dir.path().join("colors.db")).unwrap();
     let mut colors = Vec::new();
     for i in 0..9 {
-        let p = reg
-            .add_project(&format!("p{i}"), std::path::Path::new("/tmp/x"))
-            .unwrap();
+        let p = reg.add_project(&format!("p{i}"), std::path::Path::new("/tmp/x")).unwrap();
         colors.push(p.color.expect("assigned at add time"));
     }
     let unique: std::collections::HashSet<_> = colors.iter().collect();

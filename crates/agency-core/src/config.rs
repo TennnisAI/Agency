@@ -231,7 +231,10 @@ pub fn graph_path(repo_path: &Path) -> PathBuf {
 /// `graphify-out/`. Shared by the MCP injector and the settings UI so the UI's
 /// placeholder matches what actually runs.
 pub fn default_serve_command(repo_path: &Path) -> String {
-    format!("uv tool run --from graphifyy python -m graphify.serve {}", graph_path(repo_path).display())
+    format!(
+        "uv tool run --from graphifyy python -m graphify.serve {}",
+        graph_path(repo_path).display()
+    )
 }
 
 /// The shell script that installs the graphify tooling, shown (and offered) by
@@ -343,8 +346,7 @@ pub fn save_knowledge(repo_path: &Path, k: &KnowledgeConfig) -> std::io::Result<
     }
     doc.insert("knowledge".into(), toml::Value::Table(table));
 
-    let text = toml::to_string_pretty(&toml::Value::Table(doc))
-        .map_err(std::io::Error::other)?;
+    let text = toml::to_string_pretty(&toml::Value::Table(doc)).map_err(std::io::Error::other)?;
     std::fs::create_dir_all(&dir)?;
     std::fs::write(&path, text)
 }
@@ -377,8 +379,7 @@ pub fn save_files(repo_path: &Path, f: &FilesConfig) -> std::io::Result<()> {
     table.insert("copy".into(), toml::Value::Array(copy));
     doc.insert("files".into(), toml::Value::Table(table));
 
-    let text = toml::to_string_pretty(&toml::Value::Table(doc))
-        .map_err(std::io::Error::other)?;
+    let text = toml::to_string_pretty(&toml::Value::Table(doc)).map_err(std::io::Error::other)?;
     std::fs::create_dir_all(&dir)?;
     std::fs::write(&path, text)
 }
@@ -392,10 +393,8 @@ pub fn run_scripts_are_shared(repo_path: &Path) -> bool {
         read_value(&repo_path.join(".agency").join(name))
             .and_then(|v| v.get("scripts").cloned())
             .map(|s| {
-                let listed = s
-                    .get("runs")
-                    .and_then(|r| r.as_array())
-                    .is_some_and(|a| !a.is_empty());
+                let listed =
+                    s.get("runs").and_then(|r| r.as_array()).is_some_and(|a| !a.is_empty());
                 listed || s.get("run").and_then(|r| r.as_str()).is_some()
             })
             .unwrap_or(false)
@@ -422,10 +421,7 @@ pub fn save_run_scripts(repo_path: &Path, scripts: &[RunScript]) -> std::io::Res
         .and_then(|v| v.as_table().cloned())
         .unwrap_or_default();
 
-    let mut table = doc
-        .get("scripts")
-        .and_then(|v| v.as_table().cloned())
-        .unwrap_or_default();
+    let mut table = doc.get("scripts").and_then(|v| v.as_table().cloned()).unwrap_or_default();
     table.remove("run");
     table.remove("run_mode");
 
@@ -452,8 +448,7 @@ pub fn save_run_scripts(repo_path: &Path, scripts: &[RunScript]) -> std::io::Res
         doc.insert("scripts".into(), toml::Value::Table(table));
     }
 
-    let text = toml::to_string_pretty(&toml::Value::Table(doc))
-        .map_err(std::io::Error::other)?;
+    let text = toml::to_string_pretty(&toml::Value::Table(doc)).map_err(std::io::Error::other)?;
     std::fs::create_dir_all(&dir)?;
     std::fs::write(&path, text)
 }
@@ -464,9 +459,7 @@ fn merge_values(mut base: toml::Value, local: toml::Value) -> toml::Value {
     if let (Some(bt), Some(lt)) = (base.as_table_mut(), local.as_table()) {
         for (k, lv) in lt {
             let merged = match bt.get(k) {
-                Some(bv) if bv.is_table() && lv.is_table() => {
-                    merge_values(bv.clone(), lv.clone())
-                }
+                Some(bv) if bv.is_table() && lv.is_table() => merge_values(bv.clone(), lv.clone()),
                 _ => lv.clone(),
             };
             bt.insert(k.clone(), merged);
@@ -525,10 +518,7 @@ mod tests {
             split_command("python -m graphify.serve \"/my repo/graph.json\""),
             vec!["python", "-m", "graphify.serve", "/my repo/graph.json"]
         );
-        assert_eq!(
-            split_command("a 'b c' d"),
-            vec!["a", "b c", "d"]
-        );
+        assert_eq!(split_command("a 'b c' d"), vec!["a", "b c", "d"]);
         // Extra whitespace collapses; no empty trailing arg.
         assert_eq!(split_command("  a   b  "), vec!["a", "b"]);
     }
@@ -703,12 +693,15 @@ mod tests {
         let list = c.scripts.run_list();
         assert_eq!(list.len(), 2);
         // Names and commands are trimmed on the way in.
-        assert_eq!(list[0], RunScript {
-            name: "dev".into(),
-            command: "pnpm dev".into(),
-            web: true,
-            nonconcurrent: true,
-        });
+        assert_eq!(
+            list[0],
+            RunScript {
+                name: "dev".into(),
+                command: "pnpm dev".into(),
+                web: true,
+                nonconcurrent: true,
+            }
+        );
         assert_eq!(list[1].name, "build mac");
         assert!(!list[1].web, "a build script must not claim a browser preview");
         assert_eq!(c.scripts.setup.as_deref(), Some("pnpm install"));

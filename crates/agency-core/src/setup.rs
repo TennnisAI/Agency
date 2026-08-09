@@ -376,10 +376,8 @@ pub fn initial_commit_with_progress(
     // Nothing staged → empty commit so HEAD exists and worktrees can branch.
     // Probe the index rather than trusting `count`: on an already-initialized
     // repo the user may have staged changes that `git add -A` had nothing to add.
-    let staged = Command::new("git")
-        .args(["diff", "--cached", "--quiet"])
-        .current_dir(path)
-        .status()?;
+    let staged =
+        Command::new("git").args(["diff", "--cached", "--quiet"]).current_dir(path).status()?;
     let mut commit_args = vec!["commit", "-m", "Initial commit"];
     if staged.success() {
         // exit 0 from --quiet means no staged changes.

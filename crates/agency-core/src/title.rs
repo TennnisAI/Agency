@@ -22,23 +22,37 @@ fn strip_ansi_and_controls(s: &str) -> String {
                     chars.next();
                     while let Some(&n) = chars.peek() {
                         chars.next();
-                        if ('\u{40}'..='\u{7e}').contains(&n) { break; }
+                        if ('\u{40}'..='\u{7e}').contains(&n) {
+                            break;
+                        }
                     }
                 }
                 Some(']') => {
                     chars.next();
                     while let Some(&n) = chars.peek() {
                         chars.next();
-                        if n == '\u{7}' { break; }
-                        if n == '\x1b' { chars.next(); break; } // ST (ESC \)
+                        if n == '\u{7}' {
+                            break;
+                        }
+                        if n == '\x1b' {
+                            chars.next();
+                            break;
+                        } // ST (ESC \)
                     }
                 }
-                _ => { chars.next(); }
+                _ => {
+                    chars.next();
+                }
             }
             continue;
         }
-        if c == '\n' { out.push('\n'); continue; }
-        if c.is_control() { continue; }
+        if c == '\n' {
+            out.push('\n');
+            continue;
+        }
+        if c.is_control() {
+            continue;
+        }
         out.push(c);
     }
     out

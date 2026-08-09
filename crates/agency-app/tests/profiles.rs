@@ -97,16 +97,9 @@ fn complete_onboarding_enables_and_clears_flag() {
     let dir = tempfile::tempdir().unwrap();
     let state = common::state(&dir);
     assert!(state.agent_onboarding_needed().unwrap());
-    state
-        .complete_agent_onboarding(&["hermes".into(), "kimi".into(), "crush".into()])
-        .unwrap();
+    state.complete_agent_onboarding(&["hermes".into(), "kimi".into(), "crush".into()]).unwrap();
     assert!(!state.agent_onboarding_needed().unwrap());
-    let names: Vec<_> = state
-        .list_profiles()
-        .unwrap()
-        .into_iter()
-        .map(|p| p.name)
-        .collect();
+    let names: Vec<_> = state.list_profiles().unwrap().into_iter().map(|p| p.name).collect();
     assert!(names.contains(&"hermes".into()));
     assert!(names.contains(&"kimi".into()));
     assert!(names.contains(&"crush".into()));
@@ -150,9 +143,7 @@ fn catalog_lists_all_builtins_with_enabled_flag() {
 fn enabled_profiles_have_bare_commands() {
     let dir = tempfile::tempdir().unwrap();
     let state = common::state(&dir);
-    state
-        .enable_agent_profiles(&["claude".into(), "pi".into(), "hermes".into()])
-        .unwrap();
+    state.enable_agent_profiles(&["claude".into(), "pi".into(), "hermes".into()]).unwrap();
     let profiles = state.list_profiles().unwrap();
     let by_name = |n: &str| profiles.iter().find(|p| p.name == n).cloned();
 

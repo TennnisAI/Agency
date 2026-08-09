@@ -27,11 +27,7 @@ fn git(worktree: &Path, args: &[&str]) -> Result<String> {
         .env("GIT_TERMINAL_PROMPT", "0")
         .output()?;
     if !output.status.success() {
-        bail!(
-            "git {:?} failed: {}",
-            args,
-            String::from_utf8_lossy(&output.stderr)
-        );
+        bail!("git {:?} failed: {}", args, String::from_utf8_lossy(&output.stderr));
     }
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
@@ -45,11 +41,7 @@ fn git_bytes(worktree: &Path, args: &[&str]) -> Result<Vec<u8>> {
         .env("GIT_TERMINAL_PROMPT", "0")
         .output()?;
     if !output.status.success() {
-        bail!(
-            "git {:?} failed: {}",
-            args,
-            String::from_utf8_lossy(&output.stderr)
-        );
+        bail!("git {:?} failed: {}", args, String::from_utf8_lossy(&output.stderr));
     }
     Ok(output.stdout)
 }
@@ -86,11 +78,7 @@ fn parse_porcelain_z(out: &str) -> Vec<FileChange> {
         if index == "R" || index == "C" || work == "R" || work == "C" {
             let _ = fields.next();
         }
-        changes.push(FileChange {
-            path,
-            index,
-            worktree: work,
-        });
+        changes.push(FileChange { path, index, worktree: work });
     }
     changes
 }
@@ -136,10 +124,9 @@ pub fn blob_sides(
         // ":path" is the index entry; the new side is the working tree itself.
         BlobMode::Unstaged => Ok((blob_at(worktree, ":0", path)?, disk_blob(worktree, path)?)),
         BlobMode::Staged => Ok((blob_at(worktree, "HEAD", path)?, blob_at(worktree, ":0", path)?)),
-        BlobMode::Commit(hash) => Ok((
-            blob_at(worktree, &format!("{hash}^"), path)?,
-            blob_at(worktree, hash, path)?,
-        )),
+        BlobMode::Commit(hash) => {
+            Ok((blob_at(worktree, &format!("{hash}^"), path)?, blob_at(worktree, hash, path)?))
+        }
     }
 }
 
@@ -152,9 +139,8 @@ fn blob_at(worktree: &Path, rev: &str, path: &str) -> Result<Option<BlobSide>> {
     // `cat-file -s` doubles as the existence check: it fails for a path that
     // isn't in that revision, and gives the size without reading the blob, so an
     // oversized one is never loaded into memory at all.
-    let Some(size) = git(worktree, &["cat-file", "-s", &spec])
-        .ok()
-        .and_then(|s| s.trim().parse::<u64>().ok())
+    let Some(size) =
+        git(worktree, &["cat-file", "-s", &spec]).ok().and_then(|s| s.trim().parse::<u64>().ok())
     else {
         return Ok(None);
     };
@@ -263,9 +249,7 @@ pub fn push_with_progress(
     worktree: &Path,
     mut on_progress: impl FnMut(crate::setup::CloneProgress),
 ) -> Result<()> {
-    let branch = git(worktree, &["rev-parse", "--abbrev-ref", "HEAD"])?
-        .trim()
-        .to_string();
+    let branch = git(worktree, &["rev-parse", "--abbrev-ref", "HEAD"])?.trim().to_string();
     let mut cmd = Command::new("git");
     cmd.arg("push")
         .arg("--progress")
@@ -284,9 +268,7 @@ pub fn push_with_progress(
 
 /// Whether an `origin` remote is configured.
 pub fn has_origin(repo: &Path) -> bool {
-    git(repo, &["remote"])
-        .map(|out| out.lines().any(|r| r.trim() == "origin"))
-        .unwrap_or(false)
+    git(repo, &["remote"]).map(|out| out.lines().any(|r| r.trim() == "origin")).unwrap_or(false)
 }
 
 /// How long a fetch may run before it is killed. Fetches happen on their own
@@ -495,10 +477,7 @@ pub fn parse_diff(diff: &str) -> FileDiff {
             if let Some(h) = current.take() {
                 hunks.push(h);
             }
-            current = Some(Hunk {
-                header: line.to_string(),
-                lines: Vec::new(),
-            });
+            current = Some(Hunk { header: line.to_string(), lines: Vec::new() });
         } else if let Some(h) = current.as_mut() {
             h.lines.push(line.to_string());
         } else if !seen_hunk {
@@ -534,11 +513,7 @@ pub fn git_stdin(worktree: &Path, args: &[&str], input: &str) -> Result<()> {
         .write_all(input.as_bytes())?;
     let out = child.wait_with_output()?;
     if !out.status.success() {
-        bail!(
-            "git {:?} failed: {}",
-            args,
-            String::from_utf8_lossy(&out.stderr)
-        );
+        bail!("git {:?} failed: {}", args, String::from_utf8_lossy(&out.stderr));
     }
     Ok(())
 }
@@ -569,11 +544,7 @@ pub fn unstage_hunk(worktree: &Path, path: &str, hunk_index: usize) -> Result<()
     let raw = diff(worktree, path, true)?;
     let fd = parse_diff(&raw);
     let patch = build_hunk_patch(&fd, hunk_index)?;
-    git_stdin(
-        worktree,
-        &["apply", "--cached", "--reverse", "--unidiff-zero", "-"],
-        &patch,
-    )
+    git_stdin(worktree, &["apply", "--cached", "--reverse", "--unidiff-zero", "-"], &patch)
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -673,7 +644,9 @@ pub fn branch_info(worktree: &Path) -> Result<BranchInfo> {
     // origin's copy — there, "ahead of base" does mean "not pushed yet".
     let base_candidates: Vec<String> = match local_default_branch(worktree) {
         Some(d) if d != branch => vec![d.to_string()],
-        _ => ["origin/HEAD", "origin/main", "origin/master"].iter().map(|c| c.to_string()).collect(),
+        _ => {
+            ["origin/HEAD", "origin/main", "origin/master"].iter().map(|c| c.to_string()).collect()
+        }
     };
     let base = base_candidates.iter().find_map(|cand| {
         git(worktree, &["merge-base", "HEAD", cand])
@@ -720,11 +693,10 @@ pub struct ProjectBranches {
 }
 
 pub fn list_branches(repo: &Path) -> Result<ProjectBranches> {
-    let current = git(repo, &["rev-parse", "--abbrev-ref", "HEAD"])?
-        .trim()
-        .to_string();
+    let current = git(repo, &["rev-parse", "--abbrev-ref", "HEAD"])?.trim().to_string();
     let raw = git(repo, &["for-each-ref", "--format=%(refname:short)", "refs/heads"])?;
-    let mut branches: Vec<String> = raw.lines().filter(|l| !l.is_empty()).map(str::to_string).collect();
+    let mut branches: Vec<String> =
+        raw.lines().filter(|l| !l.is_empty()).map(str::to_string).collect();
     // Put the current branch first so the UI can preselect it.
     if let Some(pos) = branches.iter().position(|b| b == &current) {
         branches.remove(pos);
@@ -854,9 +826,7 @@ pub fn build_partial_patch(
         }
     }
     let mut patch = fd.header.clone();
-    patch.push_str(&format!(
-        "@@ -{old_start},{old_len} +{new_start},{new_len} @@\n"
-    ));
+    patch.push_str(&format!("@@ -{old_start},{old_len} +{new_start},{new_len} @@\n"));
     for l in body {
         patch.push_str(&l);
         patch.push('\n');
@@ -870,24 +840,41 @@ fn parse_hunk_starts(header: &str) -> Result<(u32, u32)> {
     let mut parts = core.split_whitespace();
     let old = parts.next().unwrap_or("");
     let new = parts.next().unwrap_or("");
-    let old_start = old.trim_start_matches('-').split(',').next().unwrap_or("0").parse().unwrap_or(0);
-    let new_start = new.trim_start_matches('+').split(',').next().unwrap_or("0").parse().unwrap_or(0);
+    let old_start =
+        old.trim_start_matches('-').split(',').next().unwrap_or("0").parse().unwrap_or(0);
+    let new_start =
+        new.trim_start_matches('+').split(',').next().unwrap_or("0").parse().unwrap_or(0);
     Ok((old_start, new_start))
 }
 
-pub fn stage_lines(worktree: &Path, path: &str, hunk_index: usize, selected: &[usize]) -> Result<()> {
+pub fn stage_lines(
+    worktree: &Path,
+    path: &str,
+    hunk_index: usize,
+    selected: &[usize],
+) -> Result<()> {
     let fd = parse_diff(&diff(worktree, path, false)?);
     let patch = build_partial_patch(&fd, hunk_index, selected, false)?;
     git_stdin(worktree, &["apply", "--cached", "-"], &patch)
 }
 
-pub fn unstage_lines(worktree: &Path, path: &str, hunk_index: usize, selected: &[usize]) -> Result<()> {
+pub fn unstage_lines(
+    worktree: &Path,
+    path: &str,
+    hunk_index: usize,
+    selected: &[usize],
+) -> Result<()> {
     let fd = parse_diff(&diff(worktree, path, true)?);
     let patch = build_partial_patch(&fd, hunk_index, selected, true)?;
     git_stdin(worktree, &["apply", "--cached", "--reverse", "-"], &patch)
 }
 
-pub fn revert_lines(worktree: &Path, path: &str, hunk_index: usize, selected: &[usize]) -> Result<()> {
+pub fn revert_lines(
+    worktree: &Path,
+    path: &str,
+    hunk_index: usize,
+    selected: &[usize],
+) -> Result<()> {
     let fd = parse_diff(&diff(worktree, path, false)?);
     // Reverse-applied onto the working tree (the new side), so use reverse framing.
     let patch = build_partial_patch(&fd, hunk_index, selected, true)?;
@@ -901,12 +888,14 @@ pub fn checkout_branch(worktree: &Path, name: &str) -> Result<()> {
 }
 
 /// Create `name` (optionally at `from` instead of HEAD) and optionally switch to it.
-pub fn create_branch(worktree: &Path, name: &str, from: Option<&str>, checkout: bool) -> Result<()> {
-    let mut args: Vec<&str> = if checkout {
-        vec!["switch", "-c", name]
-    } else {
-        vec!["branch", name]
-    };
+pub fn create_branch(
+    worktree: &Path,
+    name: &str,
+    from: Option<&str>,
+    checkout: bool,
+) -> Result<()> {
+    let mut args: Vec<&str> =
+        if checkout { vec!["switch", "-c", name] } else { vec!["branch", name] };
     if let Some(f) = from {
         args.push(f);
     }
@@ -916,7 +905,7 @@ pub fn create_branch(worktree: &Path, name: &str, from: Option<&str>, checkout: 
 
 /// Delete a local branch. Non-forced by default so unmerged work fails loudly.
 pub fn delete_branch(worktree: &Path, name: &str, force: bool) -> Result<()> {
-    git(worktree, &[ "branch", if force { "-D" } else { "-d" }, name])?;
+    git(worktree, &["branch", if force { "-D" } else { "-d" }, name])?;
     Ok(())
 }
 
@@ -929,9 +918,7 @@ pub fn pull_rebase(worktree: &Path) -> Result<()> {
 /// Force-push the current branch. `--force-with-lease` so a remote updated by
 /// someone else since the last fetch is never clobbered silently.
 pub fn push_force(worktree: &Path) -> Result<()> {
-    let branch = git(worktree, &["rev-parse", "--abbrev-ref", "HEAD"])?
-        .trim()
-        .to_string();
+    let branch = git(worktree, &["rev-parse", "--abbrev-ref", "HEAD"])?.trim().to_string();
     git(worktree, &["push", "--force-with-lease", "-u", "origin", &branch])?;
     Ok(())
 }
@@ -982,11 +969,8 @@ pub fn stash_list(worktree: &Path) -> Result<Vec<StashEntry>> {
         let mut f = line.split('\u{1f}');
         let (Some(refname), Some(message)) = (f.next(), f.next()) else { continue };
         // refname is "stash@{N}"
-        let index = refname
-            .trim_start_matches("stash@{")
-            .trim_end_matches('}')
-            .parse()
-            .unwrap_or(0);
+        let index =
+            refname.trim_start_matches("stash@{").trim_end_matches('}').parse().unwrap_or(0);
         entries.push(StashEntry { index, message: message.to_string() });
     }
     Ok(entries)
@@ -1198,7 +1182,11 @@ mod branch_tests {
         let repo = dir.path();
         init_repo(repo);
         let items = log_graph(repo, 10).unwrap();
-        assert!(items[0].refs.iter().any(|r| r.starts_with("HEAD -> ")), "refs: {:?}", items[0].refs);
+        assert!(
+            items[0].refs.iter().any(|r| r.starts_with("HEAD -> ")),
+            "refs: {:?}",
+            items[0].refs
+        );
     }
 
     #[test]
@@ -1260,16 +1248,22 @@ mod capped_tests {
     #[test]
     fn returns_stdout_when_the_command_finishes() {
         let dir = repo();
-        let out = git_capped(dir.path(), &["rev-parse", "--is-inside-work-tree"], Duration::from_secs(30)).unwrap();
+        let out = git_capped(
+            dir.path(),
+            &["rev-parse", "--is-inside-work-tree"],
+            Duration::from_secs(30),
+        )
+        .unwrap();
         assert_eq!(out.trim(), "true");
     }
 
     #[test]
     fn carries_stderr_when_the_command_fails() {
         let dir = repo();
-        let err = git_capped(dir.path(), &["rev-parse", "--verify", "nope"], Duration::from_secs(30))
-            .unwrap_err()
-            .to_string();
+        let err =
+            git_capped(dir.path(), &["rev-parse", "--verify", "nope"], Duration::from_secs(30))
+                .unwrap_err()
+                .to_string();
         assert!(err.contains("failed"), "unexpected error: {err}");
     }
 

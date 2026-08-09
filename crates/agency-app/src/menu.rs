@@ -75,10 +75,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
                 .accelerator("CmdOrCtrl+Shift+O")
                 .build(app)?,
         )
-        .item(
-            &MenuItemBuilder::with_id("menu:clone-project", "Clone Repository…")
-                .build(app)?,
-        )
+        .item(&MenuItemBuilder::with_id("menu:clone-project", "Clone Repository…").build(app)?)
         .separator()
         .close_window()
         .build()?;
@@ -153,16 +150,8 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
                 .build(app)?,
         )
         .separator()
-        .item(
-            &MenuItemBuilder::with_id("menu:archive", "Archive Agent")
-                .enabled(false)
-                .build(app)?,
-        )
-        .item(
-            &MenuItemBuilder::with_id("menu:discard", "Discard Agent")
-                .enabled(false)
-                .build(app)?,
-        )
+        .item(&MenuItemBuilder::with_id("menu:archive", "Archive Agent").enabled(false).build(app)?)
+        .item(&MenuItemBuilder::with_id("menu:discard", "Discard Agent").enabled(false).build(app)?)
         .build()?;
 
     let window_menu = SubmenuBuilder::new(app, "Window")

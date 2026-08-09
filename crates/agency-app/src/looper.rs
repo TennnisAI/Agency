@@ -127,11 +127,7 @@ mod tests {
     use super::*;
 
     fn cfg(check: &str, max: u32) -> LoopConfig {
-        LoopConfig {
-            check_command: check.to_string(),
-            max_attempts: max,
-            check_timeout_secs: 600,
-        }
+        LoopConfig { check_command: check.to_string(), max_attempts: max, check_timeout_secs: 600 }
     }
 
     fn snap(agent: SessionStatus) -> LoopSnapshot {

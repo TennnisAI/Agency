@@ -62,7 +62,8 @@ fn migration_exports_sqlite_issues_to_local_files_once() {
 
     // Invisible to git: the app rewrites these files constantly, and a merge
     // refuses to start on a checkout they have dirtied.
-    let out = Command::new("git").args(["status", "--porcelain"]).current_dir(&repo).output().unwrap();
+    let out =
+        Command::new("git").args(["status", "--porcelain"]).current_dir(&repo).output().unwrap();
     let status = String::from_utf8_lossy(&out.stdout).into_owned();
     assert_eq!(status.trim(), "", "issue files left the checkout dirty");
 
@@ -160,10 +161,13 @@ fn mutations_are_file_first_and_reconcile_follows_external_edits() {
     assert_eq!(listed[0].title, "Renamed outside");
     assert_eq!(listed[0].due.as_deref(), Some("2026-08-01"), "known key must reach the row");
     let roundtrip = state
-        .update_issue(&issue.id, &agency_core::registry::IssuePatch {
-            body: Some("new body".into()),
-            ..Default::default()
-        })
+        .update_issue(
+            &issue.id,
+            &agency_core::registry::IssuePatch {
+                body: Some("new body".into()),
+                ..Default::default()
+            },
+        )
         .unwrap();
     assert_eq!(roundtrip.body, "new body");
     let text = std::fs::read_to_string(d.join("DEM-1.md")).unwrap();
@@ -201,10 +205,8 @@ fn create_never_clobbers_an_unreconciled_hand_filed_issue() {
     // run, so no reconcile raised the high-water mark). The next create must
     // skip past them, not overwrite them.
     std::fs::create_dir_all(&d).unwrap();
-    std::fs::write(d.join("DEM-1.md"), "---\nkey: DEM-1\nstatus: todo\n---\n# Hand one\n")
-        .unwrap();
-    std::fs::write(d.join("DEM-2.md"), "---\nkey: DEM-2\nstatus: todo\n---\n# Hand two\n")
-        .unwrap();
+    std::fs::write(d.join("DEM-1.md"), "---\nkey: DEM-1\nstatus: todo\n---\n# Hand one\n").unwrap();
+    std::fs::write(d.join("DEM-2.md"), "---\nkey: DEM-2\nstatus: todo\n---\n# Hand two\n").unwrap();
     let created = state.create_issue(&p.id, "App issue", "", IssueStatus::Todo).unwrap();
     assert_eq!(created.seq, 3, "numbers taken on disk are skipped");
     assert!(std::fs::read_to_string(d.join("DEM-1.md")).unwrap().contains("# Hand one"));
@@ -280,16 +282,18 @@ fn dates_and_rank_patch_set_clear_and_validate() {
     assert_eq!(updated.rank, Some(1.5));
     let text = std::fs::read_to_string(d.join("DEM-1.md")).unwrap();
     assert!(
-        text.contains("due: 2026-08-01") && text.contains("scheduled: 2026-07-30") && text.contains("rank: 1.5"),
+        text.contains("due: 2026-08-01")
+            && text.contains("scheduled: 2026-07-30")
+            && text.contains("rank: 1.5"),
         "{text}"
     );
 
     // Absent fields stay put; explicit clear removes key from file and row.
     let updated = state
-        .update_issue(&issue.id, &agency_core::registry::IssuePatch {
-            due: Some(None),
-            ..Default::default()
-        })
+        .update_issue(
+            &issue.id,
+            &agency_core::registry::IssuePatch { due: Some(None), ..Default::default() },
+        )
         .unwrap();
     assert_eq!(updated.due, None);
     assert_eq!(updated.scheduled.as_deref(), Some("2026-07-30"), "absent field was touched");
@@ -299,8 +303,14 @@ fn dates_and_rank_patch_set_clear_and_validate() {
 
     // Bad values are rejected before anything is written.
     for patch in [
-        agency_core::registry::IssuePatch { due: Some(Some("whenever".into())), ..Default::default() },
-        agency_core::registry::IssuePatch { due: Some(Some("2026-02-30".into())), ..Default::default() },
+        agency_core::registry::IssuePatch {
+            due: Some(Some("whenever".into())),
+            ..Default::default()
+        },
+        agency_core::registry::IssuePatch {
+            due: Some(Some("2026-02-30".into())),
+            ..Default::default()
+        },
         agency_core::registry::IssuePatch { rank: Some(Some(f64::NAN)), ..Default::default() },
     ] {
         assert!(state.update_issue(&issue.id, &patch).is_err());
@@ -319,7 +329,8 @@ fn comments_are_written_to_the_file_and_survive_edits_from_both_sides() {
     let state = common::state(&dir);
     let p = state.add_project("demo", &repo).unwrap();
     let d = issues_dir(&repo);
-    let issue = state.create_issue(&p.id, "Discussed", "The description.", IssueStatus::Todo).unwrap();
+    let issue =
+        state.create_issue(&p.id, "Discussed", "The description.", IssueStatus::Todo).unwrap();
     assert!(issue.comments.is_empty());
 
     let after = state.add_issue_comment(&issue.id, "  First thought.  ").unwrap();
@@ -335,16 +346,20 @@ fn comments_are_written_to_the_file_and_survive_edits_from_both_sides() {
     // A comment appended to the file by hand (an agent working the issue) is
     // read back, and is not lost by an edit made in the app meanwhile.
     let ts = "2026-08-08T09:00:00Z";
-    std::fs::write(&path, format!("{}\n## agent · {ts}\n\nFrom the worktree.\n", text.trim_end())).unwrap();
+    std::fs::write(&path, format!("{}\n## agent · {ts}\n\nFrom the worktree.\n", text.trim_end()))
+        .unwrap();
     let listed = state.list_issues(&p.id).unwrap();
     assert_eq!(listed[0].comments.len(), 2, "hand-written comment not indexed");
     assert_eq!(listed[0].comments[1].author, "agent");
 
     let edited = state
-        .update_issue(&issue.id, &agency_core::registry::IssuePatch {
-            body: Some("Rewritten description.".into()),
-            ..Default::default()
-        })
+        .update_issue(
+            &issue.id,
+            &agency_core::registry::IssuePatch {
+                body: Some("Rewritten description.".into()),
+                ..Default::default()
+            },
+        )
         .unwrap();
     assert_eq!(edited.comments.len(), 2, "a body edit dropped the thread");
     assert_eq!(edited.body, "Rewritten description.");
@@ -382,11 +397,14 @@ fn links_patch_writes_the_file_and_survives_reconcile() {
 
     // The patch replaces the whole set, and lands normalized in the file.
     let updated = state
-        .update_issue(&issue.id, &agency_core::registry::IssuePatch {
-            // Own key and a duplicate are dropped; case is normalized.
-            links: Some(vec!["dem-2".into(), "AGE-9".into(), "DEM-2".into(), "DEM-1".into()]),
-            ..Default::default()
-        })
+        .update_issue(
+            &issue.id,
+            &agency_core::registry::IssuePatch {
+                // Own key and a duplicate are dropped; case is normalized.
+                links: Some(vec!["dem-2".into(), "AGE-9".into(), "DEM-2".into(), "DEM-1".into()]),
+                ..Default::default()
+            },
+        )
         .unwrap();
     assert_eq!(updated.links, vec!["DEM-2".to_string(), "AGE-9".to_string()]);
     let text = std::fs::read_to_string(d.join("DEM-1.md")).unwrap();
@@ -402,10 +420,10 @@ fn links_patch_writes_the_file_and_survives_reconcile() {
 
     // Emptying the set removes the key from the file.
     let cleared = state
-        .update_issue(&issue.id, &agency_core::registry::IssuePatch {
-            links: Some(vec![]),
-            ..Default::default()
-        })
+        .update_issue(
+            &issue.id,
+            &agency_core::registry::IssuePatch { links: Some(vec![]), ..Default::default() },
+        )
         .unwrap();
     assert!(cleared.links.is_empty());
     let text = std::fs::read_to_string(d.join("DEM-1.md")).unwrap();
@@ -413,10 +431,13 @@ fn links_patch_writes_the_file_and_survives_reconcile() {
 
     // A malformed key is refused before anything is written.
     assert!(state
-        .update_issue(&issue.id, &agency_core::registry::IssuePatch {
-            links: Some(vec!["not a key".into()]),
-            ..Default::default()
-        })
+        .update_issue(
+            &issue.id,
+            &agency_core::registry::IssuePatch {
+                links: Some(vec!["not a key".into()]),
+                ..Default::default()
+            }
+        )
         .is_err());
 
     // Files are truth: a link written by hand reaches the board through

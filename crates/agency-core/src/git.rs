@@ -36,6 +36,24 @@ fn git(worktree: &Path, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
+/// `git`, but handing back stdout unchanged. Blob contents are not text: the
+/// lossy UTF-8 conversion above would replace every byte an image is made of.
+fn git_bytes(worktree: &Path, args: &[&str]) -> Result<Vec<u8>> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(worktree)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()?;
+    if !output.status.success() {
+        bail!(
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    Ok(output.stdout)
+}
+
 /// The name git would sign a commit here with, if it has one. Used to sign
 /// issue comments: whoever the repo says you are is who you are on its issues.
 /// A directory git doesn't manage (the git-less workspace) has none.
@@ -83,6 +101,85 @@ pub fn diff(worktree: &Path, path: &str, staged: bool) -> Result<String> {
     } else {
         git(worktree, &["diff", "--", path])
     }
+}
+
+/// Which pair of revisions a binary comparison reads. Mirrors the diff viewer's
+/// modes: the unstaged view compares the index against the file on disk, the
+/// staged view HEAD against the index, and a commit against its first parent
+/// (the side `git show` picks for a merge).
+#[derive(Debug, Clone, PartialEq)]
+pub enum BlobMode {
+    Unstaged,
+    Staged,
+    Commit(String),
+}
+
+/// One side of a binary comparison: a file's bytes at one revision. `bytes` is
+/// empty when the blob is over the preview cap, which `too_large` reports so the
+/// UI can say so instead of showing a broken image.
+#[derive(Debug, Clone)]
+pub struct BlobSide {
+    pub bytes: Vec<u8>,
+    pub size: u64,
+    pub too_large: bool,
+}
+
+/// The before/after bytes of `path` — what a text diff can't show for a binary
+/// file. Either side is None when the path doesn't exist there: an added file has
+/// no old side, a deleted one no new side.
+pub fn blob_sides(
+    worktree: &Path,
+    path: &str,
+    mode: &BlobMode,
+) -> Result<(Option<BlobSide>, Option<BlobSide>)> {
+    match mode {
+        // ":path" is the index entry; the new side is the working tree itself.
+        BlobMode::Unstaged => Ok((blob_at(worktree, ":0", path)?, disk_blob(worktree, path)?)),
+        BlobMode::Staged => Ok((blob_at(worktree, "HEAD", path)?, blob_at(worktree, ":0", path)?)),
+        BlobMode::Commit(hash) => Ok((
+            blob_at(worktree, &format!("{hash}^"), path)?,
+            blob_at(worktree, hash, path)?,
+        )),
+    }
+}
+
+/// `path` as stored at `rev`, or None when it isn't there (or `rev` itself
+/// doesn't resolve — a root commit's `^`, or HEAD in a repo with no commits).
+fn blob_at(worktree: &Path, rev: &str, path: &str) -> Result<Option<BlobSide>> {
+    // No "./" prefix: `rev:path` is repo-root relative, which is what git status
+    // and git show hand us, whereas `rev:./path` would resolve from the cwd.
+    let spec = format!("{rev}:{path}");
+    // `cat-file -s` doubles as the existence check: it fails for a path that
+    // isn't in that revision, and gives the size without reading the blob, so an
+    // oversized one is never loaded into memory at all.
+    let Some(size) = git(worktree, &["cat-file", "-s", &spec])
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+    else {
+        return Ok(None);
+    };
+    if size > crate::files::MAX_BINARY_BYTES {
+        return Ok(Some(BlobSide { bytes: Vec::new(), size, too_large: true }));
+    }
+    Ok(Some(BlobSide {
+        bytes: git_bytes(worktree, &["cat-file", "blob", &spec])?,
+        size,
+        too_large: false,
+    }))
+}
+
+/// `path` as it sits in the working tree, or None when it isn't on disk (a
+/// deletion git hasn't been told about yet).
+fn disk_blob(worktree: &Path, path: &str) -> Result<Option<BlobSide>> {
+    let abs = crate::files::resolve_within(worktree, path)?;
+    let Ok(meta) = std::fs::metadata(&abs) else {
+        return Ok(None);
+    };
+    let size = meta.len();
+    if size > crate::files::MAX_BINARY_BYTES {
+        return Ok(Some(BlobSide { bytes: Vec::new(), size, too_large: true }));
+    }
+    Ok(Some(BlobSide { bytes: std::fs::read(&abs)?, size, too_large: false }))
 }
 
 pub fn stage(worktree: &Path, path: &str) -> Result<()> {

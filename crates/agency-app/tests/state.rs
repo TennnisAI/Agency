@@ -1406,3 +1406,73 @@ fn legacy_user_scope_flag_survives_a_save_load_roundtrip() {
     let after = state.list_mcp_servers().unwrap();
     assert!(after[0].user_scope_agents.is_empty());
 }
+
+/// AGE-83: turning the knowledge graph on used to change nothing until a merge
+/// landed, so the feature looked broken. Enabling it now builds the first graph,
+/// and the settings UI can watch that build finish.
+#[test]
+fn enabling_the_knowledge_graph_builds_the_first_graph() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = common::state(&dir);
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let p = state.add_project("demo", &repo).unwrap();
+
+    let before = state.knowledge_config(&p.id).unwrap();
+    assert!(!before.graph_built, "nothing built before the graph is enabled");
+    assert!(before.graph_path.ends_with("graphify-out/graph.json"));
+
+    // Stand in for `graphify .`: the point under test is that Agency runs the
+    // configured build in the primary checkout when the graph is switched on.
+    let build = "mkdir -p graphify-out && printf '{}' > graphify-out/graph.json";
+    state.save_knowledge_config(&p.id, true, None, Some(build.to_string())).unwrap();
+
+    let cfg = await_settled_build(&state, &p.id);
+    assert_eq!(cfg.last_build_error, None, "the build should have succeeded");
+    assert!(cfg.graph_built, "enabling the graph must produce {}", cfg.graph_path);
+    assert!(repo.join("graphify-out/graph.json").is_file());
+}
+
+/// A build that fails has to say so in the settings panel — silently leaving the
+/// graph unbuilt is the failure mode this whole area is about.
+#[test]
+fn a_failed_graph_build_reports_why() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = common::state(&dir);
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let p = state.add_project("demo", &repo).unwrap();
+
+    let build = "printf 'graphify: no parser for this repo\\n' >&2; exit 3";
+    state.save_knowledge_config(&p.id, true, None, Some(build.to_string())).unwrap();
+
+    let cfg = await_settled_build(&state, &p.id);
+    assert!(!cfg.graph_built);
+    assert_eq!(cfg.last_build_error.as_deref(), Some("graphify: no parser for this repo"));
+
+    // A build whose command isn't installed at all is refused up front, and
+    // pointed at the install the settings panel offers to run.
+    state
+        .save_knowledge_config(&p.id, true, None, Some("definitely-not-a-real-binary-4k2x .".into()))
+        .unwrap();
+    let err = state.build_knowledge_graph(&p.id).unwrap_err().to_string();
+    assert!(err.contains("'definitely-not-a-real-binary-4k2x' is not installed"), "{err}");
+    assert!(err.contains("Install the graphify tooling"), "{err}");
+}
+
+/// Poll the knowledge config until the background build thread has finished.
+fn await_settled_build(
+    state: &common::TestState,
+    project_id: &str,
+) -> agency_app_lib::KnowledgeConfigDto {
+    for _ in 0..200 {
+        let cfg = state.knowledge_config(project_id).unwrap();
+        if !cfg.building {
+            return cfg;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    panic!("graph build never finished");
+}

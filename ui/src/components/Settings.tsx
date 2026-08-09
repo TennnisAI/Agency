@@ -36,6 +36,8 @@ import {
   moveWorkspace,
   saveFilesConfig,
   saveKnowledgeConfig,
+  buildKnowledgeGraph,
+  installKnowledgeTooling,
   saveMcpServers,
   saveProfile,
   saveSettings,
@@ -204,6 +206,9 @@ export default function Settings({
   // editable command-override text so it survives re-renders between saves.
   const [kg, setKg] = useState<KnowledgeConfig | null>(null);
   const [kgDraft, setKgDraft] = useState({ serve: "", build: "" });
+  // Why a requested build never started (tooling missing, one already running).
+  // Cleared on the next attempt; build failures come back on the config itself.
+  const [kgBuildError, setKgBuildError] = useState<string | null>(null);
   // Per-project list of files copied into every new worktree. `files` holds the
   // loaded config (incl. auto-detected .env files); `filesDraft` is the editable
   // newline-separated text of the explicit copy list.
@@ -419,6 +424,40 @@ export default function Settings({
     if (projectId) loadKnowledge(projectId);
     else setKg(null);
   }, [projectId]);
+
+  // A graph build runs on its own thread with no event of its own, so poll the
+  // config while one is in flight to pick up the finish (and any failure).
+  useEffect(() => {
+    if (!projectId || !kg?.building) return;
+    const t = setInterval(() => loadKnowledge(projectId), 1500);
+    return () => clearInterval(t);
+  }, [projectId, kg?.building]);
+
+  async function buildGraph() {
+    if (!projectId) return;
+    setKgBuildError(null);
+    try {
+      await buildKnowledgeGraph(projectId);
+    } catch (e) {
+      setKgBuildError(String(e));
+    }
+    await loadKnowledge(projectId);
+  }
+
+  // Install the tooling the way a missing agent CLI is installed: in a visible
+  // terminal the user is dropped into, so they see what runs on their machine
+  // and can answer anything it asks.
+  async function installKgTooling() {
+    if (!projectId) return;
+    setKgBuildError(null);
+    try {
+      const run = await installKnowledgeTooling(projectId);
+      if (onOpenTerminal) onOpenTerminal(run.id);
+      else onClose();
+    } catch (e) {
+      toastError(e, "Couldn't start the install");
+    }
+  }
 
   // Worktree copy-list is per-project — same lifecycle as the knowledge config.
   async function loadFiles(id: string) {
@@ -1094,7 +1133,8 @@ export default function Settings({
           <div className="settings-section-label">Knowledge graph</div>
           <p className="settings-section-hint">
             Builds a graphify code-knowledge graph for this project and exposes it to every agent as an
-            MCP server, rebuilding after each clean merge. Saved to this machine only
+            MCP server, rebuilding after each clean merge. Enabling it builds the first graph; agents
+            only get the server once one exists. Saved to this machine only
             (<code>.agency/agency.local.toml</code>), not shared with the team. Needs the{" "}
             <code>graphify</code> / <code>uv</code> tooling on your <code>PATH</code>.
           </p>
@@ -1114,14 +1154,35 @@ export default function Settings({
                 <>
                   {(!kg.serve_installed || !kg.build_installed) && (
                     <div className="settings-kg-warn">
-                      {!kg.serve_installed && !kg.build_installed
-                        ? "The serve and build commands aren't on your PATH"
-                        : !kg.serve_installed
-                        ? "The serve command isn't on your PATH"
-                        : "The build command isn't on your PATH"}
-                      . The graph is enabled but will be skipped until the tooling is installed.
+                      <div>
+                        {!kg.serve_installed && !kg.build_installed
+                          ? "The serve and build commands aren't on your PATH"
+                          : !kg.serve_installed
+                          ? "The serve command isn't on your PATH"
+                          : "The build command isn't on your PATH"}
+                        . The graph is enabled but will be skipped until the tooling is installed.
+                        Agency can install it for you in a terminal:
+                      </div>
+                      <pre className="install-cmd">{kg.install_command}</pre>
+                      <div className="settings-kg-actions">
+                        <button className="settings-secondary" onClick={installKgTooling}>
+                          Install tooling
+                        </button>
+                      </div>
                     </div>
                   )}
+                  {kg.build_installed && (
+                    <div className={kg.graph_built && !kg.last_build_error ? "settings-kg-note" : "settings-kg-warn"}>
+                      {kg.building
+                        ? "Building the graph. Agents started after it finishes will get the knowledge-graph server."
+                        : kg.last_build_error
+                        ? `The last graph build failed: ${kg.last_build_error}`
+                        : kg.graph_built
+                        ? `Graph built at ${kg.graph_path}.`
+                        : "No graph has been built yet, so agents get no knowledge-graph server. Build one to start using it."}
+                    </div>
+                  )}
+                  {kgBuildError && <div className="settings-kg-warn">{kgBuildError}</div>}
                   <div className="settings-provider-field">
                     <label className="settings-field-key">serve</label>
                     <input
@@ -1141,6 +1202,13 @@ export default function Settings({
                     />
                   </div>
                   <div className="settings-card-foot">
+                    <button
+                      className="settings-secondary"
+                      disabled={!kg.build_installed || kg.building}
+                      onClick={buildGraph}
+                    >
+                      {kg.building ? "Building…" : kg.graph_built ? "Rebuild graph" : "Build graph"}
+                    </button>
                     <button className="settings-save" onClick={() => persistKnowledge(kg.graph)}>Save commands</button>
                   </div>
                 </>

@@ -16,7 +16,7 @@ mod state;
 mod tray;
 mod update;
 
-pub use state::{AppState, ProviderSettings, RunInfo};
+pub use state::{AppState, KnowledgeConfigDto, ProviderSettings, RunInfo};
 
 /// Log every panic (the default hook only writes to stderr, which a bundled
 /// app loses) so post-mortems in the log file show why a thread died.
@@ -187,6 +187,8 @@ pub fn run() {
             commands::save_mcp_servers,
             commands::get_knowledge_config,
             commands::save_knowledge_config,
+            commands::build_knowledge_graph,
+            commands::install_knowledge_tooling,
             commands::get_files_config,
             commands::save_files_config,
             commands::import_mcp_json,

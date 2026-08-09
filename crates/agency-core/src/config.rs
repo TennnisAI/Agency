@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct AgencyConfig {
@@ -217,15 +217,42 @@ fn read_value(path: &Path) -> Option<toml::Value> {
     toml::from_str::<toml::Value>(&text).ok()
 }
 
+/// Where the build command leaves the graph: the primary repo's untracked
+/// `graphify-out/graph.json`. The serve command points at this file, and its
+/// presence is what tells us a graph has actually been built (worktrees never
+/// carry `graphify-out/`, so the path is always the primary repo's).
+pub fn graph_path(repo_path: &Path) -> PathBuf {
+    repo_path.join("graphify-out").join("graph.json")
+}
+
 /// The default graphify MCP serve command for a repo. graphify's server has no
 /// console-script entry point — it runs as `python -m graphify.serve <graph.json>`
 /// inside the uv tool venv, and the graph lives in the primary repo's untracked
 /// `graphify-out/`. Shared by the MCP injector and the settings UI so the UI's
 /// placeholder matches what actually runs.
 pub fn default_serve_command(repo_path: &Path) -> String {
+    format!("uv tool run --from graphifyy python -m graphify.serve {}", graph_path(repo_path).display())
+}
+
+/// The shell script that installs the graphify tooling, shown (and offered) by
+/// the settings UI when the serve/build commands aren't on PATH. `graphifyy` is
+/// the PyPI distribution; it ships both the `graphify` console script the build
+/// command runs and the `graphify` Python package `graphify.serve` lives in, so
+/// this one install covers serve and build together.
+///
+/// It installs *through* uv, so when uv itself is missing the script installs
+/// that first, from Astral's own installer. uv lands in `~/.local/bin`, which a
+/// shell that started before the install doesn't have on its PATH yet, hence the
+/// export: without it the very next line fails on a uv that is right there.
+pub fn graphify_install_script(uv_installed: bool) -> String {
+    let install_graphify = "uv tool install graphifyy";
+    if uv_installed {
+        return install_graphify.to_string();
+    }
     format!(
-        "uv tool run --from graphifyy python -m graphify.serve {}",
-        repo_path.join("graphify-out").join("graph.json").display()
+        "curl -LsSf https://astral.sh/uv/install.sh | sh\n\
+         export PATH=\"$HOME/.local/bin:$PATH\"\n\
+         {install_graphify}"
     )
 }
 
@@ -242,7 +269,7 @@ pub fn default_serve_argv(repo_path: &Path) -> Vec<String> {
         "python".to_string(),
         "-m".to_string(),
         "graphify.serve".to_string(),
-        repo_path.join("graphify-out").join("graph.json").display().to_string(),
+        graph_path(repo_path).display().to_string(),
     ]
 }
 
@@ -469,6 +496,26 @@ mod tests {
         // The command itself is the first element; the path is not split.
         assert_eq!(argv[0], "uv");
         assert_eq!(argv.len(), 9);
+    }
+
+    /// AGE-83: the settings panel offers to install the tooling, so the script
+    /// has to work on a machine with no uv at all — the case that made the
+    /// feature look broken in the first place.
+    #[test]
+    fn install_script_picks_up_uv_when_it_is_missing() {
+        assert_eq!(graphify_install_script(true), "uv tool install graphifyy");
+
+        let bootstrap = graphify_install_script(false);
+        let lines: Vec<&str> = bootstrap.lines().collect();
+        assert!(lines[0].contains("astral.sh/uv/install.sh"), "{bootstrap}");
+        assert!(
+            lines[1].contains(".local/bin"),
+            "a uv installed a moment ago is not on this shell's PATH yet: {bootstrap}"
+        );
+        assert_eq!(lines[2], "uv tool install graphifyy");
+        // Both halves of the integration come from this one distribution.
+        assert!(default_serve_argv(Path::new("/r")).contains(&"graphifyy".to_string()));
+        assert!(default_build_command().starts_with("graphify"));
     }
 
     #[test]

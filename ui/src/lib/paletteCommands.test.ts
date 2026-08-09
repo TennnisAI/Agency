@@ -44,6 +44,17 @@ describe("registry drift", () => {
     }
   });
 
+  // Two menus once both claimed ⌘G (Source & Diff and, by rights, Find Next),
+  // and only one of them could ever win. Predefined items (undo, copy, close
+  // window…) bring their own OS accelerators this scan can't see, so it only
+  // guards the ones menu.rs spells out.
+  it("gives no accelerator to two menu items", () => {
+    const keys = [...menuRs.matchAll(/\.accelerator\("([^"]+)"\)/g)].map((m) => m[1]);
+    expect(keys.length).toBeGreaterThan(5); // the scan found the real bindings
+    const dupes = keys.filter((k, i) => keys.indexOf(k) !== i);
+    expect(dupes, `accelerator claimed twice in menu.rs: ${dupes.join(", ")}`).toEqual([]);
+  });
+
   it("every registry id is routed by App.tsx onMenu", () => {
     for (const id of ids) {
       expect(appTsx, `App.tsx onMenu has no case for "${id}"`).toContain(`case "${id}"`);

@@ -43,6 +43,9 @@ Cmd+F searches the note you are in, with match case, whole word and regular
 expression options; Option+Cmd+F adds the replace field. Both live in the Edit
 menu, and both work the same way on a file in the Files tab or on an issue
 description. On an issue board, Cmd+F goes to the board's own search instead.
+Enter and Shift+Enter walk the matches from inside the find field; Cmd+G and
+Shift+Cmd+G do the same from anywhere, so you can close the bar and keep
+jumping.
 
 ## Properties
 

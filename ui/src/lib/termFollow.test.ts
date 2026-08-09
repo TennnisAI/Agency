@@ -48,7 +48,9 @@ describe("follow", () => {
 // Against a real xterm, wired the way FocusTerminal wires it. Headless: with no
 // DOM there is no viewport, so the scrolls it would drive — the user's, the
 // phantom ones, and the pin's own `term.scrollToBottom()` — are stood in for by
-// the buffer-level scrolls each performs, `suppressScrollEvent` included.
+// the buffer-level scrolls each performs, `suppressScrollEvent` included, and
+// the DOM scroll event the element would emit for them by calling `settle`
+// straight after.
 describe("follow, on a live xterm buffer", () => {
   function pane(policy = true) {
     const term = new Terminal({ rows: 10, cols: 40, scrollback: 1000 });
@@ -57,7 +59,7 @@ describe("follow, on a live xterm buffer", () => {
     let repinning = false;
     let gesturing = false;
     const atBottom = () => buf.buffer.ydisp >= buf.buffer.ybase;
-    if (policy) term.onScroll(() => {
+    const settle = () => {
       if (repinning) return;
       const next = follow({
         viewportY: buf.buffer.ydisp,
@@ -70,9 +72,15 @@ describe("follow, on a live xterm buffer", () => {
       repinning = true;
       buf.scrollLines(buf.buffer.ybase - buf.buffer.ydisp);
       repinning = false;
-    });
-    // Everything the viewport drives is suppressed: the policy is never told.
-    const viewportScroll = (lines: number) => buf.scrollLines(lines, true);
+    };
+    if (policy) term.onScroll(settle);
+    // The buffer move xterm's viewport makes is suppressed, so `onScroll` never
+    // carries it; the element's own scroll event does, and that is what reaches
+    // the policy.
+    const viewportScroll = (lines: number) => {
+      buf.scrollLines(lines, true);
+      if (policy) settle();
+    };
     // A scroll with a gesture behind it, and the sample that lands after it.
     const userScroll = (lines: number) => {
       gesturing = true;
@@ -112,14 +120,40 @@ describe("follow, on a live xterm buffer", () => {
     // xterm's own warning about an unreliable scrollTop: it "causes the
     // terminal to scroll the buffer to the top". The scrollback is untouched,
     // so line 0 is still the first thing the agent ever printed.
+    const bare = pane(false);
+    await bare.print("line", 60);
+    bare.viewportScroll(-bare.buf.buffer.ydisp);
+    expect(bare.buf.buffer.ydisp).toBe(0);
+
     const p = pane();
     await p.print("line", 60);
     p.viewportScroll(-p.buf.buffer.ydisp);
-    expect(p.buf.buffer.ydisp).toBe(0);
-
-    await p.print("more", 1); // the next line of output is all it takes
     expect(p.behind()).toBe(0);
     expect(p.buf.buffer.lines.get(0).translateToString(true)).toContain("line 0");
+  });
+
+  it("puts an idle pane back with no output coming to prompt it (AGE-88)", async () => {
+    // The companion terminal: a shell at its prompt, printing nothing. Waiting
+    // for the next line to notice the drift means waiting forever, so the pane
+    // sits above its own prompt with the latch set — and every attempt to
+    // scroll back down to it is a scroll xterm's viewport has already decided
+    // it is above.
+    const p = pane();
+    await p.print("line", 60);
+    p.viewportScroll(-6);
+
+    expect(p.behind()).toBe(0);
+    expect(p.buf.isUserScrolling).toBe(false);
+  });
+
+  it("leaves an idle pane where a reader put it", async () => {
+    // Same silence, but the scroll was theirs: nothing arrives to drag it back.
+    const p = pane();
+    await p.print("line", 60);
+    p.userScroll(-6);
+
+    expect(p.behind()).toBe(6);
+    expect(p.isFollowing()).toBe(false);
   });
 
   it("does not let repeated phantom scrolls accumulate", async () => {

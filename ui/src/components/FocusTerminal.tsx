@@ -193,10 +193,9 @@ export default function FocusTerminal(
     // On window: a drag that ends outside the pane still has to release it.
     window.addEventListener("pointerup", onPointerUp, true);
     window.addEventListener("pointercancel", onPointerUp, true);
-    // Fires when output scrolls the buffer, which is where a pane that was left
-    // behind finds out: the phantom scroll itself is silent.
-    const scrollWatch = term.onScroll(() => {
-      if (repinning) return; // our own scrollToBottom, re-entering this handler
+    // Judge where the viewport has ended up, wherever the move came from.
+    const settle = () => {
+      if (repinning || torn) return; // our own scrollToBottom, re-entering this
       const buf = term.buffer.active;
       const next = follow({
         viewportY: buf.viewportY,
@@ -212,7 +211,23 @@ export default function FocusTerminal(
       } finally {
         repinning = false;
       }
-    });
+    };
+    // Fires when output scrolls the buffer, which is one of the two ways a pane
+    // that was left behind finds out.
+    const scrollWatch = term.onScroll(settle);
+    // The other way, and the only one an idle pane has. `onScroll` above stays
+    // silent for everything the viewport itself drives — xterm suppresses that
+    // event so the viewport is never fed its own scrolls — so a pane hears
+    // about a phantom scroll on the next line of output and not before. A pane
+    // sitting at a shell prompt has no next line: whatever moved it stays, and
+    // the latch it set stays with it, which is the companion terminal drifting
+    // up the moment focus goes to the agent pane and refusing to come back
+    // (AGE-88). The viewport element's own DOM scroll event is not suppressed,
+    // so take the position from that too. xterm registered its handler on this
+    // element first, in the Viewport constructor, so the buffer has already
+    // been moved to match by the time this one runs.
+    const viewportEl = container.querySelector(".xterm-viewport");
+    viewportEl?.addEventListener("scroll", settle, { passive: true });
 
     // Paste. xterm pastes whatever the paste event's `clipboardData` holds, and
     // WebKit fills that from the first pasteboard item alone: a multi-row copy
@@ -239,6 +254,11 @@ export default function FocusTerminal(
         fit.fit();
         if (term.cols > 0 && term.rows > 0) stream.resize(runId, term.cols, term.rows).catch(() => {});
       } catch { /* not laid out */ }
+      // A reflow rewrites the buffer under the viewport: rows change, lines are
+      // pulled out of the scrollback or pushed into it, and the pane can come
+      // out of it sitting above the newest output with no scroll event to say
+      // so. Re-judge the position rather than wait for one.
+      settle();
     };
     requestAnimationFrame(() => { doFit(); term.focus(); });
     // Fit on the next frame, never inside the observer callback. `fit.fit()`
@@ -338,6 +358,7 @@ export default function FocusTerminal(
       container.removeEventListener("paste", onPaste, true);
       window.removeEventListener("pointerup", onPointerUp, true);
       window.removeEventListener("pointercancel", onPointerUp, true);
+      viewportEl?.removeEventListener("scroll", settle);
       scrollWatch.dispose();
       onData?.dispose();
       // Before the detach, so a keystroke queued on this frame still reaches

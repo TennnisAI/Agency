@@ -30,7 +30,14 @@
  * Note that xterm reports none of the viewport's own scrolling through
  * `onScroll` (it suppresses the event to avoid feeding the viewport its own
  * scrolls), so a pane hears about a user's wheel only by sampling the position
- * after the gesture, and about a phantom scroll only on the next line of output.
+ * after the gesture. `onScroll` on its own would also mean a pane hears about a
+ * phantom only on the next line of output, which for a pane sitting at a shell
+ * prompt never comes: the companion terminal drifted up the moment focus went
+ * to the agent pane and stayed there, with the latch set and nothing coming to
+ * clear it (AGE-88). So the rule is fed from the viewport element's own DOM
+ * scroll event as well, which xterm does not suppress, and from anything else
+ * that can move the buffer under the viewport without one — a reflow after a
+ * resize, in particular.
  */
 
 /**

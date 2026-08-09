@@ -1,5 +1,5 @@
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
-import { Compartment, EditorState } from "@codemirror/state";
+import { EditorState } from "@codemirror/state";
 import { EditorView, drawSelection, dropCursor, keymap } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { FileRoot, createDir, readFile, writeFile, writeFileBase64 } from "../api";
@@ -10,7 +10,8 @@ import { FindRank } from "../lib/findBus";
 import { useFind } from "../hooks/useFind";
 import { DocsIndex } from "../lib/docsIndex";
 import { CrossRefs } from "../lib/links";
-import { crossRefsFacet, docsCompletion, docsHighlight, docsIndexFacet, docsMarkdown, docsNavFacet, livePreview, DocsNav } from "../lib/livePreview";
+import { docsCompletion, docsHighlight, docsMarkdown, docsNavFacet, livePreview, DocsNav } from "../lib/livePreview";
+import { useLiveFacets } from "../hooks/useLiveFacets";
 import { frontmatterEditor, requestAddProperty } from "../lib/fmEditor";
 import { joinPath } from "../lib/filePath";
 import { formatCommand, toggleInline } from "../lib/mdFormat";
@@ -106,12 +107,9 @@ export default forwardRef<DocsEditorHandle, {
   onSavedRef.current = onSaved;
   const navRef = useRef<Pick<DocsNav, "onNavigate" | "onTagClick" | "onFilter">>({ onNavigate, onTagClick, onFilter });
   navRef.current = { onNavigate, onTagClick, onFilter };
-  const indexRef = useRef(index);
-  indexRef.current = index;
-  const indexCompRef = useRef(new Compartment());
-  const crossRef = useRef(cross);
-  crossRef.current = cross;
-  const crossCompRef = useRef(new Compartment());
+  // Index / cross-ref refreshes reach the decorations through compartments,
+  // reconfigured only when the data the extensions read actually changed.
+  const liveFacets = useLiveFacets(viewRef, index, cross);
 
   // Bound inside the load effect so it always writes to the note the live view
   // belongs to. (Binding on render would point a pre-switch flush at the NEXT
@@ -255,8 +253,7 @@ export default forwardRef<DocsEditorHandle, {
           livePreview,
           docsCompletion,
           cmFindExtensions,
-          indexCompRef.current.of(docsIndexFacet.of(indexRef.current)),
-          crossCompRef.current.of(crossRefsFacet.of(crossRef.current)),
+          ...liveFacets(),
           // A stable nav facade reading live refs, so callback identity churn
           // never forces a reconfigure.
           docsNavFacet.of({
@@ -317,20 +314,6 @@ export default forwardRef<DocsEditorHandle, {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [root.kind, root.id, repoRel]);
-
-  // Feed index refreshes to the live-preview extension (wikilink resolution).
-  useEffect(() => {
-    viewRef.current?.dispatch({
-      effects: indexCompRef.current.reconfigure(docsIndexFacet.of(index)),
-    });
-  }, [index]);
-
-  // Same for the cross-project refs (issue/run wikilinks + completion).
-  useEffect(() => {
-    viewRef.current?.dispatch({
-      effects: crossCompRef.current.reconfigure(crossRefsFacet.of(cross)),
-    });
-  }, [cross]);
 
   // Flush when the window loses focus, so edits land before e.g. an agent or
   // external editor touches the same file.

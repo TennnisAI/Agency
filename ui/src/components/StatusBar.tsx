@@ -92,7 +92,7 @@ export default function StatusBar({
           )}
         </span>
       </span>
-      <span className="kbd-hints">⌘N new · ⌘G source · ⌘↵ approve · ⌘, settings</span>
+      <span className="kbd-hints">⌘N new · ⌘D source · ⌘↵ approve · ⌘, settings</span>
     </footer>
   );
 }

@@ -420,9 +420,11 @@ export default function FocusTerminal(
     prev ? addon.findPrevious(q) : addon.findNext(q);
   };
 
+  // The query outlives the box on purpose: ⌘G keeps walking the scrollback
+  // after Escape, and reopening selects what's there so typing still replaces
+  // it.
   const closeSearch = () => {
     setShowSearch(false);
-    setSearchQuery("");
     termRef.current?.focus();
   };
 
@@ -441,15 +443,18 @@ export default function FocusTerminal(
   // are mounted at once (agent grid, companion shell) and only the one that
   // was clicked into should answer. Scrollback has nothing to replace.
   const findRef = useRef<{ open: () => void; step: (back: boolean) => void }>({ open: () => {}, step: () => {} });
+  const openSearch = () => {
+    setShowSearch(true);
+    requestAnimationFrame(() => {
+      searchInputRef.current?.focus();
+      searchInputRef.current?.select();
+    });
+  };
   findRef.current = {
-    open: () => {
-      setShowSearch(true);
-      requestAnimationFrame(() => {
-        searchInputRef.current?.focus();
-        searchInputRef.current?.select();
-      });
-    },
-    step: (back: boolean) => onSearch(searchQuery, back),
+    open: openSearch,
+    // Nothing searched yet, so Find Next means "start a search" rather than a
+    // keypress that does nothing.
+    step: (back: boolean) => (searchQuery ? onSearch(searchQuery, back) : openSearch()),
   };
   useEffect(() => registerFindTarget({
     host: () => wrapRef.current,

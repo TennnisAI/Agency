@@ -67,11 +67,17 @@ export function useFind(opts: {
 
   const step = useCallback((back: boolean) => {
     const { engine: e, open: isOpen, query: q } = live.current;
-    if (!isOpen || !q.search) {
+    // Nothing to step through yet, so ⌘G means "start a search" — the same
+    // thing every editor does when Find Next has no query behind it.
+    if (!q.search) {
       openBar("find");
       return;
     }
     setState(e.step(q, back));
+    // With the bar closed the jump is all the user asked for: the selection is
+    // the feedback, and lighting every match up would leave highlighting on
+    // with no bar to press Escape in.
+    if (!isOpen) e.dismiss();
   }, [openBar]);
 
   useEffect(() => {

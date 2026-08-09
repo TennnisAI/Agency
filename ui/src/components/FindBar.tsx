@@ -112,9 +112,9 @@ export default function FindBar({
           {toggle(query.wholeWord, "ab", "Whole word", () => set({ wholeWord: !query.wholeWord }), "find-opt-word")}
           {toggle(query.regexp, ".*", "Regular expression", () => set({ regexp: !query.regexp }))}
         </span>
-        <button type="button" className="find-btn" title="Previous match (⇧↵)" aria-label="Previous match"
+        <button type="button" className="find-btn" title="Previous match (⇧↵ or ⇧⌘G)" aria-label="Previous match"
           onMouseDown={(e) => e.preventDefault()} onClick={() => onStep(true)}>↑</button>
-        <button type="button" className="find-btn" title="Next match (↵)" aria-label="Next match"
+        <button type="button" className="find-btn" title="Next match (↵ or ⌘G)" aria-label="Next match"
           onMouseDown={(e) => e.preventDefault()} onClick={() => onStep(false)}>↓</button>
         {canReplace && (
           <button

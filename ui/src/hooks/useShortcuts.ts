@@ -34,7 +34,9 @@ export function useShortcuts(h: Handlers): void {
       // requirement for approval is enforced by the caller's onApprove.
       else if (key === "enter" && !inEditable(e.target)) { e.preventDefault(); ref.current.onApprove(); }
       else if (key === "n" && !inEditable(e.target)) { e.preventDefault(); ref.current.onNewTask(); }
-      else if (key === "g" && !inEditable(e.target)) { e.preventDefault(); ref.current.onSource(); }
+      // ⌘D, not ⌘G: Find Next owns ⌘G/⇧⌘G now (menu.rs). The ⌘⇧D branch above
+      // runs first, so today's note keeps its key.
+      else if (key === "d" && !inEditable(e.target)) { e.preventDefault(); ref.current.onSource(); }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);

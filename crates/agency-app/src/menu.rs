@@ -90,8 +90,10 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     // accelerator here is also what keeps CodeMirror's own search panel from
     // opening instead: on macOS the menu bar sees the key before the webview.
     //
-    // Find Next/Previous carry no accelerator: ⌘G is already Source & Diff in
-    // the View menu, and stepping happens on Enter/⇧Enter in the find field.
+    // Find Next/Previous take the Mac-standard ⌘G / ⇧⌘G, which every editor
+    // binds — Source & Diff gave the key up and moved to ⌘D (see the View
+    // menu). Enter/⇧Enter still step from inside the find field; the
+    // accelerators are what keep the stepping going with the bar closed.
     let edit_menu = SubmenuBuilder::new(app, "Edit")
         .undo()
         .redo()
@@ -111,8 +113,16 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
                 .accelerator("CmdOrCtrl+Alt+F")
                 .build(app)?,
         )
-        .item(&MenuItemBuilder::with_id("menu:find-next", "Find Next").build(app)?)
-        .item(&MenuItemBuilder::with_id("menu:find-prev", "Find Previous").build(app)?)
+        .item(
+            &MenuItemBuilder::with_id("menu:find-next", "Find Next")
+                .accelerator("CmdOrCtrl+G")
+                .build(app)?,
+        )
+        .item(
+            &MenuItemBuilder::with_id("menu:find-prev", "Find Previous")
+                .accelerator("CmdOrCtrl+Shift+G")
+                .build(app)?,
+        )
         .build()?;
 
     let view_menu = SubmenuBuilder::new(app, "View")
@@ -122,9 +132,11 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
                 .build(app)?,
         )
         // Project-gated: the source/diff tab only exists inside a project.
+        // ⌘D, not the ⌘G it used to hold — that key is Find Next everywhere
+        // else on the platform, and Agency now honours that (see Edit).
         .item(
             &MenuItemBuilder::with_id("menu:source", "Source & Diff")
-                .accelerator("CmdOrCtrl+G")
+                .accelerator("CmdOrCtrl+D")
                 .enabled(false)
                 .build(app)?,
         )

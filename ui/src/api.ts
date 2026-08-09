@@ -584,6 +584,14 @@ export interface KnowledgeConfig {
   build_default: string;
   serve_installed: boolean;
   build_installed: boolean;
+  // The graph file the serve command reads, and whether it exists yet. No
+  // graph means no MCP server is handed to agents.
+  graph_path: string;
+  graph_built: boolean;
+  // A build is running; poll this config until it clears.
+  building: boolean;
+  last_build_error: string | null;
+  install_command: string;
 }
 
 export const getKnowledgeConfig = (projectId: string) =>
@@ -594,6 +602,8 @@ export const saveKnowledgeConfig = (
   serveCommand: string | null,
   buildCommand: string | null,
 ) => invoke<void>("save_knowledge_config", { projectId, graph, serveCommand, buildCommand });
+export const buildKnowledgeGraph = (projectId: string) =>
+  invoke<void>("build_knowledge_graph", { projectId });
 
 // Per-project list of files copied into every new agent worktree (persisted to
 // the project's gitignored .agency/agency.local.toml). `detectedEnv` is the set

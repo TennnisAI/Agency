@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct AgencyConfig {
@@ -217,17 +217,28 @@ fn read_value(path: &Path) -> Option<toml::Value> {
     toml::from_str::<toml::Value>(&text).ok()
 }
 
+/// Where the build command leaves the graph: the primary repo's untracked
+/// `graphify-out/graph.json`. The serve command points at this file, and its
+/// presence is what tells us a graph has actually been built (worktrees never
+/// carry `graphify-out/`, so the path is always the primary repo's).
+pub fn graph_path(repo_path: &Path) -> PathBuf {
+    repo_path.join("graphify-out").join("graph.json")
+}
+
 /// The default graphify MCP serve command for a repo. graphify's server has no
 /// console-script entry point — it runs as `python -m graphify.serve <graph.json>`
 /// inside the uv tool venv, and the graph lives in the primary repo's untracked
 /// `graphify-out/`. Shared by the MCP injector and the settings UI so the UI's
 /// placeholder matches what actually runs.
 pub fn default_serve_command(repo_path: &Path) -> String {
-    format!(
-        "uv tool run --from graphifyy python -m graphify.serve {}",
-        repo_path.join("graphify-out").join("graph.json").display()
-    )
+    format!("uv tool run --from graphifyy python -m graphify.serve {}", graph_path(repo_path).display())
 }
+
+/// The shell command that installs the graphify tooling, shown by the settings
+/// UI when the serve/build commands aren't on PATH. `graphifyy` is the PyPI
+/// distribution; it ships the `graphify` console script and the `graphify`
+/// Python package that `graphify.serve` lives in.
+pub const GRAPHIFY_INSTALL_COMMAND: &str = "uv tool install graphifyy";
 
 /// The default graphify MCP serve command as an argv vector. The graph path is
 /// a single element, so a repo path containing spaces survives intact — unlike
@@ -242,7 +253,7 @@ pub fn default_serve_argv(repo_path: &Path) -> Vec<String> {
         "python".to_string(),
         "-m".to_string(),
         "graphify.serve".to_string(),
-        repo_path.join("graphify-out").join("graph.json").display().to_string(),
+        graph_path(repo_path).display().to_string(),
     ]
 }
 

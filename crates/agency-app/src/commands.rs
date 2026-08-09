@@ -1114,6 +1114,13 @@ pub fn save_knowledge_config(
         .map_err(|e| e.to_string())
 }
 
+/// Start a knowledge-graph build for a project. Returns as soon as the build is
+/// running; progress and failure come back through `get_knowledge_config`.
+#[tauri::command]
+pub fn build_knowledge_graph(state: State<'_, AppState>, project_id: String) -> Result<(), String> {
+    state.build_knowledge_graph(&project_id).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn get_files_config(
     state: State<'_, AppState>,

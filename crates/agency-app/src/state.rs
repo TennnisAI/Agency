@@ -64,6 +64,27 @@ pub struct KnowledgeConfigDto {
     pub build_default: String,
     pub serve_installed: bool,
     pub build_installed: bool,
+    /// The graph file the serve command reads, and whether it exists yet. Until
+    /// a build has produced it there is nothing to serve, so the MCP server is
+    /// not injected — the UI says so rather than leaving the feature silent.
+    pub graph_path: String,
+    pub graph_built: bool,
+    /// A build is running right now (kicked off by enabling the graph, by the
+    /// Build button, or by a merge). The UI polls while this is true.
+    pub building: bool,
+    /// Why the last finished build failed, `None` if it succeeded or none ran.
+    pub last_build_error: Option<String>,
+    /// What to run to get the tooling when `*_installed` is false.
+    pub install_command: String,
+}
+
+/// Progress of a project's graph build. One entry per repo, kept in memory:
+/// after a restart the graph file itself is the source of truth.
+#[derive(Debug, Clone, Default)]
+struct KgBuild {
+    running: bool,
+    /// Failure reason from the last finished build; cleared when one succeeds.
+    error: Option<String>,
 }
 
 /// Files copied into every new worktree. `copy` is the user-configured
@@ -1004,6 +1025,11 @@ pub struct AppState {
     /// [`AppState::fetch_project_if_due`]. In-memory: an app restart just means
     /// the first request for each project fetches.
     fetches: Mutex<HashMap<String, FetchSched>>,
+    /// Per-repo knowledge-graph build state, keyed by primary repo path. Guards
+    /// against two builds of one repo overlapping (they write the same
+    /// `graphify-out/`) and carries the running flag and last failure to the
+    /// settings UI. In-memory: a restart just forgets a stale failure.
+    kg_builds: std::sync::Arc<Mutex<HashMap<PathBuf, KgBuild>>>,
 }
 
 /// When a project's origin was last contacted, and when it may be again.
@@ -1110,6 +1136,7 @@ impl AppState {
             loop_generation: std::sync::atomic::AtomicU64::new(0),
             issue_sigs: Mutex::new(HashMap::new()),
             fetches: Mutex::new(HashMap::new()),
+            kg_builds: std::sync::Arc::new(Mutex::new(HashMap::new())),
         };
         // Rehydrate: any run the daemon still hosts is adopted as-is; the watch
         // loop (watch_snapshot) then reports live status. Nothing to spawn here —
@@ -2616,6 +2643,8 @@ impl AppState {
         let build_default = agency_core::config::default_build_command().to_string();
         let serve_effective = k.serve_command.clone().unwrap_or_else(|| serve_default.clone());
         let build_effective = k.build_command.clone().unwrap_or_else(|| build_default.clone());
+        let graph = agency_core::config::graph_path(&repo);
+        let build_state = self.kg_builds.lock().unwrap().get(&repo).cloned().unwrap_or_default();
         Ok(KnowledgeConfigDto {
             graph: k.graph,
             serve_installed: first_token_on_path(&serve_effective),
@@ -2624,6 +2653,11 @@ impl AppState {
             build_command: k.build_command,
             serve_default,
             build_default,
+            graph_built: graph.is_file(),
+            graph_path: graph.display().to_string(),
+            building: build_state.running,
+            last_build_error: build_state.error,
+            install_command: agency_core::config::GRAPHIFY_INSTALL_COMMAND.to_string(),
         })
     }
 
@@ -2645,6 +2679,82 @@ impl AppState {
             build_command: clean(build_command),
         };
         agency_core::config::save_knowledge(&repo, &k)?;
+        // Enabling the graph is a request for a graph. Nothing else builds one
+        // until a merge lands, so without this the feature stays inert: the
+        // serve command would point at a graph.json that never appears.
+        if graph && !agency_core::config::graph_path(&repo).is_file() {
+            if let Err(e) = self.start_knowledge_build(&repo) {
+                log::info!("not building knowledge graph for {}: {e}", repo.display());
+            }
+        }
+        Ok(())
+    }
+
+    /// Build (or rebuild) a project's knowledge graph now, from the UI.
+    pub fn build_knowledge_graph(&self, project_id: &str) -> Result<()> {
+        let repo = self.project_repo(project_id)?;
+        self.start_knowledge_build(&repo)
+    }
+
+    /// Spawn the project's build command in the primary checkout, tracking it in
+    /// `kg_builds` so the UI can show progress and failures. Returns an error
+    /// (without spawning) when the tooling is missing or a build is already
+    /// running for this repo — both are states the caller reports, not retries.
+    fn start_knowledge_build(&self, repo: &Path) -> Result<()> {
+        let config = agency_core::config::load(repo);
+        let build = config
+            .knowledge
+            .build_command
+            .clone()
+            .unwrap_or_else(|| agency_core::config::default_build_command().to_string());
+        let cmd = build
+            .split_whitespace()
+            .next()
+            .ok_or_else(|| anyhow!("the build command is empty"))?
+            .to_string();
+        if !command_on_path(&cmd) {
+            return Err(anyhow!(
+                "'{cmd}' is not installed. Run `{}` and try again.",
+                agency_core::config::GRAPHIFY_INSTALL_COMMAND
+            ));
+        }
+        {
+            let mut builds = self.kg_builds.lock().unwrap();
+            let entry = builds.entry(repo.to_path_buf()).or_default();
+            if entry.running {
+                return Err(anyhow!("a graph build is already running for this project"));
+            }
+            entry.running = true;
+            entry.error = None;
+        }
+        log::info!("building knowledge graph in {}: {build}", repo.display());
+        let repo = repo.to_path_buf();
+        let builds_handle = self.kg_builds.clone();
+        std::thread::spawn(move || {
+            // A login shell so the build resolves the same tooling the user's
+            // terminal does, and captured output so a failure has a reason to
+            // show instead of a bare exit code.
+            let out = std::process::Command::new("sh")
+                .args(["-lc", &build])
+                .current_dir(&repo)
+                .stdin(std::process::Stdio::null())
+                .output();
+            let error = match out {
+                Err(e) => Some(format!("couldn't run the build command: {e}")),
+                Ok(o) if o.status.success() => None,
+                Ok(o) => Some(match failure_tail(&o.stderr, &o.stdout) {
+                    Some(tail) => tail,
+                    None => format!("the build command exited with {}", o.status),
+                }),
+            };
+            if let Some(e) = &error {
+                log::warn!("knowledge graph build failed in {}: {e}", repo.display());
+            }
+            let mut builds = builds_handle.lock().unwrap();
+            let entry = builds.entry(repo).or_default();
+            entry.running = false;
+            entry.error = error;
+        });
         Ok(())
     }
 
@@ -2683,27 +2793,9 @@ impl AppState {
         let project = agency_core::mcp::from_config(&config.mcp);
         let mut auto = Vec::new();
         if config.knowledge.graph {
-            // Build an argv (not a whitespace split): the default serve command
-            // embeds the primary repo's absolute graph.json path, which breaks
-            // graphify injection for any repo path containing a space.
-            let argv = config
-                .knowledge
-                .serve_command
-                .as_deref()
-                .map(agency_core::config::split_command)
-                .unwrap_or_else(|| agency_core::config::default_serve_argv(repo));
-            let mut parts = argv.into_iter();
-            if let Some(cmd) = parts.next() {
-                if command_on_path(&cmd) {
-                    auto.push(agency_core::mcp::McpServer {
-                        name: "graphify".to_string(),
-                        command: Some(cmd),
-                        args: parts.collect(),
-                        ..Default::default()
-                    });
-                } else {
-                    log::warn!("knowledge graph enabled but '{cmd}' is not installed; skipping MCP injection");
-                }
+            match graphify_server(repo, &config.knowledge, |p| p.is_file(), command_on_path) {
+                Ok(server) => auto.push(server),
+                Err(reason) => log::warn!("knowledge graph enabled but {reason}; skipping MCP injection"),
             }
         }
         agency_core::mcp::merge(&[global, project, auto])
@@ -2739,34 +2831,11 @@ impl AppState {
     /// After a clean merge, rebuild the project's knowledge graph in the
     /// background so the next agent workspace starts with a fresh graph.
     fn maybe_rebuild_knowledge_graph(&self, repo: &Path) {
-        let config = agency_core::config::load(repo);
-        if !config.knowledge.graph {
+        if !agency_core::config::load(repo).knowledge.graph {
             return;
         }
-        let build = config
-            .knowledge
-            .build_command
-            .clone()
-            .unwrap_or_else(|| agency_core::config::default_build_command().to_string());
-        if let Some(cmd) = build.split_whitespace().next() {
-            if !command_on_path(cmd) {
-                log::warn!("knowledge graph enabled but '{cmd}' is not installed; skipping rebuild");
-                return;
-            }
-        }
-        log::info!("rebuilding knowledge graph after merge: {build}");
-        let spawned = std::process::Command::new("sh")
-            .args(["-lc", &build])
-            .current_dir(repo)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn();
-        // Reap the child on its own thread — dropping it without waiting leaves a
-        // zombie `sh` per merge until the app exits.
-        if let Ok(mut child) = spawned {
-            std::thread::spawn(move || {
-                let _ = child.wait();
-            });
+        if let Err(e) = self.start_knowledge_build(repo) {
+            log::warn!("not rebuilding knowledge graph after merge: {e}");
         }
     }
 
@@ -4967,6 +5036,62 @@ impl AppState {
     }
 }
 
+/// The graphify MCP server to hand a workspace, or `Err(reason)` explaining why
+/// there is nothing to hand it. Pure over the two probes (does the graph file
+/// exist, is the command on PATH) so the skip rules are testable without a repo.
+///
+/// Two things have to hold. The command must resolve — otherwise every agent
+/// launch spawns a server that immediately ENOENTs. And, for the default serve
+/// command, the graph it reads must already have been built: pointing
+/// `graphify.serve` at a `graph.json` that was never written hands every agent a
+/// server that dies on startup, which is worse than no server at all. A
+/// user-supplied serve command is trusted to know where its own graph lives.
+fn graphify_server(
+    repo: &Path,
+    knowledge: &agency_core::config::KnowledgeConfig,
+    graph_exists: impl Fn(&Path) -> bool,
+    on_path: impl Fn(&str) -> bool,
+) -> std::result::Result<agency_core::mcp::McpServer, String> {
+    // An argv, not a whitespace split: the default serve command embeds the
+    // primary repo's absolute graph.json path, which would break graphify
+    // injection for any repo path containing a space.
+    let argv = knowledge
+        .serve_command
+        .as_deref()
+        .map(agency_core::config::split_command)
+        .unwrap_or_else(|| agency_core::config::default_serve_argv(repo));
+    let mut parts = argv.into_iter();
+    let cmd = parts.next().ok_or_else(|| "the serve command is empty".to_string())?;
+    if knowledge.serve_command.is_none() {
+        let graph = agency_core::config::graph_path(repo);
+        if !graph_exists(&graph) {
+            return Err(format!("{} has not been built", graph.display()));
+        }
+    }
+    if !on_path(&cmd) {
+        return Err(format!("'{cmd}' is not installed"));
+    }
+    Ok(agency_core::mcp::McpServer {
+        name: "graphify".to_string(),
+        command: Some(cmd),
+        args: parts.collect(),
+        ..Default::default()
+    })
+}
+
+/// The last few lines a failed command wrote, preferring stderr and falling back
+/// to stdout — enough to show the user *why* a build failed without pasting a
+/// whole log into the settings panel. `None` when the command said nothing.
+fn failure_tail(stderr: &[u8], stdout: &[u8]) -> Option<String> {
+    const LINES: usize = 4;
+    [stderr, stdout].into_iter().find_map(|bytes| {
+        let text = String::from_utf8_lossy(bytes);
+        let lines: Vec<&str> = text.lines().map(str::trim_end).filter(|l| !l.trim().is_empty()).collect();
+        let tail = lines[lines.len().saturating_sub(LINES)..].join("\n");
+        (!tail.is_empty()).then_some(tail)
+    })
+}
+
 /// True when `command` resolves to an executable file: checked directly when it
 /// contains a path separator, otherwise searched across the PATH directories.
 /// Whether the first whitespace token of a command line resolves to an
@@ -5019,9 +5144,64 @@ fn validate_repo(repo_path: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{command_on_path, new_task_id, slugify, split_session_id, pick_port, agent_argv};
+    use super::{
+        agent_argv, command_on_path, failure_tail, graphify_server, new_task_id, pick_port,
+        slugify, split_session_id,
+    };
+    use agency_core::config::KnowledgeConfig;
     use agency_core::profile::AgentProfile;
     use std::collections::HashSet;
+
+    /// AGE-83: enabling the knowledge graph looked like it did nothing. Nothing
+    /// built the first graph, and the serve command was injected anyway — every
+    /// agent got a graphify MCP server pointed at a `graph.json` that had never
+    /// been written. No graph, no server.
+    #[test]
+    fn graphify_is_not_injected_before_the_graph_is_built() {
+        let repo = Path::new("/repo");
+        let enabled = KnowledgeConfig { graph: true, ..Default::default() };
+
+        let err = graphify_server(repo, &enabled, |_| false, |_| true).unwrap_err();
+        assert!(err.contains("has not been built"), "{err}");
+        assert!(err.contains("graph.json"), "the reason names the file the user must build: {err}");
+
+        let server = graphify_server(repo, &enabled, |_| true, |_| true).unwrap();
+        assert_eq!(server.command.as_deref(), Some("uv"));
+        assert_eq!(server.args.last().unwrap(), "/repo/graphify-out/graph.json");
+    }
+
+    #[test]
+    fn graphify_is_not_injected_when_the_tooling_is_missing() {
+        let enabled = KnowledgeConfig { graph: true, ..Default::default() };
+        let err = graphify_server(Path::new("/repo"), &enabled, |_| true, |_| false).unwrap_err();
+        assert!(err.contains("'uv' is not installed"), "{err}");
+    }
+
+    /// A hand-written serve command may read a graph from anywhere, so the
+    /// default `graphify-out/graph.json` check must not gate it.
+    #[test]
+    fn a_custom_serve_command_is_not_gated_on_the_default_graph_path() {
+        let custom = KnowledgeConfig {
+            graph: true,
+            serve_command: Some("my-server \"/my graphs/g.json\"".to_string()),
+            build_command: None,
+        };
+        let server = graphify_server(Path::new("/repo"), &custom, |_| false, |_| true).unwrap();
+        assert_eq!(server.command.as_deref(), Some("my-server"));
+        assert_eq!(server.args, vec!["/my graphs/g.json".to_string()]);
+    }
+
+    #[test]
+    fn failure_tail_prefers_stderr_and_keeps_the_last_lines() {
+        assert_eq!(failure_tail(b"boom", b"noise").as_deref(), Some("boom"));
+        assert_eq!(failure_tail(b"", b"only stdout").as_deref(), Some("only stdout"));
+        assert_eq!(failure_tail(b"  \n\n", b"  \n").as_deref(), None, "whitespace is not a reason");
+        assert_eq!(
+            failure_tail(b"a\nb\nc\nd\ne\nf\n", b"").as_deref(),
+            Some("c\nd\ne\nf"),
+            "the tail is what says why it failed"
+        );
+    }
 
     #[test]
     fn command_on_path_finds_shell_binaries() {

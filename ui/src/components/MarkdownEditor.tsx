@@ -1,5 +1,5 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
-import { Compartment, EditorState, Transaction } from "@codemirror/state";
+import { EditorState, Transaction } from "@codemirror/state";
 import {
   EditorView, drawSelection, dropCursor, keymap, placeholder as cmPlaceholder, tooltips,
 } from "@codemirror/view";
@@ -10,9 +10,9 @@ import { CrossRefs } from "../lib/links";
 import { editorChromeTheme } from "../lib/cmTheme";
 import { cmFindExtensions } from "../lib/cmFind";
 import {
-  crossRefsFacet, docsCompletion, docsHighlight, docsIndexFacet, docsMarkdown,
-  docsNavFacet, livePreview,
+  docsCompletion, docsHighlight, docsMarkdown, docsNavFacet, livePreview,
 } from "../lib/livePreview";
+import { useLiveFacets } from "../hooks/useLiveFacets";
 import { formatCommand, toggleInline } from "../lib/mdFormat";
 import Menu from "./git/Menu";
 import { caretToPointer, markdownMenuItems } from "./mdMenu";
@@ -81,12 +81,9 @@ export default forwardRef<MarkdownEditorHandle, {
   const live = useRef({ onChange, onBlur, onNavigate, onTagClick, onPasteFiles, root, dir, path });
   live.current = { onChange, onBlur, onNavigate, onTagClick, onPasteFiles, root, dir, path };
 
-  const indexRef = useRef(index);
-  indexRef.current = index;
-  const indexCompRef = useRef(new Compartment());
-  const crossRef = useRef(cross);
-  crossRef.current = cross;
-  const crossCompRef = useRef(new Compartment());
+  // Index / cross-ref refreshes reach the decorations through compartments,
+  // reconfigured only when the data the extensions read actually changed.
+  const liveFacets = useLiveFacets(viewRef, index, cross);
 
   // The text most recently seen from (or handed back to) the caller: what the
   // `value` sync below compares against.
@@ -143,8 +140,7 @@ export default forwardRef<MarkdownEditorHandle, {
         tooltips({ position: "fixed" }),
         cmFindExtensions,
         ...(placeholder ? [cmPlaceholder(placeholder)] : []),
-        indexCompRef.current.of(docsIndexFacet.of(indexRef.current)),
-        crossCompRef.current.of(crossRefsFacet.of(crossRef.current)),
+        ...liveFacets(),
         docsNavFacet.of({
           onNavigate: (t, h) => live.current.onNavigate(t, h),
           onTagClick: (t) => live.current.onTagClick(t),
@@ -207,14 +203,6 @@ export default forwardRef<MarkdownEditorHandle, {
       annotations: Transaction.addToHistory.of(false),
     });
   }, [value]);
-
-  // Index / cross-ref refreshes reach the decorations through their compartments.
-  useEffect(() => {
-    viewRef.current?.dispatch({ effects: indexCompRef.current.reconfigure(docsIndexFacet.of(index)) });
-  }, [index]);
-  useEffect(() => {
-    viewRef.current?.dispatch({ effects: crossCompRef.current.reconfigure(crossRefsFacet.of(cross)) });
-  }, [cross]);
 
   const openMenu = (e: React.MouseEvent) => {
     const view = viewRef.current;

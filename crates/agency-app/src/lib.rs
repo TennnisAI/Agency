@@ -210,6 +210,7 @@ pub fn run() {
             commands::start_issue_loop,
             commands::send_merge_conflict,
             commands::git_parse_diff,
+            commands::git_blob_sides,
             commands::git_stage_hunk,
             commands::git_unstage_hunk,
             commands::git_log_graph,

@@ -1150,6 +1150,58 @@ pub async fn git_parse_diff(
     Ok(agency_core::git::parse_diff(&raw))
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BlobSideDto {
+    pub b64: String,
+    pub size: u64,
+    pub too_large: bool,
+}
+
+/// Before/after bytes of one file, for changes a text diff can't render.
+/// A side is null when the file doesn't exist there (added or deleted).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BlobSidesDto {
+    pub mime: String,
+    pub old: Option<BlobSideDto>,
+    pub new: Option<BlobSideDto>,
+}
+
+fn blob_side_dto(side: git::BlobSide) -> BlobSideDto {
+    BlobSideDto {
+        b64: STANDARD.encode(&side.bytes),
+        size: side.size,
+        too_large: side.too_large,
+    }
+}
+
+/// The two sides of a binary file's change, so the diff viewer can show an image
+/// before and after instead of "no textual changes". `hash` selects a commit
+/// (against its first parent); without one, `staged` picks HEAD-vs-index or
+/// index-vs-working-tree, matching `git_parse_diff`.
+#[tauri::command]
+pub async fn git_blob_sides(
+    state: State<'_, AppState>,
+    task_id: String,
+    path: String,
+    staged: bool,
+    hash: Option<String>,
+) -> Result<BlobSidesDto, String> {
+    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
+    let mode = match hash {
+        Some(h) => git::BlobMode::Commit(h),
+        None if staged => git::BlobMode::Staged,
+        None => git::BlobMode::Unstaged,
+    };
+    let (old, new) = git::blob_sides(&wt, &path, &mode).map_err(|e| e.to_string())?;
+    Ok(BlobSidesDto {
+        mime: agency_core::files::mime_for(&path).to_string(),
+        old: old.map(blob_side_dto),
+        new: new.map(blob_side_dto),
+    })
+}
+
 #[tauri::command]
 pub async fn git_stage_hunk(
     state: State<'_, AppState>,

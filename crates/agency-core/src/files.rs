@@ -7,7 +7,7 @@ const MAX_FILE_BYTES: u64 = 2_000_000;
 
 /// Cap for raw (binary) reads used by previews — images/PDFs run bigger than
 /// source files, but a preview still shouldn't drag hundreds of MB over IPC.
-const MAX_BINARY_BYTES: u64 = 25_000_000;
+pub(crate) const MAX_BINARY_BYTES: u64 = 25_000_000;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -40,7 +40,7 @@ pub struct FileContents {
 ///     within the root, then reject when the final component is itself a symlink.
 ///     Without this, `fs::write` would follow a dangling symlink and create the
 ///     file at its out-of-root target — a write-anywhere primitive.
-fn resolve_within(root: &Path, rel: &str) -> Result<PathBuf> {
+pub(crate) fn resolve_within(root: &Path, rel: &str) -> Result<PathBuf> {
     let mut normalized = PathBuf::new();
     for comp in Path::new(rel).components() {
         match comp {

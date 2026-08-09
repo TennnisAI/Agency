@@ -5,8 +5,33 @@ import {
 } from "../../api";
 import { buildRows, type DiffRow, type Span } from "./diffModel";
 import { highlightLine, langForPath } from "./highlight";
+import ImageDiff from "./ImageDiff";
+import { emptyReason, isRasterImage } from "./binary";
 
 type Mode = "working-unstaged" | "working-staged" | "commit";
+
+type Props = {
+  taskId: string;
+  path: string;
+  mode: Mode;
+  hash?: string;
+  onChanged: () => void;
+  onCommentAdded?: () => void;
+  allowComments?: boolean;
+};
+
+// An image has no textual diff to parse — git only reports that the bytes
+// differ — so route it to the before/after picture view instead of the line
+// viewer, which would have nothing but "no textual changes" to show.
+export default function DiffViewer(props: Props) {
+  if (isRasterImage(props.path)) {
+    return (
+      <ImageDiff taskId={props.taskId} path={props.path}
+        staged={props.mode === "working-staged"} hash={props.hash} />
+    );
+  }
+  return <TextDiffViewer {...props} />;
+}
 
 // Above this many rows we skip syntax highlighting entirely. A root commit's
 // diff is the *whole file* as additions (git show has no parent to diff
@@ -23,17 +48,9 @@ function spansToText(spans: Span[] | null): string {
   return spans ? spans.map((s) => s.text).join("") : "";
 }
 
-export default function DiffViewer({
+function TextDiffViewer({
   taskId, path, mode, hash, onChanged, onCommentAdded, allowComments = true,
-}: {
-  taskId: string;
-  path: string;
-  mode: Mode;
-  hash?: string;
-  onChanged: () => void;
-  onCommentAdded?: () => void;
-  allowComments?: boolean;
-}) {
+}: Props) {
   const [fd, setFd] = useState<FileDiff | null>(null);
   const [rows, setRows] = useState<DiffRow[]>([]);
   const [highlighted, setHighlighted] = useState<Record<string, string>>({});
@@ -159,7 +176,7 @@ export default function DiffViewer({
 
   if (error) return <div className="git-error">{error}</div>;
   if (!fd) return <div className="diff-empty">loading…</div>;
-  if (rows.length === 0) return <div className="diff-empty">no textual changes</div>;
+  if (rows.length === 0) return <div className="diff-empty">{emptyReason(fd.header)}</div>;
 
   return (
     <div className="diffviewer" ref={wrapRef}>

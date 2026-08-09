@@ -376,6 +376,117 @@ fn commit_diff_shows_file_diff() {
     assert!(diff.contains("+two"), "diff shows added line: {diff}");
 }
 
+// Bytes with a NUL so git calls the file binary and diffs it as "Binary files
+// … differ" — the case the text diff viewer has nothing to show for.
+fn binary_bytes(tag: u8) -> Vec<u8> {
+    vec![0x89, b'P', b'N', b'G', 0x00, 0x1a, 0x0a, tag]
+}
+
+#[test]
+fn blob_sides_reads_both_sides_of_an_unstaged_binary_change() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    std::fs::write(dir.path().join("i.png"), binary_bytes(1)).unwrap();
+    run(dir.path(), &["add", "-A"]);
+    run(dir.path(), &["commit", "-qm", "add image"]);
+    std::fs::write(dir.path().join("i.png"), binary_bytes(2)).unwrap();
+
+    // The text diff has no hunks at all — that's what this replaces.
+    let fd = parse_diff(&git::diff(dir.path(), "i.png", false).unwrap());
+    assert!(fd.hunks.is_empty(), "binary diff carries no hunks");
+
+    let (old, new) = git::blob_sides(dir.path(), "i.png", &git::BlobMode::Unstaged).unwrap();
+    assert_eq!(old.unwrap().bytes, binary_bytes(1));
+    assert_eq!(new.unwrap().bytes, binary_bytes(2));
+}
+
+#[test]
+fn blob_sides_staged_compares_head_with_the_index() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    std::fs::write(dir.path().join("i.png"), binary_bytes(1)).unwrap();
+    run(dir.path(), &["add", "-A"]);
+    run(dir.path(), &["commit", "-qm", "add image"]);
+    std::fs::write(dir.path().join("i.png"), binary_bytes(2)).unwrap();
+    run(dir.path(), &["add", "i.png"]);
+    // Staged holds tag 2; the working tree has moved on to tag 3.
+    std::fs::write(dir.path().join("i.png"), binary_bytes(3)).unwrap();
+
+    let (old, new) = git::blob_sides(dir.path(), "i.png", &git::BlobMode::Staged).unwrap();
+    assert_eq!(old.unwrap().bytes, binary_bytes(1));
+    assert_eq!(new.unwrap().bytes, binary_bytes(2));
+}
+
+#[test]
+fn blob_sides_has_no_old_side_for_an_untracked_file() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    std::fs::write(dir.path().join("new.png"), binary_bytes(7)).unwrap();
+
+    let (old, new) = git::blob_sides(dir.path(), "new.png", &git::BlobMode::Unstaged).unwrap();
+    assert!(old.is_none(), "an untracked file has no index side");
+    let new = new.unwrap();
+    assert_eq!(new.bytes, binary_bytes(7));
+    assert_eq!(new.size, 8);
+}
+
+#[test]
+fn blob_sides_has_no_new_side_for_a_deleted_file() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    std::fs::write(dir.path().join("i.png"), binary_bytes(1)).unwrap();
+    run(dir.path(), &["add", "-A"]);
+    run(dir.path(), &["commit", "-qm", "add image"]);
+    std::fs::remove_file(dir.path().join("i.png")).unwrap();
+
+    let (old, new) = git::blob_sides(dir.path(), "i.png", &git::BlobMode::Unstaged).unwrap();
+    assert!(old.is_some());
+    assert!(new.is_none(), "the file is gone from the working tree");
+}
+
+#[test]
+fn blob_sides_for_a_commit_compares_against_its_parent() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    std::fs::write(dir.path().join("i.png"), binary_bytes(1)).unwrap();
+    run(dir.path(), &["add", "-A"]);
+    run(dir.path(), &["commit", "-qm", "add image"]);
+    std::fs::write(dir.path().join("i.png"), binary_bytes(2)).unwrap();
+    run(dir.path(), &["commit", "-aqm", "change image"]);
+
+    let log = git::log_graph(dir.path(), 3).unwrap();
+    let head = log[0].hash.clone();
+    let (old, new) = git::blob_sides(dir.path(), "i.png", &git::BlobMode::Commit(head)).unwrap();
+    assert_eq!(old.unwrap().bytes, binary_bytes(1));
+    assert_eq!(new.unwrap().bytes, binary_bytes(2));
+
+    // The commit that introduced the file: nothing on the old side. The root
+    // commit exercises the same path with no parent to resolve at all.
+    let added = log[1].hash.clone();
+    let (old, new) = git::blob_sides(dir.path(), "i.png", &git::BlobMode::Commit(added)).unwrap();
+    assert!(old.is_none(), "an added file has no parent-side blob");
+    assert_eq!(new.unwrap().bytes, binary_bytes(1));
+    let root = log[2].hash.clone();
+    let (old, _) = git::blob_sides(dir.path(), "tracked.txt", &git::BlobMode::Commit(root)).unwrap();
+    assert!(old.is_none(), "the root commit has no parent");
+}
+
+#[test]
+fn blob_sides_reads_a_file_in_a_subdirectory() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    std::fs::create_dir_all(dir.path().join("assets/img")).unwrap();
+    std::fs::write(dir.path().join("assets/img/i.png"), binary_bytes(1)).unwrap();
+    run(dir.path(), &["add", "-A"]);
+    run(dir.path(), &["commit", "-qm", "add image"]);
+    std::fs::write(dir.path().join("assets/img/i.png"), binary_bytes(2)).unwrap();
+
+    let (old, new) =
+        git::blob_sides(dir.path(), "assets/img/i.png", &git::BlobMode::Unstaged).unwrap();
+    assert_eq!(old.unwrap().bytes, binary_bytes(1));
+    assert_eq!(new.unwrap().bytes, binary_bytes(2));
+}
+
 #[test]
 fn build_partial_patch_keeps_selected_add_drops_others() {
     // Hunk adds two lines after context; select only the first added line (index 1).

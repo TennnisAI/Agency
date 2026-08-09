@@ -1380,6 +1380,41 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
 .diff-hunks { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 10px; border-top: 1px solid var(--line); }
 .diff-sel-actions { display: flex; gap: 4px; }
 
+/* ── ImageDiff: before/after for changes git calls binary ─────── */
+.imgdiff-body { flex: 1; min-height: 0; display: flex; overflow: hidden; }
+.imgdiff-body.twoup > .imgdiff-pane + .imgdiff-pane { border-left: 1px solid var(--line); }
+.imgdiff-body.swipe { flex-direction: column; }
+.imgdiff-pane { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.imgdiff-label {
+  display: flex; align-items: baseline; gap: 8px; padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+}
+.imgdiff-side { font-size: 11px; font-weight: 600; letter-spacing: .07em; text-transform: uppercase; color: var(--o1); }
+.imgdiff-pane.old .imgdiff-side, .imgdiff-side.old { color: var(--red); }
+.imgdiff-pane.new .imgdiff-side, .imgdiff-side.new { color: var(--green); }
+.imgdiff-meta, .imgdiff-note { font-family: var(--mono); font-size: 11px; color: var(--o0); }
+.imgdiff-none { font-size: 12px; color: var(--o0); }
+/* A faint checkerboard so a transparent PNG reads as transparent rather than
+   as whatever the panel background happens to be. */
+.imgdiff-stage {
+  flex: 1; min-height: 0; display: grid; place-items: center; padding: 12px;
+  overflow: hidden; background: var(--mantle);
+  background-image:
+    linear-gradient(45deg, var(--s0) 25%, transparent 25% 75%, var(--s0) 75%),
+    linear-gradient(45deg, var(--s0) 25%, transparent 25% 75%, var(--s0) 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 8px 8px;
+}
+.imgdiff-stage img { max-width: 100%; max-height: 100%; object-fit: contain; display: block; }
+.imgdiff-swipebox { position: relative; max-width: 100%; max-height: 100%; line-height: 0; }
+.imgdiff-swipebox .imgdiff-over { position: absolute; inset: 0; width: 100%; height: 100%; }
+.imgdiff-divider { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--blue); pointer-events: none; }
+.imgdiff-swipe-meta {
+  display: flex; align-items: center; gap: 8px; padding: 6px 10px;
+  border-top: 1px solid var(--line);
+}
+.imgdiff-slider { width: 140px; accent-color: var(--blue); }
+
 /* ── Git stacked sections (Changes over History) ─────────────── */
 .git-sections { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
 .git-section { display: flex; flex-direction: column; min-height: 0; }

@@ -891,6 +891,26 @@ export interface FileDiff {
 
 export const gitParseDiff = (taskId: string, path: string, staged: boolean) =>
   invoke<FileDiff>("git_parse_diff", { taskId, path, staged });
+
+/** One side of a file's change, as bytes. Empty with `tooLarge` when the file is
+ *  past the preview cap. */
+export interface BlobSide {
+  b64: string;
+  size: number;
+  tooLarge: boolean;
+}
+/** Before/after bytes of a file git can't diff as text. A side is null when the
+ *  file doesn't exist there: an add has no `old`, a delete no `new`. */
+export interface BlobSides {
+  mime: string;
+  old: BlobSide | null;
+  new: BlobSide | null;
+}
+
+// Pass `hash` for a commit (compared against its first parent); otherwise
+// `staged` picks HEAD-vs-index or index-vs-working-tree, as in gitParseDiff.
+export const gitBlobSides = (taskId: string, path: string, staged: boolean, hash: string | null) =>
+  invoke<BlobSides>("git_blob_sides", { taskId, path, staged, hash });
 export const gitStageHunk = (taskId: string, path: string, hunkIndex: number) =>
   invoke<void>("git_stage_hunk", { taskId, path, hunkIndex });
 export const gitUnstageHunk = (taskId: string, path: string, hunkIndex: number) =>

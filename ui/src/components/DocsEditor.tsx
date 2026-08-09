@@ -14,6 +14,7 @@ import { crossRefsFacet, docsCompletion, docsHighlight, docsIndexFacet, docsMark
 import { frontmatterEditor, requestAddProperty } from "../lib/fmEditor";
 import { joinPath } from "../lib/filePath";
 import { formatCommand, toggleInline } from "../lib/mdFormat";
+import { minimalReplacement } from "../lib/textEdit";
 import Menu from "./git/Menu";
 import { caretToPointer, markdownMenuItems } from "./mdMenu";
 
@@ -81,6 +82,12 @@ export default forwardRef<DocsEditorHandle, {
   const savedTextRef = useRef("");
   const saveStateRef = useRef(saveState);
   saveStateRef.current = saveState;
+  // The corpus copy the disk-follow effect has already reconciled against, and
+  // a live view of the current one for the load path (which runs inside an
+  // async callback, where the captured prop is a render behind).
+  const seenDiskRef = useRef<string | undefined>(undefined);
+  const diskTextRef = useRef(diskText);
+  diskTextRef.current = diskText;
 
   // ⌘F / Edit ▸ Find. One engine per editor instance (there is one per open
   // tab), reading whichever view is live through the ref.
@@ -202,6 +209,9 @@ export default forwardRef<DocsEditorHandle, {
       if (!host) return;
       setStatus("ready");
       savedTextRef.current = fc.text;
+      // The read above is fresher than anything the poll has published, so
+      // whatever the corpus holds right now counts as already reconciled.
+      seenDiskRef.current = diskTextRef.current;
       save.current = async () => {
         const view = viewRef.current;
         if (!view || saveStateRef.current === "clean") return;
@@ -343,13 +353,28 @@ export default forwardRef<DocsEditorHandle, {
 
   // While clean, follow external edits surfaced by the corpus poll. A dirty
   // buffer wins (last-write-wins: our autosave lands within a second anyway).
+  //
+  // Only a corpus copy we haven't seen before is worth reconciling, and that
+  // guard is load-bearing: this effect also re-runs when `saveState` flips, and
+  // at the moment our own save flips it to clean the corpus still holds the
+  // PRE-save copy — the refresh that save kicks off lands a beat later. Acting
+  // on that stale copy rewrote the buffer with the previous text, which mapped
+  // the cursor and the scroll anchor to position 0; the note lurched to the top
+  // about a second after every edit, then lurched again when the real copy
+  // arrived (AGE-89).
   useEffect(() => {
     const view = viewRef.current;
-    if (!view || status !== "ready" || saveState !== "clean") return;
-    if (diskText === undefined || diskText === savedTextRef.current) return;
-    if (view.state.doc.toString() === diskText) return;
+    if (!view || status !== "ready") return;
+    if (diskText === undefined || diskText === seenDiskRef.current) return;
+    seenDiskRef.current = diskText;
+    if (saveState !== "clean" || diskText === savedTextRef.current) return;
+    // Smallest change that gets there, so the reader's cursor and scroll
+    // position map through it instead of collapsing to the top of the note.
+    const edit = minimalReplacement(view.state.doc.toString(), diskText);
     savedTextRef.current = diskText;
-    view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: diskText } });
+    if (!edit) return;
+    if (import.meta.env.DEV) console.debug(`[docs] external edit applied: ${path}`);
+    view.dispatch({ changes: edit });
     // The dispatch flips saveState to dirty via the update listener — undo that,
     // this is disk state, not an edit.
     setSaveState("clean");
@@ -357,7 +382,7 @@ export default forwardRef<DocsEditorHandle, {
       window.clearTimeout(timerRef.current);
       timerRef.current = null;
     }
-  }, [diskText, status, saveState]);
+  }, [diskText, status, saveState, path]);
 
   return (
     <div className="docs-editor-col" ref={colRef}>

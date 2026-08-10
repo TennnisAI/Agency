@@ -6,6 +6,7 @@ import FileTree from "./FileTree";
 import FileTabs from "./FileTabs";
 import FileEditor, { FileEditorHandle } from "./FileEditor";
 import AgentSidePanel from "./AgentSidePanel";
+import CheckoutBar from "./CheckoutBar";
 import ConfirmDialog from "./ConfirmDialog";
 import {
   TabState, closeTab, deserializeTabs, emptyTabs, openTab, removeTab, renameTab,
@@ -198,58 +199,60 @@ export default function FilesView({ root, project, agentsOpen }: {
     return <div className="board empty">Open a project to browse its files.</div>;
   }
 
-  const rootLabel = root.kind === "run" ? "Agent worktree" : `${project.name} · main`;
-
   return (
     <div className="files-view">
-      <div className="files-tree" style={{ width: treePane.width }}>
-        <FileTree
-          root={root}
-          rootLabel={rootLabel}
-          selected={tabs.active}
-          query={query}
-          onQuery={setQuery}
-          onSelect={(p) => { if (p) openAtLine(p); }}
-          onOpenHit={openAtLine}
-          onRenamed={onRenamed}
-          onDeleted={onDeleted}
-        />
-      </div>
-      <Resizer size={treePane.width} min={180} max={560} onChange={treePane.setWidth} />
-      <div className="files-editor">
-        {tabs.open.length > 0 && (
-          <FileTabs
-            open={tabs.open}
-            active={tabs.active}
-            dirty={tabs.dirty}
-            onActivate={(p) => openAtLine(p)}
-            onClose={requestClose}
+      {/* Which working tree these files come from — it follows the selected
+          agent, so it changes under you as you move around. */}
+      <CheckoutBar root={root} projectId={projectId} projectName={project.name} />
+      <div className="files-body">
+        <div className="files-tree" style={{ width: treePane.width }}>
+          <FileTree
+            root={root}
+            selected={tabs.active}
+            query={query}
+            onQuery={setQuery}
+            onSelect={(p) => { if (p) openAtLine(p); }}
+            onOpenHit={openAtLine}
+            onRenamed={onRenamed}
+            onDeleted={onDeleted}
           />
-        )}
-        {tabs.open.filter((p) => warm.has(p)).map((p) => (
-          <div
-            key={`${rootKey}:${p}`}
-            className="files-editor-pane"
-            style={{ display: p === tabs.active ? "flex" : "none" }}
-          >
-            <FileEditor
-              ref={(h) => { editorRefs.current.set(p, h); }}
-              root={root}
-              path={p}
-              onDirtyChange={(d) => updateTabs((s) => setDirtyTab(s, p, d))}
+        </div>
+        <Resizer size={treePane.width} min={180} max={560} onChange={treePane.setWidth} />
+        <div className="files-editor">
+          {tabs.open.length > 0 && (
+            <FileTabs
+              open={tabs.open}
+              active={tabs.active}
+              dirty={tabs.dirty}
+              onActivate={(p) => openAtLine(p)}
+              onClose={requestClose}
             />
-          </div>
-        ))}
-        {!tabs.active && <div className="diff-empty">Select a file to view.</div>}
+          )}
+          {tabs.open.filter((p) => warm.has(p)).map((p) => (
+            <div
+              key={`${rootKey}:${p}`}
+              className="files-editor-pane"
+              style={{ display: p === tabs.active ? "flex" : "none" }}
+            >
+              <FileEditor
+                ref={(h) => { editorRefs.current.set(p, h); }}
+                root={root}
+                path={p}
+                onDirtyChange={(d) => updateTabs((s) => setDirtyTab(s, p, d))}
+              />
+            </div>
+          ))}
+          {!tabs.active && <div className="diff-empty">Select a file to view.</div>}
+        </div>
+        {agentsOpen && (
+          <>
+            <Resizer size={agentsPane.width} min={280} max={900} onChange={agentsPane.setWidth} side="right" />
+            <div className="side-pane" style={{ width: agentsPane.width }}>
+              <AgentSidePanel project={project} />
+            </div>
+          </>
+        )}
       </div>
-      {agentsOpen && (
-        <>
-          <Resizer size={agentsPane.width} min={280} max={900} onChange={agentsPane.setWidth} side="right" />
-          <div className="side-pane" style={{ width: agentsPane.width }}>
-            <AgentSidePanel project={project} />
-          </div>
-        </>
-      )}
 
       {confirmClose !== null && (
         <ConfirmDialog

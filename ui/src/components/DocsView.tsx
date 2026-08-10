@@ -12,6 +12,7 @@ import FileTabs from "./FileTabs";
 import DocsEditor, { DocsEditorHandle } from "./DocsEditor";
 import DocsSidePanel from "./DocsSidePanel";
 import AgentSidePanel from "./AgentSidePanel";
+import CheckoutBar from "./CheckoutBar";
 import DocsQuickSwitcher from "./DocsQuickSwitcher";
 import ConfirmDialog from "./ConfirmDialog";
 import { toastError, toastInfo } from "../lib/toast";
@@ -312,98 +313,103 @@ export default function DocsView({ project }: { project: Project }) {
 
   return (
     <div className="files-view docs-view">
-      <div className="files-tree docs-tree" style={{ width: treePane.width }}>
-        <DocsTree
-          root={root}
-          docsDir={docsDir}
-          rootLabel={docsDir === "" ? project.name : undefined}
-          index={index}
-          selected={selected}
-          query={query}
-          onQuery={setQuery}
-          onSelect={(p) => { setQuery(""); if (p) openNote(p); }}
-          onOpenHit={openHit}
-          onRenamed={(from, to) => {
-            updateTabs((s) => renameTab(s, from, to));
-            setWarm((w) => new Set([...w].map((p) => retargetPath(p, from, to))));
-          }}
-          onDeleted={(path) => {
-            updateTabs((s) => removeTab(s, path));
-            dropWarm((p) => p === path || p.startsWith(path + "/"));
-          }}
-          refresh={refresh}
-        />
-      </div>
-      <Resizer size={treePane.width} min={180} max={480} onChange={treePane.setWidth} />
-      <div className="files-editor">
-        {tabs.open.length > 0 && (
-          <FileTabs
-            open={tabs.open}
-            active={tabs.active}
-            labelFor={noteLabel}
-            onActivate={openNote}
-            onClose={closeNote}
+      {/* Notes come from the project checkout whichever agent is selected, so
+          the bar says which checkout and which branch that is. */}
+      <CheckoutBar root={root} projectId={project.id} projectName={project.name} />
+      <div className="files-body">
+        <div className="files-tree docs-tree" style={{ width: treePane.width }}>
+          <DocsTree
+            root={root}
+            docsDir={docsDir}
+            rootLabel={docsDir === "" ? project.name : undefined}
+            index={index}
+            selected={selected}
+            query={query}
+            onQuery={setQuery}
+            onSelect={(p) => { setQuery(""); if (p) openNote(p); }}
+            onOpenHit={openHit}
+            onRenamed={(from, to) => {
+              updateTabs((s) => renameTab(s, from, to));
+              setWarm((w) => new Set([...w].map((p) => retargetPath(p, from, to))));
+            }}
+            onDeleted={(path) => {
+              updateTabs((s) => removeTab(s, path));
+              dropWarm((p) => p === path || p.startsWith(path + "/"));
+            }}
+            refresh={refresh}
           />
-        )}
-        {tabs.open.filter((p) => warm.has(p)).map((p) => (
-          <div
-            key={`${project.id}:${p}`}
-            className="files-editor-pane"
-            style={{ display: p === tabs.active ? "flex" : "none" }}
-          >
-            <DocsEditor
-              ref={(h) => { if (h) editorRefs.current.set(p, h); else editorRefs.current.delete(p); }}
-              root={root}
-              docsDir={docsDir}
-              path={p}
-              diskText={index?.docs.get(p)?.text}
-              index={index}
-              cross={cross}
-              onSaved={() => void refresh()}
-              onNavigate={navigate}
-              onTagClick={(tag) => setQuery(tag.startsWith("#") ? tag : `#${tag}`)}
-              onFilter={(k, v) => setQuery(v ? (/\s/.test(v) ? `${k}:"${v}"` : `${k}:${v}`) : `${k}:`)}
-              sideOpen={sideOpen}
-              onToggleSide={() => setSideOpen((o) => !o)}
-              daily={index && isDailyNotePath(p) ? {
-                prev: adjacentDailyPath(index.docs.keys(), p, "prev"),
-                next: adjacentDailyPath(index.docs.keys(), p, "next"),
-                onOpen: openNote,
-              } : null}
+        </div>
+        <Resizer size={treePane.width} min={180} max={480} onChange={treePane.setWidth} />
+        <div className="files-editor">
+          {tabs.open.length > 0 && (
+            <FileTabs
+              open={tabs.open}
+              active={tabs.active}
+              labelFor={noteLabel}
+              onActivate={openNote}
+              onClose={closeNote}
             />
-          </div>
-        ))}
-        {!tabs.active && <div className="diff-empty">Select or create a note.</div>}
-      </div>
-      {sideOpen && (selected || sideTab === "agents") && (
-        <>
-          <Resizer size={sidePane.width} min={sideMin} max={sideMax} onChange={sidePane.setWidth} side="right" />
-          <div className="side-pane docs-side" style={{ width: sidePane.width }}>
-            <div className="docs-side-tabs">
-              <button className={sideTab === "note" ? "on" : ""} onClick={() => setSideTab("note")}>▥ Note</button>
-              <button className={sideTab === "agents" ? "on" : ""} onClick={() => setSideTab("agents")}>▦ Agents</button>
-            </div>
-            {sideTab === "agents" ? (
-              <AgentSidePanel project={project} />
-            ) : (
-              <DocsSidePanel
+          )}
+          {tabs.open.filter((p) => warm.has(p)).map((p) => (
+            <div
+              key={`${project.id}:${p}`}
+              className="files-editor-pane"
+              style={{ display: p === tabs.active ? "flex" : "none" }}
+            >
+              <DocsEditor
+                ref={(h) => { if (h) editorRefs.current.set(p, h); else editorRefs.current.delete(p); }}
+                root={root}
+                docsDir={docsDir}
+                path={p}
+                diskText={index?.docs.get(p)?.text}
                 index={index}
-                selected={selected}
-                mentions={mentions}
-                onJumpToHeading={(text) => { if (selected) editorRefs.current.get(selected)?.scrollToHeading(text); }}
-                onOpen={openNote}
-                onOpenMention={(m) => {
-                  if (m.fromKind === "issue") {
-                    requestNavigate({ kind: "issue", projectId: m.fromProjectId, issueId: m.fromId });
-                  }
-                }}
+                cross={cross}
+                onSaved={() => void refresh()}
+                onNavigate={navigate}
+                onTagClick={(tag) => setQuery(tag.startsWith("#") ? tag : `#${tag}`)}
                 onFilter={(k, v) => setQuery(v ? (/\s/.test(v) ? `${k}:"${v}"` : `${k}:${v}`) : `${k}:`)}
-                onAddProperty={() => { if (selected) editorRefs.current.get(selected)?.addProperty(); }}
+                sideOpen={sideOpen}
+                onToggleSide={() => setSideOpen((o) => !o)}
+                daily={index && isDailyNotePath(p) ? {
+                  prev: adjacentDailyPath(index.docs.keys(), p, "prev"),
+                  next: adjacentDailyPath(index.docs.keys(), p, "next"),
+                  onOpen: openNote,
+                } : null}
               />
-            )}
-          </div>
-        </>
-      )}
+            </div>
+          ))}
+          {!tabs.active && <div className="diff-empty">Select or create a note.</div>}
+        </div>
+        {sideOpen && (selected || sideTab === "agents") && (
+          <>
+            <Resizer size={sidePane.width} min={sideMin} max={sideMax} onChange={sidePane.setWidth} side="right" />
+            <div className="side-pane docs-side" style={{ width: sidePane.width }}>
+              <div className="docs-side-tabs">
+                <button className={sideTab === "note" ? "on" : ""} onClick={() => setSideTab("note")}>▥ Note</button>
+                <button className={sideTab === "agents" ? "on" : ""} onClick={() => setSideTab("agents")}>▦ Agents</button>
+              </div>
+              {sideTab === "agents" ? (
+                <AgentSidePanel project={project} />
+              ) : (
+                <DocsSidePanel
+                  index={index}
+                  selected={selected}
+                  mentions={mentions}
+                  onJumpToHeading={(text) => { if (selected) editorRefs.current.get(selected)?.scrollToHeading(text); }}
+                  onOpen={openNote}
+                  onOpenMention={(m) => {
+                    if (m.fromKind === "issue") {
+                      requestNavigate({ kind: "issue", projectId: m.fromProjectId, issueId: m.fromId });
+                    }
+                  }}
+                  onFilter={(k, v) => setQuery(v ? (/\s/.test(v) ? `${k}:"${v}"` : `${k}:${v}`) : `${k}:`)}
+                  onAddProperty={() => { if (selected) editorRefs.current.get(selected)?.addProperty(); }}
+                />
+              )}
+            </div>
+          </>
+        )}
+      </div>
 
       {switcher && (
         <DocsQuickSwitcher

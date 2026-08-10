@@ -30,10 +30,9 @@ function Twistie({ open }: { open: boolean }) {
 }
 
 export default function FileTree({
-  root, rootLabel, selected, query, onQuery, onSelect, onOpenHit, onRenamed, onDeleted,
+  root, selected, query, onQuery, onSelect, onOpenHit, onRenamed, onDeleted,
 }: {
   root: FileRoot;
-  rootLabel: string;
   selected: string | null;
   /** Find-in-files query; non-empty replaces the tree with grouped hits. */
   query: string;
@@ -281,7 +280,9 @@ export default function FileTree({
         />
       </div>
       <div className="files-root-label">
-        <span className="files-root-name" title={rootLabel}>{rootLabel}</span>
+        {/* The tree's own root. Which checkout that is belongs to the bar above
+            (it has the room to name the branch too), so this row stays a path. */}
+        <span className="files-root-name" title="Repository root">/</span>
         <span className="spacer" style={{ flex: 1 }} />
         <button className="files-tool-btn" title="New File" onClick={() => setDialog({ kind: "newFile", dir: "" })}>
           <NewFileGlyph />

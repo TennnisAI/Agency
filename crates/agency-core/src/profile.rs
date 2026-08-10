@@ -17,9 +17,6 @@ pub struct AgentProfile {
 impl AgentProfile {
     /// Render `args`, replacing the literal token `{{prompt}}` with `prompt`.
     pub fn render_args(&self, prompt: &str) -> Vec<String> {
-        self.args
-            .iter()
-            .map(|a| a.replace("{{prompt}}", prompt))
-            .collect()
+        self.args.iter().map(|a| a.replace("{{prompt}}", prompt)).collect()
     }
 }

@@ -26,8 +26,5 @@ fn render_args_leaves_other_args_untouched() {
         loop_args: None,
     };
 
-    assert_eq!(
-        profile.render_args("anything"),
-        vec!["--flag".to_string(), "value".to_string()]
-    );
+    assert_eq!(profile.render_args("anything"), vec!["--flag".to_string(), "value".to_string()]);
 }

@@ -54,17 +54,9 @@ pub struct Emulator {
 
 impl Emulator {
     pub fn new(cols: u16, rows: u16) -> Emulator {
-        let dims = Dims {
-            cols: cols as usize,
-            screen: rows as usize,
-        };
+        let dims = Dims { cols: cols as usize, screen: rows as usize };
         let term = Term::new(Config::default(), &dims, VoidListener);
-        Emulator {
-            term,
-            parser: Processor::<StdSyncHandler>::new(),
-            cols,
-            rows,
-        }
+        Emulator { term, parser: Processor::<StdSyncHandler>::new(), cols, rows }
     }
 
     /// Feed PTY output, returning the carriage on every line break.
@@ -110,10 +102,7 @@ impl Emulator {
     }
 
     pub fn resize(&mut self, cols: u16, rows: u16) {
-        let dims = Dims {
-            cols: cols as usize,
-            screen: rows as usize,
-        };
+        let dims = Dims { cols: cols as usize, screen: rows as usize };
         self.term.resize(dims);
         self.cols = cols;
         self.rows = rows;
@@ -200,10 +189,7 @@ impl Emulator {
         // line, inserting a blank line between every row (the "double-spaced on
         // reattach" bug) and burning scrollback 2-3x faster.
         let content_end = |li: i32| -> usize {
-            (0..self.cols as usize)
-                .rev()
-                .find(|&col| !is_padding(li, col))
-                .map_or(0, |col| col + 1)
+            (0..self.cols as usize).rev().find(|&col| !is_padding(li, col)).map_or(0, |col| col + 1)
         };
         let mut start = 0i32;
         for li in (-history)..0 {
@@ -314,13 +300,7 @@ impl Emulator {
             data.extend_from_slice(b"\x1b[?25l");
         }
 
-        Snapshot {
-            cols: self.cols,
-            rows: self.rows,
-            cx,
-            cy,
-            data,
-        }
+        Snapshot { cols: self.cols, rows: self.rows, cx, cy, data }
     }
 }
 
@@ -502,7 +482,10 @@ mod tests {
         e.feed(b"one\r\ntwo");
         let snap = e.snapshot();
         let newlines = snap.data.iter().filter(|&&b| b == b'\n').count();
-        assert!(newlines <= 3, "snapshot emitted {newlines} rows for a 2-line screen (trailing blanks)");
+        assert!(
+            newlines <= 3,
+            "snapshot emitted {newlines} rows for a 2-line screen (trailing blanks)"
+        );
         let mut b = Emulator::new(snap.cols, snap.rows);
         b.feed(&snap.data);
         let cap = b.capture(20);

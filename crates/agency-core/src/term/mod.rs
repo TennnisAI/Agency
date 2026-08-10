@@ -16,16 +16,26 @@ mod smoke {
     use alacritty_terminal::term::{Config, Term};
     // API correction vs. brief: Processor<T: Timeout> requires explicit type in vte 0.15.
     // Use Processor::<StdSyncHandler>::new() — StdSyncHandler is the default Timeout impl.
-    use alacritty_terminal::vte::ansi::{Processor, StdSyncHandler};
     use alacritty_terminal::grid::Dimensions;
     use alacritty_terminal::index::{Column, Line};
+    use alacritty_terminal::vte::ansi::{Processor, StdSyncHandler};
 
     /// Minimal `Dimensions` so we can construct a `Term` headlessly.
-    struct Dims { cols: usize, screen: usize, total: usize }
+    struct Dims {
+        cols: usize,
+        screen: usize,
+        total: usize,
+    }
     impl Dimensions for Dims {
-        fn total_lines(&self) -> usize { self.total }
-        fn screen_lines(&self) -> usize { self.screen }
-        fn columns(&self) -> usize { self.cols }
+        fn total_lines(&self) -> usize {
+            self.total
+        }
+        fn screen_lines(&self) -> usize {
+            self.screen
+        }
+        fn columns(&self) -> usize {
+            self.cols
+        }
     }
 
     #[test]

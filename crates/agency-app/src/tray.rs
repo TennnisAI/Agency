@@ -90,9 +90,8 @@ pub fn refresh(app: &AppHandle, runs: &[TrayRun]) -> tauri::Result<()> {
             running
         )
     };
-    menu = menu
-        .item(&MenuItemBuilder::with_id("hdr", header).enabled(false).build(app)?)
-        .separator();
+    menu =
+        menu.item(&MenuItemBuilder::with_id("hdr", header).enabled(false).build(app)?).separator();
 
     // Runs arrive grouped by project (tray_runs iterates projects in order);
     // emit a clickable project row before each group.

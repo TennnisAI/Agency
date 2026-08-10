@@ -1,4 +1,7 @@
-use agency_core::setup::{repo_readiness, RepoReadiness, init_repo, initial_commit, initial_commit_with_progress, write_default_gitignore, repo_name_from_url, clone_repo};
+use agency_core::setup::{
+    clone_repo, init_repo, initial_commit, initial_commit_with_progress, repo_name_from_url,
+    repo_readiness, write_default_gitignore, RepoReadiness,
+};
 use std::path::Path;
 use std::process::Command;
 

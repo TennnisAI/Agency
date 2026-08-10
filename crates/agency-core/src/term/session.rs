@@ -1,7 +1,9 @@
 //! A single terminal session: a PTY child (with an optional early-exit
 //! fallback), an emulator, and N subscribers.
 use crate::term::emulator::Emulator;
-use crate::term::protocol::{encode_json, encode_output, encode_snapshot, ServerMsg, SessionStatus};
+use crate::term::protocol::{
+    encode_json, encode_output, encode_snapshot, ServerMsg, SessionStatus,
+};
 use crate::term::pty::{spawn_pty, ProcStatus, PtyProcess};
 use anyhow::Result;
 use std::collections::HashMap;
@@ -83,7 +85,8 @@ fn spawn_into(
         }
     };
 
-    let pty = spawn_pty(&command, &args, &ctx.cwd, &ctx.env, ctx.cols, ctx.rows, on_output, on_exit)?;
+    let pty =
+        spawn_pty(&command, &args, &ctx.cwd, &ctx.env, ctx.cols, ctx.rows, on_output, on_exit)?;
     *ctx.pty.lock().unwrap() = Some(pty);
     Ok(())
 }
@@ -149,7 +152,8 @@ impl Session {
     pub fn subscribe(&self, client_id: u64, out: Sender<Vec<u8>>) {
         let emu = self.ctx.emu.lock().unwrap();
         let snap = emu.snapshot();
-        let frame = encode_snapshot(&self.ctx.id, snap.cols, snap.rows, snap.cx, snap.cy, &snap.data);
+        let frame =
+            encode_snapshot(&self.ctx.id, snap.cols, snap.rows, snap.cx, snap.cy, &snap.data);
         let mut subs = self.ctx.subs.lock().unwrap();
         let _ = out.send(frame);
         subs.insert(client_id, out);
@@ -260,10 +264,7 @@ mod tests {
             "mouse1".into(),
             std::env::temp_dir().as_path(),
             "/bin/sh",
-            &[
-                "-c".into(),
-                "printf '\\033[?1049h\\033[?1002h\\033[?1006hPAINTED'; sleep 2".into(),
-            ],
+            &["-c".into(), "printf '\\033[?1049h\\033[?1002h\\033[?1006hPAINTED'; sleep 2".into()],
             &[],
             80,
             24,
@@ -301,9 +302,10 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         s.subscribe(1, tx);
         s.input(b"ping\n");
-        drain_until(&rx, |f| {
-            matches!(f, ServerFrame::Output { bytes, .. } if String::from_utf8_lossy(bytes).contains("ping"))
-        });
+        drain_until(
+            &rx,
+            |f| matches!(f, ServerFrame::Output { bytes, .. } if String::from_utf8_lossy(bytes).contains("ping")),
+        );
         assert!(s.capture(5).contains("ping"));
     }
 
@@ -315,19 +317,23 @@ mod tests {
             "/bin/sh",
             &["-c".into(), "printf NOPE; exit 1".into()],
             &[],
-            80, 24,
+            80,
+            24,
             Some(Fallback {
                 command: "/bin/sh".into(),
                 args: vec!["-c".into(), "printf FRESH; sleep 3".into()],
                 grace: Duration::from_secs(2),
             }),
-        ).unwrap();
+        )
+        .unwrap();
 
         let deadline = std::time::Instant::now() + Duration::from_secs(3);
         let mut cap = String::new();
         while std::time::Instant::now() < deadline {
             cap = s.capture(10);
-            if cap.contains("FRESH") { break; }
+            if cap.contains("FRESH") {
+                break;
+            }
             std::thread::sleep(Duration::from_millis(50));
         }
         assert!(cap.contains("NOPE"), "primary output missing: {cap:?}");
@@ -343,13 +349,15 @@ mod tests {
             "/bin/sh",
             &["-c".into(), "printf ALIVE; sleep 3".into()],
             &[],
-            80, 24,
+            80,
+            24,
             Some(Fallback {
                 command: "/bin/sh".into(),
                 args: vec!["-c".into(), "printf SHOULD_NOT_RUN; sleep 3".into()],
                 grace: Duration::from_secs(1),
             }),
-        ).unwrap();
+        )
+        .unwrap();
         std::thread::sleep(Duration::from_millis(800));
         let cap = s.capture(10);
         assert!(cap.contains("ALIVE"));
@@ -367,13 +375,15 @@ mod tests {
             // stays alive long enough for subscribe to register, then exits past grace
             &["-c".into(), "printf BYE; sleep 1; exit 0".into()],
             &[],
-            80, 24,
+            80,
+            24,
             Some(Fallback {
                 command: "/bin/sh".into(),
                 args: vec!["-c".into(), "printf SHOULD_NOT_RUN".into()],
                 grace: Duration::from_millis(300),
             }),
-        ).unwrap();
+        )
+        .unwrap();
         s.subscribe(1, tx);
         let got = drain_until(&rx, |f| matches!(f, ServerFrame::Msg(ServerMsg::Exited { .. })));
         assert!(matches!(got, ServerFrame::Msg(ServerMsg::Exited { .. })));

@@ -40,19 +40,25 @@ fn close_hides_project_readd_revives_delete_removes() {
 
     // close_project hides the project from the list but keeps its record
     state.close_project(&project.id).unwrap();
-    assert!(!state.list_projects().unwrap().iter().any(|p| p.id == project.id),
-        "close_project must hide the project");
+    assert!(
+        !state.list_projects().unwrap().iter().any(|p| p.id == project.id),
+        "close_project must hide the project"
+    );
 
     // re-adding the same path revives the closed project instead of duplicating it
     let revived = state.add_project("repo", &repo).unwrap();
     assert_eq!(revived.id, project.id, "re-add must revive the closed project");
-    assert!(state.list_projects().unwrap().iter().any(|p| p.id == project.id),
-        "revived project must be listed again");
+    assert!(
+        state.list_projects().unwrap().iter().any(|p| p.id == project.id),
+        "revived project must be listed again"
+    );
 
     // delete_project must remove the project record
     state.delete_project(&project.id).unwrap();
-    assert!(!state.list_projects().unwrap().iter().any(|p| p.id == project.id),
-        "delete_project must remove the project");
+    assert!(
+        !state.list_projects().unwrap().iter().any(|p| p.id == project.id),
+        "delete_project must remove the project"
+    );
 }
 
 /// AGE-50: deleting a project is the agent teardown once per agent in it, so it
@@ -74,14 +80,16 @@ fn tearing_a_project_down_reports_each_step() {
     git(&["commit", "-q", "--allow-empty", "-m", "init"]);
 
     let state = common::state(&dir);
-    state.register_profile(AgentProfile {
-        name: "noop".into(),
-        command: "sh".into(),
-        args: vec!["-c".into(), "sleep 1".into()],
-        env: vec![],
-        resume_args: None,
-        loop_args: None,
-    }).unwrap();
+    state
+        .register_profile(AgentProfile {
+            name: "noop".into(),
+            command: "sh".into(),
+            args: vec!["-c".into(), "sleep 1".into()],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
     let project = state.add_project("repo", &repo).unwrap();
     for prompt in ["a", "b"] {
         state
@@ -104,9 +112,7 @@ fn tearing_a_project_down_reports_each_step() {
     // Deleting adds the slow one — a worktree to unlink per agent.
     state.add_project("repo", &repo).unwrap(); // revive the closed project
     let mut steps = Vec::new();
-    state
-        .delete_project_with_progress(&project.id, &mut |p| steps.push(p.phase))
-        .unwrap();
+    state.delete_project_with_progress(&project.id, &mut |p| steps.push(p.phase)).unwrap();
     assert_eq!(
         steps,
         vec![
@@ -117,6 +123,8 @@ fn tearing_a_project_down_reports_each_step() {
             "Cleaning up",
         ],
     );
-    assert!(!repo.join(".agency/worktrees").read_dir().map(|mut d| d.next().is_some()).unwrap_or(false),
-        "delete_project must leave no worktrees behind");
+    assert!(
+        !repo.join(".agency/worktrees").read_dir().map(|mut d| d.next().is_some()).unwrap_or(false),
+        "delete_project must leave no worktrees behind"
+    );
 }

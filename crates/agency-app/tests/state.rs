@@ -47,7 +47,6 @@ fn add_project_rejects_non_git_folder() {
     assert_eq!(state.list_projects().unwrap().len(), 0);
 }
 
-
 use agency_core::profile::AgentProfile;
 use agency_core::term::SessionStatus;
 use std::process::Command;
@@ -82,14 +81,16 @@ fn create_run_persists_starts_session_and_lists() {
 
     let state = common::state(&dir);
     // a profile that stays alive so the session is Running
-    state.register_profile(AgentProfile {
-        name: "stay".into(),
-        command: "sh".into(),
-        args: vec!["-c".into(), "echo HI; sleep 3".into()],
-        env: vec![],
-        resume_args: None,
-        loop_args: None,
-    }).unwrap();
+    state
+        .register_profile(AgentProfile {
+            name: "stay".into(),
+            command: "sh".into(),
+            args: vec!["-c".into(), "echo HI; sleep 3".into()],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
     let project = state.add_project("demo", &repo).unwrap();
 
     let info = state.create_run(&project.id, "do it", "stay", "HEAD", None).unwrap();
@@ -107,7 +108,13 @@ fn create_run_persists_starts_session_and_lists() {
     // poll status until Running observed (session just started)
     let mut ok = false;
     for _ in 0..50 {
-        if matches!(state.run_status(&info.id).unwrap(), SessionStatus::Running | SessionStatus::Exited{..}) { ok = true; break; }
+        if matches!(
+            state.run_status(&info.id).unwrap(),
+            SessionStatus::Running | SessionStatus::Exited { .. }
+        ) {
+            ok = true;
+            break;
+        }
         std::thread::sleep(std::time::Duration::from_millis(40));
     }
     assert!(ok);
@@ -127,14 +134,16 @@ fn worktree_path_resolves_for_active_run() {
     init_repo(&repo);
 
     let state = common::state(&dir);
-    state.register_profile(AgentProfile {
-        name: "noop".into(),
-        command: "sh".into(),
-        args: vec!["-c".into(), "sleep 1".into()],
-        env: vec![],
-        resume_args: None,
-        loop_args: None,
-    }).unwrap();
+    state
+        .register_profile(AgentProfile {
+            name: "noop".into(),
+            command: "sh".into(),
+            args: vec!["-c".into(), "sleep 1".into()],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
     let project = state.add_project("demo", &repo).unwrap();
     let info = state.create_run(&project.id, "p", "noop", "HEAD", None).unwrap();
 
@@ -159,14 +168,16 @@ fn worktree_path_resolves_to_repo_root_for_terminal() {
     let project = state.add_project("demo", &repo).unwrap();
 
     // Agent run: still resolves under .agency/worktrees/<id>.
-    state.register_profile(AgentProfile {
-        name: "noop".into(),
-        command: "sh".into(),
-        args: vec!["-c".into(), "sleep 1".into()],
-        env: vec![],
-        resume_args: None,
-        loop_args: None,
-    }).unwrap();
+    state
+        .register_profile(AgentProfile {
+            name: "noop".into(),
+            command: "sh".into(),
+            args: vec!["-c".into(), "sleep 1".into()],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
     let agent = state.create_run(&project.id, "p", "noop", "HEAD", None).unwrap();
     let agent_wt = state.worktree_path(&agent.id).unwrap();
     assert!(agent_wt.ends_with(format!(".agency/worktrees/{}", agent.id)));
@@ -235,20 +246,27 @@ fn create_run_injects_provider_env() {
     init_repo(&repo);
 
     let state = common::state(&dir);
-    state.save_settings(&agency_app_lib::ProviderSettings {
-        lm_studio_base_url: "http://localhost:1234/v1".into(),
-        default_agent: None,
-        default_worktree: true,
-    }).unwrap();
+    state
+        .save_settings(&agency_app_lib::ProviderSettings {
+            lm_studio_base_url: "http://localhost:1234/v1".into(),
+            default_agent: None,
+            default_worktree: true,
+        })
+        .unwrap();
     // Profile echoes env vars and then sleeps so we can capture output.
-    state.register_profile(AgentProfile {
-        name: "envcheck".into(),
-        command: "sh".into(),
-        args: vec!["-c".into(), "echo BASE=$OPENAI_BASE_URL; echo KEYSET=${OPENAI_API_KEY:+yes}; sleep 2".into()],
-        env: vec![],
-        resume_args: None,
-        loop_args: None,
-    }).unwrap();
+    state
+        .register_profile(AgentProfile {
+            name: "envcheck".into(),
+            command: "sh".into(),
+            args: vec![
+                "-c".into(),
+                "echo BASE=$OPENAI_BASE_URL; echo KEYSET=${OPENAI_API_KEY:+yes}; sleep 2".into(),
+            ],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
     let project = state.add_project("demo", &repo).unwrap();
 
     let info = state.create_run(&project.id, "p", "envcheck", "HEAD", None).unwrap();
@@ -259,7 +277,9 @@ fn create_run_injects_provider_env() {
     while start.elapsed() < std::time::Duration::from_secs(5) {
         if let Ok(s) = state.run_preview(&info.id, 20) {
             out = s;
-            if out.contains("BASE=http://localhost:1234/v1") { break; }
+            if out.contains("BASE=http://localhost:1234/v1") {
+                break;
+            }
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
@@ -283,14 +303,16 @@ fn send_merge_conflict_requires_a_merge_in_progress() {
     init_repo(&repo);
 
     let state = common::state(&dir);
-    state.register_profile(AgentProfile {
-        name: "noop".into(),
-        command: "sh".into(),
-        args: vec!["-c".into(), "sleep 1".into()],
-        env: vec![],
-        resume_args: None,
-        loop_args: None,
-    }).unwrap();
+    state
+        .register_profile(AgentProfile {
+            name: "noop".into(),
+            command: "sh".into(),
+            args: vec!["-c".into(), "sleep 1".into()],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
     let project = state.add_project("demo", &repo).unwrap();
     let info = state.create_run(&project.id, "p", "noop", "HEAD", None).unwrap();
 
@@ -319,7 +341,8 @@ fn save_settings_rejects_bad_provider_url() {
     };
     assert!(state.save_settings(&creds).is_err());
     // localhost, IPv6 loopback http, and https are allowed
-    for ok in ["http://localhost:1234/v1", "http://[::1]:1234/v1", "https://api.example.com/v1", ""] {
+    for ok in ["http://localhost:1234/v1", "http://[::1]:1234/v1", "https://api.example.com/v1", ""]
+    {
         let s = agency_app_lib::ProviderSettings {
             lm_studio_base_url: ok.into(),
             default_agent: None,
@@ -337,27 +360,33 @@ fn attach_streams_and_input_reaches_agent() {
     init_repo(&repo);
 
     let state = common::state(&dir);
-    state.register_profile(AgentProfile {
-        name: "echoer".into(),
-        command: "sh".into(),
-        args: vec!["-c".into(), "echo READY; read x; echo GOT:$x; sleep 3".into()],
-        env: vec![],
-        resume_args: None,
-        loop_args: None,
-    }).unwrap();
+    state
+        .register_profile(AgentProfile {
+            name: "echoer".into(),
+            command: "sh".into(),
+            args: vec!["-c".into(), "echo READY; read x; echo GOT:$x; sleep 3".into()],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
     let project = state.add_project("demo", &repo).unwrap();
     let info = state.create_run(&project.id, "p", "echoer", "HEAD", None).unwrap();
 
     let buf = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
     let b = buf.clone();
-    state.attach_run(&info.id, 220, 50, move |bytes| {
-        b.lock().unwrap().push_str(&String::from_utf8_lossy(&bytes));
-    }).unwrap();
+    state
+        .attach_run(&info.id, 220, 50, move |bytes| {
+            b.lock().unwrap().push_str(&String::from_utf8_lossy(&bytes));
+        })
+        .unwrap();
 
     let wait = |needle: &str| {
         let start = std::time::Instant::now();
         while start.elapsed() < std::time::Duration::from_secs(5) {
-            if buf.lock().unwrap().contains(needle) { return true; }
+            if buf.lock().unwrap().contains(needle) {
+                return true;
+            }
             std::thread::sleep(std::time::Duration::from_millis(30));
         }
         false
@@ -432,22 +461,28 @@ fn merge_task_clean_merges_branch_into_base() {
     init_repo(&repo);
 
     let state = common::state(&dir);
-    state.register_profile(AgentProfile {
-        name: "noop".into(),
-        command: "sh".into(),
-        args: vec!["-c".into(), "sleep 1".into()],
-        env: vec![],
-        resume_args: None,
-        loop_args: None,
-    }).unwrap();
+    state
+        .register_profile(AgentProfile {
+            name: "noop".into(),
+            command: "sh".into(),
+            args: vec!["-c".into(), "sleep 1".into()],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
     let project = state.add_project("demo", &repo).unwrap();
 
     // create_run → worktree on agent/<id>; make a non-conflicting commit in it.
     let info = state.create_run(&project.id, "p", "noop", "HEAD", None).unwrap();
     let wt = state.worktree_path(&info.id).unwrap();
     std::fs::write(wt.join("feature.txt"), "x\n").unwrap();
-    std::process::Command::new("git").args(["add","-A"]).current_dir(&wt).status().unwrap();
-    std::process::Command::new("git").args(["commit","-qm","feat"]).current_dir(&wt).status().unwrap();
+    std::process::Command::new("git").args(["add", "-A"]).current_dir(&wt).status().unwrap();
+    std::process::Command::new("git")
+        .args(["commit", "-qm", "feat"])
+        .current_dir(&wt)
+        .status()
+        .unwrap();
 
     let outcome = state.merge_task(&info.id).unwrap();
     assert!(matches!(outcome, MergeOutcome::Clean { .. }));
@@ -466,14 +501,16 @@ fn ensure_run_active_respawns_a_stopped_agent_run() {
     init_repo(&repo); // repo on `main` with a commit
     let state = common::state(&dir);
     // A fake agent whose command just sleeps, so a respawn is observable as Running.
-    state.register_profile(AgentProfile {
-        name: "sleeper".into(),
-        command: "/bin/sh".into(),
-        args: vec!["-c".into(), "sleep 5".into()],
-        env: vec![],
-        resume_args: None,
-        loop_args: None,
-    }).unwrap();
+    state
+        .register_profile(AgentProfile {
+            name: "sleeper".into(),
+            command: "/bin/sh".into(),
+            args: vec!["-c".into(), "sleep 5".into()],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
     let project = state.add_project("demo", &repo).unwrap();
     let info = state.create_run(&project.id, "p", "sleeper", "HEAD", None).unwrap();
 
@@ -481,7 +518,10 @@ fn ensure_run_active_respawns_a_stopped_agent_run() {
     state.stop_run(&info.id).unwrap();
     let mut gone = false;
     for _ in 0..75 {
-        if matches!(state.run_status(&info.id).unwrap(), SessionStatus::Gone) { gone = true; break; }
+        if matches!(state.run_status(&info.id).unwrap(), SessionStatus::Gone) {
+            gone = true;
+            break;
+        }
         std::thread::sleep(std::time::Duration::from_millis(40));
     }
     assert!(gone, "session did not become Gone after stop_run");
@@ -490,7 +530,10 @@ fn ensure_run_active_respawns_a_stopped_agent_run() {
     state.ensure_run_active(&info.id).unwrap();
     let mut back = false;
     for _ in 0..75 {
-        if !matches!(state.run_status(&info.id).unwrap(), SessionStatus::Gone) { back = true; break; }
+        if !matches!(state.run_status(&info.id).unwrap(), SessionStatus::Gone) {
+            back = true;
+            break;
+        }
         std::thread::sleep(std::time::Duration::from_millis(40));
     }
     assert!(back, "ensure_run_active did not respawn the session");
@@ -521,21 +564,26 @@ fn ensure_run_active_falls_back_to_fresh_when_resume_fails() {
     init_repo(&repo);
     let state = common::state(&dir);
     // Fake agent: resume fails fast; fresh (render_args of `args`) prints FRESH and stays.
-    state.register_profile(AgentProfile {
-        name: "flaky".into(),
-        command: "/bin/sh".into(),
-        args: vec!["-c".into(), "printf FRESH; sleep 5".into()],
-        env: vec![],
-        resume_args: Some(vec!["-c".into(), "printf NO-CONV; exit 1".into()]),
-        loop_args: None,
-    }).unwrap();
+    state
+        .register_profile(AgentProfile {
+            name: "flaky".into(),
+            command: "/bin/sh".into(),
+            args: vec!["-c".into(), "printf FRESH; sleep 5".into()],
+            env: vec![],
+            resume_args: Some(vec!["-c".into(), "printf NO-CONV; exit 1".into()]),
+            loop_args: None,
+        })
+        .unwrap();
     let project = state.add_project("demo", &repo).unwrap();
     let info = state.create_run(&project.id, "p", "flaky", "HEAD", None).unwrap();
 
     state.stop_run(&info.id).unwrap();
     let mut gone = false;
     for _ in 0..75 {
-        if matches!(state.run_status(&info.id).unwrap(), SessionStatus::Gone) { gone = true; break; }
+        if matches!(state.run_status(&info.id).unwrap(), SessionStatus::Gone) {
+            gone = true;
+            break;
+        }
         std::thread::sleep(std::time::Duration::from_millis(40));
     }
     assert!(gone, "session did not become Gone after stop_run");
@@ -545,8 +593,11 @@ fn ensure_run_active_falls_back_to_fresh_when_resume_fails() {
     let mut fresh = false;
     for _ in 0..150 {
         let cap = state.run_preview(&info.id, 10).unwrap_or_default();
-        if cap.contains("FRESH") && matches!(state.run_status(&info.id).unwrap(), SessionStatus::Running) {
-            fresh = true; break;
+        if cap.contains("FRESH")
+            && matches!(state.run_status(&info.id).unwrap(), SessionStatus::Running)
+        {
+            fresh = true;
+            break;
         }
         std::thread::sleep(std::time::Duration::from_millis(40));
     }
@@ -563,14 +614,16 @@ fn extra_session_lifecycle_shares_worktree_and_cascades() {
 
     let state = common::state(&dir);
     // Prints its cwd so we can prove the extra tab runs in the run's worktree.
-    state.register_profile(AgentProfile {
-        name: "pwds".into(),
-        command: "/bin/sh".into(),
-        args: vec!["-c".into(), "pwd; sleep 5".into()],
-        env: vec![],
-        resume_args: None,
-        loop_args: None,
-    }).unwrap();
+    state
+        .register_profile(AgentProfile {
+            name: "pwds".into(),
+            command: "/bin/sh".into(),
+            args: vec!["-c".into(), "pwd; sleep 5".into()],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
     let project = state.add_project("demo", &repo).unwrap();
     let run = state.create_run(&project.id, "p", "pwds", "HEAD", None).unwrap();
     let wt = state.worktree_path(&run.id).unwrap();
@@ -584,7 +637,10 @@ fn extra_session_lifecycle_shares_worktree_and_cascades() {
     let mut cwd_ok = false;
     for _ in 0..150 {
         let cap = state.run_preview(&s2.id, 10).unwrap_or_default();
-        if cap.contains(&wt.to_string_lossy().to_string()) { cwd_ok = true; break; }
+        if cap.contains(&wt.to_string_lossy().to_string()) {
+            cwd_ok = true;
+            break;
+        }
         std::thread::sleep(std::time::Duration::from_millis(40));
     }
     assert!(cwd_ok, "extra session did not report the run's worktree as cwd");
@@ -601,7 +657,10 @@ fn extra_session_lifecycle_shares_worktree_and_cascades() {
     state.close_run_session(&s2.id).unwrap();
     let mut gone = false;
     for _ in 0..75 {
-        if matches!(state.run_status(&s2.id).unwrap(), SessionStatus::Gone) { gone = true; break; }
+        if matches!(state.run_status(&s2.id).unwrap(), SessionStatus::Gone) {
+            gone = true;
+            break;
+        }
         std::thread::sleep(std::time::Duration::from_millis(40));
     }
     assert!(gone, "closed tab session still present");
@@ -612,7 +671,10 @@ fn extra_session_lifecycle_shares_worktree_and_cascades() {
     state.discard_run(&run.id).unwrap();
     let mut swept = false;
     for _ in 0..75 {
-        if matches!(state.run_status(&s3.id).unwrap(), SessionStatus::Gone) { swept = true; break; }
+        if matches!(state.run_status(&s3.id).unwrap(), SessionStatus::Gone) {
+            swept = true;
+            break;
+        }
         std::thread::sleep(std::time::Duration::from_millis(40));
     }
     assert!(swept, "discard did not kill the extra session");
@@ -629,14 +691,16 @@ fn shell_tab_needs_no_profile_and_runs_in_the_worktree() {
     std::fs::create_dir_all(&repo).unwrap();
     init_repo(&repo);
     let state = common::state(&dir);
-    state.register_profile(AgentProfile {
-        name: "pwds".into(),
-        command: "/bin/sh".into(),
-        args: vec!["-c".into(), "pwd; sleep 5".into()],
-        env: vec![],
-        resume_args: None,
-        loop_args: None,
-    }).unwrap();
+    state
+        .register_profile(AgentProfile {
+            name: "pwds".into(),
+            command: "/bin/sh".into(),
+            args: vec!["-c".into(), "pwd; sleep 5".into()],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
     let project = state.add_project("demo", &repo).unwrap();
     let run = state.create_run(&project.id, "p", "pwds", "HEAD", None).unwrap();
     let wt = state.worktree_path(&run.id).unwrap();
@@ -650,7 +714,10 @@ fn shell_tab_needs_no_profile_and_runs_in_the_worktree() {
     let mut cwd_ok = false;
     for _ in 0..150 {
         let cap = state.run_preview(&tab.id, 20).unwrap_or_default();
-        if cap.contains(&wt.to_string_lossy().to_string()) { cwd_ok = true; break; }
+        if cap.contains(&wt.to_string_lossy().to_string()) {
+            cwd_ok = true;
+            break;
+        }
         std::thread::sleep(std::time::Duration::from_millis(40));
     }
     assert!(cwd_ok, "shell tab did not report the run's worktree as cwd");
@@ -667,14 +734,16 @@ fn ensure_run_active_revives_a_dead_extra_session() {
     std::fs::create_dir_all(&repo).unwrap();
     init_repo(&repo);
     let state = common::state(&dir);
-    state.register_profile(AgentProfile {
-        name: "pwds".into(),
-        command: "/bin/sh".into(),
-        args: vec!["-c".into(), "pwd; sleep 5".into()],
-        env: vec![],
-        resume_args: None,
-        loop_args: None,
-    }).unwrap();
+    state
+        .register_profile(AgentProfile {
+            name: "pwds".into(),
+            command: "/bin/sh".into(),
+            args: vec!["-c".into(), "pwd; sleep 5".into()],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
     let project = state.add_project("demo", &repo).unwrap();
     let run = state.create_run(&project.id, "p", "pwds", "HEAD", None).unwrap();
     let wt = state.worktree_path(&run.id).unwrap();
@@ -683,7 +752,10 @@ fn ensure_run_active_revives_a_dead_extra_session() {
     state.stop_run(&tab.id).unwrap();
     let mut gone = false;
     for _ in 0..75 {
-        if matches!(state.run_status(&tab.id).unwrap(), SessionStatus::Gone) { gone = true; break; }
+        if matches!(state.run_status(&tab.id).unwrap(), SessionStatus::Gone) {
+            gone = true;
+            break;
+        }
         std::thread::sleep(std::time::Duration::from_millis(40));
     }
     assert!(gone, "tab session did not become Gone after stop");
@@ -728,16 +800,11 @@ fn send_review_comments_errors_when_session_not_running() {
     let fake_run_id = "00000000-0000-0000-0000-000000000000";
 
     // Insert an unsent review comment for the fake run.
-    state
-        .add_review_comment(fake_run_id, "src/main.rs", 1, 3, "looks good")
-        .unwrap();
+    state.add_review_comment(fake_run_id, "src/main.rs", 1, 3, "looks good").unwrap();
 
     // send_review_comments must fail because the session is not running.
     let err = state.send_review_comments(fake_run_id).unwrap_err().to_string();
-    assert!(
-        err.contains("not running"),
-        "expected 'not running' error, got: {err}"
-    );
+    assert!(err.contains("not running"), "expected 'not running' error, got: {err}");
 
     // The comment must NOT have been marked sent.
     let unsent = state.list_review_comments(fake_run_id).unwrap();
@@ -757,14 +824,16 @@ fn create_run_without_worktree_uses_the_project_checkout() {
     init_repo(&repo); // repo on `main` with a commit
 
     let state = common::state(&dir);
-    state.register_profile(AgentProfile {
-        name: "pwds".into(),
-        command: "/bin/sh".into(),
-        args: vec!["-c".into(), "pwd; sleep 5".into()],
-        env: vec![],
-        resume_args: None,
-        loop_args: None,
-    }).unwrap();
+    state
+        .register_profile(AgentProfile {
+            name: "pwds".into(),
+            command: "/bin/sh".into(),
+            args: vec!["-c".into(), "pwd; sleep 5".into()],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
     let project = state.add_project("demo", &repo).unwrap();
 
     let info = state
@@ -813,14 +882,16 @@ fn discard_without_worktree_leaves_the_checkout_and_its_branch_alone() {
     init_repo(&repo);
 
     let state = common::state(&dir);
-    state.register_profile(AgentProfile {
-        name: "noop".into(),
-        command: "sh".into(),
-        args: vec!["-c".into(), "sleep 1".into()],
-        env: vec![],
-        resume_args: None,
-        loop_args: None,
-    }).unwrap();
+    state
+        .register_profile(AgentProfile {
+            name: "noop".into(),
+            command: "sh".into(),
+            args: vec!["-c".into(), "sleep 1".into()],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
     let project = state.add_project("demo", &repo).unwrap();
     let info = state
         .create_run_with_progress(&project.id, "p", "noop", "HEAD", None, false, |_| {})
@@ -862,42 +933,33 @@ fn archive_without_worktree_does_not_commit_the_users_work() {
     init_repo(&repo);
 
     let state = common::state(&dir);
-    state.register_profile(AgentProfile {
-        name: "noop".into(),
-        command: "sh".into(),
-        args: vec!["-c".into(), "sleep 1".into()],
-        env: vec![],
-        resume_args: None,
-        loop_args: None,
-    }).unwrap();
+    state
+        .register_profile(AgentProfile {
+            name: "noop".into(),
+            command: "sh".into(),
+            args: vec!["-c".into(), "sleep 1".into()],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
     let project = state.add_project("demo", &repo).unwrap();
     let info = state
         .create_run_with_progress(&project.id, "p", "noop", "HEAD", None, false, |_| {})
         .unwrap();
     std::fs::write(repo.join("scratch.txt"), "work in progress").unwrap();
 
-    let head_before = Command::new("git")
-        .args(["rev-parse", "HEAD"])
-        .current_dir(&repo)
-        .output()
-        .unwrap()
-        .stdout;
+    let head_before =
+        Command::new("git").args(["rev-parse", "HEAD"]).current_dir(&repo).output().unwrap().stdout;
 
     state.archive_run(&info.id).unwrap();
     assert_eq!(state.list_archived_runs(&project.id).unwrap().len(), 1);
 
-    let head_after = Command::new("git")
-        .args(["rev-parse", "HEAD"])
-        .current_dir(&repo)
-        .output()
-        .unwrap()
-        .stdout;
+    let head_after =
+        Command::new("git").args(["rev-parse", "HEAD"]).current_dir(&repo).output().unwrap().stdout;
     assert_eq!(head_before, head_after, "archive must not commit anything");
-    let status = Command::new("git")
-        .args(["status", "--porcelain"])
-        .current_dir(&repo)
-        .output()
-        .unwrap();
+    let status =
+        Command::new("git").args(["status", "--porcelain"]).current_dir(&repo).output().unwrap();
     assert!(
         String::from_utf8_lossy(&status.stdout).contains("scratch.txt"),
         "the uncommitted file is still uncommitted"
@@ -920,14 +982,16 @@ fn discard_archived_runs_clears_the_archive_and_spares_live_runs() {
     init_repo(&repo);
 
     let state = common::state(&dir);
-    state.register_profile(AgentProfile {
-        name: "noop".into(),
-        command: "sh".into(),
-        args: vec!["-c".into(), "sleep 1".into()],
-        env: vec![],
-        resume_args: None,
-        loop_args: None,
-    }).unwrap();
+    state
+        .register_profile(AgentProfile {
+            name: "noop".into(),
+            command: "sh".into(),
+            args: vec!["-c".into(), "sleep 1".into()],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
     let project = state.add_project("demo", &repo).unwrap();
 
     let mut runs = Vec::new();
@@ -980,23 +1044,23 @@ fn removing_an_agent_reports_each_teardown_step() {
     init_repo(&repo);
 
     let state = common::state(&dir);
-    state.register_profile(AgentProfile {
-        name: "noop".into(),
-        command: "sh".into(),
-        args: vec!["-c".into(), "sleep 1".into()],
-        env: vec![],
-        resume_args: None,
-        loop_args: None,
-    }).unwrap();
+    state
+        .register_profile(AgentProfile {
+            name: "noop".into(),
+            command: "sh".into(),
+            args: vec!["-c".into(), "sleep 1".into()],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
     let project = state.add_project("demo", &repo).unwrap();
 
     let archived = state
         .create_run_with_progress(&project.id, "a", "noop", "HEAD", None, true, |_| {})
         .unwrap();
     let mut steps = Vec::new();
-    state
-        .archive_run_with_progress(&archived.id, &mut |p| steps.push(p.phase))
-        .unwrap();
+    state.archive_run_with_progress(&archived.id, &mut |p| steps.push(p.phase)).unwrap();
     assert_eq!(
         steps,
         vec![
@@ -1011,9 +1075,7 @@ fn removing_an_agent_reports_each_teardown_step() {
         .create_run_with_progress(&project.id, "b", "noop", "HEAD", None, true, |_| {})
         .unwrap();
     let mut steps = Vec::new();
-    state
-        .discard_run_with_progress(&doomed.id, &mut |p| steps.push((p.phase, p.detail)))
-        .unwrap();
+    state.discard_run_with_progress(&doomed.id, &mut |p| steps.push((p.phase, p.detail))).unwrap();
     assert_eq!(
         steps.iter().map(|(phase, _)| phase.as_str()).collect::<Vec<_>>(),
         vec!["Stopping the agent", "Removing the worktree", "Cleaning up"],
@@ -1175,7 +1237,13 @@ fn list_runs_reports_which_workspace_has_a_script_live() {
         .unwrap();
 
     let live_of = |id: &str| {
-        state.list_runs(&project.id).unwrap().into_iter().find(|r| r.id == id).unwrap().run_scripts_live
+        state
+            .list_runs(&project.id)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.id == id)
+            .unwrap()
+            .run_scripts_live
     };
     assert!(!live_of(&a.id));
     assert!(!live_of(&b.id));
@@ -1207,8 +1275,18 @@ fn one_app_at_a_time_stops_every_other_script_in_the_project() {
         .save_run_scripts(
             &target,
             vec![
-                RunScript { name: "a".into(), command: "sleep 30".into(), web: false, nonconcurrent: false },
-                RunScript { name: "fixed".into(), command: "sleep 30".into(), web: false, nonconcurrent: true },
+                RunScript {
+                    name: "a".into(),
+                    command: "sleep 30".into(),
+                    web: false,
+                    nonconcurrent: false,
+                },
+                RunScript {
+                    name: "fixed".into(),
+                    command: "sleep 30".into(),
+                    web: false,
+                    nonconcurrent: true,
+                },
             ],
         )
         .unwrap();
@@ -1356,14 +1434,16 @@ fn project_of_resolves_both_token_shapes() {
     init_repo(&repo);
 
     let state = common::state(&dir);
-    state.register_profile(AgentProfile {
-        name: "noop".into(),
-        command: "sh".into(),
-        args: vec!["-c".into(), "sleep 1".into()],
-        env: vec![],
-        resume_args: None,
-        loop_args: None,
-    }).unwrap();
+    state
+        .register_profile(AgentProfile {
+            name: "noop".into(),
+            command: "sh".into(),
+            args: vec!["-c".into(), "sleep 1".into()],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
     let project = state.add_project("demo", &repo).unwrap();
 
     assert_eq!(state.project_of(&format!("project:{}", project.id)).unwrap(), project.id);
@@ -1455,7 +1535,12 @@ fn a_failed_graph_build_reports_why() {
     // A build whose command isn't installed at all is refused up front, and
     // pointed at the install the settings panel offers to run.
     state
-        .save_knowledge_config(&p.id, true, None, Some("definitely-not-a-real-binary-4k2x .".into()))
+        .save_knowledge_config(
+            &p.id,
+            true,
+            None,
+            Some("definitely-not-a-real-binary-4k2x .".into()),
+        )
         .unwrap();
     let err = state.build_knowledge_graph(&p.id).unwrap_err().to_string();
     assert!(err.contains("'definitely-not-a-real-binary-4k2x' is not installed"), "{err}");

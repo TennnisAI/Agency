@@ -127,7 +127,10 @@ fn find_dir_case_insensitive_matches_variants() {
     // case-sensitive filesystem (macOS default is case-insensitive, so
     // creating "docs" next to "Docs" fails there).
     if fs::create_dir(dir.path().join("docs")).is_ok() {
-        assert_eq!(files::find_dir_case_insensitive(dir.path(), "docs").unwrap(), Some("docs".into()));
+        assert_eq!(
+            files::find_dir_case_insensitive(dir.path(), "docs").unwrap(),
+            Some("docs".into())
+        );
     }
 }
 

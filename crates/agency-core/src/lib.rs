@@ -1,5 +1,4 @@
 pub mod config;
-pub mod term;
 pub mod files;
 pub mod gh;
 pub mod git;
@@ -15,6 +14,7 @@ pub mod scripts;
 pub mod search;
 pub mod setup;
 pub mod supervisor;
+pub mod term;
 pub mod title;
 pub mod version;
 pub mod worktree;

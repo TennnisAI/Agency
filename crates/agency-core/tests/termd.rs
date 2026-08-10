@@ -29,7 +29,8 @@ fn server_and_client() -> (tempfile::TempDir, TermClient) {
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    let client = TermClient::connect_or_spawn(sock, std::path::PathBuf::from("/nonexistent")).unwrap();
+    let client =
+        TermClient::connect_or_spawn(sock, std::path::PathBuf::from("/nonexistent")).unwrap();
     (dir, client)
 }
 
@@ -77,7 +78,8 @@ fn stale_reply_with_old_seq_is_discarded() {
         }
     });
 
-    let client = TermClient::connect_or_spawn(sock, std::path::PathBuf::from("/nonexistent")).unwrap();
+    let client =
+        TermClient::connect_or_spawn(sock, std::path::PathBuf::from("/nonexistent")).unwrap();
     assert_eq!(client.status("x").unwrap(), SessionStatus::Running);
     // And the channel is not left shifted: the next request still matches.
     assert_eq!(client.status("y").unwrap(), SessionStatus::Running);
@@ -212,29 +214,31 @@ fn send_text_submits_the_line_after_a_pause() {
 #[test]
 fn start_session_with_fallback_runs_fresh_on_fast_primary_exit() {
     let (_dir, client) = server_and_client();
-    client.start_session_with_fallback(
-        "fb",
-        std::env::temp_dir().as_path(),
-        "/bin/sh",
-        &["-c".into(), "printf NOPE; exit 1".into()],
-        &[],
-        80, 24,
-        Some(agency_core::term::protocol::FallbackSpec {
-            command: "/bin/sh".into(),
-            args: vec!["-c".into(), "printf FRESH; sleep 3".into()],
-            grace_ms: 2000,
-        }),
-    ).unwrap();
+    client
+        .start_session_with_fallback(
+            "fb",
+            std::env::temp_dir().as_path(),
+            "/bin/sh",
+            &["-c".into(), "printf NOPE; exit 1".into()],
+            &[],
+            80,
+            24,
+            Some(agency_core::term::protocol::FallbackSpec {
+                command: "/bin/sh".into(),
+                args: vec!["-c".into(), "printf FRESH; sleep 3".into()],
+                grace_ms: 2000,
+            }),
+        )
+        .unwrap();
 
     let mut cap = String::new();
     for _ in 0..60 {
         cap = client.capture("fb", 10).unwrap();
-        if cap.contains("FRESH") { break; }
+        if cap.contains("FRESH") {
+            break;
+        }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
     assert!(cap.contains("FRESH"), "fallback did not run through the daemon: {cap:?}");
-    assert!(matches!(
-        client.status("fb").unwrap(),
-        agency_core::term::SessionStatus::Running
-    ));
+    assert!(matches!(client.status("fb").unwrap(), agency_core::term::SessionStatus::Running));
 }

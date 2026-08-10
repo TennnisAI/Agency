@@ -218,7 +218,11 @@ fn split_body(lines: &[&str]) -> (String, Vec<IssueComment>) {
     let mut comments: Vec<IssueComment> = Vec::new();
     let mut open: Option<(String, i64, Vec<&str>)> = None;
     let close = |c: (String, i64, Vec<&str>), out: &mut Vec<IssueComment>| {
-        out.push(IssueComment { author: c.0, created_at: c.1, body: c.2.join("\n").trim().to_string() });
+        out.push(IssueComment {
+            author: c.0,
+            created_at: c.1,
+            body: c.2.join("\n").trim().to_string(),
+        });
     };
     for line in &lines[start..] {
         if let Some((author, at)) = comment_head(line) {
@@ -622,7 +626,12 @@ issue's discussion, not its description.
 /// square up. A project with no issues gets no directory at all — no surprise
 /// folders in user repos; the README arrives with the first issue file.
 /// Returns how many issue files were written.
-pub fn export_project(reg: &Registry, project_id: &str, issue_key: &str, root: &Path) -> Result<usize> {
+pub fn export_project(
+    reg: &Registry,
+    project_id: &str,
+    issue_key: &str,
+    root: &Path,
+) -> Result<usize> {
     let mut written = 0;
     for row in reg.list_issues(project_id)? {
         let key = format!("{issue_key}-{}", row.seq);
@@ -949,7 +958,12 @@ Second.\n";
     #[test]
     fn comment_heads_are_only_the_exact_shape() {
         // Not comments: no timestamp, an unparseable one, no author.
-        for line in ["## Sam", "## Sam · yesterday", "##  · 2026-07-27T15:10:00Z", "# Sam · 2026-07-27T15:10:00Z"] {
+        for line in [
+            "## Sam",
+            "## Sam · yesterday",
+            "##  · 2026-07-27T15:10:00Z",
+            "# Sam · 2026-07-27T15:10:00Z",
+        ] {
             assert_eq!(comment_head(line), None, "accepted {line}");
         }
         // An author may itself contain the separator: the last one wins.
@@ -1030,9 +1044,15 @@ Not attachments: [docs](https://example.com/a.png), ![](../elsewhere/a.png),
     fn parse_date_shapes() {
         assert_eq!(parse_date("2026-08-01").unwrap(), "2026-08-01");
         assert_eq!(parse_date("2024-02-29").unwrap(), "2024-02-29");
-        for bad in
-            ["2026-02-30", "2023-02-29", "2026-13-01", "26-8-1", "2026/08/01", "2026-08-01T00:00:00Z", ""]
-        {
+        for bad in [
+            "2026-02-30",
+            "2023-02-29",
+            "2026-13-01",
+            "26-8-1",
+            "2026/08/01",
+            "2026-08-01T00:00:00Z",
+            "",
+        ] {
             assert!(parse_date(bad).is_err(), "accepted {bad}");
         }
     }
@@ -1065,7 +1085,11 @@ updated: 2026-07-27T09:30:00Z\n---\n# T\n"
         // byte-identically to what Phase 5 wrote.
         let f = parse_issue_file("AGE-14", EXAMPLE).unwrap();
         assert_eq!((f.due, f.scheduled, f.rank), (None, None, None));
-        let f = parse_issue_file("AGE-14", &serialize_issue_file(&parse_issue_file("AGE-14", EXAMPLE).unwrap())).unwrap();
+        let f = parse_issue_file(
+            "AGE-14",
+            &serialize_issue_file(&parse_issue_file("AGE-14", EXAMPLE).unwrap()),
+        )
+        .unwrap();
         assert_eq!(
             serialize_issue_file(&f),
             "---\nkey: AGE-14\nstatus: in_progress\npriority: 2\n\

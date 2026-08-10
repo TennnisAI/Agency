@@ -120,11 +120,8 @@ fn common_bin_dirs(home: &Path) -> Vec<PathBuf> {
 /// supplies the existence check. Existing entries keep priority (appended, not
 /// prepended) so we never shadow the system tools already on PATH.
 fn merge_path(current: &str, extra: &[PathBuf], exists: impl Fn(&Path) -> bool) -> String {
-    let mut entries: Vec<String> = current
-        .split(':')
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
-        .collect();
+    let mut entries: Vec<String> =
+        current.split(':').filter(|s| !s.is_empty()).map(|s| s.to_string()).collect();
     for dir in extra {
         if !exists(dir) {
             continue;

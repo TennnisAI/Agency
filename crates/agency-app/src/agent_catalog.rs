@@ -95,11 +95,7 @@ pub fn builtins() -> &'static [CatalogEntry] {
                 // Unverified (not installed here); `codex [PROMPT]` per its docs.
                 prompt: PromptDelivery::Positional,
                 resume_args: Some(vec!["resume".into(), "--last".into()]),
-                loop_args: Some(vec![
-                    "exec".into(),
-                    "--full-auto".into(),
-                    "{{prompt}}".into(),
-                ]),
+                loop_args: Some(vec!["exec".into(), "--full-auto".into(), "{{prompt}}".into()]),
             },
             CatalogEntry {
                 id: "pi",
@@ -132,11 +128,7 @@ pub fn builtins() -> &'static [CatalogEntry] {
                 // is documented as required for it. Verified against 1.0.78 in a
                 // fresh, untrusted git worktree: it edits files there and exits,
                 // with no folder-trust prompt to hang a headless attempt.
-                loop_args: Some(vec![
-                    "-p".into(),
-                    "{{prompt}}".into(),
-                    "--allow-all-tools".into(),
-                ]),
+                loop_args: Some(vec!["-p".into(), "{{prompt}}".into(), "--allow-all-tools".into()]),
             },
             CatalogEntry {
                 id: "cursor",

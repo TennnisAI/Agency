@@ -154,10 +154,7 @@ fn copy_into_copies_untracked_files_and_dirs_skipping_bad_paths() {
         .unwrap();
     assert_eq!(copied, vec![".env".to_string(), "config".to_string()]);
     assert_eq!(std::fs::read_to_string(wt.path.join(".env")).unwrap(), "SECRET=1");
-    assert_eq!(
-        std::fs::read_to_string(wt.path.join("config/certs/dev.pem")).unwrap(),
-        "pem"
-    );
+    assert_eq!(std::fs::read_to_string(wt.path.join("config/certs/dev.pem")).unwrap(), "pem");
     assert!(!wt.path.join("missing.txt").exists());
 }
 
@@ -197,9 +194,8 @@ fn copy_essentials_unions_configured_list_with_env_defaults_without_dupes() {
     std::fs::write(repo.path().join("config/dev.pem"), "pem").unwrap();
 
     // `.env` is listed explicitly AND auto-detected — it must appear once.
-    let copied = mgr
-        .copy_essentials("task-union", &[".env".to_string(), "config".to_string()])
-        .unwrap();
+    let copied =
+        mgr.copy_essentials("task-union", &[".env".to_string(), "config".to_string()]).unwrap();
     assert_eq!(copied, vec![".env".to_string(), "config".to_string()]);
 }
 

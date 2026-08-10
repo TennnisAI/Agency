@@ -398,11 +398,18 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                     seen.insert(snap.id.clone());
                     // Busy/idle bookkeeping shares the notification poll: the
                     // pane-changed bit here is the same edge step() detects.
-                    let pane_changed =
-                        watches.get(&snap.id).map(|w| w.pane_hash != snap.pane_hash).unwrap_or(true);
+                    let pane_changed = watches
+                        .get(&snap.id)
+                        .map(|w| w.pane_hash != snap.pane_hash)
+                        .unwrap_or(true);
                     state.update_activity(&snap.id, pane_changed, now_ms);
-                    let (watch, events) =
-                        crate::notifier::step(watches.get(&snap.id), snap, tick, poll_secs, settings.idle_secs);
+                    let (watch, events) = crate::notifier::step(
+                        watches.get(&snap.id),
+                        snap,
+                        tick,
+                        poll_secs,
+                        settings.idle_secs,
+                    );
                     for ev in &events {
                         // Consume the idle gate at the edge (whether or not the
                         // notification is shown) so the run won't nudge again
@@ -416,7 +423,11 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                             crate::notifier::NotifyKind::Idle => settings.agent_idle,
                         };
                         let suppressed = crate::notifier::suppressed(
-                            &settings, focused, active.as_deref(), &snap.id);
+                            &settings,
+                            focused,
+                            active.as_deref(),
+                            &snap.id,
+                        );
                         if enabled && !suppressed {
                             let (title, body) = crate::notifier::message(ev, &snap.label);
                             let _ = handle.notification().builder().title(title).body(body).show();
@@ -473,16 +484,28 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                 let (focused, active) = state.ui_snapshot();
                 for n in notices {
                     let suppressed = !settings.loop_events
-                        || crate::notifier::suppressed(&settings, focused, active.as_deref(), &n.run_id);
+                        || crate::notifier::suppressed(
+                            &settings,
+                            focused,
+                            active.as_deref(),
+                            &n.run_id,
+                        );
                     if suppressed {
                         continue;
                     }
                     let (title, body) = if n.done {
-                        ("Loop complete".to_string(),
-                         format!("{} — checks passed on attempt {}", n.label, n.attempt))
+                        (
+                            "Loop complete".to_string(),
+                            format!("{} — checks passed on attempt {}", n.label, n.attempt),
+                        )
                     } else {
-                        ("Loop stalled".to_string(),
-                         format!("{} — stopped after attempt {}, checks still failing", n.label, n.attempt))
+                        (
+                            "Loop stalled".to_string(),
+                            format!(
+                                "{} — stopped after attempt {}, checks still failing",
+                                n.label, n.attempt
+                            ),
+                        )
                     };
                     let _ = loop_handle.notification().builder().title(title).body(body).show();
                     if !focused {
@@ -506,8 +529,8 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     // loop-driver ticks; it holds no lock across the network call.
     let fetch_handle = app.handle().clone();
     std::thread::Builder::new().name("remote-fetch".into()).spawn(move || {
-        use tauri::Manager;
         use std::time::Duration;
+        use tauri::Manager;
 
         // Let startup (window, first poll, daemon spawns) settle before the
         // first sweep so it doesn't contend with launch work. A panel opened

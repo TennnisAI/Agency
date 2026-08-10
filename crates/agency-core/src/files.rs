@@ -52,9 +52,8 @@ pub(crate) fn resolve_within(root: &Path, rel: &str) -> Result<PathBuf> {
     }
     let candidate = root.join(normalized);
 
-    let real_root = root
-        .canonicalize()
-        .map_err(|e| anyhow!("cannot resolve root {}: {e}", root.display()))?;
+    let real_root =
+        root.canonicalize().map_err(|e| anyhow!("cannot resolve root {}: {e}", root.display()))?;
 
     // Case 2: the candidate exists (file, dir, or non-dangling symlink). Resolve
     // it fully and require containment.
@@ -67,12 +66,9 @@ pub(crate) fn resolve_within(root: &Path, rel: &str) -> Result<PathBuf> {
 
     // Case 3: the candidate does not resolve. Its parent must exist and stay
     // within the root once symlinks are resolved...
-    let parent = candidate
-        .parent()
-        .ok_or_else(|| anyhow!("path has no parent: {rel}"))?;
-    let real_parent = parent
-        .canonicalize()
-        .map_err(|e| anyhow!("cannot resolve parent of {rel}: {e}"))?;
+    let parent = candidate.parent().ok_or_else(|| anyhow!("path has no parent: {rel}"))?;
+    let real_parent =
+        parent.canonicalize().map_err(|e| anyhow!("cannot resolve parent of {rel}: {e}"))?;
     if !real_parent.starts_with(&real_root) {
         bail!("path escapes root via symlink: {rel}");
     }
@@ -81,11 +77,7 @@ pub(crate) fn resolve_within(root: &Path, rel: &str) -> Result<PathBuf> {
     // This is deliberately conservative: a symlink whose target merely doesn't
     // exist yet is rejected even if it points within root — safe over permissive,
     // and the editor never needs to write through an unresolved symlink.
-    if candidate
-        .symlink_metadata()
-        .map(|m| m.file_type().is_symlink())
-        .unwrap_or(false)
-    {
+    if candidate.symlink_metadata().map(|m| m.file_type().is_symlink()).unwrap_or(false) {
         bail!("path is a symlink that does not resolve within root: {rel}");
     }
     Ok(candidate)
@@ -116,9 +108,7 @@ pub fn list_dir(root: &Path, rel: &str) -> Result<Vec<DirEntry>> {
 /// denied, races) report false rather than erroring — the arrow is a hint, not a
 /// guarantee, and expansion surfaces any real error.
 fn dir_has_entry(dir: &Path) -> bool {
-    std::fs::read_dir(dir)
-        .map(|mut it| it.next().is_some())
-        .unwrap_or(false)
+    std::fs::read_dir(dir).map(|mut it| it.next().is_some()).unwrap_or(false)
 }
 
 /// Create an empty file at `rel`. Fails if it already exists so an accidental
@@ -280,8 +270,7 @@ pub fn write_file_bytes(root: &Path, rel: &str, bytes: &[u8]) -> Result<()> {
 /// no-clobber rule, and the size cap. `metadata` follows symlinks, so dropping
 /// a Finder alias imports what it points at, which is what the user sees.
 pub fn import_file(root: &Path, src: &Path, rel: &str) -> Result<()> {
-    let meta = std::fs::metadata(src)
-        .map_err(|e| anyhow!("cannot read {}: {e}", src.display()))?;
+    let meta = std::fs::metadata(src).map_err(|e| anyhow!("cannot read {}: {e}", src.display()))?;
     if !meta.is_file() {
         bail!("not a file: {}", src.display());
     }
@@ -314,7 +303,10 @@ const MAX_CORPUS_BYTES: u64 = 20_000_000;
 /// Returns `(rel_path, abs_path, metadata)` per file — the shared base for the
 /// full read, the stat-only pass, and anything else that must agree with them
 /// on what "the corpus" is.
-fn walk_markdown(root: &Path, rel_dir: &str) -> Result<Vec<(String, std::path::PathBuf, std::fs::Metadata)>> {
+fn walk_markdown(
+    root: &Path,
+    rel_dir: &str,
+) -> Result<Vec<(String, std::path::PathBuf, std::fs::Metadata)>> {
     let base = resolve_within(root, rel_dir)?;
     let mut out = Vec::new();
     let mut stack = vec![(base, String::new())];
@@ -491,7 +483,12 @@ pub fn scan_tasks(root: &Path, rel_dir: &str) -> Result<Vec<TaskHit>> {
                 continue;
             }
             if let Some((checked, task)) = parse_task_line(line) {
-                out.push(TaskHit { path: rel.clone(), line: i as u32, checked, text: task.to_string() });
+                out.push(TaskHit {
+                    path: rel.clone(),
+                    line: i as u32,
+                    checked,
+                    text: task.to_string(),
+                });
             }
         }
     }
@@ -504,7 +501,13 @@ pub fn scan_tasks(root: &Path, rel_dir: &str) -> Result<Vec<TaskHit>> {
 /// `checked`. On a mismatch nothing is written and `false` comes back — the
 /// caller refreshes. The write is atomic (temp + rename) so a reader never
 /// sees a torn file.
-pub fn toggle_task(root: &Path, rel_dir: &str, rel: &str, line: u32, checked: bool) -> Result<bool> {
+pub fn toggle_task(
+    root: &Path,
+    rel_dir: &str,
+    rel: &str,
+    line: u32,
+    checked: bool,
+) -> Result<bool> {
     let base = resolve_within(root, rel_dir)?;
     let path = resolve_within(&base, rel)?;
     let text = std::fs::read_to_string(&path)?;
@@ -602,7 +605,8 @@ mod root_as_vault_tests {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("a.md"), "x").unwrap();
         std::fs::create_dir(dir.path().join("journal")).unwrap();
-        let names: Vec<String> = list_dir(dir.path(), "").unwrap().into_iter().map(|e| e.name).collect();
+        let names: Vec<String> =
+            list_dir(dir.path(), "").unwrap().into_iter().map(|e| e.name).collect();
         assert_eq!(names, vec!["journal", "a.md"]);
     }
 
@@ -666,7 +670,8 @@ mod corpus_stats_tests {
         std::fs::write(root.join("docs/a.md"), "alpha").unwrap();
         std::fs::write(root.join("docs/b.md"), "beta").unwrap();
 
-        let got = read_markdown_files(root, "docs", &["b.md".to_string(), "gone.md".to_string()]).unwrap();
+        let got = read_markdown_files(root, "docs", &["b.md".to_string(), "gone.md".to_string()])
+            .unwrap();
         assert_eq!(got.len(), 1, "missing files are skipped, not errors");
         assert_eq!((got[0].path.as_str(), got[0].text.as_str()), ("b.md", "beta"));
 
@@ -744,7 +749,10 @@ mod gitignore_tests {
 
         // Re-adding an existing pattern is a no-op and reports false.
         assert!(!add_to_gitignore(root, "secret.env").unwrap());
-        assert_eq!(std::fs::read_to_string(root.join(".gitignore")).unwrap(), "/secret.env\n/build/\n");
+        assert_eq!(
+            std::fs::read_to_string(root.join(".gitignore")).unwrap(),
+            "/secret.env\n/build/\n"
+        );
     }
 
     #[test]
@@ -755,7 +763,10 @@ mod gitignore_tests {
         std::fs::write(root.join("a.log"), "x").unwrap();
 
         add_to_gitignore(root, "a.log").unwrap();
-        assert_eq!(std::fs::read_to_string(root.join(".gitignore")).unwrap(), "node_modules\n/a.log\n");
+        assert_eq!(
+            std::fs::read_to_string(root.join(".gitignore")).unwrap(),
+            "node_modules\n/a.log\n"
+        );
     }
 }
 
@@ -779,9 +790,24 @@ mod task_tests {
         assert_eq!(
             hits,
             vec![
-                TaskHit { path: "todo.md".into(), line: 2, checked: false, text: "call the bank".into() },
-                TaskHit { path: "todo.md".into(), line: 3, checked: true, text: "done thing".into() },
-                TaskHit { path: "todo.md".into(), line: 4, checked: false, text: "indented star".into() },
+                TaskHit {
+                    path: "todo.md".into(),
+                    line: 2,
+                    checked: false,
+                    text: "call the bank".into()
+                },
+                TaskHit {
+                    path: "todo.md".into(),
+                    line: 3,
+                    checked: true,
+                    text: "done thing".into()
+                },
+                TaskHit {
+                    path: "todo.md".into(),
+                    line: 4,
+                    checked: false,
+                    text: "indented star".into()
+                },
             ]
         );
     }

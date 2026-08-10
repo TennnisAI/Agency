@@ -307,17 +307,12 @@ pub fn auth_supported(agent: &str) -> bool {
 /// quoting). Errors for agents with no such command, or for a stdio server —
 /// Authenticate exists for remote servers that need an interactive sign-in.
 pub fn auth_argv(agent: &str, server: &McpServer) -> Result<(String, Vec<String>)> {
-    let url = server
-        .url
-        .as_deref()
-        .map(str::trim)
-        .filter(|u| !u.is_empty())
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "Authenticate is for remote (url) servers; '{}' is a stdio server",
-                server.name
-            )
-        })?;
+    let url = server.url.as_deref().map(str::trim).filter(|u| !u.is_empty()).ok_or_else(|| {
+        anyhow::anyhow!(
+            "Authenticate is for remote (url) servers; '{}' is a stdio server",
+            server.name
+        )
+    })?;
     let transport = match server.effective_transport() {
         McpTransport::Sse => "sse",
         _ => "http",
@@ -328,9 +323,12 @@ pub fn auth_argv(agent: &str, server: &McpServer) -> Result<(String, Vec<String>
         "claude" => (
             "claude",
             vec![
-                "mcp".to_string(), "add".into(),
-                "--scope".into(), "user".into(),
-                "--transport".into(), transport.into(),
+                "mcp".to_string(),
+                "add".into(),
+                "--scope".into(),
+                "user".into(),
+                "--transport".into(),
+                transport.into(),
             ],
         ),
         "copilot" => (
@@ -383,7 +381,8 @@ fn remote_type_str(t: McpTransport) -> &'static str {
 fn claude_entry(s: &McpServer) -> serde_json::Value {
     match &s.url {
         Some(url) => {
-            let mut v = serde_json::json!({ "type": remote_type_str(s.effective_transport()), "url": url });
+            let mut v =
+                serde_json::json!({ "type": remote_type_str(s.effective_transport()), "url": url });
             if !s.headers.is_empty() {
                 v["headers"] = serde_json::json!(s.headers);
             }
@@ -456,9 +455,7 @@ fn upsert_json(
         root = serde_json::json!({});
     }
     let obj = root.as_object_mut().unwrap();
-    let bucket = obj
-        .entry(root_key.to_string())
-        .or_insert_with(|| serde_json::json!({}));
+    let bucket = obj.entry(root_key.to_string()).or_insert_with(|| serde_json::json!({}));
     if !bucket.is_object() {
         *bucket = serde_json::json!({});
     }
@@ -522,12 +519,21 @@ mod tests {
         )
         .unwrap();
 
-        let wrote = emit_for_agent("claude", dir.path(), &[stdio("mine", "my-cmd"), remote("api", "https://mcp.example")]).unwrap();
+        let wrote = emit_for_agent(
+            "claude",
+            dir.path(),
+            &[stdio("mine", "my-cmd"), remote("api", "https://mcp.example")],
+        )
+        .unwrap();
         assert!(wrote);
 
-        let root: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let root: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(root["other"], 1, "unrelated keys survive");
-        assert_eq!(root["mcpServers"]["repo-own"]["command"], "keep-me", "existing servers survive");
+        assert_eq!(
+            root["mcpServers"]["repo-own"]["command"], "keep-me",
+            "existing servers survive"
+        );
         assert_eq!(root["mcpServers"]["mine"]["type"], "stdio");
         assert_eq!(root["mcpServers"]["mine"]["command"], "my-cmd");
         assert_eq!(root["mcpServers"]["mine"]["env"]["KEY"], "V");
@@ -546,7 +552,8 @@ mod tests {
         .unwrap();
         assert!(wrote);
         let root: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(dir.path().join(".mcp.json")).unwrap()).unwrap();
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join(".mcp.json")).unwrap())
+                .unwrap();
         assert_eq!(root["mcpServers"]["kg"]["type"], "stdio");
         assert_eq!(root["mcpServers"]["kg"]["command"], "graphify");
         assert_eq!(root["mcpServers"]["api"]["type"], "http");
@@ -615,7 +622,8 @@ mod tests {
         };
         emit_for_agent("claude", dir.path(), &[server]).unwrap();
         let root: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(dir.path().join(".mcp.json")).unwrap()).unwrap();
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join(".mcp.json")).unwrap())
+                .unwrap();
         assert_eq!(root["mcpServers"]["atlassian"]["type"], "sse");
         assert_eq!(root["mcpServers"]["atlassian"]["headers"]["Authorization"], "Bearer tok");
     }
@@ -634,10 +642,12 @@ mod tests {
         assert!(!emit_for_agent("claude", dir.path(), &[server.clone()]).unwrap());
         assert!(!dir.path().join(".mcp.json").exists());
         // Mixed with a normal server → the user-scope one is filtered out.
-        let wrote = emit_for_agent("claude", dir.path(), &[server, stdio("kg", "graphify")]).unwrap();
+        let wrote =
+            emit_for_agent("claude", dir.path(), &[server, stdio("kg", "graphify")]).unwrap();
         assert!(wrote);
         let root: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(dir.path().join(".mcp.json")).unwrap()).unwrap();
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join(".mcp.json")).unwrap())
+                .unwrap();
         assert!(root["mcpServers"].get("atlassian").is_none());
         assert_eq!(root["mcpServers"]["kg"]["command"], "graphify");
     }
@@ -661,7 +671,8 @@ mod tests {
         // Copilot never registered it → it must still land in the worktree.
         assert!(emit_for_agent("copilot", dir.path(), &[server.clone()]).unwrap());
         let root: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(dir.path().join(".mcp.json")).unwrap()).unwrap();
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join(".mcp.json")).unwrap())
+                .unwrap();
         assert_eq!(root["mcpServers"]["atlassian"]["url"], "https://mcp.atlassian.com/v1/mcp");
         // …as must Cursor, in its own format.
         assert!(emit_for_agent("cursor", dir.path(), &[server]).unwrap());
@@ -671,10 +682,9 @@ mod tests {
     #[test]
     fn legacy_global_user_scope_migrates_to_claude_only() {
         // Servers persisted before per-agent scope existed carry `userScope`.
-        let mut s: McpServer = serde_json::from_str(
-            r#"{"name":"atlassian","url":"https://x/mcp","userScope":true}"#,
-        )
-        .unwrap();
+        let mut s: McpServer =
+            serde_json::from_str(r#"{"name":"atlassian","url":"https://x/mcp","userScope":true}"#)
+                .unwrap();
         assert!(s.user_scope);
         s.normalize();
         assert!(!s.user_scope, "legacy flag is consumed");
@@ -699,9 +709,16 @@ mod tests {
         assert_eq!(
             args,
             vec![
-                "mcp", "add", "--scope", "user", "--transport", "http",
-                "atlassian", "https://mcp.atlassian.com/v1/mcp",
-                "--header", "Authorization: Bearer tok",
+                "mcp",
+                "add",
+                "--scope",
+                "user",
+                "--transport",
+                "http",
+                "atlassian",
+                "https://mcp.atlassian.com/v1/mcp",
+                "--header",
+                "Authorization: Bearer tok",
             ]
         );
 
@@ -711,9 +728,14 @@ mod tests {
         assert_eq!(
             args,
             vec![
-                "mcp", "add", "--transport", "http",
-                "atlassian", "https://mcp.atlassian.com/v1/mcp",
-                "--header", "Authorization: Bearer tok",
+                "mcp",
+                "add",
+                "--transport",
+                "http",
+                "atlassian",
+                "https://mcp.atlassian.com/v1/mcp",
+                "--header",
+                "Authorization: Bearer tok",
             ]
         );
 
@@ -772,8 +794,10 @@ mod tests {
     fn emits_cursor_into_nested_dir() {
         let dir = tempfile::tempdir().unwrap();
         emit_for_agent("cursor", dir.path(), &[remote("api", "https://mcp.example")]).unwrap();
-        let root: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(dir.path().join(".cursor/mcp.json")).unwrap()).unwrap();
+        let root: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join(".cursor/mcp.json")).unwrap(),
+        )
+        .unwrap();
         assert_eq!(root["mcpServers"]["api"]["url"], "https://mcp.example");
     }
 
@@ -781,8 +805,10 @@ mod tests {
     fn emits_opencode_local_command_vector() {
         let dir = tempfile::tempdir().unwrap();
         emit_for_agent("opencode", dir.path(), &[stdio("kg", "graphify")]).unwrap();
-        let root: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(dir.path().join("opencode.json")).unwrap()).unwrap();
+        let root: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join("opencode.json")).unwrap(),
+        )
+        .unwrap();
         assert_eq!(root["mcp"]["kg"]["type"], "local");
         assert_eq!(root["mcp"]["kg"]["command"][0], "graphify");
         assert_eq!(root["mcp"]["kg"]["command"][1], "--flag");

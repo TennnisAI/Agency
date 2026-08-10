@@ -116,13 +116,24 @@ fn dispatch(frame: ClientFrame, client_id: u64, registry: &Arc<Registry>, out: &
         ClientFrame::Msg(ClientMsg::Hello { seq, .. }) => {
             reply(ServerMsg::Hello { version: PROTOCOL_VERSION, seq });
         }
-        ClientFrame::Msg(ClientMsg::StartSession { id, cwd, command, args, env, cols, rows, fallback, seq }) => {
+        ClientFrame::Msg(ClientMsg::StartSession {
+            id,
+            cwd,
+            command,
+            args,
+            env,
+            cols,
+            rows,
+            fallback,
+            seq,
+        }) => {
             let fb = fallback.map(|f| Fallback {
                 command: f.command,
                 args: f.args,
                 grace: Duration::from_millis(f.grace_ms),
             });
-            match registry.start(id.clone(), Path::new(&cwd), &command, &args, &env, cols, rows, fb) {
+            match registry.start(id.clone(), Path::new(&cwd), &command, &args, &env, cols, rows, fb)
+            {
                 Ok(()) => reply(ServerMsg::Started { id, seq }),
                 Err(e) => reply(ServerMsg::Error { id: Some(id), message: e.to_string(), seq }),
             }
@@ -130,7 +141,9 @@ fn dispatch(frame: ClientFrame, client_id: u64, registry: &Arc<Registry>, out: &
         ClientFrame::Msg(ClientMsg::Subscribe { id }) => match registry.get(&id) {
             Some(s) => s.subscribe(client_id, out.clone()),
             // seq 0: Subscribe is fire-and-forget, this error is async.
-            None => reply(ServerMsg::Error { id: Some(id), message: "no such session".into(), seq: 0 }),
+            None => {
+                reply(ServerMsg::Error { id: Some(id), message: "no such session".into(), seq: 0 })
+            }
         },
         ClientFrame::Msg(ClientMsg::Unsubscribe { id }) => {
             if let Some(s) = registry.get(&id) {
@@ -151,7 +164,9 @@ fn dispatch(frame: ClientFrame, client_id: u64, registry: &Arc<Registry>, out: &
             reply(ServerMsg::Status { id, status, seq });
         }
         ClientFrame::Msg(ClientMsg::Kill { id }) => registry.kill(&id),
-        ClientFrame::Msg(ClientMsg::List { seq }) => reply(ServerMsg::List { sessions: registry.list(), seq }),
+        ClientFrame::Msg(ClientMsg::List { seq }) => {
+            reply(ServerMsg::List { sessions: registry.list(), seq })
+        }
         ClientFrame::Msg(ClientMsg::Shutdown) => {
             registry.kill_all();
             std::process::exit(0);

@@ -136,54 +136,62 @@ fn search_rg(rg: &Path, root: &Path, q: &SearchQuery, deadline: Instant) -> Resu
     let stdout = child.stdout.take().expect("stdout was piped");
     // The read loop only notices the deadline between output lines, so an rg
     // that is busy but silent (a huge tree on a slow volume) would block the
-    // read past the budget. A watchdog thread kills the child at the
-    // deadline; the kill closes stdout, which unblocks the read.
-    use std::sync::atomic::{AtomicBool, Ordering};
+    // read past the budget. Killing the child is not enough to unblock it
+    // either: anything the child spawned (a wrapper script's grandchild)
+    // inherits the write end of the pipe and holds it open. So parse on a
+    // worker thread and let *this* thread own the deadline — at the budget we
+    // kill rg, take whatever the worker parsed so far, and leave it to unwind
+    // whenever its pipe finally closes.
+    use std::sync::mpsc::RecvTimeoutError;
     use std::sync::{Arc, Mutex};
-    let child = Arc::new(Mutex::new(child));
-    let finished = Arc::new(AtomicBool::new(false));
-    let watchdog = {
-        let (child, finished) = (Arc::clone(&child), Arc::clone(&finished));
+    let parsed: Arc<Mutex<Vec<SearchHit>>> = Arc::new(Mutex::new(Vec::new()));
+    let (done_tx, done_rx) = std::sync::mpsc::channel::<bool>();
+    let reader = {
+        let parsed = Arc::clone(&parsed);
         std::thread::spawn(move || {
-            while !finished.load(Ordering::Relaxed) {
-                if Instant::now() >= deadline {
-                    let _ = child.lock().unwrap().kill();
-                    return;
+            let mut capped = false;
+            for line in std::io::BufReader::new(stdout).lines() {
+                let Ok(line) = line else { break };
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+                if v["type"] != "match" {
+                    continue;
                 }
-                std::thread::sleep(Duration::from_millis(25));
+                let d = &v["data"];
+                let Some(path) = d["path"]["text"].as_str() else { continue };
+                let hit = SearchHit {
+                    path: path.trim_start_matches("./").replace('\\', "/"),
+                    line: d["line_number"].as_u64().unwrap_or(0) as u32,
+                    col: d["submatches"][0]["start"].as_u64().unwrap_or(0) as u32 + 1,
+                    text: cap_text(d["lines"]["text"].as_str().unwrap_or("")),
+                };
+                let mut hits = parsed.lock().unwrap();
+                hits.push(hit);
+                if hits.len() >= max_hits {
+                    capped = true;
+                    break;
+                }
             }
+            // A send error just means we blew the deadline and nobody is
+            // listening any more; the hits are already in `parsed`.
+            let _ = done_tx.send(capped);
         })
     };
-    let mut hits = Vec::new();
-    let mut stopped_early = false;
-    for line in std::io::BufReader::new(stdout).lines() {
-        let Ok(line) = line else { break };
-        if Instant::now() >= deadline || hits.len() >= max_hits {
-            stopped_early = true;
-            break;
-        }
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
-        if v["type"] != "match" {
-            continue;
-        }
-        let d = &v["data"];
-        let Some(path) = d["path"]["text"].as_str() else { continue };
-        hits.push(SearchHit {
-            path: path.trim_start_matches("./").replace('\\', "/"),
-            line: d["line_number"].as_u64().unwrap_or(0) as u32,
-            col: d["submatches"][0]["start"].as_u64().unwrap_or(0) as u32 + 1,
-            text: cap_text(d["lines"]["text"].as_str().unwrap_or("")),
-        });
-    }
-    finished.store(true, Ordering::Relaxed);
+    // Disconnected = the worker died without sending (it panicked); treat it
+    // like a finished read and let the empty-hits path below decide.
+    let (stopped_early, timed_out) =
+        match done_rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok(capped) => (capped, false),
+            Err(RecvTimeoutError::Disconnected) => (false, false),
+            Err(RecvTimeoutError::Timeout) => (true, true),
+        };
     // Kill rg if a cap/deadline ended the read mid-stream; harmless if it
-    // already exited on its own (or the watchdog got there first).
-    let status = {
-        let mut child = child.lock().unwrap();
-        let _ = child.kill();
-        child.wait()?
-    };
-    let _ = watchdog.join();
+    // already exited on its own.
+    let _ = child.kill();
+    let status = child.wait()?;
+    if !timed_out {
+        let _ = reader.join();
+    }
+    let hits = std::mem::take(&mut *parsed.lock().unwrap());
     // Exit 0 = matches, 1 = no matches — both fine (a deadline kill exits by
     // signal, so `code()` is None and lands here too). Anything else with no
     // output means rg itself failed; error out so the caller falls back.
@@ -450,7 +458,13 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let git = |args: &[&str]| {
-            assert!(Command::new("git").args(args).current_dir(root).output().unwrap().status.success());
+            assert!(Command::new("git")
+                .args(args)
+                .current_dir(root)
+                .output()
+                .unwrap()
+                .status
+                .success());
         };
         git(&["init", "-q"]);
         std::fs::write(root.join(".gitignore"), "ignored.txt\n").unwrap();
@@ -467,7 +481,10 @@ mod tests {
             .map(|h| h.path)
             .collect();
         assert!(paths.contains(&"tracked.txt".to_string()));
-        assert!(paths.contains(&"untracked.txt".to_string()), "untracked-not-ignored is searchable");
+        assert!(
+            paths.contains(&"untracked.txt".to_string()),
+            "untracked-not-ignored is searchable"
+        );
         assert!(!paths.contains(&"ignored.txt".to_string()), "gitignored files are not");
     }
 
@@ -484,7 +501,13 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let git = |args: &[&str]| {
-            assert!(Command::new("git").args(args).current_dir(root).output().unwrap().status.success());
+            assert!(Command::new("git")
+                .args(args)
+                .current_dir(root)
+                .output()
+                .unwrap()
+                .status
+                .success());
         };
         git(&["init", "-q"]);
         std::fs::write(root.join(".gitignore"), "ignored.txt\n").unwrap();
@@ -581,7 +604,8 @@ mod tests {
 
         if let Some(rg) = rg_on_path() {
             let started = Instant::now();
-            let hits = search_rg(&rg, dir.path(), &q("needle-500"), Instant::now() + TIMEOUT).unwrap();
+            let hits =
+                search_rg(&rg, dir.path(), &q("needle-500"), Instant::now() + TIMEOUT).unwrap();
             let rg_ms = started.elapsed().as_millis();
             assert!(!hits.is_empty());
             assert!(started.elapsed() < TIMEOUT + Duration::from_millis(500), "rg took {rg_ms}ms");

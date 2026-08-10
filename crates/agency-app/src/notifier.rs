@@ -28,8 +28,12 @@ pub struct NotifSettings {
     pub idle_secs: u64,
 }
 
-fn d_true() -> bool { true }
-fn d_idle() -> u64 { 30 }
+fn d_true() -> bool {
+    true
+}
+fn d_idle() -> u64 {
+    30
+}
 
 impl Default for NotifSettings {
     fn default() -> Self {
@@ -170,7 +174,12 @@ pub fn step(
 /// being watched at all.
 ///
 /// `focused` is the window's focus state, `active` the run the UI has open.
-pub fn suppressed(settings: &NotifSettings, focused: bool, active: Option<&str>, run_id: &str) -> bool {
+pub fn suppressed(
+    settings: &NotifSettings,
+    focused: bool,
+    active: Option<&str>,
+    run_id: &str,
+) -> bool {
     settings.only_when_watching && focused && active == Some(run_id)
 }
 
@@ -181,7 +190,9 @@ pub fn message(kind: &NotifyKind, label: &str) -> (String, String) {
         NotifyKind::RunCrashed(script) => {
             ("Run script crashed".to_string(), format!("{label} — \"{script}\" exited"))
         }
-        NotifyKind::Idle => ("Agent finished a turn".to_string(), format!("{label} — ready for you")),
+        NotifyKind::Idle => {
+            ("Agent finished a turn".to_string(), format!("{label} — ready for you"))
+        }
     }
 }
 
@@ -194,24 +205,45 @@ mod tests {
         // the gating itself is covered by `idle_requires_user_input`.
         snap_input(agent, run_script, pane_hash, true)
     }
-    fn snap_input(agent: SessionStatus, run_script: SessionStatus, pane_hash: u64, user_input_pending: bool) -> RunSnapshot {
+    fn snap_input(
+        agent: SessionStatus,
+        run_script: SessionStatus,
+        pane_hash: u64,
+        user_input_pending: bool,
+    ) -> RunSnapshot {
         RunSnapshot {
-            id: "x".into(), project_id: "proj".into(), label: "claude: fix".into(),
-            is_terminal: false, is_loop: false, agent, run_scripts: one(run_script),
-            pane_hash, user_input_pending,
+            id: "x".into(),
+            project_id: "proj".into(),
+            label: "claude: fix".into(),
+            is_terminal: false,
+            is_loop: false,
+            agent,
+            run_scripts: one(run_script),
+            pane_hash,
+            user_input_pending,
         }
     }
     /// A one-script project, under the name the tests refer to.
     fn one(status: SessionStatus) -> BTreeMap<String, SessionStatus> {
         BTreeMap::from([("dev".to_string(), status)])
     }
-    fn running() -> SessionStatus { SessionStatus::Running }
-    fn exited(code: i32) -> SessionStatus { SessionStatus::Exited { code } }
+    fn running() -> SessionStatus {
+        SessionStatus::Running
+    }
+    fn exited(code: i32) -> SessionStatus {
+        SessionStatus::Exited { code }
+    }
 
     #[test]
     fn settings_default_is_all_on_idle_30() {
         let s = NotifSettings::default();
-        assert!(s.agent_finished && s.agent_idle && s.run_crashed && s.merge_attention && s.only_when_watching);
+        assert!(
+            s.agent_finished
+                && s.agent_idle
+                && s.run_crashed
+                && s.merge_attention
+                && s.only_when_watching
+        );
         assert_eq!(s.idle_secs, 30);
     }
 
@@ -283,7 +315,9 @@ mod tests {
         for t in 1..=15 {
             let (nw, ev) = step(Some(&w), &snap(running(), SessionStatus::Gone, 1), t, 2, 30);
             w = nw;
-            if ev.contains(&NotifyKind::Idle) { fired_at = Some(t); }
+            if ev.contains(&NotifyKind::Idle) {
+                fired_at = Some(t);
+            }
         }
         assert_eq!(fired_at, Some(15));
         // already idle → no repeat next tick
@@ -300,9 +334,11 @@ mod tests {
     fn idle_requires_user_input() {
         // A running agent that has never received input (fresh prompt) must not
         // fire idle no matter how long its pane stays quiet.
-        let (mut w, _) = step(None, &snap_input(running(), SessionStatus::Gone, 1, false), 0, 2, 30);
+        let (mut w, _) =
+            step(None, &snap_input(running(), SessionStatus::Gone, 1, false), 0, 2, 30);
         for t in 1..=30 {
-            let (nw, ev) = step(Some(&w), &snap_input(running(), SessionStatus::Gone, 1, false), t, 2, 30);
+            let (nw, ev) =
+                step(Some(&w), &snap_input(running(), SessionStatus::Gone, 1, false), t, 2, 30);
             w = nw;
             assert!(!ev.contains(&NotifyKind::Idle), "fired idle without input at tick {t}");
         }
@@ -311,9 +347,15 @@ mod tests {
     #[test]
     fn terminals_never_notify() {
         let term = |agent: SessionStatus, hash: u64| RunSnapshot {
-            id: "t".into(), project_id: "proj".into(), label: "terminal".into(),
-            is_terminal: true, is_loop: false, agent, run_scripts: one(SessionStatus::Gone),
-            pane_hash: hash, user_input_pending: true,
+            id: "t".into(),
+            project_id: "proj".into(),
+            label: "terminal".into(),
+            is_terminal: true,
+            is_loop: false,
+            agent,
+            run_scripts: one(SessionStatus::Gone),
+            pane_hash: hash,
+            user_input_pending: true,
         };
         // Exit edge: running -> exited must stay silent for terminals.
         let (w, _) = step(None, &term(running(), 1), 0, 2, 30);
@@ -331,9 +373,15 @@ mod tests {
     #[test]
     fn looping_runs_suppress_finished_and_idle_but_not_run_crash() {
         let lsnap = |agent: SessionStatus, run_script: SessionStatus, hash: u64| RunSnapshot {
-            id: "l".into(), project_id: "proj".into(), label: "claude: loop".into(),
-            is_terminal: false, is_loop: true, agent, run_scripts: one(run_script),
-            pane_hash: hash, user_input_pending: true,
+            id: "l".into(),
+            project_id: "proj".into(),
+            label: "claude: loop".into(),
+            is_terminal: false,
+            is_loop: true,
+            agent,
+            run_scripts: one(run_script),
+            pane_hash: hash,
+            user_input_pending: true,
         };
         // Attempt exit (running -> exited) must not toast.
         let (w, _) = step(None, &lsnap(running(), running(), 1), 0, 2, 30);
@@ -361,10 +409,15 @@ mod tests {
     #[test]
     fn each_script_crashes_on_its_own() {
         let two = |dev: SessionStatus, build: SessionStatus| RunSnapshot {
-            id: "x".into(), project_id: "proj".into(), label: "claude: fix".into(),
-            is_terminal: false, is_loop: false, agent: running(),
+            id: "x".into(),
+            project_id: "proj".into(),
+            label: "claude: fix".into(),
+            is_terminal: false,
+            is_loop: false,
+            agent: running(),
             run_scripts: BTreeMap::from([("dev".into(), dev), ("build".into(), build)]),
-            pane_hash: 1, user_input_pending: true,
+            pane_hash: 1,
+            user_input_pending: true,
         };
         let (w, _) = step(None, &two(running(), running()), 0, 2, 30);
         // The build fails while the dev server keeps serving: one toast, named.

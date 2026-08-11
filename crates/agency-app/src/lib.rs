@@ -275,6 +275,8 @@ pub fn run() {
             commands::add_to_gitignore,
             commands::abs_path,
             commands::reveal_path,
+            commands::resolve_term_paths,
+            commands::open_term_path,
             commands::rename_run,
             commands::read_file_base64,
             commands::detect_docs_dir,

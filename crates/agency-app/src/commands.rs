@@ -2032,6 +2032,52 @@ pub fn reveal_path(
     app.opener().reveal_item_in_dir(p).map_err(|e| e.to_string())
 }
 
+/// How many candidates one hovered terminal line may ask about. A line holds a
+/// handful of path-shaped words at most; the cap keeps a pathological line
+/// (minified JSON, a `find` dump wrapped into one logical line) from turning a
+/// hover into hundreds of stat calls.
+const MAX_LINK_CANDIDATES: usize = 32;
+
+/// Which of `paths` — the path-shaped words on the terminal line under the
+/// pointer — actually exist, so only those are underlined as links. Answers
+/// positionally: `None` where nothing resolved.
+#[tauri::command]
+pub async fn resolve_term_paths(
+    state: State<'_, AppState>,
+    root: FileRoot,
+    paths: Vec<String>,
+) -> Result<Vec<Option<agency_core::files::LinkedPath>>, String> {
+    let base = resolve_root(&state, &root)?;
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    Ok(paths
+        .iter()
+        .take(MAX_LINK_CANDIDATES)
+        .map(|p| agency_core::files::resolve_printed_path(&base, p, home.as_deref()))
+        .collect())
+}
+
+/// Hand a clicked terminal path to the OS: reveal a directory in the file
+/// manager, open a file with its default app. Only for what the Files tab
+/// can't show — anything inside the root opens in the app instead.
+#[tauri::command]
+pub fn open_term_path(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    root: FileRoot,
+    path: String,
+) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let base = resolve_root(&state, &root)?;
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    let target = agency_core::files::resolve_printed_path(&base, &path, home.as_deref())
+        .ok_or_else(|| format!("path does not exist: {path}"))?;
+    if target.is_dir {
+        app.opener().reveal_item_in_dir(&target.abs_path).map_err(|e| e.to_string())
+    } else {
+        app.opener().open_path(&target.abs_path, None::<&str>).map_err(|e| e.to_string())
+    }
+}
+
 /// Rename a run: overwrite its display title unconditionally (unlike
 /// set_run_title, which only fills an empty title from the first prompt). An
 /// empty/whitespace title clears it, so the name falls back to prompt/branch.

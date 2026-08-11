@@ -4,9 +4,11 @@ import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import "@xterm/xterm/css/xterm.css";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { attachRun, detachRun, resizeRun, runInput, runPreview, ensureRunActive,
   attachRunScript, detachRunScript, resizeRunScript, runScriptInput, runScriptPreview,
-  attachShell, detachShell, resizeShell, shellInput, shellPreview, startShell } from "../api";
+  attachShell, detachShell, resizeShell, shellInput, shellPreview, startShell,
+  FileRoot, openTermPath } from "../api";
 import { useRuns } from "../store/runs";
 import { currentXtermTheme, minContrastRatio, TERMINAL_FONT_FAMILY } from "../lib/themes";
 import { initialCapture, feed } from "../lib/firstPrompt";
@@ -15,6 +17,9 @@ import { follow, GESTURE_MS } from "../lib/termFollow";
 import { createInputWriter, type InputWriter } from "../lib/termInput";
 import { fullClipboardText } from "../lib/clipboard";
 import { FindRank, registerFindTarget } from "../lib/findBus";
+import { installTermLinks } from "../lib/termLinkProvider";
+import { fileRootKey, requestOpenFile } from "../lib/openFile";
+import { toastError } from "../lib/toast";
 
 export interface TerminalStream {
   attach(id: string, cols: number, rows: number, onBytes: (b: Uint8Array) => void): Promise<void>;
@@ -84,7 +89,19 @@ export default function FocusTerminal(
   // or dev-server pane doesn't show its agent's turn ending. The functional
   // clear keeps a pane swap (old unmounts after the new one mounts) from
   // blanking the run that just took over.
-  const { setOnScreenRun } = useRuns();
+  const { setOnScreenRun, setTab, selectedRunId, selectedProjectId } = useRuns();
+  // Where a clicked path resolves, and where it opens: the root the Files tab
+  // is showing. Deliberately that one and not the pane's own session — an open
+  // request scoped to any other root is dropped by the view that has to serve
+  // it, and in the focus view (where an agent works) the two are the same root
+  // anyway. Read through a ref so switching project doesn't rebuild the pane.
+  const filesRoot: FileRoot | null = selectedRunId
+    ? { kind: "run", id: selectedRunId }
+    : selectedProjectId
+      ? { kind: "project", id: selectedProjectId }
+      : null;
+  const linkCtx = useRef({ filesRoot, setTab });
+  linkCtx.current = { filesRoot, setTab };
   const isAgentPane = stream === agentStream;
   useEffect(() => {
     if (!isAgentPane) return;
@@ -113,6 +130,24 @@ export default function FocusTerminal(
     searchAddonRef.current = search;
     termRef.current = term;
     term.open(container);
+    // URLs and file paths in the output, ⌘-clickable (see lib/termLinkProvider).
+    // After `open`: the provider listens on the screen element xterm builds there.
+    const links = installTermLinks(term, container, {
+      root: () => linkCtx.current.filesRoot,
+      openUrl: (url) => { openUrl(url).catch((e) => toastError(e, "Couldn't open that link")); },
+      openPath: (path, line, hit) => {
+        const root = linkCtx.current.filesRoot;
+        if (!root) return;
+        // A file inside the root opens in the app; a directory, or anything
+        // living outside it, belongs to the OS.
+        if (hit?.relPath && !hit.isDir) {
+          linkCtx.current.setTab("files");
+          requestOpenFile({ rootKey: fileRootKey(root), path: hit.relPath, line });
+          return;
+        }
+        openTermPath(root, path).catch((e) => toastError(e, "Couldn't open that path"));
+      },
+    });
     // Shift/Ctrl+Enter → insert a newline instead of submitting. xterm sends a bare
     // CR (\r) for Enter regardless of modifiers, so a TUI like Claude Code can't tell
     // "submit" from "newline". We intercept the modified chord and send LF (\n, 0x0a),
@@ -359,6 +394,7 @@ export default function FocusTerminal(
       window.removeEventListener("pointerup", onPointerUp, true);
       window.removeEventListener("pointercancel", onPointerUp, true);
       viewportEl?.removeEventListener("scroll", settle);
+      links();
       scrollWatch.dispose();
       onData?.dispose();
       // Before the detach, so a keystroke queued on this frame still reaches

@@ -1136,6 +1136,24 @@ export const absPath = (root: FileRoot, relPath: string) =>
 export const revealPath = (root: FileRoot, relPath: string) =>
   invoke<void>("reveal_path", { root, relPath });
 
+/** A path printed in terminal output, resolved on disk (see lib/termLinks). */
+export interface LinkedPath {
+  absPath: string;
+  /** Relative to the root, or null when the path lives outside it. */
+  relPath: string | null;
+  isDir: boolean;
+}
+
+// Which of the path-shaped words on a hovered terminal line are real paths.
+// Answers positionally, null where nothing resolved.
+export const resolveTermPaths = (root: FileRoot, paths: string[]) =>
+  invoke<(LinkedPath | null)[]>("resolve_term_paths", { root, paths });
+
+// Hand a clicked path to the OS — a directory to the file manager, a file
+// outside the root to its default app.
+export const openTermPath = (root: FileRoot, path: string) =>
+  invoke<void>("open_term_path", { root, path });
+
 // Actual on-disk name of the project's top-level docs folder (case-insensitive
 // match), or null when the project has none.
 export const detectDocsDir = (projectId: string) =>

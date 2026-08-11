@@ -189,6 +189,55 @@ pub fn abs_path(root: &Path, rel: &str) -> Result<PathBuf> {
     Ok(path)
 }
 
+/// A path printed by a program running in a root, resolved on disk.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkedPath {
+    /// Absolute, symlink-resolved path.
+    pub abs_path: String,
+    /// The same path relative to the root, when it lives inside it. `None` for
+    /// anything outside — that opens with the OS rather than in the Files tab.
+    pub rel_path: Option<String>,
+    pub is_dir: bool,
+}
+
+/// Resolve a path as an agent printed it — the backing check behind clickable
+/// paths in terminal output (`lib/termLinks.ts` finds the candidates).
+///
+/// Unlike `resolve_within`, this deliberately resolves *outside* the root too:
+/// a terminal prints paths from anywhere, and `~/notes.md` or `/etc/hosts` is
+/// as clickable in a bare terminal as a file in the checkout. Containment is
+/// reported (`rel_path`) rather than enforced, so the caller can open what is
+/// inside the root in the app and hand the rest to the OS.
+///
+/// Returns `None` for anything that doesn't exist, which is what keeps prose
+/// that merely looks path-shaped ("e.g", "v1.2") from being underlined.
+pub fn resolve_printed_path(root: &Path, text: &str, home: Option<&Path>) -> Option<LinkedPath> {
+    let text = text.trim();
+    if text.is_empty() {
+        return None;
+    }
+    let expanded = if text == "~" || text.starts_with("~/") {
+        home?.join(text.trim_start_matches('~').trim_start_matches('/'))
+    } else if text.starts_with('/') {
+        PathBuf::from(text)
+    } else {
+        root.join(text)
+    };
+    // Canonicalizing is both the existence check and the symlink resolution, so
+    // containment is judged on where the path really lands.
+    let target = expanded.canonicalize().ok()?;
+    let is_dir = target.is_dir();
+    let rel = root
+        .canonicalize()
+        .ok()
+        .and_then(|r| target.strip_prefix(r).ok().map(|p| p.to_string_lossy().into_owned()))
+        // The root itself is inside the root, but "" is not a file the Files
+        // tab can open; treat it as an outside hit and let the OS have it.
+        .filter(|p| !p.is_empty());
+    Some(LinkedPath { abs_path: target.to_string_lossy().into_owned(), rel_path: rel, is_dir })
+}
+
 /// Read a file's contents. Oversized files are flagged `too_large`; files
 /// containing a NUL byte or any invalid UTF-8 are flagged `binary` (we only
 /// return `text` for content that is genuinely valid UTF-8, so the editor never
@@ -582,6 +631,78 @@ pub fn read_file_bytes(root: &Path, rel: &str) -> Result<BinaryFile> {
         return Ok(BinaryFile { bytes: Vec::new(), mime, too_large: true });
     }
     Ok(BinaryFile { bytes: std::fs::read(&path)?, mime, too_large: false })
+}
+
+#[cfg(test)]
+mod printed_path_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn resolves_paths_relative_to_the_root() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/main.rs"), "fn main() {}").unwrap();
+
+        let got = resolve_printed_path(dir.path(), "src/main.rs", None).unwrap();
+        assert_eq!(got.rel_path.as_deref(), Some("src/main.rs"));
+        assert!(!got.is_dir);
+        assert!(got.abs_path.ends_with("src/main.rs"));
+
+        // "./" prefixed and directory forms land the same way.
+        assert_eq!(
+            resolve_printed_path(dir.path(), "./src/main.rs", None).unwrap().rel_path.as_deref(),
+            Some("src/main.rs"),
+        );
+        let d = resolve_printed_path(dir.path(), "src", None).unwrap();
+        assert!(d.is_dir);
+        assert_eq!(d.rel_path.as_deref(), Some("src"));
+    }
+
+    #[test]
+    fn absolute_paths_inside_the_root_come_back_relative() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("a.md"), "x").unwrap();
+        let abs = dir.path().canonicalize().unwrap().join("a.md");
+
+        let got = resolve_printed_path(dir.path(), abs.to_str().unwrap(), None).unwrap();
+        assert_eq!(got.rel_path.as_deref(), Some("a.md"));
+    }
+
+    #[test]
+    fn paths_outside_the_root_resolve_without_a_relative_path() {
+        let dir = tempdir().unwrap();
+        let other = tempdir().unwrap();
+        std::fs::write(other.path().join("elsewhere.txt"), "x").unwrap();
+        let abs = other.path().join("elsewhere.txt");
+
+        let got = resolve_printed_path(dir.path(), abs.to_str().unwrap(), None).unwrap();
+        assert_eq!(got.rel_path, None);
+        assert!(got.abs_path.ends_with("elsewhere.txt"));
+    }
+
+    #[test]
+    fn expands_a_leading_tilde_against_the_given_home() {
+        let home = tempdir().unwrap();
+        std::fs::write(home.path().join("notes.md"), "x").unwrap();
+        let root = tempdir().unwrap();
+
+        let got = resolve_printed_path(root.path(), "~/notes.md", Some(home.path())).unwrap();
+        assert_eq!(got.rel_path, None);
+        assert!(got.abs_path.ends_with("notes.md"));
+        // No home to expand against is a miss, not a path named "~".
+        assert_eq!(resolve_printed_path(root.path(), "~/notes.md", None), None);
+    }
+
+    #[test]
+    fn what_does_not_exist_is_not_a_link() {
+        let dir = tempdir().unwrap();
+        assert_eq!(resolve_printed_path(dir.path(), "e.g", None), None);
+        assert_eq!(resolve_printed_path(dir.path(), "src/nope.rs", None), None);
+        assert_eq!(resolve_printed_path(dir.path(), "", None), None);
+        // The root itself exists but is nothing to open in the Files tab.
+        assert_eq!(resolve_printed_path(dir.path(), ".", None).unwrap().rel_path, None);
+    }
 }
 
 #[cfg(test)]

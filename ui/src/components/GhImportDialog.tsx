@@ -77,9 +77,13 @@ export default function GhImportDialog({
   }, [mode, selectedProjectId, readiness]);
 
   // Autofocus the primary input (the first pickable item) once the list loads
-  // so keyboard users can navigate the choices immediately.
+  // so keyboard users can navigate the choices immediately. A sole candidate is
+  // picked outright: there is nothing to choose between, and leaving it unpicked
+  // only blocks the create button for no reason.
   useEffect(() => {
-    if (items && items.length > 0) firstItemRef.current?.focus();
+    if (!items || items.length === 0) return;
+    firstItemRef.current?.focus();
+    if (items.length === 1) setPicked(items[0].number);
   }, [items]);
 
   async function create() {
@@ -128,19 +132,27 @@ export default function GhImportDialog({
         ) : items && items.length === 0 && !error ? (
           <p className="merge-note">Nothing open to pick from.</p>
         ) : (
-          <div className="gh-pick-list">
-            {items?.map((it, idx) => (
-              <label key={it.number} className="gh-pick-item">
-                <input
-                  ref={idx === 0 ? firstItemRef : undefined}
-                  type="radio"
-                  name="gh-pick"
-                  checked={picked === it.number}
-                  onChange={() => setPicked(it.number)}
-                />
-                <span>{it.label}</span>
-              </label>
-            ))}
+          <div className="gh-pick-block">
+            <span className="gh-pick-caption">
+              {mode === "issue" ? "pick an issue" : "pick a pull request"}
+            </span>
+            <div className="gh-pick-list">
+              {items?.map((it, idx) => (
+                <label
+                  key={it.number}
+                  className={`gh-pick-item${picked === it.number ? " selected" : ""}`}
+                >
+                  <input
+                    ref={idx === 0 ? firstItemRef : undefined}
+                    type="radio"
+                    name="gh-pick"
+                    checked={picked === it.number}
+                    onChange={() => setPicked(it.number)}
+                  />
+                  <span>{it.label}</span>
+                </label>
+              ))}
+            </div>
           </div>
         )}
         {readiness === "ready" && (

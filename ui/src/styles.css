@@ -90,7 +90,12 @@ button {
   font-size: 13px;
   transition: background 0.15s;
 }
-button:hover { background: var(--lav); }
+button:hover:not(:disabled) { background: var(--lav); }
+/* A disabled button has to read as disabled. The base button is a solid blue
+   primary, so without this a blocked action (say "Create agent" before a pull
+   request is picked) looks clickable and silently does nothing when pressed.
+   Variants that already dim themselves through colour opt out just below. */
+button:disabled { opacity: .45; cursor: default; }
 .browse {
   background: var(--s0);
   color: var(--text);
@@ -510,7 +515,8 @@ textarea.settings-input { min-height: 64px; resize: vertical; }
   font-size: 16px;
 }
 .icon-btn:hover { background: var(--s0); color: var(--text); }
-.icon-btn:disabled { color: var(--o0); cursor: default; }
+/* Already dimmed by colour; the global disabled fade would erase it. */
+.icon-btn:disabled { color: var(--o0); cursor: default; opacity: 1; }
 .icon-btn:disabled:hover { background: none; color: var(--o0); }
 .search-box {
   display: flex; align-items: center; gap: 6px;
@@ -1355,7 +1361,7 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
 }
 .ctx-item:hover:not(:disabled), .ctx-item.open { background: var(--s0); }
 .ctx-more { color: var(--o0); font-size: 13px; line-height: 1; margin-left: 10px; }
-.ctx-item:disabled { color: var(--o0); cursor: default; }
+.ctx-item:disabled { color: var(--o0); cursor: default; opacity: 1; }
 .ctx-item.danger { color: var(--red); }
 .ctx-glyph { width: 14px; display: inline-flex; justify-content: center; color: var(--sub0); flex: none; }
 .ctx-item.danger .ctx-glyph { color: var(--red); }
@@ -2281,8 +2287,19 @@ input, textarea, code,
 .loop-strip.stalled .loop-glyph { color: var(--red); }
 .loop-strip.stopped .loop-glyph { color: var(--o1); }
 .loop-strip .loop-check-cmd { color: var(--sub0); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40%; }
+.gh-pick-block { display: flex; flex-direction: column; gap: 6px; min-height: 0; }
 .gh-pick-list { display: flex; flex-direction: column; gap: 4px; max-height: 260px; overflow-y: auto; }
-.gh-pick-item { display: flex; align-items: baseline; gap: 8px; font-size: 12px; color: var(--text); cursor: pointer; }
+.gh-pick-caption { font-size: 11px; color: var(--o1); }
+/* Rows carry their own surface and a hover/selected border so the list reads
+   as something you pick from, rather than text with a stray radio next to it. */
+.gh-pick-item {
+  display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text);
+  cursor: pointer; padding: 6px 9px; border-radius: 6px;
+  background: var(--crust); border: 1px solid transparent;
+}
+.gh-pick-item:hover { border-color: var(--s1); }
+.gh-pick-item.selected { border-color: var(--blue); background: color-mix(in srgb, var(--blue) 12%, var(--crust)); }
+.gh-pick-item input { accent-color: var(--blue); flex: none; }
 .gh-pick-agent { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--o1); }
 
 /* Modal chrome shared by the merge modal and the race/import dialogs:
@@ -3345,7 +3362,7 @@ input, textarea, code,
 /* Merge button + dialog. */
 .pr-merge-btn { border: 1px solid var(--green); color: var(--green); font-size: 11.5px; padding: 4px 10px; border-radius: 6px; }
 .pr-merge-btn:hover:not(:disabled) { background: color-mix(in srgb, var(--green) 14%, transparent); }
-.pr-merge-btn:disabled { color: var(--sub0); border-color: var(--s1); cursor: not-allowed; }
+.pr-merge-btn:disabled { color: var(--sub0); border-color: var(--s1); cursor: not-allowed; opacity: 1; }
 .merge-methods { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
 .merge-method { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text); cursor: pointer; }
 .merge-method input { accent-color: var(--green); }

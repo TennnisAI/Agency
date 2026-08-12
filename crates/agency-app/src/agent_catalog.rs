@@ -64,7 +64,7 @@ pub struct CatalogEntryInfo {
 
 /// All built-in agent profiles Agency ships recipes for.
 pub fn builtins() -> &'static [CatalogEntry] {
-    // cursor/hermes/gemini/kimi/crush are id-keyed (not cwd-keyed) so they
+    // cursor/hermes/gemini/kimi are id-keyed (not cwd-keyed) so they
     // start fresh rather than risk resuming the wrong global session. Loop
     // recipes are the agents' headless one-shot modes; agents without a known
     // headless mode get None and simply can't loop. claude gets acceptEdits so
@@ -170,8 +170,16 @@ pub fn builtins() -> &'static [CatalogEntry] {
                 // its flags carry an opening prompt, so there is nothing to hand
                 // it; `crush run <prompt>` is headless-only. See AGE-80.
                 prompt: PromptDelivery::Unsupported,
-                resume_args: None,
-                loop_args: None,
+                // Sessions live in `.crush/crush.db` under the cwd (crush drops a
+                // `*` .gitignore beside it), so a worktree only ever has its own
+                // sessions and --continue can't reach another project's.
+                resume_args: Some(vec!["--continue".into()]),
+                // `run` is the headless one-shot AGE-80 spotted but never wired
+                // up. It auto-approves the session's permissions itself (crush's
+                // app.RunNonInteractive), which is why it rejects the TUI-only
+                // --yolo; --quiet drops the spinner so the pane keeps a readable
+                // transcript instead of redraw noise. Verified against v0.51.2.
+                loop_args: Some(vec!["run".into(), "{{prompt}}".into(), "--quiet".into()]),
             },
         ]
     })
@@ -234,6 +242,25 @@ mod tests {
             assert!(
                 recipe.iter().any(|a| a.contains("{{prompt}}")),
                 "{} takes no positional prompt, so its loop recipe needs the token: {recipe:?}",
+                entry.id
+            );
+        }
+    }
+
+    /// The point of a catalog entry over a hand-rolled custom profile is the
+    /// recipes it carries, so an entry offering none of prompt/resume/loop is
+    /// just a command name and belongs nowhere near onboarding — the state
+    /// AGE-81 was filed over, after crush's recipes were left unfilled rather
+    /// than its CLI actually lacking them.
+    #[test]
+    fn every_catalog_entry_carries_at_least_one_recipe() {
+        for entry in builtins() {
+            assert!(
+                entry.prompt != PromptDelivery::Unsupported
+                    || entry.resume_args.is_some()
+                    || entry.loop_args.is_some(),
+                "{} takes no prompt, resume or loop recipe — read its --help and wire up \
+                 whatever it does support, or drop it from the catalog",
                 entry.id
             );
         }

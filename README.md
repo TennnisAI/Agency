@@ -28,8 +28,8 @@ network calls of its own at all.
 
 **Requirements**
 
-- **macOS 11+ on Apple Silicon.** Release builds are `aarch64` only right now;
-  there is no Intel or universal build yet.
+- **macOS 11 (Big Sur) or later on Apple Silicon.** Release builds are `aarch64`
+  only right now; there is no Intel or universal build yet.
 - **Git**, and Xcode Command Line Tools (`xcode-select --install`).
 - **At least one coding-agent CLI** — Claude Code, Codex, Pi, OpenCode, Copilot
   CLI, Cursor, Hermes, Gemini CLI, Kimi Code, or Crush. Agency detects what is on

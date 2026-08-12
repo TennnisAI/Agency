@@ -31,7 +31,7 @@ export default function MergeModal({
   taskId: string;
   onClose: () => void;
   onRemoved?: () => void;
-  // Deep-link handler for "Open PR" — opens the PR in the review panel.
+  // Deep-link handler for "View PR" — opens the PR in the review panel.
   // Required: without it the button falls out of Agency to github.com.
   onReviewPr: (number: number) => void;
 }) {

@@ -2241,7 +2241,7 @@ input, textarea, code,
 .pr-info-head { display: flex; align-items: center; gap: 8px; }
 .pr-info-head .spacer { flex: 1 1 auto; min-width: 8px; }
 /* The title is the only thing that gives: without this the actions shrink to
-   their min-content width and break "Open PR" across two lines. */
+   their min-content width and break "View PR" across two lines. */
 .pr-info-head > button { flex: none; white-space: nowrap; }
 .pr-state { flex: none; font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 4px; letter-spacing: .04em; }
 .pr-state-open { color: var(--green); border: 1px solid var(--green); }

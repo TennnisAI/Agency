@@ -33,7 +33,7 @@ export default function PrSection({
   projectId: string;
   canCreate: boolean;
   onLeave: () => void;
-  // Deep-links "Open PR" to the review panel for the created/existing PR.
+  // Deep-links "View PR" to the review panel for the created/existing PR.
   // Required, not optional: a missing handler is how this button silently
   // regressed to opening github.com instead (AGE-59).
   onReviewPr: (number: number) => void;
@@ -153,10 +153,10 @@ export default function PrSection({
               #{pr.number} {pr.title}
             </span>
             <span className="spacer" />
-            {/* Opening a PR keeps you in Agency: the review panel is the richer
+            {/* Viewing a PR keeps you in Agency: the review panel is the richer
                 surface, and it carries its own link out to github.com. */}
             <button className="settings-ghost-btn" onClick={() => onReviewPr(pr.number)}>
-              Open PR
+              View PR
             </button>
             <button className="settings-ghost-btn" onClick={refreshStatus} title="Refresh checks">
               ↻

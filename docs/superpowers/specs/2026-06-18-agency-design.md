@@ -171,7 +171,7 @@ analytics dashboard, a headless `maestro-cli`, and ~24h unattended runs.
 | Local models | First-class peer to Anthropic (LM Studio / OpenAI-compatible) | Provider-agent oriented; local-first models not the pitch |
 | Architecture | Rust core owns all state/process/git; heavily TDD'd headless engine | App-layer orchestration in TS/Electron |
 | v1 scope | Deliberately tight (no group chat, cloud, analytics) | Broad surface already |
-| License | MIT | AGPL-3.0 |
+| License | Apache-2.0, settled 2026-08-12; repo still private pending a cleanup pass | AGPL-3.0 as read on 2026-06-18 |
 
 **Privacy posture — Maestro as read on 2026-06-18.** This is a point-in-time reading of
 their published docs, recorded to position Agency, not a standing claim about how Maestro

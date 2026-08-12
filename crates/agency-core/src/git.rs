@@ -184,9 +184,23 @@ pub fn commit(worktree: &Path, message: &str) -> Result<()> {
     Ok(())
 }
 
+/// The revision to read a branch's history from: the local branch when there is
+/// one, otherwise origin's copy. A PR can be opened between branches that only
+/// exist on the remote, and `main..feature` is not a revision range when neither
+/// name is a local ref — the log and diffstat would fail and take the whole PR
+/// down with them.
+fn summary_rev(repo: &Path, branch: &str) -> String {
+    if !local_branch_exists(repo, branch) && remote_branch_exists(repo, branch) {
+        return format!("origin/{branch}");
+    }
+    branch.to_string()
+}
+
 /// A markdown summary of what `branch` adds over `base` — commit subjects plus
 /// a diffstat — used as the generated PR description.
 pub fn branch_summary(repo: &Path, branch: &str, base: &str) -> Result<String> {
+    let branch = &summary_rev(repo, branch);
+    let base = &summary_rev(repo, base);
     let subjects = git(repo, &["log", "--reverse", "--format=%s", &format!("{base}..{branch}")])?;
     let stat = git(repo, &["diff", "--stat", &format!("{base}...{branch}")])?;
     let mut body = String::from("## Summary\n\n");
@@ -690,6 +704,15 @@ pub struct ProjectBranches {
     pub current: String,
     /// All local branch names, with `current` first.
     pub branches: Vec<String>,
+    /// Branches that exist on `origin` but have no local branch of the same
+    /// name, as short names without the `origin/` prefix, sorted. Read from
+    /// remote-tracking refs, so they're as fresh as the last fetch — the app
+    /// fetches every project in the background, and callers that care can ask
+    /// for a fetch first. Kept separate from `branches` because the two aren't
+    /// interchangeable: a remote-only branch isn't checked out anywhere and
+    /// can't be pushed to, so only callers that handle that (the New PR picker)
+    /// should offer them.
+    pub remote: Vec<String>,
 }
 
 pub fn list_branches(repo: &Path) -> Result<ProjectBranches> {
@@ -702,7 +725,34 @@ pub fn list_branches(repo: &Path) -> Result<ProjectBranches> {
         branches.remove(pos);
         branches.insert(0, current.clone());
     }
-    Ok(ProjectBranches { current, branches })
+    // A repo with no `origin` (or no fetched refs) just has none of these.
+    let raw_remote =
+        git(repo, &["for-each-ref", "--format=%(refname:short)", "refs/remotes/origin"])
+            .unwrap_or_default();
+    let mut remote: Vec<String> = raw_remote
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("origin/"))
+        // `origin/HEAD` is a symbolic alias for the default branch, not a
+        // branch of its own — offering it would open a PR against a duplicate.
+        .filter(|b| !b.is_empty() && *b != "HEAD" && !branches.iter().any(|l| l == b))
+        .map(str::to_string)
+        .collect();
+    remote.sort();
+    Ok(ProjectBranches { current, branches, remote })
+}
+
+fn ref_exists(repo: &Path, name: &str) -> bool {
+    git(repo, &["rev-parse", "--verify", "--quiet", name]).is_ok()
+}
+
+/// Whether `branch` exists as a local branch in `repo`.
+pub fn local_branch_exists(repo: &Path, branch: &str) -> bool {
+    ref_exists(repo, &format!("refs/heads/{branch}"))
+}
+
+/// Whether `branch` exists on `origin`, as of the last fetch.
+pub fn remote_branch_exists(repo: &Path, branch: &str) -> bool {
+    ref_exists(repo, &format!("refs/remotes/origin/{branch}"))
 }
 
 pub fn stage_all(worktree: &Path) -> Result<()> {
@@ -1224,6 +1274,55 @@ mod branch_tests {
         assert_eq!(pb.branches[0], "main", "current branch must be first");
         assert!(pb.branches.contains(&"main".to_string()));
         assert!(pb.branches.contains(&"develop".to_string()));
+        assert!(pb.remote.is_empty(), "no origin, no remote branches: {:?}", pb.remote);
+    }
+
+    /// A repo whose only copy of `feature` is on origin, plus the symbolic
+    /// `origin/HEAD` that `git remote set-head` writes.
+    fn repo_with_remote_only_branch() -> (tempfile::TempDir, tempfile::TempDir) {
+        let dir = tempdir().unwrap();
+        let repo = dir.path();
+        init_repo(repo);
+        let remote_dir = tempdir().unwrap();
+        run(remote_dir.path(), &["init", "-q", "--bare"]);
+        run(repo, &["remote", "add", "origin", remote_dir.path().to_str().unwrap()]);
+        run(repo, &["push", "-q", "-u", "origin", "main"]);
+        run(repo, &["remote", "set-head", "origin", "main"]);
+        run(repo, &["checkout", "-q", "-b", "feature"]);
+        std::fs::write(repo.join("f"), "y").unwrap();
+        run(repo, &["commit", "-aqm", "work on the remote branch"]);
+        run(repo, &["push", "-q", "origin", "feature"]);
+        run(repo, &["checkout", "-q", "main"]);
+        run(repo, &["branch", "-qD", "feature"]);
+        (dir, remote_dir)
+    }
+
+    #[test]
+    fn list_branches_reports_remote_only_branches_separately() {
+        let (dir, _remote) = repo_with_remote_only_branch();
+        let repo = dir.path();
+
+        let pb = list_branches(repo).unwrap();
+        assert_eq!(pb.branches, vec!["main".to_string()]);
+        assert_eq!(pb.remote, vec!["feature".to_string()]);
+        assert!(
+            !pb.remote.contains(&"main".to_string()),
+            "a branch we have locally is not remote-only"
+        );
+        assert!(!pb.remote.contains(&"HEAD".to_string()), "origin/HEAD is not a branch");
+        assert!(local_branch_exists(repo, "main"));
+        assert!(!local_branch_exists(repo, "feature"));
+        assert!(remote_branch_exists(repo, "feature"));
+        assert!(!remote_branch_exists(repo, "nope"));
+    }
+
+    #[test]
+    fn branch_summary_reads_a_remote_only_branch_from_origin() {
+        let (dir, _remote) = repo_with_remote_only_branch();
+
+        let body = branch_summary(dir.path(), "feature", "main").unwrap();
+        assert!(body.contains("- work on the remote branch"), "commit subject listed: {body}");
+        assert!(body.contains("## Changes"), "diffstat included: {body}");
     }
 }
 

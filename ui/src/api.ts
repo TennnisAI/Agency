@@ -955,6 +955,8 @@ export const gitBranchInfo = (taskId: string) =>
 export interface ProjectBranches {
   current: string;
   branches: string[];
+  /** Branches that exist on origin but not locally, without the `origin/` prefix. */
+  remote: string[];
 }
 
 export const listProjectBranches = (projectId: string) =>

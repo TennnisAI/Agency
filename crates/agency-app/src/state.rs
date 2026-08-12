@@ -4840,7 +4840,15 @@ impl AppState {
         if head == base {
             bail!("a PR's branch and base must differ (both are {base})");
         }
-        agency_core::git::push_branch(&repo, head)?;
+        // Only a local branch needs publishing. A head that exists solely on
+        // origin (someone else's branch, or one pushed from another checkout)
+        // is already there, and `git push origin <name>` would fail on it with
+        // "src refspec does not match any".
+        if agency_core::git::local_branch_exists(&repo, head) {
+            agency_core::git::push_branch(&repo, head)?;
+        } else if !agency_core::git::remote_branch_exists(&repo, head) {
+            bail!("branch {head} exists neither locally nor on origin");
+        }
         let title = match title {
             Some(t) if !t.trim().is_empty() => t.to_string(),
             _ => head.to_string(),

@@ -973,13 +973,20 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
   flex-shrink: 0;
 }
 .rail-head .spacer { flex: 1; }
+/* Negative margins keep the label flush with the header while the hover pill
+   gets room to breathe. Without the padding the global button:hover background
+   hugs the glyphs, and :not(:disabled) is what outranks that global (a bare
+   .rail-head-add:hover loses to it on specificity, so the loud primary lavender
+   won instead of this quiet surface tone). */
 .rail-head-add {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   background: none;
   border: none;
-  padding: 0;
+  padding: 4px 8px;
+  margin: -4px -8px;
+  border-radius: 7px;
   cursor: pointer;
   font-family: inherit;
   font-size: inherit;
@@ -987,13 +994,13 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
   letter-spacing: inherit;
   color: var(--o1);
 }
-.rail-head-add:hover { color: var(--text); }
+.rail-head-add:hover:not(:disabled) { background: var(--s0); color: var(--text); }
 .rail-head-plus {
   font-size: 13px;
   line-height: 1;
   color: var(--sub0);
 }
-.rail-head-add:hover .rail-head-plus { color: var(--text); }
+.rail-head-add:hover:not(:disabled) .rail-head-plus { color: var(--text); }
 
 .rail-row {
   display: flex;

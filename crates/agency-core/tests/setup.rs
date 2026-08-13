@@ -1,6 +1,7 @@
 use agency_core::setup::{
     clone_repo, init_repo, initial_commit, initial_commit_with_progress, repo_name_from_url,
-    repo_readiness, write_default_gitignore, RepoReadiness,
+    repo_readiness, scan_large_files, write_default_gitignore, CancelToken, CommitOptions,
+    RepoReadiness, CANCELLED,
 };
 use std::path::Path;
 use std::process::Command;
@@ -101,7 +102,10 @@ fn initial_commit_reports_staging_progress_then_commit() {
     }
 
     let mut seen: Vec<(String, String)> = Vec::new();
-    initial_commit_with_progress(dir.path(), false, |p| seen.push((p.phase, p.detail))).unwrap();
+    initial_commit_with_progress(dir.path(), &CommitOptions::default(), |p| {
+        seen.push((p.phase, p.detail))
+    })
+    .unwrap();
 
     assert_eq!(repo_readiness(dir.path()), RepoReadiness::Ready { dirty: false });
     // Staging counts up as git hashes files, then the commit phase closes it out.
@@ -120,7 +124,10 @@ fn initial_commit_on_empty_folder_reports_no_staged_files() {
     git(dir.path(), &["config", "user.name", "T"]);
 
     let mut seen: Vec<(String, String)> = Vec::new();
-    initial_commit_with_progress(dir.path(), false, |p| seen.push((p.phase, p.detail))).unwrap();
+    initial_commit_with_progress(dir.path(), &CommitOptions::default(), |p| {
+        seen.push((p.phase, p.detail))
+    })
+    .unwrap();
 
     // Nothing to stage, but the phases still fire so the dialog isn't left blank.
     assert_eq!(seen.last().unwrap(), &("Writing commit".to_string(), "0 files".to_string()));
@@ -141,6 +148,112 @@ fn initial_commit_with_gitignore_writes_and_excludes() {
     assert!(gi.contains("node_modules/"));
     // node_modules excluded → tree clean, keep.txt + .gitignore committed.
     assert_eq!(repo_readiness(dir.path()), RepoReadiness::Ready { dirty: false });
+}
+
+#[test]
+fn initial_commit_excludes_chosen_paths_even_when_already_staged() {
+    let dir = tempfile::tempdir().unwrap();
+    init_bare_repo(dir.path());
+    std::fs::create_dir(dir.path().join("models")).unwrap();
+    std::fs::write(dir.path().join("models/w.gguf"), "weights\n").unwrap();
+    std::fs::write(dir.path().join("main.rs"), "fn main() {}\n").unwrap();
+    // A first attempt the user cancelled after it had staged the very file they
+    // then chose to leave out.
+    git(dir.path(), &["add", "-A"]);
+
+    let opts = CommitOptions {
+        add_gitignore: true,
+        ignore_paths: vec!["models/".to_string()],
+        ..Default::default()
+    };
+    initial_commit_with_progress(dir.path(), &opts, |_| {}).unwrap();
+
+    let out = std::process::Command::new("git")
+        .args(["ls-files"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let files: Vec<&str> = std::str::from_utf8(&out.stdout).unwrap().lines().collect();
+    assert!(files.contains(&"main.rs"), "{files:?}");
+    assert!(!files.contains(&"models/w.gguf"), "{files:?}");
+    let gi = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+    // Appended to the defaults, not instead of them.
+    assert!(gi.contains("/models/"), "{gi}");
+    assert!(gi.contains("node_modules/"), "{gi}");
+    assert_eq!(repo_readiness(dir.path()), RepoReadiness::Ready { dirty: false });
+}
+
+#[test]
+fn cancelled_commit_stops_and_leaves_no_lock() {
+    let dir = tempfile::tempdir().unwrap();
+    init_bare_repo(dir.path());
+    std::fs::write(dir.path().join("a.txt"), "a\n").unwrap();
+
+    let cancel = CancelToken::new();
+    // Already cancelled: staging must not outlive the token, whatever it hashed.
+    cancel.cancel();
+    let opts = CommitOptions { cancel, ..Default::default() };
+    let err = initial_commit_with_progress(dir.path(), &opts, |_| {}).unwrap_err();
+
+    assert_eq!(err.to_string(), CANCELLED);
+    // No commit, and nothing left behind to block the next attempt.
+    assert_eq!(repo_readiness(dir.path()), RepoReadiness::NoCommits { stageable: true });
+    assert!(!dir.path().join(".git/index.lock").exists());
+}
+
+#[test]
+fn ignore_rules_hold_for_awkward_file_names() {
+    let dir = tempfile::tempdir().unwrap();
+    init_bare_repo(dir.path());
+    // Glob characters and a space: the rule written for this file has to match
+    // it and nothing else.
+    std::fs::write(dir.path().join("[raw] set*.bin"), "x\n").unwrap();
+    std::fs::write(dir.path().join("keep.bin"), "k\n").unwrap();
+
+    let opts =
+        CommitOptions { ignore_paths: vec!["[raw] set*.bin".to_string()], ..Default::default() };
+    initial_commit_with_progress(dir.path(), &opts, |_| {}).unwrap();
+
+    let out = std::process::Command::new("git")
+        .args(["ls-files"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let files: Vec<&str> = std::str::from_utf8(&out.stdout).unwrap().lines().collect();
+    assert!(files.contains(&"keep.bin"), "{files:?}");
+    assert!(!files.iter().any(|f| f.contains("raw")), "{files:?}");
+    assert_eq!(repo_readiness(dir.path()), RepoReadiness::Ready { dirty: false });
+}
+
+#[test]
+fn cancelling_mid_staging_stops_the_commit() {
+    let dir = tempfile::tempdir().unwrap();
+    init_bare_repo(dir.path());
+    // Enough files that the first progress update (every 100) lands with most of
+    // the work still to do, which is where the user hits Cancel.
+    for i in 0..3000 {
+        std::fs::write(dir.path().join(format!("f{i}.txt")), "x\n").unwrap();
+    }
+
+    let cancel = CancelToken::new();
+    let opts = CommitOptions { cancel: cancel.clone(), ..Default::default() };
+    let err = initial_commit_with_progress(dir.path(), &opts, |_| cancel.cancel()).unwrap_err();
+
+    assert_eq!(err.to_string(), CANCELLED);
+    assert_eq!(repo_readiness(dir.path()), RepoReadiness::NoCommits { stageable: true });
+    assert!(!dir.path().join(".git/index.lock").exists());
+}
+
+#[test]
+fn scan_reports_only_files_over_the_threshold() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("small.txt"), "hi\n").unwrap();
+    // Nothing here is anywhere near 100 MB, so the setup dialog stays quiet.
+    let scan = scan_large_files(dir.path());
+    assert_eq!(scan.count, 0);
+    assert!(scan.files.is_empty());
+    assert!(scan.ignore_paths.is_empty());
+    assert!(!scan.truncated);
 }
 
 #[test]

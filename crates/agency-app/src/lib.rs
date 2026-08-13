@@ -222,6 +222,8 @@ pub fn run() {
             commands::init_repo,
             commands::clone_repo,
             commands::commit_repo,
+            commands::cancel_repo_setup,
+            commands::scan_large_files,
             commands::git_commit_files,
             commands::git_commit_diff,
             commands::git_commit_amend,

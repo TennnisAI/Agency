@@ -1,4 +1,5 @@
-import { RepoReadiness } from "../api";
+import { LargeFileScan, RepoReadiness } from "../api";
+import { formatSize } from "./git/binary";
 
 export type RepoSetupView = {
   kind: "init" | "commit" | "dirty" | "ready";
@@ -39,4 +40,14 @@ export function repoSetupView(readiness: RepoReadiness, context: "add" | "spawn"
     };
   }
   return { kind: "ready", title: "", body: "", primaryLabel: "", secondaryLabel: null };
+}
+
+// One line for what the folder is carrying: how many oversized files and how
+// much they weigh. `truncated` means the scan stopped at its budget, so the
+// count is a floor, not a total.
+export function largeFileSummary(scan: LargeFileScan): string {
+  const one = scan.count === 1;
+  const at = scan.truncated ? "At least " : "";
+  const size = `${formatSize(scan.bytes)}${one ? "" : " in total"}`;
+  return `${at}${scan.count} file${one ? " here is" : "s here are"} over 100 MB (${size})`;
 }

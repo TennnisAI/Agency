@@ -1012,6 +1012,11 @@ pub struct AppState {
     /// `graphify-out/`) and carries the running flag and last failure to the
     /// settings UI. In-memory: a restart just forgets a stale failure.
     kg_builds: std::sync::Arc<Mutex<HashMap<PathBuf, KgBuild>>>,
+    /// Cancel tokens for in-flight repo-setup commits, keyed by folder. The
+    /// setup dialog's Cancel flips one so the `git add -A` behind it stops:
+    /// staging a folder of model weights can run for many minutes, and until
+    /// this existed the only way out was to quit the app.
+    setup_cancels: Mutex<HashMap<PathBuf, agency_core::setup::CancelToken>>,
 }
 
 /// When a project's origin was last contacted, and when it may be again.
@@ -1117,6 +1122,7 @@ impl AppState {
             issue_sigs: Mutex::new(HashMap::new()),
             fetches: Mutex::new(HashMap::new()),
             kg_builds: std::sync::Arc::new(Mutex::new(HashMap::new())),
+            setup_cancels: Mutex::new(HashMap::new()),
         };
         // Rehydrate: any run the daemon still hosts is adopted as-is; the watch
         // loop (watch_snapshot) then reports live status. Nothing to spawn here —
@@ -1362,13 +1368,30 @@ impl AppState {
         agency_core::setup::clone_repo_with_progress(url, parent_dir, on_progress)
     }
 
+    /// Stage and commit `repo_path`, registering a cancel token for it first so
+    /// [`AppState::cancel_repo_setup`] can stop the staging pass.
     pub fn commit_repo(
         &self,
         repo_path: &Path,
         add_gitignore: bool,
+        ignore_paths: Vec<String>,
         on_progress: impl FnMut(agency_core::setup::CloneProgress),
     ) -> Result<()> {
-        agency_core::setup::initial_commit_with_progress(repo_path, add_gitignore, on_progress)
+        let cancel = agency_core::setup::CancelToken::new();
+        let key = repo_path.to_path_buf();
+        self.setup_cancels.lock().unwrap().insert(key.clone(), cancel.clone());
+        let opts = agency_core::setup::CommitOptions { add_gitignore, ignore_paths, cancel };
+        let out = agency_core::setup::initial_commit_with_progress(repo_path, &opts, on_progress);
+        self.setup_cancels.lock().unwrap().remove(&key);
+        out
+    }
+
+    /// Stop a setup commit running against `repo_path`, if there is one. A no-op
+    /// otherwise — the dialog also cancels during steps with nothing to kill.
+    pub fn cancel_repo_setup(&self, repo_path: &Path) {
+        if let Some(cancel) = self.setup_cancels.lock().unwrap().get(repo_path) {
+            cancel.cancel();
+        }
     }
 
     pub fn list_projects(&self) -> Result<Vec<Project>> {

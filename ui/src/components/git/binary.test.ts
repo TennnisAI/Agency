@@ -42,5 +42,7 @@ describe("formatSize", () => {
     expect(formatSize(512)).toBe("512 B");
     expect(formatSize(2048)).toBe("2.0 KB");
     expect(formatSize(1024 * 1024 * 3)).toBe("3.0 MB");
+    // A folder of model weights is the reason this goes past MB.
+    expect(formatSize(1024 * 1024 * 1024 * 48)).toBe("48.0 GB");
   });
 });

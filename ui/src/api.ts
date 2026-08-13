@@ -219,15 +219,44 @@ export function cloneRepo(
 }
 // Stages everything in `repoPath` and makes the initial commit. `onProgress`, if
 // given, is called as files are staged — a folder with a big tree takes a while.
+// `ignorePaths` are added to .gitignore instead of being committed (the large
+// files the user opted out of); folders end with a "/".
 export function commitRepo(
   repoPath: string,
   addGitignore: boolean,
+  ignorePaths: string[],
   onProgress?: (p: CloneProgress) => void,
 ): Promise<void> {
   const onProgressChannel = new Channel<CloneProgress>();
   if (onProgress) onProgressChannel.onmessage = onProgress;
-  return invoke<void>("commit_repo", { repoPath, addGitignore, onProgress: onProgressChannel });
+  return invoke<void>("commit_repo", {
+    repoPath,
+    addGitignore,
+    ignorePaths,
+    onProgress: onProgressChannel,
+  });
 }
+// Stops an in-flight commitRepo for this folder by killing the git it is
+// waiting on. A no-op when nothing is running there.
+// commitRepo then rejects with "cancelled", which is the user's own doing and
+// not a failure to report.
+export const cancelRepoSetup = (repoPath: string) =>
+  invoke<void>("cancel_repo_setup", { repoPath });
+
+// One file large enough to be worth warning about before it's committed.
+export type LargeFile = { path: string; bytes: number };
+// What a folder holds that would make its first commit slow: `files` is the
+// biggest few (largest first), `count`/`bytes` cover them all, and
+// `ignorePaths` is the shortest set of .gitignore entries that excludes them.
+export type LargeFileScan = {
+  files: LargeFile[];
+  count: number;
+  bytes: number;
+  truncated: boolean;
+  ignorePaths: string[];
+};
+export const scanLargeFiles = (repoPath: string) =>
+  invoke<LargeFileScan>("scan_large_files", { repoPath });
 
 // Both project teardowns stop every agent in the project, and deleting also
 // hands git each worktree to unlink — seconds to tens of seconds on a busy

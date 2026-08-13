@@ -24,8 +24,11 @@ export function emptyReason(header: string): string {
   return "no textual changes";
 }
 
+/** Human-readable byte size. Runs to GB because it also labels the files the
+ *  repo setup dialog warns about, where "51200.0 MB" is the whole point. */
 export function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }

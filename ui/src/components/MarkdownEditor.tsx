@@ -36,7 +36,13 @@ const proseTheme = EditorView.theme({
     fontFamily: "var(--sans)",
     padding: "4px 6px 8px",
     caretColor: "var(--text)",
+    // Bleed for live-preview block backgrounds; keep in step with the
+    // horizontal padding above (see .lp-codeblock in styles.css).
+    "--lp-gut": "6px",
   },
+  // Zero so the selection layer's rectangles line up with those backgrounds
+  // (CM's default 6px/2px would offset them).
+  ".cm-line": { padding: "0" },
   ".cm-scroller": { fontFamily: "var(--sans)", lineHeight: "inherit" },
   ".cm-activeLine": { backgroundColor: "transparent" },
 });

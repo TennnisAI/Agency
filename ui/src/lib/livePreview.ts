@@ -1,4 +1,4 @@
-import { Extension, Facet, Range, RangeSet } from "@codemirror/state";
+import { EditorState, Extension, Facet, Range, RangeSet } from "@codemirror/state";
 import {
   Decoration, DecorationSet, EditorView, ViewPlugin, ViewUpdate, WidgetType,
 } from "@codemirror/view";
@@ -9,6 +9,7 @@ import type { MarkdownConfig, InlineContext } from "@lezer/markdown";
 import { autocompletion, CompletionContext, CompletionResult } from "@codemirror/autocomplete";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { FileRoot, readFileBase64 } from "../api";
+import { toastError } from "./toast";
 import { DocsIndex, parseFrontmatter, stripExt } from "./docsIndex";
 import { CrossRefs, issueCompletionOptions, wikilinkView } from "./links";
 import { languageForFence } from "./cmLanguage";
@@ -265,6 +266,116 @@ class CalloutTitleWidget extends WidgetType {
     el.className = `lp-callout-title lp-callout-title-${this.kind}`;
     el.textContent = `◆ ${this.label}`;
     return el;
+  }
+}
+
+// ── Fenced code: the fences become the block's chrome ────────────────────────
+
+/** An opening fence line: indent, the ``` (or ~~~) run, then the info string. */
+const FENCE_OPEN_RE = /^(\s*)(`{3,}|~{3,})(.*)$/;
+/** A closing fence line: the run and nothing else. */
+const FENCE_CLOSE_RE = /^\s*(`{3,}|~{3,})\s*$/;
+
+/** The body of the fenced block containing `pos`, fences excluded — what the
+ *  copy button puts on the clipboard. Null when `pos` is outside a block. */
+export function fencedCodeAt(state: EditorState, pos: number): string | null {
+  const inner = syntaxTree(state).resolveInner(pos, 1);
+  let node: typeof inner | null = inner;
+  while (node && node.name !== "FencedCode") node = node.parent;
+  if (!node) return null;
+  const doc = state.doc;
+  const first = doc.lineAt(node.from);
+  const last = doc.lineAt(node.to);
+  const from = Math.min(first.to + 1, doc.length);
+  // An unterminated block runs to the end of the node; a closed one stops
+  // short of its closing fence line.
+  const to = last.number > first.number && FENCE_CLOSE_RE.test(last.text)
+    ? Math.max(from, last.from - 1)
+    : node.to;
+  return doc.sliceString(from, to);
+}
+
+function iconSvg(kind: "copy" | "check"): SVGSVGElement {
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  for (const [k, v] of [["width", "12"], ["height", "12"], ["viewBox", "0 0 24 24"],
+    ["fill", "none"], ["stroke", "currentColor"], ["stroke-width", "2.2"],
+    ["stroke-linecap", "round"], ["stroke-linejoin", "round"], ["aria-hidden", "true"]]) {
+    svg.setAttribute(k, v);
+  }
+  if (kind === "check") {
+    const check = document.createElementNS(ns, "polyline");
+    check.setAttribute("points", "20 6 9 17 4 12");
+    svg.appendChild(check);
+  } else {
+    const sheet = document.createElementNS(ns, "rect");
+    for (const [k, v] of [["x", "9"], ["y", "9"], ["width", "12"], ["height", "12"], ["rx", "2.5"]]) {
+      sheet.setAttribute(k, v);
+    }
+    const behind = document.createElementNS(ns, "path");
+    behind.setAttribute("d", "M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1");
+    svg.append(sheet, behind);
+  }
+  return svg;
+}
+
+/**
+ * Replaces the opening fence line: the language on the left, a copy button on
+ * the right. The block's own text is read from the document at click time
+ * (through the widget's DOM position), so typing inside a code block doesn't
+ * churn the widget.
+ */
+class CodeHeaderWidget extends WidgetType {
+  constructor(readonly lang: string, readonly hasCode: boolean) { super(); }
+  eq(other: CodeHeaderWidget) {
+    return other.lang === this.lang && other.hasCode === this.hasCode;
+  }
+  ignoreEvent() { return true; } // the strip handles its own clicks
+  toDOM(view: EditorView) {
+    const head = document.createElement("span");
+    head.className = "lp-cb-head";
+    head.setAttribute("contenteditable", "false");
+    // Clicking the strip (but not the button) parks the caret on the fence
+    // line, which reveals it — that's how the language gets edited.
+    head.addEventListener("mousedown", (e) => {
+      if ((e.target as HTMLElement | null)?.closest(".lp-cb-copy")) return;
+      e.preventDefault();
+      view.dispatch({ selection: { anchor: view.posAtDOM(head) } });
+      view.focus();
+    });
+
+    const lang = document.createElement("span");
+    lang.className = "lp-cb-lang";
+    lang.textContent = this.lang;
+    head.appendChild(lang);
+
+    if (!this.hasCode) return head;
+
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "lp-cb-copy";
+    btn.title = "Copy code";
+    btn.setAttribute("aria-label", "Copy code");
+    btn.tabIndex = -1; // a mouse target; Tab still belongs to the document
+    btn.appendChild(iconSvg("copy"));
+    let timer = 0;
+    btn.addEventListener("mousedown", (e) => e.preventDefault()); // keep the caret put
+    btn.addEventListener("click", (e) => {
+      e.preventDefault();
+      const code = fencedCodeAt(view.state, view.posAtDOM(head));
+      if (code === null) return;
+      void navigator.clipboard.writeText(code).then(() => {
+        btn.classList.add("done");
+        btn.replaceChildren(iconSvg("check"));
+        window.clearTimeout(timer);
+        timer = window.setTimeout(() => {
+          btn.classList.remove("done");
+          btn.replaceChildren(iconSvg("copy"));
+        }, 1400);
+      }).catch((err) => toastError(err, "Couldn't copy to clipboard"));
+    });
+    head.appendChild(btn);
+    return head;
   }
 }
 
@@ -555,13 +666,55 @@ class LivePreviewPlugin {
               markOrHide(node.from, node.to, revealed(node.from, node.to));
               return;
             }
+            case "CodeBlock": {
+              // Indented (4-space) code: no fences to hide, but it earns the
+              // same box as a fenced block instead of reading as prose.
+              const first = doc.lineAt(node.from);
+              const last = doc.lineAt(node.to);
+              for (let n = first.number; n <= last.number; n++) {
+                addLineClass(doc.line(n).from, "lp-codeblock");
+              }
+              addLineClass(first.from, "lp-cb-open");
+              addLineClass(last.from, "lp-cb-close");
+              return false; // its content is literal
+            }
             case "FencedCode": {
-              const firstLine = doc.lineAt(node.from).number;
-              const lastLine = doc.lineAt(node.to).number;
-              for (let n = firstLine; n <= lastLine; n++) {
-                const lf = doc.line(n).from;
-                addLineClass(lf, "lp-codeblock");
-                if (n === firstLine || n === lastLine) addLineClass(lf, "lp-fence");
+              // The fence lines carry the block's chrome rather than its
+              // syntax: the opening one becomes a header strip (language +
+              // copy button), the closing one an empty strip that reads as
+              // padding. Reveal is per fence line, not per block, so the
+              // header survives while you edit the code under it.
+              const first = doc.lineAt(node.from);
+              const last = doc.lineAt(node.to);
+              // An unterminated block (still being typed, or running to EOF)
+              // has no closing fence — its last line is code.
+              const closed = last.number > first.number && FENCE_CLOSE_RE.test(last.text);
+              const lastBody = closed ? last.number - 1 : last.number;
+              let anyCode = false;
+              for (let n = first.number; n <= last.number; n++) {
+                const line = doc.line(n);
+                addLineClass(line.from, "lp-codeblock");
+                if (n > first.number && n <= lastBody && line.text.trim() !== "") anyCode = true;
+              }
+              addLineClass(first.from, "lp-cb-open");
+              addLineClass(last.from, "lp-cb-close");
+
+              // The regex misses a fence nested in a blockquote (the line
+              // starts with its quote marks, which carry decorations of their
+              // own); those keep the raw fences, merely dimmed.
+              const open = FENCE_OPEN_RE.exec(first.text);
+              if (open && !revealed(first.from, first.to)) {
+                const lang = open[3].trim().split(/\s+/)[0] ?? "";
+                const deco = Decoration.replace({ widget: new CodeHeaderWidget(lang, anyCode) });
+                decos.push(deco.range(first.from, first.to));
+                atomics.push(deco.range(first.from, first.to));
+              } else {
+                addLineClass(first.from, "lp-fence");
+              }
+
+              if (closed) {
+                if (revealed(last.from, last.to)) addLineClass(last.from, "lp-fence");
+                else if (last.to > last.from) decos.push(hide.range(last.from, last.to));
               }
               return; // descend: nested language highlighting still applies
             }

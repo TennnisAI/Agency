@@ -43,23 +43,47 @@ function viewKind(path: string): ViewKind {
   return { kind: "text", preview: null };
 }
 
+// Marked tags fenced blocks as `<code class="language-rust">`; lift that onto
+// the <pre> so CSS can label the block the way the docs live preview does.
+// The language is re-checked against a conservative charset here — it lands in
+// an attribute, and the page it builds is a document, not a template.
+function labelCodeLangs(html: string): string {
+  return html.replace(
+    /<pre><code class="language-([A-Za-z0-9_+#.-]+)"/g,
+    (_m, lang: string) => `<pre data-lang="${lang}"><code class="language-${lang}"`,
+  );
+}
+
 // Markdown preview document, themed from the live CSS variables so it follows
-// the active app theme.
+// the active app theme. Scripts can't run here (the frame is sandboxed), so
+// this is presentation only — the copy button lives in the docs live preview.
 function markdownSrcDoc(html: string): string {
   const v = (name: string) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
   return `<!doctype html><html><head><meta charset="utf-8"><style>
 :root { color-scheme: dark; }
 body { font-family: -apple-system, system-ui, sans-serif; font-size: 14px; line-height: 1.65;
   background: ${v("--base")}; color: ${v("--text")}; margin: 0 auto; max-width: 760px; padding: 26px 30px 60px; }
+h1, h2, h3, h4, h5, h6 { line-height: 1.25; margin: 1.6em 0 .6em; }
+h1 { font-size: 1.7em; } h2 { font-size: 1.4em; } h3 { font-size: 1.18em; } h4 { font-size: 1.05em; }
+h5, h6 { font-size: 1em; } h6 { color: ${v("--sub0")}; }
 h1, h2 { border-bottom: 1px solid ${v("--line")}; padding-bottom: 6px; }
+:is(h1, h2, h3, h4, h5, h6):first-child { margin-top: 0; }
+p, ul, ol, blockquote, pre, table { margin: .8em 0; }
+ul, ol { padding-left: 1.5em; } li { margin: .2em 0; }
 a { color: ${v("--blue")}; }
-code, pre { font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; background: ${v("--crust")}; border-radius: 6px; }
+code, pre { font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; background: ${v("--crust")}; border-radius: 8px; }
 code { padding: 1px 5px; }
-pre { padding: 12px 14px; overflow: auto; } pre code { padding: 0; }
+pre { position: relative; padding: 12px 14px; overflow: auto; } pre code { padding: 0; background: none; }
+pre[data-lang] { padding-top: 26px; }
+pre[data-lang]::before { content: attr(data-lang); position: absolute; top: 7px; left: 14px;
+  font-family: -apple-system, system-ui, sans-serif; font-size: 9.5px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .07em; color: ${v("--o1")}; }
 blockquote { border-left: 3px solid ${v("--s1")}; margin-left: 0; padding-left: 14px; color: ${v("--sub0")}; }
-img { max-width: 100%; }
+img { max-width: 100%; border-radius: 6px; }
 table { border-collapse: collapse; } th, td { border: 1px solid ${v("--line")}; padding: 6px 10px; }
-hr { border: none; border-top: 1px solid ${v("--line")}; }
+th { background: ${v("--mantle")}; text-align: left; }
+hr { border: none; border-top: 1px solid ${v("--line")}; margin: 1.6em 0; }
+input[type=checkbox] { margin-right: .4em; }
 </style></head><body>${html}</body></html>`;
 }
 
@@ -290,7 +314,7 @@ const FileEditor = forwardRef<FileEditorHandle, {
   function showPreview() {
     const doc = viewRef.current?.state.doc.toString() ?? "";
     if (vk.kind === "text" && vk.preview === "md") {
-      setPreviewContent(markdownSrcDoc(marked.parse(doc, { async: false }) as string));
+      setPreviewContent(markdownSrcDoc(labelCodeLangs(marked.parse(doc, { async: false }) as string)));
     } else if (vk.kind === "text" && vk.preview === "html") {
       // data: URL, not srcDoc: srcdoc documents inherit the app's strict CSP,
       // which blocks the page's own scripts — and design-handoff HTML is

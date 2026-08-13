@@ -42,7 +42,15 @@ const docsEditorTheme = EditorView.theme({
     padding: "24px 32px 120px",
     lineHeight: "1.65",
     caretColor: "var(--text)",
+    // How far live-preview block backgrounds bleed past the text column, so
+    // they cover the same span as the selection layer's rectangles. Keep in
+    // step with the horizontal padding above (.lp-codeblock in styles.css).
+    "--lp-gut": "32px",
   },
+  // Zero, so the selection layer measures its rectangles from the content
+  // edge — the fixed 6px/2px CM puts here would offset them from the block
+  // backgrounds by exactly that much.
+  ".cm-line": { padding: "0" },
   ".cm-scroller": { fontFamily: "-apple-system, system-ui, sans-serif" },
   ".cm-activeLine": { backgroundColor: "transparent" },
 });

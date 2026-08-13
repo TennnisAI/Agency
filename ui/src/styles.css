@@ -3066,15 +3066,46 @@ input, textarea, code,
   content: ""; position: absolute; inset: 0; z-index: -3;
   background: color-mix(in srgb, var(--yellow) 30%, transparent); border-radius: 3px;
 }
+/* Fenced code blocks (AGE-106). Two things are going on:
+   — The background bleeds out by --lp-gut, the editor's own content padding
+     (declared beside that padding in each host's CM theme). drawSelection
+     draws the middle of a multi-line selection across the whole measure,
+     padding included, so a background that stopped at the text column left
+     the highlight painting OUTSIDE the block.
+   — The fence lines are the block's chrome, not its syntax: `lp-cb-open`
+     carries a header strip (language + copy button, see CodeHeaderWidget in
+     livePreview.ts) and `lp-cb-close` an empty strip that closes the box.
+     Both revert to dimmed raw fences (.lp-fence) when the caret lands on
+     them, so the language is still editable. */
 .md-live .lp-codeblock {
   font-family: var(--mono); font-size: 0.85em;
   position: relative;
 }
 .md-live .lp-codeblock::before {
-  content: ""; position: absolute; inset: 0; z-index: -3;
+  content: ""; position: absolute; z-index: -3; top: 0; bottom: 0;
+  left: calc(-1 * var(--lp-gut, 0px)); right: calc(-1 * var(--lp-gut, 0px));
   background: var(--crust);
 }
+.md-live .lp-cb-open { padding-top: 7px; }
+.md-live .lp-cb-open::before { border-radius: 8px 8px 0 0; }
+.md-live .lp-cb-close { padding-bottom: 7px; }
+.md-live .lp-cb-close::before { border-radius: 0 0 8px 8px; }
+.md-live .lp-cb-open.lp-cb-close::before { border-radius: 8px; } /* one-line block */
 .md-live .lp-fence { color: var(--o0); }
+.md-live .lp-cb-head { display: inline-block; min-height: 1.15em; }
+.md-live .lp-cb-lang {
+  font-family: var(--sans); font-size: 10px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .07em; color: var(--o1);
+}
+.md-live .lp-cb-copy {
+  position: absolute; top: 4px; right: calc(6px - var(--lp-gut, 0px));
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 20px; padding: 0; border: none; border-radius: 5px;
+  background: none; color: var(--o1); cursor: pointer; opacity: .6;
+  transition: opacity .12s ease, color .12s ease, background .12s ease;
+}
+.md-live .lp-cb-copy:hover { background: var(--s0); color: var(--text); opacity: 1; }
+.md-live .lp-cb-copy.done { color: var(--green); opacity: 1; }
 .md-live .lp-quote {
   border-left: 3px solid var(--s1); padding-left: 12px; color: var(--sub0);
 }

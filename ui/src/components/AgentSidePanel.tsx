@@ -4,7 +4,7 @@ import { useRuns } from "../store/runs";
 import { runStatus } from "../lib/runstate";
 import { agentLabel, runListLabel } from "../agents";
 import { useDismissOnResize } from "../hooks/useDismissOnResize";
-import { useRepoReadiness, isGitlessWorkspace } from "../hooks/useRepoReadiness";
+import { useRepoReadiness, isGitless } from "../hooks/useRepoReadiness";
 import { useSpawnAgent } from "../hooks/useSpawnAgent";
 import AgentAddMenu from "./AgentAddMenu";
 import FocusTerminal from "./FocusTerminal";
@@ -23,7 +23,7 @@ export default function AgentSidePanel({ project }: { project: Project }) {
   const { runs, focusedRunId, setFocusedRun, createTerminal, setTab, setView, spawning } = useRuns();
   const { readiness, refresh } = useRepoReadiness(project);
   const { spawn, error, dialogs } = useSpawnAgent(project, refresh);
-  const terminalOnly = isGitlessWorkspace(project, readiness);
+  const gitless = isGitless(readiness);
 
   const focused = runs.find((r) => r.id === focusedRunId) ?? null;
   // Picker menu, anchored in viewport coordinates so the panel's own overflow
@@ -74,7 +74,7 @@ export default function AgentSidePanel({ project }: { project: Project }) {
           projectId={project.id}
           onSpawn={spawn}
           onTerminal={createTerminal}
-          terminalOnly={terminalOnly}
+          gitless={gitless}
         />
         <button
           className="icon-btn"
@@ -116,7 +116,9 @@ export default function AgentSidePanel({ project }: { project: Project }) {
           {focused.kind === "agent" && (
             <div className="agent-side-sub">
               <span className="agent-side-agent">{agentLabel(focused.agent)}</span>
-              <code>{focused.branch}</code>
+              {/* Empty in a project with no repository, where the agent works
+                  in the folder and has no branch to name. */}
+              {focused.branch && <code>{focused.branch}</code>}
             </div>
           )}
           <FocusTerminal
@@ -137,9 +139,7 @@ export default function AgentSidePanel({ project }: { project: Project }) {
             ? "starting…"
             : runs.length
               ? "Pick an agent above to work with it here."
-              : terminalOnly
-                ? "Agents need git to work in isolated branches. Open a terminal with \"+\", or initialize a repository in Settings ▸ Workspace."
-                : "No agents in this project yet. Start one with \"+\"."}
+              : "No agents in this project yet. Start one with \"+\"."}
         </div>
       )}
 

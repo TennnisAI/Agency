@@ -10,7 +10,7 @@ import { Removal, removalLabel, removalsFor } from "../lib/runRemoval";
 import { issueLabel } from "../lib/issues";
 import { requestNavigate } from "../lib/navigate";
 import { toastError } from "../lib/toast";
-import { runStatus } from "../lib/runstate";
+import { inGitlessFolder, runStatus } from "../lib/runstate";
 import { runListLabel, agentLabel } from "../agents";
 import FocusTerminal, { shellStream } from "./FocusTerminal";
 import RunPanel from "./RunPanel";
@@ -130,8 +130,12 @@ function RailRow({
 // falls back to the raw store spawn.
 export default function AgentFocus({
   onSpawn,
+  gitless = false,
 }: {
   onSpawn?: (agentId: string, opts?: SpawnOpts) => void;
+  // The project folder has no git repository, so the rail's add menu hides
+  // everything that needs a branch (see AgentAddMenu).
+  gitless?: boolean;
 }) {
   const { runs, focusedRunId, setFocusedRun, refreshRuns, createAgent, createTerminal, selectedProjectId, pendingSessionId, setPendingSession, setApproveRun } = useRuns();
   // Archive / discard of the focused run, awaiting its confirm dialog.
@@ -326,7 +330,7 @@ export default function AgentFocus({
         <>
           <div className="rail" style={{ width: rail.width, minWidth: rail.width }}>
             <div className="rail-head">
-              <AgentAddMenu variant="header" projectId={selectedProjectId ?? undefined} onSpawn={onSpawn ?? createAgent} onTerminal={createTerminal} />
+              <AgentAddMenu variant="header" projectId={selectedProjectId ?? undefined} onSpawn={onSpawn ?? createAgent} onTerminal={createTerminal} gitless={gitless} />
               <span className="spacer" />
               <button className="icon-btn" onClick={() => setRailOpen(false)}>«</button>
             </div>
@@ -377,14 +381,22 @@ export default function AgentFocus({
                 <span className={badgeClass(focused.agent)}>{focused.agent}</span>
                 {focused.title && <span className="focus-name" title={focused.title}>{focused.title}</span>}
                 <div className="focus-head-meta">
-                  <span className="branch-chip" title={`Branch: ${focused.branch}`}>
-                    <BranchIcon />
-                    <span className="branch-chip-name">{focused.branch}</span>
-                  </span>
-                  {!focused.worktree && (
-                    <span className="badge" title="Works in the project checkout, not an isolated worktree">
-                      in checkout
+                  {inGitlessFolder(focused) ? (
+                    <span className="badge" title="Works in the project folder, which is not a git repository">
+                      in folder
                     </span>
+                  ) : (
+                    <>
+                      <span className="branch-chip" title={`Branch: ${focused.branch}`}>
+                        <BranchIcon />
+                        <span className="branch-chip-name">{focused.branch}</span>
+                      </span>
+                      {!focused.worktree && (
+                        <span className="badge" title="Works in the project checkout, not an isolated worktree">
+                          in checkout
+                        </span>
+                      )}
+                    </>
                   )}
                   {issueChip && (
                     <button

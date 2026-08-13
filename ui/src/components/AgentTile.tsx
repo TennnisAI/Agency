@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { RunInfo, runPreview } from "../api";
 import { useRuns } from "../store/runs";
 import { runName } from "../agents";
-import { runStatus } from "../lib/runstate";
+import { inGitlessFolder, runStatus } from "../lib/runstate";
 import { Removal, removalLabel, removalsFor } from "../lib/runRemoval";
 import RunRemoveDialog from "./RunRemoveDialog";
 import OverflowMenu from "./OverflowMenu";
@@ -53,13 +53,19 @@ export default function AgentTile({ run }: { run: RunInfo }) {
       </div>
       {!isTerminal && (
         <div className="tile-meta">
-          <code>{run.branch}</code>
-          {/* Without a worktree the stat is uncommitted work in the checkout,
-              not a branch's diff against its base. */}
-          <span className="diffstat" title={run.worktree ? "Changes on this branch" : "Uncommitted changes in the checkout"}>
-            <span className="add">+{run.added}</span> <span className="del">−{run.deleted}</span> · {run.files}f
-          </span>
-          {!run.worktree && <span className="badge" title="Works in the project checkout, not an isolated worktree">in checkout</span>}
+          {inGitlessFolder(run) ? (
+            <span className="badge" title="Works in the project folder, which is not a git repository">in folder</span>
+          ) : (
+            <>
+              <code>{run.branch}</code>
+              {/* Without a worktree the stat is uncommitted work in the checkout,
+                  not a branch's diff against its base. */}
+              <span className="diffstat" title={run.worktree ? "Changes on this branch" : "Uncommitted changes in the checkout"}>
+                <span className="add">+{run.added}</span> <span className="del">−{run.deleted}</span> · {run.files}f
+              </span>
+              {!run.worktree && <span className="badge" title="Works in the project checkout, not an isolated worktree">in checkout</span>}
+            </>
+          )}
         </div>
       )}
       <pre className="tile-preview">{preview}</pre>

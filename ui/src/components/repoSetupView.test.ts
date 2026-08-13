@@ -2,10 +2,15 @@ import { describe, it, expect } from "vitest";
 import { repoSetupView } from "./repoSetupView";
 
 describe("repoSetupView", () => {
-  it("notARepo → init prompt", () => {
+  it("notARepo in add context → init prompt with a way past it", () => {
     const v = repoSetupView({ state: "notARepo", stageable: false, dirty: false }, "add");
     expect(v.kind).toBe("init");
     expect(v.title).toMatch(/Set up/i);
+    expect(v.secondaryLabel).toBe("Add without git");
+  });
+  it("notARepo in spawn context → no secondary (spawn never opens this)", () => {
+    const v = repoSetupView({ state: "notARepo", stageable: false, dirty: false }, "spawn");
+    expect(v.kind).toBe("init");
     expect(v.secondaryLabel).toBeNull();
   });
   it("noCommits → initial commit prompt", () => {

@@ -37,9 +37,12 @@ export function useRepoReadiness(project: Project | null) {
 }
 
 /**
- * A workspace that declined git: agents need a worktree to branch from, so
- * everything git-shaped hides and only terminals remain.
+ * A project folder with no git repository: a workspace that declined git, or a
+ * plain folder added as a project. Agents still work there, but in the folder
+ * itself, so everything that needs a branch to exist (Source Control, races,
+ * loops, GitHub import, the worktree checkbox) hides until a repo is
+ * initialized.
  */
-export function isGitlessWorkspace(project: Project | null, readiness: RepoReadiness | null): boolean {
-  return project?.kind === "workspace" && readiness?.state === "notARepo";
+export function isGitless(readiness: RepoReadiness | null): boolean {
+  return readiness?.state === "notARepo";
 }

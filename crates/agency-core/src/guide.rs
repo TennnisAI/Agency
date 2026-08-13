@@ -96,9 +96,10 @@ Comments go under the description, in the same pane. They are markdown too,
 they are stored in the issue's own file, and an agent dispatched on the
 issue is handed the thread along with the description, so a comment is a
 way to correct or narrow the ask before you start one. Agents can write
-comments back the same way. If the
-workspace uses git, you can dispatch agents on writing tasks the
-same way you would in a code project: they work on a branch, you merge.
+comments back the same way. You can dispatch agents on writing tasks the
+same way you would in a code project. If the workspace uses git they work
+on a branch and you merge; if it does not, they edit the notes in place,
+and there is no Source Control tab and nothing to merge.
 
 The Agents tab in a note's right panel is the same set of agents, shown
 next to what you are writing. Start one with + there, switch between them

@@ -15,9 +15,12 @@ export function repoSetupView(readiness: RepoReadiness, context: "add" | "spawn"
     return {
       kind: "init",
       title: "Set up this folder for agents",
-      body: "No git repository found. Agency runs each agent in an isolated git worktree, so this folder needs to be a repository. Initialize one now?",
+      body: "No git repository found. With one, each agent gets an isolated worktree and branch to work on. Without, agents still work here, but directly in the folder: no branches, no Source Control, nothing to merge. Initialize a repository now?",
       primaryLabel: "Initialize repository",
-      secondaryLabel: null,
+      // Adding a scratch folder is a legitimate choice, so it gets a way
+      // through. A spawn never lands here: a folder with no repo needs no
+      // setup, the agent just works in it.
+      secondaryLabel: context === "add" ? "Add without git" : null,
     };
   }
   if (readiness.state === "noCommits") {

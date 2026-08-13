@@ -772,6 +772,14 @@ fn workspace_dir(repo: &Path, run: &agency_core::registry::Run) -> std::path::Pa
     }
 }
 
+/// Whether a project folder has no git repository at all. Such a project is
+/// still a project — docs, files, terminals and agents working directly in the
+/// folder all behave normally — but every branch-shaped flow (worktrees,
+/// merges, races, loops) is unavailable in it.
+fn is_gitless(repo: &Path) -> bool {
+    matches!(agency_core::setup::repo_readiness(repo), agency_core::setup::RepoReadiness::NotARepo)
+}
+
 /// Reject a branch-level operation (merge, PR) on a run that has no branch of
 /// its own — its commits are already on the checkout's branch, so "landing"
 /// them is meaningless and would target whatever the user is working on.
@@ -781,6 +789,13 @@ fn workspace_dir(repo: &Path, run: &agency_core::registry::Run) -> std::path::Pa
 fn require_own_branch(run: &agency_core::registry::Run, action: &str) -> Result<()> {
     if run.worktree {
         return Ok(());
+    }
+    // A run in a project with no repository has no branch to name either.
+    if run.branch.is_empty() {
+        bail!(
+            "this agent works directly in the project folder, which is not a git repository, \
+             so there is nothing to {action}"
+        );
     }
     bail!(
         "this agent works directly in the project checkout on {}, so there is nothing to {action}; \
@@ -1248,7 +1263,7 @@ impl AppState {
     }
 
     pub fn add_project(&self, name: &str, repo_path: &Path) -> Result<Project> {
-        validate_repo(repo_path)?;
+        validate_project_path(repo_path)?;
         self.registry.lock().unwrap().add_project(name, repo_path)
     }
 
@@ -1644,10 +1659,28 @@ impl AppState {
         // PR's existing head branch, or skip the worktree entirely and work in
         // the project's own checkout on whatever branch is there.
         let workspace = if !spec.worktree {
-            let branch = agency_core::merge::current_branch(&repo)
-                .ok_or_else(|| anyhow!("the project checkout is not on a branch, so an agent can't work in it directly; create a worktree instead"))?;
+            // A project folder with no repository has no branch to name, so the
+            // run records none — the same shape terminals have always had. Only
+            // a real checkout that is mid-rebase or otherwise off any branch is
+            // an error, since there the branch is missing unexpectedly.
+            let branch = if is_gitless(&repo) {
+                String::new()
+            } else {
+                agency_core::merge::current_branch(&repo)
+                    .ok_or_else(|| anyhow!("the project checkout is not on a branch, so an agent can't work in it directly; create a worktree instead"))?
+            };
             agency_core::worktree::Worktree { task_id: id.clone(), path: repo.clone(), branch }
         } else {
+            // Races, loops and issue dispatch always ask for a worktree. Say why
+            // it can't happen here rather than surfacing a raw git error; the UI
+            // hides these entries for a gitless project, so this is the backstop.
+            if is_gitless(&repo) {
+                bail!(
+                    "{} is not a git repository, so there is no branch to cut a worktree from; \
+                     initialize one to give agents isolated branches",
+                    repo.display()
+                );
+            }
             match &spec.existing_branch {
                 Some(branch) => manager.create_on_branch_with_progress(&id, branch, on_progress)?,
                 None => manager.create_with_progress(&id, spec.base, on_progress)?,
@@ -1955,7 +1988,13 @@ impl AppState {
         merge_target: Option<&str>,
     ) -> Result<RunInfo> {
         let (issue, prompt, title) = self.issue_dispatch(issue_id)?;
-        let base = self.issue_base(&issue.project_id, base)?;
+        // With no repository there is no base to cut from and no branch to land,
+        // so the agent takes the issue on in the folder itself; the issue still
+        // advances to in_progress, it just gets closed by hand rather than by a
+        // merge. Racing or looping an issue stays worktree-only.
+        let gitless = is_gitless(&self.project_repo(&issue.project_id)?);
+        let base =
+            if gitless { "HEAD".to_string() } else { self.issue_base(&issue.project_id, base)? };
         let info = self.create_run_spec(
             NewRunSpec {
                 project_id: &issue.project_id,
@@ -1968,7 +2007,7 @@ impl AppState {
                 existing_branch: None,
                 loop_config: None,
                 issue_id: Some(issue.id.clone()),
-                worktree: true,
+                worktree: !gitless,
             },
             &mut |_| {},
         )?;
@@ -5274,19 +5313,17 @@ fn command_on_path(command: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// A project path is addable as long as it is a git repository. A repo with no
-/// commits is allowed (it lands "gated": the UI walks the user through the
-/// first commit before any agent can spawn). Non-repos are rejected because the
-/// UI runs `init_repo` *before* calling `add_project`.
-fn validate_repo(repo_path: &Path) -> Result<()> {
+/// Any existing folder is addable as a project. Git is what unlocks worktrees
+/// (and everything downstream: branches, merges, races, loops), not what makes
+/// a folder a project — a plain scratch folder still gets agents, they just
+/// work in it directly. `create_run_spec` is where the git-shaped requests are
+/// refused, and the UI hides them ahead of that.
+fn validate_project_path(repo_path: &Path) -> Result<()> {
     if !repo_path.exists() {
         bail!("{} does not exist", repo_path.display());
     }
-    if matches!(
-        agency_core::setup::repo_readiness(repo_path),
-        agency_core::setup::RepoReadiness::NotARepo
-    ) {
-        bail!("{} is not a git repository", repo_path.display());
+    if !repo_path.is_dir() {
+        bail!("{} is not a folder", repo_path.display());
     }
     Ok(())
 }

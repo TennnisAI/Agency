@@ -66,6 +66,7 @@ export default function IssueRow({
   onDelete,
   drag,
   terms,
+  gitless = false,
 }: {
   issue: Issue;
   label: string;
@@ -74,6 +75,11 @@ export default function IssueRow({
   onSelect: () => void;
   // Plain click on ▶ = default agent; the caret next to it opens the full menu.
   onStart: () => void;
+  // The issue's project folder has no git repository: the agent takes the issue
+  // on in the folder itself, and racing or looping it is hidden (see
+  // AgentAddMenu). The cross-project board leaves this false — it has no
+  // per-project readiness to hand — and relies on the backend's refusal.
+  gitless?: boolean;
   onSpawnAgent: (agentId: string, opts?: { base: string; mergeTarget: string }) => void;
   onPatch: (patch: IssuePatch) => void;
   onDelete: () => void;
@@ -169,6 +175,7 @@ export default function IssueRow({
               onSpawn={onSpawnAgent}
               onTerminal={() => {}}
               onOpenChange={setAgentOpen}
+              gitless={gitless}
             />
           </>
         )}

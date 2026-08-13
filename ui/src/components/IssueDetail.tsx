@@ -136,9 +136,13 @@ export default function IssueDetail({
   onTagClick,
   onToggleExpand,
   onClose,
+  gitless = false,
 }: {
   issue: Issue;
   label: string;
+  // The project folder has no git repository: the agent takes the issue on in
+  // the folder itself, and racing or looping it is hidden (see AgentAddMenu).
+  gitless?: boolean;
   // The project's main checkout, where `.agency/issues/` (and the attachments
   // beside it) live.
   root: FileRoot;
@@ -464,6 +468,7 @@ export default function IssueDetail({
             issueLabel={label}
             onSpawn={(agentId, opts) => { void startAfterSave(() => onSpawnAgent(agentId, opts)); }}
             onTerminal={() => {}}
+            gitless={gitless}
           />
         </span>
       )}

@@ -33,17 +33,37 @@ fn project_crud_roundtrip() {
     assert_eq!(state.list_projects().unwrap().len(), 0);
 }
 
+/// A scratch folder is a project like any other: git is what unlocks worktrees,
+/// not what makes a folder addable.
 #[test]
-fn add_project_rejects_non_git_folder() {
+fn add_project_accepts_a_plain_folder() {
     let dir = tempfile::tempdir().unwrap();
     let state = common::state(&dir);
 
     let plain = dir.path().join("plain");
     std::fs::create_dir_all(&plain).unwrap();
 
-    let err = state.add_project("plain", &plain).unwrap_err().to_string();
-    assert!(err.contains("git repository"), "unexpected error: {err}");
-    // nothing persisted
+    let p = state.add_project("plain", &plain).unwrap();
+    assert_eq!(state.list_projects().unwrap().len(), 1);
+    assert_eq!(state.list_projects().unwrap()[0].id, p.id);
+    // It really is repo-less; the UI reads this to hide the git-shaped surfaces.
+    assert_eq!(state.inspect_repo(&plain), agency_core::setup::RepoReadiness::NotARepo);
+}
+
+#[test]
+fn add_project_rejects_a_path_that_is_not_a_folder() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = common::state(&dir);
+
+    let missing = dir.path().join("nope");
+    let err = state.add_project("nope", &missing).unwrap_err().to_string();
+    assert!(err.contains("does not exist"), "unexpected error: {err}");
+
+    let file = dir.path().join("notes.md");
+    std::fs::write(&file, "hi").unwrap();
+    let err = state.add_project("notes", &file).unwrap_err().to_string();
+    assert!(err.contains("not a folder"), "unexpected error: {err}");
+
     assert_eq!(state.list_projects().unwrap().len(), 0);
 }
 
@@ -870,6 +890,85 @@ fn create_run_without_worktree_uses_the_project_checkout() {
     assert!(state.create_pr(&info.id).unwrap_err().to_string().contains("project checkout"));
 
     session_gone_or_cleanup(&state, &info.id);
+}
+
+/// A project with no repository at all: the agent works in the folder, records
+/// no branch, and every branch-level operation stays refused.
+#[test]
+fn create_run_in_a_gitless_project_works_in_the_folder() {
+    let dir = tempfile::tempdir().unwrap();
+    let plain = dir.path().join("scratch");
+    std::fs::create_dir_all(&plain).unwrap();
+
+    let state = common::state(&dir);
+    state
+        .register_profile(AgentProfile {
+            name: "pwds".into(),
+            command: "/bin/sh".into(),
+            args: vec!["-c".into(), "pwd; sleep 5".into()],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
+    let project = state.add_project("scratch", &plain).unwrap();
+
+    let info = state
+        .create_run_with_progress(&project.id, "p", "pwds", "HEAD", None, false, |_| {})
+        .unwrap();
+    assert!(!info.worktree);
+    assert_eq!(info.branch, "", "no repository means no branch to adopt");
+    assert_eq!(
+        state.worktree_path(&info.id).unwrap().canonicalize().unwrap(),
+        plain.canonicalize().unwrap(),
+    );
+
+    // The agent's cwd really is the folder.
+    let mut cwd_ok = false;
+    for _ in 0..150 {
+        let cap = state.run_preview(&info.id, 10).unwrap_or_default();
+        if cap.contains(&plain.canonicalize().unwrap().to_string_lossy().to_string()) {
+            cwd_ok = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    assert!(cwd_ok, "agent did not report the project folder as cwd");
+
+    let err = state.merge_preview(&info.id).unwrap_err().to_string();
+    assert!(err.contains("not a git repository"), "got: {err}");
+
+    session_gone_or_cleanup(&state, &info.id);
+}
+
+/// The backstop behind the hidden UI: races, loops and issue dispatch all ask
+/// for a worktree, and there is nothing to cut one from here.
+#[test]
+fn create_run_with_a_worktree_in_a_gitless_project_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let plain = dir.path().join("scratch");
+    std::fs::create_dir_all(&plain).unwrap();
+
+    let state = common::state(&dir);
+    state
+        .register_profile(AgentProfile {
+            name: "stay".into(),
+            command: "/bin/sh".into(),
+            args: vec!["-c".into(), "sleep 5".into()],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
+    let project = state.add_project("scratch", &plain).unwrap();
+
+    let err = state
+        .create_run_with_progress(&project.id, "p", "stay", "HEAD", None, true, |_| {})
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("not a git repository"), "got: {err}");
+    assert!(err.contains("worktree"), "the error should say what was refused: {err}");
+    assert!(state.list_runs(&project.id).unwrap().is_empty(), "nothing was recorded");
 }
 
 /// Discarding such a run must not touch git: `main` is the user's branch, and

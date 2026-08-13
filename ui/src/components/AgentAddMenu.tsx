@@ -17,7 +17,7 @@ export default function AgentAddMenu({
   projectId,
   issue,
   issueLabel,
-  terminalOnly = false,
+  gitless = false,
   onOpenChange,
 }: {
   onSpawn: (agentId: string, opts?: SpawnOpts) => void;
@@ -32,9 +32,10 @@ export default function AgentAddMenu({
   // imports). onSpawn then routes to startIssueRun at the call site.
   issue?: Issue;
   issueLabel?: string;
-  // Git-less workspace: everything that needs a worktree/branch is hidden, so
-  // the menu collapses to the terminal entry.
-  terminalOnly?: boolean;
+  // Project folder with no git repository: agents still spawn, but in the
+  // folder itself, so everything that needs a branch to exist (races, loops,
+  // GitHub import, the base/target pickers) is hidden.
+  gitless?: boolean;
   // Lets a host that hides its controls on hover (the issue rows) keep them up
   // while this menu is open.
   onOpenChange?: (open: boolean) => void;
@@ -88,14 +89,16 @@ export default function AgentAddMenu({
 
   const showPicker = !!projectId;
   // Issue dispatch merges the run's branch to close the issue, so it is always
-  // isolated and the checkbox is hidden for it.
-  const wantsWorktree = !!issue || worktree;
+  // isolated and the checkbox is hidden for it. With no repository there is
+  // nothing to branch from at all, so every spawn works in the folder.
+  const wantsWorktree = !gitless && (!!issue || worktree);
   const mergeTarget = effectiveMergeTarget(base, targetOverride);
   const diverged = targetOverride !== null && targetOverride !== base;
 
-  // Load branches when the menu opens (cheap; reflects any branch the user just made).
+  // Load branches when the menu opens (cheap; reflects any branch the user just
+  // made). A folder with no repository has none to list.
   useEffect(() => {
-    if (!open || !projectId) return;
+    if (!open || !projectId || gitless) return;
     let live = true;
     listProjectBranches(projectId)
       .then((pb) => {
@@ -169,7 +172,7 @@ export default function AgentAddMenu({
         <button
           ref={btnRef}
           className="btn-primary btn-add"
-          title={terminalOnly ? "New terminal" : "New agent"}
+          title="New agent"
           disabled={spawning}
           onClick={toggle}
         >
@@ -178,7 +181,7 @@ export default function AgentAddMenu({
           ) : (
             <>
               <span className="btn-add-plus" aria-hidden>+</span>
-              <span className="btn-add-label">{terminalOnly ? "Terminal" : "Agent"}</span>
+              <span className="btn-add-label">Agent</span>
               <span className="btn-caret" aria-hidden>▾</span>
             </>
           )}
@@ -194,11 +197,13 @@ export default function AgentAddMenu({
         <>
           <div className="agent-menu-backdrop" onClick={() => setOpen(false)} />
           <div className="agent-menu" style={{ position: "fixed", ...coords }}>
-            {!terminalOnly && (
+            {agents.map((a) => (
+              <button key={a.name} onClick={() => choose(a.name)}>{agentLabel(a.name)}</button>
+            ))}
+            {/* A race gives every attempt its own branch and a loop respawns on
+                one, so both need a repository to exist. */}
+            {!gitless && (
               <>
-                {agents.map((a) => (
-                  <button key={a.name} onClick={() => choose(a.name)}>{agentLabel(a.name)}</button>
-                ))}
                 <div className="agent-menu-sep" />
                 <button onClick={() => { setOpen(false); setRaceOpen(true); }}>∥ Race agents…</button>
                 <button onClick={() => { setOpen(false); setLoopOpen(true); }}>⟳ Loop agent…</button>
@@ -206,17 +211,18 @@ export default function AgentAddMenu({
             )}
             {!issue && (
               <>
-                {!terminalOnly && (
+                {/* Importing checks the issue's or PR's branch out. */}
+                {!gitless && (
                   <>
                     <button onClick={() => { setOpen(false); setImportMode("issue"); }}>◈ GitHub issue…</button>
                     <button onClick={() => { setOpen(false); setImportMode("pr"); }}>⇋ GitHub PR…</button>
-                    <div className="agent-menu-sep" />
                   </>
                 )}
+                <div className="agent-menu-sep" />
                 <button onClick={chooseTerminal}>≳ New terminal</button>
               </>
             )}
-            {showPicker && branches.length > 0 && !terminalOnly && (
+            {showPicker && branches.length > 0 && !gitless && (
               <>
                 <div className="agent-menu-sep" />
                 <div className="branch-picker">

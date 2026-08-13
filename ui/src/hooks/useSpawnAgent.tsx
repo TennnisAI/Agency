@@ -48,6 +48,18 @@ export function useSpawnAgent(project: Project | null, onRepoResolved?: () => vo
         return;
       }
       const r = await inspectRepo(project.repo_path);
+      // A folder with no repository has nothing to set up: there is no branch to
+      // cut from, so the agent works in the folder as it stands. The add menu
+      // already clears the worktree flag here; this restates it so a stale menu
+      // (or a caller that never had one) can't ask for a worktree that the
+      // backend would only refuse.
+      if (r.state === "notARepo") {
+        if (issue) await startIssue(issue, agentId, opts);
+        // base/mergeTarget are ignored for a run that stays in the checkout;
+        // they're spelled only because SpawnOpts asks for them.
+        else await createAgent(agentId, { base: "HEAD", mergeTarget: "", worktree: false });
+        return;
+      }
       // A dirty checkout only blocks cutting a worktree (the new branch would
       // miss the uncommitted work). An agent that stays in the checkout is
       // being started *because* there is work in progress there.

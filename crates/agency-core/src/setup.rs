@@ -3,12 +3,61 @@ use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum RepoReadiness {
     NotARepo,
     NoCommits { stageable: bool },
     Ready { dirty: bool },
+}
+
+/// A cancel flag shared with a running git command. The setup dialog's Cancel
+/// flips one so a `git add -A` that is hashing a huge tree is killed instead of
+/// grinding on invisibly behind a dialog the user can no longer dismiss.
+#[derive(Clone, Debug, Default)]
+pub struct CancelToken(Arc<AtomicBool>);
+
+impl CancelToken {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    /// Ask the command holding this token to stop. Its child is killed within
+    /// one poll interval (see [`reap_or_kill`]).
+    pub fn cancel(&self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::Relaxed)
+    }
+}
+
+/// The error text a cancelled setup command returns, so callers (and the UI)
+/// can tell "the user stopped this" from a real git failure.
+pub const CANCELLED: &str = "cancelled";
+
+/// How often a reaper thread checks whether its command was cancelled.
+const CANCEL_POLL: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Wait for `child`, killing it as soon as `cancel` fires. This owns the child
+/// on its own thread so the kill can't be stuck behind whoever is reading the
+/// child's output: `git add -A` prints nothing for minutes while it hashes a
+/// large file, so a cancel checked between output lines would not be honoured.
+fn reap_or_kill(
+    mut child: std::process::Child,
+    cancel: &CancelToken,
+) -> std::io::Result<std::process::ExitStatus> {
+    loop {
+        if cancel.is_cancelled() {
+            let _ = child.kill();
+            return child.wait();
+        }
+        if let Some(status) = child.try_wait()? {
+            return Ok(status);
+        }
+        std::thread::sleep(CANCEL_POLL);
+    }
 }
 
 /// Run a git command in `dir`, returning (success, stdout).
@@ -216,9 +265,11 @@ pub(crate) fn run_clone_streaming(
 /// return `(success, full_stderr)`. Unlike [`run_clone_streaming`], progress here
 /// comes from stdout, so stderr is drained on a side thread — a git that's chatty
 /// there (one line-ending warning per file, say) would otherwise fill its pipe
-/// and wedge the stdout reader.
+/// and wedge the stdout reader. A third thread owns the child so `cancel` can
+/// kill it while this one is blocked on a read.
 fn run_streaming_stdout(
     mut cmd: Command,
+    cancel: &CancelToken,
     on_line: &mut dyn FnMut(&str),
 ) -> std::io::Result<(bool, String)> {
     use std::io::{BufRead, BufReader, Read};
@@ -232,10 +283,15 @@ fn run_streaming_stdout(
         let _ = stderr.read_to_string(&mut s);
         s
     });
+    let reaper = {
+        let cancel = cancel.clone();
+        std::thread::spawn(move || reap_or_kill(child, &cancel))
+    };
     for line in BufReader::new(stdout).lines() {
         on_line(&line?);
     }
-    let status = child.wait()?;
+    let status =
+        reaper.join().map_err(|_| std::io::Error::other("git reaper thread panicked"))??;
     Ok((status.success(), drain.join().unwrap_or_default()))
 }
 
@@ -336,10 +392,100 @@ pub fn write_default_gitignore(path: &Path) -> Result<()> {
 /// the IPC channel on a large folder without telling the user anything more.
 const STAGE_PROGRESS_EVERY: u64 = 100;
 
+/// What the setup dialog asked for when creating a repo's first commit.
+#[derive(Debug, Clone, Default)]
+pub struct CommitOptions {
+    /// Write the default `.gitignore` first (brand-new repo only).
+    pub add_gitignore: bool,
+    /// Paths (relative to the repo, folders ending in `/`) to add to
+    /// `.gitignore` instead of committing — the large files the user opted out
+    /// of. See [`gitignore_line`].
+    pub ignore_paths: Vec<String>,
+    /// Flipped by the dialog's Cancel to kill the staging pass.
+    pub cancel: CancelToken,
+}
+
 /// Stage everything and make the initial commit. See
 /// [`initial_commit_with_progress`]; this is the no-progress convenience wrapper.
 pub fn initial_commit(path: &Path, add_gitignore: bool) -> Result<()> {
-    initial_commit_with_progress(path, add_gitignore, |_| {})
+    let opts = CommitOptions { add_gitignore, ..Default::default() };
+    initial_commit_with_progress(path, &opts, |_| {})
+}
+
+/// Turn a repo-relative path into a `.gitignore` line matching exactly it:
+/// anchored at the repo root with a leading `/`, with the characters git would
+/// read as a pattern escaped. The leading `/` also spares `#` and `!`, which are
+/// only special at the start of a line.
+pub fn gitignore_line(rel: &str) -> String {
+    let mut out = String::from("/");
+    for c in rel.chars() {
+        if matches!(c, '*' | '?' | '[' | '\\') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    // Git drops unescaped trailing whitespace from a pattern.
+    if out.ends_with(' ') {
+        out.pop();
+        out.push_str("\\ ");
+    }
+    out
+}
+
+/// Append ignore rules for `paths` to the repo's `.gitignore` under a header,
+/// skipping any rule the file already has. Creates the file when missing.
+fn append_gitignore(path: &Path, paths: &[String]) -> Result<()> {
+    use std::io::Write;
+    let gi = path.join(".gitignore");
+    let existing = std::fs::read_to_string(&gi).unwrap_or_default();
+    let fresh: Vec<String> = paths
+        .iter()
+        .map(|p| gitignore_line(p))
+        .filter(|l| !existing.lines().any(|e| e.trim() == l))
+        .collect();
+    if fresh.is_empty() {
+        return Ok(());
+    }
+    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&gi)?;
+    if !existing.is_empty() && !existing.ends_with('\n') {
+        writeln!(f)?;
+    }
+    writeln!(f, "\n# Large files, excluded when this repository was set up")?;
+    for l in fresh {
+        writeln!(f, "{l}")?;
+    }
+    Ok(())
+}
+
+/// Drop `paths` from the index. A cancelled staging pass leaves what it already
+/// hashed staged, and `git add -A` never unstages what a new ignore rule hides —
+/// so without this, retrying after choosing to ignore a huge file would commit it
+/// anyway. Only safe before the first commit, where the index holds nothing but
+/// what we staged ourselves, so the caller checks for that.
+fn unstage_ignored(path: &Path, paths: &[String]) {
+    // `:(literal)` so a path with glob characters in it means itself.
+    let specs: Vec<String> = paths
+        .iter()
+        .map(|p| format!(":(literal){}", p.trim_end_matches('/')))
+        .filter(|s| s != ":(literal)")
+        .collect();
+    if specs.is_empty() {
+        return;
+    }
+    let mut args = vec!["rm", "-r", "--cached", "--quiet", "--ignore-unmatch", "--"];
+    args.extend(specs.iter().map(|s| s.as_str()));
+    // Best-effort: an empty index (nothing staged yet) is the common case.
+    let _ = git(path, &args);
+}
+
+/// Delete a stale `index.lock`. Killing `git add` mid-run leaves one behind, and
+/// every later git command in that repo fails until it's gone. Safe here because
+/// the process that held it is the one we just killed.
+fn clear_index_lock(path: &Path) {
+    let Ok((true, out)) = git(path, &["rev-parse", "--git-dir"]) else { return };
+    let dir = PathBuf::from(out.trim());
+    let git_dir = if dir.is_absolute() { dir } else { path.join(dir) };
+    let _ = std::fs::remove_file(git_dir.join("index.lock"));
 }
 
 /// Stage everything and make the initial commit, calling `on_progress` as it
@@ -351,14 +497,24 @@ pub fn initial_commit(path: &Path, add_gitignore: bool) -> Result<()> {
 /// every file, which is minutes of work the user was staring at a frozen window
 /// through. Git reports no percentage for `add` or `commit` the way it does for
 /// clone, so progress is a running count of staged files under hand-named phases
-/// — enough to show the app is alive and working.
+/// — enough to show the app is alive and working. `opts.cancel` cuts that pass
+/// short: on a folder of 50GB model weights it is the difference between a
+/// dismissable dialog and quitting the app.
 pub fn initial_commit_with_progress(
     path: &Path,
-    add_gitignore: bool,
+    opts: &CommitOptions,
     mut on_progress: impl FnMut(CloneProgress),
 ) -> Result<()> {
-    if add_gitignore {
+    if opts.add_gitignore {
         write_default_gitignore(path)?;
+    }
+    if !opts.ignore_paths.is_empty() {
+        append_gitignore(path, &opts.ignore_paths)?;
+        // No HEAD yet → the index is ours alone, so clearing these entries can't
+        // stage a deletion of something the user has committed.
+        if !matches!(git(path, &["rev-parse", "--verify", "HEAD"]), Ok((true, _))) {
+            unstage_ignored(path, &opts.ignore_paths);
+        }
     }
     let staging = |detail: String| CloneProgress {
         phase: "Staging files".to_string(),
@@ -373,7 +529,7 @@ pub fn initial_commit_with_progress(
     let mut cmd = Command::new("git");
     cmd.args(["add", "-A", "--verbose"]).current_dir(path);
     let mut count: u64 = 0;
-    let (ok, stderr) = run_streaming_stdout(cmd, &mut |line| {
+    let staged = run_streaming_stdout(cmd, &opts.cancel, &mut |line| {
         if line.trim().is_empty() {
             return;
         }
@@ -381,7 +537,17 @@ pub fn initial_commit_with_progress(
         if count.is_multiple_of(STAGE_PROGRESS_EVERY) {
             on_progress(staging(format!("{count} files")));
         }
-    })?;
+    });
+    // Before unwrapping `staged`: killing the child can surface as a read error
+    // rather than a clean EOF, and returning that error would skip the cleanup
+    // below and leave behind exactly the lock it exists to remove.
+    if opts.cancel.is_cancelled() {
+        // The killed `git add` left its lock behind; without this, every later
+        // git command in the folder fails and the user has to find the file.
+        clear_index_lock(path);
+        bail!("{CANCELLED}");
+    }
+    let (ok, stderr) = staged?;
     if !ok {
         bail!("git add -A failed: {}", stderr.trim());
     }
@@ -401,7 +567,145 @@ pub fn initial_commit_with_progress(
         // exit 0 from --quiet means no staged changes.
         commit_args.push("--allow-empty");
     }
+    // Last chance to honour a Cancel: staging is the slow part, so a click that
+    // lands as it finishes would otherwise still produce a commit, moments after
+    // the dialog closed telling the user nothing had happened. The index keeps
+    // whatever was staged, same as a cancelled `git add`.
+    if opts.cancel.is_cancelled() {
+        bail!("{CANCELLED}");
+    }
     git_checked(path, &commit_args)
+}
+
+/// Files at least this big are worth a warning before `git add -A` hashes them
+/// into the repo. 100 MB is also the file size GitHub refuses to accept, so it's
+/// the size at which committing is likely a mistake either way.
+pub const LARGE_FILE_BYTES: u64 = 100 * 1024 * 1024;
+
+/// Largest files named individually in the scan result; the rest are counted.
+const MAX_LARGE_FILES: usize = 8;
+/// Ceilings on the walk. It runs while the setup dialog is already on screen and
+/// never gates the button, so the cost is invisible — but a folder with a
+/// million entries still has to stop somewhere, and a partial answer ("these
+/// three are 48 GB") is worth as much as a complete one.
+const SCAN_MAX_ENTRIES: usize = 400_000;
+const SCAN_MAX_TIME: std::time::Duration = std::time::Duration::from_secs(3);
+/// Large files tracked before the walk gives up on listing more of them.
+const SCAN_MAX_HITS: usize = 2_000;
+
+/// One file big enough to warn about, with its path relative to the folder.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LargeFile {
+    pub path: String,
+    pub bytes: u64,
+}
+
+/// What a folder holds that would make its first commit expensive.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LargeFileScan {
+    /// The biggest offenders, largest first, capped at [`MAX_LARGE_FILES`].
+    pub files: Vec<LargeFile>,
+    /// How many files were over the threshold in total.
+    pub count: usize,
+    /// Their combined size.
+    pub bytes: u64,
+    /// The walk hit a budget and stopped, so there may be more than this.
+    pub truncated: bool,
+    /// What to exclude to leave them all out: the folder (with a trailing `/`)
+    /// where several sit together, else the file itself.
+    pub ignore_paths: Vec<String>,
+    /// The size a file had to reach to be counted here. Reported rather than
+    /// assumed so the dialog can name the threshold it actually used, instead of
+    /// spelling out a number that drifts the moment this constant changes.
+    pub threshold_bytes: u64,
+}
+
+/// Collapse large-file paths into the shortest set of things to ignore: a folder
+/// holding more than one of them is ignored whole, anything else by name.
+fn ignore_paths_for(files: &[LargeFile]) -> Vec<String> {
+    use std::collections::BTreeMap;
+    let mut by_dir: BTreeMap<&str, Vec<&LargeFile>> = BTreeMap::new();
+    for f in files {
+        let dir = f.path.rfind('/').map(|i| &f.path[..i]).unwrap_or("");
+        by_dir.entry(dir).or_default().push(f);
+    }
+    let mut out = Vec::new();
+    for (dir, group) in by_dir {
+        // Files sitting at the repo root are always named one by one — ignoring
+        // "/" would exclude the whole project.
+        if dir.is_empty() || group.len() < 2 {
+            out.extend(group.iter().map(|f| f.path.clone()));
+        } else {
+            out.push(format!("{dir}/"));
+        }
+    }
+    // Sorted so the dialog lists them the same way every time.
+    out.sort();
+    out
+}
+
+/// Find the files in `root` that are big enough to make committing it a slow
+/// mistake — model weights, datasets, videos. Walks the folder itself rather
+/// than asking git, because the folder isn't a repository yet when the setup
+/// dialog first asks. `.git` is skipped; symlinks are never followed.
+///
+/// Only metadata is read, so this is a directory walk, not a hash of anything:
+/// on an ordinary project it finishes in milliseconds, and on a pathological one
+/// the budget stops it (see [`SCAN_MAX_ENTRIES`]).
+pub fn scan_large_files(root: &Path) -> LargeFileScan {
+    scan_files_over(root, LARGE_FILE_BYTES)
+}
+
+/// [`scan_large_files`] with the threshold spelled out, so tests don't have to
+/// write hundred-megabyte files to exercise the walk.
+fn scan_files_over(root: &Path, threshold: u64) -> LargeFileScan {
+    let deadline = std::time::Instant::now() + SCAN_MAX_TIME;
+    let mut stack = vec![root.to_path_buf()];
+    let mut hits: Vec<LargeFile> = Vec::new();
+    let mut scan = LargeFileScan { threshold_bytes: threshold, ..Default::default() };
+    let mut visited = 0usize;
+    'walk: while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for entry in entries.flatten() {
+            visited += 1;
+            if visited > SCAN_MAX_ENTRIES
+                || (visited.is_multiple_of(512) && std::time::Instant::now() > deadline)
+            {
+                scan.truncated = true;
+                break 'walk;
+            }
+            let Ok(ft) = entry.file_type() else { continue };
+            if ft.is_symlink() {
+                continue;
+            }
+            let path = entry.path();
+            if ft.is_dir() {
+                if entry.file_name() != ".git" {
+                    stack.push(path);
+                }
+                continue;
+            }
+            let Ok(meta) = entry.metadata() else { continue };
+            if meta.len() < threshold {
+                continue;
+            }
+            scan.count += 1;
+            scan.bytes += meta.len();
+            if hits.len() >= SCAN_MAX_HITS {
+                scan.truncated = true;
+                continue;
+            }
+            let rel = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().replace('\\', "/");
+            hits.push(LargeFile { path: rel, bytes: meta.len() });
+        }
+    }
+    scan.ignore_paths = ignore_paths_for(&hits);
+    hits.sort_by_key(|f| std::cmp::Reverse(f.bytes));
+    hits.truncate(MAX_LARGE_FILES);
+    scan.files = hits;
+    scan
 }
 
 #[cfg(test)]
@@ -431,5 +735,68 @@ mod tests {
         // A missing repo or DNS failure is NOT an auth problem.
         assert!(!is_auth_failure("fatal: repository 'https://github.com/x/y' not found"));
         assert!(!is_auth_failure("fatal: unable to access ... Could not resolve host"));
+    }
+
+    #[test]
+    fn ignore_lines_are_anchored_and_escaped() {
+        assert_eq!(gitignore_line("models/llama.gguf"), "/models/llama.gguf");
+        // Characters git would read as a pattern must mean themselves; a space
+        // is only a problem at the end, where git would drop it.
+        assert_eq!(gitignore_line("data/[raw] set*.bin"), "/data/\\[raw] set\\*.bin");
+        assert_eq!(gitignore_line("weights "), "/weights\\ ");
+        // '#' needs no escape: the line already starts with '/'.
+        assert_eq!(gitignore_line("#notes.bin"), "/#notes.bin");
+    }
+
+    fn large(path: &str) -> LargeFile {
+        LargeFile { path: path.to_string(), bytes: LARGE_FILE_BYTES }
+    }
+
+    #[test]
+    fn ignores_a_shared_folder_but_names_lone_files() {
+        let paths = ignore_paths_for(&[
+            large("models/a.gguf"),
+            large("models/b.gguf"),
+            large("data/one.bin"),
+            large("root.bin"),
+        ]);
+        // Two files in models/ collapse to the folder; the singletons don't, and
+        // a file at the root never collapses (that would be the whole project).
+        assert_eq!(paths, vec!["data/one.bin", "models/", "root.bin"]);
+    }
+
+    #[test]
+    fn scan_finds_big_files_and_skips_git() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("models")).unwrap();
+        std::fs::create_dir_all(root.join(".git/objects")).unwrap();
+        std::fs::write(root.join("models/w.gguf"), vec![0u8; 64]).unwrap();
+        // Git's own storage is never the user's problem to ignore.
+        std::fs::write(root.join(".git/objects/pack"), vec![0u8; 64]).unwrap();
+        std::fs::write(root.join("small.txt"), b"hi").unwrap();
+
+        let scan = scan_files_over(root, 32);
+        assert_eq!(scan.count, 1);
+        assert_eq!(scan.files, vec![LargeFile { path: "models/w.gguf".into(), bytes: 64 }]);
+        assert_eq!(scan.bytes, 64);
+        assert!(!scan.truncated);
+        assert_eq!(scan.ignore_paths, vec!["models/w.gguf"]);
+    }
+
+    #[test]
+    fn scan_orders_by_size_and_counts_the_rest() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        for (name, size) in [("a.bin", 40), ("b.bin", 90), ("c.bin", 60)] {
+            std::fs::write(root.join(name), vec![0u8; size]).unwrap();
+        }
+        let scan = scan_files_over(root, 32);
+        assert_eq!(scan.count, 3);
+        assert_eq!(scan.bytes, 190);
+        assert_eq!(
+            scan.files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(),
+            vec!["b.bin", "c.bin", "a.bin"]
+        );
     }
 }

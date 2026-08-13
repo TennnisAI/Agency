@@ -1530,12 +1530,35 @@ pub async fn commit_repo(
     state: State<'_, AppState>,
     repo_path: String,
     add_gitignore: bool,
+    ignore_paths: Vec<String>,
     on_progress: Channel<agency_core::setup::CloneProgress>,
 ) -> Result<(), String> {
     state
-        .commit_repo(std::path::Path::new(&repo_path), add_gitignore, move |p| {
+        .commit_repo(std::path::Path::new(&repo_path), add_gitignore, ignore_paths, move |p| {
             let _ = on_progress.send(p);
         })
+        .map_err(|e| e.to_string())
+}
+
+// Stops the staging pass started by `commit_repo` for this folder. Sync and
+// trivial on purpose: it only flips a flag, and it has to be answered while the
+// command it cancels is still running.
+#[tauri::command]
+pub fn cancel_repo_setup(state: State<'_, AppState>, repo_path: String) {
+    state.cancel_repo_setup(std::path::Path::new(&repo_path));
+}
+
+// Looks for files big enough that committing them is probably a mistake — model
+// weights, datasets, video. Only ever called for a folder the setup dialog is
+// already open over, so it costs nothing on the ordinary path of adding a
+// project that is already a repository.
+#[tauri::command]
+pub async fn scan_large_files(
+    repo_path: String,
+) -> Result<agency_core::setup::LargeFileScan, String> {
+    let path = std::path::PathBuf::from(repo_path);
+    tauri::async_runtime::spawn_blocking(move || agency_core::setup::scan_large_files(&path))
+        .await
         .map_err(|e| e.to_string())
 }
 

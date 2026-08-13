@@ -1,4 +1,5 @@
-import { RepoReadiness } from "../api";
+import { LargeFileScan, RepoReadiness } from "../api";
+import { formatSize } from "./git/binary";
 
 export type RepoSetupView = {
   kind: "init" | "commit" | "dirty" | "ready";
@@ -47,4 +48,46 @@ export function repoSetupView(readiness: RepoReadiness, context: "add" | "spawn"
     };
   }
   return { kind: "ready", title: "", body: "", primaryLabel: "", secondaryLabel: null };
+}
+
+// One line for what the folder is carrying: how many oversized files and how
+// much they weigh. `truncated` means the scan stopped at its budget, so the
+// count is a floor, not a total.
+export function largeFileSummary(scan: LargeFileScan): string {
+  const one = scan.count === 1;
+  const at = scan.truncated ? "At least " : "";
+  const size = `${formatSize(scan.bytes)}${one ? "" : " in total"}`;
+  const over = formatSize(scan.thresholdBytes);
+  return `${at}${scan.count} file${one ? " here is" : "s here are"} over ${over} (${size})`;
+}
+
+// How many .gitignore rules the dialog spells out before it summarises the rest.
+const MAX_SHOWN_RULES = 6;
+
+// The rules the dialog shows under the checkbox. Capped, because a folder whose
+// large files sit in separate directories produces one rule each: the modal has
+// no scroll of its own, so an unbounded list grows it until its own buttons are
+// off the bottom of the screen.
+export function ignoreRulesLine(scan: LargeFileScan): string {
+  const shown = scan.ignorePaths.slice(0, MAX_SHOWN_RULES).join(", ");
+  const rest = scan.ignorePaths.length - MAX_SHOWN_RULES;
+  return rest > 0 ? `${shown}, and ${rest} more` : shown;
+}
+
+// Said under the rules when any of them is a whole folder. The rules are picked
+// from the large files alone, so a folder holding two of them is excluded whole,
+// source files and all. That is usually what the user wants for a models/ or
+// data/ folder and quietly wrong otherwise, so it gets one line rather than a
+// choice per rule.
+export function folderRulesNote(scan: LargeFileScan): string | null {
+  if (!scan.ignorePaths.some((p) => p.endsWith("/"))) return null;
+  return "Rules ending in / leave out the whole folder, not only the large files in it.";
+}
+
+// Said under the rules when the walk gave up early: the rules cover what it
+// found, which is not necessarily everything, and committing is the one choice
+// here that can't be quietly undone later.
+export function ignoreRulesCaveat(scan: LargeFileScan): string | null {
+  if (!scan.truncated) return null;
+  return "The scan stopped at its limit, so this folder may hold large files these rules miss.";
 }

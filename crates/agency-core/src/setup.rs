@@ -511,7 +511,7 @@ pub fn initial_commit_with_progress(
     let mut cmd = Command::new("git");
     cmd.args(["add", "-A", "--verbose"]).current_dir(path);
     let mut count: u64 = 0;
-    let (ok, stderr) = run_streaming_stdout(cmd, &opts.cancel, &mut |line| {
+    let staged = run_streaming_stdout(cmd, &opts.cancel, &mut |line| {
         if line.trim().is_empty() {
             return;
         }
@@ -519,13 +519,17 @@ pub fn initial_commit_with_progress(
         if count.is_multiple_of(STAGE_PROGRESS_EVERY) {
             on_progress(staging(format!("{count} files")));
         }
-    })?;
+    });
+    // Before unwrapping `staged`: killing the child can surface as a read error
+    // rather than a clean EOF, and returning that error would skip the cleanup
+    // below and leave behind exactly the lock it exists to remove.
     if opts.cancel.is_cancelled() {
         // The killed `git add` left its lock behind; without this, every later
         // git command in the folder fails and the user has to find the file.
         clear_index_lock(path);
         bail!("{CANCELLED}");
     }
+    let (ok, stderr) = staged?;
     if !ok {
         bail!("git add -A failed: {}", stderr.trim());
     }
@@ -587,6 +591,10 @@ pub struct LargeFileScan {
     /// What to exclude to leave them all out: the folder (with a trailing `/`)
     /// where several sit together, else the file itself.
     pub ignore_paths: Vec<String>,
+    /// The size a file had to reach to be counted here. Reported rather than
+    /// assumed so the dialog can name the threshold it actually used, instead of
+    /// spelling out a number that drifts the moment this constant changes.
+    pub threshold_bytes: u64,
 }
 
 /// Collapse large-file paths into the shortest set of things to ignore: a folder
@@ -631,7 +639,7 @@ fn scan_files_over(root: &Path, threshold: u64) -> LargeFileScan {
     let deadline = std::time::Instant::now() + SCAN_MAX_TIME;
     let mut stack = vec![root.to_path_buf()];
     let mut hits: Vec<LargeFile> = Vec::new();
-    let mut scan = LargeFileScan::default();
+    let mut scan = LargeFileScan { threshold_bytes: threshold, ..Default::default() };
     let mut visited = 0usize;
     'walk: while let Some(dir) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else { continue };

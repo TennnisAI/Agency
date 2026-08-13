@@ -9,7 +9,12 @@ import {
   inspectRepo,
   scanLargeFiles,
 } from "../api";
-import { repoSetupView, largeFileSummary } from "./repoSetupView";
+import {
+  repoSetupView,
+  largeFileSummary,
+  ignoreRulesLine,
+  ignoreRulesCaveat,
+} from "./repoSetupView";
 import { formatSize } from "./git/binary";
 import { useModalKeys } from "../hooks/useModalKeys";
 
@@ -107,6 +112,7 @@ export default function RepoSetupDialog({ readiness, context, repoPath, onResolv
   // nothing — it's a fast `git init` plus a rescan of the folder.
   const startingLabel = view.kind === "init" ? "Setting up repository…" : "Staging files…";
   const unlisted = scan ? scan.count - scan.files.length : 0;
+  const rulesCaveat = scan && ignoreRulesCaveat(scan);
 
   return (
     // A stray backdrop click still can't abort a running op; Cancel, X and
@@ -145,7 +151,10 @@ export default function RepoSetupDialog({ readiness, context, repoPath, onResolv
                 <span>Leave them out (adds them to .gitignore)</span>
               </label>
               {ignoreLarge && (
-                <div className="repo-large-rules">.gitignore: {scan.ignorePaths.join(", ")}</div>
+                <>
+                  <div className="repo-large-rules">.gitignore: {ignoreRulesLine(scan)}</div>
+                  {rulesCaveat && <div className="repo-large-caveat">{rulesCaveat}</div>}
+                </>
               )}
             </div>
           )}

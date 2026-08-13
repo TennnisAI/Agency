@@ -1,7 +1,7 @@
 use agency_core::setup::{
     clone_repo, init_repo, initial_commit, initial_commit_with_progress, repo_name_from_url,
     repo_readiness, scan_large_files, write_default_gitignore, CancelToken, CommitOptions,
-    RepoReadiness, CANCELLED,
+    RepoReadiness, CANCELLED, LARGE_FILE_BYTES,
 };
 use std::path::Path;
 use std::process::Command;
@@ -254,6 +254,8 @@ fn scan_reports_only_files_over_the_threshold() {
     assert!(scan.files.is_empty());
     assert!(scan.ignore_paths.is_empty());
     assert!(!scan.truncated);
+    // The dialog words its warning from this, so it has to be the real threshold.
+    assert_eq!(scan.threshold_bytes, LARGE_FILE_BYTES);
 }
 
 #[test]

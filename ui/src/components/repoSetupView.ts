@@ -49,5 +49,27 @@ export function largeFileSummary(scan: LargeFileScan): string {
   const one = scan.count === 1;
   const at = scan.truncated ? "At least " : "";
   const size = `${formatSize(scan.bytes)}${one ? "" : " in total"}`;
-  return `${at}${scan.count} file${one ? " here is" : "s here are"} over 100 MB (${size})`;
+  const over = formatSize(scan.thresholdBytes);
+  return `${at}${scan.count} file${one ? " here is" : "s here are"} over ${over} (${size})`;
+}
+
+// How many .gitignore rules the dialog spells out before it summarises the rest.
+const MAX_SHOWN_RULES = 6;
+
+// The rules the dialog shows under the checkbox. Capped, because a folder whose
+// large files sit in separate directories produces one rule each: the modal has
+// no scroll of its own, so an unbounded list grows it until its own buttons are
+// off the bottom of the screen.
+export function ignoreRulesLine(scan: LargeFileScan): string {
+  const shown = scan.ignorePaths.slice(0, MAX_SHOWN_RULES).join(", ");
+  const rest = scan.ignorePaths.length - MAX_SHOWN_RULES;
+  return rest > 0 ? `${shown}, and ${rest} more` : shown;
+}
+
+// Said under the rules when the walk gave up early: the rules cover what it
+// found, which is not necessarily everything, and committing is the one choice
+// here that can't be quietly undone later.
+export function ignoreRulesCaveat(scan: LargeFileScan): string | null {
+  if (!scan.truncated) return null;
+  return "The scan stopped at its limit, so this folder may hold large files these rules miss.";
 }

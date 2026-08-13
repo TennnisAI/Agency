@@ -248,12 +248,17 @@ export type LargeFile = { path: string; bytes: number };
 // What a folder holds that would make its first commit slow: `files` is the
 // biggest few (largest first), `count`/`bytes` cover them all, and
 // `ignorePaths` is the shortest set of .gitignore entries that excludes them.
+// `truncated` means the walk hit its budget, so `count` is a floor and
+// `ignorePaths` may not reach every large file.
 export type LargeFileScan = {
   files: LargeFile[];
   count: number;
   bytes: number;
   truncated: boolean;
   ignorePaths: string[];
+  // The size that got a file counted. Comes from the backend so the warning
+  // can't quote a threshold the scan didn't use.
+  thresholdBytes: number;
 };
 export const scanLargeFiles = (repoPath: string) =>
   invoke<LargeFileScan>("scan_large_files", { repoPath });

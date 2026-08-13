@@ -1388,6 +1388,13 @@ impl AppState {
 
     /// Stop a setup commit running against `repo_path`, if there is one. A no-op
     /// otherwise — the dialog also cancels during steps with nothing to kill.
+    ///
+    /// A Cancel that somehow beats `commit_repo` to registering its token is
+    /// dropped. Closing that window means either a tombstone (which poisons the
+    /// next attempt for the folder if no commit follows it) or a separate
+    /// registration command, and neither is worth it: reaching the window takes
+    /// a stalled async runtime *and* a click landing within milliseconds of the
+    /// one that started the commit.
     pub fn cancel_repo_setup(&self, repo_path: &Path) {
         if let Some(cancel) = self.setup_cancels.lock().unwrap().get(repo_path) {
             cancel.cancel();

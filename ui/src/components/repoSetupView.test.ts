@@ -3,6 +3,7 @@ import {
   largeFileSummary,
   ignoreRulesLine,
   ignoreRulesCaveat,
+  folderRulesNote,
   repoSetupView,
 } from "./repoSetupView";
 import type { LargeFileScan } from "../api";
@@ -82,6 +83,17 @@ describe("ignoreRulesLine", () => {
   });
   it("does not say 'and 0 more' at exactly the cap", () => {
     expect(ignoreRulesLine(scan({ ignorePaths: paths(6) }))).toBe(paths(6).join(", "));
+  });
+});
+
+describe("folderRulesNote", () => {
+  it("stays quiet when every rule names a file", () => {
+    expect(folderRulesNote(scan({ ignorePaths: ["data/big.bin", "root.iso"] }))).toBeNull();
+  });
+  it("warns that a folder rule takes everything in the folder", () => {
+    // The rule was chosen from the large files alone, so the source next to
+    // them goes too, and nothing else on screen says so.
+    expect(folderRulesNote(scan({ ignorePaths: ["big.iso", "models/"] }))).toMatch(/whole folder/);
   });
 });
 

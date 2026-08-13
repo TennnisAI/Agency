@@ -2173,6 +2173,7 @@ input, textarea, code,
      so anything unbounded in here pushes its buttons off the screen. */
   max-height: 5.5em; overflow-y: auto;
 }
+.repo-large-note { margin-top: 5px; padding-left: 22px; color: var(--sub0); font-size: 11px; }
 .repo-large-caveat { margin-top: 5px; padding-left: 22px; color: var(--yellow); font-size: 11px; }
 
 /* ── Install-missing-agent dialog ────────────────────────────── */

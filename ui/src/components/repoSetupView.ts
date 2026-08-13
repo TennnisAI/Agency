@@ -66,6 +66,16 @@ export function ignoreRulesLine(scan: LargeFileScan): string {
   return rest > 0 ? `${shown}, and ${rest} more` : shown;
 }
 
+// Said under the rules when any of them is a whole folder. The rules are picked
+// from the large files alone, so a folder holding two of them is excluded whole,
+// source files and all. That is usually what the user wants for a models/ or
+// data/ folder and quietly wrong otherwise, so it gets one line rather than a
+// choice per rule.
+export function folderRulesNote(scan: LargeFileScan): string | null {
+  if (!scan.ignorePaths.some((p) => p.endsWith("/"))) return null;
+  return "Rules ending in / leave out the whole folder, not only the large files in it.";
+}
+
 // Said under the rules when the walk gave up early: the rules cover what it
 // found, which is not necessarily everything, and committing is the one choice
 // here that can't be quietly undone later.

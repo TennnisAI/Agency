@@ -245,6 +245,27 @@ fn cancelling_mid_staging_stops_the_commit() {
 }
 
 #[test]
+fn cancelling_after_staging_still_writes_no_commit() {
+    let dir = tempfile::tempdir().unwrap();
+    init_bare_repo(dir.path());
+    std::fs::write(dir.path().join("a.txt"), "a\n").unwrap();
+
+    let cancel = CancelToken::new();
+    let opts = CommitOptions { cancel: cancel.clone(), ..Default::default() };
+    // The click lands once staging is done, in the window before the commit is
+    // written. The dialog has already closed, so no commit may appear.
+    let err = initial_commit_with_progress(dir.path(), &opts, |p| {
+        if p.phase == "Writing commit" {
+            cancel.cancel();
+        }
+    })
+    .unwrap_err();
+
+    assert_eq!(err.to_string(), CANCELLED);
+    assert_eq!(repo_readiness(dir.path()), RepoReadiness::NoCommits { stageable: true });
+}
+
+#[test]
 fn scan_reports_only_files_over_the_threshold() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("small.txt"), "hi\n").unwrap();

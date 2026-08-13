@@ -549,6 +549,13 @@ pub fn initial_commit_with_progress(
         // exit 0 from --quiet means no staged changes.
         commit_args.push("--allow-empty");
     }
+    // Last chance to honour a Cancel: staging is the slow part, so a click that
+    // lands as it finishes would otherwise still produce a commit, moments after
+    // the dialog closed telling the user nothing had happened. The index keeps
+    // whatever was staged, same as a cancelled `git add`.
+    if opts.cancel.is_cancelled() {
+        bail!("{CANCELLED}");
+    }
     git_checked(path, &commit_args)
 }
 

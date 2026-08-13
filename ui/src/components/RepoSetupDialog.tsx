@@ -14,6 +14,7 @@ import {
   largeFileSummary,
   ignoreRulesLine,
   ignoreRulesCaveat,
+  folderRulesNote,
 } from "./repoSetupView";
 import { formatSize } from "./git/binary";
 import { useModalKeys } from "../hooks/useModalKeys";
@@ -113,6 +114,7 @@ export default function RepoSetupDialog({ readiness, context, repoPath, onResolv
   const startingLabel = view.kind === "init" ? "Setting up repository…" : "Staging files…";
   const unlisted = scan ? scan.count - scan.files.length : 0;
   const rulesCaveat = scan && ignoreRulesCaveat(scan);
+  const folderNote = scan && folderRulesNote(scan);
 
   return (
     // A stray backdrop click still can't abort a running op; Cancel, X and
@@ -153,6 +155,7 @@ export default function RepoSetupDialog({ readiness, context, repoPath, onResolv
               {ignoreLarge && (
                 <>
                   <div className="repo-large-rules">.gitignore: {ignoreRulesLine(scan)}</div>
+                  {folderNote && <div className="repo-large-note">{folderNote}</div>}
                   {rulesCaveat && <div className="repo-large-caveat">{rulesCaveat}</div>}
                 </>
               )}

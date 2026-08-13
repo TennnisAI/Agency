@@ -1705,6 +1705,16 @@ input.settings-notif-secs { width: 90px; flex: 0 0 auto; }
 .files-tool-btn:hover:not(:disabled) { background: var(--s0); color: var(--text); }
 .files-tool-btn:disabled { opacity: 0.35; cursor: default; }
 .files-tree-body { flex: 1; overflow: auto; padding: 4px 0; }
+/* Finder drop feedback: the pane claims the drag, the row says where it lands.
+   `drop-into` on the body is the root's turn to be that row. */
+.files-tree-body.drop-active { box-shadow: inset 0 0 0 2px var(--blue); }
+.files-tree-body.drop-into { background: color-mix(in srgb, var(--blue) 8%, transparent); }
+.tree-row.drop-into { background: color-mix(in srgb, var(--blue) 16%, transparent); color: var(--text); }
+.tree-drop-hint {
+  flex-shrink: 0; border-top: 1px solid var(--line);
+  padding: 6px 10px; font-size: 11px; color: var(--sub0);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .files-editor { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 /* Hidden-not-unmounted editor panes: one per warm tab, display toggled inline. */
 .files-editor-pane { flex: 1; min-height: 0; flex-direction: column; }

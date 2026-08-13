@@ -320,6 +320,10 @@ pub fn write_file_bytes(root: &Path, rel: &str, bytes: &[u8]) -> Result<()> {
 /// a Finder alias imports what it points at, which is what the user sees.
 pub fn import_file(root: &Path, src: &Path, rel: &str) -> Result<()> {
     let meta = std::fs::metadata(src).map_err(|e| anyhow!("cannot read {}: {e}", src.display()))?;
+    if meta.is_dir() {
+        // Said plainly: this is what a user gets back for dropping a folder in.
+        bail!("folders can't be added, only files");
+    }
     if !meta.is_file() {
         bail!("not a file: {}", src.display());
     }

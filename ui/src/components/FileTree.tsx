@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   BackendSearchHit, DirEntry, FileRoot, listDir, searchFiles,
-  createFile, createDir, renamePath, trashPath,
+  createFile, createDir, importFile, renamePath, trashPath,
 } from "../api";
 import { joinPath, parentPath, baseName } from "../lib/filePath";
 import { fileIcon } from "../lib/fileIcon";
@@ -9,7 +9,9 @@ import { FileIcon } from "./fileIcons";
 import Menu, { MenuEntry } from "./git/Menu";
 import PromptDialog from "./PromptDialog";
 import ConfirmDialog from "./ConfirmDialog";
-import { toastError } from "../lib/toast";
+import { dirAtPoint, useFileDrop } from "../hooks/useFileDrop";
+import { dropName, nameList, uniqueName } from "../lib/fileDrop";
+import { toastError, toastInfo } from "../lib/toast";
 import { revealLabel, reveal, copyAbsPath, copyRelPath, ignorePath } from "../lib/fileActions";
 
 // A pending create/rename dialog. `dir` is the container for a create; `orig`
@@ -135,6 +137,58 @@ export default function FileTree({
     }
   };
 
+  // ── dropping in from Finder ───────────────────────────────────────────────
+  // Files land in the folder under the cursor (blank space below the rows is
+  // the root). Copies, never moves: the original stays where the user had it.
+
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const [importing, setImporting] = useState(false);
+  // The drop listener is installed once, so it would otherwise read `importing`
+  // from the render that installed it.
+  const importingRef = useRef(false);
+
+  const doImport = async (paths: string[], dir: string) => {
+    if (importingRef.current) return;
+    importingRef.current = true;
+    setImporting(true);
+    try {
+      // Real names on disk, not just the ones the tree has cached: a collision
+      // with an unloaded sibling still has to be renamed around.
+      const existing = await listDir(root, dir).catch(() => [] as DirEntry[]);
+      const taken = new Set(existing.map((e) => e.name.toLowerCase()));
+      const renamed: string[] = [];
+      const added: string[] = [];
+      for (const src of paths) {
+        const want = dropName(src);
+        const name = uniqueName(taken, want);
+        try {
+          await importFile(root, src, joinPath(dir, name));
+        } catch (e) {
+          toastError(e, `Couldn't add ${want}`);
+          continue;
+        }
+        taken.add(name.toLowerCase());
+        added.push(joinPath(dir, name));
+        if (name !== want) renamed.push(name);
+      }
+      if (added.length === 0) return;
+      if (dir !== "") expand(dir);
+      await loadDir(dir);
+      if (renamed.length > 0) toastInfo(`Renamed to keep what was there: ${nameList(renamed)}`);
+      // One file is an "open this" gesture; a batch is not, and stealing the
+      // editor for an arbitrary member of it would be noise.
+      if (added.length === 1) onSelect(added[0]);
+    } finally {
+      importingRef.current = false;
+      setImporting(false);
+    }
+  };
+
+  const dropDir = useFileDrop(
+    (x, y) => dirAtPoint(bodyRef.current, x, y),
+    (paths, dir) => { void doImport(paths, dir); },
+  );
+
   const addGitignore = async (path: string) => {
     // A first-time add creates .gitignore at the root — refresh so it shows.
     if (await ignorePath(root, path)) await loadDir("");
@@ -190,8 +244,9 @@ export default function FileTree({
         rows.push(
           <div
             key={path}
-            className="tree-row dir"
+            className={`tree-row dir${dropDir === path ? " drop-into" : ""}`}
             style={pad}
+            data-drop-dir={path}
             onClick={() => toggle(path)}
             onContextMenu={(e) => openMenu(e, { path, isDir: true })}
           >
@@ -212,6 +267,7 @@ export default function FileTree({
             key={path}
             className={`tree-row file ${selected === path ? "on" : ""}`}
             style={pad}
+            data-drop-dir={dir}
             onClick={() => onSelect(path)}
             onContextMenu={(e) => openMenu(e, { path, isDir: false })}
           >
@@ -297,7 +353,12 @@ export default function FileTree({
           <CollapseGlyph />
         </button>
       </div>
-      <div className="files-tree-body" onContextMenu={(e) => { if (e.target === e.currentTarget) openMenu(e, null); }}>
+      <div
+        ref={bodyRef}
+        className={`files-tree-body${dropDir !== null ? " drop-active" : ""}${dropDir === "" ? " drop-into" : ""}`}
+        data-drop-dir=""
+        onContextMenu={(e) => { if (e.target === e.currentTarget) openMenu(e, null); }}
+      >
         {searching ? (
           <div className="files-search-results">
             {searchFailed && <div className="docs-search-none">Search failed</div>}
@@ -330,6 +391,12 @@ export default function FileTree({
           renderDir("", 0)
         )}
       </div>
+
+      {(dropDir !== null || importing) && (
+        <div className="tree-drop-hint">
+          {importing ? "Adding…" : `Drop into ${dropDir ? `${dropDir}/` : "/"}`}
+        </div>
+      )}
 
       {menu && <Menu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} />}
 

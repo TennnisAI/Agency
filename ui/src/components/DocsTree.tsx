@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { FileRoot, createFile, createDir, renamePath, searchFiles, trashPath, writeFile } from "../api";
+import {
+  DirEntry, FileRoot, createFile, createDir, importFile, listDir, renamePath, searchFiles,
+  trashPath, writeFile,
+} from "../api";
 import { DocsIndex, SearchHit, fmFilterPaths, mergeBodyHits, searchDocs, searchLocal, stripExt } from "../lib/docsIndex";
 import { parseDocsQuery } from "../lib/docsQuery";
 import { joinPath, parentPath, baseName } from "../lib/filePath";
@@ -7,7 +10,9 @@ import { FileIcon } from "./fileIcons";
 import Menu, { MenuEntry } from "./git/Menu";
 import PromptDialog from "./PromptDialog";
 import ConfirmDialog from "./ConfirmDialog";
-import { toastError } from "../lib/toast";
+import { toastError, toastInfo } from "../lib/toast";
+import { dirAtPoint, useFileDrop } from "../hooks/useFileDrop";
+import { dropName, isMarkdown, nameList, uniqueName } from "../lib/fileDrop";
 import { revealLabel, reveal, copyAbsPath } from "../lib/fileActions";
 
 // A folder level derived from the index's note paths.
@@ -190,6 +195,65 @@ export default function DocsTree({
     }
   };
 
+  // ── dropping in from Finder ───────────────────────────────────────────────
+  // Notes land in the folder under the cursor (blank space below the rows is
+  // the docs root). Markdown only, matching what this tree can show: anything
+  // else would import into a vault it stays invisible in, so it's turned away
+  // here and pointed at the Files tab instead. Copies, never moves.
+
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const [importing, setImporting] = useState(false);
+  // The drop listener is installed once, so it would otherwise read `importing`
+  // from the render that installed it.
+  const importingRef = useRef(false);
+
+  const doImport = async (paths: string[], dir: string) => {
+    if (importingRef.current) return;
+    const notes = paths.filter((p) => isMarkdown(dropName(p)));
+    const skipped = paths.filter((p) => !isMarkdown(dropName(p))).map(dropName);
+    if (skipped.length > 0) {
+      toastInfo(`Docs takes markdown only, so ${nameList(skipped)} stayed put. Use the Files tab.`);
+    }
+    if (notes.length === 0) return;
+    importingRef.current = true;
+    setImporting(true);
+    try {
+      // Real names on disk, not the index's: it only knows markdown, and a
+      // collision with anything else in the folder is still a collision.
+      const existing = await listDir(root, toRepo(dir)).catch(() => [] as DirEntry[]);
+      const taken = new Set(existing.map((e) => e.name.toLowerCase()));
+      const renamed: string[] = [];
+      const added: string[] = [];
+      for (const src of notes) {
+        const want = dropName(src);
+        const name = uniqueName(taken, want);
+        try {
+          await importFile(root, src, toRepo(joinPath(dir, name)));
+        } catch (e) {
+          toastError(e, `Couldn't add ${want}`);
+          continue;
+        }
+        taken.add(name.toLowerCase());
+        added.push(joinPath(dir, name));
+        if (name !== want) renamed.push(name);
+      }
+      if (added.length === 0) return;
+      if (dir !== "") setOpen((s) => new Set(s).add(dir));
+      await refresh();
+      if (renamed.length > 0) toastInfo(`Renamed to keep what was there: ${nameList(renamed)}`);
+      // One note is an "open this" gesture; a batch is not.
+      if (added.length === 1) onSelect(added[0]);
+    } finally {
+      importingRef.current = false;
+      setImporting(false);
+    }
+  };
+
+  const dropDir = useFileDrop(
+    (x, y) => dirAtPoint(bodyRef.current, x, y),
+    (paths, dir) => { void doImport(paths, dir); },
+  );
+
   const openMenu = (e: React.MouseEvent, entry: { path: string; isDir: boolean } | null) => {
     e.preventDefault();
     e.stopPropagation();
@@ -222,7 +286,8 @@ export default function DocsTree({
     for (const [name, sub] of [...dir.dirs.entries()].sort(([a], [b]) => a.localeCompare(b))) {
       const isOpen = open.has(sub.path);
       rows.push(
-        <div key={sub.path} className="tree-row dir" style={pad}
+        <div key={sub.path} className={`tree-row dir${dropDir === sub.path ? " drop-into" : ""}`} style={pad}
+          data-drop-dir={sub.path}
           onClick={() => toggle(sub.path)}
           onContextMenu={(e) => openMenu(e, { path: sub.path, isDir: true })}>
           <span className="tree-twistie-slot">
@@ -241,6 +306,7 @@ export default function DocsTree({
         <div key={note.path}
           className={`tree-row file ${selected === note.path ? "on" : ""}`}
           style={pad}
+          data-drop-dir={dir.path}
           onClick={() => onSelect(note.path)}
           onContextMenu={(e) => openMenu(e, { path: note.path, isDir: false })}>
           <span className="tree-twistie-slot" />
@@ -320,7 +386,12 @@ export default function DocsTree({
           {anyOpen ? <CollapseGlyph /> : <ExpandGlyph />}
         </button>
       </div>
-      <div className="files-tree-body" onContextMenu={(e) => { if (e.target === e.currentTarget) openMenu(e, null); }}>
+      <div
+        ref={bodyRef}
+        className={`files-tree-body${dropDir !== null ? " drop-active" : ""}${dropDir === "" ? " drop-into" : ""}`}
+        data-drop-dir=""
+        onContextMenu={(e) => { if (e.target === e.currentTarget) openMenu(e, null); }}
+      >
         {searching ? (
           <div className="docs-search-results">
             {hits.length === 0 && <div className="docs-search-none">No matches</div>}
@@ -337,6 +408,12 @@ export default function DocsTree({
           renderDir(tree, 0)
         )}
       </div>
+
+      {(dropDir !== null || importing) && (
+        <div className="tree-drop-hint">
+          {importing ? "Adding…" : `Drop markdown into ${dropDir ? `${dropDir}/` : docsDir ? `${docsDir}/` : "/"}`}
+        </div>
+      )}
 
       {menu && <Menu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} />}
 

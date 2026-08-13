@@ -34,6 +34,10 @@ work on it together without leaving the page.
 
 Tag a note by writing #tags anywhere in its body, then search them with `#`.
 
+Drag markdown files in from Finder and drop them on the note tree: they are
+copied into the folder you drop on, leaving the originals where they were.
+The Files tab takes a drop of any kind of file the same way.
+
 Right-click anywhere in a note for its formatting menu: Format (bold, italic,
 strikethrough, ==highlight==, code), Paragraph (lists, heading levels, quote)
 and Insert (links, tables, callouts, code blocks). Each acts on the selection,

@@ -776,8 +776,27 @@ fn workspace_dir(repo: &Path, run: &agency_core::registry::Run) -> std::path::Pa
 /// still a project — docs, files, terminals and agents working directly in the
 /// folder all behave normally — but every branch-shaped flow (worktrees,
 /// merges, races, loops) is unavailable in it.
-fn is_gitless(repo: &Path) -> bool {
-    matches!(agency_core::setup::repo_readiness(repo), agency_core::setup::RepoReadiness::NotARepo)
+///
+/// `None` when git could not be run there, which is not an answer either way.
+fn is_gitless(repo: &Path) -> Option<bool> {
+    agency_core::setup::inside_work_tree(repo).map(|inside| !inside)
+}
+
+/// [`is_gitless`], refusing to guess.
+///
+/// This answer decides whether an agent gets an isolated worktree or is turned
+/// loose in the user's own checkout on their own branch, so reading "git would
+/// not run" as "plain folder" would silently do the more destructive thing to a
+/// perfectly normal repo — a real risk here, since a Finder-launched bundle has
+/// famously ended up without git on `PATH`. Fail loudly instead.
+fn require_gitless_known(repo: &Path) -> Result<bool> {
+    is_gitless(repo).ok_or_else(|| {
+        anyhow!(
+            "could not run git in {} to tell whether it is a repository; \
+             check that git is installed and the folder is available",
+            repo.display()
+        )
+    })
 }
 
 /// Reject a branch-level operation (merge, PR) on a run that has no branch of
@@ -786,22 +805,34 @@ fn is_gitless(repo: &Path) -> bool {
 ///
 /// The UI hides these controls for such runs; this is the backstop that keeps
 /// a stale window or a scripted call from acting on the wrong branch.
-fn require_own_branch(run: &agency_core::registry::Run, action: &str) -> Result<()> {
+///
+/// `repo` is the project folder, used only to word the refusal: the run's
+/// stored branch is empty for every terminal and for runs created before the
+/// folder had a repository, so it says nothing about whether one exists now.
+fn require_own_branch(run: &agency_core::registry::Run, repo: &Path, action: &str) -> Result<()> {
     if run.worktree {
         return Ok(());
     }
-    // A run in a project with no repository has no branch to name either.
-    if run.branch.is_empty() {
-        bail!(
+    // Read the checkout live, as `run_info_from` does, so the refusal names the
+    // branch the user can actually see rather than a stale or never-set one.
+    // Only a folder positively confirmed to have no repository gets the "not a
+    // git repository" wording — a detached HEAD or an unrunnable git would make
+    // that claim false.
+    match agency_core::merge::current_branch(repo) {
+        Some(branch) => bail!(
+            "this agent works directly in the project checkout on {branch}, so there is \
+             nothing to {action}; use Source Control to commit, publish or open a PR from \
+             that branch"
+        ),
+        None if is_gitless(repo) == Some(true) => bail!(
             "this agent works directly in the project folder, which is not a git repository, \
              so there is nothing to {action}"
-        );
+        ),
+        None => bail!(
+            "this agent works directly in the project checkout, which is not on a branch, \
+             so there is nothing to {action}"
+        ),
     }
-    bail!(
-        "this agent works directly in the project checkout on {}, so there is nothing to {action}; \
-         use Source Control to commit, publish or open a PR from that branch",
-        run.branch
-    )
 }
 
 /// Lowercase the prompt, keep ASCII alphanumerics, collapse every other run of
@@ -1663,7 +1694,7 @@ impl AppState {
             // run records none — the same shape terminals have always had. Only
             // a real checkout that is mid-rebase or otherwise off any branch is
             // an error, since there the branch is missing unexpectedly.
-            let branch = if is_gitless(&repo) {
+            let branch = if require_gitless_known(&repo)? {
                 String::new()
             } else {
                 agency_core::merge::current_branch(&repo)
@@ -1674,7 +1705,7 @@ impl AppState {
             // Races, loops and issue dispatch always ask for a worktree. Say why
             // it can't happen here rather than surfacing a raw git error; the UI
             // hides these entries for a gitless project, so this is the backstop.
-            if is_gitless(&repo) {
+            if require_gitless_known(&repo)? {
                 bail!(
                     "{} is not a git repository, so there is no branch to cut a worktree from; \
                      initialize one to give agents isolated branches",
@@ -1992,7 +2023,7 @@ impl AppState {
         // so the agent takes the issue on in the folder itself; the issue still
         // advances to in_progress, it just gets closed by hand rather than by a
         // merge. Racing or looping an issue stays worktree-only.
-        let gitless = is_gitless(&self.project_repo(&issue.project_id)?);
+        let gitless = require_gitless_known(&self.project_repo(&issue.project_id)?)?;
         let base =
             if gitless { "HEAD".to_string() } else { self.issue_base(&issue.project_id, base)? };
         let info = self.create_run_spec(
@@ -4510,8 +4541,8 @@ impl AppState {
     /// whether the agent's worktree still has uncommitted changes.
     pub fn merge_preview(&self, id: &str) -> anyhow::Result<MergePreview> {
         let run = self.run_record(id)?;
-        require_own_branch(&run, "merge")?;
         let repo = self.project_repo(&run.project_id)?;
+        require_own_branch(&run, &repo, "merge")?;
         let base = agency_core::merge::resolve_target(run.merge_target.as_deref(), &repo)?;
         let commits_ahead = agency_core::merge::commits_ahead(&repo, &run.branch, &base)?;
         let commits_behind = agency_core::merge::commits_behind(&repo, &run.branch, &base)?;
@@ -4547,13 +4578,13 @@ impl AppState {
         on_progress: &mut dyn FnMut(agency_core::setup::CloneProgress),
     ) -> anyhow::Result<agency_core::merge::MergeOutcome> {
         let run = self.run_record(id)?;
-        require_own_branch(&run, "merge")?;
+        let repo = self.project_repo(&run.project_id)?;
+        require_own_branch(&run, &repo, "merge")?;
         // An active loop is still committing attempts onto this branch; merging
         // mid-flight would take a half-done attempt and keep drifting after.
         if has_active_loop(&run) {
             bail!("this run is looping — stop the loop before merging");
         }
-        let repo = self.project_repo(&run.project_id)?;
         let base = agency_core::merge::resolve_target(run.merge_target.as_deref(), &repo)?;
         // try_with, not with: a merge that queued behind whatever else is
         // writing this checkout would go on to run against a repo it never
@@ -4604,8 +4635,8 @@ impl AppState {
     /// report that as an error.
     pub fn merge_status(&self, id: &str) -> anyhow::Result<agency_core::merge::MergeState> {
         let run = self.run_record(id)?;
-        require_own_branch(&run, "merge")?;
         let repo = self.project_repo(&run.project_id)?;
+        require_own_branch(&run, &repo, "merge")?;
         let base = agency_core::merge::resolve_target(run.merge_target.as_deref(), &repo)?;
         agency_core::merge::merge_state(&repo, &run.branch, &base)
     }
@@ -4627,8 +4658,8 @@ impl AppState {
         on_progress: &mut dyn FnMut(agency_core::setup::CloneProgress),
     ) -> anyhow::Result<agency_core::merge::MergeOutcome> {
         let run = self.run_record(id)?;
-        require_own_branch(&run, "merge")?;
         let repo = self.project_repo(&run.project_id)?;
+        require_own_branch(&run, &repo, "merge")?;
         let base = agency_core::merge::resolve_target(run.merge_target.as_deref(), &repo)?;
         let finished = self.repo_gates.try_with(&run.project_id, || {
             step(on_progress, "Checking the merge", &run.branch);
@@ -4663,8 +4694,8 @@ impl AppState {
         on_progress: &mut dyn FnMut(agency_core::setup::CloneProgress),
     ) -> anyhow::Result<()> {
         let run = self.run_record(id)?;
-        require_own_branch(&run, "merge")?;
         let repo = self.project_repo(&run.project_id)?;
+        require_own_branch(&run, &repo, "merge")?;
         let aborted = self.repo_gates.try_with(&run.project_id, || {
             step(on_progress, "Checking the merge", &run.branch);
             // Aborting throws away whatever resolution has been done so far, so it
@@ -4701,8 +4732,8 @@ impl AppState {
         if run.kind != "agent" {
             bail!("only agent runs have a branch to open a PR for");
         }
-        require_own_branch(&run, "open a PR for")?;
         let repo = self.project_repo(&run.project_id)?;
+        require_own_branch(&run, &repo, "open a PR for")?;
         let worktree = workspace_dir(&repo, &run);
         if !worktree.exists() {
             bail!("workspace is archived — restore it before creating a PR");
@@ -5332,7 +5363,7 @@ fn validate_project_path(repo_path: &Path) -> Result<()> {
 mod tests {
     use super::{
         agent_argv, command_on_path, failure_tail, graphify_server, new_task_id, pick_port,
-        slugify, split_session_id,
+        require_gitless_known, require_own_branch, slugify, split_session_id,
     };
     use agency_core::config::KnowledgeConfig;
     use agency_core::profile::AgentProfile;
@@ -5932,5 +5963,86 @@ mod tests {
         assert!(run.branch.is_empty());
         assert!(run.port_base.is_none());
         assert!(run.id.starts_with("terminal-"));
+    }
+
+    /// A run that stays in the project checkout, shaped like every terminal:
+    /// `worktree: false` and no branch of its own recorded.
+    fn checkout_run() -> agency_core::registry::Run {
+        agency_core::registry::Run {
+            id: "terminal-x".to_string(),
+            project_id: "proj".to_string(),
+            agent: "terminal".to_string(),
+            prompt: String::new(),
+            base: String::new(),
+            branch: String::new(),
+            created_at: 0,
+            port_base: None,
+            archived_at: None,
+            title: None,
+            kind: "terminal".to_string(),
+            merge_target: None,
+            race_id: None,
+            loop_config: None,
+            loop_state: None,
+            issue_id: None,
+            worktree: false,
+        }
+    }
+
+    fn init_repo_with_commit(dir: &Path) {
+        for args in [
+            &["init", "-q"][..],
+            &["config", "user.email", "t@e.com"],
+            &["config", "user.name", "T"],
+            &["commit", "-q", "--allow-empty", "-m", "init"],
+        ] {
+            assert!(std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .status()
+                .unwrap()
+                .success());
+        }
+    }
+
+    #[test]
+    fn require_own_branch_reads_the_checkout_not_the_stored_branch() {
+        // Every terminal stores an empty branch, in a git repo or not, so the
+        // refusal can't take that as evidence the folder has no repository.
+        let repo = tempfile::tempdir().unwrap();
+        init_repo_with_commit(repo.path());
+        let branch = agency_core::merge::current_branch(repo.path()).unwrap();
+
+        let err =
+            require_own_branch(&checkout_run(), repo.path(), "merge").unwrap_err().to_string();
+        assert!(err.contains(&branch), "names the branch the user can see: {err}");
+        assert!(!err.contains("not a git repository"), "the folder plainly is one: {err}");
+
+        // Only a folder actually without a repository gets that wording.
+        let plain = tempfile::tempdir().unwrap();
+        let err =
+            require_own_branch(&checkout_run(), plain.path(), "merge").unwrap_err().to_string();
+        assert!(err.contains("not a git repository"), "got: {err}");
+
+        // A run with its own worktree is never refused.
+        let mut owned = checkout_run();
+        owned.worktree = true;
+        assert!(require_own_branch(&owned, repo.path(), "merge").is_ok());
+    }
+
+    #[test]
+    fn require_gitless_known_refuses_to_guess_when_git_cannot_run() {
+        let plain = tempfile::tempdir().unwrap();
+        assert!(require_gitless_known(plain.path()).unwrap(), "a plain folder is gitless");
+
+        let repo = tempfile::tempdir().unwrap();
+        init_repo_with_commit(repo.path());
+        assert!(!require_gitless_known(repo.path()).unwrap());
+
+        // The folder is gone, so git can't answer. Guessing "gitless" here is
+        // what would turn an agent loose in a real checkout, so this errors.
+        let gone = plain.path().join("removed");
+        let err = require_gitless_known(&gone).unwrap_err().to_string();
+        assert!(err.contains("could not run git"), "got: {err}");
     }
 }

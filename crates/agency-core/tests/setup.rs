@@ -1,6 +1,6 @@
 use agency_core::setup::{
-    clone_repo, init_repo, initial_commit, initial_commit_with_progress, repo_name_from_url,
-    repo_readiness, write_default_gitignore, RepoReadiness,
+    clone_repo, init_repo, initial_commit, initial_commit_with_progress, inside_work_tree,
+    repo_name_from_url, repo_readiness, write_default_gitignore, RepoReadiness,
 };
 use std::path::Path;
 use std::process::Command;
@@ -23,6 +23,28 @@ fn init_bare_repo(dir: &Path) {
 fn plain_folder_is_not_a_repo() {
     let dir = tempfile::tempdir().unwrap();
     assert_eq!(repo_readiness(dir.path()), RepoReadiness::NotARepo);
+}
+
+#[test]
+fn inside_work_tree_answers_yes_no_or_dont_know() {
+    let plain = tempfile::tempdir().unwrap();
+    assert_eq!(
+        inside_work_tree(plain.path()),
+        Some(false),
+        "a plain folder is definitively not one"
+    );
+
+    let repo = tempfile::tempdir().unwrap();
+    init_bare_repo(repo.path());
+    assert_eq!(inside_work_tree(repo.path()), Some(true));
+
+    // git can't even be spawned against a folder that isn't there. That is not
+    // "no repository here" — callers that skip a run's isolated worktree on a
+    // gitless folder must not act on it, so it has to stay distinguishable.
+    // `repo_readiness` deliberately folds it into NotARepo for setup UI.
+    let gone = plain.path().join("removed");
+    assert_eq!(inside_work_tree(&gone), None);
+    assert_eq!(repo_readiness(&gone), RepoReadiness::NotARepo);
 }
 
 #[test]

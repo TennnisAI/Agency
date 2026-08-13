@@ -27,9 +27,14 @@ export function repoSetupView(readiness: RepoReadiness, context: "add" | "spawn"
     return {
       kind: "commit",
       title: "Create an initial commit",
-      body: "Agency needs at least one commit; each agent starts from your latest commit. Create the initial commit now?",
+      body: "Agents branch from your latest commit, so this repository needs at least one before they can get their own worktrees. Create the initial commit now?",
       primaryLabel: "Create initial commit",
-      secondaryLabel: null,
+      // Adding gets a way through too, or "Initialize repository" above becomes
+      // a trap: it leaves a commit-less repo behind, so backing out of the
+      // commit would strand a folder that can never be added again. A spawn
+      // keeps only Cancel, since a worktree really does need a commit to cut
+      // from and there is nothing to fall back to.
+      secondaryLabel: context === "add" ? "Add anyway" : null,
     };
   }
   if (readiness.state === "ready" && readiness.dirty) {

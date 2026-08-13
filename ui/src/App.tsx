@@ -51,16 +51,17 @@ function Shell() {
   // order in lib/defaultAgent (Settings default → project's last-used → claude).
   async function newTaskDefaultAgent() {
     if (!selectedProjectId) return;
-    // A git-less workspace has no worktrees to spawn into; the in-view spawn
-    // affordances are hidden, so catch the menu/shortcut path with a hint.
-    if (project?.kind === "workspace") {
-      const r = await inspectRepo(project.repo_path).catch(() => null);
-      if (r?.state === "notARepo") {
-        toastInfo("Agents need git. Initialize a repository in the workspace first.");
-        return;
-      }
+    const agent = await pickDefaultAgent(selectedProjectId, project?.default_agent);
+    // This path normally takes the Settings default for isolation, but a folder
+    // with no repository has nothing to cut a worktree from, so the agent works
+    // in it. The in-view add menu forces the same thing; this is its copy for
+    // the menu bar and the keyboard shortcut.
+    const r = project ? await inspectRepo(project.repo_path).catch(() => null) : null;
+    if (r?.state === "notARepo") {
+      createAgent(agent, { base: "HEAD", mergeTarget: "", worktree: false });
+      return;
     }
-    createAgent(await pickDefaultAgent(selectedProjectId, project?.default_agent));
+    createAgent(agent);
   }
 
   // ⌘⇧D / File ▸ Today's Note / palette: open today's journal note in the
@@ -205,20 +206,18 @@ function Shell() {
     selectProject(ws);
     setTab("docs");
     window.dispatchEvent(new CustomEvent("agency:open-note", { detail: { projectId: ws.id, path } }));
-    if (!existing) {
-      // Offer narration only where an agent can actually run (git workspace).
-      const r = await inspectRepo(ws.repo_path).catch(() => null);
-      if (r && r.state !== "notARepo") setWeeklyNarrate({ ws, path });
-    }
+    // An agent can be dispatched on the note either way: on a branch when the
+    // workspace uses git, in the folder itself when it doesn't.
+    if (!existing) setWeeklyNarrate({ ws, path });
   }
   const weeklyRef = useRef(generateWeeklyNote);
   weeklyRef.current = generateWeeklyNote;
 
-  async function dispatchWeeklyNarration(ws: Project, path: string) {
+  async function dispatchWeeklyNarration(ws: Project, path: string, worktree = true) {
     try {
       const agent = await pickDefaultAgent(ws.id, ws.default_agent);
       const prompt = `Narrate the weekly review note \`${path}\`. Read it, then write a short narrative summary of the week into its Notes section, drawing on the listed merges, closed issues, and archived runs. Keep the existing sections and wikilinks intact.`;
-      const run = await createRun(ws.id, prompt, agent, "HEAD", null);
+      const run = await createRun(ws.id, prompt, agent, "HEAD", null, undefined, worktree);
       openRun(ws, run.id);
     } catch (e) {
       toastError(e, "Couldn't start agent");
@@ -233,10 +232,13 @@ function Shell() {
     const { ws, path } = weeklyNarrate;
     setWeeklyNarrate(null);
     const r = await inspectRepo(ws.repo_path).catch(() => null);
-    if (!r || r.state === "notARepo") {
-      toastInfo("Agents need git. Initialize a repository in the workspace first.");
+    if (!r) {
+      toastInfo("Couldn't read the workspace folder.");
       return;
     }
+    // With no repository the agent edits the note where it lies, so there is no
+    // worktree for the uncommitted note to be missing from and nothing to set up.
+    if (r.state === "notARepo") return dispatchWeeklyNarration(ws, path, false);
     if (r.state === "ready" && !r.dirty) await dispatchWeeklyNarration(ws, path);
     else setWeeklySetup({ ws, path, readiness: r });
   }

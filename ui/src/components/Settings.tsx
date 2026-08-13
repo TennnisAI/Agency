@@ -866,8 +866,9 @@ export default function Settings({
                 {wsGitless && (
                   <div className="settings-notif-row">
                     <span className="settings-notif-label">
-                      Git is off, so agents can't be dispatched on notes. Initialize a
-                      repository to enable them; nothing is ever pushed anywhere.
+                      Git is off, so agents work directly in the folder: no branches,
+                      no Source Control, nothing to merge. Initialize a repository to
+                      give each one its own branch; nothing is ever pushed anywhere.
                     </span>
                     <button className="settings-save" onClick={enableWorkspaceGit}>Enable git</button>
                   </div>

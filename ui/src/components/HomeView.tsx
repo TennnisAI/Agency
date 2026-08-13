@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Issue, Project, RunInfo, RepoReadiness, addProject, inspectRepo, listIssues, listProjects, listRuns, runPreview } from "../api";
 import { projectAccent, runName } from "../agents";
-import { isWaiting, isWorking, runStatus } from "../lib/runstate";
+import { inGitlessFolder, isWaiting, isWorking, runStatus } from "../lib/runstate";
 import RepoSetupDialog from "./RepoSetupDialog";
 import CloneDialog from "./CloneDialog";
 import HomeIssues from "./HomeIssues";
@@ -298,9 +298,15 @@ function HomeTile({ run, onOpen }: { run: RunInfo; onOpen: () => void }) {
       </div>
       {!isTerminal && (
         <div className="tile-meta">
-          <code>{run.branch}</code>
-          <span className="diffstat"><span className="add">+{run.added}</span> <span className="del">−{run.deleted}</span> · {run.files}f</span>
-          {!run.worktree && <span className="badge" title="Works in the project checkout, not an isolated worktree">in checkout</span>}
+          {inGitlessFolder(run) ? (
+            <span className="badge" title="Works in the project folder, which is not a git repository">in folder</span>
+          ) : (
+            <>
+              <code>{run.branch}</code>
+              <span className="diffstat"><span className="add">+{run.added}</span> <span className="del">−{run.deleted}</span> · {run.files}f</span>
+              {!run.worktree && <span className="badge" title="Works in the project checkout, not an isolated worktree">in checkout</span>}
+            </>
+          )}
         </div>
       )}
       {preview && <pre className="tile-preview">{preview}</pre>}

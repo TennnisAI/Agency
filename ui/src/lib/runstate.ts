@@ -35,6 +35,16 @@ export function isWorking(run: RunInfo): boolean {
   );
 }
 
+/**
+ * An agent working in a project folder that has no git repository. It has no
+ * branch to name and no diff to count, so the tiles show neither. A worktree
+ * run always has a branch, and a run in a real checkout reports the live one,
+ * so an empty branch on a worktree-less run means exactly this.
+ */
+export function inGitlessFolder(run: Pick<RunInfo, "worktree" | "branch">): boolean {
+  return !run.worktree && !run.branch;
+}
+
 export function runStatus(
   run: RunInfo,
   now: number = Date.now(),

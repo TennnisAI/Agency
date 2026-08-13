@@ -36,6 +36,7 @@ import {
 } from "../lib/issues";
 import { pickDefaultAgent } from "../lib/defaultAgent";
 import { loadFold, saveFold, usePaneWidth } from "../hooks/usePaneWidth";
+import { useRepoReadiness, isGitless } from "../hooks/useRepoReadiness";
 import IssueRow from "./IssueRow";
 import IssueDetail from "./IssueDetail";
 import ConfirmDialog from "./ConfirmDialog";
@@ -61,6 +62,10 @@ export default function IssuesView({
 }) {
   const { runs, tab, setTab, setView, setFocusedRun } = useRuns();
   const { issues, loaded, refresh } = useIssues(project.id, tab === "issues");
+  // No repository here: an issue can still be dispatched (the agent works in
+  // the folder), but racing or looping it needs branches, so those hide.
+  const { readiness } = useRepoReadiness(project);
+  const gitless = isGitless(readiness);
   const [quick, setQuick] = useState("");
   const [selectedId, setSelectedIdState] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<Issue | null>(null);
@@ -696,6 +701,7 @@ export default function IssuesView({
                       onPatch={(p) => patch(issue, p)}
                       onDelete={() => setConfirmDelete(issue)}
                       terms={terms}
+                      gitless={gitless}
                       drag={!reorderable ? undefined : {
                         over:
                           drag && drag.status === status && drag.to === idx && drag.from !== idx
@@ -741,6 +747,7 @@ export default function IssuesView({
             onStart={() => { startDefault(selected); }}
             onSpawnAgent={(agentId, opts) => { onStartIssue(selected, agentId, opts); }}
             onDelete={() => setConfirmDelete(selected)}
+            gitless={gitless}
             onOpenRun={openRun}
             onOpenMention={openMention}
             onOpenIssue={(ref) =>

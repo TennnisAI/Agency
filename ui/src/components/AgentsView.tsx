@@ -11,7 +11,7 @@ import PrReviewPanel from "./pr/PrReviewPanel";
 import AgentAddMenu from "./AgentAddMenu";
 import Resizer from "./Resizer";
 import { usePaneWidth } from "../hooks/usePaneWidth";
-import { useRepoReadiness, isGitlessWorkspace } from "../hooks/useRepoReadiness";
+import { useRepoReadiness, isGitless } from "../hooks/useRepoReadiness";
 import { useSpawnAgent } from "../hooks/useSpawnAgent";
 import FilesView from "./FilesView";
 import DocsView from "./DocsView";
@@ -52,11 +52,12 @@ export default function AgentsView({
   const [reviewPr, setReviewPr] = useState<number | null>(null);
   const reviewPane = usePaneWidth("review", 360, 280, 640);
 
-  // The workspace can decline git; everything git-shaped (Source Control, the
-  // review panel, agent spawn — agents need worktrees) hides for it then.
-  // Terminals stay: they run in the checkout, no branch required.
+  // A project can have no repository at all: a workspace that declined git, or
+  // a plain folder added as a project. Agents and terminals still run there,
+  // in the folder itself, but everything that needs a branch to exist (Source
+  // Control, the review panel) hides until a repo is initialized.
   const { readiness: projReadiness, refresh: refreshReadiness } = useRepoReadiness(project);
-  const gitlessWorkspace = isGitlessWorkspace(project, projReadiness);
+  const gitless = isGitless(projReadiness);
   // The spawn pre-flight (missing CLI, unready repo) and its dialogs, shared
   // with the agents side panel in the Docs / Files tabs.
   const { spawn, error, dialogs: spawnDialogs } = useSpawnAgent(project, refreshReadiness);
@@ -67,9 +68,9 @@ export default function AgentsView({
   // Per-project tab memory can restore "source" from before git was declined,
   // or "files" from before the workspace hid it.
   useEffect(() => {
-    if (gitlessWorkspace && tab === "source") setTab("agents");
+    if (gitless && tab === "source") setTab("agents");
     if (isWorkspace && (tab === "files" || tab === "run")) setTab("docs");
-  }, [gitlessWorkspace, isWorkspace, tab, setTab]);
+  }, [gitless, isWorkspace, tab, setTab]);
 
   // Which working tree source control operates on: the selected run's worktree
   // (terminals share the project checkout) or, standing in the grid with no run
@@ -136,7 +137,7 @@ export default function AgentsView({
           <button className={tab === "docs" ? "on" : ""} title="Docs" onClick={() => setTab("docs")}>
             <span className="seg-ico" aria-hidden>▥</span><span className="seg-label">Docs</span>
           </button>
-          {!gitlessWorkspace && (
+          {!gitless && (
             <button className={tab === "source" ? "on" : ""} title="Source Control" onClick={() => setTab("source")}>
               <span className="seg-ico" aria-hidden>⎇</span>
               <span className="seg-label-short">Source</span>
@@ -187,7 +188,7 @@ export default function AgentsView({
           </div>
         )}
         <div className="spacer" />
-        {project && tab === "agents" && !gitlessWorkspace && (
+        {project && tab === "agents" && !gitless && (
           <RightPanelToggle open={sourcePanelOpen} onToggle={() => setSourcePanelOpen(!sourcePanelOpen)} />
         )}
         {project && tab === "files" && (
@@ -202,7 +203,7 @@ export default function AgentsView({
             projectId={project.id}
             onSpawn={spawn}
             onTerminal={createTerminal}
-            terminalOnly={gitlessWorkspace}
+            gitless={gitless}
           />
         )}
       </div>
@@ -273,8 +274,8 @@ export default function AgentsView({
                   <div className="grid">
                     {runs.length === 0 && !spawning && (
                       <div className="board empty">
-                        {gitlessWorkspace
-                          ? "Agents need git to work in isolated branches. Initialize a repository in the workspace (Settings ▸ Workspace) to dispatch them here."
+                        {gitless
+                          ? "No agents yet. Add one with \"+ Agent\"; with no git repository here, they work in the folder itself rather than an isolated branch."
                           : "No agents yet. Add one with \"+ Agent\"."}
                       </div>
                     )}
@@ -307,9 +308,9 @@ export default function AgentsView({
                     )}
                   </div>
                 )}
-                {view === "focus" && <AgentFocus onSpawn={spawn} />}
+                {view === "focus" && <AgentFocus onSpawn={spawn} gitless={gitless} />}
               </div>
-              {sourcePanelOpen && gitRoot && !gitlessWorkspace && (
+              {sourcePanelOpen && gitRoot && !gitless && (
                 <>
                   <Resizer size={reviewPane.width} min={280} max={640} onChange={reviewPane.setWidth} side="right" />
                   <GitPanel

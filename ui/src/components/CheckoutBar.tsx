@@ -40,9 +40,9 @@ export default function CheckoutBar({ root, projectId, projectName }: {
     return () => { alive = false; clearInterval(id); };
   }, [taskId]);
 
-  // No git at all: there is one place these files can be and no branch to
-  // confuse it with, so the bar has nothing to say. (Agents need git for their
-  // worktrees, so a note can't be waiting here either.)
+  // No git at all: every agent in such a project works in the project folder
+  // itself, so there is one place these files can be and no branch to confuse
+  // it with. The bar has nothing to say.
   if (branch === null) return null;
 
   return (

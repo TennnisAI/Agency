@@ -17,11 +17,29 @@ fn git(dir: &Path, args: &[&str]) -> std::io::Result<(bool, String)> {
     Ok((out.status.success(), String::from_utf8_lossy(&out.stdout).to_string()))
 }
 
+/// Whether `path` sits inside a git work tree, or `None` when git could not be
+/// run there at all — the binary missing from `PATH`, or the folder gone.
+///
+/// "This is not a repository" and "we could not ask" are different answers, and
+/// any caller that acts on the difference must use this rather than reading
+/// [`RepoReadiness::NotARepo`], which folds the two together.
+pub fn inside_work_tree(path: &Path) -> Option<bool> {
+    match git(path, &["rev-parse", "--is-inside-work-tree"]) {
+        // git ran and answered: success means inside, a non-zero exit ("not a
+        // git repository") means definitively outside.
+        Ok((ok, _)) => Some(ok),
+        Err(_) => None,
+    }
+}
+
 /// Inspect a folder and classify how ready it is to host agent worktrees.
 /// Worktrees branch from `HEAD`, so a repo needs at least one commit to be `Ready`.
+///
+/// This drives setup UI, where an unrunnable git and a plain folder both mean
+/// "nothing to show yet", so both land on `NotARepo`. Callers deciding what to
+/// *do* with a folder want [`inside_work_tree`] instead.
 pub fn repo_readiness(path: &Path) -> RepoReadiness {
-    let inside = git(path, &["rev-parse", "--is-inside-work-tree"]);
-    if !matches!(inside, Ok((true, _))) {
+    if inside_work_tree(path) != Some(true) {
         return RepoReadiness::NotARepo;
     }
     // HEAD resolves only when at least one commit exists.

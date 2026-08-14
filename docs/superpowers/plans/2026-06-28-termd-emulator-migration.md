@@ -18,7 +18,7 @@
 - No silent failures: daemon-unreachable, per-session spawn failure, and codec errors are surfaced, never swallowed.
 - COLORTERM/TERM/truecolor defaults from today's `tmux.rs` (`COLORTERM=truecolor`, `TERM=xterm-256color`) must be applied to the spawned PTY env for the same Finder-bundle reasons.
 - Socket path is supplied BY THE APP (it knows its Tauri data dir) as `argv[1]` to the daemon and as a parameter to `TermClient` — `agency-core` does not compute paths.
-- Run `cargo test -p agency-core` and `cargo build` from the workspace root (`<home>/agency`).
+- Run `cargo test -p agency-core` and `cargo build` from the workspace root (the repo root).
 
 ---
 

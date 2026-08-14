@@ -17,7 +17,7 @@
 - `input_seen` is set on **non-empty** input only (so `kill()`'s empty write does not count) and suppresses the fallback when set.
 - `ClientMsg::StartSession` gains `#[serde(default)] fallback: Option<FallbackSpec>` (additive). `FallbackSpec { command: String, args: Vec<String>, grace_ms: u64 }`. The daemon maps it to `Fallback { command, args, grace: Duration::from_millis(grace_ms) }`.
 - `ensure_run_active`: an agent **with** `resume_args` → primary = resume argv, fallback = fresh argv (`agent_argv(profile, prompt, false, setup)`), `grace_ms = 3000`. cursor/hermes (no `resume_args`) and terminals → no fallback. `create_run`/`rerun` unchanged.
-- Run from `<home>/agency`: `cargo test -p agency-core ...`, `cargo test -p agency-app ...`, `cargo build`.
+- Run from the repo root: `cargo test -p agency-core ...`, `cargo test -p agency-app ...`, `cargo build`.
 
 ---
 

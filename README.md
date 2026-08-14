@@ -45,6 +45,14 @@ by pointing it at a local git repo.
 logs" button, and a link to file an issue. Attaching the log makes a bug report
 far easier to act on.
 
+## Project status
+
+Agency is in beta, built and maintained by one person as a working tool.
+Issues are welcome and read; responses are best-effort. PRs are considered
+case-by-case — see [CONTRIBUTING.md](CONTRIBUTING.md) before starting anything
+substantial, and [SECURITY.md](SECURITY.md) for reporting anything sensitive.
+The design history behind the app is in [`docs/`](docs/).
+
 ## Repository layout
 
 | Path                 | What it is                                              |
@@ -199,3 +207,8 @@ manually.
 > **Note:** CI currently builds for Apple Silicon (`aarch64`) only. Intel Macs
 > would need a `universal-apple-darwin` build (both Rust targets plus a universal
 > sidecar) — a follow-up if testers need it.
+
+## License
+
+Apache-2.0 — see [LICENSE](LICENSE). The name "Agency" is not licensed;
+see [NOTICE](NOTICE).

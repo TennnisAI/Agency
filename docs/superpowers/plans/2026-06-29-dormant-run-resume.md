@@ -18,7 +18,7 @@
 - `ensure_run_active` no-ops unless the session status is `SessionStatus::Gone`; terminal kind → fresh `$SHELL -l` in the project repo root; agent kind → resume args if the profile has them, else the rendered prompt; the optional setup script wraps the command in both agent cases (same as `create_run`/`rerun`).
 - v1 assumes the run's git worktree still exists on disk (worktrees survive a quit). Restoring a deleted worktree is out of scope; a missing worktree surfaces as a spawn error (not a silent blank pane).
 - `SessionStatus` enum is unchanged (`Running`/`Exited{code}`/`Gone`); `Gone` already means "no live session" = stopped.
-- Run from `<home>/agency`: `cargo test -p agency-core`, `cargo test -p agency-app`. Frontend typecheck/build via the direct binaries in `ui/`: `./node_modules/.bin/tsc --noEmit` and `./node_modules/.bin/vite build` (per project memory: pnpm 11 `pnpm build` can mis-exit; use the direct binaries).
+- Run from the repo root: `cargo test -p agency-core`, `cargo test -p agency-app`. Frontend typecheck/build via the direct binaries in `ui/`: `./node_modules/.bin/tsc --noEmit` and `./node_modules/.bin/vite build` (per project memory: pnpm 11 `pnpm build` can mis-exit; use the direct binaries).
 
 ---
 

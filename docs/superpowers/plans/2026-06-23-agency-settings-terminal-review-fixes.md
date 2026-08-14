@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - No AI attribution in commit messages (user standing rule): write the message and stop — no `Co-Authored-By`, no "Generated with" trailer.
-- Rust build/test: `export PATH="$HOME/.cargo/bin:$PATH"; cargo build && cargo test` (run from repo root `<home>/agency`).
+- Rust build/test: `export PATH="$HOME/.cargo/bin:$PATH"; cargo build && cargo test` (run from the repo root).
 - UI typecheck/test: `cd ui && npx tsc --noEmit && npx vitest run`.
 - CSS approach is plain CSS with Catppuccin-style vars in `theme.css` (e.g. `--blue:#89b4fa`, `--green:#a6e3a1`, `--s1:#45475a`, `--text:#cdd6f4`, `--o0:#6c7086`, `--line:#25253a`, `--crust:#11111b`, `--mantle:#181825`). Use these vars, never hardcoded hex.
 - Run id / branch / tmux session names are restricted to `[a-z0-9-]`; never repurpose them as display names.

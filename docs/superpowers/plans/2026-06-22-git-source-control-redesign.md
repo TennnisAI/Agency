@@ -2232,7 +2232,7 @@ Expected: no matches (all such markup was deleted). Remove the corresponding CSS
 
 - [ ] **Step 2: Launch the app and verify**
 
-Use the `run` skill (or `cd <home>/agency && cargo tauri dev`). Verify against the spec:
+Use the `run` skill (or `cd <repo-root> && cargo tauri dev`). Verify against the spec:
 1. Open a project, spawn/focus an agent that has made changes.
 2. **Source Control tab (full):** branch bar shows branch + ahead/behind; Changes tab shows grouped files with status letters/colors; hover reveals stage/unstage/discard; commit box commits; selecting a file shows a side-by-side, syntax-highlighted diff; selecting a line range and "Stage selection" stages only those lines; History tab shows commits with the graph rail and refs; clicking a commit shows its files + read-only diff.
 3. **Review sidebar (compact):** toggle "Review"; confirm it now has both Changes AND History tabs, commit box works, and selecting a file shows an inline diff.

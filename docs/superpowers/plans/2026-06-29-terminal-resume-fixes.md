@@ -14,7 +14,7 @@
 - Fix 1 keeps the daemon early-exit fallback: only claude/pi (probeable) are gated by the probe; opencode/codex/copilot (`Unknown`) keep the existing resume-with-fallback; cursor/hermes (no `resume_args`) stay fresh.
 - `resume_probe(home: &Path, command: &str, worktree: &Path) -> ResumeProbe` with `enum ResumeProbe { Has, None, Unknown }`. claude encoding = worktree path with every `/` and `.` replaced by `-` (leading `/` kept → leading `-`); pi encoding = strip leading `/`, replace `/`→`-` (dots kept), wrap `--`…`--`. `home` is injected for testability (real caller uses `$HOME`).
 - No new crate dependencies (use `std::env`, `std::fs`). `tempfile` is already a dev-dependency of `agency-app` and `agency-core`.
-- Run from `<home>/agency`: `cargo test -p agency-app`, `cargo test -p agency-core`. UI tests via the direct binary: `./node_modules/.bin/vitest run <file>` from `ui/` (per project memory, not `pnpm test`).
+- Run from the repo root: `cargo test -p agency-app`, `cargo test -p agency-core`. UI tests via the direct binary: `./node_modules/.bin/vitest run <file>` from `ui/` (per project memory, not `pnpm test`).
 
 ---
 

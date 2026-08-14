@@ -132,7 +132,7 @@ fn search_rg(rg: &Path, root: &Path, q: &SearchQuery, deadline: Instant) -> Resu
     }
     cmd.arg("-e").arg(&q.query);
 
-    let mut child = cmd.spawn()?;
+    let mut child = crate::procutil::retry_etxtbsy(|| cmd.spawn())?;
     let stdout = child.stdout.take().expect("stdout was piped");
     // The read loop only notices the deadline between output lines, so an rg
     // that is busy but silent (a huge tree on a slow volume) would block the

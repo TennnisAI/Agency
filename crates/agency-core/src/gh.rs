@@ -239,7 +239,9 @@ impl GhCli {
     }
 
     fn run(&self, repo: &Path, args: &[&str]) -> std::io::Result<std::process::Output> {
-        Command::new(&self.bin).args(args).current_dir(repo).output()
+        crate::procutil::retry_etxtbsy(|| {
+            Command::new(&self.bin).args(args).current_dir(repo).output()
+        })
     }
 
     fn run_ok(&self, repo: &Path, args: &[&str]) -> Result<String> {
@@ -429,13 +431,13 @@ impl GhCli {
     /// Run gh with `body` piped to stdin (for `gh api --input -`, whose JSON
     /// payload can't be expressed with `-f` flags). Mirrors `git::git_stdin`.
     fn run_stdin(&self, repo: &Path, args: &[&str], body: &str) -> Result<String> {
-        let mut child = Command::new(&self.bin)
-            .args(args)
+        let mut cmd = Command::new(&self.bin);
+        cmd.args(args)
             .current_dir(repo)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
+            .stderr(Stdio::piped());
+        let mut child = crate::procutil::retry_etxtbsy(|| cmd.spawn())?;
         child
             .stdin
             .as_mut()

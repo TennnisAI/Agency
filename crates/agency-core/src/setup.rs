@@ -238,7 +238,7 @@ pub(crate) fn run_clone_streaming(
     use std::io::Read;
     use std::process::Stdio;
     cmd.stdout(Stdio::null()).stderr(Stdio::piped());
-    let mut child = cmd.spawn()?;
+    let mut child = crate::procutil::retry_etxtbsy(|| cmd.spawn())?;
     let mut stderr = child.stderr.take().expect("stderr was piped");
     let mut chunk = [0u8; 4096];
     let mut line: Vec<u8> = Vec::new();

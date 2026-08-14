@@ -3,6 +3,8 @@ name = "agency-core"
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
+description = "Core library and agency-termd terminal daemon for Agency"
+repository = "https://github.com/nic123/Agency"
 
 [dependencies]
 alacritty_terminal = "0.26"

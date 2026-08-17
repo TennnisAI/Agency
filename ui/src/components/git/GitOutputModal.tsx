@@ -1,5 +1,6 @@
 import { useModalKeys } from "../../hooks/useModalKeys";
 import { toastInfo } from "../../lib/toast";
+import ModalBackdrop from "../ModalBackdrop";
 
 // A dedicated, scrollable output view for git command output — chiefly push
 // errors, which are often many lines long (rejected pushes, protected-branch
@@ -19,7 +20,7 @@ export default function GitOutputModal({
     navigator.clipboard.writeText(text).then(() => toastInfo("Output copied")).catch(() => {});
   };
   return (
-    <div className="modal-backdrop" onClick={(e) => { e.stopPropagation(); onClose(); }}>
+    <ModalBackdrop onBackdropClick={onClose}>
       <div className="modal git-output-modal" role="dialog" aria-modal="true" aria-label={title}
         onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
@@ -34,6 +35,6 @@ export default function GitOutputModal({
           <button className="btn-primary" autoFocus onClick={onClose}>Close</button>
         </div>
       </div>
-    </div>
+    </ModalBackdrop>
   );
 }

@@ -3,6 +3,7 @@ import { AgentProfile, createPrReviewRun, listProfiles } from "../../api";
 import { agentLabel } from "../../agents";
 import { useModalKeys } from "../../hooks/useModalKeys";
 import { useRuns } from "../../store/runs";
+import ModalBackdrop from "../ModalBackdrop";
 
 // Start an agent that reviews this PR and then stays available to fix what it
 // found. The agent works in the PR's head branch, so its fixes push straight
@@ -59,7 +60,7 @@ export default function AgentReviewDialog({
   }
 
   return (
-    <div className="modal-backdrop" onClick={(e) => { e.stopPropagation(); if (!busy) onCancel(); }}>
+    <ModalBackdrop onBackdropClick={busy ? undefined : onCancel}>
       <div
         className="modal confirm"
         role="dialog"
@@ -107,6 +108,6 @@ export default function AgentReviewDialog({
           </button>
         </div>
       </div>
-    </div>
+    </ModalBackdrop>
   );
 }

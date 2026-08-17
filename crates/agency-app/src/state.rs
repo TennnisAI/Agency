@@ -841,6 +841,32 @@ fn require_own_branch(run: &agency_core::registry::Run, repo: &Path, action: &st
     }
 }
 
+/// Refuse a merge whose branch has gone, with a message that says so.
+///
+/// The run's branch is recorded when the worktree is cut, but git is the truth
+/// and someone can delete or rename that branch from outside Agency. Without
+/// this check the first thing to touch it is a `base..branch` range, and the
+/// user gets git's raw "ambiguous argument 'main..agent/foo': unknown revision
+/// or path not in the working tree", followed by advice about using `--` to
+/// separate paths from revisions. That reads as a syntax bug in Agency and
+/// says nothing about the branch being gone or what to do next.
+///
+/// Observed after a history rewrite deleted a merged agent branch while its
+/// run was still on the board. Deliberately not applied to `merge_status`,
+/// `finish_merge_task_*` or `abort_merge_task_*`: those are the ways out of a
+/// merge already in progress, and blocking them would strand the user.
+fn require_branch_exists(run: &agency_core::registry::Run, repo: &Path) -> Result<()> {
+    if agency_core::merge::branch_exists(repo, &run.branch) {
+        return Ok(());
+    }
+    bail!(
+        "this agent's branch {} no longer exists, so there is nothing to merge; it was \
+         deleted or renamed outside Agency, and if its work already landed you can archive \
+         the agent to clear it",
+        run.branch
+    )
+}
+
 /// Lowercase the prompt, keep ASCII alphanumerics, collapse every other run of
 /// characters into a single hyphen, and cap the length so branch names stay
 /// short. Falls back to "agent" when the prompt has no usable characters.
@@ -4704,6 +4730,7 @@ impl AppState {
         let run = self.run_record(id)?;
         let repo = self.project_repo(&run.project_id)?;
         require_own_branch(&run, &repo, "merge")?;
+        require_branch_exists(&run, &repo)?;
         let base = agency_core::merge::resolve_target(run.merge_target.as_deref(), &repo)?;
         let commits_ahead = agency_core::merge::commits_ahead(&repo, &run.branch, &base)?;
         let commits_behind = agency_core::merge::commits_behind(&repo, &run.branch, &base)?;
@@ -4741,6 +4768,7 @@ impl AppState {
         let run = self.run_record(id)?;
         let repo = self.project_repo(&run.project_id)?;
         require_own_branch(&run, &repo, "merge")?;
+        require_branch_exists(&run, &repo)?;
         // An active loop is still committing attempts onto this branch; merging
         // mid-flight would take a half-done attempt and keep drifting after.
         if has_active_loop(&run) {
@@ -4895,6 +4923,7 @@ impl AppState {
         }
         let repo = self.project_repo(&run.project_id)?;
         require_own_branch(&run, &repo, "open a PR for")?;
+        require_branch_exists(&run, &repo)?;
         let worktree = workspace_dir(&repo, &run);
         if !worktree.exists() {
             bail!("workspace is archived — restore it before creating a PR");
@@ -5524,7 +5553,8 @@ fn validate_project_path(repo_path: &Path) -> Result<()> {
 mod tests {
     use super::{
         agent_argv, command_on_path, failure_tail, graphify_server, new_task_id, pick_port,
-        require_gitless_known, require_own_branch, slugify, split_session_id,
+        require_branch_exists, require_gitless_known, require_own_branch, slugify,
+        split_session_id,
     };
     use agency_core::config::KnowledgeConfig;
     use agency_core::profile::AgentProfile;
@@ -6164,6 +6194,31 @@ mod tests {
                 .unwrap()
                 .success());
         }
+    }
+
+    #[test]
+    fn require_branch_exists_names_the_missing_branch_not_git_syntax() {
+        let repo = tempfile::tempdir().unwrap();
+        init_repo_with_commit(repo.path());
+
+        let mut run = checkout_run();
+        run.worktree = true;
+        run.branch = "agent/gone".to_string();
+
+        let err = require_branch_exists(&run, repo.path()).unwrap_err().to_string();
+        assert!(err.contains("agent/gone"), "names the branch: {err}");
+        assert!(err.contains("no longer exists"), "says what is wrong: {err}");
+        assert!(err.contains("archive"), "says what to do next: {err}");
+        assert!(!err.contains("ambiguous argument"), "no raw git error: {err}");
+
+        // A branch that really is there passes.
+        run.branch = agency_core::merge::current_branch(repo.path()).unwrap();
+        assert!(require_branch_exists(&run, repo.path()).is_ok());
+
+        // An empty stored branch counts as missing, not as a range against
+        // nothing, which is what git would make of "main..".
+        run.branch = String::new();
+        assert!(require_branch_exists(&run, repo.path()).is_err());
     }
 
     #[test]

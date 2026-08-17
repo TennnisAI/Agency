@@ -85,6 +85,17 @@ fn rev(repo: &Path, r: &str) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// Whether `branch` still resolves in `repo`.
+///
+/// Worth checking before evaluating any range like `base..branch`. A branch
+/// deleted or renamed outside Agency makes git fail with "ambiguous argument"
+/// plus a hint about using `--` to separate paths from revisions, which reads
+/// as a syntax problem rather than a missing branch and sends whoever hit it
+/// looking in the wrong place.
+pub fn branch_exists(repo: &Path, branch: &str) -> bool {
+    !branch.is_empty() && rev(repo, branch).is_some()
+}
+
 /// The merge the project's checkout is currently in the middle of: the commit
 /// being merged in (`MERGE_HEAD`) and, for the UI, a branch name for it.
 #[derive(Debug, Clone, PartialEq)]

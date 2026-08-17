@@ -1720,3 +1720,59 @@ fn refresh_usage_survives_a_board_with_runs() {
     let me = listed.iter().find(|r| r.id == run.id).unwrap();
     assert!(me.usage.is_none(), "an unaccountable agent must report no usage, not zero");
 }
+
+/// A user hit this: an agent branch deleted outside Agency (after its work had
+/// already been merged) while the run was still on the board. "Approve & merge"
+/// then evaluated `main..agent/<id>` and surfaced git's raw "ambiguous
+/// argument" error with its `--` path-separator advice, which reads as an
+/// Agency syntax bug and never says the branch is gone.
+#[test]
+fn merge_preview_explains_a_deleted_branch() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let state = common::state(&dir);
+    state
+        .register_profile(AgentProfile {
+            name: "noop".into(),
+            command: "true".into(),
+            args: vec![],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+    let run = state.create_run(&project.id, "p", "noop", "HEAD", None).unwrap();
+
+    // Healthy first: the branch is there and the preview is a clean no-op.
+    let preview = state.merge_preview(&run.id).unwrap();
+    assert_eq!(preview.commits_ahead, 0, "a fresh worktree has nothing to merge");
+
+    // Now delete the branch out from under the run, the way a history rewrite
+    // or a manual cleanup would.
+    let out = std::process::Command::new("git")
+        .args(["worktree", "remove", "--force", &format!(".agency/worktrees/{}", run.id)])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = std::process::Command::new("git")
+        .args(["branch", "-D", &run.branch])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+
+    let err = state.merge_preview(&run.id).unwrap_err().to_string();
+    assert!(err.contains(&run.branch), "names the branch: {err}");
+    assert!(err.contains("no longer exists"), "says what is wrong: {err}");
+    assert!(!err.contains("ambiguous argument"), "no raw git error: {err}");
+    assert!(!err.contains("rev-list"), "no internal command name: {err}");
+
+    // The same guard covers the actions, not just the preview.
+    let err = state.merge_task(&run.id).unwrap_err().to_string();
+    assert!(err.contains("no longer exists"), "merge is guarded too: {err}");
+}

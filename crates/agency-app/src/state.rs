@@ -3415,20 +3415,27 @@ impl AppState {
         let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
             return Ok(());
         };
+        // Every registry read binds to a local before the loop that uses it. A
+        // `self.registry.lock()` left in a `for` iterator expression lives for
+        // the whole loop body, so the next lock inside it deadlocks the
+        // notifier thread outright. `watch_snapshot` binds for the same reason.
         let projects = self.registry.lock().unwrap().list_projects()?;
+
+        // The profile carries the launch command; the agent id alone does not,
+        // since a custom profile may name any binary. Resolved once per pass
+        // rather than per run: this runs every 2 seconds against a board that
+        // can hold dozens of runs sharing a handful of agents.
+        let commands: HashMap<String, String> = {
+            let reg = self.registry.lock().unwrap();
+            reg.list_profiles()?.into_iter().map(|p| (p.name, p.command)).collect()
+        };
+
         for proj in projects {
             let repo = proj.repo_path.clone();
-            for run in self.registry.lock().unwrap().list_runs(&proj.id)? {
-                // The profile carries the launch command; the agent id alone
-                // does not (a custom profile may name any binary).
-                let command = {
-                    let reg = self.registry.lock().unwrap();
-                    match reg.get_profile(&run.agent)? {
-                        Some(p) => p.command,
-                        None => continue,
-                    }
-                };
-                if !agency_core::usage::agent_supported(&command) {
+            let runs = self.registry.lock().unwrap().list_runs(&proj.id)?;
+            for run in runs {
+                let Some(command) = commands.get(&run.agent) else { continue };
+                if !agency_core::usage::agent_supported(command) {
                     continue;
                 }
                 // One worktree per run means this directory is already scoped
@@ -3441,7 +3448,7 @@ impl AppState {
                 // to tell their turns apart. Over-attributing to each is the
                 // lesser wrong against silently splitting it.
                 let worktree = workspace_dir(&repo, &run);
-                let Some(dir) = agency_core::usage::session_dir(&home, &command, &worktree) else {
+                let Some(dir) = agency_core::usage::session_dir(&home, command, &worktree) else {
                     continue;
                 };
 

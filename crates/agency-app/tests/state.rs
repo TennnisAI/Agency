@@ -1660,3 +1660,56 @@ fn await_settled_build(
     }
     panic!("graph build never finished");
 }
+
+/// `refresh_usage` runs on every notifier tick, and it reads the registry more
+/// than once per pass. An earlier version left a `self.registry.lock()` in a
+/// `for` loop's iterator expression, where the guard lives for the whole loop
+/// body: the next lock inside the body deadlocked the notifier thread the
+/// first time any run existed. This test needs a run to reach that code at
+/// all, which is why it creates one.
+#[test]
+fn refresh_usage_survives_a_board_with_runs() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let state = common::state(&dir);
+    state
+        .register_profile(AgentProfile {
+            name: "noop".into(),
+            command: "true".into(),
+            args: vec![],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+    let run = state.create_run(&project.id, "p", "noop", "HEAD", None).unwrap();
+
+    // A deadlock cannot be caught by a timeout on a joined thread: the join
+    // blocks forever too, and the suite hangs instead of failing. So a
+    // detached watchdog aborts the process, turning a hang into a loud,
+    // attributable failure.
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let watchdog = done.clone();
+    std::thread::spawn(move || {
+        for _ in 0..100 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            if watchdog.load(std::sync::atomic::Ordering::SeqCst) {
+                return;
+            }
+        }
+        eprintln!("refresh_usage did not return within 10s: it is deadlocked");
+        std::process::abort();
+    });
+    state.refresh_usage().unwrap();
+    done.store(true, std::sync::atomic::Ordering::SeqCst);
+
+    // "true" is not an agent whose transcript we can read, so the run reports
+    // no usage at all. Absent, not zero.
+    let listed = state.list_runs(&project.id).unwrap();
+    let me = listed.iter().find(|r| r.id == run.id).unwrap();
+    assert!(me.usage.is_none(), "an unaccountable agent must report no usage, not zero");
+}

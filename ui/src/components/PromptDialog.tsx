@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useModalKeys } from "../hooks/useModalKeys";
+import ModalBackdrop from "./ModalBackdrop";
 
 /** Single-text-input modal, styled like ConfirmDialog. */
 export default function PromptDialog({
@@ -23,7 +24,7 @@ export default function PromptDialog({
   useModalKeys(onCancel, true);
   const submit = () => { if (value.trim()) onConfirm(value.trim()); };
   return (
-    <div className="modal-backdrop" onClick={(e) => { e.stopPropagation(); onCancel(); }}>
+    <ModalBackdrop onBackdropClick={onCancel}>
       <div className="modal confirm" role="dialog" aria-modal="true" aria-label={title} onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
           <h3>{title}</h3>
@@ -40,6 +41,6 @@ export default function PromptDialog({
           <button className="btn-primary" disabled={!value.trim()} onClick={submit}>{confirmLabel}</button>
         </div>
       </div>
-    </div>
+    </ModalBackdrop>
   );
 }

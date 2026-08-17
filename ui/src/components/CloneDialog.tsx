@@ -3,6 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { cloneRepo, ghAuthReadiness, GhReadiness, CloneProgress } from "../api";
 import { useModalKeys } from "../hooks/useModalKeys";
+import ModalBackdrop from "./ModalBackdrop";
 import ProgressReadout from "./ProgressReadout";
 
 type Props = {
@@ -62,7 +63,7 @@ export default function CloneDialog({ onCloned, onCancel }: Props) {
   }
 
   return (
-    <div className="modal-backdrop" onClick={(e) => { e.stopPropagation(); if (!busy) onCancel(); }}>
+    <ModalBackdrop onBackdropClick={busy ? undefined : onCancel}>
       <div className="modal confirm" role="dialog" aria-modal="true" aria-label="Clone repository" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
           <h3>Clone a repository</h3>
@@ -130,6 +131,6 @@ export default function CloneDialog({ onCloned, onCancel }: Props) {
           </button>
         </div>
       </div>
-    </div>
+    </ModalBackdrop>
   );
 }

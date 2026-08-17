@@ -172,13 +172,17 @@ button:disabled { opacity: .45; cursor: default; }
 .btn-danger:hover { background: rgba(243,139,168,.12); }
 
 /* ConfirmDialog (Task 9) */
-.modal-backdrop { position: absolute; inset: 0; background: var(--overlay); backdrop-filter: blur(3px); z-index: 30; display: flex; align-items: center; justify-content: center; }
-.modal { width: 580px; max-width: 92%; background: var(--mantle); border: 1px solid var(--s1); border-radius: 15px; box-shadow: 0 24px 64px var(--shadow); }
+/* Fixed, and portalled into the body by ModalBackdrop, so a dialog is measured
+   against the window and not against whichever host it happens to be rendered
+   from. The padding is the guarantee that a tall dialog in a short window keeps
+   its rounded corners clear of the edges; the body scrolls instead. */
+.modal-backdrop { position: fixed; inset: 0; padding: 24px; box-sizing: border-box; background: var(--overlay); backdrop-filter: blur(3px); z-index: 30; display: flex; align-items: center; justify-content: center; }
+.modal { width: 580px; max-width: 92%; max-height: 100%; display: flex; flex-direction: column; background: var(--mantle); border: 1px solid var(--s1); border-radius: 15px; box-shadow: 0 24px 64px var(--shadow); }
 .modal.confirm { width: 440px; }
-.modal-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 18px; border-bottom: 1px solid var(--line); }
+.modal-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 18px; border-bottom: 1px solid var(--line); flex-shrink: 0; }
 .modal-head h3 { margin: 0; font-size: 15px; font-weight: 600; color: var(--text); }
-.modal-body { padding: 18px; color: var(--sub1); line-height: 1.6; font-size: 13px; }
-.modal-foot { display: flex; gap: 10px; justify-content: flex-end; padding: 14px 18px; border-top: 1px solid var(--line); background: var(--crust); border-radius: 0 0 15px 15px; }
+.modal-body { padding: 18px; color: var(--sub1); line-height: 1.6; font-size: 13px; overflow-y: auto; }
+.modal-foot { display: flex; gap: 10px; justify-content: flex-end; padding: 14px 18px; border-top: 1px solid var(--line); background: var(--crust); border-radius: 0 0 15px 15px; flex-shrink: 0; }
 /* "Don't ask again", pinned left of the confirm's buttons. */
 .modal-hush { margin-right: auto; display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--sub0); cursor: pointer; }
 .modal-hush input { accent-color: var(--green); }
@@ -420,12 +424,12 @@ textarea.settings-input { min-height: 64px; resize: vertical; }
 .mcp-auth-chip-x { color: var(--o0); font-size: 9px; }
 .mcp-auth-chip:hover .mcp-auth-chip-x { color: var(--red); }
 
-/* Form dialog shell */
-.modal-form { width: 620px; display: flex; flex-direction: column; max-height: 88vh; }
+/* Form dialog shell. The column layout, the scrolling body and the pinned foot
+   are `.modal`'s now; this only sizes it. */
+.modal-form { width: 620px; max-height: 88vh; }
 .modal-head-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .modal-sub { margin: 0; font-size: 12px; color: var(--o1); }
-.modal-form-body { display: flex; flex-direction: column; gap: 17px; overflow-y: auto; padding: 20px; }
-.modal-form .modal-foot { flex-shrink: 0; }
+.modal-form-body { display: flex; flex-direction: column; gap: 17px; padding: 20px; }
 .modal-form .btn-primary:disabled { opacity: 0.45; cursor: default; }
 .modal-form .btn-primary:disabled:hover { background: var(--blue); }
 /* Provider cards */

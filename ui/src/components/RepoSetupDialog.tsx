@@ -18,6 +18,7 @@ import {
 } from "./repoSetupView";
 import { formatSize } from "./git/binary";
 import { useModalKeys } from "../hooks/useModalKeys";
+import ModalBackdrop from "./ModalBackdrop";
 
 type Props = {
   readiness: RepoReadiness;
@@ -119,7 +120,7 @@ export default function RepoSetupDialog({ readiness, context, repoPath, onResolv
   return (
     // A stray backdrop click still can't abort a running op; Cancel, X and
     // Escape are the deliberate ways out.
-    <div className="modal-backdrop" onClick={(e) => { e.stopPropagation(); if (!busy) cancel(); }}>
+    <ModalBackdrop onBackdropClick={busy ? undefined : cancel}>
       <div className="modal confirm" role="dialog" aria-modal="true" aria-label={view.title} onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
           <h3>{view.title}</h3>
@@ -184,6 +185,6 @@ export default function RepoSetupDialog({ readiness, context, repoPath, onResolv
           <button className="btn-primary" disabled={busy} onClick={onPrimary}>{view.primaryLabel}</button>
         </div>
       </div>
-    </div>
+    </ModalBackdrop>
   );
 }

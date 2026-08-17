@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { MergeMethod, MergeMethods, PrMergeResult, mergePr, prMergeMethods } from "../../api";
 import { useModalKeys } from "../../hooks/useModalKeys";
+import ModalBackdrop from "../ModalBackdrop";
 
 const METHOD_LABEL: Record<MergeMethod, string> = {
   merge: "Create a merge commit",
@@ -57,7 +58,7 @@ export default function MergePrDialog({
   }
 
   return (
-    <div className="modal-backdrop" onClick={(e) => { e.stopPropagation(); if (!busy) onCancel(); }}>
+    <ModalBackdrop onBackdropClick={busy ? undefined : onCancel}>
       <div className="modal confirm" role="dialog" aria-modal="true" aria-label="Merge pull request" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
           <h3>Merge pull request</h3>
@@ -95,6 +96,6 @@ export default function MergePrDialog({
           </button>
         </div>
       </div>
-    </div>
+    </ModalBackdrop>
   );
 }

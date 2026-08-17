@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Project, createWorkspace, defaultWorkspaceLocation } from "../api";
 import { useModalKeys } from "../hooks/useModalKeys";
+import ModalBackdrop from "./ModalBackdrop";
 import Toggle from "./Toggle";
 
 /**
@@ -44,7 +45,7 @@ export default function WorkspaceCreateDialog({
   }
 
   return (
-    <div className="modal-backdrop" onClick={(e) => { e.stopPropagation(); if (!busy) onCancel(); }}>
+    <ModalBackdrop onBackdropClick={busy ? undefined : onCancel}>
       <div className="modal confirm" role="dialog" aria-modal="true" aria-label="Create workspace" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
           <h3>Create your workspace</h3>
@@ -79,6 +80,6 @@ export default function WorkspaceCreateDialog({
           </button>
         </div>
       </div>
-    </div>
+    </ModalBackdrop>
   );
 }

@@ -1,5 +1,6 @@
 import { ReactNode } from "react";
 import { useModalKeys } from "../hooks/useModalKeys";
+import ModalBackdrop from "./ModalBackdrop";
 
 // A labelled form field: name, an optional plain-language explanation of what
 // the setting does, then the control. The whole thing is a <label>, so clicking
@@ -49,7 +50,7 @@ export default function FormDialog({
 }) {
   useModalKeys(onCancel);
   return (
-    <div className="modal-backdrop" onClick={(e) => { e.stopPropagation(); onCancel(); }}>
+    <ModalBackdrop onBackdropClick={onCancel}>
       <form
         className="modal modal-form"
         role="dialog"
@@ -71,6 +72,6 @@ export default function FormDialog({
           <button type="submit" className="btn-primary" disabled={submitDisabled}>{submitLabel}</button>
         </div>
       </form>
-    </div>
+    </ModalBackdrop>
   );
 }

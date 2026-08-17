@@ -14,6 +14,7 @@ import {
 } from "../api";
 import { INSTALL_COMMANDS, agentColor, agentLabel } from "../agents";
 import { toastError } from "../lib/toast";
+import ModalBackdrop from "./ModalBackdrop";
 import RepoSetupDialog from "./RepoSetupDialog";
 import CloneDialog from "./CloneDialog";
 
@@ -459,7 +460,7 @@ export default function AgentOnboarding({ onDone }: { onDone: () => void }) {
       </div>
 
       {installFor && (
-        <div className="modal-backdrop" onClick={() => setInstallFor(null)}>
+        <ModalBackdrop onBackdropClick={() => setInstallFor(null)}>
           <div
             className="modal confirm"
             role="dialog"
@@ -492,7 +493,7 @@ export default function AgentOnboarding({ onDone }: { onDone: () => void }) {
               )}
             </div>
           </div>
-        </div>
+        </ModalBackdrop>
       )}
 
       {setup && (

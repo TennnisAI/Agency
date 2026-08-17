@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { RunInfo, createInstallTerminal, listProfiles } from "../api";
 import { INSTALL_COMMANDS, agentLabel } from "../agents";
 import { useModalKeys } from "../hooks/useModalKeys";
+import ModalBackdrop from "./ModalBackdrop";
 
 // Shown when the user picks an agent whose CLI isn't on PATH. For the
 // preconfigured agents we know the install one-liner and offer to run it in a
@@ -52,7 +53,7 @@ export default function InstallAgentDialog({
   }
 
   return (
-    <div className="modal-backdrop" onClick={(e) => { e.stopPropagation(); onCancel(); }}>
+    <ModalBackdrop onBackdropClick={onCancel}>
       <div className="modal confirm" role="dialog" aria-modal="true" aria-label={`${agentLabel(agent)} isn't installed`} onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
           <h3>{agentLabel(agent)} isn't installed</h3>
@@ -84,6 +85,6 @@ export default function InstallAgentDialog({
           )}
         </div>
       </div>
-    </div>
+    </ModalBackdrop>
   );
 }

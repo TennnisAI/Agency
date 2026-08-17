@@ -1,5 +1,6 @@
 import { useModalKeys } from "../hooks/useModalKeys";
 import { CloneProgress } from "../api";
+import ModalBackdrop from "./ModalBackdrop";
 import ProgressReadout from "./ProgressReadout";
 
 export default function ConfirmDialog({
@@ -50,10 +51,7 @@ export default function ConfirmDialog({
 }) {
   useModalKeys(onCancel, !busy);
   return (
-    // stopPropagation: dialogs are often rendered inside clickable hosts (e.g.
-    // an agent tile) — a backdrop-cancel click must not bubble into the host's
-    // own onClick and navigate away.
-    <div className="modal-backdrop" onClick={(e) => { e.stopPropagation(); if (!busy) onCancel(); }}>
+    <ModalBackdrop onBackdropClick={busy ? undefined : onCancel}>
       <div className="modal confirm" role="dialog" aria-modal="true" aria-label={title} onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
           <h3>{title}</h3>
@@ -90,6 +88,6 @@ export default function ConfirmDialog({
           </button>
         </div>
       </div>
-    </div>
+    </ModalBackdrop>
   );
 }

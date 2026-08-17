@@ -230,6 +230,58 @@ Everything downstream of completion is the existing finish flow: merge preview,
 diff review, merge, archive. Nothing merges automatically — the loop's output
 is a branch the user reviews, same as any run.
 
+## Guardrails beyond the attempt cap (scoped 2026-08-17)
+
+v1 ships two guards: the attempt cap and the crash-loop guard. Both are
+attempt-shaped, and an attempt has no fixed size — one can burn ten minutes and
+a few thousand tokens, or three hours and a very large number of them. The gap
+is a run that is technically making progress and is nonetheless costing more
+than the user meant to spend. This is `beta-readiness.md` #40, tracked in
+AGE-110.
+
+**Where it goes.** `looper::step` already is a pure transition function with the
+attempt cap checked in two branches. The new caps go beside them. Nothing about
+the shape changes: no side effects, no repo, no daemon, fully unit-testable.
+
+```rust
+// LoopConfig, additive and backward-compatible via #[serde(default)]
+pub max_wall_secs: Option<u64>,   // None = off
+pub max_tokens:    Option<u64>,   // None = off
+
+// LoopState
+pub started_at:   i64,
+pub tokens_used:  u64,
+pub stall_reason: Option<StallReason>,  // AttemptCap | CrashLoop | WallClock | Budget
+```
+
+`LoopSnapshot` carries elapsed time and observed tokens in from the driver;
+`drive_loops` fills them, taking token counts from the transcript reader in
+`beta-readiness.md` #42. `create_loop_inner` clamps the new values the way it
+already clamps `max_attempts`.
+
+`stall_reason` is not cosmetic. Today "hit the attempt cap", "crashed three
+times in a row", and soon "ran out of clock" and "ran out of budget" all render
+as *Stalled*, which tells the user nothing about whether to raise a cap, fix a
+flag, or rewrite the prompt.
+
+**Two rules, and they are the whole design.**
+
+1. **Hard stops are off by default.** `None` means off, and a cap the user did
+   not ask for never trips. A loop that dies for a reason the user never
+   configured is worse than a loop that runs long, because the second is
+   visible and the first looks like a bug.
+2. **The engineering budget goes on false positives, not on detection.**
+   Detecting that a loop has run for an hour is trivial. The hard part, and the
+   reason richer heuristics are excluded here, is not stopping work that was
+   fine.
+
+**Deliberately out of scope**: output-velocity, no-progress, and
+repeated-identical-tool-call detection, and any steer-then-constrain-then-stop
+escalation ladder. Those misfire exactly where they are most expensive — during
+a context-compaction burst, or when the real progress is happening inside a
+subagent the parent cannot see. Caps are legible, predictable, and the user
+sets them. Revisit only if caps prove insufficient in practice.
+
 ## Phasing
 
 **v1** — the above: profiles `loop_args`, two run columns, `looper.rs` +
@@ -244,7 +296,8 @@ IPC commands. Rough size: ~500 lines Rust (half of it `looper.rs` tests),
    the killer flow.
 2. Output-marker completion (agent self-reports done) as an OR with the check
    command.
-3. Wall-clock and/or spend caps alongside attempt caps.
+3. Wall-clock and/or spend caps alongside attempt caps. Scoped 2026-08-17; see
+   "Guardrails beyond the attempt cap" above and `beta-readiness.md` #40.
 4. Per-attempt diff timeline in the run panel (git already has the data via
    the auto-commit boundaries).
 

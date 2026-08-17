@@ -13,7 +13,7 @@ Phase 6 item (background fetch). What remains is listed under **Still open**.
 - **Phase 3 (backend bugs, #6–14):** done (9/9).
 - **Phase 4 (frontend bugs, #15–22):** done (8/8).
 - **Phase 5 (UX polish, #23–34):** done (12/12).
-- **Phase 6 (feature gaps):** #35 done; #36–44 open (post-first-beta).
+- **Phase 6 (feature gaps):** #35 done; #36–45 open (post-first-beta).
 
 Verification for the fix pass: `cargo build` clean, `cargo test` green (136
 tests: 82 core + 54 app), `tsc --noEmit` exit 0, `vite build` exit 0.
@@ -173,10 +173,71 @@ tests: 82 core + 54 app), `tsc --noEmit` exit 0, `vite build` exit 0.
 38. **Missing-repo flow** — "project folder missing — relocate?" + project
     rename. (S/M)
 39. **Window state persistence** — tauri-plugin-window-state. (S)
-40. **Loop spend/time caps** — wall-clock cap alongside the attempt cap. (M)
+40. **Loop spend/time caps** — wall-clock and token caps alongside the attempt
+    cap. Design settled 2026-08-17: the caps live in `looper::step`, beside the
+    existing `attempt >= max_attempts` branches, so the policy stays a pure
+    function with no side effects and no repo or daemon needed to test it.
+    `LoopConfig` grows `max_wall_secs` and `max_tokens` as `Option`, both
+    defaulting to `None`; a cap you did not ask for never trips. `LoopState`
+    grows a `stall_reason` so "attempt cap", "crash loop", "wall clock" and
+    "budget" stop being four things that all render as *Stalled*. Token
+    observations come from #42.
+
+    Two rules worth stating because they are what makes a guardrail usable
+    rather than annoying: **hard stops are off by default**, and the
+    engineering budget goes on false positives, not on detection. Velocity,
+    no-progress and repeated-tool-call heuristics are deliberately out of
+    scope; they are the part that misfires on a compaction burst or on a
+    subagent whose progress is invisible to the parent. Caps first. (M)
+    See `agentic-loops.md`; tracked in AGE-110.
 41. **Prereq checks** — git/CLT presence at launch with guidance. (S)
-42. **Per-run cost/token display** (parse headless agent JSON output). (M)
-43. **Message queueing** while an agent is mid-turn. (M)
-44. **Structured transcript view** — biggest expectation gap vs Conductor/
-    Crystal; terminal-first is a legitimate positioning choice but should be a
-    stated one. (L / decision)
+42. **Per-run cost/token display.** Design settled 2026-08-17, and it replaces
+    the original "parse headless agent JSON output" sketch: read the agent's own
+    transcript JSONL instead. For Claude Code that is
+    `~/.claude/projects/<encoded-cwd>/*.jsonl`, whose per-record `message.usage`
+    and `message.model` cover **interactive** sessions too, not just headless
+    loop attempts. Price each record by its own model, because a session can
+    change model mid-run. Dedupe by request id; duplicate rows in these files
+    are an observed condition, not a hypothetical. Re-read incrementally keyed
+    on `(len, mtime)` so the existing 2s notifier tick absorbs the poll for
+    free.
+
+    Agency gets a simplification the shape of this idea does not usually
+    afford: one worktree per run means the transcript directory is already
+    scoped to the run, and extra agent tabs sharing that worktree belong to the
+    same run anyway. So per-directory aggregation *is* per-run aggregation, and
+    no session-id filtering is needed.
+
+    The ledger is a plain JSONL file, consistent with everything-is-a-file.
+    Only `claude` and `pi` have a transcript format we can read; for the other
+    eight the UI shows nothing rather than zero, and an unrecognized model
+    yields token counts with no cost figure. We do not display a number we
+    cannot stand behind. (M) Tracked in AGE-109.
+43. **Message queueing** while an agent is mid-turn. Today `send_text` writes
+    straight into the pty and its three callers (review comments, check
+    feedback, merge conflict) only test that the session is `Running`. Design
+    settled 2026-08-17 — queue instead of interrupt, drained on the notifier
+    tick when `activity::classify` says the pane is not `Working`. The details
+    are the whole feature:
+
+    - **Draft detection is one-directional.** Reading the pane to see whether
+      the human has typed something unsent may only *clear* the block, never
+      set it. The two failure modes cost differently: holding a message a few
+      seconds too long is invisible, clobbering a half-typed prompt is not.
+    - **Echo grace** of about a second after the last keystroke.
+    - **Never send Escape** to close a menu the human may have opened on
+      purpose.
+    - **On timeout, append** after whatever is on the line rather than clearing
+      it.
+    - Keep the existing 150ms split between the text and the `\r`; TUI agents
+      treat a single-read burst as a paste. (M) Tracked in AGE-111.
+44. **Structured transcript view** — the biggest expectation gap against the
+    session-viewer tools in this category; terminal-first is a legitimate
+    positioning choice but should be a stated one. (L / decision)
+45. **Per-worktree skills kit.** We already emit MCP servers per worktree in
+    each agent's native format. Emit a small skills kit the same way, from the
+    same three hook points: a deterministic date-range resolver (models are
+    reliably bad at date math) and a boot-time capabilities catalog describing
+    the workspace the agent has been dropped into. Namespaced `agency-*` and
+    upserted, never replacing a repo's own skills, and excluded from git so it
+    cannot turn up in every diff and every PR. (S/M) Tracked in AGE-112.

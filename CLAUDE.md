@@ -20,6 +20,12 @@ expensive to fix after the fact.
   not who it is about: "Add a competitor reading to the competitive landscape",
   never the product's name.
 
+`.githooks/commit-msg` enforces both, and `./dev.sh` points `core.hooksPath` at
+it. The hook only knows the distinctive names. Competitors whose names are
+ordinary English words — Conductor and Crystal today — are deliberately left out
+of it, because "crystal-clear" would trip the guard and a guard that cries wolf
+gets bypassed into uselessness. Those are your judgment call, not the hook's.
+
 Commit subjects are imperative and lower-case after the first word. Branch names
 describe the work.
 

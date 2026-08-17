@@ -21,6 +21,14 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 
+# Point git at the tracked hooks. core.hooksPath is per-clone config, not
+# something git infers, so a fresh clone has no commit-msg guard until
+# something sets it. This is the one script every developer already runs.
+if [ "$(git -C "$REPO_ROOT" config --get core.hooksPath || true)" != ".githooks" ]; then
+  git -C "$REPO_ROOT" config core.hooksPath .githooks
+  echo "Enabled tracked git hooks (.githooks)."
+fi
+
 echo "Building agency-termd (debug)..."
 cargo build -p agency-core --bin agency-termd \
   --manifest-path "$REPO_ROOT/Cargo.toml"

@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# Reject commit messages that would be expensive to fix once published.
+#
+# Both of these have already happened here and cost a full history rewrite to
+# undo (AGE-108). The rules themselves live in CLAUDE.md.
+#
+# Enabled by ./dev.sh, which sets core.hooksPath. To run it by hand:
+#   git config core.hooksPath .githooks
+#
+# To bypass deliberately, commit with --no-verify.
+set -euo pipefail
+
+MSG_FILE="$1"
+# Strip comment lines; git's own template would otherwise trip the scan.
+BODY="$(grep -v '^#' "$MSG_FILE" || true)"
+
+fail() {
+  echo "commit-msg: $1" >&2
+  echo >&2
+  echo "  See CLAUDE.md. Bypass with --no-verify if you are certain." >&2
+  exit 1
+}
+
+# 1. No AI attribution. Write the message and stop.
+if printf '%s' "$BODY" | grep -qiE '^[[:space:]]*(co-authored-by:[[:space:]]*claude|claude-session:)|generated with \[?claude'; then
+  fail "AI attribution trailer found. Remove it."
+fi
+
+# 2. No competitor product names. The design record discusses them by name and
+#    that is fine; git metadata is a different artifact with a different
+#    audience, and a merged PR's branch name cannot be edited afterwards.
+#    Describe what the commit does, not who it is about.
+#
+#    Only distinctive names are listed. Competitors whose names are ordinary
+#    English words — Conductor and Crystal, at time of writing — are left out
+#    on purpose: "crystal-clear" and "conductor-free" would trip the hook, and
+#    a guard that cries wolf gets --no-verify'd into uselessness. Those stay a
+#    judgment call, documented in CLAUDE.md. Maestro is listed because it has
+#    no innocent use anywhere in this codebase's history.
+COMPETITORS='munder|difflin|munderdiffl|chaitanyagiri|xirp|spotify|maestro'
+if printf '%s' "$BODY" | grep -qiE "(^|[^[:alnum:]])($COMPETITORS)([^[:alnum:]]|$)"; then
+  fail "Competitor product name found. Describe the change, not the product."
+fi
+
+exit 0

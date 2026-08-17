@@ -528,8 +528,8 @@ fn issue_prompt(
     let issues_dir = root.join(agency_core::issuefs::ISSUES_DIR);
     prompt.push_str(&format!(
         "\n\nThat is the whole of {label}, so there is nothing to go and read. The issue \
-         is the file `{issue_file}`, which lives in the project's tracker outside your \
-         worktree and is untracked by git: edit it in place if you have something to \
+         is the file `{issue_file}`, which lives in this project's Agency tracker outside \
+         your worktree and is untracked by git: edit it in place if you have something to \
          change there, and the change takes effect at once, with no commit or merge \
          involved. Merging this run marks {label} done automatically, so you do not have \
          to. To file a follow-up issue, read `{readme}` first; that is the only reason to \
@@ -1709,10 +1709,16 @@ impl AppState {
         let repo = self.project_repo(spec.project_id)?;
         let config = agency_core::config::load(&repo);
         let port = self.allocate_port(config.ports.base, config.ports.block_size)?;
-        let profile = {
+        let (profile, issue_key) = {
             let reg = self.registry.lock().unwrap();
-            reg.get_profile(spec.agent)?
-                .ok_or_else(|| anyhow!("unknown agent profile: {agent}", agent = spec.agent))?
+            let profile = reg
+                .get_profile(spec.agent)?
+                .ok_or_else(|| anyhow!("unknown agent profile: {agent}", agent = spec.agent))?;
+            // The prefix the worktree's tracker briefing names, so `AGE-14`
+            // reads to the agent as this project's key rather than a shape it
+            // recognizes from some other tracker.
+            let (_, key) = self.issue_root(&reg, spec.project_id)?;
+            (profile, key)
         };
         let id = new_task_id(spec.prompt);
         let manager = WorktreeManager::new(repo.clone());
@@ -1761,6 +1767,18 @@ impl AppState {
                 log::warn!("copying essentials into worktree {id}: {e}");
             }
             self.emit_mcp(spec.agent, &repo, &workspace.path, &config);
+            // Introduce the issue tracker. The prompt does this for an
+            // issue-dispatched run, but a plain run carries only the user's
+            // text and the default interactive run carries none at all, so
+            // without this an agent asked for a follow-up has never been told
+            // the tracker exists, let alone that it lives outside the worktree.
+            // Best-effort, like the copies above: a briefing that can't be
+            // written is not worth failing a run over.
+            if let Err(e) =
+                agency_core::briefing::emit_agents_md(&workspace.path, &repo, &issue_key)
+            {
+                log::warn!("writing the tracker briefing into worktree {id}: {e}");
+            }
         } else if !self.merged_mcp_servers(&repo, &config).is_empty() {
             // Emitting would rewrite `.mcp.json` (or the agent's equivalent) in
             // the user's own checkout — a tracked file in most repos. Dirtying

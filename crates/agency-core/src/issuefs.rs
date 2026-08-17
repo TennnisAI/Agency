@@ -574,8 +574,9 @@ pub fn scan_issue_stats(root: &Path) -> Result<Vec<crate::files::DocStat>> {
 pub const ISSUES_README: &str = "\
 # Issues
 
-One file per issue; the filename is the issue key (`AGE-14.md`) and the H1 is
-the title. These files are the tracker: the app's board is an index over them.
+This project's issues are tracked in Agency, and these files are the tracker:
+the app's board is an index over them. One file per issue; the filename is the
+issue key (`AGE-14.md`) and the H1 is the title.
 
 ```markdown
 ---

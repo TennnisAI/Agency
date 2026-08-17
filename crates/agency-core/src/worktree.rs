@@ -386,6 +386,35 @@ pub fn ensure_agency_excludes(repo_path: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
+/// Add one pattern to a repo's `.git/info/exclude` if it isn't there already.
+/// Returns whether the file was changed. Idempotent; a repo without `.git` is
+/// left alone, as in [`ensure_agency_excludes`].
+///
+/// Separate from that function because the Agency paths above belong to every
+/// project the app manages, while this is for a file Agency only sometimes
+/// generates (the worktree's `AGENTS.md`) and so should only sometimes hide.
+pub fn ensure_exclude_pattern(repo_path: &std::path::Path, pattern: &str) -> Result<bool> {
+    if !repo_path.join(".git").is_dir() {
+        return Ok(false);
+    }
+    let exclude = repo_path.join(".git").join("info").join("exclude");
+    let current = std::fs::read_to_string(&exclude).unwrap_or_default();
+    if current.lines().any(|l| l.trim() == pattern) {
+        return Ok(false);
+    }
+    if let Some(parent) = exclude.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    let mut out = current;
+    if !out.is_empty() && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str(pattern);
+    out.push('\n');
+    std::fs::write(&exclude, out)?;
+    Ok(true)
+}
+
 /// Stop tracking `.agency/issues/` in git, once per project. Returns whether
 /// anything was untracked.
 ///

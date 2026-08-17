@@ -1434,7 +1434,14 @@ fn repo_behind_its_origin(dir: &Path) -> (std::path::PathBuf, String) {
         assert!(out.status.success(), "git {:?}: {}", args, String::from_utf8_lossy(&out.stderr));
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     };
-    git(dir, &["init", "--bare", "-q", remote.to_str().unwrap()]);
+    // `-b main` is load-bearing, and its absence only shows up off this
+    // machine. Without it the bare repo takes its branch from the ambient
+    // `init.defaultBranch`, which is `main` in this project's dev setup but
+    // `master` on a stock runner. The push then creates `main` while HEAD
+    // still points at a `master` that never exists, so the clone below checks
+    // nothing out ("remote HEAD refers to nonexistent ref") and the `commit -a`
+    // after it fails with "nothing to commit" and an empty stderr.
+    git(dir, &["init", "--bare", "-q", "-b", "main", remote.to_str().unwrap()]);
     git(&repo, &["remote", "add", "origin", remote.to_str().unwrap()]);
     git(&repo, &["push", "-q", "-u", "origin", "main"]);
 

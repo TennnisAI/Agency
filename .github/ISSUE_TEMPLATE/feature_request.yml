@@ -1,0 +1,17 @@
+name: Feature request
+description: Something Agency should do
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What's the problem?
+      description: The situation you keep hitting, before any proposed solution.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like Agency to do?
+    validations:
+      required: true

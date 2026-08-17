@@ -3,7 +3,20 @@ ui/node_modules
 ui/dist
 crates/agency-app/gen
 
+# TypeScript build state, and the compiled JS that `tsc -b` used to emit next
+# to the Vite/Vitest config sources. The compiled copies must never be tracked:
+# Vite resolves vite.config.js *before* vite.config.ts, so a stale emitted copy
+# silently shadows the real config.
+*.tsbuildinfo
+ui/vite.config.js
+ui/vite.config.d.ts
+ui/vitest.config.js
+ui/vitest.config.d.ts
+
 .DS_Store
+
+# Local state of coding-agent CLIs run inside this repo
+.crush/
 
 # Claude Code harness worktrees / local state
 .claude/

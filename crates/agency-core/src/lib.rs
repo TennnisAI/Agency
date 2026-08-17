@@ -8,6 +8,7 @@ pub mod issuefs;
 pub mod loops;
 pub mod mcp;
 pub mod merge;
+pub(crate) mod procutil;
 pub mod profile;
 pub mod registry;
 pub mod runsetup;

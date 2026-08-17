@@ -1,0 +1,45 @@
+name: Bug report
+description: Something broke or behaved wrong
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. The version and log excerpt below are what make
+        a report actionable — both are one click away in **Settings ▸ Diagnostics**.
+  - type: input
+    id: version
+    attributes:
+      label: Agency version
+      description: Shown in Settings ▸ Diagnostics.
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      placeholder: "e.g. 14.5 (Apple Silicon)"
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Log excerpt
+      description: |
+        Settings ▸ Diagnostics ▸ "Open logs", then paste the lines from around
+        when it went wrong. Skim it first — logs can include repo paths and
+        branch names from your machine.
+      render: text
+  - type: input
+    id: agent
+    attributes:
+      label: Agent CLI involved (if any)
+      placeholder: "e.g. Claude Code 2.1.0, Codex, none"

@@ -65,6 +65,17 @@ jobs:
           pnpm --dir ui install --frozen-lockfile
           pnpm --dir ui build
 
+      # The placeholder sidecar above satisfies the bundler, but it is not a
+      # working daemon, and every AppState::new spawns one for real. Without
+      # this step the integration tests all die with "daemon did not come up",
+      # which is what the first CI run on this workflow did. `dev.sh` builds it
+      # first for the same reason.
+      #
+      # target/debug/agency-termd is where termd_bin() looks: test executables
+      # live in target/debug/deps/, and it checks one level up.
+      - name: Build the terminal daemon
+        run: cargo build -p agency-core --bin agency-termd --locked
+
       - name: Test agency-app
         run: cargo test -p agency-app --locked
 

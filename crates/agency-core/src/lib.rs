@@ -17,6 +17,7 @@ pub mod setup;
 pub mod supervisor;
 pub mod term;
 pub mod title;
+pub mod usage;
 pub mod version;
 pub mod worktree;
 

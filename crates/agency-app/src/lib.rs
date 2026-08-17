@@ -451,6 +451,12 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                 }
                 watches.retain(|id, _| seen.contains(id));
                 state.retain_activity(&seen);
+                // Token accounting rides this poll rather than running a
+                // thread of its own: an unchanged transcript costs one stat,
+                // so the marginal price of doing it here is close to nothing.
+                if let Err(e) = state.refresh_usage() {
+                    log::warn!("usage refresh failed: {e}");
+                }
             }));
             if tick_result.is_err() {
                 log::error!("notifier tick panicked; continuing");

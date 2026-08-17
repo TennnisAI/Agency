@@ -4,6 +4,7 @@ import { useRuns } from "../store/runs";
 import { runName } from "../agents";
 import { inGitlessFolder, runStatus } from "../lib/runstate";
 import { Removal, removalLabel, removalsFor } from "../lib/runRemoval";
+import { usageLabel, usageTitle } from "../lib/usage";
 import RunRemoveDialog from "./RunRemoveDialog";
 import OverflowMenu from "./OverflowMenu";
 import { TrashIcon, InboxIcon } from "./icons";
@@ -65,6 +66,10 @@ export default function AgentTile({ run }: { run: RunInfo }) {
               </span>
               {!run.worktree && <span className="badge" title="Works in the project checkout, not an isolated worktree">in checkout</span>}
             </>
+          )}
+          {/* Absent, not zero, for agents whose transcript we cannot read. */}
+          {usageLabel(run.usage) && (
+            <span className="runcost" title={usageTitle(run.usage)}>{usageLabel(run.usage)}</span>
           )}
         </div>
       )}

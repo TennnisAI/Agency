@@ -163,6 +163,12 @@ pub struct RunInfo {
     /// until the first tick observes the run (~2s after spawn or app start);
     /// the UI treats a running agent without it as working.
     pub activity: Option<crate::activity::ActivityInfo>,
+    /// Tokens and cost for this run, read from the agent's own transcript.
+    /// `None` means we cannot see this agent's spend at all, which is the
+    /// case for every agent whose transcript format we have not read. That is
+    /// deliberately distinct from a zero: showing "0 tokens" for an agent we
+    /// cannot account for would be a false claim, not a missing one.
+    pub usage: Option<agency_core::usage::UsageInfo>,
     pub added: u32,
     pub deleted: u32,
     pub files: u32,
@@ -990,6 +996,12 @@ pub struct AppState {
     /// diff and read into `RunInfo` (see `crate::activity`). In-memory only:
     /// it re-derives within one tick of an app start.
     activity: Mutex<HashMap<String, crate::activity::ActivityEntry>>,
+    /// Per-run token and cost accounting, read from the agent's own transcript
+    /// by the notifier tick. The cache carries the per-file stamps that keep
+    /// the re-read nearly free; the `Usage` beside it is the directory total
+    /// `RunInfo` serves. In-memory only: the transcripts are the source of
+    /// truth, so a restart re-derives within one tick.
+    usage: Mutex<HashMap<String, (agency_core::usage::UsageCache, agency_core::usage::Usage)>>,
     /// Run ids that have ever been given a turn (typed Enter, or created with a
     /// non-empty prompt). Unlike `input_seen` this is never consumed — it
     /// separates "waiting on the user" from "idle, never prompted" in
@@ -1157,6 +1169,7 @@ impl AppState {
             ui: Mutex::new(UiState { focused: true, active_run: None, pending_open: None }),
             input_seen: Mutex::new(HashSet::new()),
             activity: Mutex::new(HashMap::new()),
+            usage: Mutex::new(HashMap::new()),
             prompted: Mutex::new(HashSet::new()),
             repo_gates: crate::gates::KeyedGates::new(),
             spawn_gates: crate::gates::KeyedGates::new(),
@@ -1621,6 +1634,7 @@ impl AppState {
                     run.loop_config.is_none() && self.prompted.lock().unwrap().contains(&run.id);
                 crate::activity::classify(e, turn_driven, crate::activity::now_ms())
             }),
+            usage: self.usage.lock().unwrap().get(&run.id).map(|(_, u)| u.into()),
             added: stat.added,
             deleted: stat.deleted,
             files: stat.files,
@@ -3388,6 +3402,98 @@ impl AppState {
     /// (archived or discarded), mirroring the notifier's own watch pruning.
     pub fn retain_activity(&self, keep: &HashSet<String>) {
         self.activity.lock().unwrap().retain(|id, _| keep.contains(id));
+        self.usage.lock().unwrap().retain(|id, _| keep.contains(id));
+    }
+
+    /// Re-read every run's token usage from its agent's transcript, and append
+    /// any growth to the cost ledger. Called once per notifier tick.
+    ///
+    /// Cheap by construction: `UsageCache` stats each transcript and re-parses
+    /// only files whose length or mtime moved, so a board of idle runs costs
+    /// one readdir apiece.
+    pub fn refresh_usage(&self) -> Result<()> {
+        let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
+            return Ok(());
+        };
+        let projects = self.registry.lock().unwrap().list_projects()?;
+        for proj in projects {
+            let repo = proj.repo_path.clone();
+            for run in self.registry.lock().unwrap().list_runs(&proj.id)? {
+                // The profile carries the launch command; the agent id alone
+                // does not (a custom profile may name any binary).
+                let command = {
+                    let reg = self.registry.lock().unwrap();
+                    match reg.get_profile(&run.agent)? {
+                        Some(p) => p.command,
+                        None => continue,
+                    }
+                };
+                if !agency_core::usage::agent_supported(&command) {
+                    continue;
+                }
+                // One worktree per run means this directory is already scoped
+                // to the run, and extra agent tabs sharing the worktree belong
+                // to the same run, so per-directory totals are per-run totals.
+                //
+                // The exception is a `worktree: false` run, which works in the
+                // project checkout: several of those share one cwd and so
+                // report the same figure, since the transcripts give us no way
+                // to tell their turns apart. Over-attributing to each is the
+                // lesser wrong against silently splitting it.
+                let worktree = workspace_dir(&repo, &run);
+                let Some(dir) = agency_core::usage::session_dir(&home, &command, &worktree) else {
+                    continue;
+                };
+
+                let mut map = self.usage.lock().unwrap();
+                let entry = map.entry(run.id.clone()).or_default();
+                let next = entry.0.refresh(&dir);
+                let prev = std::mem::replace(&mut entry.1, next.clone());
+                drop(map);
+
+                if next != prev {
+                    self.append_usage_ledger(&proj.id, &run.id, &run.agent, &next);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Append one line to the cost ledger, a plain JSONL file.
+    ///
+    /// It lives in the app data directory rather than the project's `.agency/`
+    /// on purpose. `.agency/` sits inside the user's repository, agents run
+    /// `git add -A` constantly, and a spend record committed into someone's
+    /// project is a leak we would have shipped on their behalf. This is
+    /// per-machine state, so it belongs with the per-machine state.
+    ///
+    /// Best-effort: a ledger write that fails must never disturb the poll.
+    fn append_usage_ledger(
+        &self,
+        project_id: &str,
+        run_id: &str,
+        agent: &str,
+        usage: &agency_core::usage::Usage,
+    ) {
+        use std::io::Write;
+        let info: agency_core::usage::UsageInfo = usage.into();
+        let line = serde_json::json!({
+            "atMs": crate::activity::now_ms(),
+            "projectId": project_id,
+            "runId": run_id,
+            "agent": agent,
+            "records": usage.records,
+            "usage": info,
+        });
+        let path = self.data_dir.join("usage.jsonl");
+        let write = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .and_then(|mut f| writeln!(f, "{line}"));
+        if let Err(e) = write {
+            log::warn!("usage ledger write failed ({}): {e}", path.display());
+        }
     }
 
     /// Resize the session's PTY so the emulator reflows to the visible terminal.

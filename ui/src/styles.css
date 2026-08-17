@@ -854,6 +854,16 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
 .diffstat .add { color: var(--green); }
 .diffstat .del { color: var(--red); }
 
+/* Run spend, read from the agent's own transcript. Deliberately quiet: it is
+   reference information, not a status, and it sits beside the diffstat rather
+   than competing with it. Absent entirely when we cannot account for the
+   agent, so there is no empty slot to style. */
+.runcost {
+  font-size: 11.5px;
+  font-family: var(--mono);
+  color: var(--o1);
+}
+
 /* Terminal preview — fades at bottom */
 .tile-preview {
   font-family: var(--mono);

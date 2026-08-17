@@ -50,6 +50,20 @@ export interface RunActivity {
   since: number;
 }
 
+// Tokens and cost for a run, read from the agent's own transcript (see
+// agency_core::usage). `cents` is null when no record carried a price we know,
+// and `costComplete` is false when only some did, in which case the figure is
+// a floor rather than a total and must not be labelled as one.
+export interface RunUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheWriteTokens: number;
+  cacheReadTokens: number;
+  totalTokens: number;
+  cents: number | null;
+  costComplete: boolean;
+}
+
 export interface RunInfo {
   id: string;
   projectId: string;
@@ -59,6 +73,10 @@ export interface RunInfo {
   branch: string;
   status: SessionStatus;
   activity: RunActivity | null;
+  // Null means this agent's spend is not visible to us at all, which is true
+  // of every agent whose transcript format we have not read. Not the same as
+  // zero, and the UI must never render it as one.
+  usage: RunUsage | null;
   added: number;
   deleted: number;
   files: number;

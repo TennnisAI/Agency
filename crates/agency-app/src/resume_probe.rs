@@ -2,6 +2,7 @@
 //! Used so we never launch a resume command (e.g. `claude --continue`) when there
 //! is nothing to resume — claude does not exit on resume-failure in a PTY, so the
 //! daemon's early-exit fallback cannot recover it.
+use agency_core::usage::{claude_enc, pi_enc};
 use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,19 +38,6 @@ fn dir_probe(dir: &Path) -> ResumeProbe {
         }
         Err(_) => ResumeProbe::None,
     }
-}
-
-/// Claude encodes a cwd by replacing every '/' and '.' with '-'.
-fn claude_enc(worktree: &Path) -> String {
-    worktree.to_string_lossy().chars().map(|c| if c == '/' || c == '.' { '-' } else { c }).collect()
-}
-
-/// Pi strips a leading '/', replaces '/' with '-' (dots kept), wraps in '--'..'--'.
-fn pi_enc(worktree: &Path) -> String {
-    let s = worktree.to_string_lossy();
-    let s = s.strip_prefix('/').unwrap_or(&s);
-    let inner: String = s.chars().map(|c| if c == '/' { '-' } else { c }).collect();
-    format!("--{inner}--")
 }
 
 #[cfg(test)]

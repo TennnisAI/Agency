@@ -16,6 +16,7 @@ import { FindRank } from "../lib/findBus";
 import { cmFindEngine } from "../lib/cmFind";
 import { useFind } from "../hooks/useFind";
 import { useDismissOnResize } from "../hooks/useDismissOnResize";
+import { SpawnOpts } from "../store/runs";
 import { PriorityGlyph, StatusDot } from "./IssueRow";
 import IssueAttachments, { forgetAttachment } from "./IssueAttachments";
 import MarkdownEditor, { MarkdownEditorHandle } from "./MarkdownEditor";
@@ -164,7 +165,7 @@ export default function IssueDetail({
   // Same pair as the list rows: ▶ starts the project's default agent, the
   // caret beside it picks another (or races/loops them).
   onStart: () => void;
-  onSpawnAgent: (agentId: string, opts?: { base: string; mergeTarget: string }) => void;
+  onSpawnAgent: (agentId: string, opts?: SpawnOpts) => void;
   onDelete: () => void;
   onOpenRun: (runId: string) => void;
   onOpenMention: (edge: LinkEdge) => void;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AGENT_TYPES, INSTALL_COMMANDS, agentColor, runListLabel } from "./agents";
+import { AGENT_TYPES, INSTALL_COMMANDS, agentColor, modelIdError, modelOptions, runListLabel } from "./agents";
 
 describe("agents", () => {
   it("lists the preconfigured agent types", () => {
@@ -44,5 +44,31 @@ describe("runListLabel", () => {
   it("marks looping and racing runs", () => {
     expect(runListLabel({ ...base, loopConfig: { maxAttempts: 3 } as never })).toBe("⟳ claude: agent/x");
     expect(runListLabel({ ...base, raceId: "r1" })).toBe("∥ claude: agent/x");
+  });
+});
+
+describe("modelIdError", () => {
+  it("accepts the shapes the supported CLIs take", () => {
+    for (const id of ["opus", "claude-opus-5", "anthropic/claude-sonnet-5", "sonnet:high", "gpt-5.1"]) {
+      expect(modelIdError(id)).toBeNull();
+    }
+    expect(modelIdError("  opus  ")).toBeNull();
+  });
+
+  it("refuses an id the agent would not read as a model", () => {
+    expect(modelIdError("")).not.toBeNull();
+    expect(modelIdError("   ")).not.toBeNull();
+    // Would land in argv as another flag.
+    expect(modelIdError("--dangerously-skip-permissions")).not.toBeNull();
+    expect(modelIdError("opus; rm -rf /")).not.toBeNull();
+    expect(modelIdError("a".repeat(129))).not.toBeNull();
+  });
+});
+
+describe("modelOptions", () => {
+  it("puts the vendor aliases first and drops duplicates", () => {
+    expect(modelOptions(["opus", "sonnet"], ["sonnet", "claude-haiku-5"]))
+      .toEqual(["opus", "sonnet", "claude-haiku-5"]);
+    expect(modelOptions([], [])).toEqual([]);
   });
 });

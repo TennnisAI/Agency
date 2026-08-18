@@ -70,6 +70,12 @@ pub struct Run {
     /// discard/archive never touch git and merge/PR are refused. Terminals have
     /// always behaved this way and carry `false` too.
     pub worktree: bool,
+    /// The model this run's agent was launched with, as passed to that CLI's
+    /// own model flag. `None` = the agent's own default, which is what every
+    /// run had before models could be chosen. Stored on the run rather than
+    /// the profile because it is a per-run choice: resume, rerun and every
+    /// loop attempt must come back on the same model the work started on.
+    pub model: Option<String>,
 }
 
 /// A local issue: the tracker is per-project and agent-native — dispatching
@@ -350,6 +356,9 @@ impl Registry {
             // Every pre-existing agent run has a worktree; terminals never did.
             conn.execute("ALTER TABLE runs ADD COLUMN worktree INTEGER NOT NULL DEFAULT 1", [])?;
             conn.execute("UPDATE runs SET worktree = 0 WHERE kind = 'terminal'", [])?;
+        }
+        if !column_exists(&conn, "runs", "model")? {
+            conn.execute("ALTER TABLE runs ADD COLUMN model TEXT", [])?;
         }
         if !column_exists(&conn, "projects", "issue_key")? {
             conn.execute("ALTER TABLE projects ADD COLUMN issue_key TEXT", [])?;
@@ -730,12 +739,13 @@ impl Registry {
             None => None,
         };
         self.conn.execute(
-            "INSERT INTO runs (id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+            "INSERT INTO runs (id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
             rusqlite::params![
                 run.id, run.project_id, run.agent, run.prompt, run.base, run.branch,
                 run.created_at, run.port_base.map(|p| p as i64), run.archived_at, run.title, run.kind,
-                run.merge_target, run.race_id, loop_config, loop_state, run.issue_id, run.worktree as i64
+                run.merge_target, run.race_id, loop_config, loop_state, run.issue_id, run.worktree as i64,
+                run.model
             ],
         )?;
         Ok(())
@@ -754,7 +764,7 @@ impl Registry {
 
     pub fn get_run(&self, id: &str) -> Result<Option<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree FROM runs WHERE id = ?1",
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model FROM runs WHERE id = ?1",
         )?;
         let mut rows = stmt.query([id])?;
         match rows.next()? {
@@ -765,7 +775,7 @@ impl Registry {
 
     pub fn list_runs(&self, project_id: &str) -> Result<Vec<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model
              FROM runs WHERE project_id = ?1 AND archived_at IS NULL ORDER BY created_at DESC",
         )?;
         let rows = stmt.query_map([project_id], |row| Ok(row_to_run(row)))?;
@@ -778,7 +788,7 @@ impl Registry {
 
     pub fn list_archived_runs(&self, project_id: &str) -> Result<Vec<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model
              FROM runs WHERE project_id = ?1 AND archived_at IS NOT NULL ORDER BY archived_at DESC",
         )?;
         let rows = stmt.query_map([project_id], |row| Ok(row_to_run(row)))?;
@@ -1132,7 +1142,7 @@ impl Registry {
     /// runs" list; also drives the last-run-abandoned rollback check).
     pub fn runs_for_issue(&self, issue_id: &str) -> Result<Vec<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model
              FROM runs WHERE issue_id = ?1 AND archived_at IS NULL ORDER BY created_at DESC",
         )?;
         let rows = stmt.query_map([issue_id], |row| Ok(row_to_run(row)))?;
@@ -1372,6 +1382,7 @@ fn row_to_run(row: &rusqlite::Row) -> Result<Run> {
         },
         issue_id: row.get(15)?,
         worktree: row.get::<_, i64>(16)? != 0,
+        model: row.get(17)?,
     })
 }
 
@@ -1523,6 +1534,7 @@ mod tests {
             loop_state: None,
             issue_id: None,
             worktree: true,
+            model: None,
         }
     }
 
@@ -1903,6 +1915,7 @@ mod tests {
             loop_state: None,
             issue_id: None,
             worktree: true,
+            model: None,
         };
         reg.insert_run(&run).unwrap();
         let got = reg.get_run("t1").unwrap().unwrap();

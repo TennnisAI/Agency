@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
-import { Issue, createRace, listProfiles, listProjectBranches, startIssueRace } from "../api";
+import { AgentModels, Issue, createRace, listProfiles, listProjectBranches, startIssueRace } from "../api";
 import { agentLabel } from "../agents";
 import { effectiveMergeTarget } from "../lib/branchTargets";
 import { useRuns } from "../store/runs";
 import { useModalKeys } from "../hooks/useModalKeys";
+import { useAgentModels } from "../hooks/useAgentModels";
+import ModelSelect from "./ModelSelect";
 
 // Fan one prompt out to several agents in parallel workspaces. This is the
 // one flow where composing the prompt up-front is the point: it's typed once
@@ -18,6 +20,11 @@ export default function RaceDialog({ onClose, issue, issueLabel }: {
   const [prompt, setPrompt] = useState("");
   const [agents, setAgents] = useState<string[]>([]);
   const [picked, setPicked] = useState<Set<string>>(new Set());
+  // A model per attempt, not one for the race: "opus" means nothing to Codex,
+  // so each agent carries its own choice, seeded from what it last ran on.
+  const { models, remembered } = useAgentModels();
+  const [chosen, setChosen] = useState<Record<string, string | null>>({});
+  const modelFor = (agent: string) => (agent in chosen ? chosen[agent] : remembered(agent));
   const [branches, setBranches] = useState<string[]>([]);
   const [base, setBase] = useState("");
   const [targetOverride, setTargetOverride] = useState<string | null>(null);
@@ -57,16 +64,26 @@ export default function RaceDialog({ onClose, issue, issueLabel }: {
   const mergeTarget = effectiveMergeTarget(base, targetOverride);
   const canStart = (issue ? true : prompt.trim().length > 0) && picked.size >= 2 && !busy;
 
+  // Only the agents actually racing, and only where a model was chosen: an
+  // agent left on its own default is simply absent from the map.
+  const raceModels = (): AgentModels =>
+    Object.fromEntries(
+      [...picked].flatMap((a) => {
+        const m = modelFor(a);
+        return m ? [[a, m] as [string, string]] : [];
+      }),
+    );
+
   async function start() {
     if (!selectedProjectId || !canStart) return;
     setBusy(true);
     setError("");
     try {
       if (issue) {
-        await startIssueRace(issue.id, [...picked], base || null, mergeTarget);
+        await startIssueRace(issue.id, [...picked], raceModels(), base || null, mergeTarget);
         setTab("agents"); // jump from the board to where the attempts run
       } else {
-        await createRace(selectedProjectId, prompt.trim(), [...picked], base || "HEAD", mergeTarget);
+        await createRace(selectedProjectId, prompt.trim(), [...picked], raceModels(), base || "HEAD", mergeTarget);
       }
       await refreshRuns();
       // Grid view is the natural place to watch attempts side by side.
@@ -108,10 +125,22 @@ export default function RaceDialog({ onClose, issue, issueLabel }: {
         )}
         <div className="race-agents">
           {agents.map((name) => (
-            <label key={name} className="race-agent">
-              <input type="checkbox" checked={picked.has(name)} onChange={() => togglePick(name)} />
-              <span>{agentLabel(name)}</span>
-            </label>
+            <div key={name} className="race-agent-row">
+              <label className="race-agent">
+                <input type="checkbox" checked={picked.has(name)} onChange={() => togglePick(name)} />
+                <span>{agentLabel(name)}</span>
+              </label>
+              {/* Only for the agents actually racing: an unticked row's model
+                  is not part of this race and would just be noise. */}
+              {picked.has(name) && (
+                <ModelSelect
+                  compact
+                  info={models[name]}
+                  value={modelFor(name)}
+                  onChange={(m) => setChosen((c) => ({ ...c, [name]: m }))}
+                />
+              )}
+            </div>
           ))}
         </div>
         {branches.length > 0 && (

@@ -4,6 +4,8 @@ import { agentLabel } from "../agents";
 import { effectiveMergeTarget } from "../lib/branchTargets";
 import { useRuns } from "../store/runs";
 import { useModalKeys } from "../hooks/useModalKeys";
+import { useAgentModels } from "../hooks/useAgentModels";
+import ModelSelect from "./ModelSelect";
 
 const PROMPT_TEMPLATE =
   "Read PROGRESS.md if it exists. Pick the single most important unfinished piece of: <task>. " +
@@ -22,6 +24,16 @@ export default function LoopDialog({ onClose, issue, issueLabel }: {
   const [prompt, setPrompt] = useState("");
   const [agents, setAgents] = useState<string[]>([]);
   const [agent, setAgent] = useState("");
+  // Seeded from the model this agent last ran on, and re-seeded when the agent
+  // changes: model ids live in each CLI's own namespace, so one agent's pick
+  // means nothing to the next.
+  const { models, remembered } = useAgentModels();
+  const [model, setModel] = useState<string | null>(null);
+  const [modelTouched, setModelTouched] = useState(false);
+  useEffect(() => {
+    if (modelTouched) return;
+    setModel(remembered(agent));
+  }, [agent, remembered, modelTouched]);
   const [checkCommand, setCheckCommand] = useState("");
   // Kept as a raw string while editing so the field can be cleared/retyped;
   // clamped to [1,100] only on blur and at submit.
@@ -67,11 +79,12 @@ export default function LoopDialog({ onClose, issue, issueLabel }: {
     setError("");
     try {
       const run = issue
-        ? await startIssueLoop(issue.id, agent, checkCommand.trim(), clampAttempts(maxAttempts), base || null, mergeTarget)
+        ? await startIssueLoop(issue.id, agent, model, checkCommand.trim(), clampAttempts(maxAttempts), base || null, mergeTarget)
         : await createLoop(
             selectedProjectId,
             prompt.trim(),
             agent,
+            model,
             base || "HEAD",
             mergeTarget,
             checkCommand.trim(),
@@ -124,12 +137,25 @@ export default function LoopDialog({ onClose, issue, issueLabel }: {
         <div className="loop-fields">
           <label className="branch-row">
             <span>agent</span>
-            <select value={agent} onChange={(e) => setAgent(e.target.value)}>
+            <select
+              value={agent}
+              onChange={(e) => { setAgent(e.target.value); setModelTouched(false); }}
+            >
               {agents.map((name) => (
                 <option key={name} value={name}>{agentLabel(name)}</option>
               ))}
             </select>
           </label>
+          {models[agent]?.supported && (
+            <div className="branch-row">
+              <span>model</span>
+              <ModelSelect
+                info={models[agent]}
+                value={model}
+                onChange={(m) => { setModel(m); setModelTouched(true); }}
+              />
+            </div>
+          )}
           <label className="branch-row">
             <span>done when</span>
             <input

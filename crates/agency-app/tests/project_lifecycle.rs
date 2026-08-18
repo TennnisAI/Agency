@@ -93,7 +93,7 @@ fn tearing_a_project_down_reports_each_step() {
     let project = state.add_project("repo", &repo).unwrap();
     for prompt in ["a", "b"] {
         state
-            .create_run_with_progress(&project.id, prompt, "noop", "main", None, true, |_| {})
+            .create_run_with_progress(&project.id, prompt, "noop", None, "main", None, true, |_| {})
             .unwrap();
     }
 

@@ -77,8 +77,9 @@ export default function IssueRow({
   onStart: () => void;
   // The issue's project folder has no git repository: the agent takes the issue
   // on in the folder itself, and racing or looping it is hidden (see
-  // AgentAddMenu). The cross-project board leaves this false — it has no
-  // per-project readiness to hand — and relies on the backend's refusal.
+  // AgentAddMenu). The cross-project board reads this per project from
+  // useGitlessProjects; a row with no answer yet keeps the entries and falls
+  // back to the backend's refusal.
   gitless?: boolean;
   onSpawnAgent: (agentId: string, opts?: { base: string; mergeTarget: string }) => void;
   onPatch: (patch: IssuePatch) => void;

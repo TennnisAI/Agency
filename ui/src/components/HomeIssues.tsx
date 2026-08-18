@@ -35,6 +35,7 @@ import { requestNavigate } from "../lib/navigate";
 import { TaskExclusion, TaskGroup, isTaskExcluded, openTaskCount, promoteBody } from "../lib/tasks";
 import { toastError } from "../lib/toast";
 import { useAllTasks } from "../hooks/useAllTasks";
+import { useGitlessProjects } from "../hooks/useRepoReadiness";
 import { useRuns } from "../store/runs";
 import Menu, { MenuEntry } from "./git/Menu";
 import IssueRow from "./IssueRow";
@@ -96,6 +97,10 @@ export default function HomeIssues({
 }) {
   const { setTab } = useRuns();
   const today = dateStamp(new Date());
+  // Which projects sit in a folder with no git repository, so their issue rows
+  // can hide the entries that need a branch. Cached per folder rather than read
+  // per poll: see useGitlessProjects.
+  const gitless = useGitlessProjects(projects);
 
   const [q, setQ] = useState("");
   const [fStatus, setFStatus] = useState<StatusFilter>("open");
@@ -183,7 +188,14 @@ export default function HomeIssues({
         return;
       }
       const r = await inspectRepo(project.repo_path);
-      if (r.state === "ready" && !r.dirty) {
+      // A folder with no repository has nothing to set up: there is no branch to
+      // cut from, so the agent takes the issue on in the folder as it stands.
+      // Without that arm the board opened the setup dialog on "Initialize
+      // repository", whose only other button is Cancel, so dispatching into a
+      // scratch folder from here had no way through. The per-project flow makes
+      // the same short-circuit in useSpawnAgent.
+      const spawnable = r.state === "notARepo" || (r.state === "ready" && !r.dirty);
+      if (spawnable) {
         const run = await startIssueRun(issue.id, agentId, opts?.base, opts?.mergeTarget);
         onOpenRun(project, run.id);
       } else {
@@ -317,6 +329,7 @@ export default function HomeIssues({
       onPatch={(p) => patch(issue, p)}
       onDelete={() => setConfirmDelete({ project, issue })}
       terms={terms}
+      gitless={gitless.has(project.id)}
     />
   );
 

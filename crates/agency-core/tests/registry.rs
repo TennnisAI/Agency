@@ -109,6 +109,7 @@ fn runs_persist_list_and_delete() {
         loop_state: None,
         issue_id: None,
         worktree: true,
+        model: None,
     };
     {
         let reg = Registry::open(&db).unwrap();
@@ -146,6 +147,7 @@ fn list_runs_newest_first() {
             loop_state: None,
             issue_id: None,
             worktree: true,
+            model: None,
         })
         .unwrap();
     }

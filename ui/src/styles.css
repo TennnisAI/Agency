@@ -221,6 +221,20 @@ button:disabled { opacity: .45; cursor: default; }
 .agent-menu button { background: transparent; border: none; color: var(--text); text-align: left; padding: 8px 10px; border-radius: 6px; cursor: pointer; font-family: var(--sans); font-size: 12.5px; }
 .agent-menu button:hover { background: var(--s0); }
 .agent-menu-sep { height: 1px; background: var(--line); margin: 4px 2px; }
+/* Agent row: the name starts the agent, the chip beside it says which model it
+   will start on. The name takes the slack so the chip stays hard right, and
+   `min-width: 0` is what lets a long model id clip instead of widening the
+   menu (same trick as the branch selects below). */
+.agent-menu-row { display: flex; align-items: center; gap: 4px; }
+.agent-menu-row .agent-menu-name { flex: 1; min-width: 0; }
+.model-chip {
+  flex: none; max-width: 44%; display: flex; align-items: center; gap: 4px;
+  background: var(--crust); border: 1px solid var(--s1); color: var(--o1);
+  border-radius: 999px; padding: 2px 8px; cursor: pointer;
+  font-family: var(--sans); font-size: 11px;
+}
+.model-chip:hover { color: var(--text); border-color: var(--s2); }
+.model-chip:focus-visible { outline: none; border-color: var(--blue); }
 
 /* Overflow ("…") menu — a header's secondary actions, icon + label rows. */
 .overflow-menu { min-width: 186px; }
@@ -693,6 +707,13 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
   background: var(--s0);
   color: var(--sub1);
   white-space: nowrap;
+}
+/* The model half of an agent badge, separated by a hairline rather than a
+   character so a long id reads as one field and can be clipped on its own. */
+.badge-model {
+  margin-left: 5px; padding-left: 5px; border-left: 1px solid currentColor;
+  opacity: .72; max-width: 96px; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; display: inline-block; vertical-align: bottom;
 }
 .badge.claude { color: var(--agent-claude); }
 .badge.pi { color: var(--agent-pi); }
@@ -1850,6 +1871,20 @@ input, textarea, code,
 .agent-menu .branch-row .branch-select:focus-visible { outline: none; border-color: var(--blue); }
 .branch-select-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .branch-select-caret { color: var(--o1); font-size: var(--chev-sm); flex: none; }
+/* Model picker popup (ModelSelect.tsx): the branch list plus a field for a
+   model id Agency has never heard of, which is most of them. */
+.model-menu { max-width: min(320px, calc(100vw - 16px)); }
+.model-menu .model-other { display: flex; align-items: center; gap: 6px; padding: 4px 6px; }
+.model-menu .model-other .settings-input { flex: 1; min-width: 0; font-size: 12px; padding: 4px 6px; }
+.model-menu .model-use {
+  flex: none; background: var(--crust); border: 1px solid var(--s1);
+  color: var(--text); border-radius: 6px; padding: 4px 8px; font-size: 11px;
+}
+.model-menu .model-use:disabled { color: var(--o1); cursor: default; }
+.model-note { padding: 2px 8px 6px; color: var(--o1); font-size: 11px; line-height: 1.4; }
+.model-note code { font-family: var(--mono); font-size: 10.5px; }
+.model-error { color: var(--red); }
+
 /* Above the agent menu it opens from, so a click outside lands on this
    backdrop and closes only the branch list. */
 .branch-menu-backdrop { position: fixed; inset: 0; z-index: 42; }
@@ -2313,6 +2348,8 @@ input, textarea, code,
 .race-prompt { min-height: 84px; resize: vertical; font-family: var(--sans); }
 .race-agents { display: flex; flex-wrap: wrap; gap: 6px 14px; }
 .race-agent { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text); cursor: pointer; }
+/* Checkbox plus, once the agent is in the race, the model that attempt runs on. */
+.race-agent-row { display: flex; align-items: center; gap: 6px; }
 .race-branches { display: flex; flex-direction: row; gap: 14px; }
 .race-branches .branch-row { display: flex; align-items: center; gap: 6px; }
 .race-branches .branch-row > span { color: var(--o1); font-size: 11px; }
@@ -2358,6 +2395,13 @@ input, textarea, code,
 .gh-pick-item.selected { border-color: var(--blue); background: color-mix(in srgb, var(--blue) 12%, var(--crust)); }
 .gh-pick-item input { accent-color: var(--blue); flex: none; }
 .gh-pick-agent { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--o1); }
+/* The model trigger is a button, not a select, so it needs the selects' box. */
+.gh-pick-agent .branch-select, .loop-fields .branch-select {
+  display: flex; align-items: center; gap: 6px;
+  background: var(--crust); border: 1px solid var(--s1); color: var(--text);
+  border-radius: 6px; padding: 4px 6px;
+  font-family: var(--sans); font-size: 12px; text-align: left; cursor: pointer;
+}
 
 /* Modal chrome shared by the merge modal and the race/import dialogs:
    .settings-overlay dims and centers; .settings-head is the compact card

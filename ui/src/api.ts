@@ -97,6 +97,8 @@ export interface RunInfo {
   loopState: LoopState | null;
   // Local issue this run was dispatched from (see startIssueRun).
   issueId: string | null;
+  // Model this run's agent was launched on; null = the agent's own default.
+  model: string | null;
 }
 
 // ── issues (the local per-project tracker) ──────────────────────────────────
@@ -177,20 +179,21 @@ export const updateIssueComment = (issueId: string, createdAt: number, body: str
   invoke<Issue>("update_issue_comment", { issueId, createdAt, body });
 export const deleteIssueComment = (issueId: string, createdAt: number) =>
   invoke<Issue>("delete_issue_comment", { issueId, createdAt });
-export const startIssueRun = (issueId: string, agent: string, base?: string | null, mergeTarget?: string | null) =>
-  invoke<RunInfo>("start_issue_run", { issueId, agent, base: base ?? null, mergeTarget: mergeTarget ?? null });
-export const startIssueRace = (issueId: string, agents: string[], base?: string | null, mergeTarget?: string | null) =>
-  invoke<RunInfo[]>("start_issue_race", { issueId, agents, base: base ?? null, mergeTarget: mergeTarget ?? null });
+export const startIssueRun = (issueId: string, agent: string, model?: string | null, base?: string | null, mergeTarget?: string | null) =>
+  invoke<RunInfo>("start_issue_run", { issueId, agent, model: model ?? null, base: base ?? null, mergeTarget: mergeTarget ?? null });
+export const startIssueRace = (issueId: string, agents: string[], models?: AgentModels | null, base?: string | null, mergeTarget?: string | null) =>
+  invoke<RunInfo[]>("start_issue_race", { issueId, agents, models: models ?? null, base: base ?? null, mergeTarget: mergeTarget ?? null });
 export const startIssueLoop = (
   issueId: string,
   agent: string,
+  model: string | null,
   checkCommand: string,
   maxAttempts: number,
   base?: string | null,
   mergeTarget?: string | null,
 ) =>
   invoke<RunInfo>("start_issue_loop", {
-    issueId, agent, checkCommand, maxAttempts, base: base ?? null, mergeTarget: mergeTarget ?? null,
+    issueId, agent, model: model ?? null, checkCommand, maxAttempts, base: base ?? null, mergeTarget: mergeTarget ?? null,
   });
 
 export const addProject = (name: string, repoPath: string) =>
@@ -304,6 +307,7 @@ export function createRun(
   projectId: string,
   prompt: string,
   agent: string,
+  model: string | null,
   base: string,
   mergeTarget?: string | null,
   onProgress?: (p: CloneProgress) => void,
@@ -312,7 +316,7 @@ export function createRun(
   const onProgressChannel = new Channel<CloneProgress>();
   if (onProgress) onProgressChannel.onmessage = onProgress;
   return invoke<RunInfo>("create_run", {
-    projectId, prompt, agent, base, mergeTarget: mergeTarget ?? null, worktree,
+    projectId, prompt, agent, model, base, mergeTarget: mergeTarget ?? null, worktree,
     onProgress: onProgressChannel,
   });
 }
@@ -320,13 +324,14 @@ export const createLoop = (
   projectId: string,
   prompt: string,
   agent: string,
+  model: string | null,
   base: string,
   mergeTarget: string | null,
   checkCommand: string,
   maxAttempts: number,
 ) =>
   invoke<RunInfo>("create_loop", {
-    projectId, prompt, agent, base, mergeTarget, checkCommand, maxAttempts,
+    projectId, prompt, agent, model, base, mergeTarget, checkCommand, maxAttempts,
   });
 export const stopLoop = (id: string) => invoke<void>("stop_loop", { id });
 export const createTerminal = (projectId: string) =>
@@ -697,6 +702,40 @@ export interface CatalogEntry {
   acceptsPrompt: boolean;
 }
 
+/**
+ * What the model picker offers for one agent. `supported: false` means that
+ * CLI takes no model flag at all, so no picker is shown for it and its runs use
+ * whatever it is configured to use.
+ */
+export interface AgentModelInfo {
+  agent: string;
+  supported: boolean;
+  /** Stable vendor aliases worth one click; often empty by design. */
+  suggested: string[];
+  /** Models used before with this agent, newest first. */
+  recent: string[];
+  /** Chosen last time; null = the agent's own default. */
+  selected: string | null;
+  /** The agent's own command for listing its models, shown as a hint. */
+  listCommand: string | null;
+}
+
+/** Agent id to model, for the flows that start several agents at once. */
+export type AgentModels = Record<string, string>;
+
+export const listAgentModels = () => invoke<AgentModelInfo[]>("list_agent_models");
+
+/**
+ * The model `agent` last ran on — what a spawn with no picker in front of it
+ * should repeat, so a run started from a shortcut doesn't quietly drop back to
+ * the default model. Null on any failure: the agent's own default is the safe
+ * answer, and it is what every run got before models could be chosen.
+ */
+export const rememberedModel = (agent: string) =>
+  listAgentModels()
+    .then((ms) => ms.find((m) => m.agent === agent)?.selected ?? null)
+    .catch(() => null);
+
 export const agentOnboardingNeeded = () => invoke<boolean>("agent_onboarding_needed");
 export const listAgentCatalog = () => invoke<CatalogEntry[]>("list_agent_catalog");
 export const enableAgentProfiles = (ids: string[]) =>
@@ -823,16 +862,17 @@ export const createRace = (
   projectId: string,
   prompt: string,
   agents: string[],
+  models: AgentModels | null,
   base: string,
   mergeTarget?: string | null,
-) => invoke<RunInfo[]>("create_race", { projectId, prompt, agents, base, mergeTarget: mergeTarget ?? null });
+) => invoke<RunInfo[]>("create_race", { projectId, prompt, agents, models, base, mergeTarget: mergeTarget ?? null });
 export const listGhIssues = (projectId: string) =>
   invoke<IssueItem[]>("list_gh_issues", { projectId });
 export const listGhPrs = (projectId: string) => invoke<PrInfo[]>("list_gh_prs", { projectId });
-export const createRunFromIssue = (projectId: string, number: number, agent: string) =>
-  invoke<RunInfo>("create_run_from_issue", { projectId, number, agent });
-export const createRunFromPr = (projectId: string, number: number, agent: string) =>
-  invoke<RunInfo>("create_run_from_pr", { projectId, number, agent });
+export const createRunFromIssue = (projectId: string, number: number, agent: string, model?: string | null) =>
+  invoke<RunInfo>("create_run_from_issue", { projectId, number, agent, model: model ?? null });
+export const createRunFromPr = (projectId: string, number: number, agent: string, model?: string | null) =>
+  invoke<RunInfo>("create_run_from_pr", { projectId, number, agent, model: model ?? null });
 
 // Where an agent PR review landed. `sessionId` is set when the review had to run
 // as an extra tab inside an existing run (the PR's branch was already checked
@@ -847,8 +887,9 @@ export const createPrReviewRun = (
   projectId: string,
   number: number,
   agent: string,
+  model: string | null,
   postComments: boolean,
-) => invoke<PrReviewRun>("create_pr_review_run", { projectId, number, agent, postComments });
+) => invoke<PrReviewRun>("create_pr_review_run", { projectId, number, agent, model, postComments });
 
 export const ghReadiness = (projectId: string) =>
   invoke<GhReadiness>("gh_readiness", { projectId });

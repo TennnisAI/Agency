@@ -157,6 +157,7 @@ pub fn run() {
             commands::delete_profile,
             commands::agent_onboarding_needed,
             commands::list_agent_catalog,
+            commands::list_agent_models,
             commands::enable_agent_profiles,
             commands::complete_agent_onboarding,
             commands::get_settings,

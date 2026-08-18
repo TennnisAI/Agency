@@ -4,6 +4,7 @@ import { Issue, IssuePatch, IssueStatus, RunInfo } from "../api";
 import { ISSUE_STATUSES, PRIORITY_LABELS, STATUS_COLORS, STATUS_LABELS, fmtDate, isOverdue, matchRanges } from "../lib/issues";
 import { dateStamp } from "../lib/dailyNote";
 import { useDismissOnResize } from "../hooks/useDismissOnResize";
+import { SpawnOpts } from "../store/runs";
 import AgentAddMenu from "./AgentAddMenu";
 
 // Priority as Linear-style signal bars: 1-3 bars for low/medium/high, an
@@ -80,7 +81,7 @@ export default function IssueRow({
   // AgentAddMenu). The cross-project board leaves this false — it has no
   // per-project readiness to hand — and relies on the backend's refusal.
   gitless?: boolean;
-  onSpawnAgent: (agentId: string, opts?: { base: string; mergeTarget: string }) => void;
+  onSpawnAgent: (agentId: string, opts?: SpawnOpts) => void;
   onPatch: (patch: IssuePatch) => void;
   onDelete: () => void;
   // Manual reorder within a status group (the per-project board wires this;

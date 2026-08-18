@@ -8,7 +8,7 @@ import { planReorder } from "../lib/issueRank";
 import { Corpus, IssueRef, LinkEdge, buildLinkIndex, mentionsOf, resolveTarget } from "../lib/links";
 import { IssueLink, hasLink, issueLinks, linkCandidates, withLink, withoutLink } from "../lib/issueLinks";
 import { requestNavigate } from "../lib/navigate";
-import { useRuns } from "../store/runs";
+import { useRuns, SpawnOpts } from "../store/runs";
 import { useIssues } from "../hooks/useIssues";
 import { useCrossRefs } from "../hooks/useCrossRefs";
 import { useDocs } from "../hooks/useDocs";
@@ -59,7 +59,7 @@ export default function IssuesView({
   onStartIssue,
 }: {
   project: Project;
-  onStartIssue: (issue: Issue, agentId: string, opts?: { base: string; mergeTarget: string }) => Promise<void>;
+  onStartIssue: (issue: Issue, agentId: string, opts?: SpawnOpts) => Promise<void>;
 }) {
   const { runs, tab, setTab, setView, setFocusedRun } = useRuns();
   const { issues, loaded, refresh } = useIssues(project.id, tab === "issues");

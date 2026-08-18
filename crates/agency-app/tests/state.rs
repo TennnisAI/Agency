@@ -113,7 +113,7 @@ fn create_run_persists_starts_session_and_lists() {
         .unwrap();
     let project = state.add_project("demo", &repo).unwrap();
 
-    let info = state.create_run(&project.id, "do it", "stay", "HEAD", None).unwrap();
+    let info = state.create_run(&project.id, "do it", "stay", None, "HEAD", None).unwrap();
     assert_eq!(info.agent, "stay");
     assert_eq!(info.branch, format!("agent/{}", info.id));
 
@@ -165,7 +165,7 @@ fn worktree_path_resolves_for_active_run() {
         })
         .unwrap();
     let project = state.add_project("demo", &repo).unwrap();
-    let info = state.create_run(&project.id, "p", "noop", "HEAD", None).unwrap();
+    let info = state.create_run(&project.id, "p", "noop", None, "HEAD", None).unwrap();
 
     let wt = state.worktree_path(&info.id).unwrap();
     assert!(wt.ends_with(format!(".agency/worktrees/{}", info.id)));
@@ -198,7 +198,7 @@ fn worktree_path_resolves_to_repo_root_for_terminal() {
             loop_args: None,
         })
         .unwrap();
-    let agent = state.create_run(&project.id, "p", "noop", "HEAD", None).unwrap();
+    let agent = state.create_run(&project.id, "p", "noop", None, "HEAD", None).unwrap();
     let agent_wt = state.worktree_path(&agent.id).unwrap();
     assert!(agent_wt.ends_with(format!(".agency/worktrees/{}", agent.id)));
 
@@ -289,7 +289,7 @@ fn create_run_injects_provider_env() {
         .unwrap();
     let project = state.add_project("demo", &repo).unwrap();
 
-    let info = state.create_run(&project.id, "p", "envcheck", "HEAD", None).unwrap();
+    let info = state.create_run(&project.id, "p", "envcheck", None, "HEAD", None).unwrap();
 
     // Poll tmux capture until we see the output (up to 5s)
     let mut out = String::new();
@@ -308,6 +308,99 @@ fn create_run_injects_provider_env() {
     assert!(out.contains("KEYSET=yes"), "got: {out}");
 
     state.discard_run(&info.id).unwrap();
+}
+
+/// The model a run is started on has to reach the agent's real command line —
+/// a picker that stored a preference and launched the default anyway would be
+/// worse than no picker, because the run would look like it was on the model
+/// the user paid for.
+#[test]
+fn create_run_passes_the_chosen_model_to_the_agent_and_remembers_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let state = common::state(&dir);
+    // Named after a catalog entry, so the real `--model` recipe applies; the
+    // command underneath just prints the argv it was handed.
+    state
+        .register_profile(AgentProfile {
+            name: "claude".into(),
+            command: "sh".into(),
+            args: vec!["-c".into(), "echo ARGV=$*; sleep 2".into(), "sh".into()],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+
+    let info = state.create_run(&project.id, "p", "claude", Some("opus"), "HEAD", None).unwrap();
+    assert_eq!(info.model.as_deref(), Some("opus"));
+
+    let mut out = String::new();
+    let start = std::time::Instant::now();
+    while start.elapsed() < std::time::Duration::from_secs(5) {
+        if let Ok(s) = state.run_preview(&info.id, 20) {
+            out = s;
+            if out.contains("ARGV=") {
+                break;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    // Ahead of the prompt, which is this CLI's trailing positional.
+    assert!(out.contains("ARGV=--model opus p"), "got: {out}");
+
+    // And the choice is remembered, so the picker reopens on it.
+    let models = state.list_agent_models().unwrap();
+    let claude = models.iter().find(|m| m.agent == "claude").expect("claude in the model list");
+    assert!(claude.supported);
+    assert_eq!(claude.selected.as_deref(), Some("opus"));
+    assert_eq!(claude.recent, vec!["opus".to_string()]);
+    assert!(claude.suggested.contains(&"sonnet".to_string()));
+
+    state.discard_run(&info.id).unwrap();
+}
+
+/// An agent whose CLI has no model flag must refuse the model outright. Taking
+/// it and launching the default would bill the run to a model nobody chose.
+#[test]
+fn create_run_refuses_a_model_the_agent_cannot_be_told() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let state = common::state(&dir);
+    for name in ["crush", "made-up"] {
+        state
+            .register_profile(AgentProfile {
+                name: name.into(),
+                command: "sh".into(),
+                args: vec!["-c".into(), "sleep 1".into()],
+                env: vec![],
+                resume_args: None,
+                loop_args: None,
+            })
+            .unwrap();
+    }
+    let project = state.add_project("demo", &repo).unwrap();
+
+    for agent in ["crush", "made-up"] {
+        let err = state
+            .create_run(&project.id, "p", agent, Some("opus"), "HEAD", None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("no way to be told a model"), "{agent}: {err}");
+    }
+    // Nothing was created, so no worktree was left behind either.
+    assert!(state.list_runs(&project.id).unwrap().is_empty());
+    // And the picker knows not to offer one.
+    let models = state.list_agent_models().unwrap();
+    assert!(models.iter().all(|m| !m.supported));
+    assert!(models.iter().all(|m| m.suggested.is_empty()));
 }
 
 use agency_core::merge::MergeOutcome;
@@ -334,7 +427,7 @@ fn send_merge_conflict_requires_a_merge_in_progress() {
         })
         .unwrap();
     let project = state.add_project("demo", &repo).unwrap();
-    let info = state.create_run(&project.id, "p", "noop", "HEAD", None).unwrap();
+    let info = state.create_run(&project.id, "p", "noop", None, "HEAD", None).unwrap();
 
     let err = state.send_merge_conflict(&info.id).unwrap_err().to_string();
     assert!(err.contains("no merge is in progress"), "got: {err}");
@@ -391,7 +484,7 @@ fn attach_streams_and_input_reaches_agent() {
         })
         .unwrap();
     let project = state.add_project("demo", &repo).unwrap();
-    let info = state.create_run(&project.id, "p", "echoer", "HEAD", None).unwrap();
+    let info = state.create_run(&project.id, "p", "echoer", None, "HEAD", None).unwrap();
 
     let buf = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
     let b = buf.clone();
@@ -494,7 +587,7 @@ fn merge_task_clean_merges_branch_into_base() {
     let project = state.add_project("demo", &repo).unwrap();
 
     // create_run → worktree on agent/<id>; make a non-conflicting commit in it.
-    let info = state.create_run(&project.id, "p", "noop", "HEAD", None).unwrap();
+    let info = state.create_run(&project.id, "p", "noop", None, "HEAD", None).unwrap();
     let wt = state.worktree_path(&info.id).unwrap();
     std::fs::write(wt.join("feature.txt"), "x\n").unwrap();
     std::process::Command::new("git").args(["add", "-A"]).current_dir(&wt).status().unwrap();
@@ -532,7 +625,7 @@ fn ensure_run_active_respawns_a_stopped_agent_run() {
         })
         .unwrap();
     let project = state.add_project("demo", &repo).unwrap();
-    let info = state.create_run(&project.id, "p", "sleeper", "HEAD", None).unwrap();
+    let info = state.create_run(&project.id, "p", "sleeper", None, "HEAD", None).unwrap();
 
     // Stop the run's session (record stays) -> status becomes Gone.
     state.stop_run(&info.id).unwrap();
@@ -595,7 +688,7 @@ fn ensure_run_active_falls_back_to_fresh_when_resume_fails() {
         })
         .unwrap();
     let project = state.add_project("demo", &repo).unwrap();
-    let info = state.create_run(&project.id, "p", "flaky", "HEAD", None).unwrap();
+    let info = state.create_run(&project.id, "p", "flaky", None, "HEAD", None).unwrap();
 
     state.stop_run(&info.id).unwrap();
     let mut gone = false;
@@ -645,7 +738,7 @@ fn extra_session_lifecycle_shares_worktree_and_cascades() {
         })
         .unwrap();
     let project = state.add_project("demo", &repo).unwrap();
-    let run = state.create_run(&project.id, "p", "pwds", "HEAD", None).unwrap();
+    let run = state.create_run(&project.id, "p", "pwds", None, "HEAD", None).unwrap();
     let wt = state.worktree_path(&run.id).unwrap();
 
     // First extra tab: defaults to the run's agent, gets the --2 suffix.
@@ -722,7 +815,7 @@ fn shell_tab_needs_no_profile_and_runs_in_the_worktree() {
         })
         .unwrap();
     let project = state.add_project("demo", &repo).unwrap();
-    let run = state.create_run(&project.id, "p", "pwds", "HEAD", None).unwrap();
+    let run = state.create_run(&project.id, "p", "pwds", None, "HEAD", None).unwrap();
     let wt = state.worktree_path(&run.id).unwrap();
     assert!(state.profile_names().unwrap().iter().all(|n| n != "shell"));
 
@@ -765,7 +858,7 @@ fn ensure_run_active_revives_a_dead_extra_session() {
         })
         .unwrap();
     let project = state.add_project("demo", &repo).unwrap();
-    let run = state.create_run(&project.id, "p", "pwds", "HEAD", None).unwrap();
+    let run = state.create_run(&project.id, "p", "pwds", None, "HEAD", None).unwrap();
     let wt = state.worktree_path(&run.id).unwrap();
     let tab = state.start_run_session(&run.id, None, "").unwrap();
 
@@ -857,7 +950,7 @@ fn create_run_without_worktree_uses_the_project_checkout() {
     let project = state.add_project("demo", &repo).unwrap();
 
     let info = state
-        .create_run_with_progress(&project.id, "p", "pwds", "HEAD", None, false, |_| {})
+        .create_run_with_progress(&project.id, "p", "pwds", None, "HEAD", None, false, |_| {})
         .unwrap();
     assert!(!info.worktree);
     assert_eq!(info.branch, "main", "adopts the checkout's branch");
@@ -914,7 +1007,7 @@ fn create_run_in_a_gitless_project_works_in_the_folder() {
     let project = state.add_project("scratch", &plain).unwrap();
 
     let info = state
-        .create_run_with_progress(&project.id, "p", "pwds", "HEAD", None, false, |_| {})
+        .create_run_with_progress(&project.id, "p", "pwds", None, "HEAD", None, false, |_| {})
         .unwrap();
     assert!(!info.worktree);
     assert_eq!(info.branch, "", "no repository means no branch to adopt");
@@ -963,7 +1056,7 @@ fn create_run_with_a_worktree_in_a_gitless_project_is_refused() {
     let project = state.add_project("scratch", &plain).unwrap();
 
     let err = state
-        .create_run_with_progress(&project.id, "p", "stay", "HEAD", None, true, |_| {})
+        .create_run_with_progress(&project.id, "p", "stay", None, "HEAD", None, true, |_| {})
         .unwrap_err()
         .to_string();
     assert!(err.contains("not a git repository"), "got: {err}");
@@ -993,7 +1086,7 @@ fn discard_without_worktree_leaves_the_checkout_and_its_branch_alone() {
         .unwrap();
     let project = state.add_project("demo", &repo).unwrap();
     let info = state
-        .create_run_with_progress(&project.id, "p", "noop", "HEAD", None, false, |_| {})
+        .create_run_with_progress(&project.id, "p", "noop", None, "HEAD", None, false, |_| {})
         .unwrap();
 
     // The run follows the checkout: switching branches under it renames the run
@@ -1044,7 +1137,7 @@ fn archive_without_worktree_does_not_commit_the_users_work() {
         .unwrap();
     let project = state.add_project("demo", &repo).unwrap();
     let info = state
-        .create_run_with_progress(&project.id, "p", "noop", "HEAD", None, false, |_| {})
+        .create_run_with_progress(&project.id, "p", "noop", None, "HEAD", None, false, |_| {})
         .unwrap();
     std::fs::write(repo.join("scratch.txt"), "work in progress").unwrap();
 
@@ -1097,7 +1190,16 @@ fn discard_archived_runs_clears_the_archive_and_spares_live_runs() {
     for prompt in ["a", "b", "c"] {
         runs.push(
             state
-                .create_run_with_progress(&project.id, prompt, "noop", "HEAD", None, true, |_| {})
+                .create_run_with_progress(
+                    &project.id,
+                    prompt,
+                    "noop",
+                    None,
+                    "HEAD",
+                    None,
+                    true,
+                    |_| {},
+                )
                 .unwrap(),
         );
     }
@@ -1156,7 +1258,7 @@ fn removing_an_agent_reports_each_teardown_step() {
     let project = state.add_project("demo", &repo).unwrap();
 
     let archived = state
-        .create_run_with_progress(&project.id, "a", "noop", "HEAD", None, true, |_| {})
+        .create_run_with_progress(&project.id, "a", "noop", None, "HEAD", None, true, |_| {})
         .unwrap();
     let mut steps = Vec::new();
     state.archive_run_with_progress(&archived.id, &mut |p| steps.push(p.phase)).unwrap();
@@ -1171,7 +1273,7 @@ fn removing_an_agent_reports_each_teardown_step() {
     );
 
     let doomed = state
-        .create_run_with_progress(&project.id, "b", "noop", "HEAD", None, true, |_| {})
+        .create_run_with_progress(&project.id, "b", "noop", None, "HEAD", None, true, |_| {})
         .unwrap();
     let mut steps = Vec::new();
     state.discard_run_with_progress(&doomed.id, &mut |p| steps.push((p.phase, p.detail))).unwrap();
@@ -1186,7 +1288,7 @@ fn removing_an_agent_reports_each_teardown_step() {
     // A sweep relays each run's steps, with its own position as the detail so
     // the bar doesn't look like one teardown restarting over and over.
     let swept = state
-        .create_run_with_progress(&project.id, "c", "noop", "HEAD", None, true, |_| {})
+        .create_run_with_progress(&project.id, "c", "noop", None, "HEAD", None, true, |_| {})
         .unwrap();
     state.archive_run(&swept.id).unwrap();
     let mut details = Vec::new();
@@ -1321,8 +1423,8 @@ fn list_runs_reports_which_workspace_has_a_script_live() {
         })
         .unwrap();
     let project = state.add_project("demo", &repo).unwrap();
-    let a = state.create_run(&project.id, "a", "stay", "HEAD", None).unwrap();
-    let b = state.create_run(&project.id, "b", "stay", "HEAD", None).unwrap();
+    let a = state.create_run(&project.id, "a", "stay", None, "HEAD", None).unwrap();
+    let b = state.create_run(&project.id, "b", "stay", None, "HEAD", None).unwrap();
     state
         .save_run_scripts(
             &format!("project:{}", project.id),
@@ -1556,7 +1658,7 @@ fn project_of_resolves_both_token_shapes() {
 
     // An agent's worktree fetches through the project it was cut from: the two
     // share an object store, so fetching per run would be the same fetch twice.
-    let run = state.create_run(&project.id, "p", "noop", "HEAD", None).unwrap();
+    let run = state.create_run(&project.id, "p", "noop", None, "HEAD", None).unwrap();
     assert_eq!(state.project_of(&run.id).unwrap(), project.id);
     state.discard_run(&run.id).unwrap();
 
@@ -1693,7 +1795,7 @@ fn refresh_usage_survives_a_board_with_runs() {
         })
         .unwrap();
     let project = state.add_project("demo", &repo).unwrap();
-    let run = state.create_run(&project.id, "p", "noop", "HEAD", None).unwrap();
+    let run = state.create_run(&project.id, "p", "noop", None, "HEAD", None).unwrap();
 
     // A deadlock cannot be caught by a timeout on a joined thread: the join
     // blocks forever too, and the suite hangs instead of failing. So a
@@ -1745,7 +1847,7 @@ fn merge_preview_explains_a_deleted_branch() {
         })
         .unwrap();
     let project = state.add_project("demo", &repo).unwrap();
-    let run = state.create_run(&project.id, "p", "noop", "HEAD", None).unwrap();
+    let run = state.create_run(&project.id, "p", "noop", None, "HEAD", None).unwrap();
 
     // Healthy first: the branch is there and the preview is a clean no-op.
     let preview = state.merge_preview(&run.id).unwrap();

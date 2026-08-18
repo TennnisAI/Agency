@@ -156,12 +156,38 @@ pub fn set_project_color(
 // runs it on the async runtime, and progress streams back over `on_progress` so
 // the UI shows the checkout advancing. `create_run_spec` holds `worktree_gate`
 // to replace the main-thread serialization this used to rely on.
+/// Validate a model id on its way in from the UI. Every command that starts an
+/// agent goes through here, so nothing reaches an argv without being checked
+/// once, in one place.
+fn checked_model(model: Option<String>) -> Result<Option<String>, String> {
+    match model {
+        Some(m) => crate::agent_catalog::sanitize_model(&m),
+        None => Ok(None),
+    }
+}
+
+/// The same check for a race's agent-to-model map. A bad id fails the whole
+/// race rather than quietly dropping one attempt's model: a race whose
+/// attempts did not run on the models asked for compares the wrong things.
+fn checked_models(
+    models: Option<std::collections::HashMap<String, String>>,
+) -> Result<std::collections::HashMap<String, String>, String> {
+    let mut out = std::collections::HashMap::new();
+    for (agent, model) in models.unwrap_or_default() {
+        if let Some(model) = crate::agent_catalog::sanitize_model(&model)? {
+            out.insert(agent, model);
+        }
+    }
+    Ok(out)
+}
+
 #[tauri::command]
 pub async fn create_run(
     state: State<'_, AppState>,
     project_id: String,
     prompt: String,
     agent: String,
+    model: Option<String>,
     base: String,
     merge_target: Option<String>,
     // Absent = the historical behaviour: cut a worktree. `false` runs the agent
@@ -169,11 +195,13 @@ pub async fn create_run(
     worktree: Option<bool>,
     on_progress: Channel<agency_core::setup::CloneProgress>,
 ) -> Result<RunInfo, String> {
+    let model = checked_model(model)?;
     state
         .create_run_with_progress(
             &project_id,
             &prompt,
             &agent,
+            model.as_deref(),
             &base,
             merge_target.as_deref(),
             worktree.unwrap_or(true),
@@ -190,16 +218,19 @@ pub fn create_loop(
     project_id: String,
     prompt: String,
     agent: String,
+    model: Option<String>,
     base: String,
     merge_target: Option<String>,
     check_command: String,
     max_attempts: u32,
 ) -> Result<RunInfo, String> {
+    let model = checked_model(model)?;
     state
         .create_loop(
             &project_id,
             &prompt,
             &agent,
+            model.as_deref(),
             &base,
             merge_target.as_deref(),
             &check_command,
@@ -609,6 +640,14 @@ pub async fn agent_onboarding_needed(state: State<'_, AppState>) -> Result<bool,
     state.agent_onboarding_needed().map_err(|e| e.to_string())
 }
 
+/// What the model picker offers per agent (see `AppState::list_agent_models`).
+#[tauri::command]
+pub fn list_agent_models(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::state::AgentModelInfo>, String> {
+    state.list_agent_models().map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn list_agent_catalog(
     state: State<'_, AppState>,
@@ -910,11 +949,13 @@ pub fn create_race(
     project_id: String,
     prompt: String,
     agents: Vec<String>,
+    models: Option<std::collections::HashMap<String, String>>,
     base: String,
     merge_target: Option<String>,
 ) -> Result<Vec<RunInfo>, String> {
+    let models = checked_models(models)?;
     state
-        .create_race(&project_id, &prompt, &agents, &base, merge_target.as_deref())
+        .create_race(&project_id, &prompt, &agents, &models, &base, merge_target.as_deref())
         .map_err(|e| e.to_string())
 }
 
@@ -942,8 +983,12 @@ pub async fn create_run_from_issue(
     project_id: String,
     number: u64,
     agent: String,
+    model: Option<String>,
 ) -> Result<RunInfo, String> {
-    state.create_run_from_issue(&project_id, number, &agent).map_err(|e| e.to_string())
+    let model = checked_model(model)?;
+    state
+        .create_run_from_issue(&project_id, number, &agent, model.as_deref())
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -952,8 +997,12 @@ pub async fn create_run_from_pr(
     project_id: String,
     number: u64,
     agent: String,
+    model: Option<String>,
 ) -> Result<RunInfo, String> {
-    state.create_run_from_pr(&project_id, number, &agent).map_err(|e| e.to_string())
+    let model = checked_model(model)?;
+    state
+        .create_run_from_pr(&project_id, number, &agent, model.as_deref())
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -962,10 +1011,12 @@ pub async fn create_pr_review_run(
     project_id: String,
     number: u64,
     agent: String,
+    model: Option<String>,
     post_comments: bool,
 ) -> Result<crate::state::PrReviewRun, String> {
+    let model = checked_model(model)?;
     state
-        .create_pr_review_run(&project_id, number, &agent, post_comments)
+        .create_pr_review_run(&project_id, number, &agent, model.as_deref(), post_comments)
         .map_err(|e| e.to_string())
 }
 
@@ -1042,11 +1093,19 @@ pub fn start_issue_run(
     state: State<'_, AppState>,
     issue_id: String,
     agent: String,
+    model: Option<String>,
     base: Option<String>,
     merge_target: Option<String>,
 ) -> Result<RunInfo, String> {
+    let model = checked_model(model)?;
     state
-        .start_issue_run(&issue_id, &agent, base.as_deref(), merge_target.as_deref())
+        .start_issue_run(
+            &issue_id,
+            &agent,
+            model.as_deref(),
+            base.as_deref(),
+            merge_target.as_deref(),
+        )
         .map_err(|e| e.to_string())
 }
 
@@ -1055,11 +1114,13 @@ pub fn start_issue_race(
     state: State<'_, AppState>,
     issue_id: String,
     agents: Vec<String>,
+    models: Option<std::collections::HashMap<String, String>>,
     base: Option<String>,
     merge_target: Option<String>,
 ) -> Result<Vec<RunInfo>, String> {
+    let models = checked_models(models)?;
     state
-        .start_issue_race(&issue_id, &agents, base.as_deref(), merge_target.as_deref())
+        .start_issue_race(&issue_id, &agents, &models, base.as_deref(), merge_target.as_deref())
         .map_err(|e| e.to_string())
 }
 
@@ -1068,15 +1129,18 @@ pub fn start_issue_loop(
     state: State<'_, AppState>,
     issue_id: String,
     agent: String,
+    model: Option<String>,
     check_command: String,
     max_attempts: u32,
     base: Option<String>,
     merge_target: Option<String>,
 ) -> Result<RunInfo, String> {
+    let model = checked_model(model)?;
     state
         .start_issue_loop(
             &issue_id,
             &agent,
+            model.as_deref(),
             &check_command,
             max_attempts,
             base.as_deref(),

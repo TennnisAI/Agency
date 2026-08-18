@@ -2,8 +2,10 @@ import { useEffect, useState } from "react";
 import { AgentProfile, createPrReviewRun, listProfiles } from "../../api";
 import { agentLabel } from "../../agents";
 import { useModalKeys } from "../../hooks/useModalKeys";
+import { useAgentModels } from "../../hooks/useAgentModels";
 import { useRuns } from "../../store/runs";
 import ModalBackdrop from "../ModalBackdrop";
+import ModelSelect from "../ModelSelect";
 
 // Start an agent that reviews this PR and then stays available to fix what it
 // found. The agent works in the PR's head branch, so its fixes push straight
@@ -25,6 +27,14 @@ export default function AgentReviewDialog({
   const { refreshRuns, setFocusedRun, setView, setTab, setPendingSession } = useRuns();
   const [profiles, setProfiles] = useState<AgentProfile[]>([]);
   const [agent, setAgent] = useState("claude");
+  // Re-seeded whenever the agent changes, until the user picks for themselves.
+  const { models, remembered } = useAgentModels();
+  const [model, setModel] = useState<string | null>(null);
+  const [modelTouched, setModelTouched] = useState(false);
+  useEffect(() => {
+    if (modelTouched) return;
+    setModel(remembered(agent));
+  }, [agent, remembered, modelTouched]);
   const [postComments, setPostComments] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -44,7 +54,7 @@ export default function AgentReviewDialog({
     setBusy(true);
     setError("");
     try {
-      const { run, sessionId } = await createPrReviewRun(projectId, number, agent, postComments);
+      const { run, sessionId } = await createPrReviewRun(projectId, number, agent, model, postComments);
       await refreshRuns();
       // When the review had to share an existing run's worktree, open its tab
       // rather than the agent that wrote the code.
@@ -81,11 +91,25 @@ export default function AgentReviewDialog({
           <div className="merge-methods">
             <label className="gh-pick-agent">
               <span>agent</span>
-              <select value={agent} disabled={busy} onChange={(e) => setAgent(e.target.value)}>
+              <select
+                value={agent}
+                disabled={busy}
+                onChange={(e) => { setAgent(e.target.value); setModelTouched(false); }}
+              >
                 {profiles.map((p) => (
                   <option key={p.name} value={p.name}>{agentLabel(p.name)}</option>
                 ))}
               </select>
+              {models[agent]?.supported && (
+                <>
+                  <span>model</span>
+                  <ModelSelect
+                    info={models[agent]}
+                    value={model}
+                    onChange={(m) => { setModel(m); setModelTouched(true); }}
+                  />
+                </>
+              )}
             </label>
             <label
               className="merge-method"

@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
-import { CloneProgress, RunInfo, createRun, createTerminal as createTerminalApi, getSettings, listRuns, projectTarget, runScriptsLive } from "../api";
+import { CloneProgress, RunInfo, createRun, createTerminal as createTerminalApi, getSettings, listRuns, projectTarget, rememberedModel, runScriptsLive } from "../api";
 import { loadFold, saveFold } from "../hooks/usePaneWidth";
 import { toastError } from "../lib/toast";
 
@@ -8,7 +8,16 @@ type View = "grid" | "focus";
 // project checkout on its current branch", which makes base/mergeTarget moot.
 // Omitting it (the menu-bar shortcut, which has no picker) defers to the
 // Settings default.
-export type SpawnOpts = { base: string; mergeTarget: string; worktree?: boolean };
+export type SpawnOpts = {
+  base?: string;
+  mergeTarget?: string;
+  worktree?: boolean;
+  // Model to launch on. `null` is the agent's own default, which is a real
+  // choice; `undefined` means the caller has no picker, so the model the agent
+  // last ran on is used (the same shape `worktree` uses for its Settings
+  // default).
+  model?: string | null;
+};
 type Tab = "agents" | "source" | "files" | "issues" | "docs" | "run";
 
 interface RunStore {
@@ -143,13 +152,17 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
     // to an isolated worktree if that read fails.
     const worktree =
       opts?.worktree ?? (await getSettings().then((s) => s.defaultWorktree).catch(() => true));
+    // Same for the model: a shortcut spawn repeats whatever this agent last ran
+    // on, so "New Agent" doesn't quietly drop back to the default model after a
+    // run was deliberately started on another one.
+    const model = opts?.model !== undefined ? opts.model : await rememberedModel(agentId);
     setSpawnCount((c) => c + 1);
     setSpawnProgress(null);
     try {
       // Runs start promptless by design — the user types the real prompt into
       // the live agent terminal, and the first line is captured as the run's
       // prompt + title (see set_run_title).
-      const run = await createRun(pid, "", agentId, base, mergeTarget, setSpawnProgress, worktree).catch((e) => {
+      const run = await createRun(pid, "", agentId, model, base, mergeTarget, setSpawnProgress, worktree).catch((e) => {
         toastError(e, `Couldn't start ${agentId}`);
         return null;
       });

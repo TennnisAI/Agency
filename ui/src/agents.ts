@@ -94,3 +94,23 @@ export function runListLabel(
   if (run.kind === "terminal") return `≳ ${run.title || "terminal"}`;
   return `${run.loopConfig ? "⟳ " : run.raceId ? "∥ " : ""}${run.agent}: ${runName(run)}`;
 }
+
+// Mirror of `sanitize_model` in agent_catalog.rs, so a typed model id is
+// refused in the field rather than after a spawn round-trip. The backend still
+// checks: this is the message, not the guard.
+const MODEL_MAX = 128;
+export function modelIdError(raw: string): string | null {
+  const model = raw.trim();
+  if (!model) return "Type a model id, or pick the agent's default.";
+  if (model.length > MODEL_MAX) return `Model ids are at most ${MODEL_MAX} characters.`;
+  if (model.startsWith("-")) return "A model id can't start with '-'; the agent would read it as a flag.";
+  if (!/^[A-Za-z0-9._:/@+-]+$/.test(model)) return "Letters, digits and - _ . / : @ + only.";
+  return null;
+}
+
+// What the model picker offers for an agent: the vendor's stable aliases first,
+// then anything used before that isn't already among them. Deduped so a
+// suggestion that has also been used doesn't appear twice.
+export function modelOptions(suggested: string[], recent: string[]): string[] {
+  return [...new Set([...suggested, ...recent])];
+}

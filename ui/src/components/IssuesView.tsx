@@ -33,6 +33,7 @@ import {
   saveCollapsed,
   saveSelected,
   searchTerms,
+  stepSelection,
 } from "../lib/issues";
 import { pickDefaultAgent } from "../lib/defaultAgent";
 import { loadFold, saveFold, usePaneWidth } from "../hooks/usePaneWidth";
@@ -87,12 +88,16 @@ export default function IssuesView({
   // field rather than opening a text-scanning bar over a list of rows. The
   // field is the registered host, which self-gates: on an empty tracker there
   // is no filter bar, the ref is null, and ⌘F falls through to the description.
+  // The registration is made once, so Find Next reads the current list through
+  // a ref, the way the mouse handlers read the current grouping.
+  const stepRef = useRef<(back: boolean) => void>(() => {});
   useEffect(() => registerFindTarget({
     host: () => searchRef.current,
     open: () => {
       searchRef.current?.focus();
       searchRef.current?.select();
     },
+    step: (back) => stepRef.current(back),
     canReplace: false,
     rank: FindRank.list,
   }), []);
@@ -238,6 +243,21 @@ export default function IssuesView({
     [groups, collapsed, filtered],
   );
   const matched = groups.reduce((n, g) => n + g.issues.length, 0);
+  // ⌘G / ⇧⌘G walk the filtered board. Focus stays wherever it was, including
+  // in the filter field, so the keys read as "show me the next one" without
+  // taking the field away mid-search.
+  stepRef.current = (back: boolean) => {
+    const next = stepSelection(visible, selectedId, back);
+    if (next) setSelectedId(next);
+  };
+  // A selection the keyboard moved has to come into view with it: a ⌘G that
+  // lands on a row below the fold looks like the same dead key it used to be.
+  // `nearest` leaves a row that is already on screen exactly where it is, so
+  // clicking a row never scrolls the board under the click.
+  const listRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    listRef.current?.querySelector(".issue-row.selected")?.scrollIntoView({ block: "nearest" });
+  }, [selectedId]);
   const selected = issues.find((i) => i.id === selectedId) ?? null;
   const runsFor = (issue: Issue) => runs.filter((r) => r.issueId === issue.id);
   // Attachments are written beside the issue files, in the project's main
@@ -659,7 +679,7 @@ export default function IssuesView({
             <div>Capture your first issues. Agents can pick up issues from here.</div>
           </div>
         ) : (
-          <div className={`issues-list${drag ? " reordering" : ""}${wide ? " compact" : ""}`}>
+          <div ref={listRef} className={`issues-list${drag ? " reordering" : ""}${wide ? " compact" : ""}`}>
             {issues.length > 0 && matched === 0 && (
               <div className="issues-nomatch">
                 <div className="issues-nomatch-title">No issues match</div>

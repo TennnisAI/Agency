@@ -99,6 +99,22 @@ export function matchesFilters(issue: Issue, label: string, f: IssueFilters): bo
   return f.terms.every((t) => hay.includes(t));
 }
 
+// Edit ▸ Find Next / Find Previous over the board. ⌘F there narrows the list
+// instead of scanning text, so the honest reading of "next match" is the next
+// row the filter left standing. Wraps, the way a find does, where the arrow
+// keys clamp at the ends; a selection the filter has hidden (or none at all)
+// starts from the top, or the bottom stepping back. Null on an empty board.
+export function stepSelection(
+  visible: Pick<Issue, "id">[],
+  selectedId: string | null,
+  back: boolean,
+): string | null {
+  if (visible.length === 0) return null;
+  const at = visible.findIndex((i) => i.id === selectedId);
+  if (at < 0) return (back ? visible[visible.length - 1] : visible[0]).id;
+  return visible[(at + (back ? -1 : 1) + visible.length) % visible.length].id;
+}
+
 // Ranges of `text` covered by any search term, merged and left-to-right — the
 // highlight behind a matching title. Case-insensitive; empty when nothing hits.
 export function matchRanges(text: string, terms: string[]): [number, number][] {

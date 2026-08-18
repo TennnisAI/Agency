@@ -13,7 +13,7 @@ Phase 6 item (background fetch). What remains is listed under **Still open**.
 - **Phase 3 (backend bugs, #6–14):** done (9/9).
 - **Phase 4 (frontend bugs, #15–22):** done (8/8).
 - **Phase 5 (UX polish, #23–34):** done (12/12).
-- **Phase 6 (feature gaps):** #35 done; #36–45 open (post-first-beta).
+- **Phase 6 (feature gaps):** #35 and #45 done; #36–44 open (post-first-beta).
 
 Verification for the fix pass: `cargo build` clean, `cargo test` green (136
 tests: 82 core + 54 app), `tsc --noEmit` exit 0, `vite build` exit 0.
@@ -140,6 +140,21 @@ tests: 82 core + 54 app), `tsc --noEmit` exit 0, `vite build` exit 0.
     `--ff-only`) when the branch is behind an upstream. (git.rs, state.rs,
     commands.rs, lib.rs, BranchBar.tsx, GitPanel.tsx)
 
+45. **[done]** Per-worktree skills kit (`skills.rs`). Two skills, namespaced
+    `agency-*`, written into each worktree wherever the agent reads
+    project-local skills from (`.claude/skills/` today; an agent with no known
+    convention gets nothing). `agency-date-range` ships a POSIX-shell resolver
+    that turns "last quarter" or "the past 30 days" into exact inclusive dates,
+    doing the arithmetic on day numbers so leap years and quarter edges fall
+    out of the algorithm. `agency-workspace` is the boot-time catalog: worktree
+    and branch, project checkout, the tracker's absolute path, the setup and
+    run commands, `AGENCY_*`, a loop's check command, and what a merge does
+    with the work. Emitted beside `emit_mcp` at run creation, on an extra tab's
+    agent, on restore, and on every loop attempt (which re-uses its worktree
+    and never re-emitted anything before). A skill directory the repo tracks is
+    left alone, sibling skills are never touched, and the kit is excluded via
+    the repo's shared `.git/info/exclude`. (skills.rs, state.rs)
+
 ## Still open
 
 ### Phase 2 — update + recovery (before build #2)
@@ -234,10 +249,3 @@ tests: 82 core + 54 app), `tsc --noEmit` exit 0, `vite build` exit 0.
 44. **Structured transcript view** — the biggest expectation gap against the
     session-viewer tools in this category; terminal-first is a legitimate
     positioning choice but should be a stated one. (L / decision)
-45. **Per-worktree skills kit.** We already emit MCP servers per worktree in
-    each agent's native format. Emit a small skills kit the same way, from the
-    same three hook points: a deterministic date-range resolver (models are
-    reliably bad at date math) and a boot-time capabilities catalog describing
-    the workspace the agent has been dropped into. Namespaced `agency-*` and
-    upserted, never replacing a repo's own skills, and excluded from git so it
-    cannot turn up in every diff and every PR. (S/M) Tracked in AGE-112.

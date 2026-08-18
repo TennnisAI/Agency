@@ -1807,6 +1807,16 @@ impl AppState {
                 log::warn!("copying essentials into worktree {id}: {e}");
             }
             self.emit_mcp(spec.agent, &repo, &workspace.path, &config);
+            self.emit_skills(
+                spec.agent,
+                &repo,
+                &workspace.path,
+                &workspace.branch,
+                &issue_key,
+                &config,
+                spec.loop_config.as_ref(),
+                Some(port),
+            );
             // Introduce the issue tracker. The prompt does this for an
             // issue-dispatched run, but a plain run carries only the user's
             // text and the default interactive run carries none at all, so
@@ -3006,6 +3016,55 @@ impl AppState {
         }
     }
 
+    /// Emit the skills kit into a worktree, beside the MCP config and the
+    /// tracker briefing. Best-effort, for the same reason those are: a kit
+    /// that can't be written is not worth failing a run over.
+    ///
+    /// The facts are gathered here and baked into the emitted file. An agent
+    /// told to go read a config file to find its check command has not been
+    /// told its check command.
+    fn emit_skills(
+        &self,
+        agent: &str,
+        repo: &Path,
+        worktree: &Path,
+        branch: &str,
+        issue_key: &str,
+        config: &agency_core::config::AgencyConfig,
+        loop_config: Option<&agency_core::loops::LoopConfig>,
+        port: Option<u16>,
+    ) {
+        let ws = agency_core::skills::Workspace {
+            worktree: worktree.to_path_buf(),
+            repo_root: repo.to_path_buf(),
+            issue_key: issue_key.to_string(),
+            branch: branch.to_string(),
+            setup_command: config.scripts.setup.clone().filter(|s| !s.trim().is_empty()),
+            run_scripts: config
+                .scripts
+                .run_list()
+                .into_iter()
+                .map(|r| (r.name, r.command))
+                .collect(),
+            // An empty check command is the "fixed iterations" loop, which has
+            // no verifier to name.
+            loop_check: loop_config
+                .filter(|c| !c.check_command.trim().is_empty())
+                .map(|c| (c.check_command.clone(), c.max_attempts)),
+            port,
+        };
+        if let Err(e) = agency_core::skills::emit_for_agent(agent, &ws) {
+            log::warn!("emitting the skills kit for {agent} into {}: {e}", worktree.display());
+        }
+    }
+
+    /// The issue key prefix a project's tracker uses, for the workspace
+    /// catalog. Falls back to the same default [`issue_root`] uses.
+    fn issue_key_for(&self, project_id: &str) -> String {
+        let reg = self.registry.lock().unwrap();
+        self.issue_root(&reg, project_id).map(|(_, key)| key).unwrap_or_else(|_| "ISSUE".into())
+    }
+
     /// After a clean merge, rebuild the project's knowledge graph in the
     /// background so the next agent workspace starts with a fresh graph.
     fn maybe_rebuild_knowledge_graph(&self, repo: &Path) {
@@ -3722,16 +3781,31 @@ impl AppState {
         // one was archived (list_port_bases excludes archived rows, so a live
         // collision means a real conflict) — otherwise both export the same
         // AGENCY_PORT into their scripts.
+        let mut port = run.port_base;
         if let Some(existing) = run.port_base {
             let taken: std::collections::HashSet<u16> =
                 self.registry.lock().unwrap().list_port_bases()?.into_iter().collect();
             if taken.contains(&existing) {
                 let fresh = self.allocate_port(config.ports.base, config.ports.block_size)?;
                 self.registry.lock().unwrap().set_port_base(id, Some(fresh))?;
+                port = Some(fresh);
             }
         }
         if run.worktree {
-            self.emit_mcp(&run.agent, &repo, &workspace_dir(&repo, &run), &config);
+            let worktree = workspace_dir(&repo, &run);
+            self.emit_mcp(&run.agent, &repo, &worktree, &config);
+            // `restore` cuts the worktree again from the kept branch, so the
+            // generated files are gone with the old one; both come back here.
+            self.emit_skills(
+                &run.agent,
+                &repo,
+                &worktree,
+                &run.branch,
+                &self.issue_key_for(&run.project_id),
+                &config,
+                run.loop_config.as_ref(),
+                port,
+            );
         }
         self.registry.lock().unwrap().set_archived(id, None)?;
         let refreshed = self.run_record(id)?;
@@ -4122,6 +4196,19 @@ impl AppState {
         // target file would be one in the user's own checkout.
         if run.worktree {
             self.emit_mcp(agent, &repo, &worktree, &config);
+            // Likewise the skills kit: the tab's agent may have a skills
+            // convention the worktree's agent doesn't, so the kit it reads may
+            // not be there yet.
+            self.emit_skills(
+                agent,
+                &repo,
+                &worktree,
+                &run.branch,
+                &self.issue_key_for(&run.project_id),
+                &config,
+                run.loop_config.as_ref(),
+                run.port_base,
+            );
         }
         let mut env = self.provider_env()?;
         env.extend(profile.env.iter().cloned());
@@ -4409,6 +4496,25 @@ impl AppState {
             reg.get_profile(&run.agent)?
                 .ok_or_else(|| anyhow!("unknown agent profile: {}", run.agent))?
         };
+        // Re-emit into the existing worktree on every attempt. A headless
+        // attempt is a fresh agent process with no memory of the last one, and
+        // the previous attempt may have edited or deleted the kit; refreshing
+        // it after the wip commit above starts every attempt from the same
+        // facts, the check command included. (MCP config is deliberately not
+        // re-emitted here: it is written once at creation and the agent never
+        // changes for a loop.)
+        if run.worktree {
+            self.emit_skills(
+                &run.agent,
+                &repo,
+                &worktree,
+                &run.branch,
+                &self.issue_key_for(&run.project_id),
+                &config,
+                run.loop_config.as_ref(),
+                run.port_base,
+            );
+        }
         let mut env = self.provider_env()?;
         env.extend(profile.env.iter().cloned());
         env.extend(agency_core::scripts::script_env(&worktree, &repo, &run.id, run.port_base));

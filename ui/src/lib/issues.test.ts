@@ -16,6 +16,7 @@ import {
   saveCollapsed,
   saveSelected,
   searchTerms,
+  stepSelection,
   todayIssues,
 } from "./issues";
 
@@ -117,6 +118,33 @@ describe("matchesFilters", () => {
     expect(matchesFilters(i, "AGE-14", f({ terms: ["sam"] }))).toBe(true);
     expect(matchesFilters(i, "AGE-14", f({ terms: ["flaky", "skew"] }))).toBe(true);
     expect(matchesFilters(i, "AGE-14", f({ terms: ["nowhere"] }))).toBe(false);
+  });
+});
+
+describe("stepSelection", () => {
+  const board = [{ id: "a" }, { id: "b" }, { id: "c" }];
+
+  it("walks forward and back", () => {
+    expect(stepSelection(board, "a", false)).toBe("b");
+    expect(stepSelection(board, "b", true)).toBe("a");
+  });
+
+  it("wraps at both ends, where the arrow keys clamp", () => {
+    expect(stepSelection(board, "c", false)).toBe("a");
+    expect(stepSelection(board, "a", true)).toBe("c");
+  });
+
+  it("starts from the near end when nothing is selected", () => {
+    expect(stepSelection(board, null, false)).toBe("a");
+    expect(stepSelection(board, null, true)).toBe("c");
+  });
+
+  it("starts over when the filter has hidden the selection", () => {
+    expect(stepSelection(board, "gone", false)).toBe("a");
+  });
+
+  it("is null on a board the filter emptied", () => {
+    expect(stepSelection([], "a", false)).toBeNull();
   });
 });
 

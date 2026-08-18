@@ -90,7 +90,14 @@ button {
   font-size: 13px;
   transition: background 0.15s;
 }
-button:hover:not(:disabled) { background: var(--lav); }
+/* :where() so this stays at (0,1,1) and a quiet button's own hover rule can
+   outrank it. At (0,2,1) it beat every plain `.icon-btn:hover { background:
+   var(--s0) }`-shaped rule in this file, so ~40 ghost and icon buttons painted
+   the loud primary lavender instead of the surface tone their author asked for;
+   only the `color` half of those rules ever landed. Disabled stays excluded.
+   Buttons below that tint only their text or border on hover restate their own
+   background for the same reason: nothing else stops this fill. */
+button:hover:not(:where(:disabled)) { background: var(--lav); }
 /* A disabled button has to read as disabled. The base button is a solid blue
    primary, so without this a blocked action (say "Create agent" before a pull
    request is picked) looks clickable and silently does nothing when pressed.
@@ -188,7 +195,7 @@ button:disabled { opacity: .45; cursor: default; }
 .modal-hush input { accent-color: var(--green); }
 .modal-hush:hover { color: var(--sub1); }
 .modal-x { background: transparent; border: none; color: var(--o0); cursor: pointer; font-size: 14px; }
-.modal-x:hover { color: var(--text); }
+.modal-x:hover { background: none; color: var(--text); }
 
 /* Projects header + icons (Task 9) */
 /* `padding: 0` is load-bearing: without it these inherit the base button rule's
@@ -210,7 +217,7 @@ button:disabled { opacity: .45; cursor: default; }
 .color-swatch.on { box-shadow: 0 0 0 2px var(--mantle), 0 0 0 4px var(--text); }
 .row-act { opacity: 0; border: none; background: transparent; color: var(--o0); cursor: pointer; font-size: 13px; padding: 0 2px; }
 .tree-row:hover .row-act { opacity: 1; }
-.row-act:hover { color: var(--text); }
+.row-act:hover { background: none; color: var(--text); }
 .row-act.danger:hover { color: var(--red); }
 .tl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
@@ -357,7 +364,7 @@ button > .btn-ico:not(:only-child) { margin-right: 4px; }
   background: var(--mantle); border: 1px solid var(--s0); border-radius: 10px;
   padding: 12px 14px; cursor: pointer; text-align: left;
 }
-.settings-theme-card:hover { border-color: var(--s2); }
+.settings-theme-card:hover { background: var(--mantle); border-color: var(--s2); }
 .settings-theme-card[data-active="true"] { border-color: var(--blue); box-shadow: 0 0 0 1px var(--blue); }
 .settings-theme-name { font-size: 12.5px; color: var(--text); }
 .settings-theme-swatches { display: flex; gap: 5px; }
@@ -398,7 +405,7 @@ textarea.settings-input { min-height: 64px; resize: vertical; }
   background: transparent; border: 0; color: var(--o1); font-family: var(--sans);
   font-size: 11.5px; font-weight: 500; padding: 5px 11px; border-radius: 5px;
 }
-.mcp-seg button:hover { color: var(--text); }
+.mcp-seg button:hover { background: var(--s0); color: var(--text); }
 .mcp-seg button.on { background: var(--s1); color: var(--text); }
 /* Key/value editor for headers and env vars. */
 .kv-rows { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
@@ -406,7 +413,7 @@ textarea.settings-input { min-height: 64px; resize: vertical; }
 .kv-del { padding: 4px 8px; color: var(--o0); border-color: transparent; flex-shrink: 0; }
 .kv-del:hover { background: rgba(243,139,168,.10); color: var(--red); }
 .kv-add { background: transparent; border: 0; color: var(--blue); font-family: var(--sans); font-size: 11.5px; font-weight: 500; padding: 3px 0; }
-.kv-add:hover { text-decoration: underline; }
+.kv-add:hover { background: none; text-decoration: underline; }
 /* Transport tag next to a server's name in the list. */
 .mcp-transport-tag {
   flex-shrink: 0; font-family: var(--mono); font-size: 10px; letter-spacing: 0.04em;
@@ -420,7 +427,7 @@ textarea.settings-input { min-height: 64px; resize: vertical; }
   background: var(--s0); border: 1px solid var(--s1); border-radius: 999px;
   color: var(--sub1); font-family: var(--sans); font-size: 11.5px; padding: 3px 9px;
 }
-.mcp-auth-chip:hover { border-color: var(--red); color: var(--text); }
+.mcp-auth-chip:hover { background: var(--s0); border-color: var(--red); color: var(--text); }
 .mcp-auth-chip-x { color: var(--o0); font-size: 9px; }
 .mcp-auth-chip:hover .mcp-auth-chip-x { color: var(--red); }
 
@@ -463,7 +470,7 @@ textarea.settings-input { min-height: 64px; resize: vertical; }
 /* Inline "Don't show this again" at the end of an explanation. Quiet enough
    not to compete with the actions under it. */
 .hush-link { background: none; border: none; padding: 0; font: inherit; color: var(--o0); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
-.hush-link:hover { color: var(--text); }
+.hush-link:hover { background: none; color: var(--text); }
 .merge-review { display: flex; flex-direction: column; gap: 8px; }
 .merge-summary { color: var(--text); font-weight: 600; }
 /* Status dot */
@@ -529,8 +536,8 @@ textarea.settings-input { min-height: 64px; resize: vertical; }
   font-size: 12px; color: var(--sub0); font-weight: 400;
   min-width: 220px;
 }
-/* Override the global button:hover (var(--lav)) which made the placeholder text
-   unreadable against a saturated fill; keep it reading like a search input. */
+/* Reads like a search input, not a button: the primary fill made the
+   placeholder text unreadable against a saturated background. */
 .search-box:hover { background: var(--s0); border-color: var(--s2); color: var(--text); }
 .search-ph { flex: 1; }
 .kbd {
@@ -551,10 +558,10 @@ textarea.settings-input { min-height: 64px; resize: vertical; }
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .statusbar-branch { color: var(--o0); }
-.statusbar-branch:hover { color: var(--text); }
+.statusbar-branch:hover { background: none; color: var(--text); }
 /* Commits sitting on the checkout that origin hasn't seen. */
 .statusbar-unpushed { color: var(--blue); font-weight: 600; }
-.statusbar-unpushed:hover { text-decoration: underline; }
+.statusbar-unpushed:hover { background: none; text-decoration: underline; }
 /* Body */
 .body { flex: 1; display: flex; min-height: 0; }
 /* Sidebar host: mounted at all times, collapsed to width 0 when hidden. The
@@ -988,10 +995,9 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
 }
 .rail-head .spacer { flex: 1; }
 /* Negative margins keep the label flush with the header while the hover pill
-   gets room to breathe. Without the padding the global button:hover background
-   hugs the glyphs, and :not(:disabled) is what outranks that global (a bare
-   .rail-head-add:hover loses to it on specificity, so the loud primary lavender
-   won instead of this quiet surface tone). */
+   gets room to breathe; without the padding the hover background hugs the
+   glyphs. :not(:disabled) is behaviour, not specificity: the button is disabled
+   while an agent spawns, and a disabled control should not offer a hover. */
 .rail-head-add {
   display: inline-flex;
   align-items: center;
@@ -1295,6 +1301,7 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
 .git-group-actions { margin-left: auto; display: flex; gap: 2px; opacity: 0; }
 .git-group-head:hover .git-group-actions { opacity: 1; }
 .git-twisty { background: none; border: none; color: var(--o0); cursor: pointer; padding: 0; font-size: var(--chev); }
+.git-twisty:hover { background: none; color: var(--text); }
 .git-row { display: flex; align-items: center; gap: 8px; padding: 3px 6px 3px 20px; border-radius: 4px; cursor: pointer; font-size: 13px; }
 .git-row:hover { background: var(--s0); }
 .git-row.sel { background: var(--s1); }
@@ -1465,6 +1472,7 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
   text-transform: uppercase; text-align: left;
 }
 .git-section-head:not(.static) { cursor: pointer; }
+.git-section-head:not(.static):hover { background: var(--s0); color: var(--sub0); }
 .git-section-head .chev { font-size: var(--chev); }
 .git-section-history { border-top: 1px solid var(--line); }
 .git-section-history.folded { flex-shrink: 0; }
@@ -1613,7 +1621,7 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
 .run-idle-cmd { max-width: 100%; font-size: 11.5px; color: var(--sub0); background: var(--crust); border-radius: 5px; padding: 3px 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .run-idle-note { font-size: 11.5px; color: var(--o1); text-align: center; }
 .run-idle-edit { background: transparent; border: 0; color: var(--o1); font-size: 11.5px; padding: 2px 4px; cursor: pointer; }
-.run-idle-edit:hover { color: var(--text); text-decoration: underline; }
+.run-idle-edit:hover { background: none; color: var(--text); text-decoration: underline; }
 
 /* Run-script editor: shown until the project has a script, and behind "Edit"
    or "+" afterwards. */
@@ -1657,6 +1665,7 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
 .archived { margin-top: 8px; border-top: 1px solid var(--border, #2a2d36); padding-top: 6px; }
 .archived-head { display: flex; align-items: center; gap: 4px; }
 .archived-toggle { flex: 1; min-width: 0; text-align: left; background: transparent; color: var(--muted, #9aa); padding: 4px 8px; border: 0; }
+.archived-toggle:hover { background: var(--s0); color: var(--text); }
 .archived-cleanup {
   background: transparent; border: 0; color: var(--muted, #9aa);
   padding: 2px 8px; margin-right: 4px; border-radius: 6px;
@@ -1866,7 +1875,7 @@ input, textarea, code,
   background: transparent; border: none; color: var(--o1);
   cursor: pointer; padding: 0 2px; font-size: 13px;
 }
-.agent-menu .branch-reset:hover { color: var(--text); }
+.agent-menu .branch-reset:hover { background: none; color: var(--text); }
 /* Worktree opt-out: a checkbox row, and the note that stands in for the
    from/into selects when the agent is going to work in the checkout instead. */
 .agent-menu .branch-row.branch-check { gap: 6px; cursor: pointer; }
@@ -2064,7 +2073,7 @@ input, textarea, code,
   cursor: pointer; color: var(--text);
   transition: border-color .16s, background .16s, transform .1s, box-shadow .16s;
 }
-.onboard-tile:hover { border-color: var(--s2); transform: translateY(-1px); }
+.onboard-tile:hover { background: var(--mantle); border-color: var(--s2); transform: translateY(-1px); }
 .onboard-tile:focus-visible { outline: none; border-color: var(--blue); }
 .onboard-tile.is-on {
   border-color: color-mix(in srgb, var(--blue) 62%, transparent);
@@ -2282,6 +2291,7 @@ input, textarea, code,
   background: none; border: none; color: var(--sub0); cursor: pointer;
   padding: 0 2px; font-size: 11px; flex: none;
 }
+.toast-close:hover { background: none; color: var(--text); }
 
 /* PR section inside the merge modal (PrSection.tsx). */
 .pr-section { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--line); }
@@ -2441,7 +2451,7 @@ input, textarea, code,
 }
 /* Search and filters pin every group open, so the head stops being a control. */
 .issue-group-head.static { cursor: default; }
-.issue-group-head:not(.static):hover { color: var(--text); }
+.issue-group-head:not(.static):hover { background: none; color: var(--text); }
 .issue-group-head:not(.static):hover .issue-group-chev { color: var(--o1); }
 .issue-group-chev { width: 12px; font-size: var(--chev); color: var(--o0); }
 .issue-group-count { color: var(--o0); font-weight: 400; }
@@ -2767,7 +2777,7 @@ input, textarea, code,
   color: var(--o1); cursor: pointer; font-size: 10px;
 }
 .issue-attach:hover .issue-attach-remove { visibility: visible; }
-.issue-attach-remove:hover { color: var(--red); border-color: var(--red); }
+.issue-attach-remove:hover { background: var(--mantle); color: var(--red); border-color: var(--red); }
 
 /* Drop/attach feedback. Sticky rather than `margin-top: auto`, which would
    fight the footer for the pane's free space and shove the sections between
@@ -2846,7 +2856,7 @@ input, textarea, code,
   background: transparent; border: 0; padding: 0 0 0 2px; margin-right: -3px;
   color: var(--o0); cursor: pointer; font-size: 10px; line-height: 1;
 }
-.date-clear:hover { color: var(--text); }
+.date-clear:hover { background: none; color: var(--text); }
 
 /* Calendar popover — agent-menu chrome, calendar innards. Selectors are
    scoped under .date-picker to out-rank the .agent-menu button defaults. */
@@ -2893,7 +2903,7 @@ input, textarea, code,
   background: transparent; border: 0; padding: 0; color: var(--o0);
   cursor: pointer; font-size: 10px; line-height: 1;
 }
-.filter-clear:hover { color: var(--text); }
+.filter-clear:hover { background: none; color: var(--text); }
 /* "12 of 40", beside the search field, only while something is filtering. */
 .filter-count { color: var(--o0); font-size: 11.5px; flex-shrink: 0; }
 /* The way back to the whole board. Borderless so it doesn't read as a fourth
@@ -2939,8 +2949,8 @@ input, textarea, code,
    .today-group, kept quieter than Today (no border emphasis of its own). */
 .tasks-group { background: var(--base); }
 /* The whole card folds to its header line; the header is one click target.
-   Negative margins keep the text aligned while the hover pill gets padding
-   (the global button:hover background otherwise hugs the text). */
+   Negative margins keep the text aligned while the hover pill gets padding;
+   without it the hover background hugs the text. */
 .task-collapse {
   display: flex; align-items: baseline; gap: 10px;
   background: none; border: none; cursor: pointer;
@@ -3222,7 +3232,7 @@ input, textarea, code,
   padding: 7px 10px 5px; color: var(--o1); font-family: var(--sans);
   font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em;
 }
-.docs-side-head:hover { color: var(--sub0); }
+.docs-side-head:hover { background: none; color: var(--sub0); }
 .docs-side-chev { width: 12px; font-size: var(--chev); display: inline-block; }
 .docs-side-count { color: var(--o0); font-weight: 400; }
 .docs-side-section { display: flex; flex-direction: column; padding: 0 4px 6px; }
@@ -3426,7 +3436,7 @@ input, textarea, code,
 .pr-reply-box textarea { min-height: 52px; font-family: var(--sans); }
 .pr-reply-actions { display: flex; gap: 8px; justify-content: flex-end; }
 .pr-reply-open { background: none; border: 1px dashed var(--s1); color: var(--sub0); font-size: 11.5px; padding: 3px 10px; border-radius: 6px; cursor: pointer; margin-top: 6px; }
-.pr-reply-open:hover { color: var(--text); border-color: var(--s2); }
+.pr-reply-open:hover { background: none; color: var(--text); border-color: var(--s2); }
 
 /* Sticky submit bar. */
 .pr-review-submit { border-top: 1px solid var(--line); padding: 10px 16px; background: var(--mantle); display: flex; flex-direction: column; gap: 8px; }

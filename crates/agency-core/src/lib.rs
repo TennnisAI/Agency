@@ -15,6 +15,7 @@ pub mod runsetup;
 pub mod scripts;
 pub mod search;
 pub mod setup;
+pub mod skills;
 pub mod supervisor;
 pub mod term;
 pub mod title;

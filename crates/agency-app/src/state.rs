@@ -1117,6 +1117,17 @@ pub struct AppState {
     /// separates "waiting on the user" from "idle, never prompted" in
     /// `activity::classify`. In-memory: forgotten runs just show idle.
     prompted: Mutex<HashSet<String>>,
+    /// Per-session keyboard bookkeeping for the send queue: when the human last
+    /// touched this pane, and whether what they typed is still sitting unsent on
+    /// the prompt line. Written by `run_input`, read by `drain_session`.
+    /// In-memory: after a restart no draft is known, and the queue is empty then
+    /// anyway.
+    human_input: Mutex<HashMap<String, crate::sendq::HumanInput>>,
+    /// Text Agency owes each session — review comments, failing checks, a merge
+    /// conflict — waiting for a moment when typing it won't land mid-turn or on
+    /// top of a half-typed prompt. Drained on the notifier tick; see
+    /// `crate::sendq` for the rules.
+    send_queue: Mutex<HashMap<String, crate::sendq::SendQueue>>,
     /// Per-project lock on the project's own checkout: its index, its working
     /// tree, and the branch it stands on. Held by the merge family (whose
     /// status check → checkout → merge sequence is not atomic) and by every
@@ -1281,6 +1292,8 @@ impl AppState {
             activity: Mutex::new(HashMap::new()),
             usage: Mutex::new(HashMap::new()),
             prompted: Mutex::new(HashSet::new()),
+            human_input: Mutex::new(HashMap::new()),
+            send_queue: Mutex::new(HashMap::new()),
             repo_gates: crate::gates::KeyedGates::new(),
             spawn_gates: crate::gates::KeyedGates::new(),
             worktree_gate: Mutex::new(()),
@@ -3647,12 +3660,165 @@ impl AppState {
         // user actually submitted a turn. This handler also receives xterm
         // mouse-tracking and focus escape sequences (hovering, scrolling, or
         // clicking the pane), and arming on those made the notification fire at
-        // seemingly random times for runs the user never prompted.
-        if data.contains(&b'\r') || data.contains(&b'\n') {
+        // seemingly random times for runs the user never prompted. The same
+        // classification feeds the send queue's draft and echo-grace rules.
+        let typed = crate::sendq::classify_input(data);
+        if typed == crate::sendq::Typed::Submitted {
             self.input_seen.lock().unwrap().insert(id.to_string());
             self.prompted.lock().unwrap().insert(id.to_string());
         }
+        self.human_input
+            .lock()
+            .unwrap()
+            .entry(id.to_string())
+            .or_default()
+            .observe(typed, crate::activity::now_ms());
         Ok(())
+    }
+
+    /// Queue `text` for the run's session and try to deliver it immediately.
+    ///
+    /// Returns whether it went out now; `false` means it is waiting for the
+    /// agent to finish its turn (or for the human to send whatever they are
+    /// half-way through typing) and the notifier tick will deliver it.
+    fn queue_send(&self, id: &str, origin: &'static str, text: String) -> Result<bool> {
+        let msg = crate::sendq::Queued { text, origin, queued_at_ms: crate::activity::now_ms() };
+        {
+            let mut queues = self.send_queue.lock().unwrap();
+            if !queues.entry(id.to_string()).or_default().push(msg) {
+                bail!(
+                    "this agent already has {} messages waiting; it hasn't taken any of them yet",
+                    crate::sendq::MAX_PENDING
+                );
+            }
+        }
+        self.drain_session(id, crate::activity::now_ms());
+        Ok(self.send_queue.lock().unwrap().get(id).is_none_or(|q| q.is_empty()))
+    }
+
+    /// Try to deliver one queued message to every session that has one. Called
+    /// once per notifier tick, right after the tick has refreshed the
+    /// busy/idle bookkeeping the decision reads. Costs one map lock when no
+    /// session has anything queued, which is the usual case.
+    pub fn drain_send_queues(&self, now_ms: i64) {
+        let ids: Vec<String> = self.send_queue.lock().unwrap().keys().cloned().collect();
+        for id in ids {
+            self.drain_session(&id, now_ms);
+        }
+    }
+
+    /// Deliver at most one queued message to `id`'s session.
+    ///
+    /// One per pass, not the whole queue: every observation the decision rests
+    /// on describes the pane *before* the write, and a second message typed
+    /// against that same stale reading would be exactly the mid-turn
+    /// interruption this queue exists to prevent.
+    fn drain_session(&self, id: &str, now_ms: i64) {
+        if self.send_queue.lock().unwrap().get(id).is_none_or(|q| q.is_empty()) {
+            return;
+        }
+        // The spawn gate rather than one of its own: text must not be typed
+        // into a session that a kill-then-spawn is in the middle of replacing,
+        // and two drains of one session must not both write the same head.
+        // `try_with`, because a drain that queued behind a respawn would come
+        // out holding an observation taken before it.
+        self.spawn_gates.try_with(id, || {
+            // Read the head *inside* the gate. The command thread's own drain
+            // and the notifier tick's can both reach this point; whichever gets
+            // the gate second must see the queue the first one left, not the
+            // one it looked at on the way in.
+            let Some(head) =
+                self.send_queue.lock().unwrap().get(id).and_then(|q| q.head().cloned())
+            else {
+                return;
+            };
+            let obs = self.observe_for_send(id, now_ms);
+            match crate::sendq::decide(&head, &obs) {
+                crate::sendq::Decision::Hold(_) => {}
+                crate::sendq::Decision::Discard(reason) => {
+                    let n = self.send_queue.lock().unwrap().remove(id).map_or(0, |q| q.len());
+                    log::info!("send queue: dropped {n} message(s) for {id} ({reason:?})");
+                }
+                crate::sendq::Decision::Send => {
+                    // The only side effect in the whole mechanism, and still
+                    // the same two writes it always was: the text, a beat, then
+                    // the carriage return.
+                    if let Err(e) =
+                        self.term.read().unwrap().send_text(&session_name(id), &head.text)
+                    {
+                        // Left queued deliberately: if the session is really
+                        // gone the next decision discards it, and if the daemon
+                        // just blinked the next tick delivers it.
+                        log::warn!("send queue: writing {} to {id} failed: {e}", head.origin);
+                        return;
+                    }
+                    log::info!("send queue: delivered {} to {id}", head.origin);
+                    let mut queues = self.send_queue.lock().unwrap();
+                    if let Some(q) = queues.get_mut(id) {
+                        q.pop();
+                        if q.is_empty() {
+                            queues.remove(id);
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    /// What the send queue needs to know about one session right now.
+    fn observe_for_send(&self, id: &str, now_ms: i64) -> crate::sendq::Observation {
+        let session_running = matches!(
+            self.term.read().unwrap().status(&session_name(id)),
+            Ok(SessionStatus::Running)
+        );
+        // No activity entry means the notifier has never seen this run — a
+        // session spawned seconds ago. Unknown reads as working, which holds.
+        // `turn_driven` never reaches the Working arm of `classify`, so what it
+        // is passed here doesn't matter.
+        let working = self
+            .activity
+            .lock()
+            .unwrap()
+            .get(id)
+            .map(|e| {
+                crate::activity::classify(e, false, now_ms).state
+                    == crate::activity::ActivityState::Working
+            })
+            .unwrap_or(true);
+        let human = self.human_input.lock().unwrap().get(id).copied();
+        let mut draft = human.is_some_and(|h| h.draft);
+        // One-directional by construction: the pane is read only when a draft
+        // is already blocking, and the read can only lift the block. Nothing
+        // here can conclude that a draft exists from the pane alone.
+        if draft {
+            // One line asked for, the whole visible screen returned (the
+            // emulator always renders every row); scrollback stays out of it.
+            if let Ok(pane) = self.term.read().unwrap().capture(&session_name(id), 1) {
+                if crate::sendq::prompt_looks_empty(&pane) {
+                    draft = false;
+                    if let Some(h) = self.human_input.lock().unwrap().get_mut(id) {
+                        h.draft = false;
+                    }
+                }
+            }
+        }
+        crate::sendq::Observation {
+            now_ms,
+            session_running,
+            working,
+            last_key_ms: human.map(|h| h.last_key_ms),
+            draft,
+        }
+    }
+
+    /// Forget the per-session bookkeeping that only lives in memory, for a
+    /// session that is being torn down. Anything still queued for it is dropped
+    /// with it: there will be no pty to type it into.
+    fn forget_session_state(&self, id: &str) {
+        self.input_seen.lock().unwrap().remove(id);
+        self.prompted.lock().unwrap().remove(id);
+        self.human_input.lock().unwrap().remove(id);
+        self.send_queue.lock().unwrap().remove(id);
     }
 
     /// Whether the run has unconsumed user input for idle-notification gating.
@@ -3679,6 +3845,15 @@ impl AppState {
     pub fn retain_activity(&self, keep: &HashSet<String>) {
         self.activity.lock().unwrap().retain(|id, _| keep.contains(id));
         self.usage.lock().unwrap().retain(|id, _| keep.contains(id));
+        // Both of these are keyed by *session*, and a run's extra tabs
+        // (`<run>--2`) never appear in the watch snapshot — so prune on the run
+        // the session belongs to, not on the session id, or every tick would
+        // throw away the keystroke history of every open tab.
+        let kept_run = |id: &str| keep.contains(split_session_id(id).0);
+        self.human_input.lock().unwrap().retain(|id, _| kept_run(id));
+        // A run that has left the board (archived, discarded) has no session to
+        // type into, so anything still queued for it goes with it.
+        self.send_queue.lock().unwrap().retain(|id, _| kept_run(id));
     }
 
     /// Re-read every run's token usage from its agent's transcript, and append
@@ -3805,8 +3980,7 @@ impl AppState {
         on_progress: &mut dyn FnMut(agency_core::setup::CloneProgress),
     ) -> Result<()> {
         self.attaches.lock().unwrap().remove(id);
-        self.input_seen.lock().unwrap().remove(id);
-        self.prompted.lock().unwrap().remove(id);
+        self.forget_session_state(id);
         let run = self.run_record(id)?;
         step(on_progress, "Stopping the agent", &run.branch);
         // End an active loop first (best-effort): once delete_run removes the
@@ -4477,8 +4651,7 @@ impl AppState {
             bail!("not an extra session id: {id}");
         }
         self.attaches.lock().unwrap().remove(id);
-        self.input_seen.lock().unwrap().remove(id);
-        self.prompted.lock().unwrap().remove(id);
+        self.forget_session_state(id);
         let _ = self.term.read().unwrap().kill(&session_name(id));
         self.registry.lock().unwrap().delete_run_session(id)?;
         Ok(())
@@ -4503,8 +4676,7 @@ impl AppState {
         let rows = self.registry.lock().unwrap().list_run_sessions(run_id).unwrap_or_default();
         for s in rows {
             self.attaches.lock().unwrap().remove(&s.id);
-            self.input_seen.lock().unwrap().remove(&s.id);
-            self.prompted.lock().unwrap().remove(&s.id);
+            self.forget_session_state(&s.id);
             let _ = self.term.read().unwrap().kill(&session_name(&s.id));
         }
     }
@@ -5445,9 +5617,10 @@ impl AppState {
         Ok(agency_core::gh::GhCli::default().view_pr(&repo, &run.branch)?.map(|p| p.number))
     }
 
-    /// Type the PR's failing checks into the agent's live session so it can
-    /// investigate — same delivery path as review comments.
-    pub fn send_check_feedback(&self, id: &str) -> Result<()> {
+    /// Hand the PR's failing checks to the agent's live session so it can
+    /// investigate — same delivery path as review comments. Returns whether the
+    /// text went out now or is queued behind the agent's current turn.
+    pub fn send_check_feedback(&self, id: &str) -> Result<bool> {
         let status = self.pr_status(id)?;
         let failing: Vec<_> =
             status.checks.iter().filter(|c| c.bucket == "fail" || c.bucket == "cancel").collect();
@@ -5476,15 +5649,14 @@ impl AppState {
         msg.push_str(
             ". Please investigate the failures, fix them, commit, and push to update the PR.",
         );
-        self.term.read().unwrap().send_text(&session_name(id), &msg)?;
-        Ok(())
+        self.queue_send(id, "check feedback", msg)
     }
 
     /// Hand a conflicted merge to the run's own agent by typing a prompt into
     /// its live session, the same delivery path as review comments and CI
     /// feedback. Replaces the old one-shot resolver process, which spawned a
     /// second, context-free agent that had no idea what the branch was for.
-    pub fn send_merge_conflict(&self, id: &str) -> anyhow::Result<()> {
+    pub fn send_merge_conflict(&self, id: &str) -> anyhow::Result<bool> {
         let run = self.run_record(id)?;
         let repo = self.project_repo(&run.project_id)?;
         let base = agency_core::merge::resolve_target(run.merge_target.as_deref(), &repo)
@@ -5505,8 +5677,7 @@ impl AppState {
             bail!("agent session {id} is not running");
         }
         let msg = compose_merge_conflict(&repo, &run.branch, &base, &conflict_status(&repo));
-        self.term.read().unwrap().send_text(&session_name(id), &msg)?;
-        Ok(())
+        self.queue_send(id, "merge conflict", msg)
     }
 
     /// Update focus/active-run state. On an unfocused→focused edge, hand back a
@@ -5579,8 +5750,9 @@ impl AppState {
         self.registry.lock().unwrap().delete_review_comment(id)
     }
 
-    /// Type the unsent comments into the agent's live session and mark them sent.
-    pub fn send_review_comments(&self, run_id: &str) -> Result<()> {
+    /// Hand the unsent comments to the agent's live session and mark them sent.
+    /// Returns whether they went out now or are queued behind the agent's turn.
+    pub fn send_review_comments(&self, run_id: &str) -> Result<bool> {
         let unsent = self.registry.lock().unwrap().list_unsent_review_comments(run_id)?;
         if unsent.is_empty() {
             bail!("no unsent review comments");
@@ -5591,10 +5763,12 @@ impl AppState {
         ) {
             bail!("agent session {run_id} is not running");
         }
-        let message = compose_feedback(&unsent);
-        self.term.read().unwrap().send_text(&session_name(run_id), &message)?;
+        let delivered = self.queue_send(run_id, "review comments", compose_feedback(&unsent))?;
+        // Marked sent once the queue has accepted them, not once they are
+        // written: from here the message is Agency's to deliver, and leaving the
+        // button live would only invite a second copy of the same comments.
         self.registry.lock().unwrap().mark_review_comments_sent(run_id)?;
-        Ok(())
+        Ok(delivered)
     }
 
     /// Tell the daemon to shut down without killing sessions first. The daemon

@@ -925,6 +925,114 @@ fn send_review_comments_errors_when_session_not_running() {
     assert!(!unsent[0].sent, "comment must NOT be marked sent after failed send");
 }
 
+// ── the send queue (AGE-111) ────────────────────────────────────────────────
+
+/// Epoch ms, the clock `AppState`'s activity bookkeeping runs on.
+fn now_ms() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64
+}
+
+/// A live shell session to type into. Terminals need no agent profile, and the
+/// send queue does not care what is on the other end of the pty.
+fn live_terminal(state: &AppState, project_id: &str) -> String {
+    let term = state.create_terminal(project_id).unwrap();
+    let start = std::time::Instant::now();
+    while start.elapsed() < std::time::Duration::from_secs(5) {
+        if matches!(state.run_status(&term.id).unwrap(), SessionStatus::Running) {
+            return term.id;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    panic!("shell never came up");
+}
+
+/// Poll the pane for `needle`, which arrives asynchronously: the write goes to
+/// the daemon, the shell echoes it, the emulator renders it.
+fn pane_gets(state: &AppState, id: &str, needle: &str) -> bool {
+    let start = std::time::Instant::now();
+    while start.elapsed() < std::time::Duration::from_secs(5) {
+        if state.run_preview(id, 50).unwrap().contains(needle) {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    false
+}
+
+/// Teach the activity bookkeeping that this run's pane has been quiet since
+/// `quiet_since_ms` — the same two observations the notifier tick would make.
+fn mark_quiet_since(state: &AppState, id: &str, quiet_since_ms: i64) {
+    state.update_activity(id, true, quiet_since_ms);
+    state.update_activity(id, false, now_ms());
+}
+
+#[test]
+fn a_message_waits_for_a_busy_agent_and_lands_once_it_is_quiet() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let state = common::state(&dir);
+    let project = state.add_project("demo", &repo).unwrap();
+    let id = live_terminal(&state, &project.id);
+
+    state.add_review_comment(&id, "src/a.rs", 7, 7, "rename-this-marker").unwrap();
+    // Nothing has observed this session yet, so it counts as working: the text
+    // must be queued, not typed. Reported to the caller as "not delivered".
+    assert!(!state.send_review_comments(&id).unwrap(), "an unobserved session must hold");
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(
+        !state.run_preview(&id, 50).unwrap().contains("rename-this-marker"),
+        "the message must not have been typed while the session looked busy"
+    );
+    // The comments are marked sent all the same: from the queue's acceptance on,
+    // delivery is Agency's job and re-sending would only duplicate them.
+    assert!(state.list_review_comments(&id).unwrap().iter().all(|c| c.sent));
+
+    // The pane goes quiet past the working TTL, and the tick drains it.
+    mark_quiet_since(&state, &id, now_ms() - 60_000);
+    state.drain_send_queues(now_ms());
+    assert!(pane_gets(&state, &id, "rename-this-marker"), "a quiet session must take it");
+    state.discard_run(&id).unwrap();
+}
+
+#[test]
+fn a_half_typed_prompt_survives_a_send() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let state = common::state(&dir);
+    let project = state.add_project("demo", &repo).unwrap();
+    let id = live_terminal(&state, &project.id);
+
+    // A quiet session — nothing but the human's own draft is in the way.
+    mark_quiet_since(&state, &id, now_ms() - 60_000);
+    state.run_input(&id, b"draft-marker-not-sent-yet").unwrap();
+    assert!(pane_gets(&state, &id, "draft-marker-not-sent-yet"), "the draft should echo");
+
+    state.add_review_comment(&id, "src/a.rs", 7, 7, "queued-marker").unwrap();
+    assert!(!state.send_review_comments(&id).unwrap(), "a draft on the line must hold");
+    // Past the echo grace the draft itself is still the block, and it holds for
+    // as long as the human leaves it there.
+    std::thread::sleep(std::time::Duration::from_millis(1_200));
+    mark_quiet_since(&state, &id, now_ms() - 60_000);
+    state.drain_send_queues(now_ms());
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(
+        !state.run_preview(&id, 50).unwrap().contains("queued-marker"),
+        "the queue typed over a half-written prompt"
+    );
+
+    // The human sends their line; the queue follows behind it.
+    state.run_input(&id, b"\r").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(1_200));
+    mark_quiet_since(&state, &id, now_ms() - 60_000);
+    state.drain_send_queues(now_ms());
+    assert!(pane_gets(&state, &id, "queued-marker"), "must land once the line is free");
+    state.discard_run(&id).unwrap();
+}
+
 // ── runs without a worktree (started directly in the project checkout) ───────
 
 /// The headline of the feature: with `worktree = false` the agent runs in the

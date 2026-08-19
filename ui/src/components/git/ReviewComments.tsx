@@ -4,6 +4,7 @@ import { ReviewComment, listReviewComments, deleteReviewComment, sendReviewComme
 export default function ReviewComments({ taskId }: { taskId: string }) {
   const [items, setItems] = useState<ReviewComment[]>([]);
   const [error, setError] = useState("");
+  const [queued, setQueued] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -26,13 +27,21 @@ export default function ReviewComments({ taskId }: { taskId: string }) {
           <button
             className="git-iconbtn"
             onClick={async () => {
-              try { await sendReviewComments(taskId); await load(); }
+              // False means the agent is mid-turn, or the human has a
+              // half-typed prompt on its line: the comments are queued and go
+              // in once it is free.
+              try { setQueued(!(await sendReviewComments(taskId))); await load(); }
               catch (e) { setError(String(e)); }
             }}
           >Send {unsent.length} to agent</button>
         )}
       </div>
       {error && <div className="git-error">{error}</div>}
+      {queued && (
+        <div className="review-queued">
+          Queued for the agent. They go in as soon as it is free.
+        </div>
+      )}
       {items.map((c) => (
         <div key={c.id} className={`review-row ${c.sent ? "sent" : ""}`}>
           <code className="review-loc">

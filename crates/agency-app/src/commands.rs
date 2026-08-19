@@ -808,11 +808,13 @@ pub async fn pr_status(
     state.pr_status(&task_id).map_err(|e| e.to_string())
 }
 
+/// True if the text is in the agent's session already, false if it is queued
+/// behind the turn the agent is in the middle of (see `crate::sendq`).
 #[tauri::command]
 pub async fn send_check_feedback(
     state: State<'_, AppState>,
     task_id: String,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     state.send_check_feedback(&task_id).map_err(|e| e.to_string())
 }
 
@@ -1247,9 +1249,10 @@ pub fn save_files_config(
 }
 
 /// "Fix with agent" on a conflicted merge: type the conflict into this run's
-/// own agent session rather than spawning a separate resolver.
+/// own agent session rather than spawning a separate resolver. True if it went
+/// in now, false if it is queued behind the agent's current turn.
 #[tauri::command]
-pub fn send_merge_conflict(state: State<'_, AppState>, task_id: String) -> Result<(), String> {
+pub fn send_merge_conflict(state: State<'_, AppState>, task_id: String) -> Result<bool, String> {
     state.send_merge_conflict(&task_id).map_err(|e| e.to_string())
 }
 
@@ -1986,8 +1989,10 @@ pub fn delete_review_comment(state: State<'_, AppState>, id: String) -> Result<(
     state.delete_review_comment(&id).map_err(|e| e.to_string())
 }
 
+/// True if the comments are in the agent's session already, false if they are
+/// queued behind the turn it is in the middle of (see `crate::sendq`).
 #[tauri::command]
-pub fn send_review_comments(state: State<'_, AppState>, run_id: String) -> Result<(), String> {
+pub fn send_review_comments(state: State<'_, AppState>, run_id: String) -> Result<bool, String> {
     state.send_review_comments(&run_id).map_err(|e| e.to_string())
 }
 

@@ -12,6 +12,7 @@ mod notif_macos;
 mod notifier;
 mod pathenv;
 mod resume_probe;
+mod sendq;
 mod state;
 mod tray;
 mod update;
@@ -452,6 +453,10 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                 }
                 watches.retain(|id, _| seen.contains(id));
                 state.retain_activity(&seen);
+                // Text Agency owes an agent goes out here, after the loop above
+                // has refreshed the busy/idle bookkeeping the decision reads.
+                // See `crate::sendq` for what it waits for.
+                state.drain_send_queues(now_ms);
                 // Token accounting rides this poll rather than running a
                 // thread of its own: an unchanged transcript costs one stat,
                 // so the marginal price of doing it here is close to nothing.

@@ -20,7 +20,7 @@ import { terminalHasFocus } from "../lib/terminalFocus";
 
 const tabsKey = (root: FileRoot) => `files:tabs:${root.kind}:${root.id}`;
 
-export default function FilesView({ root, project, agentsOpen }: {
+export default function FilesView({ root, project, agentsOpen, onOpenCheckout }: {
   root: FileRoot | null;
   // Owning project even when `root` is a run worktree — recency keys need its
   // id so the palette can reopen the file later (it selects the project first),
@@ -28,6 +28,8 @@ export default function FilesView({ root, project, agentsOpen }: {
   project: Project;
   // Show the agents panel on the right (toggled from the content header).
   agentsOpen: boolean;
+  // Open Source Control on the tree the checkout bar names.
+  onOpenCheckout: () => void;
 }) {
   const projectId = project.id;
   const treePane = usePaneWidth("files-tree", 280, 180, 560);
@@ -203,7 +205,7 @@ export default function FilesView({ root, project, agentsOpen }: {
     <div className="files-view">
       {/* Which working tree these files come from — it follows the selected
           agent, so it changes under you as you move around. */}
-      <CheckoutBar root={root} projectId={projectId} projectName={project.name} />
+      <CheckoutBar root={root} projectId={projectId} projectName={project.name} onOpen={onOpenCheckout} />
       <div className="files-body">
         <div className="files-tree" style={{ width: treePane.width }}>
           <FileTree

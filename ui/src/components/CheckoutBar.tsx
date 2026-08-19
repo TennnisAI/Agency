@@ -14,11 +14,17 @@ const POLL_MS = 5000;
  * shows it: the agent worktree or project checkout the tree is rooted in, and
  * the branch checked out there. Docs stays on the project checkout even with an
  * agent selected, so the bar is what keeps the two tabs from looking alike.
+ *
+ * It is also the way there: like the status bar's branch, clicking it opens
+ * Source Control on the tree it names. The caller supplies that move, because
+ * pointing source control at a tree is a change to the run selection, which
+ * lives above both tabs.
  */
-export default function CheckoutBar({ root, projectId, projectName }: {
+export default function CheckoutBar({ root, projectId, projectName, onOpen }: {
   root: FileRoot;
   projectId: string;
   projectName: string;
+  onOpen: () => void;
 }) {
   const { runs, selectedRunId } = useRuns();
   const checkout = describeCheckout({ root, projectId, projectName, runs, selectedRunId });
@@ -46,7 +52,12 @@ export default function CheckoutBar({ root, projectId, projectName }: {
   if (branch === null) return null;
 
   return (
-    <div className="checkout-bar" title={checkoutTooltip(checkout, branch ?? null)}>
+    <button
+      type="button"
+      className="checkout-bar"
+      title={checkoutTooltip(checkout, branch ?? null)}
+      onClick={onOpen}
+    >
       <span className="checkout-scope">{checkout.name}</span>
       {branch && (
         <span className="checkout-branch">
@@ -55,6 +66,6 @@ export default function CheckoutBar({ root, projectId, projectName }: {
       )}
       <span className="checkout-kind">{checkout.kind}</span>
       {checkout.note && <span className="checkout-note">{checkout.note}</span>}
-    </div>
+    </button>
   );
 }

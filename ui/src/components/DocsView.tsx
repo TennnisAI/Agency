@@ -49,7 +49,11 @@ function loadSideTab(): SideTab {
  * rooted at the project's main checkout — docs are a project-level artifact
  * and shouldn't shift with the focused agent.
  */
-export default function DocsView({ project }: { project: Project }) {
+export default function DocsView({ project, onOpenCheckout }: {
+  project: Project;
+  // Open Source Control on the project checkout the checkout bar names.
+  onOpenCheckout: () => void;
+}) {
   const treePane = usePaneWidth("docs-tree", 240, 180, 480);
   const notePane = usePaneWidth("docs-side", 240, 180, 420);
   // The agents tab hosts a live terminal, so it remembers its own (wider)
@@ -315,7 +319,7 @@ export default function DocsView({ project }: { project: Project }) {
     <div className="files-view docs-view">
       {/* Notes come from the project checkout whichever agent is selected, so
           the bar says which checkout and which branch that is. */}
-      <CheckoutBar root={root} projectId={project.id} projectName={project.name} />
+      <CheckoutBar root={root} projectId={project.id} projectName={project.name} onOpen={onOpenCheckout} />
       <div className="files-body">
         <div className="files-tree docs-tree" style={{ width: treePane.width }}>
           <DocsTree

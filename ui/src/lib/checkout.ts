@@ -60,11 +60,16 @@ export function describeCheckout({ root, projectId, projectName, runs, selectedR
   };
 }
 
-/** Hover text for the bar: where you are, on which branch, and why. */
+/**
+ * Hover text for the bar: where you are, on which branch, why, and where
+ * clicking it goes. The tree is named again in that last clause because the
+ * note before it can be about a *different* tree (the selected agent's).
+ */
 export function checkoutTooltip(c: Checkout, branch: string | null): string {
   const where = c.kind === "worktree"
     ? `You are viewing ${c.name}'s own worktree`
     : `You are viewing the ${c.name} checkout`;
   const on = branch ? ` on branch ${branch}` : "";
-  return `${where}${on}.${c.noteDetail ? ` ${c.noteDetail}` : ""}`;
+  const opens = ` Opens Source Control for this ${c.kind}.`;
+  return `${where}${on}.${c.noteDetail ? ` ${c.noteDetail}` : ""}${opens}`;
 }

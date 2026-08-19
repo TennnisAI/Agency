@@ -3,7 +3,7 @@ use serde::Serialize;
 use std::path::{Component, Path, PathBuf};
 
 /// Files larger than this are reported as `too_large` rather than read.
-const MAX_FILE_BYTES: u64 = 2_000_000;
+pub(crate) const MAX_FILE_BYTES: u64 = 2_000_000;
 
 /// Cap for raw (binary) reads used by previews — images/PDFs run bigger than
 /// source files, but a preview still shouldn't drag hundreds of MB over IPC.

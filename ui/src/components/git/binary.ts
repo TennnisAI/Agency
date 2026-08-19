@@ -21,6 +21,11 @@ export function emptyReason(header: string): string {
     return "Binary file changed; git has no line-by-line diff for it.";
   }
   if (/^(old|new) mode /m.test(header)) return "File permissions changed; the contents are the same.";
+  // An untracked file is shown as one big addition, so an oversized one is
+  // capped in the backend rather than sent line by line. See untracked_diff()
+  // in crates/agency-core/src/git.rs.
+  const tooLarge = /^File too large to diff: (\d+) bytes$/m.exec(header);
+  if (tooLarge) return `File is too large to diff (${formatSize(Number(tooLarge[1]))}); open it in Files to read it.`;
   return "no textual changes";
 }
 

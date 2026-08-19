@@ -85,9 +85,61 @@ fn parse_porcelain_z(out: &str) -> Vec<FileChange> {
 
 pub fn diff(worktree: &Path, path: &str, staged: bool) -> Result<String> {
     if staged {
-        git(worktree, &["diff", "--cached", "--", path])
-    } else {
-        git(worktree, &["diff", "--", path])
+        return git(worktree, &["diff", "--cached", "--", path]);
+    }
+    let raw = git(worktree, &["diff", "--", path])?;
+    if raw.is_empty() {
+        return untracked_diff(worktree, path);
+    }
+    Ok(raw)
+}
+
+/// The whole of an untracked file, as additions. `git diff` says nothing at all
+/// about a path git does not track yet, so every file under "Untracked Changes"
+/// read as "no textual changes" in the diff pane and its contents were never
+/// shown. Comparing against /dev/null outside the index produces exactly the
+/// diff git gives once the file is staged, `new file mode` header and all, so
+/// the hunk and line staging buttons still build patches that apply.
+///
+/// Empty unless `path` is an untracked regular file. A tracked-but-unchanged
+/// path is not our business; a directory is not diffable at all (`git status`
+/// collapses an untracked directory into one entry, and `--no-index` errors on
+/// it); and a symlink would diff as whatever it points at, so applying that
+/// patch would replace the link with a copy of its target. An oversized file
+/// comes back as a header alone, which the diff pane reads as its reason for
+/// showing no lines.
+fn untracked_diff(worktree: &Path, path: &str) -> Result<String> {
+    // Every other diff here is scoped to the repo by git itself; `--no-index`
+    // is not, and would read "../../etc/passwd" as happily as a file in the
+    // worktree. Normalize first and refuse anything that escapes.
+    crate::files::resolve_within(worktree, path)?;
+    let Ok(meta) = std::fs::symlink_metadata(worktree.join(path)) else {
+        return Ok(String::new());
+    };
+    if !meta.is_file() || !git(worktree, &["ls-files", "-z", "--", path])?.is_empty() {
+        return Ok(String::new());
+    }
+    // A tracked file's diff stays small however big the file is; an untracked
+    // one is the whole file, so the same 2 MB the editor refuses to open would
+    // arrive here as a single IPC string and tens of thousands of DOM rows.
+    if meta.len() > crate::files::MAX_FILE_BYTES {
+        let size = meta.len();
+        return Ok(format!("diff --git a/{path} b/{path}\nFile too large to diff: {size} bytes\n"));
+    }
+    // `--no-index` exits 1 when the two sides differ, which here is every time,
+    // so this cannot go through `git()` — that treats any non-zero exit as a
+    // failure and would bail on the diff we asked for.
+    let output = Command::new("git")
+        .args(["diff", "--no-index", "--", "/dev/null", path])
+        .current_dir(worktree)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()?;
+    match output.status.code() {
+        Some(0 | 1) => Ok(String::from_utf8_lossy(&output.stdout).to_string()),
+        _ => bail!(
+            "git diff --no-index -- /dev/null {path} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ),
     }
 }
 
@@ -875,13 +927,46 @@ pub fn build_partial_patch(
             }
         }
     }
-    let mut patch = fd.header.clone();
+    let mut patch =
+        if reverse && old_len > 0 { demote_new_file(&fd.header) } else { fd.header.clone() };
     patch.push_str(&format!("@@ -{old_start},{old_len} +{new_start},{new_len} @@\n"));
     for l in body {
         patch.push_str(&l);
         patch.push('\n');
     }
     Ok(patch)
+}
+
+/// Rewrite a `new file mode` header as a plain modification of the same path.
+/// Reversing only *some* of a new file's lines does not un-create it: the
+/// unselected lines stay, so an old side now exists. Left as a creation against
+/// /dev/null, git rejects the patch with "new file f.txt depends on old
+/// contents" (observed reverting one line of an untracked file, and unstaging
+/// one line of a newly added one). A header with no `new file mode` line is
+/// returned unchanged.
+fn demote_new_file(header: &str) -> String {
+    if !header.lines().any(|l| l.starts_with("new file mode ")) {
+        return header.to_string();
+    }
+    // The old side names the same file as the new one: "+++ b/f" -> "--- a/f",
+    // keeping git's C-quoting of an unusual path intact.
+    let old_side = header
+        .lines()
+        .find(|l| l.starts_with("+++ "))
+        .map(|l| l.replacen("+++ b/", "--- a/", 1).replacen("+++ \"b/", "--- \"a/", 1));
+    let mut out = String::new();
+    for line in header.lines() {
+        // The blob hashes describe a creation (0000000..new) and no longer hold.
+        if line.starts_with("new file mode ") || line.starts_with("index ") {
+            continue;
+        }
+        match (line.starts_with("--- "), old_side.as_deref()) {
+            (true, Some(old)) => out.push_str(old),
+            _ => out.push_str(line),
+        }
+        out.push('\n');
+    }
+    out
 }
 
 fn parse_hunk_starts(header: &str) -> Result<(u32, u32)> {

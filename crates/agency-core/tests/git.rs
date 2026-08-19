@@ -735,3 +735,184 @@ fn sync_reports_diverged_without_touching_anything() {
         .unwrap();
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "remote commit");
 }
+
+#[test]
+fn diff_shows_an_untracked_file_as_additions() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    std::fs::write(dir.path().join("new.txt"), "a\nb\nc\n").unwrap();
+
+    let d = git::diff(dir.path(), "new.txt", false).unwrap();
+    assert!(d.contains("new file mode"), "creation header: {d}");
+    assert!(d.contains("--- /dev/null"), "empty old side: {d}");
+    assert!(d.contains("+++ b/new.txt"), "names the path: {d}");
+    for line in ["+a", "+b", "+c"] {
+        assert!(d.contains(line), "{line} shown: {d}");
+    }
+}
+
+#[test]
+fn diff_shows_an_untracked_file_in_a_subdirectory() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    std::fs::create_dir_all(dir.path().join("sub/deep")).unwrap();
+    std::fs::write(dir.path().join("sub/deep/new.txt"), "hi\n").unwrap();
+
+    let d = git::diff(dir.path(), "sub/deep/new.txt", false).unwrap();
+    assert!(d.contains("+++ b/sub/deep/new.txt"), "repo-relative path: {d}");
+    assert!(d.contains("+hi"), "contents shown: {d}");
+}
+
+#[test]
+fn diff_stays_empty_for_a_tracked_unchanged_file_and_an_untracked_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    // `git status` collapses an untracked directory into one "sub/" entry, and
+    // there is no single file under it to diff.
+    std::fs::create_dir_all(dir.path().join("sub")).unwrap();
+    std::fs::write(dir.path().join("sub/new.txt"), "hi\n").unwrap();
+
+    assert_eq!(git::diff(dir.path(), "tracked.txt", false).unwrap(), "");
+    assert_eq!(git::diff(dir.path(), "sub/", false).unwrap(), "");
+    assert_eq!(git::diff(dir.path(), "gone.txt", false).unwrap(), "");
+}
+
+#[test]
+fn stage_hunk_on_an_untracked_file_stages_the_whole_file() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    std::fs::write(dir.path().join("new.txt"), "a\nb\nc\n").unwrap();
+
+    stage_hunk(dir.path(), "new.txt", 0).unwrap();
+    let entry = git::status(dir.path()).unwrap().into_iter().find(|c| c.path == "new.txt").unwrap();
+    assert_eq!(entry.index, "A", "staged as an addition: {entry:?}");
+    assert!(staged_diff(dir.path(), "new.txt").contains("+c"));
+    assert_eq!(git::diff(dir.path(), "new.txt", false).unwrap(), "", "nothing left unstaged");
+}
+
+#[test]
+fn stage_lines_on_an_untracked_file_stages_only_selection() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    std::fs::write(dir.path().join("new.txt"), "a\nb\nc\n").unwrap();
+    let fd = parse_diff(&git::diff(dir.path(), "new.txt", false).unwrap());
+    let idx = fd.hunks[0].lines.iter().position(|l| l.starts_with("+b")).unwrap();
+
+    git::stage_lines(dir.path(), "new.txt", 0, &[idx]).unwrap();
+    let staged = staged_diff(dir.path(), "new.txt");
+    assert!(staged.contains("+b"), "selection staged: {staged}");
+    assert!(!staged.contains("+a") && !staged.contains("+c"), "only selection: {staged}");
+}
+
+#[test]
+fn revert_lines_on_an_untracked_file_keeps_the_unselected_lines() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    std::fs::write(dir.path().join("new.txt"), "a\nb\nc\n").unwrap();
+    let fd = parse_diff(&git::diff(dir.path(), "new.txt", false).unwrap());
+    let idx = fd.hunks[0].lines.iter().position(|l| l.starts_with("+b")).unwrap();
+
+    git::revert_lines(dir.path(), "new.txt", 0, &[idx]).unwrap();
+    assert_eq!(std::fs::read_to_string(dir.path().join("new.txt")).unwrap(), "a\nc\n");
+}
+
+#[test]
+fn revert_lines_on_an_untracked_file_deletes_it_when_every_line_goes() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    std::fs::write(dir.path().join("new.txt"), "a\nb\n").unwrap();
+    let fd = parse_diff(&git::diff(dir.path(), "new.txt", false).unwrap());
+    let all: Vec<usize> = (0..fd.hunks[0].lines.len()).collect();
+
+    git::revert_lines(dir.path(), "new.txt", 0, &all).unwrap();
+    assert!(!dir.path().join("new.txt").exists(), "reverting the whole file removes it");
+}
+
+#[test]
+fn unstage_lines_on_a_newly_added_file_keeps_the_rest_staged() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    std::fs::write(dir.path().join("new.txt"), "a\nb\nc\n").unwrap();
+    git::stage_all(dir.path()).unwrap();
+    let fd = parse_diff(&git::diff(dir.path(), "new.txt", true).unwrap());
+    let idx = fd.hunks[0].lines.iter().position(|l| l.starts_with("+b")).unwrap();
+
+    git::unstage_lines(dir.path(), "new.txt", 0, &[idx]).unwrap();
+    let staged = staged_diff(dir.path(), "new.txt");
+    assert!(staged.contains("+a") && staged.contains("+c"), "rest still staged: {staged}");
+    assert!(!staged.contains("+b"), "selection unstaged: {staged}");
+    assert_eq!(std::fs::read_to_string(dir.path().join("new.txt")).unwrap(), "a\nb\nc\n");
+}
+
+#[test]
+fn build_partial_patch_demotes_a_creation_header_when_lines_survive() {
+    let fd = parse_diff(
+        "diff --git a/f.txt b/f.txt\nnew file mode 100644\nindex 0000000..a1b2c3d\n--- /dev/null\n+++ b/f.txt\n@@ -0,0 +1,2 @@\n+one\n+two\n",
+    );
+    // Reversing only "one" leaves "two" behind, so the file is not un-created.
+    let partial = git::build_partial_patch(&fd, 0, &[0], true).unwrap();
+    assert!(!partial.contains("new file mode"), "demoted: {partial}");
+    assert!(!partial.contains("index 0000000"), "stale blob hashes dropped: {partial}");
+    assert!(partial.contains("--- a/f.txt"), "old side names the file: {partial}");
+    // Reversing every line really is an un-creation; the header must survive.
+    let whole = git::build_partial_patch(&fd, 0, &[0, 1], true).unwrap();
+    assert!(whole.contains("new file mode"), "creation kept: {whole}");
+}
+
+#[test]
+fn diff_caps_an_oversized_untracked_file_instead_of_sending_the_whole_thing() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    // Over the 2 MB the file viewer refuses to open. A tracked file this size
+    // still diffs fine; an untracked one would arrive as the whole file.
+    std::fs::write(dir.path().join("dump.sql"), "insert into t values (1);\n".repeat(100_000))
+        .unwrap();
+
+    let d = git::diff(dir.path(), "dump.sql", false).unwrap();
+    assert!(d.contains("File too large to diff: 2600000 bytes"), "capped with a reason: {d}");
+    assert!(parse_diff(&d).hunks.is_empty(), "no lines sent: {d}");
+}
+
+#[test]
+fn diff_refuses_an_untracked_path_that_escapes_the_worktree() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    // `--no-index` is not scoped to the repo the way every other diff here is.
+    assert!(git::diff(dir.path(), "../outside.txt", false).is_err());
+}
+
+#[test]
+fn diff_leaves_an_untracked_symlink_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    // Diffing through the link would show the target's contents, and staging
+    // that patch would replace the link with a copy of the target.
+    std::os::unix::fs::symlink("tracked.txt", dir.path().join("link.txt")).unwrap();
+
+    assert_eq!(git::diff(dir.path(), "link.txt", false).unwrap(), "");
+}
+
+#[test]
+fn stage_hunk_on_an_untracked_file_with_no_trailing_newline() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    // git marks this with "\ No newline at end of file"; the patch has to carry
+    // that line through or the apply rewrites the file's last byte.
+    std::fs::write(dir.path().join("new.txt"), "a\nb").unwrap();
+
+    stage_hunk(dir.path(), "new.txt", 0).unwrap();
+    assert!(staged_diff(dir.path(), "new.txt").contains("\\ No newline at end of file"));
+    assert_eq!(git::diff(dir.path(), "new.txt", false).unwrap(), "", "file matches the index");
+}
+
+#[test]
+fn diff_reports_an_untracked_binary_file_as_binary() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    std::fs::write(dir.path().join("blob.bin"), [0u8, 1, 2, 3, 0, 255]).unwrap();
+
+    // The diff pane keys the "binary file" message off exactly this line.
+    let d = git::diff(dir.path(), "blob.bin", false).unwrap();
+    assert!(d.contains("Binary files /dev/null and b/blob.bin differ"), "{d}");
+    assert!(parse_diff(&d).hunks.is_empty(), "no text lines: {d}");
+}

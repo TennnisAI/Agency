@@ -31,6 +31,11 @@ describe("emptyReason", () => {
     expect(emptyReason(header)).toMatch(/permissions/);
   });
 
+  it("explains an untracked file the backend capped instead of diffing", () => {
+    const header = "diff --git a/dump.sql b/dump.sql\nFile too large to diff: 3145728 bytes\n";
+    expect(emptyReason(header)).toBe("File is too large to diff (3.0 MB); open it in Files to read it.");
+  });
+
   it("falls back to no textual changes", () => {
     expect(emptyReason("")).toBe("no textual changes");
   });

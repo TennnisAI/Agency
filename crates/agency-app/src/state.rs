@@ -1191,10 +1191,11 @@ pub struct AppState {
     /// `graphify-out/`) and carries the running flag and last failure to the
     /// settings UI. In-memory: a restart just forgets a stale failure.
     kg_builds: std::sync::Arc<Mutex<HashMap<PathBuf, KgBuild>>>,
-    /// Cancel tokens for in-flight repo-setup commits, keyed by folder. The
-    /// setup dialog's Cancel flips one so the `git add -A` behind it stops:
-    /// staging a folder of model weights can run for many minutes, and until
-    /// this existed the only way out was to quit the app.
+    /// Cancel tokens for in-flight repo setup, keyed by folder: the commit's
+    /// repo path, or the folder a clone is downloading into. The dialogs' Cancel
+    /// flips one so the git behind it stops: staging a folder of model weights,
+    /// or cloning a huge repository, can run for many minutes, and until this
+    /// existed the only way out was to quit the app.
     setup_cancels: Mutex<HashMap<PathBuf, agency_core::setup::CancelToken>>,
 }
 
@@ -1579,13 +1580,37 @@ impl AppState {
         agency_core::setup::init_repo(repo_path)
     }
 
+    /// Clone `url` under `parent_dir`, registering a cancel token against the
+    /// folder the clone will create so [`AppState::cancel_clone`] can stop it.
     pub fn clone_repo(
         &self,
         url: &str,
         parent_dir: &Path,
         on_progress: impl FnMut(agency_core::setup::CloneProgress),
     ) -> Result<std::path::PathBuf> {
-        agency_core::setup::clone_repo_with_progress(url, parent_dir, on_progress)
+        let cancel = agency_core::setup::CancelToken::new();
+        // A URL with no folder name in it fails before git runs, so there is
+        // nothing to cancel and nothing to key the token by.
+        let key = agency_core::setup::clone_destination(url, parent_dir);
+        if let Some(key) = &key {
+            self.setup_cancels.lock().unwrap().insert(key.clone(), cancel.clone());
+        }
+        let out =
+            agency_core::setup::clone_repo_with_progress(url, parent_dir, &cancel, on_progress);
+        if let Some(key) = &key {
+            self.setup_cancels.lock().unwrap().remove(key);
+        }
+        out
+    }
+
+    /// Stop a clone of `url` into `parent_dir`, if one is running. Takes the
+    /// clone's own two arguments rather than a path so the frontend never has to
+    /// reproduce `clone_destination`'s naming rule, where a mismatch of one
+    /// character would silently cancel nothing.
+    pub fn cancel_clone(&self, url: &str, parent_dir: &Path) {
+        if let Some(dest) = agency_core::setup::clone_destination(url, parent_dir) {
+            self.cancel_repo_setup(&dest);
+        }
     }
 
     /// Stage and commit `repo_path`, registering a cancel token for it first so
@@ -1608,6 +1633,8 @@ impl AppState {
 
     /// Stop a setup commit running against `repo_path`, if there is one. A no-op
     /// otherwise — the dialog also cancels during steps with nothing to kill.
+    /// Also the landing point for [`AppState::cancel_clone`], which keys the same
+    /// map by the clone's destination folder.
     ///
     /// A Cancel that somehow beats `commit_repo` to registering its token is
     /// dropped. Closing that window means either a tombstone (which poisons the

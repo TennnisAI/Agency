@@ -257,6 +257,13 @@ export function commitRepo(
     onProgress: onProgressChannel,
   });
 }
+// Stops an in-flight cloneRepo for this url/destination pair by killing the git
+// it is waiting on, and deletes the half-downloaded folder. Pass the same two
+// arguments the clone was started with: the backend derives the folder name, so
+// the frontend never has to match it. cloneRepo then rejects with "cancelled".
+export const cancelClone = (url: string, parentDir: string) =>
+  invoke<void>("cancel_clone", { url, parentDir });
+
 // Stops an in-flight commitRepo for this folder by killing the git it is
 // waiting on. A no-op when nothing is running there.
 // commitRepo then rejects with "cancelled", which is the user's own doing and

@@ -1395,6 +1395,15 @@ pub async fn clone_repo(
     Ok(dest.to_string_lossy().to_string())
 }
 
+// Stops the clone started by `clone_repo` for this url/parent pair by killing
+// the git it is waiting on; the half-downloaded folder is deleted with it. Sync
+// and trivial for the same reason as `cancel_repo_setup`: it only flips a flag,
+// and it has to be answered while the clone it cancels is still running.
+#[tauri::command]
+pub fn cancel_clone(state: State<'_, AppState>, url: String, parent_dir: String) {
+    state.cancel_clone(&url, std::path::Path::new(&parent_dir));
+}
+
 #[tauri::command]
 pub async fn git_commit_files(
     state: State<'_, AppState>,

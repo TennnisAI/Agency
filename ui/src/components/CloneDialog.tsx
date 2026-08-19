@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { cloneRepo, ghAuthReadiness, GhReadiness, CloneProgress } from "../api";
+import { cancelClone, cloneRepo, ghAuthReadiness, GhReadiness, CloneProgress } from "../api";
 import { useModalKeys } from "../hooks/useModalKeys";
 import ModalBackdrop from "./ModalBackdrop";
 import ProgressReadout from "./ProgressReadout";
@@ -30,9 +30,12 @@ export default function CloneDialog({ onCloned, onCancel }: Props) {
   // When a clone fails on authentication, we surface a guided sign-in step keyed
   // to how far the user is from being ready (gh missing vs. not signed in).
   const [authHelp, setAuthHelp] = useState<GhReadiness | null>(null);
+  // Set by Cancel so a clone that finishes anyway can't resolve the dialog the
+  // user has already closed, or report its own killing as an error.
+  const cancelled = useRef(false);
 
-  // Escape cancels, but never mid-clone (the button is disabled then too).
-  useModalKeys(onCancel, !busy);
+  // Escape matches the Cancel button, which now works mid-clone too.
+  useModalKeys(cancel);
 
   const name = repoNameFromUrl(url);
   const canClone = !!url.trim() && !!parentDir && !busy;
@@ -47,8 +50,9 @@ export default function CloneDialog({ onCloned, onCancel }: Props) {
     setBusy(true); setError(""); setAuthHelp(null); setProgress(null);
     try {
       const path = await cloneRepo(url.trim(), parentDir, setProgress);
-      onCloned(path);
+      if (!cancelled.current) onCloned(path);
     } catch (e) {
+      if (cancelled.current) return;
       const msg = String(e);
       setError(msg);
       // The backend's auth guidance mentions signing in to GitHub; when it does,
@@ -62,12 +66,26 @@ export default function CloneDialog({ onCloned, onCancel }: Props) {
     }
   }
 
+  // Cancel means cancel, mid-clone included: downloading a large repository runs
+  // for many minutes, so the backend is told to kill the git it's waiting on
+  // (which also deletes the half-downloaded folder) and the dialog closes now
+  // rather than when git gets around to it.
+  function cancel() {
+    cancelled.current = true;
+    // Unconditional: it's a no-op when no clone is running, and this must not
+    // depend on `busy` having reached this closure.
+    void cancelClone(url.trim(), parentDir).catch(() => {});
+    onCancel();
+  }
+
   return (
-    <ModalBackdrop onBackdropClick={busy ? undefined : onCancel}>
+    // A stray backdrop click still can't abort a running clone; Cancel, X and
+    // Escape are the deliberate ways out.
+    <ModalBackdrop onBackdropClick={busy ? undefined : cancel}>
       <div className="modal confirm" role="dialog" aria-modal="true" aria-label="Clone repository" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
           <h3>Clone a repository</h3>
-          <button className="modal-x" disabled={busy} onClick={onCancel}>✕</button>
+          <button className="modal-x" onClick={cancel}>✕</button>
         </div>
         <div className="modal-body">
           <p className="modal-note">Clone an existing Git repository, then add it as a project.</p>
@@ -125,7 +143,7 @@ export default function CloneDialog({ onCloned, onCancel }: Props) {
           )}
         </div>
         <div className="modal-foot">
-          <button className="btn-secondary" disabled={busy} onClick={onCancel}>Cancel</button>
+          <button className="btn-secondary" onClick={cancel}>Cancel</button>
           <button className="btn-primary" disabled={!canClone} onClick={doClone}>
             {busy ? "Cloning…" : "Clone repository"}
           </button>

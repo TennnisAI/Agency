@@ -325,7 +325,10 @@ pub fn push_with_progress(
         .current_dir(worktree)
         // No TTY in the app: fail fast rather than blocking on a credential prompt.
         .env("GIT_TERMINAL_PROMPT", "0");
-    let (ok, stderr) = crate::setup::run_clone_streaming(cmd, &mut on_progress)?;
+    // A fresh token, never flipped: there is no Cancel over a push yet, so this
+    // one only satisfies the signature the clone dialog's Cancel needs.
+    let cancel = crate::setup::CancelToken::new();
+    let (ok, stderr) = crate::setup::run_clone_streaming(cmd, &cancel, &mut on_progress)?;
     if ok {
         return Ok(());
     }

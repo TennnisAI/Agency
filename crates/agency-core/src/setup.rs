@@ -13,9 +13,10 @@ pub enum RepoReadiness {
     Ready { dirty: bool },
 }
 
-/// A cancel flag shared with a running git command. The setup dialog's Cancel
-/// flips one so a `git add -A` that is hashing a huge tree is killed instead of
-/// grinding on invisibly behind a dialog the user can no longer dismiss.
+/// A cancel flag shared with a running git command. The setup and clone dialogs'
+/// Cancel flips one so a `git add -A` hashing a huge tree, or a `git clone`
+/// downloading a huge repository, is killed instead of grinding on invisibly
+/// behind a dialog the user can no longer dismiss.
 #[derive(Clone, Debug, Default)]
 pub struct CancelToken(Arc<AtomicBool>);
 
@@ -231,8 +232,14 @@ fn parse_clone_progress(line: &str) -> Option<CloneProgress> {
 /// it, and return `(success, full_stderr)`. Stderr is piped and split on both
 /// `\r` and `\n` because git overwrites progress in place with carriage returns;
 /// the full text is still accumulated so the caller can inspect failure output.
+///
+/// `cancel` kills the child, same as [`run_streaming_stdout`]: a clone of a huge
+/// repository runs for many minutes, and until this existed the only way out of
+/// the clone dialog was to quit the app. Callers with nothing to cancel from
+/// (push) pass a token that is never flipped.
 pub(crate) fn run_clone_streaming(
     mut cmd: Command,
+    cancel: &CancelToken,
     on_progress: &mut dyn FnMut(CloneProgress),
 ) -> std::io::Result<(bool, String)> {
     use std::io::Read;
@@ -240,11 +247,20 @@ pub(crate) fn run_clone_streaming(
     cmd.stdout(Stdio::null()).stderr(Stdio::piped());
     let mut child = crate::procutil::retry_etxtbsy(|| cmd.spawn())?;
     let mut stderr = child.stderr.take().expect("stderr was piped");
+    // A second thread owns the child so the kill isn't stuck behind this one's
+    // read: "Resolving deltas" on a large repo prints nothing for a long time,
+    // so a cancel checked between progress lines would not be honoured.
+    let reaper = {
+        let cancel = cancel.clone();
+        std::thread::spawn(move || reap_or_kill(child, &cancel))
+    };
     let mut chunk = [0u8; 4096];
     let mut line: Vec<u8> = Vec::new();
     let mut full = String::new();
-    loop {
-        let n = stderr.read(&mut chunk)?;
+    // Killing the child can surface here as a read error rather than a clean EOF;
+    // stopping on either leaves the reaper to report the exit status, which is
+    // what the caller decides on.
+    while let Ok(n) = stderr.read(&mut chunk) {
         if n == 0 {
             break;
         }
@@ -257,7 +273,8 @@ pub(crate) fn run_clone_streaming(
         }
     }
     flush_progress_line(&mut line, &mut full, on_progress);
-    let status = child.wait()?;
+    let status =
+        reaper.join().map_err(|_| std::io::Error::other("git reaper thread panicked"))??;
     Ok((status.success(), full))
 }
 
@@ -315,9 +332,29 @@ fn flush_progress_line(
 }
 
 /// Clone `url` into a new folder under `parent_dir`. See
-/// [`clone_repo_with_progress`]; this is the no-progress convenience wrapper.
+/// [`clone_repo_with_progress`]; this is the no-progress, no-cancel convenience
+/// wrapper.
 pub fn clone_repo(url: &str, parent_dir: &Path) -> Result<PathBuf> {
-    clone_repo_with_progress(url, parent_dir, |_| {})
+    clone_repo_with_progress(url, parent_dir, &CancelToken::new(), |_| {})
+}
+
+/// The folder [`clone_repo_with_progress`] will create for `url` under
+/// `parent_dir`, or `None` when the URL yields no name. Public so a caller can
+/// name an in-flight clone (to cancel it) from the same two arguments it started
+/// the clone with, instead of reproducing the naming rule.
+pub fn clone_destination(url: &str, parent_dir: &Path) -> Option<PathBuf> {
+    let name = repo_name_from_url(url);
+    (!name.is_empty()).then(|| parent_dir.join(name))
+}
+
+/// Delete a clone the user cancelled part-way. The setup commit deliberately
+/// leaves a cancelled folder alone — there the files are the user's own — but
+/// everything here was downloaded by the git we just killed:
+/// [`clone_repo_with_progress`] refuses to start when the destination exists, so
+/// nothing at this path predates the clone. Leaving the husk would also block
+/// the retry, since that same existence check would then find it.
+fn discard_partial_clone(dest: &Path) {
+    let _ = std::fs::remove_dir_all(dest);
 }
 
 /// Clone `url` into a new folder under `parent_dir`, named after the repo, and
@@ -331,16 +368,19 @@ pub fn clone_repo(url: &str, parent_dir: &Path) -> Result<PathBuf> {
 /// for github.com — retry through `gh`, which supplies the user's stored
 /// credentials. That makes an authenticated private clone just work; when it
 /// can't, `github_auth_message` says exactly what to configure.
+///
+/// `cancel` kills the clone and deletes the half-downloaded destination, failing
+/// with [`CANCELLED`]. Cloning a large repository is minutes of download the user
+/// must be able to escape without quitting the app.
 pub fn clone_repo_with_progress(
     url: &str,
     parent_dir: &Path,
+    cancel: &CancelToken,
     mut on_progress: impl FnMut(CloneProgress),
 ) -> Result<PathBuf> {
-    let name = repo_name_from_url(url);
-    if name.is_empty() {
+    let Some(dest) = clone_destination(url, parent_dir) else {
         bail!("couldn't determine a folder name from the URL");
-    }
-    let dest = parent_dir.join(&name);
+    };
     if dest.exists() {
         bail!("{} already exists — choose another location", dest.display());
     }
@@ -352,7 +392,15 @@ pub fn clone_repo_with_progress(
         .current_dir(parent_dir)
         // No TTY in the app: fail fast instead of blocking on a prompt git can't read.
         .env("GIT_TERMINAL_PROMPT", "0");
-    let (ok, stderr) = run_clone_streaming(cmd, &mut on_progress)?;
+    let (ok, stderr) = run_clone_streaming(cmd, cancel, &mut on_progress)?;
+    // Checked before `ok`: a killed git exits non-zero carrying its own error
+    // text, and reporting that as a clone failure would put it in front of the
+    // user who just pressed Cancel — or send them down the sign-in path, since
+    // a killed clone's stderr can contain "Permission denied".
+    if cancel.is_cancelled() {
+        discard_partial_clone(&dest);
+        bail!("{CANCELLED}");
+    }
     if ok {
         return Ok(dest);
     }
@@ -362,9 +410,13 @@ pub fn clone_repo_with_progress(
             let gh = GhCli::default();
             // For github.com, gh can inject credentials where bare git couldn't.
             // If gh fails too (no access, bad URL), fall through to guidance.
-            if matches!(gh.auth_readiness(), GhReadiness::Ready)
-                && gh.clone_with_progress(url, &dest, &mut on_progress).is_ok()
-            {
+            let retried = matches!(gh.auth_readiness(), GhReadiness::Ready)
+                && gh.clone_with_progress(url, &dest, cancel, &mut on_progress).is_ok();
+            if cancel.is_cancelled() {
+                discard_partial_clone(&dest);
+                bail!("{CANCELLED}");
+            }
+            if retried {
                 return Ok(dest);
             }
             bail!("{}", github_auth_message(url, &gh));

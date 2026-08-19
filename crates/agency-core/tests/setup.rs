@@ -1,7 +1,8 @@
 use agency_core::setup::{
-    clone_repo, init_repo, initial_commit, initial_commit_with_progress, inside_work_tree,
-    repo_name_from_url, repo_readiness, scan_large_files, write_default_gitignore, CancelToken,
-    CommitOptions, RepoReadiness, CANCELLED, LARGE_FILE_BYTES,
+    clone_destination, clone_repo, clone_repo_with_progress, init_repo, initial_commit,
+    initial_commit_with_progress, inside_work_tree, repo_name_from_url, repo_readiness,
+    scan_large_files, write_default_gitignore, CancelToken, CommitOptions, RepoReadiness,
+    CANCELLED, LARGE_FILE_BYTES,
 };
 use std::path::Path;
 use std::process::Command;
@@ -335,6 +336,63 @@ fn clone_repo_clones_into_named_subfolder() {
     assert_eq!(dest.parent().unwrap(), parent.path());
     assert!(dest.join("hello.txt").exists());
     assert_eq!(repo_readiness(&dest), RepoReadiness::Ready { dirty: false });
+}
+
+#[test]
+fn clone_destination_names_the_folder_the_clone_will_create() {
+    let parent = Path::new("/tmp/parent");
+    // The frontend cancels a clone by its inputs, and the backend turns them
+    // back into this path — so it has to agree with what the clone creates.
+    assert_eq!(
+        clone_destination("https://github.com/owner/repo.git", parent),
+        Some(parent.join("repo"))
+    );
+    assert_eq!(clone_destination("git@github.com:owner/repo", parent), Some(parent.join("repo")));
+    // No name in the URL means no clone and nothing to cancel.
+    assert_eq!(clone_destination("", parent), None);
+}
+
+#[test]
+fn cancelled_clone_leaves_no_half_downloaded_folder() {
+    let src = tempfile::tempdir().unwrap();
+    init_bare_repo(src.path());
+    std::fs::write(src.path().join("a.txt"), "a\n").unwrap();
+    git(src.path(), &["add", "-A"]);
+    git(src.path(), &["commit", "-q", "-m", "init"]);
+
+    let parent = tempfile::tempdir().unwrap();
+    let url = format!("file://{}", src.path().display());
+    let dest = clone_destination(&url, parent.path()).unwrap();
+
+    // The click lands on the first progress line, which for a repo this small
+    // can arrive after git has already written the folder — the case that most
+    // needs cleaning up, since the leftover would block the retry.
+    let cancel = CancelToken::new();
+    let err =
+        clone_repo_with_progress(&url, parent.path(), &cancel, |_| cancel.cancel()).unwrap_err();
+
+    assert_eq!(err.to_string(), CANCELLED);
+    assert!(!dest.exists(), "{} survived a cancelled clone", dest.display());
+}
+
+#[test]
+fn clone_cancelled_before_it_starts_reports_cancelled() {
+    let src = tempfile::tempdir().unwrap();
+    init_bare_repo(src.path());
+    std::fs::write(src.path().join("a.txt"), "a\n").unwrap();
+    git(src.path(), &["add", "-A"]);
+    git(src.path(), &["commit", "-q", "-m", "init"]);
+
+    let parent = tempfile::tempdir().unwrap();
+    let url = format!("file://{}", src.path().display());
+    let cancel = CancelToken::new();
+    // Already cancelled: the clone must not outlive the token, and must not
+    // report the killed git as a credentials problem.
+    cancel.cancel();
+    let err = clone_repo_with_progress(&url, parent.path(), &cancel, |_| {}).unwrap_err();
+
+    assert_eq!(err.to_string(), CANCELLED);
+    assert!(!clone_destination(&url, parent.path()).unwrap().exists());
 }
 
 #[test]

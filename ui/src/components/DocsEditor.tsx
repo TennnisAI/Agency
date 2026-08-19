@@ -13,6 +13,7 @@ import { CrossRefs } from "../lib/links";
 import { docsCompletion, docsHighlight, docsMarkdown, docsNavFacet, livePreview, DocsNav } from "../lib/livePreview";
 import { useLiveFacets } from "../hooks/useLiveFacets";
 import { frontmatterEditor, requestAddProperty } from "../lib/fmEditor";
+import { markdownTables } from "../lib/mdTable";
 import { joinPath } from "../lib/filePath";
 import { formatCommand, toggleInline } from "../lib/mdFormat";
 import { minimalReplacement } from "../lib/textEdit";
@@ -273,6 +274,7 @@ export default forwardRef<DocsEditorHandle, {
             notePath: path,
           }),
           frontmatterEditor,
+          markdownTables,
           EditorView.domEventHandlers({
             paste: (e, v) => {
               const file = [...(e.clipboardData?.files ?? [])].find((f) => f.type.startsWith("image/"));

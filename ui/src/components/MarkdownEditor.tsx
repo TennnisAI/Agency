@@ -12,6 +12,7 @@ import { cmFindExtensions } from "../lib/cmFind";
 import {
   docsCompletion, docsHighlight, docsMarkdown, docsNavFacet, livePreview,
 } from "../lib/livePreview";
+import { markdownTables } from "../lib/mdTable";
 import { useLiveFacets } from "../hooks/useLiveFacets";
 import { formatCommand, toggleInline } from "../lib/mdFormat";
 import Menu from "./git/Menu";
@@ -139,6 +140,7 @@ export default forwardRef<MarkdownEditorHandle, {
         proseTheme,
         docsMarkdown(),
         livePreview,
+        markdownTables,
         docsCompletion,
         // The editor can sit in a scrolling pane barely taller than itself
         // (the contracted issue detail), where an absolutely-positioned

@@ -401,7 +401,9 @@ class HRWidget extends WidgetType {
 
 // ── Decoration building ──────────────────────────────────────────────────────
 
-const TAG_RE = /(^|[\s(])#([A-Za-z0-9_][A-Za-z0-9_/-]*)/g;
+/** A #tag and the boundary character before it. Exported because table
+ *  cells are drawn by a widget (mdTable.ts) and re-run it over their text. */
+export const TAG_RE = /(^|[\s(])#([A-Za-z0-9_][A-Za-z0-9_/-]*)/g;
 
 /** Line numbers touched by any selection range. */
 function activeLines(view: EditorView): Set<number> {
@@ -717,6 +719,23 @@ class LivePreviewPlugin {
                 else if (last.to > last.from) decos.push(hide.range(last.from, last.to));
               }
               return; // descend: nested language highlighting still applies
+            }
+            case "Table": {
+              // Rendering belongs to the block widget in mdTable.ts. When the
+              // caret is inside, that widget steps aside and these dress the
+              // raw rows it leaves behind: monospace so the pipes line up as
+              // columns while they are being edited.
+              if (revealed(node.from, node.to)) {
+                eachLine(node.from, node.to, (lf) => addLineClass(lf, "lp-table-raw"));
+              }
+              return; // descend: cells hold ordinary inline markdown
+            }
+            case "TableDelimiter": {
+              // Only while revealed. Otherwise the widget covers them, and a
+              // table nested in a blockquote (which gets no widget) reads
+              // better with its pipes at full strength.
+              if (revealed(node.from, node.to)) decos.push(markDim.range(node.from, node.to));
+              return;
             }
             case "HorizontalRule": {
               if (revealed(node.from, node.to)) return;

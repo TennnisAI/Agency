@@ -43,6 +43,7 @@ export default function PrSection({
   const [checks, setChecks] = useState<CheckItem[]>([]);
   const [busy, setBusy] = useState(false);
   const [sent, setSent] = useState(false);
+  const [queued, setQueued] = useState(false);
   const [error, setError] = useState("");
   // True until the opening probe (gh readiness, then the PR's current state)
   // has settled. Rendering the section's real content before then shows
@@ -98,7 +99,8 @@ export default function PrSection({
 
   async function doSendFailures() {
     try {
-      await sendCheckFeedback(taskId);
+      // False means it is queued behind the turn the agent is already in.
+      setQueued(!(await sendCheckFeedback(taskId)));
       setSent(true);
     } catch (e) {
       toastError(e, "Couldn't send check feedback");
@@ -178,7 +180,11 @@ export default function PrSection({
           {failing.length > 0 && (
             <div className="git-actions">
               <button disabled={sent} onClick={doSendFailures}>
-                {sent ? "Sent to agent ✓" : `Send ${failing.length} failing check${failing.length === 1 ? "" : "s"} to agent`}
+                {sent
+                  ? queued
+                    ? "Queued for the agent"
+                    : "Sent to agent ✓"
+                  : `Send ${failing.length} failing check${failing.length === 1 ? "" : "s"} to agent`}
               </button>
             </div>
           )}

@@ -897,8 +897,10 @@ export const ghReadiness = (projectId: string) =>
 export const ghAuthReadiness = () => invoke<GhReadiness>("gh_auth_readiness");
 export const createPr = (taskId: string) => invoke<PrInfo>("create_pr", { taskId });
 export const prStatus = (taskId: string) => invoke<PrStatus>("pr_status", { taskId });
+// Resolves true if the text is in the agent's session already, false if it is
+// queued behind the turn the agent is in the middle of.
 export const sendCheckFeedback = (taskId: string) =>
-  invoke<void>("send_check_feedback", { taskId });
+  invoke<boolean>("send_check_feedback", { taskId });
 
 // In-app PR review, keyed by (projectId, prNumber).
 export const prDetail = (projectId: string, number: number) =>
@@ -982,9 +984,10 @@ export const abortMergeTask = (taskId: string, onProgress?: (p: CloneProgress) =
   return invoke<void>("abort_merge_task", { taskId, onProgress: onProgressChannel });
 };
 // "Fix with agent": types the conflict, with git's own status output, into this
-// run's live agent session.
+// run's live agent session. Resolves true if it went in now, false if it is
+// queued behind the agent's current turn.
 export const sendMergeConflict = (taskId: string) =>
-  invoke<void>("send_merge_conflict", { taskId });
+  invoke<boolean>("send_merge_conflict", { taskId });
 
 export interface Hunk {
   header: string;
@@ -1168,8 +1171,10 @@ export const listReviewComments = (runId: string) =>
   invoke<ReviewComment[]>("list_review_comments", { runId });
 export const deleteReviewComment = (id: string) =>
   invoke<void>("delete_review_comment", { id });
+// Resolves true if the comments are in the agent's session already, false if
+// they are queued behind the turn it is in the middle of.
 export const sendReviewComments = (runId: string) =>
-  invoke<void>("send_review_comments", { runId });
+  invoke<boolean>("send_review_comments", { runId });
 
 export type FileRoot = { kind: "run"; id: string } | { kind: "project"; id: string };
 

@@ -13,7 +13,8 @@ Phase 6 item (background fetch). What remains is listed under **Still open**.
 - **Phase 3 (backend bugs, #6–14):** done (9/9).
 - **Phase 4 (frontend bugs, #15–22):** done (8/8).
 - **Phase 5 (UX polish, #23–34):** done (12/12).
-- **Phase 6 (feature gaps):** #35 and #45 done; #36–44 open (post-first-beta).
+- **Phase 6 (feature gaps):** #35, #43 and #45 done; the rest of #36–44 open
+  (post-first-beta).
 
 Verification for the fix pass: `cargo build` clean, `cargo test` green (136
 tests: 82 core + 54 app), `tsc --noEmit` exit 0, `vite build` exit 0.
@@ -140,6 +141,24 @@ tests: 82 core + 54 app), `tsc --noEmit` exit 0, `vite build` exit 0.
     `--ff-only`) when the branch is behind an upstream. (git.rs, state.rs,
     commands.rs, lib.rs, BranchBar.tsx, GitPanel.tsx)
 
+43. **[done]** Message queueing while an agent is mid-turn (`sendq.rs`). The
+    three features that type a prompt the human never wrote — review comments,
+    failing checks, a conflicted merge — now hand their text to a per-session
+    queue instead of writing it straight into the pty. `sendq::decide` is the
+    pure transition function, in the `looper.rs` / `notifier.rs` mold, and the
+    notifier tick drains it: a message goes out only when `activity::classify`
+    says the pane is not `Working`, a second has passed since the human's last
+    keystroke, and nothing they typed is sitting unsent on the prompt line. The
+    draft block is one-directional by construction — keystroke classification
+    (which tells typing apart from the mouse and focus traffic the pane also
+    emits) sets it, and a pane read may only lift it. Nothing ever clears the
+    line: no Escape, no `^U`. At the 5-minute timeout the text is appended after
+    whatever is there and submitted with it, rather than thrown away. The write
+    itself is unchanged, still `send_text`'s text-pause-`\r`. The three commands
+    now report whether the text went in or is waiting, and the three call sites
+    say so. (sendq.rs, state.rs, commands.rs, lib.rs, api.ts, MergeModal.tsx,
+    PrSection.tsx, ReviewComments.tsx)
+
 45. **[done]** Per-worktree skills kit (`skills.rs`). Two skills, namespaced
     `agency-*`, written into each worktree wherever the agent reads
     project-local skills from (`.claude/skills/` today; an agent with no known
@@ -228,24 +247,6 @@ tests: 82 core + 54 app), `tsc --noEmit` exit 0, `vite build` exit 0.
     eight the UI shows nothing rather than zero, and an unrecognized model
     yields token counts with no cost figure. We do not display a number we
     cannot stand behind. (M) Tracked in AGE-109.
-43. **Message queueing** while an agent is mid-turn. Today `send_text` writes
-    straight into the pty and its three callers (review comments, check
-    feedback, merge conflict) only test that the session is `Running`. Design
-    settled 2026-08-17 — queue instead of interrupt, drained on the notifier
-    tick when `activity::classify` says the pane is not `Working`. The details
-    are the whole feature:
-
-    - **Draft detection is one-directional.** Reading the pane to see whether
-      the human has typed something unsent may only *clear* the block, never
-      set it. The two failure modes cost differently: holding a message a few
-      seconds too long is invisible, clobbering a half-typed prompt is not.
-    - **Echo grace** of about a second after the last keystroke.
-    - **Never send Escape** to close a menu the human may have opened on
-      purpose.
-    - **On timeout, append** after whatever is on the line rather than clearing
-      it.
-    - Keep the existing 150ms split between the text and the `\r`; TUI agents
-      treat a single-read burst as a paste. (M) Tracked in AGE-111.
 44. **Structured transcript view** — the biggest expectation gap against the
     session-viewer tools in this category; terminal-first is a legitimate
     positioning choice but should be a stated one. (L / decision)

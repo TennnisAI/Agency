@@ -44,6 +44,7 @@ export default function MergeModal({
   // hand-off has happened.
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState(false);
+  const [queued, setQueued] = useState(false);
   // What git says about the merge after a resolver has had a go at it. Null
   // until the first check; `probeError` is why, when it stays null.
   const [state, setState] = useState<MergeState | null>(null);
@@ -195,7 +196,10 @@ export default function MergeModal({
     setError("");
     setSending(true);
     try {
-      await sendMergeConflict(taskId);
+      // False means the agent is mid-turn and the prompt is queued behind it;
+      // saying "sent" then would have the user watching for work that has not
+      // started yet.
+      setQueued(!(await sendMergeConflict(taskId)));
       setSent(true);
     } catch (e) {
       setError(String(e));
@@ -434,10 +438,12 @@ export default function MergeModal({
                 </ul>
                 {sent ? (
                   <p className="merge-note">
-                    Sent to this agent's session, with git's status of the merge. Close this window
-                    to watch it work; the merge is in the project's checkout, not the agent's
-                    worktree, so the prompt points git there. Reopen this window when it's done, or
-                    leave it open: it rechecks git every few seconds either way.
+                    {queued
+                      ? "Queued for this agent, with git's status of the merge. It is part-way through a turn, so the prompt goes in as soon as that finishes. "
+                      : "Sent to this agent's session, with git's status of the merge. "}
+                    Close this window to watch it work; the merge is in the project's checkout, not
+                    the agent's worktree, so the prompt points git there. Reopen this window when
+                    it's done, or leave it open: it rechecks git every few seconds either way.
                   </p>
                 ) : (
                   <p className="merge-note">

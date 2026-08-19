@@ -2215,9 +2215,9 @@ pub async fn read_docs_corpus(
     agency_core::files::read_markdown_corpus(&base, &docs_dir).map_err(|e| e.to_string())
 }
 
-/// Stat-only corpus pass: `(path, mtime, size)` per markdown file plus the
-/// empty folders, so the docs poll can detect change without re-reading bodies
-/// and still see a folder that holds no notes yet.
+/// Stat-only corpus pass: `(path, mtime, size)` per markdown file plus every
+/// folder, so the docs poll can detect change without re-reading bodies and
+/// still see a folder that holds no notes yet.
 #[tauri::command]
 pub async fn docs_corpus_stats(
     state: State<'_, AppState>,

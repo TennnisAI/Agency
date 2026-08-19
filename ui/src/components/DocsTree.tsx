@@ -32,10 +32,11 @@ function Twistie({ open }: { open: boolean }) {
 
 /**
  * The Docs tab's note tree + search pane. Renders directly from the index (no
- * extra IPC; the corpus poll keeps it fresh). Markdown-only by design — other
- * files stay reachable via the Files tab. Folders come from the note
- * paths plus the scan's empty-folder list, so a folder with nothing in it yet
- * is a real row rather than something this view has to remember.
+ * extra IPC; the corpus poll keeps it fresh). Notes-only by design — other
+ * files stay reachable via the Files tab. Folders come from the note paths
+ * plus the scan's folder list, so a folder holding no notes (new, or holding
+ * only attachments) is a real row rather than something this view has to
+ * remember.
  */
 export default function DocsTree({
   root, docsDir, rootLabel, index, selected, query, onQuery, onSelect, onOpenHit, onRenamed, onDeleted, refresh,
@@ -351,7 +352,7 @@ export default function DocsTree({
               </div>
             ))}
           </div>
-        ) : index && index.docs.size === 0 && index.emptyDirs.length === 0 ? (
+        ) : index && index.docs.size === 0 && index.dirs.length === 0 ? (
           <div className="docs-search-none">No notes yet. Create one.</div>
         ) : (
           renderDir(tree, 0)

@@ -16,21 +16,23 @@ describe("buildDocsTree", () => {
     expect(deep.notes.map((n) => n.title)).toEqual(["Setup"]);
   });
 
-  it("keeps a folder with no notes in it (AGE-119)", () => {
-    const tree = buildDocsTree(buildIndex([doc("home.md", "# Home\n")], ["ideas"]));
+  it("keeps a folder with no notes in it, empty or not (AGE-119, AGE-120)", () => {
+    // "assets" holds only a PNG, so the scan reports it and no note does.
+    const tree = buildDocsTree(buildIndex([doc("home.md", "# Home\n")], ["assets", "ideas"]));
     const ideas = tree.dirs.get("ideas")!;
     expect(ideas.path).toBe("ideas");
     expect(ideas.notes).toEqual([]);
-    expect(allDirPaths(tree)).toEqual(["ideas"]);
+    expect(tree.dirs.get("assets")!.notes).toEqual([]);
+    expect(allDirPaths(tree).sort()).toEqual(["assets", "ideas"]);
   });
 
-  it("fills in the ancestors of a nested empty folder", () => {
+  it("fills in the ancestors of a nested note-less folder", () => {
     const tree = buildDocsTree(buildIndex([], ["research/2026/q3"]));
     expect(allDirPaths(tree).sort()).toEqual(["research", "research/2026", "research/2026/q3"]);
   });
 
-  it("does not duplicate a folder that is both empty-listed and note-bearing", () => {
-    // A note landing in a folder mid-poll can have it in both lists.
+  it("does not duplicate a folder that is both dir-listed and note-bearing", () => {
+    // The scan reports every folder, so a note-bearing one is in both lists.
     const tree = buildDocsTree(buildIndex([doc("ideas/a.md", "# A\n")], ["ideas"]));
     expect([...tree.dirs.keys()]).toEqual(["ideas"]);
     expect(tree.dirs.get("ideas")!.notes.map((n) => n.title)).toEqual(["A"]);

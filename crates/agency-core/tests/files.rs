@@ -165,7 +165,7 @@ fn read_markdown_corpus_walks_nested_md_only() {
 }
 
 #[test]
-fn scan_reports_empty_folders_so_a_new_one_stays_visible() {
+fn scan_reports_every_folder_whatever_it_holds() {
     let dir = tempfile::tempdir().unwrap();
     let docs = dir.path().join("docs");
     fs::create_dir_all(docs.join("ideas")).unwrap();
@@ -179,24 +179,34 @@ fn scan_reports_empty_folders_so_a_new_one_stays_visible() {
     // Finder mints these behind the user's back; one must not make a folder
     // they just created read as populated and vanish from the tree.
     fs::write(docs.join("ideas/.DS_Store"), [0u8]).unwrap();
+    // The AGE-120 case: a folder filled with attachments used to drop out.
     fs::write(docs.join("assets/logo.png"), [0u8, 1]).unwrap();
 
     let scan = files::scan_markdown_stats(dir.path(), "docs").unwrap();
     let mut paths: Vec<_> = scan.files.iter().map(|f| f.path.as_str()).collect();
     paths.sort();
     assert_eq!(paths, vec!["index.md", "notes/a.md"]);
-    // "research" holds a subfolder, "assets" a file, "notes" a note: not empty.
+    // Empty, attachment-only, subfolder-only and note-bearing folders alike.
     // Hidden and node_modules folders are outside the corpus entirely.
-    assert_eq!(scan.empty_dirs, vec!["ideas".to_string(), "research/2026".to_string()]);
+    assert_eq!(
+        scan.dirs,
+        vec![
+            "assets".to_string(),
+            "ideas".to_string(),
+            "notes".to_string(),
+            "research".to_string(),
+            "research/2026".to_string(),
+        ]
+    );
 }
 
 #[test]
-fn scan_reports_no_empty_folder_for_the_docs_dir_itself() {
+fn scan_reports_no_folder_row_for_the_docs_dir_itself() {
     let dir = tempfile::tempdir().unwrap();
     fs::create_dir(dir.path().join("docs")).unwrap();
     let scan = files::scan_markdown_stats(dir.path(), "docs").unwrap();
     assert!(scan.files.is_empty());
-    assert!(scan.empty_dirs.is_empty());
+    assert!(scan.dirs.is_empty());
 }
 
 #[test]

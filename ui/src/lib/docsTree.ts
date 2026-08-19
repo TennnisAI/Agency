@@ -9,14 +9,14 @@ export interface TreeDir {
 }
 
 /**
- * The Docs tree's shape: a folder per path segment of every note, plus the
- * index's empty folders.
+ * The Docs tree's shape: a folder per path segment of every note, plus every
+ * folder the scan reported.
  *
- * The empty ones have to be handed in because nothing else implies them — a
- * folder with no markdown under it is invisible to a markdown walk, so a
+ * The note-less ones have to be handed in because nothing else implies them —
+ * a folder with no markdown under it is invisible to a markdown walk, so a
  * folder the user just made disappeared from the tree the moment the view
- * rebuilt (AGE-119). Folders holding only non-markdown files stay hidden, as
- * they always were: the Files tab is where those live.
+ * rebuilt (AGE-119), and so did one they filled with images (AGE-120). Such a
+ * folder renders empty here; the attachments in it live in the Files tab.
  */
 export function buildDocsTree(index: DocsIndex | null): TreeDir {
   const root: TreeDir = { path: "", dirs: new Map(), notes: [] };
@@ -39,7 +39,7 @@ export function buildDocsTree(index: DocsIndex | null): TreeDir {
     for (const d of index.docs.values()) {
       dirAt(parentPath(d.path)).notes.push({ path: d.path, title: d.title });
     }
-    for (const dir of index.emptyDirs) dirAt(dir);
+    for (const dir of index.dirs) dirAt(dir);
   }
   const sortDir = (d: TreeDir) => {
     // The journal reads newest-first (date-stamped names, so name order is

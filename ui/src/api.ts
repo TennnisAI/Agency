@@ -1274,10 +1274,9 @@ export interface DocStat {
 }
 export interface DocsScan {
   files: DocStat[];
-  // Folders under the docs dir that hold nothing, sorted. The tree's folders
-  // otherwise come from note paths alone, which hides a folder until it has a
-  // note in it.
-  emptyDirs: string[];
+  // Every folder under the docs dir, sorted. The tree's folders otherwise come
+  // from note paths alone, which hides a folder until it has a note in it.
+  dirs: string[];
 }
 export const docsCorpusStats = (root: FileRoot, docsDir: string) =>
   invoke<DocsScan>("docs_corpus_stats", { root, docsDir });

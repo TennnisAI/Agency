@@ -32,10 +32,10 @@ export function useDocs(projectId: string | null, active: boolean) {
   // "never loaded" so the first pass always builds an index.
   const filesRef = useRef<Map<string, DocFile>>(new Map());
   const sigRef = useRef<Map<string, string>>(new Map());
-  // Folders with nothing in them: the scan reports these because the corpus
-  // cannot, and a poll that finds the list changed rebuilds the index even
-  // when no note did (creating a folder touches no markdown).
-  const emptyRef = useRef<string[]>([]);
+  // Every folder: the scan reports these because the corpus cannot, and a poll
+  // that finds the list changed rebuilds the index even when no note did
+  // (creating a folder touches no markdown).
+  const dirsRef = useRef<string[]>([]);
   const builtRef = useRef(false);
   // Last pass wins. A mutation refreshes while a poll tick is already in
   // flight, and the tick's older answer (taken before the write) would
@@ -70,8 +70,8 @@ export function useDocs(projectId: string | null, active: boolean) {
       const removed = [...sigRef.current.keys()].filter((p) => !nextSig.has(p));
       // Both lists arrive sorted, so position-wise comparison is enough.
       const dirsChanged =
-        scan.emptyDirs.length !== emptyRef.current.length ||
-        scan.emptyDirs.some((d, i) => d !== emptyRef.current[i]);
+        scan.dirs.length !== dirsRef.current.length ||
+        scan.dirs.some((d, i) => d !== dirsRef.current[i]);
       if (changed.length === 0 && removed.length === 0 && !dirsChanged && builtRef.current) return;
 
       if (changed.length > 0) {
@@ -88,13 +88,13 @@ export function useDocs(projectId: string | null, active: boolean) {
       }
       for (const p of removed) filesRef.current.delete(p);
       sigRef.current = nextSig;
-      emptyRef.current = scan.emptyDirs;
+      dirsRef.current = scan.dirs;
       builtRef.current = true;
       if (import.meta.env.DEV && (changed.length > 0 || removed.length > 0)) {
         // Ship-gate probe: an idle corpus logs nothing.
         console.debug(`[docs] corpus refresh: ${changed.length} read, ${removed.length} removed`);
       }
-      setIndexed({ pid, index: buildIndex([...filesRef.current.values()], scan.emptyDirs) });
+      setIndexed({ pid, index: buildIndex([...filesRef.current.values()], scan.dirs) });
     } catch {
       /* transient IPC errors: keep the last good index */
     }
@@ -105,7 +105,7 @@ export function useDocs(projectId: string | null, active: boolean) {
     setIndexed(null);
     filesRef.current = new Map();
     sigRef.current = new Map();
-    emptyRef.current = [];
+    dirsRef.current = [];
     builtRef.current = false;
     if (!active || !projectId) return;
     void refresh();

@@ -26,6 +26,30 @@ describe("buildDocsTree", () => {
     expect(allDirPaths(tree).sort()).toEqual(["assets", "ideas"]);
   });
 
+  it("puts attachments in the folder they sit in, by name (AGE-121)", () => {
+    const tree = buildDocsTree(
+      buildIndex(
+        [doc("home.md", "# Home\n")],
+        ["assets"],
+        ["assets/wide.png", "assets/crash.png", "spec.pdf"],
+      ),
+    );
+    expect(tree.files.map((f) => f.name)).toEqual(["spec.pdf"]);
+    expect(tree.dirs.get("assets")!.files.map((f) => f.path)).toEqual([
+      "assets/crash.png",
+      "assets/wide.png",
+    ]);
+    // Attachments are not notes, whatever else the tree does with them.
+    expect(tree.dirs.get("assets")!.notes).toEqual([]);
+  });
+
+  it("implies a folder that only an attachment path names", () => {
+    // The folder list is capped, so an attachment can be the only witness.
+    const tree = buildDocsTree(buildIndex([], [], ["shots/2026/q3/login.png"]));
+    expect(allDirPaths(tree).sort()).toEqual(["shots", "shots/2026", "shots/2026/q3"]);
+    expect(tree.dirs.get("shots")!.dirs.get("2026")!.dirs.get("q3")!.files).toHaveLength(1);
+  });
+
   it("fills in the ancestors of a nested note-less folder", () => {
     const tree = buildDocsTree(buildIndex([], ["research/2026/q3"]));
     expect(allDirPaths(tree).sort()).toEqual(["research", "research/2026", "research/2026/q3"]);
@@ -57,6 +81,7 @@ describe("buildDocsTree", () => {
   it("is an empty root when there is no index yet", () => {
     const tree = buildDocsTree(null);
     expect(tree.notes).toEqual([]);
+    expect(tree.files).toEqual([]);
     expect(allDirPaths(tree)).toEqual([]);
   });
 });

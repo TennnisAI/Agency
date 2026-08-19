@@ -1,25 +1,29 @@
 import { DocsIndex } from "./docsIndex";
-import { joinPath, parentPath } from "./filePath";
+import { baseName, joinPath, parentPath } from "./filePath";
 
 /** A folder level in the Docs tree. `path` is rel to the docs dir ("" = root). */
 export interface TreeDir {
   path: string;
   dirs: Map<string, TreeDir>;
   notes: { path: string; title: string }[];
+  /** Non-note files sitting in this folder: images, PDFs, anything dropped
+   * beside the note that references it. Rendered below the notes. */
+  files: { path: string; name: string }[];
 }
 
 /**
- * The Docs tree's shape: a folder per path segment of every note, plus every
- * folder the scan reported.
+ * The Docs tree's shape: a folder per path segment of every note and
+ * attachment, plus every folder the scan reported.
  *
- * The note-less ones have to be handed in because nothing else implies them —
- * a folder with no markdown under it is invisible to a markdown walk, so a
- * folder the user just made disappeared from the tree the moment the view
- * rebuilt (AGE-119), and so did one they filled with images (AGE-120). Such a
- * folder renders empty here; the attachments in it live in the Files tab.
+ * The note-less folders have to be handed in because nothing else implies
+ * them — a folder with no markdown under it is invisible to a markdown walk,
+ * so a folder the user just made disappeared from the tree the moment the view
+ * rebuilt (AGE-119), and so did one they filled with images (AGE-120). Those
+ * images are rows of their own now (AGE-121): a folder of screenshots reported
+ * as a folder and nothing else read as empty and was not.
  */
 export function buildDocsTree(index: DocsIndex | null): TreeDir {
-  const root: TreeDir = { path: "", dirs: new Map(), notes: [] };
+  const root: TreeDir = { path: "", dirs: new Map(), notes: [], files: [] };
   const dirAt = (dir: string): TreeDir => {
     if (dir === "") return root;
     let cur = root;
@@ -28,7 +32,7 @@ export function buildDocsTree(index: DocsIndex | null): TreeDir {
       acc = joinPath(acc, part);
       let next = cur.dirs.get(part);
       if (!next) {
-        next = { path: acc, dirs: new Map(), notes: [] };
+        next = { path: acc, dirs: new Map(), notes: [], files: [] };
         cur.dirs.set(part, next);
       }
       cur = next;
@@ -40,6 +44,9 @@ export function buildDocsTree(index: DocsIndex | null): TreeDir {
       dirAt(parentPath(d.path)).notes.push({ path: d.path, title: d.title });
     }
     for (const dir of index.dirs) dirAt(dir);
+    for (const a of index.attachments) {
+      dirAt(parentPath(a)).files.push({ path: a, name: baseName(a) });
+    }
   }
   const sortDir = (d: TreeDir) => {
     // The journal reads newest-first (date-stamped names, so name order is
@@ -49,6 +56,7 @@ export function buildDocsTree(index: DocsIndex | null): TreeDir {
     } else {
       d.notes.sort((a, b) => a.title.localeCompare(b.title));
     }
+    d.files.sort((a, b) => a.name.localeCompare(b.name));
     for (const sub of d.dirs.values()) sortDir(sub);
   };
   sortDir(root);

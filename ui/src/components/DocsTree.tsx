@@ -7,6 +7,7 @@ import { DocsIndex, SearchHit, fmFilterPaths, mergeBodyHits, searchDocs, searchL
 import { parseDocsQuery } from "../lib/docsQuery";
 import { joinPath, parentPath, baseName } from "../lib/filePath";
 import { TreeDir, allDirPaths, buildDocsTree } from "../lib/docsTree";
+import { fileIcon } from "../lib/fileIcon";
 import { FileIcon } from "./fileIcons";
 import Menu, { MenuEntry } from "./git/Menu";
 import PromptDialog from "./PromptDialog";
@@ -31,15 +32,20 @@ function Twistie({ open }: { open: boolean }) {
 }
 
 /**
- * The Docs tab's note tree + search pane. Renders directly from the index (no
- * extra IPC; the corpus poll keeps it fresh). Notes-only by design — other
- * files stay reachable via the Files tab. Folders come from the note paths
- * plus the scan's folder list, so a folder holding no notes (new, or holding
- * only attachments) is a real row rather than something this view has to
- * remember.
+ * The Docs tab's tree + search pane. Renders directly from the index (no extra
+ * IPC; the corpus poll keeps it fresh). Folders come from the note paths plus
+ * the scan's folder list, so a folder holding no notes (new, or holding only
+ * attachments) is a real row rather than something this view has to remember.
+ *
+ * A vault view, not a notes-only one: the files that aren't notes are dimmed
+ * rows here, because a folder of screenshots reported as a folder and nothing
+ * else read as empty and was not (AGE-121). Clicking one hands it to the Files
+ * tab — this tree's editor is a markdown editor, and a PNG has no business in
+ * it — and dropping one in is accepted rather than turned away.
  */
 export default function DocsTree({
-  root, docsDir, rootLabel, index, selected, query, onQuery, onSelect, onOpenHit, onRenamed, onDeleted, refresh,
+  root, docsDir, rootLabel, index, selected, query, onQuery, onSelect, onOpenFile, onAttached,
+  onOpenHit, onRenamed, onDeleted, refresh,
 }: {
   root: FileRoot;
   docsDir: string;
@@ -50,6 +56,11 @@ export default function DocsTree({
   query: string;
   onQuery: (q: string) => void;
   onSelect: (path: string | null) => void;
+  /** An attachment row was clicked: rel to the docs dir, for the Files tab. */
+  onOpenFile: (path: string) => void;
+  /** Attachments just landed in the vault (rel to the docs dir), so the view
+   * can offer to link them from whatever note is open. */
+  onAttached: (paths: string[]) => void;
   onOpenHit: (hit: SearchHit) => void;
   onRenamed: (from: string, to: string) => void;
   onDeleted: (path: string) => void;
@@ -144,10 +155,11 @@ export default function DocsTree({
   };
 
   // ── dropping in from Finder ───────────────────────────────────────────────
-  // Notes land in the folder under the cursor (blank space below the rows is
-  // the docs root). Markdown only, matching what this tree can show: anything
-  // else would import into a vault it stays invisible in, so it's turned away
-  // here and pointed at the Files tab instead. Copies, never moves.
+  // Everything lands in the folder under the cursor (blank space below the
+  // rows is the docs root). Markdown becomes a note; anything else becomes an
+  // attachment row — the tree used to refuse those and point at the Files tab,
+  // which was the wrong answer for the screenshot the open note wants to link
+  // to (AGE-121). Copies, never moves.
 
   const bodyRef = useRef<HTMLDivElement>(null);
   const [importing, setImporting] = useState(false);
@@ -157,22 +169,18 @@ export default function DocsTree({
 
   const doImport = async (paths: string[], dir: string) => {
     if (importingRef.current) return;
-    const notes = paths.filter((p) => isMarkdown(dropName(p)));
-    const skipped = paths.filter((p) => !isMarkdown(dropName(p))).map(dropName);
-    if (skipped.length > 0) {
-      toastInfo(`Docs takes markdown only, so ${nameList(skipped)} stayed put. Use the Files tab.`);
-    }
-    if (notes.length === 0) return;
     importingRef.current = true;
     setImporting(true);
     try {
-      // Real names on disk, not the index's: it only knows markdown, and a
-      // collision with anything else in the folder is still a collision.
+      // Real names on disk, not the index's: it knows notes and attachments
+      // but not dotfiles, and a collision with one of those is still a
+      // collision.
       const existing = await listDir(root, toRepo(dir)).catch(() => [] as DirEntry[]);
       const taken = new Set(existing.map((e) => e.name.toLowerCase()));
       const renamed: string[] = [];
-      const added: string[] = [];
-      for (const src of notes) {
+      const notes: string[] = [];
+      const files: string[] = [];
+      for (const src of paths) {
         const want = dropName(src);
         const name = uniqueName(taken, want);
         try {
@@ -182,15 +190,25 @@ export default function DocsTree({
           continue;
         }
         taken.add(name.toLowerCase());
-        added.push(joinPath(dir, name));
+        (isMarkdown(name) ? notes : files).push(joinPath(dir, name));
         if (name !== want) renamed.push(name);
       }
-      if (added.length === 0) return;
+      if (notes.length === 0 && files.length === 0) return;
       if (dir !== "") setOpen((s) => new Set(s).add(dir));
       await refresh();
       if (renamed.length > 0) toastInfo(`Renamed to keep what was there: ${nameList(renamed)}`);
-      // One note is an "open this" gesture; a batch is not.
-      if (added.length === 1) onSelect(added[0]);
+      // The corpus scan leaves non-markdown dotfiles out (`.DS_Store` as a row
+      // is nobody's attachment), so one that just landed has no row to appear
+      // in. Said out loud, because the file is on disk either way.
+      const hidden = files.map(baseName).filter((n) => n.startsWith("."));
+      if (hidden.length > 0) {
+        toastInfo(`${nameList(hidden)} landed in the folder, but the tree doesn't list dotfiles. Use the Files tab.`);
+      }
+      // One note is an "open this" gesture; a batch is not. An attachment is
+      // never one — it opens in another tab, so a drop would yank the user out
+      // of the note they are writing.
+      if (notes.length === 1 && files.length === 0) onSelect(notes[0]);
+      if (files.length > 0) onAttached(files);
     } finally {
       importingRef.current = false;
       setImporting(false);
@@ -239,9 +257,11 @@ export default function DocsTree({
           onClick={() => toggle(sub.path)}
           onContextMenu={(e) => openMenu(e, { path: sub.path, isDir: true })}>
           <span className="tree-twistie-slot">
-            {/* Nothing to disclose in a folder with no notes in it yet (same
+            {/* Nothing to disclose in a folder with nothing in it yet (same
                 rule as the Files tree). */}
-            {sub.notes.length > 0 || sub.dirs.size > 0 || isOpen ? <Twistie open={isOpen} /> : null}
+            {sub.notes.length > 0 || sub.files.length > 0 || sub.dirs.size > 0 || isOpen
+              ? <Twistie open={isOpen} />
+              : null}
           </span>
           <span className="tree-icon file-icon" style={{ color: "var(--blue)" }}>
             <FileIcon kind="folder" open={isOpen} />
@@ -264,6 +284,23 @@ export default function DocsTree({
             <NoteGlyph />
           </span>
           <span className="tree-name" title={note.path}>{note.title}</span>
+        </div>,
+      );
+    }
+    for (const file of dir.files) {
+      const icon = fileIcon(file.name);
+      rows.push(
+        <div key={file.path}
+          className="tree-row file attachment"
+          style={pad}
+          data-drop-dir={dir.path}
+          onClick={() => onOpenFile(file.path)}
+          onContextMenu={(e) => openMenu(e, { path: file.path, isDir: false })}>
+          <span className="tree-twistie-slot" />
+          <span className="tree-icon file-icon" style={{ color: icon.color }}>
+            <FileIcon kind={icon.kind} />
+          </span>
+          <span className="tree-name" title={file.path}>{file.name}</span>
         </div>,
       );
     }
@@ -352,7 +389,7 @@ export default function DocsTree({
               </div>
             ))}
           </div>
-        ) : index && index.docs.size === 0 && index.dirs.length === 0 ? (
+        ) : index && index.docs.size === 0 && index.dirs.length === 0 && index.attachments.length === 0 ? (
           <div className="docs-search-none">No notes yet. Create one.</div>
         ) : (
           renderDir(tree, 0)
@@ -361,7 +398,7 @@ export default function DocsTree({
 
       {(dropDir !== null || importing) && (
         <div className="tree-drop-hint">
-          {importing ? "Adding…" : `Drop markdown into ${dropDir ? `${dropDir}/` : docsDir ? `${docsDir}/` : "/"}`}
+          {importing ? "Adding…" : `Drop files into ${dropDir ? `${dropDir}/` : docsDir ? `${docsDir}/` : "/"}`}
         </div>
       )}
 
@@ -388,7 +425,11 @@ export default function DocsTree({
       )}
       {confirmDel && (
         <ConfirmDialog
-          title={confirmDel.isDir ? "Delete folder?" : "Delete note?"}
+          title={
+            confirmDel.isDir
+              ? "Delete folder?"
+              : isMarkdown(baseName(confirmDel.path)) ? "Delete note?" : "Delete file?"
+          }
           body={`Move "${baseName(confirmDel.path)}" to the trash.`}
           confirmLabel="Delete"
           danger

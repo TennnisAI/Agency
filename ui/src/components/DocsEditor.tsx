@@ -26,6 +26,9 @@ export interface DocsEditorHandle {
   flush: () => Promise<void>;
   /** Grow the properties card by one row (creating the block if absent). */
   addProperty: () => void;
+  /** Type text in at the cursor, as if the user had. Backs the offer to link a
+   * just-dropped attachment from the note being written. */
+  insertAtCursor: (text: string) => void;
 }
 
 const AUTOSAVE_MS = 800;
@@ -177,6 +180,16 @@ export default forwardRef<DocsEditorHandle, {
     addProperty: () => {
       const view = viewRef.current;
       if (view) requestAddProperty(view);
+    },
+    insertAtCursor: (text: string) => {
+      const view = viewRef.current;
+      if (!view) return;
+      const { from, to } = view.state.selection.main;
+      view.dispatch({
+        changes: { from, to, insert: text },
+        selection: { anchor: from + text.length },
+      });
+      view.focus();
     },
     scrollToHeading: (text: string) => {
       const view = viewRef.current;

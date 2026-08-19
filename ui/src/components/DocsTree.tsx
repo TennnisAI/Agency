@@ -6,6 +6,7 @@ import {
 import { DocsIndex, SearchHit, fmFilterPaths, mergeBodyHits, searchDocs, searchLocal, stripExt } from "../lib/docsIndex";
 import { parseDocsQuery } from "../lib/docsQuery";
 import { joinPath, parentPath, baseName } from "../lib/filePath";
+import { TreeDir, allDirPaths, buildDocsTree } from "../lib/docsTree";
 import { FileIcon } from "./fileIcons";
 import Menu, { MenuEntry } from "./git/Menu";
 import PromptDialog from "./PromptDialog";
@@ -14,13 +15,6 @@ import { toastError, toastInfo } from "../lib/toast";
 import { dirAtPoint, useFileDrop } from "../hooks/useFileDrop";
 import { dropName, isMarkdown, nameList, uniqueName } from "../lib/fileDrop";
 import { revealLabel, reveal, copyAbsPath } from "../lib/fileActions";
-
-// A folder level derived from the index's note paths.
-interface TreeDir {
-  path: string; // rel to docs dir
-  dirs: Map<string, TreeDir>;
-  notes: { path: string; title: string }[];
-}
 
 type Dialog =
   | { kind: "newNote"; dir: string }
@@ -39,9 +33,9 @@ function Twistie({ open }: { open: boolean }) {
 /**
  * The Docs tab's note tree + search pane. Renders directly from the index (no
  * extra IPC; the corpus poll keeps it fresh). Markdown-only by design — other
- * files stay reachable via the Files tab. `extraDirs` keeps freshly created
- * empty folders visible until a note lands in them (the corpus can't see
- * folders without markdown).
+ * files stay reachable via the Files tab. Folders come from the note
+ * paths plus the scan's empty-folder list, so a folder with nothing in it yet
+ * is a real row rather than something this view has to remember.
  */
 export default function DocsTree({
   root, docsDir, rootLabel, index, selected, query, onQuery, onSelect, onOpenHit, onRenamed, onDeleted, refresh,
@@ -61,7 +55,6 @@ export default function DocsTree({
   refresh: () => Promise<void>;
 }) {
   const [open, setOpen] = useState<Set<string>>(new Set());
-  const [extraDirs, setExtraDirs] = useState<string[]>([]);
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const [confirmDel, setConfirmDel] = useState<{ path: string; isDir: boolean } | null>(null);
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuEntry[] } | null>(null);
@@ -69,59 +62,12 @@ export default function DocsTree({
   const rootKey = `${root.kind}:${root.id}:${docsDir}`;
   useEffect(() => {
     setOpen(new Set());
-    setExtraDirs([]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rootKey]);
 
-  const tree = useMemo(() => {
-    const rootDir: TreeDir = { path: "", dirs: new Map(), notes: [] };
-    const dirAt = (dir: string): TreeDir => {
-      if (dir === "") return rootDir;
-      let cur = rootDir;
-      let acc = "";
-      for (const part of dir.split("/")) {
-        acc = joinPath(acc, part);
-        let next = cur.dirs.get(part);
-        if (!next) {
-          next = { path: acc, dirs: new Map(), notes: [] };
-          cur.dirs.set(part, next);
-        }
-        cur = next;
-      }
-      return cur;
-    };
-    if (index) {
-      for (const d of index.docs.values()) {
-        dirAt(parentPath(d.path)).notes.push({ path: d.path, title: d.title });
-      }
-    }
-    for (const dir of extraDirs) dirAt(dir);
-    const sortDir = (d: TreeDir) => {
-      // The journal reads newest-first (date-stamped names, so name order is
-      // date order); everything else alphabetical.
-      if (d.path === "journal") {
-        d.notes.sort((a, b) => b.path.localeCompare(a.path));
-      } else {
-        d.notes.sort((a, b) => a.title.localeCompare(b.title));
-      }
-      for (const sub of d.dirs.values()) sortDir(sub);
-    };
-    sortDir(rootDir);
-    return rootDir;
-  }, [index, extraDirs]);
-
+  const tree = useMemo(() => buildDocsTree(index), [index]);
   // Every folder in the tree, so the toolbar button can open them all at once.
-  const allDirs = useMemo(() => {
-    const out: string[] = [];
-    const walk = (d: TreeDir) => {
-      for (const sub of d.dirs.values()) {
-        out.push(sub.path);
-        walk(sub);
-      }
-    };
-    walk(tree);
-    return out;
-  }, [tree]);
+  const allDirs = useMemo(() => allDirPaths(tree), [tree]);
 
   // Drives the toolbar button's two directions. Measured against the live tree
   // rather than `open.size`, so paths left over from deleted folders don't make
@@ -164,7 +110,9 @@ export default function DocsTree({
       } else {
         const path = joinPath(dir, name);
         await createDir(root, toRepo(path));
-        setExtraDirs((d) => [...d, path]);
+        // Empty folders are part of the scan, so the new one comes back from
+        // disk and survives the tab switch that used to make it disappear.
+        await refresh();
         setOpen((s) => new Set(s).add(path));
       }
     } catch (e) {
@@ -187,7 +135,6 @@ export default function DocsTree({
   const doDelete = async (path: string) => {
     try {
       await trashPath(root, toRepo(path));
-      setExtraDirs((d) => d.filter((x) => x !== path && !x.startsWith(path + "/")));
       await refresh();
       onDeleted(path);
     } catch (e) {
@@ -291,7 +238,9 @@ export default function DocsTree({
           onClick={() => toggle(sub.path)}
           onContextMenu={(e) => openMenu(e, { path: sub.path, isDir: true })}>
           <span className="tree-twistie-slot">
-            <Twistie open={isOpen} />
+            {/* Nothing to disclose in a folder with no notes in it yet (same
+                rule as the Files tree). */}
+            {sub.notes.length > 0 || sub.dirs.size > 0 || isOpen ? <Twistie open={isOpen} /> : null}
           </span>
           <span className="tree-icon file-icon" style={{ color: "var(--blue)" }}>
             <FileIcon kind="folder" open={isOpen} />
@@ -402,7 +351,7 @@ export default function DocsTree({
               </div>
             ))}
           </div>
-        ) : index && index.docs.size === 0 && extraDirs.length === 0 ? (
+        ) : index && index.docs.size === 0 && index.emptyDirs.length === 0 ? (
           <div className="docs-search-none">No notes yet. Create one.</div>
         ) : (
           renderDir(tree, 0)

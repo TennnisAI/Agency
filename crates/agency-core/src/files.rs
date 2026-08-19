@@ -351,30 +351,48 @@ pub struct DocFile {
 const MAX_CORPUS_FILES: usize = 2000;
 const MAX_CORPUS_BYTES: u64 = 20_000_000;
 
+/// Cap on reported empty folders, so a pathological tree can't flood the pane.
+const MAX_CORPUS_DIRS: usize = 2000;
+
+/// One pass over the corpus: every markdown file, plus every folder that holds
+/// nothing at all.
+struct Walk {
+    /// `(rel_path, abs_path, metadata)` per markdown file.
+    files: Vec<(String, std::path::PathBuf, std::fs::Metadata)>,
+    /// Rel paths of folders with no visible entries, sorted. A folder with
+    /// notes under it is implied by their paths; one holding only non-markdown
+    /// files stays hidden, same as before. This is the "I just made it and it
+    /// is still empty" case, which is otherwise invisible to a markdown walk.
+    empty_dirs: Vec<String>,
+}
+
 /// Walk every markdown file under `rel_dir` (same skip rules everywhere the
 /// corpus is touched: hidden dirs, symlinks, node_modules; file-count cap).
-/// Returns `(rel_path, abs_path, metadata)` per file — the shared base for the
-/// full read, the stat-only pass, and anything else that must agree with them
-/// on what "the corpus" is.
-fn walk_markdown(
-    root: &Path,
-    rel_dir: &str,
-) -> Result<Vec<(String, std::path::PathBuf, std::fs::Metadata)>> {
+/// The shared base for the full read, the stat-only pass, and anything else
+/// that must agree with them on what "the corpus" is.
+///
+/// Emptiness uses the same skip rules: a folder holding only `.DS_Store` reads
+/// as empty, because Finder minting one behind the user's back must not make a
+/// folder they just created vanish from the tree.
+fn walk_markdown(root: &Path, rel_dir: &str) -> Result<Walk> {
     let base = resolve_within(root, rel_dir)?;
-    let mut out = Vec::new();
+    let mut out = Walk { files: Vec::new(), empty_dirs: Vec::new() };
     let mut stack = vec![(base, String::new())];
     while let Some((dir, prefix)) = stack.pop() {
         let entries = match std::fs::read_dir(&dir) {
             Ok(it) => it,
             Err(_) => continue, // unreadable subdir: skip, don't fail the corpus
         };
+        let mut seen = false;
         for entry in entries {
             let Ok(entry) = entry else { continue };
             let name = entry.file_name().to_string_lossy().into_owned();
+            let skipped = name.starts_with('.') || name == "node_modules";
+            seen |= !skipped;
             let rel = if prefix.is_empty() { name.clone() } else { format!("{prefix}/{name}") };
             let Ok(ft) = entry.file_type() else { continue };
             if ft.is_dir() {
-                if name.starts_with('.') || name == "node_modules" {
+                if skipped {
                     continue;
                 }
                 stack.push((entry.path(), rel));
@@ -387,13 +405,19 @@ fn walk_markdown(
             if !lower.ends_with(".md") && !lower.ends_with(".markdown") {
                 continue;
             }
-            if out.len() >= MAX_CORPUS_FILES {
+            if out.files.len() >= MAX_CORPUS_FILES {
+                out.empty_dirs.sort();
                 return Ok(out);
             }
             let Ok(meta) = entry.metadata() else { continue };
-            out.push((rel, entry.path(), meta));
+            out.files.push((rel, entry.path(), meta));
+        }
+        // The scanned dir itself is the tree root, never a row in it.
+        if !seen && !prefix.is_empty() && out.empty_dirs.len() < MAX_CORPUS_DIRS {
+            out.empty_dirs.push(prefix);
         }
     }
+    out.empty_dirs.sort();
     Ok(out)
 }
 
@@ -405,7 +429,7 @@ fn walk_markdown(
 pub fn read_markdown_corpus(root: &Path, rel_dir: &str) -> Result<Vec<DocFile>> {
     let mut out = Vec::new();
     let mut total: u64 = 0;
-    for (rel, abs, meta) in walk_markdown(root, rel_dir)? {
+    for (rel, abs, meta) in walk_markdown(root, rel_dir)?.files {
         if total >= MAX_CORPUS_BYTES {
             return Ok(out);
         }
@@ -433,23 +457,40 @@ pub struct DocStat {
     pub size: u64,
 }
 
+/// What a docs poll gets back: a change signature per markdown file, and the
+/// folders that hold nothing.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocsScan {
+    pub files: Vec<DocStat>,
+    /// Rel paths of empty folders, sorted. The tree derives its folders from
+    /// note paths, so without these a folder the user just created has nowhere
+    /// to come from and vanishes the moment the view is rebuilt.
+    pub empty_dirs: Vec<String>,
+}
+
 /// Stat-only pass over the markdown corpus — same walk, same skips, no body
 /// reads. Steady-state polls diff this against their cache and fetch bodies
 /// only for files that actually changed.
-pub fn scan_markdown_stats(root: &Path, rel_dir: &str) -> Result<Vec<DocStat>> {
-    Ok(walk_markdown(root, rel_dir)?
-        .into_iter()
-        .map(|(rel, _, meta)| DocStat {
-            path: rel,
-            mtime_ms: meta
-                .modified()
-                .ok()
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_millis() as i64)
-                .unwrap_or(0),
-            size: meta.len(),
-        })
-        .collect())
+pub fn scan_markdown_stats(root: &Path, rel_dir: &str) -> Result<DocsScan> {
+    let walk = walk_markdown(root, rel_dir)?;
+    Ok(DocsScan {
+        files: walk
+            .files
+            .into_iter()
+            .map(|(rel, _, meta)| DocStat {
+                path: rel,
+                mtime_ms: meta
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0),
+                size: meta.len(),
+            })
+            .collect(),
+        empty_dirs: walk.empty_dirs,
+    })
 }
 
 /// Read a named subset of the markdown corpus (the poll's "these changed"
@@ -516,7 +557,7 @@ fn parse_task_line(line: &str) -> Option<(bool, &str)> {
 pub fn scan_tasks(root: &Path, rel_dir: &str) -> Result<Vec<TaskHit>> {
     let mut out = Vec::new();
     let mut total: u64 = 0;
-    for (rel, abs, meta) in walk_markdown(root, rel_dir)? {
+    for (rel, abs, meta) in walk_markdown(root, rel_dir)?.files {
         if total >= MAX_CORPUS_BYTES {
             break;
         }
@@ -769,7 +810,7 @@ mod corpus_stats_tests {
         std::fs::write(root.join("docs/.hidden/c.md"), "skipped").unwrap();
 
         let mut stat_paths: Vec<String> =
-            scan_markdown_stats(root, "docs").unwrap().into_iter().map(|s| s.path).collect();
+            scan_markdown_stats(root, "docs").unwrap().files.into_iter().map(|s| s.path).collect();
         let mut corpus_paths: Vec<String> =
             read_markdown_corpus(root, "docs").unwrap().into_iter().map(|f| f.path).collect();
         stat_paths.sort();
@@ -779,12 +820,12 @@ mod corpus_stats_tests {
 
         // Signatures change when a file does.
         let before = scan_markdown_stats(root, "docs").unwrap();
-        let a = before.iter().find(|s| s.path == "a.md").unwrap();
+        let a = before.files.iter().find(|s| s.path == "a.md").unwrap();
         assert_eq!(a.size, 3);
         assert!(a.mtime_ms > 0);
         std::fs::write(root.join("docs/a.md"), "# a grew").unwrap();
         let after = scan_markdown_stats(root, "docs").unwrap();
-        assert_ne!(after.iter().find(|s| s.path == "a.md").unwrap().size, a.size);
+        assert_ne!(after.files.iter().find(|s| s.path == "a.md").unwrap().size, a.size);
     }
 
     #[test]

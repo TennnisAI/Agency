@@ -42,6 +42,11 @@ export interface Backlink {
 
 export interface DocsIndex {
   docs: Map<string, DocMeta>;
+  /** Folders holding no notes, rel to the docs dir. Not derivable from the
+   * corpus (a markdown walk cannot see a folder without markdown in it), so
+   * the scan hands them over and the tree renders them alongside the folders
+   * the note paths imply. */
+  emptyDirs: string[];
   /** lowercased basename → paths that have it (shortest path first). */
   byBase: Map<string, string[]>;
   /** resolved target path → references pointing at it. */
@@ -256,7 +261,7 @@ export function resolveLink(index: DocsIndex, target: string): string | null {
   return best;
 }
 
-export function buildIndex(files: DocFile[]): DocsIndex {
+export function buildIndex(files: DocFile[], emptyDirs: string[] = []): DocsIndex {
   const docs = new Map<string, DocMeta>();
   for (const f of files) docs.set(f.path, parseDoc(f));
 
@@ -272,7 +277,7 @@ export function buildIndex(files: DocFile[]): DocsIndex {
     list.sort((a, b) => a.length - b.length || a.localeCompare(b));
   }
 
-  const index: DocsIndex = { docs, byBase, backlinks: new Map(), tags: new Map() };
+  const index: DocsIndex = { docs, emptyDirs, byBase, backlinks: new Map(), tags: new Map() };
 
   for (const d of docs.values()) {
     for (const link of d.links) {

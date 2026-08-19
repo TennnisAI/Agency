@@ -73,17 +73,18 @@ describe("describeCheckout", () => {
 describe("checkoutTooltip", () => {
   it("names the place and the branch", () => {
     expect(checkoutTooltip(at({}), "main"))
-      .toBe("You are viewing the Agency checkout on branch main.");
+      .toBe("You are viewing the Agency checkout on branch main. Opens Source Control for this checkout.");
     expect(checkoutTooltip(at({ root: { kind: "run", id: "r1" } }), "agent/fix-login"))
-      .toBe("You are viewing claude: Fix login's own worktree on branch agent/fix-login.");
+      .toBe("You are viewing claude: Fix login's own worktree on branch agent/fix-login. Opens Source Control for this worktree.");
   });
 
   it("drops the branch clause when there is no git", () => {
-    expect(checkoutTooltip(at({}), null)).toBe("You are viewing the Agency checkout.");
+    expect(checkoutTooltip(at({}), null))
+      .toBe("You are viewing the Agency checkout. Opens Source Control for this checkout.");
   });
 
   it("appends the reason the selected agent isn't on show", () => {
     expect(checkoutTooltip(at({ selectedRunId: "r1" }), "main"))
-      .toBe("You are viewing the Agency checkout on branch main. claude: Fix login has a worktree of its own; browse it from the Files tab.");
+      .toBe("You are viewing the Agency checkout on branch main. claude: Fix login has a worktree of its own; browse it from the Files tab. Opens Source Control for this checkout.");
   });
 });

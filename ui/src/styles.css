@@ -1764,12 +1764,18 @@ input.settings-notif-secs { width: 90px; flex: 0 0 auto; }
 .files-editor-pane { flex: 1; min-height: 0; flex-direction: column; }
 
 /* Which working tree the Docs / Files tab is reading: the source-control branch
-   bar's quieter twin, a caption rather than a set of controls. */
+   bar's quieter twin. A button, like the status bar's branch — it reads as a
+   caption until you hover it, then it is the way to Source Control for the tree
+   it names. Full width so the whole strip is the target, and text-aligned left
+   so it still reads as a bar rather than a control. */
 .checkout-bar {
   display: flex; align-items: center; gap: 8px; flex-shrink: 0; min-width: 0;
-  padding: 4px 10px; border-bottom: 1px solid var(--line);
-  background: var(--mantle); font-size: 11.5px; color: var(--sub0);
+  width: 100%; text-align: left; cursor: pointer;
+  padding: 4px 10px; border: none; border-bottom: 1px solid var(--line); border-radius: 0;
+  background: var(--mantle); font-family: inherit; font-size: 11.5px; color: var(--sub0);
 }
+.checkout-bar:hover { background: var(--s0); }
+.checkout-bar:hover .checkout-branch { text-decoration: underline; }
 .checkout-scope { color: var(--text); font-weight: 600; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .checkout-branch { display: inline-flex; align-items: center; gap: 4px; min-width: 0; color: var(--blue); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .checkout-branch svg { flex-shrink: 0; }

@@ -90,6 +90,19 @@ export default function AgentsView({
       : { kind: "project", id: project.id }
     : null;
 
+  // Where the Docs / Files checkout bar goes when clicked: Source Control on
+  // the tree it names. The Files tree is rooted at whatever source control
+  // already targets (both follow the run selection, and a run without a
+  // worktree resolves to the checkout either way), so the tab is the whole
+  // move. Docs is always the project checkout, so from an agent's worktree it
+  // has to drop the selection first — the grid is what points source control at
+  // the checkout, the same way the status bar's unpushed-commits button does.
+  const openFilesCheckout = () => setTab("source");
+  const openDocsCheckout = () => {
+    if (selected?.worktree) setView("grid");
+    setTab("source");
+  };
+
   // ⌘P quick-open, everywhere except the Docs tab — DocsView owns ⌘P there
   // (its note switcher) and is only mounted on that tab, so exactly one
   // handler acts per keypress.
@@ -235,7 +248,7 @@ export default function AgentsView({
 
           {tab === "docs" && (
             <div className="source-wrap">
-              <DocsView project={project} />
+              <DocsView project={project} onOpenCheckout={openDocsCheckout} />
             </div>
           )}
 
@@ -252,7 +265,7 @@ export default function AgentsView({
 
           {tab === "files" && (
             <div className="source-wrap">
-              <FilesView root={filesRoot} project={project} agentsOpen={filesAgents} />
+              <FilesView root={filesRoot} project={project} agentsOpen={filesAgents} onOpenCheckout={openFilesCheckout} />
             </div>
           )}
 

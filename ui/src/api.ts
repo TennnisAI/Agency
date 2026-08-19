@@ -1272,8 +1272,15 @@ export interface DocStat {
   mtimeMs: number;
   size: number;
 }
+export interface DocsScan {
+  files: DocStat[];
+  // Folders under the docs dir that hold nothing, sorted. The tree's folders
+  // otherwise come from note paths alone, which hides a folder until it has a
+  // note in it.
+  emptyDirs: string[];
+}
 export const docsCorpusStats = (root: FileRoot, docsDir: string) =>
-  invoke<DocStat[]>("docs_corpus_stats", { root, docsDir });
+  invoke<DocsScan>("docs_corpus_stats", { root, docsDir });
 // Read a named subset of the corpus (the poll's "these changed" list).
 export const readDocsFiles = (root: FileRoot, docsDir: string, paths: string[]) =>
   invoke<DocFile[]>("read_docs_files", { root, docsDir, paths });

@@ -165,6 +165,41 @@ fn read_markdown_corpus_walks_nested_md_only() {
 }
 
 #[test]
+fn scan_reports_empty_folders_so_a_new_one_stays_visible() {
+    let dir = tempfile::tempdir().unwrap();
+    let docs = dir.path().join("docs");
+    fs::create_dir_all(docs.join("ideas")).unwrap();
+    fs::create_dir_all(docs.join("research/2026")).unwrap();
+    fs::create_dir_all(docs.join("assets")).unwrap();
+    fs::create_dir_all(docs.join("notes")).unwrap();
+    fs::create_dir_all(docs.join(".hidden")).unwrap();
+    fs::create_dir_all(docs.join("node_modules")).unwrap();
+    fs::write(docs.join("index.md"), "# Index\n").unwrap();
+    fs::write(docs.join("notes/a.md"), "# A\n").unwrap();
+    // Finder mints these behind the user's back; one must not make a folder
+    // they just created read as populated and vanish from the tree.
+    fs::write(docs.join("ideas/.DS_Store"), [0u8]).unwrap();
+    fs::write(docs.join("assets/logo.png"), [0u8, 1]).unwrap();
+
+    let scan = files::scan_markdown_stats(dir.path(), "docs").unwrap();
+    let mut paths: Vec<_> = scan.files.iter().map(|f| f.path.as_str()).collect();
+    paths.sort();
+    assert_eq!(paths, vec!["index.md", "notes/a.md"]);
+    // "research" holds a subfolder, "assets" a file, "notes" a note: not empty.
+    // Hidden and node_modules folders are outside the corpus entirely.
+    assert_eq!(scan.empty_dirs, vec!["ideas".to_string(), "research/2026".to_string()]);
+}
+
+#[test]
+fn scan_reports_no_empty_folder_for_the_docs_dir_itself() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir(dir.path().join("docs")).unwrap();
+    let scan = files::scan_markdown_stats(dir.path(), "docs").unwrap();
+    assert!(scan.files.is_empty());
+    assert!(scan.empty_dirs.is_empty());
+}
+
+#[test]
 fn read_markdown_corpus_rejects_traversal_and_flags_oversize() {
     let dir = tempfile::tempdir().unwrap();
     assert!(files::read_markdown_corpus(dir.path(), "../elsewhere").is_err());

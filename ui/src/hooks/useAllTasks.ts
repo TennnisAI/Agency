@@ -42,8 +42,10 @@ export function useAllTasks(active: boolean) {
             const dir = await detectDocsDir(project.id);
             if (dir === null) return null;
             const root: FileRoot = { kind: "project", id: project.id };
-            const stats = await docsCorpusStats(root, dir);
-            const sig = stats
+            const scan = await docsCorpusStats(root, dir);
+            // Tasks live in files, so an empty folder appearing is not a reason
+            // to rescan.
+            const sig = scan.files
               .map((s) => `${s.path}:${s.mtimeMs}:${s.size}`)
               .sort()
               .join("|");

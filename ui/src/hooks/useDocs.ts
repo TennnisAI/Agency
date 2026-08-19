@@ -32,7 +32,16 @@ export function useDocs(projectId: string | null, active: boolean) {
   // "never loaded" so the first pass always builds an index.
   const filesRef = useRef<Map<string, DocFile>>(new Map());
   const sigRef = useRef<Map<string, string>>(new Map());
+  // Folders with nothing in them: the scan reports these because the corpus
+  // cannot, and a poll that finds the list changed rebuilds the index even
+  // when no note did (creating a folder touches no markdown).
+  const emptyRef = useRef<string[]>([]);
   const builtRef = useRef(false);
+  // Last pass wins. A mutation refreshes while a poll tick is already in
+  // flight, and the tick's older answer (taken before the write) would
+  // otherwise land on top and un-create what the user just made until the next
+  // tick corrected it.
+  const seqRef = useRef(0);
 
   const refresh = useCallback(async () => {
     const pid = projectRef.current;
@@ -49,20 +58,25 @@ export function useDocs(projectId: string | null, active: boolean) {
         if (dir == null) return;
       }
       const root: FileRoot = { kind: "project", id: pid };
-      const stats = await docsCorpusStats(root, dir);
-      if (projectRef.current !== pid || dirRef.current !== dir) return;
+      const seq = ++seqRef.current;
+      const scan = await docsCorpusStats(root, dir);
+      if (projectRef.current !== pid || dirRef.current !== dir || seqRef.current !== seq) return;
 
-      const nextSig = new Map(stats.map((s) => [s.path, `${s.mtimeMs}:${s.size}`]));
+      const nextSig = new Map(scan.files.map((s) => [s.path, `${s.mtimeMs}:${s.size}`]));
       const changed: string[] = [];
       for (const [path, sig] of nextSig) {
         if (sigRef.current.get(path) !== sig) changed.push(path);
       }
       const removed = [...sigRef.current.keys()].filter((p) => !nextSig.has(p));
-      if (changed.length === 0 && removed.length === 0 && builtRef.current) return;
+      // Both lists arrive sorted, so position-wise comparison is enough.
+      const dirsChanged =
+        scan.emptyDirs.length !== emptyRef.current.length ||
+        scan.emptyDirs.some((d, i) => d !== emptyRef.current[i]);
+      if (changed.length === 0 && removed.length === 0 && !dirsChanged && builtRef.current) return;
 
       if (changed.length > 0) {
         const files = await readDocsFiles(root, dir, changed);
-        if (projectRef.current !== pid || dirRef.current !== dir) return;
+        if (projectRef.current !== pid || dirRef.current !== dir || seqRef.current !== seq) return;
         for (const f of files) filesRef.current.set(f.path, f);
         // A changed path the read skipped (binary, vanished mid-poll) must not
         // linger with its stale body; the signature still records the attempt
@@ -74,12 +88,13 @@ export function useDocs(projectId: string | null, active: boolean) {
       }
       for (const p of removed) filesRef.current.delete(p);
       sigRef.current = nextSig;
+      emptyRef.current = scan.emptyDirs;
       builtRef.current = true;
       if (import.meta.env.DEV && (changed.length > 0 || removed.length > 0)) {
         // Ship-gate probe: an idle corpus logs nothing.
         console.debug(`[docs] corpus refresh: ${changed.length} read, ${removed.length} removed`);
       }
-      setIndexed({ pid, index: buildIndex([...filesRef.current.values()]) });
+      setIndexed({ pid, index: buildIndex([...filesRef.current.values()], scan.emptyDirs) });
     } catch {
       /* transient IPC errors: keep the last good index */
     }
@@ -90,6 +105,7 @@ export function useDocs(projectId: string | null, active: boolean) {
     setIndexed(null);
     filesRef.current = new Map();
     sigRef.current = new Map();
+    emptyRef.current = [];
     builtRef.current = false;
     if (!active || !projectId) return;
     void refresh();

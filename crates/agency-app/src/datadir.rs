@@ -128,6 +128,7 @@ mod tests {
                 loop_state: None,
                 issue_id: None,
                 worktree: true,
+                model: None,
             })
             .unwrap();
         }

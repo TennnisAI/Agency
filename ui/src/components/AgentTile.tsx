@@ -50,7 +50,17 @@ export default function AgentTile({ run }: { run: RunInfo }) {
           <span className="run-dot" title="A run script is running in this workspace" />
         )}
         {run.raceId && <span className="badge race" title="Racing: same prompt, parallel attempts">∥</span>}
-        <span className={isTerminal ? "badge" : badgeClass(run.agent)}>{isTerminal ? "terminal" : run.agent}</span>
+        {/* Agent, and the model it was started on when that was chosen. Racing
+            the same agent's models is only readable if the tile says which one
+            each attempt is, and a run's model is otherwise invisible once it
+            is running. Nothing shown for an agent left on its own default. */}
+        <span
+          className={isTerminal ? "badge" : badgeClass(run.agent)}
+          title={run.model ? `${run.agent} on ${run.model}` : undefined}
+        >
+          {isTerminal ? "terminal" : run.agent}
+          {run.model && <span className="badge-model">{run.model}</span>}
+        </span>
       </div>
       {!isTerminal && (
         <div className="tile-meta">

@@ -14,7 +14,7 @@ import Resizer from "./components/Resizer";
 import Toasts from "./components/Toasts";
 import { useShortcuts } from "./hooks/useShortcuts";
 import { usePaneWidth } from "./hooks/usePaneWidth";
-import { FileRoot, Project, RepoReadiness, RunInfo, agentOnboardingNeeded, checkForUpdate, confirmQuit, createDir, createFile, createRun, ensureWorkspaceGuide, getUpdateCheckEnabled, getWorkspace, gitLogGraph, inspectRepo, listArchivedRuns, listIssues, listProjects, readFile, setMenuContext, setUiState, writeFile } from "./api";
+import { FileRoot, Project, RepoReadiness, RunInfo, agentOnboardingNeeded, checkForUpdate, confirmQuit, createDir, createFile, createRun, ensureWorkspaceGuide, getUpdateCheckEnabled, getWorkspace, gitLogGraph, inspectRepo, listArchivedRuns, listIssues, listProjects, readFile, rememberedModel, setMenuContext, setUiState, writeFile } from "./api";
 import { pickDefaultAgent } from "./lib/defaultAgent";
 import { PENDING_ISSUE_KEY, PENDING_QUICKADD_KEY, isClosed, issueLabel } from "./lib/issues";
 import { NAVIGATE_EVENT, NavTarget } from "./lib/navigate";
@@ -217,7 +217,10 @@ function Shell() {
     try {
       const agent = await pickDefaultAgent(ws.id, ws.default_agent);
       const prompt = `Narrate the weekly review note \`${path}\`. Read it, then write a short narrative summary of the week into its Notes section, drawing on the listed merges, closed issues, and archived runs. Keep the existing sections and wikilinks intact.`;
-      const run = await createRun(ws.id, prompt, agent, "HEAD", null, undefined, worktree);
+      // No picker on this path, so it repeats whatever that agent last ran on.
+      const run = await createRun(
+        ws.id, prompt, agent, await rememberedModel(agent), "HEAD", null, undefined, worktree,
+      );
       openRun(ws, run.id);
     } catch (e) {
       toastError(e, "Couldn't start agent");

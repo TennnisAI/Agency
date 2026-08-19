@@ -14,6 +14,8 @@ import { agentLabel } from "../agents";
 import GhSetupHint from "./GhSetupHint";
 import { useRuns } from "../store/runs";
 import { useModalKeys } from "../hooks/useModalKeys";
+import { useAgentModels } from "../hooks/useAgentModels";
+import ModelSelect from "./ModelSelect";
 
 // Start an agent from GitHub: an issue (its body becomes the agent's
 // prompt) or an existing PR (its head branch is checked out for review).
@@ -32,6 +34,14 @@ export default function GhImportDialog({
   const [picked, setPicked] = useState<number | null>(null);
   const [agents, setAgents] = useState<string[]>([]);
   const [agent, setAgent] = useState("claude");
+  // Re-seeded whenever the agent changes, until the user picks for themselves.
+  const { models, remembered } = useAgentModels();
+  const [model, setModel] = useState<string | null>(null);
+  const [modelTouched, setModelTouched] = useState(false);
+  useEffect(() => {
+    if (modelTouched) return;
+    setModel(remembered(agent));
+  }, [agent, remembered, modelTouched]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const firstItemRef = useRef<HTMLInputElement>(null);
@@ -93,8 +103,8 @@ export default function GhImportDialog({
     try {
       const run =
         mode === "issue"
-          ? await createRunFromIssue(selectedProjectId, picked, agent)
-          : await createRunFromPr(selectedProjectId, picked, agent);
+          ? await createRunFromIssue(selectedProjectId, picked, agent, model)
+          : await createRunFromPr(selectedProjectId, picked, agent, model);
       await refreshRuns();
       setFocusedRun(run.id);
       setView("focus");
@@ -159,11 +169,24 @@ export default function GhImportDialog({
           <>
             <div className="gh-pick-agent">
               <span>agent</span>
-              <select value={agent} onChange={(e) => setAgent(e.target.value)}>
+              <select
+                value={agent}
+                onChange={(e) => { setAgent(e.target.value); setModelTouched(false); }}
+              >
                 {agents.map((n) => (
                   <option key={n} value={n}>{agentLabel(n)}</option>
                 ))}
               </select>
+              {models[agent]?.supported && (
+                <>
+                  <span>model</span>
+                  <ModelSelect
+                    info={models[agent]}
+                    value={model}
+                    onChange={(m) => { setModel(m); setModelTouched(true); }}
+                  />
+                </>
+              )}
             </div>
             <div className="git-actions">
               <button disabled={picked === null || busy} onClick={create}>

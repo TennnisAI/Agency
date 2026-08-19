@@ -5,7 +5,9 @@ import { agentLabel } from "../agents";
 import { useRuns, SpawnOpts } from "../store/runs";
 import { effectiveMergeTarget } from "../lib/branchTargets";
 import { useDismissOnResize } from "../hooks/useDismissOnResize";
+import { useAgentModels } from "../hooks/useAgentModels";
 import BranchSelect from "./BranchSelect";
+import ModelSelect from "./ModelSelect";
 import RaceDialog from "./RaceDialog";
 import LoopDialog from "./LoopDialog";
 import GhImportDialog from "./GhImportDialog";
@@ -50,6 +52,15 @@ export default function AgentAddMenu({
   const [loopOpen, setLoopOpen] = useState(false);
   const [importMode, setImportMode] = useState<"issue" | "pr" | null>(null);
   const btnRef = useRef<HTMLButtonElement>(null);
+
+  // Model per agent, seeded from what each was last launched on, so the row
+  // reads as the spawn it is about to do. Picking one here changes only this
+  // menu's next spawn; it becomes the remembered choice once a run starts on
+  // it. Refreshed on open, alongside the agent list.
+  const { models, reload: reloadModels, remembered } = useAgentModels();
+  const [picked, setPicked] = useState<Record<string, string | null>>({});
+  const modelFor = (agent: string) =>
+    agent in picked ? picked[agent] : remembered(agent);
 
   // Kept in a ref so a host passing a fresh closure each render doesn't
   // re-announce the same state.
@@ -122,6 +133,9 @@ export default function AgentAddMenu({
         loadAgents();
         // Re-read: Settings may have changed since this menu last mounted.
         loadWorktreeDefault();
+        // And a run started elsewhere may have moved an agent's model on.
+        reloadModels();
+        setPicked({});
       }
       if (next && btnRef.current) {
         const r = btnRef.current.getBoundingClientRect();
@@ -146,7 +160,11 @@ export default function AgentAddMenu({
 
   const choose = (id: string) => {
     setOpen(false);
-    if (!showPicker) return onSpawn(id);
+    // Stated on every spawn, like the worktree flag below: what the row showed
+    // is what starts, whether it came from the last run or from a pick just
+    // made here. `null` is the agent's own default, which is a real choice.
+    const model = modelFor(id);
+    if (!showPicker) return onSpawn(id, { model });
     // The flag is always stated, never left to the Settings default: the box
     // in front of the user is what this spawn does, whichever way it was set.
     // Issue dispatch has no box (it always cuts a worktree), so a default of
@@ -156,6 +174,7 @@ export default function AgentAddMenu({
       base: (wantsWorktree ? base : current) || "HEAD",
       mergeTarget,
       worktree: wantsWorktree,
+      model,
     });
   };
   const chooseTerminal = () => { setOpen(false); onTerminal(); };
@@ -197,8 +216,21 @@ export default function AgentAddMenu({
         <>
           <div className="agent-menu-backdrop" onClick={() => setOpen(false)} />
           <div className="agent-menu" style={{ position: "fixed", ...coords }}>
+            {/* Agent and model on one row: the name starts the agent, the chip
+                beside it says which model it will start on and opens the list.
+                Agents whose CLI takes no model flag show no chip. */}
             {agents.map((a) => (
-              <button key={a.name} onClick={() => choose(a.name)}>{agentLabel(a.name)}</button>
+              <div key={a.name} className="agent-menu-row">
+                <button className="agent-menu-name" onClick={() => choose(a.name)}>
+                  {agentLabel(a.name)}
+                </button>
+                <ModelSelect
+                  compact
+                  info={models[a.name]}
+                  value={modelFor(a.name)}
+                  onChange={(m) => setPicked((p) => ({ ...p, [a.name]: m }))}
+                />
+              </div>
             ))}
             {/* A race gives every attempt its own branch and a loop respawns on
                 one, so both need a repository to exist. */}

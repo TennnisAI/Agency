@@ -36,7 +36,7 @@ import { TaskExclusion, TaskGroup, isTaskExcluded, openTaskCount, promoteBody } 
 import { toastError } from "../lib/toast";
 import { useAllTasks } from "../hooks/useAllTasks";
 import { useGitlessProjects } from "../hooks/useRepoReadiness";
-import { useRuns } from "../store/runs";
+import { useRuns, SpawnOpts } from "../store/runs";
 import Menu, { MenuEntry } from "./git/Menu";
 import IssueRow from "./IssueRow";
 import ConfirmDialog from "./ConfirmDialog";
@@ -114,7 +114,7 @@ export default function HomeIssues({
     issue: Issue;
     agentId: string;
     readiness: RepoReadiness;
-    opts?: { base: string; mergeTarget: string };
+    opts?: SpawnOpts;
   } | null>(null);
   const [missingAgent, setMissingAgent] = useState<{ project: Project; agentId: string } | null>(null);
 
@@ -179,7 +179,7 @@ export default function HomeIssues({
     project: Project,
     issue: Issue,
     agentId: string,
-    opts?: { base: string; mergeTarget: string },
+    opts?: SpawnOpts,
   ) {
     try {
       const installed = await agentInstalled(agentId).catch(() => true);
@@ -196,7 +196,7 @@ export default function HomeIssues({
       // the same short-circuit in useSpawnAgent.
       const spawnable = r.state === "notARepo" || (r.state === "ready" && !r.dirty);
       if (spawnable) {
-        const run = await startIssueRun(issue.id, agentId, opts?.base, opts?.mergeTarget);
+        const run = await startIssueRun(issue.id, agentId, opts?.model ?? null, opts?.base, opts?.mergeTarget);
         onOpenRun(project, run.id);
       } else {
         setPendingSpawn({ project, issue, agentId, readiness: r, opts });
@@ -600,7 +600,7 @@ export default function HomeIssues({
             const { project, issue, agentId, opts } = pendingSpawn;
             setPendingSpawn(null);
             try {
-              const run = await startIssueRun(issue.id, agentId, opts?.base, opts?.mergeTarget);
+              const run = await startIssueRun(issue.id, agentId, opts?.model ?? null, opts?.base, opts?.mergeTarget);
               onOpenRun(project, run.id);
             } catch (e) {
               toastError(e, "Couldn't start agent");

@@ -24,6 +24,18 @@ const SETTING_UPDATE_CHECK: &str = "update_check_enabled";
 /// "0" makes the add-agent menu default to working in the project checkout
 /// instead of cutting a worktree. Unset = worktrees on, the isolated default.
 const SETTING_DEFAULT_WORKTREE: &str = "default_worktree";
+/// Prefixes a per-agent setting holding the model last launched with. The
+/// value is the model id, or the empty string for the agent's own default —
+/// which is a choice in its own right, so it has to be distinguishable from
+/// never having chosen one.
+const SETTING_AGENT_MODEL_PREFIX: &str = "agent_model:";
+/// Prefixes a per-agent setting holding recently used model ids, newest first,
+/// newline-joined. It is what makes a model with no published alias (every
+/// Codex and Cursor id) a one-click choice the second time.
+const SETTING_AGENT_MODELS_PREFIX: &str = "agent_models:";
+/// How many recent model ids to keep per agent. Enough to cover switching
+/// between a few models; short enough that the picker stays a menu.
+const MODEL_MRU_MAX: usize = 6;
 
 /// How long a failing origin is left alone before the next automatic fetch,
 /// doubling per consecutive failure up to [`FETCH_BACKOFF_MAX`]. Also the
@@ -185,10 +197,31 @@ pub struct RunInfo {
     pub loop_config: Option<agency_core::loops::LoopConfig>,
     pub loop_state: Option<agency_core::loops::LoopState>,
     pub issue_id: Option<String>,
+    /// Model this run was launched on. None = the agent's own default.
+    pub model: Option<String>,
     /// Epoch seconds. Exposed for time views (the weekly note); archived_at is
     /// None for live runs and last-archive-wins after a restore cycle.
     pub created_at: i64,
     pub archived_at: Option<i64>,
+}
+
+/// What one agent's model picker offers, as sent to the UI.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentModelInfo {
+    pub agent: String,
+    /// False = this CLI takes no model flag, so the picker is not offered for
+    /// it at all and its runs use whatever it is configured to use.
+    pub supported: bool,
+    /// Stable vendor aliases worth one click. Often empty: an agent whose
+    /// model names are dated offers none rather than offering stale ones.
+    pub suggested: Vec<String>,
+    /// Model ids used before with this agent, newest first.
+    pub recent: Vec<String>,
+    /// The model chosen last time. None = the agent's own default.
+    pub selected: Option<String>,
+    /// The agent's own command for listing its models, shown as a hint.
+    pub list_command: Option<String>,
 }
 
 /// An extra agent tab sharing a run's worktree, as shown in the UI. `id` is
@@ -238,6 +271,9 @@ struct NewRunSpec<'a> {
     /// Local issue this run is dispatched from (see start_issue_*): stored on
     /// the run so merge/PR/discard can drive the issue's status.
     issue_id: Option<String>,
+    /// Model to launch this agent on, or None for the agent's own default.
+    /// Validated by the command layer (`sanitize_model`) before it gets here.
+    model: Option<&'a str>,
 }
 
 /// What an "Approve & merge" would do, computed before running it so the UI can
@@ -409,6 +445,54 @@ fn split_session_id(id: &str) -> (&str, Option<u32>) {
 /// known agent gets both halves or neither.
 fn mcp_launch_args(profile: &AgentProfile, worktree: &Path, so_far: &[String]) -> Vec<String> {
     agency_core::mcp::launch_args_unless_set(&profile.name, worktree, so_far)
+}
+
+/// A copy of `profile` whose every launch recipe pins `model`.
+///
+/// The model flag is folded into the profile once, here, rather than threaded
+/// through `fresh_agent_argv`/`agent_argv`/`loop_argv` separately — a run that
+/// started on one model and resumed, reran or looped on another would be a
+/// silent, expensive lie, and one join point is what makes that impossible.
+/// It lands at the end of each recipe so it never comes between a flag and the
+/// value the user wrote next to it, and so the loop path keeps `{{prompt}}`
+/// where the recipe put it.
+fn with_model(profile: &AgentProfile, model: Option<&str>) -> AgentProfile {
+    let extra = crate::agent_catalog::model_args(&profile.name, model);
+    if extra.is_empty() {
+        return profile.clone();
+    }
+    let append = |recipe: &Option<Vec<String>>| {
+        recipe.as_ref().map(|r| r.iter().cloned().chain(extra.iter().cloned()).collect())
+    };
+    AgentProfile {
+        args: profile.args.iter().cloned().chain(extra.iter().cloned()).collect(),
+        resume_args: append(&profile.resume_args),
+        loop_args: append(&profile.loop_args),
+        ..profile.clone()
+    }
+}
+
+/// Put `model` at the front of a newline-joined most-recently-used list,
+/// dropping any earlier occurrence and anything past the cap. Pure so the
+/// list's behaviour is testable without a database.
+fn push_mru(list: &str, model: &str) -> String {
+    let mut out = vec![model.to_string()];
+    out.extend(
+        list.lines().map(str::trim).filter(|l| !l.is_empty() && *l != model).map(String::from),
+    );
+    out.truncate(MODEL_MRU_MAX);
+    out.join("\n")
+}
+
+/// Record the model an agent was just launched on, so the picker reopens on it.
+fn remember_model(reg: &Registry, agent: &str, model: Option<&str>) -> Result<()> {
+    reg.set_setting(&format!("{SETTING_AGENT_MODEL_PREFIX}{agent}"), model.unwrap_or(""))?;
+    if let Some(model) = model {
+        let key = format!("{SETTING_AGENT_MODELS_PREFIX}{agent}");
+        let recent = reg.get_setting(&key)?.unwrap_or_default();
+        reg.set_setting(&key, &push_mru(&recent, model))?;
+    }
+    Ok(())
 }
 
 /// Decide the (command, args) to launch for an agent run. With `use_resume` and a
@@ -1251,6 +1335,44 @@ impl AppState {
         Ok(reg.get_setting(SETTING_AGENT_ONBOARDING)?.as_deref() != Some("1"))
     }
 
+    /// What the model picker needs for every enabled agent profile: whether a
+    /// model can be set at all, what to offer, and what was chosen last.
+    ///
+    /// Suggestions are stable vendor aliases only (see the catalog), so this is
+    /// deliberately not a list of every model that exists — a typed id and the
+    /// per-agent recents are what cover the rest. Cheap enough to call every
+    /// time a menu opens: settings reads and static data, no PATH probing and
+    /// no launching of agent CLIs.
+    pub fn list_agent_models(&self) -> Result<Vec<AgentModelInfo>> {
+        let reg = self.registry.lock().unwrap();
+        let mut out = Vec::new();
+        for profile in reg.list_profiles()? {
+            let entry = crate::agent_catalog::find(&profile.name);
+            let selected = reg
+                .get_setting(&format!("{SETTING_AGENT_MODEL_PREFIX}{}", profile.name))?
+                .filter(|m| !m.is_empty());
+            let recent = reg
+                .get_setting(&format!("{SETTING_AGENT_MODELS_PREFIX}{}", profile.name))?
+                .unwrap_or_default()
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .map(String::from)
+                .collect();
+            out.push(AgentModelInfo {
+                agent: profile.name.clone(),
+                supported: crate::agent_catalog::supports_model(&profile.name),
+                suggested: entry
+                    .map(|e| e.models.iter().map(|m| (*m).to_string()).collect())
+                    .unwrap_or_default(),
+                recent,
+                selected,
+                list_command: entry.and_then(|e| e.list_models).map(String::from),
+            });
+        }
+        Ok(out)
+    }
+
     /// Catalog entries with enabled/installed flags for the UI picker.
     pub fn list_agent_catalog(&self) -> Result<Vec<crate::agent_catalog::CatalogEntryInfo>> {
         let builtins = crate::agent_catalog::builtins();
@@ -1672,6 +1794,7 @@ impl AppState {
             loop_config: run.loop_config.clone(),
             loop_state: run.loop_state.clone(),
             issue_id: run.issue_id.clone(),
+            model: run.model.clone(),
             created_at: run.created_at,
             archived_at: run.archived_at,
         }
@@ -1694,10 +1817,20 @@ impl AppState {
         project_id: &str,
         prompt: &str,
         agent: &str,
+        model: Option<&str>,
         base: &str,
         merge_target: Option<&str>,
     ) -> Result<RunInfo> {
-        self.create_run_with_progress(project_id, prompt, agent, base, merge_target, true, |_| {})
+        self.create_run_with_progress(
+            project_id,
+            prompt,
+            agent,
+            model,
+            base,
+            merge_target,
+            true,
+            |_| {},
+        )
     }
 
     /// Like [`create_run`], but streams workspace-setup progress to `on_progress`
@@ -1707,11 +1840,13 @@ impl AppState {
     /// `worktree = false` skips the worktree and runs the agent in the project's
     /// main checkout on its current branch; `base`/`merge_target` are then
     /// ignored, since there is no branch to cut or land.
+    #[allow(clippy::too_many_arguments)]
     pub fn create_run_with_progress(
         &self,
         project_id: &str,
         prompt: &str,
         agent: &str,
+        model: Option<&str>,
         base: &str,
         merge_target: Option<&str>,
         worktree: bool,
@@ -1722,6 +1857,7 @@ impl AppState {
                 project_id,
                 prompt,
                 agent,
+                model,
                 base,
                 merge_target,
                 race_id: None,
@@ -1749,11 +1885,24 @@ impl AppState {
         let repo = self.project_repo(spec.project_id)?;
         let config = agency_core::config::load(&repo);
         let port = self.allocate_port(config.ports.base, config.ports.block_size)?;
+        // Refuse a model the agent's CLI has no way to be told, rather than
+        // dropping it and letting the run come up on a model the user did not
+        // pick. The pickers only offer models where a recipe exists, so this is
+        // the backstop for the raw command.
+        let model = spec.model.map(str::to_string);
+        if model.is_some() && !crate::agent_catalog::supports_model(spec.agent) {
+            bail!(
+                "'{}' has no way to be told a model on the command line — set it in that CLI's \
+                 own config instead",
+                spec.agent
+            );
+        }
         let (profile, issue_key) = {
             let reg = self.registry.lock().unwrap();
             let profile = reg
                 .get_profile(spec.agent)?
                 .ok_or_else(|| anyhow!("unknown agent profile: {agent}", agent = spec.agent))?;
+            let profile = with_model(&profile, model.as_deref());
             // The prefix the worktree's tracker briefing names, so `AGE-14`
             // reads to the agent as this project's key rather than a shape it
             // recognizes from some other tracker.
@@ -1898,6 +2047,7 @@ impl AppState {
             loop_config: spec.loop_config.clone(),
             issue_id: spec.issue_id.clone(),
             worktree: spec.worktree,
+            model: model.clone(),
         };
         {
             let reg = self.registry.lock().unwrap();
@@ -1905,6 +2055,11 @@ impl AppState {
             // Remember the agent type so new-task shortcuts default to what
             // this project actually uses. Best-effort bookkeeping.
             let _ = reg.set_project_default_agent(spec.project_id, spec.agent);
+            // Same for the model: the picker reopens on the last one used for
+            // this agent, so repeating a choice is one click rather than a
+            // retyped id. Recorded for a default pick too, so choosing
+            // "default" after a run on opus actually sticks.
+            let _ = remember_model(&reg, spec.agent, model.as_deref());
         }
         // A run born with a real prompt is already mid-turn: when it goes
         // quiet it's waiting on the user, same as after a typed turn.
@@ -1938,17 +2093,24 @@ impl AppState {
         project_id: &str,
         prompt: &str,
         agents: &[String],
+        models: &HashMap<String, String>,
         base: &str,
         merge_target: Option<&str>,
     ) -> Result<Vec<RunInfo>> {
-        self.create_race_inner(project_id, prompt, agents, base, merge_target, None, None)
+        self.create_race_inner(project_id, prompt, agents, models, base, merge_target, None, None)
     }
 
+    /// `models` maps an agent id to the model that attempt runs on; an agent
+    /// missing from it races on its own default. Keyed by agent because model
+    /// ids live in each CLI's own namespace, so there is no one model to give
+    /// a whole race.
+    #[allow(clippy::too_many_arguments)]
     fn create_race_inner(
         &self,
         project_id: &str,
         prompt: &str,
         agents: &[String],
+        models: &HashMap<String, String>,
         base: &str,
         merge_target: Option<&str>,
         title: Option<String>,
@@ -1960,6 +2122,14 @@ impl AppState {
         if agents.len() < 2 {
             bail!("racing needs at least two agents");
         }
+        // Up front, before any workspace is cut: create_run_spec refuses a model
+        // the agent can't be told, and finding that out on the third attempt
+        // would leave the first two running a race they can no longer win.
+        for agent in agents {
+            if models.contains_key(agent) && !crate::agent_catalog::supports_model(agent) {
+                bail!("'{agent}' has no way to be told a model on the command line");
+            }
+        }
         let race_id = uuid::Uuid::new_v4().to_string();
         let mut out = Vec::new();
         for agent in agents {
@@ -1968,6 +2138,7 @@ impl AppState {
                     project_id,
                     prompt,
                     agent,
+                    model: models.get(agent).map(String::as_str),
                     base,
                     merge_target,
                     race_id: Some(race_id.clone()),
@@ -1987,11 +2158,13 @@ impl AppState {
     /// (fresh context every attempt, state on disk) until the check command
     /// exits 0 or the attempt cap is spent. The loop driver in the watcher
     /// thread owns the session from here.
+    #[allow(clippy::too_many_arguments)]
     pub fn create_loop(
         &self,
         project_id: &str,
         prompt: &str,
         agent: &str,
+        model: Option<&str>,
         base: &str,
         merge_target: Option<&str>,
         check_command: &str,
@@ -2001,6 +2174,7 @@ impl AppState {
             project_id,
             prompt,
             agent,
+            model,
             base,
             merge_target,
             check_command,
@@ -2016,6 +2190,7 @@ impl AppState {
         project_id: &str,
         prompt: &str,
         agent: &str,
+        model: Option<&str>,
         base: &str,
         merge_target: Option<&str>,
         check_command: &str,
@@ -2051,6 +2226,7 @@ impl AppState {
                 project_id,
                 prompt,
                 agent,
+                model,
                 base,
                 merge_target,
                 race_id: None,
@@ -2103,6 +2279,7 @@ impl AppState {
         &self,
         issue_id: &str,
         agent: &str,
+        model: Option<&str>,
         base: Option<&str>,
         merge_target: Option<&str>,
     ) -> Result<RunInfo> {
@@ -2119,6 +2296,7 @@ impl AppState {
                 project_id: &issue.project_id,
                 prompt: &prompt,
                 agent,
+                model,
                 base: &base,
                 merge_target,
                 race_id: None,
@@ -2142,6 +2320,7 @@ impl AppState {
         &self,
         issue_id: &str,
         agents: &[String],
+        models: &HashMap<String, String>,
         base: Option<&str>,
         merge_target: Option<&str>,
     ) -> Result<Vec<RunInfo>> {
@@ -2151,6 +2330,7 @@ impl AppState {
             &issue.project_id,
             &prompt,
             agents,
+            models,
             &base,
             merge_target,
             Some(title),
@@ -2164,10 +2344,12 @@ impl AppState {
     }
 
     /// Loop an agent on one issue until the check command passes.
+    #[allow(clippy::too_many_arguments)]
     pub fn start_issue_loop(
         &self,
         issue_id: &str,
         agent: &str,
+        model: Option<&str>,
         check_command: &str,
         max_attempts: u32,
         base: Option<&str>,
@@ -2179,6 +2361,7 @@ impl AppState {
             &issue.project_id,
             &prompt,
             agent,
+            model,
             &base,
             merge_target,
             check_command,
@@ -2633,6 +2816,7 @@ impl AppState {
         project_id: &str,
         number: u64,
         agent: &str,
+        model: Option<&str>,
     ) -> Result<RunInfo> {
         let repo = self.project_repo(project_id)?;
         let issue = agency_core::gh::GhCli::default().view_issue(&repo, number)?;
@@ -2648,6 +2832,7 @@ impl AppState {
                 project_id,
                 prompt: &prompt,
                 agent,
+                model,
                 base: &base,
                 merge_target: None,
                 race_id: None,
@@ -2669,6 +2854,7 @@ impl AppState {
         project_id: &str,
         number: u64,
         agent: &str,
+        model: Option<&str>,
     ) -> Result<RunInfo> {
         let repo = self.project_repo(project_id)?;
         let pr = agency_core::gh::GhCli::default()
@@ -2702,6 +2888,7 @@ impl AppState {
                 project_id,
                 prompt: &prompt,
                 agent,
+                model,
                 base: &pr.base_ref_name,
                 merge_target: Some(&pr.base_ref_name),
                 race_id: None,
@@ -2729,6 +2916,7 @@ impl AppState {
         project_id: &str,
         number: u64,
         agent: &str,
+        model: Option<&str>,
         post_comments: bool,
     ) -> Result<PrReviewRun> {
         let repo = self.project_repo(project_id)?;
@@ -2758,6 +2946,7 @@ impl AppState {
                 project_id,
                 prompt: &prompt,
                 agent,
+                model,
                 base: &pr.base_ref_name,
                 merge_target: Some(&pr.base_ref_name),
                 race_id: None,
@@ -3149,6 +3338,7 @@ impl AppState {
             loop_state: None,
             issue_id: None,
             worktree: false,
+            model: None,
         };
         self.registry.lock().unwrap().insert_run(&run)?;
         Ok(self.run_info(&run))
@@ -3363,6 +3553,7 @@ impl AppState {
             loop_state: None,
             issue_id: None,
             worktree: false,
+            model: None,
         };
         self.registry.lock().unwrap().insert_run(&run)?;
         Ok(self.run_info(&run))
@@ -4114,7 +4305,13 @@ impl AppState {
         }
         let profile = {
             let reg = self.registry.lock().unwrap();
-            reg.get_profile(agent)?.ok_or_else(|| anyhow!("unknown agent profile: {agent}"))?
+            let profile =
+                reg.get_profile(agent)?.ok_or_else(|| anyhow!("unknown agent profile: {agent}"))?;
+            // An extra tab may run a different agent than the run does, and the
+            // run's model belongs to that agent's namespace — "opus" means
+            // nothing to Codex. Only carry it when the tab is the same agent.
+            let model = (agent == run.agent).then_some(run.model.as_deref()).flatten();
+            with_model(&profile, model)
         };
         // The extra tab may run a different agent than the one the worktree
         // was created for; make sure MCP config exists in its native format.
@@ -4297,8 +4494,13 @@ impl AppState {
         let worktree = workspace_dir(&repo, &run);
         let profile = {
             let reg = self.registry.lock().unwrap();
-            reg.get_profile(&run.agent)?
-                .ok_or_else(|| anyhow!("unknown agent profile: {}", run.agent))?
+            let profile = reg
+                .get_profile(&run.agent)?
+                .ok_or_else(|| anyhow!("unknown agent profile: {}", run.agent))?;
+            // Whatever model the run started on, it comes back on: a resume
+            // that quietly changed model would rewrite the session's terms
+            // halfway through the work.
+            with_model(&profile, run.model.as_deref())
         };
         let mut env = self.provider_env()?;
         env.extend(profile.env.iter().cloned());
@@ -4363,8 +4565,10 @@ impl AppState {
         let worktree = workspace_dir(&repo, &run);
         let profile = {
             let reg = self.registry.lock().unwrap();
-            reg.get_profile(&run.agent)?
-                .ok_or_else(|| anyhow!("unknown agent profile: {}", run.agent))?
+            let profile = reg
+                .get_profile(&run.agent)?
+                .ok_or_else(|| anyhow!("unknown agent profile: {}", run.agent))?;
+            with_model(&profile, run.model.as_deref())
         };
         let mut env = self.provider_env()?;
         env.extend(profile.env.iter().cloned());
@@ -4406,8 +4610,10 @@ impl AppState {
         }
         let profile = {
             let reg = self.registry.lock().unwrap();
-            reg.get_profile(&run.agent)?
-                .ok_or_else(|| anyhow!("unknown agent profile: {}", run.agent))?
+            let profile = reg
+                .get_profile(&run.agent)?
+                .ok_or_else(|| anyhow!("unknown agent profile: {}", run.agent))?;
+            with_model(&profile, run.model.as_deref())
         };
         let mut env = self.provider_env()?;
         env.extend(profile.env.iter().cloned());
@@ -5850,6 +6056,64 @@ mod tests {
     }
 
     #[test]
+    fn with_model_pins_the_model_on_every_launch_path() {
+        let claude = AgentProfile {
+            name: "claude".into(),
+            command: "claude".into(),
+            args: vec![],
+            env: vec![],
+            resume_args: Some(vec!["--continue".into()]),
+            loop_args: Some(vec![
+                "-p".into(),
+                "{{prompt}}".into(),
+                "--permission-mode".into(),
+                "acceptEdits".into(),
+            ]),
+        };
+        let pinned = super::with_model(&claude, Some("opus"));
+
+        // Fresh: ahead of the prompt, which is appended after these.
+        let (_cmd, args) = super::fresh_agent_argv(&pinned, no_worktree(), "go", None);
+        assert_eq!(args, vec!["--model", "opus", "go"]);
+        // Resume: the same session must come back on the same model.
+        let (_cmd, args) = agent_argv(&pinned, no_worktree(), "go", true, None);
+        assert_eq!(args, vec!["--continue", "--model", "opus"]);
+        // Loop: at the end, so {{prompt}} stays where the recipe put it.
+        let (_cmd, args) = super::loop_argv(&pinned, no_worktree(), "go", None).unwrap();
+        assert_eq!(args, vec!["-p", "go", "--permission-mode", "acceptEdits", "--model", "opus"]);
+    }
+
+    #[test]
+    fn with_model_is_a_no_op_without_a_model_or_a_recipe() {
+        let claude = AgentProfile {
+            name: "claude".into(),
+            command: "claude".into(),
+            args: vec!["--verbose".into()],
+            env: vec![],
+            resume_args: Some(vec!["--continue".into()]),
+            loop_args: None,
+        };
+        assert_eq!(super::with_model(&claude, None), claude);
+        // crush takes no model flag: pinning one must not invent an argument
+        // that would stop its CLI from starting at all.
+        let crush =
+            AgentProfile { name: "crush".into(), command: "crush".into(), ..claude.clone() };
+        assert_eq!(super::with_model(&crush, Some("anything")), crush);
+    }
+
+    #[test]
+    fn push_mru_moves_the_model_to_the_front_and_caps_the_list() {
+        assert_eq!(super::push_mru("", "opus"), "opus");
+        assert_eq!(super::push_mru("opus", "sonnet"), "sonnet\nopus");
+        // Re-picking an old model promotes it rather than duplicating it.
+        assert_eq!(super::push_mru("sonnet\nopus", "opus"), "opus\nsonnet");
+        let long = (0..10).map(|i| format!("m{i}")).collect::<Vec<_>>().join("\n");
+        let capped = super::push_mru(&long, "new");
+        assert_eq!(capped.lines().count(), super::MODEL_MRU_MAX);
+        assert!(capped.starts_with("new\n"));
+    }
+
+    #[test]
     fn loop_argv_renders_prompt_and_requires_recipe() {
         let p = AgentProfile {
             name: "claude".into(),
@@ -6149,6 +6413,7 @@ mod tests {
             loop_state: None,
             issue_id: None,
             worktree: false,
+            model: None,
         };
         assert_eq!(run.kind, "terminal");
         assert!(run.branch.is_empty());
@@ -6177,6 +6442,7 @@ mod tests {
             loop_state: None,
             issue_id: None,
             worktree: false,
+            model: None,
         }
     }
 

@@ -3218,6 +3218,23 @@ input, textarea, code,
   display: inline-block; width: 100%; height: 0;
   border-top: 1px solid var(--line); vertical-align: middle;
 }
+/* GFM tables (AGE-107). A block widget (mdTable.ts) draws the real <table>;
+   clicking a cell, or arrowing into the range, takes it away and leaves the
+   raw rows in .lp-table-raw so the pipes line up as columns while you edit.
+   The wrap scrolls on its own: a wide table must not make the whole note
+   scroll sideways. */
+.md-live .lp-table-wrap { margin: 3px 0 10px; overflow-x: auto; }
+.md-live .lp-table { border-collapse: collapse; font-size: 0.94em; }
+.md-live .lp-table th,
+.md-live .lp-table td {
+  border: 1px solid var(--line); padding: 4px 11px;
+  text-align: left; vertical-align: top; cursor: text;
+}
+/* The body keeps the prose color: revealing the raw rows must not look like
+   the text changed weight, only that the chrome went away. */
+.md-live .lp-table th { background: var(--mantle); font-weight: 650; }
+.md-live .lp-table-raw { font-family: var(--mono); font-size: 0.88em; }
+
 /* Frontmatter properties card (fmEditor.ts): an editable block widget that
    replaces the raw fences in the note's flow. Inputs are quiet until
    hovered/focused so the resting state reads like a rendered table. */

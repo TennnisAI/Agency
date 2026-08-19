@@ -1,5 +1,6 @@
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -54,12 +55,126 @@ pub fn user_name(repo: &Path) -> Option<String> {
     (!name.is_empty()).then_some(name)
 }
 
+/// How many untracked files a folder may hold and still be listed file by file.
+/// Above it the folder stays one row: `git status -uall` on a 40,000-file
+/// unignored `node_modules` took 0.27s and produced 1.4 MB of output against
+/// 0.01s and 17 bytes collapsed, and the panel re-reads status every 2s.
+const UNTRACKED_DIR_CAP: usize = 500;
+
 pub fn status(worktree: &Path) -> Result<Vec<FileChange>> {
     // `-z` gives NUL-separated, unquoted paths: without it git C-quotes any
     // path with spaces/unicode (core.quotePath default) and every downstream
     // per-file operation fails with "pathspec did not match".
     let out = git(worktree, &["status", "--porcelain", "-z"])?;
-    Ok(parse_porcelain_z(&out))
+    let changes = parse_porcelain_z(&out);
+    let dirs: Vec<String> = changes
+        .iter()
+        .filter(|c| is_untracked_dir(c) && folder_within_cap(&worktree.join(&c.path)))
+        .map(|c| c.path.clone())
+        .collect();
+    let listing = list_untracked_files(worktree, &dirs);
+    Ok(expand_untracked_dirs(changes, |dir| listing.get(dir).cloned()))
+}
+
+/// A folder git has never seen, reported as one entry with a trailing slash.
+fn is_untracked_dir(change: &FileChange) -> bool {
+    change.index == "?" && change.worktree == "?" && change.path.ends_with('/')
+}
+
+/// Replace each collapsed untracked-folder row with the files inside it.
+///
+/// `git status --porcelain` reports a folder git has never seen as one entry:
+/// `sub/a.txt` and `sub/b.txt` arrive as a single `sub/` row. That row can't be
+/// diffed (there is no one file to read), so its files could only be staged
+/// sight unseen, which is exactly the "stage without reading" the untracked
+/// diff work set out to remove.
+///
+/// `list` returns nothing for a folder over the cap, and for one git can't see
+/// into: a nested repository lists as itself, and `-uall` reports it as a
+/// single entry too. Those keep the collapsed row.
+fn expand_untracked_dirs(
+    changes: Vec<FileChange>,
+    mut list: impl FnMut(&str) -> Option<Vec<String>>,
+) -> Vec<FileChange> {
+    let mut out = Vec::with_capacity(changes.len());
+    for change in changes {
+        let files =
+            is_untracked_dir(&change).then(|| list(&change.path)).flatten().unwrap_or_default();
+        if files.is_empty() {
+            out.push(change);
+            continue;
+        }
+        out.extend(files.into_iter().map(|path| FileChange {
+            path,
+            index: "?".to_string(),
+            worktree: "?".to_string(),
+        }));
+    }
+    out
+}
+
+/// The untracked files under each of `dirs`, keyed by the folder they came from.
+///
+/// `--exclude-standard` is what makes this safe to show: it applies the same
+/// ignore rules `status` does, so an unignored build directory nested inside a
+/// brand-new folder doesn't come back as a hundred rows. One invocation covers
+/// every folder because this runs on every two-second poll of the panel, and a
+/// git process costs more than the listing it does.
+fn list_untracked_files(worktree: &Path, dirs: &[String]) -> HashMap<String, Vec<String>> {
+    let mut listing: HashMap<String, Vec<String>> = HashMap::new();
+    if dirs.is_empty() {
+        return listing;
+    }
+    let mut args = vec!["ls-files", "--others", "--exclude-standard", "-z", "--"];
+    args.extend(dirs.iter().map(String::as_str));
+    let Ok(out) = git(worktree, &args) else {
+        return listing;
+    };
+    for path in out.split('\0').filter(|p| !p.is_empty()) {
+        // A path equal to the folder itself is git saying it cannot see inside:
+        // that's a nested repository, and it keeps its single row.
+        let Some(dir) = dirs.iter().find(|d| path.starts_with(d.as_str()) && path != *d) else {
+            continue;
+        };
+        listing.entry(dir.clone()).or_default().push(path.to_string());
+    }
+    listing
+}
+
+/// Whether `dir` holds at most `UNTRACKED_DIR_CAP` entries, counted straight
+/// off the filesystem and abandoned at the first one past it.
+///
+/// The obvious cap does not work: `git ls-files` builds its whole result in
+/// memory before writing a byte, so streaming its output and killing the walk
+/// once it goes over the cap saves nothing. Measured against a 40,000-file
+/// unignored `node_modules`, status that way took 390ms, worse than the 270ms
+/// of the plain `-uall` this cap exists to avoid. A read_dir walk that stops at
+/// entry 501 costs the same for any size of folder, so git is only ever asked
+/// about folders it can answer for cheaply.
+///
+/// It counts ignored files too, which git would not, so a folder can stay
+/// collapsed on a count git would call smaller. That is the safe direction: the
+/// reason to collapse is how much disk the listing has to touch.
+fn folder_within_cap(dir: &Path) -> bool {
+    let mut seen = 0usize;
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(next) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&next) else {
+            return false;
+        };
+        for entry in entries.flatten() {
+            seen += 1;
+            if seen > UNTRACKED_DIR_CAP {
+                return false;
+            }
+            // file_type() off the dir entry does not follow symlinks; a link
+            // pointing back at an ancestor would otherwise walk forever.
+            if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                pending.push(entry.path());
+            }
+        }
+    }
+    true
 }
 
 fn parse_porcelain_z(out: &str) -> Vec<FileChange> {
@@ -102,11 +217,10 @@ pub fn diff(worktree: &Path, path: &str, staged: bool) -> Result<String> {
 /// the hunk and line staging buttons still build patches that apply.
 ///
 /// Empty unless `path` is an untracked regular file. A tracked-but-unchanged
-/// path is not our business; a directory is not diffable at all (`git status`
-/// collapses an untracked directory into one entry, and `--no-index` errors on
-/// it); and a symlink would diff as whatever it points at, so applying that
-/// patch would replace the link with a copy of its target. An oversized file
-/// comes back as a header alone, which the diff pane reads as its reason for
+/// path is not our business, and a symlink would diff as whatever it points at,
+/// so applying that patch would replace the link with a copy of its target. An
+/// oversized file, and the folder rows `expand_untracked_dirs` could not open,
+/// come back as a header alone, which the diff pane reads as its reason for
 /// showing no lines.
 fn untracked_diff(worktree: &Path, path: &str) -> Result<String> {
     // Every other diff here is scoped to the repo by git itself; `--no-index`
@@ -116,7 +230,21 @@ fn untracked_diff(worktree: &Path, path: &str) -> Result<String> {
     let Ok(meta) = std::fs::symlink_metadata(worktree.join(path)) else {
         return Ok(String::new());
     };
-    if !meta.is_file() || !git(worktree, &["ls-files", "-z", "--", path])?.is_empty() {
+    if !git(worktree, &["ls-files", "-z", "--", path])?.is_empty() {
+        return Ok(String::new());
+    }
+    // A folder still shown as one row is one `expand_untracked_dirs` left
+    // collapsed. `--no-index` errors on a directory, and before this the pane
+    // answered "no textual changes", which reads as "this folder is empty".
+    if meta.is_dir() {
+        let why = if worktree.join(path).join(".git").exists() {
+            "Untracked folder holding its own git repository".to_string()
+        } else {
+            format!("Untracked folder with more than {UNTRACKED_DIR_CAP} files")
+        };
+        return Ok(format!("diff --git a/{path} b/{path}\n{why}\n"));
+    }
+    if !meta.is_file() {
         return Ok(String::new());
     }
     // A tracked file's diff stays small however big the file is; an untracked
@@ -1175,6 +1303,127 @@ mod status_tests {
         assert_eq!(changes[0].path, "new name.txt");
         assert_eq!(changes[0].index, "R");
         assert_eq!(changes[1].path, "other.txt");
+    }
+
+    #[test]
+    fn untracked_folder_expands_to_its_files() {
+        let changes = parse_porcelain_z(" M kept.txt\0?? sub/\0");
+        let expanded = expand_untracked_dirs(changes, |dir| {
+            assert_eq!(dir, "sub/");
+            Some(vec!["sub/a.txt".into(), "sub/deep/b.txt".into()])
+        });
+        let paths: Vec<&str> = expanded.iter().map(|c| c.path.as_str()).collect();
+        assert_eq!(paths, ["kept.txt", "sub/a.txt", "sub/deep/b.txt"]);
+        assert!(expanded[1..].iter().all(|c| c.index == "?" && c.worktree == "?"));
+    }
+
+    #[test]
+    fn folder_over_the_cap_stays_one_row() {
+        let changes = parse_porcelain_z("?? node_modules/\0");
+        let expanded = expand_untracked_dirs(changes, |_| None);
+        assert_eq!(expanded.len(), 1);
+        assert_eq!(expanded[0].path, "node_modules/");
+    }
+
+    #[test]
+    fn only_untracked_folders_are_expanded() {
+        // A tracked path is never a folder, and a file row has no slash to
+        // mistake for one: neither may reach the listing walk.
+        let changes = parse_porcelain_z(" M src/main.rs\0?? loose.txt\0A  added.txt\0");
+        let expanded = expand_untracked_dirs(changes, |dir| panic!("listed {dir}"));
+        let paths: Vec<&str> = expanded.iter().map(|c| c.path.as_str()).collect();
+        assert_eq!(paths, ["src/main.rs", "loose.txt", "added.txt"]);
+    }
+
+    #[test]
+    fn status_lists_files_in_a_new_folder_and_diffs_them() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path();
+        let run = |args: &[&str]| {
+            let ok = Command::new("git").args(args).current_dir(repo).status().unwrap().success();
+            assert!(ok, "git {args:?} failed");
+        };
+        run(&["init", "-q", "-b", "main"]);
+        run(&["config", "user.email", "t@t"]);
+        run(&["config", "user.name", "t"]);
+        std::fs::write(repo.join("tracked.txt"), "x").unwrap();
+        run(&["add", "tracked.txt"]);
+        run(&["commit", "-qm", "init"]);
+
+        std::fs::create_dir_all(repo.join("sub/deep")).unwrap();
+        std::fs::write(repo.join("sub/a.txt"), "one\n").unwrap();
+        std::fs::write(repo.join("sub/deep/b.txt"), "two\n").unwrap();
+        // An ignore rule inside the new folder still applies: this is why the
+        // expansion goes through ls-files rather than walking the tree itself.
+        std::fs::write(repo.join("sub/.gitignore"), "*.log\n").unwrap();
+        std::fs::write(repo.join("sub/noisy.log"), "skip me\n").unwrap();
+
+        let paths: Vec<String> = status(repo).unwrap().into_iter().map(|c| c.path).collect();
+        assert_eq!(paths, ["sub/.gitignore", "sub/a.txt", "sub/deep/b.txt"]);
+
+        // The whole point: each file now reads, stages and reverts on its own.
+        let d = diff(repo, "sub/deep/b.txt", false).unwrap();
+        assert!(d.contains("+two"), "expected the file contents as additions, got: {d}");
+        stage(repo, "sub/a.txt").unwrap();
+        let staged: Vec<String> =
+            status(repo).unwrap().into_iter().filter(|c| c.index == "A").map(|c| c.path).collect();
+        assert_eq!(staged, ["sub/a.txt"]);
+    }
+
+    #[test]
+    fn a_huge_folder_stays_one_row_and_says_why() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path();
+        let run = |args: &[&str]| {
+            let ok = Command::new("git").args(args).current_dir(repo).status().unwrap().success();
+            assert!(ok, "git {args:?} failed");
+        };
+        run(&["init", "-q", "-b", "main"]);
+        run(&["config", "user.email", "t@t"]);
+        run(&["config", "user.name", "t"]);
+        std::fs::write(repo.join("tracked.txt"), "x").unwrap();
+        run(&["add", "tracked.txt"]);
+        run(&["commit", "-qm", "init"]);
+
+        std::fs::create_dir(repo.join("node_modules")).unwrap();
+        for i in 0..=UNTRACKED_DIR_CAP {
+            std::fs::write(repo.join("node_modules").join(format!("f{i}.js")), "x").unwrap();
+        }
+        let paths: Vec<String> = status(repo).unwrap().into_iter().map(|c| c.path).collect();
+        assert_eq!(paths, ["node_modules/"]);
+        let d = diff(repo, "node_modules/", false).unwrap();
+        assert!(d.contains("Untracked folder with more than 500 files"), "got: {d}");
+
+        // One under the cap and the same folder lists file by file.
+        std::fs::remove_file(repo.join("node_modules/f0.js")).unwrap();
+        assert_eq!(status(repo).unwrap().len(), UNTRACKED_DIR_CAP);
+    }
+
+    #[test]
+    fn a_nested_repository_stays_one_row_and_says_why() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path();
+        let run = |at: &std::path::Path, args: &[&str]| {
+            let ok = Command::new("git").args(args).current_dir(at).status().unwrap().success();
+            assert!(ok, "git {args:?} failed");
+        };
+        run(repo, &["init", "-q", "-b", "main"]);
+        run(repo, &["config", "user.email", "t@t"]);
+        run(repo, &["config", "user.name", "t"]);
+        std::fs::write(repo.join("tracked.txt"), "x").unwrap();
+        run(repo, &["add", "tracked.txt"]);
+        run(repo, &["commit", "-qm", "init"]);
+
+        // git cannot see inside another repository's worktree; `-uall` reports
+        // it as one entry too, so the row is honest rather than a bug.
+        std::fs::create_dir(repo.join("vendored")).unwrap();
+        run(&repo.join("vendored"), &["init", "-q", "-b", "main"]);
+        std::fs::write(repo.join("vendored/inner.txt"), "y").unwrap();
+
+        let paths: Vec<String> = status(repo).unwrap().into_iter().map(|c| c.path).collect();
+        assert_eq!(paths, ["vendored/"]);
+        let d = diff(repo, "vendored/", false).unwrap();
+        assert!(d.contains("Untracked folder holding its own git repository"), "got: {d}");
     }
 
     #[test]

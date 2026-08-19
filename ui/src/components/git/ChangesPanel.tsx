@@ -55,8 +55,12 @@ export default function ChangesPanel({
     // Reveal and Copy Path resolve the file on disk, so they can't work once
     // it's gone; Copy Relative Path is just the string and always can.
     const gone = decorateIn(c, group).letter === "D";
+    // An untracked folder git won't list file by file arrives with a trailing
+    // slash, which baseName reads as an empty name.
+    const isFolder = c.path.endsWith("/");
+    const name = isFolder ? baseName(c.path.slice(0, -1)) : baseName(c.path);
     const items: MenuEntry[] = [
-      { kind: "header", label: baseName(c.path) },
+      { kind: "header", label: name },
       { label: "Open Changes", onClick: () => onSelectFile(c.path, group) },
       { kind: "separator" },
     ];
@@ -92,9 +96,11 @@ export default function ChangesPanel({
         { kind: "separator" },
         // Untracked: nothing is committed, so discarding means deleting the file.
         {
-          label: "Delete File", glyph: "↩", danger: true,
+          label: isFolder ? "Delete Folder" : "Delete File", glyph: "↩", danger: true,
           onClick: () => confirmDiscard(
-            `Delete untracked file ${c.path}? This cannot be undone.`,
+            isFolder
+              ? `Delete untracked folder ${c.path} and everything in it? This cannot be undone.`
+              : `Delete untracked file ${c.path}? This cannot be undone.`,
             () => gitDiscard(taskId, c.path, true)),
         },
         // Only offered here: adding a tracked path to .gitignore doesn't untrack

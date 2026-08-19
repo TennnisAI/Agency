@@ -36,7 +36,7 @@ export default function CommitDetail({ taskId, item }: { taskId: string; item: H
             const icon = fileIcon(name);
             return (
               <div key={f.path} className={`git-row ${path === f.path ? "sel" : ""}`} onClick={() => setPath(f.path)} title={f.path}>
-                <span className="git-fileicon" style={{ color: `var(${icon.color})` }}>
+                <span className="git-fileicon" style={{ color: icon.color }}>
                   <FileIcon kind={icon.kind} size={13} />
                 </span>
                 <span className="git-name">

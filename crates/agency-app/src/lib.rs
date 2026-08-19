@@ -223,6 +223,7 @@ pub fn run() {
             commands::inspect_repo,
             commands::init_repo,
             commands::clone_repo,
+            commands::cancel_clone,
             commands::commit_repo,
             commands::cancel_repo_setup,
             commands::scan_large_files,

@@ -296,10 +296,12 @@ impl GhCli {
     /// username/password it can't read. Assumes the caller has confirmed gh is
     /// authenticated (see `auth_readiness`). Progress is streamed to
     /// `on_progress`; `--progress` after `--` is forwarded to the underlying git.
+    /// `cancel` kills the clone, so the retry is as escapable as the first try.
     pub fn clone_with_progress(
         &self,
         url: &str,
         dest: &Path,
+        cancel: &crate::setup::CancelToken,
         on_progress: &mut dyn FnMut(crate::setup::CloneProgress),
     ) -> Result<()> {
         let dest_str = dest.to_string_lossy();
@@ -311,7 +313,7 @@ impl GhCli {
             .arg("--")
             .arg("--progress")
             .current_dir(Path::new("."));
-        let (ok, stderr) = crate::setup::run_clone_streaming(cmd, on_progress)?;
+        let (ok, stderr) = crate::setup::run_clone_streaming(cmd, cancel, on_progress)?;
         if !ok {
             bail!("{}", stderr.trim());
         }

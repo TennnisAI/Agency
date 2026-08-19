@@ -295,7 +295,7 @@ export default function FocusTerminal(
       // so. Re-judge the position rather than wait for one.
       settle();
     };
-    requestAnimationFrame(() => { doFit(); term.focus(); });
+    const firstFrame = requestAnimationFrame(() => { doFit(); term.focus(); });
     // Fit on the next frame, never inside the observer callback. `fit.fit()`
     // resizes the very element being observed, so doing it synchronously feeds
     // the observer its own output and the loop overruns the frame — WebKit then
@@ -350,6 +350,11 @@ export default function FocusTerminal(
       const cols = term.cols > 0 ? term.cols : 80;
       const rows = term.rows > 0 ? term.rows : 24;
       stream.attach(runId, cols, rows, (bytes) => {
+        // Detach is a command, not a switch: the daemon keeps streaming until it
+        // lands, so a chunk can still arrive after this pane is gone. Writing it
+        // would repaint a terminal nobody can see, and `reset` below would arm
+        // the frame the teardown goes out of its way to let pass.
+        if (disposed) return;
         if (!liveStarted) {
           liveStarted = true;
           // The live attach is authoritative: the daemon sends a full snapshot as its
@@ -382,6 +387,7 @@ export default function FocusTerminal(
       disposed = true;
       ro.disconnect();
       if (fitFrame) cancelAnimationFrame(fitFrame);
+      cancelAnimationFrame(firstFrame);
       window.removeEventListener("themechange", onThemeChange);
       torn = true;
       timers.forEach(clearTimeout);
@@ -402,7 +408,26 @@ export default function FocusTerminal(
       input.dispose();
       inputRef.current = null;
       stream.detach(runId);
-      term.dispose();
+      // xterm's teardown trails the pane's by a frame, deliberately. Work it
+      // queued before now still has to run: `term.reset()` on the first live
+      // frame calls Viewport.reset, which schedules a syncScrollArea on a raw
+      // requestAnimationFrame it never cancels, and that reads the render
+      // service's dimensions. Disposing inside that frame pulls the renderer
+      // out from under the read, and it surfaces as an error toast over a pane
+      // the user has already left: "undefined is not an object (evaluating
+      // 'this._renderer.value.dimensions')" (AGE-124). Everything above is torn
+      // down synchronously; only the xterm object waits. The timer is the
+      // backstop for a window that has stopped animating — occluded, minimised,
+      // on another Space — where no frame arrives and the terminal, 50k lines of
+      // scrollback and all, would otherwise never be freed.
+      let termDisposed = false;
+      const disposeTerm = () => {
+        if (termDisposed) return;
+        termDisposed = true;
+        term.dispose();
+      };
+      requestAnimationFrame(disposeTerm);
+      window.setTimeout(disposeTerm, 250);
       captureRef.current = initialCapture();
       searchAddonRef.current = null;
       termRef.current = null;

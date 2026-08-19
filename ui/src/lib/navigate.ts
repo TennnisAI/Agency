@@ -6,6 +6,10 @@
 
 export type NavTarget =
   | { kind: "note"; projectId: string; path: string }
+  // A file the Docs editor can't open — an attachment row in the Docs tree.
+  // `path` is relative to the project's checkout, not to the docs dir, because
+  // that is the root the Files tab is showing.
+  | { kind: "file"; projectId: string; path: string }
   | { kind: "issue"; projectId: string; issueId: string }
   | { kind: "run"; projectId: string; runId: string };
 

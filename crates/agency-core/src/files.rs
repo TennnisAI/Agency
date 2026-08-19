@@ -354,7 +354,12 @@ const MAX_CORPUS_BYTES: u64 = 20_000_000;
 /// Cap on reported folders, so a pathological tree can't flood the pane.
 const MAX_CORPUS_DIRS: usize = 2000;
 
-/// One pass over the corpus: every markdown file, plus every folder.
+/// Cap on reported attachments, for the same reason as the folder cap: point
+/// the docs dir at a build output tree and the pane would drown in it.
+const MAX_CORPUS_ATTACHMENTS: usize = 2000;
+
+/// One pass over the corpus: every markdown file, every folder, and the name
+/// of every other file (the attachments the notes link to).
 struct Walk {
     /// `(rel_path, abs_path, metadata)` per markdown file.
     files: Vec<(String, std::path::PathBuf, std::fs::Metadata)>,
@@ -362,12 +367,25 @@ struct Walk {
     /// under them are implied by the note paths too; the ones that are not are
     /// the whole point of this list.
     dirs: Vec<String>,
+    /// Rel paths of every non-markdown file, sorted. Bodies are never read
+    /// here — the tree shows them as rows and the Files viewer loads the one
+    /// that gets opened.
+    attachments: Vec<String>,
 }
 
-/// Walk every markdown file under `rel_dir` (same skip rules everywhere the
-/// corpus is touched: hidden dirs, symlinks, node_modules; file-count cap).
-/// The shared base for the full read, the stat-only pass, and anything else
-/// that must agree with them on what "the corpus" is.
+impl Walk {
+    /// Both name lists go out sorted, so a poll can compare them position-wise
+    /// against the last pass instead of building a set every tick.
+    fn sort(&mut self) {
+        self.dirs.sort();
+        self.attachments.sort();
+    }
+}
+
+/// Walk the docs corpus under `rel_dir` (same skip rules everywhere the corpus
+/// is touched: hidden dirs, symlinks, node_modules; file-count cap). The
+/// shared base for the full read, the stat-only pass, and anything else that
+/// must agree with them on what "the corpus" is.
 ///
 /// Folders are reported whatever they hold, because the alternatives both
 /// confuse: keying on markdown made a folder vanish once the user filled it
@@ -375,9 +393,14 @@ struct Walk {
 /// dropped a `.DS_Store` in it. A docs folder is expected to be notes, so the
 /// skip rules (hidden, node_modules) plus MAX_CORPUS_DIRS are the only guard
 /// against a tree full of build output.
-fn walk_markdown(root: &Path, rel_dir: &str) -> Result<Walk> {
+///
+/// Non-markdown files come back separately, because a folder of screenshots
+/// reported as a folder and nothing else read as empty and was not (AGE-121).
+/// Dotfiles are left out of that list: the markdown filter used to hide them
+/// by accident, and `.DS_Store` as a visible row is nobody's attachment.
+fn walk_corpus(root: &Path, rel_dir: &str) -> Result<Walk> {
     let base = resolve_within(root, rel_dir)?;
-    let mut out = Walk { files: Vec::new(), dirs: Vec::new() };
+    let mut out = Walk { files: Vec::new(), dirs: Vec::new(), attachments: Vec::new() };
     let mut stack = vec![(base, String::new())];
     while let Some((dir, prefix)) = stack.pop() {
         // Recorded before the read, so an unreadable folder is still a row.
@@ -406,17 +429,20 @@ fn walk_markdown(root: &Path, rel_dir: &str) -> Result<Walk> {
             }
             let lower = name.to_ascii_lowercase();
             if !lower.ends_with(".md") && !lower.ends_with(".markdown") {
+                if !name.starts_with('.') && out.attachments.len() < MAX_CORPUS_ATTACHMENTS {
+                    out.attachments.push(rel);
+                }
                 continue;
             }
             if out.files.len() >= MAX_CORPUS_FILES {
-                out.dirs.sort();
+                out.sort();
                 return Ok(out);
             }
             let Ok(meta) = entry.metadata() else { continue };
             out.files.push((rel, entry.path(), meta));
         }
     }
-    out.dirs.sort();
+    out.sort();
     Ok(out)
 }
 
@@ -428,7 +454,7 @@ fn walk_markdown(root: &Path, rel_dir: &str) -> Result<Walk> {
 pub fn read_markdown_corpus(root: &Path, rel_dir: &str) -> Result<Vec<DocFile>> {
     let mut out = Vec::new();
     let mut total: u64 = 0;
-    for (rel, abs, meta) in walk_markdown(root, rel_dir)?.files {
+    for (rel, abs, meta) in walk_corpus(root, rel_dir)?.files {
         if total >= MAX_CORPUS_BYTES {
             return Ok(out);
         }
@@ -456,8 +482,8 @@ pub struct DocStat {
     pub size: u64,
 }
 
-/// What a docs poll gets back: a change signature per markdown file, and every
-/// folder under the docs dir.
+/// What a docs poll gets back: a change signature per markdown file, every
+/// folder under the docs dir, and every attachment sitting beside the notes.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DocsScan {
@@ -466,13 +492,18 @@ pub struct DocsScan {
     /// note paths, so without these a folder holding no notes has nowhere to
     /// come from and vanishes the moment the view is rebuilt.
     pub dirs: Vec<String>,
+    /// Rel paths of every non-markdown file, sorted. Names only: the tree
+    /// draws a row per attachment, and nothing reads a body until one is
+    /// opened in the Files viewer.
+    pub attachments: Vec<String>,
 }
 
-/// Stat-only pass over the markdown corpus — same walk, same skips, no body
-/// reads. Steady-state polls diff this against their cache and fetch bodies
-/// only for files that actually changed.
+/// Stat-only pass over the docs corpus — same walk, same skips, no body reads.
+/// Steady-state polls diff this against their cache and fetch bodies only for
+/// markdown files that actually changed; folders and attachments are compared
+/// by name alone.
 pub fn scan_markdown_stats(root: &Path, rel_dir: &str) -> Result<DocsScan> {
-    let walk = walk_markdown(root, rel_dir)?;
+    let walk = walk_corpus(root, rel_dir)?;
     Ok(DocsScan {
         files: walk
             .files
@@ -489,6 +520,7 @@ pub fn scan_markdown_stats(root: &Path, rel_dir: &str) -> Result<DocsScan> {
             })
             .collect(),
         dirs: walk.dirs,
+        attachments: walk.attachments,
     })
 }
 
@@ -556,7 +588,7 @@ fn parse_task_line(line: &str) -> Option<(bool, &str)> {
 pub fn scan_tasks(root: &Path, rel_dir: &str) -> Result<Vec<TaskHit>> {
     let mut out = Vec::new();
     let mut total: u64 = 0;
-    for (rel, abs, meta) in walk_markdown(root, rel_dir)?.files {
+    for (rel, abs, meta) in walk_corpus(root, rel_dir)?.files {
         if total >= MAX_CORPUS_BYTES {
             break;
         }
@@ -825,6 +857,25 @@ mod corpus_stats_tests {
         std::fs::write(root.join("docs/a.md"), "# a grew").unwrap();
         let after = scan_markdown_stats(root, "docs").unwrap();
         assert_ne!(after.files.iter().find(|s| s.path == "a.md").unwrap().size, a.size);
+    }
+
+    #[test]
+    fn scan_reports_attachments_beside_the_notes() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("docs/shots")).unwrap();
+        std::fs::create_dir_all(root.join("docs/.hidden")).unwrap();
+        std::fs::write(root.join("docs/a.md"), "# a").unwrap();
+        std::fs::write(root.join("docs/notes.txt"), "not markdown").unwrap();
+        std::fs::write(root.join("docs/shots/login.png"), [0x89, b'P']).unwrap();
+        // The markdown filter used to hide these by accident; keep it that way.
+        std::fs::write(root.join("docs/.DS_Store"), "junk").unwrap();
+        std::fs::write(root.join("docs/.hidden/c.png"), "skipped").unwrap();
+
+        let scan = scan_markdown_stats(root, "docs").unwrap();
+        assert_eq!(scan.attachments, vec!["notes.txt", "shots/login.png"]);
+        // Attachments never cross into the corpus the index parses.
+        assert_eq!(scan.files.into_iter().map(|s| s.path).collect::<Vec<_>>(), vec!["a.md"]);
     }
 
     #[test]

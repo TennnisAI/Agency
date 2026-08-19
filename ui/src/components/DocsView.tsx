@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { FileRoot, Project, createFile, writeFile } from "../api";
+import { FileRoot, Project, createFile, openTermPath, writeFile } from "../api";
 import { SearchHit, stripExt } from "../lib/docsIndex";
 import { buildLinkIndex, mentionsOf, noteId, resolveTarget } from "../lib/links";
 import { requestNavigate } from "../lib/navigate";
+import { attachmentLink } from "../lib/noteLink";
 import Resizer from "./Resizer";
 import { usePaneWidth } from "../hooks/usePaneWidth";
 import { useDocs } from "../hooks/useDocs";
@@ -230,6 +231,30 @@ export default function DocsView({ project, onOpenCheckout }: {
   // A wikilink pointed at a note that doesn't exist; confirm before creating.
   const [pendingCreate, setPendingCreate] = useState<string | null>(null);
 
+  // Attachments that just landed in the vault while a note was open, and the
+  // note they landed for. Offered rather than inserted: dropping a file into a
+  // folder in the tree is a filing gesture, and it is only sometimes also
+  // "and put it in what I'm writing".
+  const [pendingLink, setPendingLink] = useState<{ note: string; paths: string[] } | null>(null);
+
+  /** Open an attachment row: `repoRel` is relative to the project checkout. */
+  const openAttachment = (repoRel: string) => {
+    // The workspace hides the Files tab (it would duplicate Docs), so there is
+    // no in-app viewer to route to there. Hand it to the OS instead, the same
+    // way a clicked path in a terminal goes.
+    if (project.kind === "workspace") {
+      openTermPath(root, repoRel).catch((e) => toastError(e, "Couldn't open"));
+      return;
+    }
+    requestNavigate({ kind: "file", projectId: project.id, path: repoRel });
+  };
+
+  const insertLinks = (note: string, paths: string[]) => {
+    const editor = editorRefs.current.get(note);
+    if (!editor) return; // the note was closed while the dialog was up
+    editor.insertAtCursor(paths.map((p) => attachmentLink(note, p)).join("\n"));
+  };
+
   const navigate = (target: string, heading: string | null) => {
     if (!index) return;
     const res = resolveTarget(index, cross, target);
@@ -331,6 +356,8 @@ export default function DocsView({ project, onOpenCheckout }: {
             query={query}
             onQuery={setQuery}
             onSelect={(p) => { setQuery(""); if (p) openNote(p); }}
+            onOpenFile={(p) => openAttachment(joinPath(docsDir, p))}
+            onAttached={(paths) => { if (selected) setPendingLink({ note: selected, paths }); }}
             onOpenHit={openHit}
             onRenamed={(from, to) => {
               updateTabs((s) => renameTab(s, from, to));
@@ -421,6 +448,20 @@ export default function DocsView({ project, onOpenCheckout }: {
           onOpen={openNote}
           onCreate={(name) => void createNote(name)}
           onClose={() => setSwitcher(false)}
+        />
+      )}
+
+      {pendingLink && (
+        <ConfirmDialog
+          title="Link it from this note?"
+          body={
+            pendingLink.paths.length === 1
+              ? `Insert a link to ${baseName(pendingLink.paths[0])} at the cursor in "${noteLabel(pendingLink.note)}".`
+              : `Insert links to ${pendingLink.paths.length} files at the cursor in "${noteLabel(pendingLink.note)}".`
+          }
+          confirmLabel="Insert"
+          onConfirm={() => { const l = pendingLink; setPendingLink(null); insertLinks(l.note, l.paths); }}
+          onCancel={() => setPendingLink(null)}
         />
       )}
 

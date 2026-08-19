@@ -1827,6 +1827,12 @@ input.settings-notif-secs { width: 90px; flex: 0 0 auto; }
 .tree-twistie { color: var(--sub0); transition: transform 0.1s ease; }
 .tree-twistie.open { transform: rotate(90deg); }
 .tree-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Docs tree: a file that isn't a note. Present and findable, and visibly not
+   the thing this tab edits — it opens in the Files tab instead. */
+.tree-row.attachment .tree-name { color: var(--o1); }
+.tree-row.attachment .tree-icon { opacity: 0.65; }
+.tree-row.attachment:hover .tree-name { color: var(--sub0); }
+.tree-row.attachment:hover .tree-icon { opacity: 1; }
 
 /* ── Text selection: off on chrome, on where copy matters ───── */
 /* Placeholders default to a very faint browser color; pin them to a muted-but-

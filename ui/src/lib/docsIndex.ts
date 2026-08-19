@@ -47,6 +47,10 @@ export interface DocsIndex {
    * hands them over and the tree renders them alongside the folders the note
    * paths imply. */
   dirs: string[];
+  /** Every non-markdown file, rel to the docs dir: the screenshots and PDFs
+   * the notes link to. Paths only — nothing here is parsed or searched, it is
+   * what lets the tree show a folder of images as something other than empty. */
+  attachments: string[];
   /** lowercased basename → paths that have it (shortest path first). */
   byBase: Map<string, string[]>;
   /** resolved target path → references pointing at it. */
@@ -261,7 +265,11 @@ export function resolveLink(index: DocsIndex, target: string): string | null {
   return best;
 }
 
-export function buildIndex(files: DocFile[], dirs: string[] = []): DocsIndex {
+export function buildIndex(
+  files: DocFile[],
+  dirs: string[] = [],
+  attachments: string[] = [],
+): DocsIndex {
   const docs = new Map<string, DocMeta>();
   for (const f of files) docs.set(f.path, parseDoc(f));
 
@@ -277,7 +285,14 @@ export function buildIndex(files: DocFile[], dirs: string[] = []): DocsIndex {
     list.sort((a, b) => a.length - b.length || a.localeCompare(b));
   }
 
-  const index: DocsIndex = { docs, dirs, byBase, backlinks: new Map(), tags: new Map() };
+  const index: DocsIndex = {
+    docs,
+    dirs,
+    attachments,
+    byBase,
+    backlinks: new Map(),
+    tags: new Map(),
+  };
 
   for (const d of docs.values()) {
     for (const link of d.links) {

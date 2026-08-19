@@ -1282,6 +1282,10 @@ export interface DocsScan {
   // Every folder under the docs dir, sorted. The tree's folders otherwise come
   // from note paths alone, which hides a folder until it has a note in it.
   dirs: string[];
+  // Every non-markdown file under the docs dir, sorted (dotfiles excluded).
+  // Names only — the tree draws a row per attachment and the Files viewer
+  // loads whichever one is opened.
+  attachments: string[];
 }
 export const docsCorpusStats = (root: FileRoot, docsDir: string) =>
   invoke<DocsScan>("docs_corpus_stats", { root, docsDir });

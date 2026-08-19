@@ -18,6 +18,7 @@ import { FileRoot, Project, RepoReadiness, RunInfo, agentOnboardingNeeded, check
 import { pickDefaultAgent } from "./lib/defaultAgent";
 import { PENDING_ISSUE_KEY, PENDING_QUICKADD_KEY, isClosed, issueLabel } from "./lib/issues";
 import { NAVIGATE_EVENT, NavTarget } from "./lib/navigate";
+import { fileRootKey, requestOpenFile } from "./lib/openFile";
 import { requestFind, requestFindStep } from "./lib/findBus";
 import { DAILY_TEMPLATE_PATH, JOURNAL_DIR, dailyNotePath, defaultDailyContent, renderDailyTemplate } from "./lib/dailyNote";
 import { WEEKLY_DIR, buildWeeklyNote, isoWeekStamp, isoWeekStart, weeklyNotePath } from "./lib/weeklyNote";
@@ -425,6 +426,15 @@ function Shell() {
         selectProject(p);
         setTab("docs");
         window.dispatchEvent(new CustomEvent("agency:open-note", { detail: { projectId: p.id, path: target.path } }));
+        break;
+      // Docs is always rooted at the project checkout, so the Files tab has to
+      // be too, or the request would be addressed to a root that isn't showing
+      // and sit in the pending slot forever. selectProject drops the run
+      // selection, which is what points the Files tab back at the checkout.
+      case "file":
+        selectProject(p);
+        setTab("files");
+        requestOpenFile({ rootKey: fileRootKey({ kind: "project", id: p.id }), path: target.path });
         break;
     }
   }

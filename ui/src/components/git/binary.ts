@@ -26,6 +26,17 @@ export function emptyReason(header: string): string {
   // in crates/agency-core/src/git.rs.
   const tooLarge = /^File too large to diff: (\d+) bytes$/m.exec(header);
   if (tooLarge) return `File is too large to diff (${formatSize(Number(tooLarge[1]))}); open it in Files to read it.`;
+  // A new folder is normally listed file by file, so these are the two folders
+  // that stay one row. See expand_untracked_dirs() in the same file.
+  const bigFolder = /^Untracked folder with more than (\d+) files$/m.exec(header);
+  if (bigFolder) {
+    return `This folder holds more than ${bigFolder[1]} files, too many to list one by one. `
+      + "Stage or ignore the whole folder, or add a .gitignore inside it.";
+  }
+  if (/^Untracked folder holding its own git repository$/m.test(header)) {
+    return "This folder is a git repository of its own, so git reports it as a single entry "
+      + "rather than as the files inside it.";
+  }
   return "no textual changes";
 }
 

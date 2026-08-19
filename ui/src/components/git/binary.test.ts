@@ -36,6 +36,16 @@ describe("emptyReason", () => {
     expect(emptyReason(header)).toBe("File is too large to diff (3.0 MB); open it in Files to read it.");
   });
 
+  it("explains a new folder too big to list file by file", () => {
+    const header = "diff --git a/node_modules/ b/node_modules/\nUntracked folder with more than 500 files\n";
+    expect(emptyReason(header)).toMatch(/^This folder holds more than 500 files/);
+  });
+
+  it("explains a new folder that is a repository of its own", () => {
+    const header = "diff --git a/vendored/ b/vendored/\nUntracked folder holding its own git repository\n";
+    expect(emptyReason(header)).toMatch(/^This folder is a git repository of its own/);
+  });
+
   it("falls back to no textual changes", () => {
     expect(emptyReason("")).toBe("no textual changes");
   });

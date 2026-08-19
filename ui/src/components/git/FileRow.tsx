@@ -18,17 +18,26 @@ export default function FileRow({
   onContextMenu?: (e: React.MouseEvent) => void;
 }) {
   const dec = decorateIn(change, group);
-  const slash = change.path.lastIndexOf("/");
-  const dir = slash >= 0 ? change.path.slice(0, slash) : "";
-  const name = slash >= 0 ? change.path.slice(slash + 1) : change.path;
-  const icon = fileIcon(name);
+  // A folder git reports as a single entry ends in "/" (see
+  // expand_untracked_dirs in crates/agency-core/src/git.rs for the two that
+  // survive). Splitting that on the last slash left the name empty and put the
+  // folder's own name in the dimmed parent slot, so the row read as blank.
+  const isFolder = change.path.endsWith("/");
+  const shown = isFolder ? change.path.slice(0, -1) : change.path;
+  const slash = shown.lastIndexOf("/");
+  const dir = slash >= 0 ? shown.slice(0, slash) : "";
+  const name = (slash >= 0 ? shown.slice(slash + 1) : shown) + (isFolder ? "/" : "");
+  // fileIcon() hands back a "var(--token)" string, so pass it through as-is:
+  // wrapping it in var() again made var(var(--blue)), which is invalid CSS and
+  // left every icon inheriting the row colour.
+  const icon = isFolder ? { kind: "folder" as const, color: "var(--blue)" } : fileIcon(name);
   const primaryLabel = group === "index" ? "Unstage" : "Stage";
   const primaryGlyph = group === "index" ? "−" : "+";
   const deleted = dec.letter === "D";
   return (
     <div className={`git-row ${selected ? "sel" : ""} ${menuOpen ? "ctx" : ""}`}
       onClick={onSelect} onContextMenu={onContextMenu} title={change.path}>
-      <span className="git-fileicon" style={{ color: `var(${icon.color})` }}>
+      <span className="git-fileicon" style={{ color: icon.color }}>
         <FileIcon kind={icon.kind} size={13} />
       </span>
       <span className="git-name">

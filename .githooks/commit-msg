@@ -37,7 +37,11 @@ fi
 #    a guard that cries wolf gets --no-verify'd into uselessness. Those stay a
 #    judgment call, documented in CLAUDE.md. Maestro is listed because it has
 #    no innocent use anywhere in this codebase's history.
-COMPETITORS='munder|difflin|munderdiffl|chaitanyagiri|xirp|spotify|maestro'
+#
+#    "t3code"/"t3 code" and "pingdotgg" are listed; bare "t3" is not, because it
+#    is three characters and would trip on anything from a test fixture to a
+#    ref name.
+COMPETITORS='munder|difflin|munderdiffl|chaitanyagiri|xirp|spotify|maestro|t3code|t3[ -]code|pingdotgg'
 if printf '%s' "$BODY" | grep -qiE "(^|[^[:alnum:]])($COMPETITORS)([^[:alnum:]]|$)"; then
   fail "Competitor product name found. Describe the change, not the product."
 fi

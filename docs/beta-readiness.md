@@ -174,6 +174,28 @@ tests: 82 core + 54 app), `tsc --noEmit` exit 0, `vite build` exit 0.
     left alone, sibling skills are never touched, and the kit is excluded via
     the repo's shared `.git/info/exclude`. (skills.rs, state.rs)
 
+46. **[done]** A held message is visible, cancellable, and survives a quit
+    (AGE-123, follow-up to 43). `RunInfo` carries a `queuedMessages` count, and
+    while it is non-zero the tile's foot and the run header wear an amber
+    marker beside the activity readout. Opening it lists what is waiting
+    (origin and the whole text) and drops any of it: the queue is the only
+    thing in Agency that types into a session with nobody watching, so
+    cancelling has to be possible. A drop is matched on the message text, not
+    on a position, because the drain runs on the notifier tick and an index the
+    popover read a second ago can point at a different message; a drop that
+    finds nothing left says so instead of appearing to do nothing. The queue is
+    also mirrored into a `send_queues` table on every change, so quitting with
+    something held no longer loses it with no trace — the daemon outlives the
+    app, so the agent it was queued for is usually still sitting there. On
+    restore the origin comes back through a default-deny allowlist
+    (`sendq::ORIGINS`) and every message is re-stamped to launch time: keeping
+    the original stamp would put a message held overnight past `MAX_HOLD_MS`,
+    and that branch types regardless of what the pane looks like. Nothing is
+    delivered at launch; the first tick re-decides each message against the
+    session as it is now, and discards for a session the daemon no longer
+    hosts. (sendq.rs, registry.rs, state.rs, commands.rs, lib.rs, api.ts,
+    QueuedMarker.tsx, AgentTile.tsx, AgentFocus.tsx)
+
 ## Still open
 
 ### Phase 2 — update + recovery (before build #2)

@@ -313,6 +313,10 @@ impl Registry {
             CREATE TABLE IF NOT EXISTS issue_seqs (
                 project_id TEXT PRIMARY KEY,
                 next INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS send_queues (
+                session_id TEXT PRIMARY KEY,
+                messages TEXT NOT NULL
             );",
         )?;
         // Migrate older DBs whose `runs` table predates `port_base`.
@@ -954,6 +958,43 @@ impl Registry {
     pub fn delete_review_comment(&self, id: &str) -> Result<()> {
         self.conn.execute("DELETE FROM review_comments WHERE id = ?1", [id])?;
         Ok(())
+    }
+
+    // ── send queues ────────────────────────────────────────────────────────
+    //
+    // Text Agency owes a live session, held until typing it won't land mid-turn
+    // (`agency-app`'s `sendq`). It lives in memory while the app runs; these
+    // rows are only so that quitting with something held doesn't lose it with
+    // no trace. `messages` is opaque here on purpose — the queue's shape
+    // belongs to the module that decides with it, and the registry has no
+    // business knowing what a message is.
+
+    /// Write one session's whole queue. Rewritten on every change: eight
+    /// messages is the ceiling, and a whole-queue row cannot drift out of step
+    /// with the queue the way per-message rows can.
+    pub fn set_send_queue(&self, session_id: &str, messages: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO send_queues (session_id, messages) VALUES (?1, ?2)
+             ON CONFLICT(session_id) DO UPDATE SET messages = excluded.messages",
+            rusqlite::params![session_id, messages],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_send_queue(&self, session_id: &str) -> Result<()> {
+        self.conn.execute("DELETE FROM send_queues WHERE session_id = ?1", [session_id])?;
+        Ok(())
+    }
+
+    /// Every stored queue, as (session id, messages).
+    pub fn list_send_queues(&self) -> Result<Vec<(String, String)>> {
+        let mut stmt = self.conn.prepare("SELECT session_id, messages FROM send_queues")?;
+        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
     }
 
     pub fn mark_review_comments_sent(&self, run_id: &str) -> Result<()> {
@@ -2121,6 +2162,29 @@ mod tests {
         }
         let names: Vec<String> = reg.list_projects().unwrap().into_iter().map(|p| p.name).collect();
         assert_eq!(names, ["Apple", "banana", "zebra"]);
+    }
+
+    #[test]
+    fn a_send_queue_is_stored_per_session_and_survives_reopening_the_db() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("sendq.db");
+        {
+            let reg = Registry::open(&path).unwrap();
+            assert!(reg.list_send_queues().unwrap().is_empty());
+            reg.set_send_queue("run-a", "[1]").unwrap();
+            reg.set_send_queue("run-a--2", "[2]").unwrap();
+            // Rewritten wholesale, never appended to.
+            reg.set_send_queue("run-a", "[1,3]").unwrap();
+        }
+        let reg = Registry::open(&path).unwrap();
+        let mut queues = reg.list_send_queues().unwrap();
+        queues.sort();
+        assert_eq!(
+            queues,
+            [("run-a".to_string(), "[1,3]".to_string()), ("run-a--2".into(), "[2]".into())]
+        );
+        reg.delete_send_queue("run-a").unwrap();
+        assert_eq!(reg.list_send_queues().unwrap(), [("run-a--2".to_string(), "[2]".to_string())]);
     }
 
     #[test]

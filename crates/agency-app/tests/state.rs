@@ -996,6 +996,53 @@ fn a_message_waits_for_a_busy_agent_and_lands_once_it_is_quiet() {
     state.discard_run(&id).unwrap();
 }
 
+/// The marker's whole point: while something is held, the run says so — and it
+/// is still said after a quit, because the queue outlives the app that made it.
+#[test]
+fn a_held_message_shows_on_the_run_survives_a_quit_and_can_be_dropped() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let state = common::state(&dir);
+    let project = state.add_project("demo", &repo).unwrap();
+    let id = live_terminal(&state, &project.id);
+
+    let queued_on_tile = |s: &AppState| {
+        s.list_runs(&project.id).unwrap().into_iter().find(|r| r.id == id).unwrap().queued_messages
+    };
+    assert_eq!(queued_on_tile(&state), 0, "nothing owed yet");
+
+    state.add_review_comment(&id, "src/a.rs", 7, 7, "held-marker").unwrap();
+    // Unobserved sessions count as working, so this one is held rather than typed.
+    assert!(!state.send_review_comments(&id).unwrap());
+    assert_eq!(queued_on_tile(&state), 1, "the run must say it is still owed a message");
+    let waiting = state.list_queued_messages(&id);
+    assert_eq!(waiting.len(), 1);
+    assert_eq!(waiting[0].session_id, id);
+    assert_eq!(waiting[0].origin, "review comments");
+    assert!(waiting[0].text.contains("held-marker"), "the popover shows what will be typed");
+
+    // A quit and a relaunch: the same database, a new state. The daemon (and so
+    // the session) outlives the app, which is why the message is still worth
+    // keeping.
+    let reopened = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
+    let restored = reopened.list_queued_messages(&id);
+    assert_eq!(restored.len(), 1, "a quit must not lose a held message");
+    assert_eq!(restored[0].text, waiting[0].text);
+    assert_eq!(queued_on_tile(&reopened), 1);
+
+    // Dropping it is possible from either state, and leaves nothing for the
+    // next launch to restore.
+    assert!(reopened.cancel_queued_message(&id, &restored[0].text));
+    assert!(!reopened.cancel_queued_message(&id, &restored[0].text), "already gone");
+    assert!(reopened.list_queued_messages(&id).is_empty());
+    let relaunched = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
+    assert!(relaunched.list_queued_messages(&id).is_empty(), "a dropped message must stay dropped");
+
+    state.discard_run(&id).unwrap();
+}
+
 #[test]
 fn a_half_typed_prompt_survives_a_send() {
     let dir = tempfile::tempdir().unwrap();

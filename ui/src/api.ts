@@ -99,6 +99,22 @@ export interface RunInfo {
   issueId: string | null;
   // Model this run's agent was launched on; null = the agent's own default.
   model: string | null;
+  // Messages Agency is holding for this run and has not typed into its session
+  // yet. Non-zero puts the marker on the tile and the run header: a message
+  // waiting behind a long turn should read as patience, not as a lost click.
+  queuedMessages: number;
+}
+
+// One message the send queue is holding for a run.
+export interface QueuedMessage {
+  // The session it will be typed into: the run's id, or `<run>--<n>` for an
+  // extra agent tab.
+  sessionId: string;
+  // The feature that composed it: "review comments", "check feedback",
+  // "merge conflict".
+  origin: string;
+  // The whole text, and the handle cancelQueuedMessage matches on.
+  text: string;
 }
 
 // ── issues (the local per-project tracker) ──────────────────────────────────
@@ -1182,6 +1198,15 @@ export const deleteReviewComment = (id: string) =>
 // they are queued behind the turn it is in the middle of.
 export const sendReviewComments = (runId: string) =>
   invoke<boolean>("send_review_comments", { runId });
+
+// What the run is still owed, oldest first. The count is on RunInfo; this is
+// the detail behind the marker.
+export const listQueuedMessages = (runId: string) =>
+  invoke<QueuedMessage[]>("list_queued_messages", { runId });
+// Resolves false if the message went in (or was discarded) before the click
+// landed, so there was nothing left to drop.
+export const cancelQueuedMessage = (sessionId: string, text: string) =>
+  invoke<boolean>("cancel_queued_message", { sessionId, text });
 
 export type FileRoot = { kind: "run"; id: string } | { kind: "project"; id: string };
 

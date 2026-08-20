@@ -199,10 +199,30 @@ pub struct RunInfo {
     pub issue_id: Option<String>,
     /// Model this run was launched on. None = the agent's own default.
     pub model: Option<String>,
+    /// Messages Agency is holding for this run's sessions and has not typed in
+    /// yet (see `crate::sendq`). Zero for almost every run almost always; while
+    /// it isn't, the tile and the run header say so, because a message waiting
+    /// behind a long turn is otherwise indistinguishable from one that was
+    /// never sent.
+    pub queued_messages: u32,
     /// Epoch seconds. Exposed for time views (the weekly note); archived_at is
     /// None for live runs and last-archive-wins after a restore cycle.
     pub created_at: i64,
     pub archived_at: Option<i64>,
+}
+
+/// One message the send queue is holding, as shown by the run's marker.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueuedMessageInfo {
+    /// The session it will be typed into: the run's own id, or `<run>--<n>`
+    /// for one of its extra agent tabs.
+    pub session_id: String,
+    /// The feature that composed it (`crate::sendq::ORIGINS`).
+    pub origin: String,
+    /// The whole text, so the user can read what will be typed before deciding
+    /// whether to drop it, and the handle the drop is matched on.
+    pub text: String,
 }
 
 /// What one agent's model picker offers, as sent to the UI.
@@ -1313,6 +1333,10 @@ impl AppState {
         if let Ok(sessions) = state.term.read().unwrap().list() {
             log::info!("termd: adopted {} surviving session(s)", sessions.len());
         }
+        // Those surviving sessions are exactly why the send queue is stored:
+        // a message held at the last quit is still worth typing into the agent
+        // that is still sitting there waiting for it.
+        state.restore_send_queues(crate::activity::now_ms());
         Ok(state)
     }
 
@@ -1829,6 +1853,7 @@ impl AppState {
             port: run.port_base,
             kind: run.kind.clone(),
             run_scripts_live: any_run_script_live(&run.id, live),
+            queued_messages: self.queued_message_count(&run.id),
             worktree: run.worktree,
             race_id: run.race_id.clone(),
             loop_config: run.loop_config.clone(),
@@ -3720,7 +3745,120 @@ impl AppState {
             }
         }
         self.drain_session(id, crate::activity::now_ms());
+        // After the drain, not before: the usual case is that it went straight
+        // out, and then there is nothing to store.
+        self.persist_queue(id);
         Ok(self.send_queue.lock().unwrap().get(id).is_none_or(|q| q.is_empty()))
+    }
+
+    /// Mirror one session's queue into the registry, so quitting with something
+    /// held doesn't lose it with no trace. Best effort: the queue in memory is
+    /// what drains, and a write that fails costs the message only if the app is
+    /// quit before the next one succeeds.
+    fn persist_queue(&self, id: &str) {
+        let json = self
+            .send_queue
+            .lock()
+            .unwrap()
+            .get(id)
+            .filter(|q| !q.is_empty())
+            .map(crate::sendq::encode);
+        let reg = self.registry.lock().unwrap();
+        let stored = match &json {
+            Some(j) => reg.set_send_queue(id, j),
+            None => reg.delete_send_queue(id),
+        };
+        if let Err(e) = stored {
+            log::warn!("send queue: storing {id} failed: {e}");
+        }
+    }
+
+    /// Load the queues a previous run of the app left behind.
+    ///
+    /// Nothing is delivered here. Every restored message goes back to waiting
+    /// and is re-decided on the first notifier tick against the session as it
+    /// is *now*: a session the daemon no longer hosts discards it (the daemon
+    /// outlives the app, so plenty of them are still there), and one that
+    /// survived takes it under the ordinary rules.
+    fn restore_send_queues(&self, now_ms: i64) {
+        let stored = match self.registry.lock().unwrap().list_send_queues() {
+            Ok(rows) => rows,
+            Err(e) => {
+                log::warn!("send queue: reading stored queues failed: {e}");
+                return;
+            }
+        };
+        let mut restored = 0usize;
+        for (id, json) in stored {
+            let q = crate::sendq::decode(&json, now_ms);
+            if q.is_empty() {
+                // Nothing readable in the row: clear it rather than re-reading
+                // it on every launch from here on.
+                let _ = self.registry.lock().unwrap().delete_send_queue(&id);
+                continue;
+            }
+            restored += q.len();
+            self.send_queue.lock().unwrap().insert(id, q);
+        }
+        if restored > 0 {
+            log::info!("send queue: restored {restored} message(s) held at the last quit");
+        }
+    }
+
+    /// How many messages are waiting for this run, across its own session and
+    /// any extra agent tabs sharing its worktree.
+    fn queued_message_count(&self, run_id: &str) -> u32 {
+        self.send_queue
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(id, _)| split_session_id(id).0 == run_id)
+            .map(|(_, q)| q.len() as u32)
+            .sum()
+    }
+
+    /// What this run is still owed, oldest first, for the marker's popover.
+    pub fn list_queued_messages(&self, run_id: &str) -> Vec<QueuedMessageInfo> {
+        let queues = self.send_queue.lock().unwrap();
+        let mut ids: Vec<&String> =
+            queues.keys().filter(|id| split_session_id(id).0 == run_id).collect();
+        // The map has no order of its own, and the run's own session sorts
+        // before its tabs (`run` < `run--2`), which is the order they are shown
+        // in.
+        ids.sort();
+        ids.iter()
+            .flat_map(|id| {
+                queues[*id].messages().map(move |m| QueuedMessageInfo {
+                    session_id: (*id).clone(),
+                    origin: m.origin.to_string(),
+                    text: m.text.clone(),
+                })
+            })
+            .collect()
+    }
+
+    /// Drop one waiting message. Returns false when it is no longer there — the
+    /// drain runs on the notifier tick, so it may have gone out between the
+    /// popover being drawn and the click landing.
+    ///
+    /// The queue is the only thing in Agency that types into a session with
+    /// nobody watching, so this exists: what it holds must always be
+    /// cancellable.
+    pub fn cancel_queued_message(&self, session_id: &str, text: &str) -> bool {
+        let dropped = {
+            let mut queues = self.send_queue.lock().unwrap();
+            let Some(q) = queues.get_mut(session_id) else { return false };
+            let dropped = q.remove(text);
+            if q.is_empty() {
+                queues.remove(session_id);
+            }
+            dropped
+        };
+        if dropped {
+            log::info!("send queue: dropped a message for {session_id} at the user's request");
+            self.persist_queue(session_id);
+        }
+        dropped
     }
 
     /// Try to deliver one queued message to every session that has one. Called
@@ -3764,6 +3902,7 @@ impl AppState {
                 crate::sendq::Decision::Hold(_) => {}
                 crate::sendq::Decision::Discard(reason) => {
                     let n = self.send_queue.lock().unwrap().remove(id).map_or(0, |q| q.len());
+                    self.persist_queue(id);
                     log::info!("send queue: dropped {n} message(s) for {id} ({reason:?})");
                 }
                 crate::sendq::Decision::Send => {
@@ -3780,13 +3919,16 @@ impl AppState {
                         return;
                     }
                     log::info!("send queue: delivered {} to {id}", head.origin);
-                    let mut queues = self.send_queue.lock().unwrap();
-                    if let Some(q) = queues.get_mut(id) {
-                        q.pop();
-                        if q.is_empty() {
-                            queues.remove(id);
+                    {
+                        let mut queues = self.send_queue.lock().unwrap();
+                        if let Some(q) = queues.get_mut(id) {
+                            q.pop();
+                            if q.is_empty() {
+                                queues.remove(id);
+                            }
                         }
                     }
+                    self.persist_queue(id);
                 }
             }
         });
@@ -3846,6 +3988,7 @@ impl AppState {
         self.prompted.lock().unwrap().remove(id);
         self.human_input.lock().unwrap().remove(id);
         self.send_queue.lock().unwrap().remove(id);
+        self.persist_queue(id);
     }
 
     /// Whether the run has unconsumed user input for idle-notification gating.
@@ -3879,8 +4022,19 @@ impl AppState {
         let kept_run = |id: &str| keep.contains(split_session_id(id).0);
         self.human_input.lock().unwrap().retain(|id, _| kept_run(id));
         // A run that has left the board (archived, discarded) has no session to
-        // type into, so anything still queued for it goes with it.
-        self.send_queue.lock().unwrap().retain(|id, _| kept_run(id));
+        // type into, so anything still queued for it goes with it — including
+        // the stored copy, or it would come back at the next launch for a run
+        // that is no longer there.
+        let dropped: Vec<String> = {
+            let mut queues = self.send_queue.lock().unwrap();
+            let dropped =
+                queues.keys().filter(|id| !kept_run(id)).cloned().collect::<Vec<String>>();
+            queues.retain(|id, _| kept_run(id));
+            dropped
+        };
+        for id in dropped {
+            self.persist_queue(&id);
+        }
     }
 
     /// Re-read every run's token usage from its agent's transcript, and append

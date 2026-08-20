@@ -78,7 +78,7 @@ function LoopStrip({ run, onChanged }: { run: RunInfo; onChanged: () => void }) 
 // One entry in the agents rail. Hovering it (or tabbing to its control) reveals
 // a close button, and the menu behind that is where a run ends without first
 // having to open it: archived, so its branch survives and the Archived section
-// can restore it, or discarded outright. A terminal only closes.
+// can restore it, or deleted outright. A terminal only closes.
 function RailRow({
   run,
   on,
@@ -111,11 +111,11 @@ function RailRow({
       <OverflowMenu
         buttonClass="hover-close rail-row-close"
         icon={<span aria-hidden>✕</span>}
-        title={isTerminal ? "Close terminal" : "Archive or discard this agent"}
+        title={isTerminal ? "Close terminal" : "Archive or delete this agent"}
         items={removalsFor(run).map((action) => ({
           label: removalLabel(run, action),
           icon: action === "archive" ? <InboxIcon /> : <TrashIcon />,
-          danger: action === "discard",
+          danger: action === "delete",
           onSelect: () => setPending(action),
         }))}
       />
@@ -139,7 +139,7 @@ export default function AgentFocus({
   gitless?: boolean;
 }) {
   const { runs, focusedRunId, setFocusedRun, refreshRuns, createAgent, createTerminal, selectedProjectId, pendingSessionId, setPendingSession, setApproveRun } = useRuns();
-  // Archive / discard of the focused run, awaiting its confirm dialog.
+  // Archive / delete of the focused run, awaiting its confirm dialog.
   const [pendingRemoval, setPendingRemoval] = useState<Removal | null>(null);
   // Run being renamed (its display title). Any run — agent or terminal.
   const [renaming, setRenaming] = useState<RunInfo | null>(null);
@@ -366,7 +366,7 @@ export default function AgentFocus({
                 <OverflowMenu
                   items={[
                     { label: "Rename terminal", icon: <PencilIcon />, onSelect: () => setRenaming(focused) },
-                    { label: "Close terminal", icon: <TrashIcon />, danger: true, separator: true, onSelect: () => setPendingRemoval("discard") },
+                    { label: "Close terminal", icon: <TrashIcon />, danger: true, separator: true, onSelect: () => setPendingRemoval("delete") },
                   ]}
                 />
               </div>
@@ -422,7 +422,7 @@ export default function AgentFocus({
                   items={[
                     { label: "Rename agent", icon: <PencilIcon />, onSelect: () => setRenaming(focused) },
                     { label: "Archive agent", icon: <InboxIcon />, separator: true, onSelect: () => setPendingRemoval("archive") },
-                    { label: "Discard agent", icon: <TrashIcon />, danger: true, onSelect: () => setPendingRemoval("discard") },
+                    { label: "Delete agent", icon: <TrashIcon />, danger: true, onSelect: () => setPendingRemoval("delete") },
                   ]}
                 />
                 {/* Nothing to approve without a branch of its own: the work is

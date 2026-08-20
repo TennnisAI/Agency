@@ -684,6 +684,17 @@ pub fn diff_stat(worktree: &Path, base: &str) -> Result<DiffStat> {
     Ok(numstat(&git(worktree, &["diff", "--numstat", &range])?))
 }
 
+/// What `branch` changed since `from`, as a two-dot range.
+///
+/// The two-dot form is deliberate where [`diff_stat`]'s three-dot is not: this
+/// is asked at archive time, possibly after the branch has merged, when the
+/// merge base is the branch's own tip and a three-dot range would come back
+/// empty for exactly the runs that succeeded.
+pub fn range_stat(repo: &Path, from: &str, branch: &str) -> Result<DiffStat> {
+    let range = format!("{from}..{branch}");
+    Ok(numstat(&git(repo, &["diff", "--numstat", &range])?))
+}
+
 /// What is currently uncommitted (staged and unstaged, tracked files) against
 /// HEAD. The counterpart of [`diff_stat`] for a run that works in the project's
 /// main checkout: it has no branch of its own to diff against a base, so its

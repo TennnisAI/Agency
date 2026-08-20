@@ -110,6 +110,7 @@ fn runs_persist_list_and_delete() {
         issue_id: None,
         worktree: true,
         model: None,
+        base_commit: None,
     };
     {
         let reg = Registry::open(&db).unwrap();
@@ -148,6 +149,7 @@ fn list_runs_newest_first() {
             issue_id: None,
             worktree: true,
             model: None,
+            base_commit: None,
         })
         .unwrap();
     }

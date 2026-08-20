@@ -1627,6 +1627,183 @@ fn archive_without_worktree_does_not_commit_the_users_work() {
     session_gone_or_cleanup(&state, &info.id);
 }
 
+/// AGE-149. After a merge the agent branch is a second name for commits that
+/// are on the base, so archiving takes it — and the record is what is left to
+/// read, since there is no longer a branch to restore.
+#[test]
+fn archiving_merged_work_takes_the_branch_and_leaves_a_record() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let state = common::state(&dir);
+    state
+        .register_profile(AgentProfile {
+            name: "noop".into(),
+            command: "sh".into(),
+            args: vec!["-c".into(), "sleep 1".into()],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+    let info = state.create_run(&project.id, "add a feature", "noop", None, "main", None).unwrap();
+    let wt = state.worktree_path(&info.id).unwrap();
+    std::fs::write(wt.join("feature.txt"), "x\n").unwrap();
+    Command::new("git").args(["add", "-A"]).current_dir(&wt).status().unwrap();
+    Command::new("git")
+        .args(["commit", "-qm", "add the feature"])
+        .current_dir(&wt)
+        .status()
+        .unwrap();
+
+    // Before the merge the branch is the only copy, so the plan keeps it.
+    let before = state.run_cleanup(&info.id).unwrap();
+    assert!(before.archive.keeps_branch, "unmerged work keeps its branch");
+    assert_eq!(before.delete.commits_at_risk, 1, "deleting it now would lose the commit");
+
+    assert!(matches!(state.merge_task(&info.id).unwrap(), MergeOutcome::Clean { .. }));
+
+    let after = state.run_cleanup(&info.id).unwrap();
+    assert!(after.facts.merged);
+    assert!(after.archive.deletes_branch, "a merged branch is a duplicate, not a backup");
+    assert!(!after.delete.danger(), "nothing is at risk once the work is on main");
+
+    state.archive_run(&info.id).unwrap();
+    let branches = state.list_project_branches(&project.id).unwrap().branches;
+    assert!(!branches.contains(&info.branch), "{} went with the archive", info.branch);
+    assert!(!repo.join(".agency").join("worktrees").join(&info.id).exists());
+
+    // The run is still in the archive, and what is left of it says so.
+    let archived = state.list_archived_runs(&project.id).unwrap();
+    assert_eq!(archived.len(), 1);
+    let held = archived[0].archived.as_ref().unwrap();
+    assert!(!held.branch_kept);
+    assert!(held.has_record);
+
+    let record = state.read_run_record(&info.id).unwrap().unwrap();
+    assert!(record.contains("outcome: merged"), "{record}");
+    assert!(record.contains("the commits are on `main`"), "{record}");
+    assert!(record.contains("add the feature"), "the commit list survives the branch: {record}");
+    assert!(record.contains("1 file, +1"), "{record}");
+
+    // And restore says why it cannot, rather than failing inside git.
+    let err = state.restore_run(&info.id).unwrap_err().to_string();
+    assert!(err.contains("no branch to restore"), "{err}");
+}
+
+/// The other half of AGE-149: work that landed nowhere keeps its branch, and
+/// the record says what that branch is holding.
+#[test]
+fn archiving_unmerged_work_keeps_the_branch_and_stays_restorable() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let state = common::state(&dir);
+    state
+        .register_profile(AgentProfile {
+            name: "noop".into(),
+            command: "sh".into(),
+            args: vec!["-c".into(), "sleep 1".into()],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+    let info = state.create_run(&project.id, "explore", "noop", None, "main", None).unwrap();
+    let wt = state.worktree_path(&info.id).unwrap();
+    std::fs::write(wt.join("draft.txt"), "x\n").unwrap();
+    Command::new("git").args(["add", "-A"]).current_dir(&wt).status().unwrap();
+    Command::new("git").args(["commit", "-qm", "a draft"]).current_dir(&wt).status().unwrap();
+
+    state.archive_run(&info.id).unwrap();
+    let branches = state.list_project_branches(&project.id).unwrap().branches;
+    assert!(branches.contains(&info.branch), "the only copy of the work stays");
+
+    let archived = state.list_archived_runs(&project.id).unwrap();
+    let held = archived[0].archived.as_ref().unwrap();
+    assert!(held.branch_kept && held.has_record);
+
+    let record = state.read_run_record(&info.id).unwrap().unwrap();
+    assert!(record.contains("outcome: kept"), "{record}");
+    assert!(record.contains("carrying 1 commit that is nowhere else"), "{record}");
+
+    // Restoring cuts the worktree again and clears the record, which described
+    // a finished run.
+    let restored = state.restore_run(&info.id).unwrap();
+    assert!(restored.worktree);
+    assert!(state.read_run_record(&info.id).unwrap().is_none());
+    session_gone_or_cleanup(&state, &info.id);
+}
+
+/// Deleting a run takes its record with it: a file left behind for a run the
+/// user asked to be rid of is the opposite of what they pressed.
+#[test]
+fn deleting_an_archived_run_removes_its_record() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let state = common::state(&dir);
+    state
+        .register_profile(AgentProfile {
+            name: "noop".into(),
+            command: "sh".into(),
+            args: vec!["-c".into(), "sleep 1".into()],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+    let info = state.create_run(&project.id, "p", "noop", None, "main", None).unwrap();
+    state.archive_run(&info.id).unwrap();
+    let path = repo.join(".agency").join("records").join(format!("{}.md", info.id));
+    assert!(path.exists());
+
+    state.discard_run(&info.id).unwrap();
+    assert!(!path.exists(), "the record went with the run");
+}
+
+/// Anything Agency writes into a project must be git-excluded, or it turns up
+/// in every diff the user takes afterwards.
+#[test]
+fn the_records_directory_is_excluded_from_git() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let state = common::state(&dir);
+    state
+        .register_profile(AgentProfile {
+            name: "noop".into(),
+            command: "sh".into(),
+            args: vec!["-c".into(), "sleep 1".into()],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+    let info = state.create_run(&project.id, "p", "noop", None, "main", None).unwrap();
+    state.archive_run(&info.id).unwrap();
+
+    let out = Command::new("git")
+        .args(["status", "--porcelain", "--untracked-files=all"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    let status = String::from_utf8_lossy(&out.stdout);
+    assert!(!status.contains(".agency/records"), "records must not show in git status: {status}");
+}
+
 /// Cleaning up the archived list takes every archived run's branch and worktree
 /// with it, and leaves the live runs alone.
 #[test]

@@ -92,18 +92,18 @@ export default function AgentTile({ run }: { run: RunInfo }) {
         <QueuedMarker run={run} />
         {/* The same close button and menu the agents rail carries, so an agent
             offers the same ways out wherever it is listed: archived, keeping
-            its branch for the Archived section, or discarded outright. The
+            its record for the Archived section, or deleted outright. The
             wrapper swallows clicks — on the button, the menu, or its backdrop —
             that would otherwise open the tile. */}
         <span className="tile-close-wrap" onClick={(e) => e.stopPropagation()}>
           <OverflowMenu
             buttonClass="hover-close tile-close"
             icon={<span aria-hidden>✕</span>}
-            title={isTerminal ? "Close terminal" : "Archive or discard this agent"}
+            title={isTerminal ? "Close terminal" : "Archive or delete this agent"}
             items={removalsFor(run).map((action) => ({
               label: removalLabel(run, action),
               icon: action === "archive" ? <InboxIcon /> : <TrashIcon />,
-              danger: action === "discard",
+              danger: action === "delete",
               onSelect: () => setPending(action),
             }))}
           />

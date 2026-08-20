@@ -1,3 +1,4 @@
+import { ReactNode } from "react";
 import { useModalKeys } from "../hooks/useModalKeys";
 import { CloneProgress } from "../api";
 import ModalBackdrop from "./ModalBackdrop";
@@ -9,6 +10,7 @@ export default function ConfirmDialog({
   confirmLabel,
   danger,
   busy,
+  confirmDisabled,
   progress,
   progressLabel,
   altLabel,
@@ -21,11 +23,17 @@ export default function ConfirmDialog({
   onCancel,
 }: {
   title: string;
-  body: string;
+  body: ReactNode;
   confirmLabel: string;
   danger?: boolean;
   /** Disables both buttons (and Escape) while the confirmed action runs. */
   busy?: boolean;
+  /**
+   * Disables only the confirm. For a dialog still reading what it is about to
+   * say: going ahead early would do the right thing under the wrong
+   * explanation, but Cancel and Escape must keep working throughout.
+   */
+  confirmDisabled?: boolean;
   /**
    * Latest step of the confirmed action, when it streams progress. Rendered
    * with `progressLabel` while `busy`, so a slow one (an agent teardown, say)
@@ -83,7 +91,11 @@ export default function ConfirmDialog({
               {altLabel}
             </button>
           )}
-          <button className={danger ? "btn-danger" : "btn-primary"} disabled={busy} onClick={onConfirm}>
+          <button
+            className={danger ? "btn-danger" : "btn-primary"}
+            disabled={busy || confirmDisabled}
+            onClick={onConfirm}
+          >
             {confirmLabel}
           </button>
         </div>

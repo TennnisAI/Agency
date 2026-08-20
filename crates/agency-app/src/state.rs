@@ -1,4 +1,5 @@
 use crate::notifier;
+use agency_core::cleanup::{BranchFacts, Disposal};
 use agency_core::profile::AgentProfile;
 use agency_core::registry::{IssueStatus, Project, Registry};
 use agency_core::term::client::{Subscription, TermClient};
@@ -209,6 +210,22 @@ pub struct RunInfo {
     /// None for live runs and last-archive-wins after a restore cycle.
     pub created_at: i64,
     pub archived_at: Option<i64>,
+    /// What this run's archive still holds. Only set by `list_archived_runs`:
+    /// answering it costs a git call per run, and the live board polls every
+    /// 1.5 seconds while the Archived list is read once, when it is opened.
+    pub archived: Option<ArchivedInfo>,
+}
+
+/// What is left of an archived run — the two things the list has to be able to
+/// say, because the difference between them is what "archived" now means.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchivedInfo {
+    /// Its branch is still in the repo, so the run can be restored into a
+    /// fresh worktree. False for the normal ending of merged work.
+    pub branch_kept: bool,
+    /// There is a record file to read.
+    pub has_record: bool,
 }
 
 /// One message the send queue is holding, as shown by the run's marker.
@@ -359,6 +376,22 @@ pub struct DiscardSummary {
     pub discarded: usize,
     /// One message per run that couldn't be discarded; empty on a clean sweep.
     pub failed: Vec<String>,
+}
+
+/// What each teardown verb would remove from one run, and why. Both verbs come
+/// back together because every surface that offers one offers the other, and
+/// the difference between them is the thing the user is deciding.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunCleanup {
+    pub facts: BranchFacts,
+    pub archive: agency_core::cleanup::CleanupPlan,
+    pub delete: agency_core::cleanup::CleanupPlan,
+    /// The branch the plans are about, and the base they were measured
+    /// against — both named in the dialog, so both travel with the plan rather
+    /// than being re-derived by the UI.
+    pub branch: String,
+    pub base: String,
 }
 
 /// A run's PR plus check rollup, polled by the merge modal.
@@ -963,6 +996,15 @@ fn workspace_dir(repo: &Path, run: &agency_core::registry::Run) -> std::path::Pa
         repo.join(".agency").join("worktrees").join(&run.id)
     } else {
         repo.to_path_buf()
+    }
+}
+
+/// Delete a file, treating "it was not there" as success. Both callers are
+/// removing a record that may predate records existing at all.
+fn remove_if_present(path: &Path) -> std::io::Result<()> {
+    match std::fs::remove_file(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        other => other,
     }
 }
 
@@ -2029,6 +2071,7 @@ impl AppState {
             model: run.model.clone(),
             created_at: run.created_at,
             archived_at: run.archived_at,
+            archived: None,
         }
     }
 
@@ -2290,6 +2333,13 @@ impl AppState {
             issue_id: spec.issue_id.clone(),
             worktree: spec.worktree,
             model: model.clone(),
+            // Resolved now, while the answer is unambiguous. Once this branch
+            // merges, `merge-base(base, branch)` is the branch's own tip and
+            // the range that names its commits is gone — so an archive record
+            // written after a successful merge would list nothing at all
+            // without this. Best-effort: a run whose base won't resolve still
+            // starts, and its record falls back to the merge base.
+            base_commit: spec.worktree.then(|| agency_core::merge::rev(&repo, spec.base)).flatten(),
         };
         {
             let reg = self.registry.lock().unwrap();
@@ -3609,6 +3659,7 @@ impl AppState {
             issue_id: None,
             worktree: false,
             model: None,
+            base_commit: None,
         };
         self.registry.lock().unwrap().insert_run(&run)?;
         Ok(self.run_info(&run))
@@ -3824,6 +3875,7 @@ impl AppState {
             issue_id: None,
             worktree: false,
             model: None,
+            base_commit: None,
         };
         self.registry.lock().unwrap().insert_run(&run)?;
         Ok(self.run_info(&run))
@@ -4349,6 +4401,206 @@ impl AppState {
         Ok(self.term.read().unwrap().capture(&session_name(id), lines).unwrap_or_default())
     }
 
+    /// What tearing `id` down would actually remove, asked of git now.
+    ///
+    /// Both plans come back from one probe because every place that offers a
+    /// teardown offers both verbs, and the dialog has to say what each one
+    /// costs before the user picks. Every probe is local (`merge-base`,
+    /// `rev-list`, `branch --remotes --contains`): this is read while a menu is
+    /// opening, and a menu that waits on the network is a menu that hangs.
+    pub fn run_cleanup(&self, id: &str) -> Result<RunCleanup> {
+        let run = self.run_record(id)?;
+        let facts = self.branch_facts(&run);
+        let base = self
+            .project_repo(&run.project_id)
+            .ok()
+            .and_then(|repo| {
+                agency_core::merge::resolve_target(run.merge_target.as_deref(), &repo).ok()
+            })
+            .unwrap_or_else(|| run.base.clone());
+        Ok(RunCleanup {
+            archive: agency_core::cleanup::plan(&facts, Disposal::Archive),
+            delete: agency_core::cleanup::plan(&facts, Disposal::Delete),
+            facts,
+            branch: run.branch.clone(),
+            base,
+        })
+    }
+
+    /// Where this run's commits live besides its own branch. Default-deny: a
+    /// fact we cannot establish is not asserted, so anything unreadable ends up
+    /// keeping the branch rather than deleting it.
+    fn branch_facts(&self, run: &agency_core::registry::Run) -> BranchFacts {
+        // A terminal, and an agent working in the project's own checkout, own
+        // no branch of ours. Their changes are the user's, in the user's
+        // checkout, and nothing here may weigh them.
+        if run.kind != "agent" || !run.worktree {
+            return BranchFacts::default();
+        }
+        let Ok(repo) = self.project_repo(&run.project_id) else {
+            return BranchFacts { owns_branch: true, gone: true, ..BranchFacts::default() };
+        };
+        if !agency_core::merge::branch_exists(&repo, &run.branch) {
+            return BranchFacts { owns_branch: true, gone: true, ..BranchFacts::default() };
+        }
+        let base = agency_core::merge::resolve_target(run.merge_target.as_deref(), &repo)
+            .unwrap_or_else(|_| run.base.clone());
+        let ahead = agency_core::merge::commits_ahead(&repo, &run.branch, &base).ok();
+        let worktree = workspace_dir(&repo, run);
+        BranchFacts {
+            owns_branch: true,
+            commits_ahead: ahead.unwrap_or(0),
+            commits_known: ahead.is_some(),
+            merged: agency_core::merge::is_merged(&repo, &run.branch, &base),
+            pushed: agency_core::merge::is_pushed(&repo, &run.branch),
+            gone: false,
+            dirty: worktree.exists()
+                && agency_core::git::status(&worktree).is_ok_and(|cs| !cs.is_empty()),
+        }
+    }
+
+    /// Write the run's archive record: what it was asked, what it committed,
+    /// and where that work is now.
+    ///
+    /// This is what makes an archive worth keeping once its branch is gone.
+    /// Everything it can only guess at is left out rather than guessed: an
+    /// unresolvable commit range prints as unresolvable, not as "no commits".
+    fn write_run_record(
+        &self,
+        run: &agency_core::registry::Run,
+        repo: &Path,
+        facts: &agency_core::cleanup::BranchFacts,
+        plan: &agency_core::cleanup::CleanupPlan,
+        archived_at: i64,
+    ) -> Result<()> {
+        use agency_core::record::{Commit, Outcome, RunRecord};
+        let base = agency_core::merge::resolve_target(run.merge_target.as_deref(), repo)
+            .unwrap_or_else(|_| run.base.clone());
+        // The same facts the plan was decided from, passed in rather than
+        // re-probed: a second read could disagree with the first, and the
+        // record would then describe an ending the teardown did not produce.
+        // The plan is consulted before the facts, because the record has to
+        // describe what happened rather than what git says now. A branch that
+        // was kept is reported as kept even if it also looks merged — which is
+        // reachable, since the auto-commit above can put a WIP commit on a
+        // branch that had already landed.
+        let outcome = if !run.worktree {
+            Outcome::NoWorkspace { branch: run.branch.clone() }
+        } else if plan.keeps_branch {
+            Outcome::Kept { commits: facts.commits_ahead }
+        } else if facts.merged {
+            Outcome::Merged { base: base.clone() }
+        } else if facts.pushed {
+            Outcome::Pushed
+        } else if facts.commits_known && facts.commits_ahead == 0 {
+            Outcome::Empty
+        } else {
+            Outcome::Dropped { commits: facts.commits_ahead }
+        };
+
+        // The commits this run added, named from where its branch was cut.
+        // `base_commit` is recorded at creation precisely because the merge
+        // base stops being the fork point the moment the branch lands; runs
+        // that predate it fall back to the merge base and lose the list only if
+        // they also merged.
+        let range_base = run
+            .base_commit
+            .clone()
+            .or_else(|| agency_core::merge::fork_point(repo, &run.branch, &base));
+        let logged = range_base
+            .as_ref()
+            .filter(|_| run.worktree)
+            .and_then(|from| agency_core::merge::log_commits(repo, from, &run.branch, 200).ok());
+        let diffstat = range_base
+            .as_ref()
+            .filter(|_| run.worktree)
+            .and_then(|from| agency_core::git::range_stat(repo, from, &run.branch).ok());
+
+        let issue = run.issue_id.as_ref().and_then(|id| self.issue_label(id));
+        let usage =
+            self.usage.lock().unwrap().get(&run.id).and_then(|(_, u)| {
+                agency_core::usage::label(&agency_core::usage::UsageInfo::from(u))
+            });
+        // Named, not copied: the transcript belongs to the agent's own CLI and
+        // Agency does not manage that directory. Pointing at one that is not
+        // there would be worse than saying nothing, so it is checked first.
+        let transcript = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .and_then(|home| {
+                let command = self
+                    .registry
+                    .lock()
+                    .unwrap()
+                    .get_profile(&run.agent)
+                    .ok()
+                    .flatten()
+                    .map(|p| p.command)
+                    .unwrap_or_else(|| run.agent.clone());
+                agency_core::usage::session_dir(&home, &command, &workspace_dir(repo, run))
+            })
+            .filter(|d| d.exists())
+            .map(|d| d.display().to_string());
+
+        let record = RunRecord {
+            id: run.id.clone(),
+            heading: run.title.clone().unwrap_or_else(|| run.branch.clone()),
+            agent: run.agent.clone(),
+            model: run.model.clone(),
+            prompt: run.prompt.clone(),
+            branch: run.branch.clone(),
+            base,
+            issue,
+            created_at: run.created_at,
+            archived_at,
+            outcome,
+            commits_known: logged.is_some(),
+            commits: logged
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(short, subject)| Commit { short, subject })
+                .collect(),
+            diffstat,
+            usage,
+            transcript,
+        };
+        let path = agency_core::record::path(repo, &run.id);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        // The records directory is new to any repo that has not archived a run
+        // since this shipped, and an unexcluded one turns up in every diff.
+        let _ = agency_core::worktree::ensure_agency_excludes(repo);
+        std::fs::write(&path, agency_core::record::render(&record))?;
+        Ok(())
+    }
+
+    /// `AGE-149` for a run dispatched from an issue, so the record can link
+    /// back to it the way a note does. `None` if the issue has since gone.
+    fn issue_label(&self, issue_id: &str) -> Option<String> {
+        let reg = self.registry.lock().unwrap();
+        let issue = reg.get_issue(issue_id).ok().flatten()?;
+        let key = reg
+            .get_project(&issue.project_id)
+            .ok()
+            .flatten()
+            .and_then(|p| p.issue_key)
+            .unwrap_or_else(|| "ISSUE".into());
+        Some(format!("{key}-{}", issue.seq))
+    }
+
+    /// The archive record for a run, as markdown. `None` when there is none:
+    /// the run predates records, or its project folder has moved.
+    pub fn read_run_record(&self, id: &str) -> Result<Option<String>> {
+        let run = self.run_record(id)?;
+        let repo = self.project_repo(&run.project_id)?;
+        let path = agency_core::record::path(&repo, &run.id);
+        match std::fs::read_to_string(&path) {
+            Ok(text) => Ok(Some(text)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     pub fn discard_run(&self, id: &str) -> Result<()> {
         self.discard_run_with_progress(id, &mut |_| {})
     }
@@ -4394,6 +4646,16 @@ impl AppState {
             }
         }
         step(on_progress, "Cleaning up", &run.branch);
+        // Delete takes the record too: keeping a file for a run the user asked
+        // to be rid of is the opposite of what they pressed. Best-effort — a
+        // record that will not delete must not strand the teardown, and the
+        // run's row going is what actually removes it from the app.
+        if let Ok(repo) = self.project_repo(&run.project_id) {
+            let path = agency_core::record::path(&repo, &run.id);
+            if let Err(e) = remove_if_present(&path) {
+                log::warn!("discard_run {id}: couldn't remove the run record: {e}");
+            }
+        }
         {
             let reg = self.registry.lock().unwrap();
             reg.delete_run_sessions(id)?;
@@ -4405,9 +4667,20 @@ impl AppState {
         Ok(())
     }
 
-    /// Archive a run: stop its sessions, run the optional archive cleanup script,
-    /// remove the worktree but KEEP the branch, and stamp `archived_at`. The run
-    /// record is kept so it can be restored.
+    /// Archive a run: stop its sessions, run the optional archive cleanup
+    /// script, write the run's record, remove the worktree, and stamp
+    /// `archived_at`.
+    ///
+    /// Whether the branch survives is [`agency_core::cleanup`]'s decision, not
+    /// this function's: a branch already contained in the base or on a remote
+    /// is a second copy of commits that exist elsewhere, and keeping one per
+    /// archived run is how a repo ends up with hundreds of `agent/*` refs
+    /// nobody can tell apart. A branch carrying work nothing else has is kept,
+    /// and only then is the run restorable.
+    ///
+    /// The record is what makes deleting the branch bearable: it is a markdown
+    /// file in the project's `.agency/records/`, written before anything is
+    /// removed, saying what the agent was asked and what became of the work.
     ///
     /// A run without a worktree owns nothing on disk, so archiving it is only
     /// the session teardown and the stamp: its changes stay in the checkout,
@@ -4469,6 +4742,20 @@ impl AppState {
         self.kill_extra_sessions(id);
         self.registry.lock().unwrap().delete_run_sessions(id)?;
 
+        // Decided here, after the auto-commit above: a WIP commit made seconds
+        // ago is on no remote and in no base, so a run that looked merged
+        // before it correctly comes out of this holding work.
+        let facts = self.branch_facts(&run);
+        let plan = agency_core::cleanup::plan(&facts, Disposal::Archive);
+        let archived_at = now_secs();
+        // Written while the worktree, the branch and the commit range all still
+        // exist — after this the range that names the run's own commits may be
+        // gone. Best-effort: a record that cannot be written is not worth
+        // failing an archive over, and it says so in the log.
+        if let Err(e) = self.write_run_record(&run, &repo, &facts, &plan, archived_at) {
+            log::warn!("archive_run {id}: couldn't write the run record: {e}");
+        }
+
         // Best-effort archive cleanup script, before the worktree disappears.
         // It tears down a workspace; a run that never had one has nothing to
         // tear down, and the script would run against the live checkout.
@@ -4487,10 +4774,15 @@ impl AppState {
             // See discard_run_with_progress: async command, so the gate stands
             // in for the main-thread serialization this used to get for free.
             let _gate = self.worktree_gate.lock().unwrap();
-            WorktreeManager::new(repo).remove_keep_branch(id)?;
+            let manager = WorktreeManager::new(repo);
+            if plan.deletes_branch {
+                manager.remove(id)?;
+            } else {
+                manager.remove_keep_branch(id)?;
+            }
         }
         step(on_progress, "Cleaning up", &run.branch);
-        self.registry.lock().unwrap().set_archived(id, Some(now_secs()))?;
+        self.registry.lock().unwrap().set_archived(id, Some(archived_at))?;
         // Archiving an unmerged run abandons it from the issue's point of
         // view. A merged run's issue is already done, which rollback skips.
         if let Some(issue_id) = &run.issue_id {
@@ -4521,6 +4813,17 @@ impl AppState {
         // Nothing was removed for a worktree-less run, so nothing is re-created:
         // restoring it just makes the row live again.
         if run.worktree {
+            // Since archiving deletes a branch whose commits are already on the
+            // base or a remote, most archived runs have nothing left to cut a
+            // worktree from. Say that, rather than surfacing git's "invalid
+            // reference" from three frames down.
+            if !agency_core::merge::branch_exists(&repo, &run.branch) {
+                bail!(
+                    "'{}' is gone, so there is no branch to restore this agent onto. Its record \
+                     is still in the archive.",
+                    run.branch
+                );
+            }
             manager.restore(id)?;
             if let Err(e) = manager.copy_essentials(id, &config.files.copy) {
                 log::warn!("copying essentials into restored worktree {id}: {e}");
@@ -4556,15 +4859,41 @@ impl AppState {
                 port,
             );
         }
+        // The record describes a run that ended; this one is live again, and a
+        // record left behind would be read as the account of a run still going.
+        // It is written afresh whenever this one is archived again.
+        if let Err(e) = remove_if_present(&agency_core::record::path(&repo, &run.id)) {
+            log::warn!("restore_run {id}: couldn't remove the stale run record: {e}");
+        }
         self.registry.lock().unwrap().set_archived(id, None)?;
         let refreshed = self.run_record(id)?;
         Ok(self.run_info(&refreshed))
     }
 
+    /// The project's archived runs, each carrying what its archive still holds.
+    ///
+    /// Asked of git and the filesystem rather than remembered, so a branch
+    /// deleted by hand outside Agency stops being offered for restore instead
+    /// of failing when the restore is pressed.
     pub fn list_archived_runs(&self, project_id: &str) -> Result<Vec<RunInfo>> {
         let runs = self.registry.lock().unwrap().list_archived_runs(project_id)?;
         let live = self.term.read().unwrap().list().unwrap_or_default();
-        Ok(runs.iter().map(|r| self.run_info_from(r, &live)).collect())
+        let repo = self.project_repo(project_id).ok();
+        Ok(runs
+            .iter()
+            .map(|r| {
+                let mut info = self.run_info_from(r, &live);
+                info.archived = Some(ArchivedInfo {
+                    branch_kept: repo
+                        .as_ref()
+                        .is_some_and(|repo| agency_core::merge::branch_exists(repo, &r.branch)),
+                    has_record: repo
+                        .as_ref()
+                        .is_some_and(|repo| agency_core::record::path(repo, &r.id).exists()),
+                });
+                info
+            })
+            .collect())
     }
 
     /// Discard every archived run in a project in one sweep: each one's kept
@@ -7281,6 +7610,7 @@ mod tests {
             issue_id: None,
             worktree: false,
             model: None,
+            base_commit: None,
         };
         assert_eq!(run.kind, "terminal");
         assert!(run.branch.is_empty());
@@ -7310,6 +7640,7 @@ mod tests {
             issue_id: None,
             worktree: false,
             model: None,
+            base_commit: None,
         }
     }
 

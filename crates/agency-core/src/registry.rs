@@ -76,6 +76,15 @@ pub struct Run {
     /// the profile because it is a per-run choice: resume, rerun and every
     /// loop attempt must come back on the same model the work started on.
     pub model: Option<String>,
+    /// The commit the run's branch was cut from, resolved once at creation.
+    ///
+    /// Kept because it is the only thing that can still name a run's own
+    /// commits after the branch has merged: `merge-base(base, branch)` is the
+    /// branch tip by then, so `merge-base..branch` is empty and the archive
+    /// record would list nothing for exactly the runs that succeeded. `None`
+    /// for runs created before this was recorded, which fall back to the merge
+    /// base and lose the list only if they also merged.
+    pub base_commit: Option<String>,
 }
 
 /// A local issue: the tracker is per-project and agent-native — dispatching
@@ -363,6 +372,9 @@ impl Registry {
         }
         if !column_exists(&conn, "runs", "model")? {
             conn.execute("ALTER TABLE runs ADD COLUMN model TEXT", [])?;
+        }
+        if !column_exists(&conn, "runs", "base_commit")? {
+            conn.execute("ALTER TABLE runs ADD COLUMN base_commit TEXT", [])?;
         }
         if !column_exists(&conn, "projects", "issue_key")? {
             conn.execute("ALTER TABLE projects ADD COLUMN issue_key TEXT", [])?;
@@ -743,13 +755,13 @@ impl Registry {
             None => None,
         };
         self.conn.execute(
-            "INSERT INTO runs (id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+            "INSERT INTO runs (id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
             rusqlite::params![
                 run.id, run.project_id, run.agent, run.prompt, run.base, run.branch,
                 run.created_at, run.port_base.map(|p| p as i64), run.archived_at, run.title, run.kind,
                 run.merge_target, run.race_id, loop_config, loop_state, run.issue_id, run.worktree as i64,
-                run.model
+                run.model, run.base_commit
             ],
         )?;
         Ok(())
@@ -768,7 +780,7 @@ impl Registry {
 
     pub fn get_run(&self, id: &str) -> Result<Option<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model FROM runs WHERE id = ?1",
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit FROM runs WHERE id = ?1",
         )?;
         let mut rows = stmt.query([id])?;
         match rows.next()? {
@@ -779,7 +791,7 @@ impl Registry {
 
     pub fn list_runs(&self, project_id: &str) -> Result<Vec<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit
              FROM runs WHERE project_id = ?1 AND archived_at IS NULL ORDER BY created_at DESC",
         )?;
         let rows = stmt.query_map([project_id], |row| Ok(row_to_run(row)))?;
@@ -792,7 +804,7 @@ impl Registry {
 
     pub fn list_archived_runs(&self, project_id: &str) -> Result<Vec<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit
              FROM runs WHERE project_id = ?1 AND archived_at IS NOT NULL ORDER BY archived_at DESC",
         )?;
         let rows = stmt.query_map([project_id], |row| Ok(row_to_run(row)))?;
@@ -1183,7 +1195,7 @@ impl Registry {
     /// runs" list; also drives the last-run-abandoned rollback check).
     pub fn runs_for_issue(&self, issue_id: &str) -> Result<Vec<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit
              FROM runs WHERE issue_id = ?1 AND archived_at IS NULL ORDER BY created_at DESC",
         )?;
         let rows = stmt.query_map([issue_id], |row| Ok(row_to_run(row)))?;
@@ -1424,6 +1436,7 @@ fn row_to_run(row: &rusqlite::Row) -> Result<Run> {
         issue_id: row.get(15)?,
         worktree: row.get::<_, i64>(16)? != 0,
         model: row.get(17)?,
+        base_commit: row.get(18)?,
     })
 }
 
@@ -1576,6 +1589,7 @@ mod tests {
             issue_id: None,
             worktree: true,
             model: None,
+            base_commit: None,
         }
     }
 
@@ -1957,6 +1971,7 @@ mod tests {
             issue_id: None,
             worktree: true,
             model: None,
+            base_commit: None,
         };
         reg.insert_run(&run).unwrap();
         let got = reg.get_run("t1").unwrap().unwrap();

@@ -129,6 +129,7 @@ mod tests {
                 issue_id: None,
                 worktree: true,
                 model: None,
+                base_commit: None,
             })
             .unwrap();
         }

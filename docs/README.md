@@ -28,6 +28,9 @@ browser with `support.js` beside it).
   surface (shipped).
 - [`agentic-loops.md`](agentic-loops.md) — the design behind loop runs
   (shipped).
+- [`run-teardown.md`](run-teardown.md) — what archiving and deleting an agent
+  actually remove, why that is decided from the branch rather than from the
+  verb, and the record a finished run leaves behind (shipped, AGE-149).
 - [`beta-readiness.md`](beta-readiness.md) — the pre-beta bug hunt and fix
   pass, kept as a historical record.
 

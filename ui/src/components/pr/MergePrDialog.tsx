@@ -81,7 +81,7 @@ export default function MergePrDialog({
               ))}
               <label
                 className="merge-method"
-                title="Deletes the branch on GitHub. The local branch and its worktree stay until the task is archived."
+                title="Deletes the branch on GitHub. The agent\u2019s worktree and its local branch stay until you archive the agent, which removes both once the work is on the remote."
               >
                 <input type="checkbox" checked={deleteBranch} onChange={(e) => setDeleteBranch(e.target.checked)} />
                 <span>Delete remote branch after merge</span>

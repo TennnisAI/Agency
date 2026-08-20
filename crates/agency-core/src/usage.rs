@@ -233,6 +233,45 @@ pub struct UsageInfo {
     pub cost_complete: bool,
 }
 
+/// One line of spend for a written record: tokens, plus the cost when we have
+/// a price for it.
+///
+/// `None` for a run that spent nothing or that we cannot account for at all —
+/// the same rule the UI's label follows, because "$0.00" for an agent whose
+/// transcript we cannot read is a claim rather than a blank.
+pub fn label(u: &UsageInfo) -> Option<String> {
+    if u.total_tokens == 0 {
+        return None;
+    }
+    let tokens = format!("{} tokens", compact(u.total_tokens));
+    Some(match u.cents {
+        None => tokens,
+        // A partly priced total is a floor and says so, rather than presenting
+        // itself as the finished number.
+        Some(c) if u.cost_complete => format!("{tokens} · {}", dollars(c)),
+        Some(c) => format!("{tokens} · over {}", dollars(c)),
+    })
+}
+
+/// 1200 -> "1.2k", 3_400_000 -> "3.4M".
+fn compact(n: u64) -> String {
+    if n < 1_000 {
+        return n.to_string();
+    }
+    let (scaled, suffix) =
+        if n < 1_000_000 { (n as f64 / 1_000.0, "k") } else { (n as f64 / 1_000_000.0, "M") };
+    if scaled < 10.0 {
+        format!("{scaled:.1}{suffix}")
+    } else {
+        format!("{}{suffix}", scaled.round() as u64)
+    }
+}
+
+/// Whole cents as currency: 5 -> "$0.05", 254_072 -> "$2540.72".
+fn dollars(cents: u64) -> String {
+    format!("${}.{:02}", cents / 100, cents % 100)
+}
+
 impl From<&Usage> for UsageInfo {
     fn from(u: &Usage) -> UsageInfo {
         UsageInfo {
@@ -516,6 +555,30 @@ mod tests {
         format!(
             r#"{{"type":"message","id":"{id}","parentId":null,"message":{{"role":"assistant","provider":"anthropic","model":"{model}","usage":{{"input":{input},"output":{output},"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{{"total":0}}}}}}}}"#
         )
+    }
+
+    fn info(total: u64, cents: Option<u64>, complete: bool) -> UsageInfo {
+        UsageInfo {
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_write_tokens: 0,
+            cache_read_tokens: 0,
+            total_tokens: total,
+            cents,
+            cost_complete: complete,
+        }
+    }
+
+    #[test]
+    fn a_label_never_invents_a_figure() {
+        // Nothing spent, or nothing readable: an absence, not a zero.
+        assert_eq!(label(&info(0, None, true)), None);
+        assert_eq!(label(&info(0, Some(0), true)), None);
+        // Tokens we can see, a model we have no price for: tokens alone.
+        assert_eq!(label(&info(1_200_000, None, true)).unwrap(), "1.2M tokens");
+        // Partly priced totals are floors and read as floors.
+        assert_eq!(label(&info(940, Some(340), false)).unwrap(), "940 tokens · over $3.40");
+        assert_eq!(label(&info(12_500, Some(5), true)).unwrap(), "13k tokens · $0.05");
     }
 
     #[test]

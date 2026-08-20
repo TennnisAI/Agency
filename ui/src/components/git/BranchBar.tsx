@@ -1,20 +1,23 @@
 import { useState } from "react";
 import {
   BranchInfo, gitCheckoutBranch, gitCreateBranch, gitFetch, gitListBranches,
-  gitPull, gitPullRebase, gitPushForce, gitStashPop, gitStashPush,
+  gitPull, gitPullRebase, gitStashPop, gitStashPush,
 } from "../../api";
 import Menu, { MenuEntry, menuAt } from "./Menu";
 import { BranchIcon, StashIcon, CloudIcon } from "./gitIcons";
 import ConfirmDialog from "../ConfirmDialog";
 import PromptDialog from "../PromptDialog";
 
-export default function BranchBar({ taskId, info, busy = false, onAct, onPush, onRefresh, onUndoCommit }: {
+export default function BranchBar({ taskId, info, busy = false, onAct, onPush, onForcePush, onRefresh, onUndoCommit }: {
   taskId: string;
   info: BranchInfo | null;
   busy?: boolean;
   onAct: (fn: () => Promise<unknown>, label?: string) => Promise<boolean>;
   // Push has its own handler (streams progress) rather than going through onAct.
   onPush: () => void;
+  // So does force push: it re-uploads the whole branch after a rebase, so it
+  // needs the same progress bar and the same Cancel on it.
+  onForcePush: () => void;
   onRefresh: () => void;
   onUndoCommit: () => void;
 }) {
@@ -122,7 +125,7 @@ export default function BranchBar({ taskId, info, busy = false, onAct, onPush, o
       {confirmForce && (
         <ConfirmDialog title="Force push" danger confirmLabel="Force Push"
           body={`Force-push ${info.branch} to origin (with lease)? Remote commits not present locally will be overwritten.`}
-          onConfirm={() => { setConfirmForce(false); onAct(() => gitPushForce(taskId), "Force-pushed"); }}
+          onConfirm={() => { setConfirmForce(false); onForcePush(); }}
           onCancel={() => setConfirmForce(false)} />
       )}
       {stashPrompt && (

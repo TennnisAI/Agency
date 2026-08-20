@@ -765,6 +765,52 @@ fn push_cancelled_before_it_starts_leaves_the_remote_untouched() {
     assert_eq!(git::ahead_behind(&clone).unwrap(), (1, 0));
 }
 
+/// Rewrite the clone's last commit so it diverges from origin without the
+/// remote moving — a rebase or an amend, which is what force push exists for.
+/// The lease stays valid because origin is exactly where we last saw it.
+fn rewrite_last_commit(clone: &Path, msg: &str) {
+    run(clone, &["commit", "-q", "--amend", "-m", msg]);
+}
+
+#[test]
+fn force_push_overwrites_a_rewritten_branch_that_a_plain_push_refuses() {
+    let (_keep, remote, clone) = clone_with_upstream();
+    commit_file(&clone, "local.txt", "a", "local commit");
+    git::push(&clone).unwrap();
+
+    rewrite_last_commit(&clone, "rewritten commit");
+
+    // The ordinary push is refused: this is the wall the user hits first.
+    let err = git::push(&clone).unwrap_err().to_string();
+    assert!(err.contains("rejected") || err.contains("non-fast-forward"), "{err}");
+
+    git::push_force(&clone).unwrap();
+    let subjects = remote_subjects(&remote);
+    assert!(subjects.contains("rewritten commit"), "{subjects}");
+    assert!(!subjects.contains("local commit"), "the old tip is gone: {subjects}");
+}
+
+#[test]
+fn force_push_cancelled_before_it_starts_leaves_the_remote_untouched() {
+    let (_keep, remote, clone) = clone_with_upstream();
+    commit_file(&clone, "local.txt", "a", "local commit");
+    git::push(&clone).unwrap();
+    rewrite_last_commit(&clone, "rewritten commit");
+
+    let cancel = CancelToken::new();
+    // Already cancelled: a force push is the one upload that would be painful to
+    // half-do, and it must report the killing as the user's own doing.
+    cancel.cancel();
+    let err = git::push_force_with_progress(&clone, &cancel, |_| {}).unwrap_err();
+
+    assert_eq!(err.to_string(), CANCELLED);
+    // git moves the remote ref only once every object has arrived, so the
+    // remote is still on the commit it had.
+    let subjects = remote_subjects(&remote);
+    assert!(subjects.contains("local commit"), "{subjects}");
+    assert!(!subjects.contains("rewritten commit"), "{subjects}");
+}
+
 #[test]
 fn sync_cancelled_before_its_push_uploads_nothing() {
     let (_keep, remote, clone) = clone_with_upstream();
@@ -809,15 +855,22 @@ fn diff_shows_an_untracked_file_in_a_subdirectory() {
 }
 
 #[test]
-fn diff_stays_empty_for_a_tracked_unchanged_file_and_an_untracked_directory() {
+fn diff_stays_empty_for_a_tracked_unchanged_file_and_a_listed_untracked_folder() {
     let dir = tempfile::tempdir().unwrap();
     init_repo(dir.path());
-    // `git status` collapses an untracked directory into one "sub/" entry, and
-    // there is no single file under it to diff.
     std::fs::create_dir_all(dir.path().join("sub")).unwrap();
     std::fs::write(dir.path().join("sub/new.txt"), "hi\n").unwrap();
 
+    // A small untracked folder is listed file by file, so it has no row of its
+    // own in the panel at all.
+    let paths: Vec<String> = git::status(dir.path()).unwrap().into_iter().map(|c| c.path).collect();
+    assert_eq!(paths, ["sub/new.txt"]);
+
     assert_eq!(git::diff(dir.path(), "tracked.txt", false).unwrap(), "");
+    // Asked about the folder anyway — a selection left over from before it was
+    // expanded — the answer is nothing, not an invented reason. The "more than
+    // 500 files" line belongs to the folders that really are left collapsed;
+    // `a_huge_folder_stays_one_row_and_says_why` covers those.
     assert_eq!(git::diff(dir.path(), "sub/", false).unwrap(), "");
     assert_eq!(git::diff(dir.path(), "gone.txt", false).unwrap(), "");
 }

@@ -1114,7 +1114,17 @@ export const gitDeleteBranch = (taskId: string, name: string, force: boolean) =>
 export const gitListBranches = (taskId: string) =>
   invoke<ProjectBranches>("git_list_branches", { taskId });
 export const gitPullRebase = (taskId: string) => invoke<void>("git_pull_rebase", { taskId });
-export const gitPushForce = (taskId: string) => invoke<void>("git_push_force", { taskId });
+// Force-pushes the current branch (with lease), streaming git's progress like
+// gitPush: a force push after a rebase re-uploads the whole branch. cancelPush
+// stops this one too.
+export function gitPushForce(
+  taskId: string,
+  onProgress?: (p: CloneProgress) => void,
+): Promise<void> {
+  const onProgressChannel = new Channel<CloneProgress>();
+  if (onProgress) onProgressChannel.onmessage = onProgress;
+  return invoke<void>("git_push_force", { taskId, onProgress: onProgressChannel });
+}
 /** Resolves to the undone commit's message so it can be restored into the input. */
 export const gitUndoLastCommit = (taskId: string) =>
   invoke<string>("git_undo_last_commit", { taskId });

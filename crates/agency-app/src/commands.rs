@@ -1499,10 +1499,21 @@ pub async fn git_pull_rebase(state: State<'_, AppState>, task_id: String) -> Res
     state.git_mutate(&task_id, agency_core::git::pull_rebase).map_err(|e| e.to_string())
 }
 
+// async and streamed, like `git_push`: a force push after a rebase re-uploads
+// the whole branch, so it is the same long upload and reports on the same
+// channel. `cancel_push` stops it too — it is registered under the same
+// worktree key.
 #[tauri::command]
-pub async fn git_push_force(state: State<'_, AppState>, task_id: String) -> Result<(), String> {
-    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
-    agency_core::git::push_force(&wt).map_err(|e| e.to_string())
+pub async fn git_push_force(
+    state: State<'_, AppState>,
+    task_id: String,
+    on_progress: Channel<agency_core::setup::CloneProgress>,
+) -> Result<(), String> {
+    state
+        .push_force_run(&task_id, move |p| {
+            let _ = on_progress.send(p);
+        })
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]

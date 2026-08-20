@@ -5396,6 +5396,21 @@ impl AppState {
         })
     }
 
+    /// [`AppState::push_run`] with `--force-with-lease`, cancellable over the
+    /// same key: a force push after a rebase re-uploads the whole branch, so it
+    /// is the same long upload and the panel offers the same Cancel. Ungated for
+    /// the same reason as `push_run`.
+    pub fn push_force_run(
+        &self,
+        token: &str,
+        on_progress: impl FnMut(agency_core::setup::CloneProgress),
+    ) -> Result<()> {
+        let wt = self.git_root(token)?;
+        self.with_push_cancel(&wt, |cancel| {
+            agency_core::git::push_force_with_progress(&wt, cancel, on_progress)
+        })
+    }
+
     /// [`AppState::push_run`]'s both-directions sibling (VS Code's "Sync
     /// Changes"), cancellable over the same key: its push half is the slow one
     /// and the panel's Cancel can't tell the two actions apart. Gated, unlike

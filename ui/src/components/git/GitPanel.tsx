@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   FileChange, BranchInfo, HistoryItem, StashEntry, CloneProgress,
   gitStatus, gitBranchInfo, gitStashList, gitUndoLastCommit, gitPush, gitSync, gitPullRebase,
-  gitAutoFetch, cancelPush,
+  gitAutoFetch, cancelPush, gitPushForce,
 } from "../../api";
 import { toastSuccess } from "../../lib/toast";
 import ConfirmDialog from "../ConfirmDialog";
@@ -168,18 +168,22 @@ function GitRepoPanel({
   }, [taskId]);
 
   // Every action that ends in a push runs through here — Push, Publish, Commit &
-  // Push — so all of them stream `--progress` into `pushProgress` and all of
-  // them get the bar's Cancel. A push routed around this shows the bare busy
-  // bar instead, which is the unstoppable upload this replaced. `before` is the
-  // local step that precedes the push (commit, set the remote), run under the
-  // same busy flag.
-  const runPush = useCallback(async (label: string, before?: () => Promise<unknown>) => {
+  // Push, Push (Force) — so all of them stream `--progress` into `pushProgress`
+  // and all of them get the bar's Cancel. A push routed around this shows the
+  // bare busy bar instead, which is the unstoppable upload this replaced.
+  // `before` is the local step that precedes the push (commit, set the remote),
+  // run under the same busy flag.
+  const runPush = useCallback(async (
+    label: string,
+    before?: () => Promise<unknown>,
+    force = false,
+  ) => {
     setPushProgress({ phase: "Starting push…", percent: null, detail: "" });
     // No label on `act`: a cancelled push must not toast "Pushed", so the toast
     // waits until the outcome is known.
     const ok = await act(async () => {
       if (before) await before();
-      await gitPush(taskId, setPushProgress);
+      await (force ? gitPushForce : gitPush)(taskId, setPushProgress);
     });
     setPushProgress(null);
     if (consumeCancel()) return false;
@@ -188,6 +192,8 @@ function GitRepoPanel({
   }, [act, consumeCancel, taskId, setPushProgress]);
 
   const push = useCallback(() => runPush("Pushed"), [runPush]);
+  // Confirmed in BranchBar's dialog; the upload itself is the same long one.
+  const forcePush = useCallback(() => runPush("Force-pushed", undefined, true), [runPush]);
 
   // Sync = pull (fast-forward) + push, like VS Code's "Sync Changes". A diverged
   // branch can't fast-forward, so the backend reports it and we ask the user
@@ -232,7 +238,7 @@ function GitRepoPanel({
 
   const branchBar = (
     <BranchBar taskId={taskId} info={branch} busy={busy} onAct={act}
-      onPush={push} onRefresh={refresh} onUndoCommit={undoCommit} />
+      onPush={push} onForcePush={forcePush} onRefresh={refresh} onUndoCommit={undoCommit} />
   );
   // While a push streams progress, show a determinate bar with phase/percent
   // (like the clone dialog). For any other op, fall back to the VS Code-style

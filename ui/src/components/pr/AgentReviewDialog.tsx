@@ -105,6 +105,7 @@ export default function AgentReviewDialog({
                   <span>model</span>
                   <ModelSelect
                     info={models[agent]}
+                    projectId={projectId}
                     value={model}
                     onChange={(m) => { setModel(m); setModelTouched(true); }}
                   />

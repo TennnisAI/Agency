@@ -786,9 +786,14 @@ export const listAgentModels = () => invoke<AgentModelInfo[]>("list_agent_models
  * second). Cached for the app session on the Rust side, so reopening a picker
  * does not run the CLI again. Rejects with the CLI's own last words when it
  * fails or lists nothing, which is why the typed field never goes away.
+ *
+ * `projectId` is the project the picker is open in. opencode reads an
+ * `opencode.json` beside the code, so its listing command has to run there or
+ * the project's own providers are missing from the answer (AGE-135); agents
+ * configured once for the user ignore it, and are cached once for all projects.
  */
-export const probeAgentModels = (agent: string) =>
-  invoke<string[]>("probe_agent_models", { agent });
+export const probeAgentModels = (agent: string, projectId: string | null) =>
+  invoke<string[]>("probe_agent_models", { agent, projectId });
 
 /**
  * The model `agent` last ran on — what a spawn with no picker in front of it

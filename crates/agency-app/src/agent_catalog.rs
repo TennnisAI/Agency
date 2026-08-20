@@ -4,7 +4,7 @@
 //! agents Agency knows how to configure; users enable a subset via onboarding
 //! or Settings. `shell` is seeded separately and is not part of this catalog.
 
-use crate::model_probe::{ListFormat, ModelListing};
+use crate::model_probe::{ListFormat, ListScope, ModelListing};
 use agency_core::profile::AgentProfile;
 use serde::Serialize;
 use std::sync::OnceLock;
@@ -158,6 +158,9 @@ pub fn builtins() -> &'static [CatalogEntry] {
                 list_models: Some(ModelListing {
                     args: &["--list-models"],
                     format: ListFormat::ProviderTable,
+                    // pi's providers are configured once for the user
+                    // (`~/.pi/`), so the answer is the same in every project.
+                    scope: ListScope::User,
                 }),
             },
             CatalogEntry {
@@ -176,7 +179,14 @@ pub fn builtins() -> &'static [CatalogEntry] {
                 // Verified against 2026-08-20's build: one bare
                 // `provider/model` per line, which is exactly what `--model`
                 // takes.
-                list_models: Some(ModelListing { args: &["models"], format: ListFormat::Ids }),
+                list_models: Some(ModelListing {
+                    args: &["models"],
+                    format: ListFormat::Ids,
+                    // opencode merges an `opencode.json` from the directory it
+                    // is run in over the user's own, so a provider configured
+                    // for one project only lists there (AGE-135).
+                    scope: ListScope::Project,
+                }),
             },
             CatalogEntry {
                 id: "copilot",
@@ -216,6 +226,9 @@ pub fn builtins() -> &'static [CatalogEntry] {
                 list_models: Some(ModelListing {
                     args: &["--list-models"],
                     format: ListFormat::IdsWithDescriptions,
+                    // cursor-agent's models come from the signed-in account,
+                    // not from anything beside the code.
+                    scope: ListScope::User,
                 }),
             },
             CatalogEntry {

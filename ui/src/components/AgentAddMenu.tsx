@@ -227,6 +227,7 @@ export default function AgentAddMenu({
                 <ModelSelect
                   compact
                   info={models[a.name]}
+                  projectId={projectId ?? null}
                   value={modelFor(a.name)}
                   onChange={(m) => setPicked((p) => ({ ...p, [a.name]: m }))}
                 />

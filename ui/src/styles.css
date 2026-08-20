@@ -1944,6 +1944,9 @@ input, textarea, code,
 /* Model picker popup (ModelSelect.tsx): the branch list plus a field for a
    model id Agency has never heard of, which is most of them. */
 .model-menu { max-width: min(320px, calc(100vw - 16px)); }
+/* The probed list is 200 ids deep for some agents (AGE-117), so the options
+   scroll while the default row, the field and the note below it stay put. */
+.model-options { display: flex; flex-direction: column; overflow-y: auto; max-height: min(240px, 45vh); }
 .model-menu .model-other { display: flex; align-items: center; gap: 6px; padding: 4px 6px; }
 .model-menu .model-other .settings-input { flex: 1; min-width: 0; font-size: 12px; padding: 4px 6px; }
 .model-menu .model-use {

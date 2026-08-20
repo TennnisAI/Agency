@@ -364,6 +364,91 @@ fn create_run_passes_the_chosen_model_to_the_agent_and_remembers_it() {
     state.discard_run(&info.id).unwrap();
 }
 
+/// A stand-in for an agent CLI's listing command: it records the arguments it
+/// was handed (so the test can prove they came from the catalog) and prints the
+/// models substituted into it.
+const FAKE_CLI: &str =
+    concat!("#!/bin/sh\n", "echo \"$@\" >> \"$0.calls\"\n", "printf '{{models}}\\n'\n",);
+
+/// The picker's on-demand probe: run the agent's own listing command, keep
+/// what it says for the session, and never run it for an agent that has no
+/// such command (AGE-117).
+#[test]
+fn probing_an_agents_models_runs_its_own_cli_once_per_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = common::state(&dir);
+
+    // Stand in for `opencode models`: the catalog supplies the arguments, so
+    // what this proves is that the *profile's* command is what gets run.
+    let fake = dir.path().join("fake-opencode");
+    std::fs::write(
+        &fake,
+        FAKE_CLI.replace("{{models}}", "openai/gpt-5.6\nanthropic/claude-opus-5"),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    state
+        .register_profile(AgentProfile {
+            name: "opencode".into(),
+            command: fake.to_string_lossy().into_owned(),
+            args: vec![],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
+
+    let models = state.probe_agent_models("opencode").unwrap();
+    assert_eq!(models, ["openai/gpt-5.6", "anthropic/claude-opus-5"]);
+    // The arguments came from the catalog, not from the profile.
+    let calls = std::fs::read_to_string(dir.path().join("fake-opencode.calls")).unwrap();
+    assert_eq!(calls.trim(), "models");
+
+    // Cached for the session: a second picker open costs nothing, so the CLI
+    // is not run again even though its answer has changed.
+    std::fs::write(&fake, FAKE_CLI.replace("{{models}}", "openai/gpt-9")).unwrap();
+    assert_eq!(state.probe_agent_models("opencode").unwrap(), models);
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("fake-opencode.calls")).unwrap().lines().count(),
+        1
+    );
+
+    // And the hint the picker shows names the command the probe runs.
+    let listed = state.list_agent_models().unwrap();
+    let opencode = listed.iter().find(|m| m.agent == "opencode").expect("opencode in the list");
+    assert_eq!(opencode.list_command.as_deref(), Some("opencode models"));
+}
+
+/// Most of these CLIs cannot be asked at all, and a probe that guessed a flag
+/// would launch the agent instead of questioning it.
+#[test]
+fn an_agent_with_no_listing_command_is_never_probed() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = common::state(&dir);
+    state
+        .register_profile(AgentProfile {
+            name: "claude".into(),
+            command: "false".into(),
+            args: vec![],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
+
+    for agent in ["claude", "my-own-agent"] {
+        let err = state.probe_agent_models(agent).unwrap_err().to_string();
+        assert!(err.contains("no command for listing its models"), "{agent}: {err}");
+    }
+    // The picker shows no hint for them either, so nothing offers the probe.
+    let listed = state.list_agent_models().unwrap();
+    assert!(listed.iter().all(|m| m.list_command.is_none()));
+}
+
 /// An agent whose CLI has no model flag must refuse the model outright. Taking
 /// it and launching the default would bill the run to a model nobody chose.
 #[test]

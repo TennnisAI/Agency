@@ -4,6 +4,7 @@
 //! agents Agency knows how to configure; users enable a subset via onboarding
 //! or Settings. `shell` is seeded separately and is not part of this catalog.
 
+use crate::model_probe::{ListFormat, ModelListing};
 use agency_core::profile::AgentProfile;
 use serde::Serialize;
 use std::sync::OnceLock;
@@ -61,9 +62,13 @@ pub struct CatalogEntry {
     /// names, which go stale between Agency releases and would leave the menu
     /// offering models that no longer exist. Any other id is typed in.
     pub models: &'static [&'static str],
-    /// The CLI's own command for listing what it can run, shown as a hint next
-    /// to the free-text field. None where the CLI has no such command.
-    pub list_models: Option<&'static str>,
+    /// How this CLI can be asked what it can run: the arguments that make it
+    /// list its models, and the shape of what it prints (see
+    /// [`crate::model_probe`]). None where the CLI has no such command, which
+    /// is most of them. Read off each CLI's own `--help` and verified against a
+    /// live run, exactly like the recipes above: a listing whose format we
+    /// guessed would quietly offer the picker ids that are not ids.
+    pub list_models: Option<ModelListing>,
 }
 
 /// Catalog entry as sent to the UI (includes whether it's already enabled).
@@ -147,7 +152,13 @@ pub fn builtins() -> &'static [CatalogEntry] {
                 // `pi --help`.
                 model: ModelDelivery::Flag(&["--model", "{{model}}"]),
                 models: &[],
-                list_models: Some("pi --list-models"),
+                // Verified against 2026-08-20's build: a space-aligned table
+                // whose `provider` and `model` columns compose the
+                // `provider/id` pattern `--model` documents.
+                list_models: Some(ModelListing {
+                    args: &["--list-models"],
+                    format: ListFormat::ProviderTable,
+                }),
             },
             CatalogEntry {
                 id: "opencode",
@@ -162,7 +173,10 @@ pub fn builtins() -> &'static [CatalogEntry] {
                 // provider/model". Read off `opencode --help`.
                 model: ModelDelivery::Flag(&["--model", "{{model}}"]),
                 models: &[],
-                list_models: Some("opencode models"),
+                // Verified against 2026-08-20's build: one bare
+                // `provider/model` per line, which is exactly what `--model`
+                // takes.
+                list_models: Some(ModelListing { args: &["models"], format: ListFormat::Ids }),
             },
             CatalogEntry {
                 id: "copilot",
@@ -196,7 +210,13 @@ pub fn builtins() -> &'static [CatalogEntry] {
                 // sonnet-4-thinking)". Read off `cursor-agent --help`.
                 model: ModelDelivery::Flag(&["--model", "{{model}}"]),
                 models: &[],
-                list_models: Some("cursor-agent --list-models"),
+                // Verified against 2026-08-20's build: an "Available models"
+                // title, then `<id> - <description>` rows whose id is the one
+                // `--model` takes.
+                list_models: Some(ModelListing {
+                    args: &["--list-models"],
+                    format: ListFormat::IdsWithDescriptions,
+                }),
             },
             CatalogEntry {
                 id: "hermes",
@@ -284,6 +304,30 @@ pub fn prompt_delivery(agent: &str) -> PromptDelivery {
 /// by putting the flag in the profile's own arguments.
 pub fn model_delivery(agent: &str) -> ModelDelivery {
     find(agent).map(|e| e.model).unwrap_or(ModelDelivery::Unsupported)
+}
+
+/// How `agent`'s CLI can be asked what models it has, if it can be asked at
+/// all. Unknown ids (custom profiles) get None: we have not read their `--help`
+/// either, and running an unknown binary with an invented flag to see what
+/// falls out is not a probe, it is a guess with a process behind it.
+pub fn model_listing(agent: &str) -> Option<ModelListing> {
+    find(agent)?.list_models
+}
+
+/// The listing command as the user would type it (`opencode models`), for the
+/// picker's hint and as the picker's signal that this agent can be asked at
+/// all. Composed from the catalog's own binary and arguments rather than
+/// written out a second time; a profile pointing the agent at some other binary
+/// probes that one instead, and the probe's own failure message names it.
+pub fn list_command(agent: &str) -> Option<String> {
+    let entry = find(agent)?;
+    let listing = entry.list_models?;
+    Some(
+        std::iter::once(entry.command)
+            .chain(listing.args.iter().copied())
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
 }
 
 /// Whether Agency can set `agent`'s model at launch.
@@ -445,6 +489,30 @@ mod tests {
                      suggestions nor its list-models hint can ever be reached",
                     entry.id
                 );
+            }
+        }
+    }
+
+    /// The hint under the picker's field is composed from the same two pieces
+    /// the probe runs, rather than written out a second time and left to drift.
+    #[test]
+    fn the_listing_hint_reads_as_the_user_would_type_it() {
+        assert_eq!(list_command("opencode").as_deref(), Some("opencode models"));
+        assert_eq!(list_command("pi").as_deref(), Some("pi --list-models"));
+        // The binary, not the catalog id: cursor's CLI is `cursor-agent`.
+        assert_eq!(list_command("cursor").as_deref(), Some("cursor-agent --list-models"));
+        assert_eq!(list_command("claude"), None);
+        assert_eq!(list_command("my-own-agent"), None);
+        assert_eq!(model_listing("my-own-agent"), None);
+    }
+
+    /// A listing with no arguments would run the agent's bare CLI — launching
+    /// an interactive session behind a menu, not asking it anything.
+    #[test]
+    fn every_listing_carries_arguments() {
+        for entry in builtins() {
+            if let Some(listing) = entry.list_models {
+                assert!(!listing.args.is_empty(), "{}'s listing has no arguments", entry.id);
             }
         }
     }

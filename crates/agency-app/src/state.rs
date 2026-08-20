@@ -476,18 +476,21 @@ fn mcp_launch_args(profile: &AgentProfile, worktree: &Path, so_far: &[String]) -
 /// It lands at the end of each recipe so it never comes between a flag and the
 /// value the user wrote next to it, and so the loop path keeps `{{prompt}}`
 /// where the recipe put it.
+///
+/// `resume_args` is left alone: a resume launches `args` ahead of the resume
+/// recipe (AGE-100), so pinning the model in both would hand the CLI `--model`
+/// twice.
 fn with_model(profile: &AgentProfile, model: Option<&str>) -> AgentProfile {
     let extra = crate::agent_catalog::model_args(&profile.name, model);
     if extra.is_empty() {
         return profile.clone();
     }
-    let append = |recipe: &Option<Vec<String>>| {
-        recipe.as_ref().map(|r| r.iter().cloned().chain(extra.iter().cloned()).collect())
+    let with_extra = |recipe: &[String]| -> Vec<String> {
+        recipe.iter().cloned().chain(extra.iter().cloned()).collect()
     };
     AgentProfile {
-        args: profile.args.iter().cloned().chain(extra.iter().cloned()).collect(),
-        resume_args: append(&profile.resume_args),
-        loop_args: append(&profile.loop_args),
+        args: with_extra(&profile.args),
+        loop_args: profile.loop_args.as_deref().map(with_extra),
         ..profile.clone()
     }
 }
@@ -515,8 +518,45 @@ fn remember_model(reg: &Registry, agent: &str, model: Option<&str>) -> Result<()
     Ok(())
 }
 
-/// Decide the (command, args) to launch for an agent run. With `use_resume` and a
-/// resume recipe present, launch the resume args (no prompt). Otherwise launch a
+/// The profile's own arguments as they survive a resume: everything the user
+/// put in Settings -> agent -> Arguments, minus the prompt.
+///
+/// AGE-100: a resume used to launch the resume recipe *instead of* the
+/// profile's args, so a profile carrying `--permission-mode acceptEdits` or
+/// `--add-dir` ran with those flags on the first launch and silently without
+/// them from the first resume onwards. Only the prompt is meant to go, and
+/// `{{prompt}}` is already the token that marks it. A prompt written as the
+/// value of a flag (copilot's `-i`, opencode's `--prompt`) takes that flag with
+/// it: left behind, it would swallow the resume verb that follows. Only the
+/// flag the agent's own catalog recipe names is dropped that way, so a boolean
+/// flag the user happened to write ahead of a positional `{{prompt}}` stays.
+fn args_without_prompt(profile: &AgentProfile) -> Vec<String> {
+    let prompt_flag = match crate::agent_catalog::prompt_delivery(&profile.name) {
+        crate::agent_catalog::PromptDelivery::Args(recipe) => recipe
+            .iter()
+            .position(|a| a.contains("{{prompt}}"))
+            .filter(|&i| i > 0)
+            .map(|i| recipe[i - 1]),
+        _ => None,
+    };
+    let mut out: Vec<String> = Vec::with_capacity(profile.args.len());
+    for arg in profile.args.iter().filter(|a| !a.is_empty()) {
+        if !arg.contains("{{prompt}}") {
+            out.push(arg.clone());
+            continue;
+        }
+        if let Some(flag) = prompt_flag {
+            if out.last().is_some_and(|a| a == flag) {
+                out.pop();
+            }
+        }
+    }
+    out
+}
+
+/// Decide the (command, args) to launch for an agent run. With `use_resume` and
+/// a resume recipe present, launch the profile's own args minus the prompt (see
+/// [`args_without_prompt`]) followed by the resume recipe. Otherwise launch a
 /// fresh session from the rendered prompt. The optional setup script wraps the
 /// command in both cases (same as create_run/rerun).
 fn agent_argv(
@@ -527,7 +567,14 @@ fn agent_argv(
     setup: Option<&str>,
 ) -> (String, Vec<String>) {
     let mut base_args: Vec<String> = match (use_resume, &profile.resume_args) {
-        (true, Some(resume)) => resume.clone(),
+        // The profile's flags first, the resume recipe last: `codex resume
+        // --last` is a subcommand, and a flag written after it would be read as
+        // the subcommand's rather than the CLI's.
+        (true, Some(resume)) => {
+            let mut args = args_without_prompt(profile);
+            args.extend(resume.iter().cloned());
+            args
+        }
         _ => profile.render_args(prompt).into_iter().filter(|a| !a.is_empty()).collect(),
     };
     let mcp = mcp_launch_args(profile, worktree, &base_args);
@@ -6525,6 +6572,93 @@ mod tests {
         assert_eq!(args, vec!["--continue".to_string()]);
     }
 
+    /// AGE-100: the resume recipe replaces the prompt, not the whole of the
+    /// user's arguments. A profile that runs with `--permission-mode
+    /// acceptEdits` on its first launch has to keep it on every resume, or the
+    /// session quietly changes terms halfway through the work.
+    #[test]
+    fn agent_argv_keeps_custom_profile_args_on_resume() {
+        let p = AgentProfile {
+            name: "claude".into(),
+            command: "claude".into(),
+            args: vec![
+                "--permission-mode".into(),
+                "acceptEdits".into(),
+                "--add-dir".into(),
+                "/tmp/shared".into(),
+                "{{prompt}}".into(),
+            ],
+            env: vec![],
+            resume_args: Some(vec!["--continue".into()]),
+            loop_args: None,
+        };
+        let (cmd, args) = agent_argv(&p, no_worktree(), "do the thing", true, None);
+        assert_eq!(cmd, "claude");
+        assert_eq!(
+            args,
+            vec!["--permission-mode", "acceptEdits", "--add-dir", "/tmp/shared", "--continue"]
+        );
+
+        // Args the user never templated survive too: a profile with no
+        // `{{prompt}}` token at all still gets its flags on resume.
+        let untemplated = AgentProfile { args: vec!["--verbose".into()], ..p.clone() };
+        let (_cmd, args) = agent_argv(&untemplated, no_worktree(), "go", true, None);
+        assert_eq!(args, vec!["--verbose".to_string(), "--continue".to_string()]);
+
+        // The flags come first because `codex resume --last` is a subcommand:
+        // anything written after it would be read as the subcommand's.
+        let codex = AgentProfile {
+            name: "codex".into(),
+            command: "codex".into(),
+            args: vec!["--sandbox".into(), "workspace-write".into()],
+            resume_args: Some(vec!["resume".into(), "--last".into()]),
+            ..p
+        };
+        let (_cmd, args) = agent_argv(&codex, no_worktree(), "go", true, None);
+        assert_eq!(args, vec!["--sandbox", "workspace-write", "resume", "--last"]);
+    }
+
+    /// A prompt written as a flag's value takes the flag with it, or `copilot
+    /// -i --continue` would resume with "--continue" as its opening prompt.
+    /// Only the flag the agent's own recipe names goes: a boolean flag ahead of
+    /// a positional prompt is a flag the user wants on every launch.
+    #[test]
+    fn agent_argv_drops_the_flag_the_prompt_was_the_value_of() {
+        let copilot = AgentProfile {
+            name: "copilot".into(),
+            command: "copilot".into(),
+            args: vec!["--banner".into(), "-i".into(), "{{prompt}}".into()],
+            env: vec![],
+            resume_args: Some(vec!["--continue".into()]),
+            loop_args: None,
+        };
+        let (_cmd, args) = agent_argv(&copilot, no_worktree(), "go", true, None);
+        assert_eq!(args, vec!["--banner".to_string(), "--continue".to_string()]);
+
+        let opencode = AgentProfile {
+            name: "opencode".into(),
+            command: "opencode".into(),
+            args: vec!["--prompt".into(), "{{prompt}}".into()],
+            ..copilot.clone()
+        };
+        let (_cmd, args) = agent_argv(&opencode, no_worktree(), "go", true, None);
+        assert_eq!(args, vec!["--continue".to_string()]);
+
+        // claude takes its prompt positionally, so the flag before it is the
+        // user's own and stays.
+        let claude = AgentProfile {
+            name: "claude".into(),
+            command: "claude".into(),
+            args: vec!["--dangerously-skip-permissions".into(), "{{prompt}}".into()],
+            ..copilot
+        };
+        let (_cmd, args) = agent_argv(&claude, no_worktree(), "go", true, None);
+        assert_eq!(
+            args,
+            vec!["--dangerously-skip-permissions".to_string(), "--continue".to_string()]
+        );
+    }
+
     #[test]
     fn agent_argv_falls_back_to_prompt_without_resume_args() {
         let p = AgentProfile {
@@ -6755,9 +6889,11 @@ mod tests {
         // Fresh: ahead of the prompt, which is appended after these.
         let (_cmd, args) = super::fresh_agent_argv(&pinned, no_worktree(), "go", None);
         assert_eq!(args, vec!["--model", "opus", "go"]);
-        // Resume: the same session must come back on the same model.
+        // Resume: the same session must come back on the same model, and on
+        // exactly one `--model` — it rides in on the profile's args (AGE-100),
+        // so the resume recipe must not carry a second copy.
         let (_cmd, args) = agent_argv(&pinned, no_worktree(), "go", true, None);
-        assert_eq!(args, vec!["--continue", "--model", "opus"]);
+        assert_eq!(args, vec!["--model", "opus", "--continue"]);
         // Loop: at the end, so {{prompt}} stays where the recipe put it.
         let (_cmd, args) = super::loop_argv(&pinned, no_worktree(), "go", None).unwrap();
         assert_eq!(args, vec!["-p", "go", "--permission-mode", "acceptEdits", "--model", "opus"]);

@@ -653,7 +653,7 @@ export default function Settings({
         <Field
           label="Resume arguments"
           optional
-          hint="Used in place of the arguments above when reopening an existing session. Leave empty to always start fresh."
+          hint="Added after the arguments above when reopening an existing session, in place of the prompt. Leave empty to always start fresh."
         >
           <input
             className="settings-input mono"

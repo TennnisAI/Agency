@@ -4184,9 +4184,7 @@ impl AppState {
             let runs = self.registry.lock().unwrap().list_runs(&proj.id)?;
             for run in runs {
                 let Some(command) = commands.get(&run.agent) else { continue };
-                if !agency_core::usage::agent_supported(command) {
-                    continue;
-                }
+                let Some(format) = agency_core::usage::format_for(command) else { continue };
                 // One worktree per run means this directory is already scoped
                 // to the run, and extra agent tabs sharing the worktree belong
                 // to the same run, so per-directory totals are per-run totals.
@@ -4203,7 +4201,7 @@ impl AppState {
 
                 let mut map = self.usage.lock().unwrap();
                 let entry = map.entry(run.id.clone()).or_default();
-                let next = entry.0.refresh(&dir);
+                let next = entry.0.refresh(&dir, format);
                 let prev = std::mem::replace(&mut entry.1, next.clone());
                 drop(map);
 

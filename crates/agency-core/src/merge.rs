@@ -77,7 +77,7 @@ pub fn is_merging(repo: &Path) -> Result<bool> {
 }
 
 /// Resolve a revision to a commit hash, or `None` if it doesn't exist.
-fn rev(repo: &Path, r: &str) -> Option<String> {
+pub fn rev(repo: &Path, r: &str) -> Option<String> {
     git(repo, &["rev-parse", "--verify", "--quiet", &format!("{r}^{{commit}}")])
         .ok()
         .filter(|o| o.status.success())
@@ -172,10 +172,65 @@ pub fn current_branch(repo: &Path) -> Option<String> {
 }
 
 /// Whether `branch` is already contained in `base` (the merge landed).
+pub fn is_merged(repo: &Path, branch: &str, base: &str) -> bool {
+    is_ancestor(repo, branch, base)
+}
+
 fn is_ancestor(repo: &Path, branch: &str, base: &str) -> bool {
     git(repo, &["merge-base", "--is-ancestor", branch, base])
         .map(|o| o.status.success())
         .unwrap_or(false)
+}
+
+/// Whether some remote-tracking branch contains `branch`'s tip, i.e. deleting
+/// the local branch would not be the last copy of its commits.
+///
+/// True for a branch that was pushed for review, and for one whose PR was
+/// merged upstream and then fetched. Deliberately answered from the local ref
+/// store rather than from `gh`: this is read while a teardown dialog is open,
+/// and a dialog that waits on the network is a dialog that hangs. The cost of
+/// answering from a stale fetch is one branch kept that could have gone, which
+/// is the harmless direction to be wrong in.
+pub fn is_pushed(repo: &Path, branch: &str) -> bool {
+    git(repo, &["branch", "--remotes", "--contains", branch])
+        .ok()
+        .filter(|o| o.status.success())
+        .is_some_and(|o| !String::from_utf8_lossy(&o.stdout).trim().is_empty())
+}
+
+/// Commits on `branch` that `range_base` does not have, newest first, as
+/// `(short hash, subject)`. Capped at `limit` so one record cannot be a
+/// thousand lines of log.
+pub fn log_commits(
+    repo: &Path,
+    range_base: &str,
+    branch: &str,
+    limit: usize,
+) -> Result<Vec<(String, String)>> {
+    let range = format!("{range_base}..{branch}");
+    let out = git_ok(
+        repo,
+        &["log", "--no-merges", &format!("--max-count={limit}"), "--format=%h\x1f%s", &range],
+    )?;
+    Ok(out
+        .lines()
+        .filter_map(|l| l.split_once('\x1f'))
+        .map(|(h, s)| (h.trim().to_string(), s.trim().to_string()))
+        .collect())
+}
+
+/// The commit `branch` was cut from, as far as git can still tell: the merge
+/// base with `base`.
+///
+/// Correct while the branch is unmerged, which is when it is asked. Once the
+/// branch has landed the merge base *is* the branch tip, so the range it gives
+/// is empty — see `Run::base_commit`, which is why the base commit is recorded
+/// at creation and this is only the fallback for runs that predate it.
+pub fn fork_point(repo: &Path, branch: &str, base: &str) -> Option<String> {
+    git_ok(repo, &["merge-base", base, branch])
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 pub fn merge_state(repo: &Path, branch: &str, base: &str) -> Result<MergeState> {

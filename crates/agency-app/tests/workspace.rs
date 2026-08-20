@@ -104,6 +104,7 @@ fn move_workspace_refuses_while_agent_runs_are_live() {
         issue_id: None,
         worktree: true,
         model: None,
+        base_commit: None,
     };
     reg.insert_run(&run).unwrap();
 

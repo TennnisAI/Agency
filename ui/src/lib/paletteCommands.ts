@@ -33,7 +33,7 @@ export const PALETTE_COMMANDS: PaletteCommand[] = [
   { id: "find-prev", label: "Find Previous", sublabel: "Jump to the previous match", when: "always" },
   { id: "approve", label: "Approve & Merge", sublabel: "Merge the focused agent's branch", when: "focusedAgent" },
   { id: "archive", label: "Archive Agent", sublabel: "Move the focused agent to the archive", when: "focusedAgent" },
-  { id: "discard", label: "Discard Agent", sublabel: "Stop the focused agent and delete its run", when: "focusedAgent" },
+  { id: "discard", label: "Delete Agent", sublabel: "Stop the focused agent and remove its run", when: "focusedAgent" },
   { id: "add-project", label: "Add Project…", sublabel: "Pick a folder to work in", when: "always" },
   { id: "clone-project", label: "Clone Repository…", sublabel: "Clone a repo and add it as a project", when: "always" },
   { id: "toggle-sidebar", label: "Toggle Sidebar", sublabel: "Show or hide the project list", when: "always" },

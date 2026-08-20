@@ -103,6 +103,64 @@ export interface RunInfo {
   // yet. Non-zero puts the marker on the tile and the run header: a message
   // waiting behind a long turn should read as patience, not as a lost click.
   queuedMessages: number;
+  // What is left of an archived run. Only set by listArchivedRuns — answering
+  // it asks git a question per run, and the live board polls every 1.5s.
+  archived: ArchivedInfo | null;
+}
+
+// What an archived run still holds. The two flags are the difference between
+// "put away, bring it back whenever" and "finished, here is what happened".
+export interface ArchivedInfo {
+  // Its branch is still in the repo, so it can be restored. False for the
+  // normal ending of merged work, whose branch went with the archive.
+  branchKept: boolean;
+  // There is a record to read.
+  hasRecord: boolean;
+}
+
+// Where a run's commits live besides its own branch, as git saw it when the
+// teardown was offered. Everything is answered locally: a dialog that waits on
+// the network is a dialog that hangs.
+export interface BranchFacts {
+  ownsBranch: boolean;
+  commitsAhead: number;
+  // False when `base..branch` would not resolve, in which case commitsAhead is
+  // meaningless and nothing may be treated as safe.
+  commitsKnown: boolean;
+  merged: boolean;
+  pushed: boolean;
+  // The branch has been deleted or renamed outside Agency.
+  gone: boolean;
+  // Uncommitted changes in the worktree: on no branch and no remote, so an
+  // archive commits them and a delete destroys them.
+  dirty: boolean;
+}
+
+// Why deleting a branch loses nothing.
+export type SafeBecause = "merged" | "pushed" | "empty";
+
+// What one teardown verb would remove from one run. Decided in the backend so
+// the words here and the git commands there cannot disagree.
+export interface CleanupPlan {
+  removesWorktree: boolean;
+  deletesBranch: boolean;
+  keepsBranch: boolean;
+  keepsRecord: boolean;
+  restorable: boolean;
+  // Commits that exist nowhere but the branch about to be deleted. Zero for
+  // every merged run — which is why a post-merge delete is not a red button.
+  commitsAtRisk: number;
+  // Uncommitted work this teardown destroys. Only a delete ever does.
+  losesUncommitted: boolean;
+  safeBecause: SafeBecause | null;
+}
+
+export interface RunCleanup {
+  facts: BranchFacts;
+  archive: CleanupPlan;
+  delete: CleanupPlan;
+  branch: string;
+  base: string;
 }
 
 // One message the send queue is holding for a run.
@@ -414,6 +472,14 @@ export function archiveRun(id: string, onProgress?: (p: CloneProgress) => void):
   return invoke<void>("archive_run", { id, onProgress: onProgressChannel });
 }
 export const restoreRun = (id: string) => invoke<RunInfo>("restore_run", { id });
+/**
+ * What archiving or deleting this run would actually remove, asked of git now.
+ * Read before either dialog is shown so the wording is about this branch
+ * rather than about the verb.
+ */
+export const runCleanup = (id: string) => invoke<RunCleanup>("run_cleanup", { id });
+/** The archived run's record as markdown; null for a run archived before records. */
+export const readRunRecord = (id: string) => invoke<string | null>("read_run_record", { id });
 export const listArchivedRuns = (projectId: string) =>
   invoke<RunInfo[]>("list_archived_runs", { projectId });
 /** Result of a bulk discard: some runs can fail while the rest still go. */

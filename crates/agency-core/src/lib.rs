@@ -1,4 +1,5 @@
 pub mod briefing;
+pub mod cleanup;
 pub mod config;
 pub mod files;
 pub mod gh;
@@ -10,6 +11,7 @@ pub mod mcp;
 pub mod merge;
 pub(crate) mod procutil;
 pub mod profile;
+pub mod record;
 pub mod registry;
 pub mod runsetup;
 pub mod scripts;

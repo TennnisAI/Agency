@@ -353,15 +353,17 @@ impl WorktreeManager {
 /// alone.
 ///
 /// `.agency/issues/` is excluded too since the tracker stopped being a tracked
-/// part of the repo (see [`untrack_issue_files`]); only `.agency/agency.toml`,
-/// the project's shared config, stays visible to git.
+/// part of the repo (see [`untrack_issue_files`]), as is `.agency/records/`,
+/// where a finished run's archive record is written; only
+/// `.agency/agency.toml`, the project's shared config, stays visible to git.
 pub fn ensure_agency_excludes(repo_path: &std::path::Path) -> Result<()> {
     if !repo_path.join(".git").exists() {
         return Ok(());
     }
     let exclude = repo_path.join(".git").join("info").join("exclude");
     let current = std::fs::read_to_string(&exclude).unwrap_or_default();
-    let wanted = [".agency/worktrees/", ".agency/agency.local.toml", ".agency/issues/"];
+    let wanted =
+        [".agency/worktrees/", ".agency/agency.local.toml", ".agency/issues/", ".agency/records/"];
 
     let had_legacy = current.lines().any(|l| l.trim() == ".agency/");
     let mut lines: Vec<String> =

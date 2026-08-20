@@ -490,6 +490,34 @@ textarea.settings-input { min-height: 64px; resize: vertical; }
 .hush-link { background: none; border: none; padding: 0; font: inherit; color: var(--o0); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
 .hush-link:hover { background: none; color: var(--text); }
 .merge-review { display: flex; flex-direction: column; gap: 8px; }
+/* The last step of a merge: what tidying up removes and what it keeps, in the
+   same shape the teardown dialogs use. */
+.merge-cleanup {
+  display: flex; flex-direction: column; gap: 8px;
+  border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px;
+}
+.merge-cleanup-head { margin: 0; font-size: 12px; font-weight: 600; color: var(--text); }
+
+/* Removal summary — shared by the confirm dialogs and the merge window. Two
+   labelled columns, because "removes" and "keeps" read as a pair or not at all;
+   they stack on a narrow confirm dialog. */
+.removal-body { display: flex; flex-direction: column; gap: 10px; }
+.removal-lists { display: flex; gap: 18px; flex-wrap: wrap; }
+.removal-col { flex: 1 1 190px; min-width: 0; }
+.removal-label {
+  margin: 0 0 3px; font-size: 10.5px; letter-spacing: 0.05em; text-transform: uppercase;
+  color: var(--sub0);
+}
+.removal-goes, .removal-stays { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 3px; }
+.removal-goes li, .removal-stays li { position: relative; padding-left: 14px; font-size: 12.5px; line-height: 1.5; }
+.removal-goes li::before { content: "\2212"; position: absolute; left: 0; color: var(--red); }
+.removal-stays li::before { content: "\2713\FE0E"; position: absolute; left: 0; color: var(--green); }
+.removal-checking { color: var(--sub0); font-size: 12.5px; margin: 0; }
+.removal-warn { color: var(--yellow); font-size: 12.5px; margin: 0; }
+
+/* An archived run's record, rendered from its markdown file. */
+.run-record-body { max-height: 60vh; }
+.run-record-body .md { font-size: 13px; }
 .merge-summary { color: var(--text); font-weight: 600; }
 /* Status dot */
 .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
@@ -1708,6 +1736,12 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
 .archived-row { display: flex; align-items: center; gap: 4px; padding: 2px 8px; }
 .archived-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted, #9aa); font-size: 12px; }
 .archived-empty { padding: 4px 8px; color: var(--muted, #9aa); font-size: 12px; }
+/* What one archived run still holds: its branch, or only its record. Set in
+   the row because the difference decides whether Restore is offered at all. */
+.archived-held {
+  flex: 0 0 auto; font-size: 10.5px; letter-spacing: 0.04em; text-transform: uppercase;
+  color: var(--sub0); background: var(--s0); border-radius: 5px; padding: 1px 5px;
+}
 
 .settings-notif { display: flex; flex-direction: column; gap: 4px; }
 .settings-notif-row {

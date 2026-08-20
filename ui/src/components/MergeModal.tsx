@@ -4,6 +4,7 @@ import {
   MergeOutcome,
   MergePreview,
   MergeState,
+  RunCleanup,
   abortMergeTask,
   archiveRun,
   discardRun,
@@ -11,10 +12,13 @@ import {
   mergePreview,
   mergeStatus,
   mergeTask,
+  runCleanup,
   sendMergeConflict,
 } from "../api";
+import { removalCopy } from "../lib/runRemoval";
 import PrSection from "./PrSection";
 import ConfirmDialog from "./ConfirmDialog";
+import RemovalSummary from "./RemovalSummary";
 import ProgressReadout from "./ProgressReadout";
 import { useRuns } from "../store/runs";
 import { useModalKeys } from "../hooks/useModalKeys";
@@ -55,6 +59,13 @@ export default function MergeModal({
   // All three run in the project's shared checkout and move it between
   // branches, which on a large repo is seconds of nothing to look at.
   const [gitStep, setGitStep] = useState<CloneProgress | null>(null);
+  // What tidying up would remove, re-read once the merge lands: before it the
+  // branch is the only copy of the work, after it the branch is a duplicate of
+  // commits on the base, and the buttons below have to say the second thing.
+  const [plan, setPlan] = useState<RunCleanup | null>(null);
+  // The probe failed rather than being slow. Kept apart so the panel says it
+  // could not read the branch instead of claiming to still be reading it.
+  const [planFailed, setPlanFailed] = useState(false);
   const [archiving, setArchiving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -227,7 +238,36 @@ export default function MergeModal({
     }
   }
 
+  // Read when the modal opens and again whenever the merge state changes, so
+  // the tidy-up wording is about the branch as it is now rather than as it was
+  // before the merge.
+  useEffect(() => {
+    let live = true;
+    runCleanup(taskId)
+      .then((c) => {
+        if (!live) return;
+        setPlan(c);
+        setPlanFailed(false);
+      })
+      .catch(() => live && setPlanFailed(true));
+    return () => {
+      live = false;
+    };
+  }, [taskId, outcome?.kind, state?.merged]);
+
   const conflicts = outcome?.kind === "conflicts";
+  // The same sentences the tile and rail teardown dialogs use, so the merge
+  // window and the ✕ menu describe one action rather than two that sound
+  // different. `me` is missing only for the frame between a teardown landing
+  // and the run list refreshing, where the fallback is never rendered.
+  const removalRun = me ?? {
+    kind: "agent" as const,
+    agent: "this agent",
+    branch: preview?.branch ?? "",
+    worktree: true,
+  };
+  const tidy = removalCopy(removalRun, "archive", plan);
+  const deleteCopy = removalCopy(removalRun, "delete", plan);
 
   // Once a merge is in progress, keep asking git where it stands: the resolver
   // is the agent (or the user, by hand, in the project's checkout), so this
@@ -365,24 +405,32 @@ export default function MergeModal({
             <p className="merge-ok">
               ✓ Merged cleanly into {preview?.base ?? "main"} · <code>{outcome.commit.slice(0, 10)}</code>
             </p>
-            {!hushNote && (
-              <p className="merge-note">
-                Tidy up the agent? Archiving keeps its branch, so you can bring it back later. Deleting clears
-                the branch and the run out for good. Either way the merged commit stays put.{" "}
-                <button className="hush-link" onClick={() => setHushNote(true)}>Don't show this again</button>
-              </p>
-            )}
+            {/* The last step of the merge, spelled out rather than left as a
+                choice between two verbs. Archiving after a merge takes the
+                agent branch too — it is a second name for commits that are now
+                on the base — so the list below is what makes that legible, and
+                is why the delete beside it is not a red button. */}
+            <div className="merge-cleanup">
+              <p className="merge-cleanup-head">Tidy up</p>
+              <RemovalSummary copy={tidy} checking={!plan && !planFailed} probeFailed={planFailed && !plan} hideLead />
+              {!hushNote && (
+                <p className="merge-note">
+                  Deleting instead drops the record too. Neither touches the merged commit.{" "}
+                  <button className="hush-link" onClick={() => setHushNote(true)}>Don't show this again</button>
+                </p>
+              )}
+            </div>
             <div className="git-actions">
               {losers.length > 0 ? (
                 <button disabled={busy} onClick={() => archiveWorkspace(true)}>
                   {archiving
                     ? "Cleaning up…"
-                    : `Archive + discard ${losers.length} losing attempt${losers.length === 1 ? "" : "s"}`}
+                    : `Archive + delete ${losers.length} losing attempt${losers.length === 1 ? "" : "s"}`}
                 </button>
               ) : (
                 <button
                   disabled={busy}
-                  title="Stop the agent and remove its worktree. The branch is kept, so the agent can be restored."
+                  title="Stop the agent, remove its worktree, and keep a record of what it did."
                   onClick={() => archiveWorkspace(false)}
                 >
                   {archiving ? "Archiving…" : "Archive agent"}
@@ -394,7 +442,10 @@ export default function MergeModal({
                 </button>
               )}
               <button
-                className="ghost danger"
+                // Red only when something could really be lost. After a merge
+                // nothing can, and a warning colour that fires anyway is one
+                // nobody reads on the day it means something.
+                className={`ghost${deleteCopy.danger ? " danger" : ""}`}
                 disabled={busy}
                 title="Remove the worktree, the branch and the run. The merged commit stays on the base branch."
                 // Hushed and nothing else to decide: go straight to the delete.
@@ -556,13 +607,28 @@ export default function MergeModal({
       {confirmDelete && (
         <ConfirmDialog
           title="Delete agent?"
-          body={`The merged work stays on ${preview?.base ?? "the base branch"}. This clears out the worktree, the "${preview?.branch ?? "agent"}" branch and the run.${
-            losers.length > 0
-              ? ` "Delete all" clears ${losers.length} losing attempt${losers.length === 1 ? "" : "s"} too.`
-              : ""
-          }`}
+          body={
+            <RemovalSummary
+              copy={
+                // The losing attempts are part of what this button removes, so
+                // they belong in the same list rather than in a sentence under
+                // it that the eye skips.
+                losers.length > 0
+                  ? {
+                      ...deleteCopy,
+                      goes: [
+                        ...deleteCopy.goes,
+                        `"Delete all" takes ${losers.length} losing attempt${
+                          losers.length === 1 ? "" : "s"
+                        } with it.`,
+                      ],
+                    }
+                  : deleteCopy
+              }
+            />
+          }
           confirmLabel={losers.length > 0 ? `Delete all ${losers.length + 1}` : "Delete"}
-          danger
+          danger={deleteCopy.danger}
           busy={deleting}
           progress={cleanup}
           progressLabel="Deleting…"

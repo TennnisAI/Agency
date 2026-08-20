@@ -9,6 +9,8 @@ import {
   sendCheckFeedback,
 } from "../api";
 import GhSetupHint from "./GhSetupHint";
+import RunRemoveDialog from "./RunRemoveDialog";
+import { useRuns } from "../store/runs";
 import { toastError } from "../lib/toast";
 
 const BUCKET_ICON: Record<string, string> = {
@@ -49,6 +51,13 @@ export default function PrSection({
   // has settled. Rendering the section's real content before then shows
   // "Create pull request" for a run that turns out to already have one.
   const [probing, setProbing] = useState(true);
+  // Offered once the PR has landed: at that point the local branch is a second
+  // name for commits that are on the remote, and the worktree is a checkout of
+  // work that is finished. See AGE-149 — tidying up should be the next step of
+  // the flow, not something you remember to do days later.
+  const [tidying, setTidying] = useState(false);
+  const { runs } = useRuns();
+  const run = runs.find((r) => r.id === taskId);
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -188,7 +197,21 @@ export default function PrSection({
               </button>
             </div>
           )}
+          {/* Merged upstream: nothing here is the only copy of anything any
+              more, and the agent has finished. Only for an agent with a
+              worktree — a run in the checkout has nothing to tear down. */}
+          {pr.state === "MERGED" && run?.kind === "agent" && run.worktree && (
+            <div className="git-actions">
+              <button onClick={() => setTidying(true)}>Archive agent</button>
+              <span className="merge-note">
+                This PR is merged, so the worktree and the local branch have nothing left to hold.
+              </span>
+            </div>
+          )}
         </div>
+      )}
+      {tidying && run && (
+        <RunRemoveDialog run={run} action="archive" onClose={() => setTidying(false)} onRemoved={onLeave} />
       )}
     </div>
   );

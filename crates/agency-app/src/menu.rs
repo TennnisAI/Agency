@@ -163,7 +163,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         )
         .separator()
         .item(&MenuItemBuilder::with_id("menu:archive", "Archive Agent").enabled(false).build(app)?)
-        .item(&MenuItemBuilder::with_id("menu:discard", "Discard Agent").enabled(false).build(app)?)
+        .item(&MenuItemBuilder::with_id("menu:discard", "Delete Agent").enabled(false).build(app)?)
         .build()?;
 
     let window_menu = SubmenuBuilder::new(app, "Window")

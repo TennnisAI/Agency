@@ -353,7 +353,7 @@ fn workspace_skill_md(ws: &Workspace) -> String {
         "\n## How this run finishes\n\
          \n\
          Commit your work on `{branch}`. What merges is the branch: uncommitted changes are \
-         left behind by a merge, and discarding the run removes this worktree along with \
+         left behind by a merge, and deleting the run removes this worktree along with \
          anything not committed. Archiving is gentler, and commits what is left first.\n\
          \n\
          The user reviews the run in Agency and either merges the branch into the project or \

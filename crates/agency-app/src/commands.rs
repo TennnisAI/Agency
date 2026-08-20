@@ -1933,6 +1933,29 @@ pub async fn list_archived_runs(
     state.list_archived_runs(&project_id).map_err(|e| e.to_string())
 }
 
+/// What archiving or deleting this run would remove. Read before either dialog
+/// is shown, so the wording is about this branch rather than about the verb.
+///
+/// async, like its neighbours: it runs a handful of git probes, and on a repo
+/// with a lot of remote refs `branch --remotes --contains` is not instant.
+#[tauri::command]
+pub async fn run_cleanup(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<crate::state::RunCleanup, String> {
+    state.run_cleanup(&id).map_err(|e| e.to_string())
+}
+
+/// The archived run's record, as markdown. `None` for a run archived before
+/// records existed.
+#[tauri::command]
+pub async fn read_run_record(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Option<String>, String> {
+    state.read_run_record(&id).map_err(|e| e.to_string())
+}
+
 use crate::notifier::NotifSettings;
 
 /// Sync the native menu's context-dependent items with the current selection:

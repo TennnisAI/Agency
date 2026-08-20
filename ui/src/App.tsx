@@ -394,7 +394,7 @@ function Shell() {
       }
       case "discard": {
         const focused = runs.find((r) => r.id === focusedRunId);
-        if (focused) setAgentAction({ action: "discard", run: focused });
+        if (focused) setAgentAction({ action: "delete", run: focused });
         break;
       }
       case "report-issue": openUrl(`${REPO_URL}/issues/new`).catch(() => {}); break;

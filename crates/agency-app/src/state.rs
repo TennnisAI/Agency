@@ -268,6 +268,43 @@ pub struct PrReviewRun {
     pub session_id: Option<String>,
 }
 
+/// One attempt in a race: an agent, and the model that attempt runs on.
+///
+/// The attempt is the unit rather than the agent, so the same agent can appear
+/// twice on two models (AGE-118) — the comparison a model picker invites, and
+/// the one racing could not express while it took a set of agent names. The
+/// model rides on the attempt because model ids live in each CLI's own
+/// namespace, so there is no one model to give a whole race.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct RaceAttempt {
+    pub agent: String,
+    /// None = whatever that agent defaults to.
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
+/// Everything a race has to satisfy before the first workspace is cut. Pure, so
+/// the rules are unit-testable without an app, and checked up front because a
+/// failure on the third attempt would leave the first two running a race they
+/// can no longer win.
+fn validate_race(prompt: &str, attempts: &[RaceAttempt]) -> Result<()> {
+    if prompt.trim().is_empty() {
+        bail!("racing needs a prompt — it is sent to every agent at launch");
+    }
+    // Two attempts, not two agents: one agent on two models is the race a model
+    // picker invites, and it is indistinguishable here from two different
+    // agents (AGE-118).
+    if attempts.len() < 2 {
+        bail!("racing needs at least two attempts");
+    }
+    for attempt in attempts {
+        if attempt.model.is_some() && !crate::agent_catalog::supports_model(&attempt.agent) {
+            bail!("'{}' has no way to be told a model on the command line", attempt.agent);
+        }
+    }
+    Ok(())
+}
+
 /// Everything create_run_spec needs to make a workspace + session. The public
 /// entry points (plain create, racing, from-issue, from-PR) differ only in
 /// which fields they fill.
@@ -2289,7 +2326,7 @@ impl AppState {
         Ok(self.run_info(&run))
     }
 
-    /// Fan one prompt out to several agents in parallel workspaces (racing).
+    /// Fan one prompt out to several attempts in parallel workspaces (racing).
     /// Each attempt is an ordinary run sharing a race_id; the user compares
     /// them and merges the winner. Partial failures leave the already-created
     /// attempts in place (visible and individually discardable).
@@ -2297,53 +2334,34 @@ impl AppState {
         &self,
         project_id: &str,
         prompt: &str,
-        agents: &[String],
-        models: &HashMap<String, String>,
+        attempts: &[RaceAttempt],
         base: &str,
         merge_target: Option<&str>,
     ) -> Result<Vec<RunInfo>> {
-        self.create_race_inner(project_id, prompt, agents, models, base, merge_target, None, None)
+        self.create_race_inner(project_id, prompt, attempts, base, merge_target, None, None)
     }
 
-    /// `models` maps an agent id to the model that attempt runs on; an agent
-    /// missing from it races on its own default. Keyed by agent because model
-    /// ids live in each CLI's own namespace, so there is no one model to give
-    /// a whole race.
     #[allow(clippy::too_many_arguments)]
     fn create_race_inner(
         &self,
         project_id: &str,
         prompt: &str,
-        agents: &[String],
-        models: &HashMap<String, String>,
+        attempts: &[RaceAttempt],
         base: &str,
         merge_target: Option<&str>,
         title: Option<String>,
         issue_id: Option<String>,
     ) -> Result<Vec<RunInfo>> {
-        if prompt.trim().is_empty() {
-            bail!("racing needs a prompt — it is sent to every agent at launch");
-        }
-        if agents.len() < 2 {
-            bail!("racing needs at least two agents");
-        }
-        // Up front, before any workspace is cut: create_run_spec refuses a model
-        // the agent can't be told, and finding that out on the third attempt
-        // would leave the first two running a race they can no longer win.
-        for agent in agents {
-            if models.contains_key(agent) && !crate::agent_catalog::supports_model(agent) {
-                bail!("'{agent}' has no way to be told a model on the command line");
-            }
-        }
+        validate_race(prompt, attempts)?;
         let race_id = uuid::Uuid::new_v4().to_string();
         let mut out = Vec::new();
-        for agent in agents {
+        for attempt in attempts {
             out.push(self.create_run_spec(
                 NewRunSpec {
                     project_id,
                     prompt,
-                    agent,
-                    model: models.get(agent).map(String::as_str),
+                    agent: &attempt.agent,
+                    model: attempt.model.as_deref(),
                     base,
                     merge_target,
                     race_id: Some(race_id.clone()),
@@ -2520,12 +2538,11 @@ impl AppState {
         Ok(info)
     }
 
-    /// Race several agents on one issue; every attempt links the issue.
+    /// Race several attempts on one issue; every attempt links the issue.
     pub fn start_issue_race(
         &self,
         issue_id: &str,
-        agents: &[String],
-        models: &HashMap<String, String>,
+        attempts: &[RaceAttempt],
         base: Option<&str>,
         merge_target: Option<&str>,
     ) -> Result<Vec<RunInfo>> {
@@ -2534,8 +2551,7 @@ impl AppState {
         let out = self.create_race_inner(
             &issue.project_id,
             &prompt,
-            agents,
-            models,
+            attempts,
             &base,
             merge_target,
             Some(title),
@@ -6486,7 +6502,7 @@ mod tests {
     use super::{
         agent_argv, command_on_path, failure_tail, graphify_server, new_task_id, pick_port,
         require_branch_exists, require_gitless_known, require_own_branch, slugify,
-        split_session_id,
+        split_session_id, validate_race, RaceAttempt,
     };
     use agency_core::config::KnowledgeConfig;
     use agency_core::profile::AgentProfile;
@@ -7019,6 +7035,41 @@ mod tests {
         assert_eq!(split_session_id("fix-login-a3k2--12"), ("fix-login-a3k2", Some(12)));
         // Defensive: a non-numeric tail is not a tab id.
         assert_eq!(split_session_id("weird--tail"), ("weird--tail", None));
+    }
+
+    fn attempt(agent: &str, model: Option<&str>) -> RaceAttempt {
+        RaceAttempt { agent: agent.to_string(), model: model.map(str::to_string) }
+    }
+
+    /// The point of AGE-118: an agent can appear more than once in a race, so
+    /// long as the attempts are the unit being counted.
+    #[test]
+    fn a_race_can_be_one_agent_on_two_models() {
+        let attempts = [attempt("claude", Some("opus")), attempt("claude", Some("sonnet"))];
+        assert!(validate_race("build it", &attempts).is_ok());
+    }
+
+    #[test]
+    fn a_race_needs_two_attempts_and_a_prompt() {
+        assert!(validate_race("build it", &[attempt("claude", None)]).is_err());
+        assert!(validate_race("build it", &[]).is_err());
+        assert!(
+            validate_race("   ", &[attempt("claude", None), attempt("codex", None)]).is_err(),
+            "an empty prompt is nothing to send at launch"
+        );
+    }
+
+    /// Refused before the first workspace is cut, not on the attempt itself:
+    /// create_run_spec would reject it too, by which point its rivals are
+    /// already running.
+    #[test]
+    fn a_race_refuses_a_model_an_agent_cannot_be_told() {
+        let attempts = [attempt("claude", Some("opus")), attempt("crush", Some("opus"))];
+        assert!(validate_race("build it", &attempts).is_err());
+        // The same agent left on its own default is fine: nothing has to reach
+        // a command line for it.
+        let attempts = [attempt("claude", Some("opus")), attempt("crush", None)];
+        assert!(validate_race("build it", &attempts).is_ok());
     }
 
     #[test]

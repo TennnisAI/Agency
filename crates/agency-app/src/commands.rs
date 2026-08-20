@@ -11,7 +11,7 @@ use tauri::State;
 
 use crate::state::{
     AppState, DiscardSummary, FilesConfigDto, KnowledgeConfigDto, McpImportResult, MergePreview,
-    ProviderSettings, RunInfo, RunScriptConfigDto, RunScriptStatusDto, RunSessionInfo,
+    ProviderSettings, RaceAttempt, RunInfo, RunScriptConfigDto, RunScriptStatusDto, RunSessionInfo,
 };
 use agency_core::title::fallback_title;
 
@@ -166,19 +166,14 @@ fn checked_model(model: Option<String>) -> Result<Option<String>, String> {
     }
 }
 
-/// The same check for a race's agent-to-model map. A bad id fails the whole
-/// race rather than quietly dropping one attempt's model: a race whose
-/// attempts did not run on the models asked for compares the wrong things.
-fn checked_models(
-    models: Option<std::collections::HashMap<String, String>>,
-) -> Result<std::collections::HashMap<String, String>, String> {
-    let mut out = std::collections::HashMap::new();
-    for (agent, model) in models.unwrap_or_default() {
-        if let Some(model) = crate::agent_catalog::sanitize_model(&model)? {
-            out.insert(agent, model);
-        }
-    }
-    Ok(out)
+/// The same check for every attempt in a race. A bad id fails the whole race
+/// rather than quietly dropping one attempt's model: a race whose attempts did
+/// not run on the models asked for compares the wrong things.
+fn checked_attempts(attempts: Vec<RaceAttempt>) -> Result<Vec<RaceAttempt>, String> {
+    attempts
+        .into_iter()
+        .map(|a| Ok(RaceAttempt { agent: a.agent, model: checked_model(a.model)? }))
+        .collect()
 }
 
 #[tauri::command]
@@ -975,14 +970,13 @@ pub fn create_race(
     state: State<'_, AppState>,
     project_id: String,
     prompt: String,
-    agents: Vec<String>,
-    models: Option<std::collections::HashMap<String, String>>,
+    attempts: Vec<RaceAttempt>,
     base: String,
     merge_target: Option<String>,
 ) -> Result<Vec<RunInfo>, String> {
-    let models = checked_models(models)?;
+    let attempts = checked_attempts(attempts)?;
     state
-        .create_race(&project_id, &prompt, &agents, &models, &base, merge_target.as_deref())
+        .create_race(&project_id, &prompt, &attempts, &base, merge_target.as_deref())
         .map_err(|e| e.to_string())
 }
 
@@ -1140,14 +1134,13 @@ pub fn start_issue_run(
 pub fn start_issue_race(
     state: State<'_, AppState>,
     issue_id: String,
-    agents: Vec<String>,
-    models: Option<std::collections::HashMap<String, String>>,
+    attempts: Vec<RaceAttempt>,
     base: Option<String>,
     merge_target: Option<String>,
 ) -> Result<Vec<RunInfo>, String> {
-    let models = checked_models(models)?;
+    let attempts = checked_attempts(attempts)?;
     state
-        .start_issue_race(&issue_id, &agents, &models, base.as_deref(), merge_target.as_deref())
+        .start_issue_race(&issue_id, &attempts, base.as_deref(), merge_target.as_deref())
         .map_err(|e| e.to_string())
 }
 

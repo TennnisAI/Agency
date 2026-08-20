@@ -2424,10 +2424,18 @@ input, textarea, code,
 /* Race + GitHub-import dialogs (RaceDialog.tsx, GhImportDialog.tsx). */
 .race-dialog { display: flex; flex-direction: column; gap: 10px; min-width: 440px; }
 .race-prompt { min-height: 84px; resize: vertical; font-family: var(--sans); }
-.race-agents { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+.race-agents { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px 14px; }
 .race-agent { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text); cursor: pointer; }
 /* Checkbox plus, once the agent is in the race, the model that attempt runs on. */
 .race-agent-row { display: flex; align-items: center; gap: 6px; }
+/* An agent holds one row per attempt, so racing it against itself on a second
+   model stacks the extra rows under the checkbox that turned it on. */
+.race-agent-block { display: flex; flex-direction: column; gap: 4px; }
+.race-attempt-row { padding-left: 17px; }
+.race-attempt-tick { color: var(--o0); font-size: 11px; line-height: 1; }
+.race-add-model { padding: 2px 8px; }
+/* The row's only control, so it does not wait for a hover to appear. */
+.race-attempt-row .ghost-x { opacity: 1; }
 .race-branches { display: flex; flex-direction: row; gap: 14px; }
 .race-branches .branch-row { display: flex; align-items: center; gap: 6px; }
 .race-branches .branch-row > span { color: var(--o1); font-size: 11px; }

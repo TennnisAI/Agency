@@ -6,7 +6,7 @@
 // repo picks its progress right back up.
 
 import { useSyncExternalStore } from "react";
-import type { CloneProgress } from "../../api";
+import { CANCELLED, type CloneProgress } from "../../api";
 
 export type GitOp = {
   /** An action is running: buttons disable, the progress bar shows. */
@@ -45,6 +45,15 @@ function subscribe(notify: () => void): () => void {
 
 export function useGitOp(taskId: string): GitOp {
   return useSyncExternalStore(subscribe, () => gitOp(taskId));
+}
+
+/** Whether an op's error is the user pressing Cancel rather than a failure to
+ *  report: the backend fails a killed push with exactly this word. Matched
+ *  exactly, because git's own output can mention cancelling (a server-side hook
+ *  rejecting a push, say) and swallowing that would leave the panel looking as
+ *  if nothing had happened. */
+export function isCancelled(error: string): boolean {
+  return error.trim() === CANCELLED;
 }
 
 /** Test hook. */

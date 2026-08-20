@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   FileChange, BranchInfo, HistoryItem, StashEntry, CloneProgress,
   gitStatus, gitBranchInfo, gitStashList, gitUndoLastCommit, gitPush, gitSync, gitPullRebase,
-  gitAutoFetch,
+  gitAutoFetch, cancelPush, gitPushForce,
 } from "../../api";
 import { toastSuccess } from "../../lib/toast";
 import ConfirmDialog from "../ConfirmDialog";
@@ -16,7 +16,7 @@ import GitSections from "./GitSections";
 import GitOutputModal from "./GitOutputModal";
 import Resizer from "../Resizer";
 import { usePaneWidth } from "../../hooks/usePaneWidth";
-import { useGitOp, setGitOp } from "./ops";
+import { useGitOp, gitOp, setGitOp, isCancelled } from "./ops";
 
 export type GitSelection =
   | { kind: "file"; path: string; group: "index" | "workingTree" | "merge" | "untracked" }
@@ -147,15 +147,53 @@ function GitRepoPanel({
     return ok;
   }, [refresh, taskId]);
 
-  // Push streams `--progress` into `pushProgress` so a big upload shows a
-  // determinate bar instead of freezing (the command is async, off the main
-  // thread). Cleared when the push settles, success or failure.
-  const push = useCallback(async () => {
+  // Cancel means cancel, mid-push included: a branch with large objects uploads
+  // for minutes on a slow uplink, and until this existed the bar could only be
+  // escaped by quitting the app. Unconditional, because it's a no-op when
+  // nothing is pushing (a rebase, a sync's fetch half) and must not depend on
+  // `busy` having reached this closure.
+  const stopPush = useCallback(() => {
+    void cancelPush(taskId).catch(() => {});
+  }, [taskId]);
+
+  // True when the op ended because the user pressed Cancel. git was killed on
+  // purpose, so its error is dropped rather than left in the banner, and there
+  // is nothing to undo: a killed push leaves origin unchanged and the local
+  // branch is the user's own. Read from the store rather than a "cancelled" ref
+  // so a Cancel that lands after the push already finished still reports it.
+  const consumeCancel = useCallback(() => {
+    if (!isCancelled(gitOp(taskId).error)) return false;
+    setGitOp(taskId, { error: "" });
+    return true;
+  }, [taskId]);
+
+  // Every action that ends in a push runs through here — Push, Publish, Commit &
+  // Push, Push (Force) — so all of them stream `--progress` into `pushProgress`
+  // and all of them get the bar's Cancel. A push routed around this shows the
+  // bare busy bar instead, which is the unstoppable upload this replaced.
+  // `before` is the local step that precedes the push (commit, set the remote),
+  // run under the same busy flag.
+  const runPush = useCallback(async (
+    label: string,
+    before?: () => Promise<unknown>,
+    force = false,
+  ) => {
     setPushProgress({ phase: "Starting push…", percent: null, detail: "" });
-    const ok = await act(() => gitPush(taskId, setPushProgress), "Pushed");
+    // No label on `act`: a cancelled push must not toast "Pushed", so the toast
+    // waits until the outcome is known.
+    const ok = await act(async () => {
+      if (before) await before();
+      await (force ? gitPushForce : gitPush)(taskId, setPushProgress);
+    });
     setPushProgress(null);
+    if (consumeCancel()) return false;
+    if (ok) toastSuccess(label);
     return ok;
-  }, [act, taskId, setPushProgress]);
+  }, [act, consumeCancel, taskId, setPushProgress]);
+
+  const push = useCallback(() => runPush("Pushed"), [runPush]);
+  // Confirmed in BranchBar's dialog; the upload itself is the same long one.
+  const forcePush = useCallback(() => runPush("Force-pushed", undefined, true), [runPush]);
 
   // Sync = pull (fast-forward) + push, like VS Code's "Sync Changes". A diverged
   // branch can't fast-forward, so the backend reports it and we ask the user
@@ -168,21 +206,23 @@ function GitRepoPanel({
       diverged = (await gitSync(taskId, setPushProgress)) === "diverged";
     });
     setPushProgress(null);
-    if (!ok) return;
+    if (consumeCancel() || !ok) return;
     if (diverged) setDivergedPrompt(true);
     else toastSuccess("Synced");
-  }, [act, taskId, setPushProgress]);
+  }, [act, consumeCancel, taskId, setPushProgress]);
 
-  // Chosen from the diverged prompt: replay local commits onto upstream, then push.
+  // Chosen from the diverged prompt: replay local commits onto upstream, then
+  // push. The rebase names itself in the bar (it runs before the push, so
+  // `runPush`'s own phase would be a lie while it works); Cancel is live
+  // throughout, and is simply a no-op until the push it can kill starts.
   const rebaseAndSync = useCallback(async () => {
     setDivergedPrompt(false);
-    setPushProgress({ phase: "Rebasing…", percent: null, detail: "" });
-    await act(async () => {
+    await runPush("Synced (rebased)", async () => {
+      setPushProgress({ phase: "Rebasing…", percent: null, detail: "" });
       await gitPullRebase(taskId);
-      await gitPush(taskId, setPushProgress);
-    }, "Synced (rebased)");
-    setPushProgress(null);
-  }, [act, taskId, setPushProgress]);
+      setPushProgress({ phase: "Starting push…", percent: null, detail: "" });
+    });
+  }, [runPush, taskId, setPushProgress]);
 
   const undoCommit = () => act(async () => {
     const message = await gitUndoLastCommit(taskId);
@@ -198,7 +238,7 @@ function GitRepoPanel({
 
   const branchBar = (
     <BranchBar taskId={taskId} info={branch} busy={busy} onAct={act}
-      onPush={push} onRefresh={refresh} onUndoCommit={undoCommit} />
+      onPush={push} onForcePush={forcePush} onRefresh={refresh} onUndoCommit={undoCommit} />
   );
   // While a push streams progress, show a determinate bar with phase/percent
   // (like the clone dialog). For any other op, fall back to the VS Code-style
@@ -210,6 +250,8 @@ function GitRepoPanel({
         {pushProgress.percent != null && (
           <span className="git-push-progress-pct">{pushProgress.percent}%</span>
         )}
+        <button className="git-iconbtn git-push-cancel" onClick={stopPush}
+          title="Stop this push" aria-label="Cancel push">Cancel</button>
       </div>
       <div className="clone-progress-track">
         <div
@@ -251,7 +293,7 @@ function GitRepoPanel({
 
   const changesPanel = (
     <ChangesPanel taskId={taskId} changes={changes} branch={branch} stashes={stashes}
-      restoreMessage={restoreMessage} onAct={act} onSync={sync} busy={busy}
+      restoreMessage={restoreMessage} onAct={act} onSync={sync} onPush={runPush} busy={busy}
       selectedPath={selection?.kind === "file" ? selection.path : null} onSelectFile={onSelectFile} />
   );
   const divergedDialog = divergedPrompt && (

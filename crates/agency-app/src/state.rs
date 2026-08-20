@@ -1217,6 +1217,14 @@ pub struct AppState {
     /// or cloning a huge repository, can run for many minutes, and until this
     /// existed the only way out was to quit the app.
     setup_cancels: Mutex<HashMap<PathBuf, agency_core::setup::CancelToken>>,
+    /// Cancel tokens for in-flight pushes, keyed by the worktree being pushed.
+    /// Source control's Cancel flips one so the `git push` behind it stops: a
+    /// branch with large objects on a slow uplink uploads for minutes, and the
+    /// progress bar was unstoppable short of quitting the app. Separate from
+    /// `setup_cancels` because the two are keyed by different things (a folder
+    /// being set up, a worktree being pushed) and a project's own checkout can
+    /// be both.
+    push_cancels: Mutex<HashMap<PathBuf, agency_core::setup::CancelToken>>,
 }
 
 /// When a project's origin was last contacted, and when it may be again.
@@ -1326,6 +1334,7 @@ impl AppState {
             fetches: Mutex::new(HashMap::new()),
             kg_builds: std::sync::Arc::new(Mutex::new(HashMap::new())),
             setup_cancels: Mutex::new(HashMap::new()),
+            push_cancels: Mutex::new(HashMap::new()),
         };
         // Rehydrate: any run the daemon still hosts is adopted as-is; the watch
         // loop (watch_snapshot) then reports live status. Nothing to spawn here —
@@ -5371,6 +5380,84 @@ impl AppState {
             Some(project_id) => self.repo_gates.with(project_id, || f(&target.path)),
             None => f(&target.path),
         }
+    }
+
+    /// Push `token`'s branch, registering a cancel token against its worktree so
+    /// [`AppState::cancel_push`] can stop it. Ungated, like every read of the
+    /// repo: a push writes refs on the remote, not the checkout.
+    pub fn push_run(
+        &self,
+        token: &str,
+        on_progress: impl FnMut(agency_core::setup::CloneProgress),
+    ) -> Result<()> {
+        let wt = self.git_root(token)?;
+        self.with_push_cancel(&wt, |cancel| {
+            agency_core::git::push_with_progress(&wt, cancel, on_progress)
+        })
+    }
+
+    /// [`AppState::push_run`] with `--force-with-lease`, cancellable over the
+    /// same key: a force push after a rebase re-uploads the whole branch, so it
+    /// is the same long upload and the panel offers the same Cancel. Ungated for
+    /// the same reason as `push_run`.
+    pub fn push_force_run(
+        &self,
+        token: &str,
+        on_progress: impl FnMut(agency_core::setup::CloneProgress),
+    ) -> Result<()> {
+        let wt = self.git_root(token)?;
+        self.with_push_cancel(&wt, |cancel| {
+            agency_core::git::push_force_with_progress(&wt, cancel, on_progress)
+        })
+    }
+
+    /// [`AppState::push_run`]'s both-directions sibling (VS Code's "Sync
+    /// Changes"), cancellable over the same key: its push half is the slow one
+    /// and the panel's Cancel can't tell the two actions apart. Gated, unlike
+    /// push, because the pull half rewrites the working tree.
+    pub fn sync_run(
+        &self,
+        token: &str,
+        on_progress: impl FnMut(agency_core::setup::CloneProgress),
+    ) -> Result<agency_core::git::SyncOutcome> {
+        self.git_mutate(token, |wt| {
+            self.with_push_cancel(wt, |cancel| agency_core::git::sync(wt, cancel, on_progress))
+        })
+    }
+
+    /// Stop the push running against `token`'s worktree, if there is one, by
+    /// killing the git it is waiting on. A no-op otherwise — the panel's Cancel
+    /// is live during steps with nothing to kill too (the rebase before a
+    /// rebase-and-sync, the fetch half of a sync).
+    ///
+    /// Takes the run token the push was started with rather than a path, for the
+    /// same reason as [`AppState::cancel_clone`]: the frontend never reproduces
+    /// the rule for finding a run's worktree, where a mismatch of one character
+    /// would silently cancel nothing.
+    pub fn cancel_push(&self, token: &str) {
+        let Ok(worktree) = self.git_root(token) else { return };
+        if let Some(cancel) = self.push_cancels.lock().unwrap().get(&worktree) {
+            cancel.cancel();
+        }
+    }
+
+    /// Run `f` with a cancel token registered for `worktree`, so `cancel_push`
+    /// can reach the git it spawns.
+    ///
+    /// One token per worktree: two pushes of the same checkout at once would
+    /// leave the second unstoppable (the first's exit unregisters the pair).
+    /// Nothing in the UI offers that, and concurrent pushes of one checkout race
+    /// in git anyway, so it isn't worth a registry of tokens per path.
+    fn with_push_cancel<T>(
+        &self,
+        worktree: &Path,
+        f: impl FnOnce(&agency_core::setup::CancelToken) -> T,
+    ) -> T {
+        let cancel = agency_core::setup::CancelToken::new();
+        self.push_cancels.lock().unwrap().insert(worktree.to_path_buf(), cancel.clone());
+        let out = f(&cancel);
+        self.push_cancels.lock().unwrap().remove(worktree);
+        out
     }
 
     /// Source and destination branch names for a run, for the status bar.

@@ -236,11 +236,19 @@ fn untracked_diff(worktree: &Path, path: &str) -> Result<String> {
     // A folder still shown as one row is one `expand_untracked_dirs` left
     // collapsed. `--no-index` errors on a directory, and before this the pane
     // answered "no textual changes", which reads as "this folder is empty".
+    //
+    // Only those two folders have something to explain, and the reason has to be
+    // the true one: a blanket "more than 500 files" was returned for any folder
+    // asked about, including a folder holding a single file, which the panel
+    // lists file by file and gives no row of its own at all.
     if meta.is_dir() {
-        let why = if worktree.join(path).join(".git").exists() {
+        let dir = worktree.join(path);
+        let why = if dir.join(".git").exists() {
             "Untracked folder holding its own git repository".to_string()
-        } else {
+        } else if !folder_within_cap(&dir) {
             format!("Untracked folder with more than {UNTRACKED_DIR_CAP} files")
+        } else {
+            return Ok(String::new());
         };
         return Ok(format!("diff --git a/{path} b/{path}\n{why}\n"));
     }
@@ -424,7 +432,7 @@ pub fn fetch_branch(repo: &Path, branch: &str) -> Result<()> {
 }
 
 pub fn push(worktree: &Path) -> Result<()> {
-    push_with_progress(worktree, |_| {})
+    push_with_progress(worktree, &crate::setup::CancelToken::new(), |_| {})
 }
 
 /// Publish a specific local branch to `origin` (setting upstream) without
@@ -439,24 +447,63 @@ pub fn push_branch(repo: &Path, branch: &str) -> Result<()> {
 /// `--progress` output to `on_progress` so a large push shows movement instead
 /// of a frozen UI. On failure, the error carries git's raw stderr so the UI can
 /// surface the real reason (rejected push, protected branch, no permission, …).
+///
+/// `cancel` kills the push and fails with [`crate::setup::CANCELLED`]. Uploading
+/// a branch with large objects over a slow uplink is minutes the user must be
+/// able to escape. Nothing is cleaned up afterwards: a killed push leaves the
+/// remote exactly as it was, and the local branch is the user's own.
 pub fn push_with_progress(
     worktree: &Path,
+    cancel: &crate::setup::CancelToken,
     mut on_progress: impl FnMut(crate::setup::CloneProgress),
+) -> Result<()> {
+    push_streaming(worktree, false, cancel, &mut on_progress)
+}
+
+/// [`push_with_progress`] with `--force-with-lease`: same streaming, same
+/// cancellation. Force-pushing after a rebase re-uploads the whole branch, so it
+/// is the same minutes-long upload as an ordinary push and needs the same
+/// escape; a killed one leaves the remote's ref where it was, since git moves it
+/// only once every object has arrived.
+pub fn push_force_with_progress(
+    worktree: &Path,
+    cancel: &crate::setup::CancelToken,
+    mut on_progress: impl FnMut(crate::setup::CloneProgress),
+) -> Result<()> {
+    push_streaming(worktree, true, cancel, &mut on_progress)
+}
+
+/// The body both push flavours share: `git push --progress -u origin <branch>`
+/// through the cancellable streaming runner, plus `--force-with-lease` when
+/// `force`. One function so the two can't drift apart in how they report a
+/// cancel or a failure, which is the part that is easy to get subtly wrong.
+fn push_streaming(
+    worktree: &Path,
+    force: bool,
+    cancel: &crate::setup::CancelToken,
+    on_progress: &mut dyn FnMut(crate::setup::CloneProgress),
 ) -> Result<()> {
     let branch = git(worktree, &["rev-parse", "--abbrev-ref", "HEAD"])?.trim().to_string();
     let mut cmd = Command::new("git");
-    cmd.arg("push")
-        .arg("--progress")
-        .arg("-u")
+    cmd.arg("push").arg("--progress");
+    if force {
+        // With lease, never bare `--force`: a remote that moved since the last
+        // fetch is someone else's work, and this refuses rather than erasing it.
+        cmd.arg("--force-with-lease");
+    }
+    cmd.arg("-u")
         .arg("origin")
         .arg(&branch)
         .current_dir(worktree)
         // No TTY in the app: fail fast rather than blocking on a credential prompt.
         .env("GIT_TERMINAL_PROMPT", "0");
-    // A fresh token, never flipped: there is no Cancel over a push yet, so this
-    // one only satisfies the signature the clone dialog's Cancel needs.
-    let cancel = crate::setup::CancelToken::new();
-    let (ok, stderr) = crate::setup::run_clone_streaming(cmd, &cancel, &mut on_progress)?;
+    let (ok, stderr) = crate::setup::run_clone_streaming(cmd, cancel, on_progress)?;
+    // Checked before `ok`: a killed git exits non-zero carrying its own error
+    // text, and showing that would put a push failure in front of the user who
+    // just pressed Cancel.
+    if cancel.is_cancelled() {
+        bail!("{}", crate::setup::CANCELLED);
+    }
     if ok {
         return Ok(());
     }
@@ -582,11 +629,20 @@ pub enum SyncOutcome {
 /// non-fast-forward rejection. A branch that has genuinely diverged can't
 /// fast-forward, so it returns [`SyncOutcome::Diverged`] without touching
 /// anything and lets the caller offer a rebase or force-push.
+///
+/// `cancel` reaches the push half, which is the slow one; the fetch and the
+/// fast-forward ahead of it are local-speed or already bounded by
+/// [`FETCH_TIMEOUT`]. A cancel that lands during those stops the sync before it
+/// starts uploading rather than killing anything mid-write.
 pub fn sync(
     worktree: &Path,
+    cancel: &crate::setup::CancelToken,
     mut on_progress: impl FnMut(crate::setup::CloneProgress),
 ) -> Result<SyncOutcome> {
     fetch(worktree)?;
+    if cancel.is_cancelled() {
+        bail!("{}", crate::setup::CANCELLED);
+    }
     let (ahead, behind) = ahead_behind(worktree)?;
     if behind > 0 {
         if ahead > 0 {
@@ -597,7 +653,7 @@ pub fn sync(
         git(worktree, &["merge", "--ff-only", "@{u}"])?;
     }
     if ahead > 0 {
-        push_with_progress(worktree, &mut on_progress)?;
+        push_with_progress(worktree, cancel, &mut on_progress)?;
     }
     Ok(SyncOutcome::Synced)
 }
@@ -1182,11 +1238,10 @@ pub fn pull_rebase(worktree: &Path) -> Result<()> {
 }
 
 /// Force-push the current branch. `--force-with-lease` so a remote updated by
-/// someone else since the last fetch is never clobbered silently.
+/// someone else since the last fetch is never clobbered silently. See
+/// [`push_force_with_progress`]; this is the no-progress, no-cancel wrapper.
 pub fn push_force(worktree: &Path) -> Result<()> {
-    let branch = git(worktree, &["rev-parse", "--abbrev-ref", "HEAD"])?.trim().to_string();
-    git(worktree, &["push", "--force-with-lease", "-u", "origin", &branch])?;
-    Ok(())
+    push_force_with_progress(worktree, &crate::setup::CancelToken::new(), |_| {})
 }
 
 /// Undo the last commit, keeping its changes staged (mirrors VSCode's

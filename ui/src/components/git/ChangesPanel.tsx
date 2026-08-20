@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import {
   FileChange, BranchInfo, StashEntry, fileRootOf, gitStage, gitUnstage, gitStageAll, gitUnstageAll,
-  gitDiscard, gitDiscardAll, gitCommit, gitCommitAmend, gitPush, gitSetRemote,
+  gitDiscard, gitDiscardAll, gitCommit, gitCommitAmend, gitSetRemote,
   gitStashApply, gitStashDrop, gitStashPop,
 } from "../../api";
 import { baseName } from "../../lib/filePath";
@@ -14,7 +14,7 @@ import Menu, { MenuEntry } from "./Menu";
 import StashGroup from "./StashGroup";
 
 export default function ChangesPanel({
-  taskId, changes, branch, stashes, restoreMessage, onAct, onSync, busy = false, selectedPath, onSelectFile,
+  taskId, changes, branch, stashes, restoreMessage, onAct, onSync, onPush, busy = false, selectedPath, onSelectFile,
 }: {
   taskId: string;
   changes: FileChange[];
@@ -25,6 +25,10 @@ export default function ChangesPanel({
   // Sync = pull (fast-forward) + push; owned by GitPanel because it streams push
   // progress and can raise a diverged-branch prompt (unlike the plain onAct ops).
   onSync: () => void;
+  // Anything that ends in a push, also owned by GitPanel: it streams the push's
+  // progress and puts a live Cancel on the bar, which a push run through onAct
+  // would not have. `before` is the local step that precedes it, if any.
+  onPush: (label: string, before?: () => Promise<unknown>) => Promise<boolean>;
   busy?: boolean;
   selectedPath: string | null;
   onSelectFile: (path: string, group: "index" | "workingTree" | "merge" | "untracked") => void;
@@ -130,11 +134,11 @@ export default function ChangesPanel({
         restoreMessage={restoreMessage}
         onCommit={(m) => onAct(() => gitCommit(taskId, m), "Committed")}
         onCommitAll={(m) => onAct(async () => { await gitStageAll(taskId); await gitCommit(taskId, m); }, "Committed all changes")}
-        onCommitPush={(m) => onAct(async () => { await gitCommit(taskId, m); await gitPush(taskId); }, "Committed & pushed")}
+        onCommitPush={(m) => onPush("Committed & pushed", () => gitCommit(taskId, m))}
         onAmend={(m) => onAct(() => gitCommitAmend(taskId, m), "Amended")}
         onSync={onSync}
-        onPublish={() => onAct(() => gitPush(taskId), "Branch published")}
-        onPublishRemote={(url) => onAct(async () => { await gitSetRemote(taskId, url); await gitPush(taskId); }, "Branch published")}
+        onPublish={() => onPush("Branch published")}
+        onPublishRemote={(url) => onPush("Branch published", () => gitSetRemote(taskId, url))}
       />
       <ResourceGroup id="merge" label="Merge Changes" changes={g.merge}
         selectedPath={selectedPath} onSelectFile={(c) => onSelectFile(c.path, "merge")}

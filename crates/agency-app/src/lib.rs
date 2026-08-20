@@ -17,6 +17,9 @@ mod state;
 mod tray;
 mod update;
 
+// The queue's two after-the-fact reports are part of the public surface: they
+// come back out of `drain_send_queues` for the caller to show.
+pub use sendq::{Notice, NoticeKind};
 pub use state::{AppState, KnowledgeConfigDto, ProviderSettings, RunInfo};
 
 /// Log every panic (the default hook only writes to stderr, which a bundled
@@ -460,7 +463,16 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                 // Text Agency owes an agent goes out here, after the loop above
                 // has refreshed the busy/idle bookkeeping the decision reads.
                 // See `crate::sendq` for what it waits for.
-                state.drain_send_queues(now_ms);
+                for notice in state.drain_send_queues(now_ms) {
+                    // A queue thrown away, or a message appended to whatever
+                    // was on the prompt line. Both happen long after whoever
+                    // sent the text closed the window they sent it from, so the
+                    // UI toasts them; being held is already on the run's own
+                    // marker. Not an OS notification: it carries no action, and
+                    // the categories in Settings are per run event.
+                    use tauri::Emitter;
+                    let _ = handle.emit("send-queue-notice", &notice);
+                }
                 // Token accounting rides this poll rather than running a
                 // thread of its own: an unchanged transcript costs one stat,
                 // so the marginal price of doing it here is close to nothing.

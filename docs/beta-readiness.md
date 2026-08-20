@@ -196,6 +196,26 @@ tests: 82 core + 54 app), `tsc --noEmit` exit 0, `vite build` exit 0.
     hosts. (sendq.rs, registry.rs, state.rs, commands.rs, lib.rs, api.ts,
     QueuedMarker.tsx, AgentTile.tsx, AgentFocus.tsx)
 
+47. **[done]** A queued message that is dropped, or appended, says so (AGE-127,
+    follow-up to 46). The queue had one silent exit: `sendq::decide` discards
+    everything waiting for a session that is gone, and that went to the log and
+    nowhere else — the marker appeared for a tick and then vanished, which from
+    the user's side is what a message going in looks like. Persistence made it
+    easy to hit: quit with something held, relaunch, and if the session did not
+    survive the whole queue goes on the first tick. `drain_session` now hands
+    its caller a `sendq::Notice` for the two outcomes nobody can see for
+    themselves, and the notifier tick emits them as a `send-queue-notice` event
+    the UI toasts. The sentences are composed in `sendq.rs` (with an origin
+    phrase per sender, because a toast arriving minutes later cannot lean on the
+    popover's bare tag) so they are unit-testable without a running app. The
+    second outcome is the delivery side of the same hole: `Decision::Send` now
+    carries a `SendReason`, and a message that waited out `MAX_HOLD_MS` with the
+    agent still working or a draft still on the line is reported as appended,
+    while one that merely went out late is not. A discard racing a send from an
+    open sender surface is answered there instead, as an error: `queue_send`
+    used to return "it went out now" for a message nothing was ever typed of.
+    (sendq.rs, state.rs, lib.rs, api.ts, App.tsx, toast.ts)
+
 ## Still open
 
 ### Phase 2 — update + recovery (before build #2)

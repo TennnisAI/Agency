@@ -14,7 +14,7 @@ import Resizer from "./components/Resizer";
 import Toasts from "./components/Toasts";
 import { useShortcuts } from "./hooks/useShortcuts";
 import { usePaneWidth } from "./hooks/usePaneWidth";
-import { FileRoot, Project, RepoReadiness, RunInfo, agentOnboardingNeeded, checkForUpdate, confirmQuit, createDir, createFile, createRun, ensureWorkspaceGuide, getUpdateCheckEnabled, getWorkspace, gitLogGraph, inspectRepo, listArchivedRuns, listIssues, listProjects, readFile, rememberedModel, setMenuContext, setUiState, writeFile } from "./api";
+import { FileRoot, Project, QueueNotice, RepoReadiness, RunInfo, agentOnboardingNeeded, checkForUpdate, confirmQuit, createDir, createFile, createRun, ensureWorkspaceGuide, getUpdateCheckEnabled, getWorkspace, gitLogGraph, inspectRepo, listArchivedRuns, listIssues, listProjects, readFile, rememberedModel, setMenuContext, setUiState, writeFile } from "./api";
 import { pickDefaultAgent } from "./lib/defaultAgent";
 import { PENDING_ISSUE_KEY, PENDING_QUICKADD_KEY, isClosed, issueLabel } from "./lib/issues";
 import { NAVIGATE_EVENT, NavTarget } from "./lib/navigate";
@@ -454,6 +454,21 @@ function Shell() {
       listen<string>("tray-open-project", async (e) => {
         const p = (await listProjects().catch(() => [])).find((x) => x.id === e.payload);
         if (p) selectProject(p);
+      }),
+      // A queued message that stopped being queued in a way the user cannot
+      // see: dropped for a session that has gone, or appended to whatever was
+      // on the prompt line after five minutes of waiting. The run's marker
+      // covers a message while it is held; nothing covered the moment it stops
+      // being held, and a marker that appears for one tick and then vanishes
+      // reads as the message having gone in.
+      listen<QueueNotice>("send-queue-notice", (e) => {
+        const n = e.payload;
+        // Dropped is a loss, not a status change: the red toast, and the long
+        // dismissal, are the point.
+        if (n.kind === "dropped") toastError(n.text);
+        else toastInfo(n.text, 8000);
+        // Nothing to refresh: the run list polls every 1.5s, so the marker
+        // count follows on its own.
       }),
     ];
     // Palette "Today's Note" and the post-creation resume of that flow arrive

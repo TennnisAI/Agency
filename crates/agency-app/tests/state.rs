@@ -1,4 +1,4 @@
-use agency_app_lib::AppState;
+use agency_app_lib::{AppState, NoticeKind};
 use std::path::Path;
 
 mod common;
@@ -1041,6 +1041,56 @@ fn a_held_message_shows_on_the_run_survives_a_quit_and_can_be_dropped() {
     assert!(relaunched.list_queued_messages(&id).is_empty(), "a dropped message must stay dropped");
 
     state.discard_run(&id).unwrap();
+}
+
+/// The hole AGE-127 closes: a queue thrown away for a session that has since
+/// exited used to go to the log and nowhere else, so the marker appeared for a
+/// tick and then vanished, which from the user's side is what a message going
+/// in looks like.
+#[test]
+fn a_queue_dropped_for_a_gone_session_is_reported_rather_than_just_logged() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let state = common::state(&dir);
+    let project = state.add_project("demo", &repo).unwrap();
+    let id = live_terminal(&state, &project.id);
+
+    state.add_review_comment(&id, "src/a.rs", 7, 7, "never-arrives-marker").unwrap();
+    // Unobserved sessions count as working, so this is held rather than typed.
+    assert!(!state.send_review_comments(&id).unwrap());
+    assert_eq!(state.list_queued_messages(&id).len(), 1);
+
+    // The session goes away with the message still held.
+    state.run_input(&id, b"exit\r").unwrap();
+    let start = std::time::Instant::now();
+    while start.elapsed() < std::time::Duration::from_secs(5) {
+        if !matches!(state.run_status(&id).unwrap(), SessionStatus::Running) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    assert!(
+        !matches!(state.run_status(&id).unwrap(), SessionStatus::Running),
+        "shell never exited"
+    );
+
+    let notices = state.drain_send_queues(now_ms());
+    assert_eq!(notices.len(), 1, "the drop must come back to the caller, not only to the log");
+    assert_eq!(notices[0].kind, NoticeKind::Dropped);
+    assert_eq!(notices[0].run_id, id);
+    assert!(notices[0].text.contains("review comments"), "{}", notices[0].text);
+    assert!(notices[0].text.contains("that session is gone"), "{}", notices[0].text);
+    assert!(state.list_queued_messages(&id).is_empty(), "the queue is gone with the session");
+    // Said once. The tick runs every few seconds and the queue is already
+    // empty, so there is nothing left to report.
+    assert!(state.drain_send_queues(now_ms()).is_empty());
+    // And it does not come back on the next launch either.
+    let reopened = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
+    assert!(reopened.list_queued_messages(&id).is_empty());
+
+    let _ = state.discard_run(&id);
 }
 
 #[test]

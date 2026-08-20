@@ -112,10 +112,22 @@ pub enum DiscardReason {
     SessionGone,
 }
 
+/// Why a message is going out. The write is the same either way; the event is
+/// not, which is why the two are told apart at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SendReason {
+    /// The session was ready for it: between turns, with an empty prompt line.
+    Clear,
+    /// [`MAX_HOLD_MS`] ran out with the agent still working or a draft still on
+    /// the line, so the text goes in after whatever is sitting there and is
+    /// submitted along with it.
+    Appended,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Decision {
     /// Type the text, then the carriage return.
-    Send,
+    Send(SendReason),
     Hold(HoldReason),
     Discard(DiscardReason),
 }
@@ -126,7 +138,9 @@ pub enum Decision {
 /// clock. The echo grace outranks the timeout because it is a single second and
 /// the pane it protects is the evidence every later rule reads. The timeout
 /// then outranks both the busy and the draft holds — that is what "on timeout,
-/// append" means.
+/// append" means, and whether either of them was actually in the way is what
+/// separates [`SendReason::Appended`] from an ordinary send that happens to be
+/// late.
 pub fn decide(head: &Queued, obs: &Observation) -> Decision {
     if !obs.session_running {
         return Decision::Discard(DiscardReason::SessionGone);
@@ -137,7 +151,8 @@ pub fn decide(head: &Queued, obs: &Observation) -> Decision {
         }
     }
     if obs.now_ms.saturating_sub(head.queued_at_ms) >= MAX_HOLD_MS {
-        return Decision::Send;
+        let over = obs.working || obs.draft;
+        return Decision::Send(if over { SendReason::Appended } else { SendReason::Clear });
     }
     if obs.working {
         return Decision::Hold(HoldReason::Working);
@@ -145,7 +160,87 @@ pub fn decide(head: &Queued, obs: &Observation) -> Decision {
     if obs.draft {
         return Decision::Hold(HoldReason::Draft);
     }
-    Decision::Send
+    Decision::Send(SendReason::Clear)
+}
+
+/// A queue event the user has to be told about after the fact.
+///
+/// The three senders each say in place whether the text went in or is waiting,
+/// and the run's marker says so for as long as it is held. Both of those are
+/// about a message that is still on its way. These two are the moment it stops
+/// being held, which is exactly when the surface that sent it is closed: a
+/// queue thrown away for a session that has since exited, and a message that
+/// waited out [`MAX_HOLD_MS`] and went in on top of something.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Notice {
+    /// The run whose queue it was, for the UI that shows it.
+    pub run_id: String,
+    pub kind: NoticeKind,
+    /// The whole sentence, composed here so it can be tested without a running
+    /// app.
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NoticeKind {
+    /// Nothing was typed and nothing will be: a loss, not a status change.
+    Dropped,
+    /// It went in, but not cleanly.
+    Appended,
+}
+
+/// How a message is named in a sentence of its own.
+///
+/// The popover can show the bare origin next to the whole text; a toast that
+/// arrives minutes later, with the sending surface long closed, cannot. Falls
+/// back to something true for anything outside [`ORIGINS`] rather than naming
+/// a string we do not recognise.
+fn origin_phrase(origin: &str) -> &'static str {
+    match origin {
+        "review comments" => "the review comments",
+        "check feedback" => "the CI feedback",
+        "merge conflict" => "the merge conflict prompt",
+        _ => "the message",
+    }
+}
+
+/// The hold window as the copy below spells it, kept honest by
+/// `the_copy_matches_the_hold_window`.
+const MAX_HOLD_WORDS: &str = "five minutes";
+
+/// "Agency dropped the review comments it was holding for Fix login: that
+/// session is gone."
+///
+/// `n` is the whole queue, head included: a discard takes all of it, and
+/// reporting only the head would understate the loss.
+pub fn dropped_notice(run_id: &str, label: &str, head_origin: &str, n: usize) -> Notice {
+    let what =
+        if n > 1 { format!("the {n} messages") } else { origin_phrase(head_origin).to_string() };
+    Notice {
+        run_id: run_id.to_string(),
+        kind: NoticeKind::Dropped,
+        text: format!("Agency dropped {what} it was holding for {label}: that session is gone."),
+    }
+}
+
+/// "Agency waited five minutes for Fix login to come free, then added the
+/// review comments to what was already on its prompt line."
+///
+/// Phrased around the wait rather than around the message, so one sentence
+/// covers both things the timeout overrides: an agent that never stopped
+/// working, and a draft the human walked away from.
+pub fn appended_notice(run_id: &str, label: &str, origin: &str) -> Notice {
+    Notice {
+        run_id: run_id.to_string(),
+        kind: NoticeKind::Appended,
+        text: format!(
+            "Agency waited {MAX_HOLD_WORDS} for {label} to come free, then added {} to what \
+             was already on its prompt line.",
+            origin_phrase(origin)
+        ),
+    }
 }
 
 /// What a chunk of input from the pane means for the draft on the prompt line.
@@ -381,7 +476,7 @@ mod tests {
 
     #[test]
     fn a_clear_session_takes_the_message() {
-        assert_eq!(decide(&msg(0), &clear(0)), Decision::Send);
+        assert_eq!(decide(&msg(0), &clear(0)), Decision::Send(SendReason::Clear));
     }
 
     #[test]
@@ -399,7 +494,7 @@ mod tests {
             Decision::Hold(HoldReason::EchoGrace),
             "still inside the grace"
         );
-        assert_eq!(decide(&msg(0), &at(ECHO_GRACE_MS)), Decision::Send);
+        assert_eq!(decide(&msg(0), &at(ECHO_GRACE_MS)), Decision::Send(SendReason::Clear));
     }
 
     #[test]
@@ -420,9 +515,65 @@ mod tests {
     #[test]
     fn the_timeout_sends_through_a_busy_agent_and_through_a_draft() {
         let obs = Observation { working: true, draft: true, ..clear(MAX_HOLD_MS) };
-        assert_eq!(decide(&msg(0), &obs), Decision::Send, "on timeout it appends and submits");
+        assert_eq!(
+            decide(&msg(0), &obs),
+            Decision::Send(SendReason::Appended),
+            "on timeout it appends and submits"
+        );
         let obs = Observation { working: true, draft: true, ..clear(MAX_HOLD_MS - 1) };
-        assert_ne!(decide(&msg(0), &obs), Decision::Send, "not a millisecond early");
+        assert!(!matches!(decide(&msg(0), &obs), Decision::Send(_)), "not a millisecond early");
+    }
+
+    #[test]
+    fn a_late_send_into_a_clear_session_is_not_reported_as_appended() {
+        // The timeout branch is reached whenever the clock has run out, but
+        // with nothing in the way it is an ordinary send that happens to be
+        // late — telling the user their text landed on top of something would
+        // be a lie.
+        assert_eq!(decide(&msg(0), &clear(MAX_HOLD_MS)), Decision::Send(SendReason::Clear));
+        let working = Observation { working: true, ..clear(MAX_HOLD_MS) };
+        assert_eq!(decide(&msg(0), &working), Decision::Send(SendReason::Appended));
+        let draft = Observation { draft: true, ..clear(MAX_HOLD_MS) };
+        assert_eq!(decide(&msg(0), &draft), Decision::Send(SendReason::Appended));
+    }
+
+    #[test]
+    fn the_copy_matches_the_hold_window() {
+        // The sentence spells the constant out, so the two must be changed
+        // together.
+        assert_eq!(MAX_HOLD_MS / 60_000, 5, "MAX_HOLD_WORDS says {MAX_HOLD_WORDS}");
+    }
+
+    #[test]
+    fn a_dropped_queue_names_what_was_lost_and_why() {
+        let one = dropped_notice("fix-login", "Fix login", "review comments", 1);
+        assert_eq!(one.kind, NoticeKind::Dropped);
+        assert_eq!(
+            one.text,
+            "Agency dropped the review comments it was holding for Fix login: \
+             that session is gone."
+        );
+        assert_eq!(one.run_id, "fix-login");
+        // A discard takes the whole queue, not just the head it decided on.
+        let many = dropped_notice("fix-login", "Fix login", "review comments", 3);
+        assert!(many.text.contains("the 3 messages"), "{}", many.text);
+        // Every origin has a phrase of its own: the toast arrives with the
+        // sending surface closed, so "the message" would name nothing.
+        for origin in ORIGINS {
+            let text = dropped_notice("r", "Fix login", origin, 1).text;
+            assert!(!text.contains("the message "), "{origin} has no phrase: {text}");
+        }
+    }
+
+    #[test]
+    fn an_appended_message_says_it_went_in_on_top_of_something() {
+        let n = appended_notice("fix-login", "Fix login", "check feedback");
+        assert_eq!(n.kind, NoticeKind::Appended);
+        assert_eq!(
+            n.text,
+            "Agency waited five minutes for Fix login to come free, then added the CI feedback \
+             to what was already on its prompt line."
+        );
     }
 
     #[test]

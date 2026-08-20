@@ -54,7 +54,8 @@ export function toastSuccess(text: string) {
   push(text, "success", 3500);
 }
 
-/** Neutral, transient status note. */
-export function toastInfo(text: string) {
-  push(text, "info", 3500);
+/** Neutral, transient status note. `ttl` for the rare one that is a whole
+ * sentence the user has to read rather than a two-word confirmation. */
+export function toastInfo(text: string, ttl = 3500) {
+  push(text, "info", ttl);
 }

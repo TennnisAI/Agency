@@ -64,9 +64,14 @@ ui/node_modules/.bin/vite build
 - **No em dashes in UI copy.** Split the sentence, or use a comma, semicolon,
   colon or parentheses. Docs are exempt; strings the user reads are not.
 - Sentence case, second person, present tense.
-- Anywhere the privacy claim appears, the GitHub update check appears with it.
-  Say "no first-party data collection", never "nothing leaves your machine".
-  See `docs/webdesign/02-messaging.md`, which governs this and is not optional.
+- Say "no first-party data collection", never "nothing leaves your machine".
+  Wherever the claim appears, say in the same breath that the agents are third
+  party and talk to their own providers; the app's whole job is launching them,
+  so a claim that omits them is the one a reader catches. On the site, where the
+  claim is made in full, the GitHub update check appears with it too. In the app
+  it does not have to: it is one toggle in Settings, and a starter note is not a
+  privacy page. See `docs/webdesign/02-messaging.md`, which governs this and is
+  not optional.
 
 ## Code conventions
 

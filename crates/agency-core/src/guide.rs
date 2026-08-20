@@ -4,6 +4,12 @@
 //! Home), wikilinks, the journal, and search. Seeded once at creation, before
 //! the initial commit; deleting it is respected — only the explicit
 //! "Workspace Guide" command brings it back.
+//!
+//! An existing `Welcome.md` never self-updates, so a wording change here does
+//! not reach a workspace that already has one. The privacy claim is the one
+//! exception: `repair_opening` rewrites that paragraph in place, because
+//! shipping a claim we cannot stand behind is not something a user should have
+//! to opt out of.
 
 use anyhow::Result;
 use std::path::Path;
@@ -17,8 +23,11 @@ status: example
 # Welcome to your workspace
 
 This folder is a plain-markdown vault. Every file in it is yours: edit notes
-here, in any other editor, or hand one to an agent. Nothing leaves your
-machine; it is all just files on disk.
+here, in any other editor, or hand one to an agent. It is all just files on
+disk.
+
+Agency does no first-party data collection: no analytics, no telemetry, no
+account. Agents are third party, so what you hand one goes to its provider.
 
 Delete this note whenever you like. It comes back only if you run
 "Workspace Guide" from the command palette (Cmd+K).
@@ -118,10 +127,51 @@ beside the issue files and linked from the description, so they travel with
 the issue, and an agent working the issue can read them.
 "#;
 
+/// The guide's opening, carrying the privacy claim in the form
+/// `docs/webdesign/02-messaging.md` requires: scoped to what Agency itself
+/// collects, and honest that the agents are somebody else's. Two sentences on
+/// purpose. This is a starter note, not a privacy page, and the long version
+/// (the update check, git remotes) belongs on the site. Held as its own const
+/// so `repair_opening` can splice it into a `Welcome.md` seeded before this
+/// wording existed; the tests keep it and `WORKSPACE_GUIDE` in sync.
+const OPENING: &str = r#"This folder is a plain-markdown vault. Every file in it is yours: edit notes
+here, in any other editor, or hand one to an agent. It is all just files on
+disk.
+
+Agency does no first-party data collection: no analytics, no telemetry, no
+account. Agents are third party, so what you hand one goes to its provider.
+"#;
+
+/// What the guide said until 2026-08-20: "Nothing leaves your machine". Agency
+/// cannot make that claim, because the agent CLIs it launches are the whole
+/// point of the app and every one of them talks to its own provider.
+const STALE_OPENING: &str = r#"This folder is a plain-markdown vault. Every file in it is yours: edit notes
+here, in any other editor, or hand one to an agent. Nothing leaves your
+machine; it is all just files on disk.
+"#;
+
+/// Swap the stale opening for the current one, or `None` when there is nothing
+/// to do. Exact match only: a user who reworded that paragraph, or wrote their
+/// own note over it, keeps what they wrote.
+pub fn repair_opening(text: &str) -> Option<String> {
+    text.contains(STALE_OPENING).then(|| text.replace(STALE_OPENING, OPENING))
+}
+
 /// Seed the guide note if it doesn't exist. Returns whether it was created.
 pub fn ensure_guide(root: &Path) -> Result<bool> {
     let path = root.join(GUIDE_FILE);
     if path.exists() {
+        // Welcome.md never self-updates, so a workspace seeded before
+        // 2026-08-20 still opens with "Nothing leaves your machine". Repair
+        // that one paragraph here, which is every place the guide is touched:
+        // workspace create/adopt, and the palette's "Workspace Guide". An
+        // unreadable note is left alone rather than failing the caller, which
+        // is otherwise just creating a workspace.
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            if let Some(fixed) = repair_opening(&text) {
+                crate::issuefs::atomic_write(&path, &fixed)?;
+            }
+        }
         return Ok(false);
     }
     crate::issuefs::atomic_write(&path, WORKSPACE_GUIDE)?;
@@ -147,5 +197,45 @@ mod tests {
         std::fs::write(dir.path().join(GUIDE_FILE), "mine now").unwrap();
         assert!(!ensure_guide(dir.path()).unwrap());
         assert_eq!(std::fs::read_to_string(dir.path().join(GUIDE_FILE)).unwrap(), "mine now");
+    }
+
+    #[test]
+    fn guide_states_the_privacy_claim_the_messaging_doc_allows() {
+        // docs/webdesign/02-messaging.md, story 11: the claim is scoped to
+        // first-party collection, and never implies the agents are ours.
+        assert!(WORKSPACE_GUIDE.contains(OPENING), "the guide must carry OPENING verbatim");
+        assert!(!WORKSPACE_GUIDE.contains("Nothing leaves your machine"));
+        assert!(WORKSPACE_GUIDE.contains("no first-party data collection"));
+        assert!(WORKSPACE_GUIDE.contains("Agents are third party"));
+    }
+
+    #[test]
+    fn repair_opening_rewrites_a_stale_note_and_nothing_else() {
+        let stale = format!("---\ntype: guide\n---\n# Welcome\n\n{STALE_OPENING}\nMy own line.\n");
+        let fixed = repair_opening(&stale).expect("the stale claim is rewritten");
+        assert!(!fixed.contains("Nothing leaves your machine"));
+        assert!(fixed.contains(OPENING));
+        // Everything the user wrote around it survives.
+        assert!(fixed.starts_with("---\ntype: guide\n---\n# Welcome\n\n"));
+        assert!(fixed.ends_with("My own line.\n"));
+
+        // Already current, or reworded by hand: pure no-op either way.
+        assert!(repair_opening(&fixed).is_none());
+        assert!(repair_opening("nothing leaves your machine, roughly").is_none());
+        assert!(repair_opening("mine now").is_none());
+    }
+
+    #[test]
+    fn ensure_guide_repairs_the_stale_claim_in_place() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(GUIDE_FILE);
+        std::fs::write(&path, format!("# Welcome\n\n{STALE_OPENING}\nMy own line.\n")).unwrap();
+
+        // Not a creation, but the claim is fixed and the user's line is kept.
+        assert!(!ensure_guide(dir.path()).unwrap());
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("Nothing leaves your machine"));
+        assert!(text.contains("no first-party data collection"));
+        assert!(text.ends_with("My own line.\n"));
     }
 }

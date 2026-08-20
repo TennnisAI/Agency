@@ -15,6 +15,7 @@ import { initialCapture, feed } from "../lib/firstPrompt";
 import { shouldSwallowWheel, createPageScroller } from "../lib/termScroll";
 import { follow, GESTURE_MS } from "../lib/termFollow";
 import { createInputWriter, type InputWriter } from "../lib/termInput";
+import { createOutputWriter } from "../lib/termOutput";
 import { fullClipboardText } from "../lib/clipboard";
 import { FindRank, registerFindTarget } from "../lib/findBus";
 import { installTermLinks } from "../lib/termLinkProvider";
@@ -321,6 +322,28 @@ export default function FocusTerminal(
     let disposed = false;
     let liveStarted = false;
     let onData: { dispose(): void } | undefined;
+    // Everything the session sends lands here first, so a frame's worth of it
+    // reaches xterm as one write and repaints once (see lib/termOutput). The
+    // buffered bytes are written from here rather than as they arrive, which is
+    // also what keeps `liveStarted` honest: it flips when the first live bytes
+    // are actually written, so the preview seed below can still tell whether it
+    // is about to paint over a live screen.
+    const output = createOutputWriter((bytes) => {
+      // Detach is a command, not a switch: the daemon keeps streaming until it
+      // lands, so a chunk can still arrive after this pane is gone. Writing it
+      // would repaint a terminal nobody can see, and `reset` below would arm
+      // the frame the teardown goes out of its way to let pass.
+      if (disposed) return;
+      if (!liveStarted) {
+        liveStarted = true;
+        // The live attach is authoritative: the daemon sends a full snapshot as its
+        // first frame. Reset first so that snapshot owns a clean screen — this clears
+        // any preview seed we painted, and (for alt-screen apps, whose snapshot only
+        // switches buffers without wiping the normal one) any seed residue too.
+        term.reset();
+      }
+      term.write(bytes);
+    });
     stream.preview(runId, 200).then((seed) => {
       // Only seed before the live stream lands. Once attach is streaming, the daemon has
       // switched the terminal into its alternate screen and repainted; writing the
@@ -349,22 +372,7 @@ export default function FocusTerminal(
       doFit();
       const cols = term.cols > 0 ? term.cols : 80;
       const rows = term.rows > 0 ? term.rows : 24;
-      stream.attach(runId, cols, rows, (bytes) => {
-        // Detach is a command, not a switch: the daemon keeps streaming until it
-        // lands, so a chunk can still arrive after this pane is gone. Writing it
-        // would repaint a terminal nobody can see, and `reset` below would arm
-        // the frame the teardown goes out of its way to let pass.
-        if (disposed) return;
-        if (!liveStarted) {
-          liveStarted = true;
-          // The live attach is authoritative: the daemon sends a full snapshot as its
-          // first frame. Reset first so that snapshot owns a clean screen — this clears
-          // any preview seed we painted, and (for alt-screen apps, whose snapshot only
-          // switches buffers without wiping the normal one) any seed residue too.
-          term.reset();
-        }
-        term.write(bytes);
-      }).then(() => {
+      stream.attach(runId, cols, rows, (bytes) => output.write(bytes)).then(() => {
         if (disposed) return;
         onData = term.onData((d) => {
           input.write(d);
@@ -407,6 +415,7 @@ export default function FocusTerminal(
       // the session rather than dying with the pane.
       input.dispose();
       inputRef.current = null;
+      output.dispose();
       stream.detach(runId);
       // xterm's teardown trails the pane's by a frame, deliberately. Work it
       // queued before now still has to run: `term.reset()` on the first live

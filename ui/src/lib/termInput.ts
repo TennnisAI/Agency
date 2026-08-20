@@ -33,7 +33,8 @@ export interface InputWriter {
 /** Runs `fn` on the next frame; returns a cancel. */
 export type Schedule = (fn: () => void) => () => void;
 
-const nextFrame: Schedule = (fn) => {
+/** The frame clock both halves of a pane batch on (see also `termOutput`). */
+export const nextFrame: Schedule = (fn) => {
   let done = false;
   const run = () => {
     if (done) return;

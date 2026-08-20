@@ -75,7 +75,7 @@ importers:
         specifier: ^0.16.0
         version: 0.16.0
       '@xterm/xterm':
-        specifier: ^5.5.0
+        specifier: 5.5.0
         version: 5.5.0
       codemirror:
         specifier: ^6.0.2

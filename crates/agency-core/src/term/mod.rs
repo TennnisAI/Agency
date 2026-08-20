@@ -7,6 +7,7 @@ pub mod pty;
 pub mod registry;
 pub mod server;
 pub mod session;
+pub mod vt_pin;
 
 pub use protocol::SessionStatus;
 

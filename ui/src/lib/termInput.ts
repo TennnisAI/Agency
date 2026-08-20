@@ -26,6 +26,27 @@ const FLUSH_MS = 16;
 export interface InputWriter {
   /** Queue `data`; it goes out with everything else queued this frame. */
   write(data: string): void;
+  /**
+   * Drop everything written until the returned resume is called.
+   *
+   * For replaying the reattach snapshot into the pane. The repaint is history,
+   * but the terminal it is replayed into is live: xterm answers some of what it
+   * parses, and by the time an answer reaches the child it is indistinguishable
+   * from a keystroke. The snapshot re-asserts focus reporting with `?1004h`, and
+   * xterm 5.5 fires `_reportFocus()` straight out of `setModePrivate` case 1004
+   * (`InputHandler.ts`), so every reattach sends the agent an `ESC[I` or `ESC[O`
+   * that nobody generated — and which of the two depends on whether the pane
+   * element happened to carry the `focus` class mid-repaint, not on anything the
+   * user did. Real focus changes still reach the child: xterm reports those from
+   * its own textarea focus and blur handlers, which this does not touch.
+   *
+   * The window is one repaint, before the pane can take focus, and a keystroke
+   * that lands inside it is dropped rather than queued: the reply we are here to
+   * swallow is an escape sequence and so is an arrow key, and guessing which is
+   * which would be worse than losing a character that almost never exists.
+   * Resume is idempotent.
+   */
+  suspend(): () => void;
   /** Send anything still queued and stop scheduling. */
   dispose(): void;
 }
@@ -57,6 +78,7 @@ export function createInputWriter(
 ): InputWriter {
   let pending = "";
   let cancel: (() => void) | null = null;
+  let suspended = 0;
 
   const flush = () => {
     cancel = null;
@@ -67,9 +89,18 @@ export function createInputWriter(
 
   return {
     write(data: string) {
-      if (!data) return;
+      if (!data || suspended) return;
       pending += data;
       if (!cancel) cancel = schedule(flush);
+    },
+    suspend() {
+      suspended += 1;
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        suspended -= 1;
+      };
     },
     dispose() {
       // Teardown is not a reason to swallow a keystroke: a pane can unmount on

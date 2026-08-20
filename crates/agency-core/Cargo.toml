@@ -7,7 +7,7 @@ description = "Core library and agency-termd terminal daemon for Agency"
 repository = "https://github.com/nic123/Agency"
 
 [dependencies]
-alacritty_terminal = "0.26"
+alacritty_terminal = "=0.26.0"          # pinned; see term::vt_pin
 anyhow = "1"
 daemonize = "0.5"
 globset = "0.4"

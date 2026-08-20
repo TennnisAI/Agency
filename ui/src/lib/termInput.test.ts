@@ -84,4 +84,57 @@ describe("createInputWriter", () => {
     createInputWriter((d) => sent.push(d), clock.schedule).dispose();
     expect(sent).toEqual([]);
   });
+
+  it("drops what is written while the snapshot is being replayed", () => {
+    // The replayed snapshot re-asserts `?1004h`, and xterm answers it with a
+    // focus report the moment it parses it. Nothing typed that; it must not
+    // reach the child.
+    const sent: string[] = [];
+    const clock = manualSchedule();
+    const w = createInputWriter((d) => sent.push(d), clock.schedule);
+
+    const resume = w.suspend();
+    w.write("\x1b[O");
+    clock.run();
+    expect(sent).toEqual([]);
+
+    resume();
+    w.write("hi");
+    clock.run();
+    expect(sent).toEqual(["hi"]);
+  });
+
+  it("still sends what was queued before the replay began", () => {
+    const sent: string[] = [];
+    const clock = manualSchedule();
+    const w = createInputWriter((d) => sent.push(d), clock.schedule);
+
+    w.write("typed");
+    const resume = w.suspend();
+    w.write("\x1b[O");
+    clock.run();
+    resume();
+    expect(sent).toEqual(["typed"]);
+  });
+
+  it("resumes once however often a resume is called", () => {
+    // xterm decides when a write callback runs; a resume that fired twice must
+    // not unmute a replay that is still going.
+    const sent: string[] = [];
+    const clock = manualSchedule();
+    const w = createInputWriter((d) => sent.push(d), clock.schedule);
+
+    const first = w.suspend();
+    const second = w.suspend();
+    first();
+    first();
+    w.write("nope");
+    clock.run();
+    expect(sent).toEqual([]);
+
+    second();
+    w.write("yes");
+    clock.run();
+    expect(sent).toEqual(["yes"]);
+  });
 });

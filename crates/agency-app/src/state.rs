@@ -1148,6 +1148,11 @@ pub struct AppState {
     /// top of a half-typed prompt. Drained on the notifier tick; see
     /// `crate::sendq` for the rules.
     send_queue: Mutex<HashMap<String, crate::sendq::SendQueue>>,
+    /// Queue events waiting to be told to the user, for the ones a command
+    /// thread's own drain produced rather than the notifier tick's. The tick
+    /// hands everything to the UI, so this is only the crossing between the
+    /// two; it is never read anywhere else.
+    queue_notices: Mutex<Vec<crate::sendq::Notice>>,
     /// Per-project lock on the project's own checkout: its index, its working
     /// tree, and the branch it stands on. Held by the merge family (whose
     /// status check → checkout → merge sequence is not atomic) and by every
@@ -1330,6 +1335,7 @@ impl AppState {
             prompted: Mutex::new(HashSet::new()),
             human_input: Mutex::new(HashMap::new()),
             send_queue: Mutex::new(HashMap::new()),
+            queue_notices: Mutex::new(Vec::new()),
             repo_gates: crate::gates::KeyedGates::new(),
             spawn_gates: crate::gates::KeyedGates::new(),
             worktree_gate: Mutex::new(()),
@@ -3796,10 +3802,25 @@ impl AppState {
                 );
             }
         }
-        self.drain_session(id, crate::activity::now_ms());
+        let notice = self.drain_session(id, crate::activity::now_ms());
         // After the drain, not before: the usual case is that it went straight
         // out, and then there is nothing to store.
         self.persist_queue(id);
+        match notice {
+            // The session died between the sender's own status check and this
+            // drain, and the discard took the whole queue with it. Answered
+            // here rather than left to a toast on the next tick: the surface
+            // that sent it is still open, and it used to be told `Ok(true)`,
+            // "it went out now", for a message nothing was ever typed of.
+            Some(n) if n.kind == crate::sendq::NoticeKind::Dropped => {
+                bail!("that agent's session is gone, so nothing was typed")
+            }
+            // An older message queued ahead of this one hit its deadline on the
+            // way past. Nothing here is watching for that, so hand it to the
+            // tick, which is.
+            Some(n) => self.queue_notices.lock().unwrap().push(n),
+            None => {}
+        }
         Ok(self.send_queue.lock().unwrap().get(id).is_none_or(|q| q.is_empty()))
     }
 
@@ -3915,13 +3936,20 @@ impl AppState {
 
     /// Try to deliver one queued message to every session that has one. Called
     /// once per notifier tick, right after the tick has refreshed the
-    /// busy/idle bookkeeping the decision reads. Costs one map lock when no
-    /// session has anything queued, which is the usual case.
-    pub fn drain_send_queues(&self, now_ms: i64) {
+    /// busy/idle bookkeeping the decision reads. Costs two uncontended locks
+    /// when no session has anything queued, which is the usual case.
+    ///
+    /// Hands back whatever the user has to be told about, this pass and from
+    /// any command thread that drained since the last one: the tick is the only
+    /// caller with a window to say it in. The pty write stays the caller's
+    /// side effect and so does this.
+    pub fn drain_send_queues(&self, now_ms: i64) -> Vec<crate::sendq::Notice> {
         let ids: Vec<String> = self.send_queue.lock().unwrap().keys().cloned().collect();
+        let mut notices = std::mem::take(&mut *self.queue_notices.lock().unwrap());
         for id in ids {
-            self.drain_session(&id, now_ms);
+            notices.extend(self.drain_session(&id, now_ms));
         }
+        notices
     }
 
     /// Deliver at most one queued message to `id`'s session.
@@ -3930,60 +3958,97 @@ impl AppState {
     /// on describes the pane *before* the write, and a second message typed
     /// against that same stale reading would be exactly the mid-turn
     /// interruption this queue exists to prevent.
-    fn drain_session(&self, id: &str, now_ms: i64) {
+    ///
+    /// Returns the one thing that happened here the user cannot see for
+    /// themselves: a queue thrown away, or a message that went in on top of
+    /// something. A clean delivery and a hold report nothing — the marker
+    /// already covers being held, and its going away covers the rest.
+    fn drain_session(&self, id: &str, now_ms: i64) -> Option<crate::sendq::Notice> {
         if self.send_queue.lock().unwrap().get(id).is_none_or(|q| q.is_empty()) {
-            return;
+            return None;
         }
         // The spawn gate rather than one of its own: text must not be typed
         // into a session that a kill-then-spawn is in the middle of replacing,
         // and two drains of one session must not both write the same head.
         // `try_with`, because a drain that queued behind a respawn would come
         // out holding an observation taken before it.
-        self.spawn_gates.try_with(id, || {
-            // Read the head *inside* the gate. The command thread's own drain
-            // and the notifier tick's can both reach this point; whichever gets
-            // the gate second must see the queue the first one left, not the
-            // one it looked at on the way in.
-            let Some(head) =
-                self.send_queue.lock().unwrap().get(id).and_then(|q| q.head().cloned())
-            else {
-                return;
-            };
-            let obs = self.observe_for_send(id, now_ms);
-            match crate::sendq::decide(&head, &obs) {
-                crate::sendq::Decision::Hold(_) => {}
-                crate::sendq::Decision::Discard(reason) => {
-                    let n = self.send_queue.lock().unwrap().remove(id).map_or(0, |q| q.len());
-                    self.persist_queue(id);
-                    log::info!("send queue: dropped {n} message(s) for {id} ({reason:?})");
-                }
-                crate::sendq::Decision::Send => {
-                    // The only side effect in the whole mechanism, and still
-                    // the same two writes it always was: the text, a beat, then
-                    // the carriage return.
-                    if let Err(e) =
-                        self.term.read().unwrap().send_text(&session_name(id), &head.text)
-                    {
-                        // Left queued deliberately: if the session is really
-                        // gone the next decision discards it, and if the daemon
-                        // just blinked the next tick delivers it.
-                        log::warn!("send queue: writing {} to {id} failed: {e}", head.origin);
-                        return;
+        self.spawn_gates
+            .try_with(id, || {
+                // Read the head *inside* the gate. The command thread's own
+                // drain and the notifier tick's can both reach this point;
+                // whichever gets the gate second must see the queue the first
+                // one left, not the one it looked at on the way in.
+                let Some(head) =
+                    self.send_queue.lock().unwrap().get(id).and_then(|q| q.head().cloned())
+                else {
+                    return None;
+                };
+                let obs = self.observe_for_send(id, now_ms);
+                match crate::sendq::decide(&head, &obs) {
+                    crate::sendq::Decision::Hold(_) => None,
+                    crate::sendq::Decision::Discard(reason) => {
+                        let n = self.send_queue.lock().unwrap().remove(id).map_or(0, |q| q.len());
+                        self.persist_queue(id);
+                        log::info!("send queue: dropped {n} message(s) for {id} ({reason:?})");
+                        // The whole point of AGE-127: this used to end at the
+                        // log line, and a marker that appeared for one tick and
+                        // then vanished looked exactly like a message going in.
+                        Some(crate::sendq::dropped_notice(
+                            split_session_id(id).0,
+                            &self.session_label(id),
+                            head.origin,
+                            n,
+                        ))
                     }
-                    log::info!("send queue: delivered {} to {id}", head.origin);
-                    {
-                        let mut queues = self.send_queue.lock().unwrap();
-                        if let Some(q) = queues.get_mut(id) {
-                            q.pop();
-                            if q.is_empty() {
-                                queues.remove(id);
+                    crate::sendq::Decision::Send(reason) => {
+                        // The only side effect in the whole mechanism, and
+                        // still the same two writes it always was: the text, a
+                        // beat, then the carriage return.
+                        if let Err(e) =
+                            self.term.read().unwrap().send_text(&session_name(id), &head.text)
+                        {
+                            // Left queued deliberately: if the session is
+                            // really gone the next decision discards it, and if
+                            // the daemon just blinked the next tick delivers it.
+                            log::warn!("send queue: writing {} to {id} failed: {e}", head.origin);
+                            return None;
+                        }
+                        log::info!("send queue: delivered {} to {id} ({reason:?})", head.origin);
+                        {
+                            let mut queues = self.send_queue.lock().unwrap();
+                            if let Some(q) = queues.get_mut(id) {
+                                q.pop();
+                                if q.is_empty() {
+                                    queues.remove(id);
+                                }
+                            }
+                        }
+                        self.persist_queue(id);
+                        // A clean send is the non-event; an appended one landed
+                        // on top of whatever was on the line, which nobody who
+                        // has closed the sending surface would otherwise learn.
+                        match reason {
+                            crate::sendq::SendReason::Clear => None,
+                            crate::sendq::SendReason::Appended => {
+                                Some(crate::sendq::appended_notice(
+                                    split_session_id(id).0,
+                                    &self.session_label(id),
+                                    head.origin,
+                                ))
                             }
                         }
                     }
-                    self.persist_queue(id);
                 }
-            }
-        });
+            })
+            .flatten()
+    }
+
+    /// What to call the run behind a session id in a sentence the user reads.
+    /// Falls back to the id: a notice with an awkward name in it is worth more
+    /// than no notice.
+    fn session_label(&self, id: &str) -> String {
+        let run_id = split_session_id(id).0;
+        self.run_record(run_id).map(|r| run_label(&r)).unwrap_or_else(|_| run_id.to_string())
     }
 
     /// What the send queue needs to know about one session right now.

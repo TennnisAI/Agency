@@ -117,6 +117,20 @@ export interface QueuedMessage {
   text: string;
 }
 
+// What became of a message the queue was holding, pushed from the notifier
+// tick as a `send-queue-notice` event (see App.tsx).
+//
+// Both of these land long after whoever sent the text closed the window they
+// sent it from, which is why they are pushed rather than polled: "dropped" is a
+// message nothing was ever typed of, and "appended" is one that waited out its
+// five minutes and went in after whatever was on the prompt line.
+export interface QueueNotice {
+  runId: string;
+  kind: "dropped" | "appended";
+  // The whole sentence, composed in the backend so it can be tested there.
+  text: string;
+}
+
 // ── issues (the local per-project tracker) ──────────────────────────────────
 
 export type IssueStatus = "backlog" | "todo" | "in_progress" | "in_review" | "done" | "cancelled";

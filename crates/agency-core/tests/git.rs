@@ -1,5 +1,6 @@
 use agency_core::git;
 use agency_core::git::parse_diff;
+use agency_core::setup::{CancelToken, CANCELLED};
 use std::path::Path;
 use std::process::Command;
 
@@ -663,7 +664,7 @@ fn sync_pushes_when_only_ahead() {
     let (_keep, remote, clone) = clone_with_upstream();
     commit_file(&clone, "local.txt", "a", "local commit");
 
-    let outcome = git::sync(&clone, |_| {}).unwrap();
+    let outcome = git::sync(&clone, &CancelToken::new(), |_| {}).unwrap();
     assert_eq!(outcome, git::SyncOutcome::Synced);
 
     // The remote received the local commit.
@@ -687,7 +688,7 @@ fn sync_fast_forwards_when_only_behind() {
     commit_file(&other, "remote.txt", "r", "remote commit");
     git::push(&other).unwrap();
 
-    let outcome = git::sync(&clone, |_| {}).unwrap();
+    let outcome = git::sync(&clone, &CancelToken::new(), |_| {}).unwrap();
     assert_eq!(outcome, git::SyncOutcome::Synced);
     // The incoming commit was fast-forwarded into the local branch.
     assert!(clone.join("remote.txt").exists());
@@ -715,7 +716,7 @@ fn sync_reports_diverged_without_touching_anything() {
         .output()
         .unwrap();
 
-    let outcome = git::sync(&clone, |_| {}).unwrap();
+    let outcome = git::sync(&clone, &CancelToken::new(), |_| {}).unwrap();
     assert_eq!(outcome, git::SyncOutcome::Diverged);
 
     // Nothing changed locally: no merge, no rebase, no lost work.
@@ -734,6 +735,50 @@ fn sync_reports_diverged_without_touching_anything() {
         .output()
         .unwrap();
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "remote commit");
+}
+
+/// Every commit subject the remote holds, on any ref.
+fn remote_subjects(remote: &Path) -> String {
+    let out = std::process::Command::new("git")
+        .args(["log", "--format=%s", "--all"])
+        .current_dir(remote)
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).to_string()
+}
+
+#[test]
+fn push_cancelled_before_it_starts_leaves_the_remote_untouched() {
+    let (_keep, remote, clone) = clone_with_upstream();
+    commit_file(&clone, "local.txt", "a", "local commit");
+
+    let cancel = CancelToken::new();
+    // Already cancelled: the push must not outlive the token, and must not
+    // report the killing the user asked for as a rejected push.
+    cancel.cancel();
+    let err = git::push_with_progress(&clone, &cancel, |_| {}).unwrap_err();
+
+    assert_eq!(err.to_string(), CANCELLED);
+    // Nothing is undone, because nothing needs undoing: the remote never saw
+    // the commit and the local branch is still ahead by it, ready to retry.
+    assert!(!remote_subjects(&remote).contains("local commit"));
+    assert_eq!(git::ahead_behind(&clone).unwrap(), (1, 0));
+}
+
+#[test]
+fn sync_cancelled_before_its_push_uploads_nothing() {
+    let (_keep, remote, clone) = clone_with_upstream();
+    commit_file(&clone, "local.txt", "a", "local commit");
+
+    // Cancel during the fetch half: sync must stop before it starts uploading
+    // rather than carrying on into the slow part the user just escaped.
+    let cancel = CancelToken::new();
+    cancel.cancel();
+    let err = git::sync(&clone, &cancel, |_| {}).unwrap_err();
+
+    assert_eq!(err.to_string(), CANCELLED);
+    assert!(!remote_subjects(&remote).contains("local commit"));
+    assert_eq!(git::ahead_behind(&clone).unwrap(), (1, 0));
 }
 
 #[test]

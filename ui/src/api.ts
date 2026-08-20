@@ -287,6 +287,11 @@ export const cancelClone = (url: string, parentDir: string) =>
 export const cancelRepoSetup = (repoPath: string) =>
   invoke<void>("cancel_repo_setup", { repoPath });
 
+// What a backend job rejects with when the user stopped it: their own doing, so
+// callers clear it rather than showing it as a failure. Matched exactly, since
+// git's own output can mention the word.
+export const CANCELLED = "cancelled";
+
 // One file large enough to be worth warning about before it's committed.
 export type LargeFile = { path: string; bytes: number };
 // What a folder holds that would make its first commit slow: `files` is the
@@ -565,6 +570,13 @@ export function gitPush(
   if (onProgress) onProgressChannel.onmessage = onProgress;
   return invoke<void>("git_push", { taskId, onProgress: onProgressChannel });
 }
+// Stops an in-flight gitPush (or the push half of a gitSync) for this run by
+// killing the git it is waiting on; that call then rejects with CANCELLED. A
+// no-op when nothing is pushing, so it is safe to fire from a Cancel that is
+// also live during steps with nothing to kill. Nothing is cleaned up: a killed
+// push leaves origin unchanged and the local branch is the user's own.
+export const cancelPush = (taskId: string) => invoke<void>("cancel_push", { taskId });
+
 export const gitFetch = (taskId: string) => invoke<void>("git_fetch", { taskId });
 // Fetch this repo's origin *if* it hasn't been fetched recently — the backend
 // throttles and backs off per project, so callers fire it at moments the user

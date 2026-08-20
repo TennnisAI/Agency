@@ -528,11 +528,22 @@ pub async fn git_push(
     task_id: String,
     on_progress: Channel<agency_core::setup::CloneProgress>,
 ) -> Result<(), String> {
-    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
-    git::push_with_progress(&wt, move |p| {
-        let _ = on_progress.send(p);
-    })
-    .map_err(|e| e.to_string())
+    state
+        .push_run(&task_id, move |p| {
+            let _ = on_progress.send(p);
+        })
+        .map_err(|e| e.to_string())
+}
+
+// Stops the push (or the push half of a sync) running against this run's
+// worktree by killing the git it is waiting on. Sync and trivial for the same
+// reason as `cancel_clone`: it only flips a flag, and it has to be answered
+// while the push it cancels still holds the async runtime. `git_push` then
+// fails with "cancelled", which is the user's own doing and not a failure to
+// report; nothing is cleaned up, since a killed push leaves origin unchanged.
+#[tauri::command]
+pub fn cancel_push(state: State<'_, AppState>, task_id: String) {
+    state.cancel_push(&task_id);
 }
 
 // async, streamed: same as `git_push`, but reconciles both directions before
@@ -546,10 +557,8 @@ pub async fn git_sync(
     on_progress: Channel<agency_core::setup::CloneProgress>,
 ) -> Result<git::SyncOutcome, String> {
     state
-        .git_mutate(&task_id, |wt| {
-            git::sync(wt, move |p| {
-                let _ = on_progress.send(p);
-            })
+        .sync_run(&task_id, move |p| {
+            let _ = on_progress.send(p);
         })
         .map_err(|e| e.to_string())
 }

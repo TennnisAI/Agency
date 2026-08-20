@@ -424,7 +424,7 @@ pub fn fetch_branch(repo: &Path, branch: &str) -> Result<()> {
 }
 
 pub fn push(worktree: &Path) -> Result<()> {
-    push_with_progress(worktree, |_| {})
+    push_with_progress(worktree, &crate::setup::CancelToken::new(), |_| {})
 }
 
 /// Publish a specific local branch to `origin` (setting upstream) without
@@ -439,8 +439,14 @@ pub fn push_branch(repo: &Path, branch: &str) -> Result<()> {
 /// `--progress` output to `on_progress` so a large push shows movement instead
 /// of a frozen UI. On failure, the error carries git's raw stderr so the UI can
 /// surface the real reason (rejected push, protected branch, no permission, …).
+///
+/// `cancel` kills the push and fails with [`crate::setup::CANCELLED`]. Uploading
+/// a branch with large objects over a slow uplink is minutes the user must be
+/// able to escape. Nothing is cleaned up afterwards: a killed push leaves the
+/// remote exactly as it was, and the local branch is the user's own.
 pub fn push_with_progress(
     worktree: &Path,
+    cancel: &crate::setup::CancelToken,
     mut on_progress: impl FnMut(crate::setup::CloneProgress),
 ) -> Result<()> {
     let branch = git(worktree, &["rev-parse", "--abbrev-ref", "HEAD"])?.trim().to_string();
@@ -453,10 +459,13 @@ pub fn push_with_progress(
         .current_dir(worktree)
         // No TTY in the app: fail fast rather than blocking on a credential prompt.
         .env("GIT_TERMINAL_PROMPT", "0");
-    // A fresh token, never flipped: there is no Cancel over a push yet, so this
-    // one only satisfies the signature the clone dialog's Cancel needs.
-    let cancel = crate::setup::CancelToken::new();
-    let (ok, stderr) = crate::setup::run_clone_streaming(cmd, &cancel, &mut on_progress)?;
+    let (ok, stderr) = crate::setup::run_clone_streaming(cmd, cancel, &mut on_progress)?;
+    // Checked before `ok`: a killed git exits non-zero carrying its own error
+    // text, and showing that would put a push failure in front of the user who
+    // just pressed Cancel.
+    if cancel.is_cancelled() {
+        bail!("{}", crate::setup::CANCELLED);
+    }
     if ok {
         return Ok(());
     }
@@ -582,11 +591,20 @@ pub enum SyncOutcome {
 /// non-fast-forward rejection. A branch that has genuinely diverged can't
 /// fast-forward, so it returns [`SyncOutcome::Diverged`] without touching
 /// anything and lets the caller offer a rebase or force-push.
+///
+/// `cancel` reaches the push half, which is the slow one; the fetch and the
+/// fast-forward ahead of it are local-speed or already bounded by
+/// [`FETCH_TIMEOUT`]. A cancel that lands during those stops the sync before it
+/// starts uploading rather than killing anything mid-write.
 pub fn sync(
     worktree: &Path,
+    cancel: &crate::setup::CancelToken,
     mut on_progress: impl FnMut(crate::setup::CloneProgress),
 ) -> Result<SyncOutcome> {
     fetch(worktree)?;
+    if cancel.is_cancelled() {
+        bail!("{}", crate::setup::CANCELLED);
+    }
     let (ahead, behind) = ahead_behind(worktree)?;
     if behind > 0 {
         if ahead > 0 {
@@ -597,7 +615,7 @@ pub fn sync(
         git(worktree, &["merge", "--ff-only", "@{u}"])?;
     }
     if ahead > 0 {
-        push_with_progress(worktree, &mut on_progress)?;
+        push_with_progress(worktree, cancel, &mut on_progress)?;
     }
     Ok(SyncOutcome::Synced)
 }

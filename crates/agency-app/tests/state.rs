@@ -2033,3 +2033,37 @@ fn merge_preview_explains_a_deleted_branch() {
     let err = state.merge_task(&run.id).unwrap_err().to_string();
     assert!(err.contains("no longer exists"), "merge is guarded too: {err}");
 }
+
+/// The Cancel on source control's push bar has to reach the git the push is
+/// waiting on. The token is registered by the worktree being pushed and looked
+/// up again from the run token, so this covers the failure mode that would be
+/// silent: a key computed two different ways, cancelling nothing.
+#[test]
+fn cancelling_a_push_stops_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = common::state(&dir);
+
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let remote = dir.path().join("remote.git");
+    assert!(Command::new("git")
+        .args(["init", "--bare", "-q", remote.to_str().unwrap()])
+        .status()
+        .unwrap()
+        .success());
+    assert!(Command::new("git")
+        .args(["remote", "add", "origin", remote.to_str().unwrap()])
+        .current_dir(&repo)
+        .status()
+        .unwrap()
+        .success());
+
+    let project = state.add_project("demo", &repo).unwrap();
+    let token = format!("project:{}", project.id);
+
+    // The click lands on the first progress line, which is as close to
+    // mid-upload as a push to a local remote gets.
+    let err = state.push_run(&token, |_| state.cancel_push(&token)).unwrap_err();
+    assert_eq!(err.to_string(), agency_core::setup::CANCELLED);
+}

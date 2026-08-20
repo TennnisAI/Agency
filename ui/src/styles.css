@@ -346,7 +346,11 @@ button > .btn-ico:not(:only-child) { margin-right: 4px; }
 .settings-secondary:hover:not(:disabled) { background: var(--s1); }
 .settings-secondary:disabled { opacity: .45; cursor: default; }
 .settings-save { align-self: flex-start; background: var(--blue); border: none; color: var(--crust); font-size: 12px; font-weight: 500; padding: 7px 15px; border-radius: 7px; }
-.settings-save:hover { filter: brightness(1.08); }
+/* Pin the hover fill rather than leaning on the app-wide `button:hover`: the
+   rule here used to be a bare `filter: brightness(1.08)`, which brightened that
+   inherited lavender, not the blue it was written against. Lavender on hover is
+   the primary-button behaviour the handoff specifies (§ Button · primary). */
+.settings-save:hover:not(:disabled) { background: var(--lav); }
 .settings-card-foot .settings-save { align-self: auto; }
 .agent-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 .settings-group-card { background: var(--mantle); border: 1px solid var(--s0); border-radius: 11px; padding: 6px 15px; display: flex; flex-direction: column; }
@@ -1644,7 +1648,7 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
   background: var(--blue); border: none; color: var(--crust); border-radius: 8px;
   font-family: var(--sans); font-size: 13px; font-weight: 500; padding: 9px 20px; cursor: pointer;
 }
-.run-start:hover { filter: brightness(1.08); }
+.run-start:hover:not(:disabled) { background: var(--lav); }
 .run-idle-cmd { max-width: 100%; font-size: 11.5px; color: var(--sub0); background: var(--crust); border-radius: 5px; padding: 3px 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .run-idle-note { font-size: 11.5px; color: var(--o1); text-align: center; }
 .run-idle-edit { background: transparent; border: 0; color: var(--o1); font-size: 11.5px; padding: 2px 4px; cursor: pointer; }
@@ -2134,9 +2138,9 @@ input, textarea, code,
   border: none; border-radius: 10px; cursor: pointer;
   font-family: var(--sans); font-size: 13px; font-weight: 600; letter-spacing: .005em;
   box-shadow: 0 1px 2px rgba(0,0,0,.22), inset 0 1px 0 rgba(255,255,255,.18);
-  transition: filter .14s, box-shadow .14s, transform .07s;
+  transition: background .14s, filter .14s, box-shadow .14s, transform .07s;
 }
-.onboard-go:hover { background: var(--blue); filter: brightness(1.07); box-shadow: 0 4px 16px color-mix(in srgb, var(--blue) 32%, transparent), inset 0 1px 0 rgba(255,255,255,.22); }
+.onboard-go:hover:not(:disabled) { background: var(--lav); box-shadow: 0 4px 16px color-mix(in srgb, var(--lav) 32%, transparent), inset 0 1px 0 rgba(255,255,255,.22); }
 .onboard-go:active { transform: translateY(.5px); filter: brightness(.96); }
 .onboard-go:disabled { opacity: .45; cursor: default; filter: none; box-shadow: none; }
 .onboard-keys { display: inline-flex; gap: 3px; }

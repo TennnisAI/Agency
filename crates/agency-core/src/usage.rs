@@ -23,11 +23,9 @@ use std::path::{Path, PathBuf};
 /// consumer, the app's resume probe, which asks the same "where does this
 /// agent keep state for this worktree" question for a different reason.
 pub fn session_dir(home: &Path, command: &str, worktree: &Path) -> Option<PathBuf> {
-    let base = Path::new(command).file_name().and_then(|s| s.to_str()).unwrap_or(command);
-    match base {
-        "claude" => Some(home.join(".claude").join("projects").join(claude_enc(worktree))),
-        "pi" => Some(home.join(".pi").join("agent").join("sessions").join(pi_enc(worktree))),
-        _ => None,
+    match format_for(command)? {
+        Format::Claude => Some(home.join(".claude").join("projects").join(claude_enc(worktree))),
+        Format::Pi => Some(home.join(".pi").join("agent").join("sessions").join(pi_enc(worktree))),
     }
 }
 
@@ -44,17 +42,36 @@ pub fn pi_enc(worktree: &Path) -> String {
     format!("--{inner}--")
 }
 
-/// Whether Agency can account for this agent's spend at all.
+/// The transcript dialect an agent writes. The two differ in every field name
+/// that matters, so a parse has to know which it is holding rather than sniff.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Format {
+    /// Claude: `message.usage.input_tokens`, a nested `cache_creation` object
+    /// carrying the 5m/1h split, and a provider `requestId` per turn.
+    Claude,
+    /// Pi: `message.usage.input`, a flat `cacheWrite` with no time-to-live
+    /// split, and the record's own `id` as the only turn identity.
+    Pi,
+}
+
+/// Which dialect this agent writes, or `None` if Agency cannot account for its
+/// spend at all.
 ///
-/// Only agents whose transcript format we have actually read are listed. For
-/// everyone else the UI shows nothing rather than zero, because "0 tokens" and
-/// "we cannot see this agent's tokens" are different claims and only one of
-/// them is true.
-pub fn agent_supported(command: &str) -> bool {
+/// This is the single default-deny list of agents we can read, and both
+/// [`session_dir`] and the parser branch off it. Only agents whose transcript
+/// format has actually been read against real files are listed. For everyone
+/// else the UI shows nothing rather than zero, because "0 tokens" and "we
+/// cannot see this agent's tokens" are different claims and only one of them
+/// is true.
+///
+/// Only the basename is matched, since a profile may carry an absolute path.
+pub fn format_for(command: &str) -> Option<Format> {
     let base = Path::new(command).file_name().and_then(|s| s.to_str()).unwrap_or(command);
-    // pi has a session directory but its record format has not been read yet,
-    // so it resolves a path and still yields no usage. Claude only, for now.
-    matches!(base, "claude")
+    match base {
+        "claude" => Some(Format::Claude),
+        "pi" => Some(Format::Pi),
+        _ => None,
+    }
 }
 
 /// Tokens billed for one assistant turn, split by how they are priced.
@@ -246,8 +263,56 @@ fn parse_u64(v: Option<&serde_json::Value>) -> u64 {
 /// assistant turn, including malformed lines: a transcript is an append-only
 /// log that may be read mid-write, so a truncated final line is normal and
 /// must never fail the whole pass.
-fn parse_line(line: &str) -> Option<Record> {
+///
+/// In both dialects the presence of `message.usage` is what marks an assistant
+/// turn; a user record carries no usage, so no role check is needed.
+fn parse_line(line: &str, format: Format) -> Option<Record> {
     let v: serde_json::Value = serde_json::from_str(line).ok()?;
+    match format {
+        Format::Claude => parse_claude_line(&v),
+        Format::Pi => parse_pi_line(&v),
+    }
+}
+
+/// Pi's record shape, read from real session files: usage keys are `input`,
+/// `output`, `cacheRead` and `cacheWrite`, and the model id sits on the
+/// message the same way Claude's does.
+///
+/// Pi also writes a `cost` object it computed itself, which is deliberately
+/// ignored. Mixing a self-reported figure with the table below would leave one
+/// displayed total sourced from two different pricing authorities, and a model
+/// the table does not know stays honestly costless. The trade is that a pi run
+/// on a non-Anthropic provider shows tokens and no cost even though pi knew
+/// the price; see AGE-136.
+fn parse_pi_line(v: &serde_json::Value) -> Option<Record> {
+    let message = v.get("message")?;
+    let usage = message.get("usage")?;
+
+    // Pi carries no provider request id, so the record's own id is the only
+    // turn identity available. It is safe as a de-duplication key either way:
+    // if pi never repeats a record the key is unique and the dedupe is a
+    // no-op, and if it ever rewrites one in place the largest-output rule
+    // below settles it exactly as it does for Claude.
+    let key = v.get("id").and_then(|r| r.as_str())?.to_string();
+    let model = message.get("model").and_then(|m| m.as_str()).unwrap_or("").to_string();
+
+    Some(Record {
+        key,
+        model,
+        tokens: Tokens {
+            input: parse_u64(usage.get("input")),
+            output: parse_u64(usage.get("output")),
+            // Pi records one flat cacheWrite with no time-to-live split, so it
+            // prices at the 5m rate, the same fallback the flat Claude field
+            // takes. Charging the cheaper of the two beats dropping it.
+            cache_write_5m: parse_u64(usage.get("cacheWrite")),
+            cache_write_1h: 0,
+            cache_read: parse_u64(usage.get("cacheRead")),
+        },
+    })
+}
+
+fn parse_claude_line(v: &serde_json::Value) -> Option<Record> {
     let message = v.get("message")?;
     let usage = message.get("usage")?;
 
@@ -299,12 +364,12 @@ fn parse_line(line: &str) -> Option<Record> {
 /// group held the same request twice with `output_tokens` of 68 and then 415,
 /// a partial write followed by the settled figure. So the rule is
 /// last-write-wins on the largest output, not first-seen.
-pub fn parse_transcript(text: &str) -> Usage {
+pub fn parse_transcript(text: &str, format: Format) -> Usage {
     let mut by_key: HashMap<String, Record> = HashMap::new();
     let mut order: Vec<String> = Vec::new();
 
     for line in text.lines() {
-        let Some(rec) = parse_line(line) else { continue };
+        let Some(rec) = parse_line(line, format) else { continue };
         match by_key.get_mut(&rec.key) {
             Some(existing) => {
                 if rec.tokens.output > existing.tokens.output {
@@ -353,7 +418,7 @@ impl UsageCache {
     ///
     /// A missing or unreadable directory is not an error: the agent may not
     /// have written anything yet, or may not be one we can account for.
-    pub fn refresh(&mut self, dir: &Path) -> Usage {
+    pub fn refresh(&mut self, dir: &Path, format: Format) -> Usage {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return Usage::default();
         };
@@ -383,7 +448,7 @@ impl UsageCache {
             // A read failure leaves any previous entry in place rather than
             // zeroing it: a transient EBUSY should not make the number jump.
             if let Ok(text) = std::fs::read_to_string(&path) {
-                self.files.insert(path, (stamp, parse_transcript(&text)));
+                self.files.insert(path, (stamp, parse_transcript(&text, format)));
             }
         }
 
@@ -436,18 +501,110 @@ mod tests {
 
     #[test]
     fn only_agents_whose_format_we_read_are_supported() {
-        assert!(agent_supported("claude"));
-        assert!(agent_supported("/usr/local/bin/claude"));
-        // pi resolves a directory but its record format is unread, so it must
-        // not claim support and render a confident zero.
-        assert!(!agent_supported("pi"));
-        assert!(!agent_supported("codex"));
+        assert_eq!(format_for("claude"), Some(Format::Claude));
+        assert_eq!(format_for("/usr/local/bin/claude"), Some(Format::Claude));
+        assert_eq!(format_for("pi"), Some(Format::Pi));
+        // The other eight agents render nothing rather than a confident zero.
+        assert_eq!(format_for("codex"), None);
+        assert_eq!(format_for("opencode"), None);
+    }
+
+    /// Pi's real record shape, copied from a live session file: usage keys
+    /// are unsuffixed, the cache write is flat, and the turn identity is the
+    /// record's own top-level id.
+    fn pi_rec(id: &str, model: &str, input: u64, output: u64) -> String {
+        format!(
+            r#"{{"type":"message","id":"{id}","parentId":null,"message":{{"role":"assistant","provider":"anthropic","model":"{model}","usage":{{"input":{input},"output":{output},"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{{"total":0}}}}}}}}"#
+        )
+    }
+
+    #[test]
+    fn sums_a_pi_transcript() {
+        let text = [pi_rec("a", "claude-opus-4-8", 10, 20), pi_rec("b", "claude-opus-4-8", 5, 1)]
+            .join("\n");
+        let u = parse_transcript(&text, Format::Pi);
+        assert_eq!(u.records, 2);
+        assert_eq!(u.tokens.input, 15);
+        assert_eq!(u.tokens.output, 21);
+        // Pi's model ids match the same price table by prefix.
+        assert!(u.cents().is_some());
+    }
+
+    #[test]
+    fn pi_cache_fields_are_read_and_the_write_prices_at_the_5m_rate() {
+        let line = r#"{"type":"message","id":"a","message":{"role":"assistant","model":"claude-opus-4-8","usage":{"input":1,"output":2,"cacheRead":700,"cacheWrite":300}}}"#;
+        let u = parse_transcript(line, Format::Pi);
+        assert_eq!(u.tokens.cache_read, 700);
+        // Pi records no time-to-live split, so the whole write lands on 5m
+        // rather than being dropped.
+        assert_eq!(u.tokens.cache_write_5m, 300);
+        assert_eq!(u.tokens.cache_write_1h, 0);
+    }
+
+    #[test]
+    fn a_pi_record_repeated_settles_on_the_larger_output() {
+        // Pi has no requestId, so the record id carries the dedupe. If pi
+        // never repeats a record this is simply a no-op.
+        let text = [pi_rec("a", "claude-opus-4-8", 2, 68), pi_rec("a", "claude-opus-4-8", 2, 415)]
+            .join("\n");
+        let u = parse_transcript(&text, Format::Pi);
+        assert_eq!(u.records, 1);
+        assert_eq!(u.tokens.output, 415);
+    }
+
+    #[test]
+    fn pi_non_billable_and_malformed_lines_are_skipped() {
+        // The session header, a model_change and a user turn all lack usage;
+        // only the assistant record counts.
+        let text = [
+            r#"{"type":"session","version":3,"id":"s","cwd":"/w"}"#,
+            r#"{"type":"model_change","id":"m","provider":"anthropic","modelId":"claude-opus-4-8"}"#,
+            r#"{"type":"message","id":"u","message":{"role":"user","content":[{"type":"text","text":"help"}]}}"#,
+            "not json at all",
+            &pi_rec("a", "claude-opus-4-8", 1, 1),
+        ]
+        .join("\n");
+        assert_eq!(parse_transcript(&text, Format::Pi).records, 1);
+    }
+
+    #[test]
+    fn a_pi_error_turn_bills_nothing_and_so_shows_nothing() {
+        // Observed live: a request rejected by the provider is still written
+        // as an assistant record, with every usage figure zero. It must not
+        // manufacture a run that looks like it spent something.
+        let line = r#"{"type":"message","id":"a","message":{"role":"assistant","model":"claude-opus-4-8","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"total":0}},"stopReason":"error"}}"#;
+        let u = parse_transcript(line, Format::Pi);
+        assert_eq!(u.tokens.total(), 0);
+        assert_eq!(u.cents(), Some(0));
+    }
+
+    #[test]
+    fn a_pi_model_we_have_no_price_for_yields_tokens_and_no_cost() {
+        // Pi can drive non-Anthropic providers, whose ids the table does not
+        // carry. Pi writes its own cost figure for those and we still decline
+        // to show one, rather than mixing two pricing authorities.
+        let u = parse_transcript(&pi_rec("a", "gpt-5", 100, 200), Format::Pi);
+        assert_eq!(u.tokens.input, 100);
+        assert_eq!(u.cents(), None);
+        assert!(!u.cost_is_complete());
+    }
+
+    #[test]
+    fn the_two_dialects_do_not_read_each_others_records() {
+        // A Claude record has no unsuffixed `input`, and a pi record has no
+        // `input_tokens`, so a format mix-up yields zeros rather than a
+        // plausible wrong number. Reading the wrong dialect is a bug; this
+        // pins that it cannot silently half-succeed.
+        let claude = rec("a", "claude-opus-5", 10, 20);
+        assert_eq!(parse_transcript(&claude, Format::Pi).tokens.total(), 0);
+        let pi = pi_rec("a", "claude-opus-4-8", 10, 20);
+        assert_eq!(parse_transcript(&pi, Format::Claude).tokens.total(), 0);
     }
 
     #[test]
     fn sums_a_plain_transcript() {
         let text = [rec("a", "claude-opus-5", 10, 20), rec("b", "claude-opus-5", 5, 1)].join("\n");
-        let u = parse_transcript(&text);
+        let u = parse_transcript(&text, Format::Claude);
         assert_eq!(u.records, 2);
         assert_eq!(u.tokens.input, 15);
         assert_eq!(u.tokens.output, 21);
@@ -459,7 +616,7 @@ mod tests {
         // nearly doubles the reported spend.
         let one = rec("a", "claude-opus-5", 10, 20);
         let text = [one.clone(), one.clone(), one].join("\n");
-        let u = parse_transcript(&text);
+        let u = parse_transcript(&text, Format::Claude);
         assert_eq!(u.records, 1);
         assert_eq!(u.tokens.output, 20);
     }
@@ -468,16 +625,16 @@ mod tests {
     fn a_partial_repeat_settles_on_the_larger_output() {
         // Observed live: one request written twice, output_tokens 68 then 415.
         let text = [rec("a", "claude-opus-5", 2, 68), rec("a", "claude-opus-5", 2, 415)].join("\n");
-        assert_eq!(parse_transcript(&text).tokens.output, 415);
+        assert_eq!(parse_transcript(&text, Format::Claude).tokens.output, 415);
         // Order must not matter; the larger figure wins either way.
         let text = [rec("a", "claude-opus-5", 2, 415), rec("a", "claude-opus-5", 2, 68)].join("\n");
-        assert_eq!(parse_transcript(&text).tokens.output, 415);
+        assert_eq!(parse_transcript(&text, Format::Claude).tokens.output, 415);
     }
 
     #[test]
     fn falls_back_to_message_id_when_request_id_is_absent() {
         let line = r#"{"type":"assistant","message":{"id":"msg_x","model":"claude-opus-5","usage":{"input_tokens":1,"output_tokens":2}}}"#;
-        let u = parse_transcript(&[line, line].join("\n"));
+        let u = parse_transcript(&[line, line].join("\n"), Format::Claude);
         assert_eq!(u.records, 1);
     }
 
@@ -492,14 +649,14 @@ mod tests {
             &rec("a", "claude-opus-5", 1, 1),
         ]
         .join("\n");
-        let u = parse_transcript(&text);
+        let u = parse_transcript(&text, Format::Claude);
         assert_eq!(u.records, 1);
     }
 
     #[test]
     fn cache_writes_split_by_ttl_and_are_priced_apart() {
         let line = r#"{"type":"assistant","requestId":"a","message":{"id":"m","model":"claude-opus-5","usage":{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":7,"cache_creation_input_tokens":30,"cache_creation":{"ephemeral_5m_input_tokens":10,"ephemeral_1h_input_tokens":20}}}}"#;
-        let u = parse_transcript(line);
+        let u = parse_transcript(line, Format::Claude);
         assert_eq!(u.tokens.cache_write_5m, 10);
         assert_eq!(u.tokens.cache_write_1h, 20);
         assert_eq!(u.tokens.cache_read, 7);
@@ -512,7 +669,7 @@ mod tests {
     #[test]
     fn flat_cache_creation_still_counts_when_the_split_is_absent() {
         let line = r#"{"type":"assistant","requestId":"a","message":{"id":"m","model":"claude-opus-5","usage":{"input_tokens":0,"output_tokens":0,"cache_creation_input_tokens":40}}}"#;
-        let u = parse_transcript(line);
+        let u = parse_transcript(line, Format::Claude);
         assert_eq!(u.tokens.cache_write_5m, 40);
         assert_eq!(u.tokens.cache_write_1h, 0);
     }
@@ -524,7 +681,7 @@ mod tests {
         let text =
             [rec("a", "<synthetic>", 100, 100), rec("b", "some-model-from-next-year", 100, 100)]
                 .join("\n");
-        let u = parse_transcript(&text);
+        let u = parse_transcript(&text, Format::Claude);
         assert_eq!(u.records, 2);
         assert_eq!(u.tokens.input, 200);
         assert_eq!(u.unpriced_records, 2);
@@ -536,14 +693,14 @@ mod tests {
     fn a_partly_priceable_total_reports_cost_but_flags_it_incomplete() {
         let text = [rec("a", "claude-opus-5", 1_000_000, 0), rec("b", "<synthetic>", 1_000_000, 0)]
             .join("\n");
-        let u = parse_transcript(&text);
+        let u = parse_transcript(&text, Format::Claude);
         assert_eq!(u.cents(), Some(500), "only the priced record contributes");
         assert!(!u.cost_is_complete(), "so the UI must not call it a total");
     }
 
     #[test]
     fn prices_a_million_tokens_at_the_published_rate() {
-        let u = parse_transcript(&rec("a", "claude-opus-5", 1_000_000, 1_000_000));
+        let u = parse_transcript(&rec("a", "claude-opus-5", 1_000_000, 1_000_000), Format::Claude);
         // $5 in + $25 out = $30.00
         assert_eq!(u.cents(), Some(3_000));
         assert!(u.cost_is_complete());
@@ -564,7 +721,7 @@ mod tests {
         // One 100-token output on haiku is a fraction of a cent. Summed over
         // many turns it must still add up, which is why the accumulator is in
         // millicents rather than cents.
-        let one = parse_transcript(&rec("a", "claude-haiku-4-5", 0, 100));
+        let one = parse_transcript(&rec("a", "claude-haiku-4-5", 0, 100), Format::Claude);
         assert!(one.millicents > 0, "sub-cent cost must survive as millicents");
         assert_eq!(one.cents(), Some(0));
     }
@@ -577,8 +734,8 @@ mod tests {
 
     #[test]
     fn merge_adds_every_field() {
-        let mut a = parse_transcript(&rec("a", "claude-opus-5", 1, 2));
-        let b = parse_transcript(&rec("b", "<synthetic>", 3, 4));
+        let mut a = parse_transcript(&rec("a", "claude-opus-5", 1, 2), Format::Claude);
+        let b = parse_transcript(&rec("b", "<synthetic>", 3, 4), Format::Claude);
         a.merge(&b);
         assert_eq!(a.records, 2);
         assert_eq!(a.tokens.input, 4);
@@ -588,7 +745,7 @@ mod tests {
     #[test]
     fn empty_usage_offers_no_cost() {
         assert_eq!(Usage::default().cents(), None);
-        assert_eq!(parse_transcript("").records, 0);
+        assert_eq!(parse_transcript("", Format::Claude).records, 0);
     }
 
     #[test]
@@ -598,7 +755,7 @@ mod tests {
         std::fs::write(&f, rec("a", "claude-opus-5", 10, 20)).unwrap();
 
         let mut cache = UsageCache::new();
-        assert_eq!(cache.refresh(dir.path()).tokens.output, 20);
+        assert_eq!(cache.refresh(dir.path(), Format::Claude).tokens.output, 20);
 
         // Every mtime here is set explicitly. Writing and trusting the clock
         // to advance is flaky: two writes inside the filesystem's timestamp
@@ -613,7 +770,7 @@ mod tests {
             std::fs::File::options().write(true).open(&f).unwrap().set_times(at(secs)).unwrap();
         };
         set_mtime(1_000);
-        assert_eq!(cache.refresh(dir.path()).tokens.output, 20);
+        assert_eq!(cache.refresh(dir.path(), Format::Claude).tokens.output, 20);
 
         // Same byte length, same mtime: the stamp genuinely has not moved, so
         // the cache must serve the old figure. That is the only proof it
@@ -622,11 +779,15 @@ mod tests {
         assert_eq!(changed.len(), rec("a", "claude-opus-5", 10, 20).len(), "same length");
         std::fs::write(&f, &changed).unwrap();
         set_mtime(1_000);
-        assert_eq!(cache.refresh(dir.path()).tokens.output, 20, "unchanged stamp means no re-read");
+        assert_eq!(
+            cache.refresh(dir.path(), Format::Claude).tokens.output,
+            20,
+            "unchanged stamp means no re-read"
+        );
 
         // Move only the mtime and the new figure comes through.
         set_mtime(2_000);
-        assert_eq!(cache.refresh(dir.path()).tokens.output, 21);
+        assert_eq!(cache.refresh(dir.path(), Format::Claude).tokens.output, 21);
     }
 
     #[test]
@@ -638,10 +799,14 @@ mod tests {
         std::fs::write(&b, rec("b", "claude-opus-5", 5, 0)).unwrap();
 
         let mut cache = UsageCache::new();
-        assert_eq!(cache.refresh(dir.path()).tokens.input, 15);
+        assert_eq!(cache.refresh(dir.path(), Format::Claude).tokens.input, 15);
 
         std::fs::remove_file(&b).unwrap();
-        assert_eq!(cache.refresh(dir.path()).tokens.input, 10, "a cleared file stops counting");
+        assert_eq!(
+            cache.refresh(dir.path(), Format::Claude).tokens.input,
+            10,
+            "a cleared file stops counting"
+        );
     }
 
     #[test]
@@ -649,8 +814,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("notes.md"), "hello").unwrap();
         let mut cache = UsageCache::new();
-        assert_eq!(cache.refresh(dir.path()).records, 0);
-        assert_eq!(cache.refresh(&dir.path().join("nope")).records, 0);
+        assert_eq!(cache.refresh(dir.path(), Format::Claude).records, 0);
+        assert_eq!(cache.refresh(&dir.path().join("nope"), Format::Claude).records, 0);
     }
 
     #[test]
@@ -662,6 +827,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("s1.jsonl"), rec("a", "claude-opus-5", 10, 0)).unwrap();
         std::fs::write(dir.path().join("s2.jsonl"), rec("b", "claude-opus-5", 10, 0)).unwrap();
-        assert_eq!(UsageCache::new().refresh(dir.path()).tokens.input, 20);
+        assert_eq!(UsageCache::new().refresh(dir.path(), Format::Claude).tokens.input, 20);
     }
 }

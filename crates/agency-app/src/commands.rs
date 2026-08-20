@@ -2293,7 +2293,9 @@ pub async fn read_docs_files(
 
 /// Seed the workspace's Welcome guide if it was deleted and return its note
 /// path. Backs the palette's "Workspace Guide" command; creation-time seeding
-/// happens in create_workspace. Sync: it writes a file.
+/// happens in create_workspace. An existing note is left alone apart from the
+/// stale privacy claim, which `guide::repair_opening` rewrites in place. Sync:
+/// it writes a file.
 #[tauri::command]
 pub fn ensure_workspace_guide(
     state: State<'_, AppState>,

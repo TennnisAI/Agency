@@ -5,6 +5,7 @@ import { runName } from "../agents";
 import { inGitlessFolder, runStatus } from "../lib/runstate";
 import { Removal, removalLabel, removalsFor } from "../lib/runRemoval";
 import { usageLabel, usageTitle } from "../lib/usage";
+import QueuedMarker from "./QueuedMarker";
 import RunRemoveDialog from "./RunRemoveDialog";
 import OverflowMenu from "./OverflowMenu";
 import { TrashIcon, InboxIcon } from "./icons";
@@ -86,6 +87,9 @@ export default function AgentTile({ run }: { run: RunInfo }) {
       <pre className="tile-preview">{preview}</pre>
       <div className="tile-foot">
         <span title={st.title}>{st.text}</span>
+        {/* Same register as the status above: what the agent is doing, and what
+            it has not been handed yet. */}
+        <QueuedMarker run={run} />
         {/* The same close button and menu the agents rail carries, so an agent
             offers the same ways out wherever it is listed: archived, keeping
             its branch for the Archived section, or discarded outright. The

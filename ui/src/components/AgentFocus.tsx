@@ -23,6 +23,7 @@ import { useDismissOnResize } from "../hooks/useDismissOnResize";
 import { usePaneWidth, loadFold, saveFold } from "../hooks/usePaneWidth";
 import { loadFocusTab, saveFocusTab, resolveFocusTab, PRIMARY_TAB } from "../lib/focusTab";
 import AgentAddMenu from "./AgentAddMenu";
+import QueuedMarker from "./QueuedMarker";
 import OverflowMenu from "./OverflowMenu";
 import { TrashIcon, InboxIcon, TerminalIcon, PencilIcon, CheckIcon, BranchIcon } from "./icons";
 
@@ -407,6 +408,7 @@ export default function AgentFocus({
                       <span aria-hidden>▧</span> {issueChip.label}
                     </button>
                   )}
+                  <QueuedMarker run={focused} />
                 </div>
                 <span className="spacer" />
                 {panel !== "run" && (

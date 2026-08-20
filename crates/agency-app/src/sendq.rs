@@ -58,9 +58,25 @@ pub struct Queued {
     /// What to type. Single line: the carriage return is the writer's, and it
     /// goes out separately (see `TermClient::send_text`).
     pub text: String,
-    /// Which feature composed it, for the log line when it lands or is dropped.
+    /// Which feature composed it, for the log line when it lands or is dropped
+    /// and for the marker that says what a run is still owed. One of
+    /// [`ORIGINS`].
     pub origin: &'static str,
     pub queued_at_ms: i64,
+}
+
+/// Every feature allowed to put text in a session's mouth, as an allowlist.
+///
+/// Restoring a queue from the database maps the stored string back through
+/// this, so a row written by a build that queued something we no longer
+/// understand is dropped rather than typed into a live agent. Default-deny: a
+/// list of origins to *reject* would let exactly the unknown case through.
+pub const ORIGINS: [&str; 3] = ["check feedback", "merge conflict", "review comments"];
+
+/// The `'static` origin matching a stored string, or None if it is not one of
+/// ours.
+pub fn known_origin(s: &str) -> Option<&'static str> {
+    ORIGINS.into_iter().find(|o| *o == s)
 }
 
 /// What one session looks like at the moment a drain is considered.
@@ -281,6 +297,67 @@ impl SendQueue {
     pub fn is_empty(&self) -> bool {
         self.pending.is_empty()
     }
+
+    /// Everything waiting, oldest first, for the marker that shows the user
+    /// what a run is still owed.
+    pub fn messages(&self) -> impl Iterator<Item = &Queued> {
+        self.pending.iter()
+    }
+
+    /// Drop the first message with this text, and say whether one was there.
+    ///
+    /// Matched on the text rather than on a position: the drain runs on the
+    /// notifier tick, so an index the UI read a second ago may by then point at
+    /// a different message, and dropping the wrong one is worse than a click
+    /// that reports nothing to drop. Two identical texts are interchangeable.
+    pub fn remove(&mut self, text: &str) -> bool {
+        match self.pending.iter().position(|q| q.text == text) {
+            Some(i) => {
+                self.pending.remove(i);
+                true
+            }
+            None => false,
+        }
+    }
+}
+
+/// One queued message as it is stored between launches. The origin travels as a
+/// plain string and comes back through the [`ORIGINS`] allowlist; the queueing
+/// time does not travel at all (see [`decode`]).
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Stored {
+    text: String,
+    origin: String,
+}
+
+/// A queue as one JSON row, for [`decode`] to read back after a quit.
+pub fn encode(q: &SendQueue) -> String {
+    let stored: Vec<Stored> = q
+        .messages()
+        .map(|m| Stored { text: m.text.clone(), origin: m.origin.to_string() })
+        .collect();
+    serde_json::to_string(&stored).unwrap_or_else(|_| "[]".into())
+}
+
+/// Read a stored queue back, as of `now_ms`.
+///
+/// Every message is re-stamped to `now_ms` rather than keeping the time it was
+/// first queued. A message held overnight would otherwise be past
+/// [`MAX_HOLD_MS`] the moment the app opened, and the timeout branch types
+/// regardless of what the pane looks like — so the first thing Agency did on
+/// launch would be to append it to whatever the agent was in the middle of. The
+/// restored message waits out the ordinary rules instead.
+///
+/// Anything unreadable — bad JSON, an origin outside [`ORIGINS`], more messages
+/// than [`MAX_PENDING`] — is dropped rather than guessed at.
+pub fn decode(json: &str, now_ms: i64) -> SendQueue {
+    let stored: Vec<Stored> = serde_json::from_str(json).unwrap_or_default();
+    let mut q = SendQueue::default();
+    for s in stored {
+        let Some(origin) = known_origin(&s.origin) else { continue };
+        q.push(Queued { text: s.text, origin, queued_at_ms: now_ms });
+    }
+    q
 }
 
 #[cfg(test)]
@@ -428,6 +505,58 @@ mod tests {
         );
         h.observe(Typed::Submitted, 3_000);
         assert_eq!(h, HumanInput { last_key_ms: 3_000, draft: false });
+    }
+
+    #[test]
+    fn a_queue_survives_a_round_trip_through_storage() {
+        let mut q = SendQueue::default();
+        q.push(Queued {
+            text: "CI feedback: 2 check(s) failing".into(),
+            origin: "check feedback",
+            queued_at_ms: 10,
+        });
+        q.push(msg(20));
+        let back = decode(&encode(&q), 9_000);
+        assert_eq!(back.len(), 2);
+        let texts: Vec<&str> = back.messages().map(|m| m.text.as_str()).collect();
+        assert_eq!(texts, ["CI feedback: 2 check(s) failing", "please fix the merge"]);
+        assert_eq!(back.head().unwrap().origin, "check feedback");
+        assert!(
+            back.messages().all(|m| m.queued_at_ms == 9_000),
+            "the hold clock restarts at launch, or the timeout fires on the first tick"
+        );
+    }
+
+    #[test]
+    fn a_stored_queue_we_cannot_read_is_dropped_rather_than_typed() {
+        assert!(decode("", 0).is_empty(), "not even JSON");
+        assert!(decode("[{\"text\":\"hi\"}]", 0).is_empty(), "no origin at all");
+        assert!(
+            decode("[{\"text\":\"hi\",\"origin\":\"some future feature\"}]", 0).is_empty(),
+            "an origin outside the allowlist must not reach a live agent"
+        );
+        assert_eq!(known_origin("review comments"), Some("review comments"));
+        assert_eq!(known_origin("Review Comments"), None, "exact values only");
+    }
+
+    #[test]
+    fn a_stored_queue_cannot_grow_past_the_bound_on_the_way_back_in() {
+        let stored: Vec<String> = (0..MAX_PENDING + 4)
+            .map(|i| format!("{{\"text\":\"m{i}\",\"origin\":\"merge conflict\"}}"))
+            .collect();
+        let q = decode(&format!("[{}]", stored.join(",")), 0);
+        assert_eq!(q.len(), MAX_PENDING);
+    }
+
+    #[test]
+    fn a_message_is_dropped_by_its_text_and_a_stale_click_reports_nothing() {
+        let mut q = SendQueue::default();
+        q.push(msg(1));
+        q.push(Queued { text: "second".into(), origin: "check feedback", queued_at_ms: 2 });
+        assert!(q.remove("please fix the merge"));
+        assert_eq!(q.len(), 1);
+        assert_eq!(q.head().unwrap().text, "second");
+        assert!(!q.remove("please fix the merge"), "already gone: nothing to drop");
     }
 
     #[test]

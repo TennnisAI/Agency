@@ -1996,6 +1996,27 @@ pub fn send_review_comments(state: State<'_, AppState>, run_id: String) -> Resul
     state.send_review_comments(&run_id).map_err(|e| e.to_string())
 }
 
+/// What Agency is still holding for this run's sessions and has not typed in
+/// yet, oldest first (see `crate::sendq`).
+#[tauri::command]
+pub fn list_queued_messages(
+    state: State<'_, AppState>,
+    run_id: String,
+) -> Result<Vec<crate::state::QueuedMessageInfo>, String> {
+    Ok(state.list_queued_messages(&run_id))
+}
+
+/// Drop one waiting message. False means it was delivered (or discarded) before
+/// the click landed, so there was nothing left to drop.
+#[tauri::command]
+pub fn cancel_queued_message(
+    state: State<'_, AppState>,
+    session_id: String,
+    text: String,
+) -> Result<bool, String> {
+    Ok(state.cancel_queued_message(&session_id, &text))
+}
+
 /// Selects which directory the file commands operate on: a run's worktree or a
 /// project's main checkout.
 #[derive(Deserialize)]

@@ -925,6 +925,9 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
   color: var(--o0);
 }
 .tile-close-wrap { display: flex; flex-shrink: 0; }
+/* The queued marker sits with the status it belongs beside, so the close button
+   keeps the right edge of the foot to itself. */
+.tile-foot .queued-wrap { margin-right: auto; }
 .tile:hover .tile-close { opacity: 1; }
 
 /* Placeholder tile shown while a workspace is being created (worktree +
@@ -1734,6 +1737,48 @@ input.settings-notif-secs { width: 90px; flex: 0 0 auto; }
 .review-row.sent { opacity: 0.5; }
 .review-loc { color: var(--muted, #9aa); white-space: nowrap; }
 .review-body { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ── Queued messages ────────────────────────────────────────── */
+/* The marker a run wears while Agency is still holding text for its agent
+   (QueuedMarker.tsx). Amber, like the "waiting" dot: something is pending, and
+   nothing is wrong. Its popover says what is waiting and drops it. */
+.queued-wrap { display: inline-flex; flex-shrink: 0; }
+.queued-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: transparent; border: 1px solid var(--s1); border-radius: 999px;
+  color: var(--awaiting); padding: 1px 8px; cursor: pointer;
+  font-family: var(--mono); font-size: 10.5px; line-height: 1.5;
+  white-space: nowrap;
+}
+.queued-chip:hover, .queued-chip.on { background: var(--s0); border-color: var(--awaiting); }
+.queued-pop {
+  z-index: 41; background: var(--mantle); border: 1px solid var(--s1);
+  border-radius: 9px; box-shadow: 0 12px 32px var(--shadow);
+  padding: 8px; width: 330px; max-height: 60vh; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 6px;
+  font-family: var(--sans); font-size: 12px; color: var(--text);
+}
+.queued-pop-head { color: var(--o1); font-size: 11.5px; line-height: 1.45; }
+.queued-pop-empty { color: var(--o0); font-size: 11.5px; }
+.queued-row {
+  display: flex; align-items: flex-start; gap: 8px;
+  background: var(--crust); border-radius: 7px; padding: 7px 8px;
+}
+/* min-width: 0 is what lets a long prompt clamp instead of widening the row. */
+.queued-row-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.queued-origin { color: var(--awaiting); font-family: var(--mono); font-size: 10.5px; }
+/* Three lines of what will be typed: enough to recognize the message, short
+   enough that eight of them still fit in the popover. */
+.queued-body {
+  color: var(--sub1); line-height: 1.4;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden;
+}
+.queued-drop {
+  flex-shrink: 0; background: transparent; border: 1px solid var(--s1);
+  border-radius: 6px; color: var(--o1); padding: 3px 9px; cursor: pointer;
+  font-family: var(--sans); font-size: 11.5px;
+}
+.queued-drop:hover { background: var(--s0); border-color: var(--red); color: var(--red); }
 
 /* ── Files view ─────────────────────────────────────────────── */
 /* min-width: 0 matters: as a flex item of .source-wrap, the view's automatic

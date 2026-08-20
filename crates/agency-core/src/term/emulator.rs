@@ -2,7 +2,9 @@
 //!
 //! NOTE: API confirmed against `alacritty_terminal 0.26` in `term::smoke`
 //! (Task 1). If `Term::new` / `Processor::advance` / grid indexing change with
-//! a version bump, fix them here and in the smoke test together.
+//! a version bump, fix them here and in the smoke test together. The version is
+//! pinned, with the client's alongside it and the reasoning for both, in
+//! [`super::vt_pin`].
 
 use alacritty_terminal::event::VoidListener;
 use alacritty_terminal::grid::Dimensions;
@@ -148,6 +150,20 @@ impl Emulator {
     /// Getting it wrong desyncs the display from where input actually lands: the
     /// cursor drifts to the bottom, typed characters don't appear (yet arrive at
     /// the child), and paste boundaries break.
+    ///
+    /// What comes back is *reconstructed* from the grid, never a recording of the
+    /// bytes that built it, and that is the property that keeps a replay from
+    /// typing into the user's shell. The client replays this stream into a live
+    /// terminal whose input is wired straight to the pty, so a sequence in here
+    /// that provokes a reply — a DSR cursor-position query, a device-attributes
+    /// request, an OSC colour query — has its answer delivered to the child as if
+    /// the user had typed it. Queries in the live stream are consumed by the
+    /// parser and never reach a cell, so none can survive into here; the tests
+    /// below hold that against a future "just replay the tail of the stream"
+    /// shortcut, which is the tempting fidelity fix and would reintroduce it
+    /// silently. The one sequence below that a client answers is `?1004h`, and
+    /// the pane mutes its own input for the length of the replay to swallow it
+    /// (`ui/src/components/FocusTerminal.tsx`).
     pub fn snapshot(&self) -> Snapshot {
         let mode = *self.term.mode();
         let alt = mode.contains(TermMode::ALT_SCREEN);
@@ -615,5 +631,109 @@ mod tests {
         let cap = b.capture(4);
         assert!(cap.contains("row0"), "top row scrolled off screen: {cap:?}");
         assert!(cap.contains("row3"));
+    }
+
+    /// Split `data` into its escape sequences, ignoring the printable text.
+    ///
+    /// Only the two shapes [`Emulator::snapshot`] emits are recognised: a CSI
+    /// (`ESC [`, parameters, final byte) and a two-byte `ESC x`. Anything else —
+    /// a DCS or OSC string, an unterminated CSI — comes back as one blob that
+    /// fails the allowlist below, which is the point of scanning this way.
+    fn escapes(data: &[u8]) -> Vec<Vec<u8>> {
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < data.len() {
+            if data[i] != 0x1b {
+                i += 1;
+                continue;
+            }
+            let start = i;
+            i += 1;
+            if data.get(i) == Some(&b'[') {
+                i += 1;
+                while i < data.len() && !(0x40..=0x7e).contains(&data[i]) {
+                    i += 1;
+                }
+            }
+            i = (i + 1).min(data.len());
+            out.push(data[start..i].to_vec());
+        }
+        out
+    }
+
+    /// Default-deny: the exact sequences `snapshot` declares it emits, plus the
+    /// two parameterised shapes (SGR and cursor position). Nothing here provokes
+    /// a reply from a client except `?1004h`; see the note on `snapshot`.
+    fn is_declared(seq: &[u8]) -> bool {
+        const EXACT: [&[u8]; 15] = [
+            b"\x1b[?1049h",
+            b"\x1b[2J",
+            b"\x1b[3J",
+            b"\x1b[?1h",
+            b"\x1b=",
+            b"\x1b[?2004h",
+            b"\x1b[?7l",
+            b"\x1b[?1000h",
+            b"\x1b[?1002h",
+            b"\x1b[?1003h",
+            b"\x1b[?1005h",
+            b"\x1b[?1006h",
+            b"\x1b[?1004h",
+            b"\x1b[?25l",
+            b"\x1b[0m",
+        ];
+        if EXACT.contains(&seq) {
+            return true;
+        }
+        let Some(body) = seq.strip_prefix(b"\x1b[") else { return false };
+        let Some((&last, params)) = body.split_last() else { return false };
+        params.iter().all(|b| b.is_ascii_digit() || *b == b';') && matches!(last, b'm' | b'H')
+    }
+
+    #[test]
+    fn a_snapshot_emits_only_the_escape_sequences_it_declares() {
+        let mut e = Emulator::new(30, 4);
+        e.feed(
+            b"\x1b[?1049h\x1b[?1002h\x1b[?1006h\x1b[?1004h\x1b[?2004h\x1b[?7l\x1b[?1h\x1b=\
+              \x1b[?25l\x1b[1;38;5;196mbar\x1b[0m\r\nrow",
+        );
+        for seq in escapes(&e.snapshot().data) {
+            assert!(
+                is_declared(&seq),
+                "snapshot emitted an undeclared sequence {:?}",
+                String::from_utf8_lossy(&seq),
+            );
+        }
+    }
+
+    #[test]
+    fn a_device_query_in_the_stream_never_reaches_the_snapshot() {
+        // A client replays the snapshot into a terminal whose input goes to the
+        // pty, so a query that survived into it would be answered *by the client*
+        // and the answer would arrive at the child as typed input — a stray
+        // `\x1b[24;1R` in the prompt, or a shell running whatever the reply
+        // happened to spell. Nothing that provokes a reply may reach the replay.
+        let mut e = Emulator::new(40, 4);
+        e.feed(
+            b"before\
+              \x1b[6n\x1b[5n\x1b[?6n\
+              \x1b[c\x1b[>c\x1b[=c\x1bZ\
+              \x1b[?2004$p\x1b[18t\x1b[>0q\
+              \x1b]10;?\x07\x1b]11;?\x1b\\\
+              \x1bP+q544e\x1b\\\
+              after",
+        );
+        let snap = e.snapshot();
+        for seq in escapes(&snap.data) {
+            assert!(
+                is_declared(&seq),
+                "a device query survived into the snapshot: {:?}",
+                String::from_utf8_lossy(&seq),
+            );
+        }
+        // And the surrounding text is still there, so the queries were really
+        // parsed away rather than the whole feed being swallowed.
+        let text = String::from_utf8_lossy(&snap.data);
+        assert!(text.contains("before") && text.contains("after"), "{text:?}");
     }
 }

@@ -362,6 +362,16 @@ export default function FocusTerminal(
           // any preview seed we painted, and (for alt-screen apps, whose snapshot only
           // switches buffers without wiping the normal one) any seed residue too.
           term.reset();
+          // AGE-147: replay that first frame with the pane's input muted. It is a
+          // repaint of history, but xterm answers parts of what it parses and the
+          // answer arrives at the child as if it had been typed — today an
+          // unsolicited focus report off the snapshot's `?1004h`, tomorrow the reply
+          // to any query a replayed stream carries. `write`'s callback runs once the
+          // chunk has been parsed, which is the only point at which xterm is done
+          // answering it; anything earlier would unmute mid-replay.
+          const resume = input.suspend();
+          term.write(bytes, resume);
+          return;
         }
         term.write(bytes);
       }).then(() => {

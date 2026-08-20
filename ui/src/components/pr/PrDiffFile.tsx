@@ -21,17 +21,22 @@ export default function PrDiffFile({
   file,
   threads,
   drafts,
+  viewer,
   onAddDraft,
   onRemoveDraft,
   onReply,
+  onEditComment,
   onToggleResolved,
 }: {
   file: PrFileDiff;
   threads: ReviewThread[];
   drafts: DraftEntry[];
+  // The authenticated gh login, so a thread can offer Edit on your own comments.
+  viewer: string | null;
   onAddDraft: (d: Omit<DraftEntry, "id">) => void;
   onRemoveDraft: (id: string) => void;
   onReply: (inReplyTo: number, body: string) => Promise<void>;
+  onEditComment: (commentId: number, body: string) => Promise<void>;
   onToggleResolved: (threadId: string, resolved: boolean) => Promise<void>;
 }) {
   const [collapsed, setCollapsed] = useState(false);
@@ -190,7 +195,14 @@ export default function PrDiffFile({
                   </div>
                 ))}
                 {(threadsAt.get(i) ?? []).map((t) => (
-                  <PrThread key={t.id} thread={t} onReply={onReply} onToggleResolved={onToggleResolved} />
+                  <PrThread
+                    key={t.id}
+                    thread={t}
+                    viewer={viewer}
+                    onReply={onReply}
+                    onEditComment={onEditComment}
+                    onToggleResolved={onToggleResolved}
+                  />
                 ))}
               </Fragment>
             );
@@ -202,7 +214,14 @@ export default function PrDiffFile({
         <div className="prdiff-outdated">
           <div className="prdiff-outdated-head">Outdated / unanchored ({outdated.length})</div>
           {outdated.map((t) => (
-            <PrThread key={t.id} thread={t} onReply={onReply} onToggleResolved={onToggleResolved} />
+            <PrThread
+              key={t.id}
+              thread={t}
+              viewer={viewer}
+              onReply={onReply}
+              onEditComment={onEditComment}
+              onToggleResolved={onToggleResolved}
+            />
           ))}
         </div>
       )}

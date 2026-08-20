@@ -186,6 +186,8 @@ pub fn run() {
             commands::pr_review_threads,
             commands::submit_pr_review,
             commands::reply_pr_comment,
+            commands::edit_pr,
+            commands::edit_pr_comment,
             commands::resolve_pr_thread,
             commands::unresolve_pr_thread,
             commands::pr_number_for_run,

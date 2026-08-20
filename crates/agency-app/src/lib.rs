@@ -293,6 +293,7 @@ pub fn run() {
             commands::resolve_term_paths,
             commands::open_term_path,
             commands::rename_run,
+            commands::rename_run_branch,
             commands::read_file_base64,
             commands::detect_docs_dir,
             commands::read_docs_corpus,

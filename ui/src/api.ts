@@ -446,6 +446,14 @@ export const setRunTitle = (id: string, firstPrompt: string) =>
 // Rename a run: overwrites the display title (empty clears it → falls back to prompt/branch).
 export const renameRun = (id: string, title: string) =>
   invoke<void>("rename_run", { id, title });
+
+// Renames the run's branch, in git and in the registry together, and resolves
+// to the name actually applied: the `agent/` prefix is kept whether or not it
+// was typed. Refused for a branch that already exists, one git will not take as
+// a ref, one mid-merge, and one already pushed (renaming that here would leave
+// the published copy, and any PR from it, behind).
+export const renameRunBranch = (id: string, branch: string) =>
+  invoke<string>("rename_run_branch", { id, branch });
 export const listRuns = (projectId: string) => invoke<RunInfo[]>("list_runs", { projectId });
 export const runPreview = (id: string, lines: number) =>
   invoke<string>("run_preview", { id, lines });

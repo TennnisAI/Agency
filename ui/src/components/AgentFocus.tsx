@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRuns, SpawnOpts } from "../store/runs";
 import {
-  setRunTitle, renameRun,
+  setRunTitle, renameRun, renameRunBranch,
   listProfiles, AgentProfile,
   listRunSessions, startRunSession, closeRunSession, RunSessionInfo,
   RunInfo, stopLoop, listIssues, listProjects,
@@ -143,6 +143,9 @@ export default function AgentFocus({
   const [pendingRemoval, setPendingRemoval] = useState<Removal | null>(null);
   // Run being renamed (its display title). Any run — agent or terminal.
   const [renaming, setRenaming] = useState<RunInfo | null>(null);
+  // Run whose branch is being renamed. Only a run on a branch Agency cut for
+  // it, which is why this is separate from the title rename above.
+  const [renamingBranch, setRenamingBranch] = useState<RunInfo | null>(null);
   // "agent" (primary terminal), "run" (RunPanel), or an extra-session id —
   // extra agent tabs sharing this run's worktree.
   const [panel, setPanel] = useState<string>(PRIMARY_TAB);
@@ -421,6 +424,13 @@ export default function AgentFocus({
                 <OverflowMenu
                   items={[
                     { label: "Rename agent", icon: <PencilIcon />, onSelect: () => setRenaming(focused) },
+                    // A merge writes the branch name into the base branch's
+                    // history for good, so this is offered while the branch is
+                    // still local. A run working in the project's own checkout
+                    // is on the user's branch, not one to rename from here.
+                    ...(focused.worktree
+                      ? [{ label: "Rename branch…", icon: <BranchIcon />, onSelect: () => setRenamingBranch(focused) }]
+                      : []),
                     { label: "Archive agent", icon: <InboxIcon />, separator: true, onSelect: () => setPendingRemoval("archive") },
                     { label: "Delete agent", icon: <TrashIcon />, danger: true, onSelect: () => setPendingRemoval("delete") },
                   ]}
@@ -562,6 +572,22 @@ export default function AgentFocus({
           is always the focused one. */}
       {focused && pendingRemoval && (
         <RunRemoveDialog run={focused} action={pendingRemoval} onClose={() => setPendingRemoval(null)} />
+      )}
+
+      {renamingBranch && (
+        <PromptDialog
+          title="Rename branch"
+          body="The merge commit carries this name into the base branch's history for good, and a merged PR's branch can't be renamed after the fact. The agent, its workspace and its work stay where they are."
+          placeholder="agent/some-name"
+          initial={renamingBranch.branch}
+          confirmLabel="Rename"
+          onConfirm={(v) => {
+            const id = renamingBranch.id;
+            setRenamingBranch(null);
+            renameRunBranch(id, v).then(refreshRuns).catch((e) => toastError(e, "Rename failed"));
+          }}
+          onCancel={() => setRenamingBranch(null)}
+        />
       )}
 
       {renaming && (

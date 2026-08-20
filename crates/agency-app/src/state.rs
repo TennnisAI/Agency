@@ -332,6 +332,9 @@ struct NewRunSpec<'a> {
     base: &'a str,
     merge_target: Option<&'a str>,
     race_id: Option<String>,
+    /// The run's name in the UI, where the dispatcher already has one (issue,
+    /// PR, race). Also the text the run's id and branch are derived from: see
+    /// [`id_source`].
     title: Option<String>,
     /// Check out this existing branch instead of cutting `agent/<id>` off base.
     existing_branch: Option<String>,
@@ -974,6 +977,23 @@ fn validate_provider_url(raw: &str) -> Result<()> {
         bail!("URL must not contain embedded credentials");
     }
     Ok(())
+}
+
+/// The text a run's id, and so its `agent/<id>` branch, is derived from: the
+/// title where the dispatcher supplied one, else the prompt.
+///
+/// A merge writes the branch name into the base branch's history for good, so
+/// what goes into it matters. An issue- or PR-dispatched prompt is the title
+/// *plus the whole body*, and slugifying that takes the first 40 characters of
+/// both: on AGE-139, whose body led with a link, the branch came out carrying
+/// `-https-github-com-…` from that link. The title alone is the part written
+/// to be read. Promptless and free-text runs have no title yet and keep
+/// deriving from the prompt.
+fn id_source<'a>(title: Option<&'a str>, prompt: &'a str) -> &'a str {
+    match title {
+        Some(t) if !t.trim().is_empty() => t,
+        _ => prompt,
+    }
 }
 
 /// Build a readable, unique task id from the prompt: a slug derived from the
@@ -2184,7 +2204,7 @@ impl AppState {
             let (_, key) = self.issue_root(&reg, spec.project_id)?;
             (profile, key)
         };
-        let id = new_task_id(spec.prompt);
+        let id = new_task_id(id_source(spec.title.as_deref(), spec.prompt));
         let manager = WorktreeManager::new(repo.clone());
         // Three shapes: cut agent/<id> from the base (the default), check out a
         // PR's existing head branch, or skip the worktree entirely and work in
@@ -5998,6 +6018,100 @@ impl AppState {
 
     // ── merge operations ───────────────────────────────────────────────────────
 
+    /// Rename a run's branch, in git and in the registry together, while the
+    /// branch is still local.
+    ///
+    /// A merge writes the branch name into the base branch's history for good
+    /// (`Merge branch 'agent/…'`), and a merged PR's head branch cannot be
+    /// renamed afterwards either, so this is the last moment a name derived
+    /// from the prompt can be fixed. Observed on AGE-139, whose issue body led
+    /// with a link and so put a URL fragment in the branch name: the rename had
+    /// to be done by hand in both places, because `git branch -m` alone leaves
+    /// the registry pointing at a branch that no longer exists and the next
+    /// merge targets that.
+    ///
+    /// Git moves first and is put back if the row will not take the new name,
+    /// so the two cannot end up disagreeing. Returns the name actually applied,
+    /// which carries the `agent/` prefix whether or not the caller typed it.
+    pub fn rename_run_branch(&self, id: &str, requested: &str) -> Result<String> {
+        let run = self.run_record(id)?;
+        let repo = self.project_repo(&run.project_id)?;
+        // Not ours to rename: this run works on whatever branch the user's own
+        // checkout is on, shared with everything else they do there.
+        if !run.worktree {
+            bail!(
+                "this agent works directly in the project checkout, on {}, which is the \
+                 user's own branch rather than one Agency cut for the run; rename it in \
+                 Source Control or in git if you want it renamed",
+                run.branch
+            );
+        }
+        require_branch_exists(&run, &repo)?;
+        let new = agency_core::branchname::normalize(requested)?;
+        if new == run.branch {
+            return Ok(new);
+        }
+        // The same gate `create_run_spec` takes: this moves a branch, and that
+        // one cuts branches.
+        let _gate = self.worktree_gate.lock().unwrap();
+        if agency_core::merge::branch_exists(&repo, &new) {
+            bail!("this project already has a branch called {new}");
+        }
+        // A rename mid-merge would move the branch out from under the merge the
+        // shared checkout is in the middle of, and `owns_merge` (which matches
+        // MERGE_HEAD against the branch tip) would stop recognizing it as this
+        // run's, stranding the resolution.
+        if agency_core::merge::owns_merge(&repo, &run.branch) {
+            bail!(
+                "this branch is being merged right now; finish or abort that merge before \
+                 renaming it"
+            );
+        }
+        // A published name is not something a local rename takes back: the
+        // remote keeps the old branch, and a PR opened from it goes on pointing
+        // at that name whatever this end is called.
+        if let Some(remote) = agency_core::merge::remote_copies(&repo, &run.branch).first() {
+            bail!(
+                "this branch is already published as {remote}, so renaming it here would \
+                 leave that copy behind, along with any PR opened from it; delete the remote \
+                 branch first if the published name is the problem"
+            );
+        }
+        agency_core::merge::rename_branch(&repo, &run.branch, &new)?;
+        let recorded = self.registry.lock().unwrap().set_run_branch(id, &new);
+        if let Err(e) = recorded {
+            // Put git back rather than leave the two disagreeing: the registry
+            // is what merge, PR and teardown all read, so a half-done rename
+            // would send every one of them at a branch that is not there.
+            if let Err(back) = agency_core::merge::rename_branch(&repo, &new, &run.branch) {
+                log::error!(
+                    "renaming {new} back to {} after the registry refused the rename: {back}",
+                    run.branch
+                );
+            }
+            return Err(e.context("recording the new branch name"));
+        }
+        // The workspace skill states the branch the run owns, so an unrefreshed
+        // copy would have the agent name a branch that no longer exists. An
+        // archived run has no worktree to write into; emitting would recreate
+        // the directory git worktree removed.
+        let worktree = workspace_dir(&repo, &run);
+        if worktree.exists() {
+            let config = agency_core::config::load(&repo);
+            self.emit_skills(
+                &run.agent,
+                &repo,
+                &worktree,
+                &new,
+                &self.issue_key_for(&run.project_id),
+                &config,
+                run.loop_config.as_ref(),
+                run.port_base,
+            );
+        }
+        Ok(new)
+    }
+
     /// Inspect what merging this run's branch would do, without touching the
     /// repo: which base it targets, how many commits the branch is ahead, and
     /// whether the agent's worktree still has uncommitted changes.
@@ -6829,8 +6943,8 @@ fn validate_project_path(repo_path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_argv, command_on_path, failure_tail, graphify_server, new_task_id, pick_port,
-        require_branch_exists, require_gitless_known, require_own_branch, slugify,
+        agent_argv, command_on_path, failure_tail, graphify_server, id_source, new_task_id,
+        pick_port, require_branch_exists, require_gitless_known, require_own_branch, slugify,
         split_session_id, validate_race, RaceAttempt,
     };
     use agency_core::config::KnowledgeConfig;
@@ -7345,6 +7459,26 @@ mod tests {
         let id = new_task_id("Add a login page");
         assert!(id.starts_with("add-a-login-page-"), "unexpected id: {id}");
         assert!(id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'));
+    }
+
+    /// AGE-139 in miniature: the dispatched prompt is the issue title followed
+    /// by its body, and that body led with a link, so the branch cut from the
+    /// prompt carried the URL into a merge commit. The title is what names the
+    /// branch now.
+    #[test]
+    fn an_issue_run_takes_its_id_from_the_title_not_the_body() {
+        let title = "AGE-139 Competitive reading";
+        let prompt = "Work on issue AGE-139: Competitive reading\n\nhttps://github.com/some/repo\n\nis this the same thing as our product?";
+        let id = new_task_id(id_source(Some(title), prompt));
+        assert!(id.starts_with("age-139-competitive-reading-"), "unexpected id: {id}");
+        assert!(!id.contains("https"), "the body's URL reached the branch name: {id}");
+    }
+
+    #[test]
+    fn a_run_with_no_title_still_takes_its_id_from_the_prompt() {
+        assert_eq!(id_source(None, "fix the login page"), "fix the login page");
+        // A blank title is what a promptless run carries; it names nothing.
+        assert_eq!(id_source(Some("  "), "fix the login page"), "fix the login page");
     }
 
     /// `--` is the extra-session separator, so it must be impossible inside a

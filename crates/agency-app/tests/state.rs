@@ -2552,3 +2552,177 @@ fn cancelling_a_push_stops_it() {
     let err = state.push_run(&token, |_| state.cancel_push(&token)).unwrap_err();
     assert_eq!(err.to_string(), agency_core::setup::CANCELLED);
 }
+
+/// AGE-148. The name a run's branch is born with comes from its prompt, and a
+/// merge writes it into the base branch's history for good, so it has to be
+/// editable while the branch is still local — in git *and* in the registry,
+/// since the merge reads the registry.
+#[test]
+fn renaming_a_runs_branch_moves_git_and_the_registry_together() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let state = common::state(&dir);
+    // Named "claude" so the workspace skill is emitted: it states the branch
+    // the run owns, and a rename that left it stale would have the agent name
+    // a branch that no longer exists.
+    state
+        .register_profile(AgentProfile {
+            name: "claude".into(),
+            command: "sh".into(),
+            args: vec!["-c".into(), "sleep 3".into()],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+    let info = state.create_run(&project.id, "p", "claude", None, "HEAD", None).unwrap();
+    let old = info.branch.clone();
+    let wt = state.worktree_path(&info.id).unwrap();
+
+    // Typed without the prefix: it comes back with one either way.
+    let applied = state.rename_run_branch(&info.id, "tidy-name").unwrap();
+    assert_eq!(applied, "agent/tidy-name");
+
+    assert!(!agency_core::merge::branch_exists(&repo, &old));
+    assert!(agency_core::merge::branch_exists(&repo, "agent/tidy-name"));
+    // The registry is what merge reads.
+    let listed = state.list_runs(&project.id).unwrap();
+    assert_eq!(listed[0].branch, "agent/tidy-name");
+    // The worktree neither moved nor came off its branch.
+    assert_eq!(state.worktree_path(&info.id).unwrap(), wt);
+    assert_eq!(agency_core::merge::current_branch(&wt).as_deref(), Some("agent/tidy-name"));
+    // The workspace skill states the branch the run owns; a stale copy would
+    // have the agent name a branch that is gone.
+    let skill = wt.join(".claude/skills/agency-workspace/SKILL.md");
+    let text = std::fs::read_to_string(&skill).unwrap();
+    assert!(text.contains("agent/tidy-name"), "the workspace skill still names the old branch");
+    assert!(!text.contains(&old), "the workspace skill still names the old branch");
+
+    let _ = state.discard_run(&info.id);
+}
+
+#[test]
+fn renaming_a_branch_refuses_names_git_or_the_project_will_not_take() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let state = common::state(&dir);
+    state
+        .register_profile(AgentProfile {
+            name: "noop".into(),
+            command: "sh".into(),
+            args: vec!["-c".into(), "sleep 3".into()],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+    let info = state.create_run(&project.id, "p", "noop", None, "HEAD", None).unwrap();
+    let old = info.branch.clone();
+
+    let bad = state.rename_run_branch(&info.id, "has a space").unwrap_err().to_string();
+    assert!(bad.contains("space"), "unexpected error: {bad}");
+
+    assert!(Command::new("git")
+        .args(["branch", "agent/taken"])
+        .current_dir(&repo)
+        .status()
+        .unwrap()
+        .success());
+    let clash = state.rename_run_branch(&info.id, "agent/taken").unwrap_err().to_string();
+    assert!(clash.contains("already has a branch"), "unexpected error: {clash}");
+
+    // Every refusal left both halves as they were.
+    assert!(agency_core::merge::branch_exists(&repo, &old));
+    assert_eq!(state.list_runs(&project.id).unwrap()[0].branch, old);
+
+    let _ = state.discard_run(&info.id);
+}
+
+/// A pushed name is out of Agency's hands: the remote keeps the old branch and
+/// a PR opened from it goes on pointing at that name, so a local rename would
+/// only make the two disagree.
+#[test]
+fn renaming_a_branch_refuses_once_the_name_is_published() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let remote = dir.path().join("remote.git");
+    assert!(Command::new("git")
+        .args(["init", "--bare", "-q", remote.to_str().unwrap()])
+        .status()
+        .unwrap()
+        .success());
+    assert!(Command::new("git")
+        .args(["remote", "add", "origin", remote.to_str().unwrap()])
+        .current_dir(&repo)
+        .status()
+        .unwrap()
+        .success());
+
+    let state = common::state(&dir);
+    state
+        .register_profile(AgentProfile {
+            name: "noop".into(),
+            command: "sh".into(),
+            args: vec!["-c".into(), "sleep 3".into()],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+    let info = state.create_run(&project.id, "p", "noop", None, "HEAD", None).unwrap();
+    assert!(Command::new("git")
+        .args(["push", "-q", "origin", &info.branch])
+        .current_dir(&repo)
+        .status()
+        .unwrap()
+        .success());
+
+    let err = state.rename_run_branch(&info.id, "too-late").unwrap_err().to_string();
+    assert!(err.contains("already published"), "unexpected error: {err}");
+    assert_eq!(state.list_runs(&project.id).unwrap()[0].branch, info.branch);
+
+    let _ = state.discard_run(&info.id);
+}
+
+/// A run working in the project's own checkout is sitting on the user's branch,
+/// shared with everything else they do there. Not Agency's to rename.
+#[test]
+fn renaming_a_branch_refuses_a_run_in_the_project_checkout() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let state = common::state(&dir);
+    state
+        .register_profile(AgentProfile {
+            name: "noop".into(),
+            command: "sh".into(),
+            args: vec!["-c".into(), "sleep 3".into()],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+    let info = state
+        .create_run_with_progress(&project.id, "p", "noop", None, "HEAD", None, false, |_| {})
+        .unwrap();
+
+    let err = state.rename_run_branch(&info.id, "agent/nope").unwrap_err().to_string();
+    assert!(err.contains("project checkout"), "unexpected error: {err}");
+    assert_eq!(agency_core::merge::current_branch(&repo).as_deref(), Some("main"));
+
+    let _ = state.discard_run(&info.id);
+}

@@ -2260,6 +2260,19 @@ pub fn rename_run(state: State<'_, AppState>, id: String, title: String) -> Resu
     state.store_run_title(&id, title.trim()).map_err(|e| e.to_string())
 }
 
+/// Rename a run's branch, in git and in the registry, and return the name that
+/// was actually applied (the `agent/` prefix is kept whether or not the caller
+/// typed it). Sync, like the other single-ref git commands: it moves one ref
+/// and writes one row, with no checkout to wait on.
+#[tauri::command]
+pub fn rename_run_branch(
+    state: State<'_, AppState>,
+    id: String,
+    branch: String,
+) -> Result<String, String> {
+    state.rename_run_branch(&id, &branch).map_err(|e| e.to_string())
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BinaryContents {

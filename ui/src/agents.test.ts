@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AGENT_TYPES, INSTALL_COMMANDS, agentColor, modelIdError, modelOptions, runListLabel } from "./agents";
+import { AGENT_TYPES, INSTALL_COMMANDS, agentColor, filterModels, modelIdError, modelOptions, runListLabel } from "./agents";
 
 describe("agents", () => {
   it("lists the preconfigured agent types", () => {
@@ -70,5 +70,24 @@ describe("modelOptions", () => {
     expect(modelOptions(["opus", "sonnet"], ["sonnet", "claude-haiku-5"]))
       .toEqual(["opus", "sonnet", "claude-haiku-5"]);
     expect(modelOptions([], [])).toEqual([]);
+  });
+  it("keeps what the agent's CLI listed below the familiar ids, listed once", () => {
+    expect(modelOptions([], ["openai/gpt-5.6"], ["openai/gpt-5.6", "anthropic/claude-opus-5"]))
+      .toEqual(["openai/gpt-5.6", "anthropic/claude-opus-5"]);
+    // An agent that was never probed is exactly what it was before.
+    expect(modelOptions(["opus"], [])).toEqual(["opus"]);
+  });
+});
+
+describe("filterModels", () => {
+  const listed = ["anthropic/claude-opus-5", "openai/gpt-5.6", "openai/gpt-5.6-pro"];
+  it("matches anywhere in the id, whatever the case", () => {
+    expect(filterModels(listed, "opus")).toEqual(["anthropic/claude-opus-5"]);
+    expect(filterModels(listed, "GPT-5.6")).toEqual(["openai/gpt-5.6", "openai/gpt-5.6-pro"]);
+  });
+  it("shows everything until something is typed, and nothing that doesn't match", () => {
+    expect(filterModels(listed, "")).toEqual(listed);
+    expect(filterModels(listed, "   ")).toEqual(listed);
+    expect(filterModels(listed, "gemini")).toEqual([]);
   });
 });

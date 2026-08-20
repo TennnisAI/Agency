@@ -7,6 +7,7 @@ mod gates;
 mod lifecycle;
 mod looper;
 mod menu;
+mod model_probe;
 #[cfg(target_os = "macos")]
 mod notif_macos;
 mod notifier;
@@ -159,6 +160,7 @@ pub fn run() {
             commands::agent_onboarding_needed,
             commands::list_agent_catalog,
             commands::list_agent_models,
+            commands::probe_agent_models,
             commands::enable_agent_profiles,
             commands::complete_agent_onboarding,
             commands::get_settings,

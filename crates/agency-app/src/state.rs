@@ -1225,6 +1225,13 @@ pub struct AppState {
     /// being set up, a worktree being pushed) and a project's own checkout can
     /// be both.
     push_cancels: Mutex<HashMap<PathBuf, agency_core::setup::CancelToken>>,
+    /// What each agent's own CLI said it can run, from the last time a model
+    /// picker asked it (see `crate::model_probe`). Cached for the app session
+    /// because the asking is a ~1s network round trip inside an open menu, and
+    /// a CLI's catalogue does not change while the app is running. Failures are
+    /// deliberately not cached: the usual reason one fails is that the agent is
+    /// not logged in yet, and that is fixed from another window mid-session.
+    model_probes: Mutex<HashMap<String, Vec<String>>>,
 }
 
 /// When a project's origin was last contacted, and when it may be again.
@@ -1335,6 +1342,7 @@ impl AppState {
             kg_builds: std::sync::Arc::new(Mutex::new(HashMap::new())),
             setup_cancels: Mutex::new(HashMap::new()),
             push_cancels: Mutex::new(HashMap::new()),
+            model_probes: Mutex::new(HashMap::new()),
         };
         // Rehydrate: any run the daemon still hosts is adopted as-is; the watch
         // loop (watch_snapshot) then reports live status. Nothing to spawn here —
@@ -1414,10 +1422,45 @@ impl AppState {
                     .unwrap_or_default(),
                 recent,
                 selected,
-                list_command: entry.and_then(|e| e.list_models).map(String::from),
+                list_command: crate::agent_catalog::list_command(&profile.name),
             });
         }
         Ok(out)
+    }
+
+    /// Ask `agent`'s own CLI which models it has, cached for the app session.
+    ///
+    /// The counterpart to `list_agent_models`, which is free and static: this
+    /// one runs the agent's binary and waits on the network, so it is reached
+    /// only from a picker that is already open, and only for the agents whose
+    /// CLI has a listing command at all (`agent_catalog::model_listing`).
+    /// Everything it returns is a validated model id, and the picker's typed
+    /// field stays regardless — a probe can fail, and a CLI can run a model it
+    /// does not list.
+    pub fn probe_agent_models(&self, agent: &str) -> Result<Vec<String>> {
+        if let Some(models) = self.model_probes.lock().unwrap().get(agent) {
+            return Ok(models.clone());
+        }
+        let listing = crate::agent_catalog::model_listing(agent)
+            .ok_or_else(|| anyhow!("{agent} has no command for listing its models"))?;
+        // The profile's command, not the catalog's: a user who pointed this
+        // agent at a different binary is asking *that* binary what it has, and
+        // it is the one a run would launch.
+        let command = self
+            .registry
+            .lock()
+            .unwrap()
+            .get_profile(agent)?
+            .map(|p| p.command)
+            .or_else(|| crate::agent_catalog::find(agent).map(|e| e.command.to_string()))
+            .ok_or_else(|| anyhow!("no profile for {agent}"))?;
+        // Run from the user's home rather than a project: opencode and crush
+        // both read project-local config, and a per-project answer would need a
+        // per-project cache and a picker that knows which project it is in.
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let models = crate::model_probe::probe(&command, listing, home.as_deref())?;
+        self.model_probes.lock().unwrap().insert(agent.to_string(), models.clone());
+        Ok(models)
     }
 
     /// Catalog entries with enabled/installed flags for the UI picker.

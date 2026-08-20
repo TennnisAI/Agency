@@ -751,7 +751,11 @@ export interface AgentModelInfo {
   recent: string[];
   /** Chosen last time; null = the agent's own default. */
   selected: string | null;
-  /** The agent's own command for listing its models, shown as a hint. */
+  /**
+   * The agent's own command for listing what it can run ("opencode models"),
+   * or null where its CLI has no such command. Both the hint under the picker's
+   * field and what `probeAgentModels` runs.
+   */
   listCommand: string | null;
 }
 
@@ -759,6 +763,18 @@ export interface AgentModelInfo {
 export type AgentModels = Record<string, string>;
 
 export const listAgentModels = () => invoke<AgentModelInfo[]>("list_agent_models");
+
+/**
+ * Run `agent`'s own listing command and return the model ids it reports.
+ *
+ * Only for agents whose `listCommand` is set, and only from an open picker:
+ * this starts the agent's CLI and waits on a network round trip (about a
+ * second). Cached for the app session on the Rust side, so reopening a picker
+ * does not run the CLI again. Rejects with the CLI's own last words when it
+ * fails or lists nothing, which is why the typed field never goes away.
+ */
+export const probeAgentModels = (agent: string) =>
+  invoke<string[]>("probe_agent_models", { agent });
 
 /**
  * The model `agent` last ran on — what a spawn with no picker in front of it

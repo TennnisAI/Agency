@@ -109,8 +109,23 @@ export function modelIdError(raw: string): string | null {
 }
 
 // What the model picker offers for an agent: the vendor's stable aliases first,
-// then anything used before that isn't already among them. Deduped so a
-// suggestion that has also been used doesn't appear twice.
-export function modelOptions(suggested: string[], recent: string[]): string[] {
-  return [...new Set([...suggested, ...recent])];
+// then anything used before, then whatever the agent's own CLI said it has when
+// asked (AGE-117). Deduped, so a model that is two of those three appears once,
+// and ordered so the short familiar list stays above the long probed one.
+export function modelOptions(
+  suggested: string[],
+  recent: string[],
+  listed: string[] = [],
+): string[] {
+  return [...new Set([...suggested, ...recent, ...listed])];
+}
+
+// The picker's field is a filter as well as an entry box: a probed list runs to
+// 200 models for some agents, which is unreadable without one. Matched on a
+// plain substring, case-insensitively, because model ids are typed from memory
+// ("opus", "5.6") rather than recognised in full.
+export function filterModels(options: string[], typed: string): string[] {
+  const needle = typed.trim().toLowerCase();
+  if (!needle) return options;
+  return options.filter((m) => m.toLowerCase().includes(needle));
 }

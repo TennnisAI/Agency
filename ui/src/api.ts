@@ -211,8 +211,8 @@ export const deleteIssueComment = (issueId: string, createdAt: number) =>
   invoke<Issue>("delete_issue_comment", { issueId, createdAt });
 export const startIssueRun = (issueId: string, agent: string, model?: string | null, base?: string | null, mergeTarget?: string | null) =>
   invoke<RunInfo>("start_issue_run", { issueId, agent, model: model ?? null, base: base ?? null, mergeTarget: mergeTarget ?? null });
-export const startIssueRace = (issueId: string, agents: string[], models?: AgentModels | null, base?: string | null, mergeTarget?: string | null) =>
-  invoke<RunInfo[]>("start_issue_race", { issueId, agents, models: models ?? null, base: base ?? null, mergeTarget: mergeTarget ?? null });
+export const startIssueRace = (issueId: string, attempts: RaceAttempt[], base?: string | null, mergeTarget?: string | null) =>
+  invoke<RunInfo[]>("start_issue_race", { issueId, attempts, base: base ?? null, mergeTarget: mergeTarget ?? null });
 export const startIssueLoop = (
   issueId: string,
   agent: string,
@@ -773,8 +773,15 @@ export interface AgentModelInfo {
   listCommand: string | null;
 }
 
-/** Agent id to model, for the flows that start several agents at once. */
-export type AgentModels = Record<string, string>;
+/**
+ * One attempt in a race: an agent, and the model it runs on (null = the agent's
+ * own default). The attempt is the unit rather than the agent, so the same
+ * agent can race itself on two models.
+ */
+export interface RaceAttempt {
+  agent: string;
+  model: string | null;
+}
 
 export const listAgentModels = () => invoke<AgentModelInfo[]>("list_agent_models");
 
@@ -931,11 +938,10 @@ export interface DraftComment {
 export const createRace = (
   projectId: string,
   prompt: string,
-  agents: string[],
-  models: AgentModels | null,
+  attempts: RaceAttempt[],
   base: string,
   mergeTarget?: string | null,
-) => invoke<RunInfo[]>("create_race", { projectId, prompt, agents, models, base, mergeTarget: mergeTarget ?? null });
+) => invoke<RunInfo[]>("create_race", { projectId, prompt, attempts, base, mergeTarget: mergeTarget ?? null });
 export const listGhIssues = (projectId: string) =>
   invoke<IssueItem[]>("list_gh_issues", { projectId });
 export const listGhPrs = (projectId: string) => invoke<PrInfo[]>("list_gh_prs", { projectId });

@@ -120,6 +120,21 @@ export function modelOptions(
   return [...new Set([...suggested, ...recent, ...listed])];
 }
 
+// The model to seed an extra race attempt with: the first thing this agent
+// could run that its other attempts are not already on. Racing one agent
+// against itself is a model comparison (AGE-118), so two rows on the same model
+// would be a race against nothing but the agent's own nondeterminism. Null when
+// the agent has nothing left to offer, which starts that row on its own default
+// and leaves the picker to sort it out.
+export function nextRaceModel(
+  used: (string | null)[],
+  suggested: string[],
+  recent: string[],
+): string | null {
+  const taken = new Set(used);
+  return modelOptions(suggested, recent).find((m) => !taken.has(m)) ?? null;
+}
+
 // The picker's field is a filter as well as an entry box: a probed list runs to
 // 200 models for some agents, which is unreadable without one. Matched on a
 // plain substring, case-insensitively, because model ids are typed from memory

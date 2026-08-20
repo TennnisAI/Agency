@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AGENT_TYPES, INSTALL_COMMANDS, agentColor, filterModels, modelIdError, modelOptions, runListLabel } from "./agents";
+import { AGENT_TYPES, INSTALL_COMMANDS, agentColor, filterModels, modelIdError, modelOptions, nextRaceModel, runListLabel } from "./agents";
 
 describe("agents", () => {
   it("lists the preconfigured agent types", () => {
@@ -76,6 +76,23 @@ describe("modelOptions", () => {
       .toEqual(["openai/gpt-5.6", "anthropic/claude-opus-5"]);
     // An agent that was never probed is exactly what it was before.
     expect(modelOptions(["opus"], [])).toEqual(["opus"]);
+  });
+});
+
+describe("nextRaceModel", () => {
+  const suggested = ["opus", "sonnet", "haiku"];
+  it("picks the first model the agent's other attempts are not on", () => {
+    expect(nextRaceModel([null], suggested, [])).toBe("opus");
+    expect(nextRaceModel(["opus"], suggested, [])).toBe("sonnet");
+    expect(nextRaceModel(["sonnet", "opus"], suggested, [])).toBe("haiku");
+  });
+  it("falls back to models used before when the aliases run out", () => {
+    expect(nextRaceModel(["opus", "sonnet", "haiku"], suggested, ["claude-opus-4-1"]))
+      .toBe("claude-opus-4-1");
+  });
+  it("returns null when the agent has nothing left to offer", () => {
+    expect(nextRaceModel(["opus"], ["opus"], [])).toBeNull();
+    expect(nextRaceModel([], [], [])).toBeNull();
   });
 });
 

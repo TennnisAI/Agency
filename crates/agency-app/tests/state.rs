@@ -868,14 +868,25 @@ fn ensure_run_active_falls_back_to_fresh_when_resume_fails() {
     std::fs::create_dir_all(&repo).unwrap();
     init_repo(&repo);
     let state = common::state(&dir);
-    // Fake agent: resume fails fast; fresh (render_args of `args`) prints FRESH and stays.
+    // Fake agent: one script that fails fast when handed the resume flag and
+    // otherwise prints FRESH and stays. A profile whose two recipes are both
+    // `sh -c <script>` would not do since AGE-100: a resume launches the
+    // profile's own args ahead of the resume recipe, so the second `-c` would
+    // never be read and the resume would "succeed" as the fresh command.
+    let fake = dir.path().join("flaky-agent");
+    std::fs::write(
+        &fake,
+        "#!/bin/sh\nfor a in \"$@\"; do\n  [ \"$a\" = --continue ] && { printf NO-CONV; exit 1; }\ndone\nprintf FRESH\nsleep 5\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     state
         .register_profile(AgentProfile {
             name: "flaky".into(),
-            command: "/bin/sh".into(),
-            args: vec!["-c".into(), "printf FRESH; sleep 5".into()],
+            command: fake.to_string_lossy().into_owned(),
+            args: vec![],
             env: vec![],
-            resume_args: Some(vec!["-c".into(), "printf NO-CONV; exit 1".into()]),
+            resume_args: Some(vec!["--continue".into()]),
             loop_args: None,
         })
         .unwrap();
@@ -907,6 +918,61 @@ fn ensure_run_active_falls_back_to_fresh_when_resume_fails() {
         std::thread::sleep(std::time::Duration::from_millis(40));
     }
     assert!(fresh, "fallback fresh session did not come up");
+    state.discard_run(&info.id).unwrap();
+}
+
+/// AGE-100: the flags a user put in the profile's arguments are part of how the
+/// agent runs, not part of the prompt, so a resume has to carry them too. This
+/// drives the real launch path, where the resume argv used to be the resume
+/// recipe on its own.
+#[test]
+fn ensure_run_active_resumes_with_the_profiles_own_arguments() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let state = common::state(&dir);
+    // Fake agent: prints the argv it was launched with, then stays up.
+    let fake = dir.path().join("echo-agent");
+    std::fs::write(&fake, "#!/bin/sh\nprintf 'ARGV[%s]' \"$@\"\nsleep 5\n").unwrap();
+    std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    state
+        .register_profile(AgentProfile {
+            name: "echoer".into(),
+            command: fake.to_string_lossy().into_owned(),
+            args: vec!["--permission-mode".into(), "acceptEdits".into()],
+            env: vec![],
+            resume_args: Some(vec!["--continue".into()]),
+            loop_args: None,
+        })
+        .unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+    let info = state.create_run(&project.id, "p", "echoer", None, "HEAD", None).unwrap();
+
+    state.stop_run(&info.id).unwrap();
+    let mut gone = false;
+    for _ in 0..75 {
+        if matches!(state.run_status(&info.id).unwrap(), SessionStatus::Gone) {
+            gone = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    assert!(gone, "session did not become Gone after stop_run");
+
+    state.ensure_run_active(&info.id).unwrap();
+    let mut argv = String::new();
+    for _ in 0..150 {
+        argv = state.run_preview(&info.id, 10).unwrap_or_default().replace('\n', "");
+        if argv.contains("ARGV[--continue]") {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    assert!(
+        argv.contains("ARGV[--permission-mode]ARGV[acceptEdits]ARGV[--continue]"),
+        "resume dropped the profile's arguments: {argv:?}"
+    );
     state.discard_run(&info.id).unwrap();
 }
 

@@ -661,12 +661,16 @@ pub fn list_agent_models(
 /// Async because it runs that CLI: the listing commands take about a second to
 /// answer, and a sync command would spend that on the main thread with a menu
 /// open in front of it.
+///
+/// `project_id` is the project the picker is open in, which decides where the
+/// listing command runs for a CLI that reads config from its directory.
 #[tauri::command]
 pub async fn probe_agent_models(
     state: State<'_, AppState>,
     agent: String,
+    project_id: Option<String>,
 ) -> Result<Vec<String>, String> {
-    state.probe_agent_models(&agent).map_err(|e| e.to_string())
+    state.probe_agent_models(&agent, project_id.as_deref()).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

@@ -136,6 +136,7 @@ export default function RaceDialog({ onClose, issue, issueLabel }: {
                 <ModelSelect
                   compact
                   info={models[name]}
+                  projectId={selectedProjectId}
                   value={modelFor(name)}
                   onChange={(m) => setChosen((c) => ({ ...c, [name]: m }))}
                 />

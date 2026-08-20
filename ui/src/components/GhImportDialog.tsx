@@ -182,6 +182,7 @@ export default function GhImportDialog({
                   <span>model</span>
                   <ModelSelect
                     info={models[agent]}
+                    projectId={selectedProjectId}
                     value={model}
                     onChange={(m) => { setModel(m); setModelTouched(true); }}
                   />

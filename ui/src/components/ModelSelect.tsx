@@ -7,7 +7,13 @@ import { useDismissOnResize } from "../hooks/useDismissOnResize";
 // doesn't flash a spinner at what it already showed. The Rust side caches for
 // the app session; this caches for the webview's, and a reload just asks again
 // and is answered from that cache.
+//
+// Keyed by agent and project together, because opencode's answer differs
+// between projects (AGE-135). A user-scoped agent has one answer for all of
+// them, and pays only a same-tick IPC call per project to be handed it back
+// from the Rust cache.
 const probed = new Map<string, string[]>();
+const probeKey = (agent: string, projectId: string | null) => `${agent}\n${projectId ?? ""}`;
 
 // Model picker for a single agent: the vendor's stable aliases, whatever has
 // been used with this agent before, whatever the agent's own CLI says it has,
@@ -25,10 +31,15 @@ const probed = new Map<string, string[]>();
 // agent's binary and takes about a second. The typed field stays either way, as
 // a probe can fail and a CLI can run a model it doesn't list.
 //
+// The asking happens in the project being worked in, which is why this needs to
+// be told which one: opencode's providers can be configured per project, and
+// asked from anywhere else they are simply absent from the menu (AGE-135).
+//
 // Same trigger-plus-portal shape as BranchSelect, for the same reason: a native
 // <select> is sized by its widest option and can't hold a text field anyway.
 export default function ModelSelect({
   info,
+  projectId,
   value,
   onChange,
   compact = false,
@@ -37,6 +48,10 @@ export default function ModelSelect({
   // `supported: false` for an agent whose CLI takes no model flag. Either way
   // the control renders nothing (see below).
   info: AgentModelInfo | undefined;
+  // The project this picker is choosing a model for, so a project-scoped CLI is
+  // asked in it. Null only where there is genuinely no project selected, which
+  // falls back to the user-level answer.
+  projectId: string | null;
   value: string | null;
   onChange: (model: string | null) => void;
   // Chip form, for a row that already names the agent.
@@ -70,28 +85,30 @@ export default function ModelSelect({
   // The popup is placed against the trigger's rect, measured once at open.
   useDismissOnResize(open, () => setOpen(false));
 
-  // Ask the agent what it has, once per session per agent. A failure is shown
-  // and not remembered: the usual reason one fails is that the agent isn't
-  // logged in yet, which is fixed in another window while this stays open.
+  // Ask the agent what it has, once per session per agent and project. A
+  // failure is shown and not remembered: the usual reason one fails is that the
+  // agent isn't logged in yet, which is fixed in another window while this
+  // stays open.
   const agent = info?.agent;
   const listCommand = info?.listCommand;
   useEffect(() => {
     if (!open || !agent || !listCommand) return;
-    const cached = probed.get(agent);
+    const key = probeKey(agent, projectId);
+    const cached = probed.get(key);
     setListed(cached ?? []);
     setListError("");
     if (cached) return;
     let live = true;
     setListing(true);
-    probeAgentModels(agent)
+    probeAgentModels(agent, projectId)
       .then((models) => {
-        probed.set(agent, models);
+        probed.set(key, models);
         if (live) setListed(models);
       })
       .catch((e) => { if (live) setListError(String(e)); })
       .finally(() => { if (live) setListing(false); });
     return () => { live = false; };
-  }, [open, agent, listCommand]);
+  }, [open, agent, listCommand, projectId]);
 
   // Nothing to pick until we know this agent can be told a model at all: an
   // agent whose CLI takes no model flag gets no control, and neither does one

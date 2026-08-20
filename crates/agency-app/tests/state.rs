@@ -370,6 +370,30 @@ fn create_run_passes_the_chosen_model_to_the_agent_and_remembers_it() {
 const FAKE_CLI: &str =
     concat!("#!/bin/sh\n", "echo \"$@\" >> \"$0.calls\"\n", "printf '{{models}}\\n'\n",);
 
+/// The same, but its answer is the directory it was run in: the whole point of
+/// a project-scoped listing is that the same command says different things in
+/// different places, and this is the smallest CLI that behaves that way.
+const FAKE_CWD_CLI: &str = concat!(
+    "#!/bin/sh\n",
+    "echo \"$@\" >> \"$0.calls\"\n",
+    "printf 'local/%s\\n' \"$(basename \"$(pwd)\")\"\n",
+);
+
+/// Write `body` as an executable stand-in CLI at `path`.
+fn write_fake_cli(path: &Path, body: &str) {
+    std::fs::write(path, body).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+}
+
+/// How many times a stand-in CLI has been run.
+fn fake_cli_calls(path: &Path) -> usize {
+    std::fs::read_to_string(path.with_extension("calls")).map_or(0, |s| s.lines().count())
+}
+
 /// The picker's on-demand probe: run the agent's own listing command, keep
 /// what it says for the session, and never run it for an agent that has no
 /// such command (AGE-117).
@@ -381,16 +405,10 @@ fn probing_an_agents_models_runs_its_own_cli_once_per_session() {
     // Stand in for `opencode models`: the catalog supplies the arguments, so
     // what this proves is that the *profile's* command is what gets run.
     let fake = dir.path().join("fake-opencode");
-    std::fs::write(
+    write_fake_cli(
         &fake,
-        FAKE_CLI.replace("{{models}}", "openai/gpt-5.6\nanthropic/claude-opus-5"),
-    )
-    .unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+        &FAKE_CLI.replace("{{models}}", "openai/gpt-5.6\nanthropic/claude-opus-5"),
+    );
     state
         .register_profile(AgentProfile {
             name: "opencode".into(),
@@ -402,7 +420,7 @@ fn probing_an_agents_models_runs_its_own_cli_once_per_session() {
         })
         .unwrap();
 
-    let models = state.probe_agent_models("opencode").unwrap();
+    let models = state.probe_agent_models("opencode", None).unwrap();
     assert_eq!(models, ["openai/gpt-5.6", "anthropic/claude-opus-5"]);
     // The arguments came from the catalog, not from the profile.
     let calls = std::fs::read_to_string(dir.path().join("fake-opencode.calls")).unwrap();
@@ -410,17 +428,106 @@ fn probing_an_agents_models_runs_its_own_cli_once_per_session() {
 
     // Cached for the session: a second picker open costs nothing, so the CLI
     // is not run again even though its answer has changed.
-    std::fs::write(&fake, FAKE_CLI.replace("{{models}}", "openai/gpt-9")).unwrap();
-    assert_eq!(state.probe_agent_models("opencode").unwrap(), models);
-    assert_eq!(
-        std::fs::read_to_string(dir.path().join("fake-opencode.calls")).unwrap().lines().count(),
-        1
-    );
+    write_fake_cli(&fake, &FAKE_CLI.replace("{{models}}", "openai/gpt-9"));
+    assert_eq!(state.probe_agent_models("opencode", None).unwrap(), models);
+    assert_eq!(fake_cli_calls(&fake), 1);
 
     // And the hint the picker shows names the command the probe runs.
     let listed = state.list_agent_models().unwrap();
     let opencode = listed.iter().find(|m| m.agent == "opencode").expect("opencode in the list");
     assert_eq!(opencode.list_command.as_deref(), Some("opencode models"));
+}
+
+/// opencode merges an `opencode.json` from the directory it runs in over the
+/// user's own, so asking it from home lists the home directory's providers and
+/// a project's own are simply missing (AGE-135). The probe therefore runs in
+/// the project, and caches per project rather than per agent.
+#[test]
+fn a_project_scoped_cli_is_asked_in_the_project_it_is_picking_for() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = common::state(&dir);
+
+    let fake = dir.path().join("fake-opencode");
+    write_fake_cli(&fake, FAKE_CWD_CLI);
+    state
+        .register_profile(AgentProfile {
+            name: "opencode".into(),
+            command: fake.to_string_lossy().into_owned(),
+            args: vec![],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
+
+    let one = dir.path().join("one");
+    let two = dir.path().join("two");
+    std::fs::create_dir_all(&one).unwrap();
+    std::fs::create_dir_all(&two).unwrap();
+    let one = state.add_project("one", &one).unwrap();
+    let two = state.add_project("two", &two).unwrap();
+
+    // Each project gets the answer its own directory gives, not the other's.
+    assert_eq!(state.probe_agent_models("opencode", Some(&one.id)).unwrap(), ["local/one"]);
+    assert_eq!(state.probe_agent_models("opencode", Some(&two.id)).unwrap(), ["local/two"]);
+    assert_eq!(fake_cli_calls(&fake), 2);
+
+    // And the cache is per project: reopening the first project's picker is
+    // still free, and does not hand it the second project's list.
+    assert_eq!(state.probe_agent_models("opencode", Some(&one.id)).unwrap(), ["local/one"]);
+    assert_eq!(fake_cli_calls(&fake), 2);
+
+    // A picker with no project falls back to home, which is a third answer and
+    // so a third entry rather than either project's.
+    assert!(state.probe_agent_models("opencode", None).is_ok());
+    assert_eq!(fake_cli_calls(&fake), 3);
+
+    // A project id that names nothing is a bug in the caller, and says so
+    // rather than quietly answering from somewhere else.
+    let err =
+        state.probe_agent_models("opencode", Some("no-such-project")).unwrap_err().to_string();
+    assert!(err.contains("unknown project"), "{err}");
+}
+
+/// pi's providers are configured once for the user, so its answer is the same
+/// in every project. It keeps the single cache entry it had: a probe per
+/// project would be a second ~1s wait for a list that cannot have changed.
+#[test]
+fn a_user_scoped_cli_is_asked_once_for_every_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = common::state(&dir);
+
+    let fake = dir.path().join("fake-pi");
+    write_fake_cli(
+        &fake,
+        &FAKE_CLI.replace(
+            "{{models}}",
+            "provider  model            context\nanthropic  claude-opus-5   200K",
+        ),
+    );
+    state
+        .register_profile(AgentProfile {
+            name: "pi".into(),
+            command: fake.to_string_lossy().into_owned(),
+            args: vec![],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
+
+    let one = dir.path().join("one");
+    let two = dir.path().join("two");
+    std::fs::create_dir_all(&one).unwrap();
+    std::fs::create_dir_all(&two).unwrap();
+    let one = state.add_project("one", &one).unwrap();
+    let two = state.add_project("two", &two).unwrap();
+
+    let models = state.probe_agent_models("pi", Some(&one.id)).unwrap();
+    assert_eq!(models, ["anthropic/claude-opus-5"]);
+    assert_eq!(state.probe_agent_models("pi", Some(&two.id)).unwrap(), models);
+    assert_eq!(state.probe_agent_models("pi", None).unwrap(), models);
+    assert_eq!(fake_cli_calls(&fake), 1);
 }
 
 /// Most of these CLIs cannot be asked at all, and a probe that guessed a flag
@@ -441,7 +548,7 @@ fn an_agent_with_no_listing_command_is_never_probed() {
         .unwrap();
 
     for agent in ["claude", "my-own-agent"] {
-        let err = state.probe_agent_models(agent).unwrap_err().to_string();
+        let err = state.probe_agent_models(agent, None).unwrap_err().to_string();
         assert!(err.contains("no command for listing its models"), "{agent}: {err}");
     }
     // The picker shows no hint for them either, so nothing offers the probe.

@@ -151,6 +151,7 @@ export default function LoopDialog({ onClose, issue, issueLabel }: {
               <span>model</span>
               <ModelSelect
                 info={models[agent]}
+                projectId={selectedProjectId}
                 value={model}
                 onChange={(m) => { setModel(m); setModelTouched(true); }}
               />

@@ -1102,6 +1102,11 @@ struct UiState {
     pending_open: Option<PendingOpen>,
 }
 
+/// One asking of an agent's listing command: the agent, and the directory the
+/// command was run in. Both halves are the key because a project-scoped CLI
+/// gives a different answer in each place (see `model_probes`).
+type ProbeKey = (String, Option<PathBuf>);
+
 pub struct AppState {
     registry: Mutex<Registry>,
     attaches: Mutex<HashMap<String, Subscription>>,
@@ -1236,7 +1241,13 @@ pub struct AppState {
     /// a CLI's catalogue does not change while the app is running. Failures are
     /// deliberately not cached: the usual reason one fails is that the agent is
     /// not logged in yet, and that is fixed from another window mid-session.
-    model_probes: Mutex<HashMap<String, Vec<String>>>,
+    ///
+    /// Keyed by agent *and by the directory it was asked from*, because for a
+    /// project-scoped CLI those are two different answers: one cache entry per
+    /// agent listed the home directory's providers in every project, and
+    /// opencode's project providers were nowhere (AGE-135). A user-scoped
+    /// agent is always asked from home, so it still has the one entry.
+    model_probes: Mutex<HashMap<ProbeKey, Vec<String>>>,
 }
 
 /// When a project's origin was last contacted, and when it may be again.
@@ -1443,12 +1454,30 @@ impl AppState {
     /// Everything it returns is a validated model id, and the picker's typed
     /// field stays regardless — a probe can fail, and a CLI can run a model it
     /// does not list.
-    pub fn probe_agent_models(&self, agent: &str) -> Result<Vec<String>> {
-        if let Some(models) = self.model_probes.lock().unwrap().get(agent) {
-            return Ok(models.clone());
-        }
+    ///
+    /// `project_id` is the project whose picker is open. It is what makes the
+    /// answer true for a CLI that reads config from the directory it runs in
+    /// (`ListScope::Project`); everything else is asked from home either way.
+    /// `None` where the caller genuinely has no project, which falls back to
+    /// home and to the user-level answer.
+    pub fn probe_agent_models(&self, agent: &str, project_id: Option<&str>) -> Result<Vec<String>> {
         let listing = crate::agent_catalog::model_listing(agent)
             .ok_or_else(|| anyhow!("{agent} has no command for listing its models"))?;
+        // Where to ask from. Home is the neutral place: a CLI finds its own
+        // user-level configuration there and no project's. A project-scoped CLI
+        // is asked in the project instead, because that is the only place its
+        // project providers exist (AGE-135) — the project's own checkout, not a
+        // run's worktree, since every picker that reaches here is choosing a
+        // model for a run that does not exist yet.
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let cwd = match (listing.scope, project_id) {
+            (crate::model_probe::ListScope::Project, Some(id)) => Some(self.project_repo(id)?),
+            _ => home,
+        };
+        let key = (agent.to_string(), cwd);
+        if let Some(models) = self.model_probes.lock().unwrap().get(&key) {
+            return Ok(models.clone());
+        }
         // The profile's command, not the catalog's: a user who pointed this
         // agent at a different binary is asking *that* binary what it has, and
         // it is the one a run would launch.
@@ -1460,12 +1489,8 @@ impl AppState {
             .map(|p| p.command)
             .or_else(|| crate::agent_catalog::find(agent).map(|e| e.command.to_string()))
             .ok_or_else(|| anyhow!("no profile for {agent}"))?;
-        // Run from the user's home rather than a project: opencode and crush
-        // both read project-local config, and a per-project answer would need a
-        // per-project cache and a picker that knows which project it is in.
-        let home = std::env::var_os("HOME").map(PathBuf::from);
-        let models = crate::model_probe::probe(&command, listing, home.as_deref())?;
-        self.model_probes.lock().unwrap().insert(agent.to_string(), models.clone());
+        let models = crate::model_probe::probe(&command, listing, key.1.as_deref())?;
+        self.model_probes.lock().unwrap().insert(key, models.clone());
         Ok(models)
     }
 

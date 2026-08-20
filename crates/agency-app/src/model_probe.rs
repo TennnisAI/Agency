@@ -38,13 +38,35 @@ pub enum ListFormat {
     IdsWithDescriptions,
 }
 
+/// Whose configuration a listing command reads, and so where it has to be run
+/// from for its answer to be the true one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListScope {
+    /// Only user-level configuration, so one answer serves every project and
+    /// the directory the command runs in does not change it.
+    User,
+    /// Configuration from the directory it is run in as well as the user's:
+    /// opencode reads an `opencode.json` beside the code, crush a `.crush/`.
+    /// Asked from anywhere else, a provider configured for one project is
+    /// simply not in the list (AGE-135).
+    Project,
+}
+
 /// How one CLI is asked what it can run: the arguments that make it list its
-/// models, and the shape of what it prints back.
+/// models, the shape of what it prints back, and whose configuration the answer
+/// comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ModelListing {
     /// Arguments after the agent's own command (`pi` + `--list-models`).
     pub args: &'static [&'static str],
     pub format: ListFormat,
+    /// Whether the answer depends on where the command is run (see
+    /// [`ListScope`]). Read off each CLI's own configuration documentation, and
+    /// wrong in the safe direction if it is wrong: a `User` marking on a
+    /// project-scoped CLI hides that project's own providers, which is the bug
+    /// this exists to fix, while a `Project` marking on a user-scoped one only
+    /// costs a probe per project.
+    pub scope: ListScope,
 }
 
 /// Most models any of these CLIs is allowed to report. `cursor-agent` already
@@ -136,8 +158,10 @@ fn strip_ansi(line: &str) -> String {
 ///
 /// `cwd` is where the CLI is run from, and it matters: opencode and crush both
 /// read project-local config, so the answer is only as global as the directory.
-/// The caller passes the user's home for that reason — a neutral place where a
-/// CLI finds its own user-level configuration and no project's.
+/// The caller picks it from the listing's [`ListScope`] — the project being
+/// worked in for a CLI that reads config from it, the user's home for one that
+/// does not, that being a neutral place where a CLI finds its own user-level
+/// configuration and no project's.
 pub fn probe(
     command: &str,
     listing: ModelListing,
@@ -350,7 +374,8 @@ openai/gpt-5.6
     /// an empty list it renders as "this agent has nothing".
     #[test]
     fn a_missing_binary_is_an_error() {
-        let listing = ModelListing { args: &["models"], format: ListFormat::Ids };
+        let listing =
+            ModelListing { args: &["models"], format: ListFormat::Ids, scope: ListScope::User };
         let err = probe("agency-no-such-agent-cli", listing, None).unwrap_err().to_string();
         assert!(err.contains("could not run `agency-no-such-agent-cli models`"), "{err}");
     }
@@ -359,8 +384,11 @@ openai/gpt-5.6
     /// the CLI's own words are what the picker shows.
     #[test]
     fn an_empty_listing_carries_the_clis_own_complaint() {
-        let listing =
-            ModelListing { args: &["-c", "echo 'not logged in' >&2"], format: ListFormat::Ids };
+        let listing = ModelListing {
+            args: &["-c", "echo 'not logged in' >&2"],
+            format: ListFormat::Ids,
+            scope: ListScope::User,
+        };
         let err = probe("sh", listing, None).unwrap_err().to_string();
         assert!(err.contains("listed no models: not logged in"), "{err}");
     }
@@ -370,6 +398,7 @@ openai/gpt-5.6
         let listing = ModelListing {
             args: &["-c", "printf 'openai/gpt-5.6\\nanthropic/claude-opus-5\\n'"],
             format: ListFormat::Ids,
+            scope: ListScope::User,
         };
         assert_eq!(
             probe("sh", listing, None).unwrap(),
@@ -388,6 +417,7 @@ openai/gpt-5.6
         let listing = ModelListing {
             args: &["-c", "for i in $(seq 1 12000); do echo openai/gpt-$i; done"],
             format: ListFormat::Ids,
+            scope: ListScope::User,
         };
         let models = probe("sh", listing, None).unwrap();
         assert_eq!(models.len(), MAX_MODELS);

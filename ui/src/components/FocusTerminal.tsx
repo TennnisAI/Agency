@@ -15,6 +15,7 @@ import { initialCapture, feed } from "../lib/firstPrompt";
 import { shouldSwallowWheel, createPageScroller } from "../lib/termScroll";
 import { follow, GESTURE_MS } from "../lib/termFollow";
 import { createInputWriter, type InputWriter } from "../lib/termInput";
+import { createOutputWriter } from "../lib/termOutput";
 import { fullClipboardText } from "../lib/clipboard";
 import { FindRank, registerFindTarget } from "../lib/findBus";
 import { installTermLinks } from "../lib/termLinkProvider";
@@ -321,6 +322,16 @@ export default function FocusTerminal(
     let disposed = false;
     let liveStarted = false;
     let onData: { dispose(): void } | undefined;
+    // Everything after the snapshot lands here first, so a frame's worth of it
+    // reaches xterm as one write and repaints once (see lib/termOutput).
+    const output = createOutputWriter((bytes) => {
+      // Detach is a command, not a switch: the daemon keeps streaming until it
+      // lands, so a chunk can still arrive after this pane is gone, and this one
+      // was already a frame behind. Writing it would repaint a terminal nobody
+      // can see.
+      if (disposed) return;
+      term.write(bytes);
+    });
     stream.preview(runId, 200).then((seed) => {
       // Only seed before the live stream lands. Once attach is streaming, the daemon has
       // switched the terminal into its alternate screen and repainted; writing the
@@ -369,11 +380,16 @@ export default function FocusTerminal(
           // to any query a replayed stream carries. `write`'s callback runs once the
           // chunk has been parsed, which is the only point at which xterm is done
           // answering it; anything earlier would unmute mid-replay.
+          //
+          // The snapshot goes in by itself rather than through the frame batcher
+          // below, which keeps both halves honest: the mute covers the replay and
+          // nothing else, and `liveStarted` still flips the moment the first live
+          // bytes exist, so the preview seed above cannot paint over them.
           const resume = input.suspend();
           term.write(bytes, resume);
           return;
         }
-        term.write(bytes);
+        output.write(bytes);
       }).then(() => {
         if (disposed) return;
         onData = term.onData((d) => {
@@ -417,6 +433,7 @@ export default function FocusTerminal(
       // the session rather than dying with the pane.
       input.dispose();
       inputRef.current = null;
+      output.dispose();
       stream.detach(runId);
       // xterm's teardown trails the pane's by a frame, deliberately. Work it
       // queued before now still has to run: `term.reset()` on the first live

@@ -3265,7 +3265,7 @@ impl AppState {
         if servers.is_empty() {
             return;
         }
-        match agency_core::mcp::emit_for_agent(agent, worktree, &servers) {
+        match agency_core::mcp::emit_for_agent(agent, worktree, repo, &servers) {
             Err(e) => {
                 log::warn!("emitting MCP config for {agent} into {}: {e}", worktree.display());
             }
@@ -6512,6 +6512,7 @@ mod tests {
 
         agency_core::mcp::emit_for_agent(
             "copilot",
+            dir.path(),
             dir.path(),
             &[agency_core::mcp::McpServer {
                 name: "kg".into(),

@@ -360,13 +360,12 @@ fn workspace_skill_md(ws: &Workspace) -> String {
          opens a pull request from it. A merge closes the issue the run was dispatched from, \
          if there was one, so there is no status to set by hand at the end.\n\
          \n\
-         Do not commit anything Agency generated here. `AGENTS.md` and \
-         `.claude/skills/agency-*` are written into every worktree and excluded from git in \
-         the repository's `.git/info/exclude`, which is why `git status` does not show them; \
+         Do not commit anything Agency generated here. `AGENTS.md`, \
+         `.claude/skills/agency-*` and the MCP config (`.mcp.json`, or the equivalent for the \
+         agent running here) are written into every worktree and excluded from git in the \
+         repository's `.git/info/exclude`, which is why `git status` does not show them; \
          `git add -f` would defeat that permanently and put generated files in the project at \
-         merge. The MCP config Agency writes (`.mcp.json`, or the equivalent for the agent \
-         running here) is not excluded, so look at `git status` before a broad `git add`: if it \
-         is listed and the repository did not carry one before, leave it out.\n\
+         merge.\n\
          \n\
          Agency generates this skill. Edits are replaced on the next run.\n",
         branch = ws.branch,

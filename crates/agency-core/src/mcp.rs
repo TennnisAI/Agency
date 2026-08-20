@@ -4,11 +4,12 @@
 //! with the project's `[mcp.servers.*]` in `.agency/agency.toml`) and emits it
 //! into each new worktree in the *native* format of the agent that will run
 //! there — `.mcp.json` for Claude Code and Copilot CLI, `.cursor/mcp.json` for
-//! Cursor, `opencode.json` for OpenCode. Existing files are merged into (our
-//! entries upserted by name), never replaced, so repo-committed server
-//! definitions survive. Agents whose MCP config is global-only (Codex's
-//! ~/.codex/config.toml) are intentionally skipped: Agency never mutates files
-//! outside the workspace.
+//! Cursor, `opencode.json` for OpenCode. An untracked file already sitting in
+//! the worktree is merged into (our entries upserted by name), never replaced;
+//! a file the repo *tracks* is left alone entirely, and the config is excluded
+//! from git either way — see [`emit_for_agent`]. Agents whose MCP config is
+//! global-only (Codex's ~/.codex/config.toml) are intentionally skipped: Agency
+//! never mutates files outside the workspace.
 //!
 //! Writing the file is not always enough to have it read: [`launch_args`] adds
 //! whatever the agent needs on its command line to actually load what we wrote
@@ -225,6 +226,26 @@ pub fn agent_supported(agent: &str) -> bool {
     emit_target(agent).is_some()
 }
 
+/// What keeps `agent`'s emitted config out of the run's diff, derived from the
+/// same [`emit_target`] entry that decided where to write it, so a new agent
+/// format cannot land without its exclude. Anchored (`/.mcp.json`,
+/// `/.cursor/mcp.json`, `/opencode.json`) so it only ever hides the repo root's
+/// copy, never a same-named file somewhere down the tree.
+fn exclude_pattern(segments: &[&str]) -> String {
+    format!("/{}", segments.join("/"))
+}
+
+/// Whether git tracks `rel` in this worktree. A tracked config is the repo's
+/// own; see [`crate::briefing`] and [`crate::skills`], which skip on the same
+/// test.
+fn tracked(worktree: &Path, rel: &str) -> bool {
+    std::process::Command::new("git")
+        .args(["ls-files", "--", rel])
+        .current_dir(worktree)
+        .output()
+        .is_ok_and(|o| o.status.success() && !o.stdout.is_empty())
+}
+
 /// The flag `agent` takes to be handed an MCP config file outright, instead of
 /// discovering the workspace file on its own. `None` (every agent but Copilot)
 /// means the emitted file is picked up without help.
@@ -349,10 +370,20 @@ pub fn auth_argv(agent: &str, server: &McpServer) -> Result<(String, Vec<String>
     Ok((command.to_string(), args))
 }
 
-/// Write the servers into `worktree` in `agent`'s native config format.
+/// Write the servers into `worktree` in `agent`'s native config format, and
+/// keep the file out of git so no agent commits it into the project.
+///
 /// Returns false (and writes nothing) for agents Agency can't configure
-/// per-workspace. Invalid entries are skipped rather than failing the run.
-pub fn emit_for_agent(agent: &str, worktree: &Path, servers: &[McpServer]) -> Result<bool> {
+/// per-workspace, and for a repo that tracks the config file itself: a diff on
+/// a tracked file rides into the project's main branch at merge, which is not a
+/// change Agency gets to make. Invalid entries are skipped rather than failing
+/// the run.
+pub fn emit_for_agent(
+    agent: &str,
+    worktree: &Path,
+    repo_root: &Path,
+    servers: &[McpServer],
+) -> Result<bool> {
     // Skip servers registered with *this* agent's CLI directly (Authenticate
     // flow) so its persisted OAuth session applies, and re-emitting a
     // project-scoped copy would only trigger an untrusted-server approval.
@@ -365,8 +396,31 @@ pub fn emit_for_agent(agent: &str, worktree: &Path, servers: &[McpServer]) -> Re
     let Some((segments, root_key, entry)) = emit_target(agent) else {
         return Ok(false);
     };
+    let rel = segments.join("/");
+    if tracked(worktree, &rel) {
+        log::info!(
+            "{rel} is tracked in {}: leaving the repo's own MCP config alone",
+            worktree.display()
+        );
+        return Ok(false);
+    }
     let path = segments.iter().fold(worktree.to_path_buf(), |p, s| p.join(s));
-    upsert_json(&path, root_key, &valid, entry)
+    let wrote = upsert_json(&path, root_key, &valid, entry)?;
+    // AGE-115: this was the only one of Agency's three worktree file drops with no
+    // exclude, so on a repo that did not already track `.mcp.json` the first
+    // `git add -A` an agent ran staged Agency's MCP config and merging the run
+    // put it in the project. Excluding costs the user nothing: `git add -f`
+    // still wins, and an exclude has no say over a file once it is tracked
+    // (which is why the skip above, not the exclude, is what protects a repo's
+    // own committed config).
+    if wrote {
+        if let Err(e) =
+            crate::worktree::ensure_exclude_pattern(repo_root, &exclude_pattern(segments))
+        {
+            log::warn!("excluding {rel} in {}: {e}", repo_root.display());
+        }
+    }
+    Ok(wrote)
 }
 
 /// The `"type"` string Claude/standard `.mcp.json` uses for a remote transport.
@@ -522,6 +576,7 @@ mod tests {
         let wrote = emit_for_agent(
             "claude",
             dir.path(),
+            dir.path(),
             &[stdio("mine", "my-cmd"), remote("api", "https://mcp.example")],
         )
         .unwrap();
@@ -547,6 +602,7 @@ mod tests {
         let wrote = emit_for_agent(
             "copilot",
             dir.path(),
+            dir.path(),
             &[stdio("kg", "graphify"), remote("api", "https://mcp.example")],
         )
         .unwrap();
@@ -568,7 +624,7 @@ mod tests {
         // Nothing written yet: an `@path` to a missing file is worse than no flag.
         assert!(launch_args("copilot", dir.path()).is_empty());
 
-        emit_for_agent("copilot", dir.path(), &[stdio("kg", "graphify")]).unwrap();
+        emit_for_agent("copilot", dir.path(), dir.path(), &[stdio("kg", "graphify")]).unwrap();
         let path = dir.path().join(".mcp.json");
         assert_eq!(
             launch_args("copilot", dir.path()),
@@ -584,7 +640,7 @@ mod tests {
     #[test]
     fn launch_args_yield_to_a_flag_the_user_set_themselves() {
         let dir = tempfile::tempdir().unwrap();
-        emit_for_agent("copilot", dir.path(), &[stdio("kg", "graphify")]).unwrap();
+        emit_for_agent("copilot", dir.path(), dir.path(), &[stdio("kg", "graphify")]).unwrap();
         assert!(!launch_args_unless_set("copilot", dir.path(), &[]).is_empty());
         for existing in [
             vec!["--additional-mcp-config".to_string(), "@/my/own.json".to_string()],
@@ -620,7 +676,7 @@ mod tests {
             headers: BTreeMap::from([("Authorization".to_string(), "Bearer tok".to_string())]),
             ..Default::default()
         };
-        emit_for_agent("claude", dir.path(), &[server]).unwrap();
+        emit_for_agent("claude", dir.path(), dir.path(), &[server]).unwrap();
         let root: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(dir.path().join(".mcp.json")).unwrap())
                 .unwrap();
@@ -639,11 +695,12 @@ mod tests {
             ..Default::default()
         };
         // Only the user-scope server is present → nothing to write.
-        assert!(!emit_for_agent("claude", dir.path(), &[server.clone()]).unwrap());
+        assert!(!emit_for_agent("claude", dir.path(), dir.path(), &[server.clone()]).unwrap());
         assert!(!dir.path().join(".mcp.json").exists());
         // Mixed with a normal server → the user-scope one is filtered out.
         let wrote =
-            emit_for_agent("claude", dir.path(), &[server, stdio("kg", "graphify")]).unwrap();
+            emit_for_agent("claude", dir.path(), dir.path(), &[server, stdio("kg", "graphify")])
+                .unwrap();
         assert!(wrote);
         let root: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(dir.path().join(".mcp.json")).unwrap())
@@ -666,16 +723,16 @@ mod tests {
             ..Default::default()
         };
         // Claude reads it from its own user config → nothing to emit.
-        assert!(!emit_for_agent("claude", dir.path(), &[server.clone()]).unwrap());
+        assert!(!emit_for_agent("claude", dir.path(), dir.path(), &[server.clone()]).unwrap());
         assert!(!dir.path().join(".mcp.json").exists());
         // Copilot never registered it → it must still land in the worktree.
-        assert!(emit_for_agent("copilot", dir.path(), &[server.clone()]).unwrap());
+        assert!(emit_for_agent("copilot", dir.path(), dir.path(), &[server.clone()]).unwrap());
         let root: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(dir.path().join(".mcp.json")).unwrap())
                 .unwrap();
         assert_eq!(root["mcpServers"]["atlassian"]["url"], "https://mcp.atlassian.com/v1/mcp");
         // …as must Cursor, in its own format.
-        assert!(emit_for_agent("cursor", dir.path(), &[server]).unwrap());
+        assert!(emit_for_agent("cursor", dir.path(), dir.path(), &[server]).unwrap());
         assert!(dir.path().join(".cursor/mcp.json").exists());
     }
 
@@ -793,7 +850,8 @@ mod tests {
     #[test]
     fn emits_cursor_into_nested_dir() {
         let dir = tempfile::tempdir().unwrap();
-        emit_for_agent("cursor", dir.path(), &[remote("api", "https://mcp.example")]).unwrap();
+        emit_for_agent("cursor", dir.path(), dir.path(), &[remote("api", "https://mcp.example")])
+            .unwrap();
         let root: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(dir.path().join(".cursor/mcp.json")).unwrap(),
         )
@@ -804,7 +862,7 @@ mod tests {
     #[test]
     fn emits_opencode_local_command_vector() {
         let dir = tempfile::tempdir().unwrap();
-        emit_for_agent("opencode", dir.path(), &[stdio("kg", "graphify")]).unwrap();
+        emit_for_agent("opencode", dir.path(), dir.path(), &[stdio("kg", "graphify")]).unwrap();
         let root: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(dir.path().join("opencode.json")).unwrap(),
         )
@@ -818,9 +876,9 @@ mod tests {
     #[test]
     fn unsupported_agents_and_invalid_servers_write_nothing() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(!emit_for_agent("codex", dir.path(), &[stdio("x", "cmd")]).unwrap());
+        assert!(!emit_for_agent("codex", dir.path(), dir.path(), &[stdio("x", "cmd")]).unwrap());
         let invalid = McpServer { name: "bad".into(), ..Default::default() };
-        assert!(!emit_for_agent("claude", dir.path(), &[invalid]).unwrap());
+        assert!(!emit_for_agent("claude", dir.path(), dir.path(), &[invalid]).unwrap());
         assert!(!dir.path().join(".mcp.json").exists());
     }
 }

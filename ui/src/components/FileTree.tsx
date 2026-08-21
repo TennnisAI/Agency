@@ -3,7 +3,7 @@ import {
   BackendSearchHit, DirEntry, FileRoot, listDir, searchFiles,
   createFile, createDir, importFile, renamePath, trashPath,
 } from "../api";
-import { joinPath, parentPath, baseName } from "../lib/filePath";
+import { ancestorDirs, joinPath, parentPath, baseName } from "../lib/filePath";
 import { fileIcon } from "../lib/fileIcon";
 import { FileIcon } from "./fileIcons";
 import Menu, { MenuEntry } from "./git/Menu";
@@ -32,10 +32,16 @@ function Twistie({ open }: { open: boolean }) {
 }
 
 export default function FileTree({
-  root, selected, query, onQuery, onSelect, onOpenHit, onRenamed, onDeleted,
+  root, selected, revealTarget, query, onQuery, onSelect, onOpenHit, onRenamed, onDeleted,
 }: {
   root: FileRoot;
   selected: string | null;
+  /**
+   * "Reveal in Files": show this path in the tree. The nonce is what makes
+   * revealing the same path twice a fresh request. (Not `reveal` — that name
+   * belongs to the Finder action imported above.)
+   */
+  revealTarget?: { path: string; nonce: number } | null;
   /** Find-in-files query; non-empty replaces the tree with grouped hits. */
   query: string;
   onQuery: (q: string) => void;
@@ -56,6 +62,12 @@ export default function FileTree({
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuEntry[] } | null>(null);
 
   const rootKey = `${root.kind}:${root.id}`;
+  // The scrolling tree body: the drop target below, and what a reveal scrolls.
+  const bodyRef = useRef<HTMLDivElement>(null);
+  // The reveal walk below runs in a promise chain, where `cache` would be
+  // whatever it was when the effect started.
+  const cacheRef = useRef(cache);
+  cacheRef.current = cache;
 
   const loadDir = useCallback((path: string) => {
     return listDir(root, path)
@@ -92,6 +104,35 @@ export default function FileTree({
     setOpen((s) => (s.has(path) ? s : new Set(s).add(path)));
     if (!cache.has(path)) loadDir(path);
   };
+
+  // Reveal: open every folder on the way to the path, then scroll its row into
+  // view. Nothing below the root is listed until it is opened, so the row does
+  // not exist yet when the request lands — the listings are fetched first, and
+  // the scroll still retries across a few frames because a row mounts one
+  // render after the listing that holds it.
+  useEffect(() => {
+    if (!revealTarget) return;
+    let cancelled = false;
+    // An untracked folder arrives from source control with a trailing slash;
+    // it is the thing to open, not just something on the way to it.
+    const isDir = revealTarget.path.endsWith("/");
+    const target = isDir ? revealTarget.path.slice(0, -1) : revealTarget.path;
+    const dirs = ancestorDirs(target);
+    if (isDir) dirs.push(target);
+    setOpen((s) => new Set([...s, ...dirs]));
+    const pending = dirs.filter((d) => !cacheRef.current.has(d)).map(loadDir);
+    void Promise.all(pending).then(() => {
+      const scroll = (tries: number) => {
+        if (cancelled) return;
+        const row = bodyRef.current?.querySelector(`[data-path="${CSS.escape(target)}"]`);
+        if (row) { row.scrollIntoView({ block: "nearest" }); return; }
+        if (tries > 0) requestAnimationFrame(() => scroll(tries - 1));
+      };
+      requestAnimationFrame(() => scroll(6));
+    });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [revealTarget]);
 
   // The directory a create should land in: a folder targets itself, a file its
   // parent, and no target means the root.
@@ -141,7 +182,6 @@ export default function FileTree({
   // Files land in the folder under the cursor (blank space below the rows is
   // the root). Copies, never moves: the original stays where the user had it.
 
-  const bodyRef = useRef<HTMLDivElement>(null);
   const [importing, setImporting] = useState(false);
   // The drop listener is installed once, so it would otherwise read `importing`
   // from the render that installed it.
@@ -246,6 +286,7 @@ export default function FileTree({
             key={path}
             className={`tree-row dir${dropDir === path ? " drop-into" : ""}`}
             style={pad}
+            data-path={path}
             data-drop-dir={path}
             onClick={() => toggle(path)}
             onContextMenu={(e) => openMenu(e, { path, isDir: true })}
@@ -267,6 +308,7 @@ export default function FileTree({
             key={path}
             className={`tree-row file ${selected === path ? "on" : ""}`}
             style={pad}
+            data-path={path}
             data-drop-dir={dir}
             onClick={() => onSelect(path)}
             onContextMenu={(e) => openMenu(e, { path, isDir: false })}

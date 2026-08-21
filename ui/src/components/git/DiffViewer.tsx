@@ -18,6 +18,9 @@ type Props = {
   onChanged: () => void;
   onCommentAdded?: () => void;
   allowComments?: boolean;
+  // Show this file in the Files tab. Absent where there is no Files tab to
+  // show it in, which leaves the header path as plain text.
+  onRevealInFiles?: (path: string) => void;
 };
 
 // An image has no textual diff to parse — git only reports that the bytes
@@ -49,7 +52,7 @@ function spansToText(spans: Span[] | null): string {
 }
 
 function TextDiffViewer({
-  taskId, path, mode, hash, onChanged, onCommentAdded, allowComments = true,
+  taskId, path, mode, hash, onChanged, onCommentAdded, allowComments = true, onRevealInFiles,
 }: Props) {
   const [fd, setFd] = useState<FileDiff | null>(null);
   const [rows, setRows] = useState<DiffRow[]>([]);
@@ -181,7 +184,15 @@ function TextDiffViewer({
   return (
     <div className="diffviewer" ref={wrapRef}>
       <div className="diff-toolbar">
-        <span className="diff-path">{path}</span>
+        {/* The header path is the way from a diff to the file itself. A diff
+            that deletes the file has nothing left to open, so that one stays
+            plain text rather than offering a jump that would fail. */}
+        {onRevealInFiles && !/^deleted file mode/m.test(fd.header) ? (
+          <button className="diff-path" title="Show this file in the Files tab"
+            onClick={() => onRevealInFiles(path)}>{path}</button>
+        ) : (
+          <span className="diff-path">{path}</span>
+        )}
         <span className="spacer" style={{ flex: 1 }} />
         {sel && sel.lines.size > 0 && !readonly && (
           <span className="diff-sel-actions">

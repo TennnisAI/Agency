@@ -14,7 +14,8 @@ import Menu, { MenuEntry } from "./Menu";
 import StashGroup from "./StashGroup";
 
 export default function ChangesPanel({
-  taskId, changes, branch, stashes, restoreMessage, onAct, onSync, onPush, busy = false, selectedPath, onSelectFile,
+  taskId, changes, branch, stashes, restoreMessage, onAct, onSync, onPush, busy = false, selectedPath,
+  onSelectFile, onRevealInFiles,
 }: {
   taskId: string;
   changes: FileChange[];
@@ -32,6 +33,9 @@ export default function ChangesPanel({
   busy?: boolean;
   selectedPath: string | null;
   onSelectFile: (path: string, group: "index" | "workingTree" | "merge" | "untracked") => void;
+  // Show this row's file in the Files tab. Absent where there is no Files tab
+  // (the workspace), and the menu entry goes with it.
+  onRevealInFiles?: (path: string) => void;
 }) {
   const g = useMemo(() => partition(changes), [changes]);
   // Discard/drop are destructive (git restore / clean -f / stash drop); confirm first.
@@ -56,8 +60,8 @@ export default function ChangesPanel({
   };
 
   const menuItems = (c: FileChange, group: GitGroup): MenuEntry[] => {
-    // Reveal and Copy Path resolve the file on disk, so they can't work once
-    // it's gone; Copy Relative Path is just the string and always can.
+    // Both reveals and Copy Path resolve the file on disk, so they can't work
+    // once it's gone; Copy Relative Path is just the string and always can.
     const gone = decorateIn(c, group).letter === "D";
     // An untracked folder git won't list file by file arrives with a trailing
     // slash, which baseName reads as an empty name.
@@ -114,6 +118,9 @@ export default function ChangesPanel({
     }
     items.push(
       { kind: "separator" },
+      ...(onRevealInFiles
+        ? [{ label: "Reveal in Files", disabled: gone, onClick: () => onRevealInFiles(c.path) } as MenuEntry]
+        : []),
       { label: revealLabel, disabled: gone, onClick: () => reveal(root, c.path) },
       { label: "Copy Path", disabled: gone, onClick: () => copyAbsPath(root, c.path) },
       { label: "Copy Relative Path", onClick: () => copyRelPath(c.path) },

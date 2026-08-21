@@ -5,7 +5,13 @@ import { fileIcon } from "../../lib/fileIcon";
 import { FileIcon } from "../fileIcons";
 import DiffViewer from "./DiffViewer";
 
-export default function CommitDetail({ taskId, item }: { taskId: string; item: HistoryItem }) {
+export default function CommitDetail({ taskId, item, onRevealInFiles }: {
+  taskId: string;
+  item: HistoryItem;
+  // Show a file from this commit in the Files tab, as its working-tree copy
+  // stands now. Absent where there is no Files tab.
+  onRevealInFiles?: (path: string) => void;
+}) {
   const [files, setFiles] = useState<CommitFile[]>([]);
   const [path, setPath] = useState<string | null>(null);
   const [error, setError] = useState("");
@@ -50,7 +56,7 @@ export default function CommitDetail({ taskId, item }: { taskId: string; item: H
           })}
         </div>
         <div className="git-commitdetail-diff">
-          {path ? <DiffViewer taskId={taskId} path={path} mode="commit" hash={item.hash} onChanged={() => {}} />
+          {path ? <DiffViewer taskId={taskId} path={path} mode="commit" hash={item.hash} onChanged={() => {}} onRevealInFiles={onRevealInFiles} />
                 : <div className="diff-empty">Select a file.</div>}
         </div>
       </div>

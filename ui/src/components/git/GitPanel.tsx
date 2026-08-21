@@ -30,6 +30,10 @@ type Props = {
   onSelect: (sel: GitSelection) => void;
   width?: number;
   allowComments?: boolean;
+  // Show a path from this working tree in the Files tab. Absent where there is
+  // no Files tab to show it in (the workspace hides one), which is what takes
+  // "Reveal in Files" out of the menus there.
+  onRevealInFiles?: (path: string) => void;
 };
 
 // Source control is per repo, but the panel sits at a fixed spot in the tree —
@@ -48,6 +52,7 @@ function GitRepoPanel({
   onSelect,
   width,
   allowComments = true,
+  onRevealInFiles,
 }: Props) {
   const [changes, setChanges] = useState<FileChange[]>([]);
   const [branch, setBranch] = useState<BranchInfo | null>(null);
@@ -294,7 +299,8 @@ function GitRepoPanel({
   const changesPanel = (
     <ChangesPanel taskId={taskId} changes={changes} branch={branch} stashes={stashes}
       restoreMessage={restoreMessage} onAct={act} onSync={sync} onPush={runPush} busy={busy}
-      selectedPath={selection?.kind === "file" ? selection.path : null} onSelectFile={onSelectFile} />
+      selectedPath={selection?.kind === "file" ? selection.path : null} onSelectFile={onSelectFile}
+      onRevealInFiles={onRevealInFiles} />
   );
   const divergedDialog = divergedPrompt && (
     <ConfirmDialog
@@ -341,8 +347,8 @@ function GitRepoPanel({
         </div>
         <Resizer size={leftPane.width} min={300} max={720} onChange={leftPane.setWidth} />
         <div className="git-full-right">
-          {selection?.kind === "file" && <DiffViewer taskId={taskId} path={selection.path} mode={diffMode(selection.group)} onChanged={refresh} onCommentAdded={() => setCommentsKey((k) => k + 1)} allowComments={allowComments} />}
-          {selection?.kind === "commit" && <CommitDetail taskId={taskId} item={selection.item} />}
+          {selection?.kind === "file" && <DiffViewer taskId={taskId} path={selection.path} mode={diffMode(selection.group)} onChanged={refresh} onCommentAdded={() => setCommentsKey((k) => k + 1)} allowComments={allowComments} onRevealInFiles={onRevealInFiles} />}
+          {selection?.kind === "commit" && <CommitDetail taskId={taskId} item={selection.item} onRevealInFiles={onRevealInFiles} />}
           {!selection && <div className="diff-empty">Select a file or commit.</div>}
         </div>
       </div>

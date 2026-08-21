@@ -821,6 +821,18 @@ impl Registry {
         Ok(())
     }
 
+    /// Repoint a run at a renamed branch.
+    ///
+    /// The branch lives in two places, git and this row, and a merge reads the
+    /// row: rename only the git side and the next merge targets a branch that
+    /// no longer exists. Both halves belong to the one caller
+    /// (`AppState::rename_run_branch`), which rolls git back if this fails.
+    pub fn set_run_branch(&self, id: &str, branch: &str) -> Result<()> {
+        self.conn
+            .execute("UPDATE runs SET branch = ?2 WHERE id = ?1", rusqlite::params![id, branch])?;
+        Ok(())
+    }
+
     /// Record the run's prompt after the fact. Runs are created promptless
     /// (the user types straight into the agent terminal), so the first line
     /// they type is captured and stored here as the run's prompt. First

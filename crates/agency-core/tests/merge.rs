@@ -406,3 +406,56 @@ fn merge_with_progress_stops_reporting_when_it_refuses_to_start() {
     assert!(err.to_string().contains("uncommitted changes"), "{err}");
     assert_eq!(steps, vec!["Checking the project's checkout"]);
 }
+
+/// The AGE-148 shape: the branch a run is sitting on, in its own worktree, is
+/// renamed from the main checkout. Git repoints the worktree's HEAD itself, so
+/// the agent's workspace keeps working under the new name.
+#[test]
+fn rename_moves_a_branch_checked_out_in_a_worktree() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    let wt = dir.path().join("wt");
+    run(dir.path(), &["worktree", "add", "-q", "-b", "agent/old-name", wt.to_str().unwrap()]);
+
+    merge::rename_branch(dir.path(), "agent/old-name", "agent/new-name").unwrap();
+
+    assert!(!merge::branch_exists(dir.path(), "agent/old-name"));
+    assert!(merge::branch_exists(dir.path(), "agent/new-name"));
+    assert_eq!(merge::current_branch(&wt).as_deref(), Some("agent/new-name"));
+}
+
+#[test]
+fn rename_refuses_to_clobber_an_existing_branch() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    run(dir.path(), &["branch", "agent/one"]);
+    run(dir.path(), &["branch", "agent/two"]);
+
+    assert!(merge::rename_branch(dir.path(), "agent/one", "agent/two").is_err());
+    assert!(merge::branch_exists(dir.path(), "agent/one"), "the rename left the source alone");
+}
+
+/// `remote_copies` answers about the *name*, which is what a local rename
+/// cannot take back — unlike `is_pushed`, which answers about the commits and
+/// so says yes for an unpushed branch whose commits reached a remote some
+/// other way.
+#[test]
+fn remote_copies_finds_the_published_name_only() {
+    let origin = tempfile::tempdir().unwrap();
+    run(origin.path(), &["init", "-q", "--bare", "-b", "main", "."]);
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    run(dir.path(), &["remote", "add", "origin", origin.path().to_str().unwrap()]);
+    run(dir.path(), &["push", "-q", "origin", "main"]);
+
+    run(dir.path(), &["checkout", "-q", "-b", "agent/local-only"]);
+    assert!(merge::remote_copies(dir.path(), "agent/local-only").is_empty());
+    // Its commits are on the remote (it has none of its own), but its name is not.
+    assert!(merge::is_pushed(dir.path(), "agent/local-only"));
+
+    run(dir.path(), &["push", "-q", "origin", "agent/local-only"]);
+    assert_eq!(
+        merge::remote_copies(dir.path(), "agent/local-only"),
+        vec!["origin/agent/local-only".to_string()]
+    );
+}

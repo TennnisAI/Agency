@@ -162,6 +162,37 @@ fn unmerged_files(repo: &Path) -> Result<Vec<String>> {
     Ok(out.lines().map(|l| l.to_string()).collect())
 }
 
+/// Rename `from` to `to`, and nothing else.
+///
+/// `git branch -m` moves the ref, its config (upstream and friends) and its
+/// reflog together, and repoints the HEAD of whichever worktree has the branch
+/// checked out, so a run's worktree keeps working under the new name without
+/// being touched. Without `-M` it refuses to clobber an existing `to`, which is
+/// the backstop behind [`branch_exists`]'s check at the call site.
+pub fn rename_branch(repo: &Path, from: &str, to: &str) -> Result<()> {
+    git_ok(repo, &["branch", "-m", from, to])?;
+    Ok(())
+}
+
+/// Remote-tracking refs carrying `branch`'s exact name, as `origin/agent/foo`.
+///
+/// Distinct from [`is_pushed`], which asks whether the *commits* are safe
+/// somewhere: this asks whether the *name* has been published, which is what a
+/// local rename cannot take back. Answered from the local ref store, so it is
+/// as fresh as the last fetch; a name pushed from another machine and never
+/// fetched here reads as unpublished.
+pub fn remote_copies(repo: &Path, branch: &str) -> Vec<String> {
+    let pattern = format!("refs/remotes/*/{branch}");
+    git(repo, &["for-each-ref", "--format=%(refname:short)", &pattern])
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .map(|out| {
+            out.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect()
+        })
+        .unwrap_or_default()
+}
+
 /// The branch the checkout is on, or `None` on detached HEAD.
 pub fn current_branch(repo: &Path) -> Option<String> {
     git(repo, &["symbolic-ref", "--short", "-q", "HEAD"])

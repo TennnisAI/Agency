@@ -17,6 +17,16 @@ export interface OpenFileRequest {
   path: string;
   /** Optional 1-based line to land on. */
   line?: number;
+  /**
+   * Also show the path in the file tree: open the folders on the way to it and
+   * scroll its row into view. Set by "Reveal in Files" and the diff header;
+   * a quick-open jump leaves it off, because the tree is not what you were
+   * looking at.
+   *
+   * A path ending in "/" is a folder (an untracked directory git reports as
+   * one entry): it is revealed in the tree and nothing is opened in the editor.
+   */
+  reveal?: boolean;
 }
 
 /** The canonical "kind:id" key for a Files root. */

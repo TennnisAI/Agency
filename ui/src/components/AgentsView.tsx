@@ -90,6 +90,16 @@ export default function AgentsView({
       : { kind: "project", id: project.id }
     : null;
 
+  // Source control → Files: the two are rooted on the same working tree (both
+  // follow the run selection), so the tab switch plus the open request is the
+  // whole move. Undefined in a workspace, which has no Files tab at all — the
+  // request would be redirected to Docs and left dangling, so the entries that
+  // depend on this are simply not offered there.
+  const revealInFilesTab = isWorkspace || !filesRoot ? undefined : (path: string) => {
+    setTab("files");
+    requestOpenFile({ rootKey: fileRootKey(filesRoot), path, reveal: true });
+  };
+
   // Where the Docs / Files checkout bar goes when clicked: Source Control on
   // the tree it names. The Files tree is rooted at whatever source control
   // already targets (both follow the run selection, and a run without a
@@ -255,7 +265,8 @@ export default function AgentsView({
           {tab === "source" && (
             <div className="source-wrap">
               {srcTab === "changes" && gitRoot && (
-                <GitPanel taskId={gitRoot} layout="full" selection={gitSel} onSelect={setGitSel} allowComments={allowComments} />
+                <GitPanel taskId={gitRoot} layout="full" selection={gitSel} onSelect={setGitSel}
+                  allowComments={allowComments} onRevealInFiles={revealInFilesTab} />
               )}
               {srcTab === "prs" && (
                 <PrReviewPanel projectId={project.id} initialPr={reviewPr} onConsumeInitial={() => setReviewPr(null)} />
@@ -333,6 +344,7 @@ export default function AgentsView({
                     selection={gitSel}
                     onSelect={(sel) => { setGitSel(sel); if (sel) setTab("source"); }}
                     allowComments={allowComments}
+                    onRevealInFiles={revealInFilesTab}
                   />
                 </>
               )}

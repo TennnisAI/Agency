@@ -13,7 +13,7 @@ import {
   retargetPath, serializeTabs, setDirtyTab,
 } from "../lib/fileTabs";
 import { bufferKey, dropBuffer, hasBuffer, stashBuffer, takeBuffer } from "../lib/editorBuffers";
-import { consumePendingOpen, onOpenFile } from "../lib/openFile";
+import { consumePendingOpen, onOpenFile, type OpenFileRequest } from "../lib/openFile";
 import { baseName } from "../lib/filePath";
 import { recordActivation } from "../lib/recency";
 import { terminalHasFocus } from "../lib/terminalFocus";
@@ -48,6 +48,10 @@ export default function FilesView({ root, project, agentsOpen, onOpenCheckout }:
   // no file read, no CodeMirror instance — until first activation.
   const [warm, setWarm] = useState<Set<string>>(new Set());
   const [query, setQuery] = useState("");
+  // The path "Reveal in Files" asked the tree to show, if any. Separate from
+  // the open tab: revealing is what the source-control side asked for, and a
+  // quick-open jump deliberately leaves the tree where it was.
+  const [revealTarget, setRevealTarget] = useState<{ path: string; nonce: number } | null>(null);
   const [confirmClose, setConfirmClose] = useState<string | null>(null);
   const editorRefs = useRef(new Map<string, FileEditorHandle | null>());
   const rootKey = root ? `${root.kind}:${root.id}` : null;
@@ -94,6 +98,7 @@ export default function FilesView({ root, project, agentsOpen, onOpenCheckout }:
     }
     setRootTabs({ key: rootKey, tabs: s });
     setWarm(new Set(s.active ? [s.active] : []));
+    setRevealTarget(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rootKey]);
 
@@ -110,6 +115,16 @@ export default function FilesView({ root, project, agentsOpen, onOpenCheckout }:
   };
   const openRef = useRef(openAtLine);
   openRef.current = openAtLine;
+
+  // Show a path in the tree, opening the folders on the way to it. The search
+  // results replace the tree entirely, so a reveal has to leave them first or
+  // it would expand folders nobody can see.
+  const revealInTree = (path: string) => {
+    setQuery("");
+    setRevealTarget((r) => ({ path, nonce: (r?.nonce ?? 0) + 1 }));
+  };
+  const revealRef = useRef(revealInTree);
+  revealRef.current = revealInTree;
 
   const doClose = (path: string) => {
     // Discard first: the editor unmounts dirty and would otherwise stash the
@@ -156,9 +171,15 @@ export default function FilesView({ root, project, agentsOpen, onOpenCheckout }:
   // opened here (a mismatched pending one is dropped as stale instead).
   useEffect(() => {
     if (!rootKey) return;
-    const unsubscribe = onOpenFile(rootKey, (req) => openRef.current(req.path, req.line));
+    const deliver = (req: OpenFileRequest) => {
+      if (req.reveal) revealRef.current(req.path);
+      // A folder (trailing slash) has nothing to open in the editor; revealing
+      // it in the tree is the whole request.
+      if (!req.path.endsWith("/")) openRef.current(req.path, req.line);
+    };
+    const unsubscribe = onOpenFile(rootKey, deliver);
     const pending = consumePendingOpen(rootKey);
-    if (pending) openRef.current(pending.path, pending.line);
+    if (pending) deliver(pending);
     return unsubscribe;
   }, [rootKey]);
 
@@ -211,6 +232,7 @@ export default function FilesView({ root, project, agentsOpen, onOpenCheckout }:
           <FileTree
             root={root}
             selected={tabs.active}
+            revealTarget={revealTarget}
             query={query}
             onQuery={setQuery}
             onSelect={(p) => { if (p) openAtLine(p); }}

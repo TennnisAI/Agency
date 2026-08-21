@@ -342,7 +342,13 @@ export default function AgentsView({
                     layout="compact"
                     width={reviewPane.width}
                     selection={gitSel}
-                    onSelect={(sel) => { setGitSel(sel); if (sel) setTab("source"); }}
+                    onSelect={(sel) => {
+                      setGitSel(sel);
+                      // The selection only renders in the Changes sub-view, so
+                      // force it: with Pull Requests left active, this jump
+                      // landed on the PR list and the clicked file never showed.
+                      if (sel) { setSrcTab("changes"); setTab("source"); }
+                    }}
                     allowComments={allowComments}
                     onRevealInFiles={revealInFilesTab}
                   />

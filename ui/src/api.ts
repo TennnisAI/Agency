@@ -1086,6 +1086,14 @@ export const submitPrReview = (
 ) => invoke<void>("submit_pr_review", { projectId, number, event, body, comments });
 export const replyPrComment = (projectId: string, number: number, inReplyTo: number, body: string) =>
   invoke<void>("reply_pr_comment", { projectId, number, inReplyTo, body });
+// Rewrite the PR's title and/or description. A null field is left untouched, so
+// a title-only edit never sends a description back.
+export const editPr = (projectId: string, number: number, title: string | null, body: string | null) =>
+  invoke<void>("edit_pr", { projectId, number, title, body });
+// Rewrite one of your own review comments. `commentId` is a comment's
+// `databaseId` (the REST integer id), not the GraphQL node id.
+export const editPrComment = (projectId: string, commentId: number, body: string) =>
+  invoke<void>("edit_pr_comment", { projectId, commentId, body });
 export const resolvePrThread = (projectId: string, threadId: string) =>
   invoke<void>("resolve_pr_thread", { projectId, threadId });
 export const unresolvePrThread = (projectId: string, threadId: string) =>

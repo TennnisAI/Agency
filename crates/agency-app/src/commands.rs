@@ -920,6 +920,27 @@ pub async fn reply_pr_comment(
 }
 
 #[tauri::command]
+pub async fn edit_pr(
+    state: State<'_, AppState>,
+    project_id: String,
+    number: u64,
+    title: Option<String>,
+    body: Option<String>,
+) -> Result<(), String> {
+    state.edit_pr(&project_id, number, title.as_deref(), body.as_deref()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn edit_pr_comment(
+    state: State<'_, AppState>,
+    project_id: String,
+    comment_id: u64,
+    body: String,
+) -> Result<(), String> {
+    state.edit_pr_comment(&project_id, comment_id, &body).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn resolve_pr_thread(
     state: State<'_, AppState>,
     project_id: String,

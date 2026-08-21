@@ -749,6 +749,65 @@ impl GhCli {
         Ok(())
     }
 
+    /// Rewrite one of your own review comments in place. `comment_id` is a
+    /// comment's `database_id` (the REST integer id); the endpoint is the
+    /// repo-level `pulls/comments/{id}`, which takes no PR number. The new body
+    /// goes through stdin as JSON rather than `-f body=…` so a body holding a
+    /// newline, a `=` or a leading `@` reaches GitHub byte for byte. GitHub
+    /// rejects the PATCH itself when the comment isn't yours, so authorship is
+    /// enforced there as well as in the UI that offers the affordance.
+    pub fn update_review_comment(&self, repo: &Path, comment_id: u64, body: &str) -> Result<()> {
+        if body.trim().is_empty() {
+            bail!("a review comment cannot be emptied");
+        }
+        let (owner, name) = self.repo_slug(repo)?;
+        let path = format!("repos/{owner}/{name}/pulls/comments/{comment_id}");
+        let payload = serde_json::json!({ "body": body }).to_string();
+        self.run_stdin(repo, &["api", "--method", "PATCH", &path, "--input", "-"], &payload)?;
+        Ok(())
+    }
+
+    /// Rewrite a PR's title and/or description. `None` leaves that field alone,
+    /// so a title-only edit never has to round-trip the body.
+    ///
+    /// The body is piped through `--body-file -` rather than `--body`: a
+    /// description is multi-line prose that may open with `-` (which argv would
+    /// read as a flag) and can run past the argument-length limit, and stdin has
+    /// neither problem. Both fields `None` returns without calling gh at all —
+    /// `gh pr edit <n>` with no field flags opens an interactive editor, which
+    /// against a piped stdin would hang forever.
+    pub fn edit_pr(
+        &self,
+        repo: &Path,
+        number: u64,
+        title: Option<&str>,
+        body: Option<&str>,
+    ) -> Result<()> {
+        if title.is_none() && body.is_none() {
+            return Ok(());
+        }
+        if let Some(t) = title {
+            if t.trim().is_empty() {
+                bail!("a pull request needs a title");
+            }
+        }
+        let num = number.to_string();
+        let mut args: Vec<&str> = vec!["pr", "edit", &num];
+        if let Some(t) = title {
+            args.extend_from_slice(&["--title", t]);
+        }
+        match body {
+            Some(b) => {
+                args.extend_from_slice(&["--body-file", "-"]);
+                self.run_stdin(repo, &args, b)?;
+            }
+            None => {
+                self.run_ok(repo, &args)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Mark a review thread resolved. `thread_id` is the GraphQL node id
     /// (`ReviewThread.id`), not a database id.
     pub fn resolve_review_thread(&self, repo: &Path, thread_id: &str) -> Result<()> {
@@ -1288,6 +1347,96 @@ esac"#,
         let bin = fake_gh(dir.path(), r#"echo "Pull request is not mergeable" >&2; exit 1"#);
         let err = GhCli::with_bin(bin).merge_pr(dir.path(), 3, "merge", true).unwrap_err();
         assert!(err.to_string().contains("not mergeable"));
+    }
+
+    #[test]
+    fn edit_pr_pipes_body_through_stdin() {
+        let dir = tempfile::tempdir().unwrap();
+        let args_cap = dir.path().join("args.txt");
+        let body_cap = dir.path().join("body.txt");
+        let bin = fake_gh(
+            dir.path(),
+            &format!(
+                r#"echo "$@" > "{args}"
+cat > "{body}""#,
+                args = args_cap.display(),
+                body = body_cap.display()
+            ),
+        );
+        // A description that argv would mangle: it opens with a dash, spans
+        // lines, and carries the quotes a shell would eat.
+        let desc = "- first \"item\"\n- second\n";
+        GhCli::with_bin(bin).edit_pr(dir.path(), 7, Some("New title"), Some(desc)).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&args_cap).unwrap().trim(),
+            "pr edit 7 --title New title --body-file -"
+        );
+        assert_eq!(std::fs::read_to_string(&body_cap).unwrap(), desc);
+    }
+
+    #[test]
+    fn edit_pr_title_only_leaves_the_body_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let cap = dir.path().join("args.txt");
+        let bin = fake_gh(dir.path(), &format!(r#"echo "$@" > "{}""#, cap.display()));
+        GhCli::with_bin(bin).edit_pr(dir.path(), 7, Some("Just the title"), None).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&cap).unwrap().trim(),
+            "pr edit 7 --title Just the title"
+        );
+    }
+
+    #[test]
+    fn edit_pr_with_nothing_to_change_never_runs_gh() {
+        let dir = tempfile::tempdir().unwrap();
+        // A bare `gh pr edit <n>` would open an interactive editor; the guard
+        // must return before gh is spawned at all.
+        let bin = fake_gh(dir.path(), r#"echo "gh should not have run" >&2; exit 1"#);
+        GhCli::with_bin(bin).edit_pr(dir.path(), 7, None, None).unwrap();
+    }
+
+    #[test]
+    fn edit_pr_rejects_a_blank_title() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = fake_gh(dir.path(), "exit 0");
+        let err =
+            GhCli::with_bin(bin).edit_pr(dir.path(), 7, Some("   "), Some("body")).unwrap_err();
+        assert!(err.to_string().contains("needs a title"));
+    }
+
+    #[test]
+    fn update_review_comment_patches_the_repo_level_endpoint() {
+        let dir = tempfile::tempdir().unwrap();
+        let args_cap = dir.path().join("args.txt");
+        let body_cap = dir.path().join("body.json");
+        let bin = fake_gh(
+            dir.path(),
+            &format!(
+                r#"case "$1 $2" in
+  "repo view") echo "o/r";;
+  "api --method") echo "$@" > "{args}"; cat > "{body}"; echo '{{}}';;
+esac"#,
+                args = args_cap.display(),
+                body = body_cap.display()
+            ),
+        );
+        GhCli::with_bin(bin).update_review_comment(dir.path(), 555, "now = better\n@here").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&args_cap).unwrap().trim(),
+            "api --method PATCH repos/o/r/pulls/comments/555 --input -"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&body_cap).unwrap(),
+            r#"{"body":"now = better\n@here"}"#
+        );
+    }
+
+    #[test]
+    fn update_review_comment_rejects_an_empty_body() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = fake_gh(dir.path(), r#"echo "o/r""#);
+        let err = GhCli::with_bin(bin).update_review_comment(dir.path(), 555, "  \n").unwrap_err();
+        assert!(err.to_string().contains("cannot be emptied"));
     }
 
     #[test]

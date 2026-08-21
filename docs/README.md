@@ -26,6 +26,9 @@ browser with `support.js` beside it).
   the docs, issues, search, and palette features (phases 1–8, shipped).
 - [`pr-review-plan.md`](pr-review-plan.md) — the in-app GitHub PR review
   surface (shipped).
+- [`other-forges.md`](other-forges.md) — what it would take to speak to GitLab,
+  Bitbucket and Azure DevOps as well as GitHub. Written down so the answer
+  exists before anyone asks; nothing in it is built.
 - [`agentic-loops.md`](agentic-loops.md) — the design behind loop runs
   (shipped).
 - [`run-teardown.md`](run-teardown.md) — what archiving and deleting an agent

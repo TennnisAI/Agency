@@ -5,6 +5,8 @@ import {
   PrFileDiff,
   ReviewEvent,
   ReviewThread,
+  editPr,
+  editPrComment,
   ghCurrentLogin,
   prDetail,
   prDiff,
@@ -17,6 +19,7 @@ import {
 import { toastError, toastInfo, toastSuccess } from "../../lib/toast";
 import Markdown from "../Markdown";
 import AgentReviewDialog from "./AgentReviewDialog";
+import MarkdownField from "./MarkdownField";
 import MergePrDialog from "./MergePrDialog";
 import PrDiffFile from "./PrDiffFile";
 import type { DraftEntry } from "./anchor";
@@ -56,6 +59,10 @@ export default function PrReview({
   const [submitting, setSubmitting] = useState(false);
   const [showMerge, setShowMerge] = useState(false);
   const [showAgentReview, setShowAgentReview] = useState(false);
+  // Editing the PR's own title/description. Null when not editing; the drafts
+  // are seeded from the loaded detail when the editor opens.
+  const [edit, setEdit] = useState<{ title: string; body: string } | null>(null);
+  const [savingEdit, setSavingEdit] = useState(false);
 
   const reloadThreads = useCallback(async () => {
     setThreads(await prReviewThreads(projectId, number));
@@ -86,6 +93,7 @@ export default function PrReview({
     // Reset per-PR editing state when switching PRs.
     setDrafts([]);
     setSummary("");
+    setEdit(null);
     load();
   }, [load]);
 
@@ -95,6 +103,14 @@ export default function PrReview({
       await reloadThreads();
     },
     [projectId, number, reloadThreads],
+  );
+
+  const onEditComment = useCallback(
+    async (commentId: number, body: string) => {
+      await editPrComment(projectId, commentId, body);
+      await reloadThreads();
+    },
+    [projectId, reloadThreads],
   );
 
   const onToggleResolved = useCallback(
@@ -132,6 +148,30 @@ export default function PrReview({
     }
   }
 
+  // Save the title/description rewrite. Only the fields that actually changed
+  // are sent, so retyping nothing sends nothing and an untouched description is
+  // never rewritten with the copy this pane happened to load.
+  async function saveEdit() {
+    if (!detail || !edit || !edit.title.trim()) return;
+    const title = edit.title.trim() === detail.title ? null : edit.title.trim();
+    const body = edit.body === detail.body ? null : edit.body;
+    if (title === null && body === null) {
+      setEdit(null);
+      return;
+    }
+    setSavingEdit(true);
+    try {
+      await editPr(projectId, number, title, body);
+      setEdit(null);
+      await load();
+    } catch (e) {
+      // The drafts stay open: a rejected save must not discard the rewrite.
+      toastError(e, "Couldn't save the pull request");
+    } finally {
+      setSavingEdit(false);
+    }
+  }
+
   if (loading) return <div className="pr-review-empty"><span className="spinner" /> Loading PR…</div>;
   if (error) return <div className="git-error">{error}</div>;
   if (!detail) return <div className="pr-review-empty">PR #{number} not found.</div>;
@@ -157,42 +197,91 @@ export default function PrReview({
     <div className="pr-review">
       <div className="pr-review-scroll">
         <div className="pr-review-header">
-          <div className="pr-review-titlerow">
-            <span className={`pr-state pr-state-${detail.state.toLowerCase()}`}>{badge}</span>
-            <span className="pr-review-title">
-              {detail.title} <span className="pr-review-num">#{detail.number}</span>
-            </span>
-            <span className="spacer" style={{ flex: 1 }} />
-            <button
-              className="git-iconbtn"
-              title="Have an agent review this PR, then work with it to fix what it finds."
-              onClick={() => setShowAgentReview(true)}
-            >
-              Review with agent
-            </button>
-            {detail.state === "OPEN" && (
-              <button
-                className="git-iconbtn pr-merge-btn"
-                disabled={!canMerge}
-                title={mergeHint}
-                onClick={() => setShowMerge(true)}
-              >
-                Merge
-              </button>
-            )}
-            <button className="settings-ghost-btn" onClick={() => openUrl(detail.url).catch((e) => toastError(e, "Couldn't open the PR"))}>
-              Open ↗
-            </button>
-          </div>
-          <div className="pr-review-meta">
-            <code>{detail.headRefName}</code> → <code>{detail.baseRefName}</code>
-            {detail.author.login && <span className="pr-review-author">by {detail.author.login}</span>}
-            {detail.mergeable === "CONFLICTING" && <span className="pr-review-conflict">conflicts</span>}
-            {detail.reviewDecision && (
-              <span className="pr-review-decision">{DECISION_LABEL[detail.reviewDecision] ?? detail.reviewDecision}</span>
-            )}
-          </div>
-          {detail.body.trim() && <Markdown className="pr-review-desc" text={detail.body} />}
+          {edit ? (
+            <div className="pr-review-edit">
+              <div className="pr-review-titlerow">
+                <span className={`pr-state pr-state-${detail.state.toLowerCase()}`}>{badge}</span>
+                <input
+                  className="settings-input pr-review-title-input"
+                  value={edit.title}
+                  autoFocus
+                  placeholder="Title"
+                  onChange={(e) => setEdit({ ...edit, title: e.target.value })}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") { e.preventDefault(); void saveEdit(); }
+                    else if (e.key === "Escape") { e.stopPropagation(); setEdit(null); }
+                  }}
+                />
+                <span className="pr-review-num">#{detail.number}</span>
+              </div>
+              <MarkdownField
+                value={edit.body}
+                onChange={(body) => setEdit({ ...edit, body })}
+                minHeight={160}
+                placeholder="Describe this pull request…"
+                onSubmit={() => { void saveEdit(); }}
+                onCancel={() => setEdit(null)}
+              />
+              <div className="pr-review-edit-actions">
+                <span className="pr-edit-hint">⌘↵ to save</span>
+                <button className="git-iconbtn" onClick={() => setEdit(null)}>Cancel</button>
+                <button
+                  className="git-iconbtn"
+                  disabled={savingEdit || !edit.title.trim()}
+                  title={edit.title.trim() ? "Save the title and description to GitHub" : "A pull request needs a title"}
+                  onClick={() => { void saveEdit(); }}
+                >
+                  {savingEdit ? "Saving…" : "Save"}
+                </button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <div className="pr-review-titlerow">
+                <span className={`pr-state pr-state-${detail.state.toLowerCase()}`}>{badge}</span>
+                <span className="pr-review-title">
+                  {detail.title} <span className="pr-review-num">#{detail.number}</span>
+                </span>
+                <span className="spacer" style={{ flex: 1 }} />
+                <button
+                  className="git-iconbtn"
+                  title="Edit the title and description here, in markdown, instead of in a browser."
+                  onClick={() => setEdit({ title: detail.title, body: detail.body })}
+                >
+                  Edit
+                </button>
+                <button
+                  className="git-iconbtn"
+                  title="Have an agent review this PR, then work with it to fix what it finds."
+                  onClick={() => setShowAgentReview(true)}
+                >
+                  Review with agent
+                </button>
+                {detail.state === "OPEN" && (
+                  <button
+                    className="git-iconbtn pr-merge-btn"
+                    disabled={!canMerge}
+                    title={mergeHint}
+                    onClick={() => setShowMerge(true)}
+                  >
+                    Merge
+                  </button>
+                )}
+                <button className="settings-ghost-btn" onClick={() => openUrl(detail.url).catch((e) => toastError(e, "Couldn't open the PR"))}>
+                  Open ↗
+                </button>
+              </div>
+              <div className="pr-review-meta">
+                <code>{detail.headRefName}</code> → <code>{detail.baseRefName}</code>
+                {detail.author.login && <span className="pr-review-author">by {detail.author.login}</span>}
+                {detail.mergeable === "CONFLICTING" && <span className="pr-review-conflict">conflicts</span>}
+                {detail.reviewDecision && (
+                  <span className="pr-review-decision">{DECISION_LABEL[detail.reviewDecision] ?? detail.reviewDecision}</span>
+                )}
+              </div>
+              {detail.body.trim() && <Markdown className="pr-review-desc" text={detail.body} />}
+            </>
+          )}
         </div>
 
         <div className="pr-review-files">
@@ -203,9 +292,11 @@ export default function PrReview({
               file={f}
               threads={threads.filter((t) => t.path === f.path)}
               drafts={drafts.filter((d) => d.path === f.path)}
+              viewer={viewer}
               onAddDraft={(d) => setDrafts((prev) => [...prev, { ...d, id: uid() }])}
               onRemoveDraft={(id) => setDrafts((prev) => prev.filter((d) => d.id !== id))}
               onReply={onReply}
+              onEditComment={onEditComment}
               onToggleResolved={onToggleResolved}
             />
           ))}

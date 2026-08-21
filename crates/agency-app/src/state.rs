@@ -6452,6 +6452,27 @@ impl AppState {
         agency_core::gh::GhCli::default().reply_review_comment(&repo, number, in_reply_to, body)
     }
 
+    /// Rewrite the PR's title and/or description from the review pane. `None`
+    /// leaves that field as it is, so a title-only edit doesn't rewrite a
+    /// description the caller never looked at.
+    pub fn edit_pr(
+        &self,
+        project_id: &str,
+        number: u64,
+        title: Option<&str>,
+        body: Option<&str>,
+    ) -> Result<()> {
+        let repo = self.project_repo(project_id)?;
+        agency_core::gh::GhCli::default().edit_pr(&repo, number, title, body)
+    }
+
+    /// Rewrite one of the viewer's own review comments. `comment_id` is a
+    /// comment's `database_id` from `pr_review_threads`.
+    pub fn edit_pr_comment(&self, project_id: &str, comment_id: u64, body: &str) -> Result<()> {
+        let repo = self.project_repo(project_id)?;
+        agency_core::gh::GhCli::default().update_review_comment(&repo, comment_id, body)
+    }
+
     /// Resolve a review thread. `thread_id` is the GraphQL node id.
     pub fn resolve_pr_thread(&self, project_id: &str, thread_id: &str) -> Result<()> {
         let repo = self.project_repo(project_id)?;

@@ -3561,6 +3561,22 @@ input, textarea, code,
 .pr-review-desc { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
 .pr-review-files { padding: 10px 16px 24px; }
 
+/* Editing a PR's title and description in place. */
+.pr-review-edit { display: flex; flex-direction: column; gap: 10px; }
+.pr-review-title-input { flex: 1; min-width: 0; font-family: var(--sans); font-size: 14px; font-weight: 600; }
+.pr-review-edit-actions { display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
+.pr-edit-hint { color: var(--sub0); font-size: 11px; margin-right: auto; }
+
+/* Markdown box with a Write | Preview toggle. */
+.md-field { display: flex; flex-direction: column; }
+.md-field-tabs { display: flex; gap: 2px; }
+.md-field-tab { background: none; border: 1px solid transparent; border-bottom: none; color: var(--sub0); font-size: 11.5px; padding: 3px 10px; border-radius: 6px 6px 0 0; cursor: pointer; }
+.md-field-tab:hover { color: var(--text); }
+.md-field-tab.on { color: var(--text); background: var(--mantle); border-color: var(--line); }
+.md-field-input { font-family: var(--sans); border-radius: 0 6px 6px 6px; }
+.md-field-preview { padding: 8px 10px; border: 1px solid var(--line); border-radius: 0 6px 6px 6px; background: var(--mantle); overflow-wrap: anywhere; }
+.md-field-blank { color: var(--sub0); font-size: 12px; }
+
 /* Per-file diff. */
 .prdiff-file { border: 1px solid var(--line); border-radius: 8px; margin-bottom: 12px; overflow: hidden; }
 .prdiff-file-head { display: flex; align-items: center; gap: 8px; padding: 7px 10px; background: var(--mantle); cursor: pointer; font-family: var(--mono); font-size: 12px; }
@@ -3603,6 +3619,9 @@ input, textarea, code,
 .pr-comment-author { font-weight: 600; font-size: 12.5px; }
 .pr-comment-date { color: var(--sub0); font-size: 11px; }
 .pr-comment-body { margin-top: 2px; }
+.pr-comment-edit { background: none; border: none; color: var(--sub0); font-size: 11px; padding: 0 2px; cursor: pointer; }
+.pr-comment-edit:hover { color: var(--text); }
+.pr-comment-editbox { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
 .pr-reply-box { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
 .pr-reply-box textarea { min-height: 52px; font-family: var(--sans); }
 .pr-reply-actions { display: flex; gap: 8px; justify-content: flex-end; }

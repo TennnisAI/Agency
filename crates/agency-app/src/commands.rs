@@ -218,6 +218,8 @@ pub fn create_loop(
     merge_target: Option<String>,
     check_command: String,
     max_attempts: u32,
+    max_wall_secs: Option<u64>,
+    max_tokens: Option<u64>,
 ) -> Result<RunInfo, String> {
     let model = checked_model(model)?;
     state
@@ -230,6 +232,8 @@ pub fn create_loop(
             merge_target.as_deref(),
             &check_command,
             max_attempts,
+            max_wall_secs,
+            max_tokens,
         )
         .map_err(|e| e.to_string())
 }
@@ -1173,6 +1177,8 @@ pub fn start_issue_loop(
     model: Option<String>,
     check_command: String,
     max_attempts: u32,
+    max_wall_secs: Option<u64>,
+    max_tokens: Option<u64>,
     base: Option<String>,
     merge_target: Option<String>,
 ) -> Result<RunInfo, String> {
@@ -1184,6 +1190,8 @@ pub fn start_issue_loop(
             model.as_deref(),
             &check_command,
             max_attempts,
+            max_wall_secs,
+            max_tokens,
             base.as_deref(),
             merge_target.as_deref(),
         )

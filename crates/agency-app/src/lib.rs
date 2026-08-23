@@ -538,13 +538,28 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                             format!("{} — checks passed on attempt {}", n.label, n.attempt),
                         )
                     } else {
-                        (
-                            "Loop stalled".to_string(),
-                            format!(
-                                "{} — stopped after attempt {}, checks still failing",
-                                n.label, n.attempt
+                        use agency_core::loops::StallReason;
+                        // Name the cap that tripped: "Stalled" alone doesn't
+                        // say whether to raise a cap, fix a flag, or rewrite
+                        // the prompt (AGE-110).
+                        let why = match n.reason {
+                            Some(StallReason::WallClock) => {
+                                format!("stopped at the time cap after attempt {}", n.attempt)
+                            }
+                            Some(StallReason::Budget) => {
+                                format!("stopped at the token cap after attempt {}", n.attempt)
+                            }
+                            Some(StallReason::CrashLoop) => format!(
+                                "stopped after {} agent failures in a row",
+                                crate::looper::MAX_CONSECUTIVE_FAILURES
                             ),
-                        )
+                            // AttemptCap, and stalls from before reasons
+                            // existed (spawn failures included).
+                            _ => {
+                                format!("stopped after attempt {}, checks still failing", n.attempt)
+                            }
+                        };
+                        ("Loop stalled".to_string(), format!("{} — {}", n.label, why))
                     };
                     let _ = loop_handle.notification().builder().title(title).body(body).show();
                     if !focused {

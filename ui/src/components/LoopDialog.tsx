@@ -38,6 +38,11 @@ export default function LoopDialog({ onClose, issue, issueLabel }: {
   // Kept as a raw string while editing so the field can be cleared/retyped;
   // clamped to [1,100] only on blur and at submit.
   const [maxAttempts, setMaxAttempts] = useState("10");
+  // Optional caps (AGE-110): empty means off, matching the backend's None, so
+  // the same clamp-on-blur pattern applies but with "" as a valid resting
+  // state instead of a default.
+  const [maxMinutes, setMaxMinutes] = useState("");
+  const [maxTokens, setMaxTokens] = useState("");
   const [branches, setBranches] = useState<string[]>([]);
   const [base, setBase] = useState("");
   const [targetOverride, setTargetOverride] = useState<string | null>(null);
@@ -72,14 +77,24 @@ export default function LoopDialog({ onClose, issue, issueLabel }: {
     const n = Math.floor(Number(v));
     return Number.isFinite(n) && n > 0 ? Math.max(1, Math.min(100, n)) : 10;
   };
+  // Empty or unparseable reads as "no cap" (null); a set value is bounded the
+  // way the backend bounds it, so what the field shows is what will apply.
+  const clampCap = (v: string, min: number, max: number): number | null => {
+    if (v.trim() === "") return null;
+    const n = Math.floor(Number(v));
+    return Number.isFinite(n) && n > 0 ? Math.max(min, Math.min(max, n)) : null;
+  };
+  const capMinutes = clampCap(maxMinutes, 1, 10080); // one minute to one week
+  const capTokens = clampCap(maxTokens, 1000, 1_000_000_000);
 
   async function start() {
     if (!selectedProjectId || !canStart) return;
     setBusy(true);
     setError("");
     try {
+      const maxWallSecs = capMinutes === null ? null : capMinutes * 60;
       const run = issue
-        ? await startIssueLoop(issue.id, agent, model, checkCommand.trim(), clampAttempts(maxAttempts), base || null, mergeTarget)
+        ? await startIssueLoop(issue.id, agent, model, checkCommand.trim(), clampAttempts(maxAttempts), maxWallSecs, capTokens, base || null, mergeTarget)
         : await createLoop(
             selectedProjectId,
             prompt.trim(),
@@ -89,6 +104,8 @@ export default function LoopDialog({ onClose, issue, issueLabel }: {
             mergeTarget,
             checkCommand.trim(),
             clampAttempts(maxAttempts),
+            maxWallSecs,
+            capTokens,
           );
       if (issue) setTab("agents"); // jump from the board to the running loop
       await refreshRuns();
@@ -176,6 +193,33 @@ export default function LoopDialog({ onClose, issue, issueLabel }: {
               value={maxAttempts}
               onChange={(e) => setMaxAttempts(e.target.value)}
               onBlur={() => setMaxAttempts(String(clampAttempts(maxAttempts)))}
+            />
+          </label>
+          <label className="branch-row">
+            <span>time cap (minutes)</span>
+            <input
+              className="settings-input settings-notif-secs"
+              type="number"
+              min={1}
+              max={10080}
+              placeholder="off"
+              title="Stall the loop once it has run this many minutes in total. It never interrupts a running attempt; it takes effect between attempts. Empty means no cap."
+              value={maxMinutes}
+              onChange={(e) => setMaxMinutes(e.target.value)}
+              onBlur={() => setMaxMinutes(capMinutes === null ? "" : String(capMinutes))}
+            />
+          </label>
+          <label className="branch-row">
+            <span>token cap</span>
+            <input
+              className="settings-input settings-notif-secs"
+              type="number"
+              min={1000}
+              placeholder="off"
+              title="Stall the loop once its agent has used this many tokens, as read from the agent's own transcript. Agents whose transcript Agency cannot read report no tokens and never trip this cap. Empty means no cap."
+              value={maxTokens}
+              onChange={(e) => setMaxTokens(e.target.value)}
+              onBlur={() => setMaxTokens(capTokens === null ? "" : String(capTokens))}
             />
           </label>
         </div>

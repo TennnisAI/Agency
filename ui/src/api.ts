@@ -27,15 +27,29 @@ export interface LoopConfig {
   checkCommand: string;
   maxAttempts: number;
   checkTimeoutSecs: number;
+  // Null = off, and off is the default: a cap the user did not set never trips.
+  maxWallSecs: number | null;
+  maxTokens: number | null;
 }
 
 export type LoopStatus = "awaitingAgent" | "checking" | "complete" | "stalled" | "stopped";
+
+// Why a stalled loop stalled, so the UI can say which cap to raise or what to
+// fix. Null on loops stalled before reasons existed, and on driver-side stalls
+// (attempt spawn failure).
+export type StallReason = "attemptCap" | "crashLoop" | "wallClock" | "budget";
 
 export interface LoopState {
   status: LoopStatus;
   attempt: number;
   consecutiveFailures: number;
   lastCheckExit: number | null;
+  // Epoch seconds the loop started; the time cap measures from here.
+  startedAt: number;
+  // Last token total observed for the run; stays 0 for agents whose
+  // transcript Agency cannot read (their token cap never trips).
+  tokensUsed: number;
+  stallReason: StallReason | null;
   updatedAt: number;
 }
 
@@ -277,11 +291,14 @@ export const startIssueLoop = (
   model: string | null,
   checkCommand: string,
   maxAttempts: number,
+  maxWallSecs: number | null,
+  maxTokens: number | null,
   base?: string | null,
   mergeTarget?: string | null,
 ) =>
   invoke<RunInfo>("start_issue_loop", {
-    issueId, agent, model: model ?? null, checkCommand, maxAttempts, base: base ?? null, mergeTarget: mergeTarget ?? null,
+    issueId, agent, model: model ?? null, checkCommand, maxAttempts, maxWallSecs, maxTokens,
+    base: base ?? null, mergeTarget: mergeTarget ?? null,
   });
 
 export const addProject = (name: string, repoPath: string) =>
@@ -429,9 +446,12 @@ export const createLoop = (
   mergeTarget: string | null,
   checkCommand: string,
   maxAttempts: number,
+  maxWallSecs: number | null,
+  maxTokens: number | null,
 ) =>
   invoke<RunInfo>("create_loop", {
     projectId, prompt, agent, model, base, mergeTarget, checkCommand, maxAttempts,
+    maxWallSecs, maxTokens,
   });
 export const stopLoop = (id: string) => invoke<void>("stop_loop", { id });
 export const createTerminal = (projectId: string) =>

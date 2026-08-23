@@ -230,7 +230,7 @@ Everything downstream of completion is the existing finish flow: merge preview,
 diff review, merge, archive. Nothing merges automatically — the loop's output
 is a branch the user reviews, same as any run.
 
-## Guardrails beyond the attempt cap (scoped 2026-08-17)
+## Guardrails beyond the attempt cap (scoped 2026-08-17, shipped 2026-08-23)
 
 v1 ships two guards: the attempt cap and the crash-loop guard. Both are
 attempt-shaped, and an attempt has no fixed size — one can burn ten minutes and
@@ -282,6 +282,41 @@ a context-compaction burst, or when the real progress is happening inside a
 subagent the parent cannot see. Caps are legible, predictable, and the user
 sets them. Revisit only if caps prove insufficient in practice.
 
+**As shipped (2026-08-23, AGE-110).** The sketch above held, with the
+boundary semantics made explicit and two small deltas:
+
+- **Caps gate spawning, and only spawning.** `exceeded_cap` is consulted at
+  every point `step` would push `SpawnAttempt` — the failed-check respawn, the
+  fixed-iterations respawn, the crash respawn (which never consumed an
+  attempt, so without the gate an over-cap loop could keep burning through the
+  crash-retry budget), and the restart (`Gone`) respawn. A running attempt is
+  never killed mid-flight, which means a cap can trip no earlier than the next
+  attempt boundary; that is the false-positive trade chosen deliberately, and
+  it also means a hung attempt outlives its cap until it exits.
+- **Finishing outranks every cap.** A finished attempt still gets its check,
+  and a passing check completes the loop even over-cap; the last fixed
+  iteration likewise completes. Work that is done is done — reporting it as
+  stalled would be the false positive rule 2 forbids.
+- **Reason precedence is pinned** so the rendered reason cannot flap:
+  crash-loop and attempt cap first (the more actionable diagnoses), then wall
+  clock, then budget.
+- Delta one: the snapshot carries only the token observation. Elapsed time is
+  `now - started_at` computed inside `step`, which already receives `now`;
+  routing it through `LoopSnapshot` would have been the same two numbers with
+  an extra stop.
+- Delta two: the token figure is the transcript reader's *display* total
+  (input + output + cache write + cache read), the same number the run's usage
+  label shows, so the cap and the figure the user watched climb toward it can
+  never disagree. An agent whose transcript we cannot read reports `None`,
+  never 0, and its token cap never trips — a cap must not fire on a count we
+  cannot see.
+
+The dialog takes the time cap in minutes and the token cap in tokens; empty
+means off, and set values clamp to one minute–one week and 1k–1B tokens beside
+the existing attempt clamp in `create_loop_inner`. `stall_reason` reaches the
+loop strip and the stalled notification, so "raise a cap, fix a flag, or
+rewrite the prompt" is now answerable from the message itself.
+
 ## Phasing
 
 **v1** — the above: profiles `loop_args`, two run columns, `looper.rs` +
@@ -296,8 +331,8 @@ IPC commands. Rough size: ~500 lines Rust (half of it `looper.rs` tests),
    the killer flow.
 2. Output-marker completion (agent self-reports done) as an OR with the check
    command.
-3. Wall-clock and/or spend caps alongside attempt caps. Scoped 2026-08-17; see
-   "Guardrails beyond the attempt cap" above and `beta-readiness.md` #40.
+3. Wall-clock and/or spend caps alongside attempt caps. Shipped 2026-08-23;
+   see "Guardrails beyond the attempt cap" above and `beta-readiness.md` #40.
 4. Per-attempt diff timeline in the run panel (git already has the data via
    the auto-commit boundaries).
 

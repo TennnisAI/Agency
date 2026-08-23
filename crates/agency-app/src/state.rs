@@ -1445,6 +1445,10 @@ pub struct LoopNotice {
     pub label: String,
     pub done: bool,
     pub attempt: u32,
+    /// Why a stalled loop stalled, so the notification can say which cap to
+    /// raise or what to fix. None for completions and for driver-side stalls
+    /// (attempt spawn failure).
+    pub reason: Option<agency_core::loops::StallReason>,
 }
 
 impl AppState {
@@ -2462,6 +2466,8 @@ impl AppState {
         merge_target: Option<&str>,
         check_command: &str,
         max_attempts: u32,
+        max_wall_secs: Option<u64>,
+        max_tokens: Option<u64>,
     ) -> Result<RunInfo> {
         self.create_loop_inner(
             project_id,
@@ -2472,6 +2478,8 @@ impl AppState {
             merge_target,
             check_command,
             max_attempts,
+            max_wall_secs,
+            max_tokens,
             None,
             None,
         )
@@ -2488,6 +2496,8 @@ impl AppState {
         merge_target: Option<&str>,
         check_command: &str,
         max_attempts: u32,
+        max_wall_secs: Option<u64>,
+        max_tokens: Option<u64>,
         title: Option<String>,
         issue_id: Option<String>,
     ) -> Result<RunInfo> {
@@ -2513,6 +2523,11 @@ impl AppState {
             check_command: check_command.trim().to_string(),
             max_attempts: max_attempts.clamp(1, 100),
             check_timeout_secs: 600,
+            // None = off, and stays off: clamping must never invent a cap the
+            // user did not set. Set values are bounded to one minute..one week
+            // and 1k..1B tokens, the same spirit as the attempt clamp above.
+            max_wall_secs: max_wall_secs.map(|s| s.clamp(60, 604_800)),
+            max_tokens: max_tokens.map(|t| t.clamp(1_000, 1_000_000_000)),
         };
         self.create_run_spec(
             NewRunSpec {
@@ -2643,6 +2658,8 @@ impl AppState {
         model: Option<&str>,
         check_command: &str,
         max_attempts: u32,
+        max_wall_secs: Option<u64>,
+        max_tokens: Option<u64>,
         base: Option<&str>,
         merge_target: Option<&str>,
     ) -> Result<RunInfo> {
@@ -2657,6 +2674,8 @@ impl AppState {
             merge_target,
             check_command,
             max_attempts,
+            max_wall_secs,
+            max_tokens,
             Some(title),
             Some(issue.id.clone()),
         )?;
@@ -5462,7 +5481,18 @@ impl AppState {
                 .as_ref()
                 .map(|s| s.status == agency_core::loops::LoopStatus::AwaitingAgent)
                 .unwrap_or(false);
-            if awaiting && matches!(self.run_status(id)?, SessionStatus::Gone) {
+            // The focus-respawn must not outrun the driver's cap check: a loop
+            // already over its wall-clock or token cap spawned here would run a
+            // whole attempt past the cap before the driver could stall it.
+            // Leave the session down instead; the next tick stalls the loop
+            // with its reason and the loop strip says why the pane is dead.
+            let over_cap = fresh
+                .loop_config
+                .as_ref()
+                .zip(fresh.loop_state.as_ref())
+                .and_then(|(c, s)| crate::looper::exceeded_cap(c, s, now_secs()))
+                .is_some();
+            if awaiting && !over_cap && matches!(self.run_status(id)?, SessionStatus::Gone) {
                 self.spawn_loop_attempt(&fresh)?;
             }
             return Ok(());
@@ -5790,7 +5820,12 @@ impl AppState {
                         None => (false, None),
                     }
                 };
-                let snap = crate::looper::LoopSnapshot { agent, check_in_flight, check };
+                // Total tokens the run has burned, from the transcript reader
+                // (refresh_usage keeps it current on the notifier tick). None
+                // for agents whose transcript format we cannot read, so the
+                // token cap never trips on a count we cannot see.
+                let tokens = self.usage.lock().unwrap().get(&run.id).map(|(_, u)| u.tokens.total());
+                let snap = crate::looper::LoopSnapshot { agent, check_in_flight, check, tokens };
                 let (next, actions) = crate::looper::step(&cfg, &prev, &snap, now_secs());
                 if next != prev {
                     self.registry.lock().unwrap().set_loop_state(&run.id, &next)?;
@@ -5826,6 +5861,7 @@ impl AppState {
                                     label: label.clone(),
                                     done: false,
                                     attempt: stalled.attempt,
+                                    reason: None,
                                 });
                             }
                         }
@@ -5840,6 +5876,7 @@ impl AppState {
                             label: label.clone(),
                             done: true,
                             attempt: next.attempt,
+                            reason: None,
                         }),
                         crate::looper::LoopAction::NotifyStalled => notices.push(LoopNotice {
                             project_id: proj.id.clone(),
@@ -5847,6 +5884,7 @@ impl AppState {
                             label: label.clone(),
                             done: false,
                             attempt: next.attempt,
+                            reason: next.stall_reason,
                         }),
                     }
                 }

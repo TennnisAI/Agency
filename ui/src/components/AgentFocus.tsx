@@ -43,13 +43,23 @@ function LoopStrip({ run, onChanged }: { run: RunInfo; onChanged: () => void }) 
   const st = run.loopState;
   if (!cfg || !st) return null;
   const active = st.status === "awaitingAgent" || st.status === "checking";
+  // The stall names its reason (AGE-110): "stalled" alone doesn't say whether
+  // to raise a cap, fix a flag, or rewrite the prompt. Null reasons (stalls
+  // recorded before reasons existed, and attempt-spawn failures) keep the old
+  // generic text.
+  const stalledText =
+    st.stallReason === "wallClock" ? "stalled · time cap hit"
+    : st.stallReason === "budget" ? "stalled · token cap hit"
+    : st.stallReason === "crashLoop" ? "stalled · agent failed repeatedly"
+    : st.stallReason === "attemptCap" ? `stalled · attempt cap after attempt ${st.attempt}`
+    : `stalled · after attempt ${st.attempt}`;
   const text =
     st.status === "awaitingAgent" ? `attempt ${st.attempt}/${cfg.maxAttempts} · running`
     : st.status === "checking" ? `attempt ${st.attempt}/${cfg.maxAttempts} · checking`
     : st.status === "complete" ? (cfg.checkCommand
         ? `complete · checks passed on attempt ${st.attempt}`
         : `complete · ${st.attempt} attempts`)
-    : st.status === "stalled" ? `stalled · after attempt ${st.attempt}`
+    : st.status === "stalled" ? stalledText
     : "stopped";
   return (
     <div className={`loop-strip ${active ? "active" : st.status}`}>

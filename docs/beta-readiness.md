@@ -13,8 +13,8 @@ Phase 6 item (background fetch). What remains is listed under **Still open**.
 - **Phase 3 (backend bugs, #6–14):** done (9/9).
 - **Phase 4 (frontend bugs, #15–22):** done (8/8).
 - **Phase 5 (UX polish, #23–34):** done (12/12).
-- **Phase 6 (feature gaps):** #35, #43 and #45 done; the rest of #36–44 open
-  (post-first-beta).
+- **Phase 6 (feature gaps):** #35, #40, #42, #43 and #45 done; the rest of
+  #36–44 open (post-first-beta).
 
 Verification for the fix pass: `cargo build` clean, `cargo test` green (136
 tests: 82 core + 54 app), `tsc --noEmit` exit 0, `vite build` exit 0.
@@ -249,7 +249,7 @@ tests: 82 core + 54 app), `tsc --noEmit` exit 0, `vite build` exit 0.
 38. **Missing-repo flow** — "project folder missing — relocate?" + project
     rename. (S/M)
 39. **Window state persistence** — tauri-plugin-window-state. (S)
-40. **Loop spend/time caps** — wall-clock and token caps alongside the attempt
+40. **[done]** **Loop spend/time caps** — wall-clock and token caps alongside the attempt
     cap. Design settled 2026-08-17: the caps live in `looper::step`, beside the
     existing `attempt >= max_attempts` branches, so the policy stays a pure
     function with no side effects and no repo or daemon needed to test it.
@@ -265,9 +265,11 @@ tests: 82 core + 54 app), `tsc --noEmit` exit 0, `vite build` exit 0.
     no-progress and repeated-tool-call heuristics are deliberately out of
     scope; they are the part that misfires on a compaction burst or on a
     subagent whose progress is invisible to the parent. Caps first. (M)
-    See `agentic-loops.md`; tracked in AGE-110.
+    Shipped 2026-08-23: caps gate spawning only (never a running attempt, and
+    a passing check completes even over-cap); see "As shipped" in
+    `agentic-loops.md`. Tracked in AGE-110.
 41. **Prereq checks** — git/CLT presence at launch with guidance. (S)
-42. **Per-run cost/token display.** Design settled 2026-08-17, and it replaces
+42. **[done]** **Per-run cost/token display.** Design settled 2026-08-17, and it replaces
     the original "parse headless agent JSON output" sketch: read the agent's own
     transcript JSONL instead. For Claude Code that is
     `~/.claude/projects/<encoded-cwd>/*.jsonl`, whose per-record `message.usage`

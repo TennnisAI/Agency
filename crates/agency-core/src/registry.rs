@@ -1935,12 +1935,16 @@ mod tests {
             check_command: "cargo test".into(),
             max_attempts: 10,
             check_timeout_secs: 600,
+            max_wall_secs: Some(3_600),
+            max_tokens: Some(2_000_000),
         });
         run.loop_state = Some(LoopState::new(7));
         reg.insert_run(&run).unwrap();
 
         let got = reg.get_run("l-1").unwrap().unwrap();
         assert_eq!(got.loop_config.as_ref().unwrap().check_command, "cargo test");
+        assert_eq!(got.loop_config.as_ref().unwrap().max_wall_secs, Some(3_600));
+        assert_eq!(got.loop_config.as_ref().unwrap().max_tokens, Some(2_000_000));
         assert_eq!(got.loop_state.as_ref().unwrap().status, LoopStatus::AwaitingAgent);
         assert_eq!(got.loop_state.as_ref().unwrap().attempt, 1);
 

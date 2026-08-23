@@ -3,7 +3,7 @@ import { runListLabel } from "../agents";
 
 /** The fields a run has to expose for the bar to name it. */
 export type RunLike = Pick<
-  RunInfo, "id" | "kind" | "title" | "prompt" | "branch" | "agent" | "loopConfig" | "raceId" | "worktree"
+  RunInfo, "id" | "kind" | "title" | "prompt" | "branch" | "agent" | "loopConfig" | "raceId" | "model" | "worktree"
 >;
 
 export interface Checkout {

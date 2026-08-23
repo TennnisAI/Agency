@@ -9,6 +9,7 @@ const run = (over: Partial<RunLike> & { id: string }): RunLike => ({
   agent: "claude",
   loopConfig: null,
   raceId: null,
+  model: null,
   worktree: true,
   ...over,
 });

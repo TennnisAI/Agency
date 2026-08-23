@@ -87,12 +87,16 @@ export function runName(run: Pick<RunInfo, "title" | "prompt" | "branch">): stri
 }
 
 // One-line label for a run in a picker list — the focus rail and the docs/files
-// agents panel share it, so a run reads the same wherever it's listed.
+// agents panel share it, so a run reads the same wherever it's listed. The
+// model is part of the name when one was picked: a race can be one agent on
+// two models (AGE-118), and agent plus title alone rendered both attempts as
+// the identical string in exactly the lists used to switch between them.
 export function runListLabel(
-  run: Pick<RunInfo, "kind" | "title" | "prompt" | "branch" | "agent" | "loopConfig" | "raceId">,
+  run: Pick<RunInfo, "kind" | "title" | "prompt" | "branch" | "agent" | "loopConfig" | "raceId" | "model">,
 ): string {
   if (run.kind === "terminal") return `≳ ${run.title || "terminal"}`;
-  return `${run.loopConfig ? "⟳ " : run.raceId ? "∥ " : ""}${run.agent}: ${runName(run)}`;
+  const agent = run.model ? `${run.agent} ${run.model}` : run.agent;
+  return `${run.loopConfig ? "⟳ " : run.raceId ? "∥ " : ""}${agent}: ${runName(run)}`;
 }
 
 // Mirror of `sanitize_model` in agent_catalog.rs, so a typed model id is

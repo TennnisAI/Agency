@@ -29,7 +29,7 @@ describe("agents", () => {
 describe("runListLabel", () => {
   const base = {
     kind: "agent" as const, title: null, prompt: "", branch: "agent/x",
-    agent: "claude", loopConfig: null, raceId: null,
+    agent: "claude", loopConfig: null, raceId: null, model: null,
   };
 
   it("names a terminal by its title, falling back to 'terminal'", () => {
@@ -44,6 +44,11 @@ describe("runListLabel", () => {
   it("marks looping and racing runs", () => {
     expect(runListLabel({ ...base, loopConfig: { maxAttempts: 3 } as never })).toBe("⟳ claude: agent/x");
     expect(runListLabel({ ...base, raceId: "r1" })).toBe("∥ claude: agent/x");
+  });
+  it("names the model when one was picked, so two attempts of one agent differ", () => {
+    expect(runListLabel({ ...base, model: "opus" })).toBe("claude opus: agent/x");
+    expect(runListLabel({ ...base, raceId: "r1", model: "opus" })).toBe("∥ claude opus: agent/x");
+    expect(runListLabel({ ...base, raceId: "r1", model: "sonnet" })).toBe("∥ claude sonnet: agent/x");
   });
 });
 

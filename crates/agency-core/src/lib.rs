@@ -5,6 +5,7 @@ pub mod config;
 pub mod files;
 pub mod gh;
 pub mod git;
+pub mod graphview;
 pub mod guide;
 pub mod issuefs;
 pub mod loops;

@@ -1260,6 +1260,16 @@ pub fn build_knowledge_graph(state: State<'_, AppState>, project_id: String) -> 
     state.build_knowledge_graph(&project_id).map_err(|e| e.to_string())
 }
 
+/// The Map tab's drill-down view of the project's knowledge graph. Errors
+/// (no graph built yet, unreadable file) surface as the tab's empty state.
+#[tauri::command]
+pub fn knowledge_graph_view(
+    state: State<'_, AppState>,
+    project_id: String,
+) -> Result<agency_core::graphview::GraphView, String> {
+    state.knowledge_graph_view(&project_id).map_err(|e| e.to_string())
+}
+
 /// Open a terminal that installs the graphify tooling. Returns the run so the
 /// UI can jump into it and watch the install.
 #[tauri::command]

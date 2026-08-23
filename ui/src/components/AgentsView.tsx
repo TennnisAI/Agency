@@ -17,6 +17,7 @@ import FilesView from "./FilesView";
 import DocsView from "./DocsView";
 import HomeView from "./HomeView";
 import IssuesView from "./IssuesView";
+import MapView from "./MapView";
 import RunPanel from "./RunPanel";
 import SidebarToggle from "./SidebarToggle";
 import RightPanelToggle from "./RightPanelToggle";
@@ -69,7 +70,7 @@ export default function AgentsView({
   // or "files" from before the workspace hid it.
   useEffect(() => {
     if (gitless && tab === "source") setTab("agents");
-    if (isWorkspace && (tab === "files" || tab === "run")) setTab("docs");
+    if (isWorkspace && (tab === "files" || tab === "run" || tab === "map")) setTab("docs");
   }, [gitless, isWorkspace, tab, setTab]);
 
   // Which working tree source control operates on: the selected run's worktree
@@ -173,6 +174,11 @@ export default function AgentsView({
             </button>
           )}
           {!isWorkspace && (
+            <button className={tab === "map" ? "on" : ""} title="Map of the codebase" onClick={() => setTab("map")}>
+              <span className="seg-ico" aria-hidden>∴</span><span className="seg-label">Map</span>
+            </button>
+          )}
+          {!isWorkspace && (
             <button
               className={tab === "run" ? "on" : ""}
               title={projectRunLive
@@ -244,7 +250,9 @@ export default function AgentsView({
                 ? "Select a project to browse its docs."
                 : tab === "run"
                   ? "Select a project to run its scripts."
-                  : "Select a project to browse its files."}
+                  : tab === "map"
+                    ? "Select a project to see its map."
+                    : "Select a project to browse its files."}
           </div>
         )
       ) : (
@@ -277,6 +285,12 @@ export default function AgentsView({
           {tab === "files" && (
             <div className="source-wrap">
               <FilesView root={filesRoot} project={project} agentsOpen={filesAgents} onOpenCheckout={openFilesCheckout} />
+            </div>
+          )}
+
+          {tab === "map" && (
+            <div className="source-wrap">
+              <MapView project={project} />
             </div>
           )}
 

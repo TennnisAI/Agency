@@ -3345,6 +3345,28 @@ impl AppState {
         self.start_knowledge_build(&repo)
     }
 
+    /// The Map tab's view of a project's knowledge graph: the primary repo's
+    /// `graphify-out/graph.json` reduced to the drill-down view model. The UI
+    /// treats an error as "no graph yet" and falls back to the config-driven
+    /// empty state, so a missing file needs no special shape here.
+    pub fn knowledge_graph_view(
+        &self,
+        project_id: &str,
+    ) -> Result<agency_core::graphview::GraphView> {
+        let repo = self.project_repo(project_id)?;
+        let path = agency_core::config::graph_path(&repo);
+        // A graph this size is far outside what the viewer can render or the
+        // IPC should carry; 100 MB is ~15x the graph of this repository.
+        const MAX_GRAPH_BYTES: u64 = 100 * 1024 * 1024;
+        let size = std::fs::metadata(&path)?.len();
+        if size > MAX_GRAPH_BYTES {
+            anyhow::bail!("graph.json is {} MB, too large to map", size / (1024 * 1024));
+        }
+        let text = std::fs::read_to_string(&path)?;
+        let repo_dir = repo.file_name().and_then(|n| n.to_str());
+        agency_core::graphview::view(&text, repo_dir)
+    }
+
     /// Install the graphify tooling in a visible Agency terminal, the same way
     /// a missing agent CLI is installed: the user watches it run and can answer
     /// anything it asks, rather than Agency mutating their machine silently.

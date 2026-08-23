@@ -784,6 +784,48 @@ export const saveKnowledgeConfig = (
 ) => invoke<void>("save_knowledge_config", { projectId, graph, serveCommand, buildCommand });
 export const buildKnowledgeGraph = (projectId: string) =>
   invoke<void>("build_knowledge_graph", { projectId });
+
+// The Map tab's drill-down view of the knowledge graph: the directory tree
+// with per-file symbols, file-level dependency edges (category counts), and
+// symbol-level edges for the detail panel. Computed backend-side from the
+// primary repo's graphify-out/graph.json; the call fails when no graph has
+// been built, which the Map treats as its empty state.
+export interface MapSymbol {
+  id: string;
+  label: string;
+  line: number | null;
+  callable: boolean;
+  class: boolean;
+  community: string;
+}
+export interface MapFile {
+  name: string;
+  path: string;
+  symbols: MapSymbol[];
+}
+export interface MapDir {
+  name: string;
+  path: string;
+  dirs: MapDir[];
+  files: MapFile[];
+}
+export interface MapFileEdge {
+  source: string;
+  target: string;
+  calls: number;
+  imports: number;
+  refs: number;
+  other: number;
+}
+export interface KnowledgeGraphView {
+  root: MapDir;
+  file_edges: MapFileEdge[];
+  /** [source symbol id, target symbol id, relation] */
+  symbol_edges: [string, string, string][];
+  stats: { files: number; symbols: number; edges: number; communities: number };
+}
+export const knowledgeGraphView = (projectId: string) =>
+  invoke<KnowledgeGraphView>("knowledge_graph_view", { projectId });
 // Opens a terminal running `install_command`; returns it so the caller can jump in.
 export const installKnowledgeTooling = (projectId: string) =>
   invoke<RunInfo>("install_knowledge_tooling", { projectId });

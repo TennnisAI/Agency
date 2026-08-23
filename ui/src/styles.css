@@ -3683,3 +3683,128 @@ input, textarea, code,
 .daily-nav { display: inline-flex; gap: 2px; margin-right: 6px; }
 .daily-nav .file-editor-btn { font-size: 15px; line-height: 1; padding: 0 6px; }
 .daily-nav .file-editor-btn:disabled { opacity: .35; cursor: default; }
+
+/* ── Map tab ──────────────────────────────────────────────────────────────
+   The knowledge-graph map: a drill-down canvas of boxes (directories, files)
+   and dependency lines, with a side panel for the selection. Same surface
+   language as the rest of the app: flat panels, hairlines, mono for anything
+   that names code. */
+.map {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--mantle);
+  overflow: hidden;
+}
+.map-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.map-head .spacer { flex: 1; }
+.map-crumbs { display: flex; align-items: center; flex-wrap: wrap; font-family: var(--mono); font-size: 12px; }
+.map-crumbs button {
+  background: none; border: none; padding: 2px 6px; border-radius: 5px;
+  color: var(--sub0); font-family: var(--mono); font-size: 12px; cursor: pointer;
+}
+.map-crumbs button:hover { background: var(--s0); color: var(--text); }
+.map-crumbs button.on { color: var(--text); }
+.map-crumb-sep { color: var(--o0); font-size: 10px; padding: 0 1px; }
+.map-stats { font-family: var(--mono); font-size: 11px; color: var(--o1); white-space: nowrap; }
+.map-body { flex: 1; display: flex; min-height: 0; }
+.map-canvas {
+  flex: 1;
+  min-width: 0;
+  background: var(--base);
+  cursor: grab;
+  touch-action: none;
+  overscroll-behavior: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.map-canvas:active { cursor: grabbing; }
+
+.map-edge path { stroke: var(--s1); opacity: .55; transition: opacity .12s; }
+.map-edge polygon { fill: var(--s2); opacity: .7; }
+.map-edge.on path { stroke: var(--blue); opacity: .95; }
+.map-edge.on polygon { fill: var(--blue); opacity: .95; }
+.map-edge.dim path, .map-edge.dim polygon { opacity: .14; }
+
+.map-node { cursor: pointer; }
+.map-node rect { fill: var(--mantle); stroke: var(--line); stroke-width: 1; transition: opacity .12s; }
+.map-node.dir rect { stroke: var(--s1); }
+.map-node.on rect { stroke: var(--blue); }
+.map-node.dim { opacity: .35; }
+.map-node text { pointer-events: none; }
+.map-node-name { font-family: var(--mono); font-size: 11px; fill: var(--text); }
+.map-node.dir .map-node-name { fill: var(--lav); }
+.map-node-meta { font-family: var(--sans); font-size: 9px; fill: var(--o1); }
+
+.map-side {
+  width: 300px;
+  flex: none;
+  border-left: 1px solid var(--line);
+  overflow-y: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.map-side-title { font-size: 13px; font-weight: 600; word-break: break-all; margin-bottom: 2px; }
+.map-side-title.mono { font-family: var(--mono); font-size: 12px; font-weight: 500; }
+.map-side-hint { font-size: 12px; color: var(--o1); line-height: 1.45; margin-bottom: 6px; }
+.map-side-sec {
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: var(--o1);
+  margin: 12px 0 4px;
+}
+.map-side-actions { display: flex; gap: 6px; margin: 8px 0 2px; flex-wrap: wrap; }
+.map-btn {
+  background: var(--s0);
+  color: var(--text);
+  border: none;
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.map-btn:hover { background: var(--s1); }
+
+.map-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  width: 100%;
+  background: none;
+  border: none;
+  border-radius: 5px;
+  padding: 3px 6px;
+  cursor: pointer;
+  text-align: left;
+  color: var(--sub1);
+  font-size: 12px;
+}
+.map-row:hover { background: var(--s0); color: var(--text); }
+.map-row-label {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
+  min-width: 0;
+  flex: 1;
+}
+.map-row-meta { font-size: 10.5px; color: var(--o1); white-space: nowrap; }
+.map-row.sub { padding-left: 18px; }
+.map-sym-kind { font-family: var(--mono); font-size: 11px; color: var(--mauve); width: 12px; flex: none; }
+.map-sym-line { font-family: var(--mono); font-size: 10.5px; color: var(--blue); cursor: pointer; }
+.map-sym-line:hover { text-decoration: underline; }
+.map-sym-edges { margin: 0 0 4px; }
+.map-empty { max-width: 420px; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 10px; }
+.map-empty p { margin: 0; }

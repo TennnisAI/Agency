@@ -4620,6 +4620,7 @@ impl AppState {
         facts: &agency_core::cleanup::BranchFacts,
         plan: &agency_core::cleanup::CleanupPlan,
         archived_at: i64,
+        usage: Option<String>,
         rescued: Option<agency_core::record::TranscriptNote>,
     ) -> Result<()> {
         use agency_core::record::{Commit, Outcome, RunRecord, TranscriptNote};
@@ -4666,10 +4667,6 @@ impl AppState {
             .and_then(|from| agency_core::git::range_stat(repo, from, &run.branch).ok());
 
         let issue = run.issue_id.as_ref().and_then(|id| self.issue_label(id));
-        let usage =
-            self.usage.lock().unwrap().get(&run.id).and_then(|(_, u)| {
-                agency_core::usage::label(&agency_core::usage::UsageInfo::from(u))
-            });
         // The rescued conversation when the rescue happened; otherwise fall
         // back to naming the agent's own directory. Named, not copied: that
         // directory belongs to the agent's CLI and Agency does not manage it.
@@ -4936,6 +4933,15 @@ impl AppState {
         let facts = self.branch_facts(&run);
         let plan = agency_core::cleanup::plan(&facts, Disposal::Archive);
         let archived_at = now_secs();
+        // The spend is read before the transcript moves: the 2s usage poll
+        // zeroes a run's in-memory total the moment its directory stops
+        // existing, and a tick can land inside this function. Read after the
+        // rescue, the record's cost line would vanish exactly when the
+        // transcript it was parsed from was being saved.
+        let usage =
+            self.usage.lock().unwrap().get(&run.id).and_then(|(_, u)| {
+                agency_core::usage::label(&agency_core::usage::UsageInfo::from(u))
+            });
         // After the session kills above, so the files are quiescent; before
         // the worktree goes, so a crash mid-archive leaves the directory
         // where it always was rather than half-moved.
@@ -4947,7 +4953,9 @@ impl AppState {
         // exist — after this the range that names the run's own commits may be
         // gone. Best-effort: a record that cannot be written is not worth
         // failing an archive over, and it says so in the log.
-        if let Err(e) = self.write_run_record(&run, &repo, &facts, &plan, archived_at, rescued) {
+        if let Err(e) =
+            self.write_run_record(&run, &repo, &facts, &plan, archived_at, usage, rescued)
+        {
             log::warn!("archive_run {id}: couldn't write the run record: {e}");
         }
 

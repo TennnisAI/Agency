@@ -139,10 +139,10 @@ export default function ArchivedSection() {
                 : "Its work is elsewhere, so only the record was kept"}>
                 {kept ? "branch" : "record"}
               </span>
-              {r.archived?.hasRecord && (
+              {(r.archived?.hasRecord || r.archived?.hasConversation) && (
                 <button
                   className="icon-btn"
-                  title="Read the record"
+                  title="Read the record and the conversation"
                   disabled={busy}
                   onClick={() => setReading(r)}
                 >≡</button>

@@ -226,6 +226,25 @@ pub struct ArchivedInfo {
     pub branch_kept: bool,
     /// There is a record file to read.
     pub has_record: bool,
+    /// There is a conversation to read: a transcript in a format we parse,
+    /// either rescued into the archive or still in the agent's own store
+    /// (runs archived before rescues existed). Runs archived before records
+    /// existed can have this and no record, which is why it is asked
+    /// separately.
+    pub has_conversation: bool,
+}
+
+/// A run's conversation as the archive viewer renders it.
+///
+/// `supported` false means Agency does not know this agent's transcript
+/// format at all, and the UI must say "we cannot see this", never "the agent
+/// said nothing" — the same distinction usage keeps for tokens. With
+/// `supported` true and no sessions, nothing was kept or nothing was said.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationInfo {
+    pub supported: bool,
+    pub sessions: Vec<agency_core::transcript::Conversation>,
 }
 
 /// One message the send queue is holding, as shown by the run's marker.
@@ -1017,6 +1036,47 @@ fn workspace_dir(repo: &Path, run: &agency_core::registry::Run) -> std::path::Pa
     } else {
         repo.to_path_buf()
     }
+}
+
+/// Top-level session files in a transcript directory. What the record calls
+/// "2 session files": the per-session subdirectories (tool results, subagent
+/// transcripts) ride along in the rescue but are not sessions.
+fn count_sessions(dir: &Path) -> usize {
+    std::fs::read_dir(dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("jsonl"))
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+/// The agent's own command for picking the newest rescued session up again,
+/// for the agents whose resume-by-id verb is actually known. Claude's session
+/// id is its file's stem and `--resume <id>` its flag; no other agent's has
+/// been verified, and a guessed command in a record is worse than none.
+///
+/// Newest by mtime, which the rescue preserved; mtime is also what the
+/// agent's own "resume most recent" goes by.
+fn resume_command(command: &str, dir: &Path) -> Option<String> {
+    let base = Path::new(command).file_name().and_then(|s| s.to_str()).unwrap_or(command);
+    if base != "claude" {
+        return None;
+    }
+    let mut newest: Option<(std::time::SystemTime, String)> = None;
+    for entry in std::fs::read_dir(dir).ok()?.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else { continue };
+        let Ok(modified) = entry.metadata().and_then(|m| m.modified()) else { continue };
+        if newest.as_ref().map_or(true, |(t, _)| modified > *t) {
+            newest = Some((modified, stem.to_string()));
+        }
+    }
+    newest.map(|(_, id)| format!("claude --resume {id}"))
 }
 
 /// Delete a file, treating "it was not there" as success. Both callers are
@@ -4479,6 +4539,74 @@ impl AppState {
         }
     }
 
+    /// The launch command for this run's agent, from its profile when there is
+    /// one. Its basename is what selects the transcript dialect.
+    fn agent_command(&self, run: &agency_core::registry::Run) -> String {
+        self.registry
+            .lock()
+            .unwrap()
+            .get_profile(&run.agent)
+            .ok()
+            .flatten()
+            .map(|p| p.command)
+            .unwrap_or_else(|| run.agent.clone())
+    }
+
+    /// Where this run's agent keeps its transcript for this workspace, for the
+    /// agents whose layout `usage::session_dir` knows. `None` for the rest.
+    fn agent_session_dir(&self, run: &agency_core::registry::Run, repo: &Path) -> Option<PathBuf> {
+        let home = std::env::var_os("HOME").map(PathBuf::from)?;
+        agency_core::usage::session_dir(&home, &self.agent_command(run), &workspace_dir(repo, run))
+    }
+
+    /// Move the agent's transcript directory for this worktree into the
+    /// archive, beside the record (AGE-152). That directory is keyed by a
+    /// worktree path that is about to stop existing; left behind, it is
+    /// unreachable by the agent and swept by nothing, which is how every
+    /// finished run used to leak one forever.
+    ///
+    /// Worktree runs only: a run in the project's own checkout shares its
+    /// session directory with the user's own sessions there, and that
+    /// directory is not Agency's to move. Best-effort: a failed rescue leaves
+    /// the source untouched (`move_tree_verified` deletes only after the copy
+    /// verifies) and the record falls back to naming it where it is.
+    fn rescue_transcript(
+        &self,
+        run: &agency_core::registry::Run,
+        repo: &Path,
+    ) -> Option<agency_core::record::TranscriptNote> {
+        if !run.worktree {
+            return None;
+        }
+        let src = self.agent_session_dir(run, repo).filter(|d| d.exists())?;
+        let dst = agency_core::record::transcript_dir(repo, &run.id);
+        if let Err(e) = agency_core::transcript::move_tree_verified(&src, &dst) {
+            log::warn!("archive {}: couldn't rescue the transcript: {e}", run.id);
+            return None;
+        }
+        Some(agency_core::record::TranscriptNote::Rescued {
+            sessions: count_sessions(&dst),
+            resume: resume_command(&self.agent_command(run), &dst),
+        })
+    }
+
+    /// Put a rescued conversation back in the agent's own store, so the
+    /// restored run's resume finds it. The worktree comes back at the same
+    /// path, so the store directory's name is the same one it had. Best-effort
+    /// both ways: with no rescued copy this is a no-op (runs archived before
+    /// rescues existed still have their original directory in place), and a
+    /// failed move leaves the archive copy where it is.
+    fn reinstate_transcript(&self, run: &agency_core::registry::Run, repo: &Path) {
+        let src = agency_core::record::transcript_dir(repo, &run.id);
+        if !src.exists() {
+            return;
+        }
+        let Some(dst) = self.agent_session_dir(run, repo) else { return };
+        if let Err(e) = agency_core::transcript::move_tree_verified(&src, &dst) {
+            log::warn!("restore {}: couldn't reinstate the transcript: {e}", run.id);
+        }
+    }
+
     /// Write the run's archive record: what it was asked, what it committed,
     /// and where that work is now.
     ///
@@ -4492,8 +4620,9 @@ impl AppState {
         facts: &agency_core::cleanup::BranchFacts,
         plan: &agency_core::cleanup::CleanupPlan,
         archived_at: i64,
+        rescued: Option<agency_core::record::TranscriptNote>,
     ) -> Result<()> {
-        use agency_core::record::{Commit, Outcome, RunRecord};
+        use agency_core::record::{Commit, Outcome, RunRecord, TranscriptNote};
         let base = agency_core::merge::resolve_target(run.merge_target.as_deref(), repo)
             .unwrap_or_else(|_| run.base.clone());
         // The same facts the plan was decided from, passed in rather than
@@ -4541,25 +4670,16 @@ impl AppState {
             self.usage.lock().unwrap().get(&run.id).and_then(|(_, u)| {
                 agency_core::usage::label(&agency_core::usage::UsageInfo::from(u))
             });
-        // Named, not copied: the transcript belongs to the agent's own CLI and
-        // Agency does not manage that directory. Pointing at one that is not
-        // there would be worse than saying nothing, so it is checked first.
-        let transcript = std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .and_then(|home| {
-                let command = self
-                    .registry
-                    .lock()
-                    .unwrap()
-                    .get_profile(&run.agent)
-                    .ok()
-                    .flatten()
-                    .map(|p| p.command)
-                    .unwrap_or_else(|| run.agent.clone());
-                agency_core::usage::session_dir(&home, &command, &workspace_dir(repo, run))
-            })
-            .filter(|d| d.exists())
-            .map(|d| d.display().to_string());
+        // The rescued conversation when the rescue happened; otherwise fall
+        // back to naming the agent's own directory. Named, not copied: that
+        // directory belongs to the agent's CLI and Agency does not manage it.
+        // Pointing at one that is not there would be worse than saying
+        // nothing, so it is checked first.
+        let transcript = rescued.or_else(|| {
+            self.agent_session_dir(run, repo)
+                .filter(|d| d.exists())
+                .map(|d| TranscriptNote::Named { dir: d.display().to_string() })
+        });
 
         let record = RunRecord {
             id: run.id.clone(),
@@ -4621,6 +4741,35 @@ impl AppState {
         }
     }
 
+    /// The run's conversation, parsed from its transcript: the rescued copy
+    /// beside the record when there is one, else the agent's own session
+    /// directory (which covers runs archived before rescues existed).
+    ///
+    /// `supported: false` when the agent's transcript format is not one we
+    /// read; the UI must present that as "cannot see", never as "said
+    /// nothing". Worktree runs only, like the rescue: a checkout run's
+    /// session directory holds every conversation the user ever had in that
+    /// folder, and this call cannot tell which of them was this run's.
+    pub fn read_run_conversation(&self, id: &str) -> Result<ConversationInfo> {
+        let run = self.run_record(id)?;
+        let repo = self.project_repo(&run.project_id)?;
+        let Some(format) = agency_core::usage::format_for(&self.agent_command(&run)) else {
+            return Ok(ConversationInfo { supported: false, sessions: Vec::new() });
+        };
+        if !run.worktree {
+            return Ok(ConversationInfo { supported: true, sessions: Vec::new() });
+        }
+        let rescued = agency_core::record::transcript_dir(&repo, &run.id);
+        let dir = if rescued.exists() {
+            Some(rescued)
+        } else {
+            self.agent_session_dir(&run, &repo).filter(|d| d.exists())
+        };
+        let sessions =
+            dir.map(|d| agency_core::transcript::read_sessions(&d, format)).unwrap_or_default();
+        Ok(ConversationInfo { supported: true, sessions })
+    }
+
     pub fn discard_run(&self, id: &str) -> Result<()> {
         self.discard_run_with_progress(id, &mut |_| {})
     }
@@ -4674,6 +4823,25 @@ impl AppState {
             let path = agency_core::record::path(&repo, &run.id);
             if let Err(e) = remove_if_present(&path) {
                 log::warn!("discard_run {id}: couldn't remove the run record: {e}");
+            }
+            // The transcripts go with the record: the rescued copy beside it,
+            // and the agent's own directory for this worktree, which is keyed
+            // by a path that stops existing and which nothing else ever
+            // sweeps (AGE-152 counted one leaked per discarded run, forever).
+            // Worktree runs only — a checkout run's session directory also
+            // holds the user's own sessions in that folder.
+            let rescued = agency_core::record::transcript_dir(&repo, &run.id);
+            if rescued.exists() {
+                if let Err(e) = std::fs::remove_dir_all(&rescued) {
+                    log::warn!("discard_run {id}: couldn't remove the rescued transcript: {e}");
+                }
+            }
+            if run.kind == "agent" && run.worktree {
+                if let Some(sdir) = self.agent_session_dir(&run, &repo).filter(|d| d.exists()) {
+                    if let Err(e) = std::fs::remove_dir_all(&sdir) {
+                        log::warn!("discard_run {id}: couldn't remove the transcript dir: {e}");
+                    }
+                }
             }
         }
         {
@@ -4768,11 +4936,18 @@ impl AppState {
         let facts = self.branch_facts(&run);
         let plan = agency_core::cleanup::plan(&facts, Disposal::Archive);
         let archived_at = now_secs();
+        // After the session kills above, so the files are quiescent; before
+        // the worktree goes, so a crash mid-archive leaves the directory
+        // where it always was rather than half-moved.
+        if run.worktree {
+            step(on_progress, "Saving the conversation", &run.branch);
+        }
+        let rescued = self.rescue_transcript(&run, &repo);
         // Written while the worktree, the branch and the commit range all still
         // exist — after this the range that names the run's own commits may be
         // gone. Best-effort: a record that cannot be written is not worth
         // failing an archive over, and it says so in the log.
-        if let Err(e) = self.write_run_record(&run, &repo, &facts, &plan, archived_at) {
+        if let Err(e) = self.write_run_record(&run, &repo, &facts, &plan, archived_at, rescued) {
             log::warn!("archive_run {id}: couldn't write the run record: {e}");
         }
 
@@ -4879,6 +5054,13 @@ impl AppState {
                 port,
             );
         }
+        // The conversation the archive rescued goes back into the agent's own
+        // store: the worktree exists again at the same path, so the agent's
+        // resume finds its sessions exactly as if the run had never been
+        // archived.
+        if run.worktree {
+            self.reinstate_transcript(&run, &repo);
+        }
         // The record describes a run that ended; this one is live again, and a
         // record left behind would be read as the account of a run still going.
         // It is written afresh whenever this one is archived again.
@@ -4910,6 +5092,15 @@ impl AppState {
                     has_record: repo
                         .as_ref()
                         .is_some_and(|repo| agency_core::record::path(repo, &r.id).exists()),
+                    // Worktree runs only, like the rescue: a checkout run's
+                    // session directory is every conversation the user ever
+                    // had in that folder, not this run's.
+                    has_conversation: r.worktree
+                        && repo.as_ref().is_some_and(|repo| {
+                            agency_core::usage::format_for(&self.agent_command(r)).is_some()
+                                && (agency_core::record::transcript_dir(repo, &r.id).exists()
+                                    || self.agent_session_dir(r, repo).is_some_and(|d| d.exists()))
+                        }),
                 });
                 info
             })

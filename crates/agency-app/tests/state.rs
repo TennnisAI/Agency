@@ -1682,6 +1682,12 @@ fn archiving_merged_work_takes_the_branch_and_leaves_a_record() {
     let held = archived[0].archived.as_ref().unwrap();
     assert!(!held.branch_kept);
     assert!(held.has_record);
+    // This run's agent is a plain `sh` profile, whose transcript format we do
+    // not read; the viewer must get "cannot see", not an empty conversation.
+    assert!(!held.has_conversation);
+    let convo = state.read_run_conversation(&info.id).unwrap();
+    assert!(!convo.supported);
+    assert!(convo.sessions.is_empty());
 
     let record = state.read_run_record(&info.id).unwrap().unwrap();
     assert!(record.contains("outcome: merged"), "{record}");
@@ -1907,6 +1913,7 @@ fn removing_an_agent_reports_each_teardown_step() {
         vec![
             "Saving uncommitted changes",
             "Stopping the agent",
+            "Saving the conversation",
             "Removing the worktree",
             "Cleaning up",
         ],

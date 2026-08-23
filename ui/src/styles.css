@@ -2395,6 +2395,52 @@ input, textarea, code,
   flex: 1; min-height: 0; width: 100%;
   border: none; background: var(--base);
 }
+/* Markdown preview mode. This one renders in the app document rather than a
+   frame (AGE-156), which costs it two things a frame got for free: selection,
+   which .shell turns off app-wide, and a scroller of its own. In exchange the
+   colours are live variables, so a theme switch reaches an open preview. */
+.file-preview-doc {
+  flex: 1; min-height: 0; overflow: auto; background: var(--base);
+  user-select: text; -webkit-user-select: text;
+}
+.file-preview-md {
+  margin: 0 auto; max-width: 760px; padding: 26px 30px 60px;
+  font-size: 14px; line-height: 1.65; color: var(--text); overflow-wrap: break-word;
+}
+.file-preview-md :is(h1, h2, h3, h4, h5, h6) { line-height: 1.25; margin: 1.6em 0 .6em; }
+.file-preview-md h1 { font-size: 1.7em; }
+.file-preview-md h2 { font-size: 1.4em; }
+.file-preview-md h3 { font-size: 1.18em; }
+.file-preview-md h4 { font-size: 1.05em; }
+.file-preview-md :is(h5, h6) { font-size: 1em; }
+.file-preview-md h6 { color: var(--sub0); }
+.file-preview-md :is(h1, h2) { border-bottom: 1px solid var(--line); padding-bottom: 6px; }
+.file-preview-md > :first-child { margin-top: 0; }
+.file-preview-md :is(p, ul, ol, blockquote, pre, table) { margin: .8em 0; }
+.file-preview-md :is(ul, ol) { padding-left: 1.5em; }
+.file-preview-md li { margin: .2em 0; }
+.file-preview-md a { color: var(--blue); cursor: pointer; }
+.file-preview-md :is(code, pre) {
+  font-family: var(--mono); font-size: 12.5px; background: var(--crust); border-radius: 8px;
+}
+.file-preview-md code { padding: 1px 5px; }
+.file-preview-md pre { position: relative; padding: 12px 14px; overflow: auto; }
+.file-preview-md pre code { padding: 0; background: none; }
+.file-preview-md pre[data-lang] { padding-top: 26px; }
+.file-preview-md pre[data-lang]::before {
+  content: attr(data-lang); position: absolute; top: 7px; left: 14px;
+  font-family: var(--sans); font-size: 9.5px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .07em; color: var(--o1);
+}
+.file-preview-md blockquote {
+  border-left: 3px solid var(--s1); margin-left: 0; padding-left: 14px; color: var(--sub0);
+}
+.file-preview-md img { max-width: 100%; border-radius: 6px; }
+.file-preview-md table { border-collapse: collapse; }
+.file-preview-md :is(th, td) { border: 1px solid var(--line); padding: 6px 10px; }
+.file-preview-md th { background: var(--mantle); text-align: left; }
+.file-preview-md hr { border: none; border-top: 1px solid var(--line); margin: 1.6em 0; }
+.file-preview-md input[type=checkbox] { margin-right: .4em; }
 /* Compact segmented control for the Code/Preview toggle in the editor bar. */
 .seg.seg-mini { padding: 1px; }
 .seg.seg-mini button { padding: 2px 9px; font-size: 11px; }

@@ -438,6 +438,21 @@ export const createTerminal = (projectId: string) =>
   invoke<RunInfo>("create_terminal", { projectId });
 export const agentInstalled = (agent: string) =>
   invoke<boolean>("agent_installed", { agent });
+// How the binary on PATH was installed, read off its canonicalized path by the
+// backend; package/formula names come out of that same path, not a table.
+export type InstallMethod =
+  | { method: "npm"; package: string }
+  | { method: "homebrew"; formula: string }
+  | { method: "vendor" }
+  | { method: "unknown" };
+// One Settings diagnostics row (AGE-146): local facts only, no staleness verdict.
+export interface AgentCliInfo {
+  agent: string;
+  path: string | null;
+  version: string | null;
+  install: InstallMethod;
+}
+export const agentCliInfo = () => invoke<AgentCliInfo[]>("agent_cli_info");
 export const createInstallTerminal = (projectId: string, agent: string, command: string) =>
   invoke<RunInfo>("create_install_terminal", { projectId, agent, command });
 export const confirmQuit = () => invoke<void>("confirm_quit");

@@ -133,7 +133,7 @@ pub fn parse(format: ListFormat, stdout: &str) -> Vec<String> {
 /// Drop ANSI escape sequences. These are TUI CLIs, and although all four print
 /// clean text into a pipe today, a colored id would otherwise fail validation
 /// and silently disappear from the menu rather than showing up wrong.
-fn strip_ansi(line: &str) -> String {
+pub(crate) fn strip_ansi(line: &str) -> String {
     let mut out = String::with_capacity(line.len());
     let mut chars = line.chars();
     while let Some(c) = chars.next() {
@@ -212,7 +212,9 @@ pub fn probe(
     Ok(models)
 }
 
-fn drain(pipe: Option<impl std::io::Read + Send + 'static>) -> std::thread::JoinHandle<String> {
+pub(crate) fn drain(
+    pipe: Option<impl std::io::Read + Send + 'static>,
+) -> std::thread::JoinHandle<String> {
     std::thread::spawn(move || {
         let mut buf = Vec::new();
         if let Some(mut pipe) = pipe {

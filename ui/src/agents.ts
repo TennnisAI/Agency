@@ -1,4 +1,4 @@
-import type { RunInfo } from "./api";
+import type { AgentCliInfo, RunInfo } from "./api";
 
 export interface AgentType {
   id: string;
@@ -33,6 +33,37 @@ export const INSTALL_COMMANDS: Record<string, string> = {
   kimi: "curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash",
   crush: "npm install -g @charmland/crush",
 };
+
+// A vendor-managed install updates through the CLI's own subcommand, keyed by
+// binary name (the resolved path's basename, so a custom profile pointing at
+// the same binary gets the same answer). Only subcommands read off the CLI's
+// own --help are listed (claude 2.1.241, cursor-agent 2026.08.11); anything
+// else shows its facts with no command, rather than a guess.
+export const VENDOR_UPDATE_COMMANDS: Record<string, string> = {
+  claude: "claude update",
+  "cursor-agent": "cursor-agent update",
+};
+
+// The update one-liner matched to how the binary on PATH was actually
+// installed (AGE-146). npm and Homebrew lines are composed from the package or
+// formula name the backend read out of the resolved path itself, so the advice
+// cannot disagree with the install it is for: `npm install -g` is wrong for a
+// Homebrew formula and actively harmful for a vendor-managed tree. Null means
+// no command is offered, which is the honest answer for an install we cannot
+// name.
+export function updateCommand(info: AgentCliInfo): string | null {
+  const { install } = info;
+  switch (install.method) {
+    case "npm":
+      return `npm install -g ${install.package}@latest`;
+    case "homebrew":
+      return `brew upgrade ${install.formula}`;
+    case "vendor":
+      return VENDOR_UPDATE_COMMANDS[info.path?.split("/").pop() ?? ""] ?? null;
+    case "unknown":
+      return null;
+  }
+}
 
 const COLORS: Record<string, string> = {
   claude: "#fab387",

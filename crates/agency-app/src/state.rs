@@ -6926,24 +6926,7 @@ fn first_token_on_path(command_line: &str) -> bool {
 }
 
 fn command_on_path(command: &str) -> bool {
-    fn executable(p: &Path) -> bool {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            p.is_file()
-                && p.metadata().map(|m| m.permissions().mode() & 0o111 != 0).unwrap_or(false)
-        }
-        #[cfg(not(unix))]
-        {
-            p.is_file()
-        }
-    }
-    if command.contains('/') {
-        return executable(Path::new(command));
-    }
-    std::env::var_os("PATH")
-        .map(|paths| std::env::split_paths(&paths).any(|dir| executable(&dir.join(command))))
-        .unwrap_or(false)
+    crate::agent_diag::resolve_on_path(command).is_some()
 }
 
 /// Any existing folder is addable as a project. Git is what unlocks worktrees

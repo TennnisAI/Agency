@@ -1,5 +1,6 @@
 mod activity;
 mod agent_catalog;
+mod agent_diag;
 mod clipboard;
 mod commands;
 mod datadir;
@@ -310,6 +311,7 @@ pub fn run() {
             commands::import_file,
             commands::confirm_quit,
             commands::agent_installed,
+            commands::agent_cli_info,
             commands::create_install_terminal,
         ])
         .build(tauri::generate_context!())

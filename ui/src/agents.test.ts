@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AGENT_TYPES, INSTALL_COMMANDS, agentColor, filterModels, modelIdError, modelOptions, nextRaceModel, runListLabel } from "./agents";
+import { AGENT_TYPES, INSTALL_COMMANDS, agentColor, filterModels, modelIdError, modelOptions, nextRaceModel, runListLabel, updateCommand } from "./agents";
 
 describe("agents", () => {
   it("lists the preconfigured agent types", () => {
@@ -23,6 +23,29 @@ describe("agents", () => {
   });
   it("falls back to a neutral color for unknown agents", () => {
     expect(agentColor("shell")).toBe("#a6adc8");
+  });
+});
+
+describe("updateCommand", () => {
+  const row = (install: Parameters<typeof updateCommand>[0]["install"], path: string | null) =>
+    ({ agent: "x", path, version: null, install });
+
+  it("composes the npm and brew lines from the name the path carried", () => {
+    expect(updateCommand(row({ method: "npm", package: "@anthropic-ai/claude-code" }, "/opt/homebrew/bin/claude")))
+      .toBe("npm install -g @anthropic-ai/claude-code@latest");
+    expect(updateCommand(row({ method: "homebrew", formula: "opencode" }, "/opt/homebrew/bin/opencode")))
+      .toBe("brew upgrade opencode");
+  });
+  it("offers a vendor install its own CLI's update subcommand, by binary name", () => {
+    expect(updateCommand(row({ method: "vendor" }, "<home>/.local/bin/claude"))).toBe("claude update");
+    expect(updateCommand(row({ method: "vendor" }, "<home>/.local/bin/cursor-agent"))).toBe("cursor-agent update");
+    // A vendor whose update subcommand we have not read off its --help gets
+    // no command, not a guess.
+    expect(updateCommand(row({ method: "vendor" }, "<home>/.local/bin/kimi"))).toBeNull();
+  });
+  it("offers nothing for an install it cannot name", () => {
+    expect(updateCommand(row({ method: "unknown" }, "<home>/.local/bin/hermes"))).toBeNull();
+    expect(updateCommand(row({ method: "unknown" }, null))).toBeNull();
   });
 });
 

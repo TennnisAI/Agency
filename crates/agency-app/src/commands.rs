@@ -266,6 +266,31 @@ pub async fn agent_installed(state: State<'_, AppState>, agent: String) -> Resul
     state.agent_installed(&agent).map_err(|e| e.to_string())
 }
 
+/// The Settings diagnostics rows: each enabled agent CLI's resolved path,
+/// local `--version` and install method (see `agent_diag`). Reads the disk
+/// and runs local binaries only; no network. On the blocking pool because the
+/// version runs take ~1s each for the node-backed CLIs.
+#[tauri::command]
+pub async fn agent_cli_info(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::agent_diag::AgentCliInfo>, String> {
+    let profiles: Vec<(String, String)> = state
+        .list_profiles()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        // The shell profile is the user's own shell, not an agent CLI; a
+        // version row for it would be diagnostics about zsh.
+        .filter(|p| p.name != crate::state::SHELL_AGENT)
+        .map(|p| (p.name, p.command))
+        .collect();
+    let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
+        return Ok(Vec::new());
+    };
+    tauri::async_runtime::spawn_blocking(move || crate::agent_diag::diagnose(&profiles, &home))
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn create_install_terminal(
     state: State<'_, AppState>,

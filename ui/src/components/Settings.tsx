@@ -4,6 +4,7 @@ import { appLogDir } from "@tauri-apps/api/path";
 import { revealItemInDir, openUrl } from "@tauri-apps/plugin-opener";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
+  AgentCliInfo,
   AgentProfile,
   CatalogEntry,
   FilesConfig,
@@ -14,6 +15,7 @@ import {
   ProviderSettings,
   NotifSettings,
   UpdateCheck,
+  agentCliInfo,
   authenticateMcpServer,
   checkForUpdate,
   closeProject,
@@ -48,7 +50,7 @@ import Toggle from "./Toggle";
 import ConfirmDialog from "./ConfirmDialog";
 import FormDialog, { Field } from "./FormDialog";
 import { toastError, toastSuccess } from "../lib/toast";
-import { agentColor, agentLabel } from "../agents";
+import { agentColor, agentLabel, updateCommand } from "../agents";
 import { THEMES, ThemeId, applyTheme, getStoredTheme } from "../lib/themes";
 import { getWordWrap, setWordWrap } from "../lib/editorPrefs";
 import { setWorkspaceHidden, workspaceHidden } from "../lib/workspacePref";
@@ -216,6 +218,10 @@ export default function Settings({
   const [filesDraft, setFilesDraft] = useState("");
   // App version for the Diagnostics section; empty until the Tauri call lands.
   const [version, setVersion] = useState("");
+  // Per-agent CLI facts (path, version, install method) for the Diagnostics
+  // section. Loaded in its own effect because the backend runs each CLI's
+  // `--version`, which takes a second or two; rows appear when it answers.
+  const [cliInfo, setCliInfo] = useState<AgentCliInfo[]>([]);
   // Result of the last update check, or null before one has run in this view.
   const [update, setUpdate] = useState<UpdateCheck | null>(null);
   const [checking, setChecking] = useState(false);
@@ -406,6 +412,10 @@ export default function Settings({
 
   useEffect(() => {
     refresh();
+  }, []);
+
+  useEffect(() => {
+    agentCliInfo().then(setCliInfo).catch(() => {});
   }, []);
 
   // Knowledge-graph config is per-project — (re)load whenever the selected
@@ -1381,6 +1391,35 @@ export default function Settings({
               <span className="settings-notif-label">Check for updates on launch</span>
               <Toggle checked={autoCheck} onChange={pickAutoCheck} />
             </div>
+            {/* Facts about each agent's CLI, with no staleness verdict: the
+                vendors' own update banners already carry that with real data
+                (AGE-146). The copy offer exists because the right update
+                command depends on how the CLI was installed, which the user
+                often does not remember and the resolved path does. */}
+            {cliInfo.map((c) => {
+              const cmd = updateCommand(c);
+              return (
+                <div key={c.agent} className="settings-notif-row">
+                  <span className="settings-notif-label" title={c.path ?? undefined}>
+                    {agentLabel(c.agent)}
+                    {c.version ? <> <code className="settings-meta-val">{c.version}</code></> : null}
+                  </span>
+                  {cmd ? (
+                    <button
+                      className="settings-ghost-btn"
+                      title={cmd}
+                      onClick={() => {
+                        navigator.clipboard.writeText(cmd)
+                          .then(() => toastSuccess(`Copied: ${cmd}`))
+                          .catch(() => {});
+                      }}
+                    >Copy update command</button>
+                  ) : !c.path ? (
+                    <span className="settings-notif-label">Not found on PATH</span>
+                  ) : null}
+                </div>
+              );
+            })}
             <div className="settings-notif-row">
               <span className="settings-notif-label">Log files</span>
               <button className="settings-ghost-btn" onClick={openLogs}>Open logs</button>
@@ -1393,6 +1432,12 @@ export default function Settings({
               >Open GitHub issues</button>
             </div>
           </div>
+          <p className="settings-section-hint">
+            Agent versions are read from the CLIs on your machine, and each
+            update command matches how that CLI was installed: npm, Homebrew,
+            or the vendor's own installer. Agency never updates an agent
+            itself.
+          </p>
         </section>
       </div>
 

@@ -13,6 +13,29 @@ pub struct AgencyConfig {
     pub mcp: McpConfig,
     #[serde(default)]
     pub knowledge: KnowledgeConfig,
+    #[serde(default)]
+    pub preview: PreviewConfig,
+}
+
+/// The Run tab preview's agent-facing side (AGE-143). On by default because it
+/// only ever exists where the user has already configured a web run script,
+/// and every run that carries the tools says so in its Run tab — the gate is
+/// the script the user set up, not a hidden flag. `agent_tools = false` in
+/// `[preview]` turns the server off project-wide for the users who want that.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PreviewConfig {
+    #[serde(default = "default_true")]
+    pub agent_tools: bool,
+}
+
+impl Default for PreviewConfig {
+    fn default() -> Self {
+        PreviewConfig { agent_tools: true }
+    }
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// Project-level MCP servers (`[mcp.servers.<name>]` tables), merged over the
@@ -531,6 +554,14 @@ mod tests {
         assert_eq!(c.scripts.run_mode, RunMode::Concurrent);
         assert_eq!(c.ports.base, 5200);
         assert_eq!(c.ports.block_size, 10);
+        assert!(c.preview.agent_tools, "preview tools are on unless switched off");
+    }
+
+    #[test]
+    fn preview_agent_tools_can_be_switched_off() {
+        let dir = tempdir().unwrap();
+        write(dir.path(), "agency.toml", "[preview]\nagent_tools = false\n");
+        assert!(!load(dir.path()).preview.agent_tools);
     }
 
     #[test]

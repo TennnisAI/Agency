@@ -102,6 +102,9 @@ pub struct Workspace {
     pub loop_check: Option<(String, u32)>,
     /// The run's allocated port, exported as `AGENCY_PORT`.
     pub port: Option<u16>,
+    /// The preview MCP server is attached to this run (see `crate::preview`),
+    /// so the catalog tells the agent the tools exist and what they act on.
+    pub preview_tools: bool,
 }
 
 /// The kit for this workspace, to be written into `skills_dir` (which the
@@ -328,6 +331,18 @@ fn workspace_skill_md(ws: &Workspace) -> String {
              block, and that is what keeps two agents running the same server at once from \
              fighting over one port.\n"
         ));
+    }
+    if ws.preview_tools {
+        body.push_str(
+            "\nAgency also serves this workspace's preview to you over MCP, as the \
+             `agency-preview` server already in your MCP config: console and network logs, a \
+             page snapshot, a screenshot of the preview pane, and navigate, click and type. \
+             The tools act on Agency's live preview of the web run script above, the same pane \
+             the user sees. Once something serves on `AGENCY_PORT` the preview connects on its \
+             own within a few seconds; start the web run script yourself in the background if \
+             it is not running. The last port of this workspace's block belongs to that \
+             server, so leave it unbound.\n",
+        );
     }
     body.push_str(&format!(
         "\n`AGENCY_WORKSPACE_PATH` (`{worktree}`), `AGENCY_ROOT_PATH` (`{repo_root}`) and \
@@ -681,6 +696,7 @@ mod tests {
             run_scripts: Vec::new(),
             loop_check: None,
             port: None,
+            preview_tools: false,
         }
     }
 
@@ -860,6 +876,25 @@ mod tests {
         assert!(full.contains("`pnpm install`"), "{full}");
         assert!(full.contains("- dev: `pnpm dev`"), "{full}");
         assert!(full.contains("3400") && full.contains("AGENCY_PORT"), "{full}");
+    }
+
+    /// A run with the preview MCP server attached is told so, and what the
+    /// tools act on; a run without it never hears the server's name.
+    #[test]
+    fn the_catalog_mentions_preview_tools_only_when_attached() {
+        let without = skill(&workspace(), WORKSPACE_SKILL);
+        assert!(!without.contains("agency-preview"), "{without}");
+
+        let ws = Workspace {
+            run_scripts: vec![("dev".into(), "pnpm dev".into())],
+            port: Some(3400),
+            preview_tools: true,
+            ..workspace()
+        };
+        let with = skill(&ws, WORKSPACE_SKILL);
+        assert!(with.contains("`agency-preview`"), "{with}");
+        assert!(with.contains("screenshot of the preview pane"), "{with}");
+        assert!(with.contains("last port of this workspace's block"), "{with}");
     }
 
     /// A looping run finishes on its check command, so the agent is told what

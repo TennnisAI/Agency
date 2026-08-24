@@ -154,7 +154,11 @@ export default function RunScriptEditor({
             <div className="run-setup-row-label">Serves a web app</div>
             <div className="run-setup-hint">
               {port != null ? (
-                <>Gets its own port in <code>$AGENCY_PORT</code>, and the app opens beside the logs.</>
+                <>
+                  Gets its own port in <code>$AGENCY_PORT</code>, and the app opens beside the logs.
+                  {config.previewToolsEnabled &&
+                    " Dispatched agents can see and drive that preview over MCP."}
+                </>
               ) : (
                 <>This workspace has no port, so only the logs are shown.</>
               )}

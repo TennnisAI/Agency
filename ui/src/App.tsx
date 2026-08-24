@@ -25,6 +25,7 @@ import { WEEKLY_DIR, buildWeeklyNote, isoWeekStamp, isoWeekStart, weeklyNotePath
 import { toastError, toastInfo } from "./lib/toast";
 import { workspaceHidden } from "./lib/workspacePref";
 import { Removal } from "./lib/runRemoval";
+import PreviewKeeper from "./components/PreviewKeeper";
 import RepoSetupDialog from "./components/RepoSetupDialog";
 import RunRemoveDialog from "./components/RunRemoveDialog";
 
@@ -645,6 +646,9 @@ export default function App() {
   return (
     <RunStoreProvider>
       <Shell />
+      {/* Invisible hosts that keep agents' previews (and their MCP preview
+          tools) alive while the Run tab isn't showing them. */}
+      <PreviewKeeper />
     </RunStoreProvider>
   );
 }

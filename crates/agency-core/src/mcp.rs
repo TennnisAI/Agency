@@ -21,6 +21,10 @@
 //! such a server with one agent CLI and records that in `user_scope_agents`, so
 //! emission is suppressed **only for that agent**. Every other agent keeps
 //! getting the server written into its workspace config.
+//!
+//! This module only ever emits config; the one MCP server Agency *runs* is the
+//! per-run preview server ([`crate::preview`]), whose entry rides into the same
+//! merged list rather than through a second emission path.
 
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};

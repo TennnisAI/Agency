@@ -125,6 +125,16 @@ pub struct RunScriptConfigDto {
     pub suggestions: Vec<agency_core::runsetup::RunSuggestion>,
     pub workspace: String,
     pub port: Option<u16>,
+    /// Set when this workspace's preview MCP server is listening: the port
+    /// whose instrumented proxy the preview iframe should load instead of the
+    /// dev server directly, so the dispatched agent can see and drive the
+    /// pane (AGE-143). `None` for the project checkout and for runs without
+    /// the server; those load the dev server URL as always.
+    pub preview_port: Option<u16>,
+    /// `[preview] agent_tools` for this project, so the script editor can say
+    /// what marking a script "web" grants a dispatched agent — at the moment
+    /// the user is making that choice, and only when it is true.
+    pub preview_tools_enabled: bool,
 }
 
 /// One script's live session state, as `run_scripts_status` reports it.
@@ -134,6 +144,36 @@ pub struct RunScriptStatusDto {
     pub name: String,
     pub status: SessionStatus,
 }
+
+/// Where a run's visible preview iframe sits in the app window, in CSS pixels
+/// relative to the webview. Reported by the Run tab while the pane is on
+/// screen; what the native preview screenshot crops to.
+#[derive(Debug, Clone, Copy, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewRect {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+/// One run whose preview MCP server is up, for the frontend. `url` is the
+/// instrumented preview the iframes load; `active` says whether anything is
+/// serving on the run's app port, which is when a hidden preview host is
+/// worth mounting at all (see the UI's PreviewKeeper).
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewTargetDto {
+    pub run_id: String,
+    pub url: String,
+    pub active: bool,
+}
+
+/// Takes a run id, returns PNG bytes of that run's preview pane as shown in
+/// the app window, or a reason there is no such picture right now. Installed
+/// by the app shell (`crate::preview_shot`); absent in tests.
+pub type PreviewShotFn =
+    std::sync::Arc<dyn Fn(&str) -> std::result::Result<Vec<u8>, String> + Send + Sync>;
 
 /// The workspace a run script runs in, resolved from the Run tab's target
 /// token. `name` is what the command sees as `AGENCY_WORKSPACE_NAME`.
@@ -1236,6 +1276,23 @@ fn pick_port(used: &std::collections::HashSet<u16>, base: u16, block_size: u16) 
     }
 }
 
+/// The port a run's preview MCP server binds — the last of the run's port
+/// block — or `None` when the run gets no preview server: switched off in
+/// `[preview]`, no web run script to preview, no port block at all, or a
+/// block too small to hold a second port beside the app's (AGE-143).
+fn preview_mcp_port_for(
+    config: &agency_core::config::AgencyConfig,
+    port_base: Option<u16>,
+) -> Option<u16> {
+    if !config.preview.agent_tools {
+        return None;
+    }
+    if !config.scripts.run_list().iter().any(|s| s.web) {
+        return None;
+    }
+    agency_core::preview::mcp_port(port_base?, config.ports.block_size)
+}
+
 fn now_secs() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
@@ -1454,6 +1511,22 @@ pub struct AppState {
     /// opencode's project providers were nowhere (AGE-135). A user-scoped
     /// agent is always asked from home, so it still has the one entry.
     model_probes: Mutex<HashMap<ProbeKey, Vec<String>>>,
+    /// Per-run preview MCP servers (AGE-143), keyed by run id. Started when a
+    /// run is dispatched and re-converged by `sync_preview_servers` on the
+    /// notifier tick, so archive/discard/restore/config edits all take effect
+    /// within a tick without every one of those paths owning teardown.
+    preview: Mutex<HashMap<String, agency_core::preview::PreviewServer>>,
+    /// Runs whose preview server failed to bind (something else sat on the
+    /// port), and when — retried on a slow cadence so the 2s sweep neither
+    /// hammers the port nor spams the log.
+    preview_failures: Mutex<HashMap<String, Instant>>,
+    /// See [`PreviewRect`]. Absent entry = that run's pane is not on screen.
+    preview_rects: Mutex<HashMap<String, PreviewRect>>,
+    /// Native screenshot provider, installed by the app shell once a window
+    /// exists (`crate::preview_shot`). An `Arc<OnceLock>` so server hooks
+    /// capture the cell and read it at call time — preview servers start
+    /// before the window is up, and tests never install one at all.
+    preview_shot: std::sync::Arc<std::sync::OnceLock<PreviewShotFn>>,
 }
 
 /// When a project's origin was last contacted, and when it may be again.
@@ -1570,6 +1643,10 @@ impl AppState {
             setup_cancels: Mutex::new(HashMap::new()),
             push_cancels: Mutex::new(HashMap::new()),
             model_probes: Mutex::new(HashMap::new()),
+            preview: Mutex::new(HashMap::new()),
+            preview_failures: Mutex::new(HashMap::new()),
+            preview_rects: Mutex::new(HashMap::new()),
+            preview_shot: std::sync::Arc::new(std::sync::OnceLock::new()),
         };
         // Rehydrate: any run the daemon still hosts is adopted as-is; the watch
         // loop (watch_snapshot) then reports live status. Nothing to spawn here —
@@ -2314,7 +2391,17 @@ impl AppState {
             if let Err(e) = manager.copy_essentials(&id, &config.files.copy) {
                 log::warn!("copying essentials into worktree {id}: {e}");
             }
-            self.emit_mcp(spec.agent, &repo, &workspace.path, &config);
+            self.emit_mcp(
+                spec.agent,
+                &repo,
+                &workspace.path,
+                &config,
+                preview_mcp_port_for(&config, Some(port)),
+            );
+            // The agent's MCP client connects while its CLI boots, so the
+            // preview server must already be listening when the session
+            // spawns below — the 2s sweep would be a race.
+            self.ensure_preview_server(&id, &repo, Some(port), &config);
             self.emit_skills(
                 spec.agent,
                 &repo,
@@ -3540,14 +3627,24 @@ impl AppState {
 
     /// Emit MCP config into a workspace in the agent's native format.
     /// Best-effort: a bad server entry must not block the run.
+    ///
+    /// `preview_port` is the run's preview MCP server (AGE-143), merged in
+    /// last so it rides the same emission as every other server. The caller
+    /// computes it with [`preview_mcp_port_for`] so the entry and the server
+    /// that answers on it can never disagree about the port.
     fn emit_mcp(
         &self,
         agent: &str,
         repo: &Path,
         worktree: &Path,
         config: &agency_core::config::AgencyConfig,
+        preview_port: Option<u16>,
     ) {
-        let servers = self.merged_mcp_servers(repo, config);
+        let mut servers = self.merged_mcp_servers(repo, config);
+        if let Some(port) = preview_port {
+            servers =
+                agency_core::mcp::merge(&[servers, vec![agency_core::preview::server_entry(port)]]);
+        }
         if servers.is_empty() {
             return;
         }
@@ -3601,10 +3698,176 @@ impl AppState {
                 .filter(|c| !c.check_command.trim().is_empty())
                 .map(|c| (c.check_command.clone(), c.max_attempts)),
             port,
+            preview_tools: preview_mcp_port_for(config, port).is_some(),
         };
         if let Err(e) = agency_core::skills::emit_for_agent(agent, &ws) {
             log::warn!("emitting the skills kit for {agent} into {}: {e}", worktree.display());
         }
+    }
+
+    /// The hooks one run's preview server calls back through: facts read
+    /// fresh per call (so guidance in tool errors never names a stale
+    /// command), screenshots via whatever the app shell installed.
+    fn preview_hooks(&self, run_id: &str, repo: &Path) -> agency_core::preview::Hooks {
+        let repo = repo.to_path_buf();
+        let facts = std::sync::Arc::new(move || {
+            let config = agency_core::config::load(&repo);
+            agency_core::preview::Facts {
+                script: config
+                    .scripts
+                    .run_list()
+                    .into_iter()
+                    .find(|s| s.web)
+                    .map(|s| (s.name, s.command)),
+            }
+        });
+        let shot_cell = self.preview_shot.clone();
+        let run_id = run_id.to_string();
+        let screenshot = std::sync::Arc::new(move || match shot_cell.get() {
+            Some(shot) => shot(&run_id),
+            None => Err("Screenshots need the Agency app window, which is not available right \
+                         now. preview_snapshot works without it."
+                .to_string()),
+        });
+        agency_core::preview::Hooks { facts, screenshot }
+    }
+
+    /// Have this run's preview server listening on the port its emitted MCP
+    /// config names, if the run should have one at all. Idempotent; a server
+    /// already on the right ports is left alone.
+    fn ensure_preview_server(
+        &self,
+        run_id: &str,
+        repo: &Path,
+        port_base: Option<u16>,
+        config: &agency_core::config::AgencyConfig,
+    ) {
+        let Some(bind) = preview_mcp_port_for(config, port_base) else { return };
+        let Some(app_port) = port_base else { return };
+        let mut servers = self.preview.lock().unwrap();
+        if servers.get(run_id).is_some_and(|s| s.port() == bind && s.app_port() == app_port) {
+            return;
+        }
+        servers.remove(run_id);
+        match agency_core::preview::PreviewServer::start(
+            bind,
+            app_port,
+            self.preview_hooks(run_id, repo),
+        ) {
+            Ok(srv) => {
+                servers.insert(run_id.to_string(), srv);
+                self.preview_failures.lock().unwrap().remove(run_id);
+            }
+            Err(e) => {
+                // Warn once per run, not once per 2s sweep; the sweep retries
+                // on the failure map's cadence.
+                let mut failures = self.preview_failures.lock().unwrap();
+                if failures.insert(run_id.to_string(), Instant::now()).is_none() {
+                    log::warn!(
+                        "preview server for run {run_id} could not bind 127.0.0.1:{bind}: {e:#}; \
+                         the agent's preview tools stay dark until that port frees up"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Converge the preview servers on what the registry and each project's
+    /// config say should exist. Called on the notifier tick, so runs being
+    /// archived, discarded or restored, and `[preview]`/run-script edits, all
+    /// take effect within ~2s without every one of those paths owning
+    /// teardown.
+    pub fn sync_preview_servers(&self) {
+        let runs: Vec<(String, PathBuf, Option<u16>)> = {
+            let reg = self.registry.lock().unwrap();
+            let Ok(projects) = reg.list_projects() else { return };
+            projects
+                .iter()
+                .filter_map(|p| reg.list_runs(&p.id).ok().map(|runs| (p.repo_path.clone(), runs)))
+                .flat_map(|(repo, runs)| {
+                    runs.into_iter()
+                        .filter(|r| r.worktree && r.kind == "agent")
+                        .map(move |r| (r.id, repo.clone(), r.port_base))
+                })
+                .collect()
+        };
+        let mut desired: HashMap<String, (PathBuf, Option<u16>, u16)> = HashMap::new();
+        for (id, repo, port_base) in runs {
+            let config = agency_core::config::load(&repo);
+            if let Some(bind) = preview_mcp_port_for(&config, port_base) {
+                desired.insert(id, (repo, port_base, bind));
+            }
+        }
+        // Stop the no-longer-wanted before starting anything, so a port freed
+        // by one run (a restore that reallocated its block, say) can be
+        // rebound by another in the same pass. A young server gets a grace
+        // period instead: `create_run_spec` starts the server before the run's
+        // registry row exists (the agent's MCP client connects as the CLI
+        // boots), and a tick landing in that window would tear down what was
+        // just deliberately started. `ensure_preview_server` still replaces a
+        // mismatched young server directly, so the grace never delays a port
+        // move — only this sweep's deletions.
+        self.preview.lock().unwrap().retain(|id, srv| {
+            desired
+                .get(id)
+                .is_some_and(|(_, pb, bind)| srv.port() == *bind && Some(srv.app_port()) == *pb)
+                || srv.age() < Duration::from_secs(15)
+        });
+        self.preview_rects.lock().unwrap().retain(|id, _| desired.contains_key(id));
+        self.preview_failures.lock().unwrap().retain(|id, _| desired.contains_key(id));
+        for (id, (repo, port_base, _)) in desired {
+            let recently_failed = self
+                .preview_failures
+                .lock()
+                .unwrap()
+                .get(&id)
+                .is_some_and(|at| at.elapsed() < Duration::from_secs(60));
+            if recently_failed {
+                continue;
+            }
+            let config = agency_core::config::load(&repo);
+            self.ensure_preview_server(&id, &repo, port_base, &config);
+        }
+    }
+
+    /// Every run with a live preview server, for the frontend's hidden-host
+    /// keeper. `active` is a liveness probe of the run's app port: the moment
+    /// anything serves there, a preview host is worth mounting (however the
+    /// dev server was started — Run tab or the agent's own shell).
+    pub fn preview_targets(&self) -> Vec<PreviewTargetDto> {
+        self.preview
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(run_id, srv)| PreviewTargetDto {
+                run_id: run_id.clone(),
+                url: srv.preview_url(),
+                active: agency_core::preview::serving(srv.app_port()),
+            })
+            .collect()
+    }
+
+    /// The Run tab reporting where (and whether) a run's preview pane is on
+    /// screen; `None` clears it. Feeds the native screenshot crop.
+    pub fn set_preview_rect(&self, run_id: &str, rect: Option<PreviewRect>) {
+        let mut rects = self.preview_rects.lock().unwrap();
+        match rect {
+            Some(r) => {
+                rects.insert(run_id.to_string(), r);
+            }
+            None => {
+                rects.remove(run_id);
+            }
+        }
+    }
+
+    pub fn preview_rect(&self, run_id: &str) -> Option<PreviewRect> {
+        self.preview_rects.lock().unwrap().get(run_id).copied()
+    }
+
+    /// Installed once by the app shell; see [`PreviewShotFn`].
+    pub fn set_preview_shot(&self, shot: PreviewShotFn) {
+        let _ = self.preview_shot.set(shot);
     }
 
     /// The issue key prefix a project's tracker uses, for the workspace
@@ -5067,7 +5330,13 @@ impl AppState {
         }
         if run.worktree {
             let worktree = workspace_dir(&repo, &run);
-            self.emit_mcp(&run.agent, &repo, &worktree, &config);
+            self.emit_mcp(
+                &run.agent,
+                &repo,
+                &worktree,
+                &config,
+                preview_mcp_port_for(&config, port),
+            );
             // `restore` cuts the worktree again from the kept branch, so the
             // generated files are gone with the old one; both come back here.
             self.emit_skills(
@@ -5266,6 +5535,8 @@ impl AppState {
             suggestions: agency_core::runsetup::suggest_run_commands(&t.repo),
             workspace: t.cwd.display().to_string(),
             port: t.port,
+            preview_port: self.preview.lock().unwrap().get(target).map(|s| s.port()),
+            preview_tools_enabled: config.preview.agent_tools,
         })
     }
 
@@ -5279,6 +5550,10 @@ impl AppState {
     ) -> Result<()> {
         let t = self.run_target(target)?;
         agency_core::config::save_run_scripts(&t.repo, &scripts)?;
+        // A first web script starts the preview servers here and now, so the
+        // config the Run tab reloads right after this call already carries
+        // `preview_port` instead of waiting out the sweep's next tick.
+        self.sync_preview_servers();
         Ok(())
     }
 
@@ -5517,7 +5792,13 @@ impl AppState {
         // Skipped without a worktree, for the same reason as at creation: the
         // target file would be one in the user's own checkout.
         if run.worktree {
-            self.emit_mcp(agent, &repo, &worktree, &config);
+            self.emit_mcp(
+                agent,
+                &repo,
+                &worktree,
+                &config,
+                preview_mcp_port_for(&config, run.port_base),
+            );
             // Likewise the skills kit: the tab's agent may have a skills
             // convention the worktree's agent doesn't, so the kit it reads may
             // not be there yet.
@@ -7185,12 +7466,41 @@ fn validate_project_path(repo_path: &Path) -> Result<()> {
 mod tests {
     use super::{
         agent_argv, command_on_path, failure_tail, graphify_server, id_source, new_task_id,
-        pick_port, require_branch_exists, require_gitless_known, require_own_branch, slugify,
-        split_session_id, validate_race, RaceAttempt,
+        pick_port, preview_mcp_port_for, require_branch_exists, require_gitless_known,
+        require_own_branch, slugify, split_session_id, validate_race, RaceAttempt,
     };
     use agency_core::config::KnowledgeConfig;
     use agency_core::profile::AgentProfile;
     use std::collections::HashSet;
+
+    /// AGE-143: the preview MCP server exists exactly where the user has said
+    /// "this project serves a web app" — a web run script — and nowhere else.
+    /// The port is derived from config, not allocated, so the URL emitted into
+    /// an agent's MCP config survives app restarts.
+    #[test]
+    fn preview_server_exists_only_for_web_scripts_and_takes_the_blocks_last_port() {
+        use agency_core::config::{AgencyConfig, RunScript};
+        let web = RunScript {
+            name: "dev".into(),
+            command: "pnpm dev --port $AGENCY_PORT".into(),
+            web: true,
+            nonconcurrent: false,
+        };
+        let build = RunScript { name: "build".into(), web: false, ..web.clone() };
+
+        let mut config = AgencyConfig::default();
+        assert_eq!(preview_mcp_port_for(&config, Some(5240)), None, "no scripts at all");
+
+        config.scripts.runs = vec![build.clone()];
+        assert_eq!(preview_mcp_port_for(&config, Some(5240)), None, "no *web* script");
+
+        config.scripts.runs = vec![build, web];
+        assert_eq!(preview_mcp_port_for(&config, Some(5240)), Some(5249));
+        assert_eq!(preview_mcp_port_for(&config, None), None, "no port block, no server");
+
+        config.preview.agent_tools = false;
+        assert_eq!(preview_mcp_port_for(&config, Some(5240)), None, "the off switch is real");
+    }
 
     /// AGE-83: enabling the knowledge graph looked like it did nothing. Nothing
     /// built the first graph, and the serve command was injected anyway — every

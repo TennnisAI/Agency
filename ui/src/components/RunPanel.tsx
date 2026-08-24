@@ -8,6 +8,7 @@ import {
   runScriptKey,
   runScriptsStatus,
   saveRunScripts,
+  setPreviewRect,
   startRunScript,
   stopRunScript,
 } from "../api";
@@ -15,6 +16,7 @@ import FocusTerminal, { runStream } from "./FocusTerminal";
 import RunScriptEditor from "./RunScriptEditor";
 import Resizer from "./Resizer";
 import { usePaneWidth } from "../hooks/usePaneWidth";
+import { clearPreviewVisible, markPreviewVisible } from "../lib/previewHost";
 
 type Editing = { mode: "new" } | { mode: "edit"; name: string } | null;
 
@@ -108,6 +110,12 @@ export default function RunPanel({
   const status = script ? statuses[script.name] : undefined;
   const running = status?.state === "running";
   const url = config?.port != null ? `http://localhost:${config.port}` : null;
+  // With a preview MCP server up, the pane loads the instrumented proxy of the
+  // same app, which is what lets the dispatched agent see and drive this exact
+  // preview (AGE-143). The Open button keeps the direct URL: a page opened in
+  // the user's own browser is theirs, not the agent's.
+  const instrumented = config?.previewPort != null;
+  const previewSrc = instrumented ? `http://127.0.0.1:${config!.previewPort}/` : url;
 
   const start = async (name: string) => {
     setError(null);
@@ -258,6 +266,12 @@ export default function RunPanel({
               <button className="tile-act" title={`Open ${url} in your browser`} onClick={() => openUrl(url)}>
                 Open ↗
               </button>
+              {instrumented && (
+                <span
+                  className="run-agent-note"
+                  title="This run's agent can see and drive this preview over MCP: console and network logs, snapshots and screenshots, navigate, click and type. Scoped to this workspace's preview; served on 127.0.0.1 only."
+                >◈ Agent can drive this preview</span>
+              )}
             </>
           )}
           <button className="tile-act" onClick={() => setEditing({ mode: "edit", name: script.name })}>
@@ -280,7 +294,10 @@ export default function RunPanel({
             <button className="run-start" onClick={() => start(script.name)}>▶ Start</button>
             <code className="run-idle-cmd" title={script.command}>{script.command}</code>
             {script.web && url && (
-              <div className="run-idle-note">Serves a web app; the preview opens beside the logs.</div>
+              <div className="run-idle-note">
+                Serves a web app; the preview opens beside the logs.
+                {instrumented && " This run's agent gets preview tools for it over MCP."}
+              </div>
             )}
             <button
               className="run-idle-edit"
@@ -297,16 +314,70 @@ export default function RunPanel({
               side="right"
               onChange={previewPane.setWidth}
             />
-            <iframe
+            <PreviewFrame
               key={previewKey}
-              className="run-preview"
-              style={{ width: previewPane.width, flex: "0 0 auto" }}
-              src={url!}
+              target={target}
+              src={previewSrc!}
+              width={previewPane.width}
+              instrumented={instrumented}
               title={`${script!.name} preview`}
             />
           </>
         )}
       </div>
     </div>
+  );
+}
+
+// The preview iframe plus what an instrumented preview owes the backend: while
+// mounted it is the run's visible preview host (so the app-level keeper stands
+// down and the agent drives this very pane), and it keeps the backend told
+// where the pane sits on screen, which is the crop of the agent's
+// preview_screenshot. Position changes without size changes (a rail collapse)
+// escape ResizeObserver, so the rect is simply re-read on a 1s tick and only
+// reported when it moved.
+function PreviewFrame({
+  target,
+  src,
+  width,
+  instrumented,
+  title,
+}: {
+  target: string;
+  src: string;
+  width: number;
+  instrumented: boolean;
+  title: string;
+}) {
+  const ref = useRef<HTMLIFrameElement>(null);
+  useEffect(() => {
+    if (!instrumented) return;
+    markPreviewVisible(target);
+    let last = "";
+    const report = () => {
+      const r = ref.current?.getBoundingClientRect();
+      if (!r || !r.width) return;
+      const rect = { x: r.x, y: r.y, width: r.width, height: r.height };
+      const key = JSON.stringify(rect);
+      if (key === last) return;
+      last = key;
+      setPreviewRect(target, rect).catch(() => {});
+    };
+    report();
+    const iv = setInterval(report, 1000);
+    return () => {
+      clearInterval(iv);
+      clearPreviewVisible(target);
+      setPreviewRect(target, null).catch(() => {});
+    };
+  }, [target, instrumented]);
+  return (
+    <iframe
+      ref={ref}
+      className="run-preview"
+      style={{ width, flex: "0 0 auto" }}
+      src={src}
+      title={title}
+    />
   );
 }

@@ -13,6 +13,7 @@ mod model_probe;
 mod notif_macos;
 mod notifier;
 mod pathenv;
+mod preview_shot;
 mod resume_probe;
 mod sendq;
 mod state;
@@ -243,6 +244,8 @@ pub fn run() {
             commands::git_unstage_lines,
             commands::git_revert_lines,
             commands::run_script_config,
+            commands::preview_targets,
+            commands::set_preview_rect,
             commands::save_run_scripts,
             commands::start_run_script,
             commands::stop_run_script,
@@ -377,6 +380,15 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     }
     let state = AppState::new(&db_path, &data_dir)?;
     app.manage(state);
+    {
+        // Preview MCP servers (AGE-143): give them their native-screenshot
+        // provider, then bring servers up for the runs that already exist —
+        // agents surviving in the daemon reconnect to their tools without
+        // waiting out the first notifier tick.
+        let state = app.state::<AppState>();
+        state.set_preview_shot(crate::preview_shot::provider(app.handle().clone()));
+        state.sync_preview_servers();
+    }
     let handle = app.handle().clone();
     std::thread::Builder::new().name("notifier".into()).spawn(move || {
         use std::collections::{HashMap, HashSet};
@@ -489,6 +501,10 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                 if let Err(e) = state.refresh_usage() {
                     log::warn!("usage refresh failed: {e}");
                 }
+                // Preview MCP servers converge here too: archive, discard,
+                // restore and config edits all land within one tick, and a
+                // server that failed to bind retries on its own cadence.
+                state.sync_preview_servers();
             }));
             if tick_result.is_err() {
                 log::error!("notifier tick panicked; continuing");

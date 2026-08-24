@@ -1817,6 +1817,29 @@ pub async fn run_scripts_live(state: State<'_, AppState>, target: String) -> Res
     state.run_scripts_live(&target).map_err(|e| e.to_string())
 }
 
+/// Every run whose preview MCP server is up, for the app-level keeper that
+/// hosts a hidden preview whenever the Run tab's own pane is not on screen —
+/// without one, the dispatched agent's preview tools would only work while
+/// the user happens to be looking at the Run tab (AGE-143).
+#[tauri::command]
+pub async fn preview_targets(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::state::PreviewTargetDto>, String> {
+    Ok(state.preview_targets())
+}
+
+/// The Run tab reporting where its preview pane sits on screen (`None` when it
+/// leaves). Feeds the crop of the native preview screenshot.
+#[tauri::command]
+pub fn set_preview_rect(
+    state: State<'_, AppState>,
+    run_id: String,
+    rect: Option<crate::state::PreviewRect>,
+) -> Result<(), String> {
+    state.set_preview_rect(&run_id, rect);
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn run_script_preview(
     state: State<'_, AppState>,

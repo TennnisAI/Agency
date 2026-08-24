@@ -130,6 +130,10 @@ export interface ArchivedInfo {
   branchKept: boolean;
   // There is a record to read.
   hasRecord: boolean;
+  // There is a conversation to read: a transcript in a format Agency parses,
+  // rescued into the archive or still in the agent's own store. Runs archived
+  // before records existed can have this and no record.
+  hasConversation: boolean;
 }
 
 // Where a run's commits live besides its own branch, as git saw it when the
@@ -523,6 +527,23 @@ export const restoreRun = (id: string) => invoke<RunInfo>("restore_run", { id })
 export const runCleanup = (id: string) => invoke<RunCleanup>("run_cleanup", { id });
 /** The archived run's record as markdown; null for a run archived before records. */
 export const readRunRecord = (id: string) => invoke<string | null>("read_run_record", { id });
+/** One rendered line of a run's conversation. Tool turns are one-line markers. */
+export type ConversationTurn = { role: "user" | "assistant" | "tool"; text: string };
+/** One session file of a run's transcript, oldest first in the list. */
+export type ConversationSession = {
+  title: string | null;
+  started: string | null;
+  turns: ConversationTurn[];
+};
+/**
+ * A run's conversation, parsed from its agent's own transcript (the copy the
+ * archive rescued, or the live session directory). `supported` false means we
+ * cannot read this agent's format at all, which must never be presented as
+ * "the agent said nothing".
+ */
+export type RunConversation = { supported: boolean; sessions: ConversationSession[] };
+export const readRunConversation = (id: string) =>
+  invoke<RunConversation>("read_run_conversation", { id });
 export const listArchivedRuns = (projectId: string) =>
   invoke<RunInfo[]>("list_archived_runs", { projectId });
 /** Result of a bulk discard: some runs can fail while the rest still go. */

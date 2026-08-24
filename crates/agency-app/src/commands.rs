@@ -2010,6 +2010,16 @@ pub async fn read_run_record(
     state.read_run_record(&id).map_err(|e| e.to_string())
 }
 
+/// The run's conversation, parsed from its agent's transcript. async: this
+/// reads and parses what can be megabytes of JSONL.
+#[tauri::command]
+pub async fn read_run_conversation(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<crate::state::ConversationInfo, String> {
+    state.read_run_conversation(&id).map_err(|e| e.to_string())
+}
+
 use crate::notifier::NotifSettings;
 
 /// Sync the native menu's context-dependent items with the current selection:

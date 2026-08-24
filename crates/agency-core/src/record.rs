@@ -27,6 +27,14 @@ pub fn path(repo: &Path, run_id: &str) -> PathBuf {
     dir(repo).join(format!("{run_id}.md"))
 }
 
+/// Where a run's rescued transcript lives: a directory beside the record file
+/// holding the agent's session files exactly as it wrote them, moved here at
+/// archive time because their original home was keyed by a worktree path that
+/// stopped existing (AGE-152).
+pub fn transcript_dir(repo: &Path, run_id: &str) -> PathBuf {
+    dir(repo).join(format!("{run_id}.transcript"))
+}
+
 /// How a run's work ended, as git could see it at teardown.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
@@ -50,6 +58,26 @@ pub enum Outcome {
 pub struct Commit {
     pub short: String,
     pub subject: String,
+}
+
+/// What the record can say about the agent's own conversation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TranscriptNote {
+    /// The session files were moved into the archive beside this record
+    /// (see [`transcript_dir`]) and the agent's own directory, keyed by the
+    /// removed worktree path, was cleaned up.
+    Rescued {
+        /// Top-level session files rescued.
+        sessions: usize,
+        /// The agent's own command for picking the newest session up again,
+        /// e.g. `claude --resume <id>`. Only written for agents whose resume
+        /// verb is actually known; a guessed command would be worse than none.
+        resume: Option<String>,
+    },
+    /// Still in the agent's own store at this path. Named, not copied: the
+    /// rescue did not happen (it failed, or the run had no worktree of its
+    /// own), and pointing is the most that can honestly be claimed.
+    Named { dir: String },
 }
 
 /// Everything known about a finished run at the moment its workspace goes.
@@ -81,10 +109,9 @@ pub struct RunRecord {
     pub diffstat: Option<crate::git::DiffStat>,
     /// Preformatted by the caller, which already prices tokens for the UI.
     pub usage: Option<String>,
-    /// Where the agent's own transcript for this workspace is, when it exists
-    /// and we know the shape of it. Agency does not own that directory, so the
-    /// record points at it rather than claiming to have kept it.
-    pub transcript: Option<String>,
+    /// What became of the agent's own transcript, when it exists and we know
+    /// the shape of it: rescued into the archive, or named where it still is.
+    pub transcript: Option<TranscriptNote>,
 }
 
 /// Render the record. Deterministic; the only clock is in the caller.
@@ -154,13 +181,35 @@ pub fn render(r: &RunRecord) -> String {
         out.push_str(&format!("## Cost\n\n{u}\n\n"));
     }
 
-    if let Some(t) = &r.transcript {
-        out.push_str("## Transcript\n\n");
-        out.push_str(&format!(
-            "{} keeps this run's own transcript at `{}`. Agency does not manage that \
-             directory and has not touched it.\n",
-            r.agent, t
-        ));
+    match &r.transcript {
+        Some(TranscriptNote::Rescued { sessions, resume }) => {
+            out.push_str("## Transcript\n\n");
+            out.push_str(&format!(
+                "The conversation is in the archive beside this record: {sessions} session \
+                 file{} under `{}.transcript/`, moved out of {}'s own store when the worktree \
+                 went, since that store was keyed by the worktree's path. If this agent is \
+                 restored, the sessions go back first, so its own resume picks the \
+                 conversation up.\n",
+                if *sessions == 1 { "" } else { "s" },
+                r.id,
+                r.agent
+            ));
+            if let Some(cmd) = resume {
+                out.push_str(&format!(
+                    "\nWithout Agency, `{cmd}` resumes the newest session once its file is \
+                     back in that store.\n"
+                ));
+            }
+        }
+        Some(TranscriptNote::Named { dir }) => {
+            out.push_str("## Transcript\n\n");
+            out.push_str(&format!(
+                "{} keeps this run's own transcript at `{}`. Agency does not manage that \
+                 directory and has not touched it.\n",
+                r.agent, dir
+            ));
+        }
+        None => {}
     }
     out
 }
@@ -234,7 +283,10 @@ mod tests {
             commits_known: true,
             diffstat: Some(crate::git::DiffStat { added: 430, deleted: 77, files: 12 }),
             usage: Some("1.2M tokens · $3.40".into()),
-            transcript: Some("~/.claude/projects/-x-y".into()),
+            transcript: Some(TranscriptNote::Rescued {
+                sessions: 2,
+                resume: Some("claude --resume 16fc10c1".into()),
+            }),
         }
     }
 
@@ -249,7 +301,33 @@ mod tests {
         assert!(md.contains("- `a1b2c3d` decide teardown from the branch"));
         assert!(md.contains("12 files, +430 −77"));
         assert!(md.contains("1.2M tokens · $3.40"));
-        assert!(md.contains("~/.claude/projects/-x-y"));
+        assert!(md.contains("2 session files under `agent-3f9c.transcript/`"));
+        assert!(md.contains("`claude --resume 16fc10c1`"));
+    }
+
+    #[test]
+    fn a_transcript_that_was_not_rescued_is_named_where_it_still_is() {
+        // The old contract, kept for the cases the rescue cannot cover: point
+        // at the agent's own directory and claim nothing about its contents.
+        let r = RunRecord {
+            transcript: Some(TranscriptNote::Named { dir: "~/.claude/projects/-x-y".into() }),
+            ..sample()
+        };
+        let md = render(&r);
+        assert!(md.contains("~/.claude/projects/-x-y"), "{md}");
+        assert!(md.contains("has not touched it"));
+        assert!(!md.contains(".transcript/"));
+    }
+
+    #[test]
+    fn a_rescue_with_no_known_resume_verb_offers_no_command() {
+        let r = RunRecord {
+            transcript: Some(TranscriptNote::Rescued { sessions: 1, resume: None }),
+            ..sample()
+        };
+        let md = render(&r);
+        assert!(md.contains("1 session file under"), "{md}");
+        assert!(!md.contains("resumes the newest session"));
     }
 
     #[test]

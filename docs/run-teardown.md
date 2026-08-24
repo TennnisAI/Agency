@@ -160,13 +160,57 @@ piece of work; see "Not done" below.
 ## Not done
 
 - **The conversation.** The record says what an agent did, not what it said.
-  Rescuing `~/.claude/projects/<encoded-worktree>/` (and pi's equivalent) into
+  ~~Rescuing `~/.claude/projects/<encoded-worktree>/` (and pi's equivalent) into
   the archive and rendering it read-only would cover the two agents whose
-  transcripts we can parse. Worth noting that those directories are orphaned
-  today: every deleted run leaves one behind forever, keyed by a worktree path
-  that no longer exists.
+  transcripts we can parse.~~ Done since 2026-08-23; see the addendum below.
 - **Records for the other eight agents' transcripts.** Blocked on the same
   default-deny list `usage.rs` keeps, and it should stay default-deny.
 - **Per-turn checkpoints** (AGE-140) are the neighbouring idea from the same T3
   Code reading and are tracked separately. If they ship, a record could link the
   turn a change arrived in.
+
+## Addendum: the conversation (AGE-152, 2026-08-23)
+
+The transcript directories the record used to only point at are keyed by
+worktree path (`~/.claude/projects/<encoded>/`, `~/.pi/agent/sessions/<encoded>/`).
+The moment a teardown removes the worktree, that key names a path that no
+longer exists: the agent can never resume the sessions, Agency never read them
+again, and nothing ever swept them — one directory leaked per finished run,
+forever. The fix moves the directory with the run instead of orphaning it:
+
+- **Archive** moves it into the record's own folder,
+  `.agency/records/<run>.transcript/`, after the sessions are stopped and
+  before the worktree goes. The move is copy, verify, then delete
+  (`transcript.rs::move_tree_verified`), so a failure leaves the original
+  untouched and the record falls back to naming it in place, exactly as
+  before. Modification times survive the move because "resume the most recent
+  session" is an mtime decision in the agent's own CLI.
+- **Restore** moves it back. The worktree returns at the same path, so the
+  store directory gets its old name and the agent's `--continue` finds the
+  conversation as if the run had never been archived. This is not optional
+  polish: once archive removes the agent's copy, a restore that did not
+  reinstate it would have broken resume, which used to work by accident of
+  the leak.
+- **Delete** removes it — the agent's own directory for the worktree and any
+  rescued copy — along with the record. This is the disk-leak half of AGE-152
+  and applies even where nothing can be rendered.
+- **The viewer** is a second tab in `RunRecordDialog`, rendered read-only from
+  the rescued files (or the still-in-place directory, for runs archived before
+  this shipped). `transcript.rs` parses the two dialects `usage.rs` already
+  vouches for, against the same rule: for the eight agents whose format has
+  not been read against real files, the tab says Agency cannot see the
+  conversation, which is a different claim from "the agent said nothing".
+  Their transcripts are also never rescued or removed: `session_dir` cannot
+  name a directory for them at all, so their leak — wherever it is — remains,
+  and stays honestly unclaimed.
+
+Two boundaries hold everywhere: only worktree runs are touched (a run in the
+project's own checkout shares its session directory with the user's own
+sessions in that folder, which is not Agency's to move), and the record for a
+rescued transcript names the newest session's own resume command
+(`claude --resume <id>`) only for claude, whose session-id-is-the-filename
+layout has actually been verified.
+
+Resuming an *unrestorable* archived run's conversation — branch gone, so no
+worktree to put the sessions back into — is the remaining piece, tracked as
+its own issue.

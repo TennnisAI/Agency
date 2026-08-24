@@ -22,6 +22,7 @@ pub mod skills;
 pub mod supervisor;
 pub mod term;
 pub mod title;
+pub mod transcript;
 pub mod usage;
 pub mod version;
 pub mod worktree;

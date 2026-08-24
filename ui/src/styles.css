@@ -515,9 +515,34 @@ textarea.settings-input { min-height: 64px; resize: vertical; }
 .removal-checking { color: var(--sub0); font-size: 12.5px; margin: 0; }
 .removal-warn { color: var(--yellow); font-size: 12.5px; margin: 0; }
 
-/* An archived run's record, rendered from its markdown file. */
-.run-record-body { max-height: 60vh; }
+/* An archived run's record, rendered from its markdown file, with the rescued
+   conversation on a second tab. Wider than the stock modal: both tabs are for
+   reading, and a conversation in a 580px column is all wrapping. */
+.modal.run-record { width: 680px; }
+.run-record .modal-head { gap: 12px; }
+.run-record .modal-head h3 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.run-record-seg { margin-left: auto; flex-shrink: 0; }
+.run-record-body { max-height: 72vh; }
 .run-record-body .md { font-size: 13px; }
+/* The conversation, read-only. Turns keep their speaker without avatars: the
+   user's lines carry a bar, the agent's are plain prose, and each tool call is
+   a one-line marker rather than its megabytes of output. */
+.convo { display: flex; flex-direction: column; gap: 12px; }
+.convo-session { display: flex; flex-direction: column; gap: 10px; }
+.convo-session + .convo-session { border-top: 1px solid var(--line); padding-top: 12px; }
+.convo-session-head {
+  font-size: 10.5px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--sub0);
+}
+.convo-user {
+  border-left: 3px solid var(--blue); background: var(--s0); border-radius: 0 6px 6px 0;
+  padding: 6px 10px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text);
+}
+.convo-assistant.md { font-size: 13px; }
+.convo-tool {
+  color: var(--sub0); font-family: var(--mono); font-size: 11.5px; line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.convo-tool span { color: var(--o0); }
 .merge-summary { color: var(--text); font-weight: 600; }
 /* Status dot */
 .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; flex-shrink: 0; }

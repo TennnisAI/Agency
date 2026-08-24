@@ -536,6 +536,15 @@ export type RunScriptConfig = {
   suggestions: RunSuggestion[];
   workspace: string;
   port: number | null;
+  // Set when this workspace's preview MCP server is listening: the preview
+  // iframe loads this port's instrumented proxy instead of the dev server
+  // directly, so the dispatched agent can see and drive the pane (AGE-143).
+  // Null for the project checkout and for runs without the server.
+  previewPort: number | null;
+  // `[preview] agent_tools` for this project: whether marking a script "web"
+  // gives dispatched agents preview tools at all. Drives the editor's
+  // disclosure copy.
+  previewToolsEnabled: boolean;
 };
 
 export type RunScriptStatus = { name: string; status: SessionStatus };
@@ -559,6 +568,19 @@ export const runScriptsStatus = (target: string) =>
 // board never asks per agent.
 export const runScriptsLive = (target: string) =>
   invoke<boolean>("run_scripts_live", { target });
+
+// One run whose preview MCP server is up. `url` is the instrumented preview;
+// `active` whether anything serves on the run's app port, i.e. whether a
+// hidden preview host is worth mounting (see PreviewKeeper).
+export type PreviewTarget = { runId: string; url: string; active: boolean };
+export const previewTargets = () => invoke<PreviewTarget[]>("preview_targets");
+
+// Where a run's visible preview pane sits in the window (CSS px), or null when
+// it leaves the screen. Feeds the native crop behind the agent's
+// preview_screenshot tool.
+export type PreviewRect = { x: number; y: number; width: number; height: number };
+export const setPreviewRect = (runId: string, rect: PreviewRect | null) =>
+  invoke<void>("set_preview_rect", { runId, rect });
 
 // A terminal pane carries a single id, but a run script is addressed by
 // workspace *and* script name. These pack the pair into one key for the

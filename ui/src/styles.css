@@ -1671,6 +1671,9 @@ button.diff-path:hover { color: var(--text); text-decoration: underline; }
 .run-cmd { flex: 1; min-width: 0; color: var(--sub0); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .run-exit { flex: 0 0 auto; font-size: 11.5px; color: var(--o1); }
 .run-exit.bad { color: var(--red); }
+/* Says the dispatched agent holds preview tools for this pane (AGE-143):
+   attaching them must be visible wherever the run's tools are. */
+.run-agent-note { flex: 0 0 auto; font-size: 11px; color: var(--o1); cursor: default; }
 /* Nothing to show yet: the pane offers the one thing to do with the script
    rather than describing it. This is the only Start on screen in this state,
    which is why the toolbar above is left out entirely. */
@@ -1725,6 +1728,14 @@ button.diff-path:hover { color: var(--text); text-decoration: underline; }
 .run-term { flex: 1; min-width: 0; display: flex; }
 /* Width comes from the pane resizer beside it, so no flex basis here. */
 .run-preview { min-width: 0; border: 0; background: #fff; }
+/* PreviewKeeper's invisible hosts: real layout (the agent's snapshot and
+   clicks need it), no paint, no hit-testing, no tab stops. visibility, not
+   display:none — a display:none iframe lays out at zero size and the page
+   inside reports nonsense geometry. */
+.preview-keeper {
+  position: fixed; left: 0; top: 0; width: 1280px; height: 800px;
+  visibility: hidden; pointer-events: none; border: 0; z-index: -1;
+}
 .archived { margin-top: 8px; border-top: 1px solid var(--border, #2a2d36); padding-top: 6px; }
 .archived-head { display: flex; align-items: center; gap: 4px; }
 .archived-toggle { flex: 1; min-width: 0; text-align: left; background: transparent; color: var(--muted, #9aa); padding: 4px 8px; border: 0; }

@@ -10,6 +10,7 @@ pub mod issuefs;
 pub mod loops;
 pub mod mcp;
 pub mod merge;
+pub mod preview;
 pub(crate) mod procutil;
 pub mod profile;
 pub mod record;

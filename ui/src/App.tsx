@@ -326,10 +326,18 @@ function Shell() {
     setSelectedProject(p.id);
   }
 
-  // Back to the all-projects overview (the no-project state).
-  function goHome() {
+  // The selected project went away under the view — closed, or deleted along
+  // with its worktrees. Lands on the all-projects overview like goHome, but
+  // leaves Settings up: hiding the workspace closes it from inside Settings,
+  // and dismissing that screen mid-toggle would just be a second surprise.
+  function leaveProject() {
     setProject(null);
     setSelectedProject(null);
+  }
+
+  // Back to the all-projects overview (the no-project state).
+  function goHome() {
+    leaveProject();
     setShowSettings(false);
   }
 
@@ -519,6 +527,7 @@ function Shell() {
               onSelect={selectProject}
               onSelectRun={(p: Project, run: RunInfo) => openRun(p, run.id)}
               onHome={goHome}
+              onSelectionGone={leaveProject}
               onToggleSidebar={() => setSidebarOpen(false)}
               onOpenSettings={() => setShowSettings(true)}
               updateAvailable={updateAvailable}

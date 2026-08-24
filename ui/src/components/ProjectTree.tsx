@@ -25,6 +25,7 @@ export default function ProjectTree({
   onSelect,
   onSelectRun,
   onHome,
+  onSelectionGone,
   onToggleSidebar,
   onOpenSettings,
   updateAvailable = false,
@@ -34,6 +35,8 @@ export default function ProjectTree({
   onSelect: (p: Project) => void;
   onSelectRun: (p: Project, run: RunInfo) => void;
   onHome: () => void;
+  /** The selected project is gone from the list; drop back to the overview. */
+  onSelectionGone: () => void;
   onToggleSidebar: () => void;
   onOpenSettings: () => void;
   /** Marks the Settings button with a dot — a newer release is on GitHub. */
@@ -90,6 +93,19 @@ export default function ProjectTree({
     setReadiness(Object.fromEntries(entries.filter(([, r]) => r) as [string, RepoReadiness][]));
   }
   useEffect(() => { refresh(); }, []);
+
+  // Closing or deleting a project drops it out of the list, but the main view
+  // was still pointed at it: every call the panels made then came back
+  // "unknown project: 0a0a78d9-9063-442b-a2f9-9373382e199c" and the source
+  // panel and history just sat there red. Fall back to the overview. This is
+  // the one place all the removal routes meet — the row's Close/Delete dialog
+  // and Settings hiding the workspace, which closes it — so the guard belongs
+  // on the list itself, not on each caller.
+  const goneRef = useRef(onSelectionGone);
+  goneRef.current = onSelectionGone;
+  useEffect(() => {
+    if (selectedId && !projects.some((p) => p.id === selectedId)) goneRef.current();
+  }, [projects, selectedId]);
 
   // Open the workspace, creating it first if it doesn't exist yet (it is lazy
   // by design — no surprise folders at app launch). `intent` is forwarded to

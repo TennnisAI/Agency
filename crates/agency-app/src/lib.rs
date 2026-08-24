@@ -19,6 +19,8 @@ mod sendq;
 mod state;
 mod tray;
 mod update;
+#[cfg(target_os = "macos")]
+mod webview_menu;
 
 // The queue's two after-the-fact reports are part of the public surface: they
 // come back out of `drain_send_queues` for the caller to show.
@@ -364,6 +366,9 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         // otherwise macOS files them away unseen and only the ones raised
         // while the app is in the background are ever visible (AGE-33).
         crate::notif_macos::present_while_frontmost();
+        // And take WebKit's own dead items out of the context menus the app
+        // cannot reach from JS: the ones inside the preview frames (AGE-158).
+        crate::webview_menu::install();
     }
 
     // A `tauri dev` build takes a data dir of its own so it cannot share (and

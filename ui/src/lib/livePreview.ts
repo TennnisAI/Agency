@@ -136,6 +136,16 @@ export const docsHighlight = syntaxHighlighting(
 
 // ── Widgets ──────────────────────────────────────────────────────────────────
 
+// CodeMirror drops every DOM event that starts inside a widget unless the
+// widget opts back in (`eventBelongsToEditor`), and the default is to drop
+// them. So a click on a rendered bullet, image, rule or callout title in an
+// issue description reached the editor not at all: no focus, no caret, and
+// the letters typed next were read as the issue board's single-key shortcuts
+// and swallowed into quick-add on the left (AGE-160). A widget that only
+// draws markdown lets the click through and leaves the caret to CodeMirror;
+// one that owns its click (the checkbox below, the code-block header, the
+// table in mdTable.ts) keeps the default and takes focus itself.
+
 class CheckboxWidget extends WidgetType {
   constructor(readonly checked: boolean) { super(); }
   eq(other: CheckboxWidget) { return other.checked === this.checked; }
@@ -162,9 +172,15 @@ class CheckboxWidget extends WidgetType {
       const pos = view.posAtDOM(box);
       // The widget replaces the 3-char "[ ]"/"[x]" TaskMarker at `pos`.
       const cur = view.state.doc.sliceString(pos, pos + 3);
-      if (!/^\[[ xX]\]$/.test(cur)) return;
-      const insert = this.checked ? "[ ]" : "[x]";
-      view.dispatch({ changes: { from: pos, to: pos + 3, insert } });
+      if (/^\[[ xX]\]$/.test(cur)) {
+        view.dispatch({ changes: { from: pos, to: pos + 3, insert: this.checked ? "[ ]" : "[x]" } });
+      }
+      // The preventDefault above keeps the caret where it was, but it also
+      // means the click never focused the editor. Focus last (focusing
+      // rebuilds the decorations, and `box` is gone once it has), and without
+      // moving the caret: the box the user clicked in is the one that takes
+      // the typing, and the line under the pointer stays rendered.
+      view.focus();
     });
     return box;
   }
@@ -225,6 +241,7 @@ function loadImage(nav: DocsNav, src: string): Promise<string> {
 class ImageWidget extends WidgetType {
   constructor(readonly src: string, readonly alt: string, readonly nav: DocsNav) { super(); }
   eq(other: ImageWidget) { return other.src === this.src && other.nav.notePath === this.nav.notePath; }
+  ignoreEvent() { return false; } // draws only; the click is the editor's
   get estimatedHeight() { return 200; }
   toDOM(view: EditorView) {
     const wrap = document.createElement("span");
@@ -261,6 +278,7 @@ const CALLOUT_TYPES: Record<string, string> = {
 class CalloutTitleWidget extends WidgetType {
   constructor(readonly kind: string, readonly label: string) { super(); }
   eq(other: CalloutTitleWidget) { return other.kind === this.kind && other.label === this.label; }
+  ignoreEvent() { return false; } // draws only; the click is the editor's
   toDOM() {
     const el = document.createElement("span");
     el.className = `lp-callout-title lp-callout-title-${this.kind}`;
@@ -381,6 +399,7 @@ class CodeHeaderWidget extends WidgetType {
 
 class BulletWidget extends WidgetType {
   eq() { return true; }
+  ignoreEvent() { return false; } // draws only; the click is the editor's
   toDOM() {
     const el = document.createElement("span");
     el.className = "lp-bullet";
@@ -391,6 +410,7 @@ class BulletWidget extends WidgetType {
 
 class HRWidget extends WidgetType {
   eq() { return true; }
+  ignoreEvent() { return false; } // draws only; the click is the editor's
   toDOM() {
     const el = document.createElement("span");
     el.className = "lp-hr";

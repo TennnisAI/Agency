@@ -2,6 +2,7 @@
 ui/node_modules
 ui/dist
 crates/agency-app/gen
+screenshots/
 
 # TypeScript build state, and the compiled JS that `tsc -b` used to emit next
 # to the Vite/Vitest config sources. The compiled copies must never be tracked:

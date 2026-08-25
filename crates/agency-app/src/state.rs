@@ -688,9 +688,16 @@ fn args_without_prompt(profile: &AgentProfile) -> Vec<String> {
 
 /// Decide the (command, args) to launch for an agent run. With `use_resume` and
 /// a resume recipe present, launch the profile's own args minus the prompt (see
-/// [`args_without_prompt`]) followed by the resume recipe. Otherwise launch a
-/// fresh session from the rendered prompt. The optional setup script wraps the
-/// command in both cases (same as create_run/rerun).
+/// [`args_without_prompt`]) followed by the resume recipe. Otherwise hand the
+/// whole decision to [`fresh_agent_argv`], the one fresh recipe. The optional
+/// setup script wraps the command in both cases (same as create_run/rerun).
+///
+/// AGE-137: the fresh branch used to render the profile's args and stop there,
+/// which was the same thing only while profiles carried a `{{prompt}}` token.
+/// AGE-79 moved prompt delivery out of the args, so catalogue profiles ship
+/// with `args: []` and both of this function's fresh callers — `rerun_locked`
+/// and the resume fallback in `ensure_run_active` — launched `claude` in the
+/// worktree with the task text nowhere. One fresh recipe, not two.
 fn agent_argv(
     profile: &AgentProfile,
     worktree: &Path,
@@ -698,17 +705,14 @@ fn agent_argv(
     use_resume: bool,
     setup: Option<&str>,
 ) -> (String, Vec<String>) {
-    let mut base_args: Vec<String> = match (use_resume, &profile.resume_args) {
-        // The profile's flags first, the resume recipe last: `codex resume
-        // --last` is a subcommand, and a flag written after it would be read as
-        // the subcommand's rather than the CLI's.
-        (true, Some(resume)) => {
-            let mut args = args_without_prompt(profile);
-            args.extend(resume.iter().cloned());
-            args
-        }
-        _ => profile.render_args(prompt).into_iter().filter(|a| !a.is_empty()).collect(),
+    let Some(resume) = profile.resume_args.as_ref().filter(|_| use_resume) else {
+        return fresh_agent_argv(profile, worktree, prompt, setup);
     };
+    // The profile's flags first, the resume recipe last: `codex resume --last`
+    // is a subcommand, and a flag written after it would be read as the
+    // subcommand's rather than the CLI's.
+    let mut base_args = args_without_prompt(profile);
+    base_args.extend(resume.iter().cloned());
     let mcp = mcp_launch_args(profile, worktree, &base_args);
     base_args.extend(mcp);
     agency_core::scripts::wrap_setup(setup, &profile.command, &base_args)
@@ -738,8 +742,8 @@ fn prompt_args(agent: &str, prompt: &str) -> Vec<String> {
 /// The (command, args) for a fresh agent session that should open with `prompt`
 /// already delivered — positionally, behind a flag, or not at all, depending on
 /// the agent (see [`prompt_args`]) — unless the profile places it itself with a
-/// `{{prompt}}` token. An empty prompt yields the plain promptless argv, so this
-/// is a drop-in for [`agent_argv`] on the fresh (non-resume) path.
+/// `{{prompt}}` token. An empty prompt yields the plain promptless argv. This is
+/// the only fresh recipe: [`agent_argv`] delegates its non-resume branch here.
 fn fresh_agent_argv(
     profile: &AgentProfile,
     worktree: &Path,
@@ -6024,9 +6028,13 @@ impl AppState {
         let use_resume =
             profile.resume_args.is_some() && probe != crate::resume_probe::ResumeProbe::None;
         let (command, args) = agent_argv(&profile, &worktree, &run.prompt, use_resume, setup);
+        // The fallback carries the run's prompt, hours old though it may be by
+        // now: there is nothing else it could open with, and the task it names
+        // is this run's whether the agent is starting it or restarting it. A
+        // promptless fresh session would leave the user staring at a bare CLI
+        // in a worktree with no idea what it was for (AGE-137).
         let fallback = if use_resume {
-            let (fresh_cmd, fresh_args) =
-                agent_argv(&profile, &worktree, &run.prompt, false, setup);
+            let (fresh_cmd, fresh_args) = fresh_agent_argv(&profile, &worktree, &run.prompt, setup);
             Some(agency_core::term::protocol::FallbackSpec {
                 command: fresh_cmd,
                 args: fresh_args,
@@ -6075,10 +6083,10 @@ impl AppState {
         let mut env = self.provider_env()?;
         env.extend(profile.env.iter().cloned());
         env.extend(agency_core::scripts::script_env(&worktree, &repo, &run.id, run.port_base));
-        // A rerun is a fresh launch by definition, so it takes the same argv the
-        // fresh side of `agent_argv` builds (never the resume recipe).
+        // A rerun is a fresh launch by definition, so it takes the fresh argv
+        // (prompt and all, never the resume recipe) that `create_run` took.
         let (command, args) =
-            agent_argv(&profile, &worktree, &run.prompt, false, config.scripts.setup.as_deref());
+            fresh_agent_argv(&profile, &worktree, &run.prompt, config.scripts.setup.as_deref());
         let _ = self.term.read().unwrap().kill(&session_name(id));
         self.term.read().unwrap().start_session(
             &session_name(id),
@@ -7682,6 +7690,42 @@ mod tests {
         let (cmd, args) = agent_argv(&p, no_worktree(), "hello", true, None);
         assert_eq!(cmd, "cursor-agent");
         assert_eq!(args, vec!["hello".to_string()]);
+    }
+
+    /// AGE-137: a rerun and the resume fallback both take the fresh argv, and
+    /// since AGE-79 moved prompt delivery out of the profile's args the
+    /// catalogue ships `args: []`. Rendering those args and stopping there
+    /// opened `claude` in the worktree with the task text nowhere; it only ever
+    /// looked right for a profile carrying `{{prompt}}` by hand.
+    #[test]
+    fn agent_argv_fresh_delivers_the_prompt_to_a_catalogue_profile() {
+        let claude = AgentProfile {
+            name: "claude".into(),
+            command: "claude".into(),
+            args: vec![],
+            env: vec![],
+            resume_args: Some(vec!["--continue".into()]),
+            loop_args: None,
+        };
+        let (cmd, args) = agent_argv(&claude, no_worktree(), "do the thing", false, None);
+        assert_eq!(cmd, "claude");
+        assert_eq!(args, vec!["do the thing".to_string()]);
+        // One fresh recipe: whichever door a caller comes in by, same argv.
+        assert_eq!(
+            super::fresh_agent_argv(&claude, no_worktree(), "do the thing", None),
+            (cmd, args)
+        );
+
+        // A flag-valued CLI gets its own recipe, not a bare positional.
+        let opencode =
+            AgentProfile { name: "opencode".into(), command: "opencode".into(), ..claude.clone() };
+        let (_cmd, args) = agent_argv(&opencode, no_worktree(), "go", false, None);
+        assert_eq!(args, vec!["--prompt".to_string(), "go".to_string()]);
+
+        // And the resume branch still leaves the prompt out: the session it
+        // rejoins already has it (AGE-100).
+        let (_cmd, args) = agent_argv(&claude, no_worktree(), "do the thing", true, None);
+        assert_eq!(args, vec!["--continue".to_string()]);
     }
 
     #[test]

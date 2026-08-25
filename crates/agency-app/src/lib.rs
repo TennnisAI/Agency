@@ -25,6 +25,8 @@ mod webview_menu;
 // The queue's two after-the-fact reports are part of the public surface: they
 // come back out of `drain_send_queues` for the caller to show.
 pub use sendq::{Notice, NoticeKind};
+// The derived state a run is in, so the attention tests can assert on it.
+pub use activity::ActivityState;
 pub use state::{AppState, KnowledgeConfigDto, ProviderSettings, RunInfo};
 
 /// Log every panic (the default hook only writes to stderr, which a bundled
@@ -303,6 +305,8 @@ pub fn run() {
             commands::open_term_path,
             commands::rename_run,
             commands::rename_run_branch,
+            commands::set_run_standing,
+            commands::pin_run,
             commands::read_file_base64,
             commands::detect_docs_dir,
             commands::read_docs_corpus,

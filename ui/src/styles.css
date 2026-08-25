@@ -1823,6 +1823,24 @@ input.settings-notif-secs { width: 90px; flex: 0 0 auto; }
 /* The marker a run wears while Agency is still holding text for its agent
    (QueuedMarker.tsx). Amber, like the "waiting" dot: something is pending, and
    nothing is wrong. Its popover says what is waiting and drops it. */
+/* Settle / snooze / pin (AGE-141). The control is quiet on a run nobody has
+   classified — revealed by hovering the tile, like its close button — and
+   becomes a chip once there is something to say. Settled and snoozed already
+   read in the status line beside it; a pin has no other home on the card. */
+.attn-wrap { display: inline-flex; flex-shrink: 0; }
+.attn-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 1px 6px; border: 1px solid transparent; border-radius: 999px;
+  background: none; color: var(--o1); cursor: pointer;
+  font-family: var(--mono); font-size: 10.5px; line-height: 1.5; white-space: nowrap;
+}
+.attn-chip:hover, .attn-chip.on { background: var(--s2); color: var(--text); }
+.attn-chip.marked { border-color: var(--s1); color: var(--sub0); }
+.attn-chip.quiet { opacity: 0; transition: opacity 90ms ease; }
+.tile:hover .attn-chip.quiet,
+.attn-chip.quiet:focus-visible,
+.attn-chip.quiet.on { opacity: 1; }
+
 .queued-wrap { display: inline-flex; flex-shrink: 0; }
 .queued-chip {
   display: inline-flex; align-items: center; gap: 4px;

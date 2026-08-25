@@ -1,4 +1,5 @@
-use agency_app_lib::{AppState, NoticeKind};
+use agency_app_lib::{ActivityState, AppState, NoticeKind};
+use agency_core::attention::StandingKind;
 use std::path::Path;
 
 mod common;
@@ -2732,4 +2733,133 @@ fn renaming_a_branch_refuses_a_run_in_the_project_checkout() {
     assert_eq!(agency_core::merge::current_branch(&repo).as_deref(), Some("main"));
 
     let _ = state.discard_run(&info.id);
+}
+
+// ── the user's word on a run (AGE-141) ──────────────────────────────────────
+
+/// Settling is a record, not an inference: it survives the round trip through
+/// the registry, takes the run off the attention list, and is used up by the
+/// run coming back — all of which the board reads off `RunInfo`.
+#[test]
+fn settling_a_run_takes_it_off_the_attention_list_until_it_comes_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let state = common::state(&dir);
+    let project = state.add_project("demo", &repo).unwrap();
+    let id = live_terminal(&state, &project.id);
+    // A turn the user drove: without one a quiet run is idle, never waiting.
+    state.run_input(&id, b"\r").unwrap();
+
+    let info = |state: &AppState| {
+        state.list_runs(&project.id).unwrap().into_iter().find(|r| r.id == id).unwrap()
+    };
+
+    mark_quiet_since(&state, &id, now_ms() - 60_000);
+    let waiting = info(&state);
+    assert!(waiting.attention.needs_attention, "a quiet, user-driven run wants the user");
+    assert!(waiting.attention.standing.is_none(), "nobody has said anything yet");
+
+    state.set_run_standing(&id, Some(StandingKind::Settled)).unwrap();
+    let settled = info(&state);
+    assert_eq!(settled.attention.standing, Some(StandingKind::Settled));
+    assert!(!settled.attention.needs_attention, "settled: off the list");
+
+    // The agent starts producing again. That alone does not un-settle it: a
+    // run mid-turn has not finished asking for anything. The rest of the
+    // consumption rule (quiet again on a user-driven turn, and the run is back
+    // on the list) runs on a clock this test cannot move, and is unit-tested
+    // in `activity::tests::settling_holds_until_the_run_comes_back`.
+    state.update_activity(&id, true, now_ms());
+    let mid_turn = info(&state);
+    assert_eq!(mid_turn.activity.unwrap().state, ActivityState::Working);
+    assert_eq!(mid_turn.attention.standing, Some(StandingKind::Settled), "mid-turn: still held");
+
+    // Taking the word back is a write like any other, and puts the run back
+    // where the time decay can have it.
+    state.set_run_standing(&id, None).unwrap();
+    mark_quiet_since(&state, &id, now_ms() - 60_000);
+    let cleared = info(&state);
+    assert_eq!(cleared.attention.standing, None);
+    assert!(cleared.attention.needs_attention);
+
+    state.discard_run(&id).unwrap();
+}
+
+/// A snooze suppresses the run without changing what it is: it has to still be
+/// waiting when the clock runs out, however long the wait was, or waking it
+/// would surface nothing. That is the half the time decay used to break.
+#[test]
+fn a_snoozed_run_is_still_waiting_when_it_wakes() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let state = common::state(&dir);
+    let project = state.add_project("demo", &repo).unwrap();
+    let id = live_terminal(&state, &project.id);
+    state.run_input(&id, b"\r").unwrap();
+
+    let info = |state: &AppState| {
+        state.list_runs(&project.id).unwrap().into_iter().find(|r| r.id == id).unwrap()
+    };
+
+    // Quiet for well over the decay window: unclassified, this is plain idle.
+    mark_quiet_since(&state, &id, now_ms() - 90 * 60 * 1000);
+    assert_eq!(info(&state).activity.unwrap().state, ActivityState::Idle, "decayed");
+
+    // Snoozed until a moment already past, so this is the state a woken run
+    // comes back to.
+    state
+        .set_run_standing(&id, Some(StandingKind::Snoozed { until_ms: now_ms() - 1_000 }))
+        .unwrap();
+    let woken = info(&state);
+    assert_eq!(woken.activity.unwrap().state, ActivityState::Waiting, "still waiting on wake");
+    assert_eq!(woken.attention.standing, None, "the snooze has run out");
+    assert!(woken.attention.needs_attention, "and the run is back on the list");
+
+    state.discard_run(&id).unwrap();
+}
+
+/// Pinning is about placement, so it outlives everything else the user says
+/// and everything the agent does. Order is the order they were pinned in.
+#[test]
+fn pins_number_from_one_and_survive_a_settle() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let state = common::state(&dir);
+    let project = state.add_project("demo", &repo).unwrap();
+    let first = live_terminal(&state, &project.id);
+    let second = live_terminal(&state, &project.id);
+
+    let rank = |state: &AppState, id: &str| {
+        state
+            .list_runs(&project.id)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.id == id)
+            .unwrap()
+            .attention
+            .pin_rank
+    };
+
+    state.pin_run(&first, true).unwrap();
+    state.pin_run(&second, true).unwrap();
+    assert_eq!(rank(&state, &first), Some(1.0));
+    assert_eq!(rank(&state, &second), Some(2.0), "pinned second, ordered second");
+
+    state.set_run_standing(&first, Some(StandingKind::Settled)).unwrap();
+    assert_eq!(rank(&state, &first), Some(1.0), "a settle must not move a pin");
+
+    // Unpinning and pinning again is how a run is moved to the end.
+    state.pin_run(&first, false).unwrap();
+    assert_eq!(rank(&state, &first), None);
+    state.pin_run(&first, true).unwrap();
+    assert_eq!(rank(&state, &first), Some(3.0));
+
+    state.discard_run(&first).unwrap();
+    state.discard_run(&second).unwrap();
 }

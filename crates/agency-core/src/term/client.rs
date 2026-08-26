@@ -47,6 +47,27 @@ fn send_msg(shared: &Shared, msg: &ClientMsg) -> Result<()> {
     write_frame(&mut *w, &payload).map_err(Into::into)
 }
 
+/// Add the client's own `PATH` to a session's environment unless the caller
+/// set one. Sessions run under `agency-termd`, which keeps the environment it
+/// was spawned with for as long as it lives — and it is only ever replaced on
+/// a protocol bump, so a daemon started by an app launch that never repaired
+/// its PATH (a Finder launch inherits launchd's
+/// `/usr/bin:/bin:/usr/sbin:/sbin`) outlives that launch and keeps handing
+/// every session the stripped PATH. Observed 2026-08-26: an agent CLI the app
+/// could see on PATH still failed to launch, because the daemon resolving it
+/// could not. Passing the app's PATH per session makes the daemon's own
+/// irrelevant. Pure so the precedence is testable.
+fn with_client_path(env: &[(String, String)], path: Option<String>) -> Vec<(String, String)> {
+    let mut out = env.to_vec();
+    match path {
+        Some(p) if !p.is_empty() && !out.iter().any(|(k, _)| k == "PATH") => {
+            out.push(("PATH".to_string(), p))
+        }
+        _ => {}
+    }
+    out
+}
+
 impl TermClient {
     pub fn connect_or_spawn(socket_path: PathBuf, daemon_bin: PathBuf) -> Result<TermClient> {
         let client = Self::connect_once(&socket_path, &daemon_bin)?;
@@ -163,12 +184,13 @@ impl TermClient {
         rows: u16,
         fallback: Option<FallbackSpec>,
     ) -> Result<()> {
+        let env = with_client_path(env, std::env::var("PATH").ok());
         self.request(|seq| ClientMsg::StartSession {
             id: id.into(),
             cwd: cwd.to_string_lossy().into(),
             command: command.into(),
             args: args.to_vec(),
-            env: env.to_vec(),
+            env: env.clone(),
             cols,
             rows,
             fallback,
@@ -314,5 +336,35 @@ fn fire(shared: &Arc<Shared>, id: &str, bytes: Vec<u8>) {
     let cb = shared.callbacks.lock().unwrap().get(id).cloned();
     if let Some(cb) = cb {
         cb(bytes);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn env(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    #[test]
+    fn a_session_carries_the_apps_path_not_the_daemons() {
+        let out =
+            with_client_path(&env(&[("TERM", "xterm")]), Some("/usr/bin:/opt/homebrew/bin".into()));
+        assert_eq!(
+            out.iter().find(|(k, _)| k == "PATH").map(|(_, v)| v.as_str()),
+            Some("/usr/bin:/opt/homebrew/bin"),
+            "a long-lived daemon's stale PATH must not decide what an agent CLI can resolve"
+        );
+        assert!(out.iter().any(|(k, _)| k == "TERM"), "the caller's own vars survive");
+    }
+
+    #[test]
+    fn a_caller_supplied_path_wins_and_an_empty_one_is_not_set() {
+        let out = with_client_path(&env(&[("PATH", "/only/this")]), Some("/usr/bin".into()));
+        assert_eq!(out.iter().filter(|(k, _)| k == "PATH").count(), 1);
+        assert_eq!(out[0].1, "/only/this");
+        assert!(with_client_path(&env(&[]), Some(String::new())).is_empty());
+        assert!(with_client_path(&env(&[]), None).is_empty());
     }
 }

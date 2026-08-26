@@ -3729,21 +3729,76 @@ input, textarea, code,
 }
 .map-canvas:active { cursor: grabbing; }
 
-.map-edge path { stroke: var(--s1); opacity: .55; transition: opacity .12s; }
-.map-edge polygon { fill: var(--s2); opacity: .7; }
-.map-edge.on path { stroke: var(--blue); opacity: .95; }
-.map-edge.on polygon { fill: var(--blue); opacity: .95; }
-.map-edge.dim path, .map-edge.dim polygon { opacity: .14; }
+/* The courtyard: a diamond of ground under the level, its grid barely there. */
+.map-ground-outer { fill: var(--mantle); stroke: var(--line); stroke-width: 1; }
+.map-ground-inner { fill: none; stroke: var(--line); stroke-width: 1; opacity: .55; }
+.map-gridline { stroke: var(--line); stroke-width: 1; opacity: .35; }
 
-.map-node { cursor: pointer; }
-.map-node rect { fill: var(--mantle); stroke: var(--line); stroke-width: 1; transition: opacity .12s; }
-.map-node.dir rect { stroke: var(--s1); }
-.map-node.on rect { stroke: var(--blue); }
-.map-node.dim { opacity: .35; }
-.map-node text { pointer-events: none; }
-.map-node-name { font-family: var(--mono); font-size: 11px; fill: var(--text); }
-.map-node.dir .map-node-name { fill: var(--lav); }
-.map-node-meta { font-family: var(--sans); font-size: 9px; fill: var(--o1); }
+/* Roads along the grid; the dots are data underway. Peach is the one warm
+   accent in the scene, so motion is what carries it. */
+.map-road path { stroke: var(--s2); opacity: .65; transition: opacity .12s; }
+.map-road polygon { fill: var(--s2); opacity: .7; }
+.map-road.on path { stroke: var(--blue); opacity: .95; }
+.map-road.on polygon { fill: var(--blue); opacity: .95; }
+.map-road.dim path, .map-road.dim polygon { opacity: .1; }
+.map-dot { fill: var(--peach); opacity: .9; }
+.map-road.dim .map-dot { opacity: 0; }
+
+/* Buildings. Three faces per slab, lit from the upper left; directories lean
+   lavender so a keep reads apart from the halls around it. */
+.map-node { cursor: pointer; transition: transform .16s ease, opacity .14s; }
+.map-node polygon { stroke: #45475a; stroke-width: 1; stroke-linejoin: round; transition: fill .14s; }
+.map-face-top { fill: #34344e; }
+.map-face-left { fill: #272739; }
+.map-face-right { fill: #20202f; }
+.map-node.dir .map-face-top { fill: #3d3d60; }
+.map-node.dir .map-face-left { fill: #2d2d48; }
+.map-node.dir .map-face-right { fill: #25253c; }
+.map-node:hover, .map-node.on { transform: translateY(-3px); }
+.map-node.on polygon { stroke: var(--blue); }
+.map-node.on .map-face-top { fill: #3f4a6e; }
+.map-node.dim { opacity: .28; }
+
+/* Names float over the rooftops; the base-colored halo keeps them readable
+   across roads and grid lines. */
+.map-label { pointer-events: none; transition: opacity .14s; }
+.map-label.dim { opacity: .22; }
+.map-label.hide { opacity: 0; }
+.map-node-name {
+  font-family: var(--mono);
+  font-size: 11px;
+  fill: var(--text);
+  text-anchor: middle;
+  paint-order: stroke;
+  stroke: var(--base);
+  stroke-width: 3px;
+}
+.map-label.dir .map-node-name { fill: var(--lav); }
+.map-node-meta {
+  font-family: var(--sans);
+  font-size: 8.5px;
+  fill: var(--o1);
+  text-anchor: middle;
+  paint-order: stroke;
+  stroke: var(--base);
+  stroke-width: 3px;
+}
+
+/* A new level rises out of its ground, back rows first. */
+@keyframes map-rise {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes map-fade {
+  from { opacity: 0; }
+}
+.map-scene .map-node { animation: map-rise .45s cubic-bezier(.2, .7, .3, 1) backwards; }
+.map-scene .map-label { animation: map-fade .5s ease backwards; }
+.map-scene .map-road { animation: map-fade .6s ease backwards; }
+@media (prefers-reduced-motion: reduce) {
+  .map-scene .map-node, .map-scene .map-label, .map-scene .map-road { animation: none; }
+  .map-node { transition: none; }
+}
 
 .map-side {
   width: 300px;

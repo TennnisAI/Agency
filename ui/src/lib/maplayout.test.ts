@@ -3,7 +3,6 @@ import { MapDir, MapFileEdge } from "../api";
 import {
   countFiles,
   countSymbols,
-  edgePath,
   edgeSummary,
   findDir,
   findFile,
@@ -13,7 +12,6 @@ import {
   parentPath,
   symbolEdgeIndex,
   symbolsById,
-  viewBox,
 } from "./maplayout";
 
 const sym = (id: string, label: string, line: number | null = 1) => ({
@@ -154,24 +152,10 @@ describe("layout", () => {
     expect(layout([], [])).toEqual([]);
     const single = layout(nodes().slice(0, 1), []);
     expect(Number.isFinite(single[0].x)).toBe(true);
-    expect(viewBox([])).toBe("0 0 100 100");
-    expect(viewBox(single)).toMatch(/^-?[\d.]+ -?[\d.]+ [\d.]+ [\d.]+$/);
   });
 });
 
-describe("edge drawing", () => {
-  it("bows opposite directions to opposite sides", () => {
-    const a = { key: "a", kind: "file" as const, name: "a", files: 1, symbols: 0, x: 0, y: 0, w: 80, h: 40 };
-    const b = { key: "b", kind: "file" as const, name: "b", files: 1, symbols: 0, x: 200, y: 0, w: 80, h: 40 };
-    const ab = edgePath(a, b);
-    const ba = edgePath(b, a);
-    expect(ab.d).not.toBe(ba.d);
-    // Control points land on opposite sides of the straight line (y = 0).
-    const ctrlY = (d: string) => Number(d.split(" ")[5]);
-    expect(ctrlY(ab.d) * ctrlY(ba.d)).toBeLessThan(0);
-    expect(ab.arrow.split(" ")).toHaveLength(3);
-  });
-
+describe("edge summaries", () => {
   it("summarises counts in words", () => {
     expect(edgeSummary({ calls: 2, imports: 1, refs: 0, other: 0 })).toBe("2 calls, 1 import");
     expect(edgeSummary({ calls: 1, imports: 0, refs: 3, other: 2 })).toBe("1 call, 3 refs, 2 other");

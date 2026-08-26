@@ -9,12 +9,11 @@ import {
   Project,
 } from "../api";
 import { fileRootKey, requestOpenFile } from "../lib/openFile";
+import { blockGeometry, bounds, ground, place, route, TILE_W } from "../lib/isomap";
 import {
-  edgePath,
   edgeSummary,
   findDir,
   findFile,
-  layout,
   LevelEdge,
   levelEdges,
   LevelNode,
@@ -22,7 +21,6 @@ import {
   parentPath,
   symbolEdgeIndex,
   symbolsById,
-  viewBox,
 } from "../lib/maplayout";
 import { toastError, toastInfo } from "../lib/toast";
 import { useRuns } from "../store/runs";
@@ -127,7 +125,9 @@ export default function MapView({ project }: { project: Project }) {
     if (!data || !dir) return null;
     const nodes = levelNodes(dir);
     const edges = levelEdges(data.file_edges, nodes);
-    return { nodes: layout(nodes, edges), edges };
+    // Placement itself happens in MapCanvas (isomap.place), which also runs
+    // the force pass that decides neighborhoods.
+    return { nodes, edges };
   }, [data, dir]);
 
   const symbolIndex = useMemo(() => (data ? symbolEdgeIndex(data.symbol_edges) : null), [data]);
@@ -272,9 +272,12 @@ export default function MapView({ project }: { project: Project }) {
   );
 }
 
-// The drawing surface: laid-out boxes and dependency lines, with wheel zoom
-// and drag pan. Pure props in, events out — the harness renders it without
-// the app behind it.
+// The drawing surface: the level as an isometric city on a ground grid.
+// Directories are stacked keeps (a floor per doubling of their files), files
+// are single halls with height and footprint from their symbol count, and
+// dependencies are roads routed along the grid with data traveling them.
+// Wheel zooms, drag pans. Pure props in, events out — the harness renders it
+// without the app behind it.
 export function MapCanvas({
   nodes,
   edges,
@@ -297,10 +300,29 @@ export function MapCanvas({
   const [cam, setCam] = useState({ scale: 1, tx: 0, ty: 0 });
   const svgRef = useRef<SVGSVGElement | null>(null);
   const drag = useRef<{ x: number; y: number; tx: number; ty: number; moved: boolean } | null>(null);
-  const vb = useMemo(() => viewBox(nodes), [nodes]);
+  const placed = useMemo(() => place(nodes, edges), [nodes, edges]);
+  const byKey = useMemo(() => new Map(placed.map((p) => [p.node.key, p])), [placed]);
+  const terrain = useMemo(() => (placed.length > 0 ? ground(placed) : null), [placed]);
+  const roads = useMemo(
+    () =>
+      edges.flatMap((e, idx) => {
+        const a = byKey.get(e.source);
+        const b = byKey.get(e.target);
+        return a && b ? [{ e, idx, ...route(a, b) }] : [];
+      }),
+    [edges, byKey],
+  );
+  const vb = useMemo(() => bounds(placed), [placed]);
   useEffect(() => setCam({ scale: 1, tx: 0, ty: 0 }), [vb]);
 
-  const byKey = useMemo(() => new Map(nodes.map((n) => [n.key, n])), [nodes]);
+  // The traveling dots are decoration; under reduced motion the map is still
+  // complete without them.
+  const reducedMotion = useMemo(
+    () =>
+      typeof window !== "undefined" &&
+      !!window.matchMedia?.("(prefers-reduced-motion: reduce)").matches,
+    [],
+  );
 
   // Client pixel → world coordinate, through the viewBox and the camera.
   const toWorld = (clientX: number, clientY: number) => {
@@ -335,6 +357,45 @@ export function MapCanvas({
     );
   const focusKey = hover ?? selected;
 
+  // Which roads carry a traveling dot: everything around the focus, or with
+  // nothing focused the busiest few, so the city always has some life in it
+  // without turning into weather.
+  const traffic = useMemo(() => {
+    if (reducedMotion) return new Set<number>();
+    const live = focusKey
+      ? roads.filter((r) => r.e.source === focusKey || r.e.target === focusKey)
+      : [...roads].sort((a, b) => b.e.weight - a.e.weight).slice(0, 8);
+    return new Set(live.slice(0, 16).map((r) => r.idx));
+  }, [roads, focusKey, reducedMotion]);
+
+  // Which names show at rest: every directory plus the landmark files. On a
+  // dense level a name for every hall turns the sky into noise; the rest
+  // appear when they, or a neighbor they connect to, take focus.
+  const labeled = useMemo(() => {
+    const set = new Set<string>();
+    for (const p of placed) if (p.node.kind === "dir") set.add(p.node.key);
+    [...placed]
+      .filter((p) => p.node.kind === "file")
+      .sort((a, b) => b.node.symbols - a.node.symbols || a.node.key.localeCompare(b.node.key))
+      .slice(0, 18)
+      .forEach((p) => set.add(p.node.key));
+    return set;
+  }, [placed]);
+
+  // Clicks on the courtyard and grid count as the background.
+  const isBackground = (t: EventTarget | null): boolean => {
+    const el = t as Element | null;
+    if (!el) return false;
+    if (el === svgRef.current) return true;
+    const cls = el.classList;
+    return (
+      !!cls &&
+      (cls.contains("map-ground-outer") ||
+        cls.contains("map-ground-inner") ||
+        cls.contains("map-gridline"))
+    );
+  };
+
   return (
     <svg
       ref={svgRef}
@@ -361,62 +422,110 @@ export function MapCanvas({
       onPointerUp={(e) => {
         const wasDrag = drag.current?.moved;
         drag.current = null;
-        if (!wasDrag && e.target === svgRef.current) onBackground();
+        if (!wasDrag && isBackground(e.target)) onBackground();
       }}
       onDoubleClick={(e) => {
-        if (e.target === svgRef.current) onAscend();
+        if (isBackground(e.target)) onAscend();
       }}
     >
       <g transform={`translate(${cam.tx} ${cam.ty}) scale(${cam.scale})`}>
-        {edges.map((e) => {
-          const a = byKey.get(e.source);
-          const b = byKey.get(e.target);
-          if (!a || !b) return null;
-          const { d, arrow } = edgePath(a, b);
-          const on = focusKey !== null && (e.source === focusKey || e.target === focusKey);
-          const dim = focusKey !== null && !on;
-          const width = Math.min(4, 1 + Math.log2(e.weight + 1) * 0.5);
-          return (
-            <g key={`${e.source} ${e.target}`} className={`map-edge${on ? " on" : ""}${dim ? " dim" : ""}`}>
-              <path d={d} fill="none" strokeWidth={width}>
-                <title>{`${e.source} → ${e.target}: ${edgeSummary(e)}`}</title>
-              </path>
-              <polygon points={arrow} stroke="none" />
+        {/* Keyed by level so a drill re-runs the rise-in. */}
+        <g key={vb} className="map-scene">
+          {terrain && (
+            <g className="map-ground">
+              <polygon className="map-ground-outer" points={terrain.outer} />
+              {terrain.lines.map((l, i) => (
+                <line key={i} className="map-gridline" x1={l.x1} y1={l.y1} x2={l.x2} y2={l.y2} />
+              ))}
+              <polygon className="map-ground-inner" points={terrain.inner} />
             </g>
-          );
-        })}
-        {nodes.map((n) => {
-          const on = n.key === focusKey || n.key === selected;
-          const dim = focusKey !== null && !on && !connected(n.key);
-          const maxChars = Math.floor((n.w - 18) / 6.6);
-          const name = n.kind === "dir" ? n.name + "/" : n.name;
-          const label = name.length > maxChars ? name.slice(0, maxChars - 1) + "…" : name;
-          const meta =
-            n.kind === "dir"
-              ? `${n.files} ${n.files === 1 ? "file" : "files"} · ${n.symbols} sym`
-              : `${n.symbols} ${n.symbols === 1 ? "symbol" : "symbols"}`;
-          return (
-            <g
-              key={n.key}
-              className={`map-node ${n.kind}${on ? " on" : ""}${dim ? " dim" : ""}`}
-              transform={`translate(${n.x - n.w / 2} ${n.y - n.h / 2})`}
-              onPointerEnter={() => onHover(n.key)}
-              onPointerLeave={() => onHover(null)}
-              onPointerUp={(e) => {
-                if (!drag.current?.moved) {
-                  e.stopPropagation();
-                  drag.current = null;
-                  onPick(n);
-                }
-              }}
-            >
-              <rect width={n.w} height={n.h} rx={6} />
-              <text className="map-node-name" x={10} y={17}>{label}</text>
-              <text className="map-node-meta" x={10} y={31}>{meta}</text>
-              <title>{n.key}</title>
-            </g>
-          );
-        })}
+          )}
+          {roads.map((road) => {
+            const on =
+              focusKey !== null && (road.e.source === focusKey || road.e.target === focusKey);
+            const dim = focusKey !== null && !on;
+            const width = Math.min(3.5, 1 + Math.log2(road.e.weight + 1) * 0.5);
+            return (
+              <g
+                key={`${road.e.source} ${road.e.target}`}
+                className={`map-road${on ? " on" : ""}${dim ? " dim" : ""}`}
+              >
+                <path id={`road-${road.idx}`} d={road.d} fill="none" strokeWidth={width}>
+                  <title>{`${road.e.source} → ${road.e.target}: ${edgeSummary(road.e)}`}</title>
+                </path>
+                <polygon points={road.arrow} stroke="none" />
+                {traffic.has(road.idx) && (
+                  <circle className="map-dot" r={2.4}>
+                    <animateMotion
+                      dur={`${road.dur}s`}
+                      begin={`${-(road.idx % 7) * 1.4}s`}
+                      repeatCount="indefinite"
+                    >
+                      <mpath href={`#road-${road.idx}`} />
+                    </animateMotion>
+                  </circle>
+                )}
+              </g>
+            );
+          })}
+          {placed.map((p, i) => {
+            const on = p.node.key === focusKey || p.node.key === selected;
+            const dim = focusKey !== null && !on && !connected(p.node.key);
+            const geom = blockGeometry(p);
+            return (
+              <g
+                key={p.node.key}
+                className={`map-node ${p.node.kind}${on ? " on" : ""}${dim ? " dim" : ""}`}
+                style={{ animationDelay: `${Math.min(i * 16, 400)}ms` }}
+                onPointerEnter={() => onHover(p.node.key)}
+                onPointerLeave={() => onHover(null)}
+                onPointerUp={(e) => {
+                  if (!drag.current?.moved) {
+                    e.stopPropagation();
+                    drag.current = null;
+                    onPick(p.node);
+                  }
+                }}
+              >
+                {geom.slabs.map((s, f) => (
+                  <g key={f}>
+                    <polygon className="map-face-left" points={s.left} />
+                    <polygon className="map-face-right" points={s.right} />
+                    <polygon className="map-face-top" points={s.top} />
+                  </g>
+                ))}
+                <title>
+                  {p.node.kind === "dir"
+                    ? `${p.node.key} (${p.node.files} ${p.node.files === 1 ? "file" : "files"}, ${p.node.symbols} symbols)`
+                    : `${p.node.key} (${p.node.symbols} ${p.node.symbols === 1 ? "symbol" : "symbols"})`}
+                </title>
+              </g>
+            );
+          })}
+          {/* Labels drawn after every block so a tall keep in front never
+              buries a neighbor's name. One line, tucked to the rooftop: the
+              counts live in the tooltip and the panel, and the block's height
+              already says how much lives inside. */}
+          {placed.map((p, i) => {
+            const on = p.node.key === focusKey || p.node.key === selected;
+            const near = focusKey !== null && connected(p.node.key);
+            const dim = focusKey !== null && !on && !near;
+            const hide = !labeled.has(p.node.key) && !on && !near;
+            const geom = blockGeometry(p);
+            const name = p.node.kind === "dir" ? p.node.name + "/" : p.node.name;
+            const maxChars = Math.max(11, Math.floor((p.base * TILE_W + 52) / 6.4));
+            const label = name.length > maxChars ? name.slice(0, maxChars - 1) + "…" : name;
+            return (
+              <g
+                key={p.node.key}
+                className={`map-label ${p.node.kind}${on ? " on" : ""}${dim ? " dim" : ""}${hide ? " hide" : ""}`}
+                style={{ animationDelay: `${Math.min(i * 16, 400)}ms` }}
+              >
+                <text className="map-node-name" x={geom.cx} y={geom.topY - 7}>{label}</text>
+              </g>
+            );
+          })}
+        </g>
       </g>
     </svg>
   );

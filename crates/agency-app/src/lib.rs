@@ -340,6 +340,12 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     use tauri::tray::TrayIconBuilder;
     use tauri::Manager;
 
+    // `pathenv::repair` runs before the log plugin exists, so it records its
+    // outcome instead of logging it. Write it down here: an agent CLI the app
+    // cannot see is almost always a PATH the probe never composed, and without
+    // this line the only way to tell is a `ps eww` of the running app.
+    log::info!("{}", pathenv::report());
+
     // Build the tray icon and move the handle into managed state so it
     // is not dropped at the end of setup. In Tauri 2 the underlying icon
     // is reference-counted and is removed from the menu bar when the last

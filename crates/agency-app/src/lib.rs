@@ -297,6 +297,7 @@ pub fn run() {
             commands::create_file,
             commands::create_dir,
             commands::rename_path,
+            commands::copy_path,
             commands::trash_path,
             commands::add_to_gitignore,
             commands::abs_path,

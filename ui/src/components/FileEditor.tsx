@@ -157,6 +157,48 @@ const FileEditor = forwardRef<FileEditorHandle, {
     }
   };
 
+  // The file changed underneath us — edited in Finder, or written by an agent
+  // working in the same tree — while its tab sat open. Re-read when the window
+  // comes back, which is the moment after the detour that caused it (AGE-162).
+  //
+  // Never over unsaved work: a dirty buffer keeps what was typed, and Revert
+  // stays the way to take the disk copy instead. The cursor is carried across
+  // (clamped) and the view is not scrolled, so a background tab that quietly
+  // re-reads doesn't jump when it is next looked at.
+  const syncFromDisk = useRef(async () => {});
+  syncFromDisk.current = async () => {
+    const view = viewRef.current;
+    if (!view || dirtyRef.current) return;
+    try {
+      const fc = await readFile(root, path);
+      // Still the same editor, still clean: the read is a round trip, and the
+      // user can have started typing in the middle of it.
+      if (viewRef.current !== view || dirtyRef.current) return;
+      if (fc.binary || fc.tooLarge) return;
+      if (fc.text === view.state.doc.toString()) return;
+      const { anchor, head } = view.state.selection.main;
+      view.dispatch({
+        changes: { from: 0, to: view.state.doc.length, insert: fc.text },
+        selection: {
+          anchor: Math.min(anchor, fc.text.length),
+          head: Math.min(head, fc.text.length),
+        },
+      });
+      // The dispatch flips `dirty` on via the update listener; this is the
+      // disk's own text, so clear it again.
+      markDirtyRef.current(false);
+    } catch {
+      // The file may have just been deleted or renamed. The tree's own refresh
+      // is what says so; an error banner over the last good text would not.
+    }
+  };
+
+  useEffect(() => {
+    const onFocus = () => { void syncFromDisk.current(); };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, []);
+
   useImperativeHandle(ref, () => ({
     scrollToLine: (line: number) => {
       const view = viewRef.current;

@@ -1518,6 +1518,10 @@ export const createDir = (root: FileRoot, relPath: string) =>
   invoke<void>("create_dir", { root, relPath });
 export const renamePath = (root: FileRoot, from: string, to: string) =>
   invoke<void>("rename_path", { root, from, to });
+// Copy a file or folder to another path in the same root (folders recurse).
+// Refuses an existing destination, so the caller picks a free name first.
+export const copyPath = (root: FileRoot, from: string, to: string) =>
+  invoke<void>("copy_path", { root, from, to });
 export const trashPath = (root: FileRoot, relPath: string) =>
   invoke<void>("trash_path", { root, relPath });
 // Appends the path to the root's .gitignore. Resolves to true if a new entry was

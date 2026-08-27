@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agency · run coding agents locally, side by side</title>
+<meta name="description" content="Agency is a free macOS app that runs AI coding agents side by side on your own machine. Each agent gets a real terminal, its own git worktree, and its own branch. No account, no telemetry.">
+<link rel="canonical" href="https://getagency.dev/">
+<meta property="og:title" content="Agency · run coding agents locally, side by side">
+<meta property="og:description" content="Agency runs every coding agent you use, side by side, on your own machine.">
+<meta property="og:url" content="https://getagency.dev/">
+<meta property="og:type" content="website">
+<link rel="icon" href="/assets/img/agency-icon.svg" type="image/svg+xml">
+<link rel="icon" href="/assets/img/agency-icon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="/assets/img/agency-icon-180.png">
+<link rel="preload" href="/assets/fonts/geist-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/assets/img/shot-overview.webp" as="image" type="image/webp">
+<link rel="stylesheet" href="/assets/css/site.css">
+<script>
+(function () {
+  try {
+    var t = localStorage.getItem('theme');
+    if (t === 'light' || t === 'dark') {
+      document.documentElement.setAttribute('data-theme', t);
+    }
+  } catch (e) {}
+})();
+</script>
+</head>
+<body>
+
+<header class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="/" aria-label="Agency home">
+      <svg viewBox="14 8 72 82" fill="none" aria-hidden="true">
+        <path d="M22 84 L50 24 L78 84" stroke="var(--blue)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+        <rect x="36" y="55" width="20" height="7.5" rx="3.75" fill="var(--blue)" fill-opacity="0.55"/>
+        <rect x="44" y="67" width="20" height="7.5" rx="3.75" fill="var(--blue)"/>
+        <circle cx="50" cy="22" r="7.5" fill="var(--base)" stroke="var(--blue)" stroke-width="3.4"/>
+      </svg>
+      Agency
+    </a>
+    <nav class="nav-links" aria-label="Site">
+      <a href="/download.html">Download</a>
+      <a href="/privacy.html">Privacy</a>
+      <button class="theme-toggle" id="theme-toggle" aria-label="Toggle color theme">&#x25D0;&#xFE0E;</button>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+<section class="hero">
+  <div class="wrap">
+    <h1 class="display">Many agents. Many branches.<br>One window.</h1>
+    <p class="lead">Agency runs the coding agent CLIs you already use, side by side on
+    your own machine. Each one gets a real terminal, its own git worktree, and its
+    own branch.</p>
+    <div class="hero-cta">
+      <!-- Release state, once v0.1.0 is published:
+      <a class="btn" href="/download.html">Download for macOS</a>
+      and in the meta line below, prepend: v0.1.0 <span class="dot">&middot;</span>
+      -->
+      <span class="btn" aria-disabled="true">Coming shortly</span>
+    </div>
+    <p class="meta hero-meta">macOS 11 or later, Apple Silicon <span class="dot">&middot;</span> free <span class="dot">&middot;</span> no account</p>
+    <div class="hero-shot shot">
+      <img src="/assets/img/shot-overview.webp" width="2560" height="1599"
+        alt="The Agency window showing the all-projects overview: 16 projects and 13 agents, with live terminal output from several Claude Code runs, each on its own agent branch, and a plain terminal alongside.">
+    </div>
+  </div>
+</section>
+
+<section class="strip">
+  <div class="wrap">
+    <span class="eyebrow">Works with what you already run</span>
+    <p class="strip-names">Claude Code<span class="dot">&middot;</span>Codex<span class="dot">&middot;</span>Pi<span class="dot">&middot;</span>OpenCode<span class="dot">&middot;</span>Copilot CLI<span class="dot">&middot;</span>Cursor<span class="dot">&middot;</span>Hermes<span class="dot">&middot;</span>Gemini CLI<span class="dot">&middot;</span>Kimi Code<span class="dot">&middot;</span>Crush</p>
+    <p class="strip-note">Agency finds what is on your PATH and offers to install what is not.
+    Your keys and subscriptions, unchanged.</p>
+  </div>
+</section>
+
+<section class="section section-band">
+  <div class="wrap">
+    <h2 class="h2">Nothing of yours comes to us</h2>
+    <p class="local-lines">
+      <span>No account.</span>
+      <span>No vendor backend.</span>
+      <span>No analytics, no telemetry.</span>
+    </p>
+    <div class="local-body">
+      <p>There is no server of ours for it to talk to. Nothing to sign up for:
+      download it, open it, point it at a repo.</p>
+      <p>One request of ours, stated plainly: on launch Agency asks GitHub's
+      public API for the latest release tag, so it can tell you an update
+      exists. It sends no identifiers, it installs nothing, and one switch in
+      Settings turns it off. The agents are third party and talk to their own
+      providers.</p>
+      <a class="textlink" href="/privacy.html">Read the privacy page</a>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="wrap">
+
+    <div class="alt">
+      <div class="alt-media shot">
+        <img src="/assets/img/shot-focus.webp" width="2400" height="1499" loading="lazy"
+          alt="An agent in focus view: Claude Code working an issue in its own worktree, the run rail on the left listing other agents, and the changes and commit history panel on the right with an Approve button.">
+      </div>
+      <div class="alt-text">
+        <span class="eyebrow">Parallel by default</span>
+        <h2 class="h2">Six agents, six branches, no collisions</h2>
+        <p class="body">Every run opens in its own git worktree, so agents working the same
+        repo never touch each other's files. Watch them all in a grid, or
+        pull one full size when it needs you.</p>
+        <ul class="points">
+          <li>Different agent types on the same repo at the same time</li>
+          <li>Plain terminals alongside, in the project checkout, when you want one</li>
+          <li>Worktrees are the default, not a requirement</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="alt flip">
+      <div class="alt-media shot">
+        <img src="/assets/img/shot-issues.webp" width="2400" height="1499" loading="lazy"
+          alt="The Issues tab: a board of issues grouped by Backlog, Todo and In progress with AGE-prefixed keys, and an open issue detail showing properties, a linked issue, and an agent assigned to it.">
+      </div>
+      <div class="alt-text">
+        <span class="eyebrow">Issues</span>
+        <h2 class="h2">Your tracker is a folder of markdown files</h2>
+        <p class="body">Issues live in your project as files. That is why an agent can work
+        them: picking one up, changing its status, adding a comment and
+        filing a follow-up are all just edits.</p>
+        <ul class="points">
+          <li>Dispatch an issue to an agent and it moves to In progress</li>
+          <li>Open a PR and it moves to In review. Merge and it closes</li>
+          <li>Comments, links, attachments and due dates, all in the file</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="alt">
+      <div class="alt-media shot">
+        <img src="/assets/img/shot-docs.webp" width="2400" height="1499" loading="lazy"
+          alt="The Docs tab: a rendered markdown note open in the editor with the notes tree on the left, and an agent running in the note's side panel on the right.">
+      </div>
+      <div class="alt-text">
+        <span class="eyebrow">Docs</span>
+        <h2 class="h2">Notes your agents can actually read</h2>
+        <p class="body">A wiki that lives in your repo. Wikilinks, backlinks, tags,
+        properties, an outline and a quick switcher, plus a journal with
+        daily notes and a weekly note generated from what actually happened.</p>
+        <ul class="points">
+          <li>Hand a note to an agent and watch the page update as it writes</li>
+          <li>Put an agent in the side panel of the note you are working on</li>
+          <li>Keep a notes-only workspace with no code in it at all</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="alt flip">
+      <div class="alt-media shot">
+        <img src="/assets/img/shot-merge.webp" width="2400" height="1499" loading="lazy"
+          alt="The approve and merge flow: a finished agent run with its diff behind a dialog reading merged cleanly into main, offering to archive, delete or keep the agent, and the branch history graph on the right.">
+      </div>
+      <div class="alt-text">
+        <span class="eyebrow">Review</span>
+        <h2 class="h2">Read the diff before you trust it</h2>
+        <p class="body">Staged changes, per-hunk diffs, commit, history, branches and stash,
+        for whichever worktree you are standing in. Review a pull request,
+        create one, merge it, and resolve the conflicts when two agents
+        reach for the same lines.</p>
+        <ul class="points">
+          <li>Per-run diffs, so you review one agent's work at a time</li>
+          <li>Comment on a diff and send it straight back to the agent</li>
+        </ul>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<section class="section">
+  <div class="wrap">
+    <div class="cards">
+      <div class="card">
+        <div class="card-glyph" aria-hidden="true">&#x2273;&#xFE0E;</div>
+        <h3 class="h3">Terminal first</h3>
+        <p>Agency does not reimplement your agent. It spawns the CLI you already use in
+        a real terminal, TUI and all.</p>
+      </div>
+      <div class="card">
+        <div class="card-glyph" aria-hidden="true">&#x21CB;&#xFE0E;</div>
+        <h3 class="h3">Agent agnostic</h3>
+        <p>Ten agent CLIs built in, and any other you can launch from a command line.
+        Bring your own keys.</p>
+      </div>
+      <div class="card">
+        <div class="card-glyph" aria-hidden="true">&#x25A6;&#xFE0E;</div>
+        <h3 class="h3">Many projects, one window</h3>
+        <p>Set agents going on one project, switch to the next, and come back when they
+        are done. One home screen covers all of them.</p>
+      </div>
+      <div class="card">
+        <div class="card-glyph" aria-hidden="true">&#x25D4;&#xFE0E;</div>
+        <h3 class="h3">Notified when it matters</h3>
+        <p>Desktop alerts when an agent finishes, goes quiet waiting on you, crashes a
+        run script, or hits a merge conflict. Silent for the run you are watching.</p>
+      </div>
+      <div class="card">
+        <div class="card-glyph" aria-hidden="true">&#x27F3;&#xFE0E;</div>
+        <h3 class="h3">Auto-resume</h3>
+        <p>Quit with work in flight. Reopen, click the run, and the conversation picks
+        up where the agent's CLI can continue it.</p>
+      </div>
+      <div class="card">
+        <div class="card-glyph" aria-hidden="true">&#x2225;&#xFE0E;</div>
+        <h3 class="h3">Race and loop</h3>
+        <p>Send one prompt to four agents and keep the branch you like best. Or loop one
+        agent until your test command exits clean.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section section-band">
+  <div class="wrap">
+    <span class="eyebrow">Built with itself</span>
+    <h2 class="h2">Agency built Agency</h2>
+    <div class="local-body" style="margin-top: 24px">
+      <p>Almost every feature on this page was written by agents running in
+      Agency, on worktrees Agency cut, reviewed and merged in the app. The
+      commit history is the receipt.</p>
+    </div>
+  </div>
+</section>
+
+<section class="section closing">
+  <div class="wrap">
+    <h2 class="h2">Get it</h2>
+    <div class="closing-cta">
+      <!-- Release state:
+      <a class="btn" href="/download.html">Download for macOS</a>
+      -->
+      <span class="btn" aria-disabled="true">Coming shortly</span>
+      <a class="textlink" href="/download.html">Requirements</a>
+    </div>
+    <p class="closing-note">Pre-1.0 and in beta. Linux and Windows are planned.</p>
+  </div>
+</section>
+
+</main>
+
+<footer class="footer">
+  <div class="wrap footer-inner">
+    <a class="brand" href="/" aria-label="Agency home">
+      <svg viewBox="14 8 72 82" fill="none" aria-hidden="true">
+        <path d="M22 84 L50 24 L78 84" stroke="var(--blue)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+        <rect x="36" y="55" width="20" height="7.5" rx="3.75" fill="var(--blue)" fill-opacity="0.55"/>
+        <rect x="44" y="67" width="20" height="7.5" rx="3.75" fill="var(--blue)"/>
+        <circle cx="50" cy="22" r="7.5" fill="var(--base)" stroke="var(--blue)" stroke-width="3.4"/>
+      </svg>
+      Agency
+    </a>
+    <nav class="footer-links" aria-label="Footer">
+      <a href="/download.html">Download</a>
+      <a href="/privacy.html">Privacy</a>
+    </nav>
+    <p class="footer-fine">Free. Built by Nick Counts.</p>
+  </div>
+</footer>
+
+<script src="/assets/js/site.js" defer></script>
+
+</body>
+</html>

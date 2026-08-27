@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Download Agency · macOS app for AI coding agents</title>
+<meta name="description" content="Download Agency for macOS 11 or later on Apple Silicon. Free, no account, signed and notarized. Runs the AI coding agent CLIs you already use.">
+<link rel="canonical" href="https://getagency.dev/download.html">
+<meta property="og:title" content="Download Agency">
+<meta property="og:description" content="Free, no account, macOS 11 or later on Apple Silicon.">
+<meta property="og:url" content="https://getagency.dev/download.html">
+<meta property="og:type" content="website">
+<link rel="icon" href="/assets/img/agency-icon.svg" type="image/svg+xml">
+<link rel="icon" href="/assets/img/agency-icon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="/assets/img/agency-icon-180.png">
+<link rel="preload" href="/assets/fonts/geist-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/assets/css/site.css">
+<script>
+(function () {
+  try {
+    var t = localStorage.getItem('theme');
+    if (t === 'light' || t === 'dark') {
+      document.documentElement.setAttribute('data-theme', t);
+    }
+  } catch (e) {}
+})();
+</script>
+</head>
+<body>
+
+<header class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="/" aria-label="Agency home">
+      <svg viewBox="14 8 72 82" fill="none" aria-hidden="true">
+        <path d="M22 84 L50 24 L78 84" stroke="var(--blue)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+        <rect x="36" y="55" width="20" height="7.5" rx="3.75" fill="var(--blue)" fill-opacity="0.55"/>
+        <rect x="44" y="67" width="20" height="7.5" rx="3.75" fill="var(--blue)"/>
+        <circle cx="50" cy="22" r="7.5" fill="var(--base)" stroke="var(--blue)" stroke-width="3.4"/>
+      </svg>
+      Agency
+    </a>
+    <nav class="nav-links" aria-label="Site">
+      <a href="/download.html" aria-current="page">Download</a>
+      <a href="/privacy.html">Privacy</a>
+      <button class="theme-toggle" id="theme-toggle" aria-label="Toggle color theme">&#x25D0;&#xFE0E;</button>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+<section class="dl-hero">
+  <div class="wrap">
+    <h1 class="display">Download Agency</h1>
+    <p class="dl-platform-note" id="platform-note" hidden>Agency is macOS only today. Linux and Windows are planned.</p>
+    <div class="dl-button-wrap">
+      <!-- Release state, once v0.1.0 is published:
+      <a class="btn" href="RELEASE_DMG_URL">Download for macOS</a>
+      <p class="dl-sub">Agency_0.1.0_aarch64.dmg &middot; NN MB</p>
+      -->
+      <span class="btn" aria-disabled="true">Coming shortly</span>
+      <p class="dl-sub">No release published yet</p>
+    </div>
+    <p class="dl-note">Signed and notarized by Apple, so it opens without a Gatekeeper prompt.
+    No account, and nothing to sign up for.</p>
+
+    <div class="dl-cards">
+      <div class="dl-card">
+        <h2 class="h3">Requirements</h2>
+        <ul>
+          <li>macOS 11 or later, on Apple Silicon. There is no Intel or universal build.</li>
+          <li>Git, and the Xcode command line tools (<code>xcode-select --install</code>).</li>
+          <li>At least one agent CLI. Agency detects what is on your PATH and offers to
+          install a missing one. Most install through npm, so those need Node.</li>
+          <li><code>gh</code>, optional, and only for the GitHub import and pull request flows.</li>
+        </ul>
+      </div>
+      <div class="dl-card">
+        <h2 class="h3">Other platforms</h2>
+        <p>Linux and Windows are planned. There is no build and no date yet.</p>
+      </div>
+    </div>
+
+    <div class="install">
+      <h2 class="h2">Install</h2>
+      <ol>
+        <li>Open the DMG and drag Agency to Applications.</li>
+        <li>Launch it and pick your default agent.</li>
+        <li>Add a project by pointing Agency at a local git repo.</li>
+      </ol>
+      <p class="small-print">Agency is pre-1.0 and in beta. If macOS says the app is damaged, you have an
+      unsigned local build rather than a release DMG.</p>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="footer">
+  <div class="wrap footer-inner">
+    <a class="brand" href="/" aria-label="Agency home">
+      <svg viewBox="14 8 72 82" fill="none" aria-hidden="true">
+        <path d="M22 84 L50 24 L78 84" stroke="var(--blue)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+        <rect x="36" y="55" width="20" height="7.5" rx="3.75" fill="var(--blue)" fill-opacity="0.55"/>
+        <rect x="44" y="67" width="20" height="7.5" rx="3.75" fill="var(--blue)"/>
+        <circle cx="50" cy="22" r="7.5" fill="var(--base)" stroke="var(--blue)" stroke-width="3.4"/>
+      </svg>
+      Agency
+    </a>
+    <nav class="footer-links" aria-label="Footer">
+      <a href="/download.html">Download</a>
+      <a href="/privacy.html">Privacy</a>
+    </nav>
+    <p class="footer-fine">Free. Built by Nick Counts.</p>
+  </div>
+</footer>
+
+<script src="/assets/js/site.js" defer></script>
+
+</body>
+</html>

@@ -224,9 +224,9 @@ export default function PrReview({
               />
               <div className="pr-review-edit-actions">
                 <span className="pr-edit-hint">⌘↵ to save</span>
-                <button className="git-iconbtn" onClick={() => setEdit(null)}>Cancel</button>
+                <button className="settings-ghost-btn" onClick={() => setEdit(null)}>Cancel</button>
                 <button
-                  className="git-iconbtn"
+                  className="settings-ghost-btn"
                   disabled={savingEdit || !edit.title.trim()}
                   title={edit.title.trim() ? "Save the title and description to GitHub" : "A pull request needs a title"}
                   onClick={() => { void saveEdit(); }}
@@ -242,34 +242,39 @@ export default function PrReview({
                 <span className="pr-review-title">
                   {detail.title} <span className="pr-review-num">#{detail.number}</span>
                 </span>
-                <span className="spacer" style={{ flex: 1 }} />
-                <button
-                  className="git-iconbtn"
-                  title="Edit the title and description here, in markdown, instead of in a browser."
-                  onClick={() => setEdit({ title: detail.title, body: detail.body })}
-                >
-                  Edit
-                </button>
-                <button
-                  className="git-iconbtn"
-                  title="Have an agent review this PR, then work with it to fix what it finds."
-                  onClick={() => setShowAgentReview(true)}
-                >
-                  Review with agent
-                </button>
-                {detail.state === "OPEN" && (
+                <div className="pr-review-actions">
                   <button
-                    className="git-iconbtn pr-merge-btn"
-                    disabled={!canMerge}
-                    title={mergeHint}
-                    onClick={() => setShowMerge(true)}
+                    className="settings-ghost-btn"
+                    title="Edit the title and description here, in markdown, instead of in a browser."
+                    onClick={() => setEdit({ title: detail.title, body: detail.body })}
                   >
-                    Merge
+                    Edit
                   </button>
-                )}
-                <button className="settings-ghost-btn" onClick={() => openUrl(detail.url).catch((e) => toastError(e, "Couldn't open the PR"))}>
-                  Open ↗
-                </button>
+                  <button
+                    className="settings-ghost-btn"
+                    title="Have an agent review this PR, then work with it to fix what it finds."
+                    onClick={() => setShowAgentReview(true)}
+                  >
+                    Review with agent
+                  </button>
+                  {detail.state === "OPEN" && (
+                    <button
+                      className="settings-ghost-btn pr-merge-btn"
+                      disabled={!canMerge}
+                      title={mergeHint}
+                      onClick={() => setShowMerge(true)}
+                    >
+                      Merge
+                    </button>
+                  )}
+                  <button
+                    className="settings-ghost-btn"
+                    title="Open this pull request on github.com."
+                    onClick={() => openUrl(detail.url).catch((e) => toastError(e, "Couldn't open the PR"))}
+                  >
+                    Open ↗
+                  </button>
+                </div>
               </div>
               <div className="pr-review-meta">
                 <code>{detail.headRefName}</code> → <code>{detail.baseRefName}</code>
@@ -318,41 +323,42 @@ export default function PrReview({
                 ? `${drafts.length} pending comment${drafts.length === 1 ? "" : "s"}`
                 : "No pending comments"}
           </span>
-          <span className="spacer" style={{ flex: 1 }} />
-          <button
-            className="git-iconbtn"
-            disabled={submitting || !canVerdict}
-            title={
-              canVerdict
-                ? "Submit feedback without a verdict. Leaves your comments but doesn't approve or block the merge."
-                : "Add a summary or a comment first"
-            }
-            onClick={() => submit("COMMENT")}
-          >
-            Comment
-          </button>
-          <button
-            className="git-iconbtn"
-            disabled={submitting || !canVerdict || isOwnPr}
-            title={
-              isOwnPr
-                ? ownPrHint
-                : canVerdict
-                  ? "Block the merge until addressed. Marks the PR “Changes requested”; you'll need to re-review to clear it."
+          <div className="pr-review-verdict-btns">
+            <button
+              className="settings-ghost-btn"
+              disabled={submitting || !canVerdict}
+              title={
+                canVerdict
+                  ? "Submit feedback without a verdict. Leaves your comments but doesn't approve or block the merge."
                   : "Add a summary or a comment first"
-            }
-            onClick={() => submit("REQUEST_CHANGES")}
-          >
-            Request changes
-          </button>
-          <button
-            className="git-iconbtn pr-approve"
-            disabled={submitting || isOwnPr}
-            title={isOwnPr ? ownPrHint : "Sign off on the PR. Marks it “Approved” and counts toward required approvals."}
-            onClick={() => submit("APPROVE")}
-          >
-            {submitting ? "Submitting…" : "Approve"}
-          </button>
+              }
+              onClick={() => submit("COMMENT")}
+            >
+              Comment
+            </button>
+            <button
+              className="settings-ghost-btn"
+              disabled={submitting || !canVerdict || isOwnPr}
+              title={
+                isOwnPr
+                  ? ownPrHint
+                  : canVerdict
+                    ? "Block the merge until addressed. Marks the PR “Changes requested”; you'll need to re-review to clear it."
+                    : "Add a summary or a comment first"
+              }
+              onClick={() => submit("REQUEST_CHANGES")}
+            >
+              Request changes
+            </button>
+            <button
+              className="settings-ghost-btn pr-approve"
+              disabled={submitting || isOwnPr}
+              title={isOwnPr ? ownPrHint : "Sign off on the PR. Marks it “Approved” and counts toward required approvals."}
+              onClick={() => submit("APPROVE")}
+            >
+              {submitting ? "Submitting…" : "Approve"}
+            </button>
+          </div>
         </div>
       </div>
 

@@ -158,7 +158,7 @@ export default function NewPrForm({
         <div className="newpr-head">New pull request</div>
         <p className="pr-review-empty">Every branch already has an open pull request.</p>
         <div className="newpr-actions">
-          <button className="git-iconbtn" onClick={onCancel}>Back</button>
+          <button className="settings-ghost-btn" onClick={onCancel}>Back</button>
         </div>
       </div>
     );
@@ -206,10 +206,10 @@ export default function NewPrForm({
         />
       </label>
       <div className="newpr-actions">
-        <button className="git-iconbtn pr-approve" disabled={busy || !head || !base} onClick={create}>
+        <button className="settings-ghost-btn pr-approve" disabled={busy || !head || !base} onClick={create}>
           {busy ? "Creating…" : "Create pull request"}
         </button>
-        <button className="git-iconbtn" disabled={busy} onClick={onCancel}>Cancel</button>
+        <button className="settings-ghost-btn" disabled={busy} onClick={onCancel}>Cancel</button>
       </div>
     </div>
   );

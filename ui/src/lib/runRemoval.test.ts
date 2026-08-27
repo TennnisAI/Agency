@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { CleanupPlan, RunCleanup } from "../api";
-import { removalCopy, removalLabel, removalsFor, RemovalRun } from "./runRemoval";
+import {
+  mergeTidyCopy,
+  removalCopy,
+  removalLabel,
+  removalsFor,
+  RemovalRun,
+} from "./runRemoval";
 
 const agent: RemovalRun = { kind: "agent", agent: "claude", branch: "agent/foo", worktree: true };
 const inCheckout: RemovalRun = { ...agent, worktree: false };
@@ -130,5 +136,62 @@ describe("removalLabel", () => {
     expect(removalLabel(agent, "archive")).toBe("Archive agent");
     expect(removalLabel(agent, "delete")).toBe("Delete agent");
     expect(removalLabel(terminal, "delete")).toBe("Close terminal");
+  });
+});
+
+describe("mergeTidyCopy", () => {
+  /** The whole sentence, as it reads on screen. */
+  const sentence = (c: ReturnType<typeof mergeTidyCopy>) =>
+    c.choices.map((o) => `${o.verb} ${o.text}`).join(", ");
+
+  it("names every button under it, in the buttons' own words", () => {
+    // AGE-164: the step explained archiving under a heading, "Tidy up", that
+    // matched no button, and said nothing at all about the other two.
+    const c = mergeTidyCopy(merged);
+    expect(c.choices.map((o) => o.verb)).toEqual(["Archive", "Delete", "Keep"]);
+    expect(sentence(c)).toContain("Archive puts the agent away and keeps a record under Archived");
+    expect(sentence(c)).toContain("Delete removes it and its record");
+    expect(sentence(c)).toContain("Keep leaves it as it is");
+  });
+
+  it("says what archiving and deleting share, and that the merge is safe", () => {
+    const c = mergeTidyCopy(merged);
+    expect(c.detail).toBe(
+      "Archiving and deleting both stop the agent, remove its worktree, and delete the " +
+        "agent/foo branch, which is already on main; neither touches what you just merged.",
+    );
+    expect(c.caveat).toBeNull();
+  });
+
+  it("does not claim both verbs take a branch only one of them takes", () => {
+    // A dirty worktree keeps the branch through an archive (the leftovers are
+    // committed to it) and loses it to a delete, so the shared clause may not
+    // swallow the branch.
+    const dirty = cleanup(
+      {},
+      { deletesBranch: true, keepsBranch: false, losesUncommitted: true },
+      0,
+    );
+    const c = mergeTidyCopy(dirty);
+    expect(c.detail).toBe(
+      "Archiving and deleting both stop the agent and remove its worktree; only deleting " +
+        "takes the agent/foo branch with it.",
+    );
+    expect(c.caveat).toContain("Archiving commits what is uncommitted in the worktree");
+    expect(c.caveat).toContain("deleting discards it");
+  });
+
+  it("carries the commits-at-risk warning into the caveat", () => {
+    const c = mergeTidyCopy(unmerged);
+    expect(c.caveat).toContain("3 commits on agent/foo");
+    expect(c.caveat).toContain("not on main and not on any remote");
+  });
+
+  it("claims nothing about the branch before the plan has been read", () => {
+    const c = mergeTidyCopy(null);
+    expect(c.detail).toBeNull();
+    expect(c.caveat).toBeNull();
+    // The choices are true of any run, so they are still said.
+    expect(c.choices).toHaveLength(3);
   });
 });

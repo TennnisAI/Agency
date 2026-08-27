@@ -155,6 +155,75 @@ export function removalCopy(
 }
 
 /**
+ * The last step of a merge, where three buttons are the whole decision:
+ * archive the agent, delete it, or keep it.
+ *
+ * That step used to show the *archive* teardown's Removes/Keeps lists under a
+ * heading, "Tidy up", that matched none of the three buttons: it explained one
+ * option in detail and left the other two unsaid, which is what made the step
+ * read as a puzzle (AGE-164). The same facts are here in two sentences, in the
+ * buttons' own verbs.
+ */
+export type MergeTidyCopy = {
+  /** The buttons, in the order they appear, each with what it leaves behind. */
+  choices: { verb: string; text: string }[];
+  /**
+   * What archiving or deleting clears away besides the run, with the branch's
+   * real fate in it. Null while the plan is unread, where the window says it is
+   * still checking rather than guessing.
+   */
+  detail: string | null;
+  /**
+   * Work that only one of the two verbs saves. Shown even when the rest of the
+   * explanation is hushed, because it is the one line that decides which button
+   * to press.
+   */
+  caveat: string | null;
+};
+
+export function mergeTidyCopy(cleanup: RunCleanup | null): MergeTidyCopy {
+  const choices = [
+    { verb: "Archive", text: "puts the agent away and keeps a record under Archived" },
+    { verb: "Delete", text: "removes it and its record" },
+    { verb: "Keep", text: "leaves it as it is" },
+  ];
+  if (!cleanup) return { choices, detail: null, caveat: null };
+
+  const { archive, delete: remove, branch, base } = cleanup;
+  // Only what both verbs do goes in the shared clause. They part company over
+  // the branch whenever it is still the only copy of something — uncommitted
+  // work that archiving commits to it, say — and "both delete the branch" when
+  // one of them keeps it is exactly the drift this module exists to prevent.
+  const both = ["stop the agent"];
+  if (archive.removesWorktree && remove.removesWorktree) both.push("remove its worktree");
+  if (branch && archive.deletesBranch && remove.deletesBranch) {
+    both.push(`delete the ${branch} branch${safeClause(archive, base)}`);
+  }
+  const detail =
+    `Archiving and deleting both ${joinClauses(both)}` +
+    (branch && archive.keepsBranch
+      ? `; only deleting takes the ${branch} branch with it.`
+      : "; neither touches what you just merged.");
+
+  const caveats: string[] = [];
+  if (remove.losesUncommitted) {
+    caveats.push(
+      `Archiving commits what is uncommitted in the worktree to ${branch}; deleting discards it.`,
+    );
+  }
+  const risk = warningFor(remove.commitsAtRisk, false, branch, base);
+  if (risk) caveats.push(risk);
+
+  return { choices, detail, caveat: caveats.length ? caveats.join(" ") : null };
+}
+
+/** "a and b"; "a, b, and c". */
+function joinClauses(parts: string[]): string {
+  if (parts.length < 3) return parts.join(" and ");
+  return `${parts.slice(0, -1).join(", ")}, and ${parts[parts.length - 1]}`;
+}
+
+/**
  * The red-button line. Two different things can be lost and they are lost for
  * different reasons, so they are said separately rather than folded into one
  * vague "this cannot be undone".

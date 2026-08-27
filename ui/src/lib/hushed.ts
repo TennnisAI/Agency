@@ -22,8 +22,8 @@ export type Hushable = {
 export const HUSHABLE: Hushable[] = [
   {
     id: "merge-cleanup",
-    label: "What archiving and deleting an agent do",
-    hint: "The note under a finished merge.",
+    label: "What archiving and deleting remove",
+    hint: "The detail line under a finished merge. The three choices stay.",
   },
   {
     id: "merge-delete",

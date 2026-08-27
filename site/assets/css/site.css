@@ -148,6 +148,7 @@ code, kbd { font-family: var(--mono); }
 ::selection { background: color-mix(in srgb, var(--blue) 30%, transparent); }
 
 .wrap { max-width: 1120px; margin: 0 auto; padding: 0 24px; }
+.wrap-wide { max-width: 1280px; }
 .prose { max-width: 68ch; }
 
 /* ---------- Type roles ---------- */
@@ -288,6 +289,10 @@ code, kbd { font-family: var(--mono); }
 .hero-cta { display: flex; align-items: center; gap: 24px; flex-wrap: wrap; }
 .hero-meta { margin-top: 16px; }
 .hero-shot { margin-top: 64px; }
+/* Full bleed past the column, per the wireframe, once the viewport has room. */
+@media (min-width: 1281px) {
+  .hero-shot { margin-left: -80px; margin-right: -80px; }
+}
 
 /* Screenshots keep the app window's own chrome and rounded corners; the page
    stays out of their way. In light mode they sit on a crust mat so a dark
@@ -336,13 +341,16 @@ code, kbd { font-family: var(--mono); }
 
 /* ---------- Alternating blocks ---------- */
 
+/* The image always takes the 7fr track. A flipped block swaps the template
+   too; ordering alone was observed shrinking the image into the 5fr side. */
 .alt {
   display: grid;
   grid-template-columns: 7fr 5fr;
-  gap: 64px;
+  gap: 48px;
   align-items: center;
 }
 .alt + .alt { margin-top: 128px; }
+.alt.flip { grid-template-columns: 5fr 7fr; }
 .alt.flip .alt-media { order: 2; }
 .alt-text .h2 { margin-bottom: 16px; }
 .alt-text .body { color: var(--sub1); margin-bottom: 24px; }
@@ -480,7 +488,7 @@ code, kbd { font-family: var(--mono); }
 
 @media (max-width: 1024px) {
   .section { padding: 80px 0; }
-  .alt { grid-template-columns: 1fr; gap: 32px; }
+  .alt, .alt.flip { grid-template-columns: 1fr; gap: 32px; }
   .alt.flip .alt-media { order: 0; }
   .alt + .alt { margin-top: 80px; }
   .cards { grid-template-columns: 1fr 1fr; }

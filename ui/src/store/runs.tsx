@@ -18,7 +18,7 @@ export type SpawnOpts = {
   // default).
   model?: string | null;
 };
-type Tab = "agents" | "source" | "files" | "issues" | "docs" | "run" | "map";
+type Tab = "agents" | "source" | "files" | "issues" | "docs" | "run";
 
 interface RunStore {
   runs: RunInfo[];

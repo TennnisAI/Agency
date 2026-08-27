@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Project, FileRoot, projectTarget } from "../api";
-import { fileRootKey, requestOpenFile } from "../lib/openFile";
+import { fileRootKey, onAnyOpenFile, requestOpenFile } from "../lib/openFile";
 import { terminalHasFocus } from "../lib/terminalFocus";
 import { useRuns } from "../store/runs";
 import AgentTile from "./AgentTile";
@@ -50,6 +50,8 @@ export default function AgentsView({
   // Source Control has two sub-views: Changes (the git panel) and Pull Requests
   // (in-app review). `reviewPr` deep-links a specific PR from the Approve window.
   const [srcTab, setSrcTab] = useState<"changes" | "prs">("changes");
+  // Files has two of its own: the tree and editor, and the codebase Map.
+  const [filesTab, setFilesTab] = useState<"files" | "map">("files");
   const [reviewPr, setReviewPr] = useState<number | null>(null);
   const reviewPane = usePaneWidth("review", 360, 280, 640);
 
@@ -70,7 +72,7 @@ export default function AgentsView({
   // or "files" from before the workspace hid it.
   useEffect(() => {
     if (gitless && tab === "source") setTab("agents");
-    if (isWorkspace && (tab === "files" || tab === "run" || tab === "map")) setTab("docs");
+    if (isWorkspace && (tab === "files" || tab === "run")) setTab("docs");
   }, [gitless, isWorkspace, tab, setTab]);
 
   // Which working tree source control operates on: the selected run's worktree
@@ -100,6 +102,12 @@ export default function AgentsView({
     setTab("files");
     requestOpenFile({ rootKey: fileRootKey(filesRoot), path, reveal: true });
   };
+
+  // A file was asked for from anywhere (quick open, the palette, a terminal
+  // link, the map's own "Open in Files"), so the tree has to be the sub-view
+  // showing. Same reason the source panel forces Changes below: with the other
+  // sub-view left active the jump landed on it and the file never showed.
+  useEffect(() => onAnyOpenFile(() => setFilesTab("files")), []);
 
   // Where the Docs / Files checkout bar goes when clicked: Source Control on
   // the tree it names. The Files tree is rooted at whatever source control
@@ -174,11 +182,6 @@ export default function AgentsView({
             </button>
           )}
           {!isWorkspace && (
-            <button className={tab === "map" ? "on" : ""} title="Map of the codebase" onClick={() => setTab("map")}>
-              <span className="seg-ico" aria-hidden>∴</span><span className="seg-label">Map</span>
-            </button>
-          )}
-          {!isWorkspace && (
             <button
               className={tab === "run" ? "on" : ""}
               title={projectRunLive
@@ -216,11 +219,23 @@ export default function AgentsView({
             </button>
           </div>
         )}
+        {project && tab === "files" && (
+          <div className="seg">
+            <button className={filesTab === "files" ? "on" : ""} title="Files" onClick={() => setFilesTab("files")}>
+              <span className="seg-label-short">Tree</span>
+              <span className="seg-label">Files</span>
+            </button>
+            <button className={filesTab === "map" ? "on" : ""} title="Map of the codebase" onClick={() => setFilesTab("map")}>
+              <span className="seg-label-short">Map</span>
+              <span className="seg-label">Map</span>
+            </button>
+          </div>
+        )}
         <div className="spacer" />
         {project && tab === "agents" && !gitless && (
           <RightPanelToggle open={sourcePanelOpen} onToggle={() => setSourcePanelOpen(!sourcePanelOpen)} />
         )}
-        {project && tab === "files" && (
+        {project && tab === "files" && filesTab === "files" && (
           <button
             className={`icon-btn${filesAgents ? " on" : ""}`}
             title={filesAgents ? "Hide agents" : "Show agents alongside the files"}
@@ -250,9 +265,7 @@ export default function AgentsView({
                 ? "Select a project to browse its docs."
                 : tab === "run"
                   ? "Select a project to run its scripts."
-                  : tab === "map"
-                    ? "Select a project to see its map."
-                    : "Select a project to browse its files."}
+                  : "Select a project to browse its files."}
           </div>
         )
       ) : (
@@ -284,13 +297,12 @@ export default function AgentsView({
 
           {tab === "files" && (
             <div className="source-wrap">
-              <FilesView root={filesRoot} project={project} agentsOpen={filesAgents} onOpenCheckout={openFilesCheckout} />
-            </div>
-          )}
-
-          {tab === "map" && (
-            <div className="source-wrap">
-              <MapView project={project} />
+              {filesTab === "files" && (
+                <FilesView root={filesRoot} project={project} agentsOpen={filesAgents} onOpenCheckout={openFilesCheckout} />
+              )}
+              {/* Keyed by project so a switch tears the map down rather than
+                  painting one project's tree under another's breadcrumb. */}
+              {filesTab === "map" && <MapView key={project.id} project={project} />}
             </div>
           )}
 

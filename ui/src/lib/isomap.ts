@@ -1,6 +1,6 @@
-// Isometric geometry for the Map tab. maplayout.ts decides what a level
-// contains and roughly where things want to sit; this module turns that into
-// a small city: force positions snapped to an isometric ground grid, files as
+// Isometric geometry for the Map. maplayout.ts decides what a level contains
+// and roughly where things want to sit; this module turns that into a small
+// city: force positions snapped to an isometric ground grid, files as
 // low halls and directories as stacked keeps (one floor per doubling of their
 // files), dependencies as roads routed along the grid axes. Pure math, no
 // DOM, deterministic throughout — the same level always builds the same city.

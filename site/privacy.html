@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Privacy · Agency</title>
+<meta name="description" content="Agency does no first-party data collection. No analytics, no telemetry, no account, no vendor backend. This page says exactly what the app and this site do.">
+<link rel="canonical" href="https://getagency.dev/privacy.html">
+<meta property="og:title" content="Privacy · Agency">
+<meta property="og:description" content="Agency does no first-party data collection. No analytics, no telemetry, no account, no vendor backend.">
+<meta property="og:url" content="https://getagency.dev/privacy.html">
+<meta property="og:type" content="website">
+<link rel="icon" href="/assets/img/agency-icon.svg" type="image/svg+xml">
+<link rel="icon" href="/assets/img/agency-icon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="/assets/img/agency-icon-180.png">
+<link rel="preload" href="/assets/fonts/geist-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/assets/css/site.css">
+<script>
+(function () {
+  try {
+    var t = localStorage.getItem('theme');
+    if (t === 'light' || t === 'dark') {
+      document.documentElement.setAttribute('data-theme', t);
+    }
+  } catch (e) {}
+})();
+</script>
+</head>
+<body>
+
+<header class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="/" aria-label="Agency home">
+      <svg viewBox="14 8 72 82" fill="none" aria-hidden="true">
+        <path d="M22 84 L50 24 L78 84" stroke="var(--blue)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+        <rect x="36" y="55" width="20" height="7.5" rx="3.75" fill="var(--blue)" fill-opacity="0.55"/>
+        <rect x="44" y="67" width="20" height="7.5" rx="3.75" fill="var(--blue)"/>
+        <circle cx="50" cy="22" r="7.5" fill="var(--base)" stroke="var(--blue)" stroke-width="3.4"/>
+      </svg>
+      Agency
+    </a>
+    <nav class="nav-links" aria-label="Site">
+      <a href="/download.html">Download</a>
+      <a href="/privacy.html" aria-current="page">Privacy</a>
+      <button class="theme-toggle" id="theme-toggle" aria-label="Toggle color theme">&#x25D0;&#xFE0E;</button>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+<div class="page">
+  <div class="wrap">
+    <h1 class="display">Privacy</h1>
+    <p class="lead">This page covers two separate things: what the Agency app does on your
+    machine, and what this website does. Neither collects anything about you.</p>
+
+    <h2>The app</h2>
+    <p>Agency does no first-party data collection. There is no analytics, no telemetry,
+    no crash reporting, no account, and no backend of ours. There is no server of
+    ours for the app to talk to.</p>
+    <p>Agency makes exactly one network request of its own. On launch it asks GitHub's
+    public API for the latest release tag and compares it to the version you are
+    running. It sends no identifiers; GitHub sees it the way it sees any anonymous
+    request. It downloads and installs nothing. If a newer version exists, Agency
+    marks the Settings button and offers you a link. Turn it off under
+    Settings, Diagnostics, "Check for updates on launch", and Agency makes no
+    network calls of its own at all.</p>
+
+    <h2>What is not us</h2>
+    <p>Agency runs coding agent CLIs, and those talk to their own providers under their
+    own terms and your own credentials. Git talks to whichever remotes you have
+    configured. Those connections are yours. Agency neither proxies them nor sees
+    what goes over them, and we do not want the phrase "nothing leaves your machine"
+    to give you the wrong idea about them.</p>
+    <p>Your code, your issues, your notes and your agent transcripts stay on your disk
+    as ordinary files and git objects.</p>
+
+    <h2>Check it yourself</h2>
+    <p>You do not have to take our word for any of the above. Point a network monitor
+    at Agency and watch what it does. Apart from the update check on launch, every
+    connection you see will belong to the coding agent you started or to git talking
+    to your remotes. The docs explain where Agency keeps everything on disk, so you
+    can go and look at that too.</p>
+
+    <h2>This website</h2>
+    <p>Static pages. No analytics, no tag manager, no session recording, no advertising
+    pixels, no embedded third-party scripts, no cookies, and no fonts loaded from
+    anyone else's server. Our host keeps standard server logs; we do not read them
+    for anything and we do not build profiles from them.</p>
+
+    <h2>Questions</h2>
+    <!-- Open question B is settled downstream of AGE-87: bug reports go to the
+         public releases repository's issue tracker. Add the link when it exists. -->
+    <p>Bug reports and questions go through the issue tracker on the Agency
+    releases repository.</p>
+  </div>
+</div>
+
+</main>
+
+<footer class="footer">
+  <div class="wrap footer-inner">
+    <a class="brand" href="/" aria-label="Agency home">
+      <svg viewBox="14 8 72 82" fill="none" aria-hidden="true">
+        <path d="M22 84 L50 24 L78 84" stroke="var(--blue)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+        <rect x="36" y="55" width="20" height="7.5" rx="3.75" fill="var(--blue)" fill-opacity="0.55"/>
+        <rect x="44" y="67" width="20" height="7.5" rx="3.75" fill="var(--blue)"/>
+        <circle cx="50" cy="22" r="7.5" fill="var(--base)" stroke="var(--blue)" stroke-width="3.4"/>
+      </svg>
+      Agency
+    </a>
+    <nav class="footer-links" aria-label="Footer">
+      <a href="/download.html">Download</a>
+      <a href="/privacy.html">Privacy</a>
+    </nav>
+    <p class="footer-fine">Brought to you by <a href="https://tennnis.no">Tennnis&#8202;&#x2197;&#xFE0E;</a></p>
+  </div>
+</footer>
+
+<script src="/assets/js/site.js" defer></script>
+
+</body>
+</html>

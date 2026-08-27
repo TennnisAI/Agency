@@ -371,7 +371,16 @@ button > .btn-ico:not(:only-child) { margin-right: 4px; }
   background: var(--crust); border-radius: 5px; padding: 2px 7px;
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.settings-ghost-btn { background: transparent; border: 1px solid var(--s1); color: var(--sub0); font-size: 11.5px; font-weight: 400; padding: 4px 10px; border-radius: 6px; }
+/* The app's standard compact action button (Settings, the agent panel's PR
+   section, the Pull Requests tab). It inherited the UA button face rather than
+   the app's, so a row of them next to any app text read as a different
+   typeface, and a two-word label ("Review with agent") broke onto a second line
+   the moment its row ran short of room. */
+.settings-ghost-btn {
+  background: transparent; border: 1px solid var(--s1); color: var(--sub0);
+  font-family: var(--sans); font-size: 11.5px; font-weight: 400;
+  padding: 4px 10px; border-radius: 6px; white-space: nowrap;
+}
 .settings-ghost-btn:hover { background: var(--s0); color: var(--text); }
 .settings-del-btn { color: var(--red); border-color: transparent; }
 .settings-del-btn:hover { background: rgba(243,139,168,.10); color: var(--red); }
@@ -3655,8 +3664,16 @@ input, textarea, code,
 /* Two-pane panel: PR list + review. */
 .pr-panel { flex: 1; display: flex; min-height: 0; min-width: 0; }
 .pr-panel-setup { flex: 1; padding: 8px; }
+/* Every button in this tab wears the app's face. Buttons inherit nothing here:
+   the UA sheet pins form controls to -webkit-small-control, so a bare
+   .git-iconbtn rendered in Helvetica beside Geist labels. */
+.pr-panel .git-iconbtn { font-family: var(--sans); }
 .pr-list { width: 280px; min-width: 240px; flex-shrink: 0; border-right: 1px solid var(--line); display: flex; flex-direction: column; overflow-y: auto; }
 .pr-list-head { display: flex; align-items: center; gap: 6px; padding: 8px 10px; color: var(--sub0); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; border-bottom: 1px solid var(--line); }
+/* Header affordances, not row actions: they sit inside the list's 11px cap-label
+   bar, so they take its scale rather than the 13px the git panel's icon buttons
+   use in a full-height file row. */
+.pr-list-head .git-iconbtn { font-size: 11.5px; padding: 2px 6px; white-space: nowrap; }
 .pr-list-empty { padding: 14px 10px; color: var(--sub0); font-size: 12px; }
 .pr-list-row { display: flex; align-items: baseline; gap: 8px; width: 100%; text-align: left; background: none; border: none; border-bottom: 1px solid var(--line); color: var(--text); padding: 8px 10px; cursor: pointer; }
 .pr-list-row:hover { background: var(--s0); }
@@ -3671,8 +3688,12 @@ input, textarea, code,
 .pr-review-scroll { flex: 1; overflow-y: auto; min-height: 0; }
 .pr-review-empty { padding: 24px; color: var(--sub0); font-size: 13px; }
 .pr-review-header { padding: 14px 16px; border-bottom: 1px solid var(--line); }
-.pr-review-titlerow { display: flex; align-items: center; gap: 10px; }
-.pr-review-title { font-size: 15px; font-weight: 600; }
+/* The title gives way, the actions don't: the row wraps them onto their own
+   line rather than squeezing the buttons out of shape at a narrow window. */
+.pr-review-titlerow { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 10px; }
+.pr-review-title { flex: 1 1 220px; min-width: 0; font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
+.pr-review-actions { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 6px; margin-left: auto; }
+.pr-review-actions > button { flex: none; }
 .pr-review-num { color: var(--sub0); font-weight: 400; }
 .pr-review-meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 6px; font-size: 12px; color: var(--sub0); }
 .pr-review-meta code { font-family: var(--mono); font-size: 11.5px; background: var(--crust); border-radius: 5px; padding: 1px 5px; }
@@ -3684,7 +3705,7 @@ input, textarea, code,
 /* Editing a PR's title and description in place. */
 .pr-review-edit { display: flex; flex-direction: column; gap: 10px; }
 .pr-review-title-input { flex: 1; min-width: 0; font-family: var(--sans); font-size: 14px; font-weight: 600; }
-.pr-review-edit-actions { display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
+.pr-review-edit-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
 .pr-edit-hint { color: var(--sub0); font-size: 11px; margin-right: auto; }
 
 /* Markdown box with a Write | Preview toggle. */
@@ -3751,11 +3772,15 @@ input, textarea, code,
 /* Sticky submit bar. */
 .pr-review-submit { border-top: 1px solid var(--line); padding: 10px 16px; background: var(--mantle); display: flex; flex-direction: column; gap: 8px; }
 .pr-review-summary { min-height: 52px; font-family: var(--sans); }
-.pr-review-verdicts { display: flex; align-items: center; gap: 8px; }
+.pr-review-verdicts { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .pr-review-draftcount { color: var(--sub0); font-size: 11.5px; }
-.pr-review-verdicts .git-iconbtn { border: 1px solid var(--s1); padding: 5px 12px; border-radius: 6px; }
-.pr-approve { color: var(--green); border-color: var(--green) !important; }
-.pr-approve:hover { background: color-mix(in srgb, var(--green) 14%, transparent); }
+.pr-review-verdict-btns { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-left: auto; }
+.pr-review-verdict-btns > button { flex: none; }
+/* Affirmative variant of the standard button: colour only, so it keeps the
+   shared shape. */
+.pr-approve { color: var(--green); border-color: var(--green); }
+.pr-approve:hover:not(:disabled) { background: color-mix(in srgb, var(--green) 14%, transparent); color: var(--green); }
+.pr-approve:disabled { color: var(--sub0); border-color: var(--s1); }
 
 /* New pull request form. */
 .newpr { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; max-width: 640px; }
@@ -3764,13 +3789,12 @@ input, textarea, code,
 .newpr-field select, .newpr-field .settings-input { font-family: var(--sans); }
 .newpr-field select { background: var(--base); border: 1px solid var(--s1); color: var(--text); border-radius: 6px; padding: 6px 8px; font-size: 12.5px; }
 .newpr-field-body textarea { min-height: 96px; }
-.newpr-actions { display: flex; gap: 8px; margin-top: 4px; }
-.newpr-actions .git-iconbtn { border: 1px solid var(--s1); padding: 6px 13px; border-radius: 6px; }
+.newpr-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
 
 /* Merge button + dialog. */
-.pr-merge-btn { border: 1px solid var(--green); color: var(--green); font-size: 11.5px; padding: 4px 10px; border-radius: 6px; }
-.pr-merge-btn:hover:not(:disabled) { background: color-mix(in srgb, var(--green) 14%, transparent); }
-.pr-merge-btn:disabled { color: var(--sub0); border-color: var(--s1); cursor: not-allowed; opacity: 1; }
+.pr-merge-btn { color: var(--green); border-color: var(--green); }
+.pr-merge-btn:hover:not(:disabled) { background: color-mix(in srgb, var(--green) 14%, transparent); color: var(--green); }
+.pr-merge-btn:disabled { color: var(--sub0); border-color: var(--s1); }
 .merge-methods { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
 .merge-method { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text); cursor: pointer; }
 .merge-method input { accent-color: var(--green); }

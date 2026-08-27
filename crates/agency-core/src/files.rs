@@ -159,9 +159,27 @@ pub fn add_to_gitignore(root: &Path, rel: &str) -> Result<bool> {
     Ok(true)
 }
 
+/// True when the relative path `inner` is `outer` itself or sits underneath it.
+/// Compared segment-wise, so "src2/x" is not inside "src".
+pub(crate) fn is_within(outer: &str, inner: &str) -> bool {
+    let outer = outer.trim_matches('/');
+    let inner = inner.trim_matches('/');
+    // The root contains everything, itself included.
+    if outer.is_empty() {
+        return true;
+    }
+    inner == outer || inner.strip_prefix(outer).is_some_and(|rest| rest.starts_with('/'))
+}
+
 /// Rename/move `from` to `to`, both resolved within `root`. Refuses to clobber an
 /// existing destination.
 pub fn rename_path(root: &Path, from: &str, to: &str) -> Result<()> {
+    // Dragging a folder onto something inside itself. `fs::rename` reports that
+    // as a bare EINVAL ("Invalid argument"), which says nothing about what the
+    // user just did.
+    if is_within(from, to) {
+        bail!("cannot move {from} inside itself");
+    }
     let src = resolve_within(root, from)?;
     let dst = resolve_within(root, to)?;
     if dst.symlink_metadata().is_ok() {
@@ -169,6 +187,58 @@ pub fn rename_path(root: &Path, from: &str, to: &str) -> Result<()> {
     }
     std::fs::rename(&src, &dst).map_err(|e| anyhow!("cannot rename {from}{to}: {e}"))?;
     Ok(())
+}
+
+/// Copy the file or directory at `from` to `to`, both within `root`. Refuses to
+/// clobber an existing destination, and refuses to copy a folder into its own
+/// subtree, where the walk would recurse into the copy it is still writing.
+pub fn copy_path(root: &Path, from: &str, to: &str) -> Result<()> {
+    if is_within(from, to) {
+        bail!("cannot copy {from} inside itself");
+    }
+    let src = resolve_within(root, from)?;
+    let dst = resolve_within(root, to)?;
+    if dst.symlink_metadata().is_ok() {
+        bail!("destination already exists: {to}");
+    }
+    copy_tree(&src, &dst).map_err(|e| anyhow!("cannot copy {from} → {to}: {e}"))
+}
+
+/// Recursive copy of one entry. Symlinks are recreated as links rather than
+/// followed: following one copies through it to wherever it points, which for a
+/// link out of the root is an escape and for a link back up the tree is an
+/// unbounded loop. `resolve_within` guards the two endpoints; this guards the
+/// walk between them.
+fn copy_tree(src: &Path, dst: &Path) -> Result<()> {
+    let meta = std::fs::symlink_metadata(src)?;
+    if meta.file_type().is_symlink() {
+        return copy_symlink(src, dst);
+    }
+    if !meta.is_dir() {
+        std::fs::copy(src, dst)?;
+        return Ok(());
+    }
+    std::fs::create_dir(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        copy_tree(&entry.path(), &dst.join(entry.file_name()))?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn copy_symlink(src: &Path, dst: &Path) -> Result<()> {
+    std::os::unix::fs::symlink(std::fs::read_link(src)?, dst)?;
+    Ok(())
+}
+
+/// Windows needs to know whether the target is a file or a directory before it
+/// can make the link, and making either usually needs privileges Agency does not
+/// have. Skipping the link silently would be a copy that quietly lost part of
+/// the tree, so this says what it could not do.
+#[cfg(not(unix))]
+fn copy_symlink(src: &Path, _dst: &Path) -> Result<()> {
+    bail!("cannot copy the symlink {}", src.display())
 }
 
 /// Move the file or directory at `rel` to the OS trash (recoverable), rather than
@@ -778,6 +848,110 @@ mod printed_path_tests {
         assert_eq!(resolve_printed_path(dir.path(), "", None), None);
         // The root itself exists but is nothing to open in the Files tab.
         assert_eq!(resolve_printed_path(dir.path(), ".", None).unwrap().rel_path, None);
+    }
+}
+
+#[cfg(test)]
+mod transfer_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn is_within_compares_whole_segments() {
+        assert!(is_within("src", "src"));
+        assert!(is_within("src", "src/a/b.rs"));
+        // A name that merely starts the same is a sibling, not a child.
+        assert!(!is_within("src", "src2/a.rs"));
+        assert!(!is_within("src/a", "src/ab"));
+        assert!(!is_within("src/a.rs", "src/b.rs"));
+        // The tree root ("") holds everything.
+        assert!(is_within("", "anything"));
+        assert!(!is_within("a", ""));
+    }
+
+    #[test]
+    fn copy_path_duplicates_a_file_and_refuses_to_clobber() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("a.txt"), "hello").unwrap();
+
+        copy_path(root, "a.txt", "a 2.txt").unwrap();
+        assert_eq!(std::fs::read_to_string(root.join("a 2.txt")).unwrap(), "hello");
+        // The original is untouched — this is a copy, not a move.
+        assert_eq!(std::fs::read_to_string(root.join("a.txt")).unwrap(), "hello");
+
+        let err = copy_path(root, "a.txt", "a 2.txt").unwrap_err().to_string();
+        assert!(err.contains("already exists"), "{err}");
+    }
+
+    #[test]
+    fn copy_path_recurses_into_folders() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src/deep")).unwrap();
+        std::fs::write(root.join("src/top.rs"), "top").unwrap();
+        std::fs::write(root.join("src/deep/leaf.rs"), "leaf").unwrap();
+        std::fs::create_dir(root.join("out")).unwrap();
+
+        copy_path(root, "src", "out/src").unwrap();
+        assert_eq!(std::fs::read_to_string(root.join("out/src/top.rs")).unwrap(), "top");
+        assert_eq!(std::fs::read_to_string(root.join("out/src/deep/leaf.rs")).unwrap(), "leaf");
+    }
+
+    #[test]
+    fn copy_path_refuses_a_folder_into_its_own_subtree() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src/deep")).unwrap();
+
+        let err = copy_path(root, "src", "src/deep/src").unwrap_err().to_string();
+        assert!(err.contains("inside itself"), "{err}");
+        assert!(!root.join("src/deep/src").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_path_recreates_symlinks_instead_of_following_them() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let outside = tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.txt"), "not ours").unwrap();
+        std::fs::create_dir(root.join("src")).unwrap();
+        std::os::unix::fs::symlink(outside.path().join("secret.txt"), root.join("src/link"))
+            .unwrap();
+
+        copy_path(root, "src", "copy").unwrap();
+        let copied = root.join("copy/link");
+        assert!(copied.symlink_metadata().unwrap().file_type().is_symlink());
+        // The link was copied as a link; its target was never read through.
+        assert_eq!(std::fs::read_link(&copied).unwrap(), outside.path().join("secret.txt"));
+    }
+
+    #[test]
+    fn rename_path_refuses_a_folder_into_its_own_subtree() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src/deep")).unwrap();
+
+        let err = rename_path(root, "src", "src/deep/src").unwrap_err().to_string();
+        assert!(err.contains("inside itself"), "{err}");
+        assert!(root.join("src/deep").is_dir());
+    }
+
+    #[test]
+    fn rename_path_still_moves_between_folders() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir(root.join("src")).unwrap();
+        std::fs::create_dir(root.join("src2")).unwrap();
+        std::fs::write(root.join("src/a.txt"), "x").unwrap();
+
+        rename_path(root, "src/a.txt", "src2/a.txt").unwrap();
+        assert!(!root.join("src/a.txt").exists());
+        assert_eq!(std::fs::read_to_string(root.join("src2/a.txt")).unwrap(), "x");
+        // And a sibling whose name is a prefix of the source is not "inside" it.
+        rename_path(root, "src", "src2/src").unwrap();
+        assert!(root.join("src2/src").is_dir());
     }
 }
 

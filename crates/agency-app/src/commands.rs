@@ -2243,6 +2243,20 @@ pub fn rename_path(
     agency_core::files::rename_path(&base, &from, &to).map_err(|e| e.to_string())
 }
 
+/// Copy a file or folder to another path inside the same root — the file tree's
+/// copy/paste and option-drag. Folders copy recursively; the destination must
+/// not exist (the caller picks a free name first).
+#[tauri::command]
+pub fn copy_path(
+    state: State<'_, AppState>,
+    root: FileRoot,
+    from: String,
+    to: String,
+) -> Result<(), String> {
+    let base = resolve_root(&state, &root)?;
+    agency_core::files::copy_path(&base, &from, &to).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn trash_path(
     state: State<'_, AppState>,

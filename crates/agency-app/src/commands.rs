@@ -1260,13 +1260,14 @@ pub fn build_knowledge_graph(state: State<'_, AppState>, project_id: String) -> 
     state.build_knowledge_graph(&project_id).map_err(|e| e.to_string())
 }
 
-/// The Map tab's drill-down view of the project's knowledge graph. Errors
-/// (no graph built yet, unreadable file) surface as the tab's empty state.
+/// The Map's drill-down view of the project's knowledge graph. `null` is
+/// "no graph built yet", which the tab words from the knowledge config; an
+/// error means a graph exists but could not be read, and is shown as itself.
 #[tauri::command]
 pub fn knowledge_graph_view(
     state: State<'_, AppState>,
     project_id: String,
-) -> Result<agency_core::graphview::GraphView, String> {
+) -> Result<Option<agency_core::graphview::GraphView>, String> {
     state.knowledge_graph_view(&project_id).map_err(|e| e.to_string())
 }
 

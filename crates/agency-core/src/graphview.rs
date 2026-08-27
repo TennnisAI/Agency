@@ -1,4 +1,4 @@
-//! The Map tab's view model, computed from graphify's on-disk `graph.json`
+//! The Map's view model, computed from graphify's on-disk `graph.json`
 //! (networkx node-link JSON: `nodes` + `links`, flat, symbol-level). The raw
 //! file is the wrong shape and the wrong size for the UI: 6.9 MB and 13k links
 //! for this repository alone, most of it per-edge metadata the viewer never
@@ -16,6 +16,7 @@
 //!   pointed at a directory by name prefixes every path with that name
 //!   ("agency-copy/ui/src/api.ts" observed from `graphify update agency-copy`),
 //!   so the caller passes the repo directory name and it is stripped here.
+//!   Only when *every* path carries it, though; see `view`.
 //! - Files appear as nodes themselves (label "src/git.rs", non-callable, L1),
 //!   carrying the file-to-file `imports` edges. They are kept for edge
 //!   aggregation but excluded from a file's symbol list, where a row named
@@ -24,7 +25,7 @@
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-/// Everything the Map tab needs for one project, in one payload.
+/// Everything the Map needs for one project, in one payload.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct GraphView {
     pub root: Dir,
@@ -85,7 +86,8 @@ pub struct Stats {
 
 /// Reduce a `graph.json` to the Map view model. `repo_dir` is the checkout
 /// directory's name, stripped off `source_file` paths when a build was pointed
-/// at the directory by name rather than run inside it.
+/// at the directory by name rather than run inside it, which is recognised by
+/// the prefix being on every path rather than merely on some.
 pub fn view(text: &str, repo_dir: Option<&str>) -> anyhow::Result<GraphView> {
     let doc: serde_json::Value = serde_json::from_str(text)?;
     let nodes = doc
@@ -100,13 +102,10 @@ pub fn view(text: &str, repo_dir: Option<&str>) -> anyhow::Result<GraphView> {
         .map(Vec::as_slice)
         .unwrap_or(&[]);
 
-    // First pass: every kept code node, keyed by id. `symbol: false` marks the
-    // nodes that stand for a file itself.
-    struct Kept {
-        file: String,
-        symbol: Option<Symbol>,
-    }
-    let mut kept: HashMap<String, Kept> = HashMap::new();
+    // First pass: the code nodes carrying a usable path. Collected before
+    // anything is built, because the build-directory prefix below can only be
+    // told apart from a real directory by looking at all of them at once.
+    let mut coded: Vec<(&str, &serde_json::Value, String)> = Vec::new();
     for node in nodes {
         let Some(id) = node.get("id").and_then(|v| v.as_str()) else { continue };
         // External/package entries carry a `type`; docs, concepts and
@@ -117,16 +116,42 @@ pub fn view(text: &str, repo_dir: Option<&str>) -> anyhow::Result<GraphView> {
         if node.get("file_type").and_then(|v| v.as_str()) != Some("code") {
             continue;
         }
-        let Some(file) = node
-            .get("source_file")
-            .and_then(|v| v.as_str())
-            .and_then(|raw| norm_path(raw, repo_dir))
+        let Some(path) = node.get("source_file").and_then(|v| v.as_str()).and_then(clean_path)
         else {
             continue;
         };
+        coded.push((id, node, path));
+    }
+
+    // A build pointed at a directory by name prefixes every path with that
+    // name; a build run inside the checkout writes repo-relative paths.
+    // Stripping on a bare prefix match confused the two: a checkout that
+    // merely happens to be *named* like one of its own top-level directories
+    // (a clone in ~/code/src, say) had that directory cut off every path under
+    // it, so "src/a.rs" became "a.rs", files merged with same-named ones at
+    // the root, and "Open in Files" asked for a path that does not exist.
+    // Requiring the prefix on *every* path tells the two apart: the build
+    // directory's name is on all of them or it is not the build directory.
+    let strip = repo_dir
+        .filter(|d| !d.is_empty())
+        .map(|d| format!("{d}/"))
+        .filter(|p| !coded.is_empty() && coded.iter().all(|(_, _, path)| path.starts_with(p)));
+
+    // Second pass: every kept node, keyed by id. `symbol: None` marks the
+    // nodes that stand for a file itself.
+    struct Kept {
+        file: String,
+        symbol: Option<Symbol>,
+    }
+    let mut kept: HashMap<String, Kept> = HashMap::new();
+    for (id, node, path) in coded {
+        let file = match strip.as_deref() {
+            Some(prefix) => path.strip_prefix(prefix).unwrap_or(&path).to_string(),
+            None => path,
+        };
         let label = node.get("label").and_then(|v| v.as_str()).unwrap_or(id).to_string();
         let callable = node.get("_callable").and_then(|v| v.as_bool()).unwrap_or(false);
-        let symbol = if !callable && file.ends_with(&label) {
+        let symbol = if !callable && names_the_file(&file, &label) {
             None
         } else {
             Some(Symbol {
@@ -145,7 +170,7 @@ pub fn view(text: &str, repo_dir: Option<&str>) -> anyhow::Result<GraphView> {
         kept.insert(id.to_string(), Kept { file, symbol });
     }
 
-    // Second pass: links between kept nodes. `contains` is nesting (file to
+    // Third pass: links between kept nodes. `contains` is nesting (file to
     // symbol, class to inner fn), which the tree already encodes.
     let mut file_edges: BTreeMap<(String, String), FileEdge> = BTreeMap::new();
     let mut symbol_edges: Vec<(String, String, String)> = Vec::new();
@@ -186,7 +211,7 @@ pub fn view(text: &str, repo_dir: Option<&str>) -> anyhow::Result<GraphView> {
     }
     symbol_edges.sort();
 
-    // Third pass: the tree. BTreeMap keeps every listing deterministic.
+    // Fourth pass: the tree. BTreeMap keeps every listing deterministic.
     let mut files: BTreeMap<String, Vec<Symbol>> = BTreeMap::new();
     let mut communities: BTreeSet<String> = BTreeSet::new();
     for k in kept.into_values() {
@@ -212,16 +237,13 @@ pub fn view(text: &str, repo_dir: Option<&str>) -> anyhow::Result<GraphView> {
     })
 }
 
-/// Normalise a `source_file` to repo-relative, or None for a path that cannot
-/// be inside the checkout (absolute, drive-lettered, or escaping via "..").
-fn norm_path(raw: &str, repo_dir: Option<&str>) -> Option<String> {
+/// Normalise a `source_file` to a checkout-relative path, or None for one that
+/// cannot be inside the checkout (absolute, drive-lettered, or escaping via
+/// ".."). The build-directory prefix is *not* stripped here: that decision
+/// needs every path at once and is made in `view`.
+fn clean_path(raw: &str) -> Option<String> {
     let p = raw.replace('\\', "/");
-    let mut p = p.strip_prefix("./").unwrap_or(&p);
-    if let Some(dir) = repo_dir.filter(|d| !d.is_empty()) {
-        if let Some(rest) = p.strip_prefix(dir).and_then(|r| r.strip_prefix('/')) {
-            p = rest;
-        }
-    }
+    let p = p.strip_prefix("./").unwrap_or(&p);
     if p.is_empty() || p.starts_with('/') || p.contains(':') {
         return None;
     }
@@ -235,6 +257,15 @@ fn norm_path(raw: &str, repo_dir: Option<&str>) -> Option<String> {
         return None;
     }
     Some(p.to_string())
+}
+
+/// Whether `label` names the file itself rather than a symbol inside it:
+/// graphify emits a non-callable node per file, labelled with the file's own
+/// path ("src/git.rs"). Matched on whole path components, because a bare
+/// `file.ends_with(label)` swallowed real symbols -- a non-callable "ts" in
+/// "src/main.ts" disappeared from that file's symbol list.
+fn names_the_file(file: &str, label: &str) -> bool {
+    file == label || file.strip_suffix(label).is_some_and(|head| head.ends_with('/'))
 }
 
 /// "L794" → 794. Anything else graphify writes here is left as no line.
@@ -295,6 +326,11 @@ mod tests {
         json!({ "source": source, "target": target, "relation": relation })
     }
 
+    fn collect(d: &Dir, out: &mut Vec<String>) {
+        out.extend(d.files.iter().map(|f| f.path.clone()));
+        d.dirs.iter().for_each(|s| collect(s, out));
+    }
+
     fn graph(nodes: Vec<serde_json::Value>, links: Vec<serde_json::Value>) -> String {
         json!({ "directed": false, "multigraph": false, "graph": {}, "nodes": nodes, "links": links })
             .to_string()
@@ -332,15 +368,12 @@ mod tests {
     #[test]
     fn strips_build_dir_prefixes() {
         // Observed from `graphify update agency-copy`: every path carries the
-        // directory name the build was pointed at. `./` is the run-inside form.
+        // directory name the build was pointed at. `./` is the run-inside form
+        // and appears on those paths too.
         let text = graph(
             vec![
                 node("a", "alpha", "agency-copy/src/a.rs", "L1", true),
-                node("b", "beta", "./src/b.rs", "L1", true),
-                node("abs", "abs", "/etc/passwd", "L1", true),
-                node("esc", "esc", "../outside.rs", "L1", true),
-                node("win", "win", "C:\\repo\\x.rs", "L1", true),
-                node("npm", "state", "@codemirror/state", "L1", true),
+                node("b", "beta", "./agency-copy/src/b.rs", "L1", true),
             ],
             vec![],
         );
@@ -348,7 +381,78 @@ mod tests {
         let src = &v.root.dirs[0];
         let paths: Vec<&str> = src.files.iter().map(|f| f.path.as_str()).collect();
         assert_eq!(paths, ["src/a.rs", "src/b.rs"]);
-        assert_eq!(v.stats.files, 2, "absolute, escaping and drive paths are dropped");
+        assert_eq!(v.stats.files, 2);
+    }
+
+    #[test]
+    fn drops_paths_that_cannot_be_inside_the_checkout() {
+        let text = graph(
+            vec![
+                node("ok", "alpha", "src/a.rs", "L1", true),
+                node("abs", "abs", "/etc/passwd", "L1", true),
+                node("esc", "esc", "../outside.rs", "L1", true),
+                node("win", "win", "C:\\repo\\x.rs", "L1", true),
+                node("npm", "state", "@codemirror/state", "L1", true),
+                node("dots", "dots", "src/../../etc/shadow", "L1", true),
+            ],
+            vec![],
+        );
+        let v = view(&text, None).unwrap();
+        let mut paths = Vec::new();
+        collect(&v.root, &mut paths);
+        assert_eq!(paths, ["src/a.rs"], "absolute, escaping, drive and package paths are dropped");
+    }
+
+    #[test]
+    fn keeps_a_repo_dir_name_that_is_a_real_directory() {
+        // The checkout lives in a directory called "src" and the build ran
+        // inside it, so the paths are already repo-relative. Stripping on a
+        // bare prefix match cut "src/" off every path under it.
+        let text = graph(
+            vec![
+                node("a", "alpha", "src/a.rs", "L1", true),
+                node("b", "beta", "lib/b.rs", "L1", true),
+            ],
+            vec![],
+        );
+        let v = view(&text, Some("src")).unwrap();
+        let mut paths = Vec::new();
+        collect(&v.root, &mut paths);
+        paths.sort();
+        assert_eq!(paths, ["lib/b.rs", "src/a.rs"], "the prefix is not on every path");
+        // The same name really is the build directory when it is on all of
+        // them, and then it is still stripped.
+        let text = graph(
+            vec![
+                node("a", "alpha", "src/a.rs", "L1", true),
+                node("b", "beta", "src/lib/b.rs", "L1", true),
+            ],
+            vec![],
+        );
+        let v = view(&text, Some("src")).unwrap();
+        let mut paths = Vec::new();
+        collect(&v.root, &mut paths);
+        paths.sort();
+        assert_eq!(paths, ["a.rs", "lib/b.rs"]);
+    }
+
+    #[test]
+    fn a_symbol_named_like_a_path_suffix_is_still_a_symbol() {
+        // `file.ends_with(label)` swallowed these: "src/main.ts" ends with
+        // "ts", so a non-callable symbol of that name read as the file node.
+        let text = graph(
+            vec![
+                node("s", "ts", "src/main.ts", "L3", false),
+                node("f", "src/main.ts", "src/main.ts", "L1", false),
+                node("b", "main.ts", "src/main.ts", "L1", false),
+            ],
+            vec![],
+        );
+        let v = view(&text, None).unwrap();
+        let labels: Vec<&str> =
+            v.root.dirs[0].files[0].symbols.iter().map(|s| s.label.as_str()).collect();
+        // The whole path and the bare basename both name the file; "ts" does not.
+        assert_eq!(labels, ["ts"]);
     }
 
     #[test]

@@ -3345,26 +3345,36 @@ impl AppState {
         self.start_knowledge_build(&repo)
     }
 
-    /// The Map tab's view of a project's knowledge graph: the primary repo's
-    /// `graphify-out/graph.json` reduced to the drill-down view model. The UI
-    /// treats an error as "no graph yet" and falls back to the config-driven
-    /// empty state, so a missing file needs no special shape here.
+    /// The Map's view of a project's knowledge graph: the primary repo's
+    /// `graphify-out/graph.json` reduced to the drill-down view model.
+    ///
+    /// `Ok(None)` means no graph has been built yet, which is an empty state
+    /// and not a failure; the tab words it from the knowledge config. Anything
+    /// else that goes wrong is a real error and says so, because collapsing
+    /// the two told the user "no graph has been built yet" about a graph that
+    /// was sitting right there, and offered a Build button that could not fix
+    /// whatever had actually happened.
     pub fn knowledge_graph_view(
         &self,
         project_id: &str,
-    ) -> Result<agency_core::graphview::GraphView> {
+    ) -> Result<Option<agency_core::graphview::GraphView>> {
         let repo = self.project_repo(project_id)?;
         let path = agency_core::config::graph_path(&repo);
-        // A graph this size is far outside what the viewer can render or the
-        // IPC should carry; 100 MB is ~15x the graph of this repository.
-        const MAX_GRAPH_BYTES: u64 = 100 * 1024 * 1024;
-        let size = std::fs::metadata(&path)?.len();
+        let size = match std::fs::metadata(&path) {
+            Ok(m) => m.len(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(anyhow!("reading {}: {e}", path.display())),
+        };
+        // A graph this size is far outside what the viewer can render, and
+        // parsing it costs several times the file in memory; 40 MB is ~6x the
+        // graph of this repository.
+        const MAX_GRAPH_BYTES: u64 = 40 * 1024 * 1024;
         if size > MAX_GRAPH_BYTES {
             anyhow::bail!("graph.json is {} MB, too large to map", size / (1024 * 1024));
         }
         let text = std::fs::read_to_string(&path)?;
         let repo_dir = repo.file_name().and_then(|n| n.to_str());
-        agency_core::graphview::view(&text, repo_dir)
+        agency_core::graphview::view(&text, repo_dir).map(Some)
     }
 
     /// Install the graphify tooling in a visible Agency terminal, the same way

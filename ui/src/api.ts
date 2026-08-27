@@ -785,11 +785,12 @@ export const saveKnowledgeConfig = (
 export const buildKnowledgeGraph = (projectId: string) =>
   invoke<void>("build_knowledge_graph", { projectId });
 
-// The Map tab's drill-down view of the knowledge graph: the directory tree
-// with per-file symbols, file-level dependency edges (category counts), and
+// The Map's drill-down view of the knowledge graph: the directory tree with
+// per-file symbols, file-level dependency edges (category counts), and
 // symbol-level edges for the detail panel. Computed backend-side from the
-// primary repo's graphify-out/graph.json; the call fails when no graph has
-// been built, which the Map treats as its empty state.
+// primary repo's graphify-out/graph.json. Resolves to null when no graph has
+// been built yet, which is the Map's empty state; it rejects only when a graph
+// exists but could not be read, and then the Map shows that error.
 export interface MapSymbol {
   id: string;
   label: string;
@@ -825,7 +826,7 @@ export interface KnowledgeGraphView {
   stats: { files: number; symbols: number; edges: number; communities: number };
 }
 export const knowledgeGraphView = (projectId: string) =>
-  invoke<KnowledgeGraphView>("knowledge_graph_view", { projectId });
+  invoke<KnowledgeGraphView | null>("knowledge_graph_view", { projectId });
 // Opens a terminal running `install_command`; returns it so the caller can jump in.
 export const installKnowledgeTooling = (projectId: string) =>
   invoke<RunInfo>("install_knowledge_tooling", { projectId });

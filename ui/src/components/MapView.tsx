@@ -11,6 +11,7 @@ import {
 import { fileRootKey, requestOpenFile } from "../lib/openFile";
 import { blockGeometry, bounds, ground, place, route, TILE_W } from "../lib/isomap";
 import {
+  capLevel,
   edgeSummary,
   findDir,
   findFile,
@@ -25,38 +26,60 @@ import {
 import { toastError, toastInfo } from "../lib/toast";
 import { useRuns } from "../store/runs";
 
-// The Map tab: the project's knowledge graph as a drill-down dependency map.
-// Boxes are subdirectories and files of the current level, lines are the
-// dependencies between them; clicking a directory descends into it and
-// clicking a file opens its symbols and dependencies in the side panel, down
-// to the individual function. The data is graphify's graph.json, reduced
-// backend-side (graphview.rs) and fetched in one call.
+// The Map: the project's knowledge graph as a drill-down dependency map, the
+// second sub-view of the Files tab beside the tree itself. Boxes are the
+// subdirectories and files of the current level, lines are the dependencies
+// between them; clicking a directory descends into it and clicking a file
+// opens its symbols and dependencies in the side panel, down to the individual
+// function. The data is graphify's graph.json, reduced backend-side
+// (graphview.rs) and fetched in one call.
 export default function MapView({ project }: { project: Project }) {
   const { runs, selectedRunId, setView, setTab } = useRuns();
   const [data, setData] = useState<KnowledgeGraphView | null>(null);
   // Loaded when the view is unavailable, to say why and offer the fix.
   const [kg, setKg] = useState<KnowledgeConfig | null>(null);
   const [loading, setLoading] = useState(true);
+  // Set only when a graph exists but could not be read, never for "not built".
+  const [error, setError] = useState<string | null>(null);
   const [path, setPath] = useState("");
   const [selected, setSelected] = useState<string | null>(null);
   const [hover, setHover] = useState<string | null>(null);
 
+  // A reload that lands after this view is gone must not write state. The
+  // instance is keyed by project so it cannot outlive a switch, but the build
+  // poller can still have a fetch in flight when the tab is left.
+  const live = useRef(true);
+  useEffect(() => {
+    live.current = true;
+    return () => {
+      live.current = false;
+    };
+  }, []);
+
   const reload = useCallback(async () => {
+    let view: KnowledgeGraphView | null = null;
+    let failure: string | null = null;
     try {
-      const view = await knowledgeGraphView(project.id);
-      setData(view);
-      setKg(null);
-    } catch {
-      // No graph to show; the config says which empty state this is.
-      setData(null);
-      try {
-        setKg(await getKnowledgeConfig(project.id));
-      } catch (e) {
-        toastError(e, "knowledge graph");
-      }
-    } finally {
-      setLoading(false);
+      view = await knowledgeGraphView(project.id);
+    } catch (e) {
+      // A graph that exists but cannot be read: too large, malformed, no
+      // permission. Folding this into the empty state told the user no graph
+      // had been built and offered a Build button that could not fix it.
+      failure = e instanceof Error ? e.message : String(e);
     }
+    // A view means the graph is there; only the empty states need the config,
+    // to word which one this is.
+    const cfg = view
+      ? null
+      : await getKnowledgeConfig(project.id).catch((e) => {
+          toastError(e, "knowledge graph");
+          return null;
+        });
+    if (!live.current) return;
+    setData(view);
+    setError(failure);
+    setKg(cfg);
+    setLoading(false);
   }, [project.id]);
 
   useEffect(() => {
@@ -97,9 +120,11 @@ export default function MapView({ project }: { project: Project }) {
     }
   };
 
-  // Open a file (optionally at a line) in the Files tab. Files follows the
-  // selected run, so a selected worktree run is dropped back to the grid
-  // first: the map describes the project checkout, not an agent's branch.
+  // Open a file (optionally at a line) in the file tree beside this one. The
+  // request itself is what switches the sub-view (AgentsView listens for it).
+  // Files follows the selected run, so a selected worktree run is dropped back
+  // to the grid first: the map describes the project checkout, not an agent's
+  // branch.
   const openInFiles = (filePath: string, line?: number) => {
     const run = runs.find((r) => r.id === selectedRunId);
     const root =
@@ -123,11 +148,15 @@ export default function MapView({ project }: { project: Project }) {
   );
   const level = useMemo(() => {
     if (!data || !dir) return null;
-    const nodes = levelNodes(dir);
+    // `all` is every box on this level, `nodes` the ones the canvas can draw
+    // without a quadratic layout stalling the render. The panel lists `all`,
+    // so nothing on the level becomes unreachable.
+    const all = levelNodes(dir);
+    const { nodes, hidden } = capLevel(all);
     const edges = levelEdges(data.file_edges, nodes);
     // Placement itself happens in MapCanvas (isomap.place), which also runs
     // the force pass that decides neighborhoods.
-    return { nodes, edges };
+    return { all, nodes, edges, hidden };
   }, [data, dir]);
 
   const symbolIndex = useMemo(() => (data ? symbolEdgeIndex(data.symbol_edges) : null), [data]);
@@ -136,19 +165,21 @@ export default function MapView({ project }: { project: Project }) {
   if (loading) return <div className="board empty">Loading the map…</div>;
 
   if (!data) {
-    const state = building
-      ? "building"
-      : !kg
-        ? "missing"
-        : !kg.graph
-          ? "off"
-          : kg.building
-            ? "building"
-            : kg.last_build_error
-              ? "failed"
-              : !kg.build_installed
-                ? "tooling"
-                : "unbuilt";
+    const state = error
+      ? "broken"
+      : building
+        ? "building"
+        : !kg
+          ? "missing"
+          : !kg.graph
+            ? "off"
+            : kg.building
+              ? "building"
+              : kg.last_build_error
+                ? "failed"
+                : !kg.build_installed
+                  ? "tooling"
+                  : "unbuilt";
     return (
       <div className="board empty">
         <div className="map-empty">
@@ -175,6 +206,12 @@ export default function MapView({ project }: { project: Project }) {
             <>
               <p>The last graph build failed: {kg?.last_build_error}</p>
               <button className="map-btn" onClick={() => void startBuild()}>Try again</button>
+            </>
+          )}
+          {state === "broken" && (
+            <>
+              <p>The graph could not be read: {error}</p>
+              <button className="map-btn" onClick={() => void startBuild()}>Rebuild graph</button>
             </>
           )}
           {state === "missing" && <p>The map is unavailable for this project.</p>}
@@ -218,6 +255,14 @@ export default function MapView({ project }: { project: Project }) {
         <div className="spacer" />
         <span className="map-stats">
           {stats.files} files · {stats.symbols} symbols · {stats.edges} links
+          {level && level.hidden > 0 && (
+            <span
+              className="map-capped"
+              title="Too many entries to draw at once. The rest are listed in the panel."
+            >
+              · showing {level.nodes.length} of {level.nodes.length + level.hidden} here
+            </span>
+          )}
         </span>
         <button
           className="icon-btn"
@@ -264,7 +309,7 @@ export default function MapView({ project }: { project: Project }) {
               onReveal={revealFile}
             />
           ) : (
-            <LevelPanel dirPath={path} data={data} nodes={level?.nodes ?? []} onReveal={revealFile} onSelect={setSelected} />
+            <LevelPanel dirPath={path} data={data} nodes={level?.all ?? []} onReveal={revealFile} onSelect={setSelected} />
           )}
         </div>
       </div>
@@ -349,13 +394,23 @@ export function MapCanvas({
     });
   };
 
-  const connected = (key: string): boolean =>
-    edges.some(
-      (e) =>
-        (e.source === key || e.target === key) &&
-        (e.source === hover || e.target === hover || e.source === selected || e.target === selected),
-    );
   const focusKey = hover ?? selected;
+  // Boxes sharing an edge with the hovered or selected one. Built once per
+  // focus change: the scan this replaces ran over every edge for every box on
+  // every render, and a pan re-renders on each pointer move.
+  const adjacent = useMemo(() => {
+    const set = new Set<string>();
+    for (const e of edges) {
+      const touchesFocus =
+        e.source === hover || e.target === hover || e.source === selected || e.target === selected;
+      if (touchesFocus) {
+        set.add(e.source);
+        set.add(e.target);
+      }
+    }
+    return set;
+  }, [edges, hover, selected]);
+  const connected = (key: string): boolean => adjacent.has(key);
 
   // Which roads carry a traveling dot: everything around the focus, or with
   // nothing focused the busiest few, so the city always has some life in it

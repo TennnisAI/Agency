@@ -3684,9 +3684,10 @@ input, textarea, code,
 .daily-nav .file-editor-btn { font-size: 15px; line-height: 1; padding: 0 6px; }
 .daily-nav .file-editor-btn:disabled { opacity: .35; cursor: default; }
 
-/* ── Map tab ──────────────────────────────────────────────────────────────
-   The knowledge-graph map: a drill-down canvas of boxes (directories, files)
-   and dependency lines, with a side panel for the selection. Same surface
+/* ── Map ──────────────────────────────────────────────────────────────────
+   The knowledge-graph map, the Files tab's second sub-view: a drill-down
+   canvas of boxes (directories, files) and dependency lines, with a side
+   panel for the selection. Same surface
    language as the rest of the app: flat panels, hairlines, mono for anything
    that names code. */
 .map {
@@ -3716,6 +3717,8 @@ input, textarea, code,
 .map-crumbs button.on { color: var(--text); }
 .map-crumb-sep { color: var(--o0); font-size: 10px; padding: 0 1px; }
 .map-stats { font-family: var(--mono); font-size: 11px; color: var(--o1); white-space: nowrap; }
+/* What a level left undrawn, said out loud rather than silently trimmed. */
+.map-capped { color: var(--sub0); cursor: help; }
 .map-body { flex: 1; display: flex; min-height: 0; }
 .map-canvas {
   flex: 1;
@@ -3774,15 +3777,6 @@ input, textarea, code,
   stroke-width: 3px;
 }
 .map-label.dir .map-node-name { fill: var(--lav); }
-.map-node-meta {
-  font-family: var(--sans);
-  font-size: 8.5px;
-  fill: var(--o1);
-  text-anchor: middle;
-  paint-order: stroke;
-  stroke: var(--base);
-  stroke-width: 3px;
-}
 
 /* A new level rises out of its ground, back rows first. */
 @keyframes map-rise {

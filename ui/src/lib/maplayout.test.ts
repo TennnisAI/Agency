@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { MapDir, MapFileEdge } from "../api";
 import {
+  capLevel,
   countFiles,
   countSymbols,
   edgeSummary,
@@ -78,6 +79,51 @@ describe("tree walking", () => {
     ]);
     // Boxes have a measurable size before layout runs.
     expect(nodes[0].w).toBeGreaterThan(0);
+  });
+});
+
+describe("capLevel", () => {
+  const wide = (dirs: number, files: number) => [
+    ...Array.from({ length: dirs }, (_, i) => ({
+      key: `d${i}`, kind: "dir" as const, name: `d${i}`,
+      files: 1, symbols: i, x: 0, y: 0, w: 0, h: 0,
+    })),
+    ...Array.from({ length: files }, (_, i) => ({
+      key: `f${i}.ts`, kind: "file" as const, name: `f${i}.ts`,
+      files: 1, symbols: i, x: 0, y: 0, w: 0, h: 0,
+    })),
+  ];
+
+  it("leaves a level that fits completely alone", () => {
+    const nodes = wide(2, 3);
+    const capped = capLevel(nodes, 10);
+    expect(capped.nodes).toBe(nodes);
+    expect(capped.hidden).toBe(0);
+  });
+
+  it("keeps every directory and the biggest files, and says how many it dropped", () => {
+    const { nodes, hidden } = capLevel(wide(3, 10), 6);
+    expect(hidden).toBe(7);
+    expect(nodes).toHaveLength(6);
+    // Directories are how you go deeper, so none of them is ever dropped.
+    expect(nodes.filter((n) => n.kind === "dir").map((n) => n.key)).toEqual(["d0", "d1", "d2"]);
+    // Then the files with the most symbols.
+    expect(nodes.filter((n) => n.kind === "file").map((n) => n.key)).toEqual([
+      "f7.ts", "f8.ts", "f9.ts",
+    ]);
+  });
+
+  it("keeps level order, so trimming never also reshuffles", () => {
+    const nodes = wide(2, 8);
+    const { nodes: capped } = capLevel(nodes, 5);
+    const order = nodes.filter((n) => capped.includes(n));
+    expect(capped).toEqual(order);
+  });
+
+  it("falls back to the biggest directories when they alone overflow", () => {
+    const { nodes, hidden } = capLevel(wide(5, 2), 3);
+    expect(hidden).toBe(4);
+    expect(nodes.map((n) => n.key)).toEqual(["d2", "d3", "d4"]);
   });
 });
 

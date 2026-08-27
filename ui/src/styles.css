@@ -2055,8 +2055,13 @@ input, textarea, code,
 .model-error { color: var(--red); }
 
 /* Above the agent menu it opens from, so a click outside lands on this
-   backdrop and closes only the branch list. */
+   backdrop and closes only the branch list. Both popups that use this backdrop
+   then have to sit above it in turn: without the model menu's own z-index it
+   inherited .agent-menu's 41, the transparent backdrop covered it, and every
+   click on a model landed on the backdrop instead — the menu shut and the agent
+   stayed on its default (AGE-162). */
 .branch-menu-backdrop { position: fixed; inset: 0; z-index: 42; }
+.model-menu { z-index: 43; }
 .branch-menu {
   z-index: 43;
   max-width: min(340px, calc(100vw - 16px));

@@ -453,6 +453,20 @@ export default function FocusTerminal(
       // backstop for a window that has stopped animating — occluded, minimised,
       // on another Space — where no frame arrives and the terminal, 50k lines of
       // scrollback and all, would otherwise never be freed.
+      //
+      // Ordering around that callback is not enough on its own, because the
+      // backstop can win the race it is arranged around: a timer that comes due
+      // while the main thread is blocked runs before the frame does, and opening
+      // a pane blocks it through a spawn, an attach and a first paint. (Under
+      // StrictMode's dev-only double mount, that is a disposal on the way *in*,
+      // which is where AGE-124 was seen again: the toast landed over the
+      // terminal that had just opened.) So mute the callback as well as ordering
+      // around it. `_core` is the same private handle FitAddon reaches through,
+      // and a pane being torn down has no viewport left to sync.
+      const core = (term as unknown as {
+        _core?: { viewport?: { syncScrollArea?: () => void } };
+      })._core;
+      if (core?.viewport?.syncScrollArea) core.viewport.syncScrollArea = () => {};
       let termDisposed = false;
       const disposeTerm = () => {
         if (termDisposed) return;

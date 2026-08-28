@@ -38,6 +38,7 @@ import {
   moveWorkspace,
   saveFilesConfig,
   saveKnowledgeConfig,
+  setKnowledgeBackend,
   buildKnowledgeGraph,
   installKnowledgeTooling,
   saveMcpServers,
@@ -46,6 +47,7 @@ import {
   saveNotifSettings,
   setUpdateCheckEnabled,
 } from "../api";
+import PillSelect from "./PillSelect";
 import Toggle from "./Toggle";
 import ConfirmDialog from "./ConfirmDialog";
 import FormDialog, { Field } from "./FormDialog";
@@ -208,6 +210,9 @@ export default function Settings({
   // editable command-override text so it survives re-renders between saves.
   const [kg, setKg] = useState<KnowledgeConfig | null>(null);
   const [kgDraft, setKgDraft] = useState({ serve: "", build: "" });
+  // The model name typed under the backend picker, saved on blur (a keystroke
+  // is not a choice). Mirrors what the effective build command already names.
+  const [kgModel, setKgModel] = useState("");
   // Why a requested build never started (tooling missing, one already running).
   // Cleared on the next attempt; build failures come back on the config itself.
   const [kgBuildError, setKgBuildError] = useState<string | null>(null);
@@ -425,6 +430,7 @@ export default function Settings({
       const cfg = await getKnowledgeConfig(id);
       setKg(cfg);
       setKgDraft({ serve: cfg.serve_command ?? "", build: cfg.build_command ?? "" });
+      setKgModel(cfg.build_model);
     } catch (e) {
       setError(String(e));
     }
@@ -443,6 +449,15 @@ export default function Settings({
     return () => clearInterval(t);
   }, [projectId, kg?.building]);
 
+  // What the picker offers, and which of it the saved build command names.
+  // "Custom" is only in the list when that command is one the picker didn't
+  // write, so the pill has something to show instead of rendering blank.
+  const backendOptions = [
+    ...(kg?.backends ?? []).map((b) => ({ value: b.id, label: b.label })),
+    ...(kg?.build_backend === "custom" ? [{ value: "custom", label: "Custom" }] : []),
+  ];
+  const pickedBackend = kg?.backends.find((b) => b.id === kg.build_backend) ?? null;
+
   async function buildGraph() {
     if (!projectId) return;
     setKgBuildError(null);
@@ -450,6 +465,20 @@ export default function Settings({
       await buildKnowledgeGraph(projectId);
     } catch (e) {
       setKgBuildError(String(e));
+    }
+    await loadKnowledge(projectId);
+  }
+
+  // Choosing a model writes the build command and stops there. The build is a
+  // separate, deliberate press: this panel exists so that what a build costs
+  // and where it sends the project's docs is known before that.
+  async function chooseBackend(backend: string, model: string) {
+    if (!projectId) return;
+    setKgBuildError(null);
+    try {
+      await setKnowledgeBackend(projectId, backend, model);
+    } catch (e) {
+      toastError(e, "Couldn't save that model");
     }
     await loadKnowledge(projectId);
   }
@@ -1144,10 +1173,12 @@ export default function Settings({
           <div className="settings-section-label">Knowledge graph</div>
           <p className="settings-section-hint">
             Builds a graphify code-knowledge graph for this project and exposes it to every agent as an
-            MCP server, rebuilding after each clean merge. Enabling it builds the first graph; agents
-            only get the server once one exists. Saved to this machine only
+            MCP server, rebuilding after each clean merge. Agents only get the server once a graph
+            exists, and the first one is built when you ask for it. Saved to this machine only
             (<code>.agency/agency.local.toml</code>), not shared with the team. Needs the{" "}
-            <code>graphify</code> / <code>uv</code> tooling on your <code>PATH</code>.
+            <code>graphify</code> / <code>uv</code> tooling on your <code>PATH</code>. Code is
+            indexed locally; your docs are read by whichever model you pick below, and nothing
+            runs until you build.
           </p>
           {!projectId ? (
             <div className="settings-group-card">
@@ -1163,15 +1194,21 @@ export default function Settings({
               </div>
               {kg.graph && (
                 <>
-                  {(!kg.serve_installed || !kg.build_installed) && (
+                  {/* Also offered after a failed build, not just when the
+                      commands are missing: an install made before the extras
+                      were pinned leaves `graphify` right there on the PATH and
+                      still fails every build on a package it does not have, and
+                      there is otherwise nowhere left to repair that from. */}
+                  {(!kg.serve_installed || !kg.build_installed || !!kg.last_build_error) && (
                     <div className="settings-kg-warn">
                       <div>
                         {!kg.serve_installed && !kg.build_installed
-                          ? "The serve and build commands aren't on your PATH"
+                          ? "The serve and build commands aren't on your PATH. The graph is enabled but will be skipped until the tooling is installed."
                           : !kg.serve_installed
-                          ? "The serve command isn't on your PATH"
-                          : "The build command isn't on your PATH"}
-                        . The graph is enabled but will be skipped until the tooling is installed.
+                          ? "The serve command isn't on your PATH. The graph is enabled but will be skipped until the tooling is installed."
+                          : !kg.build_installed
+                          ? "The build command isn't on your PATH. The graph is enabled but will be skipped until the tooling is installed."
+                          : "A build can also fail on a package an older install of the tooling is missing."}{" "}
                         Agency can install it for you in a terminal:
                       </div>
                       <pre className="install-cmd">{kg.install_command}</pre>
@@ -1194,6 +1231,47 @@ export default function Settings({
                     </div>
                   )}
                   {kgBuildError && <div className="settings-kg-warn">{kgBuildError}</div>}
+                  {/* The picker and its note are the "before it runs" half of
+                      this feature: a build reads every doc in the project with
+                      whichever model is named here, so what that costs and who
+                      receives the docs is on screen before the Build button is
+                      reachable. Choosing writes the build command below, which
+                      stays editable for anything the picker doesn't cover. */}
+                  <div className="settings-provider-field">
+                    <label className="settings-field-key">model</label>
+                    <PillSelect
+                      value={kg.build_backend}
+                      options={backendOptions}
+                      onChange={(id) => {
+                        // "Custom" is a readout of a hand-written build
+                        // command, not something to switch to: composing
+                        // `--backend custom` would just break the build.
+                        if (id !== "custom") chooseBackend(id, "");
+                      }}
+                    />
+                    {/* No name to give a build that runs no model at all. */}
+                    {pickedBackend && pickedBackend.id !== "code-only" && (
+                      <input
+                        className="settings-field-input"
+                        placeholder={pickedBackend.default_model || "name the model it serves"}
+                        value={kgModel}
+                        onChange={(e) => setKgModel(e.target.value)}
+                        // On blur, not on keystroke: a half-typed model name is
+                        // not a choice, and every save rewrites the command.
+                        onBlur={() => {
+                          if (kgModel.trim() !== kg.build_model) {
+                            chooseBackend(pickedBackend.id, kgModel.trim());
+                          }
+                        }}
+                        onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+                      />
+                    )}
+                  </div>
+                  <div className="settings-kg-cost">
+                    {pickedBackend
+                      ? pickedBackend.note
+                      : "This build command was written by hand, so the picker leaves it alone. Clear it to go back to a listed model."}
+                  </div>
                   <div className="settings-provider-field">
                     <label className="settings-field-key">serve</label>
                     <input

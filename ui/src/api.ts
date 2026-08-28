@@ -880,6 +880,14 @@ export interface KnowledgeConfig {
   build_default: string;
   serve_installed: boolean;
   build_installed: boolean;
+  // What the build can run on, this machine, best first. `note` is the line
+  // about cost and destination shown before anything runs; `default_model` is
+  // the model placeholder, empty where the user has to name one.
+  backends: { id: string; label: string; note: string; default_model: string }[];
+  // Which backend the effective build command names ("custom" for a
+  // hand-written one), and the model it names.
+  build_backend: string;
+  build_model: string;
   // The graph file the serve command reads, and whether it exists yet. No
   // graph means no MCP server is handed to agents.
   graph_path: string;
@@ -892,6 +900,10 @@ export interface KnowledgeConfig {
 
 export const getKnowledgeConfig = (projectId: string) =>
   invoke<KnowledgeConfig>("get_knowledge_config", { projectId });
+// Pick which model the build runs on. Writes the build command; nothing runs
+// until Build graph is pressed.
+export const setKnowledgeBackend = (projectId: string, backend: string, model: string) =>
+  invoke<void>("set_knowledge_backend", { projectId, backend, model });
 export const saveKnowledgeConfig = (
   projectId: string,
   graph: boolean,
@@ -900,6 +912,49 @@ export const saveKnowledgeConfig = (
 ) => invoke<void>("save_knowledge_config", { projectId, graph, serveCommand, buildCommand });
 export const buildKnowledgeGraph = (projectId: string) =>
   invoke<void>("build_knowledge_graph", { projectId });
+
+// The Map's drill-down view of the knowledge graph: the directory tree with
+// per-file symbols, file-level dependency edges (category counts), and
+// symbol-level edges for the detail panel. Computed backend-side from the
+// primary repo's graphify-out/graph.json. Resolves to null when no graph has
+// been built yet, which is the Map's empty state; it rejects only when a graph
+// exists but could not be read, and then the Map shows that error.
+export interface MapSymbol {
+  id: string;
+  label: string;
+  line: number | null;
+  callable: boolean;
+  class: boolean;
+  community: string;
+}
+export interface MapFile {
+  name: string;
+  path: string;
+  symbols: MapSymbol[];
+}
+export interface MapDir {
+  name: string;
+  path: string;
+  dirs: MapDir[];
+  files: MapFile[];
+}
+export interface MapFileEdge {
+  source: string;
+  target: string;
+  calls: number;
+  imports: number;
+  refs: number;
+  other: number;
+}
+export interface KnowledgeGraphView {
+  root: MapDir;
+  file_edges: MapFileEdge[];
+  /** [source symbol id, target symbol id, relation] */
+  symbol_edges: [string, string, string][];
+  stats: { files: number; symbols: number; edges: number; communities: number };
+}
+export const knowledgeGraphView = (projectId: string) =>
+  invoke<KnowledgeGraphView | null>("knowledge_graph_view", { projectId });
 // Opens a terminal running `install_command`; returns it so the caller can jump in.
 export const installKnowledgeTooling = (projectId: string) =>
   invoke<RunInfo>("install_knowledge_tooling", { projectId });

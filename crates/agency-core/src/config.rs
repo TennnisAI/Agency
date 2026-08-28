@@ -74,9 +74,10 @@ pub struct McpServerDef {
 pub struct KnowledgeConfig {
     #[serde(default)]
     pub graph: bool,
-    /// Override for the MCP serve command. Default: "graphify serve".
+    /// Override for the MCP serve command. Default: [`default_serve_command`].
     pub serve_command: Option<String>,
-    /// Override for the rebuild command run after merges. Default: "graphify .".
+    /// Override for the rebuild command run after merges, and the place a user
+    /// picks a different LLM backend. Default: [`default_build_command`].
     pub build_command: Option<String>,
 }
 
@@ -270,8 +271,20 @@ pub fn default_serve_command(repo_path: &Path) -> String {
 /// that first, from Astral's own installer. uv lands in `~/.local/bin`, which a
 /// shell that started before the install doesn't have on its PATH yet, hence the
 /// export: without it the very next line fails on a uv that is right there.
+///
+/// The extras are not optional here, and a bare `uv tool install graphifyy`
+/// installs none of them. `mcp` is what the serve command imports: without it
+/// `python -m graphify.serve` exits on `ImportError: mcp not installed`, so
+/// every agent gets a knowledge-graph server that dies on startup. `openai`
+/// (the SDK the openai, gemini, kimi, deepseek and ollama backends all share)
+/// and `anthropic` are what the *build* imports once the corpus has a doc or an
+/// image in it: on graphifyy 0.9.51 a build of an 85-file corpus failed every
+/// chunk with "the 'openai' package is required for this backend but is not
+/// installed" and wrote no graph.json at all. `--force` because the install
+/// this repairs usually already exists: uv treats an installed `graphifyy` as
+/// satisfying the request and would otherwise leave the broken one in place.
 pub fn graphify_install_script(uv_installed: bool) -> String {
-    let install_graphify = "uv tool install graphifyy";
+    let install_graphify = "uv tool install --force \"graphifyy[mcp,openai,anthropic]\"";
     if uv_installed {
         return install_graphify.to_string();
     }
@@ -341,9 +354,245 @@ pub fn split_command(s: &str) -> Vec<String> {
     args
 }
 
-/// The default rebuild command run after a clean merge.
-pub fn default_build_command() -> &'static str {
-    "graphify ."
+/// The choice that runs no LLM at all: tree-sitter over the code, docs skipped.
+pub const CODE_ONLY: &str = "code-only";
+
+/// The `claude` CLI, used as the build's model. Not an API key: it bills the
+/// user's existing Claude plan.
+pub const CLAUDE_CLI: &str = "claude-cli";
+
+/// graphify's `openai` backend pointed at the local, OpenAI-protocol server
+/// from Agency's own settings (LM Studio and friends). Its own id here because
+/// nothing about it is OpenAI: the corpus never leaves the machine.
+pub const LOCAL_MODEL: &str = "lmstudio";
+
+/// A saved build command this panel didn't write, and can't take apart.
+pub const CUSTOM_BACKEND: &str = "custom";
+
+/// The cloud backends graphify can run, each with the environment variable that
+/// switches it on, where the corpus ends up, and the model it uses unasked.
+/// Ordered as graphify's own auto-detection orders them, so the first one
+/// offered is the one a bare `graphify .` would have picked anyway.
+const CLOUD_BACKENDS: &[(&str, &str, &str, &str, &str)] = &[
+    // id, label, env var, vendor, default model
+    ("gemini", "Gemini", "GEMINI_API_KEY", "Google", "gemini-3-flash-preview"),
+    ("kimi", "Kimi", "MOONSHOT_API_KEY", "Moonshot", "kimi-k2.6"),
+    ("claude", "Claude API", "ANTHROPIC_API_KEY", "Anthropic", "claude-sonnet-4-6"),
+    ("openai", "OpenAI", "OPENAI_API_KEY", "OpenAI", "gpt-4.1-mini"),
+    ("deepseek", "DeepSeek", "DEEPSEEK_API_KEY", "DeepSeek", "deepseek-v4-flash"),
+];
+
+/// What Agency can see of a machine when it works out which models the graph
+/// build could run on. Data, so the offer itself stays pure: the app fills this
+/// from PATH, its own settings and the environment it was started in.
+#[derive(Debug, Clone, Default)]
+pub struct BackendProbe {
+    pub claude_on_path: bool,
+    /// Ollama is installed or pointed at (on PATH, or `OLLAMA_BASE_URL` /
+    /// `OLLAMA_HOST` set).
+    pub ollama: bool,
+    /// Agency's own "Local model" base URL, when one is configured.
+    pub local_model_url: Option<String>,
+    /// Ids from [`CLOUD_BACKENDS`] whose API key is set in the app's
+    /// environment.
+    pub env_keys: Vec<String>,
+}
+
+/// One model the graph build can run on, as offered by settings.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct KnowledgeBackend {
+    pub id: String,
+    pub label: String,
+    /// What it costs and who ends up with the corpus, in one line. A build
+    /// reads every doc in the project, so this is what a user has to be told
+    /// *before* one runs rather than after it has already been paid for.
+    pub note: String,
+    /// The model this backend uses when none is named: the model field's
+    /// placeholder. Empty where the user has to name one themselves.
+    pub default_model: String,
+}
+
+/// Which cloud backends have an API key to run on, given a lookup into the
+/// environment the app was started in.
+///
+/// `openai` is skipped whenever `OPENAI_BASE_URL` is set alongside the key.
+/// That pair is a local, OpenAI-protocol server, not a paid OpenAI account:
+/// Agency writes exactly it into every agent session for its own local-model
+/// support, so an app started from one inherits it. Offering it as "OpenAI"
+/// would name the wrong vendor, and graphify's own auto-detection making that
+/// mistake is what sent an entire corpus at an LM Studio that wasn't running.
+pub fn env_backend_keys(env: impl Fn(&str) -> Option<String>) -> Vec<String> {
+    CLOUD_BACKENDS
+        .iter()
+        .filter(|(id, _, var, _, _)| {
+            env(var).is_some() && !(*id == "openai" && env("OPENAI_BASE_URL").is_some())
+        })
+        .map(|(id, ..)| id.to_string())
+        .collect()
+}
+
+/// The models this machine can actually build a graph with, best first.
+///
+/// Ordered by how much of a user's setup they take for granted, not by
+/// quality: the CLI they already run, then a key they have already provisioned,
+/// then a local server, then no LLM at all. Every machine gets at least
+/// [`CODE_ONLY`], so a user with no agent, no key and no local model still has
+/// a graph they can build (code, via tree-sitter, and nothing sent anywhere).
+pub fn knowledge_backends(probe: &BackendProbe) -> Vec<KnowledgeBackend> {
+    let mut out = Vec::new();
+    if probe.claude_on_path {
+        out.push(KnowledgeBackend {
+            id: CLAUDE_CLI.to_string(),
+            label: "Claude Code".to_string(),
+            note: "Runs the claude CLI you already have, billed to your Claude plan rather than \
+                   an API key. Your docs go to Anthropic."
+                .to_string(),
+            default_model: "whatever claude defaults to".to_string(),
+        });
+    }
+    for (id, label, env, vendor, model) in CLOUD_BACKENDS {
+        if probe.env_keys.iter().any(|k| k == id) {
+            out.push(KnowledgeBackend {
+                id: id.to_string(),
+                label: label.to_string(),
+                note: format!(
+                    "Uses the {env} from the environment Agency started in. Your docs go to \
+                     {vendor}, billed to that key."
+                ),
+                default_model: model.to_string(),
+            });
+        }
+    }
+    if probe.ollama {
+        out.push(KnowledgeBackend {
+            id: "ollama".to_string(),
+            label: "Ollama".to_string(),
+            note: "Runs the model on this machine. Nothing is sent anywhere and nothing is \
+                   billed, but a small local model reads docs poorly."
+                .to_string(),
+            default_model: "qwen2.5-coder:7b".to_string(),
+        });
+    }
+    if let Some(url) = probe.local_model_url.as_deref().map(str::trim).filter(|u| !u.is_empty()) {
+        out.push(KnowledgeBackend {
+            id: LOCAL_MODEL.to_string(),
+            label: "Local model".to_string(),
+            note: format!(
+                "Sends your docs to {url}, the local server from settings. Nothing leaves your \
+                 machine. Name the model it serves, and start it before you build."
+            ),
+            default_model: String::new(),
+        });
+    }
+    out.push(KnowledgeBackend {
+        id: CODE_ONLY.to_string(),
+        label: "No LLM".to_string(),
+        note: "Indexes code only, with tree-sitter, on this machine. Docs, papers and images are \
+               skipped. Costs nothing and sends nothing."
+            .to_string(),
+        default_model: String::new(),
+    });
+    out
+}
+
+/// The build command a (backend, model) choice writes into `[knowledge]`. The
+/// whole choice lives in this one string, so what runs is always exactly what
+/// the settings panel shows, and a user who wants something else can type it.
+///
+/// `--max-concurrency 1` on the two local backends is graphify's own guidance
+/// for a local server: four chunks in flight is four copies of the model's
+/// context on one machine.
+pub fn build_command_for(backend: &str, model: &str, local_model_url: &str) -> String {
+    let model = model.trim();
+    let named = |base: String| match model.is_empty() {
+        true => base,
+        false => format!("{base} --model {model}"),
+    };
+    match backend {
+        CODE_ONLY => "graphify . --code-only".to_string(),
+        // The claude CLI takes its model from graphify's env var and ignores
+        // `--model` (graphify never passes one through to `claude -p`).
+        CLAUDE_CLI if model.is_empty() => "graphify . --backend claude-cli".to_string(),
+        CLAUDE_CLI => format!("GRAPHIFY_CLAUDE_CLI_MODEL={model} graphify . --backend claude-cli"),
+        LOCAL_MODEL => named(format!(
+            "OPENAI_BASE_URL={local_model_url} OPENAI_API_KEY=local \
+             graphify . --backend openai --max-concurrency 1"
+        )),
+        "ollama" => named("graphify . --backend ollama --max-concurrency 1".to_string()),
+        other => named(format!("graphify . --backend {other}")),
+    }
+}
+
+/// The (backend, model) a build command expresses, or [`CUSTOM_BACKEND`] when
+/// it isn't one this panel wrote.
+///
+/// Recognition is a round trip rather than a parse: whatever is read out of the
+/// command is composed back with [`build_command_for`] and compared. A command
+/// the picker can't reproduce exactly is reported as custom and left alone,
+/// which is the only way a hand-written command survives being looked at.
+pub fn build_selection(command: &str) -> (String, String) {
+    let argv = split_command(command);
+    let flag = |name: &str| {
+        argv.iter()
+            .position(|a| a == name)
+            .and_then(|i| argv.get(i + 1))
+            .cloned()
+            .unwrap_or_default()
+    };
+    let assignment = |name: &str| {
+        argv.iter()
+            .find_map(|a| a.strip_prefix(&format!("{name}=")))
+            .unwrap_or_default()
+            .to_string()
+    };
+    let local_url = assignment("OPENAI_BASE_URL");
+    let backend = match () {
+        _ if argv.iter().any(|a| a == "--code-only") => CODE_ONLY.to_string(),
+        _ if !local_url.is_empty() => LOCAL_MODEL.to_string(),
+        _ => flag("--backend"),
+    };
+    let model = match backend.as_str() {
+        CLAUDE_CLI => assignment("GRAPHIFY_CLAUDE_CLI_MODEL"),
+        _ => flag("--model"),
+    };
+    match build_command_for(&backend, &model, &local_url) == command.trim() {
+        true => (backend, model),
+        false => (CUSTOM_BACKEND.to_string(), String::new()),
+    }
+}
+
+/// The build command a project gets before anyone has chosen one.
+///
+/// Only two of the offers are safe to pick on someone's behalf, and this picks
+/// between them: the CLI that is sitting right there on the PATH, or no LLM at
+/// all. An API key can be a placeholder (Agency injects `OPENAI_API_KEY` for
+/// its own local-model support, and graphify's auto-detection reads that as a
+/// paid OpenAI account), and a local server that isn't running fails the same
+/// way. Both are real choices, but a user makes them, having read what they
+/// cost. Auto-detection is never left to graphify: a build of an 85-file corpus
+/// went to an LM Studio that wasn't listening and wrote no graph at all.
+pub fn default_build_command(claude_on_path: bool) -> String {
+    match claude_on_path {
+        true => build_command_for(CLAUDE_CLI, "", ""),
+        false => build_command_for(CODE_ONLY, "", ""),
+    }
+}
+
+/// The binary a command line runs, skipping the `VAR=value` assignments a
+/// command can carry in front of it (the local-model and claude-cli choices
+/// both write those, and a bare first-token check reads the assignment as the
+/// program and reports the tooling missing).
+pub fn command_binary(command_line: &str) -> Option<String> {
+    split_command(command_line).into_iter().find(|token| !is_env_assignment(token))
+}
+
+/// `NAME=value`, in the shell's own sense: a name of word characters, an `=`,
+/// and anything after it.
+fn is_env_assignment(token: &str) -> bool {
+    let Some((name, _)) = token.split_once('=') else { return false };
+    !name.is_empty()
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && !name.starts_with(|c: char| c.is_ascii_digit())
 }
 
 /// Persist the `[knowledge]` section into `.agency/agency.local.toml` — the
@@ -519,7 +768,8 @@ mod tests {
     /// feature look broken in the first place.
     #[test]
     fn install_script_picks_up_uv_when_it_is_missing() {
-        assert_eq!(graphify_install_script(true), "uv tool install graphifyy");
+        let direct = graphify_install_script(true);
+        assert!(direct.starts_with("uv tool install"), "{direct}");
 
         let bootstrap = graphify_install_script(false);
         let lines: Vec<&str> = bootstrap.lines().collect();
@@ -528,10 +778,129 @@ mod tests {
             lines[1].contains(".local/bin"),
             "a uv installed a moment ago is not on this shell's PATH yet: {bootstrap}"
         );
-        assert_eq!(lines[2], "uv tool install graphifyy");
+        assert_eq!(lines[2], direct);
         // Both halves of the integration come from this one distribution.
         assert!(default_serve_argv(Path::new("/r")).contains(&"graphifyy".to_string()));
-        assert!(default_build_command().starts_with("graphify"));
+        assert!(default_build_command(true).starts_with("graphify"));
+    }
+
+    /// The serve command imports `mcp` and the build imports an LLM SDK; a
+    /// bare `graphifyy` ships neither, so an install without the extras leaves
+    /// both halves of the feature broken in a way nothing else here catches.
+    #[test]
+    fn install_script_carries_the_extras_both_halves_need() {
+        for script in [graphify_install_script(true), graphify_install_script(false)] {
+            let install = script.lines().last().unwrap();
+            assert!(install.contains("--force"), "{install}");
+            // Quoted: the brackets are a glob in zsh, where an unquoted spec
+            // dies on "no matches found" before uv ever runs.
+            assert!(install.contains("\"graphifyy[mcp,openai,anthropic]\""), "{install}");
+        }
+    }
+
+    /// The build's backend is a choice about who gets the source and who pays
+    /// for reading it, so it is pinned to one of the two answers that can't
+    /// surprise anyone, never inferred from an exported API key.
+    #[test]
+    fn build_command_pins_a_backend_that_cannot_surprise_anyone() {
+        assert_eq!(default_build_command(true), "graphify . --backend claude-cli");
+        assert_eq!(default_build_command(false), "graphify . --code-only");
+    }
+
+    /// Every machine can build *something*: a user with no agent CLI, no API
+    /// key and no local server still gets the code-only offer, which is the
+    /// whole answer to "what if I only run local agents".
+    #[test]
+    fn a_bare_machine_is_still_offered_a_graph_it_can_build() {
+        let bare = knowledge_backends(&BackendProbe::default());
+        assert_eq!(bare.len(), 1, "{bare:?}");
+        assert_eq!(bare[0].id, CODE_ONLY);
+        assert_eq!(default_build_command(false), build_command_for(CODE_ONLY, "", ""));
+    }
+
+    /// The offer is ordered by what it takes for granted, and every entry says
+    /// what it costs: the note is the "before it runs" half of the feature.
+    #[test]
+    fn backends_are_offered_in_order_and_all_say_what_they_cost() {
+        let probe = BackendProbe {
+            claude_on_path: true,
+            ollama: true,
+            local_model_url: Some("http://localhost:1234/v1".into()),
+            env_keys: vec!["gemini".into(), "openai".into()],
+        };
+        let offered = knowledge_backends(&probe);
+        let ids: Vec<&str> = offered.iter().map(|b| b.id.as_str()).collect();
+        assert_eq!(ids, ["claude-cli", "gemini", "openai", "ollama", "lmstudio", "code-only"]);
+        for b in &offered {
+            assert!(!b.note.trim().is_empty(), "{} has no note", b.id);
+        }
+        // The local one names the server it will talk to, since a URL from
+        // settings is the whole difference between local and not.
+        let local = offered.iter().find(|b| b.id == LOCAL_MODEL).unwrap();
+        assert!(local.note.contains("http://localhost:1234/v1"), "{}", local.note);
+    }
+
+    /// A chosen backend round-trips: the command the picker writes is the
+    /// command it reads back, or the picker has to say "custom" and keep its
+    /// hands off. Anything less silently rewrites a hand-edited command.
+    #[test]
+    fn a_backend_choice_round_trips_through_the_command() {
+        let url = "http://localhost:1234/v1";
+        let cases = [
+            (CLAUDE_CLI, ""),
+            (CLAUDE_CLI, "haiku"),
+            (CODE_ONLY, ""),
+            (LOCAL_MODEL, "qwen3-coder-30b"),
+            ("ollama", "qwen2.5-coder:7b"),
+            ("gemini", ""),
+        ];
+        for (backend, model) in cases {
+            let cmd = build_command_for(backend, model, url);
+            assert_eq!(build_selection(&cmd), (backend.to_string(), model.to_string()), "{cmd}");
+            assert_eq!(command_binary(&cmd).as_deref(), Some("graphify"), "{cmd}");
+        }
+        // Anything else is left alone rather than reinterpreted.
+        assert_eq!(build_selection("graphify . --mode deep").0, CUSTOM_BACKEND);
+        assert_eq!(build_selection("graphify .").0, CUSTOM_BACKEND);
+    }
+
+    /// Agency injects `OPENAI_API_KEY=lm-studio` + `OPENAI_BASE_URL` into every
+    /// agent session, so an app started from one inherits a key that is not an
+    /// OpenAI account at all. Offering that as "OpenAI" would name the wrong
+    /// vendor on the one line the user reads before spending anything.
+    #[test]
+    fn a_local_server_is_never_offered_as_a_cloud_account() {
+        let env = |pairs: Vec<(&'static str, &'static str)>| {
+            move |k: &str| pairs.iter().find(|(n, _)| *n == k).map(|(_, v)| v.to_string())
+        };
+        assert_eq!(env_backend_keys(env(vec![("OPENAI_API_KEY", "sk-real")])), ["openai"]);
+        assert!(env_backend_keys(env(vec![
+            ("OPENAI_API_KEY", "lm-studio"),
+            ("OPENAI_BASE_URL", "http://localhost:1234/v1"),
+        ]))
+        .is_empty());
+        // A real key elsewhere still counts, base URL or not.
+        assert_eq!(
+            env_backend_keys(env(vec![
+                ("GEMINI_API_KEY", "k"),
+                ("OPENAI_API_KEY", "lm-studio"),
+                ("OPENAI_BASE_URL", "http://localhost:1234/v1"),
+            ])),
+            ["gemini"]
+        );
+    }
+
+    /// The claude CLI reads its model from graphify's env var, so that choice
+    /// lands in front of the command, where a first-token PATH check used to
+    /// see `GRAPHIFY_CLAUDE_CLI_MODEL=haiku` and call the tooling missing.
+    #[test]
+    fn command_binary_looks_past_the_env_assignments() {
+        assert_eq!(command_binary("A=1 B=2 graphify .").as_deref(), Some("graphify"));
+        assert_eq!(command_binary("graphify .").as_deref(), Some("graphify"));
+        assert_eq!(command_binary("./scripts/build.sh").as_deref(), Some("./scripts/build.sh"));
+        // Not an assignment: no name in front of the `=`.
+        assert_eq!(command_binary("=x graphify").as_deref(), Some("=x"));
+        assert_eq!(command_binary("   "), None);
     }
 
     #[test]

@@ -57,6 +57,19 @@ export function consumePendingOpen(rootKey: string): OpenFileRequest | null {
 }
 
 /**
+ * Every open-file request, whatever its root, without touching the pending
+ * slot that FilesView consumes. AgentsView uses this to put the Files tab back
+ * on the file tree: a request means a file is what you want to see, and with
+ * the Map sub-view left in front of it the jump landed on the map and the file
+ * never showed.
+ */
+export function onAnyOpenFile(handler: (req: OpenFileRequest) => void): () => void {
+  const fn = (e: Event) => handler((e as CustomEvent<OpenFileRequest>).detail);
+  window.addEventListener(EVENT, fn);
+  return () => window.removeEventListener(EVENT, fn);
+}
+
+/**
  * Live delivery while FilesView is mounted, filtered to its root. A request
  * for another root is left pending: the requester may have just switched
  * projects, so the right mount consumes it a render later.

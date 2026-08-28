@@ -1286,11 +1286,35 @@ pub fn save_knowledge_config(
         .map_err(|e| e.to_string())
 }
 
+/// Point a project's graph build at one of the backends `get_knowledge_config`
+/// offers, optionally naming a model. Writes the build command; never starts a
+/// build, because picking a model is not asking to spend on one.
+#[tauri::command]
+pub fn set_knowledge_backend(
+    state: State<'_, AppState>,
+    project_id: String,
+    backend: String,
+    model: String,
+) -> Result<(), String> {
+    state.set_knowledge_backend(&project_id, &backend, &model).map_err(|e| e.to_string())
+}
+
 /// Start a knowledge-graph build for a project. Returns as soon as the build is
 /// running; progress and failure come back through `get_knowledge_config`.
 #[tauri::command]
 pub fn build_knowledge_graph(state: State<'_, AppState>, project_id: String) -> Result<(), String> {
     state.build_knowledge_graph(&project_id).map_err(|e| e.to_string())
+}
+
+/// The Map's drill-down view of the project's knowledge graph. `null` is
+/// "no graph built yet", which the tab words from the knowledge config; an
+/// error means a graph exists but could not be read, and is shown as itself.
+#[tauri::command]
+pub fn knowledge_graph_view(
+    state: State<'_, AppState>,
+    project_id: String,
+) -> Result<Option<agency_core::graphview::GraphView>, String> {
+    state.knowledge_graph_view(&project_id).map_err(|e| e.to_string())
 }
 
 /// Open a terminal that installs the graphify tooling. Returns the run so the

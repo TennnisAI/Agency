@@ -77,13 +77,21 @@ pub struct KnowledgeConfigDto {
     pub build_default: String,
     pub serve_installed: bool,
     pub build_installed: bool,
+    /// The models this machine can build a graph with, best first, each with
+    /// the line about cost and destination the picker shows before a build.
+    pub backends: Vec<agency_core::config::KnowledgeBackend>,
+    /// Which of `backends` the effective build command names, or "custom" for
+    /// a command the picker didn't write and won't touch.
+    pub build_backend: String,
+    /// The model named in that command, empty for the backend's own default.
+    pub build_model: String,
     /// The graph file the serve command reads, and whether it exists yet. Until
     /// a build has produced it there is nothing to serve, so the MCP server is
     /// not injected — the UI says so rather than leaving the feature silent.
     pub graph_path: String,
     pub graph_built: bool,
-    /// A build is running right now (kicked off by enabling the graph, by the
-    /// Build button, or by a merge). The UI polls while this is true.
+    /// A build is running right now (the Build button, or a merge). The UI
+    /// polls while this is true.
     pub building: bool,
     /// Why the last finished build failed, `None` if it succeeded or none ran.
     pub last_build_error: Option<String>,
@@ -3519,10 +3527,12 @@ impl AppState {
     pub fn knowledge_config(&self, project_id: &str) -> Result<KnowledgeConfigDto> {
         let repo = self.project_repo(project_id)?;
         let k = agency_core::config::load(&repo).knowledge;
+        let probe = self.backend_probe();
         let serve_default = agency_core::config::default_serve_command(&repo);
-        let build_default = agency_core::config::default_build_command().to_string();
+        let build_default = agency_core::config::default_build_command(probe.claude_on_path);
         let serve_effective = k.serve_command.clone().unwrap_or_else(|| serve_default.clone());
         let build_effective = k.build_command.clone().unwrap_or_else(|| build_default.clone());
+        let (build_backend, build_model) = agency_core::config::build_selection(&build_effective);
         let graph = agency_core::config::graph_path(&repo);
         let build_state = self.kg_builds.lock().unwrap().get(&repo).cloned().unwrap_or_default();
         Ok(KnowledgeConfigDto {
@@ -3533,12 +3543,51 @@ impl AppState {
             build_command: k.build_command,
             serve_default,
             build_default,
+            backends: agency_core::config::knowledge_backends(&probe),
+            build_backend,
+            build_model,
             graph_built: graph.is_file(),
             graph_path: graph.display().to_string(),
             building: build_state.running,
             last_build_error: build_state.error,
             install_command: graphify_install_script(),
         })
+    }
+
+    /// What this machine can run a graph build on. Probed per call, not cached:
+    /// an agent CLI installed since app start counts, and so does a local model
+    /// URL the user just saved.
+    fn backend_probe(&self) -> agency_core::config::BackendProbe {
+        agency_core::config::BackendProbe {
+            claude_on_path: command_on_path("claude"),
+            ollama: command_on_path("ollama")
+                || std::env::var_os("OLLAMA_BASE_URL").is_some()
+                || std::env::var_os("OLLAMA_HOST").is_some(),
+            local_model_url: self.get_settings().ok().map(|s| s.lm_studio_base_url),
+            env_keys: agency_core::config::env_backend_keys(|var| {
+                std::env::var(var).ok().filter(|v| !v.trim().is_empty())
+            }),
+        }
+    }
+
+    /// Write a chosen backend (and optional model) into the project's build
+    /// command. The choice *is* the command: one string the settings panel
+    /// shows, the build runs and the user can still edit by hand.
+    pub fn set_knowledge_backend(
+        &self,
+        project_id: &str,
+        backend: &str,
+        model: &str,
+    ) -> Result<()> {
+        let repo = self.project_repo(project_id)?;
+        let k = agency_core::config::load(&repo).knowledge;
+        let url = self.get_settings().map(|s| s.lm_studio_base_url).unwrap_or_default();
+        let build = agency_core::config::build_command_for(backend, model, &url);
+        agency_core::config::save_knowledge(
+            &repo,
+            &agency_core::config::KnowledgeConfig { build_command: Some(build), ..k },
+        )?;
+        Ok(())
     }
 
     /// Persist a project's knowledge-graph config into its (gitignored) local
@@ -3559,14 +3608,14 @@ impl AppState {
             build_command: clean(build_command),
         };
         agency_core::config::save_knowledge(&repo, &k)?;
-        // Enabling the graph is a request for a graph. Nothing else builds one
-        // until a merge lands, so without this the feature stays inert: the
-        // serve command would point at a graph.json that never appears.
-        if graph && !agency_core::config::graph_path(&repo).is_file() {
-            if let Err(e) = self.start_knowledge_build(&repo) {
-                log::info!("not building knowledge graph for {}: {e}", repo.display());
-            }
-        }
+        // Enabling deliberately does *not* start a build (it did until AGE-83's
+        // follow-up). A build reads every doc in the project with an LLM, and
+        // which one it uses, what that costs and who ends up with the corpus
+        // are all things a user has to see before it runs, not discover from a
+        // plan's usage page afterwards. Flicking a toggle is not that consent.
+        // The panel answers the "then nothing happens" complaint the auto-build
+        // was for: enabling reveals the backend picker, each option's cost, and
+        // the Build button that spends it.
         Ok(())
     }
 
@@ -3574,6 +3623,38 @@ impl AppState {
     pub fn build_knowledge_graph(&self, project_id: &str) -> Result<()> {
         let repo = self.project_repo(project_id)?;
         self.start_knowledge_build(&repo)
+    }
+
+    /// The Map's view of a project's knowledge graph: the primary repo's
+    /// `graphify-out/graph.json` reduced to the drill-down view model.
+    ///
+    /// `Ok(None)` means no graph has been built yet, which is an empty state
+    /// and not a failure; the tab words it from the knowledge config. Anything
+    /// else that goes wrong is a real error and says so, because collapsing
+    /// the two told the user "no graph has been built yet" about a graph that
+    /// was sitting right there, and offered a Build button that could not fix
+    /// whatever had actually happened.
+    pub fn knowledge_graph_view(
+        &self,
+        project_id: &str,
+    ) -> Result<Option<agency_core::graphview::GraphView>> {
+        let repo = self.project_repo(project_id)?;
+        let path = agency_core::config::graph_path(&repo);
+        let size = match std::fs::metadata(&path) {
+            Ok(m) => m.len(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(anyhow!("reading {}: {e}", path.display())),
+        };
+        // A graph this size is far outside what the viewer can render, and
+        // parsing it costs several times the file in memory; 40 MB is ~6x the
+        // graph of this repository.
+        const MAX_GRAPH_BYTES: u64 = 40 * 1024 * 1024;
+        if size > MAX_GRAPH_BYTES {
+            anyhow::bail!("graph.json is {} MB, too large to map", size / (1024 * 1024));
+        }
+        let text = std::fs::read_to_string(&path)?;
+        let repo_dir = repo.file_name().and_then(|n| n.to_str());
+        agency_core::graphview::view(&text, repo_dir).map(Some)
     }
 
     /// Install the graphify tooling in a visible Agency terminal, the same way
@@ -3590,16 +3671,11 @@ impl AppState {
     /// running for this repo — both are states the caller reports, not retries.
     fn start_knowledge_build(&self, repo: &Path) -> Result<()> {
         let config = agency_core::config::load(repo);
-        let build = config
-            .knowledge
-            .build_command
-            .clone()
-            .unwrap_or_else(|| agency_core::config::default_build_command().to_string());
-        let cmd = build
-            .split_whitespace()
-            .next()
-            .ok_or_else(|| anyhow!("the build command is empty"))?
-            .to_string();
+        let build = config.knowledge.build_command.clone().unwrap_or_else(|| {
+            agency_core::config::default_build_command(command_on_path("claude"))
+        });
+        let cmd = agency_core::config::command_binary(&build)
+            .ok_or_else(|| anyhow!("the build command is empty"))?;
         if !command_on_path(&cmd) {
             return Err(anyhow!(
                 "'{cmd}' is not installed. Install the graphify tooling and try again."
@@ -3944,8 +4020,16 @@ impl AppState {
 
     /// After a clean merge, rebuild the project's knowledge graph in the
     /// background so the next agent workspace starts with a fresh graph.
+    ///
+    /// A *re*build, strictly: with no graph on disk the user has never picked a
+    /// model or agreed to what a build of this project costs, and landing a
+    /// merge is not the moment to decide that for them. The first build is
+    /// always the one they press.
     fn maybe_rebuild_knowledge_graph(&self, repo: &Path) {
         if !agency_core::config::load(repo).knowledge.graph {
+            return;
+        }
+        if !agency_core::config::graph_path(repo).is_file() {
             return;
         }
         if let Err(e) = self.start_knowledge_build(repo) {
@@ -7519,15 +7603,15 @@ fn failure_tail(stderr: &[u8], stdout: &[u8]) -> Option<String> {
     })
 }
 
-/// True when `command` resolves to an executable file: checked directly when it
-/// contains a path separator, otherwise searched across the PATH directories.
-/// Whether the first whitespace token of a command line resolves to an
-/// executable on PATH (or a runnable absolute/relative path). Command overrides
-/// and the graphify defaults are full command lines, not bare binaries.
+/// Whether the program a command line runs is installed. Command overrides and
+/// the graphify defaults are full command lines, not bare binaries, and some of
+/// them carry `VAR=value` in front of the program (see `command_binary`).
 fn first_token_on_path(command_line: &str) -> bool {
-    command_line.split_whitespace().next().map(command_on_path).unwrap_or(false)
+    agency_core::config::command_binary(command_line).map(|c| command_on_path(&c)).unwrap_or(false)
 }
 
+/// True when `command` resolves to an executable file: checked directly when it
+/// contains a path separator, otherwise searched across the PATH directories.
 fn command_on_path(command: &str) -> bool {
     crate::agent_diag::resolve_on_path(command).is_some()
 }

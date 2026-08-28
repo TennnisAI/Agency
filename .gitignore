@@ -35,3 +35,4 @@ ui/vitest.config.d.ts
 .agency/worktrees/
 .agency/issues/
 .agency/agency.local.toml
+/graphify-out/

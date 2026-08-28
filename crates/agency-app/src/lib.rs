@@ -196,6 +196,7 @@ pub fn run() {
             commands::save_mcp_servers,
             commands::get_knowledge_config,
             commands::save_knowledge_config,
+            commands::set_knowledge_backend,
             commands::build_knowledge_graph,
             commands::knowledge_graph_view,
             commands::install_knowledge_tooling,

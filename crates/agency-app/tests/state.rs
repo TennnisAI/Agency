@@ -2336,10 +2336,15 @@ fn legacy_user_scope_flag_survives_a_save_load_roundtrip() {
 }
 
 /// AGE-83: turning the knowledge graph on used to change nothing until a merge
-/// landed, so the feature looked broken. Enabling it now builds the first graph,
-/// and the settings UI can watch that build finish.
+/// landed, so the feature looked broken. It builds on request now, and the
+/// settings UI can watch that build finish.
+///
+/// Enabling on its own must NOT build. A build reads the whole project with an
+/// LLM, against a plan or an API key, and flicking a toggle is not consent to
+/// spend either: the panel shows what the chosen model costs, and the Build
+/// button is where the user agrees to it.
 #[test]
-fn enabling_the_knowledge_graph_builds_the_first_graph() {
+fn the_knowledge_graph_builds_on_request_and_not_before() {
     let dir = tempfile::tempdir().unwrap();
     let state = common::state(&dir);
     let repo = dir.path().join("repo");
@@ -2352,13 +2357,18 @@ fn enabling_the_knowledge_graph_builds_the_first_graph() {
     assert!(before.graph_path.ends_with("graphify-out/graph.json"));
 
     // Stand in for `graphify .`: the point under test is that Agency runs the
-    // configured build in the primary checkout when the graph is switched on.
+    // configured build in the primary checkout, and only when asked.
     let build = "mkdir -p graphify-out && printf '{}' > graphify-out/graph.json";
     state.save_knowledge_config(&p.id, true, None, Some(build.to_string())).unwrap();
 
+    let enabled = state.knowledge_config(&p.id).unwrap();
+    assert!(!enabled.building, "enabling must not start a build");
+    assert!(!enabled.graph_built, "enabling must not write a graph");
+
+    state.build_knowledge_graph(&p.id).unwrap();
     let cfg = await_settled_build(&state, &p.id);
     assert_eq!(cfg.last_build_error, None, "the build should have succeeded");
-    assert!(cfg.graph_built, "enabling the graph must produce {}", cfg.graph_path);
+    assert!(cfg.graph_built, "the build must produce {}", cfg.graph_path);
     assert!(repo.join("graphify-out/graph.json").is_file());
 }
 
@@ -2375,6 +2385,7 @@ fn a_failed_graph_build_reports_why() {
 
     let build = "printf 'graphify: no parser for this repo\\n' >&2; exit 3";
     state.save_knowledge_config(&p.id, true, None, Some(build.to_string())).unwrap();
+    state.build_knowledge_graph(&p.id).unwrap();
 
     let cfg = await_settled_build(&state, &p.id);
     assert!(!cfg.graph_built);
@@ -2393,6 +2404,34 @@ fn a_failed_graph_build_reports_why() {
     let err = state.build_knowledge_graph(&p.id).unwrap_err().to_string();
     assert!(err.contains("'definitely-not-a-real-binary-4k2x' is not installed"), "{err}");
     assert!(err.contains("Install the graphify tooling"), "{err}");
+}
+
+/// Picking a model writes the build command and starts nothing. The whole
+/// choice lives in that one string, so the panel reads it back out rather than
+/// keeping a second copy, and a command it can't have written is reported as
+/// custom instead of being silently rewritten.
+#[test]
+fn choosing_a_model_writes_the_build_command_and_runs_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = common::state(&dir);
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let p = state.add_project("demo", &repo).unwrap();
+
+    state.save_knowledge_config(&p.id, true, None, None).unwrap();
+    state.set_knowledge_backend(&p.id, "code-only", "").unwrap();
+
+    let cfg = state.knowledge_config(&p.id).unwrap();
+    assert_eq!(cfg.build_command.as_deref(), Some("graphify . --code-only"));
+    assert_eq!(cfg.build_backend, "code-only");
+    assert!(cfg.graph, "picking a model must not disturb the toggle");
+    assert!(!cfg.building && !cfg.graph_built, "picking a model must not build");
+    // Whatever else this machine has, the build that needs no LLM is offered.
+    assert!(cfg.backends.iter().any(|b| b.id == "code-only"), "{:?}", cfg.backends);
+
+    state.save_knowledge_config(&p.id, true, None, Some("graphify . --mode deep".into())).unwrap();
+    assert_eq!(state.knowledge_config(&p.id).unwrap().build_backend, "custom");
 }
 
 /// Poll the knowledge config until the background build thread has finished.

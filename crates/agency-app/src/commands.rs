@@ -1253,6 +1253,19 @@ pub fn save_knowledge_config(
         .map_err(|e| e.to_string())
 }
 
+/// Point a project's graph build at one of the backends `get_knowledge_config`
+/// offers, optionally naming a model. Writes the build command; never starts a
+/// build, because picking a model is not asking to spend on one.
+#[tauri::command]
+pub fn set_knowledge_backend(
+    state: State<'_, AppState>,
+    project_id: String,
+    backend: String,
+    model: String,
+) -> Result<(), String> {
+    state.set_knowledge_backend(&project_id, &backend, &model).map_err(|e| e.to_string())
+}
+
 /// Start a knowledge-graph build for a project. Returns as soon as the build is
 /// running; progress and failure come back through `get_knowledge_config`.
 #[tauri::command]

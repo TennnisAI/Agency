@@ -16,7 +16,7 @@ Unix-shaped command. Each needs a per-platform variant (a
 | `ui/src/agents.ts` `INSTALL_COMMANDS.cursor` | `curl https://cursor.com/install -fsS \| bash` | Cursor ships a Windows installer; no curl-pipe |
 | `ui/src/agents.ts` `INSTALL_COMMANDS.kimi` | `curl -fsSL https://code.kimi.com/kimi-code/install.sh \| bash` | PowerShell: `irm https://code.kimi.com/kimi-code/install.ps1 \| iex` |
 | `ui/src/agents.ts` npm-based entries (claude/codex/pi/opencode/copilot/gemini/crush) | `npm install -g …` | Same command works, but runs under a different shell (see below) |
-| graphify (docs + MCP default) | `uv tool install graphifyy` / `uv tool run …` | Same via uv's Windows build; verify `python -m graphify.serve` path resolution |
+| graphify (docs + MCP default) | `uv tool install --force "graphifyy[mcp,openai,anthropic]"` / `uv tool run …` | Same via uv's Windows build; the extras need quoting in PowerShell too, and verify `python -m graphify.serve` path resolution |
 
 `gh auth login` itself is cross-platform once gh is installed.
 

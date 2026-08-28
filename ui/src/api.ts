@@ -764,6 +764,14 @@ export interface KnowledgeConfig {
   build_default: string;
   serve_installed: boolean;
   build_installed: boolean;
+  // What the build can run on, this machine, best first. `note` is the line
+  // about cost and destination shown before anything runs; `default_model` is
+  // the model placeholder, empty where the user has to name one.
+  backends: { id: string; label: string; note: string; default_model: string }[];
+  // Which backend the effective build command names ("custom" for a
+  // hand-written one), and the model it names.
+  build_backend: string;
+  build_model: string;
   // The graph file the serve command reads, and whether it exists yet. No
   // graph means no MCP server is handed to agents.
   graph_path: string;
@@ -776,6 +784,10 @@ export interface KnowledgeConfig {
 
 export const getKnowledgeConfig = (projectId: string) =>
   invoke<KnowledgeConfig>("get_knowledge_config", { projectId });
+// Pick which model the build runs on. Writes the build command; nothing runs
+// until Build graph is pressed.
+export const setKnowledgeBackend = (projectId: string, backend: string, model: string) =>
+  invoke<void>("set_knowledge_backend", { projectId, backend, model });
 export const saveKnowledgeConfig = (
   projectId: string,
   graph: boolean,

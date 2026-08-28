@@ -9,7 +9,7 @@
 use alacritty_terminal::event::VoidListener;
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::{Column, Line};
-use alacritty_terminal::term::cell::Flags;
+use alacritty_terminal::term::cell::{Cell, Flags};
 use alacritty_terminal::term::{Config, Term, TermMode};
 // API correction vs. brief: `Processor` in vte 0.15 is generic over a Timeout
 // handler (E0283 if type is omitted). Must use `Processor::<StdSyncHandler>::new()`.
@@ -225,9 +225,7 @@ impl Emulator {
                 break;
             }
         }
-        let mut last_flags = Flags::empty();
-        let mut last_fg = Color::Named(NamedColor::Foreground);
-        let mut last_bg = Color::Named(NamedColor::Background);
+        let mut last = Style::reset();
         for li in start..end {
             // CRLF *between* rows, never after the last one: a trailing newline on
             // a full screen scrolls the top row into scrollback and shifts every
@@ -235,17 +233,14 @@ impl Emulator {
             // off by a line, which is the "cursor stuck at the bottom" desync.
             if li > start {
                 data.extend_from_slice(b"\r\n");
-                last_flags = Flags::empty();
-                last_fg = Color::Named(NamedColor::Foreground);
-                last_bg = Color::Named(NamedColor::Background);
+                last = Style::reset();
             }
             for col in 0..content_end(li) {
                 let cell = &grid[Line(li)][Column(col)];
-                if cell.flags != last_flags || cell.fg != last_fg || cell.bg != last_bg {
-                    data.extend_from_slice(sgr(cell.flags, cell.fg, cell.bg).as_bytes());
-                    last_flags = cell.flags;
-                    last_fg = cell.fg;
-                    last_bg = cell.bg;
+                let style = Style::of(cell);
+                if style != last {
+                    data.extend_from_slice(sgr(style).as_bytes());
+                    last = style;
                 }
                 let mut buf = [0u8; 4];
                 data.extend_from_slice(cell.c.encode_utf8(&mut buf).as_bytes());
@@ -320,27 +315,138 @@ impl Emulator {
     }
 }
 
-/// Build a minimal SGR sequence for the common attributes we reproduce.
-fn sgr(flags: Flags, fg: Color, bg: Color) -> String {
+/// Everything one SGR sets, which is everything that has to match before two
+/// neighbouring cells can share one.
+///
+/// A cell carries its underline color outside `flags` (alacritty keeps it in
+/// the cell's overflow allocation), so it has to be compared alongside them
+/// rather than assumed to follow the text color.
+#[derive(Clone, Copy, PartialEq)]
+struct Style {
+    flags: Flags,
+    fg: Color,
+    bg: Color,
+    underline: Option<Color>,
+}
+
+impl Style {
+    /// What a client is left in by the `\x1b[0m` that closes every row.
+    fn reset() -> Style {
+        Style {
+            flags: Flags::empty(),
+            fg: Color::Named(NamedColor::Foreground),
+            bg: Color::Named(NamedColor::Background),
+            underline: None,
+        }
+    }
+
+    fn of(cell: &Cell) -> Style {
+        Style { flags: cell.flags, fg: cell.fg, bg: cell.bg, underline: cell.underline_color() }
+    }
+}
+
+/// Build a minimal SGR sequence for the attributes a cell can carry.
+///
+/// Every visible one is reproduced. An attribute left out here is not a cell
+/// drawn plainly, it is a cell drawn *wrong*: the snapshot is the whole of what
+/// a reattaching pane gets, so whatever this does not say is whatever the pane
+/// forgets the moment the user navigates away and back.
+fn sgr(style: Style) -> String {
     let mut codes: Vec<String> = vec!["0".into()];
-    if flags.contains(Flags::BOLD) {
+    if style.flags.contains(Flags::BOLD) {
         codes.push("1".into());
     }
-    if flags.contains(Flags::DIM) {
+    if style.flags.contains(Flags::DIM) {
         codes.push("2".into());
     }
-    if flags.contains(Flags::ITALIC) {
+    if style.flags.contains(Flags::ITALIC) {
         codes.push("3".into());
     }
-    if flags.contains(Flags::UNDERLINE) {
-        codes.push("4".into());
+    if let Some(code) = underline_sgr(style.flags) {
+        codes.push(code.into());
     }
-    if flags.contains(Flags::INVERSE) {
+    if style.flags.contains(Flags::INVERSE) {
         codes.push("7".into());
     }
-    push_color(&mut codes, fg, true);
-    push_color(&mut codes, bg, false);
+    // Concealed text (SGR 8). The grid stores the real character and leaves it
+    // to the renderer to withhold it, so a snapshot that drops this doesn't
+    // merely lose an attribute — it *reveals*, on return to the pane, whatever
+    // the child had concealed.
+    if style.flags.contains(Flags::HIDDEN) {
+        codes.push("8".into());
+    }
+    if style.flags.contains(Flags::STRIKEOUT) {
+        codes.push("9".into());
+    }
+    push_color(&mut codes, style.fg, true);
+    push_color(&mut codes, style.bg, false);
+    if let Some(c) = style.underline {
+        push_underline_color(&mut codes, c);
+    }
     format!("\x1b[{}m", codes.join(";"))
+}
+
+/// The SGR for whichever underline a cell carries, if any.
+///
+/// The five styles are mutually exclusive in the grid — alacritty clears the
+/// others before setting one — so the first match is the only match.
+///
+/// Double underline goes out as `4:2` rather than the `21` xterm documents for
+/// it, because alacritty reads a bare `21` as "cancel bold" (it follows the
+/// older ECMA-48 reading). Emitting `21` would have the two parsers disagree
+/// about the same snapshot: the pane would draw a double underline and the
+/// daemon's own grid would quietly un-bold instead. That is the exact class of
+/// split [`super::vt_pin`] exists to guard, and it costs nothing to avoid —
+/// both read `4:<n>` the same way.
+fn underline_sgr(flags: Flags) -> Option<&'static str> {
+    if flags.contains(Flags::UNDERLINE) {
+        Some("4")
+    } else if flags.contains(Flags::DOUBLE_UNDERLINE) {
+        Some("4:2")
+    } else if flags.contains(Flags::UNDERCURL) {
+        Some("4:3")
+    } else if flags.contains(Flags::DOTTED_UNDERLINE) {
+        Some("4:4")
+    } else if flags.contains(Flags::DASHED_UNDERLINE) {
+        Some("4:5")
+    } else {
+        None
+    }
+}
+
+/// SGR 58, the color an underline is drawn in. A child sets it separately from
+/// the text color — an undercurl under otherwise ordinary text is the usual
+/// reason — so it survives or is lost on its own.
+///
+/// The protocol has no named form of it, so a palette color goes out as its
+/// index. Nothing is pinned by that: a client resolves 0-15 through the same
+/// theme either way.
+fn push_underline_color(codes: &mut Vec<String>, c: Color) {
+    codes.push("58".into());
+    match c {
+        Color::Spec(rgb) => {
+            codes.push("2".into());
+            codes.push(rgb.r.to_string());
+            codes.push(rgb.g.to_string());
+            codes.push(rgb.b.to_string());
+        }
+        Color::Indexed(i) => {
+            codes.push("5".into());
+            codes.push(i.to_string());
+        }
+        Color::Named(n) => match palette_index(n) {
+            Some(i) => {
+                codes.push("5".into());
+                codes.push(i.to_string());
+            }
+            // Not a palette entry, so there is nothing to name: drop the `58`
+            // again and let the underline take the text color, which is what
+            // the default means.
+            None => {
+                codes.pop();
+            }
+        },
+    }
 }
 
 fn push_color(codes: &mut Vec<String>, c: Color, fg: bool) {
@@ -382,27 +488,40 @@ fn push_color(codes: &mut Vec<String>, c: Color, fg: bool) {
 /// triple, so the pane keeps painting these cells from its own theme and a
 /// theme switch after a reattach still moves them.
 fn named_sgr(color: NamedColor, fg: bool) -> Option<u16> {
+    let index = palette_index(color)? as u16;
+    let (base, offset) = match (fg, index >= 8) {
+        (true, false) => (30, index),
+        (true, true) => (90, index - 8),
+        (false, false) => (40, index),
+        (false, true) => (100, index - 8),
+    };
+    Some(base + offset)
+}
+
+/// The palette slot a named color occupies, 0-15. `None` for a color that is
+/// not a palette entry at all.
+fn palette_index(color: NamedColor) -> Option<u8> {
     use NamedColor as N;
-    // The `Dim*` entries are the palette slots alacritty resolves a dimmed
-    // color to; they have no SGR of their own, so emit the base color and let
-    // the `2` that `sgr` writes for `Flags::DIM` carry the rest.
-    let (index, bright) = match color {
-        N::Black | N::DimBlack => (0, false),
-        N::Red | N::DimRed => (1, false),
-        N::Green | N::DimGreen => (2, false),
-        N::Yellow | N::DimYellow => (3, false),
-        N::Blue | N::DimBlue => (4, false),
-        N::Magenta | N::DimMagenta => (5, false),
-        N::Cyan | N::DimCyan => (6, false),
-        N::White | N::DimWhite => (7, false),
-        N::BrightBlack => (0, true),
-        N::BrightRed => (1, true),
-        N::BrightGreen => (2, true),
-        N::BrightYellow => (3, true),
-        N::BrightBlue => (4, true),
-        N::BrightMagenta => (5, true),
-        N::BrightCyan => (6, true),
-        N::BrightWhite => (7, true),
+    // The `Dim*` entries are the slots alacritty resolves a dimmed color to;
+    // they are not separately addressable, so they map to the base color and
+    // the `2` that `sgr` writes for `Flags::DIM` carries the rest.
+    Some(match color {
+        N::Black | N::DimBlack => 0,
+        N::Red | N::DimRed => 1,
+        N::Green | N::DimGreen => 2,
+        N::Yellow | N::DimYellow => 3,
+        N::Blue | N::DimBlue => 4,
+        N::Magenta | N::DimMagenta => 5,
+        N::Cyan | N::DimCyan => 6,
+        N::White | N::DimWhite => 7,
+        N::BrightBlack => 8,
+        N::BrightRed => 9,
+        N::BrightGreen => 10,
+        N::BrightYellow => 11,
+        N::BrightBlue => 12,
+        N::BrightMagenta => 13,
+        N::BrightCyan => 14,
+        N::BrightWhite => 15,
         // The defaults, plus the two slots a cell never holds. Exhaustive on
         // purpose: `NamedColor` is not `#[non_exhaustive]`, so a version bump
         // that adds a color fails this build rather than silently losing it
@@ -410,14 +529,7 @@ fn named_sgr(color: NamedColor, fg: bool) -> Option<u16> {
         N::Foreground | N::Background | N::Cursor | N::BrightForeground | N::DimForeground => {
             return None;
         }
-    };
-    let base = match (fg, bright) {
-        (true, false) => 30,
-        (true, true) => 90,
-        (false, false) => 40,
-        (false, true) => 100,
-    };
-    Some(base + index)
+    })
 }
 
 #[cfg(test)]
@@ -722,6 +834,70 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_keeps_text_the_child_concealed_concealed() {
+        // SGR 8 is stored as a flag over the real character, so dropping it
+        // does not blank the cell — it un-conceals it. Whatever a child hid
+        // came back visible the first time the user navigated away and
+        // returned, which is the one attribute here whose loss shows something
+        // rather than hiding it.
+        let mut e = Emulator::new(40, 6);
+        e.feed(b"\x1b[8msecret\x1b[0m");
+        let snap = e.snapshot();
+        let mut b = Emulator::new(snap.cols, snap.rows);
+        b.feed(&snap.data);
+        assert!(
+            b.term.grid()[Line(0)][Column(0)].flags.contains(Flags::HIDDEN),
+            "concealed text was revealed by the reattach snapshot",
+        );
+    }
+
+    #[test]
+    fn snapshot_preserves_strikeout_and_every_underline_style() {
+        // The five underline styles are mutually exclusive in the grid, so
+        // each is checked on its own cell rather than in one run.
+        let mut e = Emulator::new(40, 6);
+        e.feed(b"\x1b[9ms\x1b[0m\x1b[4ma\x1b[4:2mb\x1b[4:3mc\x1b[4:4md\x1b[4:5me\x1b[0m");
+        let snap = e.snapshot();
+        let mut b = Emulator::new(snap.cols, snap.rows);
+        b.feed(&snap.data);
+        let flags = |col: usize| b.term.grid()[Line(0)][Column(col)].flags;
+        assert!(flags(0).contains(Flags::STRIKEOUT), "strikeout lost");
+        assert!(flags(1).contains(Flags::UNDERLINE), "single underline lost");
+        assert!(flags(2).contains(Flags::DOUBLE_UNDERLINE), "double underline lost");
+        assert!(flags(3).contains(Flags::UNDERCURL), "undercurl lost");
+        assert!(flags(4).contains(Flags::DOTTED_UNDERLINE), "dotted underline lost");
+        assert!(flags(5).contains(Flags::DASHED_UNDERLINE), "dashed underline lost");
+    }
+
+    #[test]
+    fn snapshot_does_not_spell_a_double_underline_as_21() {
+        // `21` is xterm's code for it, but alacritty reads a bare `21` as
+        // "cancel bold" — so a snapshot using it would have the pane and the
+        // daemon's own grid disagree about what they just exchanged. `4:2` is
+        // read the same by both; the round-trip above is what proves it.
+        let mut e = Emulator::new(40, 6);
+        e.feed(b"\x1b[4:2mtext");
+        let text = String::from_utf8_lossy(&e.snapshot().data).to_string();
+        assert!(text.contains("4:2"), "double underline not emitted as a sub-parameter: {text:?}");
+        assert!(!text.contains(";21"), "double underline emitted as 21: {text:?}");
+    }
+
+    #[test]
+    fn snapshot_preserves_the_underline_color() {
+        // Set apart from the text color (SGR 58), and stored outside `flags`,
+        // so it is dropped by anything that reproduces the flags alone. An
+        // undercurl is normally the only thing colored this way.
+        let mut e = Emulator::new(40, 6);
+        e.feed(b"\x1b[4:3m\x1b[58;5;196mtypo\x1b[0m\x1b[4:3mplain");
+        let snap = e.snapshot();
+        let mut b = Emulator::new(snap.cols, snap.rows);
+        b.feed(&snap.data);
+        let cell = |col: usize| b.term.grid()[Line(0)][Column(col)].underline_color();
+        assert_eq!(cell(0), Some(Color::Indexed(196)), "underline color lost");
+        assert_eq!(cell(4), None, "underline color leaked past its reset");
+    }
+
+    #[test]
     fn snapshot_spells_out_no_color_for_default_text() {
         // The leading `0` of each SGR restores the default fg/bg, so naming
         // them would only bloat the replay — and would pin the cells to a
@@ -802,7 +978,14 @@ mod tests {
         }
         let Some(body) = seq.strip_prefix(b"\x1b[") else { return false };
         let Some((&last, params)) = body.split_last() else { return false };
-        params.iter().all(|b| b.is_ascii_digit() || *b == b';') && matches!(last, b'm' | b'H')
+        match last {
+            // SGR. `:` as well as `;`, for the sub-parameter of an underline
+            // style (`4:2`); see `underline_sgr`.
+            b'm' => params.iter().all(|b| b.is_ascii_digit() || matches!(b, b';' | b':')),
+            // Cursor position, which has no sub-parameters.
+            b'H' => params.iter().all(|b| b.is_ascii_digit() || *b == b';'),
+            _ => false,
+        }
     }
 
     #[test]
@@ -810,7 +993,8 @@ mod tests {
         let mut e = Emulator::new(30, 4);
         e.feed(
             b"\x1b[?1049h\x1b[?1002h\x1b[?1006h\x1b[?1004h\x1b[?2004h\x1b[?7l\x1b[?1h\x1b=\
-              \x1b[?25l\x1b[1;38;5;196mbar\x1b[0m\r\nrow",
+              \x1b[?25l\x1b[1;38;5;196mbar\x1b[0m\r\n\
+              \x1b[8;9;4:3;58;2;255;0;0;31;44mrow",
         );
         for seq in escapes(&e.snapshot().data) {
             assert!(

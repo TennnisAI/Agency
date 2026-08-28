@@ -171,6 +171,22 @@ export function minContrastRatio(): number {
   return currentScheme() === "light" ? 4.5 : 1;
 }
 
+/** The paper a light theme puts under a dark background an agent painted (see
+ *  lib/termPaper) — the background half of what `minimumContrastRatio` does for
+ *  foregrounds. Null on a dark theme, where an agent's own surfaces sit right.
+ *
+ *  `s1`, which is already what `xtermThemeFor` gives an ANSI black background:
+ *  a dark background lands on one tone however the agent spelled it. It is also
+ *  the near neighbour `s0` is not — the selection owns `s0` in a pane, and a bar
+ *  painted in it would show nothing when you dragged across it. */
+export function surfaceFor(theme: Theme): string | null {
+  return theme.scheme === "light" ? theme.vars.s1 : null;
+}
+
+export function paperSurface(): string | null {
+  return surfaceFor(resolveTheme(active));
+}
+
 /** The active theme's id — used to pick the matching Shiki highlight theme so
  *  diff colors are drawn from the same palette (and the same background-tuned
  *  contrast) as the rest of the UI. */

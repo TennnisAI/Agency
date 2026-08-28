@@ -17,16 +17,30 @@ window.addEventListener("contextmenu", (e) => {
   e.preventDefault();
 });
 
-// Benign browser noise that must never reach the user as an error. WebKit
-// reports "ResizeObserver loop completed with undelivered notifications"
-// whenever an observer callback resizes its own subject and the work spills
-// past the frame — which is what a terminal fitting itself inside a pane that
-// is still settling does. Nothing is broken and nothing is dropped: the
-// browser simply delivers the rest next frame. It is not catchable at the
-// observer (the spec dispatches it as a window error), so it is filtered here.
+// Benign browser noise that must never reach the user as an error. Both of
+// these escape every component handler by construction — they are dispatched at
+// the window, from work the component no longer has a handle on — so this is
+// the only place they can be filtered.
+//
+// 1. WebKit reports "ResizeObserver loop completed with undelivered
+//    notifications" whenever an observer callback resizes its own subject and
+//    the work spills past the frame, which is what a terminal fitting itself
+//    inside a pane that is still settling does. Nothing is broken and nothing
+//    is dropped: the browser delivers the rest next frame.
+//
+// 2. xterm reads its render service's dimensions off a renderer that has
+//    already been disposed. FocusTerminal's teardown waits for the write buffer
+//    to drain and for a frame to pass before disposing, which is what xterm
+//    gives us to wait on (see the AGE-124 comment there) — but xterm 5.5.0
+//    schedules work on bare timers and animation frames it neither cancels nor
+//    guards, so a window that stops animating mid-teardown can still land one
+//    of those reads after the dispose. What it would be reading for is a paint
+//    of a pane that is already unmounted, so there is nothing to tell the user
+//    and nothing they could do; a live pane failing to render shows as a blank
+//    pane, not as this.
 const isBenign = (v: unknown) => {
   const text = typeof v === "string" ? v : v instanceof Error ? v.message : "";
-  return text.startsWith("ResizeObserver loop");
+  return text.startsWith("ResizeObserver loop") || text.includes("_renderer.value.dimensions");
 };
 
 // Surface errors that escape every component handler. The toast bus dedupes

@@ -226,14 +226,20 @@ pub struct RunInfo {
     pub deleted: u32,
     pub files: u32,
     pub port: Option<u16>,
-    /// Where this run's agent serves its browser GUI (see
-    /// `agent_catalog::WebUi`), on 127.0.0.1. None for terminal agents, and
-    /// for a GUI run whose block had no room — the server is then on the
-    /// CLI's own default port, which Agency won't claim to know.
+    /// Where this workspace's browser GUI is served (see
+    /// `agent_catalog::WebUi`), on 127.0.0.1. None when no session here serves
+    /// one, while a loop is driving (the headless attempt opens no port), and
+    /// for a GUI run whose block had no room — the server is then on the CLI's
+    /// own default port, which Agency won't claim to know.
     pub gui_port: Option<u16>,
+    /// Which session serves `gui_port`: the run's own id when its primary
+    /// agent is the web-served one, or an extra tab's id. The UI keys the GUI
+    /// pane off this, so a web agent opened as a tab gets its GUI too rather
+    /// than a server nobody can reach.
+    pub gui_session_id: Option<String>,
     /// Something is accepting connections on `gui_port` right now, so the GUI
     /// pane can load it instead of a connection error. Only ever true while
-    /// the agent session runs.
+    /// the session that owns the port is running.
     pub gui_live: bool,
     pub kind: String,
     /// True while at least one of the project's run scripts is still running in
@@ -952,6 +958,17 @@ fn loop_argv(
 fn has_active_loop(run: &agency_core::registry::Run) -> bool {
     run.loop_config.is_some()
         && run.loop_state.as_ref().map(|s| !s.status.is_terminal()).unwrap_or(false)
+}
+
+/// Whether this run can offer a browser-GUI pane at all (see
+/// `agent_catalog::WebUi`): an agent run that a loop is not driving.
+///
+/// A loop attempt is `spawn_loop_attempt`'s headless one-shot, which by its own
+/// contract opens no listening port — so a GUI pane on a looping run would sit
+/// on "starting the GUI" for the life of the loop, waiting for a server that
+/// was never launched. A finished loop is interactive again, and gets one back.
+fn wants_web_ui(run: &agency_core::registry::Run) -> bool {
+    run.kind == "agent" && !has_active_loop(run)
 }
 
 /// Announce a teardown step on the same channel shape clone/push/spawn report
@@ -2214,6 +2231,26 @@ impl AppState {
         reg.get_run(id)?.ok_or_else(|| anyhow!("unknown run: {id}"))
     }
 
+    /// The session in this workspace whose agent serves a browser GUI, as
+    /// `(session id, agent)`. The primary session's id is the run's own; an
+    /// extra tab's is `<run id>--<n>`. `start_run_session` admits at most one
+    /// web-GUI session per workspace, so there is never a second to choose
+    /// between.
+    ///
+    /// The extra-tab lookup is one small indexed read, and only for runs that
+    /// could have a GUI at all — the same poll already runs a whole git
+    /// process per run for the diff stat.
+    fn web_ui_session(&self, run: &agency_core::registry::Run) -> Option<(String, String)> {
+        if crate::agent_catalog::web_ui(&run.agent).is_some() {
+            return Some((run.id.clone(), run.agent.clone()));
+        }
+        let sessions = self.registry.lock().unwrap().list_run_sessions(&run.id).ok()?;
+        sessions
+            .into_iter()
+            .find(|s| crate::agent_catalog::web_ui(&s.agent).is_some())
+            .map(|s| (s.id, s.agent))
+    }
+
     fn run_info(&self, run: &agency_core::registry::Run) -> RunInfo {
         let live = self.term.read().unwrap().list().unwrap_or_default();
         self.run_info_from(run, &live)
@@ -2261,19 +2298,32 @@ impl AppState {
             }
             _ => run.branch.clone(),
         };
+        let gui_session = wants_web_ui(run).then(|| self.web_ui_session(run)).flatten();
         // Computed rather than stored so it can never disagree with what the
         // launch rendered — both come from the same `gui_port_for`. The config
         // load is two small file reads; the diff stat above already runs a
         // whole git process on the same poll.
-        let gui_port = crate::agent_catalog::web_ui(&run.agent).and_then(|_| {
+        let gui_port = gui_session.as_ref().and_then(|(_, agent)| {
             let repo = self.project_repo(&run.project_id).ok()?;
-            gui_port_for(&agency_core::config::load(&repo), run.port_base, &run.agent)
+            gui_port_for(&agency_core::config::load(&repo), run.port_base, agent)
         });
-        // Probed only while the session runs: a dead run's port is either free
-        // (instant refusal) or someone else's server, and claiming the latter
-        // as this run's GUI would render a stranger's page in its pane.
-        let gui_live = matches!(status, SessionStatus::Running)
-            && gui_port.is_some_and(agency_core::preview::serving);
+        // Probed only while the session that owns the port is running — which
+        // is not always the run's primary one, since a web agent can be an
+        // extra tab. A dead session's port is either free (instant refusal) or
+        // someone else's server, and claiming the latter as this run's GUI
+        // would render a stranger's page in its pane.
+        //
+        // The running check narrows that window but does not close it: if the
+        // server lost the bind (something outside Agency already had the port),
+        // the session is alive, the port answers, and the answer is the other
+        // process's. Nothing cheap distinguishes them from here — the bind
+        // error is in the session's own log, which is a tab away.
+        let gui_live = gui_port.is_some_and(|port| {
+            let name = gui_session.as_ref().map(|(id, _)| session_name(id)).unwrap_or_default();
+            let running =
+                live.iter().any(|(n, s)| *n == name && matches!(s, SessionStatus::Running));
+            running && agency_core::preview::serving(port)
+        });
         RunInfo {
             id: run.id.clone(),
             project_id: run.project_id.clone(),
@@ -2295,6 +2345,7 @@ impl AppState {
             files: stat.files,
             port: run.port_base,
             gui_port,
+            gui_session_id: gui_session.map(|(id, _)| id),
             gui_live,
             kind: run.kind.clone(),
             run_scripts_live: any_run_script_live(&run.id, live),
@@ -5930,7 +5981,9 @@ impl AppState {
         // One web-GUI session per workspace: a run has one GUI port, so a
         // second server in the same worktree would lose the bind and die on
         // "address in use" the moment it started. Refuse with the reason
-        // instead of spawning a tab whose whole life is that error.
+        // instead of spawning a tab whose whole life is that error. The first
+        // one is allowed on any run — `RunInfo::gui_session_id` names whichever
+        // session it is, so a web agent opened as a tab gets its GUI pane too.
         if crate::agent_catalog::web_ui(&agent).is_some() {
             let taken = crate::agent_catalog::web_ui(&run.agent).is_some()
                 || self
@@ -7667,6 +7720,86 @@ mod tests {
             loop_args: None,
         };
         assert_eq!(super::with_web_ui(&claude, Some(5248)), claude);
+    }
+
+    /// The whole interactive argv a dsh run is launched with, not just the web
+    /// prefix: the recipe plus prompt delivery, which for this agent is none at
+    /// all. A prompt appended here would be read as the app selection and the
+    /// session would die on a usage error.
+    #[test]
+    fn a_web_agents_fresh_argv_is_the_server_recipe_and_nothing_else() {
+        let dsh = AgentProfile {
+            name: "dsh".into(),
+            command: "dsh".into(),
+            args: vec![],
+            env: vec![],
+            resume_args: None,
+            loop_args: Some(vec!["--profile".into(), "headless".into(), "{{prompt}}".into()]),
+        };
+        let profile = super::with_web_ui(&dsh, Some(5248));
+        let wt = std::path::Path::new("/tmp/does-not-exist");
+        let (command, args) = super::fresh_agent_argv(&profile, wt, "fix the login bug", None);
+        assert_eq!(command, "dsh");
+        assert_eq!(args, vec!["web", "--no-open", "--port", "5248"]);
+
+        // The loop recipe takes the prompt the interactive launch cannot.
+        let (loop_cmd, loop_args) =
+            super::loop_argv(&profile, wt, "fix the login bug", None).unwrap();
+        assert_eq!(loop_cmd, "dsh");
+        assert_eq!(loop_args, vec!["--profile", "headless", "fix the login bug"]);
+    }
+
+    /// A loop attempt is headless and opens no port, so a looping run must not
+    /// advertise a GUI — the pane would wait forever on a server nothing
+    /// launched. Terminals never have one either.
+    #[test]
+    fn only_an_agent_run_that_is_not_looping_offers_a_gui() {
+        use agency_core::loops::{LoopConfig, LoopState, LoopStatus};
+        let base = agency_core::registry::Run {
+            id: "r1".into(),
+            project_id: "p1".into(),
+            agent: "dsh".into(),
+            prompt: String::new(),
+            base: "main".into(),
+            branch: "agent/r1".into(),
+            created_at: 0,
+            port_base: Some(5240),
+            archived_at: None,
+            title: None,
+            kind: "agent".into(),
+            merge_target: None,
+            race_id: None,
+            loop_config: None,
+            loop_state: None,
+            issue_id: None,
+            worktree: true,
+            model: None,
+            base_commit: None,
+        };
+        assert!(super::wants_web_ui(&base));
+
+        let terminal = agency_core::registry::Run { kind: "terminal".into(), ..base.clone() };
+        assert!(!super::wants_web_ui(&terminal));
+
+        let cfg = LoopConfig {
+            check_command: "true".into(),
+            max_attempts: 3,
+            check_timeout_secs: 60,
+            max_wall_secs: None,
+            max_tokens: None,
+        };
+        let driving = agency_core::registry::Run {
+            loop_config: Some(cfg.clone()),
+            loop_state: Some(LoopState::new(0)),
+            ..base.clone()
+        };
+        assert!(!super::wants_web_ui(&driving), "a driving loop has no server to show");
+
+        let mut done = LoopState::new(0);
+        done.status = LoopStatus::Complete;
+        let finished =
+            agency_core::registry::Run { loop_config: Some(cfg), loop_state: Some(done), ..base };
+        assert!(super::wants_web_ui(&finished), "a finished loop is interactive again");
     }
 
     /// AGE-83: enabling the knowledge graph looked like it did nothing. Nothing

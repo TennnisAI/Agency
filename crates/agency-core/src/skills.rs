@@ -48,9 +48,10 @@ pub fn exclude_pattern(segments: &[&str]) -> String {
     format!("/{}/agency-*", segments.join("/"))
 }
 
-/// Where `agent` reads project-local skills from: path segments under the
-/// worktree. `None` means the agent has no project-local skills convention
-/// Agency knows, and nothing is written for it.
+/// Every project-local skills convention Agency knows, as
+/// `(agent, path segments under the worktree)`. One table so the emission, the
+/// exclude and the tests all read the same rows: a new agent added here cannot
+/// land without the exclude that covers it.
 ///
 /// Claude Code reads `.claude/skills/<name>/SKILL.md` from the directory it was
 /// launched in. DeepSeek Harness discovers `<projectRoot>/.agents/skills` on
@@ -58,12 +59,14 @@ pub fn exclude_pattern(segments: &[&str]) -> String {
 /// vendor-neutral directory its own repo symlinks `.claude/skills` to. The
 /// other agents Agency ships either have no skills mechanism or have only a
 /// user-scope one, and Agency writes inside the workspace only.
+const SKILLS_TARGETS: &[(&str, &[&str])] =
+    &[("claude", &[".claude", "skills"]), ("dsh", &[".agents", "skills"])];
+
+/// Where `agent` reads project-local skills from (see [`SKILLS_TARGETS`]).
+/// `None` means the agent has no convention Agency knows, and nothing is
+/// written for it.
 fn skills_target(agent: &str) -> Option<&'static [&'static str]> {
-    match agent {
-        "claude" => Some(&[".claude", "skills"]),
-        "dsh" => Some(&[".agents", "skills"]),
-        _ => None,
-    }
+    SKILLS_TARGETS.iter().find(|(a, _)| *a == agent).map(|(_, segments)| *segments)
 }
 
 /// Whether Agency can emit a skills kit for this agent.
@@ -829,18 +832,21 @@ mod tests {
     }
 
     /// The exclude pattern has to cover the path the kit is actually written
-    /// to, or the whole kit shows up in the run's diff.
+    /// to, or the whole kit shows up in the run's diff. Driven off
+    /// [`SKILLS_TARGETS`] rather than a list of its own, so an agent added
+    /// there is covered here the moment it lands.
     #[test]
     fn the_exclude_pattern_covers_what_is_written() {
         let ws = workspace();
-        for (agent, root) in [("claude", ".claude/skills"), ("dsh", ".agents/skills")] {
-            let segments = skills_target(agent).unwrap();
-            let pattern = exclude_pattern(segments);
+        assert!(!SKILLS_TARGETS.is_empty());
+        for (agent, segments) in SKILLS_TARGETS {
+            let root = segments.join("/");
+            let pattern = exclude_pattern(skills_target(agent).expect("listed agent has a target"));
             let prefix = pattern.trim_start_matches('/').trim_end_matches('*');
             for skill in kit(&ws, &skills_dir(&ws)) {
                 assert!(
                     format!("{root}/{}", skill.name).starts_with(prefix),
-                    "{} is not covered by {pattern}",
+                    "{agent}: {} is not covered by {pattern}",
                     skill.name
                 );
                 assert!(skill.name.starts_with("agency-"), "{} is not namespaced", skill.name);

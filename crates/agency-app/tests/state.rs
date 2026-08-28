@@ -1162,6 +1162,61 @@ fn extra_session_rejects_terminal_runs() {
     state.discard_run(&term.id).unwrap();
 }
 
+/// A web-served agent (dsh) binds one port for the whole workspace, so exactly
+/// one session may serve it — and whichever session that is, the run has to
+/// name it, or its GUI is a server nobody in the app can reach.
+#[test]
+fn one_web_gui_session_per_workspace_and_the_run_names_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let state = common::state(&dir);
+    // Registered under the catalog's own name, which is what the web recipe is
+    // keyed by; the command only has to exist so the tab can be launched.
+    for name in ["dsh", "idle"] {
+        state
+            .register_profile(AgentProfile {
+                name: name.into(),
+                command: "/bin/sh".into(),
+                args: vec!["-c".into(), "sleep 30".into()],
+                env: vec![],
+                resume_args: None,
+                loop_args: None,
+            })
+            .unwrap();
+    }
+    let project = state.add_project("demo", &repo).unwrap();
+
+    // A run whose own agent serves the GUI: the primary session owns the port.
+    let web = state.create_run(&project.id, "", "dsh", None, "HEAD", None).unwrap();
+    assert_eq!(web.gui_session_id.as_deref(), Some(web.id.as_str()));
+    assert!(web.gui_port.is_some(), "a dsh run with a port block has a GUI port");
+    // A second one in the same workspace would lose the bind; refuse with why.
+    let err = state.start_run_session(&web.id, Some("dsh"), "").unwrap_err().to_string();
+    assert!(err.contains("already uses"), "unexpected error: {err}");
+
+    // A run whose agent is a plain terminal one: no GUI until a web tab opens,
+    // and then the tab — not the run — is what the pane keys off.
+    let plain = state.create_run(&project.id, "", "idle", None, "HEAD", None).unwrap();
+    assert_eq!(plain.gui_port, None);
+    assert_eq!(plain.gui_session_id, None);
+    let tab = state.start_run_session(&plain.id, Some("dsh"), "").unwrap();
+    let refreshed = state
+        .list_runs(&project.id)
+        .unwrap()
+        .into_iter()
+        .find(|r| r.id == plain.id)
+        .expect("run still listed");
+    assert_eq!(refreshed.gui_session_id.as_deref(), Some(tab.id.as_str()));
+    // Its own block's port, not the dsh run's: each workspace serves its own.
+    assert_eq!(refreshed.gui_port, refreshed.port.map(|base| base + 8));
+    assert_ne!(refreshed.gui_port, web.gui_port);
+
+    state.discard_run(&web.id).unwrap();
+    state.discard_run(&plain.id).unwrap();
+}
+
 #[test]
 fn send_review_comments_errors_when_session_not_running() {
     let dir = tempfile::tempdir().unwrap();

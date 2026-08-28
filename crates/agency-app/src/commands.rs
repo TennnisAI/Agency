@@ -766,7 +766,10 @@ pub async fn merge_task(
         .map_err(|e| e.to_string())?;
     if let MergeOutcome::Conflicts { files } = &outcome {
         let settings = state.notif_settings().unwrap_or_default();
-        let (focused, active) = state.ui_snapshot();
+        // The OS's answer, not the webview's: a document blurred by a banner
+        // or a panel is not the user having left (see `foreground`).
+        let (reported, active) = state.ui_snapshot();
+        let focused = crate::foreground::in_front(reported);
         let suppressed =
             crate::notifier::suppressed(&settings, focused, active.as_deref(), &task_id);
         if settings.merge_attention && !suppressed {
@@ -2070,9 +2073,11 @@ pub fn set_ui_state(
     focused: bool,
     active_run: Option<String>,
 ) {
-    // A fresh focus edge right after a notification means the user (most
-    // likely) clicked it — macOS offers no real click callback, so deep-link
-    // to the notified run via the same event the tray menu uses.
+    // Coming back to the app opens the run whose notification arrived while
+    // the user was away, via the same event the tray menu uses. A notification
+    // posted while they were already here is left alone: only a click on it
+    // means anything, and macOS reports that one for real (AGE-166, and see
+    // notif_macos::on_notification_click).
     if let Some((project_id, run_id)) = state.set_ui_state(focused, active_run) {
         use tauri::Emitter;
         let _ = app.emit("tray-open-run", crate::tray::OpenRun { project_id, run_id });

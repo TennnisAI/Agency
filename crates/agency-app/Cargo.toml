@@ -49,8 +49,10 @@ uuid = { version = "1", features = ["v4"] }
 # NSImage/NSBitmapImageRep encode the preview screenshot (preview_shot.rs).
 # NSMenu/NSMenuItem are the WebKit context menu the app filters
 # (webview_menu.rs); the identifier it filters on comes from the
-# NSUserInterfaceItemIdentification protocol.
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSPasteboard", "NSPasteboardItem", "NSImage", "NSImageRep", "NSBitmapImageRep", "NSMenu", "NSMenuItem", "NSUserInterfaceItemIdentification"] }
+# NSUserInterfaceItemIdentification protocol. NSRunningApplication answers
+# whether Agency is frontmost, which the webview's focus bit only approximates
+# (foreground.rs).
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSPasteboard", "NSPasteboardItem", "NSImage", "NSImageRep", "NSBitmapImageRep", "NSMenu", "NSMenuItem", "NSRunningApplication", "NSUserInterfaceItemIdentification"] }
 # Named explicitly (not left to feature unification with tauri's own objc2 use):
 # iterating the pasteboard's NSArray needs NSEnumerator, and dropping it turns
 # into a type error here rather than anywhere near the code that wants it.

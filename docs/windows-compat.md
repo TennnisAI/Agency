@@ -48,10 +48,14 @@ Everything Agency spawns goes through a Unix login shell today:
   formatting paths into shell strings (e.g. the graphify MCP serve command in
   `state.rs merged_mcp_servers`) must quote for spaces/backslashes.
 - **Notifications / tray / titlebar overlay** — Tauri abstracts most of it,
-  but the notification click-deeplink workaround in `state.rs` is tuned to
-  macOS notification-center behavior, and `notif_macos.rs` exists only to get
-  a banner shown while Agency itself is frontmost — Windows toasts already do
-  that, so the module stays macOS-gated rather than growing a port.
+  but `notif_macos.rs` is macOS-only twice over: it gets a banner shown while
+  Agency itself is frontmost (Windows toasts already do that), and it patches
+  the notification delegate to hear clicks, which is how `state.rs` knows to
+  open the run a notification was about. A port needs its own answer to "the
+  user clicked this notification"; without one, only the fallback survives —
+  a return from the background opens the run notified while the app was away.
+  `foreground.rs` is the other half of that: it answers whether Agency is
+  frontmost, which the webview's focus bit only approximates.
 - **`command_on_path`** (`state.rs`) — checks executability Unix-style;
   Windows needs PATHEXT-aware lookup (`gh` → `gh.exe`).
 

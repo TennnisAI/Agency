@@ -4,6 +4,7 @@ mod agent_diag;
 mod clipboard;
 mod commands;
 mod datadir;
+mod foreground;
 mod gates;
 mod lifecycle;
 mod looper;
@@ -377,6 +378,19 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         // otherwise macOS files them away unseen and only the ones raised
         // while the app is in the background are ever visible (AGE-33).
         crate::notif_macos::present_while_frontmost();
+        // A click on the banner is the one unambiguous "take me to that
+        // agent". Everything else the app can see — the window becoming key,
+        // the document getting its focus back — happens just as readily when
+        // the user clicks back into a window a banner or a panel had blurred,
+        // which is what used to teleport them mid-sentence (AGE-166).
+        let click_handle = app.handle().clone();
+        crate::notif_macos::on_notification_click(move || {
+            use tauri::Emitter;
+            let Some(state) = click_handle.try_state::<AppState>() else { return };
+            let Some((project_id, run_id)) = state.take_notification_target() else { return };
+            crate::tray::show_main(&click_handle);
+            let _ = click_handle.emit("tray-open-run", crate::tray::OpenRun { project_id, run_id });
+        });
         // And take WebKit's own dead items out of the context menus the app
         // cannot reach from JS: the ones inside the preview frames (AGE-158).
         crate::webview_menu::install();
@@ -437,7 +451,11 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 let settings = state.notif_settings().unwrap_or_default();
-                let (focused, active) = state.ui_snapshot();
+                // The OS's answer to "is the user in Agency", not the
+                // webview's: a blurred document is not a backgrounded app
+                // (AGE-166, and see `foreground`).
+                let (reported, active) = state.ui_snapshot();
+                let focused = crate::foreground::in_front(reported);
 
                 let snaps = match state.watch_snapshot() {
                     Ok(s) => s,
@@ -482,15 +500,16 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                         if enabled && !suppressed {
                             let (title, body) = crate::notifier::message(ev, &snap.label);
                             let _ = handle.notification().builder().title(title).body(body).show();
-                            // Clicking the notification activates the app; the
-                            // focus edge in set_ui_state deep-links to this run.
-                            // Only armed while unfocused — a notification seen
-                            // while already in the app shouldn't cause a jump
-                            // on some later blur/refocus. A `project:` snapshot
-                            // (the checkout's own run scripts) names no run, so
-                            // it opens the project without deep-linking.
-                            if !focused && !snap.id.starts_with("project:") {
-                                state.note_notification(&snap.project_id, &snap.id);
+                            // The run a click on this banner opens. Whether
+                            // Agency was in the background rides along: coming
+                            // back to the app opens what was posted while the
+                            // user was away, and nothing else (AGE-166, and
+                            // see notifier::opens_notified_run). A `project:`
+                            // snapshot (the checkout's own run scripts) names
+                            // no run, so it opens the project without
+                            // deep-linking.
+                            if !snap.id.starts_with("project:") {
+                                state.note_notification(&snap.project_id, &snap.id, !focused);
                             }
                         }
                     }
@@ -555,7 +574,8 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                     return;
                 }
                 let settings = state.notif_settings().unwrap_or_default();
-                let (focused, active) = state.ui_snapshot();
+                let (reported, active) = state.ui_snapshot();
+                let focused = crate::foreground::in_front(reported);
                 for n in notices {
                     let suppressed = !settings.loop_events
                         || crate::notifier::suppressed(
@@ -597,9 +617,7 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                         ("Loop stalled".to_string(), format!("{} — {}", n.label, why))
                     };
                     let _ = loop_handle.notification().builder().title(title).body(body).show();
-                    if !focused {
-                        state.note_notification(&n.project_id, &n.run_id);
-                    }
+                    state.note_notification(&n.project_id, &n.run_id, !focused);
                 }
             }));
             if tick_result.is_err() {

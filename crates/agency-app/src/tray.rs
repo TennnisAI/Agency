@@ -30,7 +30,9 @@ pub struct OpenRun {
     pub run_id: String,
 }
 
-fn show_main(app: &AppHandle) {
+/// Bring the window back for a request that came from outside it: a tray
+/// item, or a click on a notification.
+pub(crate) fn show_main(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
         let _ = w.set_focus();

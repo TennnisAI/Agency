@@ -190,6 +190,38 @@ pub fn suppressed(
     settings.only_when_watching && focused && active == Some(run_id)
 }
 
+/// How long a notification stays worth opening. Long enough to cover reading
+/// the banner and clicking it; short enough that a return to the app an hour
+/// later doesn't teleport the user to a stale run.
+pub const OPEN_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// What is asking to open the run a notification was about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpenTrigger {
+    /// The user clicked the notification itself. macOS tells us (the delegate
+    /// hook in `notif_macos`), and it is an unambiguous "take me there".
+    Click,
+    /// Agency became the focused app again — a guess, not a request.
+    Focus,
+}
+
+/// Whether a notification's run should be opened now.
+///
+/// AGE-166: a focus change is not consent. The webview blurs for a native
+/// menu, a panel, a banner — all without the user leaving the app — so
+/// treating the focus that comes back as "the user clicked the notification"
+/// jumped them to another agent on a click anywhere in the app. A click on the
+/// notification always opens; regaining focus only opens what was posted while
+/// Agency really was in the background, which is the case where returning to
+/// the app *is* the user acting on the banner.
+pub fn opens_notified_run(
+    trigger: OpenTrigger,
+    from_background: bool,
+    age: std::time::Duration,
+) -> bool {
+    age < OPEN_TTL && (trigger == OpenTrigger::Click || from_background)
+}
+
 /// Notification (title, body) for an event about the run labelled `label`.
 pub fn message(kind: &NotifyKind, label: &str) -> (String, String) {
     match kind {
@@ -495,5 +527,26 @@ mod tests {
         let (title, body) = message(&NotifyKind::Finished, "claude: fix login");
         assert!(!title.is_empty());
         assert!(body.contains("claude: fix login"));
+    }
+
+    /// AGE-166: the app jumped to the notified agent on a click anywhere in
+    /// the window. The click landed on a webview that had blurred while the
+    /// user stayed in the app, and the focus coming back was read as them
+    /// answering the banner.
+    #[test]
+    fn regaining_focus_only_opens_what_was_notified_from_the_background() {
+        let fresh = std::time::Duration::from_secs(1);
+        assert!(!opens_notified_run(OpenTrigger::Focus, false, fresh), "the AGE-166 jump");
+        assert!(opens_notified_run(OpenTrigger::Focus, true, fresh), "a real return from away");
+        // A click is the user pointing at the run, in front or not.
+        assert!(opens_notified_run(OpenTrigger::Click, false, fresh));
+        assert!(opens_notified_run(OpenTrigger::Click, true, fresh));
+    }
+
+    #[test]
+    fn a_stale_notification_opens_nothing() {
+        let stale = OPEN_TTL + std::time::Duration::from_secs(1);
+        assert!(!opens_notified_run(OpenTrigger::Click, true, stale));
+        assert!(!opens_notified_run(OpenTrigger::Focus, true, stale));
     }
 }

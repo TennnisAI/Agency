@@ -1356,20 +1356,20 @@ fn fmt_bytes(data: &[u8]) -> String {
     format!("[{}] {:?}", hex.join(" "), String::from_utf8_lossy(data))
 }
 
-/// The run the most recent notification was about. macOS gives us no
-/// notification-click callback (the plugin's actions API is mobile-only), but
-/// clicking a notification *activates the app* — so we deep-link to this run
-/// on the next unfocused→focused edge instead.
+/// The run the most recent notification was about, waiting for the user to ask
+/// for it. Two things may ask, and `notifier::opens_notified_run` decides which
+/// one this entry answers to: a click on the notification (macOS routes that
+/// through the delegate hook in `notif_macos`), or Agency becoming the focused
+/// app again — but only for a notification posted while it was in the
+/// background, because that return is the user coming back to the banner.
 struct PendingOpen {
     project_id: String,
     run_id: String,
+    /// Whether Agency was in the background when the notification went out —
+    /// the OS's answer, not the webview's (see `foreground`).
+    from_background: bool,
     at: std::time::Instant,
 }
-
-/// How long a notification stays deep-linkable. Long enough to cover reading
-/// the banner and clicking it; short enough that a manual return to the app an
-/// hour later doesn't teleport the user to a stale run.
-const PENDING_OPEN_TTL: std::time::Duration = std::time::Duration::from_secs(300);
 
 #[derive(Default)]
 struct UiState {
@@ -1380,6 +1380,23 @@ struct UiState {
     /// nothing else.
     active_run: Option<String>,
     pending_open: Option<PendingOpen>,
+}
+
+/// Hand over the pending notification target if `trigger` is one it answers to,
+/// and clear it. Anything else leaves it in place for the trigger that does —
+/// a banner the user has not clicked yet outlives a focus change.
+fn take_pending_open(
+    ui: &mut UiState,
+    trigger: crate::notifier::OpenTrigger,
+) -> Option<(String, String)> {
+    let opens = ui.pending_open.as_ref().is_some_and(|p| {
+        crate::notifier::opens_notified_run(trigger, p.from_background, p.at.elapsed())
+    });
+    if !opens {
+        return None;
+    }
+    let p = ui.pending_open.take()?;
+    Some((p.project_id, p.run_id))
 }
 
 /// One asking of an agent's listing command: the agent, and the directory the
@@ -7284,8 +7301,11 @@ impl AppState {
     }
 
     /// Update focus/active-run state. On an unfocused→focused edge, hand back a
-    /// still-fresh pending notification target (consuming it) so the caller can
-    /// deep-link the UI to the run the user was just notified about.
+    /// pending notification target the return itself answers for (consuming
+    /// it), so the caller can deep-link the UI to the run the user came back
+    /// for. A notification posted while Agency was in front is left where it
+    /// is: the user is already here, and only a click on it means anything
+    /// (AGE-166).
     pub fn set_ui_state(
         &self,
         focused: bool,
@@ -7295,22 +7315,25 @@ impl AppState {
         let was_focused = ui.focused;
         ui.focused = focused;
         ui.active_run = active_run;
-        if focused && !was_focused {
-            if let Some(p) = ui.pending_open.take() {
-                if p.at.elapsed() < PENDING_OPEN_TTL {
-                    return Some((p.project_id, p.run_id));
-                }
-            }
+        if !(focused && !was_focused) {
+            return None;
         }
-        None
+        take_pending_open(&mut ui, crate::notifier::OpenTrigger::Focus)
+    }
+
+    /// The run to open because the user clicked its notification.
+    pub fn take_notification_target(&self) -> Option<(String, String)> {
+        let mut ui = self.ui.lock().unwrap();
+        take_pending_open(&mut ui, crate::notifier::OpenTrigger::Click)
     }
 
     /// Record the run a just-shown notification is about (see [`PendingOpen`]).
-    pub fn note_notification(&self, project_id: &str, run_id: &str) {
+    pub fn note_notification(&self, project_id: &str, run_id: &str, from_background: bool) {
         let mut ui = self.ui.lock().unwrap();
         ui.pending_open = Some(PendingOpen {
             project_id: project_id.to_string(),
             run_id: run_id.to_string(),
+            from_background,
             at: std::time::Instant::now(),
         });
     }

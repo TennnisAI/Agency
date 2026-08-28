@@ -2510,7 +2510,12 @@ input, textarea, code,
 .file-preview-md :is(code, pre) {
   font-family: var(--mono); font-size: 12.5px; background: var(--crust); border-radius: 8px;
 }
-.file-preview-md code { padding: 1px 5px; }
+/* A code span that wraps keeps its padding on both lines: sliced, the second
+   fragment starts flush against the text and the chip reads as mis-sized. */
+.file-preview-md code {
+  padding: 1px 5px;
+  -webkit-box-decoration-break: clone; box-decoration-break: clone;
+}
 .file-preview-md pre { position: relative; padding: 12px 14px; overflow: auto; }
 .file-preview-md pre code { padding: 0; background: none; }
 .file-preview-md pre[data-lang] { padding-top: 26px; }
@@ -2523,8 +2528,20 @@ input, textarea, code,
   border-left: 3px solid var(--s1); margin-left: 0; padding-left: 14px; color: var(--sub0);
 }
 .file-preview-md img { max-width: 100%; border-radius: 6px; }
+/* Tables scroll in the wrap lib/mdHtml puts around them, and the cells wrap on
+   word boundaries only. An `overflow-wrap` that allows a mid-word break counts
+   that break while a column's min-content width is measured, and a column
+   squeezed that far breaks its own header down the middle: a "Chars" header
+   came out stacked "C / ha / rs" in the live preview and in `.md`. The root
+   here sets `break-word`, which WebKit does not take that far today; the cells
+   stop depending on that. */
+.file-preview-md .md-table-wrap { margin: .8em 0; overflow-x: auto; }
+.file-preview-md .md-table-wrap > table { margin: 0; }
 .file-preview-md table { border-collapse: collapse; }
-.file-preview-md :is(th, td) { border: 1px solid var(--line); padding: 6px 10px; }
+.file-preview-md :is(th, td) {
+  border: 1px solid var(--line); padding: 6px 10px;
+  word-break: normal; overflow-wrap: normal;
+}
 .file-preview-md th { background: var(--mantle); text-align: left; }
 .file-preview-md hr { border: none; border-top: 1px solid var(--line); margin: 1.6em 0; }
 .file-preview-md input[type=checkbox] { margin-right: .4em; }
@@ -3459,14 +3476,39 @@ input, textarea, code,
    scroll sideways. */
 .md-live .lp-table-wrap { margin: 3px 0 10px; overflow-x: auto; }
 .md-live .lp-table { border-collapse: collapse; font-size: 0.94em; }
+/* The cells opt out of the editor's own wrapping. CodeMirror's
+   .cm-lineWrapping sets `word-break: break-word` and `overflow-wrap: anywhere`
+   on the content, and both count a mid-word break as a wrap opportunity while a
+   column's min-content width is measured, so auto table layout was free to
+   squeeze a column narrower than its own header: a "Chars" column came out one
+   character wide, stacked "C / ha / rs". Normal wrapping floors every column at
+   its longest word, and a table too wide for the note scrolls in the wrap. */
 .md-live .lp-table th,
 .md-live .lp-table td {
   border: 1px solid var(--line); padding: 4px 11px;
   text-align: left; vertical-align: top; cursor: text;
+  word-break: normal; overflow-wrap: normal;
 }
 /* The body keeps the prose color: revealing the raw rows must not look like
    the text changed weight, only that the chrome went away. */
 .md-live .lp-table th { background: var(--mantle); font-weight: 650; }
+/* Chips in a cell paint a real background instead of the prose rule's
+   pseudo-element. An absolutely positioned ::before resolves against the box
+   bounding the FIRST and LAST fragment of a wrapped inline, so a code span
+   broken over two lines in a narrow column drew one tall rectangle as wide as
+   its last line only, sitting behind the first line's text. Cloning the
+   background gives every line its own chip. The z-index layering the prose
+   rule needs buys nothing here: a cell paints its own opaque background, and
+   a selection that reaches the table covers the widget whole. */
+.md-live .lp-table :is(.lp-code, .lp-highlight, .lp-tag)::before { content: none; }
+.md-live .lp-table :is(.lp-code, .lp-highlight, .lp-tag) {
+  -webkit-box-decoration-break: clone; box-decoration-break: clone;
+}
+.md-live .lp-table .lp-code { background: var(--crust); border-radius: 4px; }
+.md-live .lp-table .lp-highlight {
+  background: color-mix(in srgb, var(--yellow) 30%, transparent); border-radius: 3px;
+}
+.md-live .lp-table .lp-tag { background: var(--s1); border-radius: 999px; }
 .md-live .lp-table-raw { font-family: var(--mono); font-size: 0.88em; }
 
 /* Frontmatter properties card (fmEditor.ts): an editable block widget that
@@ -3659,14 +3701,26 @@ input, textarea, code,
 .md h1, .md h2, .md h3, .md h4 { margin: 12px 0 6px; line-height: 1.25; }
 .md h1 { font-size: 17px; } .md h2 { font-size: 15px; } .md h3 { font-size: 13.5px; }
 .md a { color: var(--blue); }
-.md code { font-family: var(--mono); font-size: 12px; background: var(--crust); border-radius: 5px; padding: 1px 5px; }
+.md code {
+  font-family: var(--mono); font-size: 12px; background: var(--crust); border-radius: 5px;
+  padding: 1px 5px; -webkit-box-decoration-break: clone; box-decoration-break: clone;
+}
 .md pre { background: var(--crust); border-radius: 8px; padding: 10px 12px; overflow-x: auto; }
 .md pre code { background: none; padding: 0; }
 .md blockquote { border-left: 3px solid var(--s1); margin-left: 0; padding-left: 12px; color: var(--sub0); }
 .md ul, .md ol { padding-left: 20px; }
 .md img { max-width: 100%; }
+/* Same pair as the file preview: the wrap (lib/mdHtml) takes the sideways
+   scroll, and cells break on word boundaries so no column collapses below its
+   longest word. `.md` sets `overflow-wrap: anywhere` for long URLs in prose,
+   which is exactly the value that squeezes a column to one character. */
+.md .md-table-wrap { margin: 6px 0; overflow-x: auto; }
+.md .md-table-wrap > table { margin: 0; }
 .md table { border-collapse: collapse; }
-.md th, .md td { border: 1px solid var(--line); padding: 4px 8px; }
+.md th, .md td {
+  border: 1px solid var(--line); padding: 4px 8px;
+  word-break: normal; overflow-wrap: normal;
+}
 .md hr { border: none; border-top: 1px solid var(--line); }
 
 /* Two-pane panel: PR list + review. */

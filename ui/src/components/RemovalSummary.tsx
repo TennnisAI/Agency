@@ -9,22 +9,16 @@ import { RemovalCopy } from "../lib/runRemoval";
  * merge and "archive" as expensive. Shown side by side, with the branch's real
  * state in them, the decision makes itself.
  *
- * Shared by the confirm dialogs and by the merge window's last step so all
- * three describe one action rather than three that sound different.
+ * Shared by the confirm dialogs so they describe one action rather than several
+ * that sound different. The merge window's last step is not one of them: three
+ * buttons there share one explanation, which `mergeTidyCopy` writes instead.
  */
 export default function RemovalSummary({
   copy,
   checking,
   probeFailed,
-  hideLead,
 }: {
   copy: RemovalCopy;
-  /**
-   * Drop the opening sentence. For a host that has already said what this is
-   * about — the merge window, whose own heading is the lead — where repeating
-   * it reads as the dialog talking to itself.
-   */
-  hideLead?: boolean;
   /** The branch is still being read, so the lists are not final yet. */
   checking?: boolean;
   /** It could not be read at all. */
@@ -32,7 +26,7 @@ export default function RemovalSummary({
 }) {
   return (
     <div className="removal-body">
-      {!hideLead && <p>{copy.lead}</p>}
+      <p>{copy.lead}</p>
       <div className="removal-lists">
         {copy.goes.length > 0 && (
           <div className="removal-col">
@@ -55,14 +49,32 @@ export default function RemovalSummary({
           </div>
         )}
       </div>
-      {checking && <p className="removal-checking">Checking the branch…</p>}
-      {probeFailed && (
-        <p className="removal-warn">
-          Agency could not read this branch, so it cannot say here what happens to it. A branch
-          that is the only copy of its work is kept either way.
-        </p>
-      )}
+      <BranchProbeNote checking={checking} probeFailed={probeFailed} />
       {copy.warning && <p className="removal-warn">{copy.warning}</p>}
     </div>
   );
+}
+
+/**
+ * What the window says when it has no plan to show yet, or none at all. Shared
+ * with the merge window so both hedge in the same words: a guess about a branch
+ * reads as a promise about it.
+ */
+export function BranchProbeNote({
+  checking,
+  probeFailed,
+}: {
+  checking?: boolean;
+  probeFailed?: boolean;
+}) {
+  if (checking) return <p className="removal-checking">Checking the branch…</p>;
+  if (probeFailed) {
+    return (
+      <p className="removal-warn">
+        Agency could not read this branch, so it cannot say here what happens to it. A branch that
+        is the only copy of its work is kept either way.
+      </p>
+    );
+  }
+  return null;
 }

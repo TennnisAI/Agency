@@ -15,10 +15,10 @@ import {
   runCleanup,
   sendMergeConflict,
 } from "../api";
-import { removalCopy } from "../lib/runRemoval";
+import { mergeTidyCopy, removalCopy } from "../lib/runRemoval";
 import PrSection from "./PrSection";
 import ConfirmDialog from "./ConfirmDialog";
-import RemovalSummary from "./RemovalSummary";
+import RemovalSummary, { BranchProbeNote } from "./RemovalSummary";
 import ProgressReadout from "./ProgressReadout";
 import { useRuns } from "../store/runs";
 import { useModalKeys } from "../hooks/useModalKeys";
@@ -266,7 +266,7 @@ export default function MergeModal({
     branch: preview?.branch ?? "",
     worktree: true,
   };
-  const tidy = removalCopy(removalRun, "archive", plan);
+  const tidy = mergeTidyCopy(plan);
   const deleteCopy = removalCopy(removalRun, "delete", plan);
 
   // Once a merge is in progress, keep asking git where it stands: the resolver
@@ -401,24 +401,44 @@ export default function MergeModal({
         {merging && <ProgressReadout progress={gitStep} fallback="Merging…" />}
 
         {outcome?.kind === "clean" && (
-          <div>
+          <div className="merge-done">
             <p className="merge-ok">
               ✓ Merged cleanly into {preview?.base ?? "main"} · <code>{outcome.commit.slice(0, 10)}</code>
             </p>
-            {/* The last step of the merge, spelled out rather than left as a
-                choice between two verbs. Archiving after a merge takes the
-                agent branch too — it is a second name for commits that are now
-                on the base — so the list below is what makes that legible, and
-                is why the delete beside it is not a red button. */}
+            {/* The three buttons under this are the whole decision, so the
+                copy is those three verbs and nothing else. It used to be the
+                archive teardown's own Removes/Keeps lists under a heading,
+                "Tidy up", that named no button on screen and explained one
+                option of the three (AGE-164).
+
+                The second sentence is the mechanics — the worktree, and the
+                agent branch a post-merge archive takes because it is now a
+                second name for commits on the base, which is also why the
+                delete beside it is not a red button. That much is hushable.
+                The caveat is not: it is the only line that can change which
+                button you press. */}
             <div className="merge-cleanup">
-              <p className="merge-cleanup-head">Tidy up</p>
-              <RemovalSummary copy={tidy} checking={!plan && !planFailed} probeFailed={planFailed && !plan} hideLead />
+              <p className="merge-choices">
+                {tidy.choices.map((c, i) => (
+                  <span key={c.verb}>
+                    {i > 0 && (i === tidy.choices.length - 1 ? ", and " : ", ")}
+                    <b>{c.verb}</b> {c.text}
+                    {i === tidy.choices.length - 1 && "."}
+                  </span>
+                ))}
+              </p>
               {!hushNote && (
-                <p className="merge-note">
-                  Deleting instead drops the record too. Neither touches the merged commit.{" "}
-                  <button className="hush-link" onClick={() => setHushNote(true)}>Don't show this again</button>
-                </p>
+                <>
+                  {tidy.detail && (
+                    <p className="merge-note">
+                      {tidy.detail}{" "}
+                      <button className="hush-link" onClick={() => setHushNote(true)}>Don't show this again</button>
+                    </p>
+                  )}
+                  <BranchProbeNote checking={!plan && !planFailed} probeFailed={planFailed && !plan} />
+                </>
               )}
+              {tidy.caveat && <p className="removal-warn">{tidy.caveat}</p>}
             </div>
             <div className="git-actions">
               {losers.length > 0 ? (

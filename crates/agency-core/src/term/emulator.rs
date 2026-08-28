@@ -9,7 +9,7 @@
 use alacritty_terminal::event::VoidListener;
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::{Column, Line};
-use alacritty_terminal::term::cell::{Cell, Flags};
+use alacritty_terminal::term::cell::{Cell, Flags, Hyperlink};
 use alacritty_terminal::term::{Config, Term, TermMode};
 // API correction vs. brief: `Processor` in vte 0.15 is generic over a Timeout
 // handler (E0283 if type is omitted). Must use `Processor::<StdSyncHandler>::new()`.
@@ -190,11 +190,14 @@ impl Emulator {
         // opposed to real content (a glyph, or a blank with a colored background
         // like a status bar). Both the row-blank scan and the per-row trim use
         // this so a fully-colored bar row is never mistaken for empty.
+        // The layout flags are excluded because a spacer *is* padding: it holds
+        // a space only so the grid's column arithmetic works, and a client
+        // derives it from the glyph beside it rather than being sent one.
         let is_padding = |li: i32, col: usize| {
             let cell = &grid[Line(li)][Column(col)];
             cell.c == ' '
                 && cell.bg == Color::Named(NamedColor::Background)
-                && cell.flags.is_empty()
+                && cell.flags.difference(LAYOUT_FLAGS).is_empty()
         };
         let row_blank = |li: i32| (0..self.cols as usize).all(|col| is_padding(li, col));
         // Exclusive column past the last cell worth emitting on a row. Trailing
@@ -225,27 +228,72 @@ impl Emulator {
                 break;
             }
         }
+        // A row the child never ended: its text ran past the right edge and the
+        // terminal carried it onto the next row. The grid marks that on the last
+        // cell, and it is the difference between one logical line and two.
+        let soft_wrapped = |li: i32| {
+            self.cols > 0
+                && grid[Line(li)][Column(self.cols as usize - 1)].flags.contains(Flags::WRAPLINE)
+        };
         let mut last = Style::reset();
+        // A hyperlink is not an SGR and the `\x1b[0m` closing each row does not
+        // end one, so it is tracked across the whole repaint rather than reset
+        // per row — a link the child wrote across a wrap is one link.
+        let mut link: Option<Hyperlink> = None;
         for li in start..end {
-            // CRLF *between* rows, never after the last one: a trailing newline on
-            // a full screen scrolls the top row into scrollback and shifts every
-            // row up by one — the child then redraws relative to a screen that is
-            // off by a line, which is the "cursor stuck at the bottom" desync.
-            if li > start {
-                data.extend_from_slice(b"\r\n");
-                last = Style::reset();
-            }
-            for col in 0..content_end(li) {
+            // A soft-wrapped row is emitted to its full width and *not* followed
+            // by a newline: filling the last column is what makes the client
+            // wrap on its own, and a client that wrapped on its own remembers
+            // the join. Hard-breaking it instead loses that, and the loss only
+            // shows later — the pane stops reflowing those lines, so resizing
+            // the window after a reattach leaves everything written before it
+            // broken at the old width, and a copied line comes out with a
+            // newline through the middle of it.
+            let wrapped = soft_wrapped(li);
+            let row_end = if wrapped { self.cols as usize } else { content_end(li) };
+            for col in 0..row_end {
                 let cell = &grid[Line(li)][Column(col)];
+                // The second half of a double-width glyph. The grid keeps it as
+                // a cell of its own so its columns add up, but a client draws
+                // both halves from the glyph itself — so sending the spacer's
+                // space puts a *third* column on screen and shoves the rest of
+                // the row one place right, compounding per glyph. A line of CJK
+                // or emoji came back from a reattach visibly staggered.
+                if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+                    continue;
+                }
                 let style = Style::of(cell);
                 if style != last {
                     data.extend_from_slice(sgr(style).as_bytes());
                     last = style;
                 }
+                // OSC 8: text the child marked up as a link itself. The pane
+                // gives these the same ⌘-click as the ones it finds by scanning
+                // (`ui/src/lib/termLinkProvider.ts`), and the marking lives on
+                // the cell rather than in the text, so a snapshot that leaves it
+                // out is a link that reads the same and no longer opens.
+                let want = cell.hyperlink().filter(|h| hyperlink_open(h).is_some());
+                if want != link {
+                    let open = want.as_ref().and_then(hyperlink_open);
+                    data.extend_from_slice(open.as_deref().unwrap_or(OSC8_CLOSE).as_bytes());
+                    link = want;
+                }
                 let mut buf = [0u8; 4];
                 data.extend_from_slice(cell.c.encode_utf8(&mut buf).as_bytes());
             }
             data.extend_from_slice(b"\x1b[0m");
+            last = Style::reset();
+            // CRLF *between* rows, never after the last one: a trailing newline
+            // on a full screen scrolls the top row into scrollback and shifts
+            // every row up by one — the child then redraws relative to a screen
+            // that is off by a line, which is the "cursor stuck at the bottom"
+            // desync.
+            if li + 1 < end && !wrapped {
+                data.extend_from_slice(b"\r\n");
+            }
+        }
+        if link.is_some() {
+            data.extend_from_slice(OSC8_CLOSE.as_bytes());
         }
 
         // Re-assert the input/display modes the child had turned on. These change
@@ -315,6 +363,56 @@ impl Emulator {
     }
 }
 
+/// Ends whatever OSC 8 hyperlink is open.
+const OSC8_CLOSE: &str = "\x1b]8;;\x1b\\";
+
+/// The OSC 8 that reopens `link`, or `None` when it cannot be replayed safely.
+///
+/// Default-deny, and stricter than either parser: a URI is emitted only when
+/// both will read back exactly what the grid holds.
+///
+/// - A control character would end the OSC string early and hand the rest of
+///   the URI to the parser as commands. Nothing else here is a string, so this
+///   is the one place a byte of program output could escape its quoting.
+/// - A `;` is read by the pane as the separator before the URI, and it keeps
+///   only what precedes it, while alacritty rejoins the pieces. The same bytes
+///   would mean two different links to the two sides.
+///
+/// OSC 8 asks for both percent-encoded, so neither belongs in a URI to begin
+/// with, and a link dropped here degrades to ordinary text — which the pane's
+/// own scanner picks up anyway whenever the text is the URL.
+fn hyperlink_open(link: &Hyperlink) -> Option<String> {
+    let uri = link.uri();
+    if uri.is_empty() || !osc_safe(uri) {
+        return None;
+    }
+    // The id is what lets a client treat the cells of one link as one thing
+    // (highlighting all of it on hover, across a wrap). It is optional, so an
+    // unusable one costs only that. `:` separates key=value pairs in the
+    // parameter field, so it is excluded along with the unsafe bytes.
+    let id = Some(link.id()).filter(|id| !id.is_empty() && osc_safe(id) && !id.contains(':'));
+    match id {
+        Some(id) => Some(format!("\x1b]8;id={id};{uri}\x1b\\")),
+        None => Some(format!("\x1b]8;;{uri}\x1b\\")),
+    }
+}
+
+/// Whether `s` can go inside an OSC string and come back out unchanged.
+fn osc_safe(s: &str) -> bool {
+    !s.is_empty() && !s.contains(';') && !s.chars().any(char::is_control)
+}
+
+/// Flags that record a cell's place in the grid rather than how it is drawn:
+/// the two halves of a double-width glyph, the filler standing in for one that
+/// did not fit on its row, and the soft-wrap marker. None of them is an SGR, so
+/// the run-length encoder must not treat a change in them as a style change —
+/// left in, they emitted a pointless reset between every wide glyph and the
+/// spacer beside it.
+const LAYOUT_FLAGS: Flags = Flags::WIDE_CHAR
+    .union(Flags::WIDE_CHAR_SPACER)
+    .union(Flags::LEADING_WIDE_CHAR_SPACER)
+    .union(Flags::WRAPLINE);
+
 /// Everything one SGR sets, which is everything that has to match before two
 /// neighbouring cells can share one.
 ///
@@ -341,7 +439,12 @@ impl Style {
     }
 
     fn of(cell: &Cell) -> Style {
-        Style { flags: cell.flags, fg: cell.fg, bg: cell.bg, underline: cell.underline_color() }
+        Style {
+            flags: cell.flags.difference(LAYOUT_FLAGS),
+            fg: cell.fg,
+            bg: cell.bg,
+            underline: cell.underline_color(),
+        }
     }
 }
 
@@ -909,6 +1012,107 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_does_not_stagger_double_width_glyphs() {
+        // A wide glyph owns two cells: the glyph, then a spacer holding a
+        // space so the column arithmetic works. A client draws both halves
+        // from the glyph, so emitting the spacer put a third column on screen
+        // and pushed the rest of the row one place right — compounding per
+        // glyph, so a line of CJK or emoji came back from a reattach
+        // staggered, one column further off with every character.
+        let mut e = Emulator::new(20, 3);
+        e.feed("日本語 tail".as_bytes());
+        let snap = e.snapshot();
+        assert!(
+            String::from_utf8_lossy(&snap.data).contains("日本語"),
+            "spacers (or a reset between them) broke up the glyphs: {:?}",
+            String::from_utf8_lossy(&snap.data),
+        );
+        let mut b = Emulator::new(snap.cols, snap.rows);
+        b.feed(&snap.data);
+        assert_eq!(b.capture(3), e.capture(3), "row drifted");
+        assert_eq!(b.term.grid()[Line(0)][Column(2)].c, '本');
+        assert_eq!(b.term.grid()[Line(0)][Column(7)].c, 't', "tail shifted right");
+    }
+
+    #[test]
+    fn snapshot_keeps_a_soft_wrapped_line_joined() {
+        // Text that ran past the right edge is one logical line. Ending the
+        // row with a CRLF instead makes it two, and the difference only shows
+        // afterwards: the pane stops reflowing those lines, so resizing the
+        // window after a reattach leaves everything written before it broken
+        // at the old width. Widening is what makes the loss visible, so that
+        // is what this checks.
+        let mut e = Emulator::new(10, 4);
+        e.feed(b"abcdefghijklmnopqrs");
+        let snap = e.snapshot();
+        let mut b = Emulator::new(snap.cols, snap.rows);
+        b.feed(&snap.data);
+        assert!(
+            b.term.grid()[Line(0)][Column(9)].flags.contains(Flags::WRAPLINE),
+            "the wrap was replayed as a hard line break",
+        );
+        e.resize(20, 4);
+        b.resize(20, 4);
+        assert_eq!(b.capture(4), e.capture(4));
+        assert!(b.capture(4).starts_with("abcdefghijklmnopqrs"), "line did not rejoin");
+    }
+
+    #[test]
+    fn snapshot_keeps_a_hard_break_hard() {
+        // The other half of the same rule, and the reason it keys off the
+        // grid's own flag rather than "is the row full": a row filled exactly
+        // to the edge and then ended by the child is two lines, and must not
+        // be rejoined by a widening.
+        let mut e = Emulator::new(10, 4);
+        e.feed(b"abcdefghij\r\nklm");
+        let snap = e.snapshot();
+        let mut b = Emulator::new(snap.cols, snap.rows);
+        b.feed(&snap.data);
+        e.resize(20, 4);
+        b.resize(20, 4);
+        assert_eq!(b.capture(4), e.capture(4));
+        assert!(!b.capture(4).contains("abcdefghijklm"), "a hard break was joined");
+    }
+
+    #[test]
+    fn snapshot_preserves_osc_8_hyperlinks() {
+        // Text the child marked up as a link itself. The pane gives these the
+        // same ⌘-click as the ones it finds by scanning, and the marking is on
+        // the cell rather than in the text — so dropping it left a link that
+        // reads exactly the same and no longer opens.
+        let mut e = Emulator::new(40, 3);
+        e.feed(b"see \x1b]8;;https://example.com\x07link\x1b]8;;\x07 end");
+        let snap = e.snapshot();
+        let mut b = Emulator::new(snap.cols, snap.rows);
+        b.feed(&snap.data);
+        let uri = |col: usize| {
+            b.term.grid()[Line(0)][Column(col)].hyperlink().map(|l| l.uri().to_string())
+        };
+        assert_eq!(uri(4).as_deref(), Some("https://example.com"), "hyperlink lost");
+        assert_eq!(uri(0), None, "link leaked onto the text before it");
+        assert_eq!(uri(8), None, "link was never closed");
+    }
+
+    #[test]
+    fn a_hyperlink_that_cannot_be_quoted_safely_is_dropped() {
+        // Default-deny on the one place program output travels inside a quoted
+        // string. A control character would close the string early and hand
+        // the rest to the parser as commands; a `;` means two different links
+        // to the two parsers, since the client keeps only what precedes it.
+        assert!(hyperlink_open(&Hyperlink::new(Some("id"), "https://ok/x".into())).is_some());
+        for bad in ["https://x/\x07\x1b[6n", "https://x/a;b", "https://x/\u{9b}c", ""] {
+            assert!(
+                hyperlink_open(&Hyperlink::new(Some("id"), bad.into())).is_none(),
+                "emitted an unsafe URI: {bad:?}",
+            );
+        }
+        // An unusable id costs only the id — the link itself still replays.
+        let odd = Hyperlink::new(Some("a;b"), "https://example.com".into());
+        let open = hyperlink_open(&odd).expect("link dropped for its id");
+        assert!(!open.contains("a;b") && open.contains("https://example.com"), "{open:?}");
+    }
+
+    #[test]
     fn snapshot_of_full_screen_does_not_scroll_top_row_off() {
         // Every row filled: a trailing CRLF would scroll row 0 into scrollback and
         // shift the whole screen up one — the reattach cursor-drift bug. The first
@@ -926,10 +1130,17 @@ mod tests {
 
     /// Split `data` into its escape sequences, ignoring the printable text.
     ///
-    /// Only the two shapes [`Emulator::snapshot`] emits are recognised: a CSI
-    /// (`ESC [`, parameters, final byte) and a two-byte `ESC x`. Anything else —
-    /// a DCS or OSC string, an unterminated CSI — comes back as one blob that
-    /// fails the allowlist below, which is the point of scanning this way.
+    /// Only the three shapes [`Emulator::snapshot`] emits are recognised: a CSI
+    /// (`ESC [`, parameters, final byte), an OSC (`ESC ]`, a string, `ESC \`)
+    /// and a two-byte `ESC x`. Anything else — a DCS, an OSC that never
+    /// terminates, an unterminated CSI — comes back as one blob that fails the
+    /// allowlist below, which is the point of scanning this way.
+    ///
+    /// The OSC arm matters most: its string swallows the bytes inside it, so
+    /// scanning without it would let a sequence smuggled into a URI past the
+    /// check as ordinary text. Only `ESC \` closes one here — a BEL-terminated
+    /// OSC runs to the end of the input and fails, which is deliberate, since
+    /// `snapshot` is not allowed to emit one.
     fn escapes(data: &[u8]) -> Vec<Vec<u8>> {
         let mut out = Vec::new();
         let mut i = 0;
@@ -940,13 +1151,23 @@ mod tests {
             }
             let start = i;
             i += 1;
-            if data.get(i) == Some(&b'[') {
-                i += 1;
-                while i < data.len() && !(0x40..=0x7e).contains(&data[i]) {
+            match data.get(i) {
+                Some(&b'[') => {
                     i += 1;
+                    while i < data.len() && !(0x40..=0x7e).contains(&data[i]) {
+                        i += 1;
+                    }
+                    i = (i + 1).min(data.len());
                 }
+                Some(&b']') => {
+                    i += 1;
+                    while i < data.len() && !data[i..].starts_with(b"\x1b\\") {
+                        i += 1;
+                    }
+                    i = (i + 2).min(data.len());
+                }
+                _ => i = (i + 1).min(data.len()),
             }
-            i = (i + 1).min(data.len());
             out.push(data[start..i].to_vec());
         }
         out
@@ -976,6 +1197,15 @@ mod tests {
         if EXACT.contains(&seq) {
             return true;
         }
+        // An OSC 8 hyperlink, the one string sequence `snapshot` emits. It
+        // provokes no reply, but it is the only place program output travels
+        // inside a quoted string, so the interior is held to what
+        // `hyperlink_open` promises: ST-terminated, and no control byte that
+        // could close the string early and let the tail run as commands.
+        if let Some(body) = seq.strip_prefix(b"\x1b]8;") {
+            let Some(body) = body.strip_suffix(b"\x1b\\") else { return false };
+            return !body.iter().any(u8::is_ascii_control);
+        }
         let Some(body) = seq.strip_prefix(b"\x1b[") else { return false };
         let Some((&last, params)) = body.split_last() else { return false };
         match last {
@@ -994,7 +1224,8 @@ mod tests {
         e.feed(
             b"\x1b[?1049h\x1b[?1002h\x1b[?1006h\x1b[?1004h\x1b[?2004h\x1b[?7l\x1b[?1h\x1b=\
               \x1b[?25l\x1b[1;38;5;196mbar\x1b[0m\r\n\
-              \x1b[8;9;4:3;58;2;255;0;0;31;44mrow",
+              \x1b[8;9;4:3;58;2;255;0;0;31;44mrow\x1b[0m\
+              \x1b]8;;https://example.com\x07link\x1b]8;;\x07",
         );
         for seq in escapes(&e.snapshot().data) {
             assert!(
@@ -1003,6 +1234,22 @@ mod tests {
                 String::from_utf8_lossy(&seq),
             );
         }
+    }
+
+    #[test]
+    fn the_escape_scanner_is_not_fooled_by_a_string_sequence() {
+        // A guard on the guard. Now that `snapshot` emits an OSC, the scanner
+        // has to swallow the string whole: one that walked past `ESC ]` and
+        // kept scanning would read the bytes *inside* a URI as ordinary text
+        // and wave a smuggled query through the allowlist below.
+        let smuggled = b"pre\x1b]8;;http://x\x07\x1b[6n\x1b\\post";
+        assert!(
+            escapes(smuggled).iter().any(|s| !is_declared(s)),
+            "a query hidden inside an OSC string passed the check",
+        );
+        // A BEL-terminated OSC is not a shape `snapshot` may emit, so it must
+        // fail rather than being scanned as if it had ended.
+        assert!(escapes(b"\x1b]8;;http://x\x07").iter().any(|s| !is_declared(s)));
     }
 
     #[test]

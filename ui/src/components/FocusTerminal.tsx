@@ -10,12 +10,13 @@ import { attachRun, detachRun, resizeRun, runInput, runPreview, ensureRunActive,
   attachShell, detachShell, resizeShell, shellInput, shellPreview, startShell,
   FileRoot, openTermPath } from "../api";
 import { useRuns } from "../store/runs";
-import { currentXtermTheme, minContrastRatio, TERMINAL_FONT_FAMILY } from "../lib/themes";
+import { currentXtermTheme, minContrastRatio, paperSurface, TERMINAL_FONT_FAMILY } from "../lib/themes";
 import { initialCapture, feed } from "../lib/firstPrompt";
 import { shouldSwallowWheel, createPageScroller } from "../lib/termScroll";
 import { follow, GESTURE_MS } from "../lib/termFollow";
 import { createInputWriter, type InputWriter } from "../lib/termInput";
 import { createOutputWriter } from "../lib/termOutput";
+import { createRecolor, recolor } from "../lib/termPaper";
 import { fullClipboardText } from "../lib/clipboard";
 import { FindRank, registerFindTarget } from "../lib/findBus";
 import { installTermLinks } from "../lib/termLinkProvider";
@@ -322,6 +323,11 @@ export default function FocusTerminal(
     let disposed = false;
     let liveStarted = false;
     let onData: { dispose(): void } | undefined;
+    // On a light theme, the dark backgrounds an agent paints go onto paper
+    // (see lib/termPaper). One filter per pane, over the live stream only: it
+    // carries a partial sequence between chunks, and the daemon's snapshot
+    // below is a whole frame on its own.
+    const paper = createRecolor(paperSurface);
     // Everything after the snapshot lands here first, so a frame's worth of it
     // reaches xterm as one write and repaints once (see lib/termOutput).
     const output = createOutputWriter((bytes) => {
@@ -330,7 +336,7 @@ export default function FocusTerminal(
       // was already a frame behind. Writing it would repaint a terminal nobody
       // can see.
       if (disposed) return;
-      term.write(bytes);
+      term.write(paper(bytes));
     });
     stream.preview(runId, 200).then((seed) => {
       // Only seed before the live stream lands. Once attach is streaming, the daemon has
@@ -386,7 +392,7 @@ export default function FocusTerminal(
           // nothing else, and `liveStarted` still flips the moment the first live
           // bytes exist, so the preview seed above cannot paint over them.
           const resume = input.suspend();
-          term.write(bytes, resume);
+          term.write(recolor(bytes, paperSurface()), resume);
           return;
         }
         output.write(bytes);

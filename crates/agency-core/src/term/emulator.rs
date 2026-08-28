@@ -357,8 +357,67 @@ fn push_color(codes: &mut Vec<String>, c: Color, fg: bool) {
             codes.push("5".into());
             codes.push(i.to_string());
         }
-        Color::Named(_) => { /* default fg/bg already reset by leading 0 */ }
+        Color::Named(n) => {
+            if let Some(code) = named_sgr(n, fg) {
+                codes.push(code.to_string());
+            }
+        }
     }
+}
+
+/// The SGR code for one of the sixteen palette colors: 30-37 / 90-97 as a
+/// foreground, 40-47 / 100-107 as a background. `None` for a color that has no
+/// SGR of its own, which the leading `0` has already restored.
+///
+/// This arm used to be `Color::Named(_) => {}` on the reasoning that a named
+/// color is the default fg/bg. It is not: `Named` is also every color a child
+/// asks for with a plain SGR 30-37/90-97/40-47, which is most of them, and
+/// dropping those repainted them in the default foreground. So navigating away
+/// from an agent and back — the only thing that replays a snapshot — turned the
+/// whole pane, scrollback included, into flat white-on-black or black-on-white.
+/// Only 256-color and truecolor output kept its color, which is why the loss
+/// looked total for some agents and partial for others.
+///
+/// Emitted as the palette code rather than resolved to an index or an RGB
+/// triple, so the pane keeps painting these cells from its own theme and a
+/// theme switch after a reattach still moves them.
+fn named_sgr(color: NamedColor, fg: bool) -> Option<u16> {
+    use NamedColor as N;
+    // The `Dim*` entries are the palette slots alacritty resolves a dimmed
+    // color to; they have no SGR of their own, so emit the base color and let
+    // the `2` that `sgr` writes for `Flags::DIM` carry the rest.
+    let (index, bright) = match color {
+        N::Black | N::DimBlack => (0, false),
+        N::Red | N::DimRed => (1, false),
+        N::Green | N::DimGreen => (2, false),
+        N::Yellow | N::DimYellow => (3, false),
+        N::Blue | N::DimBlue => (4, false),
+        N::Magenta | N::DimMagenta => (5, false),
+        N::Cyan | N::DimCyan => (6, false),
+        N::White | N::DimWhite => (7, false),
+        N::BrightBlack => (0, true),
+        N::BrightRed => (1, true),
+        N::BrightGreen => (2, true),
+        N::BrightYellow => (3, true),
+        N::BrightBlue => (4, true),
+        N::BrightMagenta => (5, true),
+        N::BrightCyan => (6, true),
+        N::BrightWhite => (7, true),
+        // The defaults, plus the two slots a cell never holds. Exhaustive on
+        // purpose: `NamedColor` is not `#[non_exhaustive]`, so a version bump
+        // that adds a color fails this build rather than silently losing it
+        // the way the wildcard did.
+        N::Foreground | N::Background | N::Cursor | N::BrightForeground | N::DimForeground => {
+            return None;
+        }
+    };
+    let base = match (fg, bright) {
+        (true, false) => 30,
+        (true, true) => 90,
+        (false, false) => 40,
+        (false, true) => 100,
+    };
+    Some(base + index)
 }
 
 #[cfg(test)]
@@ -615,6 +674,62 @@ mod tests {
             "trailing colored background dropped by trim: {:?}",
             String::from_utf8_lossy(&snap.data),
         );
+    }
+
+    #[test]
+    fn snapshot_preserves_palette_colors() {
+        // The colors-lost-on-return bug. A child that colors with plain SGR
+        // 31/92/44 — most of them do — had every one of those cells rebuilt
+        // with no color at all, so switching to another tab and back repainted
+        // the pane and its whole scrollback in the default foreground: flat
+        // white or black, depending on the theme.
+        let mut e = Emulator::new(40, 6);
+        e.feed(b"\x1b[31mred\x1b[92mbright\x1b[44mon-blue\x1b[0mplain");
+        let snap = e.snapshot();
+
+        let mut b = Emulator::new(snap.cols, snap.rows);
+        b.feed(&snap.data);
+        let cell = |col: usize| {
+            let c = &b.term.grid()[Line(0)][Column(col)];
+            (c.fg, c.bg)
+        };
+        let default_bg = Color::Named(NamedColor::Background);
+        assert_eq!(cell(0), (Color::Named(NamedColor::Red), default_bg), "red lost");
+        assert_eq!(cell(3), (Color::Named(NamedColor::BrightGreen), default_bg), "bright lost");
+        assert_eq!(
+            cell(9),
+            (Color::Named(NamedColor::BrightGreen), Color::Named(NamedColor::Blue)),
+            "background lost",
+        );
+        assert_eq!(
+            cell(16),
+            (Color::Named(NamedColor::Foreground), default_bg),
+            "the reset after them was not reproduced",
+        );
+    }
+
+    #[test]
+    fn snapshot_keeps_a_trailing_bar_painted_with_a_palette_color() {
+        // Same trim question as the 256-color case above, on the encoding an
+        // ordinary status bar actually uses: two spaces on a blue background
+        // are content, not padding, and must not be trimmed away.
+        let mut e = Emulator::new(20, 3);
+        e.feed(b"\x1b[44m  \x1b[0m");
+        let snap = e.snapshot();
+        let mut b = Emulator::new(snap.cols, snap.rows);
+        b.feed(&snap.data);
+        assert_eq!(b.term.grid()[Line(0)][Column(1)].bg, Color::Named(NamedColor::Blue));
+    }
+
+    #[test]
+    fn snapshot_spells_out_no_color_for_default_text() {
+        // The leading `0` of each SGR restores the default fg/bg, so naming
+        // them would only bloat the replay — and would pin the cells to a
+        // palette entry, which a later theme change could no longer move.
+        let mut e = Emulator::new(40, 6);
+        e.feed(b"plain");
+        let text = String::from_utf8_lossy(&e.snapshot().data).to_string();
+        assert!(!text.contains("\x1b[0;"), "default text carries color codes: {text:?}");
     }
 
     #[test]

@@ -95,6 +95,12 @@ export interface RunInfo {
   deleted: number;
   files: number;
   port: number | null;
+  // Where this run's agent serves its browser GUI on 127.0.0.1 (agents whose
+  // interactive surface is a web app, e.g. dsh). Null for terminal agents.
+  guiPort: number | null;
+  // Something answers on guiPort right now, so the GUI pane can load it
+  // instead of a connection error. Only ever true while the agent runs.
+  guiLive: boolean;
   kind: "agent" | "terminal";
   // True while one of the project's run scripts is still running in this run's
   // workspace — the dot on the tile and on the Run tab.
@@ -901,6 +907,11 @@ export interface CatalogEntry {
    * False means a dispatched issue or review starts the agent promptless.
    */
   acceptsPrompt: boolean;
+  /**
+   * This agent's interactive surface is a browser GUI served from the
+   * workspace; Agency renders it beside the server's log pane.
+   */
+  servesWebUi: boolean;
 }
 
 /**

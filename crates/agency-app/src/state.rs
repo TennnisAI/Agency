@@ -226,6 +226,15 @@ pub struct RunInfo {
     pub deleted: u32,
     pub files: u32,
     pub port: Option<u16>,
+    /// Where this run's agent serves its browser GUI (see
+    /// `agent_catalog::WebUi`), on 127.0.0.1. None for terminal agents, and
+    /// for a GUI run whose block had no room — the server is then on the
+    /// CLI's own default port, which Agency won't claim to know.
+    pub gui_port: Option<u16>,
+    /// Something is accepting connections on `gui_port` right now, so the GUI
+    /// pane can load it instead of a connection error. Only ever true while
+    /// the agent session runs.
+    pub gui_live: bool,
     pub kind: String,
     /// True while at least one of the project's run scripts is still running in
     /// this run's workspace, so the board can show it without anyone opening
@@ -625,6 +634,32 @@ fn with_model(profile: &AgentProfile, model: Option<&str>) -> AgentProfile {
         loop_args: profile.loop_args.as_deref().map(with_extra),
         ..profile.clone()
     }
+}
+
+/// A copy of `profile` whose interactive launch boots the agent's web GUI on
+/// the run's own port (see [`crate::agent_catalog::WebUi`]). A no-op for every
+/// terminal agent and for custom profiles.
+///
+/// Prepended, not appended: dsh's launcher hands everything after its own
+/// flags to the booted app, so the `web` selector has to come ahead of
+/// whatever the user put in the profile's arguments, or a user argument would
+/// be read as the app selection. Loop recipes are left alone — the headless
+/// one-shot opens no port and must never boot a server.
+///
+/// `gui_port` is None for a run that predates port blocks or whose block is
+/// too small to hold a GUI port; the server then comes up on the CLI's own
+/// default port. One such run works; a second collides there, loudly, in its
+/// own pane — which beats refusing to launch over a ports-config edge.
+fn with_web_ui(profile: &AgentProfile, gui_port: Option<u16>) -> AgentProfile {
+    let Some(web) = crate::agent_catalog::web_ui(&profile.name) else {
+        return profile.clone();
+    };
+    let mut args: Vec<String> = web.args.iter().map(|a| a.to_string()).collect();
+    if let Some(port) = gui_port {
+        args.extend(web.port_args.iter().map(|a| a.replace("{{port}}", &port.to_string())));
+    }
+    args.extend(profile.args.iter().cloned());
+    AgentProfile { args, ..profile.clone() }
 }
 
 /// Put `model` at the front of a newline-joined most-recently-used list,
@@ -1297,6 +1332,26 @@ fn preview_mcp_port_for(
     agency_core::preview::mcp_port(port_base?, config.ports.block_size)
 }
 
+/// The port a web-GUI agent's server is told to bind: the second-to-last of
+/// the run's port block. The block's first port is the workspace's own
+/// `$AGENCY_PORT` (the dev server the agent may start) and its last is the
+/// preview MCP server, so the GUI has to sit elsewhere or the agent's own app
+/// would fight it. `None` when the agent serves no GUI, the run has no port
+/// block, or the block is too small to hold a third port — the launch then
+/// falls back to the CLI's default port (see `with_web_ui`).
+fn gui_port_for(
+    config: &agency_core::config::AgencyConfig,
+    port_base: Option<u16>,
+    agent: &str,
+) -> Option<u16> {
+    crate::agent_catalog::web_ui(agent)?;
+    let base = port_base?;
+    if config.ports.block_size < 3 {
+        return None;
+    }
+    base.checked_add(config.ports.block_size - 2)
+}
+
 fn now_secs() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
@@ -1808,6 +1863,7 @@ impl AppState {
                 supports_mcp: agency_core::mcp::agent_supported(entry.id),
                 supports_mcp_auth: agency_core::mcp::auth_supported(entry.id),
                 accepts_prompt: entry.prompt != crate::agent_catalog::PromptDelivery::Unsupported,
+                serves_web_ui: entry.web_ui.is_some(),
             })
             .collect())
     }
@@ -2205,6 +2261,19 @@ impl AppState {
             }
             _ => run.branch.clone(),
         };
+        // Computed rather than stored so it can never disagree with what the
+        // launch rendered — both come from the same `gui_port_for`. The config
+        // load is two small file reads; the diff stat above already runs a
+        // whole git process on the same poll.
+        let gui_port = crate::agent_catalog::web_ui(&run.agent).and_then(|_| {
+            let repo = self.project_repo(&run.project_id).ok()?;
+            gui_port_for(&agency_core::config::load(&repo), run.port_base, &run.agent)
+        });
+        // Probed only while the session runs: a dead run's port is either free
+        // (instant refusal) or someone else's server, and claiming the latter
+        // as this run's GUI would render a stranger's page in its pane.
+        let gui_live = matches!(status, SessionStatus::Running)
+            && gui_port.is_some_and(agency_core::preview::serving);
         RunInfo {
             id: run.id.clone(),
             project_id: run.project_id.clone(),
@@ -2225,6 +2294,8 @@ impl AppState {
             deleted: stat.deleted,
             files: stat.files,
             port: run.port_base,
+            gui_port,
+            gui_live,
             kind: run.kind.clone(),
             run_scripts_live: any_run_script_live(&run.id, live),
             queued_messages: self.queued_message_count(&run.id),
@@ -2343,6 +2414,7 @@ impl AppState {
                 .get_profile(spec.agent)?
                 .ok_or_else(|| anyhow!("unknown agent profile: {agent}", agent = spec.agent))?;
             let profile = with_model(&profile, model.as_deref());
+            let profile = with_web_ui(&profile, gui_port_for(&config, Some(port), spec.agent));
             // The prefix the worktree's tracker briefing names, so `AGE-14`
             // reads to the agent as this project's key rather than a shape it
             // recognizes from some other tracker.
@@ -5789,7 +5861,10 @@ impl AppState {
             // run's model belongs to that agent's namespace — "opus" means
             // nothing to Codex. Only carry it when the tab is the same agent.
             let model = (agent == run.agent).then_some(run.model.as_deref()).flatten();
-            with_model(&profile, model)
+            let profile = with_model(&profile, model);
+            // Same GUI port as the run would use: start_run_session refuses a
+            // second web-GUI session in one workspace, so it can't be taken.
+            with_web_ui(&profile, gui_port_for(&config, run.port_base, agent))
         };
         // The extra tab may run a different agent than the one the worktree
         // was created for; make sure MCP config exists in its native format.
@@ -5852,6 +5927,26 @@ impl AppState {
             bail!("run is archived — restore it before adding sessions");
         }
         let agent = agent.unwrap_or(&run.agent).to_string();
+        // One web-GUI session per workspace: a run has one GUI port, so a
+        // second server in the same worktree would lose the bind and die on
+        // "address in use" the moment it started. Refuse with the reason
+        // instead of spawning a tab whose whole life is that error.
+        if crate::agent_catalog::web_ui(&agent).is_some() {
+            let taken = crate::agent_catalog::web_ui(&run.agent).is_some()
+                || self
+                    .registry
+                    .lock()
+                    .unwrap()
+                    .list_run_sessions(run_id)?
+                    .iter()
+                    .any(|s| crate::agent_catalog::web_ui(&s.agent).is_some());
+            if taken {
+                bail!(
+                    "{agent} serves its GUI on this workspace's port, which another session \
+                     here already uses — start it as its own agent instead"
+                );
+            }
+        }
         // Next tab number: the primary is implicitly 1, extras start at --2.
         // Gaps left by closed tabs are fine; only uniqueness matters.
         let next = {
@@ -6006,7 +6101,8 @@ impl AppState {
             // Whatever model the run started on, it comes back on: a resume
             // that quietly changed model would rewrite the session's terms
             // halfway through the work.
-            with_model(&profile, run.model.as_deref())
+            let profile = with_model(&profile, run.model.as_deref());
+            with_web_ui(&profile, gui_port_for(&config, run.port_base, &run.agent))
         };
         let mut env = self.provider_env()?;
         env.extend(profile.env.iter().cloned());
@@ -6078,7 +6174,8 @@ impl AppState {
             let profile = reg
                 .get_profile(&run.agent)?
                 .ok_or_else(|| anyhow!("unknown agent profile: {}", run.agent))?;
-            with_model(&profile, run.model.as_deref())
+            let profile = with_model(&profile, run.model.as_deref());
+            with_web_ui(&profile, gui_port_for(&config, run.port_base, &run.agent))
         };
         let mut env = self.provider_env()?;
         env.extend(profile.env.iter().cloned());
@@ -7508,6 +7605,68 @@ mod tests {
 
         config.preview.agent_tools = false;
         assert_eq!(preview_mcp_port_for(&config, Some(5240)), None, "the off switch is real");
+    }
+
+    /// The GUI port is derived from config like the preview port, never
+    /// allocated, so a relaunch serves where the pane already points. It must
+    /// stay off the block's first port ($AGENCY_PORT, the workspace's dev
+    /// server) and its last (the preview MCP server) or the agent's own app
+    /// would fight its own GUI.
+    #[test]
+    fn gui_port_is_the_blocks_second_to_last_and_only_for_web_agents() {
+        use agency_core::config::AgencyConfig;
+        let config = AgencyConfig::default(); // block_size 10
+        assert_eq!(super::gui_port_for(&config, Some(5240), "dsh"), Some(5248));
+        assert_ne!(
+            super::gui_port_for(&config, Some(5240), "dsh"),
+            agency_core::preview::mcp_port(5240, config.ports.block_size),
+            "the GUI port collides with the preview server's"
+        );
+        assert_eq!(super::gui_port_for(&config, Some(5240), "claude"), None);
+        assert_eq!(super::gui_port_for(&config, None, "dsh"), None, "no block, no port");
+        let mut small = AgencyConfig::default();
+        small.ports.block_size = 2;
+        assert_eq!(
+            super::gui_port_for(&small, Some(5240), "dsh"),
+            None,
+            "a two-port block holds the app and preview ports only"
+        );
+    }
+
+    /// The web recipe goes ahead of the profile's own arguments: dsh's
+    /// launcher hands everything after its own flags to the booted app, so a
+    /// user argument in front of `web` would be read as the app selection.
+    #[test]
+    fn with_web_ui_prepends_the_gui_recipe_and_leaves_terminal_agents_alone() {
+        let dsh = AgentProfile {
+            name: "dsh".into(),
+            command: "dsh".into(),
+            args: vec!["--trusted-host".into(), "example.test".into()],
+            env: vec![],
+            resume_args: None,
+            loop_args: Some(vec!["--profile".into(), "headless".into(), "{{prompt}}".into()]),
+        };
+        let launched = super::with_web_ui(&dsh, Some(5248));
+        assert_eq!(
+            launched.args,
+            vec!["web", "--no-open", "--port", "5248", "--trusted-host", "example.test"]
+        );
+        // The loop recipe must never boot the server: headless opens no port.
+        assert_eq!(launched.loop_args, dsh.loop_args);
+
+        // No port to pin: the server still boots, on the CLI's own default.
+        assert_eq!(super::with_web_ui(&dsh, None).args[..2], ["web", "--no-open"]);
+        assert!(!super::with_web_ui(&dsh, None).args.iter().any(|a| a.contains("{{port}}")));
+
+        let claude = AgentProfile {
+            name: "claude".into(),
+            command: "claude".into(),
+            args: vec![],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        };
+        assert_eq!(super::with_web_ui(&claude, Some(5248)), claude);
     }
 
     /// AGE-83: enabling the knowledge graph looked like it did nothing. Nothing

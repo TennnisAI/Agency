@@ -1,7 +1,7 @@
 //! What a dispatched agent is told about the project's issue tracker, written
 //! into each fresh worktree as `AGENTS.md` — the one instructions file every
-//! agent Agency ships (Claude Code, Codex, Cursor, OpenCode) reads on its own,
-//! with no launch flag to arrange it.
+//! agent Agency ships (Claude Code, Codex, Cursor, OpenCode, DeepSeek Harness)
+//! reads on its own, with no launch flag to arrange it.
 //!
 //! Issue files live in the project's own checkout under `.agency/issues/` and
 //! are untracked by git, so `git worktree add` never materializes them: from

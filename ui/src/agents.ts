@@ -16,6 +16,7 @@ export const AGENT_TYPES: AgentType[] = [
   { id: "gemini", label: "Gemini CLI" },
   { id: "kimi", label: "Kimi Code" },
   { id: "crush", label: "Crush" },
+  { id: "dsh", label: "DeepSeek Harness" },
 ];
 
 // Install one-liners for the preconfigured agents, used when a spawn is
@@ -32,6 +33,7 @@ export const INSTALL_COMMANDS: Record<string, string> = {
   gemini: "npm install -g @google/gemini-cli",
   kimi: "curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash",
   crush: "npm install -g @charmland/crush",
+  dsh: "npm install -g @deepseek-ai/dsh",
 };
 
 // A vendor-managed install updates through the CLI's own subcommand, keyed by
@@ -72,6 +74,7 @@ const COLORS: Record<string, string> = {
   gemini: "#89b4fa",
   kimi: "#f5c2e7",
   crush: "#a6e3a1",
+  dsh: "#89dceb",
 };
 
 export function agentColor(name: string): string {

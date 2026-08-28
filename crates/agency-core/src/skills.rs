@@ -39,20 +39,29 @@ pub const SKILL_FILE: &str = "SKILL.md";
 /// The resolver script, beside `agency-date-range/SKILL.md`.
 pub const RESOLVER_FILE: &str = "resolve.sh";
 
-/// What keeps the kit out of the run's diff. Anchored at the repo root and
-/// matching only our namespace, so a repo's own `.claude/skills/` is untouched.
-pub const EXCLUDE_PATTERN: &str = "/.claude/skills/agency-*";
+/// What keeps the kit out of the run's diff: one pattern per skills root,
+/// derived from the same [`skills_target`] entry that decided where to write,
+/// so a new agent's convention cannot land without its exclude. Anchored at the
+/// repo root and matching only our namespace, so a repo's own skills directory
+/// is untouched.
+pub fn exclude_pattern(segments: &[&str]) -> String {
+    format!("/{}/agency-*", segments.join("/"))
+}
 
 /// Where `agent` reads project-local skills from: path segments under the
 /// worktree. `None` means the agent has no project-local skills convention
 /// Agency knows, and nothing is written for it.
 ///
 /// Claude Code reads `.claude/skills/<name>/SKILL.md` from the directory it was
-/// launched in. The other agents Agency ships either have no skills mechanism
-/// or have only a user-scope one, and Agency writes inside the workspace only.
+/// launched in. DeepSeek Harness discovers `<projectRoot>/.agents/skills` on
+/// its own (rank 200 in its `skill-filesystem` roots, read at 0.1.0-rc.7), the
+/// vendor-neutral directory its own repo symlinks `.claude/skills` to. The
+/// other agents Agency ships either have no skills mechanism or have only a
+/// user-scope one, and Agency writes inside the workspace only.
 fn skills_target(agent: &str) -> Option<&'static [&'static str]> {
     match agent {
         "claude" => Some(&[".claude", "skills"]),
+        "dsh" => Some(&[".agents", "skills"]),
         _ => None,
     }
 }
@@ -179,7 +188,9 @@ pub fn emit_for_agent(agent: &str, ws: &Workspace) -> Result<bool> {
     // `.git/worktrees/<name>/info/exclude`: tested 2026-08-17, git reads only
     // the common dir's copy. Excluding costs the user nothing, since `git add
     // -f` still wins and an exclude has no say over a file once it is tracked.
-    if let Err(e) = crate::worktree::ensure_exclude_pattern(&ws.repo_root, EXCLUDE_PATTERN) {
+    if let Err(e) =
+        crate::worktree::ensure_exclude_pattern(&ws.repo_root, &exclude_pattern(segments))
+    {
         log::warn!("excluding the skills kit in {}: {e}", ws.repo_root.display());
     }
     Ok(true)
@@ -811,6 +822,7 @@ mod tests {
     #[test]
     fn only_agents_with_a_known_convention_get_a_kit() {
         assert!(agent_supported("claude"));
+        assert!(agent_supported("dsh"));
         for other in ["codex", "cursor", "opencode", "copilot", "shell", ""] {
             assert!(!agent_supported(other), "{other} claims a skills convention");
         }
@@ -821,14 +833,18 @@ mod tests {
     #[test]
     fn the_exclude_pattern_covers_what_is_written() {
         let ws = workspace();
-        let prefix = EXCLUDE_PATTERN.trim_start_matches('/').trim_end_matches('*');
-        for skill in kit(&ws, &skills_dir(&ws)) {
-            assert!(
-                format!(".claude/skills/{}", skill.name).starts_with(prefix),
-                "{} is not covered by {EXCLUDE_PATTERN}",
-                skill.name
-            );
-            assert!(skill.name.starts_with("agency-"), "{} is not namespaced", skill.name);
+        for (agent, root) in [("claude", ".claude/skills"), ("dsh", ".agents/skills")] {
+            let segments = skills_target(agent).unwrap();
+            let pattern = exclude_pattern(segments);
+            let prefix = pattern.trim_start_matches('/').trim_end_matches('*');
+            for skill in kit(&ws, &skills_dir(&ws)) {
+                assert!(
+                    format!("{root}/{}", skill.name).starts_with(prefix),
+                    "{} is not covered by {pattern}",
+                    skill.name
+                );
+                assert!(skill.name.starts_with("agency-"), "{} is not namespaced", skill.name);
+            }
         }
     }
 

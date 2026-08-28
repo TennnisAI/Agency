@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { useRuns, SpawnOpts } from "../store/runs";
 import {
   setRunTitle, renameRun, renameRunBranch,
@@ -30,6 +31,49 @@ import { TrashIcon, InboxIcon, TerminalIcon, PencilIcon, CheckIcon, BranchIcon }
 const SHELL_MIN = 120;
 const SHELL_MAX = 640;
 const SHELL_FOLD_KEY = "focus-shell-open";
+const GUI_FOLD_KEY = "focus-gui-open";
+
+// The pane for an agent whose interactive surface is a browser app served from
+// its workspace (RunInfo.guiPort, e.g. dsh). The terminal beside it keeps the
+// server's own log; this is where the user actually works, so it sits in the
+// run view like the Run tab's preview rather than being sent off to a browser
+// tab. Open in browser stays one click for anyone who prefers a real tab.
+function GuiPane({ run, width }: { run: RunInfo; width: number }) {
+  // Remounting the iframe is the reload: same trick as the Run tab's preview.
+  const [reloadKey, setReloadKey] = useState(0);
+  const url = `http://127.0.0.1:${run.guiPort}/`;
+  const running = run.status.state === "running";
+  return (
+    <div className="focus-gui" style={{ width, flex: "0 0 auto" }}>
+      <div className="focus-gui-head">
+        <code className="run-url">{url}</code>
+        <span className="spacer" />
+        <button
+          className="tile-act"
+          title="Reload the GUI"
+          onClick={() => setReloadKey((k) => k + 1)}
+        >⟳ Reload</button>
+        <button className="tile-act" title={`Open ${url} in your browser`} onClick={() => openUrl(url)}>
+          Open ↗
+        </button>
+      </div>
+      {run.guiLive ? (
+        <iframe
+          key={reloadKey}
+          className="focus-gui-frame"
+          src={url}
+          title={`${agentLabel(run.agent)} GUI`}
+        />
+      ) : (
+        <div className="focus-gui-wait">
+          {running
+            ? `Starting the ${agentLabel(run.agent)} GUI. It opens here once the server answers; the pane beside this is its log.`
+            : "The agent isn't running, so there is no GUI to show."}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function badgeClass(a: string) {
   return ["claude", "pi", "hermes"].includes(a) ? `badge ${a}` : "badge";
@@ -309,6 +353,28 @@ export default function AgentFocus({
       } catch { /* ignore quota / security errors */ }
       return next;
     });
+  // The GUI pane of a web-served agent (guiPort on the run). Open by default,
+  // because for such an agent the GUI is the surface the run is *for*; folded
+  // state is per run, like the companion terminal's.
+  const guiPane = usePaneWidth("focus-gui", 560, 320, 1400);
+  const guiFoldKey = focusedRunId ? `${GUI_FOLD_KEY}:${focusedRunId}` : null;
+  const [guiOpen, setGuiOpen] = useState<boolean>(true);
+  useEffect(() => {
+    setGuiOpen(
+      guiFoldKey && typeof localStorage !== "undefined"
+        ? loadFold(localStorage, guiFoldKey, true)
+        : true,
+    );
+  }, [guiFoldKey]);
+  const toggleGui = () =>
+    setGuiOpen((o) => {
+      const next = !o;
+      try {
+        if (guiFoldKey && typeof localStorage !== "undefined")
+          saveFold(localStorage, guiFoldKey, next);
+      } catch { /* ignore quota / security errors */ }
+      return next;
+    });
   const focused = runs.find((r) => r.id === focusedRunId) ?? null;
 
   // Issue chip (one-stop Phase 7): a run dispatched from an issue links back
@@ -424,6 +490,13 @@ export default function AgentFocus({
                   <QueuedMarker run={focused} />
                 </div>
                 <span className="spacer" />
+                {panel === PRIMARY_TAB && focused.guiPort != null && (
+                  <button
+                    className={`head-icon-btn ${guiOpen ? "on" : ""}`}
+                    title="Toggle this agent's GUI"
+                    onClick={toggleGui}
+                  ><span aria-hidden>◧</span></button>
+                )}
                 {panel !== "run" && (
                   <button
                     className={`head-icon-btn ${shellOpen ? "on" : ""}`}
@@ -523,10 +596,28 @@ export default function AgentFocus({
               )}
               {panel !== "run" ? (
                 <div className="focus-body">
-                  <FocusTerminal key={panel === PRIMARY_TAB ? focused.id : panel}
-                    runId={panel === PRIMARY_TAB ? focused.id : panel}
-                    altScrollArrows={panelIsShell}
-                    onFirstPrompt={panel === PRIMARY_TAB && !focused.title ? (line) => { setRunTitle(focused.id, line).catch(() => {}); } : undefined} />
+                  {/* The terminal row: the pane itself, plus the GUI beside it
+                      for an agent whose interactive surface is a browser app.
+                      The GUI belongs to the run's primary session (one GUI
+                      port per workspace), so extra tabs keep a plain pane. */}
+                  <div className="focus-body-main">
+                    <FocusTerminal key={panel === PRIMARY_TAB ? focused.id : panel}
+                      runId={panel === PRIMARY_TAB ? focused.id : panel}
+                      altScrollArrows={panelIsShell}
+                      onFirstPrompt={panel === PRIMARY_TAB && !focused.title ? (line) => { setRunTitle(focused.id, line).catch(() => {}); } : undefined} />
+                    {panel === PRIMARY_TAB && focused.guiPort != null && guiOpen && (
+                      <>
+                        <Resizer
+                          size={guiPane.width}
+                          min={320}
+                          max={1400}
+                          side="right"
+                          onChange={guiPane.setWidth}
+                        />
+                        <GuiPane run={focused} width={guiPane.width} />
+                      </>
+                    )}
+                  </div>
                   {shellOpen && (
                     <>
                       <Resizer orientation="horizontal" side="right"

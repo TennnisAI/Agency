@@ -1243,6 +1243,22 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
 
 /* ── Companion terminal (bottom panel in the agent focus view) ─────── */
 .focus-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+/* The terminal row: the pane, and beside it the GUI of a web-served agent. */
+.focus-body-main { flex: 1; min-height: 0; min-width: 0; display: flex; }
+.focus-body-main > .term-search-wrap { min-width: 0; }
+.focus-gui { min-height: 0; display: flex; flex-direction: column; border-left: 1px solid var(--line); }
+.focus-gui-head {
+  display: flex; align-items: center; gap: 8px; padding: 4px 10px;
+  background: var(--mantle); border-bottom: 1px solid var(--line); flex-shrink: 0;
+}
+.focus-gui-head .spacer { flex: 1; }
+/* White like .run-preview: the framed app paints its own background, and a
+   transparent frame over the app's dark chrome reads as a broken page. */
+.focus-gui-frame { flex: 1; min-height: 0; border: 0; background: #fff; }
+.focus-gui-wait {
+  flex: 1; display: flex; align-items: center; justify-content: center;
+  padding: 24px; text-align: center; font-size: 12px; color: var(--o1);
+}
 .focus-shell {
   display: flex; flex-direction: column; min-height: 0;
   border-top: 1px solid var(--line); background: var(--crust);

@@ -26,6 +26,24 @@ pub enum PromptDelivery {
     Unsupported,
 }
 
+/// An agent whose interactive surface is a browser GUI served from the
+/// worktree, not a TUI in the pane. The pane still shows the server's own log;
+/// the GUI is what the user actually works in, so the focus view renders it
+/// beside the pane and offers it to the browser.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WebUi {
+    /// argv prefix that boots the GUI server. Prepended ahead of the profile's
+    /// own arguments: for `dsh` the launcher hands everything after its own
+    /// flags to the booted app, so the `web` selector has to come first or a
+    /// user argument would be read as the app selection.
+    pub args: &'static [&'static str],
+    /// The flag recipe that pins the GUI to the run's own port, `{{port}}`
+    /// marking where the number goes. Kept apart from `args` so a run with no
+    /// port block still boots (on the CLI's default port) instead of launching
+    /// with a dangling flag.
+    pub port_args: &'static [&'static str],
+}
+
 /// How an agent's CLI takes a *model* choice on the command line. Stated per
 /// entry and never guessed: unlike a missing prompt, a wrong model flag is a
 /// loud failure — the CLI rejects the unknown option and the session dies
@@ -69,6 +87,9 @@ pub struct CatalogEntry {
     /// live run, exactly like the recipes above: a listing whose format we
     /// guessed would quietly offer the picker ids that are not ids.
     pub list_models: Option<ModelListing>,
+    /// Set when this agent's interactive surface is a browser GUI served from
+    /// the worktree (see [`WebUi`]). None for every terminal agent.
+    pub web_ui: Option<WebUi>,
 }
 
 /// Catalog entry as sent to the UI (includes whether it's already enabled).
@@ -90,6 +111,9 @@ pub struct CatalogEntryInfo {
     /// Whether this CLI can be handed an opening prompt when the run is created.
     /// False means a dispatched issue or review starts the agent promptless.
     pub accepts_prompt: bool,
+    /// Whether this agent's interactive surface is a browser GUI Agency serves
+    /// beside the pane (see [`WebUi`]), so onboarding and Settings can say so.
+    pub serves_web_ui: bool,
 }
 
 /// All built-in agent profiles Agency ships recipes for.
@@ -124,6 +148,7 @@ pub fn builtins() -> &'static [CatalogEntry] {
                 model: ModelDelivery::Flag(&["--model", "{{model}}"]),
                 models: &["fable", "opus", "sonnet", "haiku"],
                 list_models: None,
+                web_ui: None,
             },
             CatalogEntry {
                 id: "codex",
@@ -139,6 +164,7 @@ pub fn builtins() -> &'static [CatalogEntry] {
                 model: ModelDelivery::Flag(&["-m", "{{model}}"]),
                 models: &[],
                 list_models: None,
+                web_ui: None,
             },
             CatalogEntry {
                 id: "pi",
@@ -162,6 +188,7 @@ pub fn builtins() -> &'static [CatalogEntry] {
                     // (`~/.pi/`), so the answer is the same in every project.
                     scope: ListScope::User,
                 }),
+                web_ui: None,
             },
             CatalogEntry {
                 id: "opencode",
@@ -187,6 +214,7 @@ pub fn builtins() -> &'static [CatalogEntry] {
                     // for one project only lists there (AGE-135).
                     scope: ListScope::Project,
                 }),
+                web_ui: None,
             },
             CatalogEntry {
                 id: "copilot",
@@ -208,6 +236,7 @@ pub fn builtins() -> &'static [CatalogEntry] {
                 model: ModelDelivery::Flag(&["--model", "{{model}}"]),
                 models: &[],
                 list_models: None,
+                web_ui: None,
             },
             CatalogEntry {
                 id: "cursor",
@@ -230,6 +259,7 @@ pub fn builtins() -> &'static [CatalogEntry] {
                     // not from anything beside the code.
                     scope: ListScope::User,
                 }),
+                web_ui: None,
             },
             CatalogEntry {
                 id: "hermes",
@@ -244,6 +274,7 @@ pub fn builtins() -> &'static [CatalogEntry] {
                 model: ModelDelivery::Unsupported,
                 models: &[],
                 list_models: None,
+                web_ui: None,
             },
             CatalogEntry {
                 id: "gemini",
@@ -258,6 +289,7 @@ pub fn builtins() -> &'static [CatalogEntry] {
                 model: ModelDelivery::Flag(&["--model", "{{model}}"]),
                 models: &["auto", "pro", "flash", "flash-lite"],
                 list_models: None,
+                web_ui: None,
             },
             CatalogEntry {
                 id: "kimi",
@@ -272,6 +304,7 @@ pub fn builtins() -> &'static [CatalogEntry] {
                 model: ModelDelivery::Flag(&["--model", "{{model}}"]),
                 models: &[],
                 list_models: None,
+                web_ui: None,
             },
             CatalogEntry {
                 id: "crush",
@@ -298,10 +331,55 @@ pub fn builtins() -> &'static [CatalogEntry] {
                 model: ModelDelivery::Unsupported,
                 models: &[],
                 list_models: None,
+                web_ui: None,
+            },
+            CatalogEntry {
+                id: "dsh",
+                command: "dsh",
+                // Read off the launcher source at dsh-0.1.0-rc.7: `dsh` ships
+                // no TUI, and neither the launcher nor the web app takes an
+                // opening prompt on the command line — `dsh web`'s whole flag
+                // family is `--host`, `--port`, `--trusted-host`, `--no-open`.
+                // The prompt stays on the run and the user hands it over in
+                // the GUI.
+                prompt: PromptDelivery::Unsupported,
+                // Relaunching `dsh web` in the same worktree *is* the resume:
+                // sessions persist under $DSH_HOME keyed to the workspace
+                // directory, and the GUI reopens them itself. A resume recipe
+                // would be arguments the launcher reads as an app selection.
+                resume_args: None,
+                // The headless profile's own contract: one task as the
+                // positional argument, final answer on stdout, exit 0 on
+                // completion and 1 on abort or error — and it opens no
+                // listening port, so loop attempts never fight the GUI's.
+                loop_args: Some(vec!["--profile".into(), "headless".into(), "{{prompt}}".into()]),
+                // No launch-time model flag anywhere in the shipped apps: the
+                // model is chosen in the GUI (Settings > Models) or in dsh's
+                // own profile config, so there is nothing Agency can pass.
+                model: ModelDelivery::Unsupported,
+                models: &[],
+                list_models: None,
+                // `dsh web` serves its GUI on 127.0.0.1 (it refuses 0.0.0.0
+                // with a usage error) and by default opens the user's browser
+                // once the tree settles. --no-open keeps that handoff with
+                // Agency, which renders the GUI in the run's own pane instead;
+                // Open in browser stays one click, chosen, not sprung.
+                web_ui: Some(WebUi {
+                    args: &["web", "--no-open"],
+                    port_args: &["--port", "{{port}}"],
+                }),
             },
         ]
     })
     .as_slice()
+}
+
+/// The web-GUI recipe for `agent`, if its interactive surface is a browser GUI
+/// (see [`WebUi`]). None for every terminal agent and for custom profiles: we
+/// have not read their CLIs, and a guessed server recipe would replace the
+/// agent the user configured with a launch that does something else entirely.
+pub fn web_ui(agent: &str) -> Option<WebUi> {
+    find(agent)?.web_ui
 }
 
 /// How `agent`'s CLI takes an opening prompt. Unknown ids (custom profiles) keep
@@ -579,6 +657,36 @@ mod tests {
         assert!(sanitize_model("opus; rm -rf /").is_err());
         assert!(sanitize_model("opus $(id)").is_err());
         assert!(sanitize_model(&"a".repeat(MAX_MODEL_LEN + 1)).is_err());
+    }
+
+    /// The port recipe is rendered by token substitution like the prompt and
+    /// model recipes; a recipe without the token would pin every GUI to one
+    /// port and two concurrent runs would fight over it.
+    #[test]
+    fn every_web_ui_places_the_port_and_boots_something() {
+        for entry in builtins() {
+            let Some(web) = entry.web_ui else { continue };
+            assert!(
+                !web.args.is_empty(),
+                "{}'s web recipe boots nothing: the bare CLI is not a GUI server",
+                entry.id
+            );
+            assert!(
+                web.port_args.iter().any(|a| a.contains("{{port}}")),
+                "{}'s port recipe has no {{{{port}}}} token: {:?}",
+                entry.id,
+                web.port_args
+            );
+        }
+    }
+
+    /// A custom profile gets no web recipe: we have not read its CLI, and a
+    /// guessed server launch replaces whatever the user configured.
+    #[test]
+    fn web_ui_is_declared_not_guessed() {
+        assert!(web_ui("dsh").is_some());
+        assert!(web_ui("claude").is_none());
+        assert!(web_ui("my-own-agent").is_none());
     }
 
     #[test]

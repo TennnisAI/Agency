@@ -28,6 +28,19 @@ export function labelCodeLangs(html: string): string {
   );
 }
 
+/**
+ * Put every rendered table in its own scroll container. A table column is never
+ * narrower than its longest word, so a wide table has to overflow something,
+ * and the document is the wrong thing: the whole preview, or the comment it
+ * sits in, then scrolls sideways. Markdown cannot nest a table, and inline
+ * HTML that does is re-balanced by the parser DOMPurify runs afterwards.
+ */
+export function wrapTables(html: string): string {
+  return html
+    .replace(/<table(?=[\s>])/g, '<div class="md-table-wrap"><table')
+    .replace(/<\/table>/g, "</table></div>");
+}
+
 export interface RenderOpts {
   /**
    * Render a bare newline as a line break. On for chat-like bodies (a comment
@@ -52,7 +65,7 @@ export function renderMarkdown(text: string, opts: RenderOpts = {}): string {
     gfm: true,
     breaks: opts.breaks ?? false,
   }) as string;
-  const html = opts.labelFences ? labelCodeLangs(parsed) : parsed;
+  const html = wrapTables(opts.labelFences ? labelCodeLangs(parsed) : parsed);
   return DOMPurify.sanitize(html, { USE_PROFILES: { html: true } });
 }
 

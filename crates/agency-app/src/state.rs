@@ -8,7 +8,7 @@ use agency_core::worktree::WorktreeManager;
 use anyhow::{anyhow, bail, Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 use uuid;
 
@@ -239,6 +239,23 @@ pub struct RunInfo {
     pub deleted: u32,
     pub files: u32,
     pub port: Option<u16>,
+    /// Where this workspace's browser GUI is served (see
+    /// `agent_catalog::WebUi`), on 127.0.0.1. None when no session here serves
+    /// one, while a loop is driving (the headless attempt opens no port), and
+    /// for a GUI run whose block had no room — the server is then on the CLI's
+    /// own default port, which Agency won't claim to know.
+    pub gui_port: Option<u16>,
+    /// Which session serves `gui_port`: the run's own id when its primary
+    /// agent is the web-served one, or an extra tab's id. The UI keys the GUI
+    /// pane off this, so a web agent opened as a tab gets its GUI too rather
+    /// than a server nobody can reach.
+    pub gui_session_id: Option<String>,
+    /// Something is accepting connections on `gui_port` right now, so the GUI
+    /// pane can load it instead of a connection error. Only ever true while
+    /// the session that owns the port is running, and (for a web agent) after
+    /// the workspace handshake has finished — their first-paint selection
+    /// runs once, and an empty list never picks the folder we just launched in.
+    pub gui_live: bool,
     pub kind: String,
     /// True while at least one of the project's run scripts is still running in
     /// this run's workspace, so the board can show it without anyone opening
@@ -655,6 +672,54 @@ fn with_model(profile: &AgentProfile, model: Option<&str>) -> AgentProfile {
     }
 }
 
+/// A copy of `profile` whose interactive launch boots the agent's web GUI on
+/// the run's own port (see [`crate::agent_catalog::WebUi`]). A no-op for every
+/// terminal agent and for custom profiles.
+///
+/// Prepended, not appended: dsh's launcher hands everything after its own
+/// flags to the booted app, so the `web` selector has to come ahead of
+/// whatever the user put in the profile's arguments, or a user argument would
+/// be read as the app selection. Loop recipes are left alone — the headless
+/// one-shot opens no port and must never boot a server.
+///
+/// For dsh, also inserts `web --patch <agency overlay>` so the conversation
+/// sidebar starts collapsed (their layout store has no durable default; see
+/// [`crate::web_ui::ensure_collapse_sidebar_patch`]). `--patch` is a flag on
+/// the `web` subcommand itself, so it sits immediately after `web`, ahead of
+/// `--no-open` / `--port`.
+///
+/// `gui_port` is None for a run that predates port blocks or whose block is
+/// too small to hold a GUI port; the server then comes up on the CLI's own
+/// default port. One such run works; a second collides there, loudly, in its
+/// own pane — which beats refusing to launch over a ports-config edge.
+fn with_web_ui(
+    profile: &AgentProfile,
+    gui_port: Option<u16>,
+    data_dir: &std::path::Path,
+) -> AgentProfile {
+    let Some(web) = crate::agent_catalog::web_ui(&profile.name) else {
+        return profile.clone();
+    };
+    let mut args: Vec<String> = web.args.iter().map(|a| a.to_string()).collect();
+    // args[0] is the app selector (`web`); launcher overlays belong right after.
+    if profile.name == "dsh" {
+        match crate::web_ui::ensure_collapse_sidebar_patch(data_dir) {
+            Ok(patch) => {
+                args.insert(1, "--patch".into());
+                args.insert(2, patch.to_string_lossy().into_owned());
+            }
+            Err(e) => {
+                log::warn!("dsh collapse-sidebar patch unavailable; sidebar stays open: {e:#}")
+            }
+        }
+    }
+    if let Some(port) = gui_port {
+        args.extend(web.port_args.iter().map(|a| a.replace("{{port}}", &port.to_string())));
+    }
+    args.extend(profile.args.iter().cloned());
+    AgentProfile { args, ..profile.clone() }
+}
+
 /// Put `model` at the front of a newline-joined most-recently-used list,
 /// dropping any earlier occurrence and anything past the cap. Pure so the
 /// list's behaviour is testable without a database.
@@ -756,6 +821,10 @@ fn prompt_args(agent: &str, prompt: &str) -> Vec<String> {
         crate::agent_catalog::PromptDelivery::Positional => vec![prompt.to_string()],
         crate::agent_catalog::PromptDelivery::Args(recipe) => {
             recipe.iter().map(|a| a.replace("{{prompt}}", prompt)).collect()
+        }
+        crate::agent_catalog::PromptDelivery::AfterGuiReady => {
+            // Delivered by `web_ui::handshake` once the server answers, not argv.
+            Vec::new()
         }
         crate::agent_catalog::PromptDelivery::Unsupported => {
             log::warn!(
@@ -1047,6 +1116,17 @@ fn loop_argv(
 fn has_active_loop(run: &agency_core::registry::Run) -> bool {
     run.loop_config.is_some()
         && run.loop_state.as_ref().map(|s| !s.status.is_terminal()).unwrap_or(false)
+}
+
+/// Whether this run can offer a browser-GUI pane at all (see
+/// `agent_catalog::WebUi`): an agent run that a loop is not driving.
+///
+/// A loop attempt is `spawn_loop_attempt`'s headless one-shot, which by its own
+/// contract opens no listening port — so a GUI pane on a looping run would sit
+/// on "starting the GUI" for the life of the loop, waiting for a server that
+/// was never launched. A finished loop is interactive again, and gets one back.
+fn wants_web_ui(run: &agency_core::registry::Run) -> bool {
+    run.kind == "agent" && !has_active_loop(run)
 }
 
 /// Announce a teardown step on the same channel shape clone/push/spawn report
@@ -1468,6 +1548,26 @@ fn preview_mcp_port_for(
     agency_core::preview::mcp_port(port_base?, config.ports.block_size)
 }
 
+/// The port a web-GUI agent's server is told to bind: the second-to-last of
+/// the run's port block. The block's first port is the workspace's own
+/// `$AGENCY_PORT` (the dev server the agent may start) and its last is the
+/// preview MCP server, so the GUI has to sit elsewhere or the agent's own app
+/// would fight it. `None` when the agent serves no GUI, the run has no port
+/// block, or the block is too small to hold a third port — the launch then
+/// falls back to the CLI's default port (see `with_web_ui`).
+fn gui_port_for(
+    config: &agency_core::config::AgencyConfig,
+    port_base: Option<u16>,
+    agent: &str,
+) -> Option<u16> {
+    crate::agent_catalog::web_ui(agent)?;
+    let base = port_base?;
+    if config.ports.block_size < 3 {
+        return None;
+    }
+    base.checked_add(config.ports.block_size - 2)
+}
+
 fn now_secs() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
@@ -1597,6 +1697,10 @@ pub struct AppState {
     /// separates "waiting on the user" from "idle, never prompted" in
     /// `activity::classify`. In-memory: forgotten runs just show idle.
     prompted: Mutex<HashSet<String>>,
+    /// Web-GUI sessions whose post-boot handshake has finished (workspace
+    /// adopted, or the budget expired). `gui_live` stays false until the id is
+    /// here, so the iframe does not load an empty folder picker.
+    web_ui_ready: crate::web_ui::ReadySet,
     /// Per-session keyboard bookkeeping for the send queue: when the human last
     /// touched this pane, and whether what they typed is still sitting unsent on
     /// the prompt line. Written by `run_input`, read by `drain_session`.
@@ -1819,6 +1923,7 @@ impl AppState {
             activity: Mutex::new(HashMap::new()),
             usage: Mutex::new(HashMap::new()),
             prompted: Mutex::new(HashSet::new()),
+            web_ui_ready: Arc::new(Mutex::new(HashSet::new())),
             human_input: Mutex::new(HashMap::new()),
             send_queue: Mutex::new(HashMap::new()),
             queue_notices: Mutex::new(Vec::new()),
@@ -1858,10 +1963,36 @@ impl AppState {
         // by default). Agents with their own CLI auth (claude, codex, …) ignore
         // these. No cloud keys are injected — each agent uses its own login.
         let s = self.get_settings()?;
-        Ok(vec![
+        let mut env = vec![
             ("OPENAI_BASE_URL".into(), s.lm_studio_base_url),
             ("OPENAI_API_KEY".into(), "lm-studio".into()),
-        ])
+        ];
+        // Finder-launched bundles inherit no user secrets. dsh's first-run
+        // modal asks for DEEPSEEK_API_KEY on every launch until the process
+        // environment (or $DSH_HOME) already has one; passing the login-shell
+        // value is the same repair PATH already does, not Agency storing a key.
+        if let Some(key) = crate::pathenv::harvested("DEEPSEEK_API_KEY") {
+            env.push(("DEEPSEEK_API_KEY".into(), key));
+        }
+        Ok(env)
+    }
+
+    /// After a web-served agent binds, adopt this worktree as its GUI workspace
+    /// and (when `prompt` is non-empty) queue the opening ask. No-op for
+    /// terminal agents. `prompt` is empty on a resume so we do not re-send an
+    /// issue the existing dsh session already has.
+    fn kick_web_ui(
+        &self,
+        session_id: &str,
+        agent: &str,
+        port: Option<u16>,
+        cwd: &Path,
+        prompt: &str,
+    ) {
+        if crate::agent_catalog::web_ui(agent).is_none() {
+            return;
+        }
+        crate::web_ui::kick(&self.web_ui_ready, session_id, port, cwd, prompt);
     }
 
     pub fn register_profile(&self, profile: AgentProfile) -> Result<()> {
@@ -1996,6 +2127,7 @@ impl AppState {
                 supports_mcp: agency_core::mcp::agent_supported(entry.id),
                 supports_mcp_auth: agency_core::mcp::auth_supported(entry.id),
                 accepts_prompt: entry.prompt != crate::agent_catalog::PromptDelivery::Unsupported,
+                serves_web_ui: entry.web_ui.is_some(),
             })
             .collect())
     }
@@ -2404,6 +2536,26 @@ impl AppState {
         reg.get_run(id)?.ok_or_else(|| anyhow!("unknown run: {id}"))
     }
 
+    /// The session in this workspace whose agent serves a browser GUI, as
+    /// `(session id, agent)`. The primary session's id is the run's own; an
+    /// extra tab's is `<run id>--<n>`. `start_run_session` admits at most one
+    /// web-GUI session per workspace, so there is never a second to choose
+    /// between.
+    ///
+    /// The extra-tab lookup is one small indexed read, and only for runs that
+    /// could have a GUI at all — the same poll already runs a whole git
+    /// process per run for the diff stat.
+    fn web_ui_session(&self, run: &agency_core::registry::Run) -> Option<(String, String)> {
+        if crate::agent_catalog::web_ui(&run.agent).is_some() {
+            return Some((run.id.clone(), run.agent.clone()));
+        }
+        let sessions = self.registry.lock().unwrap().list_run_sessions(&run.id).ok()?;
+        sessions
+            .into_iter()
+            .find(|s| crate::agent_catalog::web_ui(&s.agent).is_some())
+            .map(|s| (s.id, s.agent))
+    }
+
     fn run_info(&self, run: &agency_core::registry::Run) -> RunInfo {
         let live = self.term.read().unwrap().list().unwrap_or_default();
         self.run_info_from(run, &live)
@@ -2451,6 +2603,37 @@ impl AppState {
             }
             _ => run.branch.clone(),
         };
+        let gui_session = wants_web_ui(run).then(|| self.web_ui_session(run)).flatten();
+        // Computed rather than stored so it can never disagree with what the
+        // launch rendered — both come from the same `gui_port_for`. The config
+        // load is two small file reads; the diff stat above already runs a
+        // whole git process on the same poll.
+        let gui_port = gui_session.as_ref().and_then(|(_, agent)| {
+            let repo = self.project_repo(&run.project_id).ok()?;
+            gui_port_for(&agency_core::config::load(&repo), run.port_base, agent)
+        });
+        // Probed only while the session that owns the port is running — which
+        // is not always the run's primary one, since a web agent can be an
+        // extra tab. A dead session's port is either free (instant refusal) or
+        // someone else's server, and claiming the latter as this run's GUI
+        // would render a stranger's page in its pane.
+        //
+        // The running check narrows that window but does not close it: if the
+        // server lost the bind (something outside Agency already had the port),
+        // the session is alive, the port answers, and the answer is the other
+        // process's. Nothing cheap distinguishes them from here — the bind
+        // error is in the session's own log, which is a tab away.
+        let gui_live = gui_port.is_some_and(|port| {
+            let name = gui_session.as_ref().map(|(id, _)| session_name(id)).unwrap_or_default();
+            let running =
+                live.iter().any(|(n, s)| *n == name && matches!(s, SessionStatus::Running));
+            // The iframe must not win the race against workspace.create: their
+            // startInitialSelection runs once and treats an empty list as done.
+            let handshake_done = gui_session
+                .as_ref()
+                .is_none_or(|(id, _)| self.web_ui_ready.lock().unwrap().contains(id));
+            running && agency_core::preview::serving(port) && handshake_done
+        });
         let (activity, attention) = self.read_activity(run, crate::activity::now_ms());
         RunInfo {
             id: run.id.clone(),
@@ -2467,6 +2650,9 @@ impl AppState {
             deleted: stat.deleted,
             files: stat.files,
             port: run.port_base,
+            gui_port,
+            gui_session_id: gui_session.map(|(id, _)| id),
+            gui_live,
             kind: run.kind.clone(),
             run_scripts_live: any_run_script_live(&run.id, live),
             queued_messages: self.queued_message_count(&run.id),
@@ -2585,6 +2771,11 @@ impl AppState {
                 .get_profile(spec.agent)?
                 .ok_or_else(|| anyhow!("unknown agent profile: {agent}", agent = spec.agent))?;
             let profile = with_model(&profile, model.as_deref());
+            let profile = with_web_ui(
+                &profile,
+                gui_port_for(&config, Some(port), spec.agent),
+                &self.data_dir,
+            );
             // The prefix the worktree's tracker briefing names, so `AGE-14`
             // reads to the agent as this project's key rather than a shape it
             // recognizes from some other tracker.
@@ -2714,6 +2905,13 @@ impl AppState {
                 }
                 return Err(e.into());
             }
+            self.kick_web_ui(
+                &id,
+                spec.agent,
+                gui_port_for(&config, Some(port), spec.agent),
+                &workspace.path,
+                spec.prompt,
+            );
         }
 
         // A run created with a real prompt gets a title immediately (word-based;
@@ -6239,7 +6437,10 @@ impl AppState {
             // run's model belongs to that agent's namespace — "opus" means
             // nothing to Codex. Only carry it when the tab is the same agent.
             let model = (agent == run.agent).then_some(run.model.as_deref()).flatten();
-            with_model(&profile, model)
+            let profile = with_model(&profile, model);
+            // Same GUI port as the run would use: start_run_session refuses a
+            // second web-GUI session in one workspace, so it can't be taken.
+            with_web_ui(&profile, gui_port_for(&config, run.port_base, agent), &self.data_dir)
         };
         // The extra tab may run a different agent than the one the worktree
         // was created for; make sure MCP config exists in its native format.
@@ -6282,7 +6483,15 @@ impl AppState {
             &env,
             220,
             50,
-        )
+        )?;
+        self.kick_web_ui(
+            sid,
+            agent,
+            gui_port_for(&config, run.port_base, agent),
+            &worktree,
+            prompt,
+        );
+        Ok(())
     }
 
     /// Open an additional agent tab in an existing run's worktree. `agent`
@@ -6302,6 +6511,28 @@ impl AppState {
             bail!("run is archived — restore it before adding sessions");
         }
         let agent = agent.unwrap_or(&run.agent).to_string();
+        // One web-GUI session per workspace: a run has one GUI port, so a
+        // second server in the same worktree would lose the bind and die on
+        // "address in use" the moment it started. Refuse with the reason
+        // instead of spawning a tab whose whole life is that error. The first
+        // one is allowed on any run — `RunInfo::gui_session_id` names whichever
+        // session it is, so a web agent opened as a tab gets its GUI pane too.
+        if crate::agent_catalog::web_ui(&agent).is_some() {
+            let taken = crate::agent_catalog::web_ui(&run.agent).is_some()
+                || self
+                    .registry
+                    .lock()
+                    .unwrap()
+                    .list_run_sessions(run_id)?
+                    .iter()
+                    .any(|s| crate::agent_catalog::web_ui(&s.agent).is_some());
+            if taken {
+                bail!(
+                    "{agent} serves its GUI on this workspace's port, which another session \
+                     here already uses — start it as its own agent instead"
+                );
+            }
+        }
         // Next tab number: the primary is implicitly 1, extras start at --2.
         // Gaps left by closed tabs are fine; only uniqueness matters.
         let next = {
@@ -6456,7 +6687,8 @@ impl AppState {
             // Whatever model the run started on, it comes back on: a resume
             // that quietly changed model would rewrite the session's terms
             // halfway through the work.
-            with_model(&profile, run.model.as_deref())
+            let profile = with_model(&profile, run.model.as_deref());
+            with_web_ui(&profile, gui_port_for(&config, run.port_base, &run.agent), &self.data_dir)
         };
         let mut env = self.provider_env()?;
         env.extend(profile.env.iter().cloned());
@@ -6503,6 +6735,16 @@ impl AppState {
             50,
             fallback,
         )?;
+        // Resume, not a fresh dispatch: adopt the folder so the GUI is not an
+        // empty picker, but do not re-queue the opening prompt the existing
+        // dsh session already has.
+        self.kick_web_ui(
+            id,
+            &run.agent,
+            gui_port_for(&config, run.port_base, &run.agent),
+            &worktree,
+            "",
+        );
         Ok(())
     }
 
@@ -6528,7 +6770,8 @@ impl AppState {
             let profile = reg
                 .get_profile(&run.agent)?
                 .ok_or_else(|| anyhow!("unknown agent profile: {}", run.agent))?;
-            with_model(&profile, run.model.as_deref())
+            let profile = with_model(&profile, run.model.as_deref());
+            with_web_ui(&profile, gui_port_for(&config, run.port_base, &run.agent), &self.data_dir)
         };
         let mut env = self.provider_env()?;
         env.extend(profile.env.iter().cloned());
@@ -6547,6 +6790,13 @@ impl AppState {
             220,
             50,
         )?;
+        self.kick_web_ui(
+            id,
+            &run.agent,
+            gui_port_for(&config, run.port_base, &run.agent),
+            &worktree,
+            &run.prompt,
+        );
         Ok(self.run_info(&run))
     }
 
@@ -8012,6 +8262,168 @@ mod tests {
 
         config.preview.agent_tools = false;
         assert_eq!(preview_mcp_port_for(&config, Some(5240)), None, "the off switch is real");
+    }
+
+    /// The GUI port is derived from config like the preview port, never
+    /// allocated, so a relaunch serves where the pane already points. It must
+    /// stay off the block's first port ($AGENCY_PORT, the workspace's dev
+    /// server) and its last (the preview MCP server) or the agent's own app
+    /// would fight its own GUI.
+    #[test]
+    fn gui_port_is_the_blocks_second_to_last_and_only_for_web_agents() {
+        use agency_core::config::AgencyConfig;
+        let config = AgencyConfig::default(); // block_size 10
+        assert_eq!(super::gui_port_for(&config, Some(5240), "dsh"), Some(5248));
+        assert_ne!(
+            super::gui_port_for(&config, Some(5240), "dsh"),
+            agency_core::preview::mcp_port(5240, config.ports.block_size),
+            "the GUI port collides with the preview server's"
+        );
+        assert_eq!(super::gui_port_for(&config, Some(5240), "claude"), None);
+        assert_eq!(super::gui_port_for(&config, None, "dsh"), None, "no block, no port");
+        let mut small = AgencyConfig::default();
+        small.ports.block_size = 2;
+        assert_eq!(
+            super::gui_port_for(&small, Some(5240), "dsh"),
+            None,
+            "a two-port block holds the app and preview ports only"
+        );
+    }
+
+    /// The web recipe goes ahead of the profile's own arguments: dsh's
+    /// launcher hands everything after its own flags to the booted app, so a
+    /// user argument in front of `web` would be read as the app selection.
+    /// `--patch` rides on the `web` subcommand itself (collapse sidebar), so it
+    /// sits immediately after `web`, ahead of `--no-open` / `--port`.
+    #[test]
+    fn with_web_ui_prepends_the_gui_recipe_and_leaves_terminal_agents_alone() {
+        let data = tempfile::tempdir().unwrap();
+        let dsh = AgentProfile {
+            name: "dsh".into(),
+            command: "dsh".into(),
+            args: vec!["--trusted-host".into(), "example.test".into()],
+            env: vec![],
+            resume_args: None,
+            loop_args: Some(vec!["--profile".into(), "headless".into(), "{{prompt}}".into()]),
+        };
+        let launched = super::with_web_ui(&dsh, Some(5248), data.path());
+        assert_eq!(&launched.args[0], "web");
+        assert_eq!(&launched.args[1], "--patch");
+        assert!(
+            std::path::Path::new(&launched.args[2]).is_file(),
+            "patch file missing: {}",
+            launched.args[2]
+        );
+        assert_eq!(
+            &launched.args[3..],
+            ["--no-open", "--port", "5248", "--trusted-host", "example.test"]
+        );
+        // The loop recipe must never boot the server: headless opens no port.
+        assert_eq!(launched.loop_args, dsh.loop_args);
+
+        // No port to pin: the server still boots, on the CLI's own default.
+        let no_port = super::with_web_ui(&dsh, None, data.path());
+        assert_eq!(&no_port.args[0], "web");
+        assert_eq!(&no_port.args[1], "--patch");
+        assert_eq!(&no_port.args[3], "--no-open");
+        assert!(!no_port.args.iter().any(|a| a.contains("{{port}}")));
+
+        let claude = AgentProfile {
+            name: "claude".into(),
+            command: "claude".into(),
+            args: vec![],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        };
+        assert_eq!(super::with_web_ui(&claude, Some(5248), data.path()), claude);
+    }
+
+    /// The whole interactive argv a dsh run is launched with, not just the web
+    /// prefix: the recipe plus prompt delivery, which for this agent is not
+    /// argv at all (`AfterGuiReady` / `web_ui::handshake`). A prompt appended
+    /// here would be read as the app selection and the session would die on a
+    /// usage error.
+    #[test]
+    fn a_web_agents_fresh_argv_is_the_server_recipe_and_nothing_else() {
+        let data = tempfile::tempdir().unwrap();
+        let dsh = AgentProfile {
+            name: "dsh".into(),
+            command: "dsh".into(),
+            args: vec![],
+            env: vec![],
+            resume_args: None,
+            loop_args: Some(vec!["--profile".into(), "headless".into(), "{{prompt}}".into()]),
+        };
+        let profile = super::with_web_ui(&dsh, Some(5248), data.path());
+        let wt = std::path::Path::new("/tmp/does-not-exist");
+        let (command, args) = super::fresh_agent_argv(&profile, wt, "fix the login bug", None);
+        assert_eq!(command, "dsh");
+        assert_eq!(&args[0], "web");
+        assert_eq!(&args[1], "--patch");
+        assert!(std::path::Path::new(&args[2]).is_file());
+        assert_eq!(&args[3..], ["--no-open", "--port", "5248"]);
+
+        // The loop recipe takes the prompt the interactive launch cannot.
+        let (loop_cmd, loop_args) =
+            super::loop_argv(&profile, wt, "fix the login bug", None).unwrap();
+        assert_eq!(loop_cmd, "dsh");
+        assert_eq!(loop_args, vec!["--profile", "headless", "fix the login bug"]);
+    }
+
+    /// A loop attempt is headless and opens no port, so a looping run must not
+    /// advertise a GUI — the pane would wait forever on a server nothing
+    /// launched. Terminals never have one either.
+    #[test]
+    fn only_an_agent_run_that_is_not_looping_offers_a_gui() {
+        use agency_core::loops::{LoopConfig, LoopState, LoopStatus};
+        let base = agency_core::registry::Run {
+            id: "r1".into(),
+            project_id: "p1".into(),
+            agent: "dsh".into(),
+            prompt: String::new(),
+            base: "main".into(),
+            branch: "agent/r1".into(),
+            created_at: 0,
+            port_base: Some(5240),
+            archived_at: None,
+            title: None,
+            kind: "agent".into(),
+            merge_target: None,
+            race_id: None,
+            loop_config: None,
+            loop_state: None,
+            issue_id: None,
+            worktree: true,
+            model: None,
+            base_commit: None,
+            standing: None,
+            pin_rank: None,
+        };
+        assert!(super::wants_web_ui(&base));
+
+        let terminal = agency_core::registry::Run { kind: "terminal".into(), ..base.clone() };
+        assert!(!super::wants_web_ui(&terminal));
+
+        let cfg = LoopConfig {
+            check_command: "true".into(),
+            max_attempts: 3,
+            check_timeout_secs: 60,
+            max_wall_secs: None,
+            max_tokens: None,
+        };
+        let driving = agency_core::registry::Run {
+            loop_config: Some(cfg.clone()),
+            loop_state: Some(LoopState::new(0)),
+            ..base.clone()
+        };
+        assert!(!super::wants_web_ui(&driving), "a driving loop has no server to show");
+
+        let mut done = LoopState::new(0);
+        done.status = LoopStatus::Complete;
+        let finished =
+            agency_core::registry::Run { loop_config: Some(cfg), loop_state: Some(done), ..base };
+        assert!(super::wants_web_ui(&finished), "a finished loop is interactive again");
     }
 
     /// AGE-83: enabling the knowledge graph looked like it did nothing. Nothing

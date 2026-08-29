@@ -343,6 +343,12 @@ export default function AgentOnboarding({ onDone }: { onDone: () => void }) {
                             ) : (
                               <span className="onboard-state">Not installed</span>
                             )}
+                            {entry.servesWebUi && (
+                              <span
+                                className="onboard-state"
+                                title="This agent's interactive surface is a browser app it serves on this machine only. Agency shows it beside the run's log pane."
+                              >Browser GUI</span>
+                            )}
                             {!entry.installed && install && (
                               <button
                                 type="button"

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { loadFocusTab, saveFocusTab, resolveFocusTab, PRIMARY_TAB } from "./focusTab";
+import { loadFocusTab, saveFocusTab, resolveFocusTab, PRIMARY_TAB, LOG_TAB } from "./focusTab";
 
 function makeStorage(): Pick<Storage, "getItem" | "setItem"> {
   const map = new Map<string, string>();
@@ -62,5 +62,13 @@ describe("resolveFocusTab", () => {
   it("passes the built-in tabs through without a session", () => {
     expect(resolveFocusTab(PRIMARY_TAB, [])).toBe(PRIMARY_TAB);
     expect(resolveFocusTab("run", [])).toBe("run");
+  });
+
+  it("keeps the log tab only while the run still serves a GUI", () => {
+    expect(resolveFocusTab(LOG_TAB, [], true)).toBe(LOG_TAB);
+    // The web session was closed, or a loop took the run over: the strip stops
+    // drawing the tab, so restoring onto it would strand an empty pane.
+    expect(resolveFocusTab(LOG_TAB, [], false)).toBe(PRIMARY_TAB);
+    expect(resolveFocusTab(LOG_TAB, [])).toBe(PRIMARY_TAB);
   });
 });

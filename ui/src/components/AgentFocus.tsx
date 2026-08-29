@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { useRuns, SpawnOpts } from "../store/runs";
 import {
   setRunTitle, renameRun, renameRunBranch,
   listProfiles, AgentProfile,
   listRunSessions, startRunSession, closeRunSession, RunSessionInfo,
-  RunInfo, stopLoop, listIssues, listProjects,
+  RunInfo, SessionStatus, stopLoop, listIssues, listProjects, ensureRunActive,
 } from "../api";
 import { Removal, removalLabel, removalsFor } from "../lib/runRemoval";
 import { issueLabel } from "../lib/issues";
@@ -21,7 +22,7 @@ import Resizer from "./Resizer";
 import ArchivedSection from "./ArchivedSection";
 import { useDismissOnResize } from "../hooks/useDismissOnResize";
 import { usePaneWidth, loadFold, saveFold } from "../hooks/usePaneWidth";
-import { loadFocusTab, saveFocusTab, resolveFocusTab, PRIMARY_TAB } from "../lib/focusTab";
+import { loadFocusTab, saveFocusTab, resolveFocusTab, PRIMARY_TAB, LOG_TAB } from "../lib/focusTab";
 import AgentAddMenu from "./AgentAddMenu";
 import QueuedMarker from "./QueuedMarker";
 import OverflowMenu from "./OverflowMenu";
@@ -31,6 +32,101 @@ import { TrashIcon, InboxIcon, TerminalIcon, PencilIcon, CheckIcon, BranchIcon }
 const SHELL_MIN = 120;
 const SHELL_MAX = 640;
 const SHELL_FOLD_KEY = "focus-shell-open";
+
+// The pane for an agent whose interactive surface is a browser app served from
+// its workspace (RunInfo.guiPort, e.g. dsh). It is the whole tab, not a half of
+// one: the terminal beside it only ever holds the server's boot line, and half
+// a window spent on `web: http://127.0.0.1:5218` is half a window the user
+// works in. The log moves to its own tab (LOG_TAB).
+//
+// Kept mounted while that log tab is showing, hidden rather than unmounted: an
+// iframe keeps its document through `display: none`, so a look at the log costs
+// nothing. Their sessions live on the server keyed to the workspace directory,
+// so a reload (the Run tab, which replaces the whole body) reopens the same
+// conversation — what it loses is the page's own state: scroll, a half-typed
+// message, whatever panel was open.
+function GuiPane({
+  run,
+  sessionId,
+  status,
+  hidden,
+}: {
+  run: RunInfo;
+  sessionId: string;
+  status: SessionStatus;
+  hidden: boolean;
+}) {
+  // Remounting the iframe is the reload: same trick as the Run tab's preview.
+  const [reloadKey, setReloadKey] = useState(0);
+  const url = `http://127.0.0.1:${run.guiPort}/`;
+  // Mounting a terminal is what revives a session the app was quit on, and this
+  // tab has no terminal: without this, reopening a web agent after a restart
+  // would sit on "the agent isn't running" with the only way to start it being
+  // to go and look at its Log. Once per session, like the terminal's own call —
+  // a server that failed to come up must not be respawned on every poll.
+  const revived = useRef<string | null>(null);
+  useEffect(() => {
+    if (status.state !== "gone" || revived.current === sessionId) return;
+    revived.current = sessionId;
+    ensureRunActive(sessionId).catch((e) => toastError(e, "Couldn't start the agent"));
+  }, [sessionId, status.state]);
+  return (
+    <div className={`focus-gui ${hidden ? "is-hidden" : ""}`}>
+      <div className="focus-gui-head">
+        <code className="run-url">{url}</code>
+        <span className="spacer" />
+        <button
+          className="tile-act"
+          title="Reload the GUI"
+          onClick={() => setReloadKey((k) => k + 1)}
+        >⟳ Reload</button>
+        <button
+          className="tile-act"
+          title={`Open ${url} in your browser`}
+          onClick={() => openUrl(url).catch((e) => toastError(e, "Couldn't open the GUI"))}
+        >
+          Open ↗
+        </button>
+      </div>
+      {run.guiLive ? (
+        // Sandboxed for one reason: a plain frame may navigate the top-level
+        // context on a click, and in a window with no browser chrome that is a
+        // one-way trip out of Agency with no way back. Everything the app
+        // actually needs is granted — its own origin (so its `/api` calls and
+        // storage work), scripts, forms, dialogs, popups and file downloads —
+        // so the only thing withheld is the navigation.
+        <iframe
+          key={reloadKey}
+          className="focus-gui-frame"
+          sandbox="allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-downloads"
+          src={url}
+          title={`${agentLabel(run.agent)} GUI`}
+        />
+      ) : (
+        <div className="focus-gui-wait">
+          {status.state === "running"
+            ? `Starting the ${agentLabel(run.agent)} GUI. It opens here once the server answers; the Log tab shows what it is doing.`
+            : status.state === "exited"
+            ? `The server stopped (exit ${status.code}). The Log tab has what it printed on the way out.`
+            : "Starting the agent. Its GUI opens here once the server answers."}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// The server log of a web-served agent, sat next to the tab whose view its GUI
+// took over. Not a session of its own: it is the same pane that agent's tab
+// used to be, moved out of the way of the thing the user actually works in.
+function LogTab({ panel, onSelect }: { panel: string; onSelect: (t: string) => void }) {
+  return (
+    <button
+      className={`session-tab ${panel === LOG_TAB ? "on" : ""}`}
+      title="Log: what this agent's server is printing"
+      onClick={() => onSelect(LOG_TAB)}
+    >≡ log</button>
+  );
+}
 
 function badgeClass(a: string) {
   return ["claude", "pi", "hermes"].includes(a) ? `badge ${a}` : "badge";
@@ -216,7 +312,7 @@ export default function AgentFocus({
           // Only correct the tab we restored — anything the user (or a pending
           // session hand-off) has since picked stands.
           if (panelRef.current !== remembered) return;
-          const resolved = resolveFocusTab(remembered, s);
+          const resolved = resolveFocusTab(remembered, s, guiSessionRef.current != null);
           if (resolved === remembered) return;
           selectPanel(resolved);
           if (beforeRun.current === remembered) beforeRun.current = resolved;
@@ -280,12 +376,6 @@ export default function AgentFocus({
       ?.querySelector(".session-tab.on")
       ?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [panel, sessions.length]);
-  // Is the visible pane an agent, or a plain shell? Session tabs carry both:
-  // "New terminal" spawns the reserved "shell" profile. Only a shell wants
-  // xterm's wheel-to-arrow fallback; in an agent those arrows walk the prompt
-  // history (AGE-15).
-  const panelIsShell = panel !== PRIMARY_TAB
-    && sessions.some((s) => s.id === panel && s.agent === "shell");
   const [railOpen, setRailOpen] = useState(true);
   const rail = usePaneWidth("rail", 312, 220, 520);
   // Companion terminal (bottom panel) — height shared across runs, but the
@@ -311,6 +401,40 @@ export default function AgentFocus({
       return next;
     });
   const focused = runs.find((r) => r.id === focusedRunId) ?? null;
+
+  // The one session in this workspace serving a browser GUI, if any. It is the
+  // primary agent's session most of the time, but a web agent can also be
+  // opened as an extra tab, and then the tab owns the port — so the backend
+  // names the session rather than the UI assuming the run's own.
+  const guiSession = focused?.guiSessionId ?? null;
+  // Which session's terminal the visible tab shows. Null means the GUI owns the
+  // view: on the web agent's own tab the browser app *is* the pane, and its
+  // terminal is one tab over, on LOG_TAB.
+  const termId = (() => {
+    if (!focused) return null;
+    if (panel === LOG_TAB) return guiSession;
+    const session = panel === PRIMARY_TAB ? focused.id : panel;
+    return session === guiSession ? null : session;
+  })();
+  const guiVisible = guiSession != null && termId === null;
+  // The GUI session's own status, not the run's: the web agent may be an extra
+  // tab, in which case the run's primary session says nothing about it. A tab
+  // the sessions poll has not caught up with yet reads as gone, which is the
+  // safe answer — `ensure_run_active` is a no-op on a session already up.
+  const guiStatus: SessionStatus =
+    guiSession == null ? { state: "gone" }
+    : guiSession === focused?.id ? focused.status
+    : sessions.find((s) => s.id === guiSession)?.status ?? { state: "gone" };
+  // Read by the tab-restore effect, which must not re-run every time the GUI
+  // comes and goes: a remembered Log tab is only valid while one is served.
+  const guiSessionRef = useRef<string | null>(guiSession);
+  guiSessionRef.current = guiSession;
+  // Is the visible pane an agent, or a plain shell? Session tabs carry both:
+  // "New terminal" spawns the reserved "shell" profile. Only a shell wants
+  // xterm's wheel-to-arrow fallback; in an agent those arrows walk the prompt
+  // history (AGE-15).
+  const panelIsShell =
+    termId != null && sessions.some((s) => s.id === termId && s.agent === "shell");
 
   // Issue chip (one-stop Phase 7): a run dispatched from an issue links back
   // to it in the header. One-shot lookup on focus change — the label needs
@@ -471,11 +595,12 @@ export default function AgentFocus({
                     className={`session-tab ${panel === PRIMARY_TAB ? "on" : ""}`}
                     onClick={() => selectPanel(PRIMARY_TAB)}
                   >{agentLabel(focused.agent)}</button>
+                  {guiSession === focused.id && <LogTab panel={panel} onSelect={selectPanel} />}
                   {sessions
                     .filter((s) => s.status.state !== "gone" || s.id === panel)
                     .map((s) => (
+                    <React.Fragment key={s.id}>
                     <button
-                      key={s.id}
                       className={`session-tab ${panel === s.id ? "on" : ""}`}
                       title={s.agent === "shell"
                         ? "Terminal: extra shell in this workspace"
@@ -489,6 +614,8 @@ export default function AgentFocus({
                         onClick={(e) => { e.stopPropagation(); setConfirmCloseTab(s.id); }}
                       >✕</span>
                     </button>
+                    {guiSession === s.id && <LogTab panel={panel} onSelect={selectPanel} />}
+                    </React.Fragment>
                   ))}
                 </div>
                 <button
@@ -528,10 +655,27 @@ export default function AgentFocus({
               )}
               {panel !== "run" ? (
                 <div className="focus-body">
-                  <FocusTerminal key={panel === PRIMARY_TAB ? focused.id : panel}
-                    runId={panel === PRIMARY_TAB ? focused.id : panel}
-                    altScrollArrows={panelIsShell}
-                    onFirstPrompt={panel === PRIMARY_TAB && !focused.title ? (line) => { setRunTitle(focused.id, line).catch(() => {}); } : undefined} />
+                  {/* Exactly one of these fills the pane. A web-served agent's
+                      tab is its GUI, whole; every other tab (its own Log
+                      included) is a terminal. The GUI stays mounted while the
+                      log is up so a glance at the server output does not throw
+                      away the session in the browser app. */}
+                  <div className="focus-body-main">
+                    {guiSession && (
+                      <GuiPane
+                        run={focused}
+                        sessionId={guiSession}
+                        status={guiStatus}
+                        hidden={!guiVisible}
+                      />
+                    )}
+                    {termId && (
+                      <FocusTerminal key={termId}
+                        runId={termId}
+                        altScrollArrows={panelIsShell}
+                        onFirstPrompt={panel === PRIMARY_TAB && !focused.title ? (line) => { setRunTitle(focused.id, line).catch(() => {}); } : undefined} />
+                    )}
+                  </div>
                   {shellOpen && (
                     <>
                       <Resizer orientation="horizontal" side="right"

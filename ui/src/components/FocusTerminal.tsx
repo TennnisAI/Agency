@@ -448,11 +448,27 @@ export default function FocusTerminal(
       // service's dimensions. Disposing inside that frame pulls the renderer
       // out from under the read, and it surfaces as an error toast over a pane
       // the user has already left: "undefined is not an object (evaluating
-      // 'this._renderer.value.dimensions')" (AGE-124). Everything above is torn
-      // down synchronously; only the xterm object waits. The timer is the
-      // backstop for a window that has stopped animating — occluded, minimised,
-      // on another Space — where no frame arrives and the terminal, 50k lines of
-      // scrollback and all, would otherwise never be freed.
+      // 'this._renderer.value.dimensions')" (AGE-124).
+      //
+      // A frame alone was not enough, and the second source is the write
+      // buffer. `WriteBuffer` is not a disposable and has no disposal check at
+      // all (xterm 5.5.0): a chunk it cannot parse inside its 12ms slice
+      // re-schedules the rest on a bare `setTimeout`, which keeps parsing
+      // however long that takes and whatever happened to the terminal
+      // meanwhile. The daemon's first live frame is a whole-screen snapshot —
+      // the largest single write a pane ever takes — so leaving a run while one
+      // lands is exactly the case that overruns. Parsing past the dispose moves
+      // the cursor, `onCursorMove` reaches `_syncTextArea`, and that reads the
+      // same dimensions off a renderer that is gone.
+      //
+      // So the wait is on xterm being quiet on both counts: an empty write
+      // queues behind whatever is still parsing and its callback is the
+      // parser-is-idle signal, and the frame after it lets the viewport's own
+      // rAF land first. Everything above is torn down synchronously; only the
+      // xterm object waits. The timeout is the backstop for a window that has
+      // stopped animating — occluded, minimised, on another Space — where no
+      // frame arrives and the terminal, 50k lines of scrollback and all, would
+      // otherwise never be freed.
       //
       // Ordering around that callback is not enough on its own, because the
       // backstop can win the race it is arranged around: a timer that comes due
@@ -473,8 +489,8 @@ export default function FocusTerminal(
         termDisposed = true;
         term.dispose();
       };
-      requestAnimationFrame(disposeTerm);
-      window.setTimeout(disposeTerm, 250);
+      term.write("", () => requestAnimationFrame(disposeTerm));
+      window.setTimeout(disposeTerm, 2000);
       captureRef.current = initialCapture();
       searchAddonRef.current = null;
       termRef.current = null;

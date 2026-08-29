@@ -1268,6 +1268,28 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
 
 /* ── Companion terminal (bottom panel in the agent focus view) ─────── */
 .focus-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+/* The pane a tab fills: a terminal, or the whole GUI of a web-served agent. */
+.focus-body-main { flex: 1; min-height: 0; min-width: 0; display: flex; }
+.focus-body-main > .term-search-wrap { min-width: 0; }
+.focus-gui { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+/* Hidden, not unmounted, while the Log tab is up: an iframe keeps its document
+   through display:none, so the session in the browser app survives a look at
+   the server output. */
+.focus-gui.is-hidden { display: none; }
+.focus-gui-head {
+  display: flex; align-items: center; gap: 8px; padding: 4px 10px;
+  background: var(--mantle); border-bottom: 1px solid var(--line); flex-shrink: 0;
+}
+.focus-gui-head .spacer { flex: 1; }
+/* Opaque, so a frame that has not painted yet is not a transparent hole over
+   the app chrome behind it. The theme's own ground rather than .run-preview's
+   white: this frame is the whole tab, and a full-window white flash before a
+   dark agent GUI paints is worse than one that matches the app it sits in. */
+.focus-gui-frame { flex: 1; min-height: 0; border: 0; background: var(--base); }
+.focus-gui-wait {
+  flex: 1; display: flex; align-items: center; justify-content: center;
+  padding: 24px; text-align: center; font-size: 12px; color: var(--o1);
+}
 .focus-shell {
   display: flex; flex-direction: column; min-height: 0;
   border-top: 1px solid var(--line); background: var(--crust);

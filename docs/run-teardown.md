@@ -130,7 +130,7 @@ base and lose the list only if they also merged, and the record says
 "not recoverable" rather than "no commits" — those are different claims.
 
 What the record does **not** do is keep the conversation. The agent's own
-transcript is readable for two of ten agents (`usage.rs` is a default-deny list
+transcript is readable for two of eleven agents (`usage.rs` is a default-deny list
 of `claude` and `pi`), so the record names the directory when it exists and
 claims nothing otherwise. Rescuing and rendering those transcripts is a separate
 piece of work; see "Not done" below.

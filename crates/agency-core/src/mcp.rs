@@ -9,7 +9,11 @@
 //! a file the repo *tracks* is left alone entirely, and the config is excluded
 //! from git either way — see [`emit_for_agent`]. Agents whose MCP config is
 //! global-only (Codex's ~/.codex/config.toml) are intentionally skipped: Agency
-//! never mutates files outside the workspace.
+//! never mutates files outside the workspace. So is DeepSeek Harness, whose
+//! MCP servers are plugin rows in its Cordis composition rather than any
+//! config file — there is no per-worktree artifact to write, and emitting a
+//! composition patch would be writing against a plugin API its README promises
+//! to break.
 //!
 //! Writing the file is not always enough to have it read: [`launch_args`] adds
 //! whatever the agent needs on its command line to actually load what we wrote
@@ -665,7 +669,10 @@ mod tests {
         for agent in ["claude", "copilot", "cursor", "opencode"] {
             assert!(agent_supported(agent), "{agent} should be supported");
         }
-        for agent in ["codex", "gemini", "kimi", "crush", "hermes", "pi", "custom-profile"] {
+        // dsh is deliberate, not an omission: its MCP servers are rows in a
+        // Cordis plugin composition, not a config file, so there is no
+        // per-worktree artifact Agency could write for it.
+        for agent in ["codex", "gemini", "kimi", "crush", "hermes", "pi", "dsh", "custom-profile"] {
             assert!(!agent_supported(agent), "{agent} should not be supported");
         }
     }

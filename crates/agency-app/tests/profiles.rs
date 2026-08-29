@@ -131,12 +131,17 @@ fn catalog_lists_all_builtins_with_enabled_flag() {
     let state = common::state(&dir);
     state.enable_agent_profiles(&["claude".into()]).unwrap();
     let catalog = state.list_agent_catalog().unwrap();
-    assert_eq!(catalog.len(), 10);
+    assert_eq!(catalog.len(), 11);
     let claude = catalog.iter().find(|e| e.id == "claude").unwrap();
     assert!(claude.enabled);
     let gemini = catalog.iter().find(|e| e.id == "gemini").unwrap();
     assert!(!gemini.enabled);
     assert_eq!(gemini.command, "gemini");
+    // The one web-served agent: opening prompt is session.prompt after boot.
+    let dsh = catalog.iter().find(|e| e.id == "dsh").unwrap();
+    assert!(dsh.serves_web_ui);
+    assert!(dsh.accepts_prompt);
+    assert!(!claude.serves_web_ui);
 }
 
 #[test]

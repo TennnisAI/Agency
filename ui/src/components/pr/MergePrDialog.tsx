@@ -9,6 +9,12 @@ const METHOD_LABEL: Record<MergeMethod, string> = {
   rebase: "Rebase and merge",
 };
 
+// gh's refusal when the branch collides with its base, as it reaches us: "Pull
+// request is not mergeable: the merge commit cannot be cleanly created." Only
+// reachable when GitHub hadn't finished computing mergeability by the time the
+// pane loaded, since a known conflict never opens this dialog.
+const CONFLICT_REFUSAL = /not mergeable|merge conflict|cleanly created/i;
+
 // Confirm + configure a GitHub PR merge (method + delete-branch). Only offers
 // the merge methods the repo actually allows, fetched on open.
 export default function MergePrDialog({
@@ -16,6 +22,7 @@ export default function MergePrDialog({
   number,
   title,
   onMerged,
+  onConflict,
   onCancel,
 }: {
   projectId: string;
@@ -23,6 +30,8 @@ export default function MergePrDialog({
   title: string;
   // Carries the merge result so the host can note branch cleanup that didn't run.
   onMerged: (result: PrMergeResult) => void;
+  // Hands over to the conflict flow when GitHub refuses the merge for one.
+  onConflict?: () => void;
   onCancel: () => void;
 }) {
   const [methods, setMethods] = useState<MergeMethods | null>(null);
@@ -67,6 +76,11 @@ export default function MergePrDialog({
         <div className="modal-body">
           <p className="modal-note">Merge #{number} “{title}” into its base branch.</p>
           {error && <div className="git-error">{error}</div>}
+          {error && onConflict && CONFLICT_REFUSAL.test(error) && (
+            <div className="pr-conflict-actions">
+              <button className="settings-ghost-btn" onClick={onConflict}>Fix with an agent</button>
+            </div>
+          )}
           {methods === null && !error ? (
             <p className="modal-note"><span className="spinner" /> Checking merge options…</p>
           ) : allowed.length === 0 ? (

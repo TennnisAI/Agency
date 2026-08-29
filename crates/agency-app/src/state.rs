@@ -346,15 +346,30 @@ pub struct RunSessionInfo {
     pub status: SessionStatus,
 }
 
-/// Where an agent PR review landed. `session_id` is set when the review had to
-/// run as an extra tab inside an existing run (the PR's branch was already
-/// checked out there); the UI focuses that tab instead of the run's primary
-/// agent. None means the review got a workspace of its own.
+/// Where an agent started on a PR (a review, or a conflict resolution) landed.
+/// `session_id` is set when it had to run as an extra tab inside an existing
+/// run (the PR's branch was already checked out there); the UI focuses that tab
+/// instead of the run's primary agent. None means it got a workspace of its own.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PrReviewRun {
+pub struct PrAgentRun {
     pub run: RunInfo,
     pub session_id: Option<String>,
+}
+
+/// Why a PR can't be merged, in the terms the user needs to act on it: which
+/// branch is stuck on which base, and the files a merge would collide in.
+///
+/// `files` empty with `probed` false means the conflict is real (GitHub says
+/// so) but the local probe couldn't run — an old git, or a branch we can't
+/// fetch. The UI says "conflicts" without pretending to know where.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrConflicts {
+    pub base: String,
+    pub head: String,
+    pub files: Vec<String>,
+    pub probed: bool,
 }
 
 /// One attempt in a race: an agent, and the model that attempt runs on.
@@ -932,6 +947,64 @@ fn pr_review_prompt(
     p.push_str(&format!(
         "Then stay available: I may ask you to fix what you found. Commit fixes to this \
          branch and push to update the PR.\n\nPR link: {url}\n"
+    ));
+    p
+}
+
+/// The prompt for an agent sent to clear a PR's merge conflicts.
+///
+/// The conflicting paths are listed rather than left to be discovered: the
+/// probe has already run to draw the UI, so the agent may as well start from
+/// the answer. The direction is spelled out too — merging the base into the
+/// head branch is what updates the PR, and a rebase or a force-push would
+/// rewrite a branch someone else may already have pulled. `workspace` says
+/// whether the merge is about to happen in a worktree of the run's own or in
+/// the user's checkout, which the agent has to know before it touches anything.
+fn pr_conflict_prompt(
+    number: u64,
+    title: &str,
+    url: &str,
+    base: &str,
+    head: &str,
+    workspace: PrWorkspace,
+    files: &[String],
+) -> String {
+    let mut p = format!(
+        "Resolve the merge conflicts blocking GitHub pull request #{number}: {title}\n\n\
+         The PR's head branch `{head}` is checked out in this workspace, and it conflicts \
+         with its base branch `{base}`, so GitHub refuses to merge it.\n\n"
+    );
+    let list = files.join(", ");
+    match files.len() {
+        0 => p.push_str("Run the merge to find out which files collide.\n\n"),
+        1 => p.push_str(&format!("One file conflicts: {list}.\n\n")),
+        n => p.push_str(&format!("These {n} files conflict: {list}.\n\n")),
+    }
+    if workspace == PrWorkspace::Checkout {
+        // The PR's branch was already checked out in the project's own tree, so
+        // this run has no worktree of its own and the merge lands in the user's
+        // working copy. Uncommitted work there is not this agent's to move: git
+        // refuses a merge over it, and the way out is to say so, not to stash.
+        p.push_str(
+            "This workspace is the project's own checkout, not an isolated worktree: git \
+             allows a branch to be checked out in one place at a time, and the PR's branch \
+             was already here. Treat the working tree as someone else's. If it holds \
+             uncommitted changes that are not yours, stop and tell me rather than stashing, \
+             resetting or committing them to get the merge going.\n\n",
+        );
+    }
+    p.push_str(&format!(
+        "Do this here, in this workspace:\n\
+         1. `git fetch origin {base}`\n\
+         2. `git merge origin/{base}`\n\
+         3. Resolve every conflict, keeping both sides' intent. Read enough of each file to \
+            know what the other change was for; a conflict is two people's work, not one \
+            person's to delete.\n\
+         4. Run the project's build or tests if it has quick ones.\n\
+         5. Commit the merge and `git push` to update the PR.\n\n\
+         Do not rebase and do not force-push: this branch is published. Do not merge the PR \
+         itself, that is mine to do. Tell me what you had to decide.\n\n\
+         PR link: {url}\n"
     ));
     p
 }
@@ -3564,7 +3637,7 @@ impl AppState {
         agent: &str,
         model: Option<&str>,
         post_comments: bool,
-    ) -> Result<PrReviewRun> {
+    ) -> Result<PrAgentRun> {
         let repo = self.project_repo(project_id)?;
         let pr = agency_core::gh::GhCli::default()
             .view_pr_by_number(&repo, number)?
@@ -3584,20 +3657,52 @@ impl AppState {
             workspace.clone(),
             post_comments,
         );
-        // A live agent run already in the holding tree hosts the review as an
-        // extra tab: the fix has to land on that branch either way, and this
+        self.spawn_pr_agent(
+            project_id,
+            &repo,
+            &pr,
+            agent,
+            model,
+            format!("Review PR #{number}"),
+            &prompt,
+            workspace,
+        )
+    }
+
+    /// Put an agent on the PR's head branch with `prompt`, in whichever tree
+    /// already holds that branch or in a worktree cut for it. Shared by the
+    /// review and conflict-resolution entry points: both need the same branch
+    /// under the same rule, and only the prompt and the title differ.
+    ///
+    /// `workspace` is passed in rather than probed here because the prompt has
+    /// to describe the tree the agent lands in, so the caller has already had
+    /// to ask.
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_pr_agent(
+        &self,
+        project_id: &str,
+        repo: &Path,
+        pr: &agency_core::gh::PrInfo,
+        agent: &str,
+        model: Option<&str>,
+        title: String,
+        prompt: &str,
+        workspace: PrWorkspace,
+    ) -> Result<PrAgentRun> {
+        // A live agent run already in the holding tree hosts the work as an
+        // extra tab: the change has to land on that branch either way, and this
         // keeps two agents from editing one tree without either knowing.
-        if let Some(dir) = workspace.holder(&repo) {
+        if let Some(dir) = workspace.holder(repo) {
             let host = self
                 .registry
                 .lock()
                 .unwrap()
                 .list_runs(project_id)?
                 .into_iter()
-                .find(|r| r.kind == "agent" && same_dir(&workspace_dir(&repo, r), &dir));
+                .find(|r| r.kind == "agent" && same_dir(&workspace_dir(repo, r), &dir));
             if let Some(run) = host {
-                let session = self.start_run_session(&run.id, Some(agent), &prompt)?;
-                return Ok(PrReviewRun { run: self.run_info(&run), session_id: Some(session.id) });
+                let session = self.start_run_session(&run.id, Some(agent), prompt)?;
+                return Ok(PrAgentRun { run: self.run_info(&run), session_id: Some(session.id) });
             }
         }
         // Before the fetch: a branch this app cannot get a workspace on is a
@@ -3605,18 +3710,18 @@ impl AppState {
         if let PrWorkspace::Held(holder) = &workspace {
             return Err(branch_held_elsewhere(&pr.head_ref_name, holder));
         }
-        agency_core::git::fetch_branch(&repo, &pr.head_ref_name)?;
+        agency_core::git::fetch_branch(repo, &pr.head_ref_name)?;
         let own_worktree = workspace == PrWorkspace::Worktree;
         let run = self.create_run_spec(
             NewRunSpec {
                 project_id,
-                prompt: &prompt,
+                prompt,
                 agent,
                 model,
                 base: &pr.base_ref_name,
                 merge_target: Some(&pr.base_ref_name),
                 race_id: None,
-                title: Some(format!("Review PR #{number}")),
+                title: Some(title),
                 existing_branch: own_worktree.then(|| pr.head_ref_name.clone()),
                 loop_config: None,
                 issue_id: None,
@@ -3624,7 +3729,54 @@ impl AppState {
             },
             &mut |_| {},
         )?;
-        Ok(PrReviewRun { run, session_id: None })
+        Ok(PrAgentRun { run, session_id: None })
+    }
+
+    /// Start an agent whose job is to clear a PR's merge conflicts: merge the
+    /// base branch into the PR's head branch, resolve, and push, which is what
+    /// makes GitHub's Merge button work again.
+    ///
+    /// The conflicting paths are probed here and written into the prompt. The
+    /// agent could find them itself, but a prompt that already names them is
+    /// one that starts on the actual work.
+    pub fn create_pr_conflict_run(
+        &self,
+        project_id: &str,
+        number: u64,
+        agent: &str,
+        model: Option<&str>,
+    ) -> Result<PrAgentRun> {
+        let repo = self.project_repo(project_id)?;
+        let pr = agency_core::gh::GhCli::default()
+            .view_pr_by_number(&repo, number)?
+            .ok_or_else(|| anyhow!("PR #{number} not found"))?;
+        if pr.head_ref_name.is_empty() {
+            bail!("PR #{number} has no local head branch (cross-fork PRs aren't supported yet)");
+        }
+        // Best effort: an unprobeable conflict still gets an agent, just without
+        // the file list. Refusing to start over a failed probe would be worse
+        // than starting slightly less informed.
+        let files = self.pr_conflicts(project_id, number).map(|c| c.files).unwrap_or_default();
+        let workspace = pr_workspace(&repo, &pr.head_ref_name);
+        let prompt = pr_conflict_prompt(
+            number,
+            &pr.title,
+            &pr.url,
+            &pr.base_ref_name,
+            &pr.head_ref_name,
+            workspace.clone(),
+            &files,
+        );
+        self.spawn_pr_agent(
+            project_id,
+            &repo,
+            &pr,
+            agent,
+            model,
+            format!("Fix conflicts on PR #{number}"),
+            &prompt,
+            workspace,
+        )
     }
 
     /// Store the first prompt the user typed into the agent terminal as the
@@ -7206,6 +7358,44 @@ impl AppState {
         agency_core::gh::GhCli::default().current_login(&repo)
     }
 
+    /// Where a PR's merge conflicts actually are.
+    ///
+    /// GitHub reports *that* a PR conflicts and never which files, so this
+    /// answers it locally: fetch both sides' remote-tracking refs and merge
+    /// them in memory. Nothing is checked out, so it is safe to call from the
+    /// review pane while the user is working in the same repo.
+    pub fn pr_conflicts(&self, project_id: &str, number: u64) -> Result<PrConflicts> {
+        let repo = self.project_repo(project_id)?;
+        let pr = agency_core::gh::GhCli::default()
+            .view_pr_detail(&repo, number)?
+            .ok_or_else(|| anyhow!("PR #{number} not found"))?;
+        if pr.head_ref_name.is_empty() || pr.base_ref_name.is_empty() {
+            bail!("PR #{number} has no local head branch (cross-fork PRs aren't supported yet)");
+        }
+        let mut out = PrConflicts {
+            base: pr.base_ref_name.clone(),
+            head: pr.head_ref_name.clone(),
+            files: Vec::new(),
+            probed: false,
+        };
+        // Both halves are best effort: a repo behind a proxy, an old git or a
+        // branch pushed from elsewhere all leave the UI reporting the conflict
+        // without the file list, which is still the message the user needs.
+        if agency_core::git::fetch_tracking(&repo, &[&pr.base_ref_name, &pr.head_ref_name]).is_err()
+        {
+            return Ok(out);
+        }
+        let head = format!("origin/{}", pr.head_ref_name);
+        let base = format!("origin/{}", pr.base_ref_name);
+        // Head first: the fix merges base *into* the PR's branch, so this is
+        // the same merge the agent (or the user) is about to run.
+        if let Ok(files) = agency_core::merge::conflicting_paths(&repo, &head, &base) {
+            out.files = files;
+            out.probed = true;
+        }
+        Ok(out)
+    }
+
     /// Which merge methods the repo allows (drives the merge dialog's options).
     pub fn pr_merge_methods(&self, project_id: &str) -> Result<agency_core::gh::MergeMethods> {
         let repo = self.project_repo(project_id)?;
@@ -8244,6 +8434,81 @@ mod tests {
         // Still the same review, with the same closing promise.
         assert!(shared.contains("Review GitHub pull request #12"), "{shared}");
         assert!(shared.contains("stay available"), "{shared}");
+    }
+
+    #[test]
+    fn pr_conflict_prompt_names_the_files_and_forbids_a_force_push() {
+        let files = vec!["src/a.rs".to_string(), "ui/b.tsx".to_string()];
+        let p = super::pr_conflict_prompt(
+            9,
+            "Add widgets",
+            "https://x/pull/9",
+            "main",
+            "feat/w",
+            super::PrWorkspace::Worktree,
+            &files,
+        );
+        assert!(p.starts_with(
+            "Resolve the merge conflicts blocking GitHub pull request #9: Add widgets"
+        ));
+        // The probe already ran to draw the UI, so the agent starts from its answer.
+        assert!(p.contains("These 2 files conflict: src/a.rs, ui/b.tsx."), "{p}");
+        assert!(p.contains("git merge origin/main"), "{p}");
+        assert!(p.contains("`feat/w`") && p.contains("`main`"), "{p}");
+        // A rebase or force-push on a published branch is how this fix turns
+        // into a worse problem than the conflict it cleared.
+        assert!(p.contains("Do not rebase and do not force-push"), "{p}");
+        assert!(p.contains("https://x/pull/9"), "{p}");
+        // A worktree of its own is the agent's to work in; only the shared
+        // checkout gets the warning about someone else's uncommitted work.
+        assert!(!p.contains("project's own checkout"), "{p}");
+    }
+
+    #[test]
+    fn pr_conflict_prompt_warns_when_the_merge_lands_in_the_users_checkout() {
+        let p = super::pr_conflict_prompt(
+            9,
+            "Add widgets",
+            "https://x/pull/9",
+            "main",
+            "feat/w",
+            super::PrWorkspace::Checkout,
+            &["a.rs".to_string()],
+        );
+        assert!(p.contains("the project's own checkout, not an isolated worktree"), "{p}");
+        // git refuses a merge over someone else's uncommitted work, and moving
+        // it out of the way is not this agent's call to make.
+        assert!(p.contains("stop and tell me rather than stashing"), "{p}");
+    }
+
+    #[test]
+    fn pr_conflict_prompt_survives_an_unprobed_conflict() {
+        let p = super::pr_conflict_prompt(
+            9,
+            "Add widgets",
+            "https://x/pull/9",
+            "main",
+            "feat/w",
+            super::PrWorkspace::Worktree,
+            &[],
+        );
+        assert!(p.contains("Run the merge to find out which files collide."), "{p}");
+        assert!(!p.contains("files conflict"), "no empty file list: {p}");
+        assert!(p.contains("git merge origin/main"), "{p}");
+    }
+
+    #[test]
+    fn pr_conflict_prompt_counts_one_file_in_the_singular() {
+        let p = super::pr_conflict_prompt(
+            9,
+            "T",
+            "u",
+            "main",
+            "feat/w",
+            super::PrWorkspace::Worktree,
+            &["a.rs".to_string()],
+        );
+        assert!(p.contains("One file conflicts: a.rs."), "{p}");
     }
 
     #[test]

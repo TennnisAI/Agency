@@ -3767,7 +3767,6 @@ input, textarea, code,
 .pr-review-num { color: var(--sub0); font-weight: 400; }
 .pr-review-meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 6px; font-size: 12px; color: var(--sub0); }
 .pr-review-meta code { font-family: var(--mono); font-size: 11.5px; background: var(--crust); border-radius: 5px; padding: 1px 5px; }
-.pr-review-conflict { color: var(--red); }
 .pr-review-decision { color: var(--peach); }
 .pr-review-desc { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
 .pr-review-files { padding: 10px 16px 24px; }
@@ -3865,6 +3864,31 @@ input, textarea, code,
 .pr-merge-btn { color: var(--green); border-color: var(--green); }
 .pr-merge-btn:hover:not(:disabled) { background: color-mix(in srgb, var(--green) 14%, transparent); color: var(--green); }
 .pr-merge-btn:disabled { color: var(--sub0); border-color: var(--s1); }
+/* A conflicted PR's merge is GitHub's refusal, not ours, and the pane has to
+   say so next to the button rather than in a tooltip on a dead one (AGE-172). */
+.pr-conflict-banner {
+  display: flex; align-items: flex-start; gap: 8px;
+  margin-top: 10px; padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--red) 35%, transparent);
+  border-radius: 8px; background: color-mix(in srgb, var(--red) 9%, transparent);
+}
+.pr-conflict-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+.pr-conflict-title { font-size: 12.5px; font-weight: 600; color: var(--text); }
+.pr-conflict-note { margin: 0; font-size: 12px; color: var(--sub0); word-break: break-word; }
+.pr-conflict-title code, .pr-conflict-note code, .pr-conflict-files code {
+  font-family: var(--mono); font-size: 11.5px; background: var(--crust); border-radius: 5px; padding: 1px 5px;
+}
+.pr-conflict-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 3px; }
+/* The dialog's file list: long enough to scan, capped so it can't push the
+   buttons off a short window. */
+.pr-conflict-files {
+  margin: 8px 0 0; padding: 0; list-style: none;
+  display: flex; flex-direction: column; gap: 3px;
+  max-height: 168px; overflow-y: auto;
+}
+/* Blocked, not dead: the button reads red and opens the reason. */
+.pr-merge-blocked { color: var(--red); border-color: color-mix(in srgb, var(--red) 55%, transparent); }
+.pr-merge-blocked:hover:not(:disabled) { background: color-mix(in srgb, var(--red) 14%, transparent); color: var(--red); }
 .merge-methods { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
 .merge-method { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text); cursor: pointer; }
 .merge-method input { accent-color: var(--green); }

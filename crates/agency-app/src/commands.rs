@@ -882,6 +882,15 @@ pub async fn pr_detail(
 }
 
 #[tauri::command]
+pub async fn pr_conflicts(
+    state: State<'_, AppState>,
+    project_id: String,
+    number: u64,
+) -> Result<crate::state::PrConflicts, String> {
+    state.pr_conflicts(&project_id, number).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn gh_current_login(
     state: State<'_, AppState>,
     project_id: String,
@@ -1087,10 +1096,24 @@ pub async fn create_pr_review_run(
     agent: String,
     model: Option<String>,
     post_comments: bool,
-) -> Result<crate::state::PrReviewRun, String> {
+) -> Result<crate::state::PrAgentRun, String> {
     let model = checked_model(model)?;
     state
         .create_pr_review_run(&project_id, number, &agent, model.as_deref(), post_comments)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn create_pr_conflict_run(
+    state: State<'_, AppState>,
+    project_id: String,
+    number: u64,
+    agent: String,
+    model: Option<String>,
+) -> Result<crate::state::PrAgentRun, String> {
+    let model = checked_model(model)?;
+    state
+        .create_pr_conflict_run(&project_id, number, &agent, model.as_deref())
         .map_err(|e| e.to_string())
 }
 

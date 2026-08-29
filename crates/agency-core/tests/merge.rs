@@ -67,6 +67,49 @@ fn conflicting_merge_detected_and_abortable() {
 }
 
 #[test]
+fn conflicting_paths_lists_the_collisions_without_touching_the_checkout() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    // Branch edits f.txt and adds one of its own; main edits f.txt differently.
+    run(dir.path(), &["checkout", "-q", "-b", "agent/z"]);
+    std::fs::write(dir.path().join("f.txt"), "branch-change\n").unwrap();
+    std::fs::write(dir.path().join("only-branch.txt"), "b\n").unwrap();
+    run(dir.path(), &["add", "-A"]);
+    run(dir.path(), &["commit", "-q", "-m", "branch edit"]);
+    run(dir.path(), &["checkout", "-q", "main"]);
+    std::fs::write(dir.path().join("f.txt"), "main-change\n").unwrap();
+    run(dir.path(), &["commit", "-qam", "main edit"]);
+
+    let files = merge::conflicting_paths(dir.path(), "agent/z", "main").unwrap();
+    assert_eq!(files, vec!["f.txt".to_string()]);
+    // The point of merge-tree: no merge is started and the checkout is clean.
+    assert!(!merge::is_merging(dir.path()).unwrap());
+    assert_eq!(std::fs::read_to_string(dir.path().join("f.txt")).unwrap(), "main-change\n");
+    assert!(!dir.path().join("only-branch.txt").exists());
+}
+
+#[test]
+fn conflicting_paths_is_empty_for_a_clean_merge() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    run(dir.path(), &["checkout", "-q", "-b", "agent/clean"]);
+    std::fs::write(dir.path().join("new.txt"), "hi\n").unwrap();
+    run(dir.path(), &["add", "-A"]);
+    run(dir.path(), &["commit", "-q", "-m", "add new"]);
+
+    assert!(merge::conflicting_paths(dir.path(), "main", "agent/clean").unwrap().is_empty());
+}
+
+#[test]
+fn conflicting_paths_fails_loudly_on_an_unknown_ref() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    // A missing branch must not read as "no conflicts" — that is the one wrong
+    // answer, since the caller would report a conflicted PR as clean.
+    assert!(merge::conflicting_paths(dir.path(), "main", "origin/nope").is_err());
+}
+
+#[test]
 fn commits_ahead_counts_new_branch_work() {
     let dir = tempfile::tempdir().unwrap();
     init_repo(dir.path());

@@ -157,6 +157,45 @@ pub fn abort_merge(repo: &Path, restore_to: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+/// The paths a merge of `theirs` into `ours` would conflict on, computed
+/// without checking anything out: `git merge-tree` does the three-way merge in
+/// memory and writes nothing but objects. That matters here because the
+/// question is asked about a *pull request* — two remote-tracking refs, from a
+/// UI pane, while the user's checkout is theirs to keep.
+///
+/// An empty list means the merge is clean. `--write-tree` needs git 2.38, and
+/// an older git exits with a usage error rather than a merge result, which
+/// surfaces here as an `Err` so the caller degrades to "conflicts, files
+/// unknown" instead of reporting a clean merge that isn't.
+pub fn conflicting_paths(repo: &Path, ours: &str, theirs: &str) -> Result<Vec<String>> {
+    let out = git(repo, &["merge-tree", "--write-tree", "--name-only", ours, theirs])?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    match out.status.code() {
+        Some(0) => Ok(Vec::new()),
+        // Exit 1 is "merged, with conflicts": stdout is the merged tree's oid,
+        // then one conflicted path per line, then a blank line and git's own
+        // "CONFLICT (content): ..." messages, which are for humans, not us.
+        //
+        // A ref it can't resolve *also* exits 1 ("merge-tree: origin/nope - not
+        // something we can merge"), with an empty stdout — so the oid line is
+        // what tells a merge result from a failure. Without that check a
+        // mistyped or unfetched branch reads as "conflicts, no files", which is
+        // the one answer that would leave the caller confidently wrong.
+        Some(1) => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let mut lines = stdout.lines();
+            match lines.next() {
+                Some(oid) if !oid.trim().is_empty() => Ok(lines
+                    .take_while(|l| !l.trim().is_empty())
+                    .map(|l| l.trim().to_string())
+                    .collect()),
+                _ => bail!("git merge-tree failed: {}", stderr.trim()),
+            }
+        }
+        _ => bail!("git merge-tree failed: {}", stderr.trim()),
+    }
+}
+
 fn unmerged_files(repo: &Path) -> Result<Vec<String>> {
     let out = git_ok(repo, &["diff", "--name-only", "--diff-filter=U"])?;
     Ok(out.lines().map(|l| l.to_string()).collect())

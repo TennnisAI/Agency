@@ -529,6 +529,25 @@ pub fn fetch(repo: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Update only the remote-tracking refs for `branches` (`origin/<branch>`),
+/// leaving local branches, HEAD and the working tree alone.
+///
+/// The refspec is spelled out rather than left to the remote's default so this
+/// can never fast-forward or clobber a local branch: a PR's conflict probe runs
+/// off someone else's head branch, and it has no business moving the user's
+/// copy of it. Unlike [`fetch_branch`], a diverged local branch is simply not
+/// its problem.
+pub fn fetch_tracking(repo: &Path, branches: &[&str]) -> Result<()> {
+    if branches.is_empty() {
+        return Ok(());
+    }
+    let mut args = vec!["fetch".to_string(), "origin".to_string()];
+    args.extend(branches.iter().map(|b| format!("+refs/heads/{b}:refs/remotes/origin/{b}")));
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    git_capped(repo, &argv, FETCH_TIMEOUT)?;
+    Ok(())
+}
+
 /// [`git`] with a wall-clock cap: the child is killed if it outlives `limit`.
 /// `Command::output()` waits forever, which is fine for the local commands but
 /// not for one that talks to a remote — an unreachable host, a stalled TLS

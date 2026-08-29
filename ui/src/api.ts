@@ -1198,7 +1198,7 @@ export const createRunFromPr = (projectId: string, number: number, agent: string
 // Where an agent PR review landed. `sessionId` is set when the review had to run
 // as an extra tab inside an existing run (the PR's branch was already checked
 // out there) — focus that tab rather than the run's primary agent.
-export interface PrReviewRun {
+export interface PrAgentRun {
   run: RunInfo;
   sessionId: string | null;
 }
@@ -1210,7 +1210,16 @@ export const createPrReviewRun = (
   agent: string,
   model: string | null,
   postComments: boolean,
-) => invoke<PrReviewRun>("create_pr_review_run", { projectId, number, agent, model, postComments });
+) => invoke<PrAgentRun>("create_pr_review_run", { projectId, number, agent, model, postComments });
+
+// Start an agent that clears a PR's merge conflicts: merges the base branch
+// into the PR's branch, resolves, and pushes.
+export const createPrConflictRun = (
+  projectId: string,
+  number: number,
+  agent: string,
+  model: string | null,
+) => invoke<PrAgentRun>("create_pr_conflict_run", { projectId, number, agent, model });
 
 export const ghReadiness = (projectId: string) =>
   invoke<GhReadiness>("gh_readiness", { projectId });
@@ -1244,6 +1253,18 @@ export const prMergeMethods = (projectId: string) =>
   invoke<MergeMethods>("pr_merge_methods", { projectId });
 export const mergePr = (projectId: string, number: number, method: MergeMethod, deleteBranch: boolean) =>
   invoke<PrMergeResult>("merge_pr", { projectId, number, method, deleteBranch });
+/** Where a conflicted PR's conflicts are. GitHub only reports *that* a PR
+ * conflicts, so the files come from a local probe: `probed` false means that
+ * probe couldn't run, and `files` is empty for want of an answer rather than
+ * because the merge is clean. */
+export interface PrConflicts {
+  base: string;
+  head: string;
+  files: string[];
+  probed: boolean;
+}
+export const prConflicts = (projectId: string, number: number) =>
+  invoke<PrConflicts>("pr_conflicts", { projectId, number });
 export const prDiff = (projectId: string, number: number) =>
   invoke<PrFileDiff[]>("pr_diff", { projectId, number });
 export const prReviewThreads = (projectId: string, number: number) =>

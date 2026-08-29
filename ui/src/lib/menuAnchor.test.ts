@@ -28,4 +28,21 @@ describe("anchorMenu", () => {
   it("flips both ways at once in the bottom-right corner", () => {
     expect(anchorMenu(rect(900, 700, 90, 24), 220, 200)).toEqual({ bottom: 104, right: 10 });
   });
+
+  it("opens upward from a trigger with room for neither, then hugs the top", () => {
+    // A menu taller than the window fits above or below nothing; `.agent-menu`
+    // caps its height so this stays hypothetical, but the placement still has
+    // to land the menu on screen rather than off the top.
+    expect(anchorMenu(rect(100, 400, 120, 24), 220, 500)).toEqual({ bottom: 404, left: 100 });
+  });
+
+  it("opens leftward from a trigger that asks for it, wherever it sits", () => {
+    // The "+ Agent" button sits at the right of its own header, and a pane to
+    // its right leaves room the menu should not take.
+    expect(anchorMenu(rect(500, 100, 90, 24), 220, 200, "left")).toEqual({ top: 128, right: 410 });
+  });
+
+  it("still opens rightward when a left-opening menu would run off the left edge", () => {
+    expect(anchorMenu(rect(40, 100, 90, 24), 220, 200, "left")).toEqual({ top: 128, left: 40 });
+  });
 });

@@ -5,6 +5,7 @@ import { agentLabel } from "../agents";
 import { useRuns, SpawnOpts } from "../store/runs";
 import { effectiveMergeTarget } from "../lib/branchTargets";
 import { useDismissOnResize } from "../hooks/useDismissOnResize";
+import { useMenuAnchor } from "../hooks/useMenuAnchor";
 import { useAgentModels } from "../hooks/useAgentModels";
 import BranchSelect from "./BranchSelect";
 import ModelSelect from "./ModelSelect";
@@ -46,12 +47,12 @@ export default function AgentAddMenu({
   // slow first spawn can't be double-fired.
   const { spawning } = useRuns();
   const [open, setOpen] = useState(false);
-  const [coords, setCoords] = useState<{ top: number; left?: number; right?: number }>();
   const [agents, setAgents] = useState<AgentProfile[]>([]);
   const [raceOpen, setRaceOpen] = useState(false);
   const [loopOpen, setLoopOpen] = useState(false);
   const [importMode, setImportMode] = useState<"issue" | "pr" | null>(null);
   const btnRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
 
   // Model per agent, seeded from what each was last launched on, so the row
   // reads as the spawn it is about to do. Picking one here changes only this
@@ -125,37 +126,29 @@ export default function AgentAddMenu({
   // Anchor the menu in viewport coordinates so an ancestor's `overflow: hidden`
   // (e.g. the focus rail) can't clip it. The icon/header buttons sit at the left
   // of their pane and open rightward; the primary button sits at the top-right
-  // and opens leftward.
+  // and opens leftward. The menu's height is the agent list's, so it is measured
+  // rather than guessed at, and a trigger low on the screen (an issue row near
+  // the bottom of the board) opens upward instead of off the edge.
+  const [rect, setRect] = useState<DOMRect | null>(null);
+  const coords = useMenuAnchor(open ? rect : null, menuRef, variant === "button" ? "left" : "right");
+
   const toggle = () => {
-    setOpen((o) => {
-      const next = !o;
-      if (next) {
-        loadAgents();
-        // Re-read: Settings may have changed since this menu last mounted.
-        loadWorktreeDefault();
-        // And a run started elsewhere may have moved an agent's model on.
-        reloadModels();
-        setPicked({});
-      }
-      if (next && btnRef.current) {
-        const r = btnRef.current.getBoundingClientRect();
-        // Icon/header triggers open rightward, but near the right edge (e.g. an
-        // issue row with the sidebar closed) that clips. Flip to right-anchor
-        // when the menu wouldn't fit. The primary button always opens leftward.
-        const MENU_W = 300; // .agent-menu max-width
-        const fitsRight = r.left + MENU_W <= window.innerWidth - 8;
-        setCoords(
-          variant === "button" || !fitsRight
-            ? { top: r.bottom + 4, right: window.innerWidth - r.right }
-            : { top: r.bottom + 4, left: r.left },
-        );
-      }
-      return next;
-    });
+    if (open) {
+      setOpen(false);
+      return;
+    }
+    loadAgents();
+    // Re-read: Settings may have changed since this menu last mounted.
+    loadWorktreeDefault();
+    // And a run started elsewhere may have moved an agent's model on.
+    reloadModels();
+    setPicked({});
+    setRect(btnRef.current?.getBoundingClientRect() ?? null);
+    setOpen(true);
   };
 
-  // Those coords are measured once, at open. Rather than let a resize leave the
-  // menu behind where its trigger used to be, close it.
+  // Those coords are against the trigger's rect at open. Rather than let a
+  // resize leave the menu behind where its trigger used to be, close it.
   useDismissOnResize(open, () => setOpen(false));
 
   const choose = (id: string) => {
@@ -215,7 +208,7 @@ export default function AgentAddMenu({
       {open && createPortal(
         <>
           <div className="agent-menu-backdrop" onClick={() => setOpen(false)} />
-          <div className="agent-menu" style={{ position: "fixed", ...coords }}>
+          <div ref={menuRef} className="agent-menu" style={{ position: "fixed", ...coords }}>
             {/* Agent and model on one row: the name starts the agent, the chip
                 beside it says which model it will start on and opens the list.
                 Agents whose CLI takes no model flag show no chip. */}

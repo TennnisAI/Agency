@@ -3625,6 +3625,13 @@ impl AppState {
             build_command: clean(build_command),
         };
         agency_core::config::save_knowledge(&repo, &k)?;
+        if graph {
+            // Enabling is where the panel starts showing the build command, and
+            // a user who runs it in their own terminal gets the same
+            // graphify-out/ in their changes as the Build button would. The
+            // exclude belongs to the feature, not to who pressed what.
+            agency_core::config::exclude_graph_output(&repo);
+        }
         // Enabling deliberately does *not* start a build (it did until AGE-83's
         // follow-up). A build reads every doc in the project with an LLM, and
         // which one it uses, what that costs and who ends up with the corpus
@@ -3707,6 +3714,10 @@ impl AppState {
             entry.running = true;
             entry.error = None;
         }
+        // Before the build writes a line: graphify-out/ is ours to keep out of
+        // the user's changes (AGE-170), and an exclude arriving after the files
+        // do has already lost them a diff.
+        agency_core::config::exclude_graph_output(repo);
         log::info!("building knowledge graph in {}: {build}", repo.display());
         let repo = repo.to_path_buf();
         let builds_handle = self.kg_builds.clone();

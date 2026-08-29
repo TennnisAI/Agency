@@ -241,12 +241,35 @@ fn read_value(path: &Path) -> Option<toml::Value> {
     toml::from_str::<toml::Value>(&text).ok()
 }
 
+/// The directory a graph build writes into, at the repo root: `graph.json`
+/// plus a `cache/` the next build reuses.
+pub const GRAPH_OUT_DIR: &str = "graphify-out";
+
 /// Where the build command leaves the graph: the primary repo's untracked
 /// `graphify-out/graph.json`. The serve command points at this file, and its
 /// presence is what tells us a graph has actually been built (worktrees never
 /// carry `graphify-out/`, so the path is always the primary repo's).
 pub fn graph_path(repo_path: &Path) -> PathBuf {
-    repo_path.join("graphify-out").join("graph.json")
+    repo_path.join(GRAPH_OUT_DIR).join("graph.json")
+}
+
+/// Keep a graph build's output out of git, in the repo's `.git/info/exclude`.
+///
+/// AGE-170: a build in the primary checkout put
+/// `graphify-out/cache/stat-index.json` in the user's untracked changes, where
+/// it sits in front of every commit they make and rides along in any `git add
+/// -A`. The graph is a machine-local artifact of a build the user re-runs, not
+/// project content, and Agency is what put it there.
+///
+/// Best-effort: failing to write the exclude file is no reason to refuse a
+/// build. Root-anchored, because only a build run from the repo root (as
+/// `graphify .` is) lands here, and `git add -f` still wins for a user who
+/// wants the graph tracked after all.
+pub fn exclude_graph_output(repo_path: &Path) {
+    let pattern = format!("/{GRAPH_OUT_DIR}/");
+    if let Err(e) = crate::worktree::ensure_exclude_pattern(repo_path, &pattern) {
+        log::warn!("excluding {pattern} in {}: {e}", repo_path.display());
+    }
 }
 
 /// The default graphify MCP serve command for a repo. graphify's server has no
@@ -752,6 +775,35 @@ mod tests {
         let agency = dir.join(".agency");
         fs::create_dir_all(&agency).unwrap();
         fs::write(agency.join(name), body).unwrap();
+    }
+
+    /// AGE-170, with the file git actually offered the user:
+    /// `graphify-out/cache/stat-index.json` in Untracked Changes on main.
+    /// Asserted through real `git status`, since what matters is git's reading
+    /// of the pattern, not the line we wrote.
+    #[test]
+    fn a_built_graph_stays_out_of_the_users_changes() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path();
+        let git = |args: &[&str]| {
+            let out =
+                std::process::Command::new("git").args(args).current_dir(repo).output().unwrap();
+            assert!(out.status.success(), "git {args:?}");
+            String::from_utf8_lossy(&out.stdout).to_string()
+        };
+        git(&["init", "-q", "-b", "main"]);
+
+        exclude_graph_output(repo);
+        let out = repo.join(GRAPH_OUT_DIR);
+        fs::create_dir_all(out.join("cache")).unwrap();
+        fs::write(out.join("cache").join("stat-index.json"), "{}").unwrap();
+        fs::write(graph_path(repo), "{}").unwrap();
+
+        assert_eq!(git(&["status", "--porcelain"]).trim(), "");
+        // Idempotent: the settings toggle and every build both call it.
+        exclude_graph_output(repo);
+        let excludes = fs::read_to_string(repo.join(".git/info/exclude")).unwrap();
+        assert_eq!(excludes.lines().filter(|l| l.trim() == "/graphify-out/").count(), 1);
     }
 
     #[test]

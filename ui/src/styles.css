@@ -225,6 +225,11 @@ button:disabled { opacity: .45; cursor: default; }
 .agent-add { position: relative; display: inline-flex; }
 .agent-menu-backdrop { position: fixed; inset: 0; z-index: 40; }
 .agent-menu { z-index: 41; background: var(--mantle); border: 1px solid var(--s1); border-radius: 9px; box-shadow: 0 12px 32px var(--shadow); padding: 5px; min-width: 220px; max-width: 300px; display: flex; flex-direction: column; }
+/* A menu is placed above or below its trigger, whichever it fits in (see
+   useMenuAnchor), and one taller than the window fits in neither: flipping it up
+   would only move the clipped end from the bottom of the screen to the top,
+   where the agent names are. Capped and scrolled, it always fits somewhere. */
+.agent-menu { max-height: calc(100vh - 16px); overflow-y: auto; }
 .agent-menu button { background: transparent; border: none; color: var(--text); text-align: left; padding: 8px 10px; border-radius: 6px; cursor: pointer; font-family: var(--sans); font-size: 12.5px; }
 .agent-menu button:hover { background: var(--s0); }
 .agent-menu-sep { height: 1px; background: var(--line); margin: 4px 2px; }

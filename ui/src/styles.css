@@ -225,6 +225,11 @@ button:disabled { opacity: .45; cursor: default; }
 .agent-add { position: relative; display: inline-flex; }
 .agent-menu-backdrop { position: fixed; inset: 0; z-index: 40; }
 .agent-menu { z-index: 41; background: var(--mantle); border: 1px solid var(--s1); border-radius: 9px; box-shadow: 0 12px 32px var(--shadow); padding: 5px; min-width: 220px; max-width: 300px; display: flex; flex-direction: column; }
+/* A menu is placed above or below its trigger, whichever it fits in (see
+   useMenuAnchor), and one taller than the window fits in neither: flipping it up
+   would only move the clipped end from the bottom of the screen to the top,
+   where the agent names are. Capped and scrolled, it always fits somewhere. */
+.agent-menu { max-height: calc(100vh - 16px); overflow-y: auto; }
 .agent-menu button { background: transparent; border: none; color: var(--text); text-align: left; padding: 8px 10px; border-radius: 6px; cursor: pointer; font-family: var(--sans); font-size: 12.5px; }
 .agent-menu button:hover { background: var(--s0); }
 .agent-menu-sep { height: 1px; background: var(--line); margin: 4px 2px; }
@@ -371,7 +376,16 @@ button > .btn-ico:not(:only-child) { margin-right: 4px; }
   background: var(--crust); border-radius: 5px; padding: 2px 7px;
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.settings-ghost-btn { background: transparent; border: 1px solid var(--s1); color: var(--sub0); font-size: 11.5px; font-weight: 400; padding: 4px 10px; border-radius: 6px; }
+/* The app's standard compact action button (Settings, the agent panel's PR
+   section, the Pull Requests tab). It inherited the UA button face rather than
+   the app's, so a row of them next to any app text read as a different
+   typeface, and a two-word label ("Review with agent") broke onto a second line
+   the moment its row ran short of room. */
+.settings-ghost-btn {
+  background: transparent; border: 1px solid var(--s1); color: var(--sub0);
+  font-family: var(--sans); font-size: 11.5px; font-weight: 400;
+  padding: 4px 10px; border-radius: 6px; white-space: nowrap;
+}
 .settings-ghost-btn:hover { background: var(--s0); color: var(--text); }
 .settings-del-btn { color: var(--red); border-color: transparent; }
 .settings-del-btn:hover { background: rgba(243,139,168,.10); color: var(--red); }
@@ -469,6 +483,9 @@ textarea.settings-input { min-height: 64px; resize: vertical; }
 .settings-kg-warn { color: var(--yellow); font-size: 11.5px; line-height: 1.4; background: rgba(249,226,175,.08); border-radius: 6px; padding: 6px 9px; display: flex; flex-direction: column; gap: 7px; }
 .settings-kg-warn .install-cmd { font-size: 11.5px; }
 .settings-kg-actions { display: flex; justify-content: flex-end; }
+/* The one line a model choice says about what it costs and where the project's
+   docs go. Prose, so no break-all: it sits under the backend picker. */
+.settings-kg-cost { color: var(--o0); font-size: 11.5px; line-height: 1.45; padding: 0 2px; }
 /* Same shape as the warning, for the settled/no-action-needed state. */
 .settings-kg-note { color: var(--o0); font-size: 11.5px; line-height: 1.4; background: var(--crust); border-radius: 6px; padding: 6px 9px; word-break: break-all; }
 /* Legacy */
@@ -490,15 +507,23 @@ textarea.settings-input { min-height: 64px; resize: vertical; }
 .hush-link { background: none; border: none; padding: 0; font: inherit; color: var(--o0); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
 .hush-link:hover { background: none; color: var(--text); }
 .merge-review { display: flex; flex-direction: column; gap: 8px; }
-/* The last step of a merge: what tidying up removes and what it keeps, in the
-   same shape the teardown dialogs use. */
-.merge-cleanup {
-  display: flex; flex-direction: column; gap: 8px;
-  border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px;
-}
-.merge-cleanup-head { margin: 0; font-size: 12px; font-weight: 600; color: var(--text); }
+/* The Done step, in three beats: what happened, what the buttons do, the
+   buttons. One gap between them rather than the default paragraph margins,
+   which left the outcome line floating and the buttons touching the copy. */
+.merge-done { display: flex; flex-direction: column; gap: 12px; }
+.merge-done > .merge-ok { margin: 0; }
+/* The last step of a merge: what the three buttons under it do, in two
+   sentences (AGE-164). It was a bordered panel of Removes/Keeps lists, which at
+   this size framed more explanation than there is and read as a fourth thing to
+   deal with; the sentences carry their own hierarchy instead. */
+.merge-cleanup { display: flex; flex-direction: column; gap: 6px; }
+.merge-choices { margin: 0; font-size: 13px; line-height: 1.6; color: var(--sub1); }
+/* The button's own word, so the eye can jump from a verb here to the button
+   under it without re-reading either. */
+.merge-choices b { font-weight: 600; color: var(--text); }
+.merge-cleanup .merge-note { margin: 0; font-size: 12.5px; line-height: 1.55; }
 
-/* Removal summary — shared by the confirm dialogs and the merge window. Two
+/* Removal summary — the teardown confirm dialogs' two lists. Two
    labelled columns, because "removes" and "keeps" read as a pair or not at all;
    they stack on a narrow confirm dialog. */
 .removal-body { display: flex; flex-direction: column; gap: 10px; }
@@ -1845,6 +1870,24 @@ input.settings-notif-secs { width: 90px; flex: 0 0 auto; }
 /* The marker a run wears while Agency is still holding text for its agent
    (QueuedMarker.tsx). Amber, like the "waiting" dot: something is pending, and
    nothing is wrong. Its popover says what is waiting and drops it. */
+/* Settle / snooze / pin (AGE-141). The control is quiet on a run nobody has
+   classified — revealed by hovering the tile, like its close button — and
+   becomes a chip once there is something to say. Settled and snoozed already
+   read in the status line beside it; a pin has no other home on the card. */
+.attn-wrap { display: inline-flex; flex-shrink: 0; }
+.attn-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 1px 6px; border: 1px solid transparent; border-radius: 999px;
+  background: none; color: var(--o1); cursor: pointer;
+  font-family: var(--mono); font-size: 10.5px; line-height: 1.5; white-space: nowrap;
+}
+.attn-chip:hover, .attn-chip.on { background: var(--s2); color: var(--text); }
+.attn-chip.marked { border-color: var(--s1); color: var(--sub0); }
+.attn-chip.quiet { opacity: 0; transition: opacity 90ms ease; }
+.tile:hover .attn-chip.quiet,
+.attn-chip.quiet:focus-visible,
+.attn-chip.quiet.on { opacity: 1; }
+
 .queued-wrap { display: inline-flex; flex-shrink: 0; }
 .queued-chip {
   display: inline-flex; align-items: center; gap: 4px;
@@ -1898,8 +1941,17 @@ input.settings-notif-secs { width: 90px; flex: 0 0 auto; }
 .files-tool-btn:hover:not(:disabled) { background: var(--s0); color: var(--text); }
 .files-tool-btn:disabled { opacity: 0.35; cursor: default; }
 .files-tree-body { flex: 1; overflow: auto; padding: 4px 0; }
-/* Finder drop feedback: the pane claims the drag, the row says where it lands.
-   `drop-into` on the body is the root's turn to be that row. */
+/* Focusable only so the tree can own ⌘X/⌘C/⌘V; the cursor row below is the
+   visible answer to "where would that land", so the ring would be noise. */
+.files-tree-body:focus { outline: none; }
+/* The row the keyboard acts on. An outline rather than a fill, so it reads
+   alongside `.on` (the file open in the editor) instead of competing with it. */
+.tree-row.cursor { box-shadow: inset 0 0 0 1px var(--s2); }
+/* Cut and waiting for its paste: still there, on its way elsewhere. */
+.tree-row.cut { opacity: 0.5; }
+/* Drop feedback, for a drag from Finder and a drag within the tree alike: the
+   pane claims the drag, the row says where it lands. `drop-into` on the body is
+   the root's turn to be that row. */
 .files-tree-body.drop-active { box-shadow: inset 0 0 0 2px var(--blue); }
 .files-tree-body.drop-into { background: color-mix(in srgb, var(--blue) 8%, transparent); }
 .tree-row.drop-into { background: color-mix(in srgb, var(--blue) 16%, transparent); color: var(--text); }
@@ -1908,6 +1960,8 @@ input.settings-notif-secs { width: 90px; flex: 0 0 auto; }
   padding: 6px 10px; font-size: 11px; color: var(--sub0);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+/* A drop the tree will refuse: the hint says why, and no row highlights. */
+.tree-drop-hint.refused { color: var(--red); }
 .files-editor { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 /* Hidden-not-unmounted editor panes: one per warm tab, display toggled inline. */
 .files-editor-pane { flex: 1; min-height: 0; flex-direction: column; }
@@ -2059,8 +2113,13 @@ input, textarea, code,
 .model-error { color: var(--red); }
 
 /* Above the agent menu it opens from, so a click outside lands on this
-   backdrop and closes only the branch list. */
+   backdrop and closes only the branch list. Both popups that use this backdrop
+   then have to sit above it in turn: without the model menu's own z-index it
+   inherited .agent-menu's 41, the transparent backdrop covered it, and every
+   click on a model landed on the backdrop instead — the menu shut and the agent
+   stayed on its default (AGE-162). */
 .branch-menu-backdrop { position: fixed; inset: 0; z-index: 42; }
+.model-menu { z-index: 43; }
 .branch-menu {
   z-index: 43;
   max-width: min(340px, calc(100vw - 16px));
@@ -2481,7 +2540,12 @@ input, textarea, code,
 .file-preview-md :is(code, pre) {
   font-family: var(--mono); font-size: 12.5px; background: var(--crust); border-radius: 8px;
 }
-.file-preview-md code { padding: 1px 5px; }
+/* A code span that wraps keeps its padding on both lines: sliced, the second
+   fragment starts flush against the text and the chip reads as mis-sized. */
+.file-preview-md code {
+  padding: 1px 5px;
+  -webkit-box-decoration-break: clone; box-decoration-break: clone;
+}
 .file-preview-md pre { position: relative; padding: 12px 14px; overflow: auto; }
 .file-preview-md pre code { padding: 0; background: none; }
 .file-preview-md pre[data-lang] { padding-top: 26px; }
@@ -2494,8 +2558,20 @@ input, textarea, code,
   border-left: 3px solid var(--s1); margin-left: 0; padding-left: 14px; color: var(--sub0);
 }
 .file-preview-md img { max-width: 100%; border-radius: 6px; }
+/* Tables scroll in the wrap lib/mdHtml puts around them, and the cells wrap on
+   word boundaries only. An `overflow-wrap` that allows a mid-word break counts
+   that break while a column's min-content width is measured, and a column
+   squeezed that far breaks its own header down the middle: a "Chars" header
+   came out stacked "C / ha / rs" in the live preview and in `.md`. The root
+   here sets `break-word`, which WebKit does not take that far today; the cells
+   stop depending on that. */
+.file-preview-md .md-table-wrap { margin: .8em 0; overflow-x: auto; }
+.file-preview-md .md-table-wrap > table { margin: 0; }
 .file-preview-md table { border-collapse: collapse; }
-.file-preview-md :is(th, td) { border: 1px solid var(--line); padding: 6px 10px; }
+.file-preview-md :is(th, td) {
+  border: 1px solid var(--line); padding: 6px 10px;
+  word-break: normal; overflow-wrap: normal;
+}
 .file-preview-md th { background: var(--mantle); text-align: left; }
 .file-preview-md hr { border: none; border-top: 1px solid var(--line); margin: 1.6em 0; }
 .file-preview-md input[type=checkbox] { margin-right: .4em; }
@@ -3430,14 +3506,39 @@ input, textarea, code,
    scroll sideways. */
 .md-live .lp-table-wrap { margin: 3px 0 10px; overflow-x: auto; }
 .md-live .lp-table { border-collapse: collapse; font-size: 0.94em; }
+/* The cells opt out of the editor's own wrapping. CodeMirror's
+   .cm-lineWrapping sets `word-break: break-word` and `overflow-wrap: anywhere`
+   on the content, and both count a mid-word break as a wrap opportunity while a
+   column's min-content width is measured, so auto table layout was free to
+   squeeze a column narrower than its own header: a "Chars" column came out one
+   character wide, stacked "C / ha / rs". Normal wrapping floors every column at
+   its longest word, and a table too wide for the note scrolls in the wrap. */
 .md-live .lp-table th,
 .md-live .lp-table td {
   border: 1px solid var(--line); padding: 4px 11px;
   text-align: left; vertical-align: top; cursor: text;
+  word-break: normal; overflow-wrap: normal;
 }
 /* The body keeps the prose color: revealing the raw rows must not look like
    the text changed weight, only that the chrome went away. */
 .md-live .lp-table th { background: var(--mantle); font-weight: 650; }
+/* Chips in a cell paint a real background instead of the prose rule's
+   pseudo-element. An absolutely positioned ::before resolves against the box
+   bounding the FIRST and LAST fragment of a wrapped inline, so a code span
+   broken over two lines in a narrow column drew one tall rectangle as wide as
+   its last line only, sitting behind the first line's text. Cloning the
+   background gives every line its own chip. The z-index layering the prose
+   rule needs buys nothing here: a cell paints its own opaque background, and
+   a selection that reaches the table covers the widget whole. */
+.md-live .lp-table :is(.lp-code, .lp-highlight, .lp-tag)::before { content: none; }
+.md-live .lp-table :is(.lp-code, .lp-highlight, .lp-tag) {
+  -webkit-box-decoration-break: clone; box-decoration-break: clone;
+}
+.md-live .lp-table .lp-code { background: var(--crust); border-radius: 4px; }
+.md-live .lp-table .lp-highlight {
+  background: color-mix(in srgb, var(--yellow) 30%, transparent); border-radius: 3px;
+}
+.md-live .lp-table .lp-tag { background: var(--s1); border-radius: 999px; }
 .md-live .lp-table-raw { font-family: var(--mono); font-size: 0.88em; }
 
 /* Frontmatter properties card (fmEditor.ts): an editable block widget that
@@ -3630,21 +3731,41 @@ input, textarea, code,
 .md h1, .md h2, .md h3, .md h4 { margin: 12px 0 6px; line-height: 1.25; }
 .md h1 { font-size: 17px; } .md h2 { font-size: 15px; } .md h3 { font-size: 13.5px; }
 .md a { color: var(--blue); }
-.md code { font-family: var(--mono); font-size: 12px; background: var(--crust); border-radius: 5px; padding: 1px 5px; }
+.md code {
+  font-family: var(--mono); font-size: 12px; background: var(--crust); border-radius: 5px;
+  padding: 1px 5px; -webkit-box-decoration-break: clone; box-decoration-break: clone;
+}
 .md pre { background: var(--crust); border-radius: 8px; padding: 10px 12px; overflow-x: auto; }
 .md pre code { background: none; padding: 0; }
 .md blockquote { border-left: 3px solid var(--s1); margin-left: 0; padding-left: 12px; color: var(--sub0); }
 .md ul, .md ol { padding-left: 20px; }
 .md img { max-width: 100%; }
+/* Same pair as the file preview: the wrap (lib/mdHtml) takes the sideways
+   scroll, and cells break on word boundaries so no column collapses below its
+   longest word. `.md` sets `overflow-wrap: anywhere` for long URLs in prose,
+   which is exactly the value that squeezes a column to one character. */
+.md .md-table-wrap { margin: 6px 0; overflow-x: auto; }
+.md .md-table-wrap > table { margin: 0; }
 .md table { border-collapse: collapse; }
-.md th, .md td { border: 1px solid var(--line); padding: 4px 8px; }
+.md th, .md td {
+  border: 1px solid var(--line); padding: 4px 8px;
+  word-break: normal; overflow-wrap: normal;
+}
 .md hr { border: none; border-top: 1px solid var(--line); }
 
 /* Two-pane panel: PR list + review. */
 .pr-panel { flex: 1; display: flex; min-height: 0; min-width: 0; }
 .pr-panel-setup { flex: 1; padding: 8px; }
+/* Every button in this tab wears the app's face. Buttons inherit nothing here:
+   the UA sheet pins form controls to -webkit-small-control, so a bare
+   .git-iconbtn rendered in Helvetica beside Geist labels. */
+.pr-panel .git-iconbtn { font-family: var(--sans); }
 .pr-list { width: 280px; min-width: 240px; flex-shrink: 0; border-right: 1px solid var(--line); display: flex; flex-direction: column; overflow-y: auto; }
 .pr-list-head { display: flex; align-items: center; gap: 6px; padding: 8px 10px; color: var(--sub0); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; border-bottom: 1px solid var(--line); }
+/* Header affordances, not row actions: they sit inside the list's 11px cap-label
+   bar, so they take its scale rather than the 13px the git panel's icon buttons
+   use in a full-height file row. */
+.pr-list-head .git-iconbtn { font-size: 11.5px; padding: 2px 6px; white-space: nowrap; }
 .pr-list-empty { padding: 14px 10px; color: var(--sub0); font-size: 12px; }
 .pr-list-row { display: flex; align-items: baseline; gap: 8px; width: 100%; text-align: left; background: none; border: none; border-bottom: 1px solid var(--line); color: var(--text); padding: 8px 10px; cursor: pointer; }
 .pr-list-row:hover { background: var(--s0); }
@@ -3659,12 +3780,15 @@ input, textarea, code,
 .pr-review-scroll { flex: 1; overflow-y: auto; min-height: 0; }
 .pr-review-empty { padding: 24px; color: var(--sub0); font-size: 13px; }
 .pr-review-header { padding: 14px 16px; border-bottom: 1px solid var(--line); }
-.pr-review-titlerow { display: flex; align-items: center; gap: 10px; }
-.pr-review-title { font-size: 15px; font-weight: 600; }
+/* The title gives way, the actions don't: the row wraps them onto their own
+   line rather than squeezing the buttons out of shape at a narrow window. */
+.pr-review-titlerow { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 10px; }
+.pr-review-title { flex: 1 1 220px; min-width: 0; font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
+.pr-review-actions { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 6px; margin-left: auto; }
+.pr-review-actions > button { flex: none; }
 .pr-review-num { color: var(--sub0); font-weight: 400; }
 .pr-review-meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 6px; font-size: 12px; color: var(--sub0); }
 .pr-review-meta code { font-family: var(--mono); font-size: 11.5px; background: var(--crust); border-radius: 5px; padding: 1px 5px; }
-.pr-review-conflict { color: var(--red); }
 .pr-review-decision { color: var(--peach); }
 .pr-review-desc { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
 .pr-review-files { padding: 10px 16px 24px; }
@@ -3672,7 +3796,7 @@ input, textarea, code,
 /* Editing a PR's title and description in place. */
 .pr-review-edit { display: flex; flex-direction: column; gap: 10px; }
 .pr-review-title-input { flex: 1; min-width: 0; font-family: var(--sans); font-size: 14px; font-weight: 600; }
-.pr-review-edit-actions { display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
+.pr-review-edit-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
 .pr-edit-hint { color: var(--sub0); font-size: 11px; margin-right: auto; }
 
 /* Markdown box with a Write | Preview toggle. */
@@ -3739,11 +3863,15 @@ input, textarea, code,
 /* Sticky submit bar. */
 .pr-review-submit { border-top: 1px solid var(--line); padding: 10px 16px; background: var(--mantle); display: flex; flex-direction: column; gap: 8px; }
 .pr-review-summary { min-height: 52px; font-family: var(--sans); }
-.pr-review-verdicts { display: flex; align-items: center; gap: 8px; }
+.pr-review-verdicts { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .pr-review-draftcount { color: var(--sub0); font-size: 11.5px; }
-.pr-review-verdicts .git-iconbtn { border: 1px solid var(--s1); padding: 5px 12px; border-radius: 6px; }
-.pr-approve { color: var(--green); border-color: var(--green) !important; }
-.pr-approve:hover { background: color-mix(in srgb, var(--green) 14%, transparent); }
+.pr-review-verdict-btns { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-left: auto; }
+.pr-review-verdict-btns > button { flex: none; }
+/* Affirmative variant of the standard button: colour only, so it keeps the
+   shared shape. */
+.pr-approve { color: var(--green); border-color: var(--green); }
+.pr-approve:hover:not(:disabled) { background: color-mix(in srgb, var(--green) 14%, transparent); color: var(--green); }
+.pr-approve:disabled { color: var(--sub0); border-color: var(--s1); }
 
 /* New pull request form. */
 .newpr { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; max-width: 640px; }
@@ -3752,13 +3880,37 @@ input, textarea, code,
 .newpr-field select, .newpr-field .settings-input { font-family: var(--sans); }
 .newpr-field select { background: var(--base); border: 1px solid var(--s1); color: var(--text); border-radius: 6px; padding: 6px 8px; font-size: 12.5px; }
 .newpr-field-body textarea { min-height: 96px; }
-.newpr-actions { display: flex; gap: 8px; margin-top: 4px; }
-.newpr-actions .git-iconbtn { border: 1px solid var(--s1); padding: 6px 13px; border-radius: 6px; }
+.newpr-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
 
 /* Merge button + dialog. */
-.pr-merge-btn { border: 1px solid var(--green); color: var(--green); font-size: 11.5px; padding: 4px 10px; border-radius: 6px; }
-.pr-merge-btn:hover:not(:disabled) { background: color-mix(in srgb, var(--green) 14%, transparent); }
-.pr-merge-btn:disabled { color: var(--sub0); border-color: var(--s1); cursor: not-allowed; opacity: 1; }
+.pr-merge-btn { color: var(--green); border-color: var(--green); }
+.pr-merge-btn:hover:not(:disabled) { background: color-mix(in srgb, var(--green) 14%, transparent); color: var(--green); }
+.pr-merge-btn:disabled { color: var(--sub0); border-color: var(--s1); }
+/* A conflicted PR's merge is GitHub's refusal, not ours, and the pane has to
+   say so next to the button rather than in a tooltip on a dead one (AGE-172). */
+.pr-conflict-banner {
+  display: flex; align-items: flex-start; gap: 8px;
+  margin-top: 10px; padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--red) 35%, transparent);
+  border-radius: 8px; background: color-mix(in srgb, var(--red) 9%, transparent);
+}
+.pr-conflict-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+.pr-conflict-title { font-size: 12.5px; font-weight: 600; color: var(--text); }
+.pr-conflict-note { margin: 0; font-size: 12px; color: var(--sub0); word-break: break-word; }
+.pr-conflict-title code, .pr-conflict-note code, .pr-conflict-files code {
+  font-family: var(--mono); font-size: 11.5px; background: var(--crust); border-radius: 5px; padding: 1px 5px;
+}
+.pr-conflict-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 3px; }
+/* The dialog's file list: long enough to scan, capped so it can't push the
+   buttons off a short window. */
+.pr-conflict-files {
+  margin: 8px 0 0; padding: 0; list-style: none;
+  display: flex; flex-direction: column; gap: 3px;
+  max-height: 168px; overflow-y: auto;
+}
+/* Blocked, not dead: the button reads red and opens the reason. */
+.pr-merge-blocked { color: var(--red); border-color: color-mix(in srgb, var(--red) 55%, transparent); }
+.pr-merge-blocked:hover:not(:disabled) { background: color-mix(in srgb, var(--red) 14%, transparent); color: var(--red); }
 .merge-methods { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
 .merge-method { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text); cursor: pointer; }
 .merge-method input { accent-color: var(--green); }
@@ -3787,3 +3939,177 @@ input, textarea, code,
 .daily-nav { display: inline-flex; gap: 2px; margin-right: 6px; }
 .daily-nav .file-editor-btn { font-size: 15px; line-height: 1; padding: 0 6px; }
 .daily-nav .file-editor-btn:disabled { opacity: .35; cursor: default; }
+
+/* ── Map ──────────────────────────────────────────────────────────────────
+   The knowledge-graph map, the Files tab's second sub-view: a drill-down
+   canvas of boxes (directories, files) and dependency lines, with a side
+   panel for the selection. Same surface
+   language as the rest of the app: flat panels, hairlines, mono for anything
+   that names code. */
+.map {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--mantle);
+  overflow: hidden;
+}
+.map-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.map-head .spacer { flex: 1; }
+.map-crumbs { display: flex; align-items: center; flex-wrap: wrap; font-family: var(--mono); font-size: 12px; }
+.map-crumbs button {
+  background: none; border: none; padding: 2px 6px; border-radius: 5px;
+  color: var(--sub0); font-family: var(--mono); font-size: 12px; cursor: pointer;
+}
+.map-crumbs button:hover { background: var(--s0); color: var(--text); }
+.map-crumbs button.on { color: var(--text); }
+.map-crumb-sep { color: var(--o0); font-size: 10px; padding: 0 1px; }
+.map-stats { font-family: var(--mono); font-size: 11px; color: var(--o1); white-space: nowrap; }
+/* What a level left undrawn, said out loud rather than silently trimmed. */
+.map-capped { color: var(--sub0); cursor: help; }
+.map-body { flex: 1; display: flex; min-height: 0; }
+.map-canvas {
+  flex: 1;
+  min-width: 0;
+  background: var(--base);
+  cursor: grab;
+  touch-action: none;
+  overscroll-behavior: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.map-canvas:active { cursor: grabbing; }
+
+/* The courtyard: a diamond of ground under the level, its grid barely there. */
+.map-ground-outer { fill: var(--mantle); stroke: var(--line); stroke-width: 1; }
+.map-ground-inner { fill: none; stroke: var(--line); stroke-width: 1; opacity: .55; }
+.map-gridline { stroke: var(--line); stroke-width: 1; opacity: .35; }
+
+/* Roads along the grid; the dots are data underway. Peach is the one warm
+   accent in the scene, so motion is what carries it. */
+.map-road path { stroke: var(--s2); opacity: .65; transition: opacity .12s; }
+.map-road polygon { fill: var(--s2); opacity: .7; }
+.map-road.on path { stroke: var(--blue); opacity: .95; }
+.map-road.on polygon { fill: var(--blue); opacity: .95; }
+.map-road.dim path, .map-road.dim polygon { opacity: .1; }
+.map-dot { fill: var(--peach); opacity: .9; }
+.map-road.dim .map-dot { opacity: 0; }
+
+/* Buildings. Three faces per slab, lit from the upper left; directories lean
+   lavender so a keep reads apart from the halls around it. */
+.map-node { cursor: pointer; transition: transform .16s ease, opacity .14s; }
+.map-node polygon { stroke: #45475a; stroke-width: 1; stroke-linejoin: round; transition: fill .14s; }
+.map-face-top { fill: #34344e; }
+.map-face-left { fill: #272739; }
+.map-face-right { fill: #20202f; }
+.map-node.dir .map-face-top { fill: #3d3d60; }
+.map-node.dir .map-face-left { fill: #2d2d48; }
+.map-node.dir .map-face-right { fill: #25253c; }
+.map-node:hover, .map-node.on { transform: translateY(-3px); }
+.map-node.on polygon { stroke: var(--blue); }
+.map-node.on .map-face-top { fill: #3f4a6e; }
+.map-node.dim { opacity: .28; }
+
+/* Names float over the rooftops; the base-colored halo keeps them readable
+   across roads and grid lines. */
+.map-label { pointer-events: none; transition: opacity .14s; }
+.map-label.dim { opacity: .22; }
+.map-label.hide { opacity: 0; }
+.map-node-name {
+  font-family: var(--mono);
+  font-size: 11px;
+  fill: var(--text);
+  text-anchor: middle;
+  paint-order: stroke;
+  stroke: var(--base);
+  stroke-width: 3px;
+}
+.map-label.dir .map-node-name { fill: var(--lav); }
+
+/* A new level rises out of its ground, back rows first. */
+@keyframes map-rise {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes map-fade {
+  from { opacity: 0; }
+}
+.map-scene .map-node { animation: map-rise .45s cubic-bezier(.2, .7, .3, 1) backwards; }
+.map-scene .map-label { animation: map-fade .5s ease backwards; }
+.map-scene .map-road { animation: map-fade .6s ease backwards; }
+@media (prefers-reduced-motion: reduce) {
+  .map-scene .map-node, .map-scene .map-label, .map-scene .map-road { animation: none; }
+  .map-node { transition: none; }
+}
+
+.map-side {
+  width: 300px;
+  flex: none;
+  border-left: 1px solid var(--line);
+  overflow-y: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.map-side-title { font-size: 13px; font-weight: 600; word-break: break-all; margin-bottom: 2px; }
+.map-side-title.mono { font-family: var(--mono); font-size: 12px; font-weight: 500; }
+.map-side-hint { font-size: 12px; color: var(--o1); line-height: 1.45; margin-bottom: 6px; }
+.map-side-sec {
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: var(--o1);
+  margin: 12px 0 4px;
+}
+.map-side-actions { display: flex; gap: 6px; margin: 8px 0 2px; flex-wrap: wrap; }
+.map-btn {
+  background: var(--s0);
+  color: var(--text);
+  border: none;
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.map-btn:hover { background: var(--s1); }
+
+.map-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  width: 100%;
+  background: none;
+  border: none;
+  border-radius: 5px;
+  padding: 3px 6px;
+  cursor: pointer;
+  text-align: left;
+  color: var(--sub1);
+  font-size: 12px;
+}
+.map-row:hover { background: var(--s0); color: var(--text); }
+.map-row-label {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
+  min-width: 0;
+  flex: 1;
+}
+.map-row-meta { font-size: 10.5px; color: var(--o1); white-space: nowrap; }
+.map-row.sub { padding-left: 18px; }
+.map-sym-kind { font-family: var(--mono); font-size: 11px; color: var(--mauve); width: 12px; flex: none; }
+.map-sym-line { font-family: var(--mono); font-size: 10.5px; color: var(--blue); cursor: pointer; }
+.map-sym-line:hover { text-decoration: underline; }
+.map-sym-edges { margin: 0 0 4px; }
+.map-empty { max-width: 420px; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 10px; }
+.map-empty p { margin: 0; }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isExternalHref, labelCodeLangs } from "./mdHtml";
+import { isExternalHref, labelCodeLangs, wrapTables } from "./mdHtml";
 
 describe("labelCodeLangs", () => {
   it("lifts the language onto the pre and keeps it on the code", () => {
@@ -43,5 +43,30 @@ describe("isExternalHref", () => {
     for (const href of ["javascript:alert(1)", "data:text/html,x", "file:///etc/passwd", "#anchor", "./rel.md"]) {
       expect(isExternalHref(href)).toBe(false);
     }
+  });
+});
+
+describe("wrapTables", () => {
+  it("puts a scroll wrap around a table", () => {
+    expect(wrapTables("<table>\n<tr><td>a</td></tr>\n</table>")).toBe(
+      '<div class="md-table-wrap"><table>\n<tr><td>a</td></tr>\n</table></div>',
+    );
+  });
+
+  it("wraps a table that carries attributes", () => {
+    expect(wrapTables('<table class="x">y</table>')).toBe(
+      '<div class="md-table-wrap"><table class="x">y</table></div>',
+    );
+  });
+
+  it("wraps every table, and balances each one", () => {
+    const html = wrapTables("<table>a</table><p>x</p><table>b</table>");
+    expect(html.match(/md-table-wrap/g)).toHaveLength(2);
+    expect(html.match(/<\/div>/g)).toHaveLength(2);
+  });
+
+  it("leaves markup with no table alone", () => {
+    const html = "<p>a <code>tabletop</code> b</p>";
+    expect(wrapTables(html)).toBe(html);
   });
 });

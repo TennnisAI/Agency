@@ -141,7 +141,8 @@ piece of work; see "Not done" below.
   archiving removes and what it keeps, in the same shape the teardown dialogs
   use, so "Archive agent" reads as the end of the merge rather than as a
   separate decision about housekeeping. "Delete agent" sits beside it and is no
-  longer red, because after a merge it cannot lose anything.
+  longer red, because after a merge it cannot lose anything. (The lists are
+  gone since AGE-164; see the second addendum.)
 - **PR merged → tidy up is offered where you are.** When a run's PR shows as
   merged, the PR section offers "Archive agent" inline. That is the "after a
   branch is created" half of AGE-149: once the work is on the remote, the local
@@ -214,3 +215,32 @@ layout has actually been verified.
 Resuming an *unrestorable* archived run's conversation — branch gone, so no
 worktree to put the sessions back into — is the remaining piece, tracked as
 its own issue.
+
+## Addendum: the last step says all three buttons (AGE-164, 2026-08-27)
+
+The step above shipped with the *archive* plan's Removes/Keeps lists under a
+heading, "Tidy up", and three buttons under that: Archive agent, Delete agent,
+Keep agent. No button said "tidy up", and the lists described exactly one of
+the three. Read cold, the panel looked like an explanation of a fourth thing,
+and the two options it did not mention were left to be guessed at.
+
+The two lists were the right answer to a different question. In a confirm
+dialog the user has already chosen a verb and is being asked to check it, so
+Removes and Keeps are a checklist of one action. In the merge window the verb
+is the question, and a checklist of one candidate is not an answer to it.
+
+So the last step is two sentences now (`runRemoval.ts::mergeTidyCopy`), and the
+first names all three buttons in their own words: Archive puts the agent away
+and keeps a record under Archived, Delete removes it and its record, Keep
+leaves it as it is. The second is the mechanics both verbs share — the agent
+stops, the worktree goes, and the merged branch goes with it, "which is already
+on main" in the same clause `safeClause` writes for the dialogs. It is still
+built from the backend's `CleanupPlan` rather than written by hand, so the
+divergences stay honest: a dirty worktree keeps the branch through an archive
+and loses it to a delete, and the sentence then says "only deleting takes the
+agent/foo branch with it" instead of claiming both do.
+
+The uncommitted-work caveat is the one line that cannot be hushed, because it
+is the only one that changes which button you press. The hush ("Don't show this
+again") now hides the mechanics sentence and leaves the three verbs, which is
+the part that is one line long and worth keeping forever.

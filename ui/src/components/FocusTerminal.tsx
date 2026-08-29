@@ -10,12 +10,13 @@ import { attachRun, detachRun, resizeRun, runInput, runPreview, ensureRunActive,
   attachShell, detachShell, resizeShell, shellInput, shellPreview, startShell,
   FileRoot, openTermPath } from "../api";
 import { useRuns } from "../store/runs";
-import { currentXtermTheme, minContrastRatio, TERMINAL_FONT_FAMILY } from "../lib/themes";
+import { currentXtermTheme, minContrastRatio, paperSurface, TERMINAL_FONT_FAMILY } from "../lib/themes";
 import { initialCapture, feed } from "../lib/firstPrompt";
 import { shouldSwallowWheel, createPageScroller } from "../lib/termScroll";
 import { follow, GESTURE_MS } from "../lib/termFollow";
 import { createInputWriter, type InputWriter } from "../lib/termInput";
 import { createOutputWriter } from "../lib/termOutput";
+import { createRecolor, recolor } from "../lib/termPaper";
 import { fullClipboardText } from "../lib/clipboard";
 import { FindRank, registerFindTarget } from "../lib/findBus";
 import { installTermLinks } from "../lib/termLinkProvider";
@@ -322,6 +323,11 @@ export default function FocusTerminal(
     let disposed = false;
     let liveStarted = false;
     let onData: { dispose(): void } | undefined;
+    // On a light theme, the dark backgrounds an agent paints go onto paper
+    // (see lib/termPaper). One filter per pane, over the live stream only: it
+    // carries a partial sequence between chunks, and the daemon's snapshot
+    // below is a whole frame on its own.
+    const paper = createRecolor(paperSurface);
     // Everything after the snapshot lands here first, so a frame's worth of it
     // reaches xterm as one write and repaints once (see lib/termOutput).
     const output = createOutputWriter((bytes) => {
@@ -330,7 +336,7 @@ export default function FocusTerminal(
       // was already a frame behind. Writing it would repaint a terminal nobody
       // can see.
       if (disposed) return;
-      term.write(bytes);
+      term.write(paper(bytes));
     });
     stream.preview(runId, 200).then((seed) => {
       // Only seed before the live stream lands. Once attach is streaming, the daemon has
@@ -386,7 +392,7 @@ export default function FocusTerminal(
           // nothing else, and `liveStarted` still flips the moment the first live
           // bytes exist, so the preview seed above cannot paint over them.
           const resume = input.suspend();
-          term.write(bytes, resume);
+          term.write(recolor(bytes, paperSurface()), resume);
           return;
         }
         output.write(bytes);
@@ -463,6 +469,20 @@ export default function FocusTerminal(
       // stopped animating — occluded, minimised, on another Space — where no
       // frame arrives and the terminal, 50k lines of scrollback and all, would
       // otherwise never be freed.
+      //
+      // Ordering around that callback is not enough on its own, because the
+      // backstop can win the race it is arranged around: a timer that comes due
+      // while the main thread is blocked runs before the frame does, and opening
+      // a pane blocks it through a spawn, an attach and a first paint. (Under
+      // StrictMode's dev-only double mount, that is a disposal on the way *in*,
+      // which is where AGE-124 was seen again: the toast landed over the
+      // terminal that had just opened.) So mute the callback as well as ordering
+      // around it. `_core` is the same private handle FitAddon reaches through,
+      // and a pane being torn down has no viewport left to sync.
+      const core = (term as unknown as {
+        _core?: { viewport?: { syncScrollArea?: () => void } };
+      })._core;
+      if (core?.viewport?.syncScrollArea) core.viewport.syncScrollArea = () => {};
       let termDisposed = false;
       const disposeTerm = () => {
         if (termDisposed) return;

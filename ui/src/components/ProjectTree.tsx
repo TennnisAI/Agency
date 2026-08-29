@@ -4,7 +4,7 @@ import { CloneProgress, Project, RunInfo, RepoReadiness, addProject, closeProjec
 import { projectAccent, runName } from "../agents";
 import { useRuns } from "../store/runs";
 import { toastError } from "../lib/toast";
-import { runStatus } from "../lib/runstate";
+import { pinnedFirst, runStatus } from "../lib/runstate";
 import ConfirmDialog from "./ConfirmDialog";
 import ProjectColorPicker from "./ProjectColorPicker";
 import RepoSetupDialog from "./RepoSetupDialog";
@@ -166,9 +166,11 @@ export default function ProjectTree({
     const ids = projects.map((p) => p.id);
     if (ids.length === 0) { setProjectRuns({}); return; }
     (async () => {
-      const lists = await Promise.all(ids.map((id) => listRuns(id).catch(() => [])));
+      const lists = await Promise.all(ids.map((id) => listRuns(id).catch(() => [] as RunInfo[])));
       if (cancelled) return;
-      setProjectRuns(Object.fromEntries(ids.map((id, i) => [id, lists[i]])));
+      // Pinned runs first here too: a pin is meant to hold a run's place
+      // wherever it is listed, not only on the board.
+      setProjectRuns(Object.fromEntries(ids.map((id, i) => [id, pinnedFirst(lists[i])])));
     })();
     return () => { cancelled = true; };
   }, [projects, runs]);

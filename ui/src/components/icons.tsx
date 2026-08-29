@@ -64,6 +64,39 @@ export function CheckIcon({ size = 13 }: IconProps) {
   );
 }
 
+// Settle: "I have dealt with this." A check inside a closed circle — the same
+// check as CheckIcon, shut in, because settling ends a thread rather than
+// approving work.
+export function SettleIcon({ size = 13 }: IconProps) {
+  return (
+    <svg {...base(size)}>
+      <circle cx="12" cy="12" r="9" />
+      <polyline points="8 12.3 10.8 15.2 16 8.8" />
+    </svg>
+  );
+}
+
+// Snooze: a clock, because the thing being chosen is a time.
+export function SnoozeIcon({ size = 13 }: IconProps) {
+  return (
+    <svg {...base(size)}>
+      <circle cx="12" cy="12" r="9" />
+      <polyline points="12 6.8 12 12 15.6 14.2" />
+    </svg>
+  );
+}
+
+// Pin: a pushpin seen head-on. Drawn rather than typed — the obvious character
+// for this is an emoji, and the UI has none.
+export function PinIcon({ size = 13 }: IconProps) {
+  return (
+    <svg {...base(size)}>
+      <path d="M9 3h6l-1.1 6L17 12.5H7L10.1 9z" />
+      <line x1="12" y1="12.5" x2="12" y2="21" />
+    </svg>
+  );
+}
+
 // Horizontal "…" affordance for an overflow menu. Dots are filled, not stroked,
 // so they stay round at 14px instead of collapsing into dashes.
 export function MoreIcon({ size = 14 }: IconProps) {

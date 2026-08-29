@@ -1,0 +1,310 @@
+// Pure geometry and aggregation behind the Map: which boxes one drill
+// level shows, which dependency lines run between them, and where everything
+// sits. No DOM, no api — MapView renders what comes out of here, and the tests
+// run on data alone.
+//
+// The layout is a small force simulation, deliberately deterministic: no
+// Math.random anywhere, nodes seed on a sunflower spiral by index, so the same
+// project always produces the same map and nothing jitters across reopens.
+
+import { MapDir, MapFile, MapFileEdge } from "../api";
+
+/** One box at the current drill level: a subdirectory or a file. */
+export interface LevelNode {
+  key: string; // repo-relative path; unique at every level
+  kind: "dir" | "file";
+  name: string;
+  files: number;
+  symbols: number;
+  // Center and size, filled by layout().
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** One aggregated dependency line between two boxes at the current level. */
+export interface LevelEdge {
+  source: string;
+  target: string;
+  calls: number;
+  imports: number;
+  refs: number;
+  other: number;
+  weight: number;
+}
+
+export function countFiles(d: MapDir): number {
+  return d.files.length + d.dirs.reduce((n, s) => n + countFiles(s), 0);
+}
+
+export function countSymbols(d: MapDir): number {
+  return (
+    d.files.reduce((n, f) => n + f.symbols.length, 0) +
+    d.dirs.reduce((n, s) => n + countSymbols(s), 0)
+  );
+}
+
+/** The subtree at `path` ("" for the root), or null when the graph moved on. */
+export function findDir(root: MapDir, path: string): MapDir | null {
+  if (path === "") return root;
+  let dir = root;
+  for (const part of path.split("/")) {
+    const next = dir.dirs.find((d) => d.name === part);
+    if (!next) return null;
+    dir = next;
+  }
+  return dir;
+}
+
+export function findFile(root: MapDir, path: string): MapFile | null {
+  const slash = path.lastIndexOf("/");
+  const dir = findDir(root, slash < 0 ? "" : path.slice(0, slash));
+  return dir?.files.find((f) => f.path === path) ?? null;
+}
+
+export function parentPath(path: string): string {
+  const slash = path.lastIndexOf("/");
+  return slash < 0 ? "" : path.slice(0, slash);
+}
+
+/** The boxes for one drill level: subdirectories first, then files. */
+export function levelNodes(dir: MapDir): LevelNode[] {
+  const dirs = dir.dirs.map((d) => ({
+    key: d.path,
+    kind: "dir" as const,
+    name: d.name,
+    files: countFiles(d),
+    symbols: countSymbols(d),
+    ...box(d.name + "/"),
+  }));
+  const files = dir.files.map((f) => ({
+    key: f.path,
+    kind: "file" as const,
+    name: f.name,
+    files: 1,
+    symbols: f.symbols.length,
+    ...box(f.name),
+  }));
+  return [...dirs, ...files];
+}
+
+// Wide enough for the name in 11px mono plus padding; two text rows tall.
+function box(name: string) {
+  return { x: 0, y: 0, w: Math.min(200, Math.max(68, name.length * 6.8 + 26)), h: 40 };
+}
+
+/**
+ * The boxes a level actually draws. Layout is quadratic, so a very wide
+ * directory cost seconds of blocked render for a picture too dense to read
+ * anyway. Directories are kept first because they are how you go deeper, then
+ * the largest files. The side panel still lists everything, and `hidden` is
+ * returned so the map can say what it left out rather than quietly drawing
+ * part of a level.
+ */
+export const MAX_LEVEL_NODES = 300;
+
+export function capLevel(
+  nodes: LevelNode[],
+  max = MAX_LEVEL_NODES,
+): { nodes: LevelNode[]; hidden: number } {
+  if (nodes.length <= max) return { nodes, hidden: 0 };
+  const keep = new Set(
+    [...nodes]
+      .sort(
+        (a, b) =>
+          (a.kind === b.kind ? 0 : a.kind === "dir" ? -1 : 1) ||
+          b.symbols - a.symbols ||
+          a.key.localeCompare(b.key),
+      )
+      .slice(0, max)
+      .map((n) => n.key),
+  );
+  // Filtered in level order, not rank order, so dropping boxes never also
+  // reshuffles the ones that stay.
+  return { nodes: nodes.filter((n) => keep.has(n.key)), hidden: nodes.length - max };
+}
+
+/**
+ * File-level edges rolled up to the current level's boxes. An endpoint outside
+ * the current directory has no box to land on and drops out; the side panel
+ * still lists a file's full dependencies. Same-box edges (two files in one
+ * subdirectory) collapse away for the same reason.
+ */
+export function levelEdges(fileEdges: MapFileEdge[], nodes: LevelNode[]): LevelEdge[] {
+  const exact = new Map<string, string>();
+  const prefixes: { prefix: string; key: string }[] = [];
+  for (const n of nodes) {
+    if (n.kind === "file") exact.set(n.key, n.key);
+    else prefixes.push({ prefix: n.key + "/", key: n.key });
+  }
+  const owner = (file: string): string | null => {
+    const direct = exact.get(file);
+    if (direct) return direct;
+    for (const p of prefixes) if (file.startsWith(p.prefix)) return p.key;
+    return null;
+  };
+  // U+001F, not NUL: a path cannot contain either, but a NUL byte in the
+  // source made git treat this file as binary and hide it from diffs and grep.
+  const out = new Map<string, LevelEdge>();
+  for (const e of fileEdges) {
+    const s = owner(e.source);
+    const t = owner(e.target);
+    if (!s || !t || s === t) continue;
+    let agg = out.get(`${s}\u001f${t}`);
+    if (!agg) {
+      agg = { source: s, target: t, calls: 0, imports: 0, refs: 0, other: 0, weight: 0 };
+      out.set(`${s}\u001f${t}`, agg);
+    }
+    agg.calls += e.calls;
+    agg.imports += e.imports;
+    agg.refs += e.refs;
+    agg.other += e.other;
+    agg.weight += e.calls + e.imports + e.refs + e.other;
+  }
+  return [...out.values()];
+}
+
+/**
+ * Place the boxes: sunflower-spiral seed, then a capped-step force pass
+ * (pairwise repulsion, spring toward connected boxes, light centering), then
+ * rectangle separation so no two boxes overlap. Mutates x/y in place and
+ * returns the same array for chaining.
+ */
+export function layout(nodes: LevelNode[], edges: LevelEdge[]): LevelNode[] {
+  const n = nodes.length;
+  if (n === 0) return nodes;
+  const index = new Map(nodes.map((node, i) => [node.key, i]));
+  for (let i = 0; i < n; i++) {
+    const angle = i * 2.3999632; // golden angle: even spread, no randomness
+    const r = 80 * Math.sqrt(i + 0.6);
+    nodes[i].x = r * Math.cos(angle);
+    nodes[i].y = r * Math.sin(angle);
+  }
+  const springs = edges
+    .map((e) => ({ a: index.get(e.source)!, b: index.get(e.target)!, w: Math.min(e.weight, 4) }))
+    .filter((s) => s.a !== undefined && s.b !== undefined);
+
+  const IDEAL = 190;
+  // The pass below is O(n^2) per iteration, so a fixed count made wide levels
+  // pay seconds of blocked render: 800 boxes measured at 1.8s against 25ms for
+  // 100. Spend a fixed number of pair updates instead. Levels up to ~200 boxes
+  // get the full 260 iterations exactly as before; bigger ones settle coarsely
+  // rather than slowly.
+  const ITER = Math.max(30, Math.min(260, Math.round(8e6 / Math.max(1, (n * (n - 1)) / 2))));
+  for (let it = 0; it < ITER; it++) {
+    const step = 40 * (1 - it / ITER) + 2; // anneal: big early moves, then settle
+    const dx = new Float64Array(n);
+    const dy = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        let vx = nodes[i].x - nodes[j].x;
+        let vy = nodes[i].y - nodes[j].y;
+        let d = Math.hypot(vx, vy);
+        if (d < 1e-6) {
+          // Coincident seeds only happen with identical indices, but keep the
+          // escape deterministic anyway.
+          vx = Math.cos(i);
+          vy = Math.sin(i);
+          d = 1;
+        }
+        const f = (IDEAL * IDEAL * 0.9) / (d * d);
+        dx[i] += (vx / d) * f;
+        dy[i] += (vy / d) * f;
+        dx[j] -= (vx / d) * f;
+        dy[j] -= (vy / d) * f;
+      }
+    }
+    for (const s of springs) {
+      const vx = nodes[s.b].x - nodes[s.a].x;
+      const vy = nodes[s.b].y - nodes[s.a].y;
+      const d = Math.hypot(vx, vy) || 1;
+      const f = (d - IDEAL * 0.6) * 0.05 * (1 + s.w * 0.5);
+      dx[s.a] += (vx / d) * f;
+      dy[s.a] += (vy / d) * f;
+      dx[s.b] -= (vx / d) * f;
+      dy[s.b] -= (vy / d) * f;
+    }
+    for (let i = 0; i < n; i++) {
+      dx[i] -= nodes[i].x * 0.03;
+      dy[i] -= nodes[i].y * 0.03;
+      const len = Math.hypot(dx[i], dy[i]);
+      const cap = Math.min(len, step) / (len || 1);
+      nodes[i].x += dx[i] * cap;
+      nodes[i].y += dy[i] * cap;
+    }
+  }
+  separate(nodes);
+  return nodes;
+}
+
+// Push overlapping rectangles apart until none intersect (or the pass budget
+// runs out; 80 passes settles every level of this repository's graph).
+function separate(nodes: LevelNode[]): void {
+  const MARGIN = 18;
+  for (let pass = 0; pass < 80; pass++) {
+    let moved = false;
+    for (let i = 0; i < nodes.length; i++) {
+      for (let j = i + 1; j < nodes.length; j++) {
+        const a = nodes[i];
+        const b = nodes[j];
+        const ox = (a.w + b.w) / 2 + MARGIN - Math.abs(a.x - b.x);
+        const oy = (a.h + b.h) / 2 + MARGIN - Math.abs(a.y - b.y);
+        if (ox <= 0 || oy <= 0) continue;
+        moved = true;
+        if (ox < oy) {
+          const push = (ox / 2 + 0.5) * (a.x < b.x ? -1 : a.x > b.x ? 1 : i < j ? -1 : 1);
+          a.x += push;
+          b.x -= push;
+        } else {
+          const push = (oy / 2 + 0.5) * (a.y < b.y ? -1 : a.y > b.y ? 1 : i < j ? -1 : 1);
+          a.y += push;
+          b.y -= push;
+        }
+      }
+    }
+    if (!moved) return;
+  }
+}
+
+/** "12 calls, 3 imports, 1 ref" for an edge or dependency row. */
+export function edgeSummary(e: { calls: number; imports: number; refs: number; other: number }): string {
+  const parts: string[] = [];
+  if (e.calls) parts.push(`${e.calls} ${e.calls === 1 ? "call" : "calls"}`);
+  if (e.imports) parts.push(`${e.imports} ${e.imports === 1 ? "import" : "imports"}`);
+  if (e.refs) parts.push(`${e.refs} ${e.refs === 1 ? "ref" : "refs"}`);
+  if (e.other) parts.push(`${e.other} other`);
+  return parts.join(", ");
+}
+
+/** Per-symbol in/out edge lists, indexed once per graph for the detail panel. */
+export interface SymbolEdgeIndex {
+  out: Map<string, [string, string][]>; // id -> [counterpart id, relation]
+  into: Map<string, [string, string][]>;
+}
+
+export function symbolEdgeIndex(edges: [string, string, string][]): SymbolEdgeIndex {
+  const out = new Map<string, [string, string][]>();
+  const into = new Map<string, [string, string][]>();
+  for (const [source, target, relation] of edges) {
+    let o = out.get(source);
+    if (!o) out.set(source, (o = []));
+    o.push([target, relation]);
+    let i = into.get(target);
+    if (!i) into.set(target, (i = []));
+    i.push([source, relation]);
+  }
+  return { out, into };
+}
+
+/** Every symbol in the tree by id, with the file it sits in. */
+export function symbolsById(root: MapDir): Map<string, { label: string; line: number | null; file: string }> {
+  const out = new Map<string, { label: string; line: number | null; file: string }>();
+  const walk = (dir: MapDir) => {
+    for (const f of dir.files)
+      for (const s of f.symbols) out.set(s.id, { label: s.label, line: s.line, file: f.path });
+    dir.dirs.forEach(walk);
+  };
+  walk(root);
+  return out;
+}

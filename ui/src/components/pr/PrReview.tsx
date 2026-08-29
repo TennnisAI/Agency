@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
+  PrConflicts,
   PrDetail,
   PrFileDiff,
   ReviewEvent,
@@ -8,6 +9,7 @@ import {
   editPr,
   editPrComment,
   ghCurrentLogin,
+  prConflicts,
   prDetail,
   prDiff,
   prReviewThreads,
@@ -19,6 +21,8 @@ import {
 import { toastError, toastInfo, toastSuccess } from "../../lib/toast";
 import Markdown from "../Markdown";
 import AgentReviewDialog from "./AgentReviewDialog";
+import ConflictDialog from "./ConflictDialog";
+import { conflictNote } from "./conflicts";
 import MarkdownField from "./MarkdownField";
 import MergePrDialog from "./MergePrDialog";
 import PrDiffFile from "./PrDiffFile";
@@ -58,7 +62,14 @@ export default function PrReview({
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [showMerge, setShowMerge] = useState(false);
+  const [showConflict, setShowConflict] = useState(false);
   const [showAgentReview, setShowAgentReview] = useState(false);
+  // Which files a conflicted PR collides in. GitHub doesn't say, so it's a
+  // local probe (fetch both sides, merge them in memory) that lands after the
+  // detail does. Kept with the number it was asked about: a probe that returns
+  // after the user has clicked to another PR is then ignored rather than shown
+  // against the wrong branch.
+  const [probe, setProbe] = useState<{ number: number; data: PrConflicts } | null>(null);
   // Editing the PR's own title/description. Null when not editing; the drafts
   // are seeded from the loaded detail when the editor opens.
   const [edit, setEdit] = useState<{ title: string; body: string } | null>(null);
@@ -96,6 +107,20 @@ export default function PrReview({
     setEdit(null);
     load();
   }, [load]);
+
+  const probeConflicts = useCallback(() => {
+    prConflicts(projectId, number)
+      .then((data) => setProbe({ number, data }))
+      // Best effort: the banner says the PR conflicts either way, and a failed
+      // probe only costs the file list.
+      .catch(() => setProbe({ number, data: { base: "", head: "", files: [], probed: false } }));
+  }, [projectId, number]);
+
+  // Probe up front only for a PR GitHub already says is stuck: it fetches, so
+  // it isn't something to do on every PR the user clicks through.
+  useEffect(() => {
+    if (detail?.mergeable === "CONFLICTING") probeConflicts();
+  }, [detail?.mergeable, probeConflicts]);
 
   const onReply = useCallback(
     async (inReplyTo: number, body: string) => {
@@ -172,6 +197,15 @@ export default function PrReview({
     }
   }
 
+  const conflicts = probe && probe.number === number ? probe.data : null;
+  // Opening the conflict flow from anywhere: the banner, the Merge button, or a
+  // merge GitHub refused. The last of those never probed, so ask on the way in.
+  function openConflicts() {
+    if (!conflicts) probeConflicts();
+    setShowMerge(false);
+    setShowConflict(true);
+  }
+
   if (loading) return <div className="pr-review-empty"><span className="spinner" /> Loading PR…</div>;
   if (error) return <div className="git-error">{error}</div>;
   if (!detail) return <div className="pr-review-empty">PR #{number} not found.</div>;
@@ -184,13 +218,17 @@ export default function PrReview({
   // instead of failing with a 422.
   const isOwnPr = !!viewer && detail.author.login.toLowerCase() === viewer.toLowerCase();
   const ownPrHint = "You authored this PR. GitHub only lets you leave a Comment review on your own PR.";
-  // The PR is mergeable when it's open, not a draft, and GitHub doesn't report a
-  // conflict. UNKNOWN (still computing) is allowed — gh will refuse if it can't.
-  const canMerge = detail.state === "OPEN" && !detail.isDraft && detail.mergeable !== "CONFLICTING";
+  // GitHub says the branch collides with its base, so a merge would be refused.
+  // The button stays live and opens the explanation instead: a disabled button
+  // with the reason hidden in a tooltip reads as a broken one (AGE-172).
+  const conflicting = detail.mergeable === "CONFLICTING";
+  // Anything else that blocks a merge keeps the button disabled. UNKNOWN
+  // (GitHub still computing) is allowed through — gh refuses if it can't.
+  const canMerge = detail.state === "OPEN" && !detail.isDraft;
   const mergeHint = detail.isDraft
     ? "This PR is a draft. Mark it ready before merging."
-    : detail.mergeable === "CONFLICTING"
-      ? "This PR has conflicts that must be resolved first."
+    : conflicting
+      ? `Blocked: this branch conflicts with ${detail.baseRefName}. Click to see what to do about it.`
       : "Merge this PR into its base branch.";
 
   return (
@@ -224,9 +262,9 @@ export default function PrReview({
               />
               <div className="pr-review-edit-actions">
                 <span className="pr-edit-hint">⌘↵ to save</span>
-                <button className="git-iconbtn" onClick={() => setEdit(null)}>Cancel</button>
+                <button className="settings-ghost-btn" onClick={() => setEdit(null)}>Cancel</button>
                 <button
-                  className="git-iconbtn"
+                  className="settings-ghost-btn"
                   disabled={savingEdit || !edit.title.trim()}
                   title={edit.title.trim() ? "Save the title and description to GitHub" : "A pull request needs a title"}
                   onClick={() => { void saveEdit(); }}
@@ -242,43 +280,64 @@ export default function PrReview({
                 <span className="pr-review-title">
                   {detail.title} <span className="pr-review-num">#{detail.number}</span>
                 </span>
-                <span className="spacer" style={{ flex: 1 }} />
-                <button
-                  className="git-iconbtn"
-                  title="Edit the title and description here, in markdown, instead of in a browser."
-                  onClick={() => setEdit({ title: detail.title, body: detail.body })}
-                >
-                  Edit
-                </button>
-                <button
-                  className="git-iconbtn"
-                  title="Have an agent review this PR, then work with it to fix what it finds."
-                  onClick={() => setShowAgentReview(true)}
-                >
-                  Review with agent
-                </button>
-                {detail.state === "OPEN" && (
+                <div className="pr-review-actions">
                   <button
-                    className="git-iconbtn pr-merge-btn"
-                    disabled={!canMerge}
-                    title={mergeHint}
-                    onClick={() => setShowMerge(true)}
+                    className="settings-ghost-btn"
+                    title="Edit the title and description here, in markdown, instead of in a browser."
+                    onClick={() => setEdit({ title: detail.title, body: detail.body })}
                   >
-                    Merge
+                    Edit
                   </button>
-                )}
-                <button className="settings-ghost-btn" onClick={() => openUrl(detail.url).catch((e) => toastError(e, "Couldn't open the PR"))}>
-                  Open ↗
-                </button>
+                  <button
+                    className="settings-ghost-btn"
+                    title="Have an agent review this PR, then work with it to fix what it finds."
+                    onClick={() => setShowAgentReview(true)}
+                  >
+                    Review with agent
+                  </button>
+                  {detail.state === "OPEN" && (
+                    <button
+                      className={`settings-ghost-btn pr-merge-btn${conflicting ? " pr-merge-blocked" : ""}`}
+                      disabled={!canMerge}
+                      title={mergeHint}
+                      onClick={() => (conflicting ? openConflicts() : setShowMerge(true))}
+                    >
+                      Merge
+                    </button>
+                  )}
+                  <button
+                    className="settings-ghost-btn"
+                    title="Open this pull request on github.com."
+                    onClick={() => openUrl(detail.url).catch((e) => toastError(e, "Couldn't open the PR"))}
+                  >
+                    Open ↗
+                  </button>
+                </div>
               </div>
               <div className="pr-review-meta">
                 <code>{detail.headRefName}</code> → <code>{detail.baseRefName}</code>
                 {detail.author.login && <span className="pr-review-author">by {detail.author.login}</span>}
-                {detail.mergeable === "CONFLICTING" && <span className="pr-review-conflict">conflicts</span>}
                 {detail.reviewDecision && (
                   <span className="pr-review-decision">{DECISION_LABEL[detail.reviewDecision] ?? detail.reviewDecision}</span>
                 )}
               </div>
+              {conflicting && (
+                <div className="pr-conflict-banner">
+                  <span className="git-error-glyph">!</span>
+                  <div className="pr-conflict-body">
+                    <div className="pr-conflict-title">
+                      Can't merge: <code>{detail.headRefName}</code> conflicts with{" "}
+                      <code>{detail.baseRefName}</code>
+                    </div>
+                    <p className="pr-conflict-note">{conflictNote(conflicts)}</p>
+                    <div className="pr-conflict-actions">
+                      <button className="settings-ghost-btn" onClick={openConflicts}>
+                        Fix with an agent
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
               {detail.body.trim() && <Markdown className="pr-review-desc" text={detail.body} />}
             </>
           )}
@@ -318,41 +377,42 @@ export default function PrReview({
                 ? `${drafts.length} pending comment${drafts.length === 1 ? "" : "s"}`
                 : "No pending comments"}
           </span>
-          <span className="spacer" style={{ flex: 1 }} />
-          <button
-            className="git-iconbtn"
-            disabled={submitting || !canVerdict}
-            title={
-              canVerdict
-                ? "Submit feedback without a verdict. Leaves your comments but doesn't approve or block the merge."
-                : "Add a summary or a comment first"
-            }
-            onClick={() => submit("COMMENT")}
-          >
-            Comment
-          </button>
-          <button
-            className="git-iconbtn"
-            disabled={submitting || !canVerdict || isOwnPr}
-            title={
-              isOwnPr
-                ? ownPrHint
-                : canVerdict
-                  ? "Block the merge until addressed. Marks the PR “Changes requested”; you'll need to re-review to clear it."
+          <div className="pr-review-verdict-btns">
+            <button
+              className="settings-ghost-btn"
+              disabled={submitting || !canVerdict}
+              title={
+                canVerdict
+                  ? "Submit feedback without a verdict. Leaves your comments but doesn't approve or block the merge."
                   : "Add a summary or a comment first"
-            }
-            onClick={() => submit("REQUEST_CHANGES")}
-          >
-            Request changes
-          </button>
-          <button
-            className="git-iconbtn pr-approve"
-            disabled={submitting || isOwnPr}
-            title={isOwnPr ? ownPrHint : "Sign off on the PR. Marks it “Approved” and counts toward required approvals."}
-            onClick={() => submit("APPROVE")}
-          >
-            {submitting ? "Submitting…" : "Approve"}
-          </button>
+              }
+              onClick={() => submit("COMMENT")}
+            >
+              Comment
+            </button>
+            <button
+              className="settings-ghost-btn"
+              disabled={submitting || !canVerdict || isOwnPr}
+              title={
+                isOwnPr
+                  ? ownPrHint
+                  : canVerdict
+                    ? "Block the merge until addressed. Marks the PR “Changes requested”; you'll need to re-review to clear it."
+                    : "Add a summary or a comment first"
+              }
+              onClick={() => submit("REQUEST_CHANGES")}
+            >
+              Request changes
+            </button>
+            <button
+              className="settings-ghost-btn pr-approve"
+              disabled={submitting || isOwnPr}
+              title={isOwnPr ? ownPrHint : "Sign off on the PR. Marks it “Approved” and counts toward required approvals."}
+              onClick={() => submit("APPROVE")}
+            >
+              {submitting ? "Submitting…" : "Approve"}
+            </button>
+          </div>
         </div>
       </div>
 
@@ -363,6 +423,19 @@ export default function PrReview({
           title={detail.title}
           onStarted={() => setShowAgentReview(false)}
           onCancel={() => setShowAgentReview(false)}
+        />
+      )}
+
+      {showConflict && (
+        <ConflictDialog
+          projectId={projectId}
+          number={number}
+          title={detail.title}
+          conflicts={conflicts}
+          base={detail.baseRefName}
+          head={detail.headRefName}
+          onStarted={() => setShowConflict(false)}
+          onCancel={() => setShowConflict(false)}
         />
       )}
 
@@ -380,6 +453,7 @@ export default function PrReview({
             onMerged?.();
             load();
           }}
+          onConflict={openConflicts}
           onCancel={() => setShowMerge(false)}
         />
       )}

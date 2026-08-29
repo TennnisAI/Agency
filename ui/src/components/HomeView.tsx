@@ -2,10 +2,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Issue, Project, RunInfo, RepoReadiness, addProject, inspectRepo, listIssues, listProjects, listRuns, runPreview } from "../api";
 import { projectAccent, runName } from "../agents";
-import { inGitlessFolder, isWaiting, isWorking, runStatus } from "../lib/runstate";
+import { inGitlessFolder, isWorking, needsAttention, pinnedFirst, runStatus } from "../lib/runstate";
 import RepoSetupDialog from "./RepoSetupDialog";
 import CloneDialog from "./CloneDialog";
 import HomeIssues from "./HomeIssues";
+import AttentionMarker from "./AttentionMarker";
 
 const FOLD_KEY = "home:folded";
 
@@ -136,7 +137,10 @@ export default function HomeView({
 
   const all = projects.flatMap((p) => runsBy[p.id] ?? []);
   const working = all.filter(isWorking).length;
-  const waitingCount = all.filter(isWaiting).length;
+  // The header counts what is actually asking for the user, so settling or
+  // snoozing a run takes it out of the number as well as off the tile. A count
+  // that keeps a settled run in it is the same climbing badge by another name.
+  const waitingCount = all.filter(needsAttention).length;
 
   // Hold the header (and its 0/0/0 stats) until the first poll returns, so an
   // empty overview doesn't flash before real counts or the welcome hero.
@@ -209,11 +213,16 @@ export default function HomeView({
       </div>
 
       {ordered.map((p) => {
-        const runs = [...(runsBy[p.id] ?? [])].sort(
-          (a, b) => Number(b.status.state === "running") - Number(a.status.state === "running"),
+        // Pinned runs first, in the order they were pinned; the rest running
+        // first. A pin holds its place whatever the run is doing, so it is the
+        // outer sort and lifecycle only orders what is left.
+        const runs = pinnedFirst(
+          [...(runsBy[p.id] ?? [])].sort(
+            (a, b) => Number(b.status.state === "running") - Number(a.status.state === "running"),
+          ),
         );
         const live = runs.filter(isWorking).length;
-        const waiting = runs.filter(isWaiting).length;
+        const waiting = runs.filter(needsAttention).length;
         const isFolded = folded.has(p.id);
         return (
           <section key={p.id} className="home-group">
@@ -241,7 +250,7 @@ export default function HomeView({
             {!isFolded && runs.length > 0 && (
               <div className="grid home-grid">
                 {runs.map((r) => (
-                  <HomeTile key={r.id} run={r} onOpen={() => onOpenRun(p, r.id)} />
+                  <HomeTile key={r.id} run={r} onOpen={() => onOpenRun(p, r.id)} onChanged={tick} />
                 ))}
               </div>
             )}
@@ -264,9 +273,12 @@ function badgeClass(agent: string): string {
   return ["claude", "pi", "hermes"].includes(agent) ? `badge ${agent}` : "badge";
 }
 
-// Same visual language as the per-project AgentTile, but read-only: no discard
-// button (the overview is for surveying and jumping in, not managing).
-function HomeTile({ run, onOpen }: { run: RunInfo; onOpen: () => void }) {
+// Same visual language as the per-project AgentTile, minus the discard button:
+// the overview is for surveying and jumping in, not for tearing down. Settle,
+// snooze and pin are the exception, because they *are* surveying — this is the
+// view whose whole job is "which of these needs me", so the answer belongs
+// where the question is asked.
+function HomeTile({ run, onOpen, onChanged }: { run: RunInfo; onOpen: () => void; onChanged: () => void }) {
   const [preview, setPreview] = useState("");
 
   useEffect(() => {
@@ -310,7 +322,10 @@ function HomeTile({ run, onOpen }: { run: RunInfo; onOpen: () => void }) {
         </div>
       )}
       {preview && <pre className="tile-preview">{preview}</pre>}
-      <div className="tile-foot" title={st.title}>{st.text}</div>
+      <div className="tile-foot">
+        <span title={st.title}>{st.text}</span>
+        <AttentionMarker run={run} onChanged={onChanged} />
+      </div>
     </div>
   );
 }

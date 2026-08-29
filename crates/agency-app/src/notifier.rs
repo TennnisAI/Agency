@@ -63,6 +63,13 @@ pub struct RunSnapshot {
     /// as the terminal transition) can't slip through as a duplicate toast.
     /// Run-script crashes still notify.
     pub is_loop: bool,
+    /// The user's own word suppresses this run's toasts: a settle that still
+    /// stands, or a snooze nothing has broken (`agency_core::attention`).
+    /// Behaves exactly like `is_loop` above, which is the point — the loop
+    /// suppression is hard-coded and this is the same thing said out loud, so
+    /// a settled loop expresses it once rather than twice. Run-script crashes
+    /// still notify: a dev server dying is a failure, not the agent asking.
+    pub hushed: bool,
     pub agent: SessionStatus,
     /// One entry per configured run script, keyed by script name. A project
     /// runs several (a dev server, a release build), and each crashes on its
@@ -111,7 +118,7 @@ pub fn step(
     if let Some(p) = prev {
         // Agent finished: running -> exited. Loop attempts exit by design;
         // their edges are reported by the loop driver instead.
-        if matches!(p.agent, SessionStatus::Running) && !snap.is_loop {
+        if matches!(p.agent, SessionStatus::Running) && !snap.is_loop && !snap.hushed {
             if let SessionStatus::Exited { .. } = snap.agent {
                 events.push(NotifyKind::Finished);
             }
@@ -141,7 +148,7 @@ pub fn step(
     // sitting at its opening prompt has `user_input_pending == false`, so it is
     // never flagged as "waiting for input". The flag is cleared by the caller
     // when the notification fires, so each turn nudges at most once.
-    if agent_running && !idle_fired && snap.user_input_pending && !snap.is_loop {
+    if agent_running && !idle_fired && snap.user_input_pending && !snap.is_loop && !snap.hushed {
         let quiet_ticks = now_tick.saturating_sub(quiet_since_tick);
         if quiet_ticks.saturating_mul(poll_secs) >= idle_secs {
             events.push(NotifyKind::Idle);
@@ -183,6 +190,38 @@ pub fn suppressed(
     settings.only_when_watching && focused && active == Some(run_id)
 }
 
+/// How long a notification stays worth opening. Long enough to cover reading
+/// the banner and clicking it; short enough that a return to the app an hour
+/// later doesn't teleport the user to a stale run.
+pub const OPEN_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// What is asking to open the run a notification was about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpenTrigger {
+    /// The user clicked the notification itself. macOS tells us (the delegate
+    /// hook in `notif_macos`), and it is an unambiguous "take me there".
+    Click,
+    /// Agency became the focused app again — a guess, not a request.
+    Focus,
+}
+
+/// Whether a notification's run should be opened now.
+///
+/// AGE-166: a focus change is not consent. The webview blurs for a native
+/// menu, a panel, a banner — all without the user leaving the app — so
+/// treating the focus that comes back as "the user clicked the notification"
+/// jumped them to another agent on a click anywhere in the app. A click on the
+/// notification always opens; regaining focus only opens what was posted while
+/// Agency really was in the background, which is the case where returning to
+/// the app *is* the user acting on the banner.
+pub fn opens_notified_run(
+    trigger: OpenTrigger,
+    from_background: bool,
+    age: std::time::Duration,
+) -> bool {
+    age < OPEN_TTL && (trigger == OpenTrigger::Click || from_background)
+}
+
 /// Notification (title, body) for an event about the run labelled `label`.
 pub fn message(kind: &NotifyKind, label: &str) -> (String, String) {
     match kind {
@@ -217,6 +256,7 @@ mod tests {
             label: "claude: fix".into(),
             is_terminal: false,
             is_loop: false,
+            hushed: false,
             agent,
             run_scripts: one(run_script),
             pane_hash,
@@ -352,6 +392,7 @@ mod tests {
             label: "terminal".into(),
             is_terminal: true,
             is_loop: false,
+            hushed: false,
             agent,
             run_scripts: one(SessionStatus::Gone),
             pane_hash: hash,
@@ -378,6 +419,7 @@ mod tests {
             label: "claude: loop".into(),
             is_terminal: false,
             is_loop: true,
+            hushed: false,
             agent,
             run_scripts: one(run_script),
             pane_hash: hash,
@@ -399,6 +441,44 @@ mod tests {
         assert_eq!(ev, vec![NotifyKind::RunCrashed("dev".into())]);
     }
 
+    /// A run the user has settled or snoozed is asking for nothing, so it
+    /// toasts nothing — the same suppression a loop gets, said by the user
+    /// instead of inferred from a config. The flag is computed fresh each tick
+    /// from the standing and the pane, so a run that comes back un-settles
+    /// itself and starts notifying again without anything being cleared here.
+    #[test]
+    fn a_hushed_run_suppresses_finished_and_idle_but_not_run_crash() {
+        let hsnap = |agent: SessionStatus, run_script: SessionStatus, hash: u64| RunSnapshot {
+            id: "h".into(),
+            project_id: "proj".into(),
+            label: "claude: settled".into(),
+            is_terminal: false,
+            is_loop: false,
+            hushed: true,
+            agent,
+            run_scripts: one(run_script),
+            pane_hash: hash,
+            user_input_pending: true,
+        };
+        let (w, _) = step(None, &hsnap(running(), running(), 1), 0, 2, 30);
+        let (w, ev) = step(Some(&w), &hsnap(exited(0), running(), 1), 1, 2, 30);
+        assert!(ev.is_empty(), "a settled agent exiting must not notify");
+        let (mut w, _) = step(Some(&w), &hsnap(running(), running(), 2), 2, 2, 30);
+        for t in 3..=40 {
+            let (nw, ev) = step(Some(&w), &hsnap(running(), running(), 2), t, 2, 30);
+            w = nw;
+            assert!(!ev.contains(&NotifyKind::Idle), "settled idle must not notify (tick {t})");
+        }
+        let (_w, ev) = step(Some(&w), &hsnap(running(), exited(1), 2), 41, 2, 30);
+        assert_eq!(ev, vec![NotifyKind::RunCrashed("dev".into())]);
+
+        // Un-hushed on the next tick (the standing was consumed): the same
+        // quiet run nudges again.
+        let (w, _) = step(None, &snap(running(), running(), 9), 0, 2, 30);
+        let (_w, ev) = step(Some(&w), &snap(running(), running(), 9), 20, 2, 30);
+        assert!(ev.contains(&NotifyKind::Idle), "no longer hushed: back to notifying");
+    }
+
     #[test]
     fn exited_agent_does_not_go_idle() {
         let (p, _) = step(None, &snap(exited(0), SessionStatus::Gone, 1), 0, 2, 30);
@@ -414,6 +494,7 @@ mod tests {
             label: "claude: fix".into(),
             is_terminal: false,
             is_loop: false,
+            hushed: false,
             agent: running(),
             run_scripts: BTreeMap::from([("dev".into(), dev), ("build".into(), build)]),
             pane_hash: 1,
@@ -446,5 +527,26 @@ mod tests {
         let (title, body) = message(&NotifyKind::Finished, "claude: fix login");
         assert!(!title.is_empty());
         assert!(body.contains("claude: fix login"));
+    }
+
+    /// AGE-166: the app jumped to the notified agent on a click anywhere in
+    /// the window. The click landed on a webview that had blurred while the
+    /// user stayed in the app, and the focus coming back was read as them
+    /// answering the banner.
+    #[test]
+    fn regaining_focus_only_opens_what_was_notified_from_the_background() {
+        let fresh = std::time::Duration::from_secs(1);
+        assert!(!opens_notified_run(OpenTrigger::Focus, false, fresh), "the AGE-166 jump");
+        assert!(opens_notified_run(OpenTrigger::Focus, true, fresh), "a real return from away");
+        // A click is the user pointing at the run, in front or not.
+        assert!(opens_notified_run(OpenTrigger::Click, false, fresh));
+        assert!(opens_notified_run(OpenTrigger::Click, true, fresh));
+    }
+
+    #[test]
+    fn a_stale_notification_opens_nothing() {
+        let stale = OPEN_TTL + std::time::Duration::from_secs(1);
+        assert!(!opens_notified_run(OpenTrigger::Click, true, stale));
+        assert!(!opens_notified_run(OpenTrigger::Focus, true, stale));
     }
 }

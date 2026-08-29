@@ -16,7 +16,7 @@ Unix-shaped command. Each needs a per-platform variant (a
 | `ui/src/agents.ts` `INSTALL_COMMANDS.cursor` | `curl https://cursor.com/install -fsS \| bash` | Cursor ships a Windows installer; no curl-pipe |
 | `ui/src/agents.ts` `INSTALL_COMMANDS.kimi` | `curl -fsSL https://code.kimi.com/kimi-code/install.sh \| bash` | PowerShell: `irm https://code.kimi.com/kimi-code/install.ps1 \| iex` |
 | `ui/src/agents.ts` npm-based entries (claude/codex/pi/opencode/copilot/gemini/crush) | `npm install -g …` | Same command works, but runs under a different shell (see below) |
-| graphify (docs + MCP default) | `uv tool install graphifyy` / `uv tool run …` | Same via uv's Windows build; verify `python -m graphify.serve` path resolution |
+| graphify (docs + MCP default) | `uv tool install --force "graphifyy[mcp,openai,anthropic]"` / `uv tool run …` | Same via uv's Windows build; the extras need quoting in PowerShell too, and verify `python -m graphify.serve` path resolution |
 
 `gh auth login` itself is cross-platform once gh is installed.
 
@@ -48,10 +48,14 @@ Everything Agency spawns goes through a Unix login shell today:
   formatting paths into shell strings (e.g. the graphify MCP serve command in
   `state.rs merged_mcp_servers`) must quote for spaces/backslashes.
 - **Notifications / tray / titlebar overlay** — Tauri abstracts most of it,
-  but the notification click-deeplink workaround in `state.rs` is tuned to
-  macOS notification-center behavior, and `notif_macos.rs` exists only to get
-  a banner shown while Agency itself is frontmost — Windows toasts already do
-  that, so the module stays macOS-gated rather than growing a port.
+  but `notif_macos.rs` is macOS-only twice over: it gets a banner shown while
+  Agency itself is frontmost (Windows toasts already do that), and it patches
+  the notification delegate to hear clicks, which is how `state.rs` knows to
+  open the run a notification was about. A port needs its own answer to "the
+  user clicked this notification"; without one, only the fallback survives —
+  a return from the background opens the run notified while the app was away.
+  `foreground.rs` is the other half of that: it answers whether Agency is
+  frontmost, which the webview's focus bit only approximates.
 - **`command_on_path`** (`state.rs`) — checks executability Unix-style;
   Windows needs PATHEXT-aware lookup (`gh` → `gh.exe`).
 

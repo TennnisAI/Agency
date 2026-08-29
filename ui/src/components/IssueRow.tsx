@@ -4,6 +4,7 @@ import { Issue, IssuePatch, IssueStatus, RunInfo } from "../api";
 import { ISSUE_STATUSES, PRIORITY_LABELS, STATUS_COLORS, STATUS_LABELS, fmtDate, isOverdue, matchRanges } from "../lib/issues";
 import { dateStamp } from "../lib/dailyNote";
 import { useDismissOnResize } from "../hooks/useDismissOnResize";
+import { useMenuAnchor } from "../hooks/useMenuAnchor";
 import { SpawnOpts } from "../store/runs";
 import AgentAddMenu from "./AgentAddMenu";
 
@@ -101,10 +102,11 @@ export default function IssueRow({
   terms?: string[];
 }) {
   const [menu, setMenu] = useState<"status" | "priority" | "more" | null>(null);
-  const [coords, setCoords] = useState<{ top: number; left?: number; right?: number }>({ top: 0, left: 0 });
+  const [rect, setRect] = useState<DOMRect | null>(null);
   const statusRef = useRef<HTMLButtonElement>(null);
   const moreRef = useRef<HTMLButtonElement>(null);
   const prioRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   // The agent menu lives inside AgentAddMenu; the row only needs to know it is
   // open so the actions don't fade out from under it.
   const [agentOpen, setAgentOpen] = useState(false);
@@ -112,21 +114,14 @@ export default function IssueRow({
   const activity = runActivity(runs);
   const startable = issue.status !== "done" && issue.status !== "cancelled";
 
-  // Same fixed-coords trick as AgentAddMenu so ancestors' overflow can't clip.
-  // These triggers sit at the far right of the row, so left-anchoring would run
-  // the menu off the right edge (worse when the sidebar is closed and the row is
-  // wide). Flip to right-anchor (open leftward) whenever there isn't room.
+  // Same fixed-coords trick as AgentAddMenu so ancestors' overflow can't clip,
+  // and the same measured placement: these triggers sit at the far right of the
+  // row, so left-anchoring would run the menu off the right edge (worse when the
+  // sidebar is closed and the row is wide), and a row near the bottom of the
+  // board has no room below it for the menu at all.
+  const coords = useMenuAnchor(menu ? rect : null, menuRef);
   const openMenu = (which: "status" | "priority" | "more", ref: React.RefObject<HTMLButtonElement>) => {
-    const r = ref.current?.getBoundingClientRect();
-    if (r) {
-      const MENU_W = 300; // .agent-menu max-width
-      const fitsRight = r.left + MENU_W <= window.innerWidth - 8;
-      setCoords(
-        fitsRight
-          ? { top: r.bottom + 4, left: r.left }
-          : { top: r.bottom + 4, right: window.innerWidth - r.right },
-      );
-    }
+    setRect(ref.current?.getBoundingClientRect() ?? null);
     setMenu(which);
   };
 
@@ -202,7 +197,7 @@ export default function IssueRow({
       {menu && createPortal(
         <>
           <div className="agent-menu-backdrop" onClick={(e) => { e.stopPropagation(); setMenu(null); }} />
-          <div className="agent-menu" style={{ position: "fixed", ...coords }} onClick={(e) => e.stopPropagation()}>
+          <div ref={menuRef} className="agent-menu" style={{ position: "fixed", ...coords }} onClick={(e) => e.stopPropagation()}>
             {menu === "status" &&
               ISSUE_STATUSES.map((s) => (
                 <button key={s} onClick={() => { setMenu(null); if (s !== issue.status) onPatch({ status: s }); }}>

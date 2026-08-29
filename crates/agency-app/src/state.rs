@@ -77,13 +77,21 @@ pub struct KnowledgeConfigDto {
     pub build_default: String,
     pub serve_installed: bool,
     pub build_installed: bool,
+    /// The models this machine can build a graph with, best first, each with
+    /// the line about cost and destination the picker shows before a build.
+    pub backends: Vec<agency_core::config::KnowledgeBackend>,
+    /// Which of `backends` the effective build command names, or "custom" for
+    /// a command the picker didn't write and won't touch.
+    pub build_backend: String,
+    /// The model named in that command, empty for the backend's own default.
+    pub build_model: String,
     /// The graph file the serve command reads, and whether it exists yet. Until
     /// a build has produced it there is nothing to serve, so the MCP server is
     /// not injected — the UI says so rather than leaving the feature silent.
     pub graph_path: String,
     pub graph_built: bool,
-    /// A build is running right now (kicked off by enabling the graph, by the
-    /// Build button, or by a merge). The UI polls while this is true.
+    /// A build is running right now (the Build button, or a merge). The UI
+    /// polls while this is true.
     pub building: bool,
     /// Why the last finished build failed, `None` if it succeeded or none ran.
     pub last_build_error: Option<String>,
@@ -216,6 +224,11 @@ pub struct RunInfo {
     /// until the first tick observes the run (~2s after spawn or app start);
     /// the UI treats a running agent without it as working.
     pub activity: Option<crate::activity::ActivityInfo>,
+    /// What the user has said about this run — settled, active, snoozed,
+    /// pinned — and what it means right now (see `crate::activity`). Always
+    /// present, unlike `activity`: the standing and the pin are the user's own
+    /// record, not a sample the notifier may not have taken yet.
+    pub attention: crate::activity::AttentionInfo,
     /// Tokens and cost for this run, read from the agent's own transcript.
     /// `None` means we cannot see this agent's spend at all, which is the
     /// case for every agent whose transcript format we have not read. That is
@@ -350,15 +363,30 @@ pub struct RunSessionInfo {
     pub status: SessionStatus,
 }
 
-/// Where an agent PR review landed. `session_id` is set when the review had to
-/// run as an extra tab inside an existing run (the PR's branch was already
-/// checked out there); the UI focuses that tab instead of the run's primary
-/// agent. None means the review got a workspace of its own.
+/// Where an agent started on a PR (a review, or a conflict resolution) landed.
+/// `session_id` is set when it had to run as an extra tab inside an existing
+/// run (the PR's branch was already checked out there); the UI focuses that tab
+/// instead of the run's primary agent. None means it got a workspace of its own.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PrReviewRun {
+pub struct PrAgentRun {
     pub run: RunInfo,
     pub session_id: Option<String>,
+}
+
+/// Why a PR can't be merged, in the terms the user needs to act on it: which
+/// branch is stuck on which base, and the files a merge would collide in.
+///
+/// `files` empty with `probed` false means the conflict is real (GitHub says
+/// so) but the local probe couldn't run — an old git, or a branch we can't
+/// fetch. The UI says "conflicts" without pretending to know where.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrConflicts {
+    pub base: String,
+    pub head: String,
+    pub files: Vec<String>,
+    pub probed: bool,
 }
 
 /// One attempt in a race: an agent, and the model that attempt runs on.
@@ -902,6 +930,35 @@ fn issue_prompt(
     prompt
 }
 
+/// Where a run on a PR's head branch can work. git allows a branch to be checked
+/// out in one worktree at a time, so the workspace a PR run gets is decided by
+/// who already holds the branch, not by preference.
+#[derive(Clone, PartialEq, Eq, Debug)]
+enum PrWorkspace {
+    /// Nothing holds the branch: the run gets a worktree of its own on it.
+    Worktree,
+    /// The project's own checkout is standing on the branch, so the run works
+    /// there. It is the only tree a fix can be committed to that branch in and
+    /// pushed from, which is the whole point of the review staying open.
+    Checkout,
+    /// Some other worktree holds the branch. An agent run of ours living there
+    /// can host the review as an extra tab; anything else has to be refused,
+    /// and by path, since only the user can free the branch.
+    Held(PathBuf),
+}
+
+impl PrWorkspace {
+    /// The tree the branch is already in, if it is in one. `None` means the
+    /// branch is free and the run gets a workspace cut for it.
+    fn holder(&self, repo: &Path) -> Option<PathBuf> {
+        match self {
+            PrWorkspace::Worktree => None,
+            PrWorkspace::Checkout => Some(repo.to_path_buf()),
+            PrWorkspace::Held(path) => Some(path.clone()),
+        }
+    }
+}
+
 /// The prompt an agent PR review opens with. Pure so the wording is testable
 /// without a repo or a live agent. `post_comments` decides whether the agent
 /// publishes its findings to the PR on GitHub or only reports them in its own
@@ -911,6 +968,7 @@ fn pr_review_prompt(
     title: &str,
     url: &str,
     base: &str,
+    workspace: PrWorkspace,
     post_comments: bool,
 ) -> String {
     let mut p = format!(
@@ -920,6 +978,20 @@ fn pr_review_prompt(
          bugs, security problems, missing tests, and anything else that should block the \
          merge. Read the surrounding code too, not just the diff.\n\n"
     );
+    if workspace == PrWorkspace::Checkout {
+        // The branch was already checked out in the project's own tree, so this
+        // run has no worktree of its own; the agent has to know it is standing
+        // in the user's working copy and not in a scratch workspace.
+        p.push_str(&format!(
+            "This workspace is the project's own checkout, not an isolated worktree: git \
+             allows a branch to be checked out in one place at a time, and the PR's branch \
+             was already here. Treat the working tree as someone else's. It may hold \
+             uncommitted changes that have nothing to do with the PR, and it can sit behind \
+             the PR's head if commits were pushed to the branch elsewhere, so take the \
+             change from `gh pr diff {number}` rather than from the working tree. Do not \
+             switch branches, stash, reset, or revert anything you did not write.\n\n"
+        ));
+    }
     if post_comments {
         p.push_str(&format!(
             "When you are done, publish the review to GitHub with the `gh` CLI, posting the \
@@ -944,6 +1016,64 @@ fn pr_review_prompt(
     p.push_str(&format!(
         "Then stay available: I may ask you to fix what you found. Commit fixes to this \
          branch and push to update the PR.\n\nPR link: {url}\n"
+    ));
+    p
+}
+
+/// The prompt for an agent sent to clear a PR's merge conflicts.
+///
+/// The conflicting paths are listed rather than left to be discovered: the
+/// probe has already run to draw the UI, so the agent may as well start from
+/// the answer. The direction is spelled out too — merging the base into the
+/// head branch is what updates the PR, and a rebase or a force-push would
+/// rewrite a branch someone else may already have pulled. `workspace` says
+/// whether the merge is about to happen in a worktree of the run's own or in
+/// the user's checkout, which the agent has to know before it touches anything.
+fn pr_conflict_prompt(
+    number: u64,
+    title: &str,
+    url: &str,
+    base: &str,
+    head: &str,
+    workspace: PrWorkspace,
+    files: &[String],
+) -> String {
+    let mut p = format!(
+        "Resolve the merge conflicts blocking GitHub pull request #{number}: {title}\n\n\
+         The PR's head branch `{head}` is checked out in this workspace, and it conflicts \
+         with its base branch `{base}`, so GitHub refuses to merge it.\n\n"
+    );
+    let list = files.join(", ");
+    match files.len() {
+        0 => p.push_str("Run the merge to find out which files collide.\n\n"),
+        1 => p.push_str(&format!("One file conflicts: {list}.\n\n")),
+        n => p.push_str(&format!("These {n} files conflict: {list}.\n\n")),
+    }
+    if workspace == PrWorkspace::Checkout {
+        // The PR's branch was already checked out in the project's own tree, so
+        // this run has no worktree of its own and the merge lands in the user's
+        // working copy. Uncommitted work there is not this agent's to move: git
+        // refuses a merge over it, and the way out is to say so, not to stash.
+        p.push_str(
+            "This workspace is the project's own checkout, not an isolated worktree: git \
+             allows a branch to be checked out in one place at a time, and the PR's branch \
+             was already here. Treat the working tree as someone else's. If it holds \
+             uncommitted changes that are not yours, stop and tell me rather than stashing, \
+             resetting or committing them to get the merge going.\n\n",
+        );
+    }
+    p.push_str(&format!(
+        "Do this here, in this workspace:\n\
+         1. `git fetch origin {base}`\n\
+         2. `git merge origin/{base}`\n\
+         3. Resolve every conflict, keeping both sides' intent. Read enough of each file to \
+            know what the other change was for; a conflict is two people's work, not one \
+            person's to delete.\n\
+         4. Run the project's build or tests if it has quick ones.\n\
+         5. Commit the merge and `git push` to update the PR.\n\n\
+         Do not rebase and do not force-push: this branch is published. Do not merge the PR \
+         itself, that is mine to do. Tell me what you had to decide.\n\n\
+         PR link: {url}\n"
     ));
     p
 }
@@ -1145,6 +1275,47 @@ fn id_source<'a>(title: Option<&'a str>, prompt: &'a str) -> &'a str {
 /// name, so it stays restricted to `[a-z0-9-]`, which is safe for all three.
 pub fn new_task_id(prompt: &str) -> String {
     format!("{}-{}", slugify(prompt), short_suffix())
+}
+
+/// Which workspace a run on `branch` can have, from git's answer to who is
+/// holding the branch rather than from the registry's record of it, which goes
+/// stale the moment a checkout moves off the branch.
+///
+/// Observed (AGE-169): a PR opened from the user's own checkout, still standing
+/// on that branch, made "Review with an agent" fail with git's raw
+/// "fatal: 'features/accessibility-pass' is already used by worktree". The
+/// checkout is a fine place to review from, and the only tree a fix could be
+/// committed to that branch in, so it gets its own variant here instead of
+/// being lumped in with the trees Agency cannot use.
+fn pr_workspace(repo: &Path, branch: &str) -> PrWorkspace {
+    match agency_core::git::branch_worktree(repo, branch) {
+        None => PrWorkspace::Worktree,
+        Some(holder) if same_dir(&holder, repo) => PrWorkspace::Checkout,
+        Some(holder) => PrWorkspace::Held(holder),
+    }
+}
+
+/// The refusal for a branch held by a tree Agency cannot put an agent in. git's
+/// own "already used by worktree" says the same thing, but says it as a fatal
+/// from a command the user never ran.
+fn branch_held_elsewhere(branch: &str, holder: &Path) -> anyhow::Error {
+    anyhow!(
+        "'{branch}' is checked out in {}, and git allows a branch in only one workspace at a \
+         time. Point that workspace at another branch, then start the review again.",
+        holder.display()
+    )
+}
+
+/// Whether two paths name the same directory. Compared through
+/// `canonicalize` because git prints resolved paths in `worktree list` while a
+/// project's root is whatever path it was registered under, and on macOS those
+/// differ for anything under `/tmp` or a symlinked home. Falls back to a literal
+/// comparison when either path cannot be resolved.
+fn same_dir(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    }
 }
 
 /// The directory a run's agent, scripts and git commands operate in: its own
@@ -1443,20 +1614,20 @@ fn fmt_bytes(data: &[u8]) -> String {
     format!("[{}] {:?}", hex.join(" "), String::from_utf8_lossy(data))
 }
 
-/// The run the most recent notification was about. macOS gives us no
-/// notification-click callback (the plugin's actions API is mobile-only), but
-/// clicking a notification *activates the app* — so we deep-link to this run
-/// on the next unfocused→focused edge instead.
+/// The run the most recent notification was about, waiting for the user to ask
+/// for it. Two things may ask, and `notifier::opens_notified_run` decides which
+/// one this entry answers to: a click on the notification (macOS routes that
+/// through the delegate hook in `notif_macos`), or Agency becoming the focused
+/// app again — but only for a notification posted while it was in the
+/// background, because that return is the user coming back to the banner.
 struct PendingOpen {
     project_id: String,
     run_id: String,
+    /// Whether Agency was in the background when the notification went out —
+    /// the OS's answer, not the webview's (see `foreground`).
+    from_background: bool,
     at: std::time::Instant,
 }
-
-/// How long a notification stays deep-linkable. Long enough to cover reading
-/// the banner and clicking it; short enough that a manual return to the app an
-/// hour later doesn't teleport the user to a stale run.
-const PENDING_OPEN_TTL: std::time::Duration = std::time::Duration::from_secs(300);
 
 #[derive(Default)]
 struct UiState {
@@ -1467,6 +1638,23 @@ struct UiState {
     /// nothing else.
     active_run: Option<String>,
     pending_open: Option<PendingOpen>,
+}
+
+/// Hand over the pending notification target if `trigger` is one it answers to,
+/// and clear it. Anything else leaves it in place for the trigger that does —
+/// a banner the user has not clicked yet outlives a focus change.
+fn take_pending_open(
+    ui: &mut UiState,
+    trigger: crate::notifier::OpenTrigger,
+) -> Option<(String, String)> {
+    let opens = ui.pending_open.as_ref().is_some_and(|p| {
+        crate::notifier::opens_notified_run(trigger, p.from_background, p.at.elapsed())
+    });
+    if !opens {
+        return None;
+    }
+    let p = ui.pending_open.take()?;
+    Some((p.project_id, p.run_id))
 }
 
 /// One asking of an agent's listing command: the agent, and the directory the
@@ -2004,6 +2192,37 @@ impl AppState {
         self.registry.lock().unwrap().set_run_title(id, title)
     }
 
+    // ── the user's word on a run (AGE-141) ─────────────────────────────────
+
+    /// Record what the user has said about a run — settled, active, snoozed —
+    /// or clear it with `None`, which hands the run back to the time decay.
+    /// The clock is stamped here rather than sent from the UI: `at_ms` is what
+    /// decides whether later output has un-settled the run, so it has to come
+    /// from the same clock the notifier's observations do.
+    pub fn set_run_standing(
+        &self,
+        id: &str,
+        kind: Option<agency_core::attention::StandingKind>,
+    ) -> Result<()> {
+        let standing =
+            kind.map(|k| agency_core::attention::Standing::new(k, crate::activity::now_ms()));
+        self.registry.lock().unwrap().set_run_standing(id, standing.as_ref())
+    }
+
+    /// Pin a run to the end of its project's pinned runs, or unpin it. The
+    /// order is the order they were pinned in, and it is the user's: unpinning
+    /// and pinning again moves a run to the end. Ranks are fractional so a
+    /// drag-to-reorder can land between two of them later without renumbering.
+    pub fn pin_run(&self, id: &str, pinned: bool) -> Result<()> {
+        let reg = self.registry.lock().unwrap();
+        if !pinned {
+            return reg.set_run_pin_rank(id, None);
+        }
+        let run = reg.get_run(id)?.ok_or_else(|| anyhow!("unknown run: {id}"))?;
+        let rank = reg.max_pin_rank(&run.project_id)?.unwrap_or(0.0) + 1.0;
+        reg.set_run_pin_rank(id, Some(rank))
+    }
+
     pub fn add_project(&self, name: &str, repo_path: &Path) -> Result<Project> {
         validate_project_path(repo_path)?;
         self.registry.lock().unwrap().add_project(name, repo_path)
@@ -2285,6 +2504,33 @@ impl AppState {
             .repo_path)
     }
 
+    /// The live read of one run's activity: its derived state (`None` until the
+    /// notifier has observed it) and what the user's own word says about it.
+    /// Shared by the board and the notifier tick, which are asking the same
+    /// question — does this run want the user right now — and must not answer
+    /// it differently.
+    fn read_activity(
+        &self,
+        run: &agency_core::registry::Run,
+        now_ms: i64,
+    ) -> (Option<crate::activity::ActivityInfo>, crate::activity::AttentionInfo) {
+        // Loops drive themselves — a quiet attempt isn't waiting on the user,
+        // so it classifies as idle at most.
+        let turn_driven =
+            run.loop_config.is_none() && self.prompted.lock().unwrap().contains(&run.id);
+        let entry = self.activity.lock().unwrap().get(&run.id).copied();
+        let activity = entry
+            .map(|e| crate::activity::classify(&e, turn_driven, run.standing.as_ref(), now_ms));
+        let attention = crate::activity::attention(
+            run.standing.as_ref(),
+            run.pin_rank,
+            entry.as_ref(),
+            activity.map(|a| a.state),
+            now_ms,
+        );
+        (activity, attention)
+    }
+
     fn run_record(&self, id: &str) -> Result<agency_core::registry::Run> {
         let reg = self.registry.lock().unwrap();
         reg.get_run(id)?.ok_or_else(|| anyhow!("unknown run: {id}"))
@@ -2388,6 +2634,7 @@ impl AppState {
                 .is_none_or(|(id, _)| self.web_ui_ready.lock().unwrap().contains(id));
             running && agency_core::preview::serving(port) && handshake_done
         });
+        let (activity, attention) = self.read_activity(run, crate::activity::now_ms());
         RunInfo {
             id: run.id.clone(),
             project_id: run.project_id.clone(),
@@ -2396,13 +2643,8 @@ impl AppState {
             title: run.title.clone(),
             branch,
             status,
-            activity: self.activity.lock().unwrap().get(&run.id).map(|e| {
-                // Loops drive themselves — a quiet attempt isn't waiting on
-                // the user, so it classifies as idle at most.
-                let turn_driven =
-                    run.loop_config.is_none() && self.prompted.lock().unwrap().contains(&run.id);
-                crate::activity::classify(e, turn_driven, crate::activity::now_ms())
-            }),
+            activity,
+            attention,
             usage: self.usage.lock().unwrap().get(&run.id).map(|(_, u)| u.into()),
             added: stat.added,
             deleted: stat.deleted,
@@ -2713,6 +2955,8 @@ impl AppState {
             // without this. Best-effort: a run whose base won't resolve still
             // starts, and its record falls back to the merge base.
             base_commit: spec.worktree.then(|| agency_core::merge::rev(&repo, spec.base)).flatten(),
+            standing: None,
+            pin_rank: None,
         };
         {
             let reg = self.registry.lock().unwrap();
@@ -3536,12 +3780,19 @@ impl AppState {
         {
             return Ok(self.run_info(&run));
         }
+        // Nothing of ours has the branch, but the user's own checkout may:
+        // work there rather than failing on git's "already used by worktree".
+        let workspace = pr_workspace(&repo, &pr.head_ref_name);
+        if let PrWorkspace::Held(holder) = &workspace {
+            return Err(branch_held_elsewhere(&pr.head_ref_name, holder));
+        }
         agency_core::git::fetch_branch(&repo, &pr.head_ref_name)?;
         let prompt = format!(
             "Review GitHub pull request #{number}: {title}. Its branch is checked out in this workspace. PR link: {url}",
             title = pr.title,
             url = pr.url,
         );
+        let own_worktree = workspace == PrWorkspace::Worktree;
         self.create_run_spec(
             NewRunSpec {
                 project_id,
@@ -3552,10 +3803,10 @@ impl AppState {
                 merge_target: Some(&pr.base_ref_name),
                 race_id: None,
                 title: Some(format!("PR #{number} {}", pr.title)),
-                existing_branch: Some(pr.head_ref_name.clone()),
+                existing_branch: own_worktree.then(|| pr.head_ref_name.clone()),
                 loop_config: None,
                 issue_id: None,
-                worktree: true,
+                worktree: own_worktree,
             },
             &mut |_| {},
         )
@@ -3565,11 +3816,18 @@ impl AppState {
     /// what it found. The agent works in the PR's head branch, so its fixes
     /// commit and push straight onto the PR.
     ///
-    /// When that branch is already checked out by another run (the usual case
-    /// for a PR an Agency agent opened from the Approve window), the review runs
-    /// as an extra agent tab inside that run: git allows a branch in only one
-    /// worktree, and fixes have to land on that branch anyway. The tab is still
-    /// a fresh agent with no memory of writing the code.
+    /// git allows a branch in only one worktree, and fixes have to land on that
+    /// branch anyway, so the review goes wherever the branch already is:
+    ///
+    /// - a tree an agent run of ours already lives in (the usual case for a PR
+    ///   an Agency agent opened from the Approve window): an extra agent tab
+    ///   inside that run, still a fresh agent with no memory of writing the
+    ///   code;
+    /// - the project's own checkout: a run in that checkout;
+    /// - nowhere: a review worktree of its own, cut on the branch.
+    ///
+    /// Only a tree Agency cannot put an agent in refuses the review, and it
+    /// says which tree.
     pub fn create_pr_review_run(
         &self,
         project_id: &str,
@@ -3577,7 +3835,7 @@ impl AppState {
         agent: &str,
         model: Option<&str>,
         post_comments: bool,
-    ) -> Result<PrReviewRun> {
+    ) -> Result<PrAgentRun> {
         let repo = self.project_repo(project_id)?;
         let pr = agency_core::gh::GhCli::default()
             .view_pr_by_number(&repo, number)?
@@ -3585,39 +3843,138 @@ impl AppState {
         if pr.head_ref_name.is_empty() {
             bail!("PR #{number} has no local head branch (cross-fork PRs aren't supported yet)");
         }
-        let prompt = pr_review_prompt(number, &pr.title, &pr.url, &pr.base_ref_name, post_comments);
-        // Only an unarchived agent run can host an extra tab; anything else
-        // holding the branch falls through and git reports the conflict.
-        let holder = self
-            .registry
-            .lock()
-            .unwrap()
-            .list_runs(project_id)?
-            .into_iter()
-            .find(|r| r.branch == pr.head_ref_name && r.kind == "agent");
-        if let Some(run) = holder {
-            let session = self.start_run_session(&run.id, Some(agent), &prompt)?;
-            return Ok(PrReviewRun { run: self.run_info(&run), session_id: Some(session.id) });
+        // Where the branch is, from git rather than from a run's recorded
+        // branch: that record goes stale when a checkout moves off the branch,
+        // and it is the disagreement between the two that produced AGE-169.
+        let workspace = pr_workspace(&repo, &pr.head_ref_name);
+        let prompt = pr_review_prompt(
+            number,
+            &pr.title,
+            &pr.url,
+            &pr.base_ref_name,
+            workspace.clone(),
+            post_comments,
+        );
+        self.spawn_pr_agent(
+            project_id,
+            &repo,
+            &pr,
+            agent,
+            model,
+            format!("Review PR #{number}"),
+            &prompt,
+            workspace,
+        )
+    }
+
+    /// Put an agent on the PR's head branch with `prompt`, in whichever tree
+    /// already holds that branch or in a worktree cut for it. Shared by the
+    /// review and conflict-resolution entry points: both need the same branch
+    /// under the same rule, and only the prompt and the title differ.
+    ///
+    /// `workspace` is passed in rather than probed here because the prompt has
+    /// to describe the tree the agent lands in, so the caller has already had
+    /// to ask.
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_pr_agent(
+        &self,
+        project_id: &str,
+        repo: &Path,
+        pr: &agency_core::gh::PrInfo,
+        agent: &str,
+        model: Option<&str>,
+        title: String,
+        prompt: &str,
+        workspace: PrWorkspace,
+    ) -> Result<PrAgentRun> {
+        // A live agent run already in the holding tree hosts the work as an
+        // extra tab: the change has to land on that branch either way, and this
+        // keeps two agents from editing one tree without either knowing.
+        if let Some(dir) = workspace.holder(repo) {
+            let host = self
+                .registry
+                .lock()
+                .unwrap()
+                .list_runs(project_id)?
+                .into_iter()
+                .find(|r| r.kind == "agent" && same_dir(&workspace_dir(repo, r), &dir));
+            if let Some(run) = host {
+                let session = self.start_run_session(&run.id, Some(agent), prompt)?;
+                return Ok(PrAgentRun { run: self.run_info(&run), session_id: Some(session.id) });
+            }
         }
-        agency_core::git::fetch_branch(&repo, &pr.head_ref_name)?;
+        // Before the fetch: a branch this app cannot get a workspace on is a
+        // refusal the user should see at once, not after a network round trip.
+        if let PrWorkspace::Held(holder) = &workspace {
+            return Err(branch_held_elsewhere(&pr.head_ref_name, holder));
+        }
+        agency_core::git::fetch_branch(repo, &pr.head_ref_name)?;
+        let own_worktree = workspace == PrWorkspace::Worktree;
         let run = self.create_run_spec(
             NewRunSpec {
                 project_id,
-                prompt: &prompt,
+                prompt,
                 agent,
                 model,
                 base: &pr.base_ref_name,
                 merge_target: Some(&pr.base_ref_name),
                 race_id: None,
-                title: Some(format!("Review PR #{number}")),
-                existing_branch: Some(pr.head_ref_name.clone()),
+                title: Some(title),
+                existing_branch: own_worktree.then(|| pr.head_ref_name.clone()),
                 loop_config: None,
                 issue_id: None,
-                worktree: true,
+                worktree: own_worktree,
             },
             &mut |_| {},
         )?;
-        Ok(PrReviewRun { run, session_id: None })
+        Ok(PrAgentRun { run, session_id: None })
+    }
+
+    /// Start an agent whose job is to clear a PR's merge conflicts: merge the
+    /// base branch into the PR's head branch, resolve, and push, which is what
+    /// makes GitHub's Merge button work again.
+    ///
+    /// The conflicting paths are probed here and written into the prompt. The
+    /// agent could find them itself, but a prompt that already names them is
+    /// one that starts on the actual work.
+    pub fn create_pr_conflict_run(
+        &self,
+        project_id: &str,
+        number: u64,
+        agent: &str,
+        model: Option<&str>,
+    ) -> Result<PrAgentRun> {
+        let repo = self.project_repo(project_id)?;
+        let pr = agency_core::gh::GhCli::default()
+            .view_pr_by_number(&repo, number)?
+            .ok_or_else(|| anyhow!("PR #{number} not found"))?;
+        if pr.head_ref_name.is_empty() {
+            bail!("PR #{number} has no local head branch (cross-fork PRs aren't supported yet)");
+        }
+        // Best effort: an unprobeable conflict still gets an agent, just without
+        // the file list. Refusing to start over a failed probe would be worse
+        // than starting slightly less informed.
+        let files = self.pr_conflicts(project_id, number).map(|c| c.files).unwrap_or_default();
+        let workspace = pr_workspace(&repo, &pr.head_ref_name);
+        let prompt = pr_conflict_prompt(
+            number,
+            &pr.title,
+            &pr.url,
+            &pr.base_ref_name,
+            &pr.head_ref_name,
+            workspace.clone(),
+            &files,
+        );
+        self.spawn_pr_agent(
+            project_id,
+            &repo,
+            &pr,
+            agent,
+            model,
+            format!("Fix conflicts on PR #{number}"),
+            &prompt,
+            workspace,
+        )
     }
 
     /// Store the first prompt the user typed into the agent terminal as the
@@ -3656,10 +4013,12 @@ impl AppState {
     pub fn knowledge_config(&self, project_id: &str) -> Result<KnowledgeConfigDto> {
         let repo = self.project_repo(project_id)?;
         let k = agency_core::config::load(&repo).knowledge;
+        let probe = self.backend_probe();
         let serve_default = agency_core::config::default_serve_command(&repo);
-        let build_default = agency_core::config::default_build_command().to_string();
+        let build_default = agency_core::config::default_build_command(probe.claude_on_path);
         let serve_effective = k.serve_command.clone().unwrap_or_else(|| serve_default.clone());
         let build_effective = k.build_command.clone().unwrap_or_else(|| build_default.clone());
+        let (build_backend, build_model) = agency_core::config::build_selection(&build_effective);
         let graph = agency_core::config::graph_path(&repo);
         let build_state = self.kg_builds.lock().unwrap().get(&repo).cloned().unwrap_or_default();
         Ok(KnowledgeConfigDto {
@@ -3670,12 +4029,51 @@ impl AppState {
             build_command: k.build_command,
             serve_default,
             build_default,
+            backends: agency_core::config::knowledge_backends(&probe),
+            build_backend,
+            build_model,
             graph_built: graph.is_file(),
             graph_path: graph.display().to_string(),
             building: build_state.running,
             last_build_error: build_state.error,
             install_command: graphify_install_script(),
         })
+    }
+
+    /// What this machine can run a graph build on. Probed per call, not cached:
+    /// an agent CLI installed since app start counts, and so does a local model
+    /// URL the user just saved.
+    fn backend_probe(&self) -> agency_core::config::BackendProbe {
+        agency_core::config::BackendProbe {
+            claude_on_path: command_on_path("claude"),
+            ollama: command_on_path("ollama")
+                || std::env::var_os("OLLAMA_BASE_URL").is_some()
+                || std::env::var_os("OLLAMA_HOST").is_some(),
+            local_model_url: self.get_settings().ok().map(|s| s.lm_studio_base_url),
+            env_keys: agency_core::config::env_backend_keys(|var| {
+                std::env::var(var).ok().filter(|v| !v.trim().is_empty())
+            }),
+        }
+    }
+
+    /// Write a chosen backend (and optional model) into the project's build
+    /// command. The choice *is* the command: one string the settings panel
+    /// shows, the build runs and the user can still edit by hand.
+    pub fn set_knowledge_backend(
+        &self,
+        project_id: &str,
+        backend: &str,
+        model: &str,
+    ) -> Result<()> {
+        let repo = self.project_repo(project_id)?;
+        let k = agency_core::config::load(&repo).knowledge;
+        let url = self.get_settings().map(|s| s.lm_studio_base_url).unwrap_or_default();
+        let build = agency_core::config::build_command_for(backend, model, &url);
+        agency_core::config::save_knowledge(
+            &repo,
+            &agency_core::config::KnowledgeConfig { build_command: Some(build), ..k },
+        )?;
+        Ok(())
     }
 
     /// Persist a project's knowledge-graph config into its (gitignored) local
@@ -3696,14 +4094,21 @@ impl AppState {
             build_command: clean(build_command),
         };
         agency_core::config::save_knowledge(&repo, &k)?;
-        // Enabling the graph is a request for a graph. Nothing else builds one
-        // until a merge lands, so without this the feature stays inert: the
-        // serve command would point at a graph.json that never appears.
-        if graph && !agency_core::config::graph_path(&repo).is_file() {
-            if let Err(e) = self.start_knowledge_build(&repo) {
-                log::info!("not building knowledge graph for {}: {e}", repo.display());
-            }
+        if graph {
+            // Enabling is where the panel starts showing the build command, and
+            // a user who runs it in their own terminal gets the same
+            // graphify-out/ in their changes as the Build button would. The
+            // exclude belongs to the feature, not to who pressed what.
+            agency_core::config::exclude_graph_output(&repo);
         }
+        // Enabling deliberately does *not* start a build (it did until AGE-83's
+        // follow-up). A build reads every doc in the project with an LLM, and
+        // which one it uses, what that costs and who ends up with the corpus
+        // are all things a user has to see before it runs, not discover from a
+        // plan's usage page afterwards. Flicking a toggle is not that consent.
+        // The panel answers the "then nothing happens" complaint the auto-build
+        // was for: enabling reveals the backend picker, each option's cost, and
+        // the Build button that spends it.
         Ok(())
     }
 
@@ -3711,6 +4116,38 @@ impl AppState {
     pub fn build_knowledge_graph(&self, project_id: &str) -> Result<()> {
         let repo = self.project_repo(project_id)?;
         self.start_knowledge_build(&repo)
+    }
+
+    /// The Map's view of a project's knowledge graph: the primary repo's
+    /// `graphify-out/graph.json` reduced to the drill-down view model.
+    ///
+    /// `Ok(None)` means no graph has been built yet, which is an empty state
+    /// and not a failure; the tab words it from the knowledge config. Anything
+    /// else that goes wrong is a real error and says so, because collapsing
+    /// the two told the user "no graph has been built yet" about a graph that
+    /// was sitting right there, and offered a Build button that could not fix
+    /// whatever had actually happened.
+    pub fn knowledge_graph_view(
+        &self,
+        project_id: &str,
+    ) -> Result<Option<agency_core::graphview::GraphView>> {
+        let repo = self.project_repo(project_id)?;
+        let path = agency_core::config::graph_path(&repo);
+        let size = match std::fs::metadata(&path) {
+            Ok(m) => m.len(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(anyhow!("reading {}: {e}", path.display())),
+        };
+        // A graph this size is far outside what the viewer can render, and
+        // parsing it costs several times the file in memory; 40 MB is ~6x the
+        // graph of this repository.
+        const MAX_GRAPH_BYTES: u64 = 40 * 1024 * 1024;
+        if size > MAX_GRAPH_BYTES {
+            anyhow::bail!("graph.json is {} MB, too large to map", size / (1024 * 1024));
+        }
+        let text = std::fs::read_to_string(&path)?;
+        let repo_dir = repo.file_name().and_then(|n| n.to_str());
+        agency_core::graphview::view(&text, repo_dir).map(Some)
     }
 
     /// Install the graphify tooling in a visible Agency terminal, the same way
@@ -3727,16 +4164,11 @@ impl AppState {
     /// running for this repo — both are states the caller reports, not retries.
     fn start_knowledge_build(&self, repo: &Path) -> Result<()> {
         let config = agency_core::config::load(repo);
-        let build = config
-            .knowledge
-            .build_command
-            .clone()
-            .unwrap_or_else(|| agency_core::config::default_build_command().to_string());
-        let cmd = build
-            .split_whitespace()
-            .next()
-            .ok_or_else(|| anyhow!("the build command is empty"))?
-            .to_string();
+        let build = config.knowledge.build_command.clone().unwrap_or_else(|| {
+            agency_core::config::default_build_command(command_on_path("claude"))
+        });
+        let cmd = agency_core::config::command_binary(&build)
+            .ok_or_else(|| anyhow!("the build command is empty"))?;
         if !command_on_path(&cmd) {
             return Err(anyhow!(
                 "'{cmd}' is not installed. Install the graphify tooling and try again."
@@ -3751,6 +4183,10 @@ impl AppState {
             entry.running = true;
             entry.error = None;
         }
+        // Before the build writes a line: graphify-out/ is ours to keep out of
+        // the user's changes (AGE-170), and an exclude arriving after the files
+        // do has already lost them a diff.
+        agency_core::config::exclude_graph_output(repo);
         log::info!("building knowledge graph in {}: {build}", repo.display());
         let repo = repo.to_path_buf();
         let builds_handle = self.kg_builds.clone();
@@ -4081,8 +4517,16 @@ impl AppState {
 
     /// After a clean merge, rebuild the project's knowledge graph in the
     /// background so the next agent workspace starts with a fresh graph.
+    ///
+    /// A *re*build, strictly: with no graph on disk the user has never picked a
+    /// model or agreed to what a build of this project costs, and landing a
+    /// merge is not the moment to decide that for them. The first build is
+    /// always the one they press.
     fn maybe_rebuild_knowledge_graph(&self, repo: &Path) {
         if !agency_core::config::load(repo).knowledge.graph {
+            return;
+        }
+        if !agency_core::config::graph_path(repo).is_file() {
             return;
         }
         if let Err(e) = self.start_knowledge_build(repo) {
@@ -4224,6 +4668,8 @@ impl AppState {
             worktree: false,
             model: None,
             base_commit: None,
+            standing: None,
+            pin_rank: None,
         };
         self.registry.lock().unwrap().insert_run(&run)?;
         Ok(self.run_info(&run))
@@ -4440,6 +4886,8 @@ impl AppState {
             worktree: false,
             model: None,
             base_commit: None,
+            standing: None,
+            pin_rank: None,
         };
         self.registry.lock().unwrap().insert_run(&run)?;
         Ok(self.run_info(&run))
@@ -4771,7 +5219,9 @@ impl AppState {
             .unwrap()
             .get(id)
             .map(|e| {
-                crate::activity::classify(e, false, now_ms).state
+                // The standing never reaches the Working arm either, so the
+                // send queue reads the pane alone.
+                crate::activity::classify(e, false, None, now_ms).state
                     == crate::activity::ActivityState::Working
             })
             .unwrap_or(true);
@@ -7158,6 +7608,44 @@ impl AppState {
         agency_core::gh::GhCli::default().current_login(&repo)
     }
 
+    /// Where a PR's merge conflicts actually are.
+    ///
+    /// GitHub reports *that* a PR conflicts and never which files, so this
+    /// answers it locally: fetch both sides' remote-tracking refs and merge
+    /// them in memory. Nothing is checked out, so it is safe to call from the
+    /// review pane while the user is working in the same repo.
+    pub fn pr_conflicts(&self, project_id: &str, number: u64) -> Result<PrConflicts> {
+        let repo = self.project_repo(project_id)?;
+        let pr = agency_core::gh::GhCli::default()
+            .view_pr_detail(&repo, number)?
+            .ok_or_else(|| anyhow!("PR #{number} not found"))?;
+        if pr.head_ref_name.is_empty() || pr.base_ref_name.is_empty() {
+            bail!("PR #{number} has no local head branch (cross-fork PRs aren't supported yet)");
+        }
+        let mut out = PrConflicts {
+            base: pr.base_ref_name.clone(),
+            head: pr.head_ref_name.clone(),
+            files: Vec::new(),
+            probed: false,
+        };
+        // Both halves are best effort: a repo behind a proxy, an old git or a
+        // branch pushed from elsewhere all leave the UI reporting the conflict
+        // without the file list, which is still the message the user needs.
+        if agency_core::git::fetch_tracking(&repo, &[&pr.base_ref_name, &pr.head_ref_name]).is_err()
+        {
+            return Ok(out);
+        }
+        let head = format!("origin/{}", pr.head_ref_name);
+        let base = format!("origin/{}", pr.base_ref_name);
+        // Head first: the fix merges base *into* the PR's branch, so this is
+        // the same merge the agent (or the user) is about to run.
+        if let Ok(files) = agency_core::merge::conflicting_paths(&repo, &head, &base) {
+            out.files = files;
+            out.probed = true;
+        }
+        Ok(out)
+    }
+
     /// Which merge methods the repo allows (drives the merge dialog's options).
     pub fn pr_merge_methods(&self, project_id: &str) -> Result<agency_core::gh::MergeMethods> {
         let repo = self.project_repo(project_id)?;
@@ -7383,8 +7871,11 @@ impl AppState {
     }
 
     /// Update focus/active-run state. On an unfocused→focused edge, hand back a
-    /// still-fresh pending notification target (consuming it) so the caller can
-    /// deep-link the UI to the run the user was just notified about.
+    /// pending notification target the return itself answers for (consuming
+    /// it), so the caller can deep-link the UI to the run the user came back
+    /// for. A notification posted while Agency was in front is left where it
+    /// is: the user is already here, and only a click on it means anything
+    /// (AGE-166).
     pub fn set_ui_state(
         &self,
         focused: bool,
@@ -7394,22 +7885,25 @@ impl AppState {
         let was_focused = ui.focused;
         ui.focused = focused;
         ui.active_run = active_run;
-        if focused && !was_focused {
-            if let Some(p) = ui.pending_open.take() {
-                if p.at.elapsed() < PENDING_OPEN_TTL {
-                    return Some((p.project_id, p.run_id));
-                }
-            }
+        if !(focused && !was_focused) {
+            return None;
         }
-        None
+        take_pending_open(&mut ui, crate::notifier::OpenTrigger::Focus)
+    }
+
+    /// The run to open because the user clicked its notification.
+    pub fn take_notification_target(&self) -> Option<(String, String)> {
+        let mut ui = self.ui.lock().unwrap();
+        take_pending_open(&mut ui, crate::notifier::OpenTrigger::Click)
     }
 
     /// Record the run a just-shown notification is about (see [`PendingOpen`]).
-    pub fn note_notification(&self, project_id: &str, run_id: &str) {
+    pub fn note_notification(&self, project_id: &str, run_id: &str, from_background: bool) {
         let mut ui = self.ui.lock().unwrap();
         ui.pending_open = Some(PendingOpen {
             project_id: project_id.to_string(),
             run_id: run_id.to_string(),
+            from_background,
             at: std::time::Instant::now(),
         });
     }
@@ -7555,6 +8049,7 @@ impl AppState {
         // tick by the size of the board.
         let live = self.term.read().unwrap().list().unwrap_or_default();
         let run_scripts_of = |target: &str| run_script_statuses_from(target, &live);
+        let now_ms = crate::activity::now_ms();
 
         let projects = self.registry.lock().unwrap().list_projects()?;
         let mut out = Vec::new();
@@ -7571,6 +8066,7 @@ impl AppState {
                 label: proj.name.clone(),
                 is_terminal: false,
                 is_loop: false,
+                hushed: false,
                 agent: SessionStatus::Gone,
                 pane_hash: 0,
                 user_input_pending: false,
@@ -7611,12 +8107,20 @@ impl AppState {
                 // the same tick) would toast "Agent exited" next to the loop's
                 // own complete/stalled notification.
                 let is_loop = run.loop_config.is_some();
+                // The same standing the board reads, asked here so a run the
+                // user has settled or snoozed stops toasting too: it is the
+                // same question either way, so it is the same derivation. A
+                // settle that new output has already consumed reports nothing,
+                // which is why a run raising its hand still notifies.
+                let hushed =
+                    self.read_activity(&run, now_ms).1.standing.is_some_and(|k| k.suppresses());
                 out.push(notifier::RunSnapshot {
                     id: run.id,
                     project_id: proj.id.clone(),
                     label,
                     is_terminal: run.kind == "terminal",
                     is_loop,
+                    hushed,
                     agent,
                     run_scripts,
                     pane_hash,
@@ -7692,15 +8196,15 @@ fn failure_tail(stderr: &[u8], stdout: &[u8]) -> Option<String> {
     })
 }
 
-/// True when `command` resolves to an executable file: checked directly when it
-/// contains a path separator, otherwise searched across the PATH directories.
-/// Whether the first whitespace token of a command line resolves to an
-/// executable on PATH (or a runnable absolute/relative path). Command overrides
-/// and the graphify defaults are full command lines, not bare binaries.
+/// Whether the program a command line runs is installed. Command overrides and
+/// the graphify defaults are full command lines, not bare binaries, and some of
+/// them carry `VAR=value` in front of the program (see `command_binary`).
 fn first_token_on_path(command_line: &str) -> bool {
-    command_line.split_whitespace().next().map(command_on_path).unwrap_or(false)
+    agency_core::config::command_binary(command_line).map(|c| command_on_path(&c)).unwrap_or(false)
 }
 
+/// True when `command` resolves to an executable file: checked directly when it
+/// contains a path separator, otherwise searched across the PATH directories.
 fn command_on_path(command: &str) -> bool {
     crate::agent_diag::resolve_on_path(command).is_some()
 }
@@ -7893,6 +8397,8 @@ mod tests {
             worktree: true,
             model: None,
             base_commit: None,
+            standing: None,
+            pin_rank: None,
         };
         assert!(super::wants_web_ui(&base));
 
@@ -8282,7 +8788,16 @@ mod tests {
 
     #[test]
     fn pr_review_prompt_switches_on_post_comments() {
-        let quiet = super::pr_review_prompt(12, "Add widgets", "https://x/pull/12", "main", false);
+        use super::PrWorkspace;
+        let wt = PrWorkspace::Worktree;
+        let quiet = super::pr_review_prompt(
+            12,
+            "Add widgets",
+            "https://x/pull/12",
+            "main",
+            wt.clone(),
+            false,
+        );
         assert!(quiet.contains("Review GitHub pull request #12: Add widgets"));
         assert!(quiet.contains("git diff main...HEAD"));
         assert!(quiet.contains("Do not post anything to GitHub"));
@@ -8290,11 +8805,122 @@ mod tests {
         // Both modes promise the follow-up fixing session the review is for.
         assert!(quiet.contains("stay available"));
 
-        let posting = super::pr_review_prompt(12, "Add widgets", "https://x/pull/12", "main", true);
+        let posting =
+            super::pr_review_prompt(12, "Add widgets", "https://x/pull/12", "main", wt, true);
         assert!(posting.contains("repos/$SLUG/pulls/12/reviews"));
         assert!(posting.contains("\"event\": \"COMMENT\""));
         assert!(!posting.contains("Do not post anything to GitHub"));
         assert!(posting.contains("stay available"));
+    }
+
+    /// A review that had to run in the project's own checkout is standing in
+    /// the user's working copy, and an agent that does not know that will read
+    /// unrelated uncommitted changes as part of the PR, or switch branches out
+    /// from under them. The worktree case must not carry the warning: it would
+    /// be a lie about an isolated workspace.
+    #[test]
+    fn pr_review_prompt_warns_only_when_it_is_the_users_checkout() {
+        use super::PrWorkspace;
+        let own = super::pr_review_prompt(
+            12,
+            "W",
+            "https://x/pull/12",
+            "main",
+            PrWorkspace::Worktree,
+            false,
+        );
+        assert!(!own.contains("project's own checkout"), "{own}");
+
+        let shared = super::pr_review_prompt(
+            12,
+            "W",
+            "https://x/pull/12",
+            "main",
+            PrWorkspace::Checkout,
+            false,
+        );
+        assert!(shared.contains("project's own checkout"), "{shared}");
+        assert!(shared.contains("Do not switch branches, stash, reset, or revert"), "{shared}");
+        // The checkout can lag the PR head, so the diff must come from the PR.
+        assert!(shared.contains("gh pr diff 12"), "{shared}");
+        // Still the same review, with the same closing promise.
+        assert!(shared.contains("Review GitHub pull request #12"), "{shared}");
+        assert!(shared.contains("stay available"), "{shared}");
+    }
+
+    #[test]
+    fn pr_conflict_prompt_names_the_files_and_forbids_a_force_push() {
+        let files = vec!["src/a.rs".to_string(), "ui/b.tsx".to_string()];
+        let p = super::pr_conflict_prompt(
+            9,
+            "Add widgets",
+            "https://x/pull/9",
+            "main",
+            "feat/w",
+            super::PrWorkspace::Worktree,
+            &files,
+        );
+        assert!(p.starts_with(
+            "Resolve the merge conflicts blocking GitHub pull request #9: Add widgets"
+        ));
+        // The probe already ran to draw the UI, so the agent starts from its answer.
+        assert!(p.contains("These 2 files conflict: src/a.rs, ui/b.tsx."), "{p}");
+        assert!(p.contains("git merge origin/main"), "{p}");
+        assert!(p.contains("`feat/w`") && p.contains("`main`"), "{p}");
+        // A rebase or force-push on a published branch is how this fix turns
+        // into a worse problem than the conflict it cleared.
+        assert!(p.contains("Do not rebase and do not force-push"), "{p}");
+        assert!(p.contains("https://x/pull/9"), "{p}");
+        // A worktree of its own is the agent's to work in; only the shared
+        // checkout gets the warning about someone else's uncommitted work.
+        assert!(!p.contains("project's own checkout"), "{p}");
+    }
+
+    #[test]
+    fn pr_conflict_prompt_warns_when_the_merge_lands_in_the_users_checkout() {
+        let p = super::pr_conflict_prompt(
+            9,
+            "Add widgets",
+            "https://x/pull/9",
+            "main",
+            "feat/w",
+            super::PrWorkspace::Checkout,
+            &["a.rs".to_string()],
+        );
+        assert!(p.contains("the project's own checkout, not an isolated worktree"), "{p}");
+        // git refuses a merge over someone else's uncommitted work, and moving
+        // it out of the way is not this agent's call to make.
+        assert!(p.contains("stop and tell me rather than stashing"), "{p}");
+    }
+
+    #[test]
+    fn pr_conflict_prompt_survives_an_unprobed_conflict() {
+        let p = super::pr_conflict_prompt(
+            9,
+            "Add widgets",
+            "https://x/pull/9",
+            "main",
+            "feat/w",
+            super::PrWorkspace::Worktree,
+            &[],
+        );
+        assert!(p.contains("Run the merge to find out which files collide."), "{p}");
+        assert!(!p.contains("files conflict"), "no empty file list: {p}");
+        assert!(p.contains("git merge origin/main"), "{p}");
+    }
+
+    #[test]
+    fn pr_conflict_prompt_counts_one_file_in_the_singular() {
+        let p = super::pr_conflict_prompt(
+            9,
+            "T",
+            "u",
+            "main",
+            "feat/w",
+            super::PrWorkspace::Worktree,
+            &["a.rs".to_string()],
+        );
+        assert!(p.contains("One file conflicts: a.rs."), "{p}");
     }
 
     #[test]
@@ -8750,6 +9376,8 @@ mod tests {
             worktree: false,
             model: None,
             base_commit: None,
+            standing: None,
+            pin_rank: None,
         };
         assert_eq!(run.kind, "terminal");
         assert!(run.branch.is_empty());
@@ -8780,6 +9408,8 @@ mod tests {
             worktree: false,
             model: None,
             base_commit: None,
+            standing: None,
+            pin_rank: None,
         }
     }
 
@@ -8797,6 +9427,59 @@ mod tests {
                 .unwrap()
                 .success());
         }
+    }
+
+    /// AGE-169: reviewing a PR failed outright whenever the PR's branch was
+    /// checked out anywhere, which is the normal state right after you push a
+    /// branch from your own checkout and open the PR from it. The checkout is
+    /// where the review belongs in that case, and only a third tree is refused.
+    #[test]
+    fn pr_workspace_sends_the_review_where_the_branch_already_is() {
+        use super::{pr_workspace, PrWorkspace};
+        let repo = tempfile::tempdir().unwrap();
+        init_repo_with_commit(repo.path());
+        let git = |args: &[&str]| {
+            assert!(std::process::Command::new("git")
+                .args(args)
+                .current_dir(repo.path())
+                .status()
+                .unwrap()
+                .success());
+        };
+
+        // Nobody holds it: the review gets a worktree of its own, and there is
+        // no tree to look for a host run in.
+        git(&["branch", "features/free"]);
+        let free = pr_workspace(repo.path(), "features/free");
+        assert_eq!(free, PrWorkspace::Worktree);
+        assert_eq!(free.holder(repo.path()), None);
+
+        // The user's own checkout holds it: the review runs there instead of
+        // failing, since that is the only tree a fix could be committed in.
+        let head = agency_core::merge::current_branch(repo.path()).unwrap();
+        let checkout = pr_workspace(repo.path(), &head);
+        assert_eq!(checkout, PrWorkspace::Checkout);
+        assert_eq!(checkout.holder(repo.path()), Some(repo.path().to_path_buf()));
+
+        // A third tree holds it. That tree is the holder, so an agent run of
+        // ours living there can still host the review.
+        let other = repo.path().join("other-wt");
+        git(&["worktree", "add", "-q", "-b", "features/busy", other.to_str().unwrap()]);
+        // Compared with `same_dir`, not `==`: git answers with the resolved
+        // path ("/private/var/…" for a macOS temp dir) while the caller holds
+        // the unresolved one, which is the whole reason the run lookup uses it.
+        let held = pr_workspace(repo.path(), "features/busy");
+        let PrWorkspace::Held(dir) = &held else { panic!("a third tree holds it: {held:?}") };
+        assert!(super::same_dir(dir, &other), "{dir:?}");
+        assert!(held.holder(repo.path()).is_some_and(|d| super::same_dir(&d, &other)));
+
+        // With nothing of ours there it is refused, but by naming the directory
+        // and what to do, not by repeating git's "already used by worktree".
+        let err = super::branch_held_elsewhere("features/busy", &other).to_string();
+        assert!(err.contains("features/busy"), "names the branch: {err}");
+        assert!(err.contains("other-wt"), "names the tree holding it: {err}");
+        assert!(err.contains("another branch"), "says what to do next: {err}");
+        assert!(!err.contains("fatal:"), "no raw git error: {err}");
     }
 
     #[test]

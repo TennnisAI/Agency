@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { CloneProgress, RunInfo, createRun, createTerminal as createTerminalApi, getSettings, listRuns, projectTarget, rememberedModel, runScriptsLive } from "../api";
 import { loadFold, saveFold } from "../hooks/usePaneWidth";
+import { pinnedFirst } from "../lib/runstate";
 import { toastError } from "../lib/toast";
 
 type View = "grid" | "focus";
@@ -135,7 +136,9 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
       // Drop stale responses: if the selected project changed while awaiting,
       // a late reply from the old project must not overwrite the current runs.
       if (projectRef.current !== pid) return;
-      setRuns(next);
+      // Ordered once, here, so a pinned run keeps its place in every surface
+      // that reads the store: the grid, the focus rail, the sidebar tree.
+      setRuns(pinnedFirst(next));
       setProjectRunLive(live);
     } catch {
       /* ignore transient errors */

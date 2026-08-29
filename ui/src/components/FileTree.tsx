@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   BackendSearchHit, DirEntry, FileRoot, listDir, searchFiles,
-  createFile, createDir, importFile, renamePath, trashPath,
+  createFile, createDir, copyPath, importFile, renamePath, trashPath,
 } from "../api";
 import { ancestorDirs, joinPath, parentPath, baseName } from "../lib/filePath";
 import { fileIcon } from "../lib/fileIcon";
@@ -11,8 +11,23 @@ import PromptDialog from "./PromptDialog";
 import ConfirmDialog from "./ConfirmDialog";
 import { dirAtPoint, useFileDrop } from "../hooks/useFileDrop";
 import { dropName, nameList, uniqueName } from "../lib/fileDrop";
+import { sameListing, visibleDirs } from "../lib/dirListing";
+import { Transfer, transferProblem } from "../lib/fileTransfer";
 import { toastError, toastInfo } from "../lib/toast";
 import { revealLabel, reveal, copyAbsPath, copyRelPath, ignorePath } from "../lib/fileActions";
+
+/** One row of the tree, as the menu, the keyboard cursor and the drag see it. */
+type Entry = { path: string; isDir: boolean };
+
+/** A move or copy in flight, and where it would land if released now. */
+type Drag = {
+  src: string;
+  /** Directory under the cursor, "" for the tree root. */
+  dir: string;
+  mode: Transfer["mode"];
+  /** Why this drop would be refused, or null. Shown in the hint. */
+  problem: string | null;
+};
 
 // A pending create/rename dialog. `dir` is the container for a create; `orig`
 // is the existing path for a rename.
@@ -60,6 +75,13 @@ export default function FileTree({
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const [confirmDel, setConfirmDel] = useState<{ path: string; isDir: boolean } | null>(null);
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuEntry[] } | null>(null);
+  // What ⌘X/⌘C put aside, waiting for a ⌘V. A cut is not applied until the
+  // paste, so the file stays where it is (and stays openable) until it lands.
+  const [clip, setClip] = useState<Transfer | null>(null);
+  // The row the keyboard acts on. Set by clicking or right-clicking a row, so
+  // "copy this" means the row you just touched rather than the file that
+  // happens to be open in the editor.
+  const [cursor, setCursor] = useState<Entry | null>(null);
 
   const rootKey = `${root.kind}:${root.id}`;
   // The scrolling tree body: the drop target below, and what a reveal scrolls.
@@ -68,6 +90,10 @@ export default function FileTree({
   // whatever it was when the effect started.
   const cacheRef = useRef(cache);
   cacheRef.current = cache;
+  // Ditto for the refresh sweep, which is installed once and would otherwise
+  // re-list whatever was expanded when it was installed.
+  const openRef = useRef(open);
+  openRef.current = open;
 
   const loadDir = useCallback((path: string) => {
     return listDir(root, path)
@@ -81,12 +107,67 @@ export default function FileTree({
       });
   }, [root]);
 
+  // Re-list a directory that is already on screen, writing to state only when
+  // the listing actually changed. `loadDir`'s unconditional write is right for
+  // a load the user asked for; on a two-second sweep it would re-render the
+  // whole tree forever, losing hover and interrupting the row being dragged.
+  //
+  // A failed sweep leaves the last good listing standing rather than replacing
+  // the rows with an error: the directory may simply have been deleted, and its
+  // parent's sweep is what makes the row go away.
+  const refreshDir = useCallback((path: string) => {
+    return listDir(root, path)
+      .then((entries) => {
+        setCache((m) => {
+          const prev = m.get(path);
+          return prev && sameListing(prev, entries) ? m : new Map(m).set(path, entries);
+        });
+        setErrors((m) => {
+          if (!m.has(path)) return m;
+          const n = new Map(m);
+          n.delete(path);
+          return n;
+        });
+      })
+      .catch(() => {});
+  }, [root]);
+  // `root` is a fresh object on every render of the view above, so `refreshDir`
+  // is too. The sweep below must not be keyed on it: it would tear its own
+  // interval down and rebuild it faster than the interval ever fires.
+  const refreshRef = useRef(refreshDir);
+  refreshRef.current = refreshDir;
+
+  // Nothing tells the tree when the files under it change: an agent writing in
+  // the worktree and the user renaming something in Finder both land behind its
+  // back, and until AGE-162 the rows stayed as they were until the Files tab was
+  // left and re-entered (which remounts this whole component). So the visible
+  // rows are re-listed on a timer, and again the moment the window comes back —
+  // the tick that matters after a detour through Finder.
+  useEffect(() => {
+    const sweep = () => {
+      for (const d of visibleDirs(cacheRef.current, openRef.current)) void refreshRef.current(d);
+    };
+    // Nobody is reading the tree while another app is in front, and that is
+    // exactly when the interesting changes are being made. The focus listener
+    // below is what catches up on them.
+    const tick = () => { if (document.hasFocus()) sweep(); };
+    const t = window.setInterval(tick, 2000);
+    window.addEventListener("focus", sweep);
+    return () => {
+      window.clearInterval(t);
+      window.removeEventListener("focus", sweep);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rootKey]);
+
   // Re-root whenever the FileRoot changes (focused agent ↔ project main).
   useEffect(() => {
     setCache(new Map());
     setOpen(new Set());
     setErrors(new Map());
     setRootError("");
+    setCursor(null);
+    setClip(null);
     loadDir("");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rootKey]);
@@ -134,9 +215,9 @@ export default function FileTree({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [revealTarget]);
 
-  // The directory a create should land in: a folder targets itself, a file its
-  // parent, and no target means the root.
-  const containerOf = (entry: { path: string; isDir: boolean } | null) =>
+  // The directory a create or a paste should land in: a folder targets itself, a
+  // file its parent, and no target means the root.
+  const containerOf = (entry: Entry | null) =>
     entry ? (entry.isDir ? entry.path : parentPath(entry.path)) : "";
 
   const doCreate = async (kind: "newFile" | "newFolder", dir: string, name: string) => {
@@ -176,6 +257,65 @@ export default function FileTree({
     } catch (e) {
       toastError(e, "Delete failed");
     }
+  };
+
+  // ── moving and copying within the tree ───────────────────────────────────
+  // One operation behind three gestures: the paste, the drag, and Duplicate.
+  // A move is a rename, so it retargets open tabs the same way the rename
+  // dialog does; a copy leaves the source alone and has nothing to retarget.
+
+  // Whether a path in this tree is a folder, read off the listing that holds
+  // it: the drag and the paste both know their source only as a path.
+  const isDirPath = (path: string) =>
+    (cacheRef.current.get(parentPath(path)) ?? []).some(
+      (e) => e.name === baseName(path) && e.isDir,
+    );
+
+  /** Resolves true only if the file actually landed at its destination. */
+  const doTransfer = async (src: string, dir: string, mode: Transfer["mode"]) => {
+    const problem = transferProblem(src, dir, mode);
+    if (problem) {
+      toastInfo(problem);
+      return false;
+    }
+    const want = baseName(src);
+    // Read before the move: afterwards the listing that knew is already gone.
+    const isDir = isDirPath(src);
+    try {
+      // Real names on disk, not the tree's cache: pasting into a folder nobody
+      // has expanded still has to be renamed around what is already in it.
+      const existing = await listDir(root, dir).catch(() => [] as DirEntry[]);
+      const name = uniqueName(new Set(existing.map((e) => e.name.toLowerCase())), want);
+      const dest = joinPath(dir, name);
+      if (mode === "move") await renamePath(root, src, dest);
+      else await copyPath(root, src, dest);
+      if (dir !== "") expand(dir);
+      await loadDir(dir);
+      if (mode === "move") {
+        await loadDir(parentPath(src));
+        // The owner retargets open tabs/selection (and their unsaved buffers).
+        onRenamed(src, dest);
+      }
+      // Follow the thing that just moved, so a second ⌘V goes where the eye is.
+      setCursor({ path: dest, isDir });
+      if (name !== want) toastInfo(`Renamed to keep what was there: ${name}`);
+      return true;
+    } catch (e) {
+      toastError(e, mode === "move" ? "Move failed" : "Copy failed");
+      return false;
+    }
+  };
+
+  const doPaste = (dir: string) => {
+    if (!clip) return;
+    const { mode, path } = clip;
+    void doTransfer(path, dir, mode).then((landed) => {
+      // A cut is spent once it lands: its source no longer exists. A copy
+      // stays, so the same file can be pasted into several places. A paste
+      // that was refused or failed keeps the clipboard either way, so the
+      // next attempt still has something to paste.
+      if (landed && mode === "move") setClip(null);
+    });
   };
 
   // ── dropping in from Finder ───────────────────────────────────────────────
@@ -229,21 +369,131 @@ export default function FileTree({
     (paths, dir) => { void doImport(paths, dir); },
   );
 
+  // ── dragging a row onto a folder ─────────────────────────────────────────
+  // Pointer-based (mousedown → 5px threshold → track → commit on mouseup), NOT
+  // HTML5 drag-and-drop: Tauri's native drag-drop layer intercepts drops at the
+  // NSView level on macOS, so an in-page HTML5 drag lifts but its drop event
+  // never fires. Same reason the issue board reorders this way.
+  //
+  // Plain drag moves and ⌥-drag copies, as in Finder. The modifier is read at
+  // each move rather than at the drop, so the hint below says which one is
+  // about to happen.
+
+  const [drag, setDrag] = useState<Drag | null>(null);
+  // Mouse events outrun React renders, so the live value is a ref and `drag`
+  // only mirrors it for the hint and the target highlight.
+  const dragLive = useRef<Drag | null>(null);
+  // A completed drag must not read as a click on the row it started from.
+  const suppressClick = useRef(false);
+
+  const onRowMouseDown = (entry: Entry, e: React.MouseEvent) => {
+    if (e.button !== 0) return;
+    if ((e.target as HTMLElement).closest("button, input, textarea")) return;
+    setCursor(entry);
+    // The keyboard shortcuts live on the tree body, so a grabbed row has to
+    // bring focus with it. preventDefault below suppresses the focus WebKit
+    // would otherwise move (and the text selection it would start dragging).
+    bodyRef.current?.focus({ preventScroll: true });
+    e.preventDefault();
+    const start = { x: e.clientX, y: e.clientY };
+    let started = false;
+    // Escape sets this so the drag can't silently restart on the next
+    // mousemove; the still-held button then releases as a no-op.
+    let cancelled = false;
+
+    const onMove = (ev: MouseEvent) => {
+      if (cancelled) return;
+      if (!started) {
+        if (Math.abs(ev.clientX - start.x) + Math.abs(ev.clientY - start.y) < 5) return;
+        started = true;
+        window.getSelection()?.removeAllRanges();
+      }
+      ev.preventDefault();
+      const dir = dirAtPoint(bodyRef.current, ev.clientX, ev.clientY);
+      const mode: Transfer["mode"] = ev.altKey ? "copy" : "move";
+      dragLive.current = dir === null
+        ? null
+        : { src: entry.path, dir, mode, problem: transferProblem(entry.path, dir, mode) };
+      setDrag(dragLive.current);
+    };
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key !== "Escape") return;
+      cancelled = true;
+      dragLive.current = null;
+      setDrag(null);
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      window.removeEventListener("keydown", onKey, true);
+      const d = dragLive.current;
+      dragLive.current = null;
+      setDrag(null);
+      if (started) {
+        // Neither a completed nor a cancelled drag may open the file or toggle
+        // the folder the pointer started on.
+        suppressClick.current = true;
+        window.setTimeout(() => { suppressClick.current = false; }, 0);
+      }
+      // A refused drop is a no-op: the hint already said why while it hovered.
+      if (!d || cancelled || d.problem) return;
+      void doTransfer(d.src, d.dir, d.mode);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    // Capture phase so an Escape mid-drag can't reach anything else.
+    window.addEventListener("keydown", onKey, true);
+  };
+
+  // ⌘X/⌘C/⌘V over the tree. Bound to the body, so they only fire while it holds
+  // focus and never while the editor or a terminal does. macOS validates the
+  // Edit menu's own Cut/Copy/Paste against the webview first, and those are
+  // disabled when nothing editable has focus and nothing is selected — which is
+  // exactly the state the tree is in, so the keystroke falls through to here.
+  const onTreeKey = (e: React.KeyboardEvent) => {
+    if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey) return;
+    const key = e.key.toLowerCase();
+    if (key === "c" || key === "x") {
+      if (!cursor) return;
+      e.preventDefault();
+      setClip({ mode: key === "c" ? "copy" : "move", path: cursor.path });
+    } else if (key === "v") {
+      if (!clip) return;
+      e.preventDefault();
+      doPaste(containerOf(cursor));
+    }
+  };
+
   const addGitignore = async (path: string) => {
     // A first-time add creates .gitignore at the root — refresh so it shows.
     if (await ignorePath(root, path)) await loadDir("");
   };
 
-  const openMenu = (e: React.MouseEvent, entry: { path: string; isDir: boolean } | null) => {
+  const openMenu = (e: React.MouseEvent, entry: Entry | null) => {
     e.preventDefault();
     e.stopPropagation();
+    setCursor(entry);
     const dir = containerOf(entry);
+    // Pasting is offered even when it can't be done, greyed out — the reason it
+    // is greyed (a folder into itself, a move that goes nowhere) is worth more
+    // than an item that silently isn't there.
+    const paste: MenuEntry = {
+      label: "Paste",
+      hint: "⌘V",
+      disabled: !clip || transferProblem(clip.path, dir, clip.mode) !== null,
+      onClick: () => doPaste(dir),
+    };
     const items: MenuEntry[] = [
       { label: "New File…", onClick: () => setDialog({ kind: "newFile", dir }) },
       { label: "New Folder…", onClick: () => setDialog({ kind: "newFolder", dir }) },
     ];
     if (entry) {
       items.push(
+        { kind: "separator" },
+        { label: "Cut", hint: "⌘X", onClick: () => setClip({ mode: "move", path: entry.path }) },
+        { label: "Copy", hint: "⌘C", onClick: () => setClip({ mode: "copy", path: entry.path }) },
+        paste,
+        { label: "Duplicate", onClick: () => void doTransfer(entry.path, parentPath(entry.path), "copy") },
         { kind: "separator" },
         { label: "Rename…", onClick: () => setDialog({ kind: "rename", orig: entry.path }) },
         { label: "Delete", danger: true, onClick: () => setConfirmDel({ path: entry.path, isDir: entry.isDir }) },
@@ -255,6 +505,8 @@ export default function FileTree({
       );
     } else {
       items.push(
+        { kind: "separator" },
+        paste,
         { kind: "separator" },
         { label: revealLabel, onClick: () => reveal(root, "") },
       );
@@ -280,15 +532,21 @@ export default function FileTree({
       const path = joinPath(dir, c.name);
       const isOpen = open.has(path);
       const pad = { paddingLeft: 8 + depth * 12 };
+      // Cursor and cut state are per-row chrome, not per-kind: a folder shows
+      // them the same way a file does.
+      const mark =
+        (cursor?.path === path ? " cursor" : "") +
+        (clip?.mode === "move" && clip.path === path ? " cut" : "");
       if (c.isDir) {
         rows.push(
           <div
             key={path}
-            className={`tree-row dir${dropDir === path ? " drop-into" : ""}`}
+            className={`tree-row dir${mark}${dropInto === path ? " drop-into" : ""}`}
             style={pad}
             data-path={path}
             data-drop-dir={path}
-            onClick={() => toggle(path)}
+            onMouseDown={(e) => onRowMouseDown({ path, isDir: true }, e)}
+            onClick={() => { if (!suppressClick.current) toggle(path); }}
             onContextMenu={(e) => openMenu(e, { path, isDir: true })}
           >
             <span className="tree-twistie-slot">
@@ -306,11 +564,12 @@ export default function FileTree({
         rows.push(
           <div
             key={path}
-            className={`tree-row file ${selected === path ? "on" : ""}`}
+            className={`tree-row file${mark}${selected === path ? " on" : ""}`}
             style={pad}
             data-path={path}
             data-drop-dir={dir}
-            onClick={() => onSelect(path)}
+            onMouseDown={(e) => onRowMouseDown({ path, isDir: false }, e)}
+            onClick={() => { if (!suppressClick.current) onSelect(path); }}
             onContextMenu={(e) => openMenu(e, { path, isDir: false })}
           >
             <span className="tree-twistie-slot" />
@@ -366,6 +625,12 @@ export default function FileTree({
 
   const searching = query.trim() !== "";
 
+  // Both kinds of drag paint the same target: one from Finder (`dropDir`), one
+  // from inside the tree. A refused in-tree drop highlights nothing, so the row
+  // under the cursor never looks like it would accept it.
+  const dropActive = drag !== null || dropDir !== null;
+  const dropInto = drag ? (drag.problem ? null : drag.dir) : dropDir;
+
   return (
     <>
       <div className="docs-search">
@@ -397,8 +662,13 @@ export default function FileTree({
       </div>
       <div
         ref={bodyRef}
-        className={`files-tree-body${dropDir !== null ? " drop-active" : ""}${dropDir === "" ? " drop-into" : ""}`}
+        className={`files-tree-body${dropActive ? " drop-active" : ""}${dropInto === "" ? " drop-into" : ""}`}
         data-drop-dir=""
+        // Focusable so ⌘X/⌘C/⌘V can be scoped to the tree; -1 keeps it out of
+        // the tab order, since the rows themselves are not tab stops either.
+        tabIndex={-1}
+        onKeyDown={onTreeKey}
+        onMouseDown={(e) => { if (e.target === e.currentTarget) setCursor(null); }}
         onContextMenu={(e) => { if (e.target === e.currentTarget) openMenu(e, null); }}
       >
         {searching ? (
@@ -434,9 +704,13 @@ export default function FileTree({
         )}
       </div>
 
-      {(dropDir !== null || importing) && (
-        <div className="tree-drop-hint">
-          {importing ? "Adding…" : `Drop into ${dropDir ? `${dropDir}/` : "/"}`}
+      {(dropActive || importing) && (
+        <div className={`tree-drop-hint${drag?.problem ? " refused" : ""}`}>
+          {importing
+            ? "Adding…"
+            : drag
+              ? drag.problem ?? `${drag.mode === "copy" ? "Copy" : "Move"} into ${dirLabel(drag.dir)}`
+              : `Drop into ${dirLabel(dropDir ?? "")}`}
         </div>
       )}
 
@@ -474,6 +748,9 @@ export default function FileTree({
     </>
   );
 }
+
+/** A directory as the drop hint names it: the root is "/". */
+const dirLabel = (dir: string) => (dir ? `${dir}/` : "/");
 
 // ── Toolbar glyphs (match the stroked-SVG convention in icons.tsx) ──────
 const gp = {

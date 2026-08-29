@@ -5,6 +5,7 @@ import { runName } from "../agents";
 import { inGitlessFolder, runStatus } from "../lib/runstate";
 import { Removal, removalLabel, removalsFor } from "../lib/runRemoval";
 import { usageLabel, usageTitle } from "../lib/usage";
+import AttentionMarker from "./AttentionMarker";
 import QueuedMarker from "./QueuedMarker";
 import RunRemoveDialog from "./RunRemoveDialog";
 import OverflowMenu from "./OverflowMenu";
@@ -18,7 +19,7 @@ function badgeClass(agent: string): string {
 }
 
 export default function AgentTile({ run }: { run: RunInfo }) {
-  const { setFocusedRun, setView } = useRuns();
+  const { setFocusedRun, setView, refreshRuns } = useRuns();
   const [preview, setPreview] = useState("");
   // Archive / discard of this run, awaiting its confirm dialog.
   const [pending, setPending] = useState<Removal | null>(null);
@@ -90,6 +91,8 @@ export default function AgentTile({ run }: { run: RunInfo }) {
         {/* Same register as the status above: what the agent is doing, and what
             it has not been handed yet. */}
         <QueuedMarker run={run} />
+        {/* And what you have said about it: settled, snoozed, pinned. */}
+        <AttentionMarker run={run} onChanged={refreshRuns} />
         {/* The same close button and menu the agents rail carries, so an agent
             offers the same ways out wherever it is listed: archived, keeping
             its record for the Archived section, or deleted outright. The

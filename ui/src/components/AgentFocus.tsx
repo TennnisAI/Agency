@@ -26,6 +26,7 @@ import { loadFocusTab, saveFocusTab, resolveFocusTab, PRIMARY_TAB, LOG_TAB } fro
 import AgentAddMenu from "./AgentAddMenu";
 import QueuedMarker from "./QueuedMarker";
 import OverflowMenu from "./OverflowMenu";
+import { attentionItems } from "./AttentionMarker";
 import { TrashIcon, InboxIcon, TerminalIcon, PencilIcon, CheckIcon, BranchIcon } from "./icons";
 
 const SHELL_MIN = 120;
@@ -558,6 +559,10 @@ export default function AgentFocus({
                 <OverflowMenu
                   items={[
                     { label: "Rename agent", icon: <PencilIcon />, onSelect: () => setRenaming(focused) },
+                    // Settle / snooze / pin, the same entries the tile carries:
+                    // deciding you are done with a run happens as often from
+                    // inside it as from the board.
+                    ...attentionItems(focused, refreshRuns),
                     // A merge writes the branch name into the base branch's
                     // history for good, so this is offered while the branch is
                     // still local. A run working in the project's own checkout

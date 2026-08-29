@@ -55,13 +55,41 @@ export interface LoopState {
 
 // Live activity signal derived from pane output (camelCase serde, see
 // agency_app::activity). "working" = output recently; "waiting" = quiet after
-// a user-driven turn (finished, or blocked on input), decaying to idle after
-// ~30m; "idle" = quiet with no turn in flight (never prompted, or waited too
-// long). `since` is epoch ms when the current state began. Null until the
-// backend's first 2s poll observes the run.
+// a user-driven turn (finished, or blocked on input); "idle" = quiet with no
+// turn in flight (never prompted, or waited too long). A waiting run the user
+// has never classified decays to idle after ~30m; one carrying a standing
+// below does not, because there is nothing left to guess. `since` is epoch ms
+// when the current state began. Null until the backend's first 2s poll
+// observes the run.
 export interface RunActivity {
   state: "working" | "waiting" | "idle";
   since: number;
+}
+
+// The user's own word on a run (agency_core::attention), as it applies right
+// now: a settle the run has already answered, or a snooze that has run out,
+// arrives as null rather than as a stale record.
+//   settled — "I have dealt with this". Off the attention list until the run
+//             comes back asking, which un-settles it.
+//   active  — "this one still needs me". Stays on the list, and the time decay
+//             stops applying to it.
+//   snoozed — "not now". Off the list until untilMs, or until new output makes
+//             it raise its hand early.
+export type RunStanding =
+  | { kind: "settled" }
+  | { kind: "active" }
+  | { kind: "snoozed"; untilMs: number };
+
+// What the user has said about a run and what it means right now. Always
+// present, unlike `activity`: the standing and the pin are their record, not a
+// sample the backend may not have taken yet.
+export interface RunAttention {
+  standing: RunStanding | null;
+  // Ascending order among pinned runs; null = unpinned. Untouched by activity.
+  pinRank: number | null;
+  // The bottom line: this run is waiting on the user and nothing they have
+  // said suppresses it.
+  needsAttention: boolean;
 }
 
 // Tokens and cost for a run, read from the agent's own transcript (see
@@ -87,6 +115,7 @@ export interface RunInfo {
   branch: string;
   status: SessionStatus;
   activity: RunActivity | null;
+  attention: RunAttention;
   // Null means this agent's spend is not visible to us at all, which is true
   // of every agent whose transcript format we have not read. Not the same as
   // zero, and the UI must never render it as one.
@@ -505,6 +534,15 @@ export const renameRun = (id: string, title: string) =>
 // the published copy, and any PR from it, behind).
 export const renameRunBranch = (id: string, branch: string) =>
   invoke<string>("rename_run_branch", { id, branch });
+// Record what the user has said about a run, or clear it with null — which
+// hands the run back to the time decay. The moment is stamped backend-side:
+// it is what decides whether later output has un-settled the run.
+export const setRunStanding = (id: string, standing: RunStanding | null) =>
+  invoke<void>("set_run_standing", { id, standing });
+// Pin a run to the end of its project's pinned runs, or unpin it. Pinned order
+// is the order they were pinned in; unpin and pin again to move one to the end.
+export const pinRun = (id: string, pinned: boolean) =>
+  invoke<void>("pin_run", { id, pinned });
 export const listRuns = (projectId: string) => invoke<RunInfo[]>("list_runs", { projectId });
 export const runPreview = (id: string, lines: number) =>
   invoke<string>("run_preview", { id, lines });
@@ -854,6 +892,14 @@ export interface KnowledgeConfig {
   build_default: string;
   serve_installed: boolean;
   build_installed: boolean;
+  // What the build can run on, this machine, best first. `note` is the line
+  // about cost and destination shown before anything runs; `default_model` is
+  // the model placeholder, empty where the user has to name one.
+  backends: { id: string; label: string; note: string; default_model: string }[];
+  // Which backend the effective build command names ("custom" for a
+  // hand-written one), and the model it names.
+  build_backend: string;
+  build_model: string;
   // The graph file the serve command reads, and whether it exists yet. No
   // graph means no MCP server is handed to agents.
   graph_path: string;
@@ -866,6 +912,10 @@ export interface KnowledgeConfig {
 
 export const getKnowledgeConfig = (projectId: string) =>
   invoke<KnowledgeConfig>("get_knowledge_config", { projectId });
+// Pick which model the build runs on. Writes the build command; nothing runs
+// until Build graph is pressed.
+export const setKnowledgeBackend = (projectId: string, backend: string, model: string) =>
+  invoke<void>("set_knowledge_backend", { projectId, backend, model });
 export const saveKnowledgeConfig = (
   projectId: string,
   graph: boolean,
@@ -874,6 +924,49 @@ export const saveKnowledgeConfig = (
 ) => invoke<void>("save_knowledge_config", { projectId, graph, serveCommand, buildCommand });
 export const buildKnowledgeGraph = (projectId: string) =>
   invoke<void>("build_knowledge_graph", { projectId });
+
+// The Map's drill-down view of the knowledge graph: the directory tree with
+// per-file symbols, file-level dependency edges (category counts), and
+// symbol-level edges for the detail panel. Computed backend-side from the
+// primary repo's graphify-out/graph.json. Resolves to null when no graph has
+// been built yet, which is the Map's empty state; it rejects only when a graph
+// exists but could not be read, and then the Map shows that error.
+export interface MapSymbol {
+  id: string;
+  label: string;
+  line: number | null;
+  callable: boolean;
+  class: boolean;
+  community: string;
+}
+export interface MapFile {
+  name: string;
+  path: string;
+  symbols: MapSymbol[];
+}
+export interface MapDir {
+  name: string;
+  path: string;
+  dirs: MapDir[];
+  files: MapFile[];
+}
+export interface MapFileEdge {
+  source: string;
+  target: string;
+  calls: number;
+  imports: number;
+  refs: number;
+  other: number;
+}
+export interface KnowledgeGraphView {
+  root: MapDir;
+  file_edges: MapFileEdge[];
+  /** [source symbol id, target symbol id, relation] */
+  symbol_edges: [string, string, string][];
+  stats: { files: number; symbols: number; edges: number; communities: number };
+}
+export const knowledgeGraphView = (projectId: string) =>
+  invoke<KnowledgeGraphView | null>("knowledge_graph_view", { projectId });
 // Opens a terminal running `install_command`; returns it so the caller can jump in.
 export const installKnowledgeTooling = (projectId: string) =>
   invoke<RunInfo>("install_knowledge_tooling", { projectId });
@@ -1122,7 +1215,7 @@ export const createRunFromPr = (projectId: string, number: number, agent: string
 // Where an agent PR review landed. `sessionId` is set when the review had to run
 // as an extra tab inside an existing run (the PR's branch was already checked
 // out there) — focus that tab rather than the run's primary agent.
-export interface PrReviewRun {
+export interface PrAgentRun {
   run: RunInfo;
   sessionId: string | null;
 }
@@ -1134,7 +1227,16 @@ export const createPrReviewRun = (
   agent: string,
   model: string | null,
   postComments: boolean,
-) => invoke<PrReviewRun>("create_pr_review_run", { projectId, number, agent, model, postComments });
+) => invoke<PrAgentRun>("create_pr_review_run", { projectId, number, agent, model, postComments });
+
+// Start an agent that clears a PR's merge conflicts: merges the base branch
+// into the PR's branch, resolves, and pushes.
+export const createPrConflictRun = (
+  projectId: string,
+  number: number,
+  agent: string,
+  model: string | null,
+) => invoke<PrAgentRun>("create_pr_conflict_run", { projectId, number, agent, model });
 
 export const ghReadiness = (projectId: string) =>
   invoke<GhReadiness>("gh_readiness", { projectId });
@@ -1168,6 +1270,18 @@ export const prMergeMethods = (projectId: string) =>
   invoke<MergeMethods>("pr_merge_methods", { projectId });
 export const mergePr = (projectId: string, number: number, method: MergeMethod, deleteBranch: boolean) =>
   invoke<PrMergeResult>("merge_pr", { projectId, number, method, deleteBranch });
+/** Where a conflicted PR's conflicts are. GitHub only reports *that* a PR
+ * conflicts, so the files come from a local probe: `probed` false means that
+ * probe couldn't run, and `files` is empty for want of an answer rather than
+ * because the merge is clean. */
+export interface PrConflicts {
+  base: string;
+  head: string;
+  files: string[];
+  probed: boolean;
+}
+export const prConflicts = (projectId: string, number: number) =>
+  invoke<PrConflicts>("pr_conflicts", { projectId, number });
 export const prDiff = (projectId: string, number: number) =>
   invoke<PrFileDiff[]>("pr_diff", { projectId, number });
 export const prReviewThreads = (projectId: string, number: number) =>
@@ -1497,6 +1611,10 @@ export const createDir = (root: FileRoot, relPath: string) =>
   invoke<void>("create_dir", { root, relPath });
 export const renamePath = (root: FileRoot, from: string, to: string) =>
   invoke<void>("rename_path", { root, from, to });
+// Copy a file or folder to another path in the same root (folders recurse).
+// Refuses an existing destination, so the caller picks a free name first.
+export const copyPath = (root: FileRoot, from: string, to: string) =>
+  invoke<void>("copy_path", { root, from, to });
 export const trashPath = (root: FileRoot, relPath: string) =>
   invoke<void>("trash_path", { root, relPath });
 // Appends the path to the root's .gitignore. Resolves to true if a new entry was

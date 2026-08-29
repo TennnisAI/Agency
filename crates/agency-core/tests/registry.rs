@@ -111,6 +111,8 @@ fn runs_persist_list_and_delete() {
         worktree: true,
         model: None,
         base_commit: None,
+        standing: None,
+        pin_rank: None,
     };
     {
         let reg = Registry::open(&db).unwrap();
@@ -150,6 +152,8 @@ fn list_runs_newest_first() {
             worktree: true,
             model: None,
             base_commit: None,
+            standing: None,
+            pin_rank: None,
         })
         .unwrap();
     }

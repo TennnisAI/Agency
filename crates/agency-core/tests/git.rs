@@ -659,6 +659,39 @@ fn branch_info_ahead_excludes_the_default_branchs_unpushed_commits() {
     assert_eq!(git::branch_info(&clone).unwrap().ahead, 2);
 }
 
+/// Which tree holds a branch, not just whether one does. A review that cannot
+/// check a PR's branch out has to say where the branch already is, and the
+/// answer is usually the user's own checkout rather than an agent worktree.
+#[test]
+fn branch_worktree_names_the_tree_holding_the_branch() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    init_repo(repo);
+
+    // A branch nobody has checked out is free.
+    run(repo, &["branch", "features/idle"]);
+    assert_eq!(git::branch_worktree(repo, "features/idle"), None);
+    assert!(!git::branch_checked_out(repo, "features/idle"));
+
+    // The primary working tree counts: this is the case that broke reviewing.
+    let head = git::branch_info(repo).unwrap().branch;
+    let held = git::branch_worktree(repo, &head).expect("the checkout holds its own branch");
+    assert_eq!(held.canonicalize().unwrap(), repo.canonicalize().unwrap());
+    assert!(git::branch_checked_out(repo, &head));
+
+    // So does a linked worktree, and it is named rather than confused with the
+    // checkout.
+    let linked = dir.path().parent().unwrap().join("linked-wt");
+    run(repo, &["worktree", "add", "-q", "-b", "features/busy", linked.to_str().unwrap()]);
+    let held = git::branch_worktree(repo, "features/busy").expect("the linked worktree holds it");
+    assert_eq!(held.canonicalize().unwrap(), linked.canonicalize().unwrap());
+
+    // A detached worktree holds no branch, so it never shadows one.
+    assert_eq!(git::branch_worktree(repo, "features/idle"), None);
+
+    run(repo, &["worktree", "remove", "--force", linked.to_str().unwrap()]);
+}
+
 #[test]
 fn sync_pushes_when_only_ahead() {
     let (_keep, remote, clone) = clone_with_upstream();

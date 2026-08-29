@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   THEMES, DEFAULT_THEME, resolveTheme, getStoredTheme, themeVars, xtermThemeFor, currentScheme,
+  paperSurface, surfaceFor,
 } from "./themes";
 
 function makeStorage(seed?: Record<string, string>): Pick<Storage, "getItem"> {
@@ -72,6 +73,24 @@ describe("xtermThemeFor", () => {
     expect(x.magenta).toBe(t.vars.mauve);
     expect(x.cyan).toBe(t.vars.teal);
     expect(x.brightBlack).toBe(t.vars.o0);
+  });
+});
+
+describe("surfaceFor", () => {
+  it("gives a light theme the tone its panes already give a black background", () => {
+    const paperback = resolveTheme("paperback");
+    expect(surfaceFor(paperback)).toBe(paperback.vars.s1);
+    expect(xtermThemeFor(paperback).black).toBe(surfaceFor(paperback));
+    // And not the one a pane paints a selection with, which would swallow it.
+    expect(surfaceFor(paperback)).not.toBe(xtermThemeFor(paperback).selectionBackground);
+  });
+  it("leaves a dark theme's panes to the agent's own surfaces", () => {
+    for (const t of THEMES.filter((t) => t.scheme === "dark")) {
+      expect(surfaceFor(t), t.id).toBeNull();
+    }
+  });
+  it("follows the active theme, which starts dark", () => {
+    expect(paperSurface()).toBeNull();
   });
 });
 

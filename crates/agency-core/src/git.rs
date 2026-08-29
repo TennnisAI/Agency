@@ -403,16 +403,30 @@ pub fn branch_summary(repo: &Path, branch: &str, base: &str) -> Result<String> {
     Ok(body)
 }
 
+/// The worktree of `repo` that has `branch` checked out, if any — the primary
+/// working tree included. git allows a branch in only one worktree at a time,
+/// so a caller refused a checkout needs the holder's path to say *where* the
+/// branch already is instead of repeating git's "already used by worktree".
+pub fn branch_worktree(repo: &Path, branch: &str) -> Option<std::path::PathBuf> {
+    let out = git(repo, &["worktree", "list", "--porcelain"]).ok()?;
+    let needle = format!("branch refs/heads/{branch}");
+    let mut current: Option<&str> = None;
+    for line in out.lines() {
+        if let Some(rest) = line.strip_prefix("worktree ") {
+            current = Some(rest);
+        } else if line.trim() == needle {
+            return current.map(std::path::PathBuf::from);
+        }
+    }
+    None
+}
+
 /// Whether `branch` is currently checked out in any worktree of `repo`
 /// (including the primary working tree). git forbids updating a branch ref that
 /// is checked out, and forbids checking the same branch out twice — callers use
 /// this to avoid both failures.
 pub fn branch_checked_out(repo: &Path, branch: &str) -> bool {
-    let Ok(out) = git(repo, &["worktree", "list", "--porcelain"]) else {
-        return false;
-    };
-    let needle = format!("branch refs/heads/{branch}");
-    out.lines().any(|l| l.trim() == needle)
+    branch_worktree(repo, branch).is_some()
 }
 
 /// Update (or create) the local `branch` from origin's copy without checking
@@ -526,6 +540,25 @@ const FETCH_TIMEOUT: Duration = Duration::from_secs(60);
 /// snapshot. Nothing is checked out or merged.
 pub fn fetch(repo: &Path) -> Result<()> {
     git_capped(repo, &["fetch", "--prune", "origin"], FETCH_TIMEOUT)?;
+    Ok(())
+}
+
+/// Update only the remote-tracking refs for `branches` (`origin/<branch>`),
+/// leaving local branches, HEAD and the working tree alone.
+///
+/// The refspec is spelled out rather than left to the remote's default so this
+/// can never fast-forward or clobber a local branch: a PR's conflict probe runs
+/// off someone else's head branch, and it has no business moving the user's
+/// copy of it. Unlike [`fetch_branch`], a diverged local branch is simply not
+/// its problem.
+pub fn fetch_tracking(repo: &Path, branches: &[&str]) -> Result<()> {
+    if branches.is_empty() {
+        return Ok(());
+    }
+    let mut args = vec!["fetch".to_string(), "origin".to_string()];
+    args.extend(branches.iter().map(|b| format!("+refs/heads/{b}:refs/remotes/origin/{b}")));
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    git_capped(repo, &argv, FETCH_TIMEOUT)?;
     Ok(())
 }
 

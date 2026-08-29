@@ -766,7 +766,10 @@ pub async fn merge_task(
         .map_err(|e| e.to_string())?;
     if let MergeOutcome::Conflicts { files } = &outcome {
         let settings = state.notif_settings().unwrap_or_default();
-        let (focused, active) = state.ui_snapshot();
+        // The OS's answer, not the webview's: a document blurred by a banner
+        // or a panel is not the user having left (see `foreground`).
+        let (reported, active) = state.ui_snapshot();
+        let focused = crate::foreground::in_front(reported);
         let suppressed =
             crate::notifier::suppressed(&settings, focused, active.as_deref(), &task_id);
         if settings.merge_attention && !suppressed {
@@ -876,6 +879,15 @@ pub async fn pr_detail(
     number: u64,
 ) -> Result<Option<agency_core::gh::PrDetail>, String> {
     state.pr_detail(&project_id, number).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn pr_conflicts(
+    state: State<'_, AppState>,
+    project_id: String,
+    number: u64,
+) -> Result<crate::state::PrConflicts, String> {
+    state.pr_conflicts(&project_id, number).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1084,10 +1096,24 @@ pub async fn create_pr_review_run(
     agent: String,
     model: Option<String>,
     post_comments: bool,
-) -> Result<crate::state::PrReviewRun, String> {
+) -> Result<crate::state::PrAgentRun, String> {
     let model = checked_model(model)?;
     state
         .create_pr_review_run(&project_id, number, &agent, model.as_deref(), post_comments)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn create_pr_conflict_run(
+    state: State<'_, AppState>,
+    project_id: String,
+    number: u64,
+    agent: String,
+    model: Option<String>,
+) -> Result<crate::state::PrAgentRun, String> {
+    let model = checked_model(model)?;
+    state
+        .create_pr_conflict_run(&project_id, number, &agent, model.as_deref())
         .map_err(|e| e.to_string())
 }
 
@@ -1286,11 +1312,35 @@ pub fn save_knowledge_config(
         .map_err(|e| e.to_string())
 }
 
+/// Point a project's graph build at one of the backends `get_knowledge_config`
+/// offers, optionally naming a model. Writes the build command; never starts a
+/// build, because picking a model is not asking to spend on one.
+#[tauri::command]
+pub fn set_knowledge_backend(
+    state: State<'_, AppState>,
+    project_id: String,
+    backend: String,
+    model: String,
+) -> Result<(), String> {
+    state.set_knowledge_backend(&project_id, &backend, &model).map_err(|e| e.to_string())
+}
+
 /// Start a knowledge-graph build for a project. Returns as soon as the build is
 /// running; progress and failure come back through `get_knowledge_config`.
 #[tauri::command]
 pub fn build_knowledge_graph(state: State<'_, AppState>, project_id: String) -> Result<(), String> {
     state.build_knowledge_graph(&project_id).map_err(|e| e.to_string())
+}
+
+/// The Map's drill-down view of the project's knowledge graph. `null` is
+/// "no graph built yet", which the tab words from the knowledge config; an
+/// error means a graph exists but could not be read, and is shown as itself.
+#[tauri::command]
+pub fn knowledge_graph_view(
+    state: State<'_, AppState>,
+    project_id: String,
+) -> Result<Option<agency_core::graphview::GraphView>, String> {
+    state.knowledge_graph_view(&project_id).map_err(|e| e.to_string())
 }
 
 /// Open a terminal that installs the graphify tooling. Returns the run so the
@@ -2070,9 +2120,11 @@ pub fn set_ui_state(
     focused: bool,
     active_run: Option<String>,
 ) {
-    // A fresh focus edge right after a notification means the user (most
-    // likely) clicked it — macOS offers no real click callback, so deep-link
-    // to the notified run via the same event the tray menu uses.
+    // Coming back to the app opens the run whose notification arrived while
+    // the user was away, via the same event the tray menu uses. A notification
+    // posted while they were already here is left alone: only a click on it
+    // means anything, and macOS reports that one for real (AGE-166, and see
+    // notif_macos::on_notification_click).
     if let Some((project_id, run_id)) = state.set_ui_state(focused, active_run) {
         use tauri::Emitter;
         let _ = app.emit("tray-open-run", crate::tray::OpenRun { project_id, run_id });
@@ -2243,6 +2295,20 @@ pub fn rename_path(
     agency_core::files::rename_path(&base, &from, &to).map_err(|e| e.to_string())
 }
 
+/// Copy a file or folder to another path inside the same root — the file tree's
+/// copy/paste and option-drag. Folders copy recursively; the destination must
+/// not exist (the caller picks a free name first).
+#[tauri::command]
+pub fn copy_path(
+    state: State<'_, AppState>,
+    root: FileRoot,
+    from: String,
+    to: String,
+) -> Result<(), String> {
+    let base = resolve_root(&state, &root)?;
+    agency_core::files::copy_path(&base, &from, &to).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn trash_path(
     state: State<'_, AppState>,
@@ -2345,6 +2411,28 @@ pub fn open_term_path(
 #[tauri::command]
 pub fn rename_run(state: State<'_, AppState>, id: String, title: String) -> Result<(), String> {
     state.store_run_title(&id, title.trim()).map_err(|e| e.to_string())
+}
+
+/// Record what the user has said about a run: settled, active, snoozed — or
+/// `None` to take it back, which hands the run to the time decay again.
+///
+/// The payload is the standing's own tagged shape (`{"kind":"snoozed",
+/// "untilMs":…}`), so serde is the allowlist: anything that is not one of the
+/// three known kinds fails to deserialize and never reaches the database. The
+/// moment is stamped backend-side (see `AppState::set_run_standing`).
+#[tauri::command]
+pub fn set_run_standing(
+    state: State<'_, AppState>,
+    id: String,
+    standing: Option<agency_core::attention::StandingKind>,
+) -> Result<(), String> {
+    state.set_run_standing(&id, standing).map_err(|e| e.to_string())
+}
+
+/// Pin a run to the end of its project's pinned runs, or unpin it.
+#[tauri::command]
+pub fn pin_run(state: State<'_, AppState>, id: String, pinned: bool) -> Result<(), String> {
+    state.pin_run(&id, pinned).map_err(|e| e.to_string())
 }
 
 /// Rename a run's branch, in git and in the registry, and return the name that

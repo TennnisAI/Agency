@@ -20,11 +20,48 @@
 use anyhow::{anyhow, bail, Context as _, Result};
 use serde_json::{json, Value};
 use std::collections::HashSet;
+use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpStream};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+/// Host plugin source: collapses the conversation sidebar once on first paint.
+/// Written under the Agency data dir and pointed at by [`ensure_collapse_sidebar_patch`].
+const COLLAPSE_SIDEBAR_PLUGIN: &str = include_str!("dsh_agency/collapse_sidebar_plugin.js");
+
+/// Materialize Agency's dsh `--patch` overlay (collapse sidebar on boot) under
+/// `data_dir/dsh-agency/` and return the absolute path of the patch YAML.
+///
+/// dsh's layout store is transient and always starts with the sidebar open;
+/// there is no CLI flag or setting for a collapsed default. The overlay inserts
+/// a tiny host plugin that injects a one-shot click of the Collapse control.
+/// The patch path must be absolute (dsh resolves plugin `name` that way), and
+/// `--patch` is a launcher flag on `dsh web`, so callers place it right after
+/// `web` in argv.
+pub fn ensure_collapse_sidebar_patch(data_dir: &Path) -> Result<PathBuf> {
+    let dir = data_dir.join("dsh-agency");
+    fs::create_dir_all(&dir).with_context(|| format!("mkdir {}", dir.display()))?;
+    let plugin = dir.join("collapse-sidebar.js");
+    fs::write(&plugin, COLLAPSE_SIDEBAR_PLUGIN)
+        .with_context(|| format!("write {}", plugin.display()))?;
+    // Prefer a canonical path so spaces/symlinks in the data dir don't break
+    // the YAML string dsh's Loader hands to Node's module resolver.
+    let plugin_abs = plugin.canonicalize().unwrap_or_else(|_| plugin.clone());
+    let plugin_yaml = plugin_abs.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"");
+    let patch = dir.join("collapse-sidebar.patch.yml");
+    // Build the YAML without `\ ` line continuation: that form strips the next
+    // line's leading whitespace, which flattened the list indent and made dsh
+    // reject the overlay ("end of the stream or a document separator is expected").
+    let yaml = format!(
+        "{comment}\n- insert:\n    - id: agency-collapse-sidebar\n      name: \"{plugin_yaml}\"\n",
+        comment = "# Written by Agency. Collapses the dsh conversation sidebar on boot.",
+        plugin_yaml = plugin_yaml,
+    );
+    fs::write(&patch, yaml).with_context(|| format!("write {}", patch.display()))?;
+    Ok(patch.canonicalize().unwrap_or(patch))
+}
 
 /// How long we poll for `/api` after the TCP port is bound. Their Loader tree
 /// settles after the listen; with a working body reader this is usually one or
@@ -461,5 +498,30 @@ mod tests {
         let chunked = "5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n";
         let got = read_chunked_body(&mut Cursor::new(chunked.as_bytes())).unwrap();
         assert_eq!(got, "hello world");
+    }
+
+    #[test]
+    fn collapse_sidebar_patch_points_at_a_real_plugin_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let patch = ensure_collapse_sidebar_patch(dir.path()).unwrap();
+        assert!(patch.is_absolute(), "{patch:?}");
+        let yaml = fs::read_to_string(&patch).unwrap();
+        // Nested under `insert:` — a flat `- id:` sibling is what crashed dsh
+        // (YAMLException at the `name:` line) on 2026-08-29.
+        assert!(
+            yaml.contains("\n- insert:\n    - id: agency-collapse-sidebar\n      name: \""),
+            "patch must keep list indent, got:\n{yaml}"
+        );
+        let plugin = dir.path().join("dsh-agency/collapse-sidebar.js");
+        assert!(plugin.is_file(), "{plugin:?}");
+        assert!(
+            fs::read_to_string(&plugin).unwrap().contains("Collapse sidebar"),
+            "plugin must target the Collapse control"
+        );
+        // Absolute plugin path inside the quoted name field.
+        assert!(
+            yaml.contains(&format!("name: \"{}\"", plugin.canonicalize().unwrap().display())),
+            "{yaml}"
+        );
     }
 }

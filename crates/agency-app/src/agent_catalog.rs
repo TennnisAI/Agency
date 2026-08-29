@@ -369,6 +369,9 @@ pub fn builtins() -> &'static [CatalogEntry] {
                 // Agency, which renders the GUI in the run's own pane instead;
                 // Open in browser stays one click, chosen, not sprung.
                 web_ui: Some(WebUi {
+                    // `web --patch …` is added at launch (see with_web_ui): their
+                    // layout store always starts with the conversation sidebar
+                    // open, and there is no flag for a collapsed default.
                     args: &["web", "--no-open"],
                     port_args: &["--port", "{{port}}"],
                 }),

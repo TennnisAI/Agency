@@ -654,15 +654,37 @@ fn with_model(profile: &AgentProfile, model: Option<&str>) -> AgentProfile {
 /// be read as the app selection. Loop recipes are left alone — the headless
 /// one-shot opens no port and must never boot a server.
 ///
+/// For dsh, also inserts `web --patch <agency overlay>` so the conversation
+/// sidebar starts collapsed (their layout store has no durable default; see
+/// [`crate::web_ui::ensure_collapse_sidebar_patch`]). `--patch` is a flag on
+/// the `web` subcommand itself, so it sits immediately after `web`, ahead of
+/// `--no-open` / `--port`.
+///
 /// `gui_port` is None for a run that predates port blocks or whose block is
 /// too small to hold a GUI port; the server then comes up on the CLI's own
 /// default port. One such run works; a second collides there, loudly, in its
 /// own pane — which beats refusing to launch over a ports-config edge.
-fn with_web_ui(profile: &AgentProfile, gui_port: Option<u16>) -> AgentProfile {
+fn with_web_ui(
+    profile: &AgentProfile,
+    gui_port: Option<u16>,
+    data_dir: &std::path::Path,
+) -> AgentProfile {
     let Some(web) = crate::agent_catalog::web_ui(&profile.name) else {
         return profile.clone();
     };
     let mut args: Vec<String> = web.args.iter().map(|a| a.to_string()).collect();
+    // args[0] is the app selector (`web`); launcher overlays belong right after.
+    if profile.name == "dsh" {
+        match crate::web_ui::ensure_collapse_sidebar_patch(data_dir) {
+            Ok(patch) => {
+                args.insert(1, "--patch".into());
+                args.insert(2, patch.to_string_lossy().into_owned());
+            }
+            Err(e) => {
+                log::warn!("dsh collapse-sidebar patch unavailable; sidebar stays open: {e:#}")
+            }
+        }
+    }
     if let Some(port) = gui_port {
         args.extend(web.port_args.iter().map(|a| a.replace("{{port}}", &port.to_string())));
     }
@@ -2507,7 +2529,11 @@ impl AppState {
                 .get_profile(spec.agent)?
                 .ok_or_else(|| anyhow!("unknown agent profile: {agent}", agent = spec.agent))?;
             let profile = with_model(&profile, model.as_deref());
-            let profile = with_web_ui(&profile, gui_port_for(&config, Some(port), spec.agent));
+            let profile = with_web_ui(
+                &profile,
+                gui_port_for(&config, Some(port), spec.agent),
+                &self.data_dir,
+            );
             // The prefix the worktree's tracker briefing names, so `AGE-14`
             // reads to the agent as this project's key rather than a shape it
             // recognizes from some other tracker.
@@ -5964,7 +5990,7 @@ impl AppState {
             let profile = with_model(&profile, model);
             // Same GUI port as the run would use: start_run_session refuses a
             // second web-GUI session in one workspace, so it can't be taken.
-            with_web_ui(&profile, gui_port_for(&config, run.port_base, agent))
+            with_web_ui(&profile, gui_port_for(&config, run.port_base, agent), &self.data_dir)
         };
         // The extra tab may run a different agent than the one the worktree
         // was created for; make sure MCP config exists in its native format.
@@ -6212,7 +6238,7 @@ impl AppState {
             // that quietly changed model would rewrite the session's terms
             // halfway through the work.
             let profile = with_model(&profile, run.model.as_deref());
-            with_web_ui(&profile, gui_port_for(&config, run.port_base, &run.agent))
+            with_web_ui(&profile, gui_port_for(&config, run.port_base, &run.agent), &self.data_dir)
         };
         let mut env = self.provider_env()?;
         env.extend(profile.env.iter().cloned());
@@ -6295,7 +6321,7 @@ impl AppState {
                 .get_profile(&run.agent)?
                 .ok_or_else(|| anyhow!("unknown agent profile: {}", run.agent))?;
             let profile = with_model(&profile, run.model.as_deref());
-            with_web_ui(&profile, gui_port_for(&config, run.port_base, &run.agent))
+            with_web_ui(&profile, gui_port_for(&config, run.port_base, &run.agent), &self.data_dir)
         };
         let mut env = self.provider_env()?;
         env.extend(profile.env.iter().cloned());
@@ -7763,8 +7789,11 @@ mod tests {
     /// The web recipe goes ahead of the profile's own arguments: dsh's
     /// launcher hands everything after its own flags to the booted app, so a
     /// user argument in front of `web` would be read as the app selection.
+    /// `--patch` rides on the `web` subcommand itself (collapse sidebar), so it
+    /// sits immediately after `web`, ahead of `--no-open` / `--port`.
     #[test]
     fn with_web_ui_prepends_the_gui_recipe_and_leaves_terminal_agents_alone() {
+        let data = tempfile::tempdir().unwrap();
         let dsh = AgentProfile {
             name: "dsh".into(),
             command: "dsh".into(),
@@ -7773,17 +7802,27 @@ mod tests {
             resume_args: None,
             loop_args: Some(vec!["--profile".into(), "headless".into(), "{{prompt}}".into()]),
         };
-        let launched = super::with_web_ui(&dsh, Some(5248));
+        let launched = super::with_web_ui(&dsh, Some(5248), data.path());
+        assert_eq!(&launched.args[0], "web");
+        assert_eq!(&launched.args[1], "--patch");
+        assert!(
+            std::path::Path::new(&launched.args[2]).is_file(),
+            "patch file missing: {}",
+            launched.args[2]
+        );
         assert_eq!(
-            launched.args,
-            vec!["web", "--no-open", "--port", "5248", "--trusted-host", "example.test"]
+            &launched.args[3..],
+            ["--no-open", "--port", "5248", "--trusted-host", "example.test"]
         );
         // The loop recipe must never boot the server: headless opens no port.
         assert_eq!(launched.loop_args, dsh.loop_args);
 
         // No port to pin: the server still boots, on the CLI's own default.
-        assert_eq!(super::with_web_ui(&dsh, None).args[..2], ["web", "--no-open"]);
-        assert!(!super::with_web_ui(&dsh, None).args.iter().any(|a| a.contains("{{port}}")));
+        let no_port = super::with_web_ui(&dsh, None, data.path());
+        assert_eq!(&no_port.args[0], "web");
+        assert_eq!(&no_port.args[1], "--patch");
+        assert_eq!(&no_port.args[3], "--no-open");
+        assert!(!no_port.args.iter().any(|a| a.contains("{{port}}")));
 
         let claude = AgentProfile {
             name: "claude".into(),
@@ -7793,7 +7832,7 @@ mod tests {
             resume_args: None,
             loop_args: None,
         };
-        assert_eq!(super::with_web_ui(&claude, Some(5248)), claude);
+        assert_eq!(super::with_web_ui(&claude, Some(5248), data.path()), claude);
     }
 
     /// The whole interactive argv a dsh run is launched with, not just the web
@@ -7803,6 +7842,7 @@ mod tests {
     /// usage error.
     #[test]
     fn a_web_agents_fresh_argv_is_the_server_recipe_and_nothing_else() {
+        let data = tempfile::tempdir().unwrap();
         let dsh = AgentProfile {
             name: "dsh".into(),
             command: "dsh".into(),
@@ -7811,11 +7851,14 @@ mod tests {
             resume_args: None,
             loop_args: Some(vec!["--profile".into(), "headless".into(), "{{prompt}}".into()]),
         };
-        let profile = super::with_web_ui(&dsh, Some(5248));
+        let profile = super::with_web_ui(&dsh, Some(5248), data.path());
         let wt = std::path::Path::new("/tmp/does-not-exist");
         let (command, args) = super::fresh_agent_argv(&profile, wt, "fix the login bug", None);
         assert_eq!(command, "dsh");
-        assert_eq!(args, vec!["web", "--no-open", "--port", "5248"]);
+        assert_eq!(&args[0], "web");
+        assert_eq!(&args[1], "--patch");
+        assert!(std::path::Path::new(&args[2]).is_file());
+        assert_eq!(&args[3..], ["--no-open", "--port", "5248"]);
 
         // The loop recipe takes the prompt the interactive launch cannot.
         let (loop_cmd, loop_args) =

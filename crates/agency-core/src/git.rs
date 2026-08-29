@@ -403,16 +403,30 @@ pub fn branch_summary(repo: &Path, branch: &str, base: &str) -> Result<String> {
     Ok(body)
 }
 
+/// The worktree of `repo` that has `branch` checked out, if any — the primary
+/// working tree included. git allows a branch in only one worktree at a time,
+/// so a caller refused a checkout needs the holder's path to say *where* the
+/// branch already is instead of repeating git's "already used by worktree".
+pub fn branch_worktree(repo: &Path, branch: &str) -> Option<std::path::PathBuf> {
+    let out = git(repo, &["worktree", "list", "--porcelain"]).ok()?;
+    let needle = format!("branch refs/heads/{branch}");
+    let mut current: Option<&str> = None;
+    for line in out.lines() {
+        if let Some(rest) = line.strip_prefix("worktree ") {
+            current = Some(rest);
+        } else if line.trim() == needle {
+            return current.map(std::path::PathBuf::from);
+        }
+    }
+    None
+}
+
 /// Whether `branch` is currently checked out in any worktree of `repo`
 /// (including the primary working tree). git forbids updating a branch ref that
 /// is checked out, and forbids checking the same branch out twice — callers use
 /// this to avoid both failures.
 pub fn branch_checked_out(repo: &Path, branch: &str) -> bool {
-    let Ok(out) = git(repo, &["worktree", "list", "--porcelain"]) else {
-        return false;
-    };
-    let needle = format!("branch refs/heads/{branch}");
-    out.lines().any(|l| l.trim() == needle)
+    branch_worktree(repo, branch).is_some()
 }
 
 /// Update (or create) the local `branch` from origin's copy without checking

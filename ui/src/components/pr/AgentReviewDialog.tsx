@@ -9,8 +9,11 @@ import ModelSelect from "../ModelSelect";
 
 // Start an agent that reviews this PR and then stays available to fix what it
 // found. The agent works in the PR's head branch, so its fixes push straight
-// onto the PR. Posting the findings to GitHub is opt-in: it writes to a page
-// other people are watching, so it never happens by default.
+// onto the PR. Where that branch already is decides the workspace: another
+// run's worktree becomes an extra tab in it, the project's own checkout hosts
+// the run directly, and only a free branch gets a review worktree of its own.
+// Posting the findings to GitHub is opt-in: it writes to a page other people
+// are watching, so it never happens by default.
 export default function AgentReviewDialog({
   projectId,
   number,
@@ -86,6 +89,8 @@ export default function AgentReviewDialog({
           <p className="modal-note">
             An agent reads #{number} “{title}” in a workspace on the PR's branch and reports what it
             finds. It stays open afterwards, so you can ask it to fix anything it raised and push.
+            If the branch is already checked out, the agent works there rather than in a new
+            workspace: git allows a branch in one place at a time, and a fix has to land on it.
           </p>
           {error && <div className="git-error">{error}</div>}
           <div className="merge-methods">

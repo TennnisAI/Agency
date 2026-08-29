@@ -846,6 +846,35 @@ fn issue_prompt(
     prompt
 }
 
+/// Where a run on a PR's head branch can work. git allows a branch to be checked
+/// out in one worktree at a time, so the workspace a PR run gets is decided by
+/// who already holds the branch, not by preference.
+#[derive(Clone, PartialEq, Eq, Debug)]
+enum PrWorkspace {
+    /// Nothing holds the branch: the run gets a worktree of its own on it.
+    Worktree,
+    /// The project's own checkout is standing on the branch, so the run works
+    /// there. It is the only tree a fix can be committed to that branch in and
+    /// pushed from, which is the whole point of the review staying open.
+    Checkout,
+    /// Some other worktree holds the branch. An agent run of ours living there
+    /// can host the review as an extra tab; anything else has to be refused,
+    /// and by path, since only the user can free the branch.
+    Held(PathBuf),
+}
+
+impl PrWorkspace {
+    /// The tree the branch is already in, if it is in one. `None` means the
+    /// branch is free and the run gets a workspace cut for it.
+    fn holder(&self, repo: &Path) -> Option<PathBuf> {
+        match self {
+            PrWorkspace::Worktree => None,
+            PrWorkspace::Checkout => Some(repo.to_path_buf()),
+            PrWorkspace::Held(path) => Some(path.clone()),
+        }
+    }
+}
+
 /// The prompt an agent PR review opens with. Pure so the wording is testable
 /// without a repo or a live agent. `post_comments` decides whether the agent
 /// publishes its findings to the PR on GitHub or only reports them in its own
@@ -855,6 +884,7 @@ fn pr_review_prompt(
     title: &str,
     url: &str,
     base: &str,
+    workspace: PrWorkspace,
     post_comments: bool,
 ) -> String {
     let mut p = format!(
@@ -864,6 +894,20 @@ fn pr_review_prompt(
          bugs, security problems, missing tests, and anything else that should block the \
          merge. Read the surrounding code too, not just the diff.\n\n"
     );
+    if workspace == PrWorkspace::Checkout {
+        // The branch was already checked out in the project's own tree, so this
+        // run has no worktree of its own; the agent has to know it is standing
+        // in the user's working copy and not in a scratch workspace.
+        p.push_str(&format!(
+            "This workspace is the project's own checkout, not an isolated worktree: git \
+             allows a branch to be checked out in one place at a time, and the PR's branch \
+             was already here. Treat the working tree as someone else's. It may hold \
+             uncommitted changes that have nothing to do with the PR, and it can sit behind \
+             the PR's head if commits were pushed to the branch elsewhere, so take the \
+             change from `gh pr diff {number}` rather than from the working tree. Do not \
+             switch branches, stash, reset, or revert anything you did not write.\n\n"
+        ));
+    }
     if post_comments {
         p.push_str(&format!(
             "When you are done, publish the review to GitHub with the `gh` CLI, posting the \
@@ -1078,6 +1122,47 @@ fn id_source<'a>(title: Option<&'a str>, prompt: &'a str) -> &'a str {
 /// name, so it stays restricted to `[a-z0-9-]`, which is safe for all three.
 pub fn new_task_id(prompt: &str) -> String {
     format!("{}-{}", slugify(prompt), short_suffix())
+}
+
+/// Which workspace a run on `branch` can have, from git's answer to who is
+/// holding the branch rather than from the registry's record of it, which goes
+/// stale the moment a checkout moves off the branch.
+///
+/// Observed (AGE-169): a PR opened from the user's own checkout, still standing
+/// on that branch, made "Review with an agent" fail with git's raw
+/// "fatal: 'features/accessibility-pass' is already used by worktree". The
+/// checkout is a fine place to review from, and the only tree a fix could be
+/// committed to that branch in, so it gets its own variant here instead of
+/// being lumped in with the trees Agency cannot use.
+fn pr_workspace(repo: &Path, branch: &str) -> PrWorkspace {
+    match agency_core::git::branch_worktree(repo, branch) {
+        None => PrWorkspace::Worktree,
+        Some(holder) if same_dir(&holder, repo) => PrWorkspace::Checkout,
+        Some(holder) => PrWorkspace::Held(holder),
+    }
+}
+
+/// The refusal for a branch held by a tree Agency cannot put an agent in. git's
+/// own "already used by worktree" says the same thing, but says it as a fatal
+/// from a command the user never ran.
+fn branch_held_elsewhere(branch: &str, holder: &Path) -> anyhow::Error {
+    anyhow!(
+        "'{branch}' is checked out in {}, and git allows a branch in only one workspace at a \
+         time. Point that workspace at another branch, then start the review again.",
+        holder.display()
+    )
+}
+
+/// Whether two paths name the same directory. Compared through
+/// `canonicalize` because git prints resolved paths in `worktree list` while a
+/// project's root is whatever path it was registered under, and on macOS those
+/// differ for anything under `/tmp` or a symlinked home. Falls back to a literal
+/// comparison when either path cannot be resolved.
+fn same_dir(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    }
 }
 
 /// The directory a run's agent, scripts and git commands operate in: its own
@@ -3424,12 +3509,19 @@ impl AppState {
         {
             return Ok(self.run_info(&run));
         }
+        // Nothing of ours has the branch, but the user's own checkout may:
+        // work there rather than failing on git's "already used by worktree".
+        let workspace = pr_workspace(&repo, &pr.head_ref_name);
+        if let PrWorkspace::Held(holder) = &workspace {
+            return Err(branch_held_elsewhere(&pr.head_ref_name, holder));
+        }
         agency_core::git::fetch_branch(&repo, &pr.head_ref_name)?;
         let prompt = format!(
             "Review GitHub pull request #{number}: {title}. Its branch is checked out in this workspace. PR link: {url}",
             title = pr.title,
             url = pr.url,
         );
+        let own_worktree = workspace == PrWorkspace::Worktree;
         self.create_run_spec(
             NewRunSpec {
                 project_id,
@@ -3440,10 +3532,10 @@ impl AppState {
                 merge_target: Some(&pr.base_ref_name),
                 race_id: None,
                 title: Some(format!("PR #{number} {}", pr.title)),
-                existing_branch: Some(pr.head_ref_name.clone()),
+                existing_branch: own_worktree.then(|| pr.head_ref_name.clone()),
                 loop_config: None,
                 issue_id: None,
-                worktree: true,
+                worktree: own_worktree,
             },
             &mut |_| {},
         )
@@ -3453,11 +3545,18 @@ impl AppState {
     /// what it found. The agent works in the PR's head branch, so its fixes
     /// commit and push straight onto the PR.
     ///
-    /// When that branch is already checked out by another run (the usual case
-    /// for a PR an Agency agent opened from the Approve window), the review runs
-    /// as an extra agent tab inside that run: git allows a branch in only one
-    /// worktree, and fixes have to land on that branch anyway. The tab is still
-    /// a fresh agent with no memory of writing the code.
+    /// git allows a branch in only one worktree, and fixes have to land on that
+    /// branch anyway, so the review goes wherever the branch already is:
+    ///
+    /// - a tree an agent run of ours already lives in (the usual case for a PR
+    ///   an Agency agent opened from the Approve window): an extra agent tab
+    ///   inside that run, still a fresh agent with no memory of writing the
+    ///   code;
+    /// - the project's own checkout: a run in that checkout;
+    /// - nowhere: a review worktree of its own, cut on the branch.
+    ///
+    /// Only a tree Agency cannot put an agent in refuses the review, and it
+    /// says which tree.
     pub fn create_pr_review_run(
         &self,
         project_id: &str,
@@ -3473,21 +3572,41 @@ impl AppState {
         if pr.head_ref_name.is_empty() {
             bail!("PR #{number} has no local head branch (cross-fork PRs aren't supported yet)");
         }
-        let prompt = pr_review_prompt(number, &pr.title, &pr.url, &pr.base_ref_name, post_comments);
-        // Only an unarchived agent run can host an extra tab; anything else
-        // holding the branch falls through and git reports the conflict.
-        let holder = self
-            .registry
-            .lock()
-            .unwrap()
-            .list_runs(project_id)?
-            .into_iter()
-            .find(|r| r.branch == pr.head_ref_name && r.kind == "agent");
-        if let Some(run) = holder {
-            let session = self.start_run_session(&run.id, Some(agent), &prompt)?;
-            return Ok(PrReviewRun { run: self.run_info(&run), session_id: Some(session.id) });
+        // Where the branch is, from git rather than from a run's recorded
+        // branch: that record goes stale when a checkout moves off the branch,
+        // and it is the disagreement between the two that produced AGE-169.
+        let workspace = pr_workspace(&repo, &pr.head_ref_name);
+        let prompt = pr_review_prompt(
+            number,
+            &pr.title,
+            &pr.url,
+            &pr.base_ref_name,
+            workspace.clone(),
+            post_comments,
+        );
+        // A live agent run already in the holding tree hosts the review as an
+        // extra tab: the fix has to land on that branch either way, and this
+        // keeps two agents from editing one tree without either knowing.
+        if let Some(dir) = workspace.holder(&repo) {
+            let host = self
+                .registry
+                .lock()
+                .unwrap()
+                .list_runs(project_id)?
+                .into_iter()
+                .find(|r| r.kind == "agent" && same_dir(&workspace_dir(&repo, r), &dir));
+            if let Some(run) = host {
+                let session = self.start_run_session(&run.id, Some(agent), &prompt)?;
+                return Ok(PrReviewRun { run: self.run_info(&run), session_id: Some(session.id) });
+            }
+        }
+        // Before the fetch: a branch this app cannot get a workspace on is a
+        // refusal the user should see at once, not after a network round trip.
+        if let PrWorkspace::Held(holder) = &workspace {
+            return Err(branch_held_elsewhere(&pr.head_ref_name, holder));
         }
         agency_core::git::fetch_branch(&repo, &pr.head_ref_name)?;
+        let own_worktree = workspace == PrWorkspace::Worktree;
         let run = self.create_run_spec(
             NewRunSpec {
                 project_id,
@@ -3498,10 +3617,10 @@ impl AppState {
                 merge_target: Some(&pr.base_ref_name),
                 race_id: None,
                 title: Some(format!("Review PR #{number}")),
-                existing_branch: Some(pr.head_ref_name.clone()),
+                existing_branch: own_worktree.then(|| pr.head_ref_name.clone()),
                 loop_config: None,
                 issue_id: None,
-                worktree: true,
+                worktree: own_worktree,
             },
             &mut |_| {},
         )?;
@@ -8056,7 +8175,16 @@ mod tests {
 
     #[test]
     fn pr_review_prompt_switches_on_post_comments() {
-        let quiet = super::pr_review_prompt(12, "Add widgets", "https://x/pull/12", "main", false);
+        use super::PrWorkspace;
+        let wt = PrWorkspace::Worktree;
+        let quiet = super::pr_review_prompt(
+            12,
+            "Add widgets",
+            "https://x/pull/12",
+            "main",
+            wt.clone(),
+            false,
+        );
         assert!(quiet.contains("Review GitHub pull request #12: Add widgets"));
         assert!(quiet.contains("git diff main...HEAD"));
         assert!(quiet.contains("Do not post anything to GitHub"));
@@ -8064,11 +8192,47 @@ mod tests {
         // Both modes promise the follow-up fixing session the review is for.
         assert!(quiet.contains("stay available"));
 
-        let posting = super::pr_review_prompt(12, "Add widgets", "https://x/pull/12", "main", true);
+        let posting =
+            super::pr_review_prompt(12, "Add widgets", "https://x/pull/12", "main", wt, true);
         assert!(posting.contains("repos/$SLUG/pulls/12/reviews"));
         assert!(posting.contains("\"event\": \"COMMENT\""));
         assert!(!posting.contains("Do not post anything to GitHub"));
         assert!(posting.contains("stay available"));
+    }
+
+    /// A review that had to run in the project's own checkout is standing in
+    /// the user's working copy, and an agent that does not know that will read
+    /// unrelated uncommitted changes as part of the PR, or switch branches out
+    /// from under them. The worktree case must not carry the warning: it would
+    /// be a lie about an isolated workspace.
+    #[test]
+    fn pr_review_prompt_warns_only_when_it_is_the_users_checkout() {
+        use super::PrWorkspace;
+        let own = super::pr_review_prompt(
+            12,
+            "W",
+            "https://x/pull/12",
+            "main",
+            PrWorkspace::Worktree,
+            false,
+        );
+        assert!(!own.contains("project's own checkout"), "{own}");
+
+        let shared = super::pr_review_prompt(
+            12,
+            "W",
+            "https://x/pull/12",
+            "main",
+            PrWorkspace::Checkout,
+            false,
+        );
+        assert!(shared.contains("project's own checkout"), "{shared}");
+        assert!(shared.contains("Do not switch branches, stash, reset, or revert"), "{shared}");
+        // The checkout can lag the PR head, so the diff must come from the PR.
+        assert!(shared.contains("gh pr diff 12"), "{shared}");
+        // Still the same review, with the same closing promise.
+        assert!(shared.contains("Review GitHub pull request #12"), "{shared}");
+        assert!(shared.contains("stay available"), "{shared}");
     }
 
     #[test]
@@ -8575,6 +8739,59 @@ mod tests {
                 .unwrap()
                 .success());
         }
+    }
+
+    /// AGE-169: reviewing a PR failed outright whenever the PR's branch was
+    /// checked out anywhere, which is the normal state right after you push a
+    /// branch from your own checkout and open the PR from it. The checkout is
+    /// where the review belongs in that case, and only a third tree is refused.
+    #[test]
+    fn pr_workspace_sends_the_review_where_the_branch_already_is() {
+        use super::{pr_workspace, PrWorkspace};
+        let repo = tempfile::tempdir().unwrap();
+        init_repo_with_commit(repo.path());
+        let git = |args: &[&str]| {
+            assert!(std::process::Command::new("git")
+                .args(args)
+                .current_dir(repo.path())
+                .status()
+                .unwrap()
+                .success());
+        };
+
+        // Nobody holds it: the review gets a worktree of its own, and there is
+        // no tree to look for a host run in.
+        git(&["branch", "features/free"]);
+        let free = pr_workspace(repo.path(), "features/free");
+        assert_eq!(free, PrWorkspace::Worktree);
+        assert_eq!(free.holder(repo.path()), None);
+
+        // The user's own checkout holds it: the review runs there instead of
+        // failing, since that is the only tree a fix could be committed in.
+        let head = agency_core::merge::current_branch(repo.path()).unwrap();
+        let checkout = pr_workspace(repo.path(), &head);
+        assert_eq!(checkout, PrWorkspace::Checkout);
+        assert_eq!(checkout.holder(repo.path()), Some(repo.path().to_path_buf()));
+
+        // A third tree holds it. That tree is the holder, so an agent run of
+        // ours living there can still host the review.
+        let other = repo.path().join("other-wt");
+        git(&["worktree", "add", "-q", "-b", "features/busy", other.to_str().unwrap()]);
+        // Compared with `same_dir`, not `==`: git answers with the resolved
+        // path ("/private/var/…" for a macOS temp dir) while the caller holds
+        // the unresolved one, which is the whole reason the run lookup uses it.
+        let held = pr_workspace(repo.path(), "features/busy");
+        let PrWorkspace::Held(dir) = &held else { panic!("a third tree holds it: {held:?}") };
+        assert!(super::same_dir(dir, &other), "{dir:?}");
+        assert!(held.holder(repo.path()).is_some_and(|d| super::same_dir(&d, &other)));
+
+        // With nothing of ours there it is refused, but by naming the directory
+        // and what to do, not by repeating git's "already used by worktree".
+        let err = super::branch_held_elsewhere("features/busy", &other).to_string();
+        assert!(err.contains("features/busy"), "names the branch: {err}");
+        assert!(err.contains("other-wt"), "names the tree holding it: {err}");
+        assert!(err.contains("another branch"), "says what to do next: {err}");
+        assert!(!err.contains("fatal:"), "no raw git error: {err}");
     }
 
     #[test]

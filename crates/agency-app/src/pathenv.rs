@@ -17,7 +17,10 @@
 //! last command fails, and a PATH exported from `.zshrc` rather than
 //! `.zprofile`.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Condvar, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 /// Marker the probe wraps `$PATH` in. A login shell runs the user's profile,
 /// and anything that profile prints (a fetch banner, a motd echo, a version
@@ -26,6 +29,14 @@ use std::path::{Path, PathBuf};
 /// then fails the `exists` check and is dropped; the marker makes the answer
 /// findable in the noise instead.
 const PATH_MARKER: &str = "__agency_path__";
+/// Same probe, a second line: Finder-launched bundles inherit no user secrets
+/// either, and dsh's first-run modal asks for `DEEPSEEK_API_KEY` on every
+/// launch until it sees one in the process environment (or `$DSH_HOME`).
+const ENV_MARKER: &str = "__agency_env__";
+/// Env vars the login-shell probe copies onto this process when launchd did
+/// not. Named explicitly: we will not dump `$HOME` or the whole environment
+/// into the process, only the keys a child CLI has no other way to see.
+const HARVEST_VARS: &[&str] = &["DEEPSEEK_API_KEY"];
 
 /// How long the probe gets before it is killed. Interactive rc files do real
 /// work (completion init, version-manager shims), so this is not the 3s a
@@ -39,6 +50,63 @@ const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 /// running app, because nothing the app wrote down said where its PATH came
 /// from or whether the probe had run at all.
 static REPORT: std::sync::RwLock<String> = std::sync::RwLock::new(String::new());
+
+/// Harvested login-shell env, filled by [`repair`]. Secrets are never written
+/// to the PATH cache file; waiters in [`harvested`] block on this instead.
+struct Harvest {
+    env: Mutex<HashMap<String, String>>,
+    done: Condvar,
+    finished: Mutex<bool>,
+}
+
+static HARVEST: OnceLock<Harvest> = OnceLock::new();
+
+fn harvest_slot() -> &'static Harvest {
+    HARVEST.get_or_init(|| Harvest {
+        env: Mutex::new(HashMap::new()),
+        done: Condvar::new(),
+        finished: Mutex::new(false),
+    })
+}
+
+/// A login-shell value for `name` if the probe found one and launchd did not
+/// already have it. Waits briefly for a background probe (the PATH cache hit
+/// path) so a dsh launch right after startup still sees `DEEPSEEK_API_KEY`.
+pub fn harvested(name: &str) -> Option<String> {
+    if let Ok(v) = std::env::var(name) {
+        if !v.is_empty() {
+            return Some(v);
+        }
+    }
+    let h = HARVEST.get()?;
+    let mut finished = h.finished.lock().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !*finished {
+        let wait = deadline.saturating_duration_since(Instant::now());
+        if wait.is_zero() {
+            break;
+        }
+        let (guard, result) = h.done.wait_timeout(finished, wait).ok()?;
+        finished = guard;
+        if result.timed_out() {
+            break;
+        }
+    }
+    drop(finished);
+    h.env.lock().unwrap().get(name).cloned().filter(|s| !s.is_empty())
+}
+
+fn finish_harvest(env: HashMap<String, String>) {
+    for (k, v) in &env {
+        if std::env::var(k).ok().filter(|s| !s.is_empty()).is_none() {
+            std::env::set_var(k, v);
+        }
+    }
+    let h = harvest_slot();
+    *h.env.lock().unwrap() = env;
+    *h.finished.lock().unwrap() = true;
+    h.done.notify_all();
+}
 
 /// One line describing where this process's PATH came from. Empty before
 /// [`repair`] has run.
@@ -65,20 +133,37 @@ pub fn report() -> String {
 ///   discarding it strands every directory that profile contributed. Same for
 ///   a shell that prints the marker and then hangs: we kill it at the deadline
 ///   and keep what it said.
-fn login_shell_path() -> Option<String> {
-    use std::process::{Command, Stdio};
-    use std::time::Instant;
+struct Probe {
+    path: Option<String>,
+    env: HashMap<String, String>,
+}
 
-    let shell = std::env::var("SHELL").ok().filter(|s| !s.is_empty())?;
-    let script = format!("printf '\\n{PATH_MARKER}%s\\n' \"$PATH\"");
-    let mut child = Command::new(&shell)
+fn harvest_script() -> String {
+    let mut script = format!("printf '\\n{PATH_MARKER}%s\\n' \"$PATH\"");
+    for var in HARVEST_VARS {
+        script.push_str(&format!("; printf '\\n{ENV_MARKER}{var}=%s\\n' \"${{{var}-}}\""));
+    }
+    script
+}
+
+fn login_shell_probe() -> Probe {
+    use std::process::{Command, Stdio};
+
+    let empty = Probe { path: None, env: HashMap::new() };
+    let Some(shell) = std::env::var("SHELL").ok().filter(|s| !s.is_empty()) else {
+        return empty;
+    };
+    let mut child = match Command::new(&shell)
         .arg("-ilc")
-        .arg(&script)
+        .arg(&harvest_script())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-        .ok()?;
+    {
+        Ok(c) => c,
+        Err(_) => return empty,
+    };
 
     // Drain on a thread rather than after the wait: a chatty profile can fill
     // the pipe buffer, and a child blocked on a write we never read would sit
@@ -96,12 +181,12 @@ fn login_shell_path() -> Option<String> {
                 let _ = child.wait();
                 break;
             }
-            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(20)),
+            Ok(None) => std::thread::sleep(Duration::from_millis(20)),
             Err(_) => break,
         }
     }
 
-    parse_marked_path(&out.join().unwrap_or_default())
+    parse_probe(&out.join().unwrap_or_default())
 }
 
 /// The PATH out of a probe's stdout: the last marked line, whatever else the
@@ -113,6 +198,28 @@ fn parse_marked_path(stdout: &str) -> Option<String> {
         .find_map(|l| l.trim().strip_prefix(PATH_MARKER))
         .map(str::to_string)
         .filter(|p| !p.is_empty())
+}
+
+/// Allowlisted `NAME=value` lines the probe printed. Unknown names are dropped
+/// so a banner that happens to contain the marker cannot inject env.
+fn parse_marked_env(stdout: &str) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    for line in stdout.lines() {
+        let Some(rest) = line.trim().strip_prefix(ENV_MARKER) else {
+            continue;
+        };
+        let Some((name, value)) = rest.split_once('=') else {
+            continue;
+        };
+        if HARVEST_VARS.contains(&name) && !value.is_empty() {
+            out.insert(name.to_string(), value.to_string());
+        }
+    }
+    out
+}
+
+fn parse_probe(stdout: &str) -> Probe {
+    Probe { path: parse_marked_path(stdout), env: parse_marked_env(stdout) }
 }
 
 /// Split a `PATH`-style string into directory entries.
@@ -153,17 +260,20 @@ fn write_cached_shell_path(path: &str) {
 fn cached_login_shell_path() -> (Option<String>, bool) {
     if let Some(cached) = read_cached_shell_path() {
         std::thread::spawn(|| {
-            if let Some(fresh) = login_shell_path() {
-                write_cached_shell_path(&fresh);
+            let probe = login_shell_probe();
+            if let Some(fresh) = &probe.path {
+                write_cached_shell_path(fresh);
             }
+            finish_harvest(probe.env);
         });
         return (Some(cached), true);
     }
-    let probed = login_shell_path();
-    if let Some(p) = &probed {
+    let probe = login_shell_probe();
+    if let Some(p) = &probe.path {
         write_cached_shell_path(p);
     }
-    (probed, false)
+    finish_harvest(probe.env);
+    (probe.path, false)
 }
 
 /// Directories where CLI tools (node, agent CLIs, language version managers)
@@ -247,6 +357,9 @@ fn report_line(shell: Option<&str>, probed: Option<&str>, cached: bool, merged: 
 /// inherits the repaired PATH — and so this is the only thread running when the
 /// process environment is mutated.
 pub fn repair() {
+    // So [`harvested`] can wait for the background probe on a PATH cache hit
+    // instead of treating an uninitialised slot as "no key".
+    harvest_slot();
     let current = std::env::var("PATH").unwrap_or_default();
     let home = std::env::var("HOME").map(PathBuf::from).unwrap_or_default();
     // Prefer the user's real login-shell PATH (picks up nvm/volta/fnm/asdf and
@@ -393,6 +506,17 @@ mod tests {
             None,
             "an empty PATH is nothing"
         );
+    }
+
+    #[test]
+    fn reads_allowlisted_env_out_of_the_same_probe() {
+        let stdout = format!(
+            "hello\n{PATH_MARKER}/usr/bin\n{ENV_MARKER}DEEPSEEK_API_KEY=sk-test\n{ENV_MARKER}HOME=/tmp\n{ENV_MARKER}DEEPSEEK_API_KEY=\n"
+        );
+        let env = parse_marked_env(&stdout);
+        assert_eq!(env.get("DEEPSEEK_API_KEY").map(String::as_str), Some("sk-test"));
+        assert!(!env.contains_key("HOME"), "unknown names must not be harvested");
+        assert_eq!(parse_probe(&stdout).path.as_deref(), Some("/usr/bin"));
     }
 
     #[test]

@@ -19,6 +19,7 @@ mod sendq;
 mod state;
 mod tray;
 mod update;
+mod web_ui;
 #[cfg(target_os = "macos")]
 mod webview_menu;
 

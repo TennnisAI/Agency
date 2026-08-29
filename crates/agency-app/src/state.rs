@@ -8,7 +8,7 @@ use agency_core::worktree::WorktreeManager;
 use anyhow::{anyhow, bail, Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 use uuid;
 
@@ -239,7 +239,9 @@ pub struct RunInfo {
     pub gui_session_id: Option<String>,
     /// Something is accepting connections on `gui_port` right now, so the GUI
     /// pane can load it instead of a connection error. Only ever true while
-    /// the session that owns the port is running.
+    /// the session that owns the port is running, and (for a web agent) after
+    /// the workspace handshake has finished — their first-paint selection
+    /// runs once, and an empty list never picks the folder we just launched in.
     pub gui_live: bool,
     pub kind: String,
     /// True while at least one of the project's run scripts is still running in
@@ -769,6 +771,10 @@ fn prompt_args(agent: &str, prompt: &str) -> Vec<String> {
         crate::agent_catalog::PromptDelivery::Positional => vec![prompt.to_string()],
         crate::agent_catalog::PromptDelivery::Args(recipe) => {
             recipe.iter().map(|a| a.replace("{{prompt}}", prompt)).collect()
+        }
+        crate::agent_catalog::PromptDelivery::AfterGuiReady => {
+            // Delivered by `web_ui::handshake` once the server answers, not argv.
+            Vec::new()
         }
         crate::agent_catalog::PromptDelivery::Unsupported => {
             log::warn!(
@@ -1481,6 +1487,10 @@ pub struct AppState {
     /// separates "waiting on the user" from "idle, never prompted" in
     /// `activity::classify`. In-memory: forgotten runs just show idle.
     prompted: Mutex<HashSet<String>>,
+    /// Web-GUI sessions whose post-boot handshake has finished (workspace
+    /// adopted, or the budget expired). `gui_live` stays false until the id is
+    /// here, so the iframe does not load an empty folder picker.
+    web_ui_ready: crate::web_ui::ReadySet,
     /// Per-session keyboard bookkeeping for the send queue: when the human last
     /// touched this pane, and whether what they typed is still sitting unsent on
     /// the prompt line. Written by `run_input`, read by `drain_session`.
@@ -1703,6 +1713,7 @@ impl AppState {
             activity: Mutex::new(HashMap::new()),
             usage: Mutex::new(HashMap::new()),
             prompted: Mutex::new(HashSet::new()),
+            web_ui_ready: Arc::new(Mutex::new(HashSet::new())),
             human_input: Mutex::new(HashMap::new()),
             send_queue: Mutex::new(HashMap::new()),
             queue_notices: Mutex::new(Vec::new()),
@@ -1742,10 +1753,36 @@ impl AppState {
         // by default). Agents with their own CLI auth (claude, codex, …) ignore
         // these. No cloud keys are injected — each agent uses its own login.
         let s = self.get_settings()?;
-        Ok(vec![
+        let mut env = vec![
             ("OPENAI_BASE_URL".into(), s.lm_studio_base_url),
             ("OPENAI_API_KEY".into(), "lm-studio".into()),
-        ])
+        ];
+        // Finder-launched bundles inherit no user secrets. dsh's first-run
+        // modal asks for DEEPSEEK_API_KEY on every launch until the process
+        // environment (or $DSH_HOME) already has one; passing the login-shell
+        // value is the same repair PATH already does, not Agency storing a key.
+        if let Some(key) = crate::pathenv::harvested("DEEPSEEK_API_KEY") {
+            env.push(("DEEPSEEK_API_KEY".into(), key));
+        }
+        Ok(env)
+    }
+
+    /// After a web-served agent binds, adopt this worktree as its GUI workspace
+    /// and (when `prompt` is non-empty) queue the opening ask. No-op for
+    /// terminal agents. `prompt` is empty on a resume so we do not re-send an
+    /// issue the existing dsh session already has.
+    fn kick_web_ui(
+        &self,
+        session_id: &str,
+        agent: &str,
+        port: Option<u16>,
+        cwd: &Path,
+        prompt: &str,
+    ) {
+        if crate::agent_catalog::web_ui(agent).is_none() {
+            return;
+        }
+        crate::web_ui::kick(&self.web_ui_ready, session_id, port, cwd, prompt);
     }
 
     pub fn register_profile(&self, profile: AgentProfile) -> Result<()> {
@@ -2322,7 +2359,12 @@ impl AppState {
             let name = gui_session.as_ref().map(|(id, _)| session_name(id)).unwrap_or_default();
             let running =
                 live.iter().any(|(n, s)| *n == name && matches!(s, SessionStatus::Running));
-            running && agency_core::preview::serving(port)
+            // The iframe must not win the race against workspace.create: their
+            // startInitialSelection runs once and treats an empty list as done.
+            let handshake_done = gui_session
+                .as_ref()
+                .is_none_or(|(id, _)| self.web_ui_ready.lock().unwrap().contains(id));
+            running && agency_core::preview::serving(port) && handshake_done
         });
         RunInfo {
             id: run.id.clone(),
@@ -2595,6 +2637,13 @@ impl AppState {
                 }
                 return Err(e.into());
             }
+            self.kick_web_ui(
+                &id,
+                spec.agent,
+                gui_port_for(&config, Some(port), spec.agent),
+                &workspace.path,
+                spec.prompt,
+            );
         }
 
         // A run created with a real prompt gets a title immediately (word-based;
@@ -5958,7 +6007,15 @@ impl AppState {
             &env,
             220,
             50,
-        )
+        )?;
+        self.kick_web_ui(
+            sid,
+            agent,
+            gui_port_for(&config, run.port_base, agent),
+            &worktree,
+            prompt,
+        );
+        Ok(())
     }
 
     /// Open an additional agent tab in an existing run's worktree. `agent`
@@ -6202,6 +6259,16 @@ impl AppState {
             50,
             fallback,
         )?;
+        // Resume, not a fresh dispatch: adopt the folder so the GUI is not an
+        // empty picker, but do not re-queue the opening prompt the existing
+        // dsh session already has.
+        self.kick_web_ui(
+            id,
+            &run.agent,
+            gui_port_for(&config, run.port_base, &run.agent),
+            &worktree,
+            "",
+        );
         Ok(())
     }
 
@@ -6247,6 +6314,13 @@ impl AppState {
             220,
             50,
         )?;
+        self.kick_web_ui(
+            id,
+            &run.agent,
+            gui_port_for(&config, run.port_base, &run.agent),
+            &worktree,
+            &run.prompt,
+        );
         Ok(self.run_info(&run))
     }
 
@@ -7723,9 +7797,10 @@ mod tests {
     }
 
     /// The whole interactive argv a dsh run is launched with, not just the web
-    /// prefix: the recipe plus prompt delivery, which for this agent is none at
-    /// all. A prompt appended here would be read as the app selection and the
-    /// session would die on a usage error.
+    /// prefix: the recipe plus prompt delivery, which for this agent is not
+    /// argv at all (`AfterGuiReady` / `web_ui::handshake`). A prompt appended
+    /// here would be read as the app selection and the session would die on a
+    /// usage error.
     #[test]
     fn a_web_agents_fresh_argv_is_the_server_recipe_and_nothing_else() {
         let dsh = AgentProfile {

@@ -137,10 +137,10 @@ fn catalog_lists_all_builtins_with_enabled_flag() {
     let gemini = catalog.iter().find(|e| e.id == "gemini").unwrap();
     assert!(!gemini.enabled);
     assert_eq!(gemini.command, "gemini");
-    // The one web-served agent: no prompt at dispatch, GUI beside the pane.
+    // The one web-served agent: opening prompt is session.prompt after boot.
     let dsh = catalog.iter().find(|e| e.id == "dsh").unwrap();
     assert!(dsh.serves_web_ui);
-    assert!(!dsh.accepts_prompt);
+    assert!(dsh.accepts_prompt);
     assert!(!claude.serves_web_ui);
 }
 

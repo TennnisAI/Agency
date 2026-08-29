@@ -24,6 +24,11 @@ pub enum PromptDelivery {
     /// The CLI has no way to be handed an opening prompt, so a run created with
     /// one launches promptless and the user hands it over in the live terminal.
     Unsupported,
+    /// Not an argv recipe: after the GUI server answers, Agency adopts the
+    /// worktree over the agent's HTTP API and queues the prompt on a session
+    /// there (`workspace.create` / `session.prompt`). Putting the text on the
+    /// command line would be read as an app selection and the server would die.
+    AfterGuiReady,
 }
 
 /// An agent whose interactive surface is a browser GUI served from the
@@ -336,13 +341,12 @@ pub fn builtins() -> &'static [CatalogEntry] {
             CatalogEntry {
                 id: "dsh",
                 command: "dsh",
-                // Read off the launcher source at dsh-0.1.0-rc.7: `dsh` ships
-                // no TUI, and neither the launcher nor the web app takes an
-                // opening prompt on the command line — `dsh web`'s whole flag
-                // family is `--host`, `--port`, `--trusted-host`, `--no-open`.
-                // The prompt stays on the run and the user hands it over in
-                // the GUI.
-                prompt: PromptDelivery::Unsupported,
+                // Read off the launcher source at dsh-0.1.0-rc.7, re-checked
+                // against 0.1.1-rc.2: `dsh web`'s flag family is still `--host`,
+                // `--port`, `--trusted-host`, `--no-open`. The opening ask is
+                // `session.prompt` after `workspace.create` adopts the cwd —
+                // see `web_ui.rs`. A positional here is read as an app selection.
+                prompt: PromptDelivery::AfterGuiReady,
                 // Relaunching `dsh web` in the same worktree *is* the resume:
                 // sessions persist under $DSH_HOME keyed to the workspace
                 // directory, and the GUI reopens them itself. A resume recipe
@@ -701,6 +705,7 @@ mod tests {
         assert_eq!(prompt_delivery("claude"), PromptDelivery::Positional);
         assert_eq!(prompt_delivery("copilot"), PromptDelivery::Args(&["-i", "{{prompt}}"]));
         assert_eq!(prompt_delivery("crush"), PromptDelivery::Unsupported);
+        assert_eq!(prompt_delivery("dsh"), PromptDelivery::AfterGuiReady);
         assert_eq!(prompt_delivery("my-own-agent"), PromptDelivery::Positional);
     }
 }

@@ -2378,6 +2378,17 @@ fn the_knowledge_graph_builds_on_request_and_not_before() {
     assert_eq!(cfg.last_build_error, None, "the build should have succeeded");
     assert!(cfg.graph_built, "the build must produce {}", cfg.graph_path);
     assert!(repo.join("graphify-out/graph.json").is_file());
+
+    // AGE-170: the graph is Agency's artifact, so git must not offer it. The
+    // stand-in build above writes only graph.json; a real one also leaves the
+    // cache/ that turned up in the user's Untracked Changes, so put that file
+    // there too and let git rule on the directory.
+    std::fs::create_dir_all(repo.join("graphify-out/cache")).unwrap();
+    std::fs::write(repo.join("graphify-out/cache/stat-index.json"), "{}").unwrap();
+    let out =
+        Command::new("git").args(["status", "--porcelain"]).current_dir(&repo).output().unwrap();
+    let status = String::from_utf8_lossy(&out.stdout);
+    assert!(!status.contains("graphify-out"), "the build left git dirty: {status}");
 }
 
 /// A build that fails has to say so in the settings panel — silently leaving the

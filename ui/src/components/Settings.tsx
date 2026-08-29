@@ -1226,7 +1226,7 @@ export default function Settings({
                         : kg.last_build_error
                         ? `The last graph build failed: ${kg.last_build_error}`
                         : kg.graph_built
-                        ? `Graph built at ${kg.graph_path}.`
+                        ? `Graph built at ${kg.graph_path}, and kept out of git.`
                         : "No graph has been built yet, so agents get no knowledge-graph server. Build one to start using it."}
                     </div>
                   )}

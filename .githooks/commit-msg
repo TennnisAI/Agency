@@ -26,24 +26,29 @@ if printf '%s' "$BODY" | grep -qiE '^[[:space:]]*(co-authored-by:[[:space:]]*cla
   fail "AI attribution trailer found. Remove it."
 fi
 
-# 2. No competitor product names. The design record discusses them by name and
-#    that is fine; git metadata is a different artifact with a different
-#    audience, and a merged PR's branch name cannot be edited afterwards.
-#    Describe what the commit does, not who it is about.
+# 2. No competitor product names. Git metadata is a different artifact with a
+#    different audience, and a merged PR's branch name cannot be edited
+#    afterwards. Describe what the commit does, not who it is about.
 #
-#    Only distinctive names are listed. Competitors whose names are ordinary
-#    English words — Conductor and Crystal, at time of writing — are left out
-#    on purpose: "crystal-clear" and "conductor-free" would trip the hook, and
-#    a guard that cries wolf gets --no-verify'd into uselessness. Those stay a
-#    judgment call, documented in CLAUDE.md. Maestro is listed because it has
-#    no innocent use anywhere in this codebase's history.
+#    The list of names lives in .githooks/competitors.local, which is NOT
+#    tracked (see .gitignore). This file is public: a checked-in enumeration of
+#    competitors would itself be the artifact this rule exists to prevent, and
+#    it would be the first thing a reader greps for. With no local file the
+#    check is skipped and the judgment is yours — CLAUDE.md carries the rule.
 #
-#    "t3code"/"t3 code" and "pingdotgg" are listed; bare "t3" is not, because it
-#    is three characters and would trip on anything from a test fixture to a
-#    ref name.
-COMPETITORS='munder|difflin|munderdiffl|chaitanyagiri|xirp|spotify|maestro|t3code|t3[ -]code|pingdotgg'
-if printf '%s' "$BODY" | grep -qiE "(^|[^[:alnum:]])($COMPETITORS)([^[:alnum:]]|$)"; then
-  fail "Competitor product name found. Describe the change, not the product."
+#    Format: one extended-regex alternation, e.g. `foocorp|bar[ -]baz`. Leave
+#    out names that are ordinary English words; a guard that trips on everyday
+#    prose gets --no-verify'd into uselessness. Leave out anything under about
+#    five characters, which trips on test fixtures and ref names. Note that
+#    substrings match: a bare `difflin` would fire on the identifier
+#    `DiffLineRow`, which appears throughout the UI.
+COMPETITORS_FILE="$(git rev-parse --show-toplevel)/.githooks/competitors.local"
+if [ -f "$COMPETITORS_FILE" ]; then
+  COMPETITORS="$(tr -d '[:space:]' <"$COMPETITORS_FILE")"
+  if [ -n "$COMPETITORS" ] &&
+    printf '%s' "$BODY" | grep -qiE "(^|[^[:alnum:]])($COMPETITORS)([^[:alnum:]]|$)"; then
+    fail "Competitor product name found. Describe the change, not the product."
+  fi
 fi
 
 exit 0

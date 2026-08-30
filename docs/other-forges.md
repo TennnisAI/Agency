@@ -8,8 +8,8 @@ and breadth bought before anyone asks for it is breadth that rots. This document
 exists so that the first time someone with a GitLab repo asks, the answer is a
 plan rather than a fresh afternoon of reading `gh.rs`.
 
-The prompt for it is a competitor reading (`competitive-landscape.md`,
-2026-08-20): four forges — GitHub, GitLab, Bitbucket, Azure DevOps — behind one
+The prompt for it was a reading of an adjacent product (2026-08-20): four
+forges — GitHub, GitLab, Bitbucket, Azure DevOps — behind one
 provider interface, authenticated by shelling out to the user's own `gh`, `glab`
 or `az`, or by a token in the environment for Bitbucket. Their layout is one
 provider file plus one JSON-shape file per forge, which is a sound decomposition
@@ -121,9 +121,9 @@ own their credentials, in their own keychain, and Agency never sees a token.
 **Bitbucket breaks that**, and it should not be slipped in as an implementation
 detail. It has no first-party CLI, so it means a token in the environment, which
 means Agency reads a user secret for the first time. That is a positioning
-decision — it belongs in `docs/webdesign/02-messaging.md`'s claim about what
-Agency touches — and it should be taken deliberately, or Bitbucket should be
-dropped from the set. GitLab and Azure DevOps carry none of that cost.
+decision — it changes what the product can claim about what Agency touches —
+and it should be taken deliberately, or Bitbucket should be dropped from the
+set. GitLab and Azure DevOps carry none of that cost.
 
 ## Order and estimate
 

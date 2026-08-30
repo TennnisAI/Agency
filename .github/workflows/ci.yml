@@ -12,6 +12,59 @@ on:
   pull_request:
 
 jobs:
+  # Every commit must be attributable to a person who can license it under
+  # Apache-2.0. Eight commits authored *and* committed by an agent reached main
+  # through merged PRs before anyone noticed, and unpicking them cost a history
+  # rewrite — which stops being available the moment this repo is public and
+  # people have clones. So the guard has to be prevention, here, on the PR.
+  #
+  # .githooks/commit-msg cannot do this: it is passed the message file and
+  # nothing else, so the author and committer fields are invisible to it. That
+  # is exactly how these got through.
+  #
+  # A denylist, not an allowlist: contributors are an open set and their own
+  # identities are the record of their licence grant under Apache-2.0 s5.
+  # Never normalize a contributor's identity — only reject an agent's.
+  authorship:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # Need the PR's commits, not just the merge result. 0 = full history;
+          # a shallow clone cannot see the range below.
+          fetch-depth: 0
+
+      - name: Reject agent-authored commits
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          # Match on the email, never the display name. "Claude" is an ordinary
+          # French given name, and a rule that rejects a contributor called
+          # Claude Dupont is worse than the one it is guarding against. The
+          # email is the identity; the name is just text.
+          #
+          # %ae/%ce, not %aE/%cE: the raw fields, so a .mailmap can never
+          # launder a bad identity into a passing check.
+          bad=$(git log --format='%H|%an <%ae>|%cn <%ce>' "$BASE..$HEAD" \
+            | awk -F'|' '
+                { ids = $2 "\n" $3 }
+                tolower(ids) ~ /@anthropic\.com|@openai\.com|noreply@(anthropic|openai)|\[bot\]@|@users\.noreply\.github\.com>.*\[bot\]/ { print }
+              ' || true)
+          if [ -n "$bad" ]; then
+            echo "::error::Commits are authored or committed by an agent identity."
+            printf '%s\n' "$bad"
+            echo
+            echo "Every commit must be attributable to a person who can license it"
+            echo "under Apache-2.0. Reattribute the range and force-push:"
+            echo "  git rebase -x 'git commit --amend --no-edit --reset-author' $BASE"
+            exit 1
+          fi
+          echo "All commits carry a human author and committer."
+
   # agency-core is platform-neutral, so the cheap Linux runner covers it.
   core:
     runs-on: ubuntu-latest

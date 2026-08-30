@@ -11,20 +11,25 @@ expensive to fix after the fact.
 
 - **No AI attribution, ever.** No `Co-Authored-By: Claude` trailer, no
   "Generated with" line, no session URL, in a commit message or a PR body. Write
-  the message and stop. Nick is the sole copyright holder and the history is the
-  evidence for that; a co-author trailer is a claim against it.
-- **No competitor product name in a commit message, a branch name, or a PR
-  title.** The design record discusses competitors by name and that is fine, but
-  git metadata is a different artifact with a different audience, and a merged
-  PR's branch name cannot be edited afterwards. Describe what the commit does,
-  not who it is about: "Add a competitor reading to the competitive landscape",
-  never the product's name.
+  the message and stop. Every commit has to be attributable to a person who can
+  license it, and an agent cannot; a trailer is a claim against that. It applies
+  to the **author and committer fields** as much as the message — eight commits
+  authored by an agent reached `main` through merged PRs before anyone noticed,
+  because `commit-msg` is never passed those fields. The `authorship` job in
+  `.github/workflows/ci.yml` checks them on every PR; the hook cannot.
+- **No competitor product name anywhere in the repo.** Not in a commit message,
+  a branch name, a PR title, or a document. This was once scoped to git metadata
+  alone, on the grounds that the design record was private and could name names
+  freely. Publishing the repo removed that exemption, and the named readings
+  moved out of the tree entirely. Describe the observation, not who it is about:
+  "a self-hosted alternative to the hosted agent runners", never the product's
+  name.
 
-`.githooks/commit-msg` enforces both, and `./dev.sh` points `core.hooksPath` at
-it. The hook only knows the distinctive names. Competitors whose names are
-ordinary English words — Conductor and Crystal today — are deliberately left out
-of it, because "crystal-clear" would trip the guard and a guard that cries wolf
-gets bypassed into uselessness. Those are your judgment call, not the hook's.
+`.githooks/commit-msg` enforces both in messages, and `./dev.sh` points
+`core.hooksPath` at it. The hook only knows the distinctive names. Competitors
+whose names are ordinary English words are deliberately left out of it: a guard
+that trips on everyday prose is a guard that gets bypassed into uselessness.
+Those are your judgment call, not the hook's.
 
 Commit subjects are imperative and lower-case after the first word. Branch names
 describe the work.
@@ -70,8 +75,8 @@ ui/node_modules/.bin/vite build
   so a claim that omits them is the one a reader catches. On the site, where the
   claim is made in full, the GitHub update check appears with it too. In the app
   it does not have to: it is one toggle in Settings, and a starter note is not a
-  privacy page. See `docs/webdesign/02-messaging.md`, which governs this and is
-  not optional.
+  privacy page. `guide.rs` holds the canonical wording as `OPENING`, and a test
+  pins it; that const is the reference, not any prose elsewhere.
 
 ## Code conventions
 

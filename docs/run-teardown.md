@@ -40,28 +40,23 @@ when the work was on `main` and deleting the run could not lose anything at all.
 A warning that fires when nothing is at risk is one nobody reads on the day
 something is.
 
-## How competitors handle it
+## What adjacent products do differently
 
-From `competitive-landscape.md`, which has four dated readings. This question
-splits them cleanly.
+Four dated readings of adjacent tools, made 2026-08, split cleanly on this
+question, and the split is the useful part rather than any one product.
 
-**T3 Code** (read 2026-08-20) is the one with something to teach. Its threads
-have a real lifecycle — settle/unsettle, snooze, pin, archive, delete — and none
-of it is coupled to a checkout, because the durable record of a session is a
-thread in an event-sourced log, not a directory. Archiving there costs nothing
-because the thing being kept was never a worktree. It also keeps per-turn
-workspace snapshots in hidden refs (`refs/t3/checkpoints`), which is the same
-insight from the other end: git objects are the cheap place to keep history, and
-a checkout is the expensive place.
+Only one of the four has a session lifecycle worth taking: settle/unsettle,
+snooze, pin, archive, delete, none of it coupled to a checkout, because the
+durable record of a session there is a thread in an event-sourced log rather
+than a directory. Archiving costs nothing when the thing being kept was never a
+worktree. The same tool keeps per-turn workspace snapshots in hidden refs, which
+is the identical insight from the other end: **git objects are the cheap place
+to keep history, and a checkout is the expensive place.**
 
-**Spotify Xirp** (read 2026-08-12) is one worktree per session like us, and its
-cleanup behaviour was not readable from the sources available; nothing to take.
-
-**DeepSeek Harness** (read 2026-08-19) has no worktree model at all — a
-"workspace" is a directory record with an ordered list of sessions — so the
-question does not arise for them.
-
-**Munder Difflin** (read 2026-08-15) does not isolate per worktree either.
+Of the rest, one is one-worktree-per-session like us with cleanup behaviour that
+was not readable from the available sources, and two have no worktree model at
+all — a "workspace" is a directory record with an ordered list of sessions — so
+the question never arises for them.
 
 So the answer is not a feature any of them has. It is a decomposition three of
 the four get for free by not having worktrees: **the record of a run and the

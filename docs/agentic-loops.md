@@ -22,9 +22,9 @@ tasks; the filesystem is the memory. The two things that make or break it:
 
 Agency's pitch: **racing is breadth, loops are depth.** We already have the
 per-run worktree isolation, the respawn primitive, the polling daemon, and the
-finish flow (diff review → merge) that a loop needs on both ends. Conductor-
-class tools parallelize agents; none of them iterate one to convergence with a
-proper cockpit. This is a feature overlay, not an architecture change.
+finish flow (diff review → merge) that a loop needs on both ends. The
+parallel-agent tools parallelize agents; none of them iterate one to
+convergence with a proper cockpit. This is a feature overlay, not an architecture change.
 
 ## Goals / non-goals
 

@@ -13,8 +13,8 @@ use serde::{Deserialize, Serialize};
 
 /// Repo the release check reads. Kept next to the "Report an issue" URL in the
 /// UI — both have to move together if the repo does.
-const RELEASES_API: &str = "https://api.github.com/repos/nic123/Agency/releases/latest";
-pub const RELEASES_PAGE: &str = "https://github.com/nic123/Agency/releases/latest";
+const RELEASES_API: &str = "https://api.github.com/repos/TennnisAI/Agency/releases/latest";
+pub const RELEASES_PAGE: &str = "https://github.com/TennnisAI/Agency/releases/latest";
 
 /// Wall-clock cap on the whole request. The check is never on a path the user is
 /// waiting for, so a slow network should give up quietly rather than hang.
@@ -135,7 +135,7 @@ mod tests {
     fn release_page_and_api_point_at_the_same_repo() {
         // The two URLs are written out separately; this catches one being
         // repointed at a new repo without the other.
-        let repo = "nic123/Agency";
+        let repo = "TennnisAI/Agency";
         assert!(RELEASES_API.contains(repo));
         assert!(RELEASES_PAGE.contains(repo));
     }

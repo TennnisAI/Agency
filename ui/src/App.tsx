@@ -29,7 +29,7 @@ import PreviewKeeper from "./components/PreviewKeeper";
 import RepoSetupDialog from "./components/RepoSetupDialog";
 import RunRemoveDialog from "./components/RunRemoveDialog";
 
-const REPO_URL = "https://github.com/nic123/Agency";
+const REPO_URL = "https://github.com/TennnisAI/Agency";
 
 function Shell() {
   const { selectedProjectId, setSelectedProject, createAgent, createTerminal, setTab, focusedRunId, selectedRunId, onScreenRunId, setApproveRun, setFocusedRun, setView, runs } = useRuns();

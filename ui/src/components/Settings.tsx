@@ -1506,7 +1506,7 @@ export default function Settings({
               <span className="settings-notif-label">Report an issue</span>
               <button
                 className="settings-ghost-btn"
-                onClick={() => { openUrl("https://github.com/nic123/Agency/issues/new").catch(() => {}); }}
+                onClick={() => { openUrl("https://github.com/TennnisAI/Agency/issues/new").catch(() => {}); }}
               >Open GitHub issues</button>
             </div>
           </div>

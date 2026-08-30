@@ -6,7 +6,7 @@
 
 ## Motivation
 
-A competitive review against Conductor surfaced five gaps in agency's workspace
+A competitive review of an adjacent tool surfaced five gaps in agency's workspace
 lifecycle. Today a new agent run gets a bare `git worktree` with no dependencies,
 no way to run the app it's editing, only destructive run cleanup (stop/discard),
 no path from a diff comment back to the agent, and no notifications. This design
@@ -21,7 +21,7 @@ The five features share one new foundation: **committed per-project config**.
 - Multi-agent orchestration / DAGs (out of scope; separate effort).
 - Preserving agent terminal scrollback across archive (branch + diff + metadata
   are preserved; live scrollback is not — see Feature 3).
-- Full Conductor-style layered settings hierarchy (user/managed tiers). We adopt
+- A full layered settings hierarchy (user/managed tiers). We adopt
   repo + machine-local layering only; user/managed tiers are a future extension.
 
 ## Foundation — committed project config

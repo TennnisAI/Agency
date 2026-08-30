@@ -37,19 +37,10 @@ browser with `support.js` beside it).
 - [`beta-readiness.md`](beta-readiness.md) — the pre-beta bug hunt and fix
   pass, kept as a historical record.
 
-## Positioning and the site
+## Maintainer procedure
 
-- [`competitive-landscape.md`](competitive-landscape.md) — dated, point-in-time
-  readings of adjacent products, each cross-checked against source rather than
-  the vendor's README. None of it goes on the site, and no competitor is named
-  anywhere a customer can see.
-- [`marketing-strategy.md`](marketing-strategy.md) — the layer between those
-  readings and the site: which of our claims a funded competitor could copy,
-  which they structurally cannot, and what follows for the copy and the
-  channels. Read before changing anything positional in `webdesign/`.
-- [`webdesign/`](webdesign/) — the getagency.dev design handoff. Start at its
-  `README.md`; `02-messaging.md` governs all user-facing copy and is not
-  optional.
+- [`releasing.md`](releasing.md) — cutting a signed, notarized macOS build and
+  publishing it, plus the one-time certificate, notary and CI-secret setup.
 
 ## Living documents
 

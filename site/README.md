@@ -1,10 +1,12 @@
 # getagency.dev
 
-The marketing site. Static, hand-written, no build step, no framework. The
-design record it implements is `docs/webdesign/`; the copy comes from
-`docs/webdesign/03-pages.md` and is final there, so edit copy there first and
-here second. Tokens, type scale, spacing and components follow
-`docs/webdesign/04-design-system.md`.
+The marketing site. Static, hand-written, no build step, no framework.
+
+The design record it implements is kept privately, outside this repo, and the
+copy is final there rather than here — edit it there first and here second. The
+same goes for tokens, type scale, spacing and components: this stylesheet
+follows that record, so changing a token here without changing it there puts
+the two out of step silently.
 
 ## Preview
 

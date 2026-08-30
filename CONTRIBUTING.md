@@ -20,8 +20,13 @@ Thanks for your interest. A few honest expectations up front:
   design history under `docs/` — a feature that fights those won't merge, and
   it's better to find that out before writing it.
 - **Licensing:** contributions are accepted under the repository's
-  [Apache-2.0 licence](LICENSE). For substantial contributions the maintainer
-  may ask you to sign a contributor licence agreement before merging.
+  [Apache-2.0 licence](LICENSE), and you keep the copyright in what you write.
+- **You will be asked to sign a [CLA](CLA.md).** A bot comments on your first
+  pull request with a sentence to reply with; that is the whole process, and it
+  is once per contributor, not once per PR. It exists so the project can be
+  relicensed later if it ever needs to be, which Apache-2.0 alone does not
+  allow. Trivial changes are exempt, and if the bot asks when it should not
+  have, say so on the PR.
 
 ## Development setup
 

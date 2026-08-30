@@ -22,12 +22,11 @@
 //! edit here plus a run of the reattach tests in [`super::emulator`], which are
 //! the only place the two sides' agreement is written down.
 //!
-//! The discipline is borrowed from a competitor with the same split across a
+//! The discipline is borrowed from another project with the same split across a
 //! wider gap — a native emulator on one target and a WebAssembly build of it on
 //! another, both built from a single pinned revision, with a test that reads the
-//! build metadata back out of the compiled artifact. See
-//! `docs/competitive-landscape.md`. We are not adopting their emulator, only
-//! this. If the emulator question is ever genuinely reopened, "one
+//! build metadata back out of the compiled artifact. We are not adopting their
+//! emulator, only this. If the emulator question is ever genuinely reopened, "one
 //! implementation, two targets" is the shape to reopen it toward: it is the only
 //! arrangement in which the two sides cannot disagree at all.
 

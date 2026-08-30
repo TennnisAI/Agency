@@ -36,3 +36,8 @@ ui/vitest.config.d.ts
 .agency/issues/
 .agency/agency.local.toml
 /graphify-out/
+
+# The commit-msg hook's competitor-name list. Deliberately untracked: this repo
+# is public, and a checked-in list of competitors is the exact artifact the rule
+# it enforces exists to prevent. Absent the file, the hook skips that check.
+.githooks/competitors.local

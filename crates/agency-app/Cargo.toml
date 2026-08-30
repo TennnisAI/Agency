@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
 description = "Tauri app shell for Agency"
-repository = "https://github.com/nic123/Agency"
+repository = "https://github.com/TennnisAI/Agency"
 
 [lib]
 name = "agency_app_lib"

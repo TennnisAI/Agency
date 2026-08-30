@@ -127,9 +127,11 @@ beside the issue files and linked from the description, so they travel with
 the issue, and an agent working the issue can read them.
 "#;
 
-/// The guide's opening, carrying the privacy claim in the form
-/// `docs/webdesign/02-messaging.md` requires: scoped to what Agency itself
-/// collects, and honest that the agents are somebody else's. Two sentences on
+/// The guide's opening, carrying the privacy claim in the only form allowed:
+/// scoped to what Agency itself collects, and honest that the agents are
+/// somebody else's. Never "nothing leaves your machine" — launching third-party
+/// agents that talk to their own providers is the app's whole job, so a claim
+/// that omits them is the one a reader catches. Two sentences on
 /// purpose. This is a starter note, not a privacy page, and the long version
 /// (the update check, git remotes) belongs on the site. Held as its own const
 /// so `repair_opening` can splice it into a `Welcome.md` seeded before this
@@ -200,9 +202,11 @@ mod tests {
     }
 
     #[test]
-    fn guide_states_the_privacy_claim_the_messaging_doc_allows() {
-        // docs/webdesign/02-messaging.md, story 11: the claim is scoped to
-        // first-party collection, and never implies the agents are ours.
+    fn guide_scopes_the_privacy_claim_to_first_party_collection() {
+        // The claim is scoped to what Agency itself collects and never implies
+        // the agents are ours. "Nothing leaves your machine" is the specific
+        // phrasing this rules out: the agents are third party and talk to their
+        // own providers.
         assert!(WORKSPACE_GUIDE.contains(OPENING), "the guide must carry OPENING verbatim");
         assert!(!WORKSPACE_GUIDE.contains("Nothing leaves your machine"));
         assert!(WORKSPACE_GUIDE.contains("no first-party data collection"));

@@ -1,4 +1,5 @@
-/* getagency.dev, hand-written against docs/webdesign/04-design-system.md.
+/* getagency.dev, hand-written against the design system in the site design
+   record (kept privately, outside this repo — see site/README.md).
    Tokens are named as the app names them (ui/src/lib/themes.ts); keep them in step. */
 
 /* ---------- Fonts, self-hosted. Nothing loads from a third-party server. ---------- */

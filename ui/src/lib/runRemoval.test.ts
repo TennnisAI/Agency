@@ -38,15 +38,25 @@ const cleanup = (
     pushed: false,
     gone: false,
     dirty: false,
+    baseExists: true,
   },
   archive: plan(archive),
   delete: plan({ keepsRecord: false, restorable: false, ...del }),
   branch: "agent/foo",
   base: "main",
+  // The fixture is a claude worktree run: one of the two agents whose
+  // transcript layout Agency reads, so it is the case where the conversation
+  // travels with the teardown. `unmanaged` below is everyone else.
+  managesTranscript: true,
 });
 
+/** The same run under an agent whose transcript Agency cannot find. */
+const unmanaged = (c: RunCleanup): RunCleanup => ({ ...c, managesTranscript: false });
+
+// The ordinary ending: the branch goes because its commits are on main, and
+// the archive is still restorable — main is what a restore cuts it from again.
 const merged = cleanup(
-  { deletesBranch: true, keepsBranch: false, restorable: false, safeBecause: "merged" },
+  { deletesBranch: true, keepsBranch: false, safeBecause: "merged" },
   { deletesBranch: true, keepsBranch: false, safeBecause: "merged" },
   2,
 );
@@ -108,6 +118,27 @@ describe("removalCopy", () => {
     expect(c.danger).toBe(false);
   });
 
+  it("only claims the conversation for an agent Agency can find one for", () => {
+    // Deleting a claude or pi worktree run removes that agent's session
+    // directory for the worktree; for every other agent Agency has no idea
+    // where the conversation is and touches nothing, so the delete list has to
+    // say the history stays rather than imply it goes.
+    const del = removalCopy(agent, "delete", merged);
+    expect(del.goes.join(" ")).toContain("Its conversation, from the agent's own session store.");
+    expect(del.stays.join(" ")).not.toContain("session history");
+
+    const other = removalCopy(agent, "delete", unmanaged(merged));
+    expect(other.goes.join(" ")).not.toContain("conversation");
+    expect(other.stays.join(" ")).toContain("This agent's own session history");
+
+    // And the archive list mirrors it: it only offers a conversation to read
+    // when there was one to rescue.
+    expect(removalCopy(agent, "archive", merged).stays.join(" ")).toContain("and its conversation");
+    expect(removalCopy(agent, "archive", unmanaged(merged)).stays.join(" ")).not.toContain(
+      "conversation",
+    );
+  });
+
   it("says so when a delete would also take uncommitted work", () => {
     // A merged branch does not make this safe: the uncommitted changes are on
     // no branch and no remote.
@@ -140,43 +171,64 @@ describe("removalLabel", () => {
 });
 
 describe("mergeTidyCopy", () => {
-  /** The whole sentence, as it reads on screen. */
-  const sentence = (c: ReturnType<typeof mergeTidyCopy>) =>
-    c.choices.map((o) => `${o.verb} ${o.text}`).join(", ");
+  /** One line per button, as they read on screen. */
+  const lines = (c: ReturnType<typeof mergeTidyCopy>) =>
+    c.choices.map((o) => `${o.verb} ${o.text}.`);
 
   it("names every button under it, in the buttons' own words", () => {
     // AGE-164: the step explained archiving under a heading, "Tidy up", that
     // matched no button, and said nothing at all about the other two.
     const c = mergeTidyCopy(merged);
     expect(c.choices.map((o) => o.verb)).toEqual(["Archive", "Delete", "Keep"]);
-    expect(sentence(c)).toContain("Archive puts the agent away and keeps a record under Archived");
-    expect(sentence(c)).toContain("Delete removes it and its record");
-    expect(sentence(c)).toContain("Keep leaves it as it is");
+    expect(lines(c)).toEqual([
+      "Archive removes the worktree and the agent/foo branch, and keeps the transcript and a record under Archived.",
+      "Delete removes all of it, the transcript included.",
+      "Keep leaves the agent as it is.",
+    ]);
   });
 
-  it("says what archiving and deleting share, and that the merge is safe", () => {
+  it("says the transcript is what the two verbs actually differ over", () => {
+    // The one asymmetry left now that both endings restore, and the one a
+    // vaguer word ("its record") let the user walk past.
+    const c = mergeTidyCopy(merged);
+    expect(lines(c)[0]).toContain("keeps the transcript and a record under Archived");
+    expect(lines(c)[1]).toContain("the transcript included");
+  });
+
+  it("says why the branch is safe to let go, and that archiving is reversible", () => {
     const c = mergeTidyCopy(merged);
     expect(c.detail).toBe(
-      "Archiving and deleting both stop the agent, remove its worktree, and delete the " +
-        "agent/foo branch, which is already on main; neither touches what you just merged.",
+      "The agent/foo branch goes either way, since it is already on main. Neither touches " +
+        "what you just merged. Archiving can be undone: Restore brings the worktree and the " +
+        "conversation back.",
     );
     expect(c.caveat).toBeNull();
   });
 
+  it("does not claim a transcript it cannot see, for the agents it cannot read", () => {
+    // Most agents: Agency has no idea where their conversation lives, so it
+    // neither rescues nor removes one, and the user who deletes an agent and
+    // then resumes it from the agent itself is not being contradicted.
+    const c = mergeTidyCopy(unmanaged(merged));
+    expect(lines(c)[0]).toBe(
+      "Archive removes the worktree and the agent/foo branch, and keeps a record of what it did under Archived.",
+    );
+    expect(lines(c)[1]).toBe("Delete removes all of it.");
+    expect(c.detail).toContain("This agent keeps its own session history, which neither one touches.");
+  });
+
   it("does not claim both verbs take a branch only one of them takes", () => {
     // A dirty worktree keeps the branch through an archive (the leftovers are
-    // committed to it) and loses it to a delete, so the shared clause may not
-    // swallow the branch.
+    // committed to it) and loses it to a delete, so neither the Archive line
+    // nor the shared detail may swallow the branch.
     const dirty = cleanup(
       {},
       { deletesBranch: true, keepsBranch: false, losesUncommitted: true },
       0,
     );
     const c = mergeTidyCopy(dirty);
-    expect(c.detail).toBe(
-      "Archiving and deleting both stop the agent and remove its worktree; only deleting " +
-        "takes the agent/foo branch with it.",
-    );
+    expect(lines(c)[0]).toBe("Archive removes the worktree, and keeps the transcript and a record under Archived.");
+    expect(c.detail).toContain("Only deleting takes the agent/foo branch with it.");
     expect(c.caveat).toContain("Archiving commits what is uncommitted in the worktree");
     expect(c.caveat).toContain("deleting discards it");
   });
@@ -187,11 +239,26 @@ describe("mergeTidyCopy", () => {
     expect(c.caveat).toContain("not on main and not on any remote");
   });
 
-  it("claims nothing about the branch before the plan has been read", () => {
+  it("does not promise a restore the archive cannot deliver", () => {
+    // Branch gone and no base to cut it again from: the plan says so, and the
+    // line about undoing has to go with it.
+    const stranded = cleanup({ deletesBranch: true, keepsBranch: false, restorable: false }, {});
+    expect(mergeTidyCopy(stranded).detail).not.toContain("can be undone");
+  });
+
+  it("claims nothing about the branch or the transcript before the plan is read", () => {
     const c = mergeTidyCopy(null);
     expect(c.detail).toBeNull();
     expect(c.caveat).toBeNull();
-    // The choices are true of any run, so they are still said.
+    // The choices are true of any run, so they are still said — minus the
+    // branch and the transcript, the two parts that need the plan. The
+    // transcript defaults to unclaimed rather than promised, so the window
+    // never says "the transcript included" about an agent it turns out not to
+    // hold one for.
     expect(c.choices).toHaveLength(3);
+    expect(lines(c)[0]).toBe(
+      "Archive removes the worktree, and keeps a record of what it did under Archived.",
+    );
+    expect(lines(c)[1]).toBe("Delete removes all of it.");
   });
 });

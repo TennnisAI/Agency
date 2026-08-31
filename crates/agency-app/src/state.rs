@@ -294,6 +294,11 @@ pub struct ArchivedInfo {
     /// Its branch is still in the repo, so the run can be restored into a
     /// fresh worktree. False for the normal ending of merged work.
     pub branch_kept: bool,
+    /// With `branch_kept` false, the branch a restore would cut the run's
+    /// branch afresh from — the base its work went into. `None` only when that
+    /// branch has gone too, which is the one archive nothing can be restored
+    /// from; the list disables Restore on exactly that.
+    pub restore_base: Option<String>,
     /// There is a record file to read.
     pub has_record: bool,
     /// There is a conversation to read: a transcript in a format we parse,
@@ -499,6 +504,19 @@ pub struct RunCleanup {
     /// than being re-derived by the UI.
     pub branch: String,
     pub base: String,
+    /// Agency knows where this agent keeps its conversation for this worktree,
+    /// so archiving rescues it into the archive and deleting removes it along
+    /// with the run.
+    ///
+    /// False in two common cases, and in both of them neither verb touches the
+    /// agent's history at all: an agent whose transcript format Agency cannot
+    /// read (`usage::format_for` is a default-deny list of two, so most agents
+    /// land here), and a run in the project's own checkout, whose session
+    /// directory holds the user's own conversations in that folder and is not
+    /// Agency's to move. The teardown copy has to be able to tell those apart:
+    /// "the transcript goes too" is a warning, and a warning that is wrong for
+    /// most agents is one nobody reads on the day it is right.
+    pub manages_transcript: bool,
 }
 
 /// A run's PR plus check rollup, polled by the merge modal.
@@ -1331,6 +1349,21 @@ fn workspace_dir(repo: &Path, run: &agency_core::registry::Run) -> std::path::Pa
     } else {
         repo.to_path_buf()
     }
+}
+
+/// Where a restore cuts this run's branch afresh when the branch itself is
+/// gone: the branch its work was merged into, if that is still in the repo.
+///
+/// The merge target first, since that is where the run's commits actually went;
+/// `run.base` second, for a run that never named one. `None` when neither is in
+/// the repo any more — the only archive left that cannot be restored, and the
+/// only one whose Restore button is disabled.
+fn restore_start_point(repo: &Path, run: &agency_core::registry::Run) -> Option<String> {
+    agency_core::merge::resolve_target(run.merge_target.as_deref(), repo)
+        .ok()
+        .into_iter()
+        .chain(std::iter::once(run.base.clone()))
+        .find(|b| agency_core::merge::branch_exists(repo, b))
 }
 
 /// Top-level session files in a transcript directory. What the record calls
@@ -5432,12 +5465,19 @@ impl AppState {
                 agency_core::merge::resolve_target(run.merge_target.as_deref(), &repo).ok()
             })
             .unwrap_or_else(|| run.base.clone());
+        // The same two conditions `rescue_transcript` and `discard_run` apply
+        // before they move or remove anything, asked here so the words and the
+        // filesystem operations cannot drift apart.
+        let manages_transcript = run.kind == "agent"
+            && run.worktree
+            && agency_core::usage::format_for(&self.agent_command(&run)).is_some();
         Ok(RunCleanup {
             archive: agency_core::cleanup::plan(&facts, Disposal::Archive),
             delete: agency_core::cleanup::plan(&facts, Disposal::Delete),
             facts,
             branch: run.branch.clone(),
             base,
+            manages_transcript,
         })
     }
 
@@ -5454,11 +5494,17 @@ impl AppState {
         let Ok(repo) = self.project_repo(&run.project_id) else {
             return BranchFacts { owns_branch: true, gone: true, ..BranchFacts::default() };
         };
-        if !agency_core::merge::branch_exists(&repo, &run.branch) {
-            return BranchFacts { owns_branch: true, gone: true, ..BranchFacts::default() };
-        }
         let base = agency_core::merge::resolve_target(run.merge_target.as_deref(), &repo)
             .unwrap_or_else(|_| run.base.clone());
+        let base_exists = agency_core::merge::branch_exists(&repo, &base);
+        if !agency_core::merge::branch_exists(&repo, &run.branch) {
+            return BranchFacts {
+                owns_branch: true,
+                gone: true,
+                base_exists,
+                ..BranchFacts::default()
+            };
+        }
         let ahead = agency_core::merge::commits_ahead(&repo, &run.branch, &base).ok();
         let worktree = workspace_dir(&repo, run);
         BranchFacts {
@@ -5470,6 +5516,7 @@ impl AppState {
             gone: false,
             dirty: worktree.exists()
                 && agency_core::git::status(&worktree).is_ok_and(|cs| !cs.is_empty()),
+            base_exists,
         }
     }
 
@@ -5950,18 +5997,27 @@ impl AppState {
         // Nothing was removed for a worktree-less run, so nothing is re-created:
         // restoring it just makes the row live again.
         if run.worktree {
-            // Since archiving deletes a branch whose commits are already on the
-            // base or a remote, most archived runs have nothing left to cut a
-            // worktree from. Say that, rather than surfacing git's "invalid
-            // reference" from three frames down.
-            if !agency_core::merge::branch_exists(&repo, &run.branch) {
-                bail!(
-                    "'{}' is gone, so there is no branch to restore this agent onto. Its record \
-                     is still in the archive.",
-                    run.branch
-                );
+            // Archiving deletes a branch whose commits are already on the base
+            // or a remote, so most archived runs have no branch of their own
+            // left. This used to stop here — "there is no branch to restore
+            // this agent onto" — which meant Restore failed for every run that
+            // ended the normal way, and only worked for the abandoned ones.
+            // The work is on the base and the conversation was rescued into the
+            // archive, so cut the branch again from the base and reinstate the
+            // conversation into the worktree that comes back at the same path:
+            // the run resumes where it left off, on top of what it merged.
+            if agency_core::merge::branch_exists(&repo, &run.branch) {
+                manager.restore(id)?;
+            } else {
+                let Some(start) = restore_start_point(&repo, &run) else {
+                    bail!(
+                        "'{}' is gone, and so is the branch it was based on, so there is nothing \
+                         left to cut a worktree from. Its record is still in the archive.",
+                        run.branch
+                    );
+                };
+                manager.recreate_on(id, &run.branch, &start)?;
             }
-            manager.restore(id)?;
             if let Err(e) = manager.copy_essentials(id, &config.files.copy) {
                 log::warn!("copying essentials into restored worktree {id}: {e}");
             }
@@ -6033,10 +6089,18 @@ impl AppState {
             .iter()
             .map(|r| {
                 let mut info = self.run_info_from(r, &live);
+                let branch_kept = repo
+                    .as_ref()
+                    .is_some_and(|repo| agency_core::merge::branch_exists(repo, &r.branch));
                 info.archived = Some(ArchivedInfo {
-                    branch_kept: repo
-                        .as_ref()
-                        .is_some_and(|repo| agency_core::merge::branch_exists(repo, &r.branch)),
+                    branch_kept,
+                    // Only asked when it decides something: with the branch
+                    // still here the restore uses it, and this is a second git
+                    // call per row in a list that is drawn on every open.
+                    restore_base: match (branch_kept, repo.as_ref()) {
+                        (false, Some(repo)) => restore_start_point(repo, r),
+                        _ => None,
+                    },
                     has_record: repo
                         .as_ref()
                         .is_some_and(|repo| agency_core::record::path(repo, &r.id).exists()),

@@ -163,12 +163,17 @@ export interface RunInfo {
   archived: ArchivedInfo | null;
 }
 
-// What an archived run still holds. The two flags are the difference between
-// "put away, bring it back whenever" and "finished, here is what happened".
+// What an archived run still holds. The flags are the difference between "put
+// away, bring it back whenever" and "finished, here is what happened".
 export interface ArchivedInfo {
-  // Its branch is still in the repo, so it can be restored. False for the
-  // normal ending of merged work, whose branch went with the archive.
+  // Its branch is still in the repo, so it can be restored onto it. False for
+  // the normal ending of merged work, whose branch went with the archive.
   branchKept: boolean;
+  // With branchKept false, the branch a restore cuts this run's branch afresh
+  // from — the base its work went into, which is where a merged run's commits
+  // are. Null only when that branch has gone too, the one case with nothing
+  // left to restore from.
+  restoreBase: string | null;
   // There is a record to read.
   hasRecord: boolean;
   // There is a conversation to read: a transcript in a format Agency parses,
@@ -193,6 +198,9 @@ export interface BranchFacts {
   // Uncommitted changes in the worktree: on no branch and no remote, so an
   // archive commits them and a delete destroys them.
   dirty: boolean;
+  // The base is in the repo, so a restore has something to cut the run's branch
+  // afresh from once the archive has let that branch go.
+  baseExists: boolean;
 }
 
 // Why deleting a branch loses nothing.
@@ -220,6 +228,12 @@ export interface RunCleanup {
   delete: CleanupPlan;
   branch: string;
   base: string;
+  // Agency knows where this agent keeps its conversation for this worktree, so
+  // archiving rescues it into the archive and deleting removes it. False for an
+  // agent whose transcript format Agency cannot read (most of them) and for a
+  // run in the project's own checkout: in both, the agent's own session history
+  // is untouched by either verb, and can still be resumed from the agent.
+  managesTranscript: boolean;
 }
 
 // One message the send queue is holding for a run.

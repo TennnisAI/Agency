@@ -319,7 +319,15 @@ export default function MergeModal({
   const blockedBy = state?.blockedBy ?? null;
 
   return (
-    <div className="settings-overlay anchor-top" onClick={() => { if (!busy && !gitBusy) onClose(); }}>
+    // Click-outside-to-close is off while the delete confirm is up. The confirm
+    // covers this overlay now, so a click can no longer fall through to it, but
+    // the pairing is what made the old stacking bug so expensive: a stray click
+    // dismissed the whole approve-and-merge flow and put the user back on the
+    // agent they had just asked to delete.
+    <div
+      className="settings-overlay anchor-top"
+      onClick={() => { if (!busy && !gitBusy && !confirmDelete) onClose(); }}
+    >
       <div
         className="merge-modal"
         role="dialog"
@@ -411,22 +419,22 @@ export default function MergeModal({
                 "Tidy up", that named no button on screen and explained one
                 option of the three (AGE-164).
 
-                The second sentence is the mechanics — the worktree, and the
-                agent branch a post-merge archive takes because it is now a
-                second name for commits on the base, which is also why the
-                delete beside it is not a red button. That much is hushable.
-                The caveat is not: it is the only line that can change which
-                button you press. */}
+                Under the three lines is the mechanics — the agent branch a
+                post-merge archive takes because it is now a second name for
+                commits on the base, which is also why the delete beside it is
+                not a red button, and that archiving is reversible. That much
+                is hushable. The caveat is not: it is the only line that can
+                change which button you press. */}
             <div className="merge-cleanup">
-              <p className="merge-choices">
-                {tidy.choices.map((c, i) => (
-                  <span key={c.verb}>
-                    {i > 0 && (i === tidy.choices.length - 1 ? ", and " : ", ")}
-                    <b>{c.verb}</b> {c.text}
-                    {i === tidy.choices.length - 1 && "."}
-                  </span>
+              {/* One line per button, in the buttons' own order. Run together
+                  as a single comma-spliced sentence, as this was, the three
+                  verbs had to be picked back out of it before any of them
+                  could be compared — which is the whole job of this step. */}
+              <ul className="merge-choices">
+                {tidy.choices.map((c) => (
+                  <li key={c.verb}><b>{c.verb}</b> {c.text}.</li>
                 ))}
-              </p>
+              </ul>
               {!hushNote && (
                 <>
                   {tidy.detail && (

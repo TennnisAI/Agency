@@ -182,8 +182,16 @@ button:disabled { opacity: .45; cursor: default; }
 /* Fixed, and portalled into the body by ModalBackdrop, so a dialog is measured
    against the window and not against whichever host it happens to be rendered
    from. The padding is the guarantee that a tall dialog in a short window keeps
-   its rounded corners clear of the edges; the body scrolls instead. */
-.modal-backdrop { position: fixed; inset: 0; padding: 24px; box-sizing: border-box; background: var(--overlay); backdrop-filter: blur(3px); z-index: 30; display: flex; align-items: center; justify-content: center; }
+   its rounded corners clear of the edges; the body scrolls instead.
+
+   Above every other overlay (.settings-overlay and .menu-overlay are 60), and
+   deliberately: a confirm is always the *last* thing opened, asked about
+   whatever is already on screen. At 30 the merge window's own "Delete agent?"
+   came up behind it — legible only as a blurred rectangle at the bottom of the
+   screen, and a click aimed at it landed on the merge overlay instead, which
+   closed the whole approve-and-merge flow and left the agent undeleted. Only
+   toasts (1000) sit higher. */
+.modal-backdrop { position: fixed; inset: 0; padding: 24px; box-sizing: border-box; background: var(--overlay); backdrop-filter: blur(3px); z-index: 70; display: flex; align-items: center; justify-content: center; }
 .modal { width: 580px; max-width: 92%; max-height: 100%; display: flex; flex-direction: column; background: var(--mantle); border: 1px solid var(--s1); border-radius: 15px; box-shadow: 0 24px 64px var(--shadow); }
 .modal.confirm { width: 440px; }
 .modal-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 18px; border-bottom: 1px solid var(--line); flex-shrink: 0; }
@@ -512,15 +520,20 @@ textarea.settings-input { min-height: 64px; resize: vertical; }
    which left the outcome line floating and the buttons touching the copy. */
 .merge-done { display: flex; flex-direction: column; gap: 12px; }
 .merge-done > .merge-ok { margin: 0; }
-/* The last step of a merge: what the three buttons under it do, in two
-   sentences (AGE-164). It was a bordered panel of Removes/Keeps lists, which at
-   this size framed more explanation than there is and read as a fourth thing to
-   deal with; the sentences carry their own hierarchy instead. */
-.merge-cleanup { display: flex; flex-direction: column; gap: 6px; }
-.merge-choices { margin: 0; font-size: 13px; line-height: 1.6; color: var(--sub1); }
+/* The last step of a merge: what the three buttons under it do, one line each
+   (AGE-164). It was a bordered panel of Removes/Keeps lists, which at this size
+   framed more explanation than there is and read as a fourth thing to deal
+   with; the three lines carry their own hierarchy instead. */
+.merge-cleanup { display: flex; flex-direction: column; gap: 8px; }
+.merge-choices {
+  margin: 0; padding: 0; list-style: none;
+  display: flex; flex-direction: column; gap: 3px;
+  font-size: 13px; line-height: 1.5; color: var(--sub1);
+}
 /* The button's own word, so the eye can jump from a verb here to the button
-   under it without re-reading either. */
-.merge-choices b { font-weight: 600; color: var(--text); }
+   under it without re-reading either. Fixed-width so the three verbs stack into
+   a column and the differences between the lines line up beside them. */
+.merge-choices b { display: inline-block; min-width: 58px; font-weight: 600; color: var(--text); }
 .merge-cleanup .merge-note { margin: 0; font-size: 12.5px; line-height: 1.55; }
 
 /* Removal summary — the teardown confirm dialogs' two lists. Two
@@ -808,10 +821,11 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
 .badge.pi { color: var(--agent-pi); }
 .badge.hermes { color: var(--agent-hermes); }
 
-/* Gated-project badge (needs a commit) + repo-setup dialog gitignore toggle */
+/* Repo-setup dialog gitignore toggle. The `.warn` variant was the sidebar's
+   "⚠︎ commit" badge, now gone: a commit-less repository is a new project, not a
+   broken one, and the spawn flow raises the setup dialog when it actually
+   matters. Kept because the base badge is still in use. */
 .row-badge { font-family: var(--mono); font-size: 9.5px; border: none; border-radius: 5px; padding: 1px 6px; margin-left: 4px; cursor: pointer; background: var(--s0); }
-.row-badge.warn { color: var(--yellow); background: rgba(249,226,175,.10); }
-.row-badge.warn:hover { background: rgba(249,226,175,.20); }
 
 /* ── Agents view (Task 10) ──────────────────────────────────── */
 .agents {
@@ -1820,15 +1834,16 @@ button.diff-path:hover { color: var(--text); text-decoration: underline; }
 .archived-cleanup:hover { background: var(--s0); color: var(--red); }
 .archived-cleanup:disabled { opacity: 0.5; cursor: default; }
 .archived-cleanup:disabled:hover { background: transparent; color: var(--muted, #9aa); }
-.archived-row { display: flex; align-items: center; gap: 4px; padding: 2px 8px; }
+.archived-row { display: flex; align-items: center; gap: 6px; padding: 2px 8px; }
 .archived-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted, #9aa); font-size: 12px; }
 .archived-empty { padding: 4px 8px; color: var(--muted, #9aa); font-size: 12px; }
-/* What one archived run still holds: its branch, or only its record. Set in
-   the row because the difference decides whether Restore is offered at all. */
-.archived-held {
-  flex: 0 0 auto; font-size: 10.5px; letter-spacing: 0.04em; text-transform: uppercase;
-  color: var(--sub0); background: var(--s0); border-radius: 5px; padding: 1px 5px;
-}
+/* Read / restore / delete, as one group pushed to the right edge. At the
+   sidebar's width three 28px buttons spaced 4px apart left about two words of
+   the title readable and every row looked alike; squared down to 20px and
+   butted together they read as one control and give the title back ~28px. */
+.archived-acts { flex: 0 0 auto; display: flex; align-items: center; gap: 0; }
+.archived-acts .icon-btn { width: 20px; height: 20px; font-size: 13px; border-radius: 4px; }
+.archived-acts .icon-btn svg { width: 12px; height: 12px; }
 
 .settings-notif { display: flex; flex-direction: column; gap: 4px; }
 .settings-notif-row {

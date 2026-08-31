@@ -29,6 +29,14 @@
 //! emulator, only this. If the emulator question is ever genuinely reopened, "one
 //! implementation, two targets" is the shape to reopen it toward: it is the only
 //! arrangement in which the two sides cannot disagree at all.
+//!
+//! Reopened, on the roadmap as AGE-174: libghostty now ships both halves, a
+//! zero-dependency C API for the daemon and a WebAssembly build with an
+//! xterm.js-compatible API for the pane, from one source. It is blocked on
+//! upstream declaring the API stable — it currently warns that breaking changes
+//! are expected — so the pins below are still the mitigation, not a stale one.
+//! Everything the swap has to preserve is the reattach tests in
+//! [`super::emulator`].
 
 /// The VT parser in the daemon. Pinned in `crates/agency-core/Cargo.toml`.
 pub const ALACRITTY_TERMINAL: &str = "0.26.0";

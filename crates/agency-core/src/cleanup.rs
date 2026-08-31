@@ -63,6 +63,11 @@ pub struct BranchFacts {
     /// being a duplicate of anything and has to be kept) and deleting destroys
     /// them (so a delete is dangerous even when the branch itself has landed).
     pub dirty: bool,
+    /// The branch this run's work goes to is in the repo. It is what a restore
+    /// cuts the run's branch afresh from once the archive has let that branch
+    /// go, so it is what makes the ordinary post-merge archive reversible.
+    /// Default-deny like the rest: unreadable means not asserted.
+    pub base_exists: bool,
 }
 
 /// What a teardown will do, and what it costs. Rendered into words by the UI
@@ -161,8 +166,12 @@ pub fn plan(facts: &BranchFacts, disposal: Disposal) -> CleanupPlan {
         deletes_branch,
         keeps_branch,
         keeps_record: disposal == Disposal::Archive,
-        // Restoring cuts a worktree from the kept branch, so it needs one.
-        restorable: disposal == Disposal::Archive && keeps_branch,
+        // Restoring cuts a worktree from the kept branch — or, once the archive
+        // has let that branch go, from the base the work landed on, cutting the
+        // branch again there. This used to require `keeps_branch`, which made
+        // the ordinary ending (merged, branch dropped) the one that could not
+        // be restored, so Restore was disabled on nearly every archived run.
+        restorable: disposal == Disposal::Archive && (keeps_branch || facts.base_exists),
         commits_at_risk: if deletes_branch && !redundant { facts.commits_ahead } else { 0 },
         loses_uncommitted: facts.dirty && disposal == Disposal::Delete,
         safe_because,
@@ -178,6 +187,7 @@ mod tests {
             owns_branch: true,
             commits_ahead,
             commits_known: true,
+            base_exists: true,
             ..BranchFacts::default()
         }
     }
@@ -190,10 +200,21 @@ mod tests {
         assert!(p.removes_worktree && p.deletes_branch);
         assert!(!p.keeps_branch);
         assert!(p.keeps_record);
-        assert!(!p.restorable, "nothing to cut a worktree from once the branch is gone");
+        assert!(p.restorable, "the base is the start point once the branch is gone");
         assert_eq!(p.commits_at_risk, 0);
         assert_eq!(p.safe_because, Some(SafeBecause::Merged));
         assert!(!p.danger());
+    }
+
+    #[test]
+    fn an_archive_with_nothing_left_to_cut_from_is_not_restorable() {
+        // The branch goes and the base is not in the repo either — the one
+        // ending that really cannot be brought back, and the only one whose
+        // Restore button is disabled.
+        let facts = BranchFacts { merged: true, base_exists: false, ..agent(3) };
+        let p = plan(&facts, Disposal::Archive);
+        assert!(p.deletes_branch && !p.keeps_branch);
+        assert!(!p.restorable);
     }
 
     #[test]
@@ -302,7 +323,10 @@ mod tests {
         let p = plan(&BranchFacts { gone: true, ..agent(2) }, Disposal::Archive);
         assert!(p.removes_worktree, "the checkout may still be on disk");
         assert!(!p.deletes_branch && !p.keeps_branch);
-        assert!(!p.restorable);
+        // Still restorable, onto the base: whatever was on the vanished branch
+        // was lost by whoever deleted it, not by archiving, and the worktree
+        // and the conversation do come back.
+        assert!(p.restorable);
         assert_eq!(p.commits_at_risk, 0);
     }
 }

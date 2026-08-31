@@ -56,7 +56,6 @@ export default function ProjectTree({
   const [error, setError] = useState("");
   const [setup, setSetup] = useState<{ path: string; name: string; readiness: RepoReadiness; existing: boolean } | null>(null);
   const [cloning, setCloning] = useState(false);
-  const [readiness, setReadiness] = useState<Record<string, RepoReadiness>>({});
   // Workspace-creation dialog; `intent` (e.g. "daily-note") is re-emitted via
   // an `agency:workspace-ready` event once the workspace exists, so the flow
   // that needed it (⌘⇧D on first use) can resume.
@@ -86,11 +85,6 @@ export default function ProjectTree({
     const ps = await listProjects();
     if (seq !== refreshSeq.current) return;
     setProjects(ps);
-    const entries = await Promise.all(
-      ps.map(async (p) => [p.id, await inspectRepo(p.repo_path).catch(() => null)] as const),
-    );
-    if (seq !== refreshSeq.current) return;
-    setReadiness(Object.fromEntries(entries.filter(([, r]) => r) as [string, RepoReadiness][]));
   }
   useEffect(() => { refresh(); }, []);
 
@@ -358,14 +352,17 @@ export default function ProjectTree({
                 onDoubleClick={(e) => openRecolor(e, p)}
               >{p.name.slice(0, 1).toUpperCase()}</span>
               <span className="tree-name tl">{p.name}</span>
-              {readiness[p.id]?.state === "noCommits" && (
-                <button
-                  className="row-badge warn"
-                  title="Needs a commit before agents can run"
-                  aria-label="Needs a commit before agents can run"
-                  onClick={(e) => { e.stopPropagation(); setSetup({ path: p.repo_path, name: p.name, readiness: readiness[p.id]!, existing: true }); }}
-                >{"⚠︎"} commit</button>
-              )}
+              {/* No "needs a commit" badge here. A repository with no commits
+                  is not a broken project, it is a new one: agents run in the
+                  checkout either way, and a folder with no repository at all
+                  is more limited still and never got a badge. The one thing it
+                  does block, cutting a worktree, is caught by `useSpawnAgent`
+                  at the moment of the spawn, which raises the setup dialog with
+                  "Create initial commit" on it — the explanation and the fix,
+                  where the user is already looking. The badge said less, and
+                  said it forever: nothing tells this component about a commit
+                  made in Source Control, so it sat next to a History panel
+                  already showing the commit until the app restarted. */}
               <button className="row-act" title="Close project" aria-label="Close project" onClick={(e) => { e.stopPropagation(); setPending({ project: p }); }}>×</button>
             </div>
             {openIds.has(p.id) && (

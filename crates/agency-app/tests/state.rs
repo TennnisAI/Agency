@@ -1634,6 +1634,62 @@ fn discard_without_worktree_leaves_the_checkout_and_its_branch_alone() {
     assert_eq!(state.list_runs(&project.id).unwrap().len(), 0);
 }
 
+/// Whether a teardown touches the agent's conversation at all, which is the one
+/// thing archive and delete really differ over and so the one thing the dialogs
+/// have to get right.
+///
+/// Both halves are load-bearing, and both were being claimed wrongly by copy
+/// that said "the transcript included" for every agent: Agency only knows where
+/// two agents keep their sessions, and even for those it leaves a checkout run's
+/// directory alone, because that directory holds the user's own conversations in
+/// that folder. Users noticed — deleting an agent and then resuming it from the
+/// agent itself is the normal experience for everyone else.
+#[test]
+fn only_an_agent_agency_can_read_has_a_transcript_the_teardown_touches() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let state = common::state(&dir);
+    for (name, command) in [("claude", "claude"), ("other", "sh")] {
+        state
+            .register_profile(AgentProfile {
+                name: name.into(),
+                command: command.into(),
+                args: vec!["-c".into(), "sleep 1".into()],
+                env: vec![],
+                resume_args: None,
+                loop_args: None,
+            })
+            .unwrap();
+    }
+    let project = state.add_project("demo", &repo).unwrap();
+
+    let known = state.create_run(&project.id, "a", "claude", None, "main", None).unwrap();
+    assert!(
+        state.run_cleanup(&known.id).unwrap().manages_transcript,
+        "claude's session layout is one of the two Agency reads"
+    );
+
+    let unknown = state.create_run(&project.id, "b", "other", None, "main", None).unwrap();
+    assert!(
+        !state.run_cleanup(&unknown.id).unwrap().manages_transcript,
+        "an agent whose transcript format is unknown keeps its own history"
+    );
+
+    // Same agent, no worktree: its session directory is the one the user's own
+    // conversations in this folder live in, so neither verb may claim it.
+    let checkout = state
+        .create_run_with_progress(&project.id, "c", "claude", None, "HEAD", None, false, |_| {})
+        .unwrap();
+    assert!(!state.run_cleanup(&checkout.id).unwrap().manages_transcript);
+
+    for id in [&known.id, &unknown.id, &checkout.id] {
+        session_gone_or_cleanup(&state, id);
+    }
+}
+
 /// Archiving one is only the teardown and the stamp: no auto-commit sweeping
 /// the user's uncommitted work onto their branch, and restore is a no-op.
 #[test]
@@ -1684,8 +1740,9 @@ fn archive_without_worktree_does_not_commit_the_users_work() {
 }
 
 /// AGE-149. After a merge the agent branch is a second name for commits that
-/// are on the base, so archiving takes it — and the record is what is left to
-/// read, since there is no longer a branch to restore.
+/// are on the base, so archiving takes it, and the record is what is left to
+/// read. Restoring still works: the base is where the work went, so the branch
+/// is cut again from there.
 #[test]
 fn archiving_merged_work_takes_the_branch_and_leaves_a_record() {
     let dir = tempfile::tempdir().unwrap();
@@ -1719,6 +1776,12 @@ fn archiving_merged_work_takes_the_branch_and_leaves_a_record() {
     let before = state.run_cleanup(&info.id).unwrap();
     assert!(before.archive.keeps_branch, "unmerged work keeps its branch");
     assert_eq!(before.delete.commits_at_risk, 1, "deleting it now would lose the commit");
+    // This run's profile is a plain `sh`, whose transcript layout Agency does
+    // not know, so neither teardown can move or remove a conversation for it
+    // and the dialog must not say either one does. The copy reads this flag;
+    // `rescue_transcript` and `discard_run` make the same test before they
+    // touch a file, which is the point of asking it here rather than in the UI.
+    assert!(!before.manages_transcript);
 
     assert!(matches!(state.merge_task(&info.id).unwrap(), MergeOutcome::Clean { .. }));
 
@@ -1737,6 +1800,11 @@ fn archiving_merged_work_takes_the_branch_and_leaves_a_record() {
     assert_eq!(archived.len(), 1);
     let held = archived[0].archived.as_ref().unwrap();
     assert!(!held.branch_kept);
+    assert_eq!(
+        held.restore_base.as_deref(),
+        Some("main"),
+        "the branch is gone, but the work it carried is on main, so a restore has a start point"
+    );
     assert!(held.has_record);
     // This run's agent is a plain `sh` profile, whose transcript format we do
     // not read; the viewer must get "cannot see", not an empty conversation.
@@ -1751,9 +1819,24 @@ fn archiving_merged_work_takes_the_branch_and_leaves_a_record() {
     assert!(record.contains("add the feature"), "the commit list survives the branch: {record}");
     assert!(record.contains("1 file, +1"), "{record}");
 
-    // And restore says why it cannot, rather than failing inside git.
-    let err = state.restore_run(&info.id).unwrap_err().to_string();
-    assert!(err.contains("no branch to restore"), "{err}");
+    // And the ordinary ending restores. It used to refuse — "there is no branch
+    // to restore this agent onto" — which disabled Restore on every run that
+    // merged, i.e. nearly all of them. The branch is cut again from main, where
+    // the work landed, so the worktree comes back with that work in it.
+    let restored = state.restore_run(&info.id).unwrap();
+    assert!(restored.worktree);
+    assert!(restored.archived_at.is_none(), "restoring puts the run back on the board");
+    assert_eq!(
+        std::fs::read_to_string(wt.join("feature.txt")).unwrap(),
+        "x\n",
+        "the merged work is in the restored worktree, because main is where it went"
+    );
+    assert!(
+        state.list_project_branches(&project.id).unwrap().branches.contains(&info.branch),
+        "the run's branch is back, cut fresh from main"
+    );
+    assert!(state.read_run_record(&info.id).unwrap().is_none(), "a live run has no record");
+    session_gone_or_cleanup(&state, &info.id);
 }
 
 /// The other half of AGE-149: work that landed nowhere keeps its branch, and

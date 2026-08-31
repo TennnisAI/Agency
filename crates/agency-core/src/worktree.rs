@@ -345,6 +345,23 @@ impl WorktreeManager {
         self.git(&["worktree", "add", &path_str, &branch])?;
         Ok(Worktree { task_id: task_id.to_string(), path, branch })
     }
+
+    /// Re-create a worktree for `task_id` on a *fresh* `branch` cut from
+    /// `start`, for a restore whose original branch is gone.
+    ///
+    /// Archiving a merged run deletes its branch, because the branch is by then
+    /// a second name for commits that are already on the base — so the common
+    /// ending leaves nothing to restore onto, and Restore failed for every run
+    /// that ended normally. Cutting the same name again from the base gives
+    /// back a worktree that contains that work, and the rescued conversation
+    /// resumes in it.
+    pub fn recreate_on(&self, task_id: &str, branch: &str, start: &str) -> Result<Worktree> {
+        self.ensure_excluded()?;
+        let path = self.worktrees_root().join(task_id);
+        let path_str = path.to_string_lossy().to_string();
+        self.git(&["worktree", "add", &path_str, "-b", branch, start])?;
+        Ok(Worktree { task_id: task_id.to_string(), path, branch: branch.to_string() })
+    }
 }
 
 /// The exclude-file rewrite behind [`WorktreeManager::ensure_excluded`], as a

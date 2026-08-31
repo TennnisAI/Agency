@@ -8,6 +8,7 @@ import {
   discardArchivedRuns,
 } from "../api";
 import { useRuns } from "../store/runs";
+import { restorable, restoreTitle } from "../lib/restore";
 import { toastError, toastSuccess } from "../lib/toast";
 import ConfirmDialog from "./ConfirmDialog";
 import RunRecordDialog from "./RunRecordDialog";
@@ -19,10 +20,14 @@ import { TrashIcon } from "./icons";
  * An archived run never has a worktree — archiving removes it, and always did.
  * What it may still have is its branch, and only when that branch is the last
  * copy of some work; a merged run's branch goes with the archive, since it is a
- * second name for commits that are on the base. So the two endings look
- * different here and are labelled differently: one can be restored, the other
- * is a record to read. Saying "worktrees and branches" over both, as this
- * section used to, is what made archiving sound expensive.
+ * second name for commits that are on the base.
+ *
+ * Both endings restore. Where the branch survived, the worktree goes back onto
+ * it; where it did not, the branch is cut again from the base its work landed
+ * on and the rescued conversation is reinstated, so the agent resumes on top of
+ * what it merged. Which of the two is about to happen is in the Restore
+ * tooltip; see `lib/restore.ts`. Only a run whose base is gone as well has
+ * nothing to come back from.
  */
 export default function ArchivedSection() {
   const { selectedProjectId, refreshRuns, setFocusedRun } = useRuns();
@@ -127,41 +132,41 @@ export default function ArchivedSection() {
         )}
       </div>
       {open &&
-        items.map((r) => {
-          const kept = r.archived?.branchKept ?? false;
-          return (
+        items.map((r) => (
             <div key={r.id} className="archived-row">
-              <span className="archived-name">{r.agent}: {r.prompt || r.branch}</span>
-              {/* What is left of this one, in one word. "Record" is not a
-                  lesser archive — it is the normal ending for merged work. */}
-              <span className="archived-held" title={kept
-                ? `Its ${r.branch} branch is still here, so the agent can be restored onto it`
-                : "Its work is elsewhere, so only the record was kept"}>
-                {kept ? "branch" : "record"}
+              {/* The row used to carry a "branch"/"record" chip here. On a
+                  sidebar this narrow it cost more of the title than it was
+                  worth, and every row after a merge said the same word —
+                  "record" — so it distinguished nothing. What it was for now
+                  lives in the Restore button's own tooltip, which is where the
+                  distinction is acted on. */}
+              <span className="archived-name" title={`${r.agent}: ${r.prompt || r.branch}`}>
+                {r.agent}: {r.prompt || r.branch}
               </span>
-              {(r.archived?.hasRecord || r.archived?.hasConversation) && (
+              <div className="archived-acts">
+                {(r.archived?.hasRecord || r.archived?.hasConversation) && (
+                  <button
+                    className="icon-btn"
+                    title="Read the record and the conversation"
+                    disabled={busy}
+                    onClick={() => setReading(r)}
+                  >≡</button>
+                )}
                 <button
                   className="icon-btn"
-                  title="Read the record and the conversation"
+                  title={restoreTitle(r)}
+                  disabled={busy || !restorable(r)}
+                  onClick={() => restore(r)}
+                >↺</button>
+                <button
+                  className="icon-btn danger"
+                  title="Delete permanently"
                   disabled={busy}
-                  onClick={() => setReading(r)}
-                >≡</button>
-              )}
-              <button
-                className="icon-btn"
-                title={kept ? "Restore" : "Nothing to restore: this run's branch is gone"}
-                disabled={busy || !kept}
-                onClick={() => restore(r)}
-              >↺</button>
-              <button
-                className="icon-btn danger"
-                title="Delete permanently"
-                disabled={busy}
-                onClick={() => setConfirmDelete(r)}
-              ><TrashIcon /></button>
+                  onClick={() => setConfirmDelete(r)}
+                ><TrashIcon /></button>
+              </div>
             </div>
-          );
-        })}
+        ))}
       {open && items.length === 0 && <div className="archived-empty">Nothing archived.</div>}
       {reading && <RunRecordDialog run={reading} onClose={() => setReading(null)} />}
       {confirmDelete && (

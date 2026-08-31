@@ -1652,7 +1652,17 @@ fn only_an_agent_agency_can_read_has_a_transcript_the_teardown_touches() {
     init_repo(&repo);
 
     let state = common::state(&dir);
-    for (name, command) in [("claude", "claude"), ("other", "sh")] {
+    // `manages_transcript` keys off the *basename* of the profile's command, so
+    // a stand-in named `claude` proves the same thing the real CLI would. Using
+    // the real one made this test pass only on a machine that had claude
+    // installed: CI has no such binary, and create_run failed there with
+    // "Unable to spawn claude because it doesn't exist on the filesystem".
+    let bin = dir.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let claude = bin.join("claude");
+    write_fake_cli(&claude, "#!/bin/sh\nsleep 1\n");
+
+    for (name, command) in [("claude", claude.to_str().unwrap()), ("other", "sh")] {
         state
             .register_profile(AgentProfile {
                 name: name.into(),

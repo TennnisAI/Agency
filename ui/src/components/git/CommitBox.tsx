@@ -85,11 +85,17 @@ export default function CommitBox({
             ? <button className="git-secondary git-iconlabel" onClick={onPublish} disabled={busy}
                 title={`Push ${ahead} commit${ahead === 1 ? "" : "s"} to a new origin/${branch}`}>
                 <CloudUploadIcon />
-                <span>Publish Branch ↑{ahead}</span></button>
+                {/* "Publish Branch ↑N" did not fit beside the Commit split at the
+                    compact panel's width. The branch it publishes is named in the
+                    branch bar directly above, and in full in this button's title. */}
+                <span>Publish ↑{ahead}</span></button>
             : <button className="git-secondary git-iconlabel" onClick={() => setAddingRemote((o) => !o)} disabled={busy}
                 title="No 'origin' remote configured. Add one to publish.">
                 <CloudUploadIcon />
-                <span>Add Remote &amp; Publish…</span></button>)}
+                {/* Same width problem as its sibling above: "Add Remote & Publish…"
+                    is 180px of button beside a 109px Commit split. The ellipsis says
+                    an input follows, and the title says why it is needed. */}
+                <span>Add Remote…</span></button>)}
       </div>
       {addingRemote && !hasRemote && (
         <div className="git-remote-row">

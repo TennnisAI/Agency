@@ -1466,16 +1466,21 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
 .git-commit { display: flex; flex-direction: column; gap: 6px; padding: 8px; }
 .git-commit-input { background: var(--crust); border: 1px solid var(--s1); color: var(--text); border-radius: 6px; padding: 7px; min-height: 54px; resize: vertical; font-family: var(--sans); font-size: 13px; }
 .git-commit-input:focus { outline: none; border-color: var(--blue); }
-.git-commit-bar { display: flex; gap: 6px; align-items: center; }
-.git-remote-row { display: flex; gap: 6px; align-items: center; }
+/* Every button in these rows sets white-space: nowrap, and the rows wrap rather
+   than squeeze: at the compact panel's real content width (~240px) the natural
+   row was 261.6px, so "✓ Commit" broke after the glyph and "Publish Branch ↑1"
+   broke after "Branch": two-line buttons, on a display with room to spare.
+   A button that no longer fits now moves to its own row whole. */
+.git-commit-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.git-remote-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .git-remote-input { flex: 1; min-width: 0; background: var(--crust); border: 1px solid var(--s1); color: var(--text); border-radius: 6px; padding: 6px 8px; font-family: var(--mono); font-size: 12px; }
 .git-remote-input:focus { outline: none; border-color: var(--blue); }
 .git-split { position: relative; display: flex; }
-.git-primary { background: var(--blue); color: var(--crust); border: none; font-weight: 600; padding: 6px 12px; cursor: pointer; font-size: 12.5px; }
+.git-primary { background: var(--blue); color: var(--crust); border: none; font-weight: 600; padding: 6px 12px; cursor: pointer; font-size: 12.5px; white-space: nowrap; flex-shrink: 0; }
 .git-primary:hover { background: var(--lav); }
 .git-split .git-primary:first-child { border-radius: 7px 0 0 7px; }
 .git-caret { border-radius: 0 7px 7px 0; padding: 6px 8px; border-left: 1px solid rgba(0,0,0,.25); }
-.git-secondary { background: var(--s0); color: var(--text); border: none; border-radius: 7px; padding: 6px 10px; cursor: pointer; font-size: 12.5px; }
+.git-secondary { background: var(--s0); color: var(--text); border: none; border-radius: 7px; padding: 6px 10px; cursor: pointer; font-size: 12.5px; white-space: nowrap; flex-shrink: 0; }
 .git-secondary:hover { background: var(--s1); }
 /* Button whose label is preceded by an SVG glyph: centres the two instead of
    letting the icon sit on the text baseline. */

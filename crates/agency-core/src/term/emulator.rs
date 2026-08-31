@@ -170,6 +170,10 @@ impl Emulator {
         let grid = self.term.grid();
         let total = grid.total_lines();
         let mut data: Vec<u8> = Vec::new();
+        let cur = grid.cursor.point;
+        let cx = cur.column.0 as u16;
+        // `cur.line.0` is i32 in alacritty 0.26 (negative = scrollback); clamp to 0.
+        let cy = cur.line.0.max(0);
 
         // Restore the screen buffer the child is drawing on. On the alternate
         // screen there is no scrollback; entering it (1049h) also clears + homes,
@@ -228,12 +232,32 @@ impl Emulator {
                 break;
             }
         }
+        // The cursor's own row is painted even when it is blank, because the
+        // client reaches the cursor by counting rows: a row the trim dropped is
+        // a row the client never scrolls past, and the cursor lands that many
+        // rows too high. Observed as two rows too high, mid-way along an old
+        // output line, after typing a wrapped command at the shell and erasing
+        // it again — zsh redraws the prompt on row 7 of 10 and clears to the
+        // end of the screen, so the two rows under it are blank with scrollback
+        // above. Rows *below* the cursor are still dropped; those are what
+        // scrolled blank lines into the pane's scrollback.
+        let end = end.max(cy + 1);
         // A row the child never ended: its text ran past the right edge and the
         // terminal carried it onto the next row. The grid marks that on the last
         // cell, and it is the difference between one logical line and two.
         let soft_wrapped = |li: i32| {
             self.cols > 0
                 && grid[Line(li)][Column(self.cols as usize - 1)].flags.contains(Flags::WRAPLINE)
+        };
+        // What the paint emits for a row: the whole width for a soft-wrapped
+        // row (filling the last column is what makes the client wrap on its
+        // own), otherwise up to the last cell worth keeping.
+        let row_end = |li: i32| if soft_wrapped(li) { self.cols as usize } else { content_end(li) };
+        // Whether that leaves the client any character to draw — a row of
+        // nothing but wide-char spacers emits none, and neither does a blank.
+        let row_emits = |li: i32| {
+            (0..row_end(li))
+                .any(|col| !grid[Line(li)][Column(col)].flags.contains(Flags::WIDE_CHAR_SPACER))
         };
         let mut last = Style::reset();
         // A hyperlink is not an SGR and the `\x1b[0m` closing each row does not
@@ -250,8 +274,7 @@ impl Emulator {
             // broken at the old width, and a copied line comes out with a
             // newline through the middle of it.
             let wrapped = soft_wrapped(li);
-            let row_end = if wrapped { self.cols as usize } else { content_end(li) };
-            for col in 0..row_end {
+            for col in 0..row_end(li) {
                 let cell = &grid[Line(li)][Column(col)];
                 // The second half of a double-width glyph. The grid keeps it as
                 // a cell of its own so its columns add up, but a client draws
@@ -288,7 +311,16 @@ impl Emulator {
             // every row up by one — the child then redraws relative to a screen
             // that is off by a line, which is the "cursor stuck at the bottom"
             // desync.
-            if li + 1 < end && !wrapped {
+            //
+            // A soft-wrapped row is left one character short of the wrap it
+            // relies on, and the next row's first character is what completes
+            // it — so a next row with nothing to draw (the child erased the
+            // continuation) would never wrap at all, and the paint would lose a
+            // row. Break that one by hand instead: the join is not worth
+            // keeping across an erased row, and every painted row consuming
+            // exactly one client row is what the cursor arithmetic below rests
+            // on.
+            if li + 1 < end && (!wrapped || !row_emits(li + 1)) {
                 data.extend_from_slice(b"\r\n");
             }
         }
@@ -346,10 +378,16 @@ impl Emulator {
             data.extend_from_slice(b"\x1b[?1004h");
         }
 
-        let cur = self.term.grid().cursor.point;
-        let cx = cur.column.0 as u16;
-        // `cur.line.0` is i32 in alacritty 0.26 (negative = scrollback); clamp to 0.
-        let cy = cur.line.0.max(0) as u16;
+        // Where the cursor lands on the *client's* screen, which is not `cy`.
+        // The paint starts from home and every row above consumes one row, so
+        // the client scrolls once for each row past its last: what the snapshot
+        // drew sits `start + scrolled` rows off the emulator's own numbering,
+        // and sending `cy` straight through put the cursor above the newest
+        // line whenever the two disagreed. Rows painted is `end - start`; the
+        // last of them does not advance, hence `rows` and not `rows - 1`.
+        let scrolled = ((end - start) as usize).saturating_sub(self.rows as usize) as i32;
+        let bottom = (self.rows as i32 - 1).max(0);
+        let cy = (cy - start - scrolled).clamp(0, bottom) as u16;
         // Position the cursor (1-based) after the repaint.
         data.extend_from_slice(format!("\x1b[{};{}H", cy + 1, cx + 1).as_bytes());
         // Hide the hardware cursor if the child had (full-screen TUIs draw their
@@ -746,6 +784,98 @@ mod tests {
         let mut b = Emulator::new(snap.cols, snap.rows);
         b.feed(&snap.data);
         assert_eq!(b.capture(10).trim_end(), a.capture(10).trim_end());
+    }
+
+    /// The cursor's column, and the text of the row it is sitting on.
+    ///
+    /// What "the cursor is in the right place" means to someone looking at the
+    /// pane: not the row *number* (the replay's screen is scrolled differently
+    /// from the emulator's grid, deliberately — see the trims in `snapshot`)
+    /// but the line it is on and where along it.
+    fn cursor_view(e: &Emulator) -> (usize, String) {
+        let li = e.term.grid().cursor.point.line.0;
+        let mut row = String::new();
+        for col in 0..e.cols as usize {
+            row.push(e.term.grid()[Line(li)][Column(col)].c);
+        }
+        (e.term.grid().cursor.point.column.0, row.trim_end().to_string())
+    }
+
+    /// Replay the snapshot into a fresh emulator — what the pane does on
+    /// reattach — and assert the cursor came back where the child left it.
+    fn assert_cursor_survives_a_reattach(a: &Emulator, what: &str) {
+        let snap = a.snapshot();
+        let mut b = Emulator::new(snap.cols, snap.rows);
+        b.feed(&snap.data);
+        assert_eq!(cursor_view(&b), cursor_view(a), "cursor moved on reattach: {what}");
+        // And the frame's own cursor fields describe the same place, since a
+        // client is entitled to read them instead of the CUP in the stream.
+        assert_eq!(
+            (snap.cx as usize, snap.cy as i32),
+            (b.term.grid().cursor.point.column.0, b.term.grid().cursor.point.line.0),
+            "snapshot cx/cy disagree with the stream it carries: {what}",
+        );
+    }
+
+    #[test]
+    fn snapshot_keeps_the_cursor_on_its_own_line_when_rows_below_it_are_blank() {
+        // The toggle-the-terminal-and-type bug. A shell with scrollback whose
+        // last rows are blank — zsh redraws the prompt higher up and clears to
+        // the end of the screen every time a wrapped command line is erased —
+        // came back with the cursor two rows above the prompt, part-way along
+        // an old output line, because the snapshot numbered the cursor's row in
+        // the emulator's grid while the trimmed repaint had scrolled the client
+        // further down.
+        let mut e = Emulator::new(40, 10);
+        for i in 0..20 {
+            e.feed(format!("line{i}\r\n").as_bytes());
+        }
+        // A command line long enough to have wrapped, erased: the prompt is
+        // redrawn two rows higher and everything under it cleared.
+        e.feed(b"$ a-long-command");
+        e.feed(b"\x1b[2A\r$ \x1b[J");
+        assert_cursor_survives_a_reattach(&e, "prompt with blank rows under it");
+    }
+
+    #[test]
+    fn snapshot_keeps_the_cursor_on_a_blank_row_below_the_last_output() {
+        // Same arithmetic, one row further: the child left the cursor on a row
+        // of its own below everything it drew (a command still running, its
+        // output ending in a newline). The row is blank, so the trim drops it —
+        // and the cursor then lands on the last line of output instead, with
+        // whatever the user types appearing in the middle of it.
+        let mut e = Emulator::new(40, 10);
+        for i in 0..20 {
+            e.feed(format!("line{i}\r\n").as_bytes());
+        }
+        assert_cursor_survives_a_reattach(&e, "cursor alone on the row below the output");
+    }
+
+    #[test]
+    fn snapshot_keeps_the_cursor_after_a_screen_clear_that_kept_the_scrollback() {
+        // ED 2 without ED 3: the screen is blank and the prompt is back at the
+        // top of it, but the scrollback the snapshot replays is not, so the
+        // client's screen ends up scrolled a long way from the emulator's.
+        let mut e = Emulator::new(40, 10);
+        for i in 0..20 {
+            e.feed(format!("line{i}\r\n").as_bytes());
+        }
+        e.feed(b"\x1b[2J\x1b[H$ ");
+        assert_cursor_survives_a_reattach(&e, "cleared screen over kept scrollback");
+    }
+
+    #[test]
+    fn snapshot_keeps_the_cursor_when_a_wrapped_line_lost_its_continuation() {
+        // A soft-wrapped row relies on the next row's first character to make
+        // the client wrap. Where the child erased that continuation there is no
+        // such character, so the row has to be broken by hand or the paint
+        // loses a row and everything below it — the cursor included — comes
+        // back one row high.
+        let mut e = Emulator::new(10, 6);
+        e.feed(b"0123456789continued\r\n");
+        // Erase the continuation row, then park the cursor below it.
+        e.feed(b"\x1b[2;1H\x1b[2K\x1b[4;3Hx\x1b[4;4H");
+        assert_cursor_survives_a_reattach(&e, "wrapped row with an erased continuation");
     }
 
     #[test]

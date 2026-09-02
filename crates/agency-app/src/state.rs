@@ -3409,6 +3409,10 @@ impl AppState {
             .ok()
             .and_then(|t| issuefs::parse_issue_file(&key, &t).ok());
         let extra = current.as_ref().map(|f| f.extra.clone()).unwrap_or_default();
+        // Preserved from the file for the same reason `extra` is: the identity
+        // in the file may have been minted on another machine, and this write
+        // (a status flip, a retitle) is no reason to overwrite it with ours.
+        let uid = current.as_ref().and_then(|f| f.uid.clone()).or_else(|| Some(issue.id.clone()));
         // The thread belongs to the file, not to the index row: an agent can
         // append a comment while the app has the issue open, and every write
         // from here (title, body, status, links) carries over what the file
@@ -3417,6 +3421,7 @@ impl AppState {
         let comments = current.map_or_else(|| issue.comments.clone(), |f| f.comments);
         let file = issuefs::IssueFile {
             key,
+            uid,
             seq: issue.seq,
             title: issue.title.clone(),
             body: issue.body.clone(),
@@ -3469,6 +3474,7 @@ impl AppState {
             .and_then(|t| issuefs::parse_issue_file(&key, &t).ok())
             .unwrap_or_else(|| issuefs::IssueFile {
                 key: key.clone(),
+                uid: Some(row.id.clone()),
                 seq: row.seq,
                 title: row.title.clone(),
                 body: row.body.clone(),

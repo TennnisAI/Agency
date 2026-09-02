@@ -46,5 +46,7 @@ browser with `support.js` beside it).
 
 - [`windows-compat.md`](windows-compat.md) — every macOS/Unix assumption a
   Windows port would need to touch. Kept current as shell-outs are added.
-- [`tracked-issues.md`](tracked-issues.md) — open exploration: should
-  `.agency/issues/` be trackable in git? No decision yet; constraints recorded.
+- [`tracked-issues.md`](tracked-issues.md) — syncing `.agency/issues/` across a
+  person's machines and across a team, as one mechanism: a git ref used as
+  transport, never checked out. Direction settled; the `uid` groundwork is in,
+  the sync engine is not.

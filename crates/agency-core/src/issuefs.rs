@@ -7,6 +7,10 @@
 //! a status is skipped, never guessed at) but round-trips forgivingly: unknown
 //! keys are preserved verbatim so files written by a newer schema — Phase 6
 //! adds `due`/`scheduled`/`rank` — survive an older build's write untouched.
+//!
+//! `key` names an issue within a checkout; `uid` names it across checkouts, and
+//! is what any future sync of this directory between machines has to match on.
+//! See `docs/tracked-issues.md`.
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -32,8 +36,20 @@ pub const ASSETS_DIR: &str = "assets";
 /// we don't understand, preserved verbatim and in order.
 #[derive(Debug, Clone, PartialEq)]
 pub struct IssueFile {
-    /// `AGE-14` — also the filename stem; the file's identity.
+    /// `AGE-14` — also the filename stem; the file's identity *within one
+    /// checkout*.
     pub key: String,
+    /// The issue's identity *across* checkouts: the uuid its index row is
+    /// keyed by, persisted so it survives a copy to another machine.
+    ///
+    /// Without it the key is the only identity an issue has, and the key is
+    /// minted from a per-machine counter (`registry::alloc_issue_seq`), so two
+    /// machines filing offline both reach for the same number and produce two
+    /// unrelated issues that claim to be `AGE-175` — indistinguishable, and
+    /// impossible to renumber safely because any `links:` naming `AGE-175`
+    /// could mean either. `None` for a file written before this field existed
+    /// or hand-authored without one; `reconcile` backfills those in place.
+    pub uid: Option<String>,
     /// The numeric part of the key.
     pub seq: i64,
     pub title: String,
@@ -163,8 +179,25 @@ pub fn issue_path(root: &Path, key: &str) -> PathBuf {
 // ---------------------------------------------------------------------------
 // Parse / serialize
 
-const KNOWN_KEYS: [&str; 9] =
-    ["key", "status", "priority", "due", "scheduled", "rank", "links", "created", "updated"];
+const KNOWN_KEYS: [&str; 10] =
+    ["key", "uid", "status", "priority", "due", "scheduled", "rank", "links", "created", "updated"];
+
+/// Is this a hyphenated uuid (`8-4-4-4-12` hex, either case)? Used to reject a
+/// `uid:` that could not have come from us. Shape only, and deliberately not a
+/// version check: a uuid we did not mint is still a usable identity, but a
+/// hand-typed word is not — it would collide with every other file someone
+/// typed the same word into, which is the exact failure `uid` exists to stop.
+fn is_uuid(s: &str) -> bool {
+    let groups = [8, 4, 4, 4, 12];
+    let mut parts = s.split('-');
+    for len in groups {
+        match parts.next() {
+            Some(p) if p.len() == len && p.bytes().all(|b| b.is_ascii_hexdigit()) => {}
+            _ => return false,
+        }
+    }
+    parts.next().is_none()
+}
 
 /// Parse a `links:` value — a comma-separated list of issue keys. Keys are
 /// upper-cased (a hand-written `age-12` means AGE-12), deduped, and kept in
@@ -250,6 +283,7 @@ pub fn parse_issue_file(file_key: &str, text: &str) -> Result<IssueFile> {
         bail!("missing frontmatter fence");
     }
     let mut key = None;
+    let mut uid: Option<String> = None;
     let mut status = None;
     let mut priority: Option<u8> = None;
     let mut due = None;
@@ -282,6 +316,15 @@ pub fn parse_issue_file(file_key: &str, text: &str) -> Result<IssueFile> {
         let v = v.find(" #").map_or(v, |i| &v[..i]).trim();
         let slot = match k {
             "key" => &mut key,
+            "uid" => {
+                if !is_uuid(v) {
+                    bail!("invalid uid: {v}");
+                }
+                if uid.replace(v.to_string()).is_some() {
+                    bail!("duplicate frontmatter key: uid");
+                }
+                continue;
+            }
             "status" => {
                 if status.replace(IssueStatus::parse(v)?).is_some() {
                     bail!("duplicate frontmatter key: status");
@@ -362,6 +405,7 @@ pub fn parse_issue_file(file_key: &str, text: &str) -> Result<IssueFile> {
 
     Ok(IssueFile {
         key,
+        uid,
         seq,
         title,
         body,
@@ -386,6 +430,9 @@ pub fn serialize_issue_file(f: &IssueFile) -> String {
     let mut out = String::new();
     out.push_str("---\n");
     out.push_str(&format!("key: {}\n", f.key));
+    if let Some(u) = &f.uid {
+        out.push_str(&format!("uid: {u}\n"));
+    }
     out.push_str(&format!("status: {}\n", f.status.as_str()));
     out.push_str(&format!("priority: {}\n", f.priority));
     if let Some(d) = &f.due {
@@ -423,6 +470,58 @@ pub fn serialize_issue_file(f: &IssueFile) -> String {
         }
     }
     out
+}
+
+/// Insert `uid: <uuid>` into an issue file's frontmatter, returning the new
+/// text. `None` when the text already carries a `uid:` or has no frontmatter to
+/// put one in, so a caller can treat `None` as "nothing to do".
+///
+/// A byte-level splice rather than a `parse_issue_file` → `serialize_issue_file`
+/// round-trip, which is lossy in ways that would be gratuitous here: the round
+/// trip drops the trailing `# backlog|todo|…` comments the README's own example
+/// teaches people to write, normalizes whitespace, and rewrites CRLF as LF.
+/// Backfilling an identity the user never asked for must not reformat a file
+/// they hand-authored; everything outside the inserted line is preserved
+/// byte-for-byte.
+///
+/// The line goes after `key:` so the two identities read together, and falls
+/// back to the top of the block for a file that somehow lacks one.
+fn splice_uid(text: &str, uid: &str) -> Option<String> {
+    let mut insert_at: Option<usize> = None;
+    let mut eol = "\n";
+    let mut offset = 0usize;
+    let mut in_frontmatter = false;
+    for raw in text.split_inclusive('\n') {
+        let next = offset + raw.len();
+        let line = raw.trim_end_matches('\n').trim_end_matches('\r');
+        if !in_frontmatter {
+            if line.trim_end() != "---" {
+                return None;
+            }
+            in_frontmatter = true;
+            if raw.ends_with("\r\n") {
+                eol = "\r\n";
+            }
+            insert_at = Some(next);
+        } else if line.trim_end() == "---" {
+            break;
+        } else {
+            match line.split_once(':').map(|(k, _)| k.trim()) {
+                Some("uid") => return None,
+                Some("key") => insert_at = Some(next),
+                _ => {}
+            }
+        }
+        offset = next;
+    }
+    let at = insert_at?;
+    let mut out = String::with_capacity(text.len() + uid.len() + 6);
+    out.push_str(&text[..at]);
+    out.push_str("uid: ");
+    out.push_str(uid);
+    out.push_str(eol);
+    out.push_str(&text[at..]);
+    Some(out)
 }
 
 /// Repo-relative paths of the files an issue body attaches, deduped and in
@@ -581,6 +680,7 @@ issue key (`AGE-14.md`) and the H1 is the title.
 ```markdown
 ---
 key: AGE-14
+uid: 8fbc9e2a-3d41-4c7e-9a10-5b6d2f8e04c3   # the app writes this; don't edit
 status: in_progress        # backlog|todo|in_progress|in_review|done|cancelled
 priority: 2                # 0-4
 created: 2026-07-27T09:30:00Z
@@ -599,6 +699,9 @@ issue's discussion, not its description.
 - To change status, edit `status:`. To close an issue, set `status: done`.
 - To file a new issue, add `<KEY>-<n>.md` using the next unused number for the
   key. Numbers are never reused and never renumbered, even after deletion.
+  Leave `uid:` out; the app writes one in. It is the issue's identity when this
+  directory is copied somewhere the numbering isn't shared, so never copy one
+  from another issue and never edit one by hand.
 - To comment, append a `## <author> · <UTC RFC3339>` section to the end of the
   file and write under it. The body is everything between the H1 and the first
   such heading, so a comment never eats the description. Sign it with your own
@@ -642,6 +745,7 @@ pub fn export_project(
         }
         let file = IssueFile {
             key,
+            uid: Some(row.id.clone()),
             seq: row.seq,
             title: row.title,
             body: row.body,
@@ -724,6 +828,8 @@ pub struct ReconcileSummary {
     pub imported: usize,
     /// Files whose row differed: row overwritten from the file.
     pub updated: usize,
+    /// Files that carried no `uid:` and had one written into them.
+    pub backfilled: usize,
     /// Rows whose file is gone: row deleted.
     pub dropped: usize,
     /// Issue-shaped files that failed to parse: `(filename, reason)`. Their
@@ -734,11 +840,18 @@ pub struct ReconcileSummary {
 
 /// Make the project's index rows follow its issue files. A row keyed by a seq
 /// no file (healthy or corrupt) covers is deleted; a file with no row is
-/// imported under a fresh uuid; on both, the row is overwritten from the file
-/// (the existing uuid survives, so `runs.issue_id` links hold). Every file's
-/// seq raises the high-water mark — numbers consumed by hand-authored files
-/// are never handed out again. Files that omit `created`/`updated` get the
-/// file's mtime.
+/// imported under the uuid its `uid:` names, or a fresh one when it names none;
+/// on both, the row is overwritten from the file (the existing uuid survives,
+/// so `runs.issue_id` links hold). Every file's seq raises the high-water mark
+/// — numbers consumed by hand-authored files are never handed out again. Files
+/// that omit `created`/`updated` get the file's mtime.
+///
+/// This is also where a file that predates `uid` gets one written into it. That
+/// makes reconcile a writer of the files it reads, which is a departure worth
+/// naming: it is a single converging write per file, it changes nothing an
+/// index row is derived from, and the alternative (a one-shot migration, as
+/// `untrack_issue_files` does) would miss every file that arrives later by hand
+/// or by sync — which is most of the ones that need it.
 ///
 /// Only files under the project's own `issue_key` prefix belong to it: the
 /// filename is the issue's identity, and the app writes/deletes exactly
@@ -805,7 +918,40 @@ pub fn reconcile(
             (f.created_at, f.updated_at)
         };
         let prev = existing.get(&f.seq);
-        let id = prev.map_or_else(|| uuid::Uuid::new_v4().to_string(), |p| p.id.clone());
+        // Identity comes from the file when the file carries one — that is what
+        // `uid` is for, and it is what lets an issue copied to another machine
+        // keep the id its runs point at. A file whose uid disagrees with the row
+        // already holding its seq is left alone: `upsert_issue_row` keeps the
+        // existing row's id regardless, and re-keying the row here would dangle
+        // every `runs.issue_id` pointing at it. Telling the two apart (the same
+        // issue whose ids diverged, versus two issues that raced for one number)
+        // needs a common ancestor, which only a sync pass has.
+        let id = match (f.uid.as_deref(), prev) {
+            (Some(u), Some(p)) if u != p.id => {
+                log::warn!(
+                    "issue {} carries uid {u} but is indexed as {}; keeping the indexed id",
+                    f.key,
+                    p.id
+                );
+                p.id.clone()
+            }
+            (Some(u), _) => u.to_string(),
+            (None, Some(p)) => p.id.clone(),
+            (None, None) => uuid::Uuid::new_v4().to_string(),
+        };
+        // Persist that identity into the file if it has none, so it survives the
+        // next copy of this directory. A failure here is logged, not fatal: a
+        // read-only issues dir must not take the board down with it.
+        if f.uid.is_none() {
+            let path = issue_path(root, &f.key);
+            match std::fs::read_to_string(&path).ok().and_then(|t| splice_uid(&t, &id)) {
+                Some(next) => match atomic_write(&path, &next) {
+                    Ok(()) => summary.backfilled += 1,
+                    Err(e) => log::warn!("could not write uid into {}: {e}", f.key),
+                },
+                None => log::warn!("could not place a uid in {}", f.key),
+            }
+        }
         let issue = issue_from_file(f, id, project_id, created_at, updated_at);
         match prev {
             None => {
@@ -907,6 +1053,7 @@ Body markdown, wikilinks allowed.\n";
     fn serialize_is_canonical() {
         let f = IssueFile {
             key: "AGE-14".into(),
+            uid: None,
             seq: 14,
             title: "Fix terminal resize on reattach".into(),
             body: "Body markdown, wikilinks allowed.".into(),
@@ -1255,6 +1402,181 @@ created: 2026-07-27T09:30:00Z\nupdated: 2026-07-27T14:02:00Z\n---\n\
         let s = reconcile(&reg, "p1", "AGE", root).unwrap();
         assert_eq!((s.imported, s.updated, s.dropped), (0, 0, 1));
         assert!(reg.list_issues("p1").unwrap().is_empty());
+    }
+
+    const UID: &str = "8fbc9e2a-3d41-4c7e-9a10-5b6d2f8e04c3";
+
+    fn write_issue_uid(root: &Path, key: &str, uid: &str) {
+        let dir = root.join(ISSUES_DIR);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(format!("{key}.md")),
+            format!("---\nkey: {key}\nuid: {uid}\nstatus: todo\n---\n# T\n"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn uid_round_trips_and_is_omitted_when_absent() {
+        let text = format!("---\nkey: AGE-9\nuid: {UID}\nstatus: todo\n---\n# Nine\n");
+        let f = parse_issue_file("AGE-9", &text).unwrap();
+        assert_eq!(f.uid.as_deref(), Some(UID));
+        // Not swept into `extra` — a known key that fell through would be
+        // written twice on the next serialize.
+        assert!(f.extra.is_empty());
+        let back = parse_issue_file("AGE-9", &serialize_issue_file(&f)).unwrap();
+        assert_eq!(back, f);
+        assert!(serialize_issue_file(&f).contains(&format!("uid: {UID}\n")));
+
+        let none =
+            parse_issue_file("AGE-9", "---\nkey: AGE-9\nstatus: todo\n---\n# Nine\n").unwrap();
+        assert_eq!(none.uid, None);
+        assert!(!serialize_issue_file(&none).contains("uid:"));
+    }
+
+    #[test]
+    fn rejects_a_uid_that_is_not_a_uuid() {
+        for bad in ["mine", "8fbc9e2a3d414c7e9a105b6d2f8e04c3", "8fbc9e2a-3d41-4c7e-9a10-zzz"] {
+            let text = format!("---\nkey: AGE-9\nuid: {bad}\nstatus: todo\n---\n# Nine\n");
+            assert!(
+                parse_issue_file("AGE-9", &text).is_err(),
+                "accepted a uid that cannot be one: {bad}"
+            );
+        }
+        // Duplicate uid lines are a conflict, not a last-one-wins.
+        let dup = format!("---\nkey: AGE-9\nuid: {UID}\nuid: {UID}\nstatus: todo\n---\n# N\n");
+        assert!(parse_issue_file("AGE-9", &dup).is_err());
+    }
+
+    #[test]
+    fn splice_uid_preserves_everything_it_did_not_insert() {
+        // Trailing comments and odd spacing survive, which a parse/serialize
+        // round-trip would have eaten.
+        let text = "---\nkey: AGE-14\nstatus: todo    # backlog|todo|done\n---\n# T\n\nBody\n";
+        let out = splice_uid(text, UID).unwrap();
+        assert_eq!(
+            out,
+            format!(
+                "---\nkey: AGE-14\nuid: {UID}\nstatus: todo    # backlog|todo|done\n\
+---\n# T\n\nBody\n"
+            )
+        );
+        // And the result is still parseable, with the uid where we put it.
+        assert_eq!(parse_issue_file("AGE-14", &out).unwrap().uid.as_deref(), Some(UID));
+
+        // CRLF stays CRLF — a Windows checkout must not be rewritten wholesale.
+        let crlf = "---\r\nkey: AGE-1\r\nstatus: todo\r\n---\r\n# T\r\n";
+        let out = splice_uid(crlf, UID).unwrap();
+        assert_eq!(
+            out,
+            format!("---\r\nkey: AGE-1\r\nuid: {UID}\r\nstatus: todo\r\n---\r\n# T\r\n")
+        );
+    }
+
+    /// The invariant behind letting `reconcile` rewrite a user's file: the
+    /// splice adds a uid and changes *nothing else* the parser can see. Run
+    /// over the shapes a real tracker actually contains — trailing comments, a
+    /// comment thread, links, dates, and frontmatter keys this build does not
+    /// know — because those are what a lossy rewrite would quietly eat.
+    #[test]
+    fn splice_uid_changes_nothing_but_the_uid() {
+        let cases = [
+            EXAMPLE,
+            "---\nkey: AGE-5\nstatus: done\npriority: 4\ndue: 2026-08-01\n\
+scheduled: 2026-07-30\nrank: 2.5\nlinks: AGE-1, AGE-2\n\
+created: 2026-07-27T09:30:00Z\nupdated: 2026-07-27T14:02:00Z\n\
+owner: nic\nepic: platform\n---\n# Five\n\nBody with an ![](assets/a.png).\n\
+\n## Sam · 2026-07-27T15:10:00Z\n\nFirst.\n\
+\n## Ada · 2026-07-28T09:00:00Z\n\nSecond.\n",
+            // No body, no comments — the minimum a file can be.
+            "---\nkey: AGE-2\nstatus: todo\n---\n# Two\n",
+        ];
+        for text in cases {
+            let key = &text[text.find("key: ").unwrap() + 5..];
+            let key = &key[..key.find('\n').unwrap()];
+            let before = parse_issue_file(key, text).unwrap();
+            assert_eq!(before.uid, None, "fixture already has a uid: {key}");
+            let after = parse_issue_file(key, &splice_uid(text, UID).unwrap()).unwrap();
+            assert_eq!(after.uid.as_deref(), Some(UID));
+            assert_eq!(IssueFile { uid: None, ..after }, before, "splice altered {key}");
+        }
+    }
+
+    #[test]
+    fn splice_uid_declines_when_there_is_nothing_to_do() {
+        let has = format!("---\nkey: AGE-1\nuid: {UID}\nstatus: todo\n---\n# T\n");
+        assert_eq!(splice_uid(&has, UID), None);
+        assert_eq!(splice_uid("# no frontmatter here\n", UID), None);
+    }
+
+    #[test]
+    fn reconcile_backfills_a_uid_and_converges() {
+        let db = tempfile::tempdir().unwrap();
+        let reg = Registry::open(&db.path().join("r.db")).unwrap();
+        let root_dir = tempfile::tempdir().unwrap();
+        let root = root_dir.path();
+
+        write_issue(root, "AGE-7", "todo", "Seven");
+        let s = reconcile(&reg, "p1", "AGE", root).unwrap();
+        assert_eq!(s.backfilled, 1);
+        let id = reg.list_issues("p1").unwrap()[0].id.clone();
+        let on_disk = std::fs::read_to_string(issue_path(root, "AGE-7")).unwrap();
+        assert!(on_disk.contains(&format!("uid: {id}\n")), "uid not written: {on_disk}");
+
+        // Second pass has nothing to write: the backfill is a one-time,
+        // converging write, not churn on every issue-touching call.
+        let s = reconcile(&reg, "p1", "AGE", root).unwrap();
+        assert_eq!((s.backfilled, s.imported, s.updated), (0, 0, 0));
+
+        // A file that loses its uid (an old build's write, a hand edit) adopts
+        // the id the row already holds rather than minting a new one — this is
+        // what keeps `runs.issue_id` pointing at the same issue.
+        write_issue(root, "AGE-7", "todo", "Seven");
+        let s = reconcile(&reg, "p1", "AGE", root).unwrap();
+        assert_eq!(s.backfilled, 1);
+        assert_eq!(reg.list_issues("p1").unwrap()[0].id, id);
+        assert!(std::fs::read_to_string(issue_path(root, "AGE-7"))
+            .unwrap()
+            .contains(&format!("uid: {id}\n")));
+    }
+
+    #[test]
+    fn reconcile_imports_under_the_uid_the_file_carries() {
+        let db = tempfile::tempdir().unwrap();
+        let reg = Registry::open(&db.path().join("r.db")).unwrap();
+        let root_dir = tempfile::tempdir().unwrap();
+        let root = root_dir.path();
+
+        // The whole point: this file's identity was minted on another machine,
+        // and importing it here must not invent a second one for it.
+        write_issue_uid(root, "AGE-3", UID);
+        let s = reconcile(&reg, "p1", "AGE", root).unwrap();
+        assert_eq!((s.imported, s.backfilled), (1, 0));
+        assert_eq!(reg.list_issues("p1").unwrap()[0].id, UID);
+    }
+
+    #[test]
+    fn reconcile_keeps_the_indexed_id_when_a_files_uid_disagrees() {
+        let db = tempfile::tempdir().unwrap();
+        let reg = Registry::open(&db.path().join("r.db")).unwrap();
+        let root_dir = tempfile::tempdir().unwrap();
+        let root = root_dir.path();
+
+        write_issue_uid(root, "AGE-3", UID);
+        reconcile(&reg, "p1", "AGE", root).unwrap();
+
+        // Same seq, different identity. Re-keying the row would dangle every
+        // run pointing at it, so the row wins and the file is left as-is for a
+        // sync pass (which has the common ancestor this does not) to resolve.
+        let other = "11111111-2222-3333-4444-555555555555";
+        write_issue_uid(root, "AGE-3", other);
+        reconcile(&reg, "p1", "AGE", root).unwrap();
+        let rows = reg.list_issues("p1").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, UID);
+        assert!(std::fs::read_to_string(issue_path(root, "AGE-3"))
+            .unwrap()
+            .contains(&format!("uid: {other}\n")));
     }
 
     #[test]

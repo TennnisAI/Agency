@@ -44,7 +44,10 @@ export async function copyRelPath(relPath: string): Promise<void> {
 export async function ignorePath(root: FileRoot, relPath: string): Promise<boolean> {
   try {
     const added = await addToGitignore(root, relPath);
-    const name = baseName(relPath);
+    // A collapsed untracked folder arrives as git status prints it, with a
+    // trailing slash, and baseName of ".npm-cache/" is the empty string — the
+    // toast read "Added  to .gitignore" until the slash came off first.
+    const name = baseName(relPath.replace(/\/+$/, ""));
     toastInfo(added ? `Added ${name} to .gitignore` : `${name} is already in .gitignore`);
     return added;
   } catch (e) {

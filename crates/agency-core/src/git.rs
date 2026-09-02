@@ -529,6 +529,18 @@ pub fn has_origin(repo: &Path) -> bool {
     git(repo, &["remote"]).map(|out| out.lines().any(|r| r.trim() == "origin")).unwrap_or(false)
 }
 
+/// Every remote this repo has, in git's own order. Used by the backlog-sharing
+/// setting, which offers a remote to sync issues to and should name the ones
+/// that exist rather than making the user remember them.
+pub fn remotes(repo: &Path) -> Result<Vec<String>> {
+    Ok(git(repo, &["remote"])?
+        .lines()
+        .map(str::trim)
+        .filter(|r| !r.is_empty())
+        .map(str::to_string)
+        .collect())
+}
+
 /// How long a fetch may run before it is killed. Fetches happen on their own
 /// now (see the auto-fetch scheduler in the app), so a wedged one must not sit
 /// there forever: the scheduler treats a project as "fetch in flight" until the

@@ -57,6 +57,17 @@ fn default_remote() -> String {
     "origin".to_string()
 }
 
+/// Did the *tracked* `agency.toml` ask for issue sync, rather than this
+/// machine's local file? Read on its own, and not through [`load`], because the
+/// two say different things to a user: a repo that turns sync on is a decision
+/// their team made and shares, and switching it off locally is an override of
+/// that rather than a change anyone else sees.
+pub fn issue_sync_declared_by_repo(repo_path: &Path) -> bool {
+    read_value(&repo_path.join(".agency").join("agency.toml"))
+        .and_then(|v| Some(v.get("issues")?.get("sync")?.as_bool()?))
+        .unwrap_or(false)
+}
+
 /// The remote this project's issues sync to, or `None` when the backlog stays
 /// on this machine. One place to ask, so no caller has to remember that an
 /// empty `remote` means the same thing as `sync = false`.
@@ -695,6 +706,40 @@ pub fn save_knowledge(repo_path: &Path, k: &KnowledgeConfig) -> std::io::Result<
     std::fs::write(&path, text)
 }
 
+/// Persist the `[issues]` section into `.agency/agency.local.toml`, the
+/// gitignored per-machine file. Mirrors [`save_knowledge`].
+///
+/// The local file and not the tracked `agency.toml`, even though `sync` is
+/// conceptually a fact about the repo: Agency has never written a tracked file,
+/// and starting here would leave the user's checkout dirty every time they
+/// touched this toggle — the exact condition the whole untracked-issues design
+/// exists to avoid. A team that wants the decision to travel with the repo
+/// commits `[issues] sync = true` into `agency.toml` by hand, and `load` already
+/// merges that under whatever this writes. See `docs/tracked-issues.md`.
+pub fn save_issues(repo_path: &Path, i: &IssuesConfig) -> std::io::Result<()> {
+    let dir = repo_path.join(".agency");
+    let path = dir.join("agency.local.toml");
+    let mut doc = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|t| toml::from_str::<toml::Value>(&t).ok())
+        .and_then(|v| v.as_table().cloned())
+        .unwrap_or_default();
+
+    let mut table = toml::value::Table::new();
+    // Always written, so turning sync back off is durable rather than falling
+    // through to whatever the tracked file says.
+    table.insert("sync".into(), toml::Value::Boolean(i.sync));
+    let remote = i.remote.trim();
+    if !remote.is_empty() && remote != default_remote() {
+        table.insert("remote".into(), toml::Value::String(remote.to_string()));
+    }
+    doc.insert("issues".into(), toml::Value::Table(table));
+
+    let text = toml::to_string_pretty(&toml::Value::Table(doc)).map_err(std::io::Error::other)?;
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(&path, text)
+}
+
 /// Persist the `[files]` section (the `copy` list) into `.agency/agency.local.toml`
 /// — the gitignored, per-machine override file. Paths are trimmed and blanks
 /// dropped; any other config already in that file is preserved. Mirrors
@@ -847,6 +892,30 @@ mod tests {
 
         // And a local override can switch it back off for one machine.
         write(dir.path(), "agency.local.toml", "[issues]\nsync = false\n");
+        assert_eq!(issue_sync_remote(dir.path()), None);
+    }
+
+    #[test]
+    fn saving_the_backlog_setting_writes_local_and_keeps_the_rest() {
+        let dir = tempdir().unwrap();
+        write(dir.path(), "agency.local.toml", "[knowledge]\ngraph = true\n");
+        // The tracked file must never be touched by a save: writing it would
+        // dirty the checkout, which is the condition this whole design avoids.
+        write(dir.path(), "agency.toml", "[issues]\nsync = true\n");
+        let tracked_before =
+            fs::read_to_string(dir.path().join(".agency").join("agency.toml")).unwrap();
+
+        save_issues(dir.path(), &IssuesConfig { sync: true, remote: "tracker".into() }).unwrap();
+        assert_eq!(issue_sync_remote(dir.path()).as_deref(), Some("tracker"));
+        assert!(load(dir.path()).knowledge.graph, "an unrelated section was dropped");
+        assert_eq!(
+            fs::read_to_string(dir.path().join(".agency").join("agency.toml")).unwrap(),
+            tracked_before
+        );
+
+        // Turning it off is durable: it has to beat the tracked `sync = true`,
+        // so it cannot be written by omission.
+        save_issues(dir.path(), &IssuesConfig { sync: false, remote: "tracker".into() }).unwrap();
         assert_eq!(issue_sync_remote(dir.path()), None);
     }
 

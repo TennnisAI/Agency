@@ -65,6 +65,23 @@ pub struct ProviderSettings {
     pub default_worktree: bool,
 }
 
+/// A project's backlog-sharing config for the settings UI, plus the two facts
+/// the UI needs to say what the choice actually means.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IssueSyncDto {
+    pub sync: bool,
+    pub remote: String,
+    /// The remotes this repo has, so the UI offers names rather than asking the
+    /// user to remember them. Empty for a project with no git remote at all,
+    /// which is the case where sync cannot be turned on usefully.
+    pub remotes: Vec<String>,
+    /// Set by the tracked `agency.toml` rather than this machine's local file.
+    /// The UI says so, because turning it off here is a local override of a
+    /// decision the repo made, not a change everyone sees.
+    pub from_repo: bool,
+}
+
 /// A project's effective knowledge-graph config for the settings UI. Command
 /// overrides are `None` when unset (the `*_default` fields show what runs then);
 /// the `*_installed` flags report whether that tooling is actually on PATH.
@@ -3579,6 +3596,30 @@ impl AppState {
         self.write_issue_file(reg, &next)?;
         reg.upsert_issue_row(&next)?;
         Ok(true)
+    }
+
+    /// This project's backlog-sharing settings, as the settings UI shows them.
+    pub fn issue_sync_config(&self, project_id: &str) -> Result<IssueSyncDto> {
+        let repo = self.project_repo(project_id)?;
+        let cfg = agency_core::config::load(&repo).issues;
+        Ok(IssueSyncDto {
+            sync: cfg.sync,
+            remote: cfg.remote,
+            remotes: agency_core::git::remotes(&repo).unwrap_or_default(),
+            from_repo: agency_core::config::issue_sync_declared_by_repo(&repo),
+        })
+    }
+
+    /// Persist this project's backlog-sharing settings to its local config.
+    pub fn save_issue_sync_config(&self, project_id: &str, sync: bool, remote: &str) -> Result<()> {
+        let repo = self.project_repo(project_id)?;
+        let remote = remote.trim();
+        let remote = if remote.is_empty() { "origin".to_string() } else { remote.to_string() };
+        agency_core::config::save_issues(
+            &repo,
+            &agency_core::config::IssuesConfig { sync, remote },
+        )?;
+        Ok(())
     }
 
     /// Sync this project's backlog with the remote its config names, then put

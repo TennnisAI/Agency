@@ -165,6 +165,53 @@ pub fn plan(mode: Mode, base: &[IssueFile], local: &[IssueFile], remote: &[Issue
     out
 }
 
+/// What to do about attachments: which to bring over, which to remove.
+#[derive(Debug, Default, PartialEq)]
+pub struct AssetPlan {
+    /// Paths relative to the issues dir (`assets/AGE-14-shot.png`) to copy from
+    /// the other side.
+    pub fetch: Vec<String>,
+    /// Paths to remove here.
+    pub delete: Vec<String>,
+}
+
+/// Three-way merge of the attachment set.
+///
+/// Assets are identified by path and never edited in place — the app names each
+/// one with the issue key and a timestamp, so a given path always holds the same
+/// bytes. That makes this a pure set question (did someone add one, did someone
+/// delete one) with no content merge to do, and it is why the bytes are fetched
+/// only for what is actually missing rather than compared.
+///
+/// Orphans are deliberately not collected here. An asset whose issue was deleted
+/// is still referenced by that issue's text in the ref's history, and a merge is
+/// the wrong place to decide a file is unreachable.
+pub fn plan_assets(mode: Mode, base: &[String], local: &[String], remote: &[String]) -> AssetPlan {
+    let set = |xs: &[String]| xs.iter().cloned().collect::<BTreeSet<String>>();
+    let (b, l, r) = (set(base), set(local), set(remote));
+    match mode {
+        // The local side is the source; nothing arrives and nothing goes.
+        Mode::Publish => AssetPlan::default(),
+        Mode::Adopt => AssetPlan {
+            fetch: r.difference(&l).cloned().collect(),
+            delete: l.difference(&r).cloned().collect(),
+        },
+        Mode::Merge => {
+            let keep = |p: &String| {
+                if b.contains(p) {
+                    l.contains(p) && r.contains(p)
+                } else {
+                    l.contains(p) || r.contains(p)
+                }
+            };
+            AssetPlan {
+                fetch: r.iter().filter(|p| !l.contains(*p) && keep(p)).cloned().collect(),
+                delete: l.iter().filter(|p| !keep(p)).cloned().collect(),
+            }
+        }
+    }
+}
+
 /// Index files by uid, recording the ones that have none. `report` is false for
 /// the base, whose uid-less files are not a problem anyone can act on.
 fn index<'a>(files: &'a [IssueFile], out: &mut Plan, report: bool) -> Snapshot<'a> {
@@ -603,6 +650,40 @@ mod tests {
         let p = plan(Mode::Adopt, &[], &[mine], &[theirs.clone()]);
         assert_eq!(written(&p), vec![theirs]);
         assert_eq!(deleted(&p), vec!["AGE-1"]);
+    }
+
+    #[test]
+    fn attachments_merge_as_a_set_and_only_fetch_what_is_missing() {
+        let a = |s: &str| s.to_string();
+        let base = vec![a("assets/one.png"), a("assets/two.png")];
+        let local = vec![a("assets/one.png"), a("assets/two.png"), a("assets/mine.png")];
+        // Dropped two.png, added theirs.png.
+        let remote = vec![a("assets/one.png"), a("assets/theirs.png")];
+
+        let p = plan_assets(Mode::Merge, &base, &local, &remote);
+        assert_eq!(p.fetch, vec!["assets/theirs.png"], "did not bring over the new attachment");
+        assert_eq!(p.delete, vec!["assets/two.png"], "a removal did not travel");
+        // one.png is on both sides and is not re-fetched: the bytes at a path
+        // never change, so having it is knowing it is current.
+        assert!(!p.fetch.contains(&a("assets/one.png")));
+        // And ours, which the remote has never seen, is left alone.
+        assert!(!p.delete.contains(&a("assets/mine.png")));
+    }
+
+    #[test]
+    fn seeding_moves_attachments_wholesale_in_one_direction() {
+        let a = |s: &str| s.to_string();
+        let local = vec![a("assets/mine.png")];
+        let remote = vec![a("assets/theirs.png")];
+
+        // Publishing makes this machine the source: nothing lands here.
+        assert_eq!(plan_assets(Mode::Publish, &[], &local, &remote), AssetPlan::default());
+
+        // Adopting replaces, attachments included, or the issues that arrive
+        // have body links to files that were never written.
+        let p = plan_assets(Mode::Adopt, &[], &local, &remote);
+        assert_eq!(p.fetch, vec!["assets/theirs.png"]);
+        assert_eq!(p.delete, vec!["assets/mine.png"]);
     }
 
     #[test]

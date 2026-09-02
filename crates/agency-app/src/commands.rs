@@ -1152,6 +1152,28 @@ pub fn delete_issue(state: State<'_, AppState>, id: String) -> Result<(), String
     state.delete_issue(&id).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+pub fn get_issue_sync_config(
+    state: State<'_, AppState>,
+    project_id: String,
+) -> Result<crate::state::IssueSyncDto, String> {
+    state.issue_sync_config(&project_id).map_err(|e| e.to_string())
+}
+
+/// Write the backlog-sharing setting to the project's *local* config. The
+/// tracked `agency.toml` is never written from here: that would leave the
+/// user's checkout dirty, which is the condition untracking the issues existed
+/// to avoid. See `docs/tracked-issues.md`.
+#[tauri::command]
+pub fn save_issue_sync_config(
+    state: State<'_, AppState>,
+    project_id: String,
+    sync: bool,
+    remote: String,
+) -> Result<(), String> {
+    state.save_issue_sync_config(&project_id, sync, &remote).map_err(|e| e.to_string())
+}
+
 /// Sync the backlog with the remote this project's config names.
 ///
 /// `mode` is `merge` in the steady state. Two already-populated machines

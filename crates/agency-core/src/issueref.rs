@@ -40,6 +40,11 @@ pub struct Outcome {
     pub written: usize,
     /// Issue files deleted locally by the merge.
     pub deleted: usize,
+    /// Attachments copied here from the other side, so the relative links in an
+    /// arriving issue's body resolve on this machine too.
+    pub assets_fetched: usize,
+    /// Attachments removed here because the other side removed them.
+    pub assets_deleted: usize,
     /// The merge's judgement calls, verbatim from [`issuesync::Plan`].
     pub conflicts: Vec<issuesync::Conflict>,
     /// Local files left out because they carry no `uid` yet.
@@ -188,26 +193,77 @@ fn commit_tree(
     Ok(Some(commit))
 }
 
+/// Everything a commit says is in the issues directory: paths relative to
+/// `.agency/issues/`, in tree order.
+fn list_tree(repo: &Path, at: &str) -> Vec<String> {
+    let prefix = format!("{}/", issuefs::ISSUES_DIR);
+    git(repo, &["ls-tree", "-r", "--name-only", at, "--", issuefs::ISSUES_DIR])
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix(prefix.as_str()).map(str::to_string))
+        .filter(|p| !p.is_empty())
+        .collect()
+}
+
 /// Every issue file in a commit, parsed. A file that does not parse is skipped
 /// with a warning rather than failing the sync: one corrupt file on the other
 /// side must not stop the other two hundred from arriving.
 fn read_tree(repo: &Path, at: &str) -> Result<Vec<IssueFile>> {
-    let listing = git(repo, &["ls-tree", "-r", "--name-only", at, "--", issuefs::ISSUES_DIR])
-        .unwrap_or_default();
     let mut out = Vec::new();
-    for path in listing.lines().map(str::trim).filter(|l| !l.is_empty()) {
-        let Some(name) = path.rsplit('/').next() else { continue };
-        let Some(stem) = name.strip_suffix(".md") else { continue };
+    for rel in list_tree(repo, at) {
+        let Some(stem) = rel.strip_suffix(".md") else { continue };
         if issuefs::parse_key(stem).is_none() {
             continue; // README.md, and anything else that isn't an issue.
         }
-        let text = git(repo, &["cat-file", "blob", &format!("{at}:{path}")])?;
+        let text = git(repo, &["cat-file", "blob", &blob_spec(at, &rel)])?;
         match issuefs::parse_issue_file(stem, &text) {
             Ok(f) => out.push(f),
             Err(e) => log::warn!("issue {stem} in {at} skipped: {e}"),
         }
     }
     Ok(out)
+}
+
+/// Attachment paths in a commit, relative to the issues directory
+/// (`assets/AGE-14-shot.png`) — the same spelling an issue body links them by,
+/// so a plan can be compared against what a body references without rewriting
+/// paths.
+fn read_tree_assets(repo: &Path, at: &str) -> Vec<String> {
+    let prefix = format!("{}/", issuefs::ASSETS_DIR);
+    list_tree(repo, at).into_iter().filter(|p| p.starts_with(&prefix)).collect()
+}
+
+/// Attachment paths on disk, in the same spelling as [`read_tree_assets`]. One
+/// level deep: the app writes attachments flat into `assets/`, and
+/// `issuefs::body_attachments` refuses to link anything deeper.
+fn disk_assets(repo: &Path) -> Vec<String> {
+    let dir = repo.join(issuefs::ISSUES_DIR).join(issuefs::ASSETS_DIR);
+    let Ok(entries) = std::fs::read_dir(&dir) else { return Vec::new() };
+    let mut out: Vec<String> = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+        .map(|e| format!("{}/{}", issuefs::ASSETS_DIR, e.file_name().to_string_lossy()))
+        .collect();
+    out.sort();
+    out
+}
+
+fn blob_spec(at: &str, rel: &str) -> String {
+    format!("{at}:{}/{rel}", issuefs::ISSUES_DIR)
+}
+
+/// An attachment's bytes. Not the text helper: the lossy UTF-8 conversion there
+/// would replace every byte a PNG is made of.
+fn read_blob(repo: &Path, at: &str, rel: &str) -> Result<Vec<u8>> {
+    let out = Command::new("git")
+        .args(["cat-file", "blob", &blob_spec(at, rel)])
+        .current_dir(repo)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()?;
+    if !out.status.success() {
+        bail!("reading {rel} at {at}: {}", String::from_utf8_lossy(&out.stderr).trim());
+    }
+    Ok(out.stdout)
 }
 
 /// Fetch the other side into [`REMOTE_REF`]. `Ok(false)` means the remote has
@@ -251,6 +307,41 @@ fn apply(repo: &Path, plan: &Plan) -> Result<(usize, usize)> {
     Ok((written, deleted))
 }
 
+/// Bring attachments into line with the plan. Runs after the issue files, so an
+/// issue is never briefly on disk pointing at bytes that have not arrived.
+///
+/// An attachment that cannot be written is logged and skipped rather than
+/// failing the pass: a broken image link is a much smaller loss than a sync that
+/// refuses to finish, and the issue text it belongs to is already here.
+fn apply_assets(repo: &Path, at: &str, plan: &issuesync::AssetPlan) -> (usize, usize) {
+    let dir = repo.join(issuefs::ISSUES_DIR);
+    let (mut fetched, mut removed) = (0, 0);
+    for rel in &plan.fetch {
+        let dest = dir.join(rel);
+        let wrote = read_blob(repo, at, rel).and_then(|bytes| {
+            if let Some(parent) = dest.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(&dest, bytes)?;
+            Ok(())
+        });
+        match wrote {
+            Ok(()) => fetched += 1,
+            Err(e) => log::warn!("attachment {rel} did not arrive: {e}"),
+        }
+    }
+    for rel in &plan.delete {
+        let path = dir.join(rel);
+        if path.exists() {
+            match std::fs::remove_file(&path) {
+                Ok(()) => removed += 1,
+                Err(e) => log::warn!("removing attachment {rel}: {e}"),
+            }
+        }
+    }
+    (fetched, removed)
+}
+
 /// One sync pass: fetch, merge, apply, commit, push.
 ///
 /// `repo` is the project's own checkout — the one place `.agency/issues/`
@@ -262,14 +353,15 @@ pub fn sync(repo: &Path, remote: &str, mode: Mode) -> Result<Outcome> {
     let local_files = issuefs::read_issue_dir(repo)?.issues;
 
     let remote_files = if have_remote { read_tree(repo, REMOTE_REF)? } else { Vec::new() };
-    let base_files = match (rev(repo, LOCAL_REF), have_remote) {
-        (Some(l), true) => match merge_base(repo, &l, REMOTE_REF) {
-            Some(b) => read_tree(repo, &b)?,
-            None => Vec::new(),
-        },
-        // Nothing published from here yet, so whatever the remote has is
-        // entirely new to us and there is no shared past to merge against.
-        _ => Vec::new(),
+    // Nothing published from here yet means whatever the remote has is entirely
+    // new to us, and there is no shared past to merge against.
+    let base_ref = match (rev(repo, LOCAL_REF), have_remote) {
+        (Some(l), true) => merge_base(repo, &l, REMOTE_REF),
+        _ => None,
+    };
+    let base_files = match &base_ref {
+        Some(b) => read_tree(repo, b)?,
+        None => Vec::new(),
     };
 
     // No common history and issues on both sides is the state a first sync of
@@ -282,8 +374,27 @@ pub fn sync(repo: &Path, remote: &str, mode: Mode) -> Result<Outcome> {
         );
     }
 
+    // Adopting replaces this machine's tracker wholesale, which is the one
+    // operation here that destroys the user's issues on their say-so. Commit
+    // what is about to be replaced onto the local ref first: the ref is then
+    // the backup, recoverable with `git show`, and it costs one commit that
+    // would have happened on the next sync anyway.
+    if mode == Mode::Adopt && !local_files.is_empty() {
+        let before = write_tree(repo)?;
+        let parents: Vec<String> = rev(repo, LOCAL_REF).into_iter().collect();
+        commit_tree(repo, &before, &parents, "issues before adopting the shared tracker")?;
+    }
+
     let plan = issuesync::plan(mode, &base_files, &local_files, &remote_files);
     let (written, deleted) = apply(repo, &plan)?;
+
+    let asset_plan = issuesync::plan_assets(
+        mode,
+        &base_ref.as_deref().map(|b| read_tree_assets(repo, b)).unwrap_or_default(),
+        &disk_assets(repo),
+        &if have_remote { read_tree_assets(repo, REMOTE_REF) } else { Vec::new() },
+    );
+    let (assets_fetched, assets_deleted) = apply_assets(repo, REMOTE_REF, &asset_plan);
 
     let tree = write_tree(repo)?;
     let mut parents: Vec<String> = Vec::new();
@@ -318,6 +429,8 @@ pub fn sync(repo: &Path, remote: &str, mode: Mode) -> Result<Outcome> {
     Ok(Outcome {
         written,
         deleted,
+        assets_fetched,
+        assets_deleted,
         conflicts: plan.conflicts,
         skipped: plan.skipped,
         committed,
@@ -539,6 +652,72 @@ mod tests {
             let on_main = sh(r, &["ls-tree", "-r", "--name-only", "main"]);
             assert!(!on_main.contains(".agency/issues"), "issues leaked onto a branch");
         }
+    }
+
+    /// Bytes, not text: the point of reading attachments as blobs is that a PNG
+    /// survives, and a lossy UTF-8 round trip would replace half of one.
+    const PNG: &[u8] = &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0x00, 0xfe];
+
+    fn attach(repo: &Path, name: &str, bytes: &[u8]) {
+        let dir = repo.join(issuefs::ISSUES_DIR).join(issuefs::ASSETS_DIR);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(name), bytes).unwrap();
+    }
+
+    fn asset(repo: &Path, name: &str) -> Option<Vec<u8>> {
+        std::fs::read(repo.join(issuefs::ISSUES_DIR).join(issuefs::ASSETS_DIR).join(name)).ok()
+    }
+
+    #[test]
+    fn an_attachment_travels_with_the_issue_that_links_it() {
+        let (_d, a, b, url) = two_machines();
+        put(&a, "AGE-1", U1, "todo", "One");
+        attach(&a, "AGE-1-shot.png", PNG);
+
+        sync(&a, &url, Mode::Publish).unwrap();
+        let out = sync(&b, &url, Mode::Adopt).unwrap();
+
+        assert_eq!(out.assets_fetched, 1, "the issue arrived without its attachment");
+        assert_eq!(
+            asset(&b, "AGE-1-shot.png").as_deref(),
+            Some(PNG),
+            "attachment bytes did not survive the transport"
+        );
+
+        // A second attachment added later reaches the other side by merge, not
+        // only by seeding.
+        attach(&b, "AGE-1-log.txt", b"hello");
+        sync(&b, &url, Mode::Merge).unwrap();
+        let out = sync(&a, &url, Mode::Merge).unwrap();
+        assert_eq!(out.assets_fetched, 1);
+        assert_eq!(asset(&a, "AGE-1-log.txt").as_deref(), Some(&b"hello"[..]));
+
+        // Nothing to do on a third pass: an attachment already here is not
+        // re-fetched, because the bytes at a path never change.
+        let out = sync(&a, &url, Mode::Merge).unwrap();
+        assert_eq!((out.assets_fetched, out.assets_deleted), (0, 0));
+    }
+
+    #[test]
+    fn adopting_leaves_the_replaced_tracker_recoverable() {
+        let (_d, a, b, url) = two_machines();
+        put(&a, "AGE-1", U1, "todo", "From A");
+        sync(&a, &url, Mode::Publish).unwrap();
+
+        // B has its own work that adopting is about to throw away.
+        put(&b, "AGE-9", U3, "todo", "Only on B");
+        sync(&b, &url, Mode::Adopt).unwrap();
+        assert_eq!(keys(&b), vec!["AGE-1"], "adopt did not replace the tracker");
+
+        // The ref carries what was replaced, so it is not actually gone.
+        let history = sh(&b, &["log", "--format=%s", LOCAL_REF]);
+        assert!(history.contains("before adopting"), "no recovery point was committed: {history}");
+        let backup = sh(&b, &["rev-parse", &format!("{LOCAL_REF}^")]).trim().to_string();
+        let restored = read_tree(&b, &backup).unwrap();
+        assert!(
+            restored.iter().any(|f| f.key == "AGE-9"),
+            "the replaced issues are not in the backup commit"
+        );
     }
 
     #[test]

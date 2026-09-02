@@ -32,8 +32,12 @@ ui/vitest.config.d.ts
 # refuse to start on) and put the same frontmatter lines on both sides of every
 # agent merge. One local copy, shared by every worktree. See
 # docs/tracked-issues.md.
+#
+# .agency/records/ is where a finished run's archive record is written, which is
+# per-checkout by the same logic.
 .agency/worktrees/
 .agency/issues/
+.agency/records/
 .agency/agency.local.toml
 /graphify-out/
 

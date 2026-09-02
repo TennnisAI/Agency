@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  FileRoot, Issue, IssuePatch, IssueStatus, Project,
-  addIssueComment, createIssue, deleteIssue, deleteIssueComment, getWorkspace, updateIssue,
-  updateIssueComment,
+  FileRoot, Issue, IssuePatch, IssueStatus, IssueSyncMode, Project,
+  addIssueComment, createIssue, deleteIssue, deleteIssueComment, getIssueSyncConfig, getWorkspace,
+  syncIssues, updateIssue, updateIssueComment,
 } from "../api";
 import { planReorder } from "../lib/issueRank";
 import { Corpus, IssueRef, LinkEdge, buildLinkIndex, mentionsOf, resolveTarget } from "../lib/links";
@@ -43,7 +43,7 @@ import IssueDetail from "./IssueDetail";
 import ConfirmDialog from "./ConfirmDialog";
 import PillSelect from "./PillSelect";
 import Resizer from "./Resizer";
-import { toastError, toastInfo } from "../lib/toast";
+import { toastError, toastInfo, toastSuccess } from "../lib/toast";
 import { FindRank, registerFindTarget } from "../lib/findBus";
 
 // How narrow the list may get once the detail pane takes over the view.
@@ -70,6 +70,17 @@ export default function IssuesView({
   const [quick, setQuick] = useState("");
   const [selectedId, setSelectedIdState] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<Issue | null>(null);
+  // Backlog sharing. `syncOn` is null until the config lands, so the button
+  // doesn't flash in and out on every project switch.
+  const [syncOn, setSyncOn] = useState<boolean | null>(null);
+  const [syncing, setSyncing] = useState(false);
+  // Set when a first sync finds issues on both sides with no history in common;
+  // holds the two counts the prompt states.
+  const [seed, setSeed] = useState<{ local: number; remote: number } | null>(null);
+  // Issue key to the lines the last sync decided for itself. Kept for the visit
+  // rather than persisted: it describes one sync, and a marker that outlived
+  // the thing it described would be worse than none.
+  const [syncConflicts, setSyncConflicts] = useState<Record<string, string[]>>({});
   // Any status group folds; done/cancelled are the ones that start folded.
   const [collapsed, setCollapsed] = useState<Set<IssueStatus>>(() => new Set(DEFAULT_COLLAPSED));
   // Quick-add rests as a + button and expands into an inline input on demand.
@@ -335,6 +346,62 @@ export default function IssuesView({
       await Promise.all([refresh(), refreshCross()]);
     } catch (e) {
       toastError(e, `Couldn't unlink ${link.label}`);
+    }
+  }
+
+  // Is this project's backlog shared? Decides whether the toolbar offers a
+  // sync at all, and re-read per project rather than cached globally.
+  // Re-read on every arrival at the tab, not only on a project switch: the
+  // setting is changed in Settings, which leaves this component mounted, so
+  // keying on the project alone would leave the button missing until a remount.
+  useEffect(() => {
+    if (tab !== "issues") return;
+    let live = true;
+    getIssueSyncConfig(project.id)
+      .then((c) => { if (live) setSyncOn(c.sync && c.remotes.length > 0); })
+      .catch(() => { if (live) setSyncOn(false); });
+    return () => { live = false; };
+  }, [project.id, tab]);
+
+  // A different project's conflicts say nothing about this one.
+  useEffect(() => { setSyncConflicts({}); }, [project.id]);
+
+  // One sync pass. `merge` is the steady state; `publish`/`adopt` only ever
+  // arrive from the seeding prompt, which is the one question the merge cannot
+  // answer for itself.
+  async function runSync(mode: IssueSyncMode) {
+    if (syncing) return;
+    setSyncing(true);
+    try {
+      const res = await syncIssues(project.id, mode);
+      if (res.kind === "needsSeeding") {
+        setSeed({ local: res.local, remote: res.remote });
+        return;
+      }
+      const o = res.outcome;
+      await refresh();
+      setSyncConflicts(() => {
+        const next: Record<string, string[]> = {};
+        for (const c of o.conflicts) (next[c.key] ??= []).push(`${c.field}: ${c.detail}`);
+        return next;
+      });
+      // Say what changed here, not what was uploaded: the push is the boring
+      // half, and its failure is the only part of it worth a sentence.
+      const bits: string[] = [];
+      if (o.written) bits.push(`${o.written} issue${o.written === 1 ? "" : "s"} updated`);
+      if (o.deleted) bits.push(`${o.deleted} removed`);
+      if (o.assetsFetched) bits.push(`${o.assetsFetched} attachment${o.assetsFetched === 1 ? "" : "s"}`);
+      if (o.conflicts.length) {
+        bits.push(`${o.conflicts.length} conflict${o.conflicts.length === 1 ? "" : "s"} decided for you`);
+      }
+      const what = bits.length ? bits.join(", ") : "Already up to date";
+      if (!o.pushed) toastError(`${what}, but the shared copy was not updated. Try again.`, "Sync");
+      else if (o.conflicts.length) toastInfo(what, 8000);
+      else toastSuccess(what);
+    } catch (e) {
+      toastError(e, "Couldn't sync the backlog");
+    } finally {
+      setSyncing(false);
     }
   }
 
@@ -624,6 +691,16 @@ export default function IssuesView({
               <span className="filter-count">{matched} of {issues.length}</span>
             )}
             <div className="spacer" />
+            {syncOn && (
+              <button
+                className="filter-reset"
+                title="Sync this backlog with the shared copy"
+                disabled={syncing}
+                onClick={() => { runSync("merge"); }}
+              >
+                {syncing ? "Syncing…" : "Sync"}
+              </button>
+            )}
             {narrowed && (
               <button className="filter-reset" title="Clear search and filters" onClick={clearFilters}>
                 Reset
@@ -721,6 +798,7 @@ export default function IssuesView({
                       onPatch={(p) => patch(issue, p)}
                       onDelete={() => setConfirmDelete(issue)}
                       terms={terms}
+                      syncConflicts={syncConflicts[issueLabel(project, issue)]}
                       gitless={gitless}
                       drag={!reorderable ? undefined : {
                         over:
@@ -784,6 +862,29 @@ export default function IssuesView({
             onClose={() => setSelectedId(null)}
           />
         </>
+      )}
+      {seed && (
+        // The one question a merge cannot answer for itself. Before the first
+        // sync each machine numbered its issues from its own counter, so the
+        // two backlogs have no identities in common and merging them would
+        // report every issue as a clash. One side has to seed the other.
+        <ConfirmDialog
+          title="Which backlog is the real one?"
+          body={
+            <>
+              This machine has {seed.local} issue{seed.local === 1 ? "" : "s"} and the shared copy
+              has {seed.remote}, with nothing in common yet. Pick the one to keep. The other is
+              replaced, and the replaced copy stays recoverable from the repository.
+            </>
+          }
+          confirmLabel="Use this machine's"
+          altLabel="Use the shared copy"
+          altDanger
+          busy={syncing}
+          onConfirm={() => { setSeed(null); runSync("publish"); }}
+          onAlt={() => { setSeed(null); runSync("adopt"); }}
+          onCancel={() => setSeed(null)}
+        />
       )}
       {confirmDelete && (
         <ConfirmDialog

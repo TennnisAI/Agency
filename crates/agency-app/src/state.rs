@@ -65,6 +65,34 @@ pub struct ProviderSettings {
     pub default_worktree: bool,
 }
 
+/// How a sync pass ended. "Needs seeding" is an outcome rather than an error
+/// because it is a question for the user, not a failure: the UI has to be able
+/// to tell it apart from a broken remote without reading an error message, and
+/// it carries both counts so the prompt can state them.
+#[derive(Debug, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum SyncResult {
+    Done { outcome: agency_core::issueref::Outcome },
+    NeedsSeeding { local: usize, remote: usize },
+}
+
+/// A project's backlog-sharing config for the settings UI, plus the two facts
+/// the UI needs to say what the choice actually means.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IssueSyncDto {
+    pub sync: bool,
+    pub remote: String,
+    /// The remotes this repo has, so the UI offers names rather than asking the
+    /// user to remember them. Empty for a project with no git remote at all,
+    /// which is the case where sync cannot be turned on usefully.
+    pub remotes: Vec<String>,
+    /// Set by the tracked `agency.toml` rather than this machine's local file.
+    /// The UI says so, because turning it off here is a local override of a
+    /// decision the repo made, not a change everyone sees.
+    pub from_repo: bool,
+}
+
 /// A project's effective knowledge-graph config for the settings UI. Command
 /// overrides are `None` when unset (the `*_default` fields show what runs then);
 /// the `*_installed` flags report whether that tooling is actually on PATH.
@@ -3409,6 +3437,10 @@ impl AppState {
             .ok()
             .and_then(|t| issuefs::parse_issue_file(&key, &t).ok());
         let extra = current.as_ref().map(|f| f.extra.clone()).unwrap_or_default();
+        // Preserved from the file for the same reason `extra` is: the identity
+        // in the file may have been minted on another machine, and this write
+        // (a status flip, a retitle) is no reason to overwrite it with ours.
+        let uid = current.as_ref().and_then(|f| f.uid.clone()).or_else(|| Some(issue.id.clone()));
         // The thread belongs to the file, not to the index row: an agent can
         // append a comment while the app has the issue open, and every write
         // from here (title, body, status, links) carries over what the file
@@ -3417,6 +3449,7 @@ impl AppState {
         let comments = current.map_or_else(|| issue.comments.clone(), |f| f.comments);
         let file = issuefs::IssueFile {
             key,
+            uid,
             seq: issue.seq,
             title: issue.title.clone(),
             body: issue.body.clone(),
@@ -3469,6 +3502,7 @@ impl AppState {
             .and_then(|t| issuefs::parse_issue_file(&key, &t).ok())
             .unwrap_or_else(|| issuefs::IssueFile {
                 key: key.clone(),
+                uid: Some(row.id.clone()),
                 seq: row.seq,
                 title: row.title.clone(),
                 body: row.body.clone(),
@@ -3573,6 +3607,71 @@ impl AppState {
         self.write_issue_file(reg, &next)?;
         reg.upsert_issue_row(&next)?;
         Ok(true)
+    }
+
+    /// This project's backlog-sharing settings, as the settings UI shows them.
+    pub fn issue_sync_config(&self, project_id: &str) -> Result<IssueSyncDto> {
+        let repo = self.project_repo(project_id)?;
+        let cfg = agency_core::config::load(&repo).issues;
+        Ok(IssueSyncDto {
+            sync: cfg.sync,
+            remote: cfg.remote,
+            remotes: agency_core::git::remotes(&repo).unwrap_or_default(),
+            from_repo: agency_core::config::issue_sync_declared_by_repo(&repo),
+        })
+    }
+
+    /// Persist this project's backlog-sharing settings to its local config.
+    pub fn save_issue_sync_config(&self, project_id: &str, sync: bool, remote: &str) -> Result<()> {
+        let repo = self.project_repo(project_id)?;
+        let remote = remote.trim();
+        let remote = if remote.is_empty() { "origin".to_string() } else { remote.to_string() };
+        agency_core::config::save_issues(
+            &repo,
+            &agency_core::config::IssuesConfig { sync, remote },
+        )?;
+        Ok(())
+    }
+
+    /// Sync this project's backlog with the remote its config names, then put
+    /// the index back in step with the files the merge changed.
+    ///
+    /// `mode` is the caller's call, not ours: two already-populated machines
+    /// syncing for the first time share no history, so there is no base to
+    /// merge against and only the user can say which side seeds the other. The
+    /// error for that case is `issueref::Blocked::NeedsSeeding`, which carries
+    /// both counts so the prompt can state them.
+    pub fn sync_issues(
+        &self,
+        project_id: &str,
+        mode: agency_core::issuesync::Mode,
+    ) -> Result<SyncResult> {
+        let reg = self.registry.lock().unwrap();
+        self.ensure_issue_files(&reg, project_id)?;
+        let (root, key) = self.issue_root(&reg, project_id)?;
+        let remote = agency_core::config::issue_sync_remote(&root).ok_or_else(|| {
+            anyhow!("this project's backlog is not set to sync; turn it on in settings first")
+        })?;
+        let outcome = match agency_core::issueref::sync(&root, &remote, mode) {
+            Ok(o) => o,
+            Err(e) => {
+                // A question, not a failure: hand it back as an outcome so the
+                // UI can prompt rather than parse a message.
+                if let Some(agency_core::issueref::Blocked::NeedsSeeding { local, remote }) =
+                    e.downcast_ref::<agency_core::issueref::Blocked>()
+                {
+                    return Ok(SyncResult::NeedsSeeding { local: *local, remote: *remote });
+                }
+                return Err(e);
+            }
+        };
+        // The merge wrote issue files behind the index's back. Drop the cached
+        // stat signature first: `list_issues` skips reconciling when it has not
+        // moved, and a sync that lands during the same second as an app write
+        // could otherwise leave the board showing the pre-merge state.
+        self.issue_sigs.lock().unwrap().remove(project_id);
+        agency_core::issuefs::reconcile(&reg, project_id, &key, &root)?;
+        Ok(SyncResult::Done { outcome })
     }
 
     pub fn list_issues(&self, project_id: &str) -> Result<Vec<agency_core::registry::Issue>> {

@@ -8,6 +8,7 @@ import {
   AgentProfile,
   CatalogEntry,
   FilesConfig,
+  IssueSyncConfig,
   KnowledgeConfig,
   McpServer,
   McpTransport,
@@ -25,6 +26,7 @@ import {
   deleteProfile,
   enableAgentProfiles,
   getFilesConfig,
+  getIssueSyncConfig,
   getKnowledgeConfig,
   getSettings,
   getNotifSettings,
@@ -37,6 +39,7 @@ import {
   listProfiles,
   moveWorkspace,
   saveFilesConfig,
+  saveIssueSyncConfig,
   saveKnowledgeConfig,
   setKnowledgeBackend,
   buildKnowledgeGraph,
@@ -208,6 +211,10 @@ export default function Settings({
   // Per-project knowledge-graph config. `null` until loaded (or when no project
   // is selected — the section then prompts to pick one). `kgDraft` holds the
   // editable command-override text so it survives re-renders between saves.
+  const [backlog, setBacklog] = useState<IssueSyncConfig | null>(null);
+  // Editable remote text, kept out of `backlog` so it survives re-renders
+  // between saves, the same way `kgDraft` does.
+  const [backlogRemote, setBacklogRemote] = useState("");
   const [kg, setKg] = useState<KnowledgeConfig | null>(null);
   const [kgDraft, setKgDraft] = useState({ serve: "", build: "" });
   // The model name typed under the backend picker, saved on blur (a keystroke
@@ -440,6 +447,37 @@ export default function Settings({
     if (projectId) loadKnowledge(projectId);
     else setKg(null);
   }, [projectId]);
+
+  // Backlog sharing is per-project too, and loads on the same schedule.
+  async function loadBacklog(id: string) {
+    try {
+      const cfg = await getIssueSyncConfig(id);
+      setBacklog(cfg);
+      setBacklogRemote(cfg.remote);
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  useEffect(() => {
+    if (projectId) loadBacklog(projectId);
+    else setBacklog(null);
+  }, [projectId]);
+
+  // One write for both fields: the remote is meaningless with sync off, and
+  // saving them separately would let a half-applied state reach disk.
+  async function persistBacklog(sync: boolean, remote: string) {
+    if (!projectId) return;
+    const prev = backlog;
+    setBacklog((b) => (b ? { ...b, sync, remote } : b));
+    try {
+      await saveIssueSyncConfig(projectId, sync, remote);
+      await loadBacklog(projectId);
+    } catch (e) {
+      setBacklog(prev);
+      toastError(e, "Couldn't save backlog settings");
+    }
+  }
 
   // A graph build runs on its own thread with no event of its own, so poll the
   // config while one is in flight to pick up the finish (and any failure).
@@ -1167,6 +1205,92 @@ export default function Settings({
               />
             </label>
           </div>
+        </section>
+
+        <section className="settings-section">
+          <div className="settings-section-label">Backlog</div>
+          <p className="settings-section-hint">
+            Shares this project's issues through its git remote, so the same backlog is on every
+            machine you work from, and on your team's if you have one. Issues travel on a ref of
+            their own that is never checked out, so nothing lands in a branch, in a diff or in a
+            pull request. Status, priority and attachments all travel; syncing is manual, from the
+            issues view.
+          </p>
+          {!projectId ? (
+            <div className="settings-group-card">
+              <span className="settings-notif-label">Select a project to configure its backlog.</span>
+            </div>
+          ) : backlog ? (
+            <div className="settings-group-card">
+              <div className="settings-notif-row">
+                <span className="settings-notif-label">
+                  Share the backlog{projectName ? ` for ${projectName}` : ""}
+                </span>
+                <Toggle
+                  checked={backlog.sync}
+                  onChange={(next) => persistBacklog(next, backlogRemote)}
+                />
+              </div>
+              {backlog.remotes.length === 0 ? (
+                <p className="settings-section-hint">
+                  This project has no git remote, so there is nowhere to share a backlog to yet.
+                </p>
+              ) : (
+                backlog.sync && (
+                  <>
+                    <div className="settings-notif-row">
+                      <span className="settings-notif-label">Remote</span>
+                      <select
+                        className="settings-input"
+                        style={{ maxWidth: 220 }}
+                        value={
+                          backlog.remotes.includes(backlogRemote) ? backlogRemote : "__custom"
+                        }
+                        onChange={(e) => {
+                          const next = e.target.value === "__custom" ? "" : e.target.value;
+                          setBacklogRemote(next);
+                          if (next) persistBacklog(true, next);
+                        }}
+                      >
+                        {backlog.remotes.map((r) => (
+                          <option key={r} value={r}>
+                            {r}
+                          </option>
+                        ))}
+                        <option value="__custom">Another remote…</option>
+                      </select>
+                    </div>
+                    {!backlog.remotes.includes(backlogRemote) && (
+                      <input
+                        className="settings-input"
+                        value={backlogRemote}
+                        placeholder="Remote name or URL"
+                        onChange={(e) => setBacklogRemote(e.target.value)}
+                        onBlur={() => backlogRemote.trim() && persistBacklog(true, backlogRemote)}
+                      />
+                    )}
+                    {/* The one thing a reader can't check for themselves, and
+                        the case this repo is in: public code, private backlog. */}
+                    <p className="settings-section-hint">
+                      Anyone who can read <code>{backlogRemote || "this remote"}</code> can read the
+                      backlog. If the repository is public, point this at a private remote instead.
+                    </p>
+                  </>
+                )
+              )}
+              {backlog.fromRepo && (
+                <p className="settings-section-hint">
+                  This project's <code>agency.toml</code> asks for a shared backlog, so anyone who
+                  clones it gets this on by default. Turning it off here only affects this machine.
+                </p>
+              )}
+              <p className="settings-section-hint">
+                Saved to this machine only (<code>.agency/agency.local.toml</code>). To share the
+                choice with the repository, commit <code>[issues] sync = true</code> into{" "}
+                <code>.agency/agency.toml</code>.
+              </p>
+            </div>
+          ) : null}
         </section>
 
         <section className="settings-section">

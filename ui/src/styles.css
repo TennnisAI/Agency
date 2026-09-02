@@ -2823,6 +2823,11 @@ input, textarea, code,
 .issue-row:hover { background: var(--s0); }
 .issue-row.selected { background: var(--s0); border-color: var(--s1); }
 .issue-key { color: var(--o1); font-size: 11px; flex-shrink: 0; }
+/* A field the last sync had to decide for itself on this row. Carries its own
+   color because it is the one marker here reporting something the user did not
+   do, and it has to survive a scan of a board where every other glyph is
+   status. Hover has the detail; the glyph only says "look". */
+.issue-sync-conflict { color: var(--yellow); font-size: 11px; flex-shrink: 0; cursor: default; }
 .issue-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .issue-title.cancelled { color: var(--o0); text-decoration: line-through; }
 /* Search hit inside a key or title. Colored, not filled: a highlighter block

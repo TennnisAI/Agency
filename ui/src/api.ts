@@ -329,6 +329,54 @@ export const updateIssue = (id: string, patch: IssuePatch) =>
   invoke<Issue>("update_issue", { id, patch });
 export const deleteIssue = (id: string) => invoke<void>("delete_issue", { id });
 
+// Backlog sharing. `sync` is read from the tracked agency.toml merged under the
+// local one, but only ever *written* to the local one: writing the tracked file
+// would leave the checkout dirty, which is what untracking the issues avoided.
+// `fromRepo` says the tracked file asked for it, so the UI can explain that
+// switching off here is a local override rather than a change everyone sees.
+export interface IssueSyncConfig {
+  sync: boolean;
+  remote: string;
+  remotes: string[];
+  fromRepo: boolean;
+}
+// Whole-file last-writer-wins is not what happens; the merge is field by field,
+// and a conflict is one field of one issue that both sides changed.
+export interface IssueSyncConflict {
+  key: string;
+  field: string;
+  detail: string;
+}
+export interface IssueSyncOutcome {
+  written: number;
+  deleted: number;
+  assetsFetched: number;
+  assetsDeleted: number;
+  conflicts: IssueSyncConflict[];
+  skipped: [string, string][];
+  committed: boolean;
+  pushed: boolean;
+}
+// "merge" in the steady state. Two already-populated machines syncing for the
+// first time share no history, so merge fails there and the caller re-runs with
+// "publish" (this machine seeds the shared tracker) or "adopt" (the reverse).
+export type IssueSyncMode = "merge" | "publish" | "adopt";
+
+export const getIssueSyncConfig = (projectId: string) =>
+  invoke<IssueSyncConfig>("get_issue_sync_config", { projectId });
+export const saveIssueSyncConfig = (projectId: string, sync: boolean, remote: string) =>
+  invoke<void>("save_issue_sync_config", { projectId, sync, remote });
+// "Needs seeding" is an outcome, not an error: two already-populated machines
+// with no history in common is a question for the user (which side seeds the
+// other), and the UI has to tell it apart from a broken remote without reading
+// an error string.
+export type IssueSyncResult =
+  | { kind: "done"; outcome: IssueSyncOutcome }
+  | { kind: "needsSeeding"; local: number; remote: number };
+
+export const syncIssues = (projectId: string, mode: IssueSyncMode) =>
+  invoke<IssueSyncResult>("sync_issues", { projectId, mode });
+
 // Comments are their own calls rather than a field of the patch: the thread
 // lives in the issue file and an agent may be appending to it at the same
 // time, so each call re-reads the file and applies only its own change.

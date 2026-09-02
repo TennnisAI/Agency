@@ -1152,6 +1152,43 @@ pub fn delete_issue(state: State<'_, AppState>, id: String) -> Result<(), String
     state.delete_issue(&id).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+pub fn get_issue_sync_config(
+    state: State<'_, AppState>,
+    project_id: String,
+) -> Result<crate::state::IssueSyncDto, String> {
+    state.issue_sync_config(&project_id).map_err(|e| e.to_string())
+}
+
+/// Write the backlog-sharing setting to the project's *local* config. The
+/// tracked `agency.toml` is never written from here: that would leave the
+/// user's checkout dirty, which is the condition untracking the issues existed
+/// to avoid. See `docs/tracked-issues.md`.
+#[tauri::command]
+pub fn save_issue_sync_config(
+    state: State<'_, AppState>,
+    project_id: String,
+    sync: bool,
+    remote: String,
+) -> Result<(), String> {
+    state.save_issue_sync_config(&project_id, sync, &remote).map_err(|e| e.to_string())
+}
+
+/// Sync the backlog with the remote this project's config names.
+///
+/// `mode` is `merge` in the steady state. Two already-populated machines
+/// syncing for the first time share no history, so `merge` fails there with a
+/// message naming both counts, and the UI asks the user for `publish` (this
+/// machine seeds the shared tracker) or `adopt` (the other way round).
+#[tauri::command]
+pub fn sync_issues(
+    state: State<'_, AppState>,
+    project_id: String,
+    mode: agency_core::issuesync::Mode,
+) -> Result<crate::state::SyncResult, String> {
+    state.sync_issues(&project_id, mode).map_err(|e| e.to_string())
+}
+
 // Comments live in the issue file and have more than one writer, so they are
 // their own three calls rather than a field of `update_issue`: each one reads
 // the file, applies just its change, and returns the issue as it now stands.

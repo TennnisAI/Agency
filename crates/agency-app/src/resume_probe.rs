@@ -18,17 +18,36 @@ pub enum ResumeProbe {
 
 /// `home` is the user's home dir (injected for testability). `command` is the
 /// agent launch command (e.g. "claude", "pi"); only the basename is matched.
-/// `session` is the Agency session about to be launched.
+/// `session` is the Agency session about to be launched, and `conversation`
+/// the one it has on record, if any.
 ///
-/// The probe has to ask about the same store the launch will use, or it
-/// answers a different question than the one that decides resume-vs-fresh: a
-/// pinned agent (AGE-175) resumes its own session's store, so a sibling
-/// session's conversation in the shared directory is not something it can
-/// continue, and reading it as "Has" would resume an empty store with the
-/// run's prompt nowhere.
-pub fn resume_probe(home: &Path, command: &str, worktree: &Path, session: &str) -> ResumeProbe {
+/// The probe has to ask about the same conversation the launch will ask for,
+/// or it answers a different question than the one that decides
+/// resume-vs-fresh:
+///
+/// - an agent with a store of its own (pi) resumes only what is in that store,
+///   so a sibling session's conversation in the shared directory is not
+///   something it can continue, and reading it as "Has" would resume an empty
+///   store with the run's prompt nowhere;
+/// - an agent that names conversations (claude) is about to run
+///   `--resume <id>`, which refuses outright when that id is not there, so the
+///   question is whether that one file exists and nothing else;
+/// - a run with no conversation on record — every run that predates Agency
+///   minting them — falls back to the directory question it always asked.
+pub fn resume_probe(
+    home: &Path,
+    command: &str,
+    worktree: &Path,
+    session: &str,
+    conversation: Option<&str>,
+) -> ResumeProbe {
     if let Some(dir) = agency_core::sessionstore::dir(home, command, worktree, session) {
         return dir_probe(&dir);
+    }
+    if let Some(file) = conversation
+        .and_then(|c| agency_core::sessionstore::conversation_path(home, command, worktree, c))
+    {
+        return if file.exists() { ResumeProbe::Has } else { ResumeProbe::None };
     }
     let base = Path::new(command).file_name().and_then(|s| s.to_str()).unwrap_or(command);
     match base {
@@ -65,16 +84,16 @@ mod tests {
         let enc = "-Users-x-agency--agency-worktrees-agent-abcd";
         let dir = home.path().join(".claude").join("projects").join(enc);
         fs::create_dir_all(&dir).unwrap();
-        assert_eq!(resume_probe(home.path(), "claude", wt, "agent-abcd"), ResumeProbe::None);
+        assert_eq!(resume_probe(home.path(), "claude", wt, "agent-abcd", None), ResumeProbe::None);
         fs::write(dir.join("s.jsonl"), "x").unwrap();
-        assert_eq!(resume_probe(home.path(), "claude", wt, "agent-abcd"), ResumeProbe::Has);
+        assert_eq!(resume_probe(home.path(), "claude", wt, "agent-abcd", None), ResumeProbe::Has);
     }
 
     #[test]
     fn claude_probe_none_when_dir_absent() {
         let home = tempfile::tempdir().unwrap();
         let wt = Path::new("/Users/x/agency/.agency/worktrees/agent-zzzz");
-        assert_eq!(resume_probe(home.path(), "claude", wt, "agent-zzzz"), ResumeProbe::None);
+        assert_eq!(resume_probe(home.path(), "claude", wt, "agent-zzzz", None), ResumeProbe::None);
     }
 
     #[test]
@@ -88,24 +107,54 @@ mod tests {
             home.path().join(".pi").join("agent").join("sessions").join("--Users-x-agency--");
         fs::create_dir_all(&shared).unwrap();
         fs::write(shared.join("session.jsonl"), "x").unwrap();
-        assert_eq!(resume_probe(home.path(), "pi", wt, "agent-abcd"), ResumeProbe::None);
-        assert_eq!(resume_probe(home.path(), "pi", wt, "agent-zzzz"), ResumeProbe::None);
+        assert_eq!(resume_probe(home.path(), "pi", wt, "agent-abcd", None), ResumeProbe::None);
+        assert_eq!(resume_probe(home.path(), "pi", wt, "agent-zzzz", None), ResumeProbe::None);
 
         fs::create_dir_all(shared.join("agent-abcd")).unwrap();
         fs::write(shared.join("agent-abcd").join("session.jsonl"), "x").unwrap();
-        assert_eq!(resume_probe(home.path(), "pi", wt, "agent-abcd"), ResumeProbe::Has);
-        assert_eq!(resume_probe(home.path(), "pi", wt, "agent-zzzz"), ResumeProbe::None);
+        assert_eq!(resume_probe(home.path(), "pi", wt, "agent-abcd", None), ResumeProbe::Has);
+        assert_eq!(resume_probe(home.path(), "pi", wt, "agent-zzzz", None), ResumeProbe::None);
+    }
+
+    /// With a conversation on record the question is that one file, not the
+    /// directory: `claude --resume <id>` refuses when the id is not there, and
+    /// a sibling run's conversation next to it is no answer.
+    #[test]
+    fn claude_probe_asks_about_the_conversation_on_record() {
+        let home = tempfile::tempdir().unwrap();
+        let wt = Path::new("/Users/x/proj");
+        let dir = home.path().join(".claude").join("projects").join("-Users-x-proj");
+        fs::create_dir_all(&dir).unwrap();
+        let ours = "9674f5a1-334c-49a5-9952-89e592b0bc5b";
+        let theirs = "1a4970ef-de34-4b3c-a444-41e9a73722fb";
+        fs::write(dir.join(format!("{theirs}.jsonl")), "x").unwrap();
+        assert_eq!(
+            resume_probe(home.path(), "claude", wt, "agent-abcd", Some(ours)),
+            ResumeProbe::None,
+            "a sibling's conversation is not ours to resume"
+        );
+        fs::write(dir.join(format!("{ours}.jsonl")), "x").unwrap();
+        assert_eq!(
+            resume_probe(home.path(), "claude", wt, "agent-abcd", Some(ours)),
+            ResumeProbe::Has
+        );
     }
 
     #[test]
     fn unknown_agents_are_unknown() {
         let home = tempfile::tempdir().unwrap();
         let wt = Path::new("/x");
-        assert_eq!(resume_probe(home.path(), "opencode", wt, "agent-abcd"), ResumeProbe::Unknown);
         assert_eq!(
-            resume_probe(home.path(), "cursor-agent", wt, "agent-abcd"),
+            resume_probe(home.path(), "opencode", wt, "agent-abcd", None),
             ResumeProbe::Unknown
         );
-        assert_eq!(resume_probe(home.path(), "hermes", wt, "agent-abcd"), ResumeProbe::Unknown);
+        assert_eq!(
+            resume_probe(home.path(), "cursor-agent", wt, "agent-abcd", None),
+            ResumeProbe::Unknown
+        );
+        assert_eq!(
+            resume_probe(home.path(), "hermes", wt, "agent-abcd", None),
+            ResumeProbe::Unknown
+        );
     }
 }

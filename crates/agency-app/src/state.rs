@@ -809,21 +809,30 @@ fn args_without_prompt(profile: &AgentProfile) -> Vec<String> {
 /// with `args: []` and both of this function's fresh callers — `rerun_locked`
 /// and the resume fallback in `ensure_run_active` — launched `claude` in the
 /// worktree with the task text nowhere. One fresh recipe, not two.
+///
+/// `conversation` is the conversation this session owns, for an agent that
+/// names them (AGE-177). It replaces the profile's recipe rather than joining
+/// it: `claude --continue --resume <id>` is two answers to one question, and
+/// the generic half is the one that crossed two runs sharing a directory.
 fn agent_argv(
     profile: &AgentProfile,
     worktree: &Path,
     prompt: &str,
     use_resume: bool,
     setup: Option<&str>,
+    conversation: Option<&str>,
 ) -> (String, Vec<String>) {
-    let Some(resume) = profile.resume_args.as_ref().filter(|_| use_resume) else {
-        return fresh_agent_argv(profile, worktree, prompt, setup);
+    let Some(generic) = profile.resume_args.as_ref().filter(|_| use_resume) else {
+        return fresh_agent_argv(profile, worktree, prompt, setup, conversation);
     };
     // The profile's flags first, the resume recipe last: `codex resume --last`
     // is a subcommand, and a flag written after it would be read as the
     // subcommand's rather than the CLI's.
     let mut base_args = args_without_prompt(profile);
-    base_args.extend(resume.iter().cloned());
+    let exact = conversation
+        .map(|c| agency_core::sessionstore::resume_args(&profile.command, c, &base_args))
+        .filter(|args| !args.is_empty());
+    base_args.extend(exact.unwrap_or_else(|| generic.to_vec()));
     let mcp = mcp_launch_args(profile, worktree, &base_args);
     base_args.extend(mcp);
     agency_core::scripts::wrap_setup(setup, &profile.command, &base_args)
@@ -859,19 +868,47 @@ fn prompt_args(agent: &str, prompt: &str) -> Vec<String> {
 /// the agent (see [`prompt_args`]) — unless the profile places it itself with a
 /// `{{prompt}}` token. An empty prompt yields the plain promptless argv. This is
 /// the only fresh recipe: [`agent_argv`] delegates its non-resume branch here.
+///
+/// `conversation` is a freshly minted id for an agent that names conversations
+/// (AGE-177), so this launch opens one only this session knows the name of.
+/// Every fresh launch mints its own: a rerun is a new conversation, and claude
+/// refuses `--session-id` for an id already in use.
 fn fresh_agent_argv(
     profile: &AgentProfile,
     worktree: &Path,
     prompt: &str,
     setup: Option<&str>,
+    conversation: Option<&str>,
 ) -> (String, Vec<String>) {
-    let mut args: Vec<String> =
-        profile.render_args(prompt).into_iter().filter(|a| !a.is_empty()).collect();
-    // Ahead of the prompt below: a flag after a positional argument is the shape
-    // most CLIs are least happy with.
-    let mcp = mcp_launch_args(profile, worktree, &args);
-    args.extend(mcp);
-    if !prompt.trim().is_empty() && !profile.args.iter().any(|a| a.contains("{{prompt}}")) {
+    // Rendered alongside the raw args so the `{{prompt}}` token's place is
+    // still known after substitution: Agency's own flags go in front of it, and
+    // a flag behind a positional argument is the shape most CLIs are least
+    // happy with. A profile that places the prompt itself used to get them
+    // behind it, which was invisible while the only such flags were MCP's
+    // `--additional-mcp-config` (copilot reads it either way) and became a hard
+    // error the moment `--session-id` joined them.
+    let mut args: Vec<String> = Vec::with_capacity(profile.args.len());
+    let mut prompt_at = None;
+    for (raw, rendered) in profile.args.iter().zip(profile.render_args(prompt)) {
+        if rendered.is_empty() {
+            continue;
+        }
+        if prompt_at.is_none() && raw.contains("{{prompt}}") {
+            prompt_at = Some(args.len());
+        }
+        args.push(rendered);
+    }
+    let mut ours = conversation
+        .map(|c| agency_core::sessionstore::open_args(&profile.command, c, &args))
+        .unwrap_or_default();
+    ours.extend(mcp_launch_args(profile, worktree, &args));
+    match prompt_at {
+        Some(i) => {
+            args.splice(i..i, ours);
+        }
+        None => args.extend(ours),
+    }
+    if !prompt.trim().is_empty() && prompt_at.is_none() {
         args.extend(prompt_args(&profile.name, prompt));
     }
     agency_core::scripts::wrap_setup(setup, &profile.command, &args)
@@ -1099,11 +1136,16 @@ fn pr_conflict_prompt(
 /// The (command, args) for one headless loop attempt: the profile's loop
 /// recipe with `{{prompt}}` filled in, wrapped by the optional setup script.
 /// Errors when the profile has no loop recipe — such agents can't loop.
+///
+/// `conversation` names the attempt's own conversation for an agent that takes
+/// one. Attempts are fresh sessions by design, so each gets a new name; the
+/// last one's is what an interactive resume finds when the loop ends.
 fn loop_argv(
     profile: &AgentProfile,
     worktree: &Path,
     prompt: &str,
     setup: Option<&str>,
+    conversation: Option<&str>,
 ) -> Result<(String, Vec<String>)> {
     let recipe = profile.loop_args.as_ref().filter(|r| !r.is_empty()).ok_or_else(|| {
         anyhow!("agent '{}' has no loop recipe — set the profile's loop args first", profile.name)
@@ -1111,12 +1153,15 @@ fn loop_argv(
     let mut args: Vec<String> = recipe.iter().map(|a| a.replace("{{prompt}}", prompt)).collect();
     // Ahead of wherever the prompt lands, for the same reason as the
     // interactive path: keep Agency's flags out from behind a positional.
-    let mcp = mcp_launch_args(profile, worktree, &args);
+    let mut ours = conversation
+        .map(|c| agency_core::sessionstore::open_args(&profile.command, c, &args))
+        .unwrap_or_default();
+    ours.extend(mcp_launch_args(profile, worktree, &args));
     match recipe.iter().position(|a| a.contains("{{prompt}}")) {
         Some(i) => {
-            args.splice(i..i, mcp);
+            args.splice(i..i, ours);
         }
-        None => args.extend(mcp),
+        None => args.extend(ours),
     }
     // A recipe without a {{prompt}} token still gets the prompt, as the final
     // positional arg — mirroring the interactive path. Attempts must never
@@ -2921,6 +2966,7 @@ impl AppState {
         // place that builds a headless attempt.
         if spec.loop_config.is_none() {
             let env = self.agent_env(&profile, &workspace.path, &repo, &id, &id, Some(port))?;
+            let conversation = self.open_conversation(&profile.command, &id, &id);
             // The default flow passes "" and behaves exactly as before: the user
             // types the real prompt into the live terminal.
             let (command, args) = fresh_agent_argv(
@@ -2928,6 +2974,7 @@ impl AppState {
                 &workspace.path,
                 spec.prompt,
                 config.scripts.setup.as_deref(),
+                conversation.as_deref(),
             );
             if let Err(e) = self.term.read().unwrap().start_session(
                 &session_name(&id),
@@ -5564,6 +5611,37 @@ impl AppState {
         Ok(env)
     }
 
+    /// Mint the conversation a fresh launch of `session` will open, and record
+    /// it against the session so a later resume can reopen that exact one
+    /// (AGE-177). `None` for an agent that does not name conversations, which
+    /// is what keeps its own resume recipe in use.
+    ///
+    /// Called on every fresh launch, so a rerun replaces the id: the previous
+    /// conversation stays on disk under its own name, and the session stops
+    /// pointing at it. A record that cannot be written gives up the pin rather
+    /// than the launch — an id nothing remembers would resume nothing.
+    fn open_conversation(&self, command: &str, run_id: &str, session: &str) -> Option<String> {
+        let id = agency_core::sessionstore::mint(command)?;
+        let write =
+            self.registry.lock().unwrap().set_conversation(session, run_id, &id, now_secs());
+        match write {
+            Ok(()) => Some(id),
+            Err(e) => {
+                log::warn!(
+                    "{session}: couldn't record the conversation id, launching without it: {e}"
+                );
+                None
+            }
+        }
+    }
+
+    /// The conversation `session` owns, if it has one. `None` for every run
+    /// that predates this and for agents Agency cannot name a conversation to;
+    /// both then resume the way they always did.
+    fn conversation_of(&self, session: &str) -> Option<String> {
+        self.registry.lock().unwrap().get_conversation(session).ok().flatten()
+    }
+
     /// The launch command an agent id resolves to. An extra tab may run a
     /// different agent than its run does, so the two cannot share a lookup
     /// keyed on the run alone.
@@ -5916,6 +5994,11 @@ impl AppState {
         {
             let reg = self.registry.lock().unwrap();
             reg.delete_run_sessions(id)?;
+            // The conversations go with the run, like the transcripts above.
+            // Archiving deliberately keeps them: a restored run's transcripts
+            // are reinstated under the same names, so it comes back into the
+            // conversation it was in.
+            reg.delete_conversations(id)?;
             reg.delete_run(id)?;
         }
         if let Some(issue_id) = &run.issue_id {
@@ -6629,8 +6712,14 @@ impl AppState {
         // worktree is exactly how a tab used to take over the run's resume
         // (AGE-175).
         let env = self.agent_env(&profile, &worktree, &repo, &run.id, sid, run.port_base)?;
-        let (command, args) =
-            fresh_agent_argv(&profile, &worktree, prompt, config.scripts.setup.as_deref());
+        let conversation = self.open_conversation(&profile.command, &run.id, sid);
+        let (command, args) = fresh_agent_argv(
+            &profile,
+            &worktree,
+            prompt,
+            config.scripts.setup.as_deref(),
+            conversation.as_deref(),
+        );
         self.term.read().unwrap().start_session(
             &session_name(sid),
             &worktree,
@@ -6848,6 +6937,8 @@ impl AppState {
         };
         let env = self.agent_env(&profile, &worktree, &repo, &run.id, id, run.port_base)?;
         let setup = config.scripts.setup.as_deref();
+        // The conversation this session owns, if it has one to come back to.
+        let recorded = self.conversation_of(id);
         // Decide resume-vs-fresh up front. For claude/pi we can prove whether a
         // session exists (they don't exit on resume-failure, so the daemon
         // fallback can't save them); other resume-capable agents fall through to
@@ -6859,19 +6950,44 @@ impl AppState {
                     &profile.command,
                     &worktree,
                     id,
+                    recorded.as_deref(),
                 )
             })
             .unwrap_or(crate::resume_probe::ResumeProbe::Unknown);
         let use_resume =
             profile.resume_args.is_some() && probe != crate::resume_probe::ResumeProbe::None;
-        let (command, args) = agent_argv(&profile, &worktree, &run.prompt, use_resume, setup);
+        // Resuming reopens the conversation on record; starting fresh opens a
+        // new one under a new name. Never the recorded name on a fresh launch:
+        // claude refuses `--session-id` for an id already in use, and the run
+        // would not come up at all.
+        let conversation = if use_resume {
+            recorded
+        } else {
+            self.open_conversation(&profile.command, &run.id, id)
+        };
+        let (command, args) = agent_argv(
+            &profile,
+            &worktree,
+            &run.prompt,
+            use_resume,
+            setup,
+            conversation.as_deref(),
+        );
         // The fallback carries the run's prompt, hours old though it may be by
         // now: there is nothing else it could open with, and the task it names
         // is this run's whether the agent is starting it or restarting it. A
         // promptless fresh session would leave the user staring at a bare CLI
         // in a worktree with no idea what it was for (AGE-137).
+        //
+        // It opens no named conversation. Whether it ran at all is the daemon's
+        // to know, not ours: recording a name for a conversation that may never
+        // be created would point the next resume at nothing and abandon the one
+        // the agent is in. Left unnamed, it is at worst not resumable by name —
+        // and the resume it stands in for is the one the probe above has
+        // already proved.
         let fallback = if use_resume {
-            let (fresh_cmd, fresh_args) = fresh_agent_argv(&profile, &worktree, &run.prompt, setup);
+            let (fresh_cmd, fresh_args) =
+                fresh_agent_argv(&profile, &worktree, &run.prompt, setup, None);
             Some(agency_core::term::protocol::FallbackSpec {
                 command: fresh_cmd,
                 args: fresh_args,
@@ -6930,9 +7046,17 @@ impl AppState {
         };
         let env = self.agent_env(&profile, &worktree, &repo, &run.id, id, run.port_base)?;
         // A rerun is a fresh launch by definition, so it takes the fresh argv
-        // (prompt and all, never the resume recipe) that `create_run` took.
-        let (command, args) =
-            fresh_agent_argv(&profile, &worktree, &run.prompt, config.scripts.setup.as_deref());
+        // (prompt and all, never the resume recipe) that `create_run` took, and
+        // a new conversation with it. The one it replaces stays on disk under
+        // its own name; the run simply stops pointing at it.
+        let conversation = self.open_conversation(&profile.command, &run.id, id);
+        let (command, args) = fresh_agent_argv(
+            &profile,
+            &worktree,
+            &run.prompt,
+            config.scripts.setup.as_deref(),
+            conversation.as_deref(),
+        );
         let _ = self.term.read().unwrap().kill(&session_name(id));
         self.term.read().unwrap().start_session(
             &session_name(id),
@@ -6998,8 +7122,17 @@ impl AppState {
             );
         }
         let env = self.agent_env(&profile, &worktree, &repo, &run.id, &run.id, run.port_base)?;
-        let (command, args) =
-            loop_argv(&profile, &worktree, &run.prompt, config.scripts.setup.as_deref())?;
+        // Every attempt is a fresh session, so every attempt names its own
+        // conversation. The last one's is what the run resumes into if the
+        // user takes the loop's work over by hand once it ends.
+        let conversation = self.open_conversation(&profile.command, &run.id, &run.id);
+        let (command, args) = loop_argv(
+            &profile,
+            &worktree,
+            &run.prompt,
+            config.scripts.setup.as_deref(),
+            conversation.as_deref(),
+        )?;
         let _ = self.term.read().unwrap().kill(&session_name(&run.id));
         self.term.read().unwrap().start_session(
             &session_name(&run.id),
@@ -8508,7 +8641,8 @@ mod tests {
         };
         let profile = super::with_web_ui(&dsh, Some(5248), data.path());
         let wt = std::path::Path::new("/tmp/does-not-exist");
-        let (command, args) = super::fresh_agent_argv(&profile, wt, "fix the login bug", None);
+        let (command, args) =
+            super::fresh_agent_argv(&profile, wt, "fix the login bug", None, None);
         assert_eq!(command, "dsh");
         assert_eq!(&args[0], "web");
         assert_eq!(&args[1], "--patch");
@@ -8517,7 +8651,7 @@ mod tests {
 
         // The loop recipe takes the prompt the interactive launch cannot.
         let (loop_cmd, loop_args) =
-            super::loop_argv(&profile, wt, "fix the login bug", None).unwrap();
+            super::loop_argv(&profile, wt, "fix the login bug", None, None).unwrap();
         assert_eq!(loop_cmd, "dsh");
         assert_eq!(loop_args, vec!["--profile", "headless", "fix the login bug"]);
     }
@@ -8652,9 +8786,90 @@ mod tests {
             resume_args: Some(vec!["--continue".into()]),
             loop_args: None,
         };
-        let (cmd, args) = agent_argv(&p, no_worktree(), "do the thing", true, None);
+        let (cmd, args) = agent_argv(&p, no_worktree(), "do the thing", true, None, None);
         assert_eq!(cmd, "claude");
         assert_eq!(args, vec!["--continue".to_string()]);
+    }
+
+    /// AGE-177: a session with a conversation on record reopens that one by
+    /// name. `--continue` is the recipe that crossed two runs sharing a
+    /// directory, so it is replaced rather than joined — claude given both
+    /// would be asked two questions at once.
+    #[test]
+    fn a_recorded_conversation_replaces_the_generic_resume_recipe() {
+        let id = "9674f5a1-334c-49a5-9952-89e592b0bc5b";
+        let claude = AgentProfile {
+            name: "claude".into(),
+            command: "claude".into(),
+            args: vec!["--permission-mode".into(), "acceptEdits".into(), "{{prompt}}".into()],
+            env: vec![],
+            resume_args: Some(vec!["--continue".into()]),
+            loop_args: None,
+        };
+        let (cmd, args) = agent_argv(&claude, no_worktree(), "go", true, None, Some(id));
+        assert_eq!(cmd, "claude");
+        assert_eq!(args, vec!["--permission-mode", "acceptEdits", "--resume", id]);
+        assert!(!args.contains(&"--continue".to_string()));
+
+        // A fresh launch opens a new conversation under that name, ahead of
+        // the prompt, and never `--resume`: there is nothing to reopen yet.
+        let (_cmd, args) = agent_argv(&claude, no_worktree(), "go", false, None, Some(id));
+        assert_eq!(args, vec!["--permission-mode", "acceptEdits", "--session-id", id, "go"]);
+    }
+
+    /// Pi is pinned by its store instead, so its recipe is untouched: `-c`
+    /// there already means "the most recent conversation in *this session's*
+    /// store". Agents with no verified lever keep theirs too.
+    #[test]
+    fn agents_pinned_another_way_keep_their_own_resume_recipe() {
+        let id = "9674f5a1-334c-49a5-9952-89e592b0bc5b";
+        let pi = AgentProfile {
+            name: "pi".into(),
+            command: "pi".into(),
+            args: vec![],
+            env: vec![],
+            resume_args: Some(vec!["--continue".into()]),
+            loop_args: None,
+        };
+        let (_cmd, args) = agent_argv(&pi, no_worktree(), "go", true, None, Some(id));
+        assert_eq!(args, vec!["--continue".to_string()]);
+        let (_cmd, args) = agent_argv(&pi, no_worktree(), "go", false, None, Some(id));
+        assert_eq!(args, vec!["go".to_string()], "no id flags for a store-pinned agent");
+
+        let codex = AgentProfile {
+            name: "codex".into(),
+            command: "codex".into(),
+            resume_args: Some(vec!["resume".into(), "--last".into()]),
+            ..pi
+        };
+        let (_cmd, args) = agent_argv(&codex, no_worktree(), "go", true, None, Some(id));
+        assert_eq!(args, vec!["resume".to_string(), "--last".to_string()]);
+    }
+
+    /// A headless attempt names its conversation too, and the flag lands ahead
+    /// of the prompt like every other argument Agency adds.
+    #[test]
+    fn loop_attempts_name_their_conversation() {
+        let id = "9674f5a1-334c-49a5-9952-89e592b0bc5b";
+        let claude = AgentProfile {
+            name: "claude".into(),
+            command: "claude".into(),
+            args: vec![],
+            env: vec![],
+            resume_args: Some(vec!["--continue".into()]),
+            loop_args: Some(vec![
+                "-p".into(),
+                "{{prompt}}".into(),
+                "--permission-mode".into(),
+                "acceptEdits".into(),
+            ]),
+        };
+        let (_cmd, args) =
+            super::loop_argv(&claude, no_worktree(), "fix the tests", None, Some(id)).unwrap();
+        assert_eq!(
+            args,
+            vec!["-p", "--session-id", id, "fix the tests", "--permission-mode", "acceptEdits"]
+        );
     }
 
     /// AGE-100: the resume recipe replaces the prompt, not the whole of the
@@ -8677,7 +8892,7 @@ mod tests {
             resume_args: Some(vec!["--continue".into()]),
             loop_args: None,
         };
-        let (cmd, args) = agent_argv(&p, no_worktree(), "do the thing", true, None);
+        let (cmd, args) = agent_argv(&p, no_worktree(), "do the thing", true, None, None);
         assert_eq!(cmd, "claude");
         assert_eq!(
             args,
@@ -8687,7 +8902,7 @@ mod tests {
         // Args the user never templated survive too: a profile with no
         // `{{prompt}}` token at all still gets its flags on resume.
         let untemplated = AgentProfile { args: vec!["--verbose".into()], ..p.clone() };
-        let (_cmd, args) = agent_argv(&untemplated, no_worktree(), "go", true, None);
+        let (_cmd, args) = agent_argv(&untemplated, no_worktree(), "go", true, None, None);
         assert_eq!(args, vec!["--verbose".to_string(), "--continue".to_string()]);
 
         // The flags come first because `codex resume --last` is a subcommand:
@@ -8699,7 +8914,7 @@ mod tests {
             resume_args: Some(vec!["resume".into(), "--last".into()]),
             ..p
         };
-        let (_cmd, args) = agent_argv(&codex, no_worktree(), "go", true, None);
+        let (_cmd, args) = agent_argv(&codex, no_worktree(), "go", true, None, None);
         assert_eq!(args, vec!["--sandbox", "workspace-write", "resume", "--last"]);
     }
 
@@ -8717,7 +8932,7 @@ mod tests {
             resume_args: Some(vec!["--continue".into()]),
             loop_args: None,
         };
-        let (_cmd, args) = agent_argv(&copilot, no_worktree(), "go", true, None);
+        let (_cmd, args) = agent_argv(&copilot, no_worktree(), "go", true, None, None);
         assert_eq!(args, vec!["--banner".to_string(), "--continue".to_string()]);
 
         let opencode = AgentProfile {
@@ -8726,7 +8941,7 @@ mod tests {
             args: vec!["--prompt".into(), "{{prompt}}".into()],
             ..copilot.clone()
         };
-        let (_cmd, args) = agent_argv(&opencode, no_worktree(), "go", true, None);
+        let (_cmd, args) = agent_argv(&opencode, no_worktree(), "go", true, None, None);
         assert_eq!(args, vec!["--continue".to_string()]);
 
         // claude takes its prompt positionally, so the flag before it is the
@@ -8737,7 +8952,7 @@ mod tests {
             args: vec!["--dangerously-skip-permissions".into(), "{{prompt}}".into()],
             ..copilot
         };
-        let (_cmd, args) = agent_argv(&claude, no_worktree(), "go", true, None);
+        let (_cmd, args) = agent_argv(&claude, no_worktree(), "go", true, None, None);
         assert_eq!(
             args,
             vec!["--dangerously-skip-permissions".to_string(), "--continue".to_string()]
@@ -8754,7 +8969,7 @@ mod tests {
             resume_args: None,
             loop_args: None,
         };
-        let (cmd, args) = agent_argv(&p, no_worktree(), "hello", true, None);
+        let (cmd, args) = agent_argv(&p, no_worktree(), "hello", true, None, None);
         assert_eq!(cmd, "cursor-agent");
         assert_eq!(args, vec!["hello".to_string()]);
     }
@@ -8774,24 +8989,24 @@ mod tests {
             resume_args: Some(vec!["--continue".into()]),
             loop_args: None,
         };
-        let (cmd, args) = agent_argv(&claude, no_worktree(), "do the thing", false, None);
+        let (cmd, args) = agent_argv(&claude, no_worktree(), "do the thing", false, None, None);
         assert_eq!(cmd, "claude");
         assert_eq!(args, vec!["do the thing".to_string()]);
         // One fresh recipe: whichever door a caller comes in by, same argv.
         assert_eq!(
-            super::fresh_agent_argv(&claude, no_worktree(), "do the thing", None),
+            super::fresh_agent_argv(&claude, no_worktree(), "do the thing", None, None),
             (cmd, args)
         );
 
         // A flag-valued CLI gets its own recipe, not a bare positional.
         let opencode =
             AgentProfile { name: "opencode".into(), command: "opencode".into(), ..claude.clone() };
-        let (_cmd, args) = agent_argv(&opencode, no_worktree(), "go", false, None);
+        let (_cmd, args) = agent_argv(&opencode, no_worktree(), "go", false, None, None);
         assert_eq!(args, vec!["--prompt".to_string(), "go".to_string()]);
 
         // And the resume branch still leaves the prompt out: the session it
         // rejoins already has it (AGE-100).
-        let (_cmd, args) = agent_argv(&claude, no_worktree(), "do the thing", true, None);
+        let (_cmd, args) = agent_argv(&claude, no_worktree(), "do the thing", true, None, None);
         assert_eq!(args, vec!["--continue".to_string()]);
     }
 
@@ -8805,7 +9020,7 @@ mod tests {
             resume_args: Some(vec!["--continue".into()]),
             loop_args: None,
         };
-        let (_cmd, args) = agent_argv(&p, no_worktree(), "fresh prompt", false, None);
+        let (_cmd, args) = agent_argv(&p, no_worktree(), "fresh prompt", false, None, None);
         assert_eq!(args, vec!["fresh prompt".to_string()]);
     }
 
@@ -8820,16 +9035,17 @@ mod tests {
             loop_args: None,
         };
         // The token places the prompt; it must not also be appended.
-        let (cmd, args) = super::fresh_agent_argv(&templated, no_worktree(), "review it", None);
+        let (cmd, args) =
+            super::fresh_agent_argv(&templated, no_worktree(), "review it", None, None);
         assert_eq!(cmd, "claude");
         assert_eq!(args, vec!["--flag".to_string(), "review it".to_string()]);
 
         let plain = AgentProfile { args: vec!["--flag".into()], ..templated.clone() };
-        let (_cmd, args) = super::fresh_agent_argv(&plain, no_worktree(), "review it", None);
+        let (_cmd, args) = super::fresh_agent_argv(&plain, no_worktree(), "review it", None, None);
         assert_eq!(args, vec!["--flag".to_string(), "review it".to_string()]);
 
         // An empty prompt is the promptless launch every ordinary tab uses.
-        let (_cmd, args) = super::fresh_agent_argv(&plain, no_worktree(), "", None);
+        let (_cmd, args) = super::fresh_agent_argv(&plain, no_worktree(), "", None, None);
         assert_eq!(args, vec!["--flag".to_string()]);
     }
 
@@ -8847,7 +9063,7 @@ mod tests {
             loop_args: None,
         };
         let args_for = |name: &str, prompt: &str| {
-            super::fresh_agent_argv(&profile(name), no_worktree(), prompt, None).1
+            super::fresh_agent_argv(&profile(name), no_worktree(), prompt, None, None).1
         };
 
         assert_eq!(args_for("claude", "go"), vec!["go".to_string()]);
@@ -8871,7 +9087,7 @@ mod tests {
             args: vec!["--interactive".into(), "{{prompt}}".into()],
             ..profile("copilot")
         };
-        let (_cmd, args) = super::fresh_agent_argv(&hand_rolled, no_worktree(), "go", None);
+        let (_cmd, args) = super::fresh_agent_argv(&hand_rolled, no_worktree(), "go", None, None);
         assert_eq!(args, vec!["--interactive".to_string(), "go".to_string()]);
     }
 
@@ -8893,7 +9109,7 @@ mod tests {
         let arg = format!("@{}", dir.path().join(".mcp.json").display());
 
         // Nothing emitted yet → no flag pointing at a file that isn't there.
-        let (_cmd, args) = super::fresh_agent_argv(&copilot, dir.path(), "", None);
+        let (_cmd, args) = super::fresh_agent_argv(&copilot, dir.path(), "", None, None);
         assert!(args.is_empty(), "{args:?}");
 
         agency_core::mcp::emit_for_agent(
@@ -8909,12 +9125,12 @@ mod tests {
         .unwrap();
 
         // Fresh launch: flags first, prompt still last (behind `-i`, per AGE-79).
-        let (cmd, args) = super::fresh_agent_argv(&copilot, dir.path(), "go", None);
+        let (cmd, args) = super::fresh_agent_argv(&copilot, dir.path(), "go", None, None);
         assert_eq!(cmd, "copilot");
         assert_eq!(args, vec![flag.clone(), arg.clone(), "-i".to_string(), "go".to_string()]);
 
         // Resume launch: the recipe keeps its own args and gains the config.
-        let (_cmd, args) = agent_argv(&copilot, dir.path(), "go", true, None);
+        let (_cmd, args) = agent_argv(&copilot, dir.path(), "go", true, None, None);
         assert_eq!(args, vec!["--continue".to_string(), flag.clone(), arg.clone()]);
 
         // A loop recipe gets it ahead of wherever it places the prompt.
@@ -8922,18 +9138,18 @@ mod tests {
             loop_args: Some(vec!["-p".into(), "{{prompt}}".into()]),
             ..copilot.clone()
         };
-        let (_cmd, args) = super::loop_argv(&looping, dir.path(), "go", None).unwrap();
+        let (_cmd, args) = super::loop_argv(&looping, dir.path(), "go", None, None).unwrap();
         assert_eq!(args, vec!["-p".to_string(), flag.clone(), arg.clone(), "go".to_string()]);
 
         // The user's own flag wins: Agency doesn't add a rival copy.
         let hand_rolled =
             AgentProfile { args: vec![flag.clone(), "@/my/own.json".into()], ..copilot.clone() };
-        let (_cmd, args) = super::fresh_agent_argv(&hand_rolled, dir.path(), "", None);
+        let (_cmd, args) = super::fresh_agent_argv(&hand_rolled, dir.path(), "", None, None);
         assert_eq!(args, vec![flag.clone(), "@/my/own.json".to_string()]);
 
         // Agents that read the emitted file unaided get no extra flags.
         let claude = AgentProfile { name: "claude".into(), command: "claude".into(), ..copilot };
-        let (_cmd, args) = super::fresh_agent_argv(&claude, dir.path(), "", None);
+        let (_cmd, args) = super::fresh_agent_argv(&claude, dir.path(), "", None, None);
         assert!(args.is_empty(), "{args:?}");
     }
 
@@ -9128,15 +9344,15 @@ mod tests {
         let pinned = super::with_model(&claude, Some("opus"));
 
         // Fresh: ahead of the prompt, which is appended after these.
-        let (_cmd, args) = super::fresh_agent_argv(&pinned, no_worktree(), "go", None);
+        let (_cmd, args) = super::fresh_agent_argv(&pinned, no_worktree(), "go", None, None);
         assert_eq!(args, vec!["--model", "opus", "go"]);
         // Resume: the same session must come back on the same model, and on
         // exactly one `--model` — it rides in on the profile's args (AGE-100),
         // so the resume recipe must not carry a second copy.
-        let (_cmd, args) = agent_argv(&pinned, no_worktree(), "go", true, None);
+        let (_cmd, args) = agent_argv(&pinned, no_worktree(), "go", true, None, None);
         assert_eq!(args, vec!["--model", "opus", "--continue"]);
         // Loop: at the end, so {{prompt}} stays where the recipe put it.
-        let (_cmd, args) = super::loop_argv(&pinned, no_worktree(), "go", None).unwrap();
+        let (_cmd, args) = super::loop_argv(&pinned, no_worktree(), "go", None, None).unwrap();
         assert_eq!(args, vec!["-p", "go", "--permission-mode", "acceptEdits", "--model", "opus"]);
     }
 
@@ -9185,17 +9401,17 @@ mod tests {
                 "acceptEdits".into(),
             ]),
         };
-        let (cmd, args) = super::loop_argv(&p, no_worktree(), "fix the tests", None).unwrap();
+        let (cmd, args) = super::loop_argv(&p, no_worktree(), "fix the tests", None, None).unwrap();
         assert_eq!(cmd, "claude");
         assert_eq!(args, vec!["-p", "fix the tests", "--permission-mode", "acceptEdits"]);
 
         let no_recipe = AgentProfile { loop_args: None, ..p.clone() };
-        assert!(super::loop_argv(&no_recipe, no_worktree(), "x", None).is_err());
+        assert!(super::loop_argv(&no_recipe, no_worktree(), "x", None, None).is_err());
 
         // An empty recipe is no recipe — Settings saves None for an empty
         // field, but a hand-edited profile must not slip through.
         let empty_recipe = AgentProfile { loop_args: Some(vec![]), ..p };
-        assert!(super::loop_argv(&empty_recipe, no_worktree(), "x", None).is_err());
+        assert!(super::loop_argv(&empty_recipe, no_worktree(), "x", None, None).is_err());
     }
 
     #[test]
@@ -9211,7 +9427,7 @@ mod tests {
             resume_args: None,
             loop_args: Some(vec!["exec".into(), "--full-auto".into()]),
         };
-        let (cmd, args) = super::loop_argv(&p, no_worktree(), "fix the tests", None).unwrap();
+        let (cmd, args) = super::loop_argv(&p, no_worktree(), "fix the tests", None, None).unwrap();
         assert_eq!(cmd, "codex");
         assert_eq!(args, vec!["exec", "--full-auto", "fix the tests"]);
     }

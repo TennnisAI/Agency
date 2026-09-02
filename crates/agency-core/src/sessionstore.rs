@@ -16,14 +16,124 @@
 //! cwd, `-p "run one"`, `-p "run two"`, then `-c` in the first — the first's
 //! turn landed in the second's session file.
 //!
-//! The fix is to stop sharing the directory: give each Agency session a store
-//! of its own inside the agent's own project directory, so "the most recent
-//! conversation here" is the one this session had. Only agents with a
-//! documented, verified lever for that are pinned; everything else keeps the
-//! old behaviour rather than getting a guessed flag that could kill the
-//! launch.
+//! The fix is to stop asking "which conversation was most recent here" at all.
+//! There are two levers for that, and which one an agent gets is decided by
+//! what its CLI actually offers:
+//!
+//! - **A store of its own** ([`Pin::Store`], pi). The CLI takes a session
+//!   directory per process, so pointing each Agency session at one of its own
+//!   makes "the most recent conversation here" that session's, with no state
+//!   for Agency to keep.
+//! - **A conversation of its own** ([`Pin::Id`], claude). The CLI names
+//!   conversations, so Agency mints an id, opens the conversation under it,
+//!   records it against the session, and later reopens that exact one.
+//!
+//! Everything else keeps its old resume recipe. A guessed flag would be worse
+//! than the bug: `claude --session-id` on an id already in use and
+//! `claude --resume` on one that is not there both refuse to start.
+//!
+//! Verified live rather than read off `--help` alone. Pi 0.84.4: two processes
+//! in one cwd, `-p "run one"`, `-p "run two"`, then `-c` in the first — the
+//! first's turn landed in the second's session file, and pinning the store
+//! separated them. Claude 2.x, driven in a pty the way Agency launches it:
+//! `--session-id <uuid>` opened `<uuid>.jsonl` in the cwd's project directory,
+//! `--resume <uuid>` reopened that conversation and appended to the same file,
+//! and two conversations in one directory each came back to their own.
 
 use std::path::{Path, PathBuf};
+
+/// How Agency keeps one session's conversation to itself, per agent. A
+/// default-deny list: an agent is here only once its recipe has been read off
+/// its own CLI and checked against a live launch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pin {
+    /// The CLI takes a session store per process; Agency gives it one.
+    Store,
+    /// The CLI names conversations; Agency mints the name.
+    Id,
+    /// No verified lever. The agent keeps whatever resume recipe it has, and
+    /// two of these sharing a directory can still cross (AGE-177).
+    None,
+}
+
+/// Which lever `command` offers, by launch command basename (a profile may
+/// carry an absolute path).
+///
+/// Codex, opencode and copilot are deliberately absent: none is installed on
+/// any machine this has been developed on, so neither their store layout nor a
+/// pin has been checked against a running CLI. Cursor, hermes, gemini and kimi
+/// key their sessions globally rather than by cwd and so ship with no resume
+/// recipe at all; there is nothing here for them to cross.
+pub fn pin(command: &str) -> Pin {
+    match base(command) {
+        "pi" => Pin::Store,
+        "claude" => Pin::Id,
+        _ => Pin::None,
+    }
+}
+
+/// A conversation id `command` will accept for a conversation that does not
+/// exist yet, or `None` for an agent that does not name them.
+///
+/// Claude requires a UUID ("--session-id <uuid>: Use a specific session ID for
+/// the conversation (must be a valid UUID)") and refuses an id already in use,
+/// so this is minted per fresh launch and never reused: a rerun is a new
+/// conversation by definition.
+pub fn mint(command: &str) -> Option<String> {
+    match pin(command) {
+        Pin::Id => Some(uuid::Uuid::new_v4().to_string()),
+        Pin::Store | Pin::None => None,
+    }
+}
+
+/// Argv that opens `conversation` as a new conversation, for an agent that
+/// names them. Empty for everyone else, and empty when `so_far` already
+/// carries the flag: a profile the user wrote one into keeps theirs, and
+/// claude refuses a second `--session-id` outright.
+pub fn open_args(command: &str, conversation: &str, so_far: &[String]) -> Vec<String> {
+    match pin(command) {
+        Pin::Id if !has_flag(so_far, &["--session-id"]) => {
+            vec!["--session-id".into(), conversation.to_string()]
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Argv that reopens exactly `conversation`, replacing the CLI's generic
+/// "most recent conversation here" recipe. Empty for everyone else, which is
+/// what keeps that recipe in use for them.
+pub fn resume_args(command: &str, conversation: &str, so_far: &[String]) -> Vec<String> {
+    match pin(command) {
+        Pin::Id if !has_flag(so_far, &["--resume", "-r"]) => {
+            vec!["--resume".into(), conversation.to_string()]
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// The file `conversation` is kept in, for an agent that names them, so a
+/// caller can ask whether there is anything to reopen before trying. Claude
+/// names the file for the id: `~/.claude/projects/<cwd>/<uuid>.jsonl`, which
+/// is the same convention the archive record's resume line already relies on.
+pub fn conversation_path(
+    home: &Path,
+    command: &str,
+    worktree: &Path,
+    conversation: &str,
+) -> Option<PathBuf> {
+    if pin(command) != Pin::Id {
+        return None;
+    }
+    let name = leaf(conversation)?;
+    Some(crate::usage::session_dir(home, command, worktree)?.join(format!("{name}.jsonl")))
+}
+
+/// Whether `so_far` already sets one of `flags`, so Agency's own argument can
+/// stand down. Same rule as the MCP flags in [`crate::mcp`]: what the user
+/// wrote wins.
+fn has_flag(so_far: &[String], flags: &[&str]) -> bool {
+    so_far.iter().any(|a| flags.iter().any(|f| a == f || a.starts_with(&format!("{f}="))))
+}
 
 /// Pi reads this before falling back to its per-cwd default; `--session-dir`
 /// on the command line overrides it, so a profile that sets its own store
@@ -47,7 +157,7 @@ const PI_SESSION_DIR: &str = "PI_CODING_AGENT_SESSION_DIR";
 /// these are app-generated ids, and a path component assembled from anything
 /// else is a traversal waiting to be found rather than a name to fix up.
 pub fn dir(home: &Path, command: &str, worktree: &Path, session: &str) -> Option<PathBuf> {
-    if !pinnable(command) {
+    if pin(command) != Pin::Store {
         return None;
     }
     let name = leaf(session)?;
@@ -69,20 +179,6 @@ pub fn env(home: &Path, command: &str, worktree: &Path, session: &str) -> Vec<(S
         "pi" => vec![(PI_SESSION_DIR.to_string(), dir.to_string_lossy().into_owned())],
         _ => Vec::new(),
     }
-}
-
-/// The agents whose store Agency can pin, by launch command. A default-deny
-/// list of one: pi.
-///
-/// Claude is open to the same collision by the same rule (`claude --help`:
-/// "-c, --continue: Continue the most recent conversation in the current
-/// directory"), though nothing has been observed hitting it — what decides the
-/// exposure is whether two agents share a directory, and claude's runs here
-/// have almost all had a worktree apiece. Its `--session-id` pins an id rather
-/// than a store and takes a UUID, so it is a different shape of fix; filed as
-/// AGE-177 rather than guessed at here.
-fn pinnable(command: &str) -> bool {
-    matches!(base(command), "pi")
 }
 
 /// Only the basename is matched, since a profile may carry an absolute path.
@@ -131,13 +227,70 @@ mod tests {
     }
 
     #[test]
-    fn unpinnable_agents_get_no_store_and_no_environment() {
+    fn agents_without_a_verified_lever_are_left_alone() {
         let home = Path::new("/home/u");
         let wt = Path::new("/w");
-        for command in ["claude", "codex", "opencode", "copilot", "cursor-agent", "hermes"] {
+        for command in ["codex", "opencode", "copilot", "cursor-agent", "hermes"] {
+            assert_eq!(pin(command), Pin::None, "{command}");
             assert_eq!(dir(home, command, wt, "agent-3f9c"), None, "{command}");
             assert!(env(home, command, wt, "agent-3f9c").is_empty(), "{command}");
+            assert_eq!(mint(command), None, "{command}");
+            assert!(open_args(command, "x", &[]).is_empty(), "{command}");
+            assert!(resume_args(command, "x", &[]).is_empty(), "{command}");
         }
+    }
+
+    /// The two levers are exclusive: an agent given a store of its own is not
+    /// also handed conversation ids, and the other way round.
+    #[test]
+    fn each_agent_gets_exactly_one_lever() {
+        let home = Path::new("/home/u");
+        let wt = Path::new("/Users/x/proj");
+        assert_eq!(pin("pi"), Pin::Store);
+        assert!(dir(home, "pi", wt, "agent-3f9c").is_some());
+        assert_eq!(mint("pi"), None);
+        assert!(open_args("pi", "x", &[]).is_empty());
+        assert!(resume_args("pi", "x", &[]).is_empty(), "pi keeps -c, scoped by its own store");
+
+        assert_eq!(pin("claude"), Pin::Id);
+        assert_eq!(dir(home, "claude", wt, "agent-3f9c"), None);
+        assert!(env(home, "claude", wt, "agent-3f9c").is_empty());
+    }
+
+    #[test]
+    fn claude_opens_and_reopens_a_named_conversation() {
+        let id = "9674f5a1-334c-49a5-9952-89e592b0bc5b";
+        assert_eq!(open_args("claude", id, &[]), vec!["--session-id", id]);
+        assert_eq!(resume_args("claude", id, &[]), vec!["--resume", id]);
+        // An absolute path in the profile resolves to the same recipe.
+        assert_eq!(open_args("/opt/homebrew/bin/claude", id, &[]), vec!["--session-id", id]);
+        assert_eq!(
+            conversation_path(Path::new("/home/u"), "claude", Path::new("/Users/x/proj"), id)
+                .unwrap(),
+            Path::new("/home/u/.claude/projects/-Users-x-proj").join(format!("{id}.jsonl"))
+        );
+    }
+
+    #[test]
+    fn a_minted_id_is_fresh_every_time_and_a_uuid() {
+        // Claude refuses `--session-id` for an id already in use, so a rerun
+        // reusing one would not start at all.
+        let a = mint("claude").unwrap();
+        let b = mint("claude").unwrap();
+        assert_ne!(a, b);
+        assert!(uuid::Uuid::parse_str(&a).is_ok(), "{a}");
+    }
+
+    #[test]
+    fn a_profile_that_names_its_own_conversation_keeps_it() {
+        let id = "9674f5a1-334c-49a5-9952-89e592b0bc5b";
+        let set = ["--session-id".to_string(), "other".to_string()];
+        assert!(open_args("claude", id, &set).is_empty());
+        let resumed = ["-r".to_string(), "other".to_string()];
+        assert!(resume_args("claude", id, &resumed).is_empty());
+        // `--flag=value` counts as set too.
+        let joined = ["--resume=other".to_string()];
+        assert!(resume_args("claude", id, &joined).is_empty());
     }
 
     #[test]

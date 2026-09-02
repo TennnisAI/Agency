@@ -72,6 +72,13 @@ interface RunStore {
   // later visit to the same run lands on the primary agent as usual.
   pendingSessionId: string | null;
   setPendingSession: (id: string | null) => void;
+  // A run whose agent the user asked to see by name — a row in the focus rail,
+  // a row under a project in the sidebar tree, an entry in the palette. Focusing
+  // the run is not enough on its own: it may already be the focused one, and it
+  // may be sitting on its Run tab, which is not the agent. AgentFocus consumes
+  // and clears this, leaving that tab for the one the run was on before it.
+  agentViewRunId: string | null;
+  requestAgentView: (id: string | null) => void;
 }
 
 const Ctx = createContext<RunStore | null>(null);
@@ -90,6 +97,7 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
   const [tab, setTabState] = useState<Tab>("agents");
   const [approveRunId, setApproveRun] = useState<string | null>(null);
   const [pendingSessionId, setPendingSession] = useState<string | null>(null);
+  const [agentViewRunId, requestAgentView] = useState<string | null>(null);
   const [sourcePanelOpen, setSourcePanelOpenState] = useState<boolean>(() =>
     typeof localStorage === "undefined" ? false : loadFold(localStorage, SOURCE_PANEL_KEY, false),
   );
@@ -218,6 +226,7 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
     // its run belongs to the project we just left.
     setApproveRun(null);
     setPendingSession(null);
+    requestAgentView(null);
   }
 
   useEffect(() => {
@@ -231,7 +240,7 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <Ctx.Provider
-      value={{ runs, projectRunLive, selectedProjectId, setSelectedProject, view, setView, focusedRunId, setFocusedRun, selectedRunId, sourcePanelOpen, setSourcePanelOpen, onScreenRunId, setOnScreenRun, refreshRuns, tab, setTab, createAgent, createTerminal, spawning: spawnCount > 0, spawnProgress, approveRunId, setApproveRun, pendingSessionId, setPendingSession }}
+      value={{ runs, projectRunLive, selectedProjectId, setSelectedProject, view, setView, focusedRunId, setFocusedRun, selectedRunId, sourcePanelOpen, setSourcePanelOpen, onScreenRunId, setOnScreenRun, refreshRuns, tab, setTab, createAgent, createTerminal, spawning: spawnCount > 0, spawnProgress, approveRunId, setApproveRun, pendingSessionId, setPendingSession, agentViewRunId, requestAgentView }}
     >
       {children}
     </Ctx.Provider>

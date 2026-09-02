@@ -8,6 +8,11 @@
 // id.
 export const PRIMARY_TAB = "agent";
 
+// The run panel's tab. It shares the strip with the agent tabs, and is the only
+// tab that is not an agent, which is why clicking an agent's name anywhere else
+// in the app has to leave it (see agentViewTab).
+export const RUN_TAB = "run";
+
 // The pane a web-served agent's terminal moves to. Its GUI is the whole view on
 // the agent's own tab, so the server log — which is all that pane ever shows —
 // lives one tab over rather than taking half the window beside it.
@@ -53,8 +58,21 @@ export function resolveFocusTab(
   sessions: { id: string; status: { state: string } }[],
   hasLog = false,
 ): string {
-  if (remembered === PRIMARY_TAB || remembered === "run") return remembered;
+  if (remembered === PRIMARY_TAB || remembered === RUN_TAB) return remembered;
   if (remembered === LOG_TAB) return hasLog ? remembered : PRIMARY_TAB;
   const live = sessions.some((s) => s.id === remembered && s.status.state !== "gone");
   return live ? remembered : PRIMARY_TAB;
+}
+
+// The tab an "open this agent" click should land on: the focus rail's rows, the
+// sidebar tree's rows under a project, and everything else that opens a run by
+// name. Sitting on the Run tab, the only way back to the agent was the strip's
+// own agent tab, and clicking the agent's name in a pane did nothing at all
+// (the run was already focused, so nothing re-ran) — the one gesture that reads
+// like "show me this agent" was the one that didn't. So a name click leaves the
+// Run tab, for the tab it was opened from. Every other tab stands: an extra
+// agent tab is still the agent view, and that is the memory AGE-31 added.
+export function agentViewTab(current: string, before: string): string {
+  if (current !== RUN_TAB) return current;
+  return before === RUN_TAB ? PRIMARY_TAB : before;
 }

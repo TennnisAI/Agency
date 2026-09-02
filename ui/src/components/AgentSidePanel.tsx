@@ -20,7 +20,7 @@ import FocusTerminal from "./FocusTerminal";
  * the same session.
  */
 export default function AgentSidePanel({ project }: { project: Project }) {
-  const { runs, focusedRunId, setFocusedRun, createTerminal, setTab, setView, spawning } = useRuns();
+  const { runs, focusedRunId, setFocusedRun, createTerminal, setTab, setView, requestAgentView, spawning } = useRuns();
   const { readiness, refresh } = useRepoReadiness(project);
   const { spawn, error, dialogs } = useSpawnAgent(project, refresh);
   const gitless = isGitless(readiness);
@@ -47,9 +47,12 @@ export default function AgentSidePanel({ project }: { project: Project }) {
   // Those coords stop being true the moment the window changes size.
   useDismissOnResize(pickerOpen, () => setPickerOpen(false));
 
+  // "This agent, over there" — so it lands on the agent, not on the run panel
+  // the Agents tab may have been left on for this run.
   const openInAgentsTab = () => {
     setTab("agents");
     setView("focus");
+    if (focusedRunId) requestAgentView(focusedRunId);
   };
 
   const st = focused ? runStatus(focused) : null;

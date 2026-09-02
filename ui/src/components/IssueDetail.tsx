@@ -246,12 +246,36 @@ export default function IssueDetail({
   // Grow the title textarea to fit its wrapped content (no scroll, no clip).
   // Re-measured on a layout switch too: the same title wraps to fewer lines
   // once the pane is expanded.
-  useLayoutEffect(() => {
+  const fitTitle = () => {
     const el = titleRef.current;
     if (!el) return;
     el.style.height = "auto";
     el.style.height = `${el.scrollHeight}px`;
-  }, [shownTitle, expanded]);
+  };
+  useLayoutEffect(fitTitle, [shownTitle, expanded]);
+
+  // The other way that measurement goes stale: expanded, the reading column is
+  // fluid, so dragging the window narrower rewraps the title onto another line
+  // with nothing in the deps above changing — and the height measured for the
+  // old width then cuts the last line in half. Width is the only thing that can
+  // rewrap it; the height this writes is itself a resize, so re-fitting on that
+  // would feed the observer its own output (see FocusTerminal for what that
+  // costs in WebKit). Hence the guard, and the fit deferred to its own frame.
+  useLayoutEffect(() => {
+    const el = titleRef.current;
+    if (!el) return;
+    let width = el.clientWidth;
+    let frame = 0;
+    const ro = new ResizeObserver(() => {
+      if (el.clientWidth === width) return;
+      width = el.clientWidth;
+      // Coalesced, so a drag-resize fits once per frame and not per pixel.
+      if (!frame) frame = requestAnimationFrame(() => { frame = 0; fitTitle(); });
+    });
+    ro.observe(el);
+    return () => { ro.disconnect(); cancelAnimationFrame(frame); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // What is typed but not yet written. Titles are trimmed and may not be
   // emptied; an empty description is a legitimate edit.

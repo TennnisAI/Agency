@@ -1,10 +1,10 @@
 # Syncing `.agency/issues/` — across machines, and across a team
 
-Status: **engine built, no UI yet** (2026-09-02). The `uid` groundwork, the
-merge, the ref transport and the setting are in and tested; nothing in the app
-offers to run a sync, and nothing writes the setting but a text editor. This doc
-supersedes the earlier version, which asked a narrower question and got a
-narrower answer.
+Status: **built and usable** (2026-09-02), manual sync only. The `uid`
+groundwork, the merge, the ref transport, the setting and the UI are in and
+tested. Nothing syncs on its own; every pass is something the user asks for.
+This doc supersedes the earlier version, which asked a narrower question and got
+a narrower answer.
 
 The question this now answers: the tracker is local files, so a person with
 three machines has three different backlogs, and a team has none. What makes
@@ -216,10 +216,22 @@ a merge base; an unchanged tree does not commit at all. Tested end to end
 against real repositories pushing through a bare remote, including the property
 that neither checkout is ever dirtied and no branch ever carries the issues.
 
-**`config.rs` — the setting.** `[issues] sync` and `[issues] remote`, split
-across the two files as described above. `issue_sync_remote()` is the one place
-to ask. Reachable from the app as the `sync_issues` command; nothing calls it
-from the UI yet.
+**`config.rs` — the setting.** `[issues] sync` and `[issues] remote`.
+`issue_sync_remote()` is the one place to ask. Both fields are *read* from the
+tracked file merged under the local one, but only ever *written* to the local
+one: Agency has never written a tracked file, and starting here would dirty the
+checkout every time the toggle was touched, which is the exact condition this
+whole design avoids. A team that wants the decision to travel commits one line
+into `agency.toml` by hand, and `load` already merges it.
+
+**The UI.** A per-project Backlog section in Settings, and a Sync button on the
+issues toolbar shown only when the project is configured to share and has a
+remote. The seeding question comes back as an outcome rather than an error
+(`SyncResult::NeedsSeeding`), so the dialog can state both counts without
+parsing a message. Conflicts get a marker on the affected row as well as a
+toast: the merge decides a field both sides changed by `updated`, a body edit
+that lost that way is content quietly gone, and a dismissed toast would be the
+last anyone heard of it.
 
 ### `uid`
 
@@ -289,31 +301,30 @@ How it behaves:
 
 ## What is left
 
-- **The UI.** A settings control that writes the two config fields and states
-  the consequence (and, on a public remote, says so). A way to run a sync. A
-  place to show `Outcome.conflicts`, which the engine returns and nobody reads.
-- **The seeding prompt.** `sync` refuses a blind first merge with
-  `Blocked::NeedsSeeding { local, remote }`, carrying both counts precisely so a
-  dialog can say "this machine has 174, the shared tracker has 2" and offer
-  publish or adopt. Nothing asks yet.
+Each of these was decided against for now rather than missed.
+
+- **A trigger.** Every sync is manual, from the button on the issues toolbar.
+  Automatic on project open is the obvious next step and needs no engine change;
+  manual first is how you find out whether the merge behaves before it runs
+  unattended.
 - **A push that fails is only `pushed: false`.** The common cause is the remote
-  having moved, and "sync again" is the right advice, but distinguishing that
-  from an auth failure means either parsing git's stderr or re-fetching to
-  compare. Left undone rather than guessed at.
+  having moved, and "sync again" is the right advice, but telling that apart
+  from an auth failure means parsing git's stderr or re-fetching to compare.
+  Left undone rather than guessed at; the toast says the shared copy was not
+  updated, which is true either way.
 - **Renumbering.** Two uids claiming one key is reported and neither side is
   touched. Resolving it means renaming a file and rewriting every `links:` that
-  names it, which is its own pass.
-- **A trigger.** Every sync today is something a caller asks for.
+  names it, which is its own pass. Publish/Adopt avoids the only case a single
+  user hits, so this is a team problem and not yet a real one.
+- **Orphaned attachments.** An asset whose issue was deleted is never collected.
+  A merge is the wrong place to decide a file is unreachable.
 
 ## Open questions
 
-1. Sync trigger: manual, on app focus, on dispatch, on a timer?
-2. Should `Adopt` back up the tracker it replaces? It is the one operation here
-   that deletes issues wholesale on the user's say-so, and the house rule for
-   rewriting a user's files is back up, transform, verify, swap.
-3. Is there a story for issues that stay private in an otherwise shared backlog,
+1. Sync trigger: on app focus, on project open, on dispatch, on a timer?
+2. Is there a story for issues that stay private in an otherwise shared backlog,
    or is that out of scope?
-4. Does `rank` eventually become the per-person overlay, and if so is that a
+3. Does `rank` eventually become the per-person overlay, and if so is that a
    separate ref, a separate file, or a local-only column?
-5. Should the ref be pruned? Its history grows one commit per changed sync
+4. Should the ref be pruned? Its history grows one commit per changed sync
    forever, and nothing ever reads further back than the merge base.

@@ -20,6 +20,7 @@ pub mod registry;
 pub mod runsetup;
 pub mod scripts;
 pub mod search;
+pub mod sessionstore;
 pub mod setup;
 pub mod skills;
 pub mod supervisor;

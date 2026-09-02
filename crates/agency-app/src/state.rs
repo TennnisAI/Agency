@@ -1336,6 +1336,23 @@ fn same_dir(a: &Path, b: &Path) -> bool {
     }
 }
 
+/// The environment that keeps this session's conversation to itself, for the
+/// agents Agency can pin (see [`agency_core::sessionstore`]). Empty for
+/// everyone else, so every agent launch can extend with it unconditionally.
+///
+/// AGE-175: without it, "resume the most recent conversation in this
+/// directory" is whatever session was touched last, and every run sharing a
+/// directory — a `worktree: false` run, a gitless project, an extra agent tab
+/// — comes back into the same one. Applied on fresh launches as much as on
+/// resumes: the store a session resumes from is the one its first launch
+/// wrote to.
+fn session_store_env(command: &str, worktree: &Path, session: &str) -> Vec<(String, String)> {
+    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+        return Vec::new();
+    };
+    agency_core::sessionstore::env(&home, command, worktree, session)
+}
+
 /// The directory a run's agent, scripts and git commands operate in: its own
 /// worktree when it has one, else the project's main checkout.
 ///
@@ -1366,18 +1383,13 @@ fn restore_start_point(repo: &Path, run: &agency_core::registry::Run) -> Option<
         .find(|b| agency_core::merge::branch_exists(repo, b))
 }
 
-/// Top-level session files in a transcript directory. What the record calls
-/// "2 session files": the per-session subdirectories (tool results, subagent
-/// transcripts) ride along in the rescue but are not sessions.
+/// The session files in a transcript directory. What the record calls "2
+/// session files": the directory's own, plus those in the per-session stores
+/// one level down (AGE-175). Deeper subdirectories (claude's tool results,
+/// subagent transcripts) ride along in the rescue but are not sessions, which
+/// is where `usage::transcripts` stops.
 fn count_sessions(dir: &Path) -> usize {
-    std::fs::read_dir(dir)
-        .map(|entries| {
-            entries
-                .flatten()
-                .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("jsonl"))
-                .count()
-        })
-        .unwrap_or(0)
+    agency_core::usage::transcripts(dir).len()
 }
 
 /// The agent's own command for picking the newest rescued session up again,
@@ -2908,9 +2920,7 @@ impl AppState {
         // path the driver uses for every respawn — so there is exactly one
         // place that builds a headless attempt.
         if spec.loop_config.is_none() {
-            let mut env = self.provider_env()?;
-            env.extend(profile.env.iter().cloned());
-            env.extend(agency_core::scripts::script_env(&workspace.path, &repo, &id, Some(port)));
+            let env = self.agent_env(&profile, &workspace.path, &repo, &id, &id, Some(port))?;
             // The default flow passes "" and behaves exactly as before: the user
             // types the real prompt into the live terminal.
             let (command, args) = fresh_agent_argv(
@@ -5523,14 +5533,81 @@ impl AppState {
     /// The launch command for this run's agent, from its profile when there is
     /// one. Its basename is what selects the transcript dialect.
     fn agent_command(&self, run: &agency_core::registry::Run) -> String {
+        self.profile_command(&run.agent)
+    }
+
+    /// The environment every agent launch runs in: the user's provider keys,
+    /// the profile's own variables, the run's script variables, and the pin
+    /// that keeps this session's conversation to itself.
+    ///
+    /// One builder for all five launch paths — create, resume, rerun, loop
+    /// attempt and extra tab — so a sixth cannot quietly ship without the pin.
+    /// AGE-175 was a resume reading a sibling session's conversation, and a
+    /// launch that skipped the pin would go on writing into one.
+    ///
+    /// `run_id` and `session` differ only for an extra agent tab: the scripts
+    /// belong to the run whose workspace they operate in, the conversation to
+    /// the tab that is having it.
+    fn agent_env(
+        &self,
+        profile: &AgentProfile,
+        worktree: &Path,
+        repo: &Path,
+        run_id: &str,
+        session: &str,
+        port: Option<u16>,
+    ) -> Result<Vec<(String, String)>> {
+        let mut env = self.provider_env()?;
+        env.extend(profile.env.iter().cloned());
+        env.extend(agency_core::scripts::script_env(worktree, repo, run_id, port));
+        env.extend(session_store_env(&profile.command, worktree, session));
+        Ok(env)
+    }
+
+    /// The launch command an agent id resolves to. An extra tab may run a
+    /// different agent than its run does, so the two cannot share a lookup
+    /// keyed on the run alone.
+    fn profile_command(&self, agent: &str) -> String {
         self.registry
             .lock()
             .unwrap()
-            .get_profile(&run.agent)
+            .get_profile(agent)
             .ok()
             .flatten()
             .map(|p| p.command)
-            .unwrap_or_else(|| run.agent.clone())
+            .unwrap_or_else(|| agent.to_string())
+    }
+
+    /// The per-session conversation stores this run's agents keep inside the
+    /// workspace's transcript directory (see [`agency_core::sessionstore`]):
+    /// the run's own, and one per extra agent tab.
+    ///
+    /// Each is named for the session that wrote it, so unlike the directory
+    /// around them they are Agency's to remove even when that directory is the
+    /// user's own checkout, shared with whatever pi sessions they have had
+    /// there themselves.
+    fn session_stores(&self, run: &agency_core::registry::Run, repo: &Path) -> Vec<PathBuf> {
+        let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+            return Vec::new();
+        };
+        let worktree = workspace_dir(repo, run);
+        // Bound and dropped before the loop below: `profile_command` locks the
+        // registry too, and a guard still alive there would deadlock.
+        let extras = {
+            let reg = self.registry.lock().unwrap();
+            reg.list_run_sessions(&run.id).unwrap_or_default()
+        };
+        std::iter::once((run.id.clone(), run.agent.clone()))
+            .chain(extras.into_iter().map(|s| (s.id, s.agent)))
+            .filter_map(|(sid, agent)| {
+                agency_core::sessionstore::dir(
+                    &home,
+                    &self.profile_command(&agent),
+                    &worktree,
+                    &sid,
+                )
+            })
+            .collect()
     }
 
     /// Where this run's agent keeps its transcript for this workspace, for the
@@ -5818,6 +5895,20 @@ impl AppState {
                 if let Some(sdir) = self.agent_session_dir(&run, &repo).filter(|d| d.exists()) {
                     if let Err(e) = std::fs::remove_dir_all(&sdir) {
                         log::warn!("discard_run {id}: couldn't remove the transcript dir: {e}");
+                    }
+                }
+            } else if run.kind == "agent" {
+                // A checkout run's directory is the user's, but the per-session
+                // stores inside it are this run's alone (AGE-175) and nothing
+                // else ever sweeps them.
+                for store in self.session_stores(&run, &repo) {
+                    if store.exists() {
+                        if let Err(e) = std::fs::remove_dir_all(&store) {
+                            log::warn!(
+                                "discard_run {id}: couldn't remove {}: {e}",
+                                store.display()
+                            );
+                        }
                     }
                 }
             }
@@ -6532,11 +6623,12 @@ impl AppState {
                 run.port_base,
             );
         }
-        let mut env = self.provider_env()?;
-        env.extend(profile.env.iter().cloned());
-        // Same env recipe as the run itself, ports included: extra sessions
-        // are collaborators in the same workspace, not new workspaces.
-        env.extend(agency_core::scripts::script_env(&worktree, &repo, &run.id, run.port_base));
+        // Same env recipe as the run itself, ports included: extra sessions are
+        // collaborators in the same workspace, not new workspaces. The
+        // conversation is the exception, and is the tab's own: sharing the
+        // worktree is exactly how a tab used to take over the run's resume
+        // (AGE-175).
+        let env = self.agent_env(&profile, &worktree, &repo, &run.id, sid, run.port_base)?;
         let (command, args) =
             fresh_agent_argv(&profile, &worktree, prompt, config.scripts.setup.as_deref());
         self.term.read().unwrap().start_session(
@@ -6754,9 +6846,7 @@ impl AppState {
             let profile = with_model(&profile, run.model.as_deref());
             with_web_ui(&profile, gui_port_for(&config, run.port_base, &run.agent), &self.data_dir)
         };
-        let mut env = self.provider_env()?;
-        env.extend(profile.env.iter().cloned());
-        env.extend(agency_core::scripts::script_env(&worktree, &repo, &run.id, run.port_base));
+        let env = self.agent_env(&profile, &worktree, &repo, &run.id, id, run.port_base)?;
         let setup = config.scripts.setup.as_deref();
         // Decide resume-vs-fresh up front. For claude/pi we can prove whether a
         // session exists (they don't exit on resume-failure, so the daemon
@@ -6768,6 +6858,7 @@ impl AppState {
                     std::path::Path::new(&h),
                     &profile.command,
                     &worktree,
+                    id,
                 )
             })
             .unwrap_or(crate::resume_probe::ResumeProbe::Unknown);
@@ -6837,9 +6928,7 @@ impl AppState {
             let profile = with_model(&profile, run.model.as_deref());
             with_web_ui(&profile, gui_port_for(&config, run.port_base, &run.agent), &self.data_dir)
         };
-        let mut env = self.provider_env()?;
-        env.extend(profile.env.iter().cloned());
-        env.extend(agency_core::scripts::script_env(&worktree, &repo, &run.id, run.port_base));
+        let env = self.agent_env(&profile, &worktree, &repo, &run.id, id, run.port_base)?;
         // A rerun is a fresh launch by definition, so it takes the fresh argv
         // (prompt and all, never the resume recipe) that `create_run` took.
         let (command, args) =
@@ -6908,9 +6997,7 @@ impl AppState {
                 run.port_base,
             );
         }
-        let mut env = self.provider_env()?;
-        env.extend(profile.env.iter().cloned());
-        env.extend(agency_core::scripts::script_env(&worktree, &repo, &run.id, run.port_base));
+        let env = self.agent_env(&profile, &worktree, &repo, &run.id, &run.id, run.port_base)?;
         let (command, args) =
             loop_argv(&profile, &worktree, &run.prompt, config.scripts.setup.as_deref())?;
         let _ = self.term.read().unwrap().kill(&session_name(&run.id));

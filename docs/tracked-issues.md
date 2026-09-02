@@ -1,8 +1,10 @@
 # Syncing `.agency/issues/` — across machines, and across a team
 
-Status: **direction settled, one piece built.** The `uid` groundwork below is in
-(2026-09-02); the sync engine and its setting are not. This doc supersedes the
-earlier version, which asked a narrower question and got a narrower answer.
+Status: **engine built, no UI yet** (2026-09-02). The `uid` groundwork, the
+merge, the ref transport and the setting are in and tested; nothing in the app
+offers to run a sync, and nothing writes the setting but a text editor. This doc
+supersedes the earlier version, which asked a narrower question and got a
+narrower answer.
 
 The question this now answers: the tracker is local files, so a person with
 three machines has three different backlogs, and a team has none. What makes
@@ -186,10 +188,40 @@ Frame it in the UI as sharing a backlog and say what that means, not as
 "git-track `.agency/issues/`", which names the mechanism and hides the
 consequence.
 
-## What is built: `uid` (2026-09-02)
+## What is built (2026-09-02)
 
-Separable groundwork, landed ahead of the sync engine because it is cheap now
-and a migration later.
+Four pieces, in the order they landed. `issuesync.rs` is the merge and nothing
+else — a pure function over three sets of parsed files — and `issueref.rs` is
+the transport. Keeping them apart is what lets the judgement calls be tested
+without a repository.
+
+**`issuefs.rs` — `uid`.** Below.
+
+**`issuesync.rs` — the merge.** `plan(mode, base, local, remote)` returns writes
+and deletes. Field-level rather than whole-file, so a status flipped here and a
+due date set there both survive. Comments and links merge as three-way sets, so
+a deliberate removal is not undone and an addition from either side lives. The
+unknown-key passthrough merges the same way; it exists so a newer schema's
+fields survive an older build, and a merge is no place to drop them. A plan
+carries only work: when the merge agrees with what is already on disk it is
+empty, which is what makes the steady state cheap.
+
+**`issueref.rs` — the transport.** Snapshots `.agency/issues/` into
+`refs/agency/issues` through a scratch `GIT_INDEX_FILE`, so the real index and
+working tree are never touched. `git add` needs `--force`, because the directory
+is deliberately in `.git/info/exclude`. The scratch index path comes from
+`rev-parse --absolute-git-dir` rather than `<repo>/.git`, which in a linked
+worktree is a file. Commits carry both sides as parents, so the *next* pass has
+a merge base; an unchanged tree does not commit at all. Tested end to end
+against real repositories pushing through a bare remote, including the property
+that neither checkout is ever dirtied and no branch ever carries the issues.
+
+**`config.rs` — the setting.** `[issues] sync` and `[issues] remote`, split
+across the two files as described above. `issue_sync_remote()` is the one place
+to ask. Reachable from the app as the `sync_issues` command; nothing calls it
+from the UI yet.
+
+### `uid`
 
 Issue files carry `uid:` — a uuid in the frontmatter, right after `key:`, which
 is the id the index row is keyed by. `key` names an issue within one checkout;
@@ -255,15 +287,33 @@ How it behaves:
   for a ref snapshot; it is the kind of thing a file-sync service would pick up,
   which is another small mark against that route.
 
+## What is left
+
+- **The UI.** A settings control that writes the two config fields and states
+  the consequence (and, on a public remote, says so). A way to run a sync. A
+  place to show `Outcome.conflicts`, which the engine returns and nobody reads.
+- **The seeding prompt.** `sync` refuses a blind first merge with
+  `Blocked::NeedsSeeding { local, remote }`, carrying both counts precisely so a
+  dialog can say "this machine has 174, the shared tracker has 2" and offer
+  publish or adopt. Nothing asks yet.
+- **A push that fails is only `pushed: false`.** The common cause is the remote
+  having moved, and "sync again" is the right advice, but distinguishing that
+  from an auth failure means either parsing git's stderr or re-fetching to
+  compare. Left undone rather than guessed at.
+- **Renumbering.** Two uids claiming one key is reported and neither side is
+  touched. Resolving it means renaming a file and rewriting every `links:` that
+  names it, which is its own pass.
+- **A trigger.** Every sync today is something a caller asks for.
+
 ## Open questions
 
 1. Sync trigger: manual, on app focus, on dispatch, on a timer?
-2. What does a first clone show — every issue as the ref has it, or a review
-   step before the local tracker is populated?
-3. Does the merge ever need to surface a conflict in the UI, or is
-   "field-level plus union comments, body conflict wins by `updated`" good
-   enough to stay silent?
-4. Is there a story for issues that stay private in an otherwise shared backlog,
+2. Should `Adopt` back up the tracker it replaces? It is the one operation here
+   that deletes issues wholesale on the user's say-so, and the house rule for
+   rewriting a user's files is back up, transform, verify, swap.
+3. Is there a story for issues that stay private in an otherwise shared backlog,
    or is that out of scope?
-5. Does `rank` eventually become the per-person overlay, and if so is that a
+4. Does `rank` eventually become the per-person overlay, and if so is that a
    separate ref, a separate file, or a local-only column?
+5. Should the ref be pruned? Its history grows one commit per changed sync
+   forever, and nothing ever reads further back than the merge base.

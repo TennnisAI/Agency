@@ -15,6 +15,55 @@ pub struct AgencyConfig {
     pub knowledge: KnowledgeConfig,
     #[serde(default)]
     pub preview: PreviewConfig,
+    #[serde(default)]
+    pub issues: IssuesConfig,
+}
+
+/// Where this project's backlog lives. Off by default: a tracker that starts
+/// pushing itself somewhere the user did not ask for is not a default anyone
+/// wants.
+///
+/// The two fields deliberately belong in different files, and `load` already
+/// merges them that way (`agency.toml` under `agency.local.toml`):
+///
+/// - `sync` is a fact about the repo and its team, so it belongs in the tracked
+///   `agency.toml` and travels with a clone. A teammate then needs no setup.
+/// - `remote` is a fact about this machine, so it belongs in the gitignored
+///   `agency.local.toml`. A private tracker remote is not something to ship to
+///   people who cannot push to it, and this repo is the case in point: the code
+///   is public and the backlog is not.
+///
+/// The three states a user picks between are "this machine only" (`sync =
+/// false`), "sync with the repo" (`sync = true`, the default `origin`), and
+/// "sync to another remote" (`sync = true` with `remote` set). See
+/// `docs/tracked-issues.md`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct IssuesConfig {
+    #[serde(default)]
+    pub sync: bool,
+    /// A remote name, or a URL for a tracker that lives somewhere the code
+    /// does not.
+    #[serde(default = "default_remote")]
+    pub remote: String,
+}
+
+impl Default for IssuesConfig {
+    fn default() -> Self {
+        IssuesConfig { sync: false, remote: default_remote() }
+    }
+}
+
+fn default_remote() -> String {
+    "origin".to_string()
+}
+
+/// The remote this project's issues sync to, or `None` when the backlog stays
+/// on this machine. One place to ask, so no caller has to remember that an
+/// empty `remote` means the same thing as `sync = false`.
+pub fn issue_sync_remote(repo_path: &Path) -> Option<String> {
+    let cfg = load(repo_path).issues;
+    let remote = cfg.remote.trim().to_string();
+    (cfg.sync && !remote.is_empty()).then_some(remote)
 }
 
 /// The Run tab preview's agent-facing side (AGE-143). On by default because it
@@ -775,6 +824,30 @@ mod tests {
         let agency = dir.join(".agency");
         fs::create_dir_all(&agency).unwrap();
         fs::write(agency.join(name), body).unwrap();
+    }
+
+    /// The split that makes one setting serve a team and one person: the repo
+    /// decides *that* the backlog is shared, this machine decides *where*.
+    #[test]
+    fn issue_sync_is_off_until_the_repo_says_otherwise() {
+        let dir = tempdir().unwrap();
+        // Nothing configured is today's behavior: the tracker stays here.
+        assert_eq!(issue_sync_remote(dir.path()), None);
+
+        // The tracked file turns it on; the default target is the repo's own
+        // remote, so a teammate cloning needs to configure nothing.
+        write(dir.path(), "agency.toml", "[issues]\nsync = true\n");
+        assert_eq!(issue_sync_remote(dir.path()).as_deref(), Some("origin"));
+
+        // The gitignored file redirects it, which is what a public repo with a
+        // private backlog needs. It must not have to edit the tracked file to
+        // do that, or the private URL ships to everyone who clones.
+        write(dir.path(), "agency.local.toml", "[issues]\nremote = \"tracker\"\n");
+        assert_eq!(issue_sync_remote(dir.path()).as_deref(), Some("tracker"));
+
+        // And a local override can switch it back off for one machine.
+        write(dir.path(), "agency.local.toml", "[issues]\nsync = false\n");
+        assert_eq!(issue_sync_remote(dir.path()), None);
     }
 
     /// AGE-170, with the file git actually offered the user:

@@ -33,7 +33,8 @@ pub const LOCAL_REF: &str = "refs/agency/issues";
 pub const REMOTE_REF: &str = "refs/agency/issues-remote";
 
 /// What a sync pass did, for the caller to show.
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, Default, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Outcome {
     /// Issue files written locally (created or updated) by the merge.
     pub written: usize,

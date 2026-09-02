@@ -31,7 +31,7 @@ pub enum Action {
 
 /// Something the merge could not decide alone. Reported, never fatal: a plan
 /// with conflicts is still applied, and the conflict says what was chosen.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct Conflict {
     /// The issue key the conflict is about, for showing a human.
     pub key: String,
@@ -60,7 +60,8 @@ impl Plan {
 }
 
 /// How a sync pass treats the two sides.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Mode {
     /// Three-way merge against the last synced state. The steady state.
     Merge,

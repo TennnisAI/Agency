@@ -3581,6 +3581,35 @@ impl AppState {
         Ok(true)
     }
 
+    /// Sync this project's backlog with the remote its config names, then put
+    /// the index back in step with the files the merge changed.
+    ///
+    /// `mode` is the caller's call, not ours: two already-populated machines
+    /// syncing for the first time share no history, so there is no base to
+    /// merge against and only the user can say which side seeds the other. The
+    /// error for that case is `issueref::Blocked::NeedsSeeding`, which carries
+    /// both counts so the prompt can state them.
+    pub fn sync_issues(
+        &self,
+        project_id: &str,
+        mode: agency_core::issuesync::Mode,
+    ) -> Result<agency_core::issueref::Outcome> {
+        let reg = self.registry.lock().unwrap();
+        self.ensure_issue_files(&reg, project_id)?;
+        let (root, key) = self.issue_root(&reg, project_id)?;
+        let remote = agency_core::config::issue_sync_remote(&root).ok_or_else(|| {
+            anyhow!("this project's backlog is not set to sync; turn it on in settings first")
+        })?;
+        let outcome = agency_core::issueref::sync(&root, &remote, mode)?;
+        // The merge wrote issue files behind the index's back. Drop the cached
+        // stat signature first: `list_issues` skips reconciling when it has not
+        // moved, and a sync that lands during the same second as an app write
+        // could otherwise leave the board showing the pre-merge state.
+        self.issue_sigs.lock().unwrap().remove(project_id);
+        agency_core::issuefs::reconcile(&reg, project_id, &key, &root)?;
+        Ok(outcome)
+    }
+
     pub fn list_issues(&self, project_id: &str) -> Result<Vec<agency_core::registry::Issue>> {
         let reg = self.registry.lock().unwrap();
         self.ensure_issue_files(&reg, project_id)?;

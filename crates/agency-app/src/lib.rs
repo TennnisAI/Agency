@@ -225,6 +225,7 @@ pub fn run() {
             commands::create_issue,
             commands::update_issue,
             commands::delete_issue,
+            commands::sync_issues,
             commands::add_issue_comment,
             commands::update_issue_comment,
             commands::delete_issue_comment,

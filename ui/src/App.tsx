@@ -32,7 +32,7 @@ import RunRemoveDialog from "./components/RunRemoveDialog";
 const REPO_URL = "https://github.com/TennnisAI/Agency";
 
 function Shell() {
-  const { selectedProjectId, setSelectedProject, createAgent, createTerminal, setTab, focusedRunId, selectedRunId, onScreenRunId, setApproveRun, setFocusedRun, setView, runs } = useRuns();
+  const { selectedProjectId, setSelectedProject, createAgent, createTerminal, setTab, focusedRunId, selectedRunId, onScreenRunId, setApproveRun, setFocusedRun, setView, requestAgentView, runs } = useRuns();
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [project, setProject] = useState<Project | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -347,6 +347,9 @@ function Shell() {
   // leaving the run focused in the Agents tab. Without the setTab, opening a run
   // from the sidebar while the project last sat on Docs or Files looked like a
   // dead click: the run was focused behind a tab the user couldn't see.
+  // requestAgentView is the same problem one level in: a run left on its Run tab
+  // reopens there, so opening it by name landed on the run panel rather than the
+  // agent, and a run already focused didn't move at all.
   function openRun(p: Project, runId: string) {
     setShowSettings(false);
     setProject(p);
@@ -354,6 +357,7 @@ function Shell() {
     setTab("agents");
     setFocusedRun(runId);
     setView("focus");
+    requestAgentView(runId);
   }
 
   // Route a native-menu action (payload of the backend "menu" event) to the

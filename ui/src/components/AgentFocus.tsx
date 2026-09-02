@@ -22,7 +22,7 @@ import Resizer from "./Resizer";
 import ArchivedSection from "./ArchivedSection";
 import { useDismissOnResize } from "../hooks/useDismissOnResize";
 import { usePaneWidth, loadFold, saveFold } from "../hooks/usePaneWidth";
-import { loadFocusTab, saveFocusTab, resolveFocusTab, PRIMARY_TAB, LOG_TAB } from "../lib/focusTab";
+import { agentViewTab, loadFocusTab, saveFocusTab, resolveFocusTab, PRIMARY_TAB, RUN_TAB, LOG_TAB } from "../lib/focusTab";
 import AgentAddMenu from "./AgentAddMenu";
 import QueuedMarker from "./QueuedMarker";
 import OverflowMenu from "./OverflowMenu";
@@ -245,7 +245,7 @@ export default function AgentFocus({
   // everything that needs a branch (see AgentAddMenu).
   gitless?: boolean;
 }) {
-  const { runs, focusedRunId, setFocusedRun, refreshRuns, createAgent, createTerminal, selectedProjectId, pendingSessionId, setPendingSession, setApproveRun } = useRuns();
+  const { runs, focusedRunId, setFocusedRun, refreshRuns, createAgent, createTerminal, selectedProjectId, pendingSessionId, setPendingSession, agentViewRunId, requestAgentView, setApproveRun } = useRuns();
   // Archive / delete of the focused run, awaiting its confirm dialog.
   const [pendingRemoval, setPendingRemoval] = useState<Removal | null>(null);
   // Run being renamed (its display title). Any run — agent or terminal.
@@ -256,8 +256,10 @@ export default function AgentFocus({
   // "agent" (primary terminal), "run" (RunPanel), or an extra-session id —
   // extra agent tabs sharing this run's worktree.
   const [panel, setPanel] = useState<string>(PRIMARY_TAB);
-  // Read-only mirror of `panel` for effects that need the value at the moment
-  // an await settles, not the one captured when they started.
+  // Mirror of `panel` for effects that need the value at the moment an await
+  // settles, not the one captured when they started. Written the moment a tab
+  // is decided as well as on render, so an effect that runs in the same commit
+  // as the one that changed it reads the new tab rather than the old one.
   const panelRef = useRef(panel);
   panelRef.current = panel;
   // Every deliberate tab change goes through here so the run remembers where
@@ -265,6 +267,7 @@ export default function AgentFocus({
   // it should reopen the agent you were using, not always the primary one.
   const selectPanel = useCallback((next: string) => {
     setPanel(next);
+    panelRef.current = next;
     if (focusedRunId && typeof localStorage !== "undefined") saveFocusTab(localStorage, focusedRunId, next);
   }, [focusedRunId]);
   // The tab Run was opened from, so backing out of the run setup card returns
@@ -290,7 +293,8 @@ export default function AgentFocus({
       ? loadFocusTab(localStorage, focusedRunId)
       : PRIMARY_TAB;
     setPanel(remembered);
-    beforeRun.current = remembered === "run" ? PRIMARY_TAB : remembered;
+    panelRef.current = remembered;
+    beforeRun.current = remembered === RUN_TAB ? PRIMARY_TAB : remembered;
     if (!focusedRunId) return;
     // `live` drops a response that lands after the run changed (a slow fetch for
     // the previous run must not repopulate this one's tab strip). The interval
@@ -333,6 +337,18 @@ export default function AgentFocus({
     selectPanel(pendingSessionId);
     setPendingSession(null);
   }, [pendingSessionId, focusedRunId, setPendingSession, selectPanel]);
+
+  // "Show me this agent", clicked by name in the rail, the sidebar tree or the
+  // palette. Only the Run tab moves (agentViewTab), and only for the run the
+  // request names — a request for a run that isn't focused yet waits for the
+  // focus change, which lands in this same commit and has already restored its
+  // remembered tab into panelRef above.
+  useEffect(() => {
+    if (!agentViewRunId || agentViewRunId !== focusedRunId) return;
+    requestAgentView(null);
+    const next = agentViewTab(panelRef.current, beforeRun.current);
+    if (next !== panelRef.current) selectPanel(next);
+  }, [agentViewRunId, focusedRunId, requestAgentView, selectPanel]);
 
   const toggleAddMenu = () => {
     setAddOpen((o) => {
@@ -478,7 +494,7 @@ export default function AgentFocus({
                 key={r.id}
                 run={r}
                 on={r.id === focusedRunId}
-                onSelect={() => setFocusedRun(r.id)}
+                onSelect={() => { setFocusedRun(r.id); requestAgentView(r.id); }}
                 onRename={() => setRenaming(r)}
               />
             ))}
@@ -549,7 +565,7 @@ export default function AgentFocus({
                   <QueuedMarker run={focused} />
                 </div>
                 <span className="spacer" />
-                {panel !== "run" && (
+                {panel !== RUN_TAB && (
                   <button
                     className={`head-icon-btn ${shellOpen ? "on" : ""}`}
                     title={focused.worktree ? "Toggle terminal in this worktree" : "Toggle terminal in the project checkout"}
@@ -626,13 +642,13 @@ export default function AgentFocus({
                 >+</button>
                 <span className="spacer" />
                 <button
-                  className={`session-tab run-tab ${panel === "run" ? "on" : ""}`}
+                  className={`session-tab run-tab ${panel === RUN_TAB ? "on" : ""}`}
                   title={focused.runScriptsLive
                     ? "Run: a script is running in this workspace"
                     : "Run this project's scripts in this agent's workspace"}
                   onClick={() => {
-                    if (panel !== "run") beforeRun.current = panel;
-                    selectPanel("run");
+                    if (panel !== RUN_TAB) beforeRun.current = panel;
+                    selectPanel(RUN_TAB);
                   }}
                 >
                   Run
@@ -653,7 +669,7 @@ export default function AgentFocus({
                   </div>
                 </>
               )}
-              {panel !== "run" ? (
+              {panel !== RUN_TAB ? (
                 <div className="focus-body">
                   {/* Exactly one of these fills the pane. A web-served agent's
                       tab is its GUI, whole; every other tab (its own Log

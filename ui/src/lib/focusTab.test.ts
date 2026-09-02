@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { loadFocusTab, saveFocusTab, resolveFocusTab, PRIMARY_TAB, LOG_TAB } from "./focusTab";
+import { agentViewTab, loadFocusTab, saveFocusTab, resolveFocusTab, PRIMARY_TAB, RUN_TAB, LOG_TAB } from "./focusTab";
 
 function makeStorage(): Pick<Storage, "getItem" | "setItem"> {
   const map = new Map<string, string>();
@@ -70,5 +70,26 @@ describe("resolveFocusTab", () => {
     // drawing the tab, so restoring onto it would strand an empty pane.
     expect(resolveFocusTab(LOG_TAB, [], false)).toBe(PRIMARY_TAB);
     expect(resolveFocusTab(LOG_TAB, [])).toBe(PRIMARY_TAB);
+  });
+});
+
+describe("agentViewTab", () => {
+  it("leaves the run tab for the tab it was opened from", () => {
+    expect(agentViewTab(RUN_TAB, PRIMARY_TAB)).toBe(PRIMARY_TAB);
+    expect(agentViewTab(RUN_TAB, "run-1--2")).toBe("run-1--2");
+    expect(agentViewTab(RUN_TAB, LOG_TAB)).toBe(LOG_TAB);
+  });
+
+  it("falls back to the primary agent when the run tab is all it knows", () => {
+    // A run restored straight onto Run remembers no tab before it.
+    expect(agentViewTab(RUN_TAB, RUN_TAB)).toBe(PRIMARY_TAB);
+  });
+
+  it("leaves every other tab alone", () => {
+    // An extra agent tab is the agent view too, so a name click stays on it
+    // rather than dropping back to the primary agent.
+    expect(agentViewTab("run-1--2", PRIMARY_TAB)).toBe("run-1--2");
+    expect(agentViewTab(PRIMARY_TAB, "run-1--2")).toBe(PRIMARY_TAB);
+    expect(agentViewTab(LOG_TAB, PRIMARY_TAB)).toBe(LOG_TAB);
   });
 });

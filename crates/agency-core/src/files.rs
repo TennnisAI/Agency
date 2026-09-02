@@ -134,18 +134,27 @@ pub fn create_dir(root: &Path, rel: &str) -> Result<()> {
 /// Append `rel` to the root's `.gitignore` as an anchored pattern, creating the
 /// file if it doesn't exist. Anchoring with a leading slash ("/src/foo") means
 /// the entry ignores this exact path rather than every same-named file in the
-/// tree; directories get a trailing slash. A no-op when the identical pattern is
-/// already present, so repeated use never piles up duplicates. Returns whether a
-/// new line was written (false = already ignored).
+/// tree; directories get a trailing slash. A no-op when the path is already
+/// covered by a line in the file, so repeated use never piles up duplicates.
+/// Returns whether a new line was written (false = already ignored).
 pub fn add_to_gitignore(root: &Path, rel: &str) -> Result<bool> {
     let target = resolve_within(root, rel)?;
-    let mut pattern = format!("/{}", rel.trim_start_matches('/'));
-    if target.is_dir() {
-        pattern.push('/');
+    // The changes panel passes an untracked folder exactly as `git status`
+    // reports it, with a trailing slash: ".npm-cache/". That slash used to
+    // survive into the pattern, so the entry written was "/.npm-cache//", which
+    // git matches nothing with — the folder stayed in every diff until it was
+    // edited by hand. Trim the ends, and let a trailing slash stand in as the
+    // is-a-directory hint for a row whose folder git collapsed.
+    let body = rel.trim_matches('/');
+    if body.is_empty() {
+        bail!("cannot ignore the worktree root");
     }
+    let is_dir = target.is_dir() || rel.ends_with('/');
+    let pattern = format!("/{body}{}", if is_dir { "/" } else { "" });
+
     let gi_path = root.join(".gitignore");
     let existing = std::fs::read_to_string(&gi_path).unwrap_or_default();
-    if existing.lines().any(|l| l.trim() == pattern) {
+    if existing.lines().any(|l| ignore_line_covers(l, body, is_dir)) {
         return Ok(false);
     }
     let mut out = existing;
@@ -157,6 +166,37 @@ pub fn add_to_gitignore(root: &Path, rel: &str) -> Result<bool> {
     out.push('\n');
     std::fs::write(&gi_path, out).map_err(|e| anyhow!("cannot write .gitignore: {e}"))?;
     Ok(true)
+}
+
+/// Whether an existing `.gitignore` line already ignores the path `body` (a
+/// root-relative path with no slashes at either end). The forms this function
+/// writes and the hand-written equivalents of them all count: "/build/",
+/// "/build", "build/" and "build" every one cover the folder `build`, and a
+/// line with no interior slash ("node_modules/") covers the path at any depth,
+/// which is how it reads to git. A trailing slash restricts a pattern to
+/// directories, so "build/" does not cover a *file* named `build`. Wildcards
+/// and negations are left alone: deciding whether "*.log" already covers
+/// "a.log" is git's job, and guessing wrong here means silently declining to
+/// ignore what the user asked to ignore.
+fn ignore_line_covers(line: &str, body: &str, is_dir: bool) -> bool {
+    let line = line.trim();
+    if line.starts_with('#') || line.starts_with('!') || line.contains(['*', '?', '[']) {
+        return false;
+    }
+    let (pattern, dir_only) = match line.strip_suffix('/') {
+        Some(rest) => (rest, true),
+        None => (line, false),
+    };
+    if dir_only && !is_dir {
+        return false;
+    }
+    match pattern.strip_prefix('/') {
+        // Anchored: matches this exact path, from the root down.
+        Some(anchored) => anchored == body,
+        // Unanchored and single-segment: matches that name at any depth.
+        None if !pattern.contains('/') => body.rsplit('/').next() == Some(pattern),
+        None => pattern == body,
+    }
 }
 
 /// True when the relative path `inner` is `outer` itself or sits underneath it.
@@ -1157,6 +1197,68 @@ mod gitignore_tests {
             std::fs::read_to_string(root.join(".gitignore")).unwrap(),
             "node_modules\n/a.log\n"
         );
+    }
+
+    #[test]
+    fn add_to_gitignore_writes_one_slash_for_a_git_status_folder_path() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir(root.join(".npm-cache")).unwrap();
+
+        // The changes panel passes a collapsed untracked folder as git status
+        // prints it. The trailing slash used to reach the pattern, giving
+        // "/.npm-cache//", which ignores nothing.
+        assert!(add_to_gitignore(root, ".npm-cache/").unwrap());
+        assert_eq!(std::fs::read_to_string(root.join(".gitignore")).unwrap(), "/.npm-cache/\n");
+
+        // The same folder, however the caller spells it, is already ignored.
+        assert!(!add_to_gitignore(root, ".npm-cache").unwrap());
+        assert!(!add_to_gitignore(root, ".npm-cache/").unwrap());
+    }
+
+    #[test]
+    fn add_to_gitignore_trusts_a_trailing_slash_over_a_missing_folder() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        // Deleted between the status poll and the click: nothing is on disk to
+        // ask, so the slash git printed is the only is-a-directory evidence.
+        assert!(add_to_gitignore(root, "gone/").unwrap());
+        assert_eq!(std::fs::read_to_string(root.join(".gitignore")).unwrap(), "/gone/\n");
+    }
+
+    #[test]
+    fn add_to_gitignore_refuses_the_root() {
+        let dir = tempdir().unwrap();
+        assert!(add_to_gitignore(dir.path(), "/").is_err());
+        assert!(add_to_gitignore(dir.path(), "").is_err());
+        assert!(!dir.path().join(".gitignore").exists());
+    }
+
+    #[test]
+    fn ignore_line_covers_the_equivalent_spellings_only() {
+        // Every spelling of the same folder counts as already ignored.
+        for line in ["/build/", "/build", "build/", "build", "  build/  "] {
+            assert!(ignore_line_covers(line, "build", true), "{line}");
+        }
+        // A trailing slash restricts a pattern to directories.
+        assert!(ignore_line_covers("build", "build", false));
+        assert!(!ignore_line_covers("build/", "build", false));
+
+        // An unanchored single-segment line matches at any depth; an anchored
+        // one, or one with an interior slash, matches only where it points.
+        assert!(ignore_line_covers("node_modules/", "ui/node_modules", true));
+        assert!(!ignore_line_covers("/node_modules/", "ui/node_modules", true));
+        assert!(ignore_line_covers("ui/node_modules", "ui/node_modules", true));
+        assert!(!ignore_line_covers("api/node_modules", "ui/node_modules", true));
+
+        // A near miss is not a match.
+        assert!(!ignore_line_covers("build2", "build", true));
+        assert!(!ignore_line_covers("", "build", true));
+
+        // Comments, negations and wildcards are left for git to judge.
+        assert!(!ignore_line_covers("#build", "build", true));
+        assert!(!ignore_line_covers("!build", "build", true));
+        assert!(!ignore_line_covers("*.log", "a.log", false));
     }
 }
 

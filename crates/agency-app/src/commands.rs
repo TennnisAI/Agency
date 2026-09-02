@@ -1185,7 +1185,7 @@ pub fn sync_issues(
     state: State<'_, AppState>,
     project_id: String,
     mode: agency_core::issuesync::Mode,
-) -> Result<agency_core::issueref::Outcome, String> {
+) -> Result<crate::state::SyncResult, String> {
     state.sync_issues(&project_id, mode).map_err(|e| e.to_string())
 }
 

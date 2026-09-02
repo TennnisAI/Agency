@@ -68,6 +68,7 @@ export default function IssueRow({
   onDelete,
   drag,
   terms,
+  syncConflicts,
   gitless = false,
 }: {
   issue: Issue;
@@ -100,6 +101,11 @@ export default function IssueRow({
   };
   // Active search terms, lit up in the key and title.
   terms?: string[];
+  // What the last sync had to decide for itself on this issue, one line per
+  // field both sides had changed. Marked on the row rather than only toasted,
+  // because a body edit that lost to the other machine is content quietly gone
+  // and a dismissed toast is the last anyone hears of it.
+  syncConflicts?: string[];
 }) {
   const [menu, setMenu] = useState<"status" | "priority" | "more" | null>(null);
   const [rect, setRect] = useState<DOMRect | null>(null);
@@ -148,6 +154,14 @@ export default function IssueRow({
         <PriorityGlyph priority={issue.priority} />
       </button>
       <code className="issue-key"><Hits text={label} terms={terms} /></code>
+      {syncConflicts && syncConflicts.length > 0 && (
+        <span
+          className="issue-sync-conflict"
+          title={`The last sync decided these for you:\n${syncConflicts.join("\n")}`}
+        >
+          ≠
+        </span>
+      )}
       <span className={`issue-title${issue.status === "cancelled" ? " cancelled" : ""}`}>
         <Hits text={issue.title} terms={terms} />
       </span>

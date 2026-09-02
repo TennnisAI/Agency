@@ -65,6 +65,17 @@ pub struct ProviderSettings {
     pub default_worktree: bool,
 }
 
+/// How a sync pass ended. "Needs seeding" is an outcome rather than an error
+/// because it is a question for the user, not a failure: the UI has to be able
+/// to tell it apart from a broken remote without reading an error message, and
+/// it carries both counts so the prompt can state them.
+#[derive(Debug, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum SyncResult {
+    Done { outcome: agency_core::issueref::Outcome },
+    NeedsSeeding { local: usize, remote: usize },
+}
+
 /// A project's backlog-sharing config for the settings UI, plus the two facts
 /// the UI needs to say what the choice actually means.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -3634,21 +3645,33 @@ impl AppState {
         &self,
         project_id: &str,
         mode: agency_core::issuesync::Mode,
-    ) -> Result<agency_core::issueref::Outcome> {
+    ) -> Result<SyncResult> {
         let reg = self.registry.lock().unwrap();
         self.ensure_issue_files(&reg, project_id)?;
         let (root, key) = self.issue_root(&reg, project_id)?;
         let remote = agency_core::config::issue_sync_remote(&root).ok_or_else(|| {
             anyhow!("this project's backlog is not set to sync; turn it on in settings first")
         })?;
-        let outcome = agency_core::issueref::sync(&root, &remote, mode)?;
+        let outcome = match agency_core::issueref::sync(&root, &remote, mode) {
+            Ok(o) => o,
+            Err(e) => {
+                // A question, not a failure: hand it back as an outcome so the
+                // UI can prompt rather than parse a message.
+                if let Some(agency_core::issueref::Blocked::NeedsSeeding { local, remote }) =
+                    e.downcast_ref::<agency_core::issueref::Blocked>()
+                {
+                    return Ok(SyncResult::NeedsSeeding { local: *local, remote: *remote });
+                }
+                return Err(e);
+            }
+        };
         // The merge wrote issue files behind the index's back. Drop the cached
         // stat signature first: `list_issues` skips reconciling when it has not
         // moved, and a sync that lands during the same second as an app write
         // could otherwise leave the board showing the pre-merge state.
         self.issue_sigs.lock().unwrap().remove(project_id);
         agency_core::issuefs::reconcile(&reg, project_id, &key, &root)?;
-        Ok(outcome)
+        Ok(SyncResult::Done { outcome })
     }
 
     pub fn list_issues(&self, project_id: &str) -> Result<Vec<agency_core::registry::Issue>> {

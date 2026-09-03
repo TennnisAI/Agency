@@ -341,6 +341,12 @@ impl Registry {
             CREATE TABLE IF NOT EXISTS send_queues (
                 session_id TEXT PRIMARY KEY,
                 messages TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS conversations (
+                session_id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                conversation_id TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
             );",
         )?;
         // Migrate older DBs whose `runs` table predates `port_base`.
@@ -990,6 +996,51 @@ impl Registry {
         Ok(())
     }
 
+    /// Record which conversation an Agency session owns, in the agent's own
+    /// naming (see [`crate::sessionstore`]). Written on every fresh launch, so
+    /// a rerun replaces the id rather than adding one: the old conversation
+    /// stays on disk under its own name, and the session stops pointing at it.
+    ///
+    /// `session_id` is a run's id, or an extra tab's `<run>--<n>`. `run_id` is
+    /// carried so a discard can drop a run's rows without listing its tabs.
+    pub fn set_conversation(
+        &self,
+        session_id: &str,
+        run_id: &str,
+        conversation_id: &str,
+        now: i64,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO conversations (session_id, run_id, conversation_id, updated_at)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(session_id) DO UPDATE SET
+                 run_id = ?2, conversation_id = ?3, updated_at = ?4",
+            rusqlite::params![session_id, run_id, conversation_id, now],
+        )?;
+        Ok(())
+    }
+
+    /// The conversation this session owns, or `None` for a session that has
+    /// never been launched with one — every run that predates this, and every
+    /// agent Agency cannot name a conversation to.
+    pub fn get_conversation(&self, session_id: &str) -> Result<Option<String>> {
+        let mut stmt =
+            self.conn.prepare("SELECT conversation_id FROM conversations WHERE session_id = ?1")?;
+        let mut rows = stmt.query([session_id])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(row.get(0)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Drop a run's conversation record and its tabs' — the cascade for
+    /// discard. The agent's own transcripts are removed separately, by the
+    /// caller that knows where that agent keeps them.
+    pub fn delete_conversations(&self, run_id: &str) -> Result<()> {
+        self.conn.execute("DELETE FROM conversations WHERE run_id = ?1", [run_id])?;
+        Ok(())
+    }
+
     pub fn insert_review_comment(&self, c: &ReviewComment) -> Result<()> {
         self.conn.execute(
             "INSERT INTO review_comments (id, run_id, path, line_start, line_end, body, sent, created_at)
@@ -1284,7 +1335,8 @@ impl Registry {
     /// created it, so a copy must not carry them.
     pub fn clear_runs(&self) -> Result<()> {
         self.conn.execute_batch(
-            "DELETE FROM review_comments; DELETE FROM run_sessions; DELETE FROM runs;",
+            "DELETE FROM review_comments; DELETE FROM run_sessions;
+             DELETE FROM conversations; DELETE FROM runs;",
         )?;
         Ok(())
     }
@@ -1891,6 +1943,36 @@ mod tests {
         let ids: Vec<String> =
             reg.list_review_comments("run-1").unwrap().into_iter().map(|c| c.id).collect();
         assert_eq!(ids, vec!["c2"]);
+    }
+
+    /// AGE-177: which conversation a session owns has to survive the app being
+    /// quit, since that is the case it exists for. A rerun replaces it rather
+    /// than adding a second, and a discard takes a run's and its tabs' with it.
+    #[test]
+    fn conversations_round_trip_and_cascade() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("a.db");
+        {
+            let reg = Registry::open(&db).unwrap();
+            reg.set_conversation("agent-3f9c", "agent-3f9c", "uuid-one", 100).unwrap();
+            reg.set_conversation("agent-3f9c--2", "agent-3f9c", "uuid-tab", 100).unwrap();
+            reg.set_conversation("agent-77bd", "agent-77bd", "uuid-other", 100).unwrap();
+            // A rerun replaces the run's own; the tab's is untouched.
+            reg.set_conversation("agent-3f9c", "agent-3f9c", "uuid-two", 200).unwrap();
+        }
+        let reg = Registry::open(&db).unwrap();
+        assert_eq!(reg.get_conversation("agent-3f9c").unwrap().as_deref(), Some("uuid-two"));
+        assert_eq!(reg.get_conversation("agent-3f9c--2").unwrap().as_deref(), Some("uuid-tab"));
+        assert_eq!(reg.get_conversation("never-launched").unwrap(), None);
+
+        reg.delete_conversations("agent-3f9c").unwrap();
+        assert_eq!(reg.get_conversation("agent-3f9c").unwrap(), None);
+        assert_eq!(reg.get_conversation("agent-3f9c--2").unwrap(), None, "the tabs go too");
+        assert_eq!(
+            reg.get_conversation("agent-77bd").unwrap().as_deref(),
+            Some("uuid-other"),
+            "another run's is not touched"
+        );
     }
 
     #[test]

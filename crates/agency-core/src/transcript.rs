@@ -275,15 +275,10 @@ fn parse_pi(text: &str) -> Conversation {
 /// an empty parse really does mean nothing was said, unlike the unsupported
 /// case the caller must keep distinct.
 pub fn read_sessions(dir: &Path, format: Format) -> Vec<Conversation> {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
-    };
     let mut sessions: Vec<(String, String, Conversation)> = Vec::new();
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-            continue;
-        }
+    // The directory's own files and its per-session stores below it; see
+    // `usage::transcripts` for why one level and no further.
+    for path in crate::usage::transcripts(dir) {
         let Ok(text) = std::fs::read_to_string(&path) else { continue };
         let convo = parse_conversation(&text, format);
         if convo.turns.is_empty() {
@@ -579,6 +574,25 @@ mod tests {
     #[test]
     fn read_sessions_of_a_missing_dir_is_empty() {
         assert!(read_sessions(Path::new("/nope/never"), Format::Claude).is_empty());
+    }
+
+    #[test]
+    fn sessions_in_a_per_session_store_are_read_too() {
+        // A pinned agent's conversation lives one level down (AGE-175); the
+        // run's own directory still holds whatever it wrote before that.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("a.jsonl"),
+            c_user("before").replace("2026-08-02", "2026-08-01"),
+        )
+        .unwrap();
+        let store = dir.path().join("agent-3f9c");
+        std::fs::create_dir_all(&store).unwrap();
+        std::fs::write(store.join("b.jsonl"), c_user("after")).unwrap();
+        let sessions = read_sessions(dir.path(), Format::Claude);
+        assert_eq!(sessions.len(), 2);
+        assert_eq!(sessions[0].turns[0].text, "before");
+        assert_eq!(sessions[1].turns[0].text, "after");
     }
 
     #[test]

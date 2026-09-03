@@ -22,6 +22,11 @@ use std::path::{Path, PathBuf};
 /// Shares its encodings with [`crate::usage::session_dir`]'s only other
 /// consumer, the app's resume probe, which asks the same "where does this
 /// agent keep state for this worktree" question for a different reason.
+///
+/// This is the directory the agent's CLI writes in by default. A pinned agent
+/// (see [`crate::sessionstore`]) writes one level down, in a subdirectory per
+/// Agency session, which is why everything that reads a transcript directory
+/// here reads its immediate subdirectories too.
 pub fn session_dir(home: &Path, command: &str, worktree: &Path) -> Option<PathBuf> {
     match format_for(command)? {
         Format::Claude => Some(home.join(".claude").join("projects").join(claude_enc(worktree))),
@@ -431,6 +436,35 @@ pub fn parse_transcript(text: &str, format: Format) -> Usage {
     usage
 }
 
+/// Every transcript file in `dir` and in its immediate subdirectories, in no
+/// particular order.
+///
+/// One level down, not a full walk: a pinned agent's per-session store
+/// ([`crate::sessionstore`]) is exactly one level below the directory its CLI
+/// keys by cwd, and what an agent puts below *that* is not a transcript.
+/// Checked before relying on it: across 400 real claude project directories
+/// here, the subdirectories are `<session>/tool-results/` and `memory/`, and
+/// not one `.jsonl` sits deeper than one level.
+///
+/// A missing or unreadable directory yields nothing, which is not an error:
+/// the agent may not have written anything yet.
+pub fn transcripts(dir: &Path) -> Vec<PathBuf> {
+    fn jsonl(dir: &Path, out: &mut Vec<PathBuf>, descend: bool) {
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+                out.push(path);
+            } else if descend && entry.file_type().is_ok_and(|t| t.is_dir()) {
+                jsonl(&path, out, false);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    jsonl(dir, &mut out, true);
+    out
+}
+
 /// What was known about one transcript file the last time it was read, so an
 /// unchanged file can be skipped without opening it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -458,17 +492,9 @@ impl UsageCache {
     /// A missing or unreadable directory is not an error: the agent may not
     /// have written anything yet, or may not be one we can account for.
     pub fn refresh(&mut self, dir: &Path, format: Format) -> Usage {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return Usage::default();
-        };
-
         let mut present: Vec<PathBuf> = Vec::new();
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-                continue;
-            }
-            let Ok(meta) = entry.metadata() else { continue };
+        for path in transcripts(dir) {
+            let Ok(meta) = std::fs::metadata(&path) else { continue };
             let stamp = FileStamp {
                 len: meta.len(),
                 mtime_ms: meta
@@ -891,5 +917,33 @@ mod tests {
         std::fs::write(dir.path().join("s1.jsonl"), rec("a", "claude-opus-5", 10, 0)).unwrap();
         std::fs::write(dir.path().join("s2.jsonl"), rec("b", "claude-opus-5", 10, 0)).unwrap();
         assert_eq!(UsageCache::new().refresh(dir.path(), Format::Claude).tokens.input, 20);
+    }
+
+    #[test]
+    fn per_session_stores_one_level_down_count_too() {
+        // A pinned agent (AGE-175) writes in a subdirectory per Agency
+        // session. Counting only the top level would report nothing for a run
+        // that is spending, and "0 tokens" is a different claim from "we
+        // cannot see this agent's tokens".
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("legacy.jsonl"), rec("a", "claude-opus-5", 10, 0)).unwrap();
+        let store = dir.path().join("agent-3f9c");
+        std::fs::create_dir_all(&store).unwrap();
+        std::fs::write(store.join("s.jsonl"), rec("b", "claude-opus-5", 5, 0)).unwrap();
+        assert_eq!(UsageCache::new().refresh(dir.path(), Format::Claude).tokens.input, 15);
+    }
+
+    #[test]
+    fn transcripts_stop_one_level_down() {
+        // Claude's sidecar directories sit below a session's own; they hold
+        // tool output, not turns, and walking into them would be unbounded.
+        let dir = tempfile::tempdir().unwrap();
+        let deep = dir.path().join("agent-3f9c").join("tool-results");
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::write(deep.join("t.jsonl"), "x").unwrap();
+        std::fs::write(dir.path().join("agent-3f9c").join("s.jsonl"), "x").unwrap();
+        let found = transcripts(dir.path());
+        assert_eq!(found.len(), 1);
+        assert!(found[0].ends_with("agent-3f9c/s.jsonl"), "{found:?}");
     }
 }

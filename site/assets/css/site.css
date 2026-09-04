@@ -149,7 +149,7 @@ code, kbd { font-family: var(--mono); }
 ::selection { background: color-mix(in srgb, var(--blue) 30%, transparent); }
 
 .wrap { max-width: 1120px; margin: 0 auto; padding: 0 24px; }
-.wrap-wide { max-width: 1280px; }
+.wrap-wide { max-width: 1360px; }
 .prose { max-width: 68ch; }
 
 /* ---------- Type roles ---------- */
@@ -292,25 +292,24 @@ code, kbd { font-family: var(--mono); }
 .hero-shot { margin-top: 64px; }
 /* Full bleed past the column, per the wireframe, once the viewport has room. */
 @media (min-width: 1281px) {
-  .hero-shot { margin-left: -80px; margin-right: -80px; }
+  .hero-shot { margin-left: -120px; margin-right: -120px; }
 }
 
-/* Screenshots keep the app window's own chrome and rounded corners; the page
-   stays out of their way. In light mode they sit on a crust mat so a dark
-   capture reads as a deliberate inset panel rather than a bug. */
-.shot img { width: 100%; }
-.shot { border-radius: 12px; }
-@media (prefers-color-scheme: light) {
-  :root:not([data-theme="dark"]) .shot {
-    background: var(--crust);
-    border: 1px solid var(--line);
-    padding: 16px;
-  }
+/* Screenshots carry their own window chrome. No mat or padding; a rounded
+   box-shadow matches the app window's corners. */
+.shot img {
+  width: 100%;
+  display: block;
+  border-radius: 12px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45);
 }
-:root[data-theme="light"] .shot {
-  background: var(--crust);
-  border: 1px solid var(--line);
-  padding: 16px;
+:root[data-theme="light"] .shot img {
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) .shot img {
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
+  }
 }
 
 /* ---------- Agent strip ---------- */
@@ -342,16 +341,16 @@ code, kbd { font-family: var(--mono); }
 
 /* ---------- Alternating blocks ---------- */
 
-/* The image always takes the 7fr track. A flipped block swaps the template
-   too; ordering alone was observed shrinking the image into the 5fr side. */
+/* The image always takes the 8fr track. A flipped block swaps the template
+   too; ordering alone was observed shrinking the image into the text side. */
 .alt {
   display: grid;
-  grid-template-columns: 7fr 5fr;
-  gap: 48px;
+  grid-template-columns: 8fr 4fr;
+  gap: 40px;
   align-items: center;
 }
 .alt + .alt { margin-top: 128px; }
-.alt.flip { grid-template-columns: 5fr 7fr; }
+.alt.flip { grid-template-columns: 4fr 8fr; }
 .alt.flip .alt-media { order: 2; }
 .alt-text .h2 { margin-bottom: 16px; }
 .alt-text .body { color: var(--sub1); margin-bottom: 24px; }

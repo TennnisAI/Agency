@@ -681,6 +681,18 @@ pub fn list_agent_models(
     state.list_agent_models().map_err(|e| e.to_string())
 }
 
+/// Choose the model an agent's next run starts on (see
+/// `AppState::set_agent_model`). What the Settings row writes; a launch writes
+/// it too, so the two never disagree.
+#[tauri::command]
+pub fn set_agent_model(
+    state: State<'_, AppState>,
+    agent: String,
+    model: Option<String>,
+) -> Result<(), String> {
+    state.set_agent_model(&agent, model.as_deref()).map_err(|e| e.to_string())
+}
+
 /// Ask one agent's CLI what models it has (see `AppState::probe_agent_models`).
 /// Async because it runs that CLI: the listing commands take about a second to
 /// answer, and a sync command would spend that on the main thread with a menu

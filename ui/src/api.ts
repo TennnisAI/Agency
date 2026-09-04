@@ -1137,6 +1137,14 @@ export const probeAgentModels = (agent: string, projectId: string | null) =>
   invoke<string[]>("probe_agent_models", { agent, projectId });
 
 /**
+ * Choose the model `agent`'s next run starts on; null is the agent's own
+ * default. The same setting a launch writes, which is why the Settings row and
+ * the pickers can't drift apart: there is one model the next run starts on.
+ */
+export const setAgentModel = (agent: string, model: string | null) =>
+  invoke<void>("set_agent_model", { agent, model });
+
+/**
  * The model `agent` last ran on — what a spawn with no picker in front of it
  * should repeat, so a run started from a shortcut doesn't quietly drop back to
  * the default model. Null on any failure: the agent's own default is the safe

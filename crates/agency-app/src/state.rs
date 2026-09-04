@@ -2173,6 +2173,26 @@ impl AppState {
         Ok(out)
     }
 
+    /// Set the model `agent`'s next run starts on, exactly as finishing a
+    /// launch does. `None` is the agent's own default, which is a choice of its
+    /// own and not the absence of one.
+    ///
+    /// Settings writes the same per-agent setting the picker reads rather than
+    /// a second "default model" beside it: there is one model the next run
+    /// starts on, and two stores for it would need a rule for which of them
+    /// the menu reopens on, with the loser silently ignored.
+    pub fn set_agent_model(&self, agent: &str, model: Option<&str>) -> Result<()> {
+        // The UI sends "the agent's default" as null, but an empty string is
+        // the same statement, and stored as a model it would put a blank entry
+        // at the head of the recents.
+        let model = model.map(str::trim).filter(|m| !m.is_empty());
+        let reg = self.registry.lock().unwrap();
+        if reg.get_profile(agent)?.is_none() {
+            bail!("no profile for {agent}");
+        }
+        remember_model(&reg, agent, model)
+    }
+
     /// Ask `agent`'s own CLI which models it has, cached for the app session.
     ///
     /// The counterpart to `list_agent_models`, which is free and static: this

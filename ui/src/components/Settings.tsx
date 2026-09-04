@@ -48,8 +48,10 @@ import {
   saveProfile,
   saveSettings,
   saveNotifSettings,
+  setAgentModel,
   setUpdateCheckEnabled,
 } from "../api";
+import ModelSelect from "./ModelSelect";
 import PillSelect from "./PillSelect";
 import Toggle from "./Toggle";
 import ConfirmDialog from "./ConfirmDialog";
@@ -58,6 +60,7 @@ import { toastError, toastSuccess } from "../lib/toast";
 import { agentColor, agentLabel, updateCommand } from "../agents";
 import { THEMES, ThemeId, applyTheme, getStoredTheme } from "../lib/themes";
 import { getWordWrap, setWordWrap } from "../lib/editorPrefs";
+import { useAgentModels } from "../hooks/useAgentModels";
 import { setWorkspaceHidden, workspaceHidden } from "../lib/workspacePref";
 import { HUSHABLE, HushId, isHushed, setHushed } from "../lib/hushed";
 
@@ -158,6 +161,7 @@ export default function Settings({
     defaultWorktree: true,
   });
   const [profiles, setProfiles] = useState<AgentProfile[]>([]);
+  const { models, reload: reloadModels } = useAgentModels();
   const [catalog, setCatalog] = useState<CatalogEntry[]>([]);
   // Whether the "add built-in agent" dropdown is open.
   const [catalogOpen, setCatalogOpen] = useState(false);
@@ -876,6 +880,14 @@ export default function Settings({
     }
   }
 
+  // The agent the default-model row is for, or null when there is none to
+  // name: no default agent chosen, its models not loaded yet, or an agent
+  // whose CLI takes no model flag at all.
+  const defaultModelAgent =
+    settings.defaultAgent && models[settings.defaultAgent]?.supported
+      ? settings.defaultAgent
+      : null;
+
   return (
     <main className="settings-page">
       <div className="settings-inner">
@@ -987,6 +999,25 @@ export default function Settings({
                 ))}
               </select>
             </div>
+            {/* A model id only means anything for one agent, so this row is
+                the default agent's. On Auto the agent isn't known until a
+                spawn picks one, and it renders nothing for a CLI that takes
+                no model flag, the same case ModelSelect itself sits out. */}
+            {defaultModelAgent && (
+              <div className="settings-notif-row">
+                <span className="settings-notif-label">Default model for new tasks</span>
+                <ModelSelect
+                  info={models[defaultModelAgent]}
+                  projectId={projectId}
+                  value={models[defaultModelAgent]?.selected ?? null}
+                  onChange={(model) =>
+                    setAgentModel(defaultModelAgent, model)
+                      .then(reloadModels)
+                      .catch((e) => toastError(e, "Couldn't set the default model"))
+                  }
+                />
+              </div>
+            )}
             <div className="settings-notif-row">
               <span className="settings-notif-label">Give new agents their own worktree</span>
               <Toggle
@@ -995,6 +1026,13 @@ export default function Settings({
               />
             </div>
           </div>
+          <p className="settings-section-hint">
+            A default model belongs to one agent, so that row appears once you
+            have chosen a default agent above; on Auto each agent keeps the
+            model it last ran on. Every menu that starts an agent still offers
+            the full list, and starting one on another model moves that agent's
+            default there.
+          </p>
           <p className="settings-section-hint">
             Off means new agents work in the project checkout, on the branch you
             have open, with no branch of their own to merge. This sets how the

@@ -172,6 +172,7 @@ pub fn run() {
             commands::list_agent_catalog,
             commands::list_agent_models,
             commands::probe_agent_models,
+            commands::set_agent_model,
             commands::enable_agent_profiles,
             commands::complete_agent_onboarding,
             commands::get_settings,

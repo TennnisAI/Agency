@@ -1890,6 +1890,18 @@ button.diff-path:hover { color: var(--text); text-decoration: underline; }
 /* `input.` prefix outweighs the base `.settings-input { width: 100% }` rule so the
    stepper stays a fixed 90px and the label keeps its space instead of wrapping. */
 input.settings-notif-secs { width: 90px; flex: 0 0 auto; }
+/* ModelSelect's trigger is a button, so sitting beside the default-agent
+   <select> it has to restate that frame rather than inherit it; same width, so
+   the two controls line up down the right edge of the card. */
+.settings-notif-row .branch-select {
+  flex: 0 0 auto; display: flex; align-items: center; gap: 6px;
+  width: 220px; max-width: 220px;
+  background: var(--mantle); border: 1px solid var(--s1); color: var(--text);
+  border-radius: 7px; padding: 8px 10px;
+  font-family: var(--sans); font-size: 13px; text-align: left; cursor: pointer;
+}
+.settings-notif-row .branch-select:hover { border-color: var(--s2); }
+.settings-notif-row .branch-select:focus-visible { outline: none; border-color: var(--blue); }
 
 /* Sleek toggle switch */
 .toggle { position: relative; display: inline-flex; flex-shrink: 0; cursor: pointer; }

@@ -365,6 +365,64 @@ fn create_run_passes_the_chosen_model_to_the_agent_and_remembers_it() {
     state.discard_run(&info.id).unwrap();
 }
 
+/// Settings and the launch picker write the same per-agent setting, so a model
+/// chosen in Settings is the one the next run starts on and the picker reopens
+/// on. Two stores would need a rule for which wins, with the loser ignored.
+#[test]
+fn set_agent_model_writes_what_the_picker_reads() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = common::state(&dir);
+    state
+        .register_profile(AgentProfile {
+            name: "claude".into(),
+            command: "claude".into(),
+            args: vec![],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
+
+    let entry = |state: &AppState| {
+        state
+            .list_agent_models()
+            .unwrap()
+            .into_iter()
+            .find(|m| m.agent == "claude")
+            .expect("claude in the model list")
+    };
+
+    // Nothing chosen yet: the agent's own default, and nothing in the recents.
+    assert_eq!(entry(&state).selected, None);
+    assert!(entry(&state).recent.is_empty());
+
+    state.set_agent_model("claude", Some("opus")).unwrap();
+    assert_eq!(entry(&state).selected.as_deref(), Some("opus"));
+    assert_eq!(entry(&state).recent, ["opus"]);
+
+    // Choosing again puts the newest first without repeating an entry, which is
+    // what makes a typed id a one-click choice the second time.
+    state.set_agent_model("claude", Some("sonnet")).unwrap();
+    state.set_agent_model("claude", Some("opus")).unwrap();
+    assert_eq!(entry(&state).selected.as_deref(), Some("opus"));
+    assert_eq!(entry(&state).recent, ["opus", "sonnet"]);
+
+    // The agent's own default is a choice in its own right: it clears the
+    // selection and leaves the recents alone.
+    state.set_agent_model("claude", None).unwrap();
+    assert_eq!(entry(&state).selected, None);
+    assert_eq!(entry(&state).recent, ["opus", "sonnet"]);
+
+    // An empty id says the same thing as null. Stored as a model it would sit
+    // at the head of the recents as a blank row.
+    state.set_agent_model("claude", Some("  ")).unwrap();
+    assert_eq!(entry(&state).selected, None);
+    assert_eq!(entry(&state).recent, ["opus", "sonnet"]);
+
+    // An agent with no profile is a stale UI, not a setting to write.
+    assert!(state.set_agent_model("nope", Some("opus")).is_err());
+}
+
 /// A stand-in for an agent CLI's listing command: it records the arguments it
 /// was handed (so the test can prove they came from the catalog) and prints the
 /// models substituted into it.

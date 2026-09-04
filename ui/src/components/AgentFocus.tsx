@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useRuns, SpawnOpts } from "../store/runs";
 import {
-  setRunTitle, renameRun, renameRunBranch,
+  setRunTitle,
   listProfiles, AgentProfile,
   listRunSessions, startRunSession, closeRunSession, RunSessionInfo,
   RunInfo, SessionStatus, stopLoop, listIssues, listProjects, ensureRunActive,
@@ -16,11 +16,10 @@ import { runListLabel, agentLabel } from "../agents";
 import FocusTerminal, { shellStream } from "./FocusTerminal";
 import RunPanel from "./RunPanel";
 import ConfirmDialog from "./ConfirmDialog";
-import RunRemoveDialog from "./RunRemoveDialog";
-import PromptDialog from "./PromptDialog";
 import Resizer from "./Resizer";
 import ArchivedSection from "./ArchivedSection";
 import { useDismissOnResize } from "../hooks/useDismissOnResize";
+import { useRunMenu } from "../hooks/useRunMenu";
 import { usePaneWidth, loadFold, saveFold } from "../hooks/usePaneWidth";
 import { agentViewTab, loadFocusTab, saveFocusTab, resolveFocusTab, PRIMARY_TAB, RUN_TAB, LOG_TAB } from "../lib/focusTab";
 import AgentAddMenu from "./AgentAddMenu";
@@ -185,22 +184,29 @@ function LoopStrip({ run, onChanged }: { run: RunInfo; onChanged: () => void }) 
 // One entry in the agents rail. Hovering it (or tabbing to its control) reveals
 // a close button, and the menu behind that is where a run ends without first
 // having to open it: archived, so its branch survives and the Archived section
-// can restore it, or deleted outright. A terminal only closes.
+// can restore it, or deleted outright. A terminal only closes. Right-clicking
+// the row opens the run's full menu, the same one its tile carries.
 function RailRow({
   run,
   on,
   onSelect,
   onRename,
+  onRemove,
+  onContextMenu,
+  menuOpen,
 }: {
   run: RunInfo;
   on: boolean;
   onSelect: () => void;
   onRename: () => void;
+  onRemove: (action: Removal) => void;
+  onContextMenu: (e: React.MouseEvent) => void;
+  /** This row's menu is up; its overlay has taken the pointer away. */
+  menuOpen: boolean;
 }) {
-  const [pending, setPending] = useState<Removal | null>(null);
   const isTerminal = run.kind === "terminal";
   return (
-    <div className="rail-row-wrap">
+    <div className={`rail-row-wrap${menuOpen ? " ctx" : ""}`} onContextMenu={onContextMenu}>
       <button
         className={`rail-row ${on ? "on" : ""}`}
         onClick={onSelect}
@@ -223,12 +229,9 @@ function RailRow({
           label: removalLabel(run, action),
           icon: action === "archive" ? <InboxIcon /> : <TrashIcon />,
           danger: action === "delete",
-          onSelect: () => setPending(action),
+          onSelect: () => onRemove(action),
         }))}
       />
-      {pending && (
-        <RunRemoveDialog run={run} action={pending} onClose={() => setPending(null)} />
-      )}
     </div>
   );
 }
@@ -246,13 +249,10 @@ export default function AgentFocus({
   gitless?: boolean;
 }) {
   const { runs, focusedRunId, setFocusedRun, refreshRuns, createAgent, createTerminal, selectedProjectId, pendingSessionId, setPendingSession, agentViewRunId, requestAgentView, setApproveRun } = useRuns();
-  // Archive / delete of the focused run, awaiting its confirm dialog.
-  const [pendingRemoval, setPendingRemoval] = useState<Removal | null>(null);
-  // Run being renamed (its display title). Any run — agent or terminal.
-  const [renaming, setRenaming] = useState<RunInfo | null>(null);
-  // Run whose branch is being renamed. Only a run on a branch Agency cut for
-  // it, which is why this is separate from the title rename above.
-  const [renamingBranch, setRenamingBranch] = useState<RunInfo | null>(null);
+  // The rail's right-click menu, and the dialogs its entries raise: renaming a
+  // run or its branch, archiving, deleting. The header menu below drives the
+  // same actions rather than keeping a second copy of them.
+  const { openRunMenu, menuRunId, rename, renameBranch, remove, runMenu } = useRunMenu();
   // "agent" (primary terminal), "run" (RunPanel), or an extra-session id —
   // extra agent tabs sharing this run's worktree.
   const [panel, setPanel] = useState<string>(PRIMARY_TAB);
@@ -283,7 +283,6 @@ export default function AgentFocus({
   const addBtnRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     setApproveRun(null);
-    setPendingRemoval(null);
     setAddOpen(false);
     setSessions([]);
     // Reopen this run on its last-used tab. The strip isn't loaded yet, so the
@@ -495,7 +494,10 @@ export default function AgentFocus({
                 run={r}
                 on={r.id === focusedRunId}
                 onSelect={() => { setFocusedRun(r.id); requestAgentView(r.id); }}
-                onRename={() => setRenaming(r)}
+                onRename={() => rename(r)}
+                onRemove={(action) => remove(r, action)}
+                onContextMenu={(e) => openRunMenu(e, r)}
+                menuOpen={menuRunId === r.id}
               />
             ))}
             <ArchivedSection />
@@ -519,8 +521,8 @@ export default function AgentFocus({
                 <span className="spacer" />
                 <OverflowMenu
                   items={[
-                    { label: "Rename terminal", icon: <PencilIcon />, onSelect: () => setRenaming(focused) },
-                    { label: "Close terminal", icon: <TrashIcon />, danger: true, separator: true, onSelect: () => setPendingRemoval("delete") },
+                    { label: "Rename terminal", icon: <PencilIcon />, onSelect: () => rename(focused) },
+                    { label: "Close terminal", icon: <TrashIcon />, danger: true, separator: true, onSelect: () => remove(focused, "delete") },
                   ]}
                 />
               </div>
@@ -574,7 +576,7 @@ export default function AgentFocus({
                 )}
                 <OverflowMenu
                   items={[
-                    { label: "Rename agent", icon: <PencilIcon />, onSelect: () => setRenaming(focused) },
+                    { label: "Rename agent", icon: <PencilIcon />, onSelect: () => rename(focused) },
                     // Settle / snooze / pin, the same entries the tile carries:
                     // deciding you are done with a run happens as often from
                     // inside it as from the board.
@@ -584,10 +586,10 @@ export default function AgentFocus({
                     // still local. A run working in the project's own checkout
                     // is on the user's branch, not one to rename from here.
                     ...(focused.worktree
-                      ? [{ label: "Rename branch…", icon: <BranchIcon />, onSelect: () => setRenamingBranch(focused) }]
+                      ? [{ label: "Rename branch…", icon: <BranchIcon />, onSelect: () => renameBranch(focused) }]
                       : []),
-                    { label: "Archive agent", icon: <InboxIcon />, separator: true, onSelect: () => setPendingRemoval("archive") },
-                    { label: "Delete agent", icon: <TrashIcon />, danger: true, onSelect: () => setPendingRemoval("delete") },
+                    { label: "Archive agent", icon: <InboxIcon />, separator: true, onSelect: () => remove(focused, "archive") },
+                    { label: "Delete agent", icon: <TrashIcon />, danger: true, onSelect: () => remove(focused, "delete") },
                   ]}
                 />
                 {/* Nothing to approve without a branch of its own: the work is
@@ -743,42 +745,7 @@ export default function AgentFocus({
         )}
       </div>
 
-      {/* Shared by both header menus (agent and terminal): the run being removed
-          is always the focused one. */}
-      {focused && pendingRemoval && (
-        <RunRemoveDialog run={focused} action={pendingRemoval} onClose={() => setPendingRemoval(null)} />
-      )}
-
-      {renamingBranch && (
-        <PromptDialog
-          title="Rename branch"
-          body="The merge commit carries this name into the base branch's history for good, and a merged PR's branch can't be renamed after the fact. The agent, its workspace and its work stay where they are."
-          placeholder="agent/some-name"
-          initial={renamingBranch.branch}
-          confirmLabel="Rename"
-          onConfirm={(v) => {
-            const id = renamingBranch.id;
-            setRenamingBranch(null);
-            renameRunBranch(id, v).then(refreshRuns).catch((e) => toastError(e, "Rename failed"));
-          }}
-          onCancel={() => setRenamingBranch(null)}
-        />
-      )}
-
-      {renaming && (
-        <PromptDialog
-          title={renaming.kind === "terminal" ? "Rename terminal" : "Rename agent"}
-          placeholder="New name"
-          initial={renaming.title ?? ""}
-          confirmLabel="Rename"
-          onConfirm={(v) => {
-            const id = renaming.id;
-            setRenaming(null);
-            renameRun(id, v).then(refreshRuns).catch((e) => toastError(e, "Rename failed"));
-          }}
-          onCancel={() => setRenaming(null)}
-        />
-      )}
+      {runMenu}
     </div>
   );
 }

@@ -3702,6 +3702,7 @@ impl AppState {
         &self,
         project_id: &str,
         mode: agency_core::issuesync::Mode,
+        mut on_progress: impl FnMut(agency_core::setup::CloneProgress),
     ) -> Result<SyncResult> {
         let reg = self.registry.lock().unwrap();
         self.ensure_issue_files(&reg, project_id)?;
@@ -3709,7 +3710,9 @@ impl AppState {
         let remote = agency_core::config::issue_sync_remote(&root).ok_or_else(|| {
             anyhow!("this project's backlog is not set to sync; turn it on in settings first")
         })?;
-        let outcome = match agency_core::issueref::sync(&root, &remote, mode) {
+        let pass =
+            agency_core::issueref::sync_with_progress(&root, &remote, mode, &mut on_progress);
+        let outcome = match pass {
             Ok(o) => o,
             Err(e) => {
                 // A question, not a failure: hand it back as an outcome so the
@@ -3727,6 +3730,11 @@ impl AppState {
         // moved, and a sync that lands during the same second as an app write
         // could otherwise leave the board showing the pre-merge state.
         self.issue_sigs.lock().unwrap().remove(project_id);
+        on_progress(agency_core::setup::CloneProgress {
+            phase: "Updating the board".into(),
+            percent: None,
+            detail: String::new(),
+        });
         agency_core::issuefs::reconcile(&reg, project_id, &key, &root)?;
         Ok(SyncResult::Done { outcome })
     }

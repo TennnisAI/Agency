@@ -1180,13 +1180,22 @@ pub fn save_issue_sync_config(
 /// syncing for the first time share no history, so `merge` fails there with a
 /// message naming both counts, and the UI asks the user for `publish` (this
 /// machine seeds the shared tracker) or `adopt` (the other way round).
+///
+/// async, streamed, for the same reason as `git_sync` right above: a pass
+/// fetches and pushes, and as a plain `fn` tauri ran it on the main thread, so
+/// every sync froze the window for as long as the remote took to answer.
 #[tauri::command]
-pub fn sync_issues(
+pub async fn sync_issues(
     state: State<'_, AppState>,
     project_id: String,
     mode: agency_core::issuesync::Mode,
+    on_progress: Channel<agency_core::setup::CloneProgress>,
 ) -> Result<crate::state::SyncResult, String> {
-    state.sync_issues(&project_id, mode).map_err(|e| e.to_string())
+    state
+        .sync_issues(&project_id, mode, move |p| {
+            let _ = on_progress.send(p);
+        })
+        .map_err(|e| e.to_string())
 }
 
 // Comments live in the issue file and have more than one writer, so they are

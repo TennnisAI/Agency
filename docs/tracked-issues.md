@@ -233,6 +233,36 @@ toast: the merge decides a field both sides changed by `updated`, a body edit
 that lost that way is content quietly gone, and a dismissed toast would be the
 last anyone heard of it.
 
+**Progress, and why it needed any (2026-09-04).** `sync_issues` shipped as a
+plain `#[tauri::command] fn`, and tauri runs those on the main thread, so every
+pass froze the window for the length of two network round-trips plus one `git
+cat-file` per issue per tree. On a few hundred issues that is seconds of
+beachball with nothing on screen to say why. It is an `async fn` taking a
+`Channel<CloneProgress>` now, the same shape as `git_sync` directly above it in
+`commands.rs`, and `issueref::sync_with_progress` names each step it waits on:
+"Fetching from origin", "Reading the shared backlog", "Reading the last synced
+copy", "Merging", "Copying attachments", "Publishing to origin", then "Updating
+the board" for the reconcile the app layer adds. The fetch and the push stream
+git's own `--progress` lines through the parser the clone dialog already uses,
+so the two network steps report real object counts rather than a sweep. The
+board draws all of it with the shared `ProgressReadout`.
+
+Two things that came out of doing it, both deliberate:
+
+- **The per-blob read is still one process per issue per tree.** `read_tree`
+  spawns a `git cat-file` per file and a pass reads two trees, so a 200-issue
+  backlog is 400 spawns and that is the slowest step that never touches the
+  network. `git cat-file --batch` would collapse it into one process, at the
+  cost of framing binary blobs by hand. Left alone: the ask was feedback, not
+  speed, and the phase now reports "n of 200" so the cost is at least visible
+  rather than mysterious.
+- **The Sync button's tooltip states the transport.** "Issues travel on a ref of
+  their own, refs/agency/issues, so they never land on a branch or in a diff."
+  The same claim Settings makes, moved to the one place someone wondering why
+  `git log` is empty is already looking. This came straight from a user asking
+  exactly that, which is the evidence that stating it once, in Settings, at the
+  moment the toggle is flipped, is not stating it.
+
 ### `uid`
 
 Issue files carry `uid:` — a uuid in the frontmatter, right after `key:`, which
@@ -311,7 +341,8 @@ Each of these was decided against for now rather than missed.
   having moved, and "sync again" is the right advice, but telling that apart
   from an auth failure means parsing git's stderr or re-fetching to compare.
   Left undone rather than guessed at; the toast says the shared copy was not
-  updated, which is true either way.
+  updated, which is true either way. git's stderr now reaches the log verbatim,
+  so the diagnosis exists even though the toast does not attempt one.
 - **Renumbering.** Two uids claiming one key is reported and neither side is
   touched. Resolving it means renaming a file and rewriting every `links:` that
   names it, which is its own pass. Publish/Adopt avoids the only case a single

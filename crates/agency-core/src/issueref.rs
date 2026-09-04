@@ -22,6 +22,7 @@ use anyhow::{bail, Context, Result};
 
 use crate::issuefs::{self, IssueFile};
 use crate::issuesync::{self, Action, Mode, Plan};
+use crate::setup::{CancelToken, CloneProgress};
 
 /// Where a project's issues live when they are shared. Not under `refs/heads/`
 /// or `refs/remotes/`, so it is invisible to branch listings, to `git log
@@ -77,6 +78,24 @@ impl std::fmt::Display for Blocked {
     }
 }
 impl std::error::Error for Blocked {}
+
+// ---------------------------------------------------------------------------
+// progress
+
+/// One step of a pass, for whatever the caller is drawing a bar with. The
+/// phases are the ones a person can act on ("Publishing to origin"), not the
+/// plumbing; the fetch and the push additionally stream git's own `--progress`
+/// lines straight through, exactly as a clone does.
+///
+/// `percent` is `None` for the steps with no fraction to report, which sweeps
+/// the bar rather than pinning it at zero and calling that information.
+fn report(on: &mut dyn FnMut(CloneProgress), phase: &str, percent: Option<u8>, detail: &str) {
+    on(CloneProgress { phase: phase.to_string(), percent, detail: detail.to_string() });
+}
+
+fn pct(done: usize, total: usize) -> Option<u8> {
+    (total > 0).then(|| (done * 100 / total) as u8)
+}
 
 // ---------------------------------------------------------------------------
 // git plumbing
@@ -208,14 +227,27 @@ fn list_tree(repo: &Path, at: &str) -> Vec<String> {
 /// Every issue file in a commit, parsed. A file that does not parse is skipped
 /// with a warning rather than failing the sync: one corrupt file on the other
 /// side must not stop the other two hundred from arriving.
-fn read_tree(repo: &Path, at: &str) -> Result<Vec<IssueFile>> {
+///
+/// One `git cat-file` per issue, and a pass reads two trees this way (the other
+/// side's and the merge base's), so a few-hundred-issue backlog is a few
+/// hundred process spawns and the slowest step that never touches the network.
+/// That is why it reports a fraction: `phase` names which tree is being read.
+fn read_tree(
+    repo: &Path,
+    at: &str,
+    phase: &str,
+    on_progress: &mut dyn FnMut(CloneProgress),
+) -> Result<Vec<IssueFile>> {
     let mut out = Vec::new();
-    for rel in list_tree(repo, at) {
+    let paths = list_tree(repo, at);
+    let total = paths.len();
+    for (i, rel) in paths.iter().enumerate() {
+        report(on_progress, phase, pct(i, total), &format!("{} of {total}", i + 1));
         let Some(stem) = rel.strip_suffix(".md") else { continue };
         if issuefs::parse_key(stem).is_none() {
             continue; // README.md, and anything else that isn't an issue.
         }
-        let text = git(repo, &["cat-file", "blob", &blob_spec(at, &rel)])?;
+        let text = git(repo, &["cat-file", "blob", &blob_spec(at, rel)])?;
         match issuefs::parse_issue_file(stem, &text) {
             Ok(f) => out.push(f),
             Err(e) => log::warn!("issue {stem} in {at} skipped: {e}"),
@@ -268,14 +300,23 @@ fn read_blob(repo: &Path, at: &str, rel: &str) -> Result<Vec<u8>> {
 
 /// Fetch the other side into [`REMOTE_REF`]. `Ok(false)` means the remote has
 /// no tracker yet, which is the normal state before anyone has published.
-fn fetch(repo: &Path, remote: &str) -> Result<bool> {
+///
+/// Streamed rather than `--quiet`: this and the push are the two steps that
+/// round-trip the network, so on a slow remote they are nearly the whole wait,
+/// and git's own progress lines are the only truthful thing to show during one.
+fn fetch(repo: &Path, remote: &str, on_progress: &mut dyn FnMut(CloneProgress)) -> Result<bool> {
     let spec = format!("+{LOCAL_REF}:{REMOTE_REF}");
-    match git(repo, &["fetch", "--quiet", remote, &spec]) {
-        Ok(_) => Ok(rev(repo, REMOTE_REF).is_some()),
-        // A remote that has never been published has no such ref, and git says
-        // so by failing. Nothing is wrong and the first push will create it.
-        Err(_) => Ok(false),
-    }
+    let mut cmd = Command::new("git");
+    cmd.args(["fetch", "--progress", remote, &spec])
+        .current_dir(repo)
+        .env("GIT_TERMINAL_PROMPT", "0");
+    // A remote that has never been published has no such ref, and git says so
+    // by exiting non-zero. Nothing is wrong and the first push will create it.
+    // Note which half is which: a non-zero *exit* is that answer, but a failure
+    // to run git at all is not, and propagates rather than reading as an empty
+    // remote the way it silently did before this streamed.
+    let (ok, _) = crate::setup::run_clone_streaming(cmd, &CancelToken::new(), on_progress)?;
+    Ok(ok && rev(repo, REMOTE_REF).is_some())
 }
 
 // ---------------------------------------------------------------------------
@@ -313,10 +354,17 @@ fn apply(repo: &Path, plan: &Plan) -> Result<(usize, usize)> {
 /// An attachment that cannot be written is logged and skipped rather than
 /// failing the pass: a broken image link is a much smaller loss than a sync that
 /// refuses to finish, and the issue text it belongs to is already here.
-fn apply_assets(repo: &Path, at: &str, plan: &issuesync::AssetPlan) -> (usize, usize) {
+fn apply_assets(
+    repo: &Path,
+    at: &str,
+    plan: &issuesync::AssetPlan,
+    on_progress: &mut dyn FnMut(CloneProgress),
+) -> (usize, usize) {
     let dir = repo.join(issuefs::ISSUES_DIR);
     let (mut fetched, mut removed) = (0, 0);
-    for rel in &plan.fetch {
+    let total = plan.fetch.len();
+    for (i, rel) in plan.fetch.iter().enumerate() {
+        report(on_progress, "Copying attachments", pct(i, total), &format!("{} of {total}", i + 1));
         let dest = dir.join(rel);
         let wrote = read_blob(repo, at, rel).and_then(|bytes| {
             if let Some(parent) = dest.parent() {
@@ -349,10 +397,40 @@ fn apply_assets(repo: &Path, at: &str, plan: &issuesync::AssetPlan) -> (usize, u
 /// index into line with the files this changed; that is left outside so this
 /// stays a function over a directory and a remote, testable without a registry.
 pub fn sync(repo: &Path, remote: &str, mode: Mode) -> Result<Outcome> {
-    let have_remote = fetch(repo, remote)?;
+    sync_with_progress(repo, remote, mode, |_| {})
+}
+
+/// [`sync`], reporting each step as it starts.
+///
+/// A pass runs two network round-trips and one `git cat-file` per issue per
+/// tree, so on a real backlog it is seconds, not milliseconds; before this the
+/// only feedback was the window going unresponsive, because the command was
+/// also running on the main thread. Split the way `git::push_with_progress` is,
+/// so the plain [`sync`] stays the shape the tests call.
+pub fn sync_with_progress(
+    repo: &Path,
+    remote: &str,
+    mode: Mode,
+    mut on_progress: impl FnMut(CloneProgress),
+) -> Result<Outcome> {
+    sync_streaming(repo, remote, mode, &mut on_progress)
+}
+
+fn sync_streaming(
+    repo: &Path,
+    remote: &str,
+    mode: Mode,
+    on_progress: &mut dyn FnMut(CloneProgress),
+) -> Result<Outcome> {
+    report(on_progress, &format!("Fetching from {remote}"), None, "");
+    let have_remote = fetch(repo, remote, on_progress)?;
     let local_files = issuefs::read_issue_dir(repo)?.issues;
 
-    let remote_files = if have_remote { read_tree(repo, REMOTE_REF)? } else { Vec::new() };
+    let remote_files = if have_remote {
+        read_tree(repo, REMOTE_REF, "Reading the shared backlog", on_progress)?
+    } else {
+        Vec::new()
+    };
     // Nothing published from here yet means whatever the remote has is entirely
     // new to us, and there is no shared past to merge against.
     let base_ref = match (rev(repo, LOCAL_REF), have_remote) {
@@ -360,7 +438,7 @@ pub fn sync(repo: &Path, remote: &str, mode: Mode) -> Result<Outcome> {
         _ => None,
     };
     let base_files = match &base_ref {
-        Some(b) => read_tree(repo, b)?,
+        Some(b) => read_tree(repo, b, "Reading the last synced copy", on_progress)?,
         None => Vec::new(),
     };
 
@@ -385,6 +463,7 @@ pub fn sync(repo: &Path, remote: &str, mode: Mode) -> Result<Outcome> {
         commit_tree(repo, &before, &parents, "issues before adopting the shared tracker")?;
     }
 
+    report(on_progress, "Merging", None, "");
     let plan = issuesync::plan(mode, &base_files, &local_files, &remote_files);
     let (written, deleted) = apply(repo, &plan)?;
 
@@ -394,8 +473,9 @@ pub fn sync(repo: &Path, remote: &str, mode: Mode) -> Result<Outcome> {
         &disk_assets(repo),
         &if have_remote { read_tree_assets(repo, REMOTE_REF) } else { Vec::new() },
     );
-    let (assets_fetched, assets_deleted) = apply_assets(repo, REMOTE_REF, &asset_plan);
+    let (assets_fetched, assets_deleted) = apply_assets(repo, REMOTE_REF, &asset_plan, on_progress);
 
+    report(on_progress, "Recording the merged backlog", None, "");
     let tree = write_tree(repo)?;
     let mut parents: Vec<String> = Vec::new();
     if let Some(l) = rev(repo, LOCAL_REF) {
@@ -414,9 +494,20 @@ pub fn sync(repo: &Path, remote: &str, mode: Mode) -> Result<Outcome> {
     let committed = commit_tree(repo, &tree, &parents, message)?.is_some();
 
     let pushed = if rev(repo, LOCAL_REF).is_some() {
+        report(on_progress, &format!("Publishing to {remote}"), None, "");
         let spec = format!("{LOCAL_REF}:{LOCAL_REF}");
-        match git(repo, &["push", "--quiet", remote, &spec]) {
-            Ok(_) => true,
+        let mut cmd = Command::new("git");
+        cmd.args(["push", "--progress", remote, &spec])
+            .current_dir(repo)
+            .env("GIT_TERMINAL_PROMPT", "0");
+        match crate::setup::run_clone_streaming(cmd, &CancelToken::new(), on_progress) {
+            Ok((true, _)) => true,
+            // A push that git refused says why on stderr, and that line is the
+            // whole diagnosis when the shared copy silently stops updating.
+            Ok((false, stderr)) => {
+                log::warn!("issue sync push failed: {}", stderr.trim());
+                false
+            }
             Err(e) => {
                 log::warn!("issue sync push failed: {e}");
                 false
@@ -521,7 +612,7 @@ mod tests {
 
         let tree = write_tree(&repo).unwrap();
         let commit = commit_tree(&repo, &tree, &[], "snap").unwrap().unwrap();
-        let back = read_tree(&repo, &commit).unwrap();
+        let back = read_tree(&repo, &commit, "reading", &mut |_| {}).unwrap();
 
         let mut got: Vec<_> = back.iter().map(|f| f.key.clone()).collect();
         got.sort();
@@ -571,6 +662,31 @@ mod tests {
         let one = one.iter().find(|f| f.key == "AGE-1").unwrap();
         assert_eq!(one.uid.as_deref(), Some(U1), "identity did not survive the transport");
         assert_eq!(one.status, crate::registry::IssueStatus::InProgress);
+    }
+
+    /// A sync used to run on the main thread and report nothing, so the whole
+    /// window stopped answering for as long as the remote took. The fix is only
+    /// half done if the pass is silent: pin that every step a person waits on
+    /// names itself, and that the two network steps name the remote they are
+    /// talking to rather than saying "the shared copy" at someone trying to
+    /// work out where their issues went.
+    #[test]
+    fn a_pass_names_every_step_it_waits_on() {
+        let (_d, a, b, url) = two_machines();
+        put(&a, "AGE-1", U1, "todo", "One");
+        sync(&a, &url, Mode::Publish).unwrap();
+        sync(&b, &url, Mode::Adopt).unwrap();
+        put(&b, "AGE-2", U2, "todo", "Two");
+
+        let mut phases: Vec<String> = Vec::new();
+        sync_with_progress(&b, &url, Mode::Merge, |p| phases.push(p.phase)).unwrap();
+
+        let has = |needle: &str| phases.iter().any(|p| p.contains(needle));
+        assert!(has(&format!("Fetching from {url}")), "no fetch phase in {phases:?}");
+        assert!(has("Reading the shared backlog"), "no remote-read phase in {phases:?}");
+        assert!(has("Reading the last synced copy"), "no base-read phase in {phases:?}");
+        assert!(has("Merging"), "no merge phase in {phases:?}");
+        assert!(has(&format!("Publishing to {url}")), "no push phase in {phases:?}");
     }
 
     #[test]
@@ -713,7 +829,7 @@ mod tests {
         let history = sh(&b, &["log", "--format=%s", LOCAL_REF]);
         assert!(history.contains("before adopting"), "no recovery point was committed: {history}");
         let backup = sh(&b, &["rev-parse", &format!("{LOCAL_REF}^")]).trim().to_string();
-        let restored = read_tree(&b, &backup).unwrap();
+        let restored = read_tree(&b, &backup, "reading", &mut |_| {}).unwrap();
         assert!(
             restored.iter().any(|f| f.key == "AGE-9"),
             "the replaced issues are not in the backup commit"

@@ -2786,6 +2786,17 @@ input, textarea, code,
    field takes the row, and the 160px floor comes off so it can share it with
    Reset when a filter is still on. Gutter matches .issues-list.compact. */
 .issues-filterbar.issues-toolbar.compact { padding: 0 10px; }
+/* The manual backlog sync's readout, in the board's own gutter. The shape is
+   ProgressReadout's, shared with the clone and push bars; this supplies the
+   padding the toolbar above it uses, and pins the height. The floor is what
+   stops the list jumping: ProgressReadout drops the detail line entirely when a
+   phase reports no count ("Merging", "Publishing to origin"), so the two line
+   heights are fixed and the floor is set above their sum. */
+.issues-sync-progress { padding: 0 16px; }
+.issues-sync-progress.compact { padding: 0 10px; }
+.issues-sync-progress .clone-progress { margin-top: 8px; gap: 4px; min-height: 52px; }
+.issues-sync-progress .clone-progress-head,
+.issues-sync-progress .clone-progress-detail { line-height: 16px; }
 .issues-toolbar.compact .filter-search { min-width: 0; max-width: none; }
 /* No pills to push away from, so the field takes the row instead of splitting
    it with the spacer. */

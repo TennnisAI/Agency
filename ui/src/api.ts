@@ -978,7 +978,16 @@ export interface KnowledgeConfig {
   graph_built: boolean;
   // A build is running; poll this config until it clears.
   building: boolean;
+  // How long the running build has been going, and how long the last finished
+  // one took. A graph build takes minutes, so the elapsed time is what tells a
+  // working build apart from a stuck panel.
+  build_elapsed_secs: number | null;
+  last_build_secs: number | null;
+  // The tail of the running (or last) build's output, oldest first.
+  build_log: string[];
   last_build_error: string | null;
+  // The last build ended because the user stopped it, which is not a failure.
+  last_build_stopped: boolean;
   install_command: string;
 }
 
@@ -996,6 +1005,10 @@ export const saveKnowledgeConfig = (
 ) => invoke<void>("save_knowledge_config", { projectId, graph, serveCommand, buildCommand });
 export const buildKnowledgeGraph = (projectId: string) =>
   invoke<void>("build_knowledge_graph", { projectId });
+// Stop the running build. Signals the whole process group, so the agent CLI
+// graphify spawns per document stops with it.
+export const stopKnowledgeBuild = (projectId: string) =>
+  invoke<void>("stop_knowledge_build", { projectId });
 
 // The Map's drill-down view of the knowledge graph: the directory tree with
 // per-file symbols, file-level dependency edges (category counts), and

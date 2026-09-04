@@ -1,4 +1,5 @@
 use crate::notifier;
+use agency_core::buildlog::Stream;
 use agency_core::cleanup::{BranchFacts, Disposal};
 use agency_core::profile::AgentProfile;
 use agency_core::registry::{IssueStatus, Project, Registry};
@@ -121,8 +122,21 @@ pub struct KnowledgeConfigDto {
     /// A build is running right now (the Build button, or a merge). The UI
     /// polls while this is true.
     pub building: bool,
-    /// Why the last finished build failed, `None` if it succeeded or none ran.
+    /// How long the running build has been going, and how long the last
+    /// finished one took. A graph build of this repository takes ten minutes
+    /// and printed nothing at all while it ran, which reads as a hung panel
+    /// rather than a working build (AGE-180); the elapsed time is the cheapest
+    /// half of the answer.
+    pub build_elapsed_secs: Option<u64>,
+    pub last_build_secs: Option<u64>,
+    /// The tail of the running (or last) build's output, oldest first. The
+    /// other half of the answer: what it is actually doing right now.
+    pub build_log: Vec<String>,
+    /// Why the last finished build failed, `None` if it succeeded, was stopped
+    /// or none ran. A build the user stopped is not a failure, so it reports as
+    /// `last_build_stopped` instead of inventing a reason.
     pub last_build_error: Option<String>,
+    pub last_build_stopped: bool,
     /// What to run to get the tooling when `*_installed` is false.
     pub install_command: String,
 }
@@ -134,6 +148,19 @@ struct KgBuild {
     running: bool,
     /// Failure reason from the last finished build; cleared when one succeeds.
     error: Option<String>,
+    /// When the running build started, and how long the last finished one ran.
+    started: Option<Instant>,
+    took: Option<Duration>,
+    /// The tail of the build's output, shared with the threads reading its
+    /// pipes. Kept after the build ends: a failure's reason and the last thing
+    /// a stopped build managed to say are both in here.
+    log: Arc<Mutex<agency_core::buildlog::BuildLog>>,
+    /// The running child, so the user can stop a build that is going nowhere.
+    /// `None` once it has been reaped.
+    child: Option<Arc<Mutex<std::process::Child>>>,
+    /// The user asked for this build to stop. Kept so the outcome is reported
+    /// as their decision rather than as a failure with a signal in it.
+    stopped: bool,
 }
 
 /// Files copied into every new worktree. `copy` is the user-configured
@@ -4218,6 +4245,7 @@ impl AppState {
         let (build_backend, build_model) = agency_core::config::build_selection(&build_effective);
         let graph = agency_core::config::graph_path(&repo);
         let build_state = self.kg_builds.lock().unwrap().get(&repo).cloned().unwrap_or_default();
+        let build_log = build_state.log.lock().unwrap().tail(KG_LOG_SHOWN);
         Ok(KnowledgeConfigDto {
             graph: k.graph,
             serve_installed: first_token_on_path(&serve_effective),
@@ -4232,7 +4260,11 @@ impl AppState {
             graph_built: graph.is_file(),
             graph_path: graph.display().to_string(),
             building: build_state.running,
+            build_elapsed_secs: build_state.started.map(|t| t.elapsed().as_secs()),
+            last_build_secs: build_state.took.map(|d| d.as_secs()),
+            build_log,
             last_build_error: build_state.error,
+            last_build_stopped: build_state.stopped && !build_state.running,
             install_command: graphify_install_script(),
         })
     }
@@ -4355,6 +4387,27 @@ impl AppState {
         self.create_install_terminal(project_id, "graphify", &graphify_install_script())
     }
 
+    /// Stop a running graph build. The panel's escape hatch from a build that
+    /// is going nowhere: without it a wedged build holds `running` forever, and
+    /// with it every later build (the Build button, every post-merge rebuild)
+    /// is refused as "already running" until the app restarts.
+    pub fn stop_knowledge_build(&self, project_id: &str) -> Result<()> {
+        let repo = self.project_repo(project_id)?;
+        let child = {
+            let mut builds = self.kg_builds.lock().unwrap();
+            let entry = builds
+                .get_mut(&repo)
+                .filter(|b| b.running)
+                .ok_or_else(|| anyhow!("no graph build is running for this project"))?;
+            entry.stopped = true;
+            entry.child.clone()
+        };
+        if let Some(child) = child {
+            signal_build_stop(&child);
+        }
+        Ok(())
+    }
+
     /// Spawn the project's build command in the primary checkout, tracking it in
     /// `kg_builds` so the UI can show progress and failures. Returns an error
     /// (without spawning) when the tooling is missing or a build is already
@@ -4371,14 +4424,21 @@ impl AppState {
                 "'{cmd}' is not installed. Install the graphify tooling and try again."
             ));
         }
+        let buildlog = Arc::new(Mutex::new(agency_core::buildlog::BuildLog::default()));
+        // Claim the slot before spawning: two Build presses a moment apart must
+        // not both get a process.
         {
             let mut builds = self.kg_builds.lock().unwrap();
             let entry = builds.entry(repo.to_path_buf()).or_default();
             if entry.running {
                 return Err(anyhow!("a graph build is already running for this project"));
             }
-            entry.running = true;
-            entry.error = None;
+            *entry = KgBuild {
+                running: true,
+                started: Some(Instant::now()),
+                log: buildlog.clone(),
+                ..Default::default()
+            };
         }
         // Before the build writes a line: graphify-out/ is ours to keep out of
         // the user's changes (AGE-170), and an exclude arriving after the files
@@ -4387,29 +4447,83 @@ impl AppState {
         log::info!("building knowledge graph in {}: {build}", repo.display());
         let repo = repo.to_path_buf();
         let builds_handle = self.kg_builds.clone();
+
+        // A login shell so the build resolves the same tooling the user's
+        // terminal does, and piped output so the panel can show what the build
+        // is doing instead of a spinner that never moves.
+        let mut command = std::process::Command::new("sh");
+        command
+            .args(["-lc", &build])
+            .current_dir(&repo)
+            // graphify is Python, and Python block-buffers stdout when it is a
+            // pipe: without this its progress lines arrive in 8 KB batches, so
+            // a build that prints steadily for ten minutes looks silent for
+            // nine of them. Harmless for a build command that is not Python.
+            .env("PYTHONUNBUFFERED", "1")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        // Its own process group, so stopping the build can reach the agent CLI
+        // graphify spawns per document rather than only the process Agency
+        // started. `sh -lc <one command>` execs into the command, so the child
+        // is graphify itself and its pid is the group's.
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
+        let mut child = match command.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                let reason = format!("couldn't run the build command: {e}");
+                let mut builds = builds_handle.lock().unwrap();
+                let entry = builds.entry(repo).or_default();
+                entry.running = false;
+                entry.started = None;
+                entry.error = Some(reason.clone());
+                return Err(anyhow!(reason));
+            }
+        };
+        let readers = [
+            child.stdout.take().map(|p| read_build_output(p, Stream::Out, buildlog.clone())),
+            child.stderr.take().map(|p| read_build_output(p, Stream::Err, buildlog.clone())),
+        ];
+        let child = Arc::new(Mutex::new(child));
+        {
+            let mut builds = builds_handle.lock().unwrap();
+            builds.entry(repo.clone()).or_default().child = Some(child.clone());
+        }
         std::thread::spawn(move || {
-            // A login shell so the build resolves the same tooling the user's
-            // terminal does, and captured output so a failure has a reason to
-            // show instead of a bare exit code.
-            let out = std::process::Command::new("sh")
-                .args(["-lc", &build])
-                .current_dir(&repo)
-                .stdin(std::process::Stdio::null())
-                .output();
-            let error = match out {
-                Err(e) => Some(format!("couldn't run the build command: {e}")),
-                Ok(o) if o.status.success() => None,
-                Ok(o) => Some(match failure_tail(&o.stderr, &o.stdout) {
+            let status = wait_for_build(&child, &builds_handle, &repo);
+            // Give the readers a moment to drain what is left in the pipes, but
+            // do not join them: a grandchild that inherited the pipe and
+            // outlived its parent holds it open indefinitely, and waiting on
+            // that would leave the panel saying "Building" for a build that has
+            // already exited.
+            let drained = Instant::now() + Duration::from_secs(2);
+            for r in readers.iter().flatten() {
+                while !r.is_finished() && Instant::now() < drained {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            }
+            let mut builds = builds_handle.lock().unwrap();
+            let entry = builds.entry(repo.clone()).or_default();
+            let error = match status {
+                // Stopping is not failing: the panel says so from `stopped`.
+                _ if entry.stopped => None,
+                Ok(s) if s.success() => None,
+                Ok(s) => Some(match buildlog.lock().unwrap().failure_tail(4) {
                     Some(tail) => tail,
-                    None => format!("the build command exited with {}", o.status),
+                    None => format!("the build command exited with {s}"),
                 }),
+                Err(e) => Some(format!("couldn't wait for the build command: {e}")),
             };
             if let Some(e) = &error {
                 log::warn!("knowledge graph build failed in {}: {e}", repo.display());
             }
-            let mut builds = builds_handle.lock().unwrap();
-            let entry = builds.entry(repo).or_default();
             entry.running = false;
+            entry.took = entry.started.take().map(|t| t.elapsed());
+            entry.child = None;
             entry.error = error;
         });
         Ok(())
@@ -8383,6 +8497,10 @@ impl AppState {
     /// Called from the quit confirmation flow; errors are swallowed because we
     /// are about to exit anyway.
     pub(crate) fn kill_all_and_shutdown(&self) {
+        // A graph build is not a daemon session, so it used to outlive the
+        // quit: graphify kept running with the agent CLI it spawns per document
+        // still billing, and no window left to say so or to stop it.
+        self.stop_all_knowledge_builds();
         let sessions = self.term.read().unwrap().list();
         if let Ok(sessions) = sessions {
             for (id, _) in sessions {
@@ -8390,6 +8508,22 @@ impl AppState {
             }
         }
         let _ = self.term.read().unwrap().shutdown();
+    }
+
+    /// Signal every running graph build to stop, on the way out. Signal only:
+    /// the monitor threads that would reap them do not outlive this process.
+    fn stop_all_knowledge_builds(&self) {
+        let mut children = Vec::new();
+        {
+            let mut builds = self.kg_builds.lock().unwrap();
+            for build in builds.values_mut().filter(|b| b.running) {
+                build.stopped = true;
+                children.extend(build.child.clone());
+            }
+        }
+        for child in &children {
+            signal_build_stop(child);
+        }
     }
 
     /// Whether Agency checks GitHub for a newer release on launch. Defaults to
@@ -8573,18 +8707,83 @@ fn graphify_server(
     })
 }
 
-/// The last few lines a failed command wrote, preferring stderr and falling back
-/// to stdout — enough to show the user *why* a build failed without pasting a
-/// whole log into the settings panel. `None` when the command said nothing.
-fn failure_tail(stderr: &[u8], stdout: &[u8]) -> Option<String> {
-    const LINES: usize = 4;
-    [stderr, stdout].into_iter().find_map(|bytes| {
-        let text = String::from_utf8_lossy(bytes);
-        let lines: Vec<&str> =
-            text.lines().map(str::trim_end).filter(|l| !l.trim().is_empty()).collect();
-        let tail = lines[lines.len().saturating_sub(LINES)..].join("\n");
-        (!tail.is_empty()).then_some(tail)
+/// Lines of a graph build's output handed to the settings panel on each poll.
+/// The log itself keeps more (a failure's reason has to survive the progress
+/// lines printed after it); this is what a panel that is 110 pixels tall can
+/// usefully scroll.
+const KG_LOG_SHOWN: usize = 40;
+
+/// How long a stopped build gets to exit on its own before it is killed. A
+/// build that ignores the polite signal still has to end, or the panel is left
+/// on "Building" with a Stop button that does nothing.
+const KG_STOP_GRACE: Duration = Duration::from_secs(5);
+
+/// Drain one of a build's pipes into its log until EOF.
+fn read_build_output(
+    mut pipe: impl std::io::Read + Send + 'static,
+    stream: Stream,
+    log: Arc<Mutex<agency_core::buildlog::BuildLog>>,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 8192];
+        loop {
+            match pipe.read(&mut buf) {
+                // EOF, or a pipe that broke: either way there is nothing more
+                // to read and the exit status is what says how it went.
+                Ok(0) | Err(_) => break,
+                Ok(n) => log.lock().unwrap().push(stream, &buf[..n]),
+            }
+        }
+        log.lock().unwrap().finish(stream);
     })
+}
+
+/// Wait for a build to exit. Polled rather than blocked on `wait`, because the
+/// `Child` has to stay lockable for [`signal_build_stop`] the whole time — and
+/// because a build the user stopped that is still alive after the grace period
+/// gets killed here.
+fn wait_for_build(
+    child: &Arc<Mutex<std::process::Child>>,
+    builds: &Arc<Mutex<HashMap<PathBuf, KgBuild>>>,
+    repo: &Path,
+) -> std::io::Result<std::process::ExitStatus> {
+    let mut deadline: Option<Instant> = None;
+    let mut killed = false;
+    loop {
+        match child.lock().unwrap().try_wait() {
+            Ok(Some(status)) => return Ok(status),
+            Ok(None) => {}
+            Err(e) => return Err(e),
+        }
+        if !killed && builds.lock().unwrap().get(repo).is_some_and(|b| b.stopped) {
+            let at = *deadline.get_or_insert_with(|| Instant::now() + KG_STOP_GRACE);
+            if Instant::now() >= at {
+                let _ = child.lock().unwrap().kill();
+                killed = true;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+/// Ask a running build to stop, whole process group first: the agent CLI
+/// graphify spawns per document is what is actually spending the user's plan,
+/// and signalling only the process Agency started leaves it running.
+fn signal_build_stop(child: &Arc<Mutex<std::process::Child>>) {
+    #[cfg(unix)]
+    {
+        let pgid = child.lock().unwrap().id();
+        let signalled = std::process::Command::new("/bin/kill")
+            .args(["-TERM", &format!("-{pgid}")])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success());
+        if signalled {
+            return;
+        }
+    }
+    let _ = child.lock().unwrap().kill();
 }
 
 /// Whether the program a command line runs is installed. Command overrides and
@@ -8618,9 +8817,9 @@ fn validate_project_path(repo_path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_argv, command_on_path, failure_tail, graphify_server, id_source, new_task_id,
-        pick_port, preview_mcp_port_for, require_branch_exists, require_gitless_known,
-        require_own_branch, slugify, split_session_id, validate_race, RaceAttempt,
+        agent_argv, command_on_path, graphify_server, id_source, new_task_id, pick_port,
+        preview_mcp_port_for, require_branch_exists, require_gitless_known, require_own_branch,
+        slugify, split_session_id, validate_race, RaceAttempt,
     };
     use agency_core::config::KnowledgeConfig;
     use agency_core::profile::AgentProfile;
@@ -8855,18 +9054,6 @@ mod tests {
         let server = graphify_server(Path::new("/repo"), &custom, |_| false, |_| true).unwrap();
         assert_eq!(server.command.as_deref(), Some("my-server"));
         assert_eq!(server.args, vec!["/my graphs/g.json".to_string()]);
-    }
-
-    #[test]
-    fn failure_tail_prefers_stderr_and_keeps_the_last_lines() {
-        assert_eq!(failure_tail(b"boom", b"noise").as_deref(), Some("boom"));
-        assert_eq!(failure_tail(b"", b"only stdout").as_deref(), Some("only stdout"));
-        assert_eq!(failure_tail(b"  \n\n", b"  \n").as_deref(), None, "whitespace is not a reason");
-        assert_eq!(
-            failure_tail(b"a\nb\nc\nd\ne\nf\n", b"").as_deref(),
-            Some("c\nd\ne\nf"),
-            "the tail is what says why it failed"
-        );
     }
 
     #[test]

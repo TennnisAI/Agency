@@ -2557,6 +2557,9 @@ fn a_failed_graph_build_reports_why() {
     let cfg = await_settled_build(&state, &p.id);
     assert!(!cfg.graph_built);
     assert_eq!(cfg.last_build_error.as_deref(), Some("graphify: no parser for this repo"));
+    assert!(!cfg.last_build_stopped, "it failed on its own");
+    assert_eq!(cfg.build_log, ["graphify: no parser for this repo"], "and keeps the whole tail");
+    assert!(cfg.last_build_secs.is_some());
 
     // A build whose command isn't installed at all is refused up front, and
     // pointed at the install the settings panel offers to run.
@@ -2571,6 +2574,54 @@ fn a_failed_graph_build_reports_why() {
     let err = state.build_knowledge_graph(&p.id).unwrap_err().to_string();
     assert!(err.contains("'definitely-not-a-real-binary-4k2x' is not installed"), "{err}");
     assert!(err.contains("Install the graphify tooling"), "{err}");
+}
+
+/// AGE-180: a build that runs for ten minutes showed "Building the graph" and
+/// nothing else, so a working build and a wedged one looked identical and
+/// neither could be got out of. The panel gets the build's own output and the
+/// elapsed time while it runs, and a Stop that reaches the whole process group
+/// (graphify spawns an agent CLI per document; signalling only the process
+/// Agency started leaves those spending).
+#[test]
+fn a_running_build_shows_its_output_and_can_be_stopped() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = common::state(&dir);
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let p = state.add_project("demo", &repo).unwrap();
+
+    // Prints like a real build does, then goes quiet for longer than the test
+    // will wait. Two commands, so `sh` does not exec into the sleep and the
+    // stop has a process group to reach rather than one child.
+    let build = "printf 'AST extraction: 1/2 uncached files\\n'; sleep 120";
+    state.save_knowledge_config(&p.id, true, None, Some(build.to_string())).unwrap();
+    state.build_knowledge_graph(&p.id).unwrap();
+
+    let mut cfg = state.knowledge_config(&p.id).unwrap();
+    for _ in 0..200 {
+        if cfg.build_log.iter().any(|l| l.contains("AST extraction")) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+        cfg = state.knowledge_config(&p.id).unwrap();
+    }
+    assert!(cfg.building, "the build is still running");
+    assert!(cfg.build_elapsed_secs.is_some(), "a running build says how long it has been going");
+    assert!(
+        cfg.build_log.iter().any(|l| l == "AST extraction: 1/2 uncached files"),
+        "the build's own output is what says what it is doing: {:?}",
+        cfg.build_log
+    );
+    assert!(state.build_knowledge_graph(&p.id).is_err(), "one build at a time");
+
+    state.stop_knowledge_build(&p.id).unwrap();
+    let cfg = await_settled_build(&state, &p.id);
+    assert!(cfg.last_build_stopped, "the panel has to say the build was stopped");
+    assert_eq!(cfg.last_build_error, None, "a build the user stopped is not one that failed");
+    assert!(cfg.last_build_secs.is_some(), "a finished build says how long it took");
+    assert!(!cfg.build_log.is_empty(), "the output stays readable after the build ends");
+    assert!(state.stop_knowledge_build(&p.id).is_err(), "nothing to stop is an error, not a no-op");
 }
 
 /// Picking a model writes the build command and starts nothing. The whole

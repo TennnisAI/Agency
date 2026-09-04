@@ -43,6 +43,7 @@ import {
   saveKnowledgeConfig,
   setKnowledgeBackend,
   buildKnowledgeGraph,
+  stopKnowledgeBuild,
   installKnowledgeTooling,
   saveMcpServers,
   saveProfile,
@@ -55,6 +56,7 @@ import Toggle from "./Toggle";
 import ConfirmDialog from "./ConfirmDialog";
 import FormDialog, { Field } from "./FormDialog";
 import { toastError, toastSuccess } from "../lib/toast";
+import { fmtDur } from "../lib/runstate";
 import { agentColor, agentLabel, updateCommand } from "../agents";
 import { THEMES, ThemeId, applyTheme, getStoredTheme } from "../lib/themes";
 import { getWordWrap, setWordWrap } from "../lib/editorPrefs";
@@ -74,6 +76,12 @@ const pairsToRecord = (pairs: KeyValue[]): Record<string, string> =>
   Object.fromEntries(
     pairs.map(({ key, value }) => [key.trim(), value.trim()]).filter(([k]) => k),
   );
+
+// " after 4m" for a finished graph build, empty when there is no timing to
+// report (the app was restarted since, so the build it watched is not one it
+// has a duration for).
+const buildTook = (kg: KnowledgeConfig): string =>
+  kg.last_build_secs === null ? "" : ` after ${fmtDur(kg.last_build_secs * 1000)}`;
 
 // The three shapes an MCP server can take, as offered by the transport picker.
 // "Local" spawns a command over stdio; the other two are remote endpoints.
@@ -220,6 +228,11 @@ export default function Settings({
   // The model name typed under the backend picker, saved on blur (a keystroke
   // is not a choice). Mirrors what the effective build command already names.
   const [kgModel, setKgModel] = useState("");
+  // The build-output pane, and whether it is currently scrolled to the newest
+  // line. Followed only while it is: pulling the pane back down every 1.5s
+  // while the user is reading further up is the scroll-latch bug again.
+  const kgLogRef = useRef<HTMLPreElement | null>(null);
+  const kgLogFollow = useRef(true);
   // Why a requested build never started (tooling missing, one already running).
   // Cleared on the next attempt; build failures come back on the config itself.
   const [kgBuildError, setKgBuildError] = useState<string | null>(null);
@@ -479,8 +492,14 @@ export default function Settings({
     }
   }
 
+  useEffect(() => {
+    const el = kgLogRef.current;
+    if (el && kgLogFollow.current) el.scrollTop = el.scrollHeight;
+  }, [kg?.build_log]);
+
   // A graph build runs on its own thread with no event of its own, so poll the
-  // config while one is in flight to pick up the finish (and any failure).
+  // config while one is in flight to pick up its output, the finish, and any
+  // failure.
   useEffect(() => {
     if (!projectId || !kg?.building) return;
     const t = setInterval(() => loadKnowledge(projectId), 1500);
@@ -501,6 +520,20 @@ export default function Settings({
     setKgBuildError(null);
     try {
       await buildKnowledgeGraph(projectId);
+    } catch (e) {
+      setKgBuildError(String(e));
+    }
+    await loadKnowledge(projectId);
+  }
+
+  // The way out of a build that is going nowhere. Without it a wedged build
+  // holds the slot until the app restarts, and every later build (including
+  // every post-merge rebuild) is refused as already running.
+  async function stopBuild() {
+    if (!projectId) return;
+    setKgBuildError(null);
+    try {
+      await stopKnowledgeBuild(projectId);
     } catch (e) {
       setKgBuildError(String(e));
     }
@@ -1302,7 +1335,8 @@ export default function Settings({
             (<code>.agency/agency.local.toml</code>), not shared with the team. Needs the{" "}
             <code>graphify</code> / <code>uv</code> tooling on your <code>PATH</code>. Code is
             indexed locally; your docs are read by whichever model you pick below, and nothing
-            runs until you build.
+            runs until you build. A first build of a large project takes minutes; its output
+            appears here while it runs, and you can stop it.
           </p>
           {!projectId ? (
             <div className="settings-group-card">
@@ -1343,16 +1377,44 @@ export default function Settings({
                       </div>
                     </div>
                   )}
+                  {/* AGE-180: a build of this repository runs for ten minutes.
+                      Saying only "Building the graph" for all of it left no way
+                      to tell a working build from a wedged one, so the elapsed
+                      time and the build's own output are both on screen. */}
                   {kg.build_installed && (
                     <div className={kg.graph_built && !kg.last_build_error ? "settings-kg-note" : "settings-kg-warn"}>
                       {kg.building
-                        ? "Building the graph. Agents started after it finishes will get the knowledge-graph server."
+                        ? kg.graph_built
+                          ? `Rebuilding the graph, ${fmtDur((kg.build_elapsed_secs ?? 0) * 1000)} so far. Agents keep using the graph that is already there until this one finishes.`
+                          : `Building the graph, ${fmtDur((kg.build_elapsed_secs ?? 0) * 1000)} so far. Agents started after it finishes will get the knowledge-graph server.`
                         : kg.last_build_error
-                        ? `The last graph build failed: ${kg.last_build_error}`
+                        ? `The last graph build failed${buildTook(kg)}: ${kg.last_build_error}`
+                        : kg.last_build_stopped
+                        ? `You stopped the last build${buildTook(kg)}. Agents keep using whatever graph was built before it.`
                         : kg.graph_built
-                        ? `Graph built at ${kg.graph_path}, and kept out of git.`
+                        ? `Graph built at ${kg.graph_path}, and kept out of git.${
+                            kg.last_build_secs === null
+                              ? ""
+                              : ` The last build took ${fmtDur(kg.last_build_secs * 1000)}.`
+                          }`
                         : "No graph has been built yet, so agents get no knowledge-graph server. Build one to start using it."}
                     </div>
+                  )}
+                  {/* The build's own output, which is the only thing that says
+                      what it is doing right now. Kept after it ends: a failure's
+                      last lines are the context for the reason above. */}
+                  {kg.build_log.length > 0 && (
+                    <pre
+                      className="settings-kg-log"
+                      ref={kgLogRef}
+                      onScroll={(e) => {
+                        const el = e.currentTarget;
+                        kgLogFollow.current =
+                          el.scrollHeight - el.scrollTop - el.clientHeight < 8;
+                      }}
+                    >
+                      {kg.build_log.join("\n")}
+                    </pre>
                   )}
                   {kgBuildError && <div className="settings-kg-warn">{kgBuildError}</div>}
                   {/* The picker and its note are the "before it runs" half of
@@ -1415,13 +1477,19 @@ export default function Settings({
                     />
                   </div>
                   <div className="settings-card-foot">
-                    <button
-                      className="settings-secondary"
-                      disabled={!kg.build_installed || kg.building}
-                      onClick={buildGraph}
-                    >
-                      {kg.building ? "Building…" : kg.graph_built ? "Rebuild graph" : "Build graph"}
-                    </button>
+                    {kg.building ? (
+                      <button className="settings-secondary" onClick={stopBuild}>
+                        Stop build
+                      </button>
+                    ) : (
+                      <button
+                        className="settings-secondary"
+                        disabled={!kg.build_installed}
+                        onClick={buildGraph}
+                      >
+                        {kg.graph_built ? "Rebuild graph" : "Build graph"}
+                      </button>
+                    )}
                     <button className="settings-save" onClick={() => persistKnowledge(kg.graph)}>Save commands</button>
                   </div>
                 </>

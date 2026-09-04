@@ -31,6 +31,12 @@ Everything Agency spawns goes through a Unix login shell today:
   `/bin/zsh` / `/bin/bash` (terminal creation, install terminals, shell
   profile seeding at `state.rs:342`) and `sh -lc` for the run script and the
   knowledge-graph rebuild. On Windows: `%COMSPEC%` / PowerShell, no `-l`.
+- `state.rs start_knowledge_build` puts the graph build in its own process
+  group (`process_group(0)`) and stops it with `/bin/kill -TERM -<pgid>`, so
+  Stop reaches the agent CLI graphify spawns per document and not just the
+  process Agency started. Windows has no process groups in that sense: a job
+  object (or `taskkill /T /PID`) is the equivalent, and `Child::kill` is the
+  fallback the code already takes when the group signal fails.
 - `create_install_terminal` composes `"<command>\nexec \"$SHELL\" -l"` —
   the "run installer, then drop into an interactive shell" trick needs a
   PowerShell equivalent.

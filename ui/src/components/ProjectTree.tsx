@@ -1,10 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { CloneProgress, Project, RunInfo, RepoReadiness, addProject, closeProject, deleteProject, inspectRepo, listProjects, listRuns, setProjectColor } from "../api";
+import { CloneProgress, FileRoot, Project, RunInfo, RepoReadiness, addProject, closeProject, deleteProject, inspectRepo, listProjects, listRuns, setProjectColor } from "../api";
 import { projectAccent, runName } from "../agents";
 import { useRuns } from "../store/runs";
 import { toastError } from "../lib/toast";
+import { copyAbsPath, reveal, revealLabel } from "../lib/fileActions";
 import { pinnedFirst, runStatus } from "../lib/runstate";
+import { newAgentItems, useAgentProfiles, useRunMenu } from "../hooks/useRunMenu";
+import { useSpawnAgent } from "../hooks/useSpawnAgent";
+import Menu, { MenuEntry } from "./git/Menu";
 import ConfirmDialog from "./ConfirmDialog";
 import ProjectColorPicker from "./ProjectColorPicker";
 import RepoSetupDialog from "./RepoSetupDialog";
@@ -42,7 +46,7 @@ export default function ProjectTree({
   /** Marks the Settings button with a dot — a newer release is on GitHub. */
   updateAvailable?: boolean;
 }) {
-  const { runs } = useRuns();
+  const { runs, createTerminal } = useRuns();
   const [projects, setProjects] = useState<Project[]>([]);
   const [openIds, setOpenIds] = useState<Set<string>>(() => new Set());
   const [projectRuns, setProjectRuns] = useState<Record<string, RunInfo[]>>({});
@@ -62,6 +66,18 @@ export default function ProjectTree({
   const [wsCreate, setWsCreate] = useState<{ intent: string | null } | null>(null);
   // Open color picker: the project being recolored plus the icon rect it hangs off.
   const [recolor, setRecolor] = useState<{ project: Project; anchor: DOMRect } | null>(null);
+  // Right-click menus. A run's is the shared one every surface offers; a
+  // project's is built below, against the project the menu was opened on.
+  const [projMenu, setProjMenu] = useState<{ x: number; y: number; project: Project; anchor: DOMRect } | null>(null);
+  const { openRunMenu, menuRunId, runMenu } = useRunMenu({ onChanged: () => { void refresh(); } });
+  const { profiles, reload: reloadProfiles } = useAgentProfiles();
+  // The project the last menu was opened on, which outlives the menu itself:
+  // the spawn pre-flight can raise a dialog (install this agent's CLI, make the
+  // repo ready) that is answered long after the menu closed, and that dialog
+  // needs the project it was opened against. Set a render before any entry can
+  // be clicked, so `spawn` is always bound to the right one.
+  const [menuProject, setMenuProject] = useState<Project | null>(null);
+  const { spawn, error: spawnError, dialogs: spawnDialogs } = useSpawnAgent(menuProject);
 
   // The pinned workspace is a project row flagged `kind: "workspace"` — shown
   // above the list, never part of the active filter, not closable. Users who
@@ -230,6 +246,53 @@ export default function ProjectTree({
     setSetup(null);
   }
 
+  // A project's own right-click menu (AGE-179). Beyond opening it and starting
+  // something in it, this is where the row's two hidden affordances become
+  // findable: the color palette behind a double-click on the icon, and the
+  // close behind a hover.
+  function projectEntries(p: Project, anchor: DOMRect): MenuEntry[] {
+    const root: FileRoot = { kind: "project", id: p.id };
+    const start = (agent: string) => {
+      // Both creations run in the *selected* project — the store reads the
+      // selection rather than taking a project argument — so select it first.
+      onSelect(p);
+      if (agent === "shell") void createTerminal();
+      else void spawn(agent);
+    };
+    const items: MenuEntry[] = [
+      { label: p.kind === "workspace" ? "Open workspace" : "Open project", onClick: () => onSelect(p) },
+      { kind: "submenu", label: "New agent", items: newAgentItems(profiles, start) },
+      { kind: "separator" },
+      { label: "Change color…", onClick: () => setRecolor({ project: p, anchor }) },
+      { label: revealLabel, onClick: () => void reveal(root, "") },
+      { label: "Copy path", onClick: () => void copyAbsPath(root, "") },
+    ];
+    // The workspace is pinned: it is hidden from Settings, never closed.
+    if (p.kind !== "workspace") {
+      items.push(
+        { kind: "separator" },
+        { label: "Close project…", onClick: () => setPending({ project: p }) },
+      );
+    }
+    return items;
+  }
+
+  function openProjectMenu(e: React.MouseEvent, p: Project) {
+    e.preventDefault();
+    e.stopPropagation();
+    // A profile added moments ago should be in the list this open builds.
+    reloadProfiles();
+    setMenuProject(p);
+    setProjMenu({
+      x: e.clientX,
+      y: e.clientY,
+      project: p,
+      // The color picker hangs off the row, not off the pointer: it is the
+      // same palette the icon's double-click opens, in the same place.
+      anchor: e.currentTarget.getBoundingClientRect(),
+    });
+  }
+
   // Double-clicking a project's icon opens the palette over it. The rect is
   // captured here rather than from a ref because every row shares one picker.
   function openRecolor(e: React.MouseEvent, p: Project) {
@@ -291,16 +354,17 @@ export default function ProjectTree({
         <button className="icon-add" title="Clone repository" aria-label="Clone repository" onClick={() => setCloning(true)}>⤓</button>
         <button className="icon-add" title="Add project" aria-label="Add project" onClick={handleAdd}>+</button>
       </div>
-      {error && <div className="git-error">{error}</div>}
+      {(error || spawnError) && <div className="git-error">{error || spawnError}</div>}
       <ul className="tree-list">
         {/* Pinned workspace: always first, outside the active filter. Before
             first use it's an invitation — clicking sets it up. */}
         {!wsHidden && (
         <li className="tree-workspace">
           <div
-            className={`tree-row ${workspace && workspace.id === selectedId ? (focusedRunId ? "selected ancestor" : "selected") : ""}${workspace ? "" : " ws-absent"}`}
+            className={`tree-row ${workspace && workspace.id === selectedId ? (focusedRunId ? "selected ancestor" : "selected") : ""}${workspace ? "" : " ws-absent"}${workspace && projMenu?.project.id === workspace.id ? " ctx" : ""}`}
             title={workspace ? workspace.repo_path : "Create your workspace: a home for journaling, planning, and notes"}
             onClick={() => openWorkspace(null)}
+            onContextMenu={(e) => { if (workspace) openProjectMenu(e, workspace); }}
           >
             <span className="chev" onClick={(e) => { e.stopPropagation(); if (workspace) toggle(workspace); }}>
               {workspace && openIds.has(workspace.id) ? "▾" : "▸"}
@@ -319,10 +383,11 @@ export default function ProjectTree({
               {(projectRuns[workspace.id] ?? []).map((r) => (
                 <li
                   key={r.id}
-                  className={`tree-child ${r.id === focusedRunId ? "active" : ""}`}
+                  className={`tree-child ${r.id === focusedRunId ? "active" : ""}${menuRunId === r.id ? " ctx" : ""}`}
                   style={{ "--sel-accent": projectAccent(workspace) } as React.CSSProperties}
                   title={`Open ${r.agent}: ${runName(r)}`}
                   onClick={(e) => { e.stopPropagation(); onSelectRun(workspace, r); }}
+                  onContextMenu={(e) => openRunMenu(e, r, (run) => onSelectRun(workspace, run))}
                 >
                   <span className={`dot ${runStatus(r).cls}`} />
                   <span className="tree-child-name tl">{r.agent}: {runName(r)}</span>
@@ -338,8 +403,9 @@ export default function ProjectTree({
         {visible.map((p) => (
           <li key={p.id}>
             <div
-              className={`tree-row ${p.id === selectedId ? (focusedRunId ? "selected ancestor" : "selected") : ""}`}
+              className={`tree-row ${p.id === selectedId ? (focusedRunId ? "selected ancestor" : "selected") : ""}${projMenu?.project.id === p.id ? " ctx" : ""}`}
               onClick={() => onSelect(p)}
+              onContextMenu={(e) => openProjectMenu(e, p)}
             >
               <span className="chev" onClick={(e) => { e.stopPropagation(); toggle(p); }}>
                 {openIds.has(p.id) ? "▾" : "▸"}
@@ -370,10 +436,11 @@ export default function ProjectTree({
                 {(projectRuns[p.id] ?? []).map((r) => (
                   <li
                     key={r.id}
-                    className={`tree-child ${r.id === focusedRunId ? "active" : ""}`}
+                    className={`tree-child ${r.id === focusedRunId ? "active" : ""}${menuRunId === r.id ? " ctx" : ""}`}
                     style={{ "--sel-accent": projectAccent(p) } as React.CSSProperties}
                     title={`Open ${r.agent}: ${runName(r)}`}
                     onClick={(e) => { e.stopPropagation(); onSelectRun(p, r); }}
+                    onContextMenu={(e) => openRunMenu(e, r, (run) => onSelectRun(p, run))}
                   >
                     <span className={`dot ${runStatus(r).cls}`} />
                     <span className="tree-child-name tl">{r.agent}: {runName(r)}</span>
@@ -394,6 +461,16 @@ export default function ProjectTree({
           {updateAvailable && <span className="tree-settings-dot" aria-hidden="true" />}
         </button>
       </div>
+      {projMenu && (
+        <Menu
+          x={projMenu.x}
+          y={projMenu.y}
+          items={projectEntries(projMenu.project, projMenu.anchor)}
+          onClose={() => setProjMenu(null)}
+        />
+      )}
+      {runMenu}
+      {spawnDialogs}
       {recolor && (
         <ProjectColorPicker
           anchor={recolor.anchor}

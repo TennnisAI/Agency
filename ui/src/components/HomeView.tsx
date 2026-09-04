@@ -3,6 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { Issue, Project, RunInfo, RepoReadiness, addProject, inspectRepo, listIssues, listProjects, listRuns, runPreview } from "../api";
 import { projectAccent, runName } from "../agents";
 import { inGitlessFolder, isWorking, needsAttention, pinnedFirst, runStatus } from "../lib/runstate";
+import { useRunMenu } from "../hooks/useRunMenu";
 import RepoSetupDialog from "./RepoSetupDialog";
 import CloneDialog from "./CloneDialog";
 import HomeIssues from "./HomeIssues";
@@ -278,8 +279,14 @@ function badgeClass(agent: string): string {
 // snooze and pin are the exception, because they *are* surveying — this is the
 // view whose whole job is "which of these needs me", so the answer belongs
 // where the question is asked.
+//
+// The right-click menu is not that button: it is hidden until it is asked for,
+// so it costs the card nothing, and a run has to offer the same menu wherever
+// it is listed or the answer to "how do I archive this" depends on which view
+// you happened to be in (AGE-179).
 function HomeTile({ run, onOpen, onChanged }: { run: RunInfo; onOpen: () => void; onChanged: () => void }) {
   const [preview, setPreview] = useState("");
+  const { openRunMenu, menuRunId, runMenu } = useRunMenu({ onOpen: () => onOpen(), onChanged });
 
   useEffect(() => {
     let alive = true;
@@ -299,7 +306,12 @@ function HomeTile({ run, onOpen, onChanged }: { run: RunInfo; onOpen: () => void
   const st = runStatus(run);
   const isTerminal = run.kind === "terminal";
   return (
-    <div className="tile" onClick={onOpen} title="Open in focus mode">
+    <div
+      className={`tile${menuRunId === run.id ? " ctx" : ""}`}
+      onClick={onOpen}
+      title="Open in focus mode"
+      onContextMenu={(e) => openRunMenu(e, run)}
+    >
       <div className="tile-head">
         <span className={`dot ${st.cls}`} />
         <span className="tile-title">{runName(run)}</span>
@@ -326,6 +338,7 @@ function HomeTile({ run, onOpen, onChanged }: { run: RunInfo; onOpen: () => void
         <span title={st.title}>{st.text}</span>
         <AttentionMarker run={run} onChanged={onChanged} />
       </div>
+      {runMenu}
     </div>
   );
 }

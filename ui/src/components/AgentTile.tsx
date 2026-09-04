@@ -2,12 +2,12 @@ import { useEffect, useState } from "react";
 import { RunInfo, runPreview } from "../api";
 import { useRuns } from "../store/runs";
 import { runName } from "../agents";
+import { useRunMenu } from "../hooks/useRunMenu";
 import { inGitlessFolder, runStatus } from "../lib/runstate";
-import { Removal, removalLabel, removalsFor } from "../lib/runRemoval";
+import { removalLabel, removalsFor } from "../lib/runRemoval";
 import { usageLabel, usageTitle } from "../lib/usage";
 import AttentionMarker from "./AttentionMarker";
 import QueuedMarker from "./QueuedMarker";
-import RunRemoveDialog from "./RunRemoveDialog";
 import OverflowMenu from "./OverflowMenu";
 import { TrashIcon, InboxIcon } from "./icons";
 
@@ -21,8 +21,10 @@ function badgeClass(agent: string): string {
 export default function AgentTile({ run }: { run: RunInfo }) {
   const { setFocusedRun, setView, refreshRuns } = useRuns();
   const [preview, setPreview] = useState("");
-  // Archive / discard of this run, awaiting its confirm dialog.
-  const [pending, setPending] = useState<Removal | null>(null);
+  // Right-click anywhere on the card, and the dialogs its entries raise
+  // (rename, archive, delete) — the same menu the rail rows and the sidebar
+  // tree carry.
+  const { openRunMenu, menuRunId, remove, runMenu } = useRunMenu();
 
   useEffect(() => {
     let alive = true;
@@ -42,7 +44,11 @@ export default function AgentTile({ run }: { run: RunInfo }) {
   const st = runStatus(run);
   const isTerminal = run.kind === "terminal";
   return (
-    <div className="tile" onClick={() => { setFocusedRun(run.id); setView("focus"); }}>
+    <div
+      className={`tile${menuRunId === run.id ? " ctx" : ""}`}
+      onClick={() => { setFocusedRun(run.id); setView("focus"); }}
+      onContextMenu={(e) => openRunMenu(e, run)}
+    >
       <div className="tile-head">
         <span className={`dot ${st.cls}`} />
         <span className="tile-title">{runName(run)}</span>
@@ -107,14 +113,12 @@ export default function AgentTile({ run }: { run: RunInfo }) {
               label: removalLabel(run, action),
               icon: action === "archive" ? <InboxIcon /> : <TrashIcon />,
               danger: action === "delete",
-              onSelect: () => setPending(action),
+              onSelect: () => remove(run, action),
             }))}
           />
         </span>
       </div>
-      {pending && (
-        <RunRemoveDialog run={run} action={pending} onClose={() => setPending(null)} />
-      )}
+      {runMenu}
     </div>
   );
 }

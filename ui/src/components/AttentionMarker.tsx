@@ -2,6 +2,7 @@ import { RunInfo, RunStanding, pinRun, setRunStanding } from "../api";
 import { SNOOZE_PRESETS, fmtWake, isPinned, standingTitle } from "../lib/runstate";
 import { toastError } from "../lib/toast";
 import OverflowMenu, { OverflowItem } from "./OverflowMenu";
+import { MenuEntry } from "./git/Menu";
 import { PinIcon, SettleIcon, SnoozeIcon } from "./icons";
 
 // Saying what you want done with a run, instead of leaving it to be guessed
@@ -15,10 +16,11 @@ import { PinIcon, SettleIcon, SnoozeIcon } from "./icons";
 // keep in step with it.
 
 /**
- * The menu entries for one run, for hosts that already have an overflow menu
- * (the focus header). `onChanged` refreshes whatever list the host is showing.
+ * The writes behind the standing entries, plus the labels that depend on what
+ * the run's standing is now. Shared so the overflow list and the right-click
+ * menu offer the same choices under the same names wherever a run is listed.
  */
-export function attentionItems(run: RunInfo, onChanged: () => void): OverflowItem[] {
+function attentionActions(run: RunInfo, onChanged: () => void) {
   const standing = run.attention.standing;
   const pinned = isPinned(run);
   const set = async (next: RunStanding | null) => {
@@ -29,48 +31,73 @@ export function attentionItems(run: RunInfo, onChanged: () => void): OverflowIte
       toastError(e, "Couldn't record that");
     }
   };
-  const pin = async () => {
-    try {
-      await pinRun(run.id, !pinned);
-      onChanged();
-    } catch (e) {
-      toastError(e, pinned ? "Couldn't unpin this run" : "Couldn't pin this run");
-    }
+  // "Unsettle" and "Wake now" are the same instruction — put this back in
+  // front of me — and both land on `active` rather than clearing the record,
+  // so the run keeps its place instead of dropping back to the clock.
+  const suppressed = standing?.kind === "settled" || standing?.kind === "snoozed";
+  return {
+    settleLabel: suppressed ? (standing?.kind === "settled" ? "Unsettle" : "Wake now") : "Settle",
+    settle: () => set(suppressed ? { kind: "active" } : { kind: "settled" }),
+    snooze: (ms: number) => set({ kind: "snoozed", untilMs: Date.now() + ms }),
+    pinLabel: pinned ? "Unpin" : "Pin",
+    pin: async () => {
+      try {
+        await pinRun(run.id, !pinned);
+        onChanged();
+      } catch (e) {
+        toastError(e, pinned ? "Couldn't unpin this run" : "Couldn't pin this run");
+      }
+    },
   };
+}
 
+/**
+ * The menu entries for one run, for hosts that already have an overflow menu
+ * (the focus header). `onChanged` refreshes whatever list the host is showing.
+ */
+export function attentionItems(run: RunInfo, onChanged: () => void): OverflowItem[] {
+  const a = attentionActions(run, onChanged);
   const items: OverflowItem[] = [];
   // A terminal is never waiting on you, so settling and snoozing have nothing
   // to act on. It can still be pinned: that is about where it sits.
   if (run.kind === "agent") {
-    // "Unsettle" and "Wake now" are the same instruction — put this back in
-    // front of me — and both land on `active` rather than clearing the record,
-    // so the run keeps its place instead of dropping back to the clock.
-    const suppressed = standing?.kind === "settled" || standing?.kind === "snoozed";
-    items.push(
-      suppressed
-        ? {
-            label: standing?.kind === "settled" ? "Unsettle" : "Wake now",
-            icon: <SettleIcon />,
-            onSelect: () => set({ kind: "active" }),
-          }
-        : { label: "Settle", icon: <SettleIcon />, onSelect: () => set({ kind: "settled" }) },
-    );
+    items.push({ label: a.settleLabel, icon: <SettleIcon />, onSelect: a.settle });
     SNOOZE_PRESETS.forEach((preset, i) => {
       items.push({
         label: `Snooze ${preset.label}`,
         icon: <SnoozeIcon />,
         separator: i === 0,
-        onSelect: () => set({ kind: "snoozed", untilMs: Date.now() + preset.ms }),
+        onSelect: () => a.snooze(preset.ms),
       });
     });
   }
-  items.push({
-    label: pinned ? "Unpin" : "Pin",
-    icon: <PinIcon />,
-    separator: items.length > 0,
-    onSelect: pin,
-  });
+  items.push({ label: a.pinLabel, icon: <PinIcon />, separator: items.length > 0, onSelect: a.pin });
   return items;
+}
+
+/**
+ * The same choices as a run's right-click menu sees them. The presets go in a
+ * submenu rather than three more rows: that menu already carries the run's whole
+ * vocabulary, and the snooze durations are the part nobody scans for.
+ */
+export function attentionEntries(run: RunInfo, onChanged: () => void): MenuEntry[] {
+  const a = attentionActions(run, onChanged);
+  const entries: MenuEntry[] = [];
+  if (run.kind === "agent") {
+    entries.push(
+      { label: a.settleLabel, onClick: a.settle },
+      {
+        kind: "submenu",
+        label: "Snooze",
+        items: SNOOZE_PRESETS.map((preset) => ({
+          label: preset.label,
+          onClick: () => a.snooze(preset.ms),
+        })),
+      },
+    );
+  }
+  entries.push({ label: a.pinLabel, onClick: a.pin });
+  return entries;
 }
 
 /**

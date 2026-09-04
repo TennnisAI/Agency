@@ -44,9 +44,8 @@ follows `prefers-color-scheme`. Dark tokens live on bare `:root`; light is a
 media query guarded by `:root:not([data-theme="dark"])` plus an explicit
 `[data-theme="light"]` block, so the toggle wins in both directions.
 
-Screenshots are dark-theme captures. In light mode they sit on a `--crust` mat
-with padding, which is the documented fallback in `04-design-system.md` until a
-Paperback capture set exists.
+Screenshots are dark-theme captures. They sit directly on the page with a
+rounded box-shadow; there is no light-mode mat.
 
 ## The release switch
 
@@ -84,9 +83,9 @@ against the shot list in `05-assets.md`:
 |---|---|---|
 | `shot-overview.webp` | all-projects overview, 13 agents | stands in for SHOT-01 (hero) |
 | `shot-focus.webp` | focus view, agent working an issue | SHOT-02 |
-| `shot-issues.webp` | issue board and detail | SHOT-04/05 |
+| `shot-issues.webp` | Issues board and detail (1bit-launcher) | SHOT-04/05 |
 | `shot-docs.webp` | note with an agent in the side panel | SHOT-06 |
-| `shot-merge.webp` | approve-and-merge, merged cleanly | SHOT-11/12 |
+| `shot-merge.webp` | Source Control Changes, side-by-side diff | SHOT-11/12 |
 
 Still worth capturing, in value order: SHOT-01 proper (Agents tab, grid layout,
 6 tiles, mixed agent types; the hero's real job), SHOT-10 (a race in flight),

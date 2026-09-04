@@ -233,6 +233,53 @@ toast: the merge decides a field both sides changed by `updated`, a body edit
 that lost that way is content quietly gone, and a dismissed toast would be the
 last anyone heard of it.
 
+**Progress, and why it needed any (2026-09-04).** `sync_issues` shipped as a
+plain `#[tauri::command] fn`, and tauri runs those on the main thread, so every
+pass froze the window for the length of two network round-trips plus one `git
+cat-file` per issue per tree. On a few hundred issues that is seconds of
+beachball with nothing on screen to say why. It is an `async fn` taking a
+`Channel<CloneProgress>` now, the same shape as `git_sync` directly above it in
+`commands.rs`, and `issueref::sync_with_progress` names each step it waits on:
+"Fetching from origin", "Reading the shared backlog", "Reading the last synced
+copy", "Merging", "Copying attachments", "Publishing to origin", then "Updating
+the board" for the reconcile the app layer adds. The fetch and the push stream
+git's own `--progress` lines through the parser the clone dialog already uses,
+so the two network steps report real object counts rather than a sweep. The
+board draws all of it with the shared `ProgressReadout`.
+
+Two things that came out of doing it, both deliberate:
+
+- **The per-blob read is one `git cat-file --batch` per tree.** It used to be
+  one process per issue per tree, and that was not marginal: 600 blobs out of
+  one commit measured 15.4s spawned per file against 0.21s batched, so a pass
+  over a backlog that size spent half a minute in the step that never touches
+  the network. `cat_file_batch` writes its specs from a second thread, which is
+  load-bearing rather than tidy: a git blocked on a full stdout pipe stops
+  draining stdin, so writing every spec before reading a byte wedges the pair
+  once both buffers fill. There is no size that reliably reproduces that (it
+  turns on kernel pipe sizing and on how big the issue files are) and a
+  deadlock hangs a test suite rather than failing it, so the thread is the fix
+  and the test covers the other trap instead: a spec git cannot resolve answers
+  `<spec> missing` with no body *and no trailing newline*, and consuming one
+  there reads every response after it out of frame.
+- **The Sync button's tooltip states the transport.** "Issues travel on a ref of
+  their own, refs/agency/issues, so they never land on a branch or in a diff."
+  The same claim Settings makes, moved to the one place someone wondering why
+  `git log` is empty is already looking. This came straight from a user asking
+  exactly that, which is the evidence that stating it once, in Settings, at the
+  moment the toggle is flipped, is not stating it.
+
+**An empty board can sync (AGE-177).** The toolbar the Sync button lives on is
+drawn inside `issues.length > 0`, so the one machine that most needs to sync
+could not: a fresh clone of a shared project has nothing local, everything on
+the ref, and until this had no control anywhere that would fetch it. The whole
+second-machine half of the feature was unreachable. The empty board now carries
+its own Sync button, and its line reads "Capture your first issues, or sync to
+bring down the shared backlog" when sharing is on. `Merge` is the right mode
+there and not `Adopt`: with no local issues there is no seeding question to ask,
+which is why the `NeedsSeeding` guard turns on `!local_files.is_empty()`, and
+the merge writes every issue the remote has.
+
 ### `uid`
 
 Issue files carry `uid:` — a uuid in the frontmatter, right after `key:`, which
@@ -311,7 +358,8 @@ Each of these was decided against for now rather than missed.
   having moved, and "sync again" is the right advice, but telling that apart
   from an auth failure means parsing git's stderr or re-fetching to compare.
   Left undone rather than guessed at; the toast says the shared copy was not
-  updated, which is true either way.
+  updated, which is true either way. git's stderr now reaches the log verbatim,
+  so the diagnosis exists even though the toast does not attempt one.
 - **Renumbering.** Two uids claiming one key is reported and neither side is
   touched. Resolving it means renaming a file and rewriting every `links:` that
   names it, which is its own pass. Publish/Adopt avoids the only case a single

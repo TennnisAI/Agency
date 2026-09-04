@@ -374,8 +374,18 @@ export type IssueSyncResult =
   | { kind: "done"; outcome: IssueSyncOutcome }
   | { kind: "needsSeeding"; local: number; remote: number };
 
-export const syncIssues = (projectId: string, mode: IssueSyncMode) =>
-  invoke<IssueSyncResult>("sync_issues", { projectId, mode });
+// Streamed, like the git commands: a pass fetches, reads one blob per issue per
+// tree, then pushes, so it is seconds on a real backlog and the board shows a
+// phase readout rather than nothing.
+export function syncIssues(
+  projectId: string,
+  mode: IssueSyncMode,
+  onProgress?: (p: CloneProgress) => void,
+): Promise<IssueSyncResult> {
+  const onProgressChannel = new Channel<CloneProgress>();
+  if (onProgress) onProgressChannel.onmessage = onProgress;
+  return invoke<IssueSyncResult>("sync_issues", { projectId, mode, onProgress: onProgressChannel });
+}
 
 // Comments are their own calls rather than a field of the patch: the thread
 // lives in the issue file and an agent may be appending to it at the same

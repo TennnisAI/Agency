@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  FileRoot, Issue, IssuePatch, IssueStatus, IssueSyncMode, Project,
+  CloneProgress, FileRoot, Issue, IssuePatch, IssueStatus, IssueSyncMode, Project,
   addIssueComment, createIssue, deleteIssue, deleteIssueComment, getIssueSyncConfig, getWorkspace,
   syncIssues, updateIssue, updateIssueComment,
 } from "../api";
@@ -42,6 +42,7 @@ import IssueRow from "./IssueRow";
 import IssueDetail from "./IssueDetail";
 import ConfirmDialog from "./ConfirmDialog";
 import PillSelect from "./PillSelect";
+import ProgressReadout from "./ProgressReadout";
 import Resizer from "./Resizer";
 import { toastError, toastInfo, toastSuccess } from "../lib/toast";
 import { FindRank, registerFindTarget } from "../lib/findBus";
@@ -73,7 +74,14 @@ export default function IssuesView({
   // Backlog sharing. `syncOn` is null until the config lands, so the button
   // doesn't flash in and out on every project switch.
   const [syncOn, setSyncOn] = useState<boolean | null>(null);
+  // The remote a pass would use, so the board can name it rather than saying
+  // "the shared copy" at someone who is trying to work out where that is.
+  const [syncRemote, setSyncRemote] = useState("");
   const [syncing, setSyncing] = useState(false);
+  // The pass's current step. A sync fetches, reads one blob per issue per tree,
+  // then pushes, so on a real backlog it is seconds; before this the window
+  // simply stopped answering for that whole time.
+  const [syncProgress, setSyncProgress] = useState<CloneProgress | null>(null);
   // Set when a first sync finds issues on both sides with no history in common;
   // holds the two counts the prompt states.
   const [seed, setSeed] = useState<{ local: number; remote: number } | null>(null);
@@ -358,7 +366,11 @@ export default function IssuesView({
     if (tab !== "issues") return;
     let live = true;
     getIssueSyncConfig(project.id)
-      .then((c) => { if (live) setSyncOn(c.sync && c.remotes.length > 0); })
+      .then((c) => {
+        if (!live) return;
+        setSyncOn(c.sync && c.remotes.length > 0);
+        setSyncRemote(c.remote);
+      })
       .catch(() => { if (live) setSyncOn(false); });
     return () => { live = false; };
   }, [project.id, tab]);
@@ -372,8 +384,9 @@ export default function IssuesView({
   async function runSync(mode: IssueSyncMode) {
     if (syncing) return;
     setSyncing(true);
+    setSyncProgress(null);
     try {
-      const res = await syncIssues(project.id, mode);
+      const res = await syncIssues(project.id, mode, setSyncProgress);
       if (res.kind === "needsSeeding") {
         setSeed({ local: res.local, remote: res.remote });
         return;
@@ -402,6 +415,7 @@ export default function IssuesView({
       toastError(e, "Couldn't sync the backlog");
     } finally {
       setSyncing(false);
+      setSyncProgress(null);
     }
   }
 
@@ -624,6 +638,13 @@ export default function IssuesView({
 
   // The list only compresses while there is a detail pane to give the room to.
   const wide = expanded && selected != null;
+  // One string for both Sync buttons (the toolbar's and the empty board's), so
+  // the two cannot drift. It is the whole answer to "where did my issues go",
+  // in the place someone asking that is already looking; the same claim the
+  // Backlog section in Settings makes, in fewer words.
+  const syncTitle =
+    `Sync this backlog with ${syncRemote || "the shared copy"}. Issues travel on a ref of ` +
+    "their own, refs/agency/issues, so they never land on a branch or in a diff.";
 
   return (
     <div className={`issues-wrap${wide ? " expanded" : ""}`}>
@@ -694,7 +715,7 @@ export default function IssuesView({
             {syncOn && (
               <button
                 className="filter-reset"
-                title="Sync this backlog with the shared copy"
+                title={syncTitle}
                 disabled={syncing}
                 onClick={() => { runSync("merge"); }}
               >
@@ -744,6 +765,16 @@ export default function IssuesView({
             )}
           </div>
         )}
+        {syncing && (
+          // Outside the filter bar's own row: the bar is only drawn once there
+          // are issues, and a sync runs from the seeding prompt too.
+          <div className={`issues-sync-progress${wide ? " compact" : ""}`}>
+            <ProgressReadout
+              progress={syncProgress}
+              fallback={`Syncing with ${syncRemote || "the remote"}`}
+            />
+          </div>
+        )}
         {loaded && issues.length === 0 ? (
           <div className="board empty issues-empty">
             <button
@@ -753,7 +784,29 @@ export default function IssuesView({
             >
               +
             </button>
-            <div>Capture your first issues. Agents can pick up issues from here.</div>
+            <div>
+              {syncOn
+                ? "Capture your first issues, or sync to bring down the shared backlog."
+                : "Capture your first issues. Agents can pick up issues from here."}
+            </div>
+            {/* The toolbar's Sync button lives inside `issues.length > 0`, so
+                without one here a machine that has just cloned a shared project
+                has no way to fetch the backlog at all: nothing local, everything
+                on the ref, and no control anywhere. That is exactly the state
+                the second-machine half of the feature starts in. Plain "merge"
+                is the right mode for it, not adopt: with nothing local there is
+                no seeding question to ask, and the merge writes every issue the
+                remote has. */}
+            {syncOn && (
+              <button
+                className="ghost"
+                title={syncTitle}
+                disabled={syncing}
+                onClick={() => { runSync("merge"); }}
+              >
+                {syncing ? "Syncing…" : `Sync with ${syncRemote || "the remote"}`}
+              </button>
+            )}
           </div>
         ) : (
           <div ref={listRef} className={`issues-list${drag ? " reordering" : ""}${wide ? " compact" : ""}`}>

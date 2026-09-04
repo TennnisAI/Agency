@@ -18,10 +18,11 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 
 use crate::issuefs::{self, IssueFile};
 use crate::issuesync::{self, Action, Mode, Plan};
+use crate::setup::{CancelToken, CloneProgress};
 
 /// Where a project's issues live when they are shared. Not under `refs/heads/`
 /// or `refs/remotes/`, so it is invisible to branch listings, to `git log
@@ -77,6 +78,24 @@ impl std::fmt::Display for Blocked {
     }
 }
 impl std::error::Error for Blocked {}
+
+// ---------------------------------------------------------------------------
+// progress
+
+/// One step of a pass, for whatever the caller is drawing a bar with. The
+/// phases are the ones a person can act on ("Publishing to origin"), not the
+/// plumbing; the fetch and the push additionally stream git's own `--progress`
+/// lines straight through, exactly as a clone does.
+///
+/// `percent` is `None` for the steps with no fraction to report, which sweeps
+/// the bar rather than pinning it at zero and calling that information.
+fn report(on: &mut dyn FnMut(CloneProgress), phase: &str, percent: Option<u8>, detail: &str) {
+    on(CloneProgress { phase: phase.to_string(), percent, detail: detail.to_string() });
+}
+
+fn pct(done: usize, total: usize) -> Option<u8> {
+    (total > 0).then(|| (done * 100 / total) as u8)
+}
 
 // ---------------------------------------------------------------------------
 // git plumbing
@@ -205,18 +224,130 @@ fn list_tree(repo: &Path, at: &str) -> Vec<String> {
         .collect()
 }
 
+/// Read many objects out of a repository in one `git cat-file --batch`,
+/// answering in the order asked. `None` is git saying it could not resolve that
+/// spec, which is an answer and not a failure.
+///
+/// One process, not one per object, and the difference is not marginal: 600
+/// blobs out of one commit measured 15.4s as `git cat-file blob` per file
+/// against 0.21s as one batch, on the machine this was written on. A pass reads
+/// two trees, so that was half a minute of a frozen window on a backlog of that
+/// size, and it was the slowest step of a sync that never touched the network.
+///
+/// The protocol is `<oid> SP <type> SP <size> LF`, then exactly `size` bytes,
+/// then a bare LF. An unresolvable spec answers `<spec> SP missing LF` with no
+/// body, so the trailing newline must not be consumed for one.
+///
+/// stdin is written from its own thread, and that is load-bearing rather than
+/// tidy: a git blocked on a full stdout pipe stops draining stdin, so a caller
+/// that writes every spec before reading a byte wedges the pair once both
+/// buffers fill. Where that lands depends on the kernel's pipe sizing and on
+/// how large the issue files are, so there is no honest size to pin it at, and
+/// a deadlock does not fail a test suite, it hangs one. The thread costs
+/// nothing and takes the question away.
+fn cat_file_batch(repo: &Path, specs: Vec<String>) -> Result<Vec<Option<Vec<u8>>>> {
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::process::Stdio;
+
+    if specs.is_empty() {
+        return Ok(Vec::new());
+    }
+    let wanted = specs.len();
+    let mut child = Command::new("git")
+        .args(["cat-file", "--batch"])
+        .current_dir(repo)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let mut stdin = child.stdin.take().expect("stdin was piped");
+    let writer = std::thread::spawn(move || {
+        for spec in &specs {
+            // A git that died early closes the pipe; stop rather than spin.
+            if writeln!(stdin, "{spec}").is_err() {
+                break;
+            }
+        }
+        // Dropping stdin is the EOF that ends the batch.
+    });
+    let mut errs = child.stderr.take().expect("stderr was piped");
+    let drain = std::thread::spawn(move || {
+        let mut s = String::new();
+        let _ = errs.read_to_string(&mut s);
+        s
+    });
+
+    let mut out = BufReader::new(child.stdout.take().expect("stdout was piped"));
+    let mut blobs: Vec<Option<Vec<u8>>> = Vec::with_capacity(wanted);
+    let mut header = String::new();
+    let mut short = false;
+    for _ in 0..wanted {
+        header.clear();
+        if out.read_line(&mut header)? == 0 {
+            short = true;
+            break;
+        }
+        let line = header.trim_end_matches('\n');
+        // A path with a space in it is legal, so the missing case is read off
+        // the end of the line rather than by splitting it into fields.
+        if line.ends_with(" missing") {
+            blobs.push(None);
+            continue;
+        }
+        let size = line
+            .rsplit(' ')
+            .next()
+            .and_then(|n| n.parse::<usize>().ok())
+            .ok_or_else(|| anyhow!("git cat-file --batch said {line:?}"))?;
+        let mut body = vec![0u8; size];
+        out.read_exact(&mut body)?;
+        let mut nl = [0u8; 1];
+        out.read_exact(&mut nl)?;
+        blobs.push(Some(body));
+    }
+
+    let _ = writer.join();
+    let status = child.wait()?;
+    let stderr = drain.join().unwrap_or_default();
+    if !status.success() || short {
+        bail!("git cat-file --batch failed: {}", stderr.trim());
+    }
+    Ok(blobs)
+}
+
 /// Every issue file in a commit, parsed. A file that does not parse is skipped
 /// with a warning rather than failing the sync: one corrupt file on the other
 /// side must not stop the other two hundred from arriving.
-fn read_tree(repo: &Path, at: &str) -> Result<Vec<IssueFile>> {
+///
+/// `phase` names which tree is being read, for the progress bar. There is no
+/// fraction to report: the whole tree comes back from a single
+/// [`cat_file_batch`], so the step is one wait rather than a countdown.
+fn read_tree(
+    repo: &Path,
+    at: &str,
+    phase: &str,
+    on_progress: &mut dyn FnMut(CloneProgress),
+) -> Result<Vec<IssueFile>> {
+    // README.md, and anything else that isn't an issue, drops out here rather
+    // than after the read, so nothing is fetched that cannot be parsed.
+    let stems: Vec<(String, String)> = list_tree(repo, at)
+        .into_iter()
+        .filter_map(|rel| {
+            let stem = rel.strip_suffix(".md")?.to_string();
+            issuefs::parse_key(&stem).is_some().then_some((stem, rel))
+        })
+        .collect();
+    report(on_progress, phase, None, &format!("{} issues", stems.len()));
+
+    let specs = stems.iter().map(|(_, rel)| blob_spec(at, rel)).collect();
     let mut out = Vec::new();
-    for rel in list_tree(repo, at) {
-        let Some(stem) = rel.strip_suffix(".md") else { continue };
-        if issuefs::parse_key(stem).is_none() {
-            continue; // README.md, and anything else that isn't an issue.
-        }
-        let text = git(repo, &["cat-file", "blob", &blob_spec(at, &rel)])?;
-        match issuefs::parse_issue_file(stem, &text) {
+    for ((stem, _), blob) in stems.iter().zip(cat_file_batch(repo, specs)?) {
+        let Some(bytes) = blob else {
+            log::warn!("issue {stem} in {at} skipped: git could not read it");
+            continue;
+        };
+        match issuefs::parse_issue_file(stem, &String::from_utf8_lossy(&bytes)) {
             Ok(f) => out.push(f),
             Err(e) => log::warn!("issue {stem} in {at} skipped: {e}"),
         }
@@ -268,14 +399,23 @@ fn read_blob(repo: &Path, at: &str, rel: &str) -> Result<Vec<u8>> {
 
 /// Fetch the other side into [`REMOTE_REF`]. `Ok(false)` means the remote has
 /// no tracker yet, which is the normal state before anyone has published.
-fn fetch(repo: &Path, remote: &str) -> Result<bool> {
+///
+/// Streamed rather than `--quiet`: this and the push are the two steps that
+/// round-trip the network, so on a slow remote they are nearly the whole wait,
+/// and git's own progress lines are the only truthful thing to show during one.
+fn fetch(repo: &Path, remote: &str, on_progress: &mut dyn FnMut(CloneProgress)) -> Result<bool> {
     let spec = format!("+{LOCAL_REF}:{REMOTE_REF}");
-    match git(repo, &["fetch", "--quiet", remote, &spec]) {
-        Ok(_) => Ok(rev(repo, REMOTE_REF).is_some()),
-        // A remote that has never been published has no such ref, and git says
-        // so by failing. Nothing is wrong and the first push will create it.
-        Err(_) => Ok(false),
-    }
+    let mut cmd = Command::new("git");
+    cmd.args(["fetch", "--progress", remote, &spec])
+        .current_dir(repo)
+        .env("GIT_TERMINAL_PROMPT", "0");
+    // A remote that has never been published has no such ref, and git says so
+    // by exiting non-zero. Nothing is wrong and the first push will create it.
+    // Note which half is which: a non-zero *exit* is that answer, but a failure
+    // to run git at all is not, and propagates rather than reading as an empty
+    // remote the way it silently did before this streamed.
+    let (ok, _) = crate::setup::run_clone_streaming(cmd, &CancelToken::new(), on_progress)?;
+    Ok(ok && rev(repo, REMOTE_REF).is_some())
 }
 
 // ---------------------------------------------------------------------------
@@ -313,10 +453,17 @@ fn apply(repo: &Path, plan: &Plan) -> Result<(usize, usize)> {
 /// An attachment that cannot be written is logged and skipped rather than
 /// failing the pass: a broken image link is a much smaller loss than a sync that
 /// refuses to finish, and the issue text it belongs to is already here.
-fn apply_assets(repo: &Path, at: &str, plan: &issuesync::AssetPlan) -> (usize, usize) {
+fn apply_assets(
+    repo: &Path,
+    at: &str,
+    plan: &issuesync::AssetPlan,
+    on_progress: &mut dyn FnMut(CloneProgress),
+) -> (usize, usize) {
     let dir = repo.join(issuefs::ISSUES_DIR);
     let (mut fetched, mut removed) = (0, 0);
-    for rel in &plan.fetch {
+    let total = plan.fetch.len();
+    for (i, rel) in plan.fetch.iter().enumerate() {
+        report(on_progress, "Copying attachments", pct(i, total), &format!("{} of {total}", i + 1));
         let dest = dir.join(rel);
         let wrote = read_blob(repo, at, rel).and_then(|bytes| {
             if let Some(parent) = dest.parent() {
@@ -349,10 +496,40 @@ fn apply_assets(repo: &Path, at: &str, plan: &issuesync::AssetPlan) -> (usize, u
 /// index into line with the files this changed; that is left outside so this
 /// stays a function over a directory and a remote, testable without a registry.
 pub fn sync(repo: &Path, remote: &str, mode: Mode) -> Result<Outcome> {
-    let have_remote = fetch(repo, remote)?;
+    sync_with_progress(repo, remote, mode, |_| {})
+}
+
+/// [`sync`], reporting each step as it starts.
+///
+/// A pass runs two network round-trips and one `git cat-file` per issue per
+/// tree, so on a real backlog it is seconds, not milliseconds; before this the
+/// only feedback was the window going unresponsive, because the command was
+/// also running on the main thread. Split the way `git::push_with_progress` is,
+/// so the plain [`sync`] stays the shape the tests call.
+pub fn sync_with_progress(
+    repo: &Path,
+    remote: &str,
+    mode: Mode,
+    mut on_progress: impl FnMut(CloneProgress),
+) -> Result<Outcome> {
+    sync_streaming(repo, remote, mode, &mut on_progress)
+}
+
+fn sync_streaming(
+    repo: &Path,
+    remote: &str,
+    mode: Mode,
+    on_progress: &mut dyn FnMut(CloneProgress),
+) -> Result<Outcome> {
+    report(on_progress, &format!("Fetching from {remote}"), None, "");
+    let have_remote = fetch(repo, remote, on_progress)?;
     let local_files = issuefs::read_issue_dir(repo)?.issues;
 
-    let remote_files = if have_remote { read_tree(repo, REMOTE_REF)? } else { Vec::new() };
+    let remote_files = if have_remote {
+        read_tree(repo, REMOTE_REF, "Reading the shared backlog", on_progress)?
+    } else {
+        Vec::new()
+    };
     // Nothing published from here yet means whatever the remote has is entirely
     // new to us, and there is no shared past to merge against.
     let base_ref = match (rev(repo, LOCAL_REF), have_remote) {
@@ -360,7 +537,7 @@ pub fn sync(repo: &Path, remote: &str, mode: Mode) -> Result<Outcome> {
         _ => None,
     };
     let base_files = match &base_ref {
-        Some(b) => read_tree(repo, b)?,
+        Some(b) => read_tree(repo, b, "Reading the last synced copy", on_progress)?,
         None => Vec::new(),
     };
 
@@ -385,6 +562,7 @@ pub fn sync(repo: &Path, remote: &str, mode: Mode) -> Result<Outcome> {
         commit_tree(repo, &before, &parents, "issues before adopting the shared tracker")?;
     }
 
+    report(on_progress, "Merging", None, "");
     let plan = issuesync::plan(mode, &base_files, &local_files, &remote_files);
     let (written, deleted) = apply(repo, &plan)?;
 
@@ -394,8 +572,9 @@ pub fn sync(repo: &Path, remote: &str, mode: Mode) -> Result<Outcome> {
         &disk_assets(repo),
         &if have_remote { read_tree_assets(repo, REMOTE_REF) } else { Vec::new() },
     );
-    let (assets_fetched, assets_deleted) = apply_assets(repo, REMOTE_REF, &asset_plan);
+    let (assets_fetched, assets_deleted) = apply_assets(repo, REMOTE_REF, &asset_plan, on_progress);
 
+    report(on_progress, "Recording the merged backlog", None, "");
     let tree = write_tree(repo)?;
     let mut parents: Vec<String> = Vec::new();
     if let Some(l) = rev(repo, LOCAL_REF) {
@@ -414,9 +593,20 @@ pub fn sync(repo: &Path, remote: &str, mode: Mode) -> Result<Outcome> {
     let committed = commit_tree(repo, &tree, &parents, message)?.is_some();
 
     let pushed = if rev(repo, LOCAL_REF).is_some() {
+        report(on_progress, &format!("Publishing to {remote}"), None, "");
         let spec = format!("{LOCAL_REF}:{LOCAL_REF}");
-        match git(repo, &["push", "--quiet", remote, &spec]) {
-            Ok(_) => true,
+        let mut cmd = Command::new("git");
+        cmd.args(["push", "--progress", remote, &spec])
+            .current_dir(repo)
+            .env("GIT_TERMINAL_PROMPT", "0");
+        match crate::setup::run_clone_streaming(cmd, &CancelToken::new(), on_progress) {
+            Ok((true, _)) => true,
+            // A push that git refused says why on stderr, and that line is the
+            // whole diagnosis when the shared copy silently stops updating.
+            Ok((false, stderr)) => {
+                log::warn!("issue sync push failed: {}", stderr.trim());
+                false
+            }
             Err(e) => {
                 log::warn!("issue sync push failed: {e}");
                 false
@@ -521,7 +711,7 @@ mod tests {
 
         let tree = write_tree(&repo).unwrap();
         let commit = commit_tree(&repo, &tree, &[], "snap").unwrap().unwrap();
-        let back = read_tree(&repo, &commit).unwrap();
+        let back = read_tree(&repo, &commit, "reading", &mut |_| {}).unwrap();
 
         let mut got: Vec<_> = back.iter().map(|f| f.key.clone()).collect();
         got.sort();
@@ -571,6 +761,106 @@ mod tests {
         let one = one.iter().find(|f| f.key == "AGE-1").unwrap();
         assert_eq!(one.uid.as_deref(), Some(U1), "identity did not survive the transport");
         assert_eq!(one.status, crate::registry::IssueStatus::InProgress);
+    }
+
+    /// A backlog large enough that the responses run to hundreds of KB, so the
+    /// batch is exercised well past git's stdout pipe buffer rather than as one
+    /// tidy read, together with a spec git cannot resolve.
+    ///
+    /// The missing case is the framing trap: it answers `<spec> missing` with
+    /// *no body and no trailing newline*, so consuming one there reads every
+    /// response after it out of frame. The assert that catches that is the one
+    /// on the last blob, not the one on the missing blob.
+    ///
+    /// It does not pin the deadlock the writer thread exists for. That needs
+    /// both pipes full at once and this size does not reach it; see
+    /// `cat_file_batch` for why there is no size that reliably would.
+    #[test]
+    fn a_large_batch_read_survives_a_missing_object() {
+        let d = tempdir().unwrap();
+        let repo = repo(&d.path().join("a"));
+        const N: usize = 600;
+        let filler = "lorem ipsum dolor sit amet consectetur. ".repeat(10);
+        for n in 1..=N {
+            let key = format!("AGE-{n}");
+            let uid = uuid::Uuid::new_v4();
+            std::fs::write(
+                issuefs::issue_path(&repo, &key),
+                format!(
+                    "---\nkey: {key}\nuid: {uid}\nstatus: todo\nupdated: \
+                     2026-09-01T00:00:00Z\n---\n# Issue {n}\n\n{filler}\n"
+                ),
+            )
+            .unwrap();
+        }
+        let tree = write_tree(&repo).unwrap();
+        let commit = commit_tree(&repo, &tree, &[], "many").unwrap().unwrap();
+
+        let files = read_tree(&repo, &commit, "reading", &mut |_| {}).unwrap();
+        assert_eq!(files.len(), N, "the batch lost issues");
+
+        let specs = vec![
+            blob_spec(&commit, "AGE-1.md"),
+            blob_spec(&commit, "AGE-9999.md"), // never written
+            blob_spec(&commit, &format!("AGE-{N}.md")),
+        ];
+        let got = cat_file_batch(&repo, specs).unwrap();
+        assert!(got[1].is_none(), "an unresolvable spec should answer None");
+        let last = String::from_utf8_lossy(got[2].as_ref().unwrap()).to_string();
+        assert!(
+            last.contains(&format!("# Issue {N}")),
+            "the response after a missing one is out of frame"
+        );
+    }
+
+    /// A sync used to run on the main thread and report nothing, so the whole
+    /// window stopped answering for as long as the remote took. The fix is only
+    /// half done if the pass is silent: pin that every step a person waits on
+    /// names itself, and that the two network steps name the remote they are
+    /// talking to rather than saying "the shared copy" at someone trying to
+    /// work out where their issues went.
+    #[test]
+    fn a_pass_names_every_step_it_waits_on() {
+        let (_d, a, b, url) = two_machines();
+        put(&a, "AGE-1", U1, "todo", "One");
+        sync(&a, &url, Mode::Publish).unwrap();
+        sync(&b, &url, Mode::Adopt).unwrap();
+        put(&b, "AGE-2", U2, "todo", "Two");
+
+        let mut phases: Vec<String> = Vec::new();
+        sync_with_progress(&b, &url, Mode::Merge, |p| phases.push(p.phase)).unwrap();
+
+        let has = |needle: &str| phases.iter().any(|p| p.contains(needle));
+        assert!(has(&format!("Fetching from {url}")), "no fetch phase in {phases:?}");
+        assert!(has("Reading the shared backlog"), "no remote-read phase in {phases:?}");
+        assert!(has("Reading the last synced copy"), "no base-read phase in {phases:?}");
+        assert!(has("Merging"), "no merge phase in {phases:?}");
+        assert!(has(&format!("Publishing to {url}")), "no push phase in {phases:?}");
+    }
+
+    /// The state a second machine is in the moment it clones a shared project:
+    /// nothing local, the whole backlog on the ref. `Merge` has to bring it
+    /// down rather than ask which side seeds, and it does, because the
+    /// NeedsSeeding guard turns on `!local_files.is_empty()` for exactly this
+    /// case. What was missing was any way to call it: the board's Sync button
+    /// lived inside `issues.length > 0`, so the one screen that needed it was
+    /// the one screen that did not show it (AGE-177).
+    #[test]
+    fn an_empty_machine_merges_the_shared_backlog_down() {
+        let (_d, a, b, url) = two_machines();
+        put(&a, "AGE-1", U1, "todo", "One");
+        put(&a, "AGE-2", U2, "in_progress", "Two");
+        sync(&a, &url, Mode::Publish).unwrap();
+
+        let out = sync(&b, &url, Mode::Merge).unwrap();
+        assert_eq!(out.written, 2, "a fresh machine did not receive the backlog: {out:?}");
+        assert!(out.conflicts.is_empty(), "a one-sided merge reported a conflict: {out:?}");
+        assert_eq!(keys(&b), vec!["AGE-1", "AGE-2"]);
+
+        // And the two sides now agree: B's pass left a descendant of A's commit
+        // rather than a divergent copy, so A's next pass has nothing to do.
+        let out = sync(&a, &url, Mode::Merge).unwrap();
+        assert_eq!((out.written, out.deleted), (0, 0), "the round trip was not settled: {out:?}");
     }
 
     #[test]
@@ -713,7 +1003,7 @@ mod tests {
         let history = sh(&b, &["log", "--format=%s", LOCAL_REF]);
         assert!(history.contains("before adopting"), "no recovery point was committed: {history}");
         let backup = sh(&b, &["rev-parse", &format!("{LOCAL_REF}^")]).trim().to_string();
-        let restored = read_tree(&b, &backup).unwrap();
+        let restored = read_tree(&b, &backup, "reading", &mut |_| {}).unwrap();
         assert!(
             restored.iter().any(|f| f.key == "AGE-9"),
             "the replaced issues are not in the backup commit"

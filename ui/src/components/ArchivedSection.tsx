@@ -139,19 +139,28 @@ export default function ArchivedSection() {
                   worth, and every row after a merge said the same word —
                   "record" — so it distinguished nothing. What it was for now
                   lives in the Restore button's own tooltip, which is where the
-                  distinction is acted on. */}
-              <span className="archived-name" title={`${r.agent}: ${r.prompt || r.branch}`}>
-                {r.agent}: {r.prompt || r.branch}
-              </span>
+                  distinction is acted on.
+
+                  The name itself opens the record, for the same reason: the ≡
+                  button that used to sit in the actions spent width on an
+                  affordance the row already had. A run with neither a record
+                  nor a rescued conversation has nothing to open, so it stays
+                  plain text. */}
+              {r.archived?.hasRecord || r.archived?.hasConversation ? (
+                <button
+                  className="archived-name archived-name-open"
+                  title="Read the record and the conversation"
+                  disabled={busy}
+                  onClick={() => setReading(r)}
+                >
+                  {r.agent}: {r.prompt || r.branch}
+                </button>
+              ) : (
+                <span className="archived-name" title={`${r.agent}: ${r.prompt || r.branch}`}>
+                  {r.agent}: {r.prompt || r.branch}
+                </span>
+              )}
               <div className="archived-acts">
-                {(r.archived?.hasRecord || r.archived?.hasConversation) && (
-                  <button
-                    className="icon-btn"
-                    title="Read the record and the conversation"
-                    disabled={busy}
-                    onClick={() => setReading(r)}
-                  >≡</button>
-                )}
                 <button
                   className="icon-btn"
                   title={restoreTitle(r)}

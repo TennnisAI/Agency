@@ -1841,11 +1841,18 @@ button.diff-path:hover { color: var(--text); text-decoration: underline; }
 .archived-cleanup:disabled:hover { background: transparent; color: var(--muted, #9aa); }
 .archived-row { display: flex; align-items: center; gap: 6px; padding: 2px 8px; }
 .archived-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted, #9aa); font-size: 12px; }
+/* The name doubles as the button that opens the record, so a button wearing
+   this class has to look like the plain text next to it until hovered. */
+.archived-name-open { display: block; text-align: left; background: transparent; border: 0; padding: 0; font: inherit; font-size: 12px; cursor: pointer; }
+/* Restates the transparent background: the base `button:hover` fill would
+   otherwise paint the row's title primary lavender. */
+.archived-name-open:hover { background: transparent; color: var(--text); }
 .archived-empty { padding: 4px 8px; color: var(--muted, #9aa); font-size: 12px; }
-/* Read / restore / delete, as one group pushed to the right edge. At the
-   sidebar's width three 28px buttons spaced 4px apart left about two words of
-   the title readable and every row looked alike; squared down to 20px and
-   butted together they read as one control and give the title back ~28px. */
+/* Restore / delete, as one group pushed to the right edge. At the sidebar's
+   width three 28px buttons spaced 4px apart left about two words of the title
+   readable and every row looked alike; squared down to 20px and butted
+   together they read as one control and give the title back ~28px. Read left
+   the group entirely: the title opens the record now. */
 .archived-acts { flex: 0 0 auto; display: flex; align-items: center; gap: 0; }
 .archived-acts .icon-btn { width: 20px; height: 20px; font-size: 13px; border-radius: 4px; }
 .archived-acts .icon-btn svg { width: 12px; height: 12px; }

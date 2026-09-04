@@ -207,6 +207,7 @@ pub fn run() {
             commands::save_knowledge_config,
             commands::set_knowledge_backend,
             commands::build_knowledge_graph,
+            commands::stop_knowledge_build,
             commands::knowledge_graph_view,
             commands::install_knowledge_tooling,
             commands::get_files_config,

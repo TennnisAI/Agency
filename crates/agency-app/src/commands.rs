@@ -1378,6 +1378,14 @@ pub fn build_knowledge_graph(state: State<'_, AppState>, project_id: String) -> 
     state.build_knowledge_graph(&project_id).map_err(|e| e.to_string())
 }
 
+/// Stop the knowledge-graph build running for a project. Errors when none is,
+/// which the panel shows: the button is only offered while one runs, so being
+/// told there is nothing to stop means the state on screen was already stale.
+#[tauri::command]
+pub fn stop_knowledge_build(state: State<'_, AppState>, project_id: String) -> Result<(), String> {
+    state.stop_knowledge_build(&project_id).map_err(|e| e.to_string())
+}
+
 /// The Map's drill-down view of the project's knowledge graph. `null` is
 /// "no graph built yet", which the tab words from the knowledge config; an
 /// error means a graph exists but could not be read, and is shown as itself.

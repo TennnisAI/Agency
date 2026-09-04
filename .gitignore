@@ -9,6 +9,11 @@ screenshots/
 # Vite resolves vite.config.js *before* vite.config.ts, so a stale emitted copy
 # silently shadows the real config.
 *.tsbuildinfo
+
+# Vitest's on-disk cache. Written next to whichever directory the runner was
+# invoked from, so it turns up at the repo root as readily as under ui/.
+.vite/
+ui/.vite/
 ui/vite.config.js
 ui/vite.config.d.ts
 ui/vitest.config.js

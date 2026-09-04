@@ -18,7 +18,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 
 use crate::issuefs::{self, IssueFile};
 use crate::issuesync::{self, Action, Mode, Plan};
@@ -224,31 +224,130 @@ fn list_tree(repo: &Path, at: &str) -> Vec<String> {
         .collect()
 }
 
+/// Read many objects out of a repository in one `git cat-file --batch`,
+/// answering in the order asked. `None` is git saying it could not resolve that
+/// spec, which is an answer and not a failure.
+///
+/// One process, not one per object, and the difference is not marginal: 600
+/// blobs out of one commit measured 15.4s as `git cat-file blob` per file
+/// against 0.21s as one batch, on the machine this was written on. A pass reads
+/// two trees, so that was half a minute of a frozen window on a backlog of that
+/// size, and it was the slowest step of a sync that never touched the network.
+///
+/// The protocol is `<oid> SP <type> SP <size> LF`, then exactly `size` bytes,
+/// then a bare LF. An unresolvable spec answers `<spec> SP missing LF` with no
+/// body, so the trailing newline must not be consumed for one.
+///
+/// stdin is written from its own thread, and that is load-bearing rather than
+/// tidy: a git blocked on a full stdout pipe stops draining stdin, so a caller
+/// that writes every spec before reading a byte wedges the pair once both
+/// buffers fill. Where that lands depends on the kernel's pipe sizing and on
+/// how large the issue files are, so there is no honest size to pin it at, and
+/// a deadlock does not fail a test suite, it hangs one. The thread costs
+/// nothing and takes the question away.
+fn cat_file_batch(repo: &Path, specs: Vec<String>) -> Result<Vec<Option<Vec<u8>>>> {
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::process::Stdio;
+
+    if specs.is_empty() {
+        return Ok(Vec::new());
+    }
+    let wanted = specs.len();
+    let mut child = Command::new("git")
+        .args(["cat-file", "--batch"])
+        .current_dir(repo)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let mut stdin = child.stdin.take().expect("stdin was piped");
+    let writer = std::thread::spawn(move || {
+        for spec in &specs {
+            // A git that died early closes the pipe; stop rather than spin.
+            if writeln!(stdin, "{spec}").is_err() {
+                break;
+            }
+        }
+        // Dropping stdin is the EOF that ends the batch.
+    });
+    let mut errs = child.stderr.take().expect("stderr was piped");
+    let drain = std::thread::spawn(move || {
+        let mut s = String::new();
+        let _ = errs.read_to_string(&mut s);
+        s
+    });
+
+    let mut out = BufReader::new(child.stdout.take().expect("stdout was piped"));
+    let mut blobs: Vec<Option<Vec<u8>>> = Vec::with_capacity(wanted);
+    let mut header = String::new();
+    let mut short = false;
+    for _ in 0..wanted {
+        header.clear();
+        if out.read_line(&mut header)? == 0 {
+            short = true;
+            break;
+        }
+        let line = header.trim_end_matches('\n');
+        // A path with a space in it is legal, so the missing case is read off
+        // the end of the line rather than by splitting it into fields.
+        if line.ends_with(" missing") {
+            blobs.push(None);
+            continue;
+        }
+        let size = line
+            .rsplit(' ')
+            .next()
+            .and_then(|n| n.parse::<usize>().ok())
+            .ok_or_else(|| anyhow!("git cat-file --batch said {line:?}"))?;
+        let mut body = vec![0u8; size];
+        out.read_exact(&mut body)?;
+        let mut nl = [0u8; 1];
+        out.read_exact(&mut nl)?;
+        blobs.push(Some(body));
+    }
+
+    let _ = writer.join();
+    let status = child.wait()?;
+    let stderr = drain.join().unwrap_or_default();
+    if !status.success() || short {
+        bail!("git cat-file --batch failed: {}", stderr.trim());
+    }
+    Ok(blobs)
+}
+
 /// Every issue file in a commit, parsed. A file that does not parse is skipped
 /// with a warning rather than failing the sync: one corrupt file on the other
 /// side must not stop the other two hundred from arriving.
 ///
-/// One `git cat-file` per issue, and a pass reads two trees this way (the other
-/// side's and the merge base's), so a few-hundred-issue backlog is a few
-/// hundred process spawns and the slowest step that never touches the network.
-/// That is why it reports a fraction: `phase` names which tree is being read.
+/// `phase` names which tree is being read, for the progress bar. There is no
+/// fraction to report: the whole tree comes back from a single
+/// [`cat_file_batch`], so the step is one wait rather than a countdown.
 fn read_tree(
     repo: &Path,
     at: &str,
     phase: &str,
     on_progress: &mut dyn FnMut(CloneProgress),
 ) -> Result<Vec<IssueFile>> {
+    // README.md, and anything else that isn't an issue, drops out here rather
+    // than after the read, so nothing is fetched that cannot be parsed.
+    let stems: Vec<(String, String)> = list_tree(repo, at)
+        .into_iter()
+        .filter_map(|rel| {
+            let stem = rel.strip_suffix(".md")?.to_string();
+            issuefs::parse_key(&stem).is_some().then_some((stem, rel))
+        })
+        .collect();
+    report(on_progress, phase, None, &format!("{} issues", stems.len()));
+
+    let specs = stems.iter().map(|(_, rel)| blob_spec(at, rel)).collect();
     let mut out = Vec::new();
-    let paths = list_tree(repo, at);
-    let total = paths.len();
-    for (i, rel) in paths.iter().enumerate() {
-        report(on_progress, phase, pct(i, total), &format!("{} of {total}", i + 1));
-        let Some(stem) = rel.strip_suffix(".md") else { continue };
-        if issuefs::parse_key(stem).is_none() {
-            continue; // README.md, and anything else that isn't an issue.
-        }
-        let text = git(repo, &["cat-file", "blob", &blob_spec(at, rel)])?;
-        match issuefs::parse_issue_file(stem, &text) {
+    for ((stem, _), blob) in stems.iter().zip(cat_file_batch(repo, specs)?) {
+        let Some(bytes) = blob else {
+            log::warn!("issue {stem} in {at} skipped: git could not read it");
+            continue;
+        };
+        match issuefs::parse_issue_file(stem, &String::from_utf8_lossy(&bytes)) {
             Ok(f) => out.push(f),
             Err(e) => log::warn!("issue {stem} in {at} skipped: {e}"),
         }
@@ -664,6 +763,56 @@ mod tests {
         assert_eq!(one.status, crate::registry::IssueStatus::InProgress);
     }
 
+    /// A backlog large enough that the responses run to hundreds of KB, so the
+    /// batch is exercised well past git's stdout pipe buffer rather than as one
+    /// tidy read, together with a spec git cannot resolve.
+    ///
+    /// The missing case is the framing trap: it answers `<spec> missing` with
+    /// *no body and no trailing newline*, so consuming one there reads every
+    /// response after it out of frame. The assert that catches that is the one
+    /// on the last blob, not the one on the missing blob.
+    ///
+    /// It does not pin the deadlock the writer thread exists for. That needs
+    /// both pipes full at once and this size does not reach it; see
+    /// `cat_file_batch` for why there is no size that reliably would.
+    #[test]
+    fn a_large_batch_read_survives_a_missing_object() {
+        let d = tempdir().unwrap();
+        let repo = repo(&d.path().join("a"));
+        const N: usize = 600;
+        let filler = "lorem ipsum dolor sit amet consectetur. ".repeat(10);
+        for n in 1..=N {
+            let key = format!("AGE-{n}");
+            let uid = uuid::Uuid::new_v4();
+            std::fs::write(
+                issuefs::issue_path(&repo, &key),
+                format!(
+                    "---\nkey: {key}\nuid: {uid}\nstatus: todo\nupdated: \
+                     2026-09-01T00:00:00Z\n---\n# Issue {n}\n\n{filler}\n"
+                ),
+            )
+            .unwrap();
+        }
+        let tree = write_tree(&repo).unwrap();
+        let commit = commit_tree(&repo, &tree, &[], "many").unwrap().unwrap();
+
+        let files = read_tree(&repo, &commit, "reading", &mut |_| {}).unwrap();
+        assert_eq!(files.len(), N, "the batch lost issues");
+
+        let specs = vec![
+            blob_spec(&commit, "AGE-1.md"),
+            blob_spec(&commit, "AGE-9999.md"), // never written
+            blob_spec(&commit, &format!("AGE-{N}.md")),
+        ];
+        let got = cat_file_batch(&repo, specs).unwrap();
+        assert!(got[1].is_none(), "an unresolvable spec should answer None");
+        let last = String::from_utf8_lossy(got[2].as_ref().unwrap()).to_string();
+        assert!(
+            last.contains(&format!("# Issue {N}")),
+            "the response after a missing one is out of frame"
+        );
+    }
+
     /// A sync used to run on the main thread and report nothing, so the whole
     /// window stopped answering for as long as the remote took. The fix is only
     /// half done if the pass is silent: pin that every step a person waits on
@@ -687,6 +836,31 @@ mod tests {
         assert!(has("Reading the last synced copy"), "no base-read phase in {phases:?}");
         assert!(has("Merging"), "no merge phase in {phases:?}");
         assert!(has(&format!("Publishing to {url}")), "no push phase in {phases:?}");
+    }
+
+    /// The state a second machine is in the moment it clones a shared project:
+    /// nothing local, the whole backlog on the ref. `Merge` has to bring it
+    /// down rather than ask which side seeds, and it does, because the
+    /// NeedsSeeding guard turns on `!local_files.is_empty()` for exactly this
+    /// case. What was missing was any way to call it: the board's Sync button
+    /// lived inside `issues.length > 0`, so the one screen that needed it was
+    /// the one screen that did not show it (AGE-177).
+    #[test]
+    fn an_empty_machine_merges_the_shared_backlog_down() {
+        let (_d, a, b, url) = two_machines();
+        put(&a, "AGE-1", U1, "todo", "One");
+        put(&a, "AGE-2", U2, "in_progress", "Two");
+        sync(&a, &url, Mode::Publish).unwrap();
+
+        let out = sync(&b, &url, Mode::Merge).unwrap();
+        assert_eq!(out.written, 2, "a fresh machine did not receive the backlog: {out:?}");
+        assert!(out.conflicts.is_empty(), "a one-sided merge reported a conflict: {out:?}");
+        assert_eq!(keys(&b), vec!["AGE-1", "AGE-2"]);
+
+        // And the two sides now agree: B's pass left a descendant of A's commit
+        // rather than a divergent copy, so A's next pass has nothing to do.
+        let out = sync(&a, &url, Mode::Merge).unwrap();
+        assert_eq!((out.written, out.deleted), (0, 0), "the round trip was not settled: {out:?}");
     }
 
     #[test]

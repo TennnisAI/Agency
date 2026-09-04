@@ -249,19 +249,36 @@ board draws all of it with the shared `ProgressReadout`.
 
 Two things that came out of doing it, both deliberate:
 
-- **The per-blob read is still one process per issue per tree.** `read_tree`
-  spawns a `git cat-file` per file and a pass reads two trees, so a 200-issue
-  backlog is 400 spawns and that is the slowest step that never touches the
-  network. `git cat-file --batch` would collapse it into one process, at the
-  cost of framing binary blobs by hand. Left alone: the ask was feedback, not
-  speed, and the phase now reports "n of 200" so the cost is at least visible
-  rather than mysterious.
+- **The per-blob read is one `git cat-file --batch` per tree.** It used to be
+  one process per issue per tree, and that was not marginal: 600 blobs out of
+  one commit measured 15.4s spawned per file against 0.21s batched, so a pass
+  over a backlog that size spent half a minute in the step that never touches
+  the network. `cat_file_batch` writes its specs from a second thread, which is
+  load-bearing rather than tidy: a git blocked on a full stdout pipe stops
+  draining stdin, so writing every spec before reading a byte wedges the pair
+  once both buffers fill. There is no size that reliably reproduces that (it
+  turns on kernel pipe sizing and on how big the issue files are) and a
+  deadlock hangs a test suite rather than failing it, so the thread is the fix
+  and the test covers the other trap instead: a spec git cannot resolve answers
+  `<spec> missing` with no body *and no trailing newline*, and consuming one
+  there reads every response after it out of frame.
 - **The Sync button's tooltip states the transport.** "Issues travel on a ref of
   their own, refs/agency/issues, so they never land on a branch or in a diff."
   The same claim Settings makes, moved to the one place someone wondering why
   `git log` is empty is already looking. This came straight from a user asking
   exactly that, which is the evidence that stating it once, in Settings, at the
   moment the toggle is flipped, is not stating it.
+
+**An empty board can sync (AGE-177).** The toolbar the Sync button lives on is
+drawn inside `issues.length > 0`, so the one machine that most needs to sync
+could not: a fresh clone of a shared project has nothing local, everything on
+the ref, and until this had no control anywhere that would fetch it. The whole
+second-machine half of the feature was unreachable. The empty board now carries
+its own Sync button, and its line reads "Capture your first issues, or sync to
+bring down the shared backlog" when sharing is on. `Merge` is the right mode
+there and not `Adopt`: with no local issues there is no seeding question to ask,
+which is why the `NeedsSeeding` guard turns on `!local_files.is_empty()`, and
+the merge writes every issue the remote has.
 
 ### `uid`
 

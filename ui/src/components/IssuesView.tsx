@@ -638,6 +638,13 @@ export default function IssuesView({
 
   // The list only compresses while there is a detail pane to give the room to.
   const wide = expanded && selected != null;
+  // One string for both Sync buttons (the toolbar's and the empty board's), so
+  // the two cannot drift. It is the whole answer to "where did my issues go",
+  // in the place someone asking that is already looking; the same claim the
+  // Backlog section in Settings makes, in fewer words.
+  const syncTitle =
+    `Sync this backlog with ${syncRemote || "the shared copy"}. Issues travel on a ref of ` +
+    "their own, refs/agency/issues, so they never land on a branch or in a diff.";
 
   return (
     <div className={`issues-wrap${wide ? " expanded" : ""}`}>
@@ -708,10 +715,7 @@ export default function IssuesView({
             {syncOn && (
               <button
                 className="filter-reset"
-                // The whole answer to "where did my issues go", in the one place
-                // someone asking it is already looking. Same claim as the
-                // Backlog section in Settings makes, in fewer words.
-                title={`Sync this backlog with ${syncRemote || "the shared copy"}. Issues travel on a ref of their own, refs/agency/issues, so they never land on a branch or in a diff.`}
+                title={syncTitle}
                 disabled={syncing}
                 onClick={() => { runSync("merge"); }}
               >
@@ -780,7 +784,29 @@ export default function IssuesView({
             >
               +
             </button>
-            <div>Capture your first issues. Agents can pick up issues from here.</div>
+            <div>
+              {syncOn
+                ? "Capture your first issues, or sync to bring down the shared backlog."
+                : "Capture your first issues. Agents can pick up issues from here."}
+            </div>
+            {/* The toolbar's Sync button lives inside `issues.length > 0`, so
+                without one here a machine that has just cloned a shared project
+                has no way to fetch the backlog at all: nothing local, everything
+                on the ref, and no control anywhere. That is exactly the state
+                the second-machine half of the feature starts in. Plain "merge"
+                is the right mode for it, not adopt: with nothing local there is
+                no seeding question to ask, and the merge writes every issue the
+                remote has. */}
+            {syncOn && (
+              <button
+                className="ghost"
+                title={syncTitle}
+                disabled={syncing}
+                onClick={() => { runSync("merge"); }}
+              >
+                {syncing ? "Syncing…" : `Sync with ${syncRemote || "the remote"}`}
+              </button>
+            )}
           </div>
         ) : (
           <div ref={listRef} className={`issues-list${drag ? " reordering" : ""}${wide ? " compact" : ""}`}>

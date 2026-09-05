@@ -958,6 +958,9 @@ export const deauthenticateMcpServer = (agent: string, name: string) =>
 // which case *_default is what actually runs; *_installed reports PATH presence.
 export interface KnowledgeConfig {
   graph: boolean;
+  // Rebuild the graph after every clean merge. The one thing here that spends
+  // a model budget without the user pressing anything, so it is a switch.
+  rebuild_on_merge: boolean;
   serve_command: string | null;
   build_command: string | null;
   serve_default: string;
@@ -1000,9 +1003,17 @@ export const setKnowledgeBackend = (projectId: string, backend: string, model: s
 export const saveKnowledgeConfig = (
   projectId: string,
   graph: boolean,
+  rebuildOnMerge: boolean,
   serveCommand: string | null,
   buildCommand: string | null,
-) => invoke<void>("save_knowledge_config", { projectId, graph, serveCommand, buildCommand });
+) =>
+  invoke<void>("save_knowledge_config", {
+    projectId,
+    graph,
+    rebuildOnMerge,
+    serveCommand,
+    buildCommand,
+  });
 export const buildKnowledgeGraph = (projectId: string) =>
   invoke<void>("build_knowledge_graph", { projectId });
 // Stop the running build. Signals the whole process group, so the agent CLI

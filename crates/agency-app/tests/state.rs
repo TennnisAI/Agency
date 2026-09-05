@@ -2573,7 +2573,7 @@ fn the_knowledge_graph_builds_on_request_and_not_before() {
     // Stand in for `graphify .`: the point under test is that Agency runs the
     // configured build in the primary checkout, and only when asked.
     let build = "mkdir -p graphify-out && printf '{}' > graphify-out/graph.json";
-    state.save_knowledge_config(&p.id, true, None, Some(build.to_string())).unwrap();
+    state.save_knowledge_config(&p.id, true, true, None, Some(build.to_string())).unwrap();
 
     let enabled = state.knowledge_config(&p.id).unwrap();
     assert!(!enabled.building, "enabling must not start a build");
@@ -2609,7 +2609,7 @@ fn a_failed_graph_build_reports_why() {
     let p = state.add_project("demo", &repo).unwrap();
 
     let build = "printf 'graphify: no parser for this repo\\n' >&2; exit 3";
-    state.save_knowledge_config(&p.id, true, None, Some(build.to_string())).unwrap();
+    state.save_knowledge_config(&p.id, true, true, None, Some(build.to_string())).unwrap();
     state.build_knowledge_graph(&p.id).unwrap();
 
     let cfg = await_settled_build(&state, &p.id);
@@ -2624,6 +2624,7 @@ fn a_failed_graph_build_reports_why() {
     state
         .save_knowledge_config(
             &p.id,
+            true,
             true,
             None,
             Some("definitely-not-a-real-binary-4k2x .".into()),
@@ -2653,7 +2654,7 @@ fn a_running_build_shows_its_output_and_can_be_stopped() {
     // will wait. Two commands, so `sh` does not exec into the sleep and the
     // stop has a process group to reach rather than one child.
     let build = "printf 'AST extraction: 1/2 uncached files\\n'; sleep 120";
-    state.save_knowledge_config(&p.id, true, None, Some(build.to_string())).unwrap();
+    state.save_knowledge_config(&p.id, true, true, None, Some(build.to_string())).unwrap();
     state.build_knowledge_graph(&p.id).unwrap();
 
     let mut cfg = state.knowledge_config(&p.id).unwrap();
@@ -2695,7 +2696,7 @@ fn choosing_a_model_writes_the_build_command_and_runs_nothing() {
     init_repo(&repo);
     let p = state.add_project("demo", &repo).unwrap();
 
-    state.save_knowledge_config(&p.id, true, None, None).unwrap();
+    state.save_knowledge_config(&p.id, true, true, None, None).unwrap();
     state.set_knowledge_backend(&p.id, "code-only", "").unwrap();
 
     let cfg = state.knowledge_config(&p.id).unwrap();
@@ -2706,8 +2707,82 @@ fn choosing_a_model_writes_the_build_command_and_runs_nothing() {
     // Whatever else this machine has, the build that needs no LLM is offered.
     assert!(cfg.backends.iter().any(|b| b.id == "code-only"), "{:?}", cfg.backends);
 
-    state.save_knowledge_config(&p.id, true, None, Some("graphify . --mode deep".into())).unwrap();
+    state
+        .save_knowledge_config(&p.id, true, true, None, Some("graphify . --mode deep".into()))
+        .unwrap();
     assert_eq!(state.knowledge_config(&p.id).unwrap().build_backend, "custom");
+}
+
+/// A build command saved before the model was part of the choice runs `claude
+/// -p` per file on whatever the CLI defaults to, which spent a 5-hour usage
+/// window in about 30 minutes. Reading the config repairs it in place, so the
+/// panel and the post-merge rebuild both see a command that names its model.
+#[test]
+fn a_saved_command_that_names_no_model_is_repaired_in_place() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = common::state(&dir);
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let p = state.add_project("demo", &repo).unwrap();
+
+    state
+        .save_knowledge_config(
+            &p.id,
+            true,
+            true,
+            None,
+            Some("graphify . --backend claude-cli".into()),
+        )
+        .unwrap();
+    let cfg = state.knowledge_config(&p.id).unwrap();
+
+    // Machine-dependent by nature: claude-cli is only offered where the CLI is
+    // installed, and only an offered backend has a default model to name. Both
+    // halves are asserted so neither machine passes by accident.
+    if cfg.backends.iter().any(|b| b.id == "claude-cli") {
+        assert_eq!(cfg.build_backend, "claude-cli");
+        assert!(!cfg.build_model.is_empty(), "{:?}", cfg.build_command);
+        let saved = cfg.build_command.as_deref().unwrap_or_default();
+        assert!(saved.contains("GRAPHIFY_CLAUDE_CLI_MODEL="), "repaired in place: {saved}");
+        // Idempotent: a second read leaves the repaired command alone.
+        assert_eq!(state.knowledge_config(&p.id).unwrap().build_command.as_deref(), Some(saved));
+    } else {
+        assert_eq!(cfg.build_backend, "claude-cli");
+        assert_eq!(cfg.build_command.as_deref(), Some("graphify . --backend claude-cli"));
+    }
+
+    // A hand-written command is never rewritten, whatever the machine has.
+    state
+        .save_knowledge_config(&p.id, true, true, None, Some("graphify . --mode deep".into()))
+        .unwrap();
+    let cfg = state.knowledge_config(&p.id).unwrap();
+    assert_eq!(cfg.build_backend, "custom");
+    assert_eq!(cfg.build_command.as_deref(), Some("graphify . --mode deep"));
+}
+
+/// The rebuild that runs after every clean merge is the only build nobody
+/// presses, so it is a switch the user can see and turn off, and it is on for
+/// every project configured before the switch existed.
+#[test]
+fn the_post_merge_rebuild_is_a_switch_that_defaults_to_on() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = common::state(&dir);
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let p = state.add_project("demo", &repo).unwrap();
+
+    assert!(state.knowledge_config(&p.id).unwrap().rebuild_on_merge);
+    // A config written before the field existed reads as on, not off.
+    std::fs::create_dir_all(repo.join(".agency")).unwrap();
+    std::fs::write(repo.join(".agency/agency.local.toml"), "[knowledge]\ngraph = true\n").unwrap();
+    assert!(state.knowledge_config(&p.id).unwrap().rebuild_on_merge);
+
+    state.save_knowledge_config(&p.id, true, false, None, None).unwrap();
+    let cfg = state.knowledge_config(&p.id).unwrap();
+    assert!(!cfg.rebuild_on_merge);
+    assert!(cfg.graph, "turning the rebuild off must not disturb the feature toggle");
 }
 
 /// Poll the knowledge config until the background build thread has finished.

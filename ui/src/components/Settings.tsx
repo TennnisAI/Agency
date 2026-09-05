@@ -518,6 +518,11 @@ export default function Settings({
     ...(kg?.build_backend === "custom" ? [{ value: "custom", label: "Custom" }] : []),
   ];
   const pickedBackend = kg?.backends.find((b) => b.id === kg.build_backend) ?? null;
+  // Claude Code's own model list, when that is the backend the build runs on.
+  // Undefined for every other backend, and while the list is still loading,
+  // which falls the control back to a typed model id.
+  const claudeCliModels =
+    pickedBackend?.id === "claude-cli" && models.claude?.supported ? models.claude : undefined;
 
   async function buildGraph() {
     if (!projectId) return;
@@ -603,14 +608,21 @@ export default function Settings({
   // Persist the whole knowledge section at once (toggle and Save both route
   // here) so an in-progress command edit is never dropped by a toggle, then
   // reload to refresh the derived install-status flags.
-  async function persistKnowledge(graph: boolean) {
-    if (!projectId) return;
+  async function persistKnowledge(patch: Partial<Pick<KnowledgeConfig, "graph" | "rebuild_on_merge">>) {
+    if (!projectId || !kg) return;
     // Optimistic: reflect the toggle immediately so it doesn't lag the save
     // round-trip; revert if the write fails.
     const prev = kg;
-    setKg((k) => (k ? { ...k, graph } : k));
+    const next = { ...kg, ...patch };
+    setKg(next);
     try {
-      await saveKnowledgeConfig(projectId, graph, kgDraft.serve.trim() || null, kgDraft.build.trim() || null);
+      await saveKnowledgeConfig(
+        projectId,
+        next.graph,
+        next.rebuild_on_merge,
+        kgDraft.serve.trim() || null,
+        kgDraft.build.trim() || null,
+      );
       await loadKnowledge(projectId);
     } catch (e) {
       setKg(prev);
@@ -1386,7 +1398,7 @@ export default function Settings({
                 <span className="settings-notif-label">
                   Enable knowledge graph{projectName ? ` for ${projectName}` : ""}
                 </span>
-                <Toggle checked={kg.graph} onChange={(next) => persistKnowledge(next)} />
+                <Toggle checked={kg.graph} onChange={(graph) => persistKnowledge({ graph })} />
               </div>
               {kg.graph && (
                 <>
@@ -1475,26 +1487,81 @@ export default function Settings({
                     />
                     {/* No name to give a build that runs no model at all. */}
                     {pickedBackend && pickedBackend.id !== "code-only" && (
-                      <input
-                        className="settings-field-input"
-                        placeholder={pickedBackend.default_model || "name the model it serves"}
-                        value={kgModel}
-                        onChange={(e) => setKgModel(e.target.value)}
-                        // On blur, not on keystroke: a half-typed model name is
-                        // not a choice, and every save rewrites the command.
-                        onBlur={() => {
-                          if (kgModel.trim() !== kg.build_model) {
-                            chooseBackend(pickedBackend.id, kgModel.trim());
-                          }
-                        }}
-                        onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
-                      />
+                      // The claude CLI is the one backend whose models Agency
+                      // already knows, so its model is picked from the same
+                      // menu every agent uses rather than typed from memory.
+                      // Picking "Agent's default" there writes this backend's
+                      // own default (haiku) into the command, not an unnamed
+                      // model: the build is a per-file `claude -p` loop, and an
+                      // unnamed one answering on the plan's default spent a
+                      // 5-hour usage window in 30 minutes. Every other backend
+                      // takes a typed id, since what those can run is the
+                      // vendor's business and not a list Agency holds.
+                      claudeCliModels ? (
+                        <ModelSelect
+                          info={claudeCliModels}
+                          projectId={projectId}
+                          value={kg.build_model || null}
+                          onChange={(model) => chooseBackend(pickedBackend.id, model ?? "")}
+                        />
+                      ) : (
+                        <input
+                          className="settings-field-input"
+                          placeholder={pickedBackend.default_model || "name the model it serves"}
+                          value={kgModel}
+                          onChange={(e) => setKgModel(e.target.value)}
+                          // On blur, not on keystroke: a half-typed model name is
+                          // not a choice, and every save rewrites the command.
+                          onBlur={() => {
+                            if (kgModel.trim() !== kg.build_model) {
+                              chooseBackend(pickedBackend.id, kgModel.trim());
+                            }
+                          }}
+                          onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+                        />
+                      )
                     )}
                   </div>
                   <div className="settings-kg-cost">
                     {pickedBackend
                       ? pickedBackend.note
                       : "This build command was written by hand, so the picker leaves it alone. Clear it to go back to a listed model."}
+                  </div>
+                  {/* What size of model this actually needs, which is the
+                      question the picker raises and used to leave unanswered.
+                      Stated once rather than per backend, because it is a fact
+                      about the job and not about the vendor. */}
+                  <div className="settings-kg-cost">
+                    The model only reads docs, papers and images. Code is indexed locally by
+                    tree-sitter, so this is a strict-format extraction job rather than a reasoning
+                    one, and a light model is the right default. Reach for a heavier one when the
+                    substance of the project is in its prose, or when you have edited the build
+                    command to run deep mode.
+                  </div>
+                  {/* A command saved before the model was part of this choice.
+                      It leaves the model to the CLI, which answered on the
+                      plan's default and spent a 5-hour usage window on one
+                      build, so it is called out rather than quietly rewritten:
+                      picking a model above is what fixes it. */}
+                  {pickedBackend?.id === "claude-cli" && !kg.build_model && (
+                    <div className="settings-kg-warn">
+                      This build names no model, so it runs on whatever claude defaults to. Pick
+                      one above. A build reads every file in the project, and a large model can
+                      spend a whole usage window on a single build.
+                    </div>
+                  )}
+                  {/* The only build nobody presses. It runs the command above
+                      over the whole project after every clean merge, so on a
+                      busy day it is the largest thing this feature spends, and
+                      it is a switch rather than something to find out about
+                      afterwards. On by default: a graph that has stopped
+                      matching the code is worse than no graph. */}
+                  <div className="settings-notif-row">
+                    <span className="settings-notif-label">Rebuild after every merge</span>
+                    <Toggle
+                      checked={kg.rebuild_on_merge}
+                      onChange={(rebuild_on_merge) => persistKnowledge({ rebuild_on_merge })}
+                    />
                   </div>
                   <div className="settings-provider-field">
                     <label className="settings-field-key">serve</label>
@@ -1528,7 +1595,7 @@ export default function Settings({
                         {kg.graph_built ? "Rebuild graph" : "Build graph"}
                       </button>
                     )}
-                    <button className="settings-save" onClick={() => persistKnowledge(kg.graph)}>Save commands</button>
+                    <button className="settings-save" onClick={() => persistKnowledge({})}>Save commands</button>
                   </div>
                 </>
               )}

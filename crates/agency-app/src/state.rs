@@ -100,6 +100,10 @@ pub struct IssueSyncDto {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct KnowledgeConfigDto {
     pub graph: bool,
+    /// Rebuild the graph after every clean merge. The only thing here that
+    /// spends a model budget without the user pressing anything, so it is a
+    /// switch on the panel rather than a behaviour they discover from a bill.
+    pub rebuild_on_merge: bool,
     pub serve_command: Option<String>,
     pub build_command: Option<String>,
     pub serve_default: String,
@@ -4256,6 +4260,7 @@ impl AppState {
     /// no-ops when it isn't, so the UI surfaces it as a warning).
     pub fn knowledge_config(&self, project_id: &str) -> Result<KnowledgeConfigDto> {
         let repo = self.project_repo(project_id)?;
+        self.name_the_default_model(&repo);
         let k = agency_core::config::load(&repo).knowledge;
         let probe = self.backend_probe();
         let serve_default = agency_core::config::default_serve_command(&repo);
@@ -4268,6 +4273,7 @@ impl AppState {
         let build_log = build_state.log.lock().unwrap().tail(KG_LOG_SHOWN);
         Ok(KnowledgeConfigDto {
             graph: k.graph,
+            rebuild_on_merge: k.rebuild_on_merge,
             serve_installed: first_token_on_path(&serve_effective),
             build_installed: first_token_on_path(&build_effective),
             serve_command: k.serve_command,
@@ -4308,6 +4314,11 @@ impl AppState {
     /// Write a chosen backend (and optional model) into the project's build
     /// command. The choice *is* the command: one string the settings panel
     /// shows, the build runs and the user can still edit by hand.
+    ///
+    /// A backend picked without a model gets that backend's own default written
+    /// in, rather than an unnamed model the CLI or the vendor chooses at build
+    /// time: a claude-CLI build left unnamed answered on the plan's default
+    /// model and spent a 5-hour usage window in 30 minutes.
     pub fn set_knowledge_backend(
         &self,
         project_id: &str,
@@ -4317,12 +4328,42 @@ impl AppState {
         let repo = self.project_repo(project_id)?;
         let k = agency_core::config::load(&repo).knowledge;
         let url = self.get_settings().map(|s| s.lm_studio_base_url).unwrap_or_default();
-        let build = agency_core::config::build_command_for(backend, model, &url);
+        let model = match model.trim() {
+            "" => agency_core::config::default_model_for(backend, &self.backend_probe()),
+            named => named.to_string(),
+        };
+        let build = agency_core::config::build_command_for(backend, &model, &url);
         agency_core::config::save_knowledge(
             &repo,
             &agency_core::config::KnowledgeConfig { build_command: Some(build), ..k },
         )?;
         Ok(())
+    }
+
+    /// Fill in the model of a saved build command that names none, once, in
+    /// place. Best effort and silent: this is a migration, not an action the
+    /// user took, and a project whose config cannot be written is a project
+    /// whose build still runs.
+    ///
+    /// Run on both paths that reach a saved command, because they are reached
+    /// in either order: the panel (so what it shows is what would run) and the
+    /// start of a build (so the post-merge rebuild is repaired for a user who
+    /// never opens the panel, which is exactly the user it burned).
+    fn name_the_default_model(&self, repo: &Path) {
+        let k = agency_core::config::load(repo).knowledge;
+        // Only a command actually saved for this project. An unset one already
+        // resolves to `default_build_command`, which names its model.
+        let Some(saved) = k.build_command.as_deref() else { return };
+        let url = self.get_settings().map(|s| s.lm_studio_base_url).unwrap_or_default();
+        let Some(repaired) =
+            agency_core::config::name_the_default_model(saved, &self.backend_probe(), &url)
+        else {
+            return;
+        };
+        let named = agency_core::config::KnowledgeConfig { build_command: Some(repaired), ..k };
+        if let Err(e) = agency_core::config::save_knowledge(repo, &named) {
+            log::warn!("naming the graph build's model in {}: {e}", repo.display());
+        }
     }
 
     /// Persist a project's knowledge-graph config into its (gitignored) local
@@ -4332,6 +4373,7 @@ impl AppState {
         &self,
         project_id: &str,
         graph: bool,
+        rebuild_on_merge: bool,
         serve_command: Option<String>,
         build_command: Option<String>,
     ) -> Result<()> {
@@ -4339,6 +4381,7 @@ impl AppState {
         let clean = |s: Option<String>| s.map(|x| x.trim().to_string()).filter(|x| !x.is_empty());
         let k = agency_core::config::KnowledgeConfig {
             graph,
+            rebuild_on_merge,
             serve_command: clean(serve_command),
             build_command: clean(build_command),
         };
@@ -4433,6 +4476,7 @@ impl AppState {
     /// (without spawning) when the tooling is missing or a build is already
     /// running for this repo — both are states the caller reports, not retries.
     fn start_knowledge_build(&self, repo: &Path) -> Result<()> {
+        self.name_the_default_model(repo);
         let config = agency_core::config::load(repo);
         let build = config.knowledge.build_command.clone().unwrap_or_else(|| {
             agency_core::config::default_build_command(command_on_path("claude"))
@@ -4854,7 +4898,8 @@ impl AppState {
     /// merge is not the moment to decide that for them. The first build is
     /// always the one they press.
     fn maybe_rebuild_knowledge_graph(&self, repo: &Path) {
-        if !agency_core::config::load(repo).knowledge.graph {
+        let k = agency_core::config::load(repo).knowledge;
+        if !k.graph || !k.rebuild_on_merge {
             return;
         }
         if !agency_core::config::graph_path(repo).is_file() {
@@ -9069,7 +9114,7 @@ mod tests {
         let custom = KnowledgeConfig {
             graph: true,
             serve_command: Some("my-server \"/my graphs/g.json\"".to_string()),
-            build_command: None,
+            ..Default::default()
         };
         let server = graphify_server(Path::new("/repo"), &custom, |_| false, |_| true).unwrap();
         assert_eq!(server.command.as_deref(), Some("my-server"));

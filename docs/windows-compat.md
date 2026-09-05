@@ -31,6 +31,11 @@ Everything Agency spawns goes through a Unix login shell today:
   `/bin/zsh` / `/bin/bash` (terminal creation, install terminals, shell
   profile seeding at `state.rs:342`) and `sh -lc` for the run script and the
   knowledge-graph rebuild. On Windows: `%COMSPEC%` / PowerShell, no `-l`.
+- The default knowledge-graph build command now carries a `VAR=value` prefix
+  (`GRAPHIFY_CLAUDE_CLI_MODEL=haiku graphify . --backend claude-cli`), which is
+  a POSIX shell assignment and not a PowerShell one. `config.rs` composes it,
+  `command_binary` already reads past it for the PATH check, and a Windows port
+  needs `$env:VAR = …` or an env entry on the spawned command instead.
 - `state.rs start_knowledge_build` puts the graph build in its own process
   group (`process_group(0)`) and stops it with `/bin/kill -TERM -<pgid>`, so
   Stop reaches the agent CLI graphify spawns per document and not just the

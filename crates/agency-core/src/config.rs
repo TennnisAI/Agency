@@ -130,7 +130,7 @@ pub struct McpServerDef {
 /// Knowledge-graph integration (graphify). When `graph = true`, the serve
 /// command is auto-registered as an MCP server for every agent workspace and
 /// the graph is rebuilt in the background after each clean merge.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct KnowledgeConfig {
     #[serde(default)]
     pub graph: bool,
@@ -139,6 +139,20 @@ pub struct KnowledgeConfig {
     /// Override for the rebuild command run after merges, and the place a user
     /// picks a different LLM backend. Default: [`default_build_command`].
     pub build_command: Option<String>,
+    /// Rebuild the graph in the background after every clean merge.
+    ///
+    /// On, because a graph that stops matching the code is worse than no graph.
+    /// A switch and not a constant, because it is the one thing here that
+    /// spends a user's model budget without them pressing anything: a build
+    /// reads every file in the project, and merges land all day.
+    #[serde(default = "default_true")]
+    pub rebuild_on_merge: bool,
+}
+
+impl Default for KnowledgeConfig {
+    fn default() -> Self {
+        Self { graph: false, serve_command: None, build_command: None, rebuild_on_merge: true }
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -444,6 +458,23 @@ pub const CODE_ONLY: &str = "code-only";
 /// user's existing Claude plan.
 pub const CLAUDE_CLI: &str = "claude-cli";
 
+/// The model a claude-CLI build runs on when the user names none.
+///
+/// Not the CLI's own default, which is what a build got before this existed:
+/// graphify passes `claude -p` once per chunk, the CLI answered on the plan's
+/// default (a large model), and one first build of one project spent an entire
+/// 5-hour usage window in about 30 minutes. It is named in the command so it
+/// can never silently follow whatever the CLI defaults to next.
+///
+/// Small on purpose, and graphify agrees in its own source (`llm.py`,
+/// `_call_claude_cli`): "claude-cli defaults to Opus, which is overkill for the
+/// structured-JSON extraction graphify performs". The model never sees code at
+/// all. Code files go through tree-sitter locally; the LLM pass runs over docs,
+/// papers and images only, at temperature 0, against a fixed node/edge schema
+/// that newer Claude Code releases pin structurally with `--json-schema`. That
+/// is a format-following job, not a reasoning one.
+pub const CLAUDE_CLI_DEFAULT_MODEL: &str = "haiku";
+
 /// graphify's `openai` backend pointed at the local, OpenAI-protocol server
 /// from Agency's own settings (LM Studio and friends). Its own id here because
 /// nothing about it is OpenAI: the corpus never leaves the machine.
@@ -528,9 +559,11 @@ pub fn knowledge_backends(probe: &BackendProbe) -> Vec<KnowledgeBackend> {
             id: CLAUDE_CLI.to_string(),
             label: "Claude Code".to_string(),
             note: "Runs the claude CLI you already have, billed to your Claude plan rather than \
-                   an API key. Your docs go to Anthropic."
+                   an API key. Your docs go to Anthropic. A build reads every file in the \
+                   project, so the model is the cost: a large one can spend a whole usage \
+                   window on a single build."
                 .to_string(),
-            default_model: "whatever claude defaults to".to_string(),
+            default_model: CLAUDE_CLI_DEFAULT_MODEL.to_string(),
         });
     }
     for (id, label, env, vendor, model) in CLOUD_BACKENDS {
@@ -551,9 +584,14 @@ pub fn knowledge_backends(probe: &BackendProbe) -> Vec<KnowledgeBackend> {
             id: "ollama".to_string(),
             label: "Ollama".to_string(),
             note: "Runs the model on this machine. Nothing is sent anywhere and nothing is \
-                   billed, but a small local model reads docs poorly."
+                   billed. Name a model you have pulled, and not a small one: below about 14b \
+                   the answers come back as prose or half-formed JSON, and those chunks are \
+                   retried and then dropped from the graph."
                 .to_string(),
-            default_model: "qwen2.5-coder:7b".to_string(),
+            // 14b and not 7b because graphify's own ollama warning says so:
+            // "model too small for JSON instruction following - try a larger
+            // model with --model (e.g. --model qwen2.5-coder:14b)".
+            default_model: "qwen2.5-coder:14b".to_string(),
         });
     }
     if let Some(url) = probe.local_model_url.as_deref().map(str::trim).filter(|u| !u.is_empty()) {
@@ -576,6 +614,22 @@ pub fn knowledge_backends(probe: &BackendProbe) -> Vec<KnowledgeBackend> {
         default_model: String::new(),
     });
     out
+}
+
+/// The model a backend runs on when the user picks the backend and names no
+/// model: the same string its offer shows as the placeholder.
+///
+/// Empty for the backends only the user can name a model for (a local server,
+/// and the build that runs no model at all). Everywhere else the choice is
+/// written into the command, so the panel and the build can never disagree
+/// about which model reads the project, and a vendor moving its own default
+/// cannot move what a build costs.
+pub fn default_model_for(backend: &str, probe: &BackendProbe) -> String {
+    knowledge_backends(probe)
+        .into_iter()
+        .find(|b| b.id == backend)
+        .map(|b| b.default_model)
+        .unwrap_or_default()
 }
 
 /// The build command a (backend, model) choice writes into `[knowledge]`. The
@@ -603,6 +657,37 @@ pub fn build_command_for(backend: &str, model: &str, local_model_url: &str) -> S
         )),
         "ollama" => named("graphify . --backend ollama --max-concurrency 1".to_string()),
         other => named(format!("graphify . --backend {other}")),
+    }
+}
+
+/// A saved build command that leaves the model to the CLI, rewritten to name
+/// the backend's own default. `None` when there is nothing to repair.
+///
+/// The one migration this panel performs, and it is deliberately narrow: only a
+/// command this picker itself wrote (it has to round-trip), only where the
+/// model is missing, and only to the model the panel already shows as that
+/// backend's default. A hand-written command is never touched, and neither is
+/// one that names a model.
+///
+/// It exists because the model was not always part of the choice. A command
+/// saved as `graphify . --backend claude-cli` runs `claude -p` per file on
+/// whatever the CLI defaults to, which is how one project's builds spent a
+/// 5-hour usage window in about 30 minutes. Leaving that saved command alone
+/// and only warning about it would leave the post-merge rebuild firing it all
+/// day for anyone who never opens this panel.
+pub fn name_the_default_model(
+    command: &str,
+    probe: &BackendProbe,
+    local_model_url: &str,
+) -> Option<String> {
+    let (backend, model) = build_selection(command);
+    if backend == CUSTOM_BACKEND || !model.is_empty() {
+        return None;
+    }
+    let default = default_model_for(&backend, probe);
+    match default.is_empty() {
+        true => None,
+        false => Some(build_command_for(&backend, &default, local_model_url)),
     }
 }
 
@@ -656,7 +741,7 @@ pub fn build_selection(command: &str) -> (String, String) {
 /// went to an LM Studio that wasn't listening and wrote no graph at all.
 pub fn default_build_command(claude_on_path: bool) -> String {
     match claude_on_path {
-        true => build_command_for(CLAUDE_CLI, "", ""),
+        true => build_command_for(CLAUDE_CLI, CLAUDE_CLI_DEFAULT_MODEL, ""),
         false => build_command_for(CODE_ONLY, "", ""),
     }
 }
@@ -694,6 +779,7 @@ pub fn save_knowledge(repo_path: &Path, k: &KnowledgeConfig) -> std::io::Result<
 
     let mut table = toml::value::Table::new();
     table.insert("graph".into(), toml::Value::Boolean(k.graph));
+    table.insert("rebuild_on_merge".into(), toml::Value::Boolean(k.rebuild_on_merge));
     for (key, val) in [("serve_command", &k.serve_command), ("build_command", &k.build_command)] {
         if let Some(s) = val.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
             table.insert(key.into(), toml::Value::String(s.to_string()));
@@ -975,7 +1061,9 @@ mod tests {
         assert_eq!(lines[2], direct);
         // Both halves of the integration come from this one distribution.
         assert!(default_serve_argv(Path::new("/r")).contains(&"graphifyy".to_string()));
-        assert!(default_build_command(true).starts_with("graphify"));
+        // Read past the model assignment the claude-CLI default carries in
+        // front of it, which is not the program being run.
+        assert_eq!(command_binary(&default_build_command(true)).as_deref(), Some("graphify"));
     }
 
     /// The serve command imports `mcp` and the build imports an LLM SDK; a
@@ -997,8 +1085,41 @@ mod tests {
     /// surprise anyone, never inferred from an exported API key.
     #[test]
     fn build_command_pins_a_backend_that_cannot_surprise_anyone() {
-        assert_eq!(default_build_command(true), "graphify . --backend claude-cli");
+        assert_eq!(
+            default_build_command(true),
+            "GRAPHIFY_CLAUDE_CLI_MODEL=haiku graphify . --backend claude-cli"
+        );
         assert_eq!(default_build_command(false), "graphify . --code-only");
+    }
+
+    /// The model is half the choice, not a detail under it: a claude-CLI build
+    /// that names no model runs on whatever the CLI defaults to, which is how
+    /// one first build spent a 5-hour usage window in 30 minutes. Every offer
+    /// that has a default model says which, and the default command names it.
+    #[test]
+    fn a_build_never_leaves_the_model_to_the_cli() {
+        let probe = BackendProbe {
+            claude_on_path: true,
+            local_model_url: Some("http://localhost:1234/v1".into()),
+            env_keys: vec!["gemini".into()],
+            ..BackendProbe::default()
+        };
+        assert_eq!(default_model_for(CLAUDE_CLI, &probe), CLAUDE_CLI_DEFAULT_MODEL);
+        assert_eq!(default_model_for("gemini", &probe), "gemini-3-flash-preview");
+        // Nothing to name: no model runs, or only the user knows what the
+        // local server serves.
+        assert_eq!(default_model_for(CODE_ONLY, &probe), "");
+        assert_eq!(default_model_for(LOCAL_MODEL, &probe), "");
+        // A backend this machine can't run has no default to offer.
+        assert_eq!(default_model_for("kimi", &probe), "");
+
+        // The default model is the one that reads a doc cheapest, not the one
+        // the plan would otherwise reach for.
+        assert!(default_build_command(true).contains(CLAUDE_CLI_DEFAULT_MODEL));
+        for b in knowledge_backends(&probe) {
+            let cmd = build_command_for(&b.id, &b.default_model, "http://localhost:1234/v1");
+            assert_eq!(build_selection(&cmd), (b.id.clone(), b.default_model.clone()), "{cmd}");
+        }
     }
 
     /// Every machine can build *something*: a user with no agent CLI, no API
@@ -1056,6 +1177,44 @@ mod tests {
         // Anything else is left alone rather than reinterpreted.
         assert_eq!(build_selection("graphify . --mode deep").0, CUSTOM_BACKEND);
         assert_eq!(build_selection("graphify .").0, CUSTOM_BACKEND);
+    }
+
+    /// A command saved before the model was part of the choice runs on whatever
+    /// the CLI defaults to. It is repaired to name the backend's default, and
+    /// nothing else is: a hand-written command means the user knows what they
+    /// wrote, and one that already names a model has already been decided.
+    #[test]
+    fn a_command_that_names_no_model_is_repaired_and_nothing_else_is() {
+        let url = "http://localhost:1234/v1";
+        let probe = BackendProbe {
+            claude_on_path: true,
+            local_model_url: Some(url.into()),
+            env_keys: vec!["gemini".into()],
+            ..BackendProbe::default()
+        };
+        let repair = |cmd: &str| name_the_default_model(cmd, &probe, url);
+
+        assert_eq!(
+            repair("graphify . --backend claude-cli").as_deref(),
+            Some("GRAPHIFY_CLAUDE_CLI_MODEL=haiku graphify . --backend claude-cli")
+        );
+        assert_eq!(
+            repair("graphify . --backend gemini").as_deref(),
+            Some("graphify . --backend gemini --model gemini-3-flash-preview")
+        );
+        // Already named: the user's choice, left exactly as it is.
+        assert_eq!(repair("GRAPHIFY_CLAUDE_CLI_MODEL=opus graphify . --backend claude-cli"), None);
+        // Hand-written, so not this panel's to rewrite.
+        assert_eq!(repair("graphify . --mode deep"), None);
+        // Nothing to name: no model runs, or only the user knows what the local
+        // server serves.
+        assert_eq!(repair("graphify . --code-only"), None);
+        assert_eq!(repair(&build_command_for(LOCAL_MODEL, "", url)), None);
+        // A backend this machine cannot run is not repaired into one it can.
+        assert_eq!(repair("graphify . --backend kimi"), None);
+        // Repairing twice changes nothing.
+        let once = repair("graphify . --backend claude-cli").unwrap();
+        assert_eq!(repair(&once), None);
     }
 
     /// Agency injects `OPENAI_API_KEY=lm-studio` + `OPENAI_BASE_URL` into every
@@ -1219,8 +1378,8 @@ mod tests {
             dir.path(),
             &KnowledgeConfig {
                 graph: true,
-                serve_command: None,
                 build_command: Some("  graphify . --skip-html  ".to_string()),
+                ..KnowledgeConfig::default()
             },
         )
         .unwrap();
@@ -1232,12 +1391,19 @@ mod tests {
         assert_eq!(c.ports.base, 4100);
 
         // Toggling off is durable (graph = false is written, not dropped).
+        save_knowledge(dir.path(), &KnowledgeConfig { graph: false, ..KnowledgeConfig::default() })
+            .unwrap();
+        assert!(!load(dir.path()).knowledge.graph);
+
+        // The post-merge rebuild is on for a config that predates the switch,
+        // and off is durable the same way `graph = false` is.
+        assert!(load(dir.path()).knowledge.rebuild_on_merge);
         save_knowledge(
             dir.path(),
-            &KnowledgeConfig { graph: false, serve_command: None, build_command: None },
+            &KnowledgeConfig { graph: true, rebuild_on_merge: false, ..KnowledgeConfig::default() },
         )
         .unwrap();
-        assert!(!load(dir.path()).knowledge.graph);
+        assert!(!load(dir.path()).knowledge.rebuild_on_merge);
     }
 
     #[test]

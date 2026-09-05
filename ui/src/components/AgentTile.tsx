@@ -97,7 +97,7 @@ export default function AgentTile({ run }: { run: RunInfo }) {
         {/* Same register as the status above: what the agent is doing, and what
             it has not been handed yet. */}
         <QueuedMarker run={run} />
-        {/* And what you have said about it: settled, snoozed, pinned. */}
+        {/* And whether you have pinned it to the top of the board. */}
         <AttentionMarker run={run} onChanged={refreshRuns} />
         {/* The same close button and menu the agents rail carries, so an agent
             offers the same ways out wherever it is listed: archived, keeping

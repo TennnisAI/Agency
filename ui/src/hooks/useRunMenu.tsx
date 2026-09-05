@@ -4,7 +4,7 @@ import { agentLabel } from "../agents";
 import { useRuns } from "../store/runs";
 import { toastError } from "../lib/toast";
 import { Removal, removalLabel, removalsFor } from "../lib/runRemoval";
-import { attentionEntries } from "../components/AttentionMarker";
+import { pinEntries } from "../components/AttentionMarker";
 import Menu, { MenuEntry } from "../components/git/Menu";
 import PromptDialog from "../components/PromptDialog";
 import RunRemoveDialog from "../components/RunRemoveDialog";
@@ -163,7 +163,7 @@ export function useRunMenu({
     if (run.worktree) {
       entries.push({ label: "Rename branch…", onClick: () => setRenamingBranch(run) });
     }
-    entries.push({ kind: "separator" }, ...attentionEntries(run, changed), { kind: "separator" });
+    entries.push({ kind: "separator" }, ...pinEntries(run, changed), { kind: "separator" });
     for (const action of removalsFor(run)) {
       entries.push({
         label: removalLabel(run, action),

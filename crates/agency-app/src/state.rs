@@ -283,11 +283,11 @@ pub struct RunInfo {
     /// until the first tick observes the run (~2s after spawn or app start);
     /// the UI treats a running agent without it as working.
     pub activity: Option<crate::activity::ActivityInfo>,
-    /// What the user has said about this run — settled, active, snoozed,
-    /// pinned — and what it means right now (see `crate::activity`). Always
-    /// present, unlike `activity`: the standing and the pin are the user's own
-    /// record, not a sample the notifier may not have taken yet.
-    pub attention: crate::activity::AttentionInfo,
+    /// Ascending order among this project's pinned runs; `None` = unpinned.
+    /// Board order only: a pin never changes how a run classifies above, and
+    /// nothing the agent does consumes one. Read straight off the stored
+    /// column rather than derived, so unlike `activity` it is always current.
+    pub pin_rank: Option<f64>,
     /// Tokens and cost for this run, read from the agent's own transcript.
     /// `None` means we cannot see this agent's spend at all, which is the
     /// case for every agent whose transcript format we have not read. That is
@@ -2464,22 +2464,7 @@ impl AppState {
         Ok(())
     }
 
-    // ── the user's word on a run (AGE-141) ─────────────────────────────────
-
-    /// Record what the user has said about a run — settled, active, snoozed —
-    /// or clear it with `None`, which hands the run back to the time decay.
-    /// The clock is stamped here rather than sent from the UI: `at_ms` is what
-    /// decides whether later output has un-settled the run, so it has to come
-    /// from the same clock the notifier's observations do.
-    pub fn set_run_standing(
-        &self,
-        id: &str,
-        kind: Option<agency_core::attention::StandingKind>,
-    ) -> Result<()> {
-        let standing =
-            kind.map(|k| agency_core::attention::Standing::new(k, crate::activity::now_ms()));
-        self.registry.lock().unwrap().set_run_standing(id, standing.as_ref())
-    }
+    // ── pin a run on the board ─────────────────────────────────────────────
 
     /// Pin a run to the end of its project's pinned runs, or unpin it. The
     /// order is the order they were pinned in, and it is the user's: unpinning
@@ -2776,31 +2761,19 @@ impl AppState {
             .repo_path)
     }
 
-    /// The live read of one run's activity: its derived state (`None` until the
-    /// notifier has observed it) and what the user's own word says about it.
-    /// Shared by the board and the notifier tick, which are asking the same
-    /// question — does this run want the user right now — and must not answer
-    /// it differently.
+    /// The live read of one run's derived activity state, or `None` until the
+    /// notifier's poll has observed it.
     fn read_activity(
         &self,
         run: &agency_core::registry::Run,
         now_ms: i64,
-    ) -> (Option<crate::activity::ActivityInfo>, crate::activity::AttentionInfo) {
+    ) -> Option<crate::activity::ActivityInfo> {
         // Loops drive themselves — a quiet attempt isn't waiting on the user,
         // so it classifies as idle at most.
         let turn_driven =
             run.loop_config.is_none() && self.prompted.lock().unwrap().contains(&run.id);
         let entry = self.activity.lock().unwrap().get(&run.id).copied();
-        let activity = entry
-            .map(|e| crate::activity::classify(&e, turn_driven, run.standing.as_ref(), now_ms));
-        let attention = crate::activity::attention(
-            run.standing.as_ref(),
-            run.pin_rank,
-            entry.as_ref(),
-            activity.map(|a| a.state),
-            now_ms,
-        );
-        (activity, attention)
+        entry.map(|e| crate::activity::classify(&e, turn_driven, now_ms))
     }
 
     fn run_record(&self, id: &str) -> Result<agency_core::registry::Run> {
@@ -2906,7 +2879,7 @@ impl AppState {
                 .is_none_or(|(id, _)| self.web_ui_ready.lock().unwrap().contains(id));
             running && agency_core::preview::serving(port) && handshake_done
         });
-        let (activity, attention) = self.read_activity(run, crate::activity::now_ms());
+        let activity = self.read_activity(run, crate::activity::now_ms());
         RunInfo {
             id: run.id.clone(),
             project_id: run.project_id.clone(),
@@ -2916,7 +2889,7 @@ impl AppState {
             branch,
             status,
             activity,
-            attention,
+            pin_rank: run.pin_rank,
             usage: self.usage.lock().unwrap().get(&run.id).map(|(_, u)| u.into()),
             added: stat.added,
             deleted: stat.deleted,
@@ -3227,7 +3200,6 @@ impl AppState {
             // without this. Best-effort: a run whose base won't resolve still
             // starts, and its record falls back to the merge base.
             base_commit: spec.worktree.then(|| agency_core::merge::rev(&repo, spec.base)).flatten(),
-            standing: None,
             pin_rank: None,
         };
         {
@@ -5147,7 +5119,6 @@ impl AppState {
             worktree: false,
             model: None,
             base_commit: None,
-            standing: None,
             pin_rank: None,
         };
         self.registry.lock().unwrap().insert_run(&run)?;
@@ -5365,7 +5336,6 @@ impl AppState {
             worktree: false,
             model: None,
             base_commit: None,
-            standing: None,
             pin_rank: None,
         };
         self.registry.lock().unwrap().insert_run(&run)?;
@@ -5698,9 +5668,7 @@ impl AppState {
             .unwrap()
             .get(id)
             .map(|e| {
-                // The standing never reaches the Working arm either, so the
-                // send queue reads the pane alone.
-                crate::activity::classify(e, false, None, now_ms).state
+                crate::activity::classify(e, false, now_ms).state
                     == crate::activity::ActivityState::Working
             })
             .unwrap_or(true);
@@ -8742,7 +8710,6 @@ impl AppState {
         // tick by the size of the board.
         let live = self.term.read().unwrap().list().unwrap_or_default();
         let run_scripts_of = |target: &str| run_script_statuses_from(target, &live);
-        let now_ms = crate::activity::now_ms();
 
         let projects = self.registry.lock().unwrap().list_projects()?;
         let mut out = Vec::new();
@@ -8759,7 +8726,6 @@ impl AppState {
                 label: proj.name.clone(),
                 is_terminal: false,
                 is_loop: false,
-                hushed: false,
                 agent: SessionStatus::Gone,
                 pane_hash: 0,
                 user_input_pending: false,
@@ -8800,20 +8766,12 @@ impl AppState {
                 // the same tick) would toast "Agent exited" next to the loop's
                 // own complete/stalled notification.
                 let is_loop = run.loop_config.is_some();
-                // The same standing the board reads, asked here so a run the
-                // user has settled or snoozed stops toasting too: it is the
-                // same question either way, so it is the same derivation. A
-                // settle that new output has already consumed reports nothing,
-                // which is why a run raising its hand still notifies.
-                let hushed =
-                    self.read_activity(&run, now_ms).1.standing.is_some_and(|k| k.suppresses());
                 out.push(notifier::RunSnapshot {
                     id: run.id,
                     project_id: proj.id.clone(),
                     label,
                     is_terminal: run.kind == "terminal",
                     is_loop,
-                    hushed,
                     agent,
                     run_scripts,
                     pane_hash,
@@ -9157,7 +9115,6 @@ mod tests {
             worktree: true,
             model: None,
             base_commit: None,
-            standing: None,
             pin_rank: None,
         };
         assert!(super::wants_web_ui(&base));
@@ -10254,7 +10211,6 @@ mod tests {
             worktree: false,
             model: None,
             base_commit: None,
-            standing: None,
             pin_rank: None,
         };
         assert_eq!(run.kind, "terminal");
@@ -10286,7 +10242,6 @@ mod tests {
             worktree: false,
             model: None,
             base_commit: None,
-            standing: None,
             pin_rank: None,
         }
     }

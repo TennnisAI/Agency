@@ -130,7 +130,6 @@ mod tests {
                 worktree: true,
                 model: None,
                 base_commit: None,
-                standing: None,
                 pin_rank: None,
             })
             .unwrap();

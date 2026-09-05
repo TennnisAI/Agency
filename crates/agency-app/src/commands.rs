@@ -2466,22 +2466,6 @@ pub fn rename_run(state: State<'_, AppState>, id: String, title: String) -> Resu
     state.store_run_title(&id, title.trim()).map_err(|e| e.to_string())
 }
 
-/// Record what the user has said about a run: settled, active, snoozed — or
-/// `None` to take it back, which hands the run to the time decay again.
-///
-/// The payload is the standing's own tagged shape (`{"kind":"snoozed",
-/// "untilMs":…}`), so serde is the allowlist: anything that is not one of the
-/// three known kinds fails to deserialize and never reaches the database. The
-/// moment is stamped backend-side (see `AppState::set_run_standing`).
-#[tauri::command]
-pub fn set_run_standing(
-    state: State<'_, AppState>,
-    id: String,
-    standing: Option<agency_core::attention::StandingKind>,
-) -> Result<(), String> {
-    state.set_run_standing(&id, standing).map_err(|e| e.to_string())
-}
-
 /// Pin a run to the end of its project's pinned runs, or unpin it.
 #[tauri::command]
 pub fn pin_run(state: State<'_, AppState>, id: String, pinned: bool) -> Result<(), String> {

@@ -76,20 +76,9 @@ pub struct Run {
     /// the profile because it is a per-run choice: resume, rerun and every
     /// loop attempt must come back on the same model the work started on.
     pub model: Option<String>,
-    /// The user's own word on this run: settled, active or snoozed (see
-    /// `crate::attention`). `None` = nobody has classified it, which is the
-    /// only case the activity module's time decay still guesses for.
-    pub standing: Option<crate::attention::Standing>,
     /// Ascending order among pinned runs; `None` = not pinned. A pin holds the
-    /// run's place regardless of its lifecycle, so it is deliberately separate
-    /// from the standing above and is never consumed by anything the agent
-    /// does.
-    ///
-    /// It outranks the standing in *placement* — a pinned run stays at the top
-    /// however it is classified and whatever it is doing — and only there. A
-    /// pin does not raise a hand the user has lowered: pinning something you
-    /// settled would put it back on the list you just cleared, which is not
-    /// what either word means.
+    /// run's place regardless of its lifecycle and is never consumed by
+    /// anything the agent does.
     pub pin_rank: Option<f64>,
     /// The commit the run's branch was cut from, resolved once at creation.
     ///
@@ -397,11 +386,9 @@ impl Registry {
         if !column_exists(&conn, "runs", "base_commit")? {
             conn.execute("ALTER TABLE runs ADD COLUMN base_commit TEXT", [])?;
         }
-        // JSON, like loop_config: one column for a small tagged record beats
-        // three that can disagree about which of them is in force.
-        if !column_exists(&conn, "runs", "standing")? {
-            conn.execute("ALTER TABLE runs ADD COLUMN standing TEXT", [])?;
-        }
+        // Pin rank only. Settle / snooze / active standing (AGE-141) was
+        // removed: existing DBs may still have an inert `standing` column, and
+        // that is fine — nothing reads or writes it. Fresh DBs never get one.
         if !column_exists(&conn, "runs", "pin_rank")? {
             conn.execute("ALTER TABLE runs ADD COLUMN pin_rank REAL", [])?;
         }
@@ -783,18 +770,14 @@ impl Registry {
             Some(s) => Some(serde_json::to_string(s)?),
             None => None,
         };
-        let standing = match &run.standing {
-            Some(s) => Some(serde_json::to_string(s)?),
-            None => None,
-        };
         self.conn.execute(
-            "INSERT INTO runs (id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, standing, pin_rank)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
+            "INSERT INTO runs (id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, pin_rank)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
             rusqlite::params![
                 run.id, run.project_id, run.agent, run.prompt, run.base, run.branch,
                 run.created_at, run.port_base.map(|p| p as i64), run.archived_at, run.title, run.kind,
                 run.merge_target, run.race_id, loop_config, loop_state, run.issue_id, run.worktree as i64,
-                run.model, run.base_commit, standing, run.pin_rank
+                run.model, run.base_commit, run.pin_rank
             ],
         )?;
         Ok(())
@@ -813,7 +796,7 @@ impl Registry {
 
     pub fn get_run(&self, id: &str) -> Result<Option<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, standing, pin_rank FROM runs WHERE id = ?1",
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, pin_rank FROM runs WHERE id = ?1",
         )?;
         let mut rows = stmt.query([id])?;
         match rows.next()? {
@@ -824,7 +807,7 @@ impl Registry {
 
     pub fn list_runs(&self, project_id: &str) -> Result<Vec<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, standing, pin_rank
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, pin_rank
              FROM runs WHERE project_id = ?1 AND archived_at IS NULL ORDER BY created_at DESC",
         )?;
         let rows = stmt.query_map([project_id], |row| Ok(row_to_run(row)))?;
@@ -837,7 +820,7 @@ impl Registry {
 
     pub fn list_archived_runs(&self, project_id: &str) -> Result<Vec<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, standing, pin_rank
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, pin_rank
              FROM runs WHERE project_id = ?1 AND archived_at IS NOT NULL ORDER BY archived_at DESC",
         )?;
         let rows = stmt.query_map([project_id], |row| Ok(row_to_run(row)))?;
@@ -851,23 +834,6 @@ impl Registry {
     pub fn set_run_title(&self, id: &str, title: &str) -> Result<()> {
         self.conn
             .execute("UPDATE runs SET title = ?2 WHERE id = ?1", rusqlite::params![id, title])?;
-        Ok(())
-    }
-
-    /// Record (or clear) the user's word on a run. Written whole: settling a
-    /// snoozed run replaces the snooze rather than leaving two answers to
-    /// "does this need me" on the same row.
-    pub fn set_run_standing(
-        &self,
-        id: &str,
-        standing: Option<&crate::attention::Standing>,
-    ) -> Result<()> {
-        let json = match standing {
-            Some(s) => Some(serde_json::to_string(s)?),
-            None => None,
-        };
-        self.conn
-            .execute("UPDATE runs SET standing = ?2 WHERE id = ?1", rusqlite::params![id, json])?;
         Ok(())
     }
 
@@ -1317,7 +1283,7 @@ impl Registry {
     /// runs" list; also drives the last-run-abandoned rollback check).
     pub fn runs_for_issue(&self, issue_id: &str) -> Result<Vec<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, standing, pin_rank
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, pin_rank
              FROM runs WHERE issue_id = ?1 AND archived_at IS NULL ORDER BY created_at DESC",
         )?;
         let rows = stmt.query_map([issue_id], |row| Ok(row_to_run(row)))?;
@@ -1560,14 +1526,7 @@ fn row_to_run(row: &rusqlite::Row) -> Result<Run> {
         worktree: row.get::<_, i64>(16)? != 0,
         model: row.get(17)?,
         base_commit: row.get(18)?,
-        // A standing we cannot parse (a hand-edited row, a record from a
-        // future build) reads as "nobody has classified this run", which is
-        // the safe answer: the time decay takes over again.
-        standing: match row.get::<_, Option<String>>(19)? {
-            Some(s) => serde_json::from_str(&s).ok(),
-            None => None,
-        },
-        pin_rank: row.get(20)?,
+        pin_rank: row.get(19)?,
     })
 }
 
@@ -1721,7 +1680,6 @@ mod tests {
             worktree: true,
             model: None,
             base_commit: None,
-            standing: None,
             pin_rank: None,
         }
     }
@@ -2114,45 +2072,32 @@ mod tests {
         assert!(plain.loop_config.is_none() && plain.loop_state.is_none());
     }
 
-    /// The user's word on a run has to survive a restart, or "I have dealt
-    /// with this" is worth no more than the inference it replaced.
+    /// A pin has to survive a restart, or the board order the user set is
+    /// worth no more than a transient UI sort.
     #[test]
-    fn a_standing_and_a_pin_round_trip() {
+    fn a_pin_round_trips() {
         let dir = tempdir().unwrap();
-        let db = dir.path().join("standing.db");
+        let db = dir.path().join("pin.db");
         let project_id = {
             let reg = Registry::open(&db).unwrap();
             let project = reg.add_project("p", std::path::Path::new("/tmp/p")).unwrap();
             let mut run = sample_run("s1", None);
             run.project_id = project.id.clone();
             reg.insert_run(&run).unwrap();
-            assert_eq!(reg.get_run("s1").unwrap().unwrap().standing, None, "starts unclassified");
             assert_eq!(reg.max_pin_rank(&project.id).unwrap(), None, "nothing pinned yet");
 
-            let snooze = crate::attention::Standing::new(
-                crate::attention::StandingKind::Snoozed { until_ms: 9_000 },
-                1_000,
-            );
-            reg.set_run_standing("s1", Some(&snooze)).unwrap();
             reg.set_run_pin_rank("s1", Some(2.0)).unwrap();
             project.id
         };
-        // Reopened: a new connection, the same answers.
+        // Reopened: a new connection, the same answer.
         let reg = Registry::open(&db).unwrap();
         let got = reg.get_run("s1").unwrap().unwrap();
-        assert_eq!(
-            got.standing.map(|s| s.kind),
-            Some(crate::attention::StandingKind::Snoozed { until_ms: 9_000 })
-        );
-        assert_eq!(got.standing.map(|s| s.at_ms), Some(1_000));
         assert_eq!(got.pin_rank, Some(2.0));
         assert_eq!(reg.max_pin_rank(&project_id).unwrap(), Some(2.0));
 
-        // Both clear back to nothing said and nothing pinned.
-        reg.set_run_standing("s1", None).unwrap();
         reg.set_run_pin_rank("s1", None).unwrap();
         let got = reg.get_run("s1").unwrap().unwrap();
-        assert!(got.standing.is_none() && got.pin_rank.is_none());
+        assert!(got.pin_rank.is_none());
         assert_eq!(reg.max_pin_rank(&project_id).unwrap(), None);
     }
 
@@ -2181,7 +2126,6 @@ mod tests {
             worktree: true,
             model: None,
             base_commit: None,
-            standing: None,
             pin_rank: None,
         };
         reg.insert_run(&run).unwrap();

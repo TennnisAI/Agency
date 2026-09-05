@@ -50,3 +50,4 @@ ui/vitest.config.d.ts
 # is public, and a checked-in list of competitors is the exact artifact the rule
 # it enforces exists to prevent. Absent the file, the hook skips that check.
 .githooks/competitors.local
+/.vite/

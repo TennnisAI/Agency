@@ -138,9 +138,7 @@ export default function HomeView({
 
   const all = projects.flatMap((p) => runsBy[p.id] ?? []);
   const working = all.filter(isWorking).length;
-  // The header counts what is actually asking for the user, so settling or
-  // snoozing a run takes it out of the number as well as off the tile. A count
-  // that keeps a settled run in it is the same climbing badge by another name.
+  // The header counts what is actually asking for the user.
   const waitingCount = all.filter(needsAttention).length;
 
   // Hold the header (and its 0/0/0 stats) until the first poll returns, so an
@@ -275,10 +273,10 @@ function badgeClass(agent: string): string {
 }
 
 // Same visual language as the per-project AgentTile, minus the discard button:
-// the overview is for surveying and jumping in, not for tearing down. Settle,
-// snooze and pin are the exception, because they *are* surveying — this is the
-// view whose whole job is "which of these needs me", so the answer belongs
-// where the question is asked.
+// the overview is for surveying and jumping in, not for tearing down. Pin is
+// the exception, because it *is* surveying — this is the view whose whole job
+// is "which of these needs me", so holding one at the top belongs where the
+// question is asked.
 //
 // The right-click menu is not that button: it is hidden until it is asked for,
 // so it costs the card nothing, and a run has to offer the same menu wherever

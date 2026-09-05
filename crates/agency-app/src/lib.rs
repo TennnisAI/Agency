@@ -317,7 +317,6 @@ pub fn run() {
             commands::open_term_path,
             commands::rename_run,
             commands::rename_run_branch,
-            commands::set_run_standing,
             commands::pin_run,
             commands::read_file_base64,
             commands::detect_docs_dir,

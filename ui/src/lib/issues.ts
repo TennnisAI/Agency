@@ -281,18 +281,22 @@ export function saveSelected(
  * button carries the warning. `publish` keeps this machine's backlog and
  * discards the shared copy; `adopt` is the other way round.
  *
- * A rule and not a fixed pair of styles, because which one is dangerous
- * depends entirely on the counts. The prompt used to offer "use this machine's"
- * as its primary action and mark only "use the shared copy" as destructive,
- * which is backwards on the machine that is joining: a second laptop holding
- * two issues was offered a primary button that discarded the other 227, and the
- * first machine then deleted them locally on its next pass, reading their
- * absence from the remote as a deliberate deletion. Equal counts mark both,
- * because both really do discard that much.
+ * Every side with anything to lose is marked, rather than only the side that
+ * loses more. The prompt used to offer "use this machine's" as its primary
+ * action and mark only "use the shared copy" as destructive, which is
+ * backwards on the machine that is joining: a second laptop holding two issues
+ * was offered a primary button that discarded the other 227, and the first
+ * machine then deleted them locally on its next pass, reading their absence
+ * from the remote as a deliberate deletion. Ranking the two counts fixed that
+ * laptop and left its mirror image, where 227 local against 2 shared styles
+ * "keep this machine's" as a safe primary even though it still destroys two
+ * real issues on every other machine. Whenever both sides hold issues there is
+ * no safe answer, so neither button claims to be one, and the counts in the
+ * labels are what say which loss is larger.
  */
 export function seedingRisk(seed: { local: number; remote: number }): {
   publishDanger: boolean;
   adoptDanger: boolean;
 } {
-  return { publishDanger: seed.remote >= seed.local, adoptDanger: seed.local >= seed.remote };
+  return { publishDanger: seed.remote > 0, adoptDanger: seed.local > 0 };
 }

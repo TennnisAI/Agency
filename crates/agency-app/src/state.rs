@@ -2096,6 +2096,15 @@ pub struct AppState {
     /// digest). `list_issues` reconciles the index from the files only when
     /// this changes, so an idle Issues-tab poll costs one readdir.
     issue_sigs: Mutex<HashMap<String, String>>,
+    /// Serializes issue-sync passes. `sync_issues` used to run its `git
+    /// fetch`/`git push` under the registry lock, which serialized them by
+    /// accident while freezing every other registry reader for the duration;
+    /// it now releases that lock across the network, so this is what keeps two
+    /// passes over one repo from interleaving their ref updates and their
+    /// writes to `.agency/issues/`. App-wide rather than per project: only one
+    /// board is on screen at a time, so there is nothing to gain from letting
+    /// two projects sync at once.
+    issue_sync_gate: Mutex<()>,
     /// Per-project `git fetch` bookkeeping, shared by every automatic fetch —
     /// the background sweep and the UI's on-open/on-focus requests. See
     /// [`AppState::fetch_project_if_due`]. In-memory: an app restart just means
@@ -2273,6 +2282,7 @@ impl AppState {
             loops_active: std::sync::atomic::AtomicBool::new(true),
             loop_generation: std::sync::atomic::AtomicU64::new(0),
             issue_sigs: Mutex::new(HashMap::new()),
+            issue_sync_gate: Mutex::new(()),
             fetches: Mutex::new(HashMap::new()),
             kg_builds: std::sync::Arc::new(Mutex::new(HashMap::new())),
             setup_cancels: Mutex::new(HashMap::new()),
@@ -3994,9 +4004,23 @@ impl AppState {
         mode: agency_core::issuesync::Mode,
         mut on_progress: impl FnMut(agency_core::setup::CloneProgress),
     ) -> Result<SyncResult> {
-        let reg = self.registry.lock().unwrap();
-        self.ensure_issue_files(&reg, project_id)?;
-        let (root, key) = self.issue_root(&reg, project_id)?;
+        // The registry lock is taken for the lookups, dropped for the network,
+        // and taken again to reconcile. It used to be held across the whole
+        // pass, and `git fetch`/`git push` have no timeout: every other reader
+        // of the registry blocked for as long as the remote took, including the
+        // `list_issues` the board polls every 1.5s, so the window stopped
+        // answering for the duration. That was survivable while a pass only
+        // ever came from a button press. The automatic schedule made it
+        // unattended, every couple of minutes, with the progress readout
+        // deliberately suppressed, which left nothing on screen to explain it.
+        // `issue_sync_gate` keeps the serialization the registry lock was
+        // providing by accident.
+        let _sync_gate = self.issue_sync_gate.lock().unwrap();
+        let (root, key) = {
+            let reg = self.registry.lock().unwrap();
+            self.ensure_issue_files(&reg, project_id)?;
+            self.issue_root(&reg, project_id)?
+        };
         let remote = agency_core::config::issue_sync_remote(&root).ok_or_else(|| {
             anyhow!("this project's backlog is not set to sync; turn it on in settings first")
         })?;
@@ -4025,6 +4049,7 @@ impl AppState {
             percent: None,
             detail: String::new(),
         });
+        let reg = self.registry.lock().unwrap();
         agency_core::issuefs::reconcile(&reg, project_id, &key, &root)?;
         Ok(SyncResult::Done { outcome })
     }

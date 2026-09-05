@@ -285,13 +285,45 @@ the merge writes every issue the remote has.
 `[issues] auto` in `agency.local.toml`, off by default, per machine. Deliberately
 not part of the `sync`/`remote` pair a team may commit into `agency.toml`:
 whether the backlog is shared is a fact about the project, how often this laptop
-talks to the network is not. When it is on, `IssuesView` runs a pass on arrival
-at the board and every two minutes it stays there, and nowhere else. Not for
-unselected projects and not off-screen: a pass is two network round-trips and a
-read of every issue in two trees, and spending that on boards nobody is looking
-at is how a quiet feature becomes the reason the fans spin. Both directions
-travel on one schedule, because a pass pushes as well as fetches, so two
-machines polling is all it takes for a status change to cross.
+talks to the network is not. That one is enforced and not merely intended:
+`config::load` strips `auto` out of the tracked file before merging the local
+one over it (`strip_machine_only`). Leaving it to the merge was not enough,
+because a fresh clone has no `[issues]` in `agency.local.toml` at all for a
+local `false` to win with, so a committed `auto = true` would have had every
+clone start fetching and pushing on a timer with nobody on that machine having
+asked. That is the "never silently escalate" rule in `CLAUDE.md` applied to the
+network rather than to permissions, and `remote` got the same treatment from the
+other direction: `save_issues` now writes it even when it is `origin`, because
+omitting the default left a tracked `remote = "tracker"` to win the merge and a
+user who picked `origin` in Settings got the repo's answer back.
+
+When it is on, `IssuesView` runs a pass on arrival at the board and every two
+minutes it stays there, and nowhere else. Not for unselected projects and not
+off-screen: a pass is two network round-trips and a read of every issue in two
+trees, and spending that on boards nobody is looking at is how a quiet feature
+becomes the reason the fans spin. Both directions travel on one schedule,
+because a pass pushes as well as fetches, so two machines polling is all it
+takes for a status change to cross.
+
+The schedule's own state lives in `ui/src/lib/autoSync.ts`, outside the
+component, and the window is measured from the last pass rather than from the
+mount. Both because the board is rendered only on its own tab and therefore
+unmounts whenever the user looks at anything else: with the pause and the
+failure count as refs on `IssuesView`, a click on Agents and back handed the
+schedule a clean slate, so it re-announced "gave up after three failures" on
+every return, and with nothing recording the last pass, arriving at the board
+fired a fresh one. Flipping tabs was a way to fetch and push as fast as you
+could click. The record resets when the `auto` setting itself changes, which is
+the user asking for another go, and not when the board merely remounts.
+
+A pass also holds the registry lock only for its two lookups and its final
+reconcile, not across the network. It used to hold it for the whole pass, which
+serialized passes by accident and blocked every other registry reader for as
+long as the remote took, `list_issues` included, and the board polls that every
+1.5 seconds. Once per button press that was survivable and the progress readout
+explained it; every two minutes, unattended, with the readout deliberately
+suppressed, it was a window that stopped answering for no visible reason.
+`AppState::issue_sync_gate` keeps the serialization the lock was providing.
 
 Three things had to change shape before a pass could run unwatched, and each is
 the same observation: every signal the manual pass gives a user who is watching
@@ -306,16 +338,34 @@ becomes noise, or a lie, when nobody is.
   sides changed by `updated`; for a body that is text quietly replaced, and a
   dismissed toast would be the last anyone heard of it. A scheduled pass with
   conflicts opens a dialog that names each one and offers to open the first
-  affected issue. The row markers stay behind either way. The dialog reports a
-  decision already made, which is why its safe button reads "Dismiss" and not
-  "Cancel" (`ConfirmDialog` grew a `cancelLabel` for it).
+  affected issue. The row markers stay behind either way, and that last part
+  took a second change to be true: every pass used to replace the marker map
+  wholesale, which was fine when each pass was a button press and wrong on a
+  schedule, because the next clean pass wiped the markers a couple of minutes
+  later. The dialog sent the user to look at rows that no longer said anything,
+  and nothing on screen still recorded what had been overwritten. Only a pass
+  with conflicts of its own replaces them now. The dialog reports a decision
+  already made, which is why its safe button reads "Dismiss" and not "Cancel"
+  (`ConfirmDialog` grew a `cancelLabel` for it).
 - **Seeding is never asked by a timer, and failures stop the schedule.**
   `NeedsSeeding` from an automatic pass pauses the schedule and toasts once
   instead of putting up the modal: that choice discards one side's backlog
   wholesale and belongs to someone who just asked for a sync, not to someone
   dismissing a box that appeared while they typed. Three consecutive errors
-  (offline, no auth, a moved URL) pause it too, having said so once. A manual
-  sync clears the pause, which is the user saying they are dealing with it.
+  (offline, no auth, a moved URL) pause it too, having said so once. A push that
+  fails is said once as well, and then not again until a push has succeeded in
+  between: a remote that refuses one push refuses every push, and the first
+  version of this said so on every pass, which is the toast people learn to
+  dismiss unread. A manual sync clears all of it, which is the user saying they
+  are dealing with it.
+- **No pass starts while a sync prompt is up.** Both prompts are modal and both
+  are about a decision, so a pass underneath one is a pass whose reporting has
+  nowhere to go: the seeding dialog goes `busy` on a sync in flight, which
+  deadened its buttons, its ✕ and Escape with no readout to explain why, and a
+  second conflict report would swap the list under the cursor and retarget its
+  "Open" button. For the same reason the Sync buttons no longer react to a
+  quiet pass at all; a press during one is queued and runs when it lets go,
+  rather than being swallowed by the in-flight guard.
 
 **The seeding prompt's danger was on the wrong button.** It offered "Use this
 machine's" as the primary and marked only "Use the shared copy" as destructive,
@@ -324,9 +374,13 @@ two issues got a primary button that discarded the other 227, and the loss does
 not stop there. The next pass from the first machine sees those issues in the
 base and absent from the remote, reads that as a deliberate deletion
 (`issuesync.rs:129`) and deletes them locally too. So neither side is styled as
-a recommendation now, both buttons carry their count ("Keep the shared 227"),
-and the danger follows whichever side discards more. Reported by a user hitting
-exactly this on a second machine.
+a recommendation now and both buttons carry their count ("Keep the shared 227").
+Ranking the two counts was the first attempt and it only moved the problem: 227
+local against 2 shared styled "keep this machine's" as the safe primary, and it
+still destroys two real issues on every other machine. `seedingRisk` marks
+every side that has anything to lose, so whenever both sides hold issues there
+is no primary button at all, and the counts in the labels are what say which
+loss is larger. Reported by a user hitting exactly this on a second machine.
 
 **The empty board says where sharing is turned on.** With sharing off, the empty
 board was the only thing on screen and nothing on it named Settings, so "how do
@@ -426,6 +480,16 @@ Each of these was decided against for now rather than missed.
   user hits, so this is a team problem and not yet a real one.
 - **Orphaned attachments.** An asset whose issue was deleted is never collected.
   A merge is the wrong place to decide a file is unreachable.
+- **No deadline on the git calls.** `issueref::git_env` sets
+  `GIT_TERMINAL_PROMPT=0`, so a fetch cannot block on a hidden credential
+  prompt, but nothing bounds a fetch that hangs on the network: a remote behind
+  a dropped VPN takes as long as the OS gives it. Since the pass no longer holds
+  the registry lock across the network, a hang costs the schedule and the Sync
+  button rather than the window, and the OS timeout ends it in minutes. A real
+  deadline means spawning the child and killing it on expiry, in the one place
+  every git call already goes through. Worth doing, not worth guessing a
+  timeout: `http.lowSpeedTime` would only cover https and would abort a slow but
+  live transfer.
 
 ## Open questions
 

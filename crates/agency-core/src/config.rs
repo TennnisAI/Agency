@@ -310,7 +310,7 @@ fn default_block_size() -> u16 {
 /// Load `.agency/agency.toml` merged under `.agency/agency.local.toml`
 /// (local overrides repo). Missing files / malformed TOML resolve to defaults.
 pub fn load(repo_path: &Path) -> AgencyConfig {
-    let base = read_value(&repo_path.join(".agency").join("agency.toml"));
+    let base = read_value(&repo_path.join(".agency").join("agency.toml")).map(strip_machine_only);
     let local = read_value(&repo_path.join(".agency").join("agency.local.toml"));
     let merged = match (base, local) {
         (Some(b), Some(l)) => merge_values(b, l),
@@ -319,6 +319,24 @@ pub fn load(repo_path: &Path) -> AgencyConfig {
         (None, None) => return AgencyConfig::default(),
     };
     merged.try_into().unwrap_or_default()
+}
+
+/// Drop the fields a repo is not allowed to decide for the machine that clones
+/// it, before the tracked file is merged under the local one.
+///
+/// `[issues] auto` is the only one so far. Whether a backlog is shared is a
+/// fact about the project and a team may commit `sync = true`; how often this
+/// laptop talks to the network is not, and a tracked `auto = true` would have
+/// every clone start fetching and pushing on a timer with nobody here having
+/// asked. The merge alone cannot stop it: a fresh clone has no `[issues]` in
+/// `agency.local.toml` at all, so there is no local `false` for the merge to
+/// prefer. Stripped from the tracked value rather than special-cased in
+/// `merge_values`, which has no business knowing which keys these are.
+fn strip_machine_only(mut v: toml::Value) -> toml::Value {
+    if let Some(issues) = v.get_mut("issues").and_then(|i| i.as_table_mut()) {
+        issues.remove("auto");
+    }
+    v
 }
 
 fn read_value(path: &Path) -> Option<toml::Value> {
@@ -828,10 +846,13 @@ pub fn save_issues(repo_path: &Path, i: &IssuesConfig) -> std::io::Result<()> {
     // falling through to whatever the tracked file says.
     table.insert("sync".into(), toml::Value::Boolean(i.sync));
     table.insert("auto".into(), toml::Value::Boolean(i.auto));
+    // The remote is written even when it is the default, for the same reason:
+    // omitting `origin` left a tracked `remote = "tracker"` to win the merge,
+    // so a user who picked `origin` here got the repo's choice back on the next
+    // read and no way to say otherwise from the UI.
     let remote = i.remote.trim();
-    if !remote.is_empty() && remote != default_remote() {
-        table.insert("remote".into(), toml::Value::String(remote.to_string()));
-    }
+    let remote = if remote.is_empty() { default_remote() } else { remote.to_string() };
+    table.insert("remote".into(), toml::Value::String(remote));
     doc.insert("issues".into(), toml::Value::Table(table));
 
     let text = toml::to_string_pretty(&toml::Value::Table(doc)).map_err(std::io::Error::other)?;
@@ -1027,21 +1048,46 @@ mod tests {
     }
 
     /// Automatic sync is a per-machine choice, so a repo that shares its
-    /// backlog does not also decide that everyone's laptop polls for it. Off by
-    /// omission, and durable when turned off against a tracked `auto = true`,
-    /// for the same reason `sync` is.
+    /// backlog does not also decide that everyone's laptop polls for it. A
+    /// tracked `auto = true` is dropped before the merge rather than merely
+    /// losing it: a fresh clone has no `[issues]` in the local file at all, so
+    /// there would be no local `false` to prefer, and cloning a repo would
+    /// start unattended fetching and pushing here with nobody having asked.
     #[test]
-    fn automatic_sync_is_off_until_this_machine_asks_for_it() {
+    fn only_this_machine_can_turn_automatic_sync_on() {
         let dir = tempdir().unwrap();
         write(dir.path(), "agency.toml", "[issues]\nsync = true\n");
         assert!(!load(dir.path()).issues.auto);
 
+        // The state a clone actually arrives in: the tracked file asks for it
+        // and there is no local file to answer with.
         write(dir.path(), "agency.toml", "[issues]\nsync = true\nauto = true\n");
-        assert!(load(dir.path()).issues.auto, "the repo may still offer it");
+        let cfg = load(dir.path()).issues;
+        assert!(!cfg.auto, "the repo does not get to decide this one");
+        assert!(cfg.sync, "but sharing itself still travels with the repo");
+
+        // Only the gitignored file can turn it on, and off again after.
+        save_issues(dir.path(), &IssuesConfig { sync: true, auto: true, remote: "origin".into() })
+            .unwrap();
+        assert!(load(dir.path()).issues.auto);
+        save_issues(dir.path(), &IssuesConfig { sync: true, auto: false, remote: "origin".into() })
+            .unwrap();
+        assert!(!load(dir.path()).issues.auto);
+    }
+
+    /// A local `origin` has to beat a tracked non-default remote, so the field
+    /// cannot be written by omission either. Before this, choosing `origin` in
+    /// Settings wrote nothing at all and the tracked `remote = "tracker"` won
+    /// the merge, so the choice silently did not take.
+    #[test]
+    fn choosing_the_default_remote_beats_a_tracked_one() {
+        let dir = tempdir().unwrap();
+        write(dir.path(), "agency.toml", "[issues]\nsync = true\nremote = \"tracker\"\n");
+        assert_eq!(issue_sync_remote(dir.path()).as_deref(), Some("tracker"));
 
         save_issues(dir.path(), &IssuesConfig { sync: true, auto: false, remote: "origin".into() })
             .unwrap();
-        assert!(!load(dir.path()).issues.auto, "a local no has to beat the tracked yes");
+        assert_eq!(issue_sync_remote(dir.path()).as_deref(), Some("origin"));
     }
 
     /// AGE-170, with the file git actually offered the user:

@@ -569,7 +569,13 @@ export default function Settings({
     const prev = backlog;
     const sync = patch.sync ?? backlog.sync;
     const auto = patch.auto ?? backlog.auto;
-    const remote = patch.remote ?? backlogRemote;
+    // The saved remote and not `backlogRemote`, which is the input's own state
+    // and is deliberately empty between choosing "Another remote…" and typing
+    // one. Falling back to it meant flipping either toggle in that window wrote
+    // an empty remote, which the backend reads as `origin`: the select snapped
+    // back and the backlog was pointed somewhere the user had not chosen. The
+    // select and the input's blur are the only writers of this field.
+    const remote = patch.remote ?? backlog.remote;
     setBacklog((b) => (b ? { ...b, sync, auto, remote } : b));
     try {
       await saveIssueSyncConfig(id, sync, auto, remote);

@@ -310,19 +310,19 @@ describe("remembered selection", () => {
 });
 
 describe("seedingRisk", () => {
-  it("warns on the side that discards more", () => {
+  it("warns on either side that has issues to lose", () => {
     // The machine that is joining: two issues here, a real backlog there.
+    // Publishing discards 227 and adopting still discards 2, so neither button
+    // is offered as the safe one.
     expect(seedingRisk({ local: 2, remote: 227 })).toEqual({
       publishDanger: true,
-      adoptDanger: false,
-    });
-    expect(seedingRisk({ local: 227, remote: 2 })).toEqual({
-      publishDanger: false,
       adoptDanger: true,
     });
-  });
-
-  it("warns on both when either side discards the same", () => {
+    // The mirror image, which a rule comparing the counts called safe.
+    expect(seedingRisk({ local: 227, remote: 2 })).toEqual({
+      publishDanger: true,
+      adoptDanger: true,
+    });
     expect(seedingRisk({ local: 4, remote: 4 })).toEqual({
       publishDanger: true,
       adoptDanger: true,

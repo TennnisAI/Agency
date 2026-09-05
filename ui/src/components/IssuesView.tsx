@@ -33,8 +33,11 @@ import {
   saveCollapsed,
   saveSelected,
   searchTerms,
+  seedingRisk,
   stepSelection,
 } from "../lib/issues";
+import { autoSchedules } from "../lib/autoSync";
+import { ConflictReport, conflictReports } from "../lib/syncConflicts";
 import { pickDefaultAgent } from "../lib/defaultAgent";
 import { loadFold, saveFold, usePaneWidth } from "../hooks/usePaneWidth";
 import { useRepoReadiness, isGitless } from "../hooks/useRepoReadiness";
@@ -51,6 +54,12 @@ import { FindRank, registerFindTarget } from "../lib/findBus";
 const SIDEBAR_MIN = 200;
 const SIDEBAR_MAX = 460;
 
+// How often an automatically synced backlog fetches, while its board is on
+// screen. Two minutes is short enough that a teammate moving an issue is news
+// rather than history, and long enough that a day at the board is a couple of
+// hundred passes rather than a couple of thousand.
+const AUTO_SYNC_MS = 2 * 60 * 1000;
+
 // The project's issue board: a status-grouped list (Linear's default view),
 // quick capture on top, detail pane on the right. Dispatching an issue to an
 // agent goes through `onStartIssue`, which runs the same installed/readiness
@@ -58,9 +67,12 @@ const SIDEBAR_MAX = 460;
 export default function IssuesView({
   project,
   onStartIssue,
+  onOpenBacklogSettings,
 }: {
   project: Project;
   onStartIssue: (issue: Issue, agentId: string, opts?: SpawnOpts) => Promise<void>;
+  /** Settings, at the Backlog section: where sharing is turned on and pointed. */
+  onOpenBacklogSettings: () => void;
 }) {
   const { runs, tab, setTab, setView, setFocusedRun } = useRuns();
   const { issues, loaded, refresh } = useIssues(project.id, tab === "issues");
@@ -78,6 +90,9 @@ export default function IssuesView({
   // "the shared copy" at someone who is trying to work out where that is.
   const [syncRemote, setSyncRemote] = useState("");
   const [syncing, setSyncing] = useState(false);
+  // Whether the pass in flight is one nobody asked for, which is the only thing
+  // that decides if the progress readout is drawn.
+  const [quietSync, setQuietSync] = useState(false);
   // The pass's current step. A sync fetches, reads one blob per issue per tree,
   // then pushes, so on a real backlog it is seconds; before this the window
   // simply stopped answering for that whole time.
@@ -85,10 +100,24 @@ export default function IssuesView({
   // Set when a first sync finds issues on both sides with no history in common;
   // holds the two counts the prompt states.
   const [seed, setSeed] = useState<{ local: number; remote: number } | null>(null);
-  // Issue key to the lines the last sync decided for itself. Kept for the visit
-  // rather than persisted: it describes one sync, and a marker that outlived
-  // the thing it described would be worse than none.
-  const [syncConflicts, setSyncConflicts] = useState<Record<string, string[]>>({});
+  // Whether this project syncs on its own as well as on the button.
+  const [autoOn, setAutoOn] = useState(false);
+  // A pass is in flight. A ref and not `syncing`, because the automatic
+  // schedule's timer holds the closure it was created with and would read a
+  // `syncing` that is permanently false.
+  const syncingRef = useRef(false);
+  // A Sync pressed while a quiet pass held the lock. The buttons stay live
+  // through a pass nobody asked for, so a press there is a real request rather
+  // than a double-click, and dropping it left the one button the user reached
+  // for doing nothing at all.
+  const pendingManual = useRef<IssueSyncMode | null>(null);
+  // What the last deciding sync of this project left behind: the row markers,
+  // and the dialog an automatic pass owes the user. Seeded from a store that
+  // outlives the board, because the board unmounts on every tab switch and the
+  // prompt sends the user to look at the markers. See `lib/syncConflicts.ts`.
+  const [conflicts, setConflicts] = useState<ConflictReport>(() =>
+    conflictReports.forProject(project.id),
+  );
   // Any status group folds; done/cancelled are the ones that start folded.
   const [collapsed, setCollapsed] = useState<Set<IssueStatus>>(() => new Set(DEFAULT_COLLAPSED));
   // Quick-add rests as a + button and expands into an inline input on demand.
@@ -370,34 +399,130 @@ export default function IssuesView({
         if (!live) return;
         setSyncOn(c.sync && c.remotes.length > 0);
         setSyncRemote(c.remote);
+        setAutoOn(c.auto);
       })
-      .catch(() => { if (live) setSyncOn(false); });
+      .catch(() => { if (live) { setSyncOn(false); setAutoOn(false); } });
     return () => { live = false; };
   }, [project.id, tab]);
 
-  // A different project's conflicts say nothing about this one.
-  useEffect(() => { setSyncConflicts({}); }, [project.id]);
+  // A different project's conflicts say nothing about this one, so the board
+  // shows that project's own outstanding report rather than clearing.
+  useEffect(() => { setConflicts(conflictReports.forProject(project.id)); }, [project.id]);
+
+  // This project's schedule record, created on first use and reset only when
+  // the `auto` setting itself changes. Read through a call rather than held in
+  // a ref so that a manual sync arriving before the schedule's own effect has
+  // run still finds the same record.
+  const sched = () => autoSchedules.forProject(project.id, autoOn);
+
+  // A sync prompt is on screen. No pass may start while one is: the seeding
+  // dialog goes `busy` on `syncing`, so a quiet pass would deaden its buttons,
+  // its ✕ and Escape with no progress readout to explain why, and a second
+  // conflict report would swap the list under the cursor and retarget its
+  // "Open" button. A ref, because the schedule's timer cannot see state.
+  const promptOpen = useRef(false);
+  promptOpen.current = seed !== null || conflicts.prompt !== null;
+
+  // The automatic schedule: a pass on arrival, then one every couple of minutes
+  // for as long as the board is on screen. Nothing runs off-screen, and nothing
+  // runs for a project that is not selected: a pass is two network round-trips
+  // and a read of every issue in two trees, and spending that on boards nobody
+  // is looking at is how a quiet feature becomes the reason the fans spin.
+  // There is no `tab` check because the board is only mounted on its own tab.
+  //
+  // A rescheduling timeout and not an interval, so the window is measured from
+  // the last pass rather than from this mount. `IssuesView` unmounts on every
+  // tab switch, and an interval that started over each time it came back meant
+  // arriving at the board was itself a way to force a pass.
+  //
+  // The interval is not a setting. Anything short enough to feel live is short
+  // enough that the number stops mattering, and a knob here would only be a
+  // place to get it wrong.
+  useEffect(() => {
+    if (!syncOn || !autoOn) return;
+    let timer = 0;
+    function tick() {
+      const s = sched();
+      const due = s.lastPassAt + AUTO_SYNC_MS - Date.now();
+      if (due > 0) {
+        timer = window.setTimeout(tick, due);
+        return;
+      }
+      // `runSync` stamps `lastPassAt` for every pass it actually starts, the
+      // manual ones included, so pressing Sync also pushes the window out
+      // rather than leaving a scheduled pass due seconds later.
+      if (!s.paused && !syncingRef.current && !promptOpen.current) void runSync("merge", true);
+      timer = window.setTimeout(tick, AUTO_SYNC_MS);
+    }
+    tick();
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project.id, syncOn, autoOn]);
 
   // One sync pass. `merge` is the steady state; `publish`/`adopt` only ever
   // arrive from the seeding prompt, which is the one question the merge cannot
   // answer for itself.
-  async function runSync(mode: IssueSyncMode) {
-    if (syncing) return;
+  //
+  // `auto` is the same pass with the reporting inverted. A pass the user asked
+  // for says how it went, including "Already up to date", because they pressed
+  // a button and are owed an answer. A pass on the schedule says nothing unless
+  // there is something only a person can settle: a toast every couple of
+  // minutes trains people to ignore the one that matters.
+  async function runSync(mode: IssueSyncMode, auto = false) {
+    const s = sched();
+    if (syncingRef.current) {
+      // Queued rather than dropped: the Sync buttons stay live through a quiet
+      // pass, so this is someone asking for one, and the pass in flight is
+      // seconds from letting go. The pass in flight stops being quiet at the
+      // same time, or a press during a slow one would leave the button reading
+      // "Sync" and apparently doing nothing until it finished. The readout has
+      // a fallback for the progress this pass never reported.
+      if (!auto) {
+        pendingManual.current = mode;
+        setQuietSync(false);
+      }
+      return;
+    }
+    syncingRef.current = true;
+    if (!auto) {
+      // A manual sync is the user saying they are dealing with whatever
+      // stopped the schedule, so it starts the whole record over.
+      s.paused = false;
+      s.fails = 0;
+      s.pushFailed = false;
+    }
+    s.lastPassAt = Date.now();
     setSyncing(true);
+    setQuietSync(auto);
     setSyncProgress(null);
     try {
-      const res = await syncIssues(project.id, mode, setSyncProgress);
+      // No readout for a pass nobody asked for. The progress bar exists to
+      // explain a window that has gone quiet for several seconds, and on the
+      // schedule it would instead be a bar that appears on its own.
+      const res = await syncIssues(project.id, mode, auto ? () => {} : setSyncProgress);
       if (res.kind === "needsSeeding") {
-        setSeed({ local: res.local, remote: res.remote });
+        // Not a modal thrown up by a timer: the choice discards one side's
+        // backlog, and it should be made by someone who just asked for a sync,
+        // not by someone dismissing a box that appeared while they typed.
+        if (auto) {
+          s.paused = true;
+          toastInfo(
+            "Automatic sync is waiting on you: this machine's backlog and the shared copy " +
+              "have nothing in common yet. Press Sync to choose which to keep.",
+            10000,
+          );
+        } else {
+          setSeed({ local: res.local, remote: res.remote });
+        }
         return;
       }
+      s.fails = 0;
       const o = res.outcome;
       await refresh();
-      setSyncConflicts(() => {
-        const next: Record<string, string[]> = {};
-        for (const c of o.conflicts) (next[c.key] ??= []).push(`${c.field}: ${c.detail}`);
-        return next;
-      });
+      // The rules for what a pass does to the markers and the prompt live in
+      // the store, which is where they can be tested: a pass that decided
+      // nothing leaves both alone, and only an automatic one raises a dialog.
+      setConflicts(conflictReports.record(project.id, o.conflicts, { auto }));
       // Say what changed here, not what was uploaded: the push is the boring
       // half, and its failure is the only part of it worth a sentence.
       const bits: string[] = [];
@@ -408,14 +533,45 @@ export default function IssuesView({
         bits.push(`${o.conflicts.length} conflict${o.conflicts.length === 1 ? "" : "s"} decided for you`);
       }
       const what = bits.length ? bits.join(", ") : "Already up to date";
+      if (auto) {
+        // A failed push on the schedule gets said once and then not again: the
+        // board looks synced while the shared copy is not, which is the one
+        // outcome silence would misrepresent, but a remote that refuses a push
+        // refuses every push, and saying so every two minutes for the rest of
+        // the day is the toast people learn to dismiss unread. Said again only
+        // after a pass has succeeded in between.
+        if (!o.pushed && !s.pushFailed) {
+          toastError("Sync couldn't update the shared copy. Try again.", "Sync");
+        }
+        s.pushFailed = !o.pushed;
+        return;
+      }
+      s.pushFailed = !o.pushed;
       if (!o.pushed) toastError(`${what}, but the shared copy was not updated. Try again.`, "Sync");
       else if (o.conflicts.length) toastInfo(what, 8000);
       else toastSuccess(what);
     } catch (e) {
+      // On the schedule, the first failure is worth saying and the tenth is
+      // not. Three in a row is a remote that is not coming back on its own
+      // (no network, no auth, a URL that has moved), so the schedule stops and
+      // says so rather than retrying until the app closes.
+      if (auto) {
+        s.fails += 1;
+        if (s.fails === 1) toastError(e, "Couldn't sync the backlog");
+        if (s.fails >= 3) {
+          s.paused = true;
+          toastError("Automatic sync gave up after three failures. Press Sync to try again.", "Sync");
+        }
+        return;
+      }
       toastError(e, "Couldn't sync the backlog");
     } finally {
+      syncingRef.current = false;
       setSyncing(false);
       setSyncProgress(null);
+      const queued = pendingManual.current;
+      pendingManual.current = null;
+      if (queued) void runSync(queued);
     }
   }
 
@@ -638,13 +794,28 @@ export default function IssuesView({
 
   // The list only compresses while there is a detail pane to give the room to.
   const wide = expanded && selected != null;
+  // A pass the user can see. The Sync buttons and the progress readout both key
+  // off this and not `syncing`, or an automatically synced board would grey its
+  // Sync button out and relabel it "Syncing…" on its own every couple of
+  // minutes, which is the unrequested change the quiet pass exists to avoid. A
+  // press during a quiet pass is queued, not swallowed; see `runSync`.
+  const busySync = syncing && !quietSync;
+  // The row an automatic conflict prompt offers to open: the first one it names
+  // that is still on the board. A merge can report a conflict on an issue this
+  // side then deletes, so the lookup can come back empty.
+  const conflictTarget = conflicts.prompt
+    ? issues.find((i) => issueLabel(project, i) === conflicts.prompt?.[0]?.key) ?? null
+    : null;
   // One string for both Sync buttons (the toolbar's and the empty board's), so
   // the two cannot drift. It is the whole answer to "where did my issues go",
   // in the place someone asking that is already looking; the same claim the
   // Backlog section in Settings makes, in fewer words.
   const syncTitle =
     `Sync this backlog with ${syncRemote || "the shared copy"}. Issues travel on a ref of ` +
-    "their own, refs/agency/issues, so they never land on a branch or in a diff.";
+    "their own, refs/agency/issues, so they never land on a branch or in a diff." +
+    // Someone pressing Sync on a backlog that already syncs itself is owed the
+    // reason it was probably already up to date.
+    (autoOn ? " This one also syncs on its own every couple of minutes." : "");
 
   return (
     <div className={`issues-wrap${wide ? " expanded" : ""}`}>
@@ -716,10 +887,10 @@ export default function IssuesView({
               <button
                 className="filter-reset"
                 title={syncTitle}
-                disabled={syncing}
+                disabled={busySync}
                 onClick={() => { runSync("merge"); }}
               >
-                {syncing ? "Syncing…" : "Sync"}
+                {busySync ? "Syncing…" : "Sync"}
               </button>
             )}
             {narrowed && (
@@ -765,7 +936,7 @@ export default function IssuesView({
             )}
           </div>
         )}
-        {syncing && (
+        {busySync && (
           // Outside the filter bar's own row: the bar is only drawn once there
           // are issues, and a sync runs from the seeding prompt too.
           <div className={`issues-sync-progress${wide ? " compact" : ""}`}>
@@ -787,7 +958,7 @@ export default function IssuesView({
             <div>
               {syncOn
                 ? "Capture your first issues, or sync to bring down the shared backlog."
-                : "Capture your first issues. Agents can pick up issues from here."}
+                : "Capture your first issues, or set up sharing to bring one down from a repository."}
             </div>
             {/* The toolbar's Sync button lives inside `issues.length > 0`, so
                 without one here a machine that has just cloned a shared project
@@ -796,17 +967,36 @@ export default function IssuesView({
                 the second-machine half of the feature starts in. Plain "merge"
                 is the right mode for it, not adopt: with nothing local there is
                 no seeding question to ask, and the merge writes every issue the
-                remote has. */}
-            {syncOn && (
+                remote has.
+
+                Sharing off is the same dead end one step earlier: the empty
+                board was the only thing on screen and nothing on it said where
+                sharing is turned on, so the second machine's first question
+                ("how do I get my issues here") had no answer in the place it
+                was being asked. */}
+            <div className="issues-empty-actions">
+              {syncOn && (
+                <button
+                  className="ghost"
+                  title={syncTitle}
+                  disabled={busySync}
+                  onClick={() => { runSync("merge"); }}
+                >
+                  {busySync ? "Syncing…" : `Sync with ${syncRemote || "the remote"}`}
+                </button>
+              )}
               <button
                 className="ghost"
-                title={syncTitle}
-                disabled={syncing}
-                onClick={() => { runSync("merge"); }}
+                title={
+                  syncOn
+                    ? `This backlog syncs with ${syncRemote}. Change or turn off sharing in Settings.`
+                    : "Share this backlog with a repository, so it travels between your machines."
+                }
+                onClick={onOpenBacklogSettings}
               >
-                {syncing ? "Syncing…" : `Sync with ${syncRemote || "the remote"}`}
+                {syncOn ? "Backlog settings" : "Set up sharing"}
               </button>
-            )}
+            </div>
           </div>
         ) : (
           <div ref={listRef} className={`issues-list${drag ? " reordering" : ""}${wide ? " compact" : ""}`}>
@@ -851,7 +1041,7 @@ export default function IssuesView({
                       onPatch={(p) => patch(issue, p)}
                       onDelete={() => setConfirmDelete(issue)}
                       terms={terms}
-                      syncConflicts={syncConflicts[issueLabel(project, issue)]}
+                      syncConflicts={conflicts.markers[issueLabel(project, issue)]}
                       gitless={gitless}
                       drag={!reorderable ? undefined : {
                         over:
@@ -921,22 +1111,70 @@ export default function IssuesView({
         // sync each machine numbered its issues from its own counter, so the
         // two backlogs have no identities in common and merging them would
         // report every issue as a clash. One side has to seed the other.
+        //
+        // Neither side is styled as the recommendation whenever both hold
+        // issues, because neither is safe; `seedingRisk` is where that rule and
+        // the reason for it live.
         <ConfirmDialog
           title="Which backlog is the real one?"
           body={
             <>
-              This machine has {seed.local} issue{seed.local === 1 ? "" : "s"} and the shared copy
-              has {seed.remote}, with nothing in common yet. Pick the one to keep. The other is
-              replaced, and the replaced copy stays recoverable from the repository.
+              This machine has {seed.local} issue{seed.local === 1 ? "" : "s"} and the shared
+              copy has {seed.remote}, with nothing in common yet, so neither can be merged into the
+              other. Whichever you keep replaces the other everywhere, and your other machines drop
+              the replaced issues on their next sync. The replaced copy stays recoverable from the
+              repository.
             </>
           }
-          confirmLabel="Use this machine's"
-          altLabel="Use the shared copy"
-          altDanger
+          confirmLabel={`Keep this machine's ${seed.local}`}
+          danger={seedingRisk(seed).publishDanger}
+          altLabel={`Keep the shared ${seed.remote}`}
+          altDanger={seedingRisk(seed).adoptDanger}
           busy={syncing}
           onConfirm={() => { setSeed(null); runSync("publish"); }}
           onAlt={() => { setSeed(null); runSync("adopt"); }}
           onCancel={() => setSeed(null)}
+        />
+      )}
+      {conflicts.prompt && conflicts.prompt.length > 0 && (
+        // The prompt the automatic schedule owes the user. A hand sync reports
+        // its conflicts in a toast, which is right when someone is watching the
+        // board they just pressed Sync on. On the schedule nobody is, and the
+        // merge has already resolved a field by `updated`: for a body that is
+        // text quietly replaced, so a dismissed toast would be the last anyone
+        // heard of it. The row markers stay behind either way, and both this
+        // and they outlive the board: it unmounts on a tab switch, which used
+        // to discard the report and the rows it points at together.
+        <ConfirmDialog
+          title={`Sync decided ${conflicts.prompt.length} ${
+            conflicts.prompt.length === 1 ? "field" : "fields"
+          } for you`}
+          body={
+            <>
+              <p>
+                Both this machine and the shared copy changed these since the last sync, so the
+                later edit won. What it replaced is still in the backlog's own history.
+              </p>
+              <ul className="issue-conflict-list">
+                {conflicts.prompt.slice(0, 6).map((c, n) => (
+                  <li key={`${c.key}-${c.field}-${n}`}>
+                    <code>{c.key}</code> {c.field}: {c.detail}
+                  </li>
+                ))}
+              </ul>
+              {conflicts.prompt.length > 6 && (
+                <p>and {conflicts.prompt.length - 6} more, marked on their rows.</p>
+              )}
+            </>
+          }
+          cancelLabel="Dismiss"
+          confirmLabel={`Open ${conflicts.prompt[0].key}`}
+          confirmDisabled={!conflictTarget}
+          onConfirm={() => {
+            if (conflictTarget) setSelectedId(conflictTarget.id);
+            setConflicts(conflictReports.dismiss(project.id));
+          }}
+          onCancel={() => setConflicts(conflictReports.dismiss(project.id))}
         />
       )}
       {confirmDelete && (

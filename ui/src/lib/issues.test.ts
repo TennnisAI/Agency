@@ -16,6 +16,7 @@ import {
   saveCollapsed,
   saveSelected,
   searchTerms,
+  seedingRisk,
   stepSelection,
   todayIssues,
 } from "./issues";
@@ -305,5 +306,35 @@ describe("remembered selection", () => {
     const open = issue({});
     saveSelected(storage, KEY, open.id);
     expect(loadSelected(storage, issuesSelectedKey("p2"), [open])).toBeNull();
+  });
+});
+
+describe("seedingRisk", () => {
+  it("warns on either side that has issues to lose", () => {
+    // The machine that is joining: two issues here, a real backlog there.
+    // Publishing discards 227 and adopting still discards 2, so neither button
+    // is offered as the safe one.
+    expect(seedingRisk({ local: 2, remote: 227 })).toEqual({
+      publishDanger: true,
+      adoptDanger: true,
+    });
+    // The mirror image, which a rule comparing the counts called safe.
+    expect(seedingRisk({ local: 227, remote: 2 })).toEqual({
+      publishDanger: true,
+      adoptDanger: true,
+    });
+    expect(seedingRisk({ local: 4, remote: 4 })).toEqual({
+      publishDanger: true,
+      adoptDanger: true,
+    });
+  });
+
+  it("does not warn about discarding nothing", () => {
+    // A remote with no issues cannot be worth keeping over a local backlog, and
+    // publishing over it destroys nothing.
+    expect(seedingRisk({ local: 12, remote: 0 })).toEqual({
+      publishDanger: false,
+      adoptDanger: true,
+    });
   });
 });

@@ -1167,9 +1167,10 @@ pub fn save_issue_sync_config(
     state: State<'_, AppState>,
     project_id: String,
     sync: bool,
+    auto: bool,
     remote: String,
 ) -> Result<(), String> {
-    state.save_issue_sync_config(&project_id, sync, &remote).map_err(|e| e.to_string())
+    state.save_issue_sync_config(&project_id, sync, auto, &remote).map_err(|e| e.to_string())
 }
 
 /// Sync the backlog with the remote this project's config names.

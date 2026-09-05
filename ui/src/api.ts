@@ -316,6 +316,8 @@ export const deleteIssue = (id: string) => invoke<void>("delete_issue", { id });
 // switching off here is a local override rather than a change everyone sees.
 export interface IssueSyncConfig {
   sync: boolean;
+  /** Sync on the board's own schedule as well as from the Sync button. */
+  auto: boolean;
   remote: string;
   remotes: string[];
   fromRepo: boolean;
@@ -344,8 +346,12 @@ export type IssueSyncMode = "merge" | "publish" | "adopt";
 
 export const getIssueSyncConfig = (projectId: string) =>
   invoke<IssueSyncConfig>("get_issue_sync_config", { projectId });
-export const saveIssueSyncConfig = (projectId: string, sync: boolean, remote: string) =>
-  invoke<void>("save_issue_sync_config", { projectId, sync, remote });
+export const saveIssueSyncConfig = (
+  projectId: string,
+  sync: boolean,
+  auto: boolean,
+  remote: string,
+) => invoke<void>("save_issue_sync_config", { projectId, sync, auto, remote });
 // "Needs seeding" is an outcome, not an error: two already-populated machines
 // with no history in common is a question for the user (which side seeds the
 // other), and the UI has to tell it apart from a broken remote without reading

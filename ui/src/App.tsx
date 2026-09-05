@@ -18,6 +18,7 @@ import { FileRoot, Project, QueueNotice, RepoReadiness, RunInfo, agentOnboarding
 import { pickDefaultAgent } from "./lib/defaultAgent";
 import { PENDING_ISSUE_KEY, PENDING_QUICKADD_KEY, isClosed, issueLabel } from "./lib/issues";
 import { NAVIGATE_EVENT, NavTarget } from "./lib/navigate";
+import { SectionId } from "./lib/settingsSections";
 import { fileRootKey, requestOpenFile } from "./lib/openFile";
 import { requestFind, requestFindStep } from "./lib/findBus";
 import { DAILY_TEMPLATE_PATH, JOURNAL_DIR, dailyNotePath, defaultDailyContent, renderDailyTemplate } from "./lib/dailyNote";
@@ -37,6 +38,10 @@ function Shell() {
   const [project, setProject] = useState<Project | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [showSettings, setShowSettings] = useState(false);
+  // Which Settings section to land on, for the callers that mean a particular
+  // one: the empty backlog's own "set up sharing" button, and anything like it.
+  // null leaves Settings on whichever section it was last left at.
+  const [settingsSection, setSettingsSection] = useState<SectionId | null>(null);
   // A newer release exists on GitHub. Dots the Settings button; the actual
   // download link lives in Settings ▸ Diagnostics.
   const [updateAvailable, setUpdateAvailable] = useState(false);
@@ -248,6 +253,15 @@ function Shell() {
     else setWeeklySetup({ ws, path, readiness: r });
   }
 
+  // Settings, optionally at a named section. Every caller that just wants the
+  // screen passes nothing and keeps the section it was last left at; a caller
+  // that is answering "where do I turn this on" names the section, so the
+  // answer is on screen rather than thirteen sections away.
+  function openSettings(section?: SectionId) {
+    setSettingsSection(section ?? null);
+    setShowSettings(true);
+  }
+
   useShortcuts({
     onNewTask: () => { newTaskDefaultAgent(); },
     onSource: () => setTab("source"),
@@ -258,7 +272,7 @@ function Shell() {
       if (focused?.kind === "agent") setApproveRun(focused.id);
     },
     onPalette: () => setPaletteOpen(true),
-    onSettings: () => setShowSettings(true),
+    onSettings: () => openSettings(),
   });
 
   // ⌘F / ⌥⌘F normally arrive as Edit-menu actions — macOS gives the menu bar
@@ -382,7 +396,7 @@ function Shell() {
   // calls the version closed over the latest state.
   function onMenu(action: string) {
     switch (action) {
-      case "settings": setShowSettings(true); break;
+      case "settings": openSettings(); break;
       case "palette": setPaletteOpen(true); break;
       case "new-agent": newTaskDefaultAgent(); break;
       case "new-terminal": createTerminal(); break;
@@ -550,7 +564,7 @@ function Shell() {
               onHome={goHome}
               onSelectionGone={leaveProject}
               onToggleSidebar={() => setSidebarOpen(false)}
-              onOpenSettings={() => setShowSettings(true)}
+              onOpenSettings={() => openSettings()}
               updateAvailable={updateAvailable}
             />
           </div>
@@ -561,6 +575,7 @@ function Shell() {
         {showSettings ? (
           <Settings
             onClose={() => setShowSettings(false)}
+            section={settingsSection}
             onOpenTerminal={(runId) => project && openRun(project, runId)}
             projectId={selectedProjectId}
             projectName={project?.name ?? null}
@@ -568,6 +583,7 @@ function Shell() {
         ) : (
           <AgentsView
             project={project}
+            onOpenSettings={openSettings}
             sidebarOpen={sidebarOpen}
             onToggleSidebar={() => setSidebarOpen(true)}
             onOpenRun={openRun}

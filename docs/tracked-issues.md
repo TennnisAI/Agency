@@ -1,10 +1,11 @@
 # Syncing `.agency/issues/` — across machines, and across a team
 
-Status: **built and usable** (2026-09-02), manual sync only. The `uid`
-groundwork, the merge, the ref transport, the setting and the UI are in and
-tested. Nothing syncs on its own; every pass is something the user asks for.
-This doc supersedes the earlier version, which asked a narrower question and got
-a narrower answer.
+Status: **built and usable** (2026-09-02), with an opt-in automatic trigger
+since 2026-09-05. The `uid` groundwork, the merge, the ref transport, the
+setting and the UI are in and tested. A backlog syncs on its own only where
+someone has turned that on per machine; otherwise every pass is still something
+the user asks for. This doc supersedes the earlier version, which asked a
+narrower question and got a narrower answer.
 
 The question this now answers: the tracker is local files, so a person with
 three machines has three different backlogs, and a team has none. What makes
@@ -280,6 +281,121 @@ there and not `Adopt`: with no local issues there is no seeding question to ask,
 which is why the `NeedsSeeding` guard turns on `!local_files.is_empty()`, and
 the merge writes every issue the remote has.
 
+**An automatic trigger, and what it cost to make it safe (2026-09-05).**
+`[issues] auto` in `agency.local.toml`, off by default, per machine. Deliberately
+not part of the `sync`/`remote` pair a team may commit into `agency.toml`:
+whether the backlog is shared is a fact about the project, how often this laptop
+talks to the network is not. That one is enforced and not merely intended:
+`config::load` strips `auto` out of the tracked file before merging the local
+one over it (`strip_machine_only`). Leaving it to the merge was not enough,
+because a fresh clone has no `[issues]` in `agency.local.toml` at all for a
+local `false` to win with, so a committed `auto = true` would have had every
+clone start fetching and pushing on a timer with nobody on that machine having
+asked. That is the "never silently escalate" rule in `CLAUDE.md` applied to the
+network rather than to permissions, and `remote` got the same treatment from the
+other direction: `save_issues` now writes it even when it is `origin`, because
+omitting the default left a tracked `remote = "tracker"` to win the merge and a
+user who picked `origin` in Settings got the repo's answer back.
+
+When it is on, `IssuesView` runs a pass on arrival at the board and every two
+minutes it stays there, and nowhere else. Not for unselected projects and not
+off-screen: a pass is two network round-trips and a read of every issue in two
+trees, and spending that on boards nobody is looking at is how a quiet feature
+becomes the reason the fans spin. Both directions travel on one schedule,
+because a pass pushes as well as fetches, so two machines polling is all it
+takes for a status change to cross.
+
+The schedule's own state lives in `ui/src/lib/autoSync.ts`, outside the
+component, and the window is measured from the last pass rather than from the
+mount. Both because the board is rendered only on its own tab and therefore
+unmounts whenever the user looks at anything else: with the pause and the
+failure count as refs on `IssuesView`, a click on Agents and back handed the
+schedule a clean slate, so it re-announced "gave up after three failures" on
+every return, and with nothing recording the last pass, arriving at the board
+fired a fresh one. Flipping tabs was a way to fetch and push as fast as you
+could click. The record resets when the `auto` setting itself changes, which is
+the user asking for another go, and not when the board merely remounts.
+
+A pass also holds the registry lock only for its two lookups and its final
+reconcile, not across the network. It used to hold it for the whole pass, which
+serialized passes by accident and blocked every other registry reader for as
+long as the remote took, `list_issues` included, and the board polls that every
+1.5 seconds. Once per button press that was survivable and the progress readout
+explained it; every two minutes, unattended, with the readout deliberately
+suppressed, it was a window that stopped answering for no visible reason.
+`AppState::issue_sync_gate` keeps the serialization the lock was providing.
+
+Three things had to change shape before a pass could run unwatched, and each is
+the same observation: every signal the manual pass gives a user who is watching
+becomes noise, or a lie, when nobody is.
+
+- **The reporting inverts.** A hand sync says how it went, "Already up to date"
+  included, because someone pressed a button and is owed an answer. A scheduled
+  one says nothing at all unless there is something only a person can settle. A
+  toast every two minutes is a toast nobody reads, including the one that
+  matters.
+- **Conflicts get a prompt instead of a toast.** The merge decides a field both
+  sides changed by `updated`; for a body that is text quietly replaced, and a
+  dismissed toast would be the last anyone heard of it. A scheduled pass with
+  conflicts opens a dialog that names each one and offers to open the first
+  affected issue. The row markers stay behind either way, and that last part
+  took two changes to be true. Every pass used to replace the marker map
+  wholesale, which was fine when each pass was a button press and wrong on a
+  schedule, because the next clean pass wiped the markers a couple of minutes
+  later; only a pass with conflicts of its own replaces them now. And both the
+  markers and the prompt were state on `IssuesView`, which unmounts on every
+  tab switch, so a click on Agents and back discarded the report and the rows
+  it points at together. Both now live in `ui/src/lib/syncConflicts.ts`, keyed
+  by project, in memory for the life of the app run: the prompt is outstanding
+  until it is answered, not until the user looks elsewhere. That module also
+  holds the two rules, where they can be tested: a pass that decided nothing
+  leaves both alone, and only an automatic pass raises a dialog (a manual one
+  toasts, and clears a prompt naming conflicts it has just superseded). The
+  dialog reports a decision already made, which is why its safe button reads
+  "Dismiss" and not "Cancel" (`ConfirmDialog` grew a `cancelLabel` for it).
+- **Seeding is never asked by a timer, and failures stop the schedule.**
+  `NeedsSeeding` from an automatic pass pauses the schedule and toasts once
+  instead of putting up the modal: that choice discards one side's backlog
+  wholesale and belongs to someone who just asked for a sync, not to someone
+  dismissing a box that appeared while they typed. Three consecutive errors
+  (offline, no auth, a moved URL) pause it too, having said so once. A push that
+  fails is said once as well, and then not again until a push has succeeded in
+  between: a remote that refuses one push refuses every push, and the first
+  version of this said so on every pass, which is the toast people learn to
+  dismiss unread. A manual sync clears all of it, which is the user saying they
+  are dealing with it.
+- **No pass starts while a sync prompt is up.** Both prompts are modal and both
+  are about a decision, so a pass underneath one is a pass whose reporting has
+  nowhere to go: the seeding dialog goes `busy` on a sync in flight, which
+  deadened its buttons, its ✕ and Escape with no readout to explain why, and a
+  second conflict report would swap the list under the cursor and retarget its
+  "Open" button. For the same reason the Sync buttons no longer react to a
+  quiet pass at all; a press during one is queued and runs when it lets go,
+  rather than being swallowed by the in-flight guard.
+
+**The seeding prompt's danger was on the wrong button.** It offered "Use this
+machine's" as the primary and marked only "Use the shared copy" as destructive,
+which is exactly backwards on the machine that is joining: a second laptop with
+two issues got a primary button that discarded the other 227, and the loss does
+not stop there. The next pass from the first machine sees those issues in the
+base and absent from the remote, reads that as a deliberate deletion
+(`issuesync.rs:129`) and deletes them locally too. So neither side is styled as
+a recommendation now and both buttons carry their count ("Keep the shared 227").
+Ranking the two counts was the first attempt and it only moved the problem: 227
+local against 2 shared styled "keep this machine's" as the safe primary, and it
+still destroys two real issues on every other machine. `seedingRisk` marks
+every side that has anything to lose, so whenever both sides hold issues there
+is no primary button at all, and the counts in the labels are what say which
+loss is larger. Reported by a user hitting exactly this on a second machine.
+
+**The empty board says where sharing is turned on.** With sharing off, the empty
+board was the only thing on screen and nothing on it named Settings, so "how do
+I get my issues onto this machine" had no answer in the place it was being
+asked. It now carries a button into Settings at the Backlog section, which is
+what gave `Settings` a `section` prop at all: the rail was added for AGE-187 and
+had no deep link, and `lastSection` has to record the arrival or closing
+Settings and reopening it jumps back to wherever you were before.
+
 ### `uid`
 
 Issue files carry `uid:` — a uuid in the frontmatter, right after `key:`, which
@@ -350,10 +466,14 @@ How it behaves:
 
 Each of these was decided against for now rather than missed.
 
-- **A trigger.** Every sync is manual, from the button on the issues toolbar.
-  Automatic on project open is the obvious next step and needs no engine change;
-  manual first is how you find out whether the merge behaves before it runs
-  unattended.
+- **Interactive conflict resolution (AGE-191).** The merge still decides a field both
+  sides changed, and the prompt reports the decision rather than offering it.
+  Holding a plan open with a contested field unresolved, showing the two
+  versions of a body side by side and letting a person pick, is the next real
+  engine change: `plan` would need a third outcome between "applied" and
+  "blocked", and the app a place to keep a half-merged issue while the question
+  is on screen. Reporting first is the same staging manual-before-automatic
+  was.
 - **A push that fails is only `pushed: false`.** The common cause is the remote
   having moved, and "sync again" is the right advice, but telling that apart
   from an auth failure means parsing git's stderr or re-fetching to compare.
@@ -366,10 +486,22 @@ Each of these was decided against for now rather than missed.
   user hits, so this is a team problem and not yet a real one.
 - **Orphaned attachments.** An asset whose issue was deleted is never collected.
   A merge is the wrong place to decide a file is unreachable.
+- **No deadline on the git calls.** `issueref::git_env` sets
+  `GIT_TERMINAL_PROMPT=0`, so a fetch cannot block on a hidden credential
+  prompt, but nothing bounds a fetch that hangs on the network: a remote behind
+  a dropped VPN takes as long as the OS gives it. Since the pass no longer holds
+  the registry lock across the network, a hang costs the schedule and the Sync
+  button rather than the window, and the OS timeout ends it in minutes. A real
+  deadline means spawning the child and killing it on expiry, in the one place
+  every git call already goes through. Worth doing, not worth guessing a
+  timeout: `http.lowSpeedTime` would only cover https and would abort a slow but
+  live transfer.
 
 ## Open questions
 
-1. Sync trigger: on app focus, on project open, on dispatch, on a timer?
+1. Should a dispatch sync first? An agent picking up an issue someone else moved
+   to In progress two minutes ago is the one case where the two-minute window is
+   too wide, and dispatch is a moment the user is already waiting on.
 2. Is there a story for issues that stay private in an otherwise shared backlog,
    or is that out of scope?
 3. Does `rank` eventually become the per-person overlay, and if so is that a

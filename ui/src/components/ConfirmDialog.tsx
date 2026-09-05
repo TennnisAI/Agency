@@ -8,6 +8,7 @@ export default function ConfirmDialog({
   title,
   body,
   confirmLabel,
+  cancelLabel,
   danger,
   busy,
   confirmDisabled,
@@ -25,6 +26,12 @@ export default function ConfirmDialog({
   title: string;
   body: ReactNode;
   confirmLabel: string;
+  /**
+   * Overrides "Cancel", for a dialog whose safe option is not a cancellation:
+   * a report of something that has already happened is dismissed, not called
+   * off.
+   */
+  cancelLabel?: string;
   danger?: boolean;
   /** Disables both buttons (and Escape) while the confirmed action runs. */
   busy?: boolean;
@@ -85,7 +92,9 @@ export default function ConfirmDialog({
           )}
           {/* Autofocused so Enter/Escape act immediately — and Enter lands on
               the safe option, not the (possibly destructive) confirm. */}
-          <button className="btn-secondary" autoFocus disabled={busy} onClick={onCancel}>Cancel</button>
+          <button className="btn-secondary" autoFocus disabled={busy} onClick={onCancel}>
+            {cancelLabel ?? "Cancel"}
+          </button>
           {altLabel && onAlt && (
             <button className={altDanger ? "btn-danger" : "btn-secondary"} disabled={busy} onClick={onAlt}>
               {altLabel}

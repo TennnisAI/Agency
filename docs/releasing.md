@@ -24,6 +24,18 @@ keychain and notary profile.
 > CI builds for Apple Silicon (`aarch64`) only. Intel Macs would need a
 > `universal-apple-darwin` build: both Rust targets, plus a universal sidecar.
 
+The DMG carries `THIRD-PARTY.md` inside the app, so the licences of the 300-odd
+crates and 100-odd packages linked into it travel with it, as MIT and
+Apache-2.0 both require. CI regenerates and diffs that file on every pull
+request (`.github/workflows/ci.yml`, the `app` job), so by tag time it is
+already current. If you ever change a dependency on a branch that skips CI,
+regenerate it before tagging:
+
+```sh
+pnpm --dir ui install --frozen-lockfile
+python3 scripts/third-party.py
+```
+
 ## Local builds
 
 ### Unsigned

@@ -6,6 +6,11 @@ This product includes software developed by Nicholas Counts.
 Licensed under the Apache License, Version 2.0. See the LICENSE file at the root
 of this repository for the full terms.
 
+This product also contains third-party software: Rust crates, JavaScript
+packages and two typefaces, each under its own licence. THIRD-PARTY.md
+reproduces those licences and names every component they cover. A copy ships
+inside the app, under Settings > About.
+
 "Agency" is the name of this product. Section 6 of the Apache License grants no
 licence to use it. Forks and derivative works are welcome under the licence, but
 should not present themselves under this name.

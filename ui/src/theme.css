@@ -1,3 +1,43 @@
+/* The two typefaces the design system specifies, bundled rather than assumed.
+   Until they were, `--sans` and `--mono` named fonts the app never shipped, so
+   the design only ever rendered on a machine that happened to have them
+   installed; everyone else got the system fallback. Both are SIL Open Font
+   License 1.1, and their licence texts travel with the app in THIRD-PARTY.md.
+
+   `font-display: block`, not `swap`: these are local files that load in
+   milliseconds, and a swap after first paint re-measures under CodeMirror,
+   which sizes its gutters and cursor from the character width it read at
+   startup. */
+@font-face {
+  font-family: 'Geist';
+  font-style: normal;
+  font-display: block;
+  font-weight: 100 900;
+  src: url('./assets/fonts/geist-latin-wght-normal.woff2') format('woff2-variations');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Geist';
+  font-style: normal;
+  font-display: block;
+  font-weight: 100 900;
+  src: url('./assets/fonts/geist-latin-ext-wght-normal.woff2') format('woff2-variations');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0306,
+    U+0500-052F, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-display: block;
+  font-weight: 100 800;
+  src: url('./assets/fonts/jetbrains-mono-latin-wght-normal.woff2') format('woff2-variations');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+/* Colour tokens: the Catppuccin Mocha palette, MIT, from
+   https://github.com/catppuccin/catppuccin. Credited in THIRD-PARTY.md. */
 :root {
   --base:#1e1e2e; --mantle:#181825; --crust:#11111b;
   --s0:#313244; --s1:#45475a; --s2:#585b70;

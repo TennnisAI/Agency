@@ -745,7 +745,7 @@ fn send_merge_conflict_requires_a_merge_in_progress() {
     let project = state.add_project("demo", &repo).unwrap();
     let info = state.create_run(&project.id, "p", "noop", None, "HEAD", None).unwrap();
 
-    let err = state.send_merge_conflict(&info.id).unwrap_err().to_string();
+    let err = state.send_merge_conflict(&info.id, None).unwrap_err().to_string();
     assert!(err.contains("no merge is in progress"), "got: {err}");
 
     state.discard_run(&info.id).unwrap();
@@ -1145,9 +1145,6 @@ fn extra_session_lifecycle_shares_worktree_and_cascades() {
     assert_eq!(s3.id, format!("{}--3", run.id));
     assert_eq!(state.run_sessions(&run.id).unwrap().len(), 2);
 
-    // The primary id is not closable through the tab path.
-    assert!(state.close_run_session(&run.id).is_err());
-
     // Closing a tab kills only that session; siblings survive.
     state.close_run_session(&s2.id).unwrap();
     let mut gone = false;
@@ -1160,6 +1157,41 @@ fn extra_session_lifecycle_shares_worktree_and_cascades() {
     }
     assert!(gone, "closed tab session still present");
     assert_eq!(state.run_sessions(&run.id).unwrap().len(), 1);
+    assert!(!matches!(state.run_status(&run.id).unwrap(), SessionStatus::Gone));
+
+    // AGE-184: the run's own tab closes like any other while a tab is left to
+    // carry the workspace. The run stays — it is the worktree and the branch,
+    // not the session — and its status now comes from the tab that is left.
+    state.close_run_session(&run.id).unwrap();
+    let mut primary_gone = false;
+    for _ in 0..75 {
+        if matches!(state.run_status(&run.id).unwrap(), SessionStatus::Gone) {
+            primary_gone = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    assert!(primary_gone, "the run's own session survived its tab being closed");
+    let info = state.list_runs(&project.id).unwrap().into_iter().find(|r| r.id == run.id).unwrap();
+    assert!(info.primary_closed, "the close must survive as more than a dead session");
+    assert!(
+        !matches!(info.status, SessionStatus::Gone),
+        "the remaining tab carries the run's status"
+    );
+    // Nothing revives a tab the user closed: this is the call every attach
+    // makes, and before AGE-184 it would have started the agent straight back.
+    state.ensure_run_active(&run.id).unwrap();
+    assert!(matches!(state.run_status(&run.id).unwrap(), SessionStatus::Gone));
+
+    // And the last one standing cannot be closed — that is what archive and
+    // delete are for.
+    let err = state.close_run_session(&s3.id).unwrap_err().to_string();
+    assert!(err.contains("last agent"), "expected a last-agent refusal, got: {err}");
+
+    // The way back: the + menu's reopen clears the stamp and starts the agent.
+    state.reopen_primary_session(&run.id).unwrap();
+    let info = state.list_runs(&project.id).unwrap().into_iter().find(|r| r.id == run.id).unwrap();
+    assert!(!info.primary_closed);
     assert!(!matches!(state.run_status(&run.id).unwrap(), SessionStatus::Gone));
 
     // Discarding the run sweeps the remaining tab: session and row.

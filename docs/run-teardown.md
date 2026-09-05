@@ -239,3 +239,59 @@ The uncommitted-work caveat is the one line that cannot be hushed, because it
 is the only one that changes which button you press. The hush ("Don't show this
 again") now hides the mechanics sentence and leaves the three verbs, which is
 the part that is one line long and worth keeping forever.
+
+## Addendum: several agents in one worktree (AGE-184, 2026-09-05)
+
+A run stopped being one agent the moment extra tabs could share its worktree,
+and three things in this file were still written as if it were one. All three
+were reported together.
+
+**The first tab could not be closed.** Every extra tab carried a ✕; the run's
+own did not, because the run *is* that session — closing it cannot delete a
+row. So it stamps one instead: `runs.primary_closed_at`. The strip stops
+drawing the tab, `ensure_run_active` stops reviving it (every other caller of
+that function treats a missing session as an accident to repair, so without the
+check the agent came straight back on the next poll), and
+`state.rs::lead_session_name` hands the run's status dot, its notifier watch,
+its idle gate and anything Agency types in to the lowest-numbered tab still
+alive. Lowest-numbered because that is the strip's leftmost: what the rail's
+dot describes is what the strip opens on.
+
+Refused when it would leave the run with no agent at all — an empty tab strip
+is a run you can only stare at, and "there is one left" is exactly when archive
+or delete is the thing meant. Refused too for a looping run, whose driver owns
+that session name and would only spawn into it again. The way back is the +
+menu's "Reopen", which clears the stamp and goes through `ensure_run_active`,
+so the agent comes back into the conversation it had rather than a blank one;
+archiving clears it as well, because archiving takes every extra tab with it
+and the run's own agent is then all there is to restore as.
+
+**Archiving saved one agent's transcript, not the workspace's.** The rescue
+above walks a single directory, `session_dir(run.agent, worktree)`. Tabs
+running the *same* agent as the run always rode along for free — claude writes
+one file per conversation in the workspace's directory and pi a store per
+session under it, and the move takes the tree. A tab running a *different*
+agent did not: its directory hangs off that agent's own root, nothing named it,
+and archiving orphaned it in exactly the way AGE-152 fixed for the run itself.
+So the rescue is now one directory per agent that worked here, read off the
+session rows *before* the archive deletes them. The extra ones land beside the
+run's own as `<run>.transcript.<agent>` — a sibling, not a child, because the
+readers descend exactly one level looking for session files and pi already
+spends that level on a store per session. Restore, delete and the record's
+conversation tab all walk the same set; restore finds the agents by parsing the
+directory names, since an archived run has no session rows left to ask. The
+agent name is allowlisted rather than escaped (`record.rs::transcript_dir_for`):
+profile names are user-editable, and a rescue that could be talked into `..` is
+a delete outside the archive.
+
+**"Fix with agent" always went to the first agent.** It typed the conflict into
+`session_name(run.id)` unconditionally, which after a day's work is routinely
+the agent with the least to do with the branch being merged. `send_merge_conflict`
+now takes a session id, checked against the run rather than trusted, and the
+merge window offers the run's tabs when there is more than one. It defaults to
+the tab the run was last looked at — the focus view already remembers that per
+run (AGE-31), and "the agent I was just working with" is what the phrase means.
+Shell tabs are left out of the list: a login shell does not read a prompt. The
+same `lead_session_name` covers the two senders that have no picker (CI
+feedback, review comments), so a run whose first tab is closed still receives
+them.

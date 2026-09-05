@@ -35,6 +35,46 @@ pub fn transcript_dir(repo: &Path, run_id: &str) -> PathBuf {
     dir(repo).join(format!("{run_id}.transcript"))
 }
 
+/// Where the rescued transcript of an *extra* agent tab lives: a sibling of
+/// [`transcript_dir`] named for the agent that wrote it (AGE-184).
+///
+/// A run's extra tabs may run a different agent than the run does, and each
+/// agent keeps its transcripts under a root of its own — so one directory per
+/// run only ever rescued the run's own agent, and a pi tab in a claude run had
+/// its conversation left behind in a directory keyed to a worktree path that
+/// had just stopped existing. That is the same leak AGE-152 fixed for the run
+/// itself, one level down.
+///
+/// A sibling rather than a subdirectory of the run's own: the readers descend
+/// exactly one level looking for session files (pi nests a store per session),
+/// so a directory *inside* the rescue would put a pi tab's files one level too
+/// deep to be found, and would be re-read with the wrong dialect besides.
+///
+/// `agent` is a profile name, which is a user-editable string; anything
+/// outside the allowlist is refused rather than escaped, on the same principle
+/// as [`crate::sessionstore::dir`] — a path component assembled from arbitrary
+/// text is a traversal waiting to be found.
+pub fn transcript_dir_for(repo: &Path, run_id: &str, agent: &str) -> Option<PathBuf> {
+    if !agent_leaf(agent) {
+        return None;
+    }
+    Some(dir(repo).join(format!("{run_id}.transcript.{agent}")))
+}
+
+/// The agent name in `<run>.transcript.<agent>`, for the restore side, which
+/// has no session rows left to ask: they are deleted at archive time.
+pub fn transcript_dir_agent(run_id: &str, file_name: &str) -> Option<String> {
+    let agent = file_name.strip_prefix(&format!("{run_id}.transcript."))?;
+    agent_leaf(agent).then(|| agent.to_string())
+}
+
+fn agent_leaf(agent: &str) -> bool {
+    !agent.is_empty()
+        && agent != "."
+        && agent != ".."
+        && agent.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
 /// How a run's work ended, as git could see it at teardown.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
@@ -412,5 +452,39 @@ mod tests {
         // paragraph; every line needs its own marker.
         let md = render(&RunRecord { prompt: "first\n\nthird\n".into(), ..sample() });
         assert!(md.contains("> first\n> \n> third\n"), "{md}");
+    }
+
+    /// AGE-184: a tab's rescue sits beside the run's own, never inside it —
+    /// the readers descend exactly one level looking for session files, and pi
+    /// already spends that level on a store per session.
+    #[test]
+    fn a_tabs_transcript_is_a_sibling_of_the_runs_own() {
+        let repo = Path::new("/repo");
+        let own = transcript_dir(repo, "fix-a1");
+        let tab = transcript_dir_for(repo, "fix-a1", "pi").unwrap();
+        assert_eq!(own.file_name().unwrap(), "fix-a1.transcript");
+        assert_eq!(tab.file_name().unwrap(), "fix-a1.transcript.pi");
+        assert_eq!(own.parent(), tab.parent());
+    }
+
+    #[test]
+    fn a_tabs_agent_reads_back_off_the_directory_name() {
+        assert_eq!(transcript_dir_agent("fix-a1", "fix-a1.transcript.pi").as_deref(), Some("pi"));
+        // The run's own rescue is not a tab's, and neither is a neighbour's.
+        assert_eq!(transcript_dir_agent("fix-a1", "fix-a1.transcript"), None);
+        assert_eq!(transcript_dir_agent("fix-a1", "fix-a12.transcript.pi"), None);
+        assert_eq!(transcript_dir_agent("fix-a1", "fix-a1.md"), None);
+    }
+
+    /// Profile names are user-editable, so the path component is allowlisted
+    /// rather than escaped: a rescue that could be talked into `..` would be
+    /// deleting directories outside the archive.
+    #[test]
+    fn an_agent_name_that_is_not_a_path_component_is_refused() {
+        let repo = Path::new("/repo");
+        assert!(transcript_dir_for(repo, "fix-a1", "../../etc").is_none());
+        assert!(transcript_dir_for(repo, "fix-a1", "..").is_none());
+        assert!(transcript_dir_for(repo, "fix-a1", "").is_none());
+        assert!(transcript_dir_agent("fix-a1", "fix-a1.transcript.../x").is_none());
     }
 }

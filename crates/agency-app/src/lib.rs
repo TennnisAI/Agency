@@ -274,6 +274,7 @@ pub fn run() {
             commands::start_run_session,
             commands::list_run_sessions,
             commands::close_run_session,
+            commands::reopen_run_agent,
             commands::start_shell,
             commands::stop_shell,
             commands::shell_status,

@@ -43,6 +43,19 @@ export function saveFocusTab(
   }
 }
 
+// The tab to land on when the remembered one cannot be drawn. Normally the
+// primary agent; once that tab has been closed (AGE-184) the run is carried by
+// its extra tabs, so it is the leftmost of those that is still alive. With
+// none, the primary stands: the strip draws it again the moment the run has an
+// agent of its own, and a tab id nothing renders would be worse.
+function fallbackTab(
+  sessions: { id: string; status: { state: string } }[],
+  primaryClosed: boolean,
+): string {
+  if (!primaryClosed) return PRIMARY_TAB;
+  return sessions.find((s) => s.status.state !== "gone")?.id ?? PRIMARY_TAB;
+}
+
 // Vets a remembered tab against the sessions the run actually has now. A tab
 // whose session was closed while we were away (or died, and so no longer
 // renders) would otherwise restore as a dead pane, so it falls back to the
@@ -53,15 +66,21 @@ export function saveFocusTab(
 // when its web session is closed (or a loop takes the run over), and the log
 // tab goes with it — restoring onto a tab the strip no longer draws would leave
 // an empty pane with no way back except another tab.
+//
+// `primaryClosed` says the run's own agent tab has been closed, so the strip
+// does not draw it either and it cannot be the fallback.
 export function resolveFocusTab(
   remembered: string,
   sessions: { id: string; status: { state: string } }[],
   hasLog = false,
+  primaryClosed = false,
 ): string {
-  if (remembered === PRIMARY_TAB || remembered === RUN_TAB) return remembered;
-  if (remembered === LOG_TAB) return hasLog ? remembered : PRIMARY_TAB;
+  const fallback = fallbackTab(sessions, primaryClosed);
+  if (remembered === PRIMARY_TAB) return primaryClosed ? fallback : remembered;
+  if (remembered === RUN_TAB) return remembered;
+  if (remembered === LOG_TAB) return hasLog ? remembered : fallback;
   const live = sessions.some((s) => s.id === remembered && s.status.state !== "gone");
-  return live ? remembered : PRIMARY_TAB;
+  return live ? remembered : fallback;
 }
 
 // The tab an "open this agent" click should land on: the focus rail's rows, the

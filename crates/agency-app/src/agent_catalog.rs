@@ -123,11 +123,15 @@ pub struct CatalogEntryInfo {
 
 /// All built-in agent profiles Agency ships recipes for.
 pub fn builtins() -> &'static [CatalogEntry] {
-    // cursor/hermes/gemini/kimi are id-keyed (not cwd-keyed) so they
-    // start fresh rather than risk resuming the wrong global session. Loop
-    // recipes are the agents' headless one-shot modes; agents without a known
-    // headless mode get None and simply can't loop. claude gets acceptEdits so
-    // unattended attempts don't die on the first file-edit permission prompt.
+    // Resume recipes are each CLI's "most recent conversation in this
+    // directory" and nothing broader: hermes keys its `--continue` globally
+    // (and moves into the other session's directory), so it has none, and
+    // gemini's is unread (see `sessionstore::pin` for both). A session's own
+    // conversation, once recorded, replaces the recipe with an exact one
+    // (`sessionstore::resume_args`). Loop recipes are the agents' headless
+    // one-shot modes; agents without a known headless mode get None and simply
+    // can't loop. claude gets acceptEdits so unattended attempts don't die on
+    // the first file-edit permission prompt.
     //
     // `prompt` is read off each CLI's own `--help` and, where the CLI was
     // installed to check, a live launch. Marked "unverified" where neither was
@@ -248,7 +252,16 @@ pub fn builtins() -> &'static [CatalogEntry] {
                 command: "cursor-agent",
                 // `agent [options] [command] [prompt...]`.
                 prompt: PromptDelivery::Positional,
-                resume_args: None,
+                // "Continue previous session", and the session it means is
+                // the most recently touched chat under this cwd's own
+                // directory (`~/.cursor/chats/<md5 of cwd>/`), not the
+                // machine's: driven in 2026.09.02 with a newer chat in
+                // another directory, it came back with this directory's.
+                // With none here it prints "No previous chats found." and
+                // exits 1, which the daemon's early-exit fallback catches.
+                // The recipe for a run with no conversation on record; one
+                // with a record resumes that exact chat (AGE-190).
+                resume_args: Some(vec!["--continue".into()]),
                 loop_args: Some(vec!["-p".into(), "{{prompt}}".into()]),
                 // `--model <model>`, "Model to use (e.g., gpt-5,
                 // sonnet-4-thinking)". Read off `cursor-agent --help`.
@@ -301,7 +314,15 @@ pub fn builtins() -> &'static [CatalogEntry] {
                 command: "kimi",
                 // Unverified (not installed here).
                 prompt: PromptDelivery::Positional,
-                resume_args: None,
+                // `-C, --continue`: "Continue the previous session for the
+                // working directory", and it is: kimi files sessions under
+                // `~/.kimi/sessions/<md5 of cwd>/` and remembers the last
+                // one per directory. Driven in 1.50.0. In a directory it has
+                // never used it exits 2 with "No previous session found for
+                // the working directory", which the early-exit fallback
+                // catches. A run with a conversation on record resumes that
+                // exact session instead (AGE-190).
+                resume_args: Some(vec!["--continue".into()]),
                 loop_args: None,
                 // `-m, --model`, "specify a model alias for this launch",
                 // per the kimi command reference. The aliases are per-provider,

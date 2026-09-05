@@ -13,6 +13,7 @@ base64 = "0.22"
 daemonize = "0.5"
 globset = "0.4"
 log = "0.4"
+md-5 = "0.10"
 regex = "1"
 rusqlite = { version = "0.31", features = ["bundled"] }
 portable-pty = "0.8"

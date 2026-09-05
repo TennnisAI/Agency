@@ -45,7 +45,8 @@ fn enable_catalog_profiles_writes_recipes() {
     assert_eq!(get("claude").resume_args, Some(vec!["--continue".into()]));
     assert_eq!(get("codex").resume_args, Some(vec!["resume".into(), "--last".into()]));
     assert_eq!(get("cursor").command, "cursor-agent");
-    assert_eq!(get("cursor").resume_args, None);
+    // AGE-190: cursor's `--continue` turned out to be per cwd, so it resumes.
+    assert_eq!(get("cursor").resume_args, Some(vec!["--continue".into()]));
     assert_eq!(get("gemini").command, "gemini");
     assert!(get("gemini").args.is_empty());
 }

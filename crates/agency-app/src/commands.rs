@@ -1423,12 +1423,21 @@ pub fn save_files_config(
     state.save_files_config(&project_id, copy).map_err(|e| e.to_string())
 }
 
-/// "Fix with agent" on a conflicted merge: type the conflict into this run's
-/// own agent session rather than spawning a separate resolver. True if it went
-/// in now, false if it is queued behind the agent's current turn.
+/// "Fix with agent" on a conflicted merge: type the conflict into one of this
+/// run's own agent sessions rather than spawning a separate resolver. True if
+/// it went in now, false if it is queued behind that agent's current turn.
+///
+/// `session_id` is the agent tab to hand it to — a worktree can host several,
+/// and the run's own is not usually the one whose context has anything to do
+/// with the merge (AGE-184). Omitted, it goes to whichever session speaks for
+/// the run.
 #[tauri::command]
-pub fn send_merge_conflict(state: State<'_, AppState>, task_id: String) -> Result<bool, String> {
-    state.send_merge_conflict(&task_id).map_err(|e| e.to_string())
+pub fn send_merge_conflict(
+    state: State<'_, AppState>,
+    task_id: String,
+    session_id: Option<String>,
+) -> Result<bool, String> {
+    state.send_merge_conflict(&task_id, session_id.as_deref()).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -2082,6 +2091,13 @@ pub async fn list_run_sessions(
 #[tauri::command]
 pub fn close_run_session(state: State<'_, AppState>, id: String) -> Result<(), String> {
     state.close_run_session(&id).map_err(|e| e.to_string())
+}
+
+/// Put back the run's own agent tab after it was closed (AGE-184), resuming
+/// the conversation it had rather than starting a blank one.
+#[tauri::command]
+pub async fn reopen_run_agent(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    state.reopen_primary_session(&id).map_err(|e| e.to_string())
 }
 
 // async + progress for the same reason `discard_run` is: archiving auto-commits

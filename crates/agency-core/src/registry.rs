@@ -100,6 +100,19 @@ pub struct Run {
     /// for runs created before this was recorded, which fall back to the merge
     /// base and lose the list only if they also merged.
     pub base_commit: Option<String>,
+    /// When the user closed the run's own agent tab, leaving its extra tabs to
+    /// carry the workspace (AGE-184). `None` — the usual case — means the run
+    /// still has the agent it was created with.
+    ///
+    /// A run is more than one agent: extra tabs share its worktree, and the
+    /// first agent's context is often the least relevant one by the time a
+    /// merge conflict or a review needs answering. Closing it stops that
+    /// session for good rather than for this launch, so nothing revives it and
+    /// the tab strip stops drawing it; `AppState::lead_session` then hands the
+    /// run's status, its notifier watch and anything Agency types in to the
+    /// lowest-numbered tab still open. Cleared on archive, where every extra
+    /// tab goes and the run's own agent is all that can come back.
+    pub primary_closed_at: Option<i64>,
 }
 
 /// A local issue: the tracker is per-project and agent-native — dispatching
@@ -404,6 +417,9 @@ impl Registry {
         }
         if !column_exists(&conn, "runs", "pin_rank")? {
             conn.execute("ALTER TABLE runs ADD COLUMN pin_rank REAL", [])?;
+        }
+        if !column_exists(&conn, "runs", "primary_closed_at")? {
+            conn.execute("ALTER TABLE runs ADD COLUMN primary_closed_at INTEGER", [])?;
         }
         if !column_exists(&conn, "projects", "issue_key")? {
             conn.execute("ALTER TABLE projects ADD COLUMN issue_key TEXT", [])?;
@@ -788,13 +804,13 @@ impl Registry {
             None => None,
         };
         self.conn.execute(
-            "INSERT INTO runs (id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, standing, pin_rank)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
+            "INSERT INTO runs (id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, standing, pin_rank, primary_closed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
             rusqlite::params![
                 run.id, run.project_id, run.agent, run.prompt, run.base, run.branch,
                 run.created_at, run.port_base.map(|p| p as i64), run.archived_at, run.title, run.kind,
                 run.merge_target, run.race_id, loop_config, loop_state, run.issue_id, run.worktree as i64,
-                run.model, run.base_commit, standing, run.pin_rank
+                run.model, run.base_commit, standing, run.pin_rank, run.primary_closed_at
             ],
         )?;
         Ok(())
@@ -813,7 +829,7 @@ impl Registry {
 
     pub fn get_run(&self, id: &str) -> Result<Option<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, standing, pin_rank FROM runs WHERE id = ?1",
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, standing, pin_rank, primary_closed_at FROM runs WHERE id = ?1",
         )?;
         let mut rows = stmt.query([id])?;
         match rows.next()? {
@@ -824,7 +840,7 @@ impl Registry {
 
     pub fn list_runs(&self, project_id: &str) -> Result<Vec<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, standing, pin_rank
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, standing, pin_rank, primary_closed_at
              FROM runs WHERE project_id = ?1 AND archived_at IS NULL ORDER BY created_at DESC",
         )?;
         let rows = stmt.query_map([project_id], |row| Ok(row_to_run(row)))?;
@@ -837,7 +853,7 @@ impl Registry {
 
     pub fn list_archived_runs(&self, project_id: &str) -> Result<Vec<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, standing, pin_rank
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, standing, pin_rank, primary_closed_at
              FROM runs WHERE project_id = ?1 AND archived_at IS NOT NULL ORDER BY archived_at DESC",
         )?;
         let rows = stmt.query_map([project_id], |row| Ok(row_to_run(row)))?;
@@ -868,6 +884,16 @@ impl Registry {
         };
         self.conn
             .execute("UPDATE runs SET standing = ?2 WHERE id = ?1", rusqlite::params![id, json])?;
+        Ok(())
+    }
+
+    /// Record (or clear) the moment the run's own agent tab was closed. See
+    /// [`Run::primary_closed_at`].
+    pub fn set_run_primary_closed(&self, id: &str, at: Option<i64>) -> Result<()> {
+        self.conn.execute(
+            "UPDATE runs SET primary_closed_at = ?2 WHERE id = ?1",
+            rusqlite::params![id, at],
+        )?;
         Ok(())
     }
 
@@ -1317,7 +1343,7 @@ impl Registry {
     /// runs" list; also drives the last-run-abandoned rollback check).
     pub fn runs_for_issue(&self, issue_id: &str) -> Result<Vec<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, standing, pin_rank
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, standing, pin_rank, primary_closed_at
              FROM runs WHERE issue_id = ?1 AND archived_at IS NULL ORDER BY created_at DESC",
         )?;
         let rows = stmt.query_map([issue_id], |row| Ok(row_to_run(row)))?;
@@ -1568,6 +1594,7 @@ fn row_to_run(row: &rusqlite::Row) -> Result<Run> {
             None => None,
         },
         pin_rank: row.get(20)?,
+        primary_closed_at: row.get(21)?,
     })
 }
 
@@ -1721,6 +1748,7 @@ mod tests {
             worktree: true,
             model: None,
             base_commit: None,
+            primary_closed_at: None,
             standing: None,
             pin_rank: None,
         }
@@ -2181,6 +2209,7 @@ mod tests {
             worktree: true,
             model: None,
             base_commit: None,
+            primary_closed_at: None,
             standing: None,
             pin_rank: None,
         };

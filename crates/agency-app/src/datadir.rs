@@ -130,6 +130,7 @@ mod tests {
                 worktree: true,
                 model: None,
                 base_commit: None,
+                primary_closed_at: None,
                 standing: None,
                 pin_rank: None,
             })

@@ -80,7 +80,7 @@ export const SECTIONS: Section[] = [
   { id: "mcp", label: "MCP servers", group: "agents",
     terms: "model context protocol tools stdio http sse oauth authenticate headers env import json" },
   { id: "localModel", label: "Local model", group: "agents",
-    terms: "lm studio openai base url endpoint compatible offline" },
+    terms: "lm studio openai base url endpoint compatible offline api key token environment variable localhost port" },
   { id: "backlog", label: "Backlog", group: "project",
     terms: "issues sync share remote git ref team tracker" },
   { id: "knowledge", label: "Knowledge graph", group: "project",
@@ -150,11 +150,11 @@ const singular = (w: string): string => (w.length > 4 && w.endsWith("s") ? w.sli
  *
  * When nothing clears that bar, the sections that matched the *most* words win
  * instead. A hand-written term list can never hold every phrasing, and the all-
- * words rule turns each gap into a blank screen: "turn off notifications" and
- * "claude version" both named a section that was right there and got nothing.
- * Answering with the closest sections costs a stop-word list nothing and is
- * never worse than the empty state, which is still what a query that hits no
- * section at all ("kubernetes") returns.
+ * words rule turned each gap in it into a blank screen: "turn off
+ * notifications" and "claude version" each named a section that was right
+ * there and got nothing back. The closest sections are never a worse answer
+ * than none, and a query that hits no section at all ("kubernetes") still
+ * returns the empty set.
  */
 export function matchSections(query: string, extra: ExtraTerms = {}): Set<SectionId> | null {
   const raw = query.trim().toLowerCase().split(/\s+/).filter(Boolean);

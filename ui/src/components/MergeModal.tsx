@@ -5,10 +5,12 @@ import {
   MergePreview,
   MergeState,
   RunCleanup,
+  RunSessionInfo,
   abortMergeTask,
   archiveRun,
   discardRun,
   finishMergeTask,
+  listRunSessions,
   mergePreview,
   mergeStatus,
   mergeTask,
@@ -16,6 +18,9 @@ import {
   sendMergeConflict,
 } from "../api";
 import { mergeTidyCopy, removalCopy } from "../lib/runRemoval";
+import { loadFocusTab, PRIMARY_TAB } from "../lib/focusTab";
+import { agentLabel } from "../agents";
+import PillSelect from "./PillSelect";
 import PrSection from "./PrSection";
 import ConfirmDialog from "./ConfirmDialog";
 import RemovalSummary, { BranchProbeNote } from "./RemovalSummary";
@@ -49,6 +54,20 @@ export default function MergeModal({
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState(false);
   const [queued, setQueued] = useState(false);
+  // The agent tabs sharing this run's worktree, so the conflict can be handed
+  // to the one whose context has something to do with it (AGE-184). This used
+  // to go to the run's own agent every time, which after a day's work is
+  // routinely the one that has been doing something else entirely.
+  const [tabs, setTabs] = useState<RunSessionInfo[]>([]);
+  // The tabs have been asked for and answered. The default below has to wait
+  // for this: the run itself is in the store already, so without it the
+  // default would settle on the run's own agent one render before the tabs
+  // that might hold the remembered one arrived.
+  const [tabsLoaded, setTabsLoaded] = useState(false);
+  // Null until the tabs load, then the tab this run was last looked at on —
+  // "the one I was just using" is what the user means by "this agent", and the
+  // focus view already remembers it per run.
+  const [target, setTarget] = useState<string | null>(null);
   // What git says about the merge after a resolver has had a go at it. Null
   // until the first check; `probeError` is why, when it stays null.
   const [state, setState] = useState<MergeState | null>(null);
@@ -87,6 +106,26 @@ export default function MergeModal({
   const losers = me?.raceId
     ? runs.filter((r) => r.raceId === me.raceId && r.id !== taskId && r.kind === "agent")
     : [];
+  // Who "Fix with agent" can hand the conflict to: the same tabs the run's
+  // strip draws, in the same order. A shell tab is left out — it is a login
+  // shell, not something that reads a prompt.
+  const targets: { value: string; label: string }[] = [
+    ...(me && !me.primaryClosed ? [{ value: me.id, label: agentLabel(me.agent) }] : []),
+    ...tabs
+      .filter((t) => t.status.state !== "gone" && t.agent !== "shell")
+      .map((t) => ({ value: t.id, label: `${agentLabel(t.agent)} · ${t.id.split("--").pop()}` })),
+  ];
+  // Default to the tab this run was last open on, which is the app's best
+  // record of "the agent I was just working with". Falls back to the leftmost
+  // tab when that one is gone (or when the run has never been opened).
+  useEffect(() => {
+    if (target !== null || !tabsLoaded || targets.length === 0) return;
+    const remembered = typeof localStorage !== "undefined"
+      ? loadFocusTab(localStorage, taskId)
+      : PRIMARY_TAB;
+    const wanted = remembered === PRIMARY_TAB ? taskId : remembered;
+    setTarget(targets.some((t) => t.value === wanted) ? wanted : targets[0].value);
+  }, [target, targets, tabsLoaded, taskId]);
   // Cleanup in flight: archiving or deleting. Both tear the run down, so the
   // modal's cancel affordances stay disabled until they land.
   const busy = archiving || deleting;
@@ -112,6 +151,17 @@ export default function MergeModal({
         if (s.merging) setOutcome({ kind: "conflicts", files: s.unresolved });
       })
       .catch(() => {});
+  }, [taskId]);
+
+  // The run's agent tabs, loaded once: "Fix with agent" needs to know whether
+  // there is a choice to offer before it offers one.
+  useEffect(() => {
+    let live = true;
+    listRunSessions(taskId)
+      .then((s) => { if (live) setTabs(s); })
+      .catch(() => {})
+      .finally(() => { if (live) setTabsLoaded(true); });
+    return () => { live = false; };
   }, [taskId]);
 
   // Losers are torn down one at a time before the winner, so their progress is
@@ -210,7 +260,7 @@ export default function MergeModal({
       // False means the agent is mid-turn and the prompt is queued behind it;
       // saying "sent" then would have the user watching for work that has not
       // started yet.
-      setQueued(!(await sendMergeConflict(taskId)));
+      setQueued(!(await sendMergeConflict(taskId, target ?? undefined)));
       setSent(true);
     } catch (e) {
       setError(String(e));
@@ -518,19 +568,33 @@ export default function MergeModal({
                 {sent ? (
                   <p className="merge-note">
                     {queued
-                      ? "Queued for this agent, with git's status of the merge. It is part-way through a turn, so the prompt goes in as soon as that finishes. "
-                      : "Sent to this agent's session, with git's status of the merge. "}
+                      ? `Queued for ${targets.find((t) => t.value === target)?.label ?? "this agent"}, with git's status of the merge. It is part-way through a turn, so the prompt goes in as soon as that finishes. `
+                      : `Sent to ${targets.find((t) => t.value === target)?.label ?? "this agent"}, with git's status of the merge. `}
                     Close this window to watch it work; the merge is in the project's checkout, not
                     the agent's worktree, so the prompt points git there. Reopen this window when
                     it's done, or leave it open: it rechecks git every few seconds either way.
                   </p>
                 ) : (
                   <p className="merge-note">
-                    Nothing has been committed. Hand the conflict to this agent, or resolve it
-                    yourself in the project's checkout and come back here to finish.
+                    Nothing has been committed. Hand the conflict to
+                    {targets.length > 1 ? " one of this workspace's agents" : " this agent"}, or
+                    resolve it yourself in the project's checkout and come back here to finish.
                   </p>
                 )}
                 <div className="git-actions">
+                  {/* Which agent, before the button that sends to it. Only
+                      when there is a choice: one agent in the worktree and
+                      this is noise; several and picking is the whole point,
+                      since the run's own is not usually the one that has been
+                      near this branch lately (AGE-184). */}
+                  {targets.length > 1 && target && (
+                    <PillSelect
+                      value={target}
+                      options={targets}
+                      onChange={(v) => { setTarget(v); setSent(false); }}
+                      title="Which agent in this workspace gets the conflict"
+                    />
+                  )}
                   {sent ? (
                     <button autoFocus onClick={onClose}>Close and watch</button>
                   ) : (

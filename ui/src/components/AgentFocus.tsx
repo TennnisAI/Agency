@@ -3,7 +3,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { useRuns, SpawnOpts } from "../store/runs";
 import {
   listProfiles, AgentProfile,
-  listRunSessions, startRunSession, closeRunSession, RunSessionInfo,
+  listRunSessions, startRunSession, closeRunSession, reopenRunAgent, RunSessionInfo,
   RunInfo, SessionStatus, stopLoop, listIssues, listProjects, ensureRunActive,
 } from "../api";
 import { Removal, removalLabel, removalsFor } from "../lib/runRemoval";
@@ -274,6 +274,14 @@ export default function AgentFocus({
   // where you came from instead of dumping you on the primary agent.
   const beforeRun = useRef<string>(PRIMARY_TAB);
   const [sessions, setSessions] = useState<RunSessionInfo[]>([]);
+  // Read by the tab-restore effect, which keys off the run id alone: the strip
+  // does not draw a closed primary tab, so restoring onto it would strand an
+  // empty pane. Declared here (like guiSessionRef below) so the effect does not
+  // have to re-run every time the flag changes.
+  const primaryClosedRef = useRef(false);
+  // The tabs the strip is drawing, for effects that need them at the moment
+  // they run rather than the value captured when they were declared.
+  const drawnTabsRef = useRef<string[]>([]);
   const [confirmCloseTab, setConfirmCloseTab] = useState<string | null>(null);
   // "+" tab menu: agent profiles to open as an extra tab. Anchored in viewport
   // coordinates like AgentAddMenu so ancestor overflow can't clip it.
@@ -315,7 +323,12 @@ export default function AgentFocus({
           // Only correct the tab we restored — anything the user (or a pending
           // session hand-off) has since picked stands.
           if (panelRef.current !== remembered) return;
-          const resolved = resolveFocusTab(remembered, s, guiSessionRef.current != null);
+          const resolved = resolveFocusTab(
+            remembered,
+            s,
+            guiSessionRef.current != null,
+            primaryClosedRef.current,
+          );
           if (resolved === remembered) return;
           selectPanel(resolved);
           if (beforeRun.current === remembered) beforeRun.current = resolved;
@@ -346,7 +359,13 @@ export default function AgentFocus({
     if (!agentViewRunId || agentViewRunId !== focusedRunId) return;
     requestAgentView(null);
     const next = agentViewTab(panelRef.current, beforeRun.current);
-    if (next !== panelRef.current) selectPanel(next);
+    // The tab it was opened from may be the primary agent's, which the strip
+    // no longer draws if that tab has been closed (AGE-184).
+    const drawn = drawnTabsRef.current;
+    const shown = next === PRIMARY_TAB && !drawn.includes(PRIMARY_TAB)
+      ? drawn[0] ?? PRIMARY_TAB
+      : next;
+    if (shown !== panelRef.current) selectPanel(shown);
   }, [agentViewRunId, focusedRunId, requestAgentView, selectPanel]);
 
   const toggleAddMenu = () => {
@@ -377,6 +396,18 @@ export default function AgentFocus({
       selectPanel(s.id);
     } catch (e) {
       toastError(e, "Couldn't open agent tab");
+    }
+  };
+
+  const reopenPrimary = async () => {
+    setAddOpen(false);
+    if (!focusedRunId) return;
+    try {
+      await reopenRunAgent(focusedRunId);
+      await refreshRuns();
+      selectPanel(PRIMARY_TAB);
+    } catch (e) {
+      toastError(e, "Couldn't reopen the agent");
     }
   };
 
@@ -445,6 +476,28 @@ export default function AgentFocus({
   // comes and goes: a remembered Log tab is only valid while one is served.
   const guiSessionRef = useRef<string | null>(guiSession);
   guiSessionRef.current = guiSession;
+  const primaryClosed = focused?.primaryClosed ?? false;
+  primaryClosedRef.current = primaryClosed;
+  // Tabs the strip is drawing, in the order it draws them: the run's own agent
+  // unless that tab has been closed, then every extra session that has not
+  // gone. What "one left" means for the close controls below (AGE-184) — the
+  // backend refuses a close that would empty this list, and a ✕ that only ever
+  // produces that refusal is a ✕ that should not be there.
+  const drawnTabs = [
+    ...(primaryClosed ? [] : [PRIMARY_TAB]),
+    // Same filter the strip below uses: a tab whose session has gone drops
+    // out, unless it is the one being looked at, which keeps its pane (and so
+    // its ✕ — a dead tab you cannot dismiss is worse than a dead tab).
+    ...sessions.filter((s) => s.status.state !== "gone" || s.id === panel).map((s) => s.id),
+  ];
+  drawnTabsRef.current = drawnTabs;
+  const canCloseTabs = drawnTabs.length > 1;
+  // A tab id the strip actually draws. Anything the run remembers — the tab it
+  // was opened on, the one the Run panel backs out to — can name the primary
+  // agent, which is not drawn once its tab is closed (AGE-184), so every such
+  // hand-back goes through here rather than stranding an empty pane.
+  const visibleTab = (t: string) =>
+    t === RUN_TAB || t === LOG_TAB || drawnTabs.includes(t) ? t : drawnTabs[0] ?? PRIMARY_TAB;
   // Is the visible pane an agent, or a plain shell? Session tabs carry both:
   // "New terminal" spawns the reserved "shell" profile. Only a shell wants
   // xterm's wheel-to-arrow fallback; in an agent those arrows walk the prompt
@@ -608,10 +661,27 @@ export default function AgentFocus({
               <LoopStrip run={focused} onChanged={refreshRuns} />
               <div className="session-tabs">
                 <div className="session-tabs-scroll" ref={tabsScrollRef} onWheel={onTabsWheel}>
-                  <button
-                    className={`session-tab ${panel === PRIMARY_TAB ? "on" : ""}`}
-                    onClick={() => selectPanel(PRIMARY_TAB)}
-                  >{agentLabel(focused.agent)}</button>
+                  {/* The run's own agent. Closable like any other tab once it
+                      is not the only one left (AGE-184): after a day's work
+                      the first agent's context is often the least relevant in
+                      the worktree, and it used to be the one tab you were
+                      stuck with. The + menu's Reopen brings it back. */}
+                  {!primaryClosed && (
+                    <button
+                      className={`session-tab ${panel === PRIMARY_TAB ? "on" : ""}`}
+                      title={`${agentLabel(focused.agent)}: the agent this workspace was created for`}
+                      onClick={() => selectPanel(PRIMARY_TAB)}
+                    >
+                      {agentLabel(focused.agent)}
+                      {canCloseTabs && (
+                        <span
+                          className="tab-close"
+                          title="Close this agent tab"
+                          onClick={(e) => { e.stopPropagation(); setConfirmCloseTab(focused.id); }}
+                        >✕</span>
+                      )}
+                    </button>
+                  )}
                   {guiSession === focused.id && <LogTab panel={panel} onSelect={selectPanel} />}
                   {sessions
                     .filter((s) => s.status.state !== "gone" || s.id === panel)
@@ -625,11 +695,13 @@ export default function AgentFocus({
                       onClick={() => selectPanel(s.id)}
                     >
                       {s.agent === "shell" ? "≳ terminal" : agentLabel(s.agent)} · {s.id.split("--").pop()}
-                      <span
-                        className="tab-close"
-                        title="Close this agent tab"
-                        onClick={(e) => { e.stopPropagation(); setConfirmCloseTab(s.id); }}
-                      >✕</span>
+                      {canCloseTabs && (
+                        <span
+                          className="tab-close"
+                          title="Close this agent tab"
+                          onClick={(e) => { e.stopPropagation(); setConfirmCloseTab(s.id); }}
+                        >✕</span>
+                      )}
                     </button>
                     {guiSession === s.id && <LogTab panel={panel} onSelect={selectPanel} />}
                     </React.Fragment>
@@ -660,6 +732,18 @@ export default function AgentFocus({
                 <>
                   <div className="agent-menu-backdrop" onClick={() => setAddOpen(false)} />
                   <div className="agent-menu" style={{ position: "fixed", ...addCoords }}>
+                    {/* The way back from closing the run's own tab (AGE-184).
+                        First, and separated, because it is not a new agent:
+                        it reopens the one this workspace was created for, on
+                        the conversation it already had. */}
+                    {primaryClosed && (
+                      <>
+                        <button onClick={reopenPrimary}>
+                          ⟳ Reopen {agentLabel(focused.agent)}
+                        </button>
+                        <div className="agent-menu-sep" />
+                      </>
+                    )}
                     {profiles.map((p) => (
                       <button key={p.name} onClick={() => spawnTab(p.name)}>{agentLabel(p.name)}</button>
                     ))}
@@ -715,13 +799,19 @@ export default function AgentFocus({
                   key={`run-${focused.id}`}
                   target={focused.id}
                   where="this agent's workspace"
-                  onClose={() => selectPanel(beforeRun.current)}
+                  onClose={() => selectPanel(visibleTab(beforeRun.current))}
                 />
               )}
               {confirmCloseTab && (
                 <ConfirmDialog
                   title="Close agent tab?"
-                  body="Stop this extra agent session. The workspace, its branch and the other tabs are untouched."
+                  body={confirmCloseTab === focused.id
+                    // The run's own agent. Its conversation is not deleted (it
+                    // is the agent's own file, and the archive still rescues
+                    // it), so the promise here is only that the tab goes and
+                    // the session stops.
+                    ? `Stop ${agentLabel(focused.agent)}, the agent this workspace was created for. The workspace, its branch and the other tabs are untouched, and the + menu can reopen it on the same conversation.`
+                    : "Stop this extra agent session. The workspace, its branch and the other tabs are untouched."}
                   confirmLabel="Close"
                   danger
                   onConfirm={async () => {
@@ -729,9 +819,15 @@ export default function AgentFocus({
                     setConfirmCloseTab(null);
                     try {
                       await closeRunSession(sid);
-                      setSessions((prev) => prev.filter((s) => s.id !== sid));
-                      if (panel === sid) selectPanel(PRIMARY_TAB);
-                      if (beforeRun.current === sid) beforeRun.current = PRIMARY_TAB;
+                      const left = drawnTabs.filter((t) =>
+                        t !== (sid === focused.id ? PRIMARY_TAB : sid));
+                      const next = left[0] ?? PRIMARY_TAB;
+                      if (sid !== focused.id) setSessions((prev) => prev.filter((s) => s.id !== sid));
+                      else await refreshRuns();
+                      if (panel === sid || (sid === focused.id && panel === PRIMARY_TAB)) selectPanel(next);
+                      if (beforeRun.current === sid || (sid === focused.id && beforeRun.current === PRIMARY_TAB)) {
+                        beforeRun.current = next;
+                      }
                     } catch (e) {
                       toastError(e, "Close failed");
                     }

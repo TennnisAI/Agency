@@ -1513,9 +1513,11 @@ export default function Settings({
             <section className="settings-section">
               <SectionHead id="localModel" projectName={projectName} />
               <p className="settings-section-hint">
-                Points OpenAI-compatible agents at a local, OpenAI-protocol server via{" "}
-                <code>OPENAI_BASE_URL</code>. Agents with their own login (Claude, Codex, …) ignore it.
-                Leave blank to disable.
+                Sets <code>OPENAI_BASE_URL</code> and a placeholder <code>OPENAI_API_KEY</code> in
+                every agent session, run script and terminal Agency opens, so OpenAI-protocol tools
+                reach a server on this machine instead of OpenAI. Agents with their own login (Claude,
+                Codex, …) ignore it. It also becomes a model the knowledge graph can build on. Blank is
+                the default and sets neither variable; start the server before you rely on it.
               </p>
               <div className="settings-providers">
                 <div className="settings-provider-card">
@@ -1526,6 +1528,7 @@ export default function Settings({
                     <label className="settings-field-key">base URL</label>
                     <input
                       className="settings-field-input"
+                      placeholder="http://localhost:1234/v1"
                       value={settings.lmStudioBaseUrl}
                       onChange={(e) => setSettings({ ...settings, lmStudioBaseUrl: e.target.value })}
                     />

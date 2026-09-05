@@ -14,7 +14,13 @@ use std::time::{Duration, Instant};
 use uuid;
 
 const SETTING_LM_STUDIO_URL: &str = "lm_studio_base_url";
-const DEFAULT_LM_STUDIO_URL: &str = "http://localhost:1234/v1";
+/// LM Studio's own default port. The settings field's *placeholder*, never a
+/// stored value: an unconfigured local model is off, and off has to look empty.
+/// See `unprefill_local_model_url`.
+const LM_STUDIO_PLACEHOLDER_URL: &str = "http://localhost:1234/v1";
+/// Set to "1" once the old prefilled local-model URL has been cleared, so the
+/// clear happens once and a user who deliberately types that same URL keeps it.
+const SETTING_LOCAL_MODEL_UNPREFILLED: &str = "local_model_unprefilled";
 // Agent the "New Agent" menu/shortcut spawns. Empty = auto (project's last-used).
 const SETTING_DEFAULT_AGENT: &str = "default_agent";
 const SETTING_NOTIF: &str = "notification_settings";
@@ -335,6 +341,10 @@ pub struct RunInfo {
     /// behind a long turn is otherwise indistinguishable from one that was
     /// never sent.
     pub queued_messages: u32,
+    /// The run's own agent tab has been closed (AGE-184), so the tab strip
+    /// stops drawing it and `status` above describes whichever extra tab is
+    /// standing in for it. See `lead_session_name`.
+    pub primary_closed: bool,
     /// Epoch seconds. Exposed for time views (the weekly note); archived_at is
     /// None for live runs and last-archive-wins after a restore cycle.
     pub created_at: i64,
@@ -704,6 +714,34 @@ fn split_session_id(id: &str) -> (&str, Option<u32>) {
         },
         None => (id, None),
     }
+}
+
+/// The daemon session that speaks for a run: its status dot, the notifier's
+/// busy/idle watch, and the default target for text Agency types in.
+///
+/// Normally the run's own session. Once the user has closed the run's first
+/// agent tab (AGE-184) that session is gone for good, and the run is carried
+/// by its extra tabs — so the lowest-numbered one still alive stands in for
+/// it. Lowest-numbered rather than newest: it is the tab strip's leftmost, so
+/// what the rail's dot describes is what the strip opens on.
+///
+/// `live` is the daemon's session listing; a session missing from it is gone,
+/// which is why this can decide without a registry read. With the primary
+/// closed and no tab alive, it falls back to the run's own name, whose status
+/// then reads Gone — which is the truth about the run.
+fn lead_session_name(run: &agency_core::registry::Run, live: &[(String, SessionStatus)]) -> String {
+    if run.primary_closed_at.is_none() {
+        return session_name(&run.id);
+    }
+    let prefix = format!("{}--", session_name(&run.id));
+    live.iter()
+        .filter_map(|(name, _)| {
+            let seq = name.strip_prefix(&prefix)?.parse::<u32>().ok()?;
+            Some((seq, name.clone()))
+        })
+        .min_by_key(|(seq, _)| *seq)
+        .map(|(_, name)| name)
+        .unwrap_or_else(|| session_name(&run.id))
 }
 
 /// Agency's own additions to an agent's argv: the flags that make it read the
@@ -1351,6 +1389,32 @@ pub const SHELL_AGENT: &str = "shell";
 /// between `/bin/zsh` and `/bin/bash` for the same feature).
 fn login_shell() -> String {
     std::env::var("SHELL").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "/bin/zsh".to_string())
+}
+
+/// Clear the local-model URL once, where it still holds the value the app used
+/// to prefill it with.
+///
+/// AGE-186: "Local model" said "leave blank to disable" while arriving filled
+/// in with `http://localhost:1234/v1` as real, selectable text. No user chose
+/// it. `get_settings` invented it whenever the setting was unset, and every
+/// unrelated save wrote it straight back into the row, because the panel
+/// persists the whole `ProviderSettings` struct on the worktree toggle and the
+/// default-agent select. So a machine that had never run a local model still
+/// pointed every agent session, run script and terminal tab at a port with
+/// nothing listening on it.
+///
+/// Narrow on purpose: only the exact old default, and only until the flag is
+/// set. A user who genuinely serves that port types it back in (it is the
+/// field's placeholder) and it survives from then on.
+fn unprefill_local_model_url(registry: &Registry) -> Result<()> {
+    if registry.get_setting(SETTING_LOCAL_MODEL_UNPREFILLED)?.is_some() {
+        return Ok(());
+    }
+    if registry.get_setting(SETTING_LM_STUDIO_URL)?.as_deref() == Some(LM_STUDIO_PLACEHOLDER_URL) {
+        registry.set_setting(SETTING_LM_STUDIO_URL, "")?;
+    }
+    registry.set_setting(SETTING_LOCAL_MODEL_UNPREFILLED, "1")?;
+    Ok(())
 }
 
 fn validate_provider_url(raw: &str) -> Result<()> {
@@ -2106,6 +2170,7 @@ impl AppState {
         if !onboarding_done && !registry.list_profiles()?.is_empty() {
             registry.set_setting(SETTING_AGENT_ONBOARDING, "1")?;
         }
+        unprefill_local_model_url(&registry)?;
         let state = AppState {
             registry: Mutex::new(registry),
             attaches: Mutex::new(HashMap::new()),
@@ -2156,13 +2221,24 @@ impl AppState {
 
     fn provider_env(&self) -> Result<Vec<(String, String)>> {
         // Point OpenAI-protocol agents at the configured local model (LM Studio
-        // by default). Agents with their own CLI auth (claude, codex, …) ignore
-        // these. No cloud keys are injected — each agent uses its own login.
+        // and friends). Agents with their own CLI auth (claude, codex, …)
+        // ignore these. No cloud keys are injected — each agent uses its own
+        // login.
+        //
+        // AGE-186: nothing is injected when no local model is configured, which
+        // is what the panel's "leave blank to disable" has always claimed.
+        // Injecting the pair unconditionally set them even with the field
+        // blank. Observed in an Agency-launched agent while fixing this:
+        // `OPENAI_API_KEY=lm-studio` with `OPENAI_BASE_URL=` empty. That
+        // shadows the user's own key in everything Agency opens, and a bare
+        // OPENAI_API_KEY is exactly what graphify's auto-detection reads as a
+        // paid OpenAI account (see `config::env_backend_keys`).
         let s = self.get_settings()?;
-        let mut env = vec![
-            ("OPENAI_BASE_URL".into(), s.lm_studio_base_url),
-            ("OPENAI_API_KEY".into(), "lm-studio".into()),
-        ];
+        let mut env = Vec::new();
+        if !s.lm_studio_base_url.trim().is_empty() {
+            env.push(("OPENAI_BASE_URL".into(), s.lm_studio_base_url));
+            env.push(("OPENAI_API_KEY".into(), "lm-studio".into()));
+        }
         // Finder-launched bundles inherit no user secrets. dsh's first-run
         // modal asks for DEEPSEEK_API_KEY on every launch until the process
         // environment (or $DSH_HOME) already has one; passing the login-shell
@@ -2380,9 +2456,11 @@ impl AppState {
     pub fn get_settings(&self) -> Result<ProviderSettings> {
         let reg = self.registry.lock().unwrap();
         Ok(ProviderSettings {
-            lm_studio_base_url: reg
-                .get_setting(SETTING_LM_STUDIO_URL)?
-                .unwrap_or_else(|| DEFAULT_LM_STUDIO_URL.to_string()),
+            // Unset means no local model. The field shows
+            // LM_STUDIO_PLACEHOLDER_URL as a placeholder, not as a value: a
+            // prefilled URL is a configured one, and this one configures every
+            // shell Agency opens (see `provider_env`).
+            lm_studio_base_url: reg.get_setting(SETTING_LM_STUDIO_URL)?.unwrap_or_default(),
             // Stored as "" when unset; surface that as None so the UI shows "Auto".
             default_agent: reg.get_setting(SETTING_DEFAULT_AGENT)?.filter(|s| !s.is_empty()),
             // Unset = on, so existing installs keep cutting worktrees.
@@ -2815,7 +2893,7 @@ impl AppState {
         run: &agency_core::registry::Run,
         live: &[(String, SessionStatus)],
     ) -> RunInfo {
-        let name = session_name(&run.id);
+        let name = lead_session_name(run, live);
         let status = live
             .iter()
             .find(|(n, _)| *n == name)
@@ -2901,6 +2979,7 @@ impl AppState {
             kind: run.kind.clone(),
             run_scripts_live: any_run_script_live(&run.id, live),
             queued_messages: self.queued_message_count(&run.id),
+            primary_closed: run.primary_closed_at.is_some(),
             worktree: run.worktree,
             race_id: run.race_id.clone(),
             loop_config: run.loop_config.clone(),
@@ -3201,6 +3280,7 @@ impl AppState {
             // starts, and its record falls back to the merge base.
             base_commit: spec.worktree.then(|| agency_core::merge::rev(&repo, spec.base)).flatten(),
             pin_rank: None,
+            primary_closed_at: None,
         };
         {
             let reg = self.registry.lock().unwrap();
@@ -5119,6 +5199,7 @@ impl AppState {
             worktree: false,
             model: None,
             base_commit: None,
+            primary_closed_at: None,
             pin_rank: None,
         };
         self.registry.lock().unwrap().insert_run(&run)?;
@@ -5146,6 +5227,7 @@ impl AppState {
     /// status is fetched per run (no diff stats, no pane capture).
     pub fn tray_runs(&self) -> Result<Vec<crate::tray::TrayRun>> {
         let projects = self.registry.lock().unwrap().list_projects()?;
+        let live = self.term.read().unwrap().list().unwrap_or_default();
         let mut out = Vec::new();
         for proj in projects {
             let runs = self.registry.lock().unwrap().list_runs(&proj.id)?;
@@ -5154,7 +5236,7 @@ impl AppState {
                     .term
                     .read()
                     .unwrap()
-                    .status(&session_name(&run.id))
+                    .status(&lead_session_name(&run, &live))
                     .unwrap_or(SessionStatus::Gone);
                 let name = run.title.clone().filter(|t| !t.is_empty()).unwrap_or_else(|| {
                     if run.prompt.is_empty() {
@@ -5336,6 +5418,7 @@ impl AppState {
             worktree: false,
             model: None,
             base_commit: None,
+            primary_closed_at: None,
             pin_rank: None,
         };
         self.registry.lock().unwrap().insert_run(&run)?;
@@ -5716,8 +5799,13 @@ impl AppState {
 
     /// Consume the idle gate after a "waiting for input" notification fires so the
     /// run stays quiet until the user drives another turn.
+    ///
+    /// Every session of the run, not just the one named: the notifier watches
+    /// runs, and the session it read the gate off is whichever tab is speaking
+    /// for the run (AGE-184). Clearing only `id` would leave the flag set on
+    /// that tab and the nudge would fire again on every tick.
     pub fn clear_input_seen(&self, id: &str) {
-        self.input_seen.lock().unwrap().remove(id);
+        self.input_seen.lock().unwrap().retain(|s| split_session_id(s).0 != id);
     }
 
     /// Advance a run's busy/idle state; called by the notifier tick with its
@@ -6052,11 +6140,89 @@ impl AppState {
         agency_core::usage::session_dir(&home, &self.agent_command(run), &workspace_dir(repo, run))
     }
 
-    /// Move the agent's transcript directory for this worktree into the
-    /// archive, beside the record (AGE-152). That directory is keyed by a
-    /// worktree path that is about to stop existing; left behind, it is
-    /// unreachable by the agent and swept by nothing, which is how every
-    /// finished run used to leak one forever.
+    /// Every agent that has worked in this run's workspace: the run's own,
+    /// plus one per extra tab, deduplicated and in tab order.
+    ///
+    /// The tabs are what make this a list. A run is one agent only until you
+    /// open a second tab in its worktree, and that tab may be a different
+    /// agent entirely — which is the whole of AGE-184's second question: each
+    /// agent keeps its transcripts under a root of its own, so anything that
+    /// walks "the run's transcript" as a single directory silently means "the
+    /// run's *first* agent's".
+    fn workspace_agents(&self, run: &agency_core::registry::Run) -> Vec<String> {
+        let rows = self.registry.lock().unwrap().list_run_sessions(&run.id).unwrap_or_default();
+        let mut out = vec![run.agent.clone()];
+        for s in rows {
+            if !out.contains(&s.agent) {
+                out.push(s.agent);
+            }
+        }
+        out
+    }
+
+    /// The transcript directories this run's agents keep for its workspace,
+    /// one per agent (see [`Self::workspace_agents`]). Only the ones that
+    /// exist, and only for the agents whose store layout `usage::session_dir`
+    /// knows.
+    fn workspace_transcript_dirs(
+        &self,
+        run: &agency_core::registry::Run,
+        repo: &Path,
+    ) -> Vec<PathBuf> {
+        let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else { return Vec::new() };
+        let worktree = workspace_dir(repo, run);
+        self.workspace_agents(run)
+            .iter()
+            .filter_map(|agent| {
+                agency_core::usage::session_dir(&home, &self.profile_command(agent), &worktree)
+            })
+            .filter(|d| d.exists())
+            .collect()
+    }
+
+    /// The rescued transcript directories sitting in the archive for this run:
+    /// its own agent's, plus one per extra tab that ran a different agent.
+    /// Read off the directory names, so it works after the session rows are
+    /// gone (an archived run has none).
+    fn rescued_transcript_dirs(
+        &self,
+        run: &agency_core::registry::Run,
+        repo: &Path,
+    ) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        let own = agency_core::record::transcript_dir(repo, &run.id);
+        if own.exists() {
+            out.push(own);
+        }
+        if let Ok(entries) = std::fs::read_dir(agency_core::record::dir(repo)) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let is_tab = name
+                    .to_str()
+                    .and_then(|n| agency_core::record::transcript_dir_agent(&run.id, n))
+                    .is_some();
+                if is_tab {
+                    out.push(entry.path());
+                }
+            }
+        }
+        out
+    }
+
+    /// Move the transcript directories for this worktree into the archive,
+    /// beside the record (AGE-152). Those directories are keyed by a worktree
+    /// path that is about to stop existing; left behind, they are unreachable
+    /// by the agent and swept by nothing, which is how every finished run used
+    /// to leak one forever.
+    ///
+    /// One per agent that worked here (AGE-184). Tabs running the *same* agent
+    /// as the run already rode along for free — claude writes one file per
+    /// conversation in the workspace's directory and pi a store per session
+    /// under it, so moving the tree took every tab's conversation with it. A
+    /// tab running a *different* agent did not: its directory hangs off that
+    /// agent's own root, nothing named it, and archiving the run orphaned it.
+    /// `agents` is read before the session rows are deleted, which is why it
+    /// is passed in rather than looked up here.
     ///
     /// Worktree runs only: a run in the project's own checkout shares its
     /// session directory with the user's own sessions there, and that
@@ -6067,36 +6233,85 @@ impl AppState {
         &self,
         run: &agency_core::registry::Run,
         repo: &Path,
+        agents: &[String],
     ) -> Option<agency_core::record::TranscriptNote> {
         if !run.worktree {
             return None;
         }
-        let src = self.agent_session_dir(run, repo).filter(|d| d.exists())?;
-        let dst = agency_core::record::transcript_dir(repo, &run.id);
-        if let Err(e) = agency_core::transcript::move_tree_verified(&src, &dst) {
-            log::warn!("archive {}: couldn't rescue the transcript: {e}", run.id);
-            return None;
+        let worktree = workspace_dir(repo, run);
+        let home = std::env::var_os("HOME").map(PathBuf::from)?;
+        let mut sessions = 0;
+        let mut own: Option<PathBuf> = None;
+        for agent in agents {
+            let command = self.profile_command(agent);
+            let Some(src) =
+                agency_core::usage::session_dir(&home, &command, &worktree).filter(|d| d.exists())
+            else {
+                continue;
+            };
+            // The run's own agent keeps the directory it has always had, so
+            // records written before tabs could be rescued still resolve.
+            let dst = if *agent == run.agent {
+                agency_core::record::transcript_dir(repo, &run.id)
+            } else {
+                match agency_core::record::transcript_dir_for(repo, &run.id, agent) {
+                    Some(d) => d,
+                    None => continue,
+                }
+            };
+            if let Err(e) = agency_core::transcript::move_tree_verified(&src, &dst) {
+                log::warn!("archive {}: couldn't rescue {agent}'s transcript: {e}", run.id);
+                continue;
+            }
+            sessions += count_sessions(&dst);
+            if *agent == run.agent {
+                own = Some(dst);
+            }
         }
-        Some(agency_core::record::TranscriptNote::Rescued {
-            sessions: count_sessions(&dst),
-            resume: resume_command(&self.agent_command(run), &dst),
-        })
+        // The resume line is the run's own agent's: it is the conversation the
+        // record's reader will want back, and a command for a tab's agent
+        // pointing at a directory that is not the run's would be a guess.
+        let resume = own.as_ref().and_then(|d| resume_command(&self.agent_command(run), d));
+        (sessions > 0 || own.is_some())
+            .then_some(agency_core::record::TranscriptNote::Rescued { sessions, resume })
     }
 
-    /// Put a rescued conversation back in the agent's own store, so the
-    /// restored run's resume finds it. The worktree comes back at the same
-    /// path, so the store directory's name is the same one it had. Best-effort
+    /// Put the rescued conversations back in their agents' own stores, so the
+    /// restored run's resume finds them. The worktree comes back at the same
+    /// path, so each store directory's name is the one it had. Best-effort
     /// both ways: with no rescued copy this is a no-op (runs archived before
     /// rescues existed still have their original directory in place), and a
     /// failed move leaves the archive copy where it is.
+    ///
+    /// The extra tabs' agents are read back off the directory names rather
+    /// than the session rows: archiving deletes those rows, so by the time a
+    /// restore runs there is nothing left to ask which agents worked here.
     fn reinstate_transcript(&self, run: &agency_core::registry::Run, repo: &Path) {
-        let src = agency_core::record::transcript_dir(repo, &run.id);
-        if !src.exists() {
-            return;
+        let mut moves: Vec<(PathBuf, String)> = Vec::new();
+        let own = agency_core::record::transcript_dir(repo, &run.id);
+        if own.exists() {
+            moves.push((own, run.agent.clone()));
         }
-        let Some(dst) = self.agent_session_dir(run, repo) else { return };
-        if let Err(e) = agency_core::transcript::move_tree_verified(&src, &dst) {
-            log::warn!("restore {}: couldn't reinstate the transcript: {e}", run.id);
+        if let Ok(entries) = std::fs::read_dir(agency_core::record::dir(repo)) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let Some(name) = name.to_str() else { continue };
+                let Some(agent) = agency_core::record::transcript_dir_agent(&run.id, name) else {
+                    continue;
+                };
+                moves.push((entry.path(), agent));
+            }
+        }
+        let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else { return };
+        let worktree = workspace_dir(repo, run);
+        for (src, agent) in moves {
+            let command = self.profile_command(&agent);
+            let Some(dst) = agency_core::usage::session_dir(&home, &command, &worktree) else {
+                continue;
+            };
+            if let Err(e) = agency_core::transcript::move_tree_verified(&src, &dst) {
+                log::warn!("restore {}: couldn't reinstate {agent}'s transcript: {e}", run.id);
+            }
         }
     }
 
@@ -6249,14 +6464,55 @@ impl AppState {
         if !run.worktree {
             return Ok(ConversationInfo { supported: true, sessions: Vec::new() });
         }
+        // The run's own agent first, then one directory per extra tab that ran
+        // a different agent (AGE-184). Each is parsed in its own dialect: a
+        // pi tab's file read as claude renders as nothing said, which is the
+        // one thing this view must never claim.
+        let mut dirs: Vec<(PathBuf, agency_core::usage::Format)> = Vec::new();
         let rescued = agency_core::record::transcript_dir(&repo, &run.id);
-        let dir = if rescued.exists() {
-            Some(rescued)
-        } else {
-            self.agent_session_dir(&run, &repo).filter(|d| d.exists())
-        };
-        let sessions =
-            dir.map(|d| agency_core::transcript::read_sessions(&d, format)).unwrap_or_default();
+        if rescued.exists() {
+            dirs.push((rescued, format));
+        } else if let Some(d) = self.agent_session_dir(&run, &repo).filter(|d| d.exists()) {
+            dirs.push((d, format));
+        }
+        for agent in self.workspace_agents(&run).into_iter().filter(|a| *a != run.agent) {
+            let Some(tab_format) = agency_core::usage::format_for(&self.profile_command(&agent))
+            else {
+                continue;
+            };
+            let archived = agency_core::record::transcript_dir_for(&repo, &run.id, &agent)
+                .filter(|d| d.exists());
+            let dir = archived.or_else(|| {
+                let home = std::env::var_os("HOME").map(PathBuf::from)?;
+                agency_core::usage::session_dir(
+                    &home,
+                    &self.profile_command(&agent),
+                    &workspace_dir(&repo, &run),
+                )
+                .filter(|d| d.exists())
+            });
+            if let Some(dir) = dir {
+                dirs.push((dir, tab_format));
+            }
+        }
+        // An archived run has no session rows left, so its tabs' directories
+        // are found by name instead — the same list the discard sweep walks.
+        for dir in self.rescued_transcript_dirs(&run, &repo) {
+            let Some(name) = dir.file_name().and_then(|n| n.to_str()) else { continue };
+            let Some(agent) = agency_core::record::transcript_dir_agent(&run.id, name) else {
+                continue;
+            };
+            if dirs.iter().any(|(d, _)| *d == dir) {
+                continue;
+            }
+            if let Some(f) = agency_core::usage::format_for(&self.profile_command(&agent)) {
+                dirs.push((dir, f));
+            }
+        }
+        let sessions = dirs
+            .into_iter()
+            .flat_map(|(d, f)| agency_core::transcript::read_sessions(&d, f))
+            .collect();
         Ok(ConversationInfo { supported: true, sessions })
     }
 
@@ -6320,14 +6576,17 @@ impl AppState {
             // sweeps (AGE-152 counted one leaked per discarded run, forever).
             // Worktree runs only — a checkout run's session directory also
             // holds the user's own sessions in that folder.
-            let rescued = agency_core::record::transcript_dir(&repo, &run.id);
-            if rescued.exists() {
-                if let Err(e) = std::fs::remove_dir_all(&rescued) {
+            //
+            // One per agent that worked here, not one per run (AGE-184): an
+            // extra tab may run a different agent, whose directory hangs off
+            // its own root and which nothing else names.
+            for dir in self.rescued_transcript_dirs(&run, &repo) {
+                if let Err(e) = std::fs::remove_dir_all(&dir) {
                     log::warn!("discard_run {id}: couldn't remove the rescued transcript: {e}");
                 }
             }
             if run.kind == "agent" && run.worktree {
-                if let Some(sdir) = self.agent_session_dir(&run, &repo).filter(|d| d.exists()) {
+                for sdir in self.workspace_transcript_dirs(&run, &repo) {
                     if let Err(e) = std::fs::remove_dir_all(&sdir) {
                         log::warn!("discard_run {id}: couldn't remove the transcript dir: {e}");
                     }
@@ -6429,6 +6688,10 @@ impl AppState {
         }
 
         step(on_progress, "Stopping the agent", &run.branch);
+        // Read while the session rows are still there: the rescue below needs
+        // one transcript directory per agent that worked in this workspace,
+        // and the tabs that name the other agents are about to be deleted.
+        let agents = self.workspace_agents(&run);
         // Stop all sessions and drop attach handles. Extra tabs are purged for
         // good: the worktree they live in is about to disappear.
         self.attaches.lock().unwrap().remove(id);
@@ -6437,7 +6700,14 @@ impl AppState {
         self.shell_attaches.lock().unwrap().remove(id);
         let _ = self.term.read().unwrap().kill(&shell_session_name(id));
         self.kill_extra_sessions(id);
-        self.registry.lock().unwrap().delete_run_sessions(id)?;
+        {
+            let reg = self.registry.lock().unwrap();
+            reg.delete_run_sessions(id)?;
+            // Every tab goes with the worktree, so a restored run has only its
+            // own agent to come back as; leaving it stamped closed (AGE-184)
+            // would restore a run with an empty tab strip.
+            reg.set_run_primary_closed(id, None)?;
+        }
 
         // Decided here, after the auto-commit above: a WIP commit made seconds
         // ago is on no remote and in no base, so a run that looked merged
@@ -6460,7 +6730,7 @@ impl AppState {
         if run.worktree {
             step(on_progress, "Saving the conversation", &run.branch);
         }
-        let rescued = self.rescue_transcript(&run, &repo);
+        let rescued = self.rescue_transcript(&run, &repo, &agents);
         // Written while the worktree, the branch and the commit range all still
         // exist — after this the range that names the run's own commits may be
         // gone. Best-effort: a record that cannot be written is not worth
@@ -7162,18 +7432,85 @@ impl AppState {
         Ok(rows.iter().map(|s| self.run_session_info(s)).collect())
     }
 
-    /// Close an extra agent tab: kill its daemon session and forget it. The
-    /// worktree, branch and every sibling session are untouched.
+    /// Close one of a run's agent tabs: kill its daemon session and forget it.
+    /// The worktree, branch and every sibling session are untouched.
+    ///
+    /// The run's own tab counts (AGE-184). Closing it cannot delete a row —
+    /// the run *is* that row — so it stamps `primary_closed_at` instead: the
+    /// strip stops drawing the tab, `ensure_run_active` stops reviving it, and
+    /// `lead_session_name` hands the run's status and its prompts to whichever
+    /// tab is left. Archiving clears the stamp, because archiving takes every
+    /// extra tab with it and the run's own agent is then all there is.
+    ///
+    /// Refused when it would leave the run with no agent at all: a workspace
+    /// with an empty tab strip is a run you can only stare at, and "there is
+    /// one left" is exactly when archive or delete is the thing meant.
     pub fn close_run_session(&self, id: &str) -> Result<()> {
-        let (_, seq) = split_session_id(id);
+        let (run_id, seq) = split_session_id(id);
+        let run = self.run_record(run_id)?;
+        let live = self.term.read().unwrap().list().unwrap_or_default();
+        if self.drawn_tabs(&run, &live).into_iter().filter(|t| t != id).count() == 0 {
+            bail!(
+                "this is the last agent in this workspace. Archive or delete the agent instead, \
+                 or open another tab first."
+            );
+        }
         if seq.is_none() {
-            bail!("not an extra session id: {id}");
+            // A loop drives the run's own session: attempt after attempt is
+            // spawned under that name, so closing it would only have it come
+            // back. Stopping the loop is the gesture that means this.
+            if run.loop_config.is_some() {
+                bail!("this agent is running a loop. Stop the loop before closing its tab.");
+            }
+            self.attaches.lock().unwrap().remove(id);
+            self.forget_session_state(id);
+            let _ = self.term.read().unwrap().kill(&session_name(id));
+            self.registry.lock().unwrap().set_run_primary_closed(id, Some(now_secs()))?;
+            return Ok(());
         }
         self.attaches.lock().unwrap().remove(id);
         self.forget_session_state(id);
         let _ = self.term.read().unwrap().kill(&session_name(id));
         self.registry.lock().unwrap().delete_run_session(id)?;
         Ok(())
+    }
+
+    /// Reopen the run's own agent tab after it was closed (AGE-184).
+    ///
+    /// Through `ensure_run_active`, so the agent comes back into the
+    /// conversation it was in rather than starting blank: closing a tab is not
+    /// throwing the conversation away, and the transcript was never deleted.
+    /// A run whose tab is already open is left alone.
+    pub fn reopen_primary_session(&self, id: &str) -> Result<()> {
+        let run = self.run_record(id)?;
+        if run.primary_closed_at.is_none() {
+            return Ok(());
+        }
+        self.registry.lock().unwrap().set_run_primary_closed(id, None)?;
+        self.ensure_run_active(id)
+    }
+
+    /// The session ids the run's tab strip actually draws: its own agent
+    /// unless that tab has been closed, plus every extra tab whose session is
+    /// still alive. A tab whose agent has gone is dropped from the strip, so
+    /// it cannot be what stops a close from leaving the strip empty.
+    fn drawn_tabs(
+        &self,
+        run: &agency_core::registry::Run,
+        live: &[(String, SessionStatus)],
+    ) -> Vec<String> {
+        let mut out = Vec::new();
+        if run.primary_closed_at.is_none() {
+            out.push(run.id.clone());
+        }
+        let rows = self.registry.lock().unwrap().list_run_sessions(&run.id).unwrap_or_default();
+        for s in rows {
+            let name = session_name(&s.id);
+            if live.iter().any(|(n, _)| *n == name) {
+                out.push(s.id);
+            }
+        }
+        out
     }
 
     fn run_session_info(&self, s: &agency_core::registry::RunSession) -> RunSessionInfo {
@@ -7229,6 +7566,14 @@ impl AppState {
             return self.launch_run_session(id, &run, &session.agent, "");
         }
         let run = self.run_record(id)?;
+        // The user closed this tab (AGE-184). Every other caller of this
+        // function treats a missing session as an accident to repair — the app
+        // was quit, the daemon dropped it — so without this the run's own agent
+        // would come straight back on the next poll that touched it, and the
+        // close would look like it had not worked.
+        if run.primary_closed_at.is_some() {
+            return Ok(());
+        }
         let repo = self.project_repo(&run.project_id)?;
 
         // The loop driver owns an active loop's session — never spawn a rival
@@ -7389,6 +7734,12 @@ impl AppState {
         let run = self.run_record(id)?;
         if has_active_loop(&run) {
             bail!("this run is looping — stop the loop before rerunning it manually");
+        }
+        // Rerunning is how a closed first tab comes back (AGE-184): it is the
+        // one gesture that already means "start this run's own agent again",
+        // and it is spelled out in the close confirmation.
+        if run.primary_closed_at.is_some() {
+            self.registry.lock().unwrap().set_run_primary_closed(id, None)?;
         }
         let repo = self.project_repo(&run.project_id)?;
         let config = agency_core::config::load(&repo);
@@ -8448,6 +8799,37 @@ impl AppState {
         Ok(agency_core::gh::GhCli::default().view_pr(&repo, &run.branch)?.map(|p| p.number))
     }
 
+    /// Which of a run's agents a prompt Agency composes should be typed into.
+    ///
+    /// `session` is the caller's choice — an agent tab the user picked
+    /// (AGE-184: a worktree with three agents in it sent every prompt to the
+    /// first one, whose context was usually the least relevant). `None` means
+    /// "whichever agent speaks for this run": its own, or the tab standing in
+    /// for it once that has been closed.
+    ///
+    /// A named session is checked against the run rather than trusted: it
+    /// arrives from the UI, and typing a merge-conflict prompt into another
+    /// run's agent would send it off editing work it has never seen.
+    fn send_target(&self, run_id: &str, session: Option<&str>) -> Result<String> {
+        let Some(sid) = session else {
+            // A row we cannot read is not an error here: the caller's next step
+            // is a session check, and "that agent is not running" says more
+            // about a run that has gone than "unknown run" does.
+            let Ok(run) = self.run_record(run_id) else { return Ok(run_id.to_string()) };
+            let live = self.term.read().unwrap().list().unwrap_or_default();
+            // The daemon's name, back to a session id.
+            let lead = lead_session_name(&run, &live);
+            return Ok(lead.strip_prefix("agency-").unwrap_or(&lead).to_string());
+        };
+        if split_session_id(sid).0 != run_id {
+            bail!("session {sid} does not belong to this agent");
+        }
+        if sid != run_id && self.registry.lock().unwrap().get_run_session(sid)?.is_none() {
+            bail!("agent tab {sid} is not open any more");
+        }
+        Ok(sid.to_string())
+    }
+
     /// Hand the PR's failing checks to the agent's live session so it can
     /// investigate — same delivery path as review comments. Returns whether the
     /// text went out now or is queued behind the agent's current turn.
@@ -8458,11 +8840,12 @@ impl AppState {
         if failing.is_empty() {
             bail!("no failing checks to send");
         }
+        let target = self.send_target(id, None)?;
         if !matches!(
-            self.term.read().unwrap().status(&session_name(id)),
+            self.term.read().unwrap().status(&session_name(&target)),
             Ok(SessionStatus::Running)
         ) {
-            bail!("agent session {id} is not running");
+            bail!("agent session {target} is not running");
         }
         let mut msg =
             format!("CI feedback: {} check(s) failing on this branch's PR — ", failing.len());
@@ -8480,14 +8863,19 @@ impl AppState {
         msg.push_str(
             ". Please investigate the failures, fix them, commit, and push to update the PR.",
         );
-        self.queue_send(id, "check feedback", msg)
+        self.queue_send(&target, "check feedback", msg)
     }
 
-    /// Hand a conflicted merge to the run's own agent by typing a prompt into
-    /// its live session, the same delivery path as review comments and CI
+    /// Hand a conflicted merge to one of the run's agents by typing a prompt
+    /// into its live session, the same delivery path as review comments and CI
     /// feedback. Replaces the old one-shot resolver process, which spawned a
     /// second, context-free agent that had no idea what the branch was for.
-    pub fn send_merge_conflict(&self, id: &str) -> anyhow::Result<bool> {
+    ///
+    /// `session` names the agent tab to hand it to; `None` means the one that
+    /// speaks for the run. A worktree can host several agents, and this used to
+    /// go to the run's own every time — which after a day's work is often the
+    /// one with the least to do with the branch being merged (AGE-184).
+    pub fn send_merge_conflict(&self, id: &str, session: Option<&str>) -> anyhow::Result<bool> {
         let run = self.run_record(id)?;
         let repo = self.project_repo(&run.project_id)?;
         let base = agency_core::merge::resolve_target(run.merge_target.as_deref(), &repo)
@@ -8501,14 +8889,15 @@ impl AppState {
             }
             Some(_) => {}
         }
+        let target = self.send_target(id, session)?;
         if !matches!(
-            self.term.read().unwrap().status(&session_name(id)),
+            self.term.read().unwrap().status(&session_name(&target)),
             Ok(SessionStatus::Running)
         ) {
-            bail!("agent session {id} is not running");
+            bail!("agent session {target} is not running");
         }
         let msg = compose_merge_conflict(&repo, &run.branch, &base, &conflict_status(&repo));
-        self.queue_send(id, "merge conflict", msg)
+        self.queue_send(&target, "merge conflict", msg)
     }
 
     /// Update focus/active-run state. On an unfocused→focused edge, hand back a
@@ -8594,13 +8983,14 @@ impl AppState {
         if unsent.is_empty() {
             bail!("no unsent review comments");
         }
+        let target = self.send_target(run_id, None)?;
         if !matches!(
-            self.term.read().unwrap().status(&session_name(run_id)),
+            self.term.read().unwrap().status(&session_name(&target)),
             Ok(SessionStatus::Running)
         ) {
-            bail!("agent session {run_id} is not running");
+            bail!("agent session {target} is not running");
         }
-        let delivered = self.queue_send(run_id, "review comments", compose_feedback(&unsent))?;
+        let delivered = self.queue_send(&target, "review comments", compose_feedback(&unsent))?;
         // Marked sent once the queue has accepted them, not once they are
         // written: from here the message is Agency's to deliver, and leaving the
         // button live would only invite a second copy of the same comments.
@@ -8732,19 +9122,13 @@ impl AppState {
             });
             let runs = self.registry.lock().unwrap().list_runs(&proj.id)?;
             for run in runs {
-                let agent = self
-                    .term
-                    .read()
-                    .unwrap()
-                    .status(&session_name(&run.id))
-                    .unwrap_or(SessionStatus::Gone);
+                // The run's own session, or the tab standing in for it once
+                // that has been closed: a run whose first agent is gone is
+                // still working, and the watch has to see the agent that is.
+                let lead = lead_session_name(&run, &live);
+                let agent = self.term.read().unwrap().status(&lead).unwrap_or(SessionStatus::Gone);
                 let run_scripts = run_scripts_of(&run.id);
-                let pane = self
-                    .term
-                    .read()
-                    .unwrap()
-                    .capture(&session_name(&run.id), 50)
-                    .unwrap_or_default();
+                let pane = self.term.read().unwrap().capture(&lead, 50).unwrap_or_default();
                 let mut hasher = std::collections::hash_map::DefaultHasher::new();
                 std::hash::Hash::hash(&pane, &mut hasher);
                 let pane_hash = std::hash::Hasher::finish(&hasher);
@@ -8759,7 +9143,13 @@ impl AppState {
                         }
                     })
                 );
-                let user_input_pending = self.input_seen.lock().unwrap().contains(&run.id);
+                // Keyed by the session the user actually typed into, which is
+                // the one standing in for the run once its own tab is closed
+                // (AGE-184) — the idle nudge is gated on the human having
+                // driven a turn, and reading the wrong session would gate it
+                // on a session nobody can type into any more.
+                let typed_into = lead.strip_prefix("agency-").unwrap_or(&lead);
+                let user_input_pending = self.input_seen.lock().unwrap().contains(typed_into);
                 // Any run with a loop config, active OR terminal: suppression
                 // must not depend on when the driver persists the terminal
                 // transition, or the final attempt's exit edge (which lands on
@@ -9115,6 +9505,7 @@ mod tests {
             worktree: true,
             model: None,
             base_commit: None,
+            primary_closed_at: None,
             pin_rank: None,
         };
         assert!(super::wants_web_ui(&base));
@@ -9918,6 +10309,79 @@ mod tests {
         assert_eq!(split_session_id("weird--tail"), ("weird--tail", None));
     }
 
+    /// A worktree run, for the pure helpers that only read the row.
+    fn agent_run(id: &str) -> agency_core::registry::Run {
+        agency_core::registry::Run {
+            id: id.to_string(),
+            project_id: "proj".to_string(),
+            agent: "claude".to_string(),
+            prompt: "do a thing".to_string(),
+            base: "main".to_string(),
+            branch: format!("agent/{id}"),
+            created_at: 0,
+            port_base: None,
+            archived_at: None,
+            title: None,
+            kind: "agent".to_string(),
+            merge_target: None,
+            race_id: None,
+            loop_config: None,
+            loop_state: None,
+            issue_id: None,
+            worktree: true,
+            model: None,
+            base_commit: None,
+            primary_closed_at: None,
+            pin_rank: None,
+        }
+    }
+
+    fn live(names: &[&str]) -> Vec<(String, super::SessionStatus)> {
+        names.iter().map(|n| ((*n).to_string(), super::SessionStatus::Running)).collect()
+    }
+
+    #[test]
+    fn a_run_speaks_through_its_own_session_until_that_tab_is_closed() {
+        let run = agent_run("fix-a1");
+        let sessions = live(&["agency-fix-a1", "agency-fix-a1--2", "agency-fix-a1--3"]);
+        assert_eq!(super::lead_session_name(&run, &sessions), "agency-fix-a1");
+    }
+
+    /// AGE-184: with the run's own tab closed, the leftmost tab still alive
+    /// carries the run — its status dot, its notifier watch, its prompts.
+    #[test]
+    fn a_closed_first_tab_hands_the_run_to_its_lowest_numbered_tab() {
+        let mut run = agent_run("fix-a1");
+        run.primary_closed_at = Some(1);
+        let sessions = live(&["agency-fix-a1--3", "agency-fix-a1--2"]);
+        assert_eq!(super::lead_session_name(&run, &sessions), "agency-fix-a1--2");
+        // Double digits sort as numbers, not as text.
+        let sessions = live(&["agency-fix-a1--10", "agency-fix-a1--9"]);
+        assert_eq!(super::lead_session_name(&run, &sessions), "agency-fix-a1--9");
+    }
+
+    #[test]
+    fn a_closed_first_tab_with_nothing_left_alive_reads_as_gone() {
+        let mut run = agent_run("fix-a1");
+        run.primary_closed_at = Some(1);
+        // The run's own name, whose status is Gone — which is the truth about
+        // a run with no agent running in it.
+        assert_eq!(super::lead_session_name(&run, &[]), "agency-fix-a1");
+        // Neither a shell nor a run script is an agent tab.
+        let sessions = live(&["agency-shell-fix-a1", "agency-run-fix-a1#dev"]);
+        assert_eq!(super::lead_session_name(&run, &sessions), "agency-fix-a1");
+    }
+
+    #[test]
+    fn a_neighbouring_runs_tabs_never_speak_for_this_one() {
+        let mut run = agent_run("fix-a1");
+        run.primary_closed_at = Some(1);
+        // `fix-a12--2` starts with this run's name; the `--` boundary is what
+        // keeps it out.
+        let sessions = live(&["agency-fix-a12--2"]);
+        assert_eq!(super::lead_session_name(&run, &sessions), "agency-fix-a1");
+    }
+
     fn attempt(agent: &str, model: Option<&str>) -> RaceAttempt {
         RaceAttempt { agent: agent.to_string(), model: model.map(str::to_string) }
     }
@@ -10211,6 +10675,7 @@ mod tests {
             worktree: false,
             model: None,
             base_commit: None,
+            primary_closed_at: None,
             pin_rank: None,
         };
         assert_eq!(run.kind, "terminal");
@@ -10242,6 +10707,7 @@ mod tests {
             worktree: false,
             model: None,
             base_commit: None,
+            primary_closed_at: None,
             pin_rank: None,
         }
     }

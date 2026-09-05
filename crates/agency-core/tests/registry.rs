@@ -111,6 +111,7 @@ fn runs_persist_list_and_delete() {
         worktree: true,
         model: None,
         base_commit: None,
+        primary_closed_at: None,
         pin_rank: None,
     };
     {
@@ -151,6 +152,7 @@ fn list_runs_newest_first() {
             worktree: true,
             model: None,
             base_commit: None,
+            primary_closed_at: None,
             pin_rank: None,
         })
         .unwrap();

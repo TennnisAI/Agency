@@ -134,6 +134,10 @@ export interface RunInfo {
   // yet. Non-zero puts the marker on the tile and the run header: a message
   // waiting behind a long turn should read as patience, not as a lost click.
   queuedMessages: number;
+  // The run's own agent tab has been closed, so the tab strip stops drawing it
+  // and `status` above describes whichever extra tab is standing in for it.
+  // Rerunning the agent brings it back.
+  primaryClosed: boolean;
   // What is left of an archived run. Only set by listArchivedRuns — answering
   // it asks git a question per run, and the live board polls every 1.5s.
   archived: ArchivedInfo | null;
@@ -794,6 +798,9 @@ export const startRunSession = (runId: string, agent?: string) =>
 export const listRunSessions = (runId: string) =>
   invoke<RunSessionInfo[]>("list_run_sessions", { runId });
 export const closeRunSession = (id: string) => invoke<void>("close_run_session", { id });
+// Put back a run's own agent tab after it was closed, resuming the
+// conversation it had.
+export const reopenRunAgent = (id: string) => invoke<void>("reopen_run_agent", { id });
 
 export interface FileChange {
   path: string;
@@ -1430,8 +1437,8 @@ export const abortMergeTask = (taskId: string, onProgress?: (p: CloneProgress) =
 // "Fix with agent": types the conflict, with git's own status output, into this
 // run's live agent session. Resolves true if it went in now, false if it is
 // queued behind the agent's current turn.
-export const sendMergeConflict = (taskId: string) =>
-  invoke<boolean>("send_merge_conflict", { taskId });
+export const sendMergeConflict = (taskId: string, sessionId?: string) =>
+  invoke<boolean>("send_merge_conflict", { taskId, sessionId: sessionId ?? null });
 
 export interface Hunk {
   header: string;

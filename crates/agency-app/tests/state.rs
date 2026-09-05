@@ -218,7 +218,9 @@ fn settings_default_and_roundtrip() {
     let dir = tempfile::tempdir().unwrap();
     let state = common::state(&dir);
     let s = state.get_settings().unwrap();
-    assert_eq!(s.lm_studio_base_url, "http://localhost:1234/v1");
+    // AGE-186: no local model until the user names one. The settings field
+    // shows LM Studio's port as a placeholder, not as text they have to delete.
+    assert_eq!(s.lm_studio_base_url, "");
     // Unset by default (empty string surfaces as None, i.e. "auto").
     assert_eq!(s.default_agent, None);
     // Unset means worktrees on, so an upgrade doesn't silently change where
@@ -265,6 +267,13 @@ fn create_run_injects_provider_env() {
     std::fs::create_dir_all(&repo).unwrap();
     init_repo(&repo);
 
+    // Sentinels in the environment the daemon inherits, so the two halves of
+    // this test can tell "Agency injected it" from "it was already there".
+    // Agency is routinely run from a shell that already has these two set,
+    // because Agency itself sets them in every shell it opens.
+    std::env::set_var("OPENAI_BASE_URL", "http://inherited.invalid/v1");
+    std::env::set_var("OPENAI_API_KEY", "inherited-key");
+
     let state = common::state(&dir);
     state
         .save_settings(&agency_app_lib::ProviderSettings {
@@ -280,7 +289,7 @@ fn create_run_injects_provider_env() {
             command: "sh".into(),
             args: vec![
                 "-c".into(),
-                "echo BASE=$OPENAI_BASE_URL; echo KEYSET=${OPENAI_API_KEY:+yes}; sleep 2".into(),
+                "echo BASE=$OPENAI_BASE_URL; echo KEY=$OPENAI_API_KEY; sleep 2".into(),
             ],
             env: vec![],
             resume_args: None,
@@ -305,9 +314,66 @@ fn create_run_injects_provider_env() {
     }
 
     assert!(out.contains("BASE=http://localhost:1234/v1"), "got: {out}");
-    assert!(out.contains("KEYSET=yes"), "got: {out}");
+    assert!(out.contains("KEY=lm-studio"), "got: {out}");
 
     state.discard_run(&info.id).unwrap();
+
+    // AGE-186: blanking the field has to set neither variable. It used to set
+    // OPENAI_BASE_URL="" and a placeholder OPENAI_API_KEY regardless, which
+    // shadowed the user's real key in every session Agency opens.
+    state
+        .save_settings(&agency_app_lib::ProviderSettings {
+            lm_studio_base_url: "".into(),
+            default_agent: None,
+            default_worktree: true,
+        })
+        .unwrap();
+    let off = state.create_run(&project.id, "p", "envcheck", None, "HEAD", None).unwrap();
+    let mut out = String::new();
+    let start = std::time::Instant::now();
+    while start.elapsed() < std::time::Duration::from_secs(5) {
+        if let Ok(s) = state.run_preview(&off.id, 20) {
+            out = s;
+            if out.contains("KEY=") {
+                break;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    // The inherited values come through untouched: Agency set neither.
+    assert!(out.contains("BASE=http://inherited.invalid/v1"), "got: {out}");
+    assert!(out.contains("KEY=inherited-key"), "got: {out}");
+
+    state.discard_run(&off.id).unwrap();
+}
+
+/// AGE-186: the local-model URL used to arrive prefilled with LM Studio's
+/// default port as real, selectable text, under copy that said "leave blank to
+/// disable". Nobody chose it: the getter invented it whenever the row was
+/// unset, and any unrelated save (the worktree toggle, the default-agent
+/// select) persisted the whole struct and wrote it back. The clear runs once,
+/// so the same URL typed in deliberately survives the next launch.
+#[test]
+fn the_prefilled_local_model_url_is_cleared_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("agency.db");
+    {
+        let reg = agency_core::registry::Registry::open(&db).unwrap();
+        reg.set_setting("lm_studio_base_url", "http://localhost:1234/v1").unwrap();
+    }
+    {
+        let state = common::state(&dir);
+        assert_eq!(state.get_settings().unwrap().lm_studio_base_url, "");
+        state
+            .save_settings(&agency_app_lib::ProviderSettings {
+                lm_studio_base_url: "http://localhost:1234/v1".into(),
+                default_agent: None,
+                default_worktree: true,
+            })
+            .unwrap();
+    }
+    let state = common::state(&dir);
+    assert_eq!(state.get_settings().unwrap().lm_studio_base_url, "http://localhost:1234/v1");
 }
 
 /// The model a run is started on has to reach the agent's real command line —
@@ -679,7 +745,7 @@ fn send_merge_conflict_requires_a_merge_in_progress() {
     let project = state.add_project("demo", &repo).unwrap();
     let info = state.create_run(&project.id, "p", "noop", None, "HEAD", None).unwrap();
 
-    let err = state.send_merge_conflict(&info.id).unwrap_err().to_string();
+    let err = state.send_merge_conflict(&info.id, None).unwrap_err().to_string();
     assert!(err.contains("no merge is in progress"), "got: {err}");
 
     state.discard_run(&info.id).unwrap();
@@ -1079,9 +1145,6 @@ fn extra_session_lifecycle_shares_worktree_and_cascades() {
     assert_eq!(s3.id, format!("{}--3", run.id));
     assert_eq!(state.run_sessions(&run.id).unwrap().len(), 2);
 
-    // The primary id is not closable through the tab path.
-    assert!(state.close_run_session(&run.id).is_err());
-
     // Closing a tab kills only that session; siblings survive.
     state.close_run_session(&s2.id).unwrap();
     let mut gone = false;
@@ -1094,6 +1157,41 @@ fn extra_session_lifecycle_shares_worktree_and_cascades() {
     }
     assert!(gone, "closed tab session still present");
     assert_eq!(state.run_sessions(&run.id).unwrap().len(), 1);
+    assert!(!matches!(state.run_status(&run.id).unwrap(), SessionStatus::Gone));
+
+    // AGE-184: the run's own tab closes like any other while a tab is left to
+    // carry the workspace. The run stays — it is the worktree and the branch,
+    // not the session — and its status now comes from the tab that is left.
+    state.close_run_session(&run.id).unwrap();
+    let mut primary_gone = false;
+    for _ in 0..75 {
+        if matches!(state.run_status(&run.id).unwrap(), SessionStatus::Gone) {
+            primary_gone = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    assert!(primary_gone, "the run's own session survived its tab being closed");
+    let info = state.list_runs(&project.id).unwrap().into_iter().find(|r| r.id == run.id).unwrap();
+    assert!(info.primary_closed, "the close must survive as more than a dead session");
+    assert!(
+        !matches!(info.status, SessionStatus::Gone),
+        "the remaining tab carries the run's status"
+    );
+    // Nothing revives a tab the user closed: this is the call every attach
+    // makes, and before AGE-184 it would have started the agent straight back.
+    state.ensure_run_active(&run.id).unwrap();
+    assert!(matches!(state.run_status(&run.id).unwrap(), SessionStatus::Gone));
+
+    // And the last one standing cannot be closed — that is what archive and
+    // delete are for.
+    let err = state.close_run_session(&s3.id).unwrap_err().to_string();
+    assert!(err.contains("last agent"), "expected a last-agent refusal, got: {err}");
+
+    // The way back: the + menu's reopen clears the stamp and starts the agent.
+    state.reopen_primary_session(&run.id).unwrap();
+    let info = state.list_runs(&project.id).unwrap().into_iter().find(|r| r.id == run.id).unwrap();
+    assert!(!info.primary_closed);
     assert!(!matches!(state.run_status(&run.id).unwrap(), SessionStatus::Gone));
 
     // Discarding the run sweeps the remaining tab: session and row.

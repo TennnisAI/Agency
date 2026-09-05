@@ -16,6 +16,7 @@ import {
   saveCollapsed,
   saveSelected,
   searchTerms,
+  seedingRisk,
   stepSelection,
   todayIssues,
 } from "./issues";
@@ -305,5 +306,35 @@ describe("remembered selection", () => {
     const open = issue({});
     saveSelected(storage, KEY, open.id);
     expect(loadSelected(storage, issuesSelectedKey("p2"), [open])).toBeNull();
+  });
+});
+
+describe("seedingRisk", () => {
+  it("warns on the side that discards more", () => {
+    // The machine that is joining: two issues here, a real backlog there.
+    expect(seedingRisk({ local: 2, remote: 227 })).toEqual({
+      publishDanger: true,
+      adoptDanger: false,
+    });
+    expect(seedingRisk({ local: 227, remote: 2 })).toEqual({
+      publishDanger: false,
+      adoptDanger: true,
+    });
+  });
+
+  it("warns on both when either side discards the same", () => {
+    expect(seedingRisk({ local: 4, remote: 4 })).toEqual({
+      publishDanger: true,
+      adoptDanger: true,
+    });
+  });
+
+  it("does not warn about discarding nothing", () => {
+    // A remote with no issues cannot be worth keeping over a local backlog, and
+    // publishing over it destroys nothing.
+    expect(seedingRisk({ local: 12, remote: 0 })).toEqual({
+      publishDanger: false,
+      adoptDanger: true,
+    });
   });
 });

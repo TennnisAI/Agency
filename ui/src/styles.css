@@ -2876,6 +2876,14 @@ input, textarea, code,
 .quickadd-input::placeholder { color: var(--o0); }
 /* Empty board: the + is the hero, centered above the hint. */
 .issues-empty { gap: 12px; }
+/* The conflict list inside the automatic-sync prompt: a modal body, so it
+   carries no list styling of its own. */
+.issue-conflict-list { margin: 8px 0 0; padding-left: 18px; display: flex;
+  flex-direction: column; gap: 4px; }
+.issue-conflict-list code { color: var(--o1); }
+/* Sync and Settings sit side by side on the empty board: stacked, the
+   second read as the more important of the two. */
+.issues-empty-actions { display: flex; gap: 8px; align-items: center; }
 .quickadd-toggle.big { width: 36px; height: 36px; font-size: 19px; }
 /* Search + filters, one row under quick capture. The bar itself is the shared
    .issues-filterbar (same as the cross-project board, so both boards read the

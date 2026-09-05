@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Project, FileRoot, projectTarget } from "../api";
 import { fileRootKey, onAnyOpenFile, requestOpenFile } from "../lib/openFile";
+import { SectionId } from "../lib/settingsSections";
 import { terminalHasFocus } from "../lib/terminalFocus";
 import { useRuns } from "../store/runs";
 import AgentTile from "./AgentTile";
@@ -33,12 +34,14 @@ export default function AgentsView({
   onToggleSidebar,
   onOpenRun,
   onOpenProject,
+  onOpenSettings,
 }: {
   project: Project | null;
   sidebarOpen: boolean;
   onToggleSidebar: () => void;
   onOpenRun: (project: Project, runId: string) => void;
   onOpenProject: (project: Project) => void;
+  onOpenSettings: (section?: SectionId) => void;
 }) {
   const { runs, projectRunLive, view, setView, focusedRunId, selectedRunId, sourcePanelOpen, setSourcePanelOpen, tab, setTab, approveRunId, setApproveRun, createTerminal, spawning, spawnProgress, setFocusedRun, refreshRuns } = useRuns();
   const focused = runs.find((r) => r.id === focusedRunId) ?? null;
@@ -274,6 +277,7 @@ export default function AgentsView({
             <IssuesView
               project={project}
               onStartIssue={(issue, agentId, opts) => spawn(agentId, opts, issue)}
+              onOpenBacklogSettings={() => onOpenSettings("backlog")}
             />
           )}
 

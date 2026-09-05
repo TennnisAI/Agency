@@ -188,11 +188,18 @@ export default function Settings({
   onOpenTerminal,
   projectId,
   projectName,
+  section,
 }: {
   onClose: () => void;
   onOpenTerminal?: (runId: string) => void;
   projectId: string | null;
   projectName: string | null;
+  /**
+   * Section to open on, for a caller that is answering "where do I turn this
+   * on" rather than opening Settings for its own sake. null keeps
+   * `lastSection`, which is what every other caller wants.
+   */
+  section?: SectionId | null;
 }) {
   const [settings, setSettings] = useState<ProviderSettings>({
     lmStudioBaseUrl: "",
@@ -551,15 +558,21 @@ export default function Settings({
     if (projectId) loadBacklog(projectId);
   }, [projectId]);
 
-  // One write for both fields: the remote is meaningless with sync off, and
-  // saving them separately would let a half-applied state reach disk.
-  async function persistBacklog(sync: boolean, remote: string) {
+  // One write for all three fields: the remote is meaningless with sync off,
+  // and saving them separately would let a half-applied state reach disk.
+  // Patch-shaped rather than positional for the same reason, now that there are
+  // three: a caller changing one would otherwise have to restate the other two,
+  // and the day it restated a stale one it would silently turn sharing off.
+  async function persistBacklog(patch: { sync?: boolean; auto?: boolean; remote?: string }) {
     const id = projectId;
-    if (!id) return;
+    if (!id || !backlog) return;
     const prev = backlog;
-    setBacklog((b) => (b ? { ...b, sync, remote } : b));
+    const sync = patch.sync ?? backlog.sync;
+    const auto = patch.auto ?? backlog.auto;
+    const remote = patch.remote ?? backlogRemote;
+    setBacklog((b) => (b ? { ...b, sync, auto, remote } : b));
     try {
-      await saveIssueSyncConfig(id, sync, remote);
+      await saveIssueSyncConfig(id, sync, auto, remote);
       await loadBacklog(id);
     } catch (e) {
       // The revert is guarded for the same reason the loaders are, and it is
@@ -1016,7 +1029,7 @@ export default function Settings({
 
   // ── nav and search ─────────────────────────────────────────────────────
   const [query, setQuery] = useState("");
-  const [active, setActive] = useState<SectionId>(lastSection);
+  const [active, setActive] = useState<SectionId>(section ?? lastSection);
   const pageRef = useRef<HTMLElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -1056,6 +1069,14 @@ export default function Settings({
     setQuery("");
     scrollRef.current?.scrollTo({ top: 0 });
   }
+
+  // A deep link also has to record itself as `lastSection`, or closing Settings
+  // and reopening it from the menu jumps back to wherever you were before the
+  // link. Settings mounts fresh on every open, so this normally runs once.
+  useEffect(() => {
+    if (section) pickSection(section);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [section]);
 
   // ⌘F belongs to this box while Settings is on screen. Settings takes over
   // the whole content area, so nothing else searchable is visible behind it.
@@ -1548,8 +1569,8 @@ export default function Settings({
                 Shares this project's issues through its git remote, so the same backlog is on every
                 machine you work from, and on your team's if you have one. Issues travel on a ref of
                 their own that is never checked out, so nothing lands in a branch, in a diff or in a
-                pull request. Status, priority and attachments all travel; syncing is manual, from the
-                issues view.
+                pull request. Status, priority and attachments all travel. Sync by hand from the
+                issues view, or turn on automatic sync below.
               </p>
               {!projectId ? (
                 <div className="settings-group-card">
@@ -1563,7 +1584,7 @@ export default function Settings({
                     </span>
                     <Toggle
                       checked={backlog.sync}
-                      onChange={(next) => persistBacklog(next, backlogRemote)}
+                      onChange={(next) => persistBacklog({ sync: next })}
                     />
                   </div>
                   {backlog.remotes.length === 0 ? (
@@ -1584,7 +1605,7 @@ export default function Settings({
                             onChange={(e) => {
                               const next = e.target.value === "__custom" ? "" : e.target.value;
                               setBacklogRemote(next);
-                              if (next) persistBacklog(true, next);
+                              if (next) persistBacklog({ sync: true, remote: next });
                             }}
                           >
                             {backlog.remotes.map((r) => (
@@ -1601,7 +1622,9 @@ export default function Settings({
                             value={backlogRemote}
                             placeholder="Remote name or URL"
                             onChange={(e) => setBacklogRemote(e.target.value)}
-                            onBlur={() => backlogRemote.trim() && persistBacklog(true, backlogRemote)}
+                            onBlur={() =>
+                              backlogRemote.trim() && persistBacklog({ sync: true, remote: backlogRemote })
+                            }
                           />
                         )}
                         {/* The one thing a reader can't check for themselves, and
@@ -1609,6 +1632,24 @@ export default function Settings({
                         <p className="settings-section-hint">
                           Anyone who can read <code>{backlogRemote || "this remote"}</code> can read the
                           backlog. If the repository is public, point this at a private remote instead.
+                        </p>
+                        <div className="settings-notif-row">
+                          <span className="settings-notif-label">Sync automatically</span>
+                          <Toggle
+                            checked={backlog.auto}
+                            onChange={(next) => persistBacklog({ auto: next })}
+                          />
+                        </div>
+                        {/* What it costs and when it interrupts, both stated: a
+                            pass is two network round-trips, and the merge
+                            decides a contested field by itself. Someone turning
+                            this on is agreeing to both. */}
+                        <p className="settings-section-hint">
+                          Runs a pass when you open this backlog, then every couple of minutes while
+                          it is on screen, so a teammate moving an issue to In progress turns up here
+                          without your asking. It stays quiet unless the merge had to decide
+                          something: when you have both changed the same field of the same issue, the
+                          later edit wins, and you get told which issues that happened to.
                         </p>
                       </>
                     )

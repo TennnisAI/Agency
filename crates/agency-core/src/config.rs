@@ -41,6 +41,17 @@ pub struct AgencyConfig {
 pub struct IssuesConfig {
     #[serde(default)]
     pub sync: bool,
+    /// Run a pass without being asked, rather than only from the Sync button.
+    ///
+    /// Per machine and off by default, and deliberately not part of the
+    /// `sync`/`remote` pair: whether the backlog is shared is a fact about the
+    /// project that a team may commit into `agency.toml`, while how often this
+    /// laptop talks to the network is nobody else's decision. It stays off
+    /// until asked for because a merge decides a field both sides changed by
+    /// `updated`, and the first version of that judgement to run unattended
+    /// should be one someone has already watched run by hand.
+    #[serde(default)]
+    pub auto: bool,
     /// A remote name, or a URL for a tracker that lives somewhere the code
     /// does not.
     #[serde(default = "default_remote")]
@@ -49,7 +60,7 @@ pub struct IssuesConfig {
 
 impl Default for IssuesConfig {
     fn default() -> Self {
-        IssuesConfig { sync: false, remote: default_remote() }
+        IssuesConfig { sync: false, auto: false, remote: default_remote() }
     }
 }
 
@@ -813,9 +824,10 @@ pub fn save_issues(repo_path: &Path, i: &IssuesConfig) -> std::io::Result<()> {
         .unwrap_or_default();
 
     let mut table = toml::value::Table::new();
-    // Always written, so turning sync back off is durable rather than falling
-    // through to whatever the tracked file says.
+    // Always written, so turning either back off is durable rather than
+    // falling through to whatever the tracked file says.
     table.insert("sync".into(), toml::Value::Boolean(i.sync));
+    table.insert("auto".into(), toml::Value::Boolean(i.auto));
     let remote = i.remote.trim();
     if !remote.is_empty() && remote != default_remote() {
         table.insert("remote".into(), toml::Value::String(remote.to_string()));
@@ -992,7 +1004,11 @@ mod tests {
         let tracked_before =
             fs::read_to_string(dir.path().join(".agency").join("agency.toml")).unwrap();
 
-        save_issues(dir.path(), &IssuesConfig { sync: true, remote: "tracker".into() }).unwrap();
+        save_issues(
+            dir.path(),
+            &IssuesConfig { sync: true, auto: false, remote: "tracker".into() },
+        )
+        .unwrap();
         assert_eq!(issue_sync_remote(dir.path()).as_deref(), Some("tracker"));
         assert!(load(dir.path()).knowledge.graph, "an unrelated section was dropped");
         assert_eq!(
@@ -1002,8 +1018,30 @@ mod tests {
 
         // Turning it off is durable: it has to beat the tracked `sync = true`,
         // so it cannot be written by omission.
-        save_issues(dir.path(), &IssuesConfig { sync: false, remote: "tracker".into() }).unwrap();
+        save_issues(
+            dir.path(),
+            &IssuesConfig { sync: false, auto: false, remote: "tracker".into() },
+        )
+        .unwrap();
         assert_eq!(issue_sync_remote(dir.path()), None);
+    }
+
+    /// Automatic sync is a per-machine choice, so a repo that shares its
+    /// backlog does not also decide that everyone's laptop polls for it. Off by
+    /// omission, and durable when turned off against a tracked `auto = true`,
+    /// for the same reason `sync` is.
+    #[test]
+    fn automatic_sync_is_off_until_this_machine_asks_for_it() {
+        let dir = tempdir().unwrap();
+        write(dir.path(), "agency.toml", "[issues]\nsync = true\n");
+        assert!(!load(dir.path()).issues.auto);
+
+        write(dir.path(), "agency.toml", "[issues]\nsync = true\nauto = true\n");
+        assert!(load(dir.path()).issues.auto, "the repo may still offer it");
+
+        save_issues(dir.path(), &IssuesConfig { sync: true, auto: false, remote: "origin".into() })
+            .unwrap();
+        assert!(!load(dir.path()).issues.auto, "a local no has to beat the tracked yes");
     }
 
     /// AGE-170, with the file git actually offered the user:

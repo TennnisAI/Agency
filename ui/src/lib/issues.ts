@@ -275,3 +275,24 @@ export function saveSelected(
   if (id === null) storage.removeItem("pane:" + key);
   else storage.setItem("pane:" + key, id);
 }
+
+/**
+ * Which side of the seeding prompt destroys something, and therefore which
+ * button carries the warning. `publish` keeps this machine's backlog and
+ * discards the shared copy; `adopt` is the other way round.
+ *
+ * A rule and not a fixed pair of styles, because which one is dangerous
+ * depends entirely on the counts. The prompt used to offer "use this machine's"
+ * as its primary action and mark only "use the shared copy" as destructive,
+ * which is backwards on the machine that is joining: a second laptop holding
+ * two issues was offered a primary button that discarded the other 227, and the
+ * first machine then deleted them locally on its next pass, reading their
+ * absence from the remote as a deliberate deletion. Equal counts mark both,
+ * because both really do discard that much.
+ */
+export function seedingRisk(seed: { local: number; remote: number }): {
+  publishDanger: boolean;
+  adoptDanger: boolean;
+} {
+  return { publishDanger: seed.remote >= seed.local, adoptDanger: seed.local >= seed.remote };
+}

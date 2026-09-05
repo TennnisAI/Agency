@@ -1,10 +1,11 @@
 # Syncing `.agency/issues/` — across machines, and across a team
 
-Status: **built and usable** (2026-09-02), manual sync only. The `uid`
-groundwork, the merge, the ref transport, the setting and the UI are in and
-tested. Nothing syncs on its own; every pass is something the user asks for.
-This doc supersedes the earlier version, which asked a narrower question and got
-a narrower answer.
+Status: **built and usable** (2026-09-02), with an opt-in automatic trigger
+since 2026-09-05. The `uid` groundwork, the merge, the ref transport, the
+setting and the UI are in and tested. A backlog syncs on its own only where
+someone has turned that on per machine; otherwise every pass is still something
+the user asks for. This doc supersedes the earlier version, which asked a
+narrower question and got a narrower answer.
 
 The question this now answers: the tracker is local files, so a person with
 three machines has three different backlogs, and a team has none. What makes
@@ -280,6 +281,61 @@ there and not `Adopt`: with no local issues there is no seeding question to ask,
 which is why the `NeedsSeeding` guard turns on `!local_files.is_empty()`, and
 the merge writes every issue the remote has.
 
+**An automatic trigger, and what it cost to make it safe (2026-09-05).**
+`[issues] auto` in `agency.local.toml`, off by default, per machine. Deliberately
+not part of the `sync`/`remote` pair a team may commit into `agency.toml`:
+whether the backlog is shared is a fact about the project, how often this laptop
+talks to the network is not. When it is on, `IssuesView` runs a pass on arrival
+at the board and every two minutes it stays there, and nowhere else. Not for
+unselected projects and not off-screen: a pass is two network round-trips and a
+read of every issue in two trees, and spending that on boards nobody is looking
+at is how a quiet feature becomes the reason the fans spin. Both directions
+travel on one schedule, because a pass pushes as well as fetches, so two
+machines polling is all it takes for a status change to cross.
+
+Three things had to change shape before a pass could run unwatched, and each is
+the same observation: every signal the manual pass gives a user who is watching
+becomes noise, or a lie, when nobody is.
+
+- **The reporting inverts.** A hand sync says how it went, "Already up to date"
+  included, because someone pressed a button and is owed an answer. A scheduled
+  one says nothing at all unless there is something only a person can settle. A
+  toast every two minutes is a toast nobody reads, including the one that
+  matters.
+- **Conflicts get a prompt instead of a toast.** The merge decides a field both
+  sides changed by `updated`; for a body that is text quietly replaced, and a
+  dismissed toast would be the last anyone heard of it. A scheduled pass with
+  conflicts opens a dialog that names each one and offers to open the first
+  affected issue. The row markers stay behind either way. The dialog reports a
+  decision already made, which is why its safe button reads "Dismiss" and not
+  "Cancel" (`ConfirmDialog` grew a `cancelLabel` for it).
+- **Seeding is never asked by a timer, and failures stop the schedule.**
+  `NeedsSeeding` from an automatic pass pauses the schedule and toasts once
+  instead of putting up the modal: that choice discards one side's backlog
+  wholesale and belongs to someone who just asked for a sync, not to someone
+  dismissing a box that appeared while they typed. Three consecutive errors
+  (offline, no auth, a moved URL) pause it too, having said so once. A manual
+  sync clears the pause, which is the user saying they are dealing with it.
+
+**The seeding prompt's danger was on the wrong button.** It offered "Use this
+machine's" as the primary and marked only "Use the shared copy" as destructive,
+which is exactly backwards on the machine that is joining: a second laptop with
+two issues got a primary button that discarded the other 227, and the loss does
+not stop there. The next pass from the first machine sees those issues in the
+base and absent from the remote, reads that as a deliberate deletion
+(`issuesync.rs:129`) and deletes them locally too. So neither side is styled as
+a recommendation now, both buttons carry their count ("Keep the shared 227"),
+and the danger follows whichever side discards more. Reported by a user hitting
+exactly this on a second machine.
+
+**The empty board says where sharing is turned on.** With sharing off, the empty
+board was the only thing on screen and nothing on it named Settings, so "how do
+I get my issues onto this machine" had no answer in the place it was being
+asked. It now carries a button into Settings at the Backlog section, which is
+what gave `Settings` a `section` prop at all: the rail was added for AGE-187 and
+had no deep link, and `lastSection` has to record the arrival or closing
+Settings and reopening it jumps back to wherever you were before.
+
 ### `uid`
 
 Issue files carry `uid:` — a uuid in the frontmatter, right after `key:`, which
@@ -350,10 +406,14 @@ How it behaves:
 
 Each of these was decided against for now rather than missed.
 
-- **A trigger.** Every sync is manual, from the button on the issues toolbar.
-  Automatic on project open is the obvious next step and needs no engine change;
-  manual first is how you find out whether the merge behaves before it runs
-  unattended.
+- **Interactive conflict resolution (AGE-191).** The merge still decides a field both
+  sides changed, and the prompt reports the decision rather than offering it.
+  Holding a plan open with a contested field unresolved, showing the two
+  versions of a body side by side and letting a person pick, is the next real
+  engine change: `plan` would need a third outcome between "applied" and
+  "blocked", and the app a place to keep a half-merged issue while the question
+  is on screen. Reporting first is the same staging manual-before-automatic
+  was.
 - **A push that fails is only `pushed: false`.** The common cause is the remote
   having moved, and "sync again" is the right advice, but telling that apart
   from an auth failure means parsing git's stderr or re-fetching to compare.
@@ -369,7 +429,9 @@ Each of these was decided against for now rather than missed.
 
 ## Open questions
 
-1. Sync trigger: on app focus, on project open, on dispatch, on a timer?
+1. Should a dispatch sync first? An agent picking up an issue someone else moved
+   to In progress two minutes ago is the one case where the two-minute window is
+   too wide, and dispatch is a moment the user is already waiting on.
 2. Is there a story for issues that stay private in an otherwise shared backlog,
    or is that out of scope?
 3. Does `rank` eventually become the per-person overlay, and if so is that a

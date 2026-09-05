@@ -89,6 +89,9 @@ pub enum SyncResult {
 #[serde(rename_all = "camelCase")]
 pub struct IssueSyncDto {
     pub sync: bool,
+    /// Run passes on the board's own schedule rather than only from the Sync
+    /// button. Per machine, so it is not part of what a repo can declare.
+    pub auto: bool,
     pub remote: String,
     /// The remotes this repo has, so the UI offers names rather than asking the
     /// user to remember them. Empty for a project with no git remote at all,
@@ -3952,6 +3955,7 @@ impl AppState {
         let cfg = agency_core::config::load(&repo).issues;
         Ok(IssueSyncDto {
             sync: cfg.sync,
+            auto: cfg.auto,
             remote: cfg.remote,
             remotes: agency_core::git::remotes(&repo).unwrap_or_default(),
             from_repo: agency_core::config::issue_sync_declared_by_repo(&repo),
@@ -3959,13 +3963,19 @@ impl AppState {
     }
 
     /// Persist this project's backlog-sharing settings to its local config.
-    pub fn save_issue_sync_config(&self, project_id: &str, sync: bool, remote: &str) -> Result<()> {
+    pub fn save_issue_sync_config(
+        &self,
+        project_id: &str,
+        sync: bool,
+        auto: bool,
+        remote: &str,
+    ) -> Result<()> {
         let repo = self.project_repo(project_id)?;
         let remote = remote.trim();
         let remote = if remote.is_empty() { "origin".to_string() } else { remote.to_string() };
         agency_core::config::save_issues(
             &repo,
-            &agency_core::config::IssuesConfig { sync, remote },
+            &agency_core::config::IssuesConfig { sync, auto, remote },
         )?;
         Ok(())
     }

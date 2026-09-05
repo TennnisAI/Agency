@@ -339,14 +339,20 @@ becomes noise, or a lie, when nobody is.
   dismissed toast would be the last anyone heard of it. A scheduled pass with
   conflicts opens a dialog that names each one and offers to open the first
   affected issue. The row markers stay behind either way, and that last part
-  took a second change to be true: every pass used to replace the marker map
+  took two changes to be true. Every pass used to replace the marker map
   wholesale, which was fine when each pass was a button press and wrong on a
   schedule, because the next clean pass wiped the markers a couple of minutes
-  later. The dialog sent the user to look at rows that no longer said anything,
-  and nothing on screen still recorded what had been overwritten. Only a pass
-  with conflicts of its own replaces them now. The dialog reports a decision
-  already made, which is why its safe button reads "Dismiss" and not "Cancel"
-  (`ConfirmDialog` grew a `cancelLabel` for it).
+  later; only a pass with conflicts of its own replaces them now. And both the
+  markers and the prompt were state on `IssuesView`, which unmounts on every
+  tab switch, so a click on Agents and back discarded the report and the rows
+  it points at together. Both now live in `ui/src/lib/syncConflicts.ts`, keyed
+  by project, in memory for the life of the app run: the prompt is outstanding
+  until it is answered, not until the user looks elsewhere. That module also
+  holds the two rules, where they can be tested: a pass that decided nothing
+  leaves both alone, and only an automatic pass raises a dialog (a manual one
+  toasts, and clears a prompt naming conflicts it has just superseded). The
+  dialog reports a decision already made, which is why its safe button reads
+  "Dismiss" and not "Cancel" (`ConfirmDialog` grew a `cancelLabel` for it).
 - **Seeding is never asked by a timer, and failures stop the schedule.**
   `NeedsSeeding` from an automatic pass pauses the schedule and toasts once
   instead of putting up the modal: that choice discards one side's backlog

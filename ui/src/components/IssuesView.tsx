@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  CloneProgress, FileRoot, Issue, IssuePatch, IssueStatus, IssueSyncConflict, IssueSyncMode,
-  Project,
+  CloneProgress, FileRoot, Issue, IssuePatch, IssueStatus, IssueSyncMode, Project,
   addIssueComment, createIssue, deleteIssue, deleteIssueComment, getIssueSyncConfig, getWorkspace,
   syncIssues, updateIssue, updateIssueComment,
 } from "../api";
@@ -38,6 +37,7 @@ import {
   stepSelection,
 } from "../lib/issues";
 import { autoSchedules } from "../lib/autoSync";
+import { ConflictReport, conflictReports } from "../lib/syncConflicts";
 import { pickDefaultAgent } from "../lib/defaultAgent";
 import { loadFold, saveFold, usePaneWidth } from "../hooks/usePaneWidth";
 import { useRepoReadiness, isGitless } from "../hooks/useRepoReadiness";
@@ -111,14 +111,13 @@ export default function IssuesView({
   // than a double-click, and dropping it left the one button the user reached
   // for doing nothing at all.
   const pendingManual = useRef<IssueSyncMode | null>(null);
-  // Conflicts from an automatic pass, which is the one case nobody was watching
-  // the board when the merge made its call. A toast would be the last anyone
-  // heard of it, so this asks instead.
-  const [autoConflicts, setAutoConflicts] = useState<IssueSyncConflict[] | null>(null);
-  // Issue key to the lines the last sync decided for itself. Kept for the visit
-  // rather than persisted: it describes one sync, and a marker that outlived
-  // the thing it described would be worse than none.
-  const [syncConflicts, setSyncConflicts] = useState<Record<string, string[]>>({});
+  // What the last deciding sync of this project left behind: the row markers,
+  // and the dialog an automatic pass owes the user. Seeded from a store that
+  // outlives the board, because the board unmounts on every tab switch and the
+  // prompt sends the user to look at the markers. See `lib/syncConflicts.ts`.
+  const [conflicts, setConflicts] = useState<ConflictReport>(() =>
+    conflictReports.forProject(project.id),
+  );
   // Any status group folds; done/cancelled are the ones that start folded.
   const [collapsed, setCollapsed] = useState<Set<IssueStatus>>(() => new Set(DEFAULT_COLLAPSED));
   // Quick-add rests as a + button and expands into an inline input on demand.
@@ -406,8 +405,9 @@ export default function IssuesView({
     return () => { live = false; };
   }, [project.id, tab]);
 
-  // A different project's conflicts say nothing about this one.
-  useEffect(() => { setSyncConflicts({}); }, [project.id]);
+  // A different project's conflicts say nothing about this one, so the board
+  // shows that project's own outstanding report rather than clearing.
+  useEffect(() => { setConflicts(conflictReports.forProject(project.id)); }, [project.id]);
 
   // This project's schedule record, created on first use and reset only when
   // the `auto` setting itself changes. Read through a call rather than held in
@@ -421,7 +421,7 @@ export default function IssuesView({
   // conflict report would swap the list under the cursor and retarget its
   // "Open" button. A ref, because the schedule's timer cannot see state.
   const promptOpen = useRef(false);
-  promptOpen.current = seed !== null || autoConflicts !== null;
+  promptOpen.current = seed !== null || conflicts.prompt !== null;
 
   // The automatic schedule: a pass on arrival, then one every couple of minutes
   // for as long as the board is on screen. Nothing runs off-screen, and nothing
@@ -519,20 +519,10 @@ export default function IssuesView({
       s.fails = 0;
       const o = res.outcome;
       await refresh();
-      // Only a pass that decided something replaces the markers. Clearing them
-      // on every pass was survivable while each one was a button press; on the
-      // schedule the next clean pass wiped them a couple of minutes later, so
-      // the row markers the conflict prompt sends the user to look at were
-      // gone by the time they looked, and nothing on screen still recorded
-      // what had been quietly overwritten. They now stand until another pass
-      // has something to say, or the project changes.
-      if (o.conflicts.length) {
-        setSyncConflicts(() => {
-          const next: Record<string, string[]> = {};
-          for (const c of o.conflicts) (next[c.key] ??= []).push(`${c.field}: ${c.detail}`);
-          return next;
-        });
-      }
+      // The rules for what a pass does to the markers and the prompt live in
+      // the store, which is where they can be tested: a pass that decided
+      // nothing leaves both alone, and only an automatic one raises a dialog.
+      setConflicts(conflictReports.record(project.id, o.conflicts, { auto }));
       // Say what changed here, not what was uploaded: the push is the boring
       // half, and its failure is the only part of it worth a sentence.
       const bits: string[] = [];
@@ -554,7 +544,6 @@ export default function IssuesView({
           toastError("Sync couldn't update the shared copy. Try again.", "Sync");
         }
         s.pushFailed = !o.pushed;
-        if (o.conflicts.length) setAutoConflicts(o.conflicts);
         return;
       }
       s.pushFailed = !o.pushed;
@@ -814,8 +803,8 @@ export default function IssuesView({
   // The row an automatic conflict prompt offers to open: the first one it names
   // that is still on the board. A merge can report a conflict on an issue this
   // side then deletes, so the lookup can come back empty.
-  const conflictTarget = autoConflicts
-    ? issues.find((i) => issueLabel(project, i) === autoConflicts[0]?.key) ?? null
+  const conflictTarget = conflicts.prompt
+    ? issues.find((i) => issueLabel(project, i) === conflicts.prompt?.[0]?.key) ?? null
     : null;
   // One string for both Sync buttons (the toolbar's and the empty board's), so
   // the two cannot drift. It is the whole answer to "where did my issues go",
@@ -1052,7 +1041,7 @@ export default function IssuesView({
                       onPatch={(p) => patch(issue, p)}
                       onDelete={() => setConfirmDelete(issue)}
                       terms={terms}
-                      syncConflicts={syncConflicts[issueLabel(project, issue)]}
+                      syncConflicts={conflicts.markers[issueLabel(project, issue)]}
                       gitless={gitless}
                       drag={!reorderable ? undefined : {
                         over:
@@ -1147,16 +1136,18 @@ export default function IssuesView({
           onCancel={() => setSeed(null)}
         />
       )}
-      {autoConflicts && autoConflicts.length > 0 && (
+      {conflicts.prompt && conflicts.prompt.length > 0 && (
         // The prompt the automatic schedule owes the user. A hand sync reports
         // its conflicts in a toast, which is right when someone is watching the
         // board they just pressed Sync on. On the schedule nobody is, and the
         // merge has already resolved a field by `updated`: for a body that is
         // text quietly replaced, so a dismissed toast would be the last anyone
-        // heard of it. The row markers stay behind either way.
+        // heard of it. The row markers stay behind either way, and both this
+        // and they outlive the board: it unmounts on a tab switch, which used
+        // to discard the report and the rows it points at together.
         <ConfirmDialog
-          title={`Sync decided ${autoConflicts.length} ${
-            autoConflicts.length === 1 ? "field" : "fields"
+          title={`Sync decided ${conflicts.prompt.length} ${
+            conflicts.prompt.length === 1 ? "field" : "fields"
           } for you`}
           body={
             <>
@@ -1165,25 +1156,25 @@ export default function IssuesView({
                 later edit won. What it replaced is still in the backlog's own history.
               </p>
               <ul className="issue-conflict-list">
-                {autoConflicts.slice(0, 6).map((c, n) => (
+                {conflicts.prompt.slice(0, 6).map((c, n) => (
                   <li key={`${c.key}-${c.field}-${n}`}>
                     <code>{c.key}</code> {c.field}: {c.detail}
                   </li>
                 ))}
               </ul>
-              {autoConflicts.length > 6 && (
-                <p>and {autoConflicts.length - 6} more, marked on their rows.</p>
+              {conflicts.prompt.length > 6 && (
+                <p>and {conflicts.prompt.length - 6} more, marked on their rows.</p>
               )}
             </>
           }
           cancelLabel="Dismiss"
-          confirmLabel={`Open ${autoConflicts[0].key}`}
+          confirmLabel={`Open ${conflicts.prompt[0].key}`}
           confirmDisabled={!conflictTarget}
           onConfirm={() => {
             if (conflictTarget) setSelectedId(conflictTarget.id);
-            setAutoConflicts(null);
+            setConflicts(conflictReports.dismiss(project.id));
           }}
-          onCancel={() => setAutoConflicts(null)}
+          onCancel={() => setConflicts(conflictReports.dismiss(project.id))}
         />
       )}
       {confirmDelete && (

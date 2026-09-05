@@ -531,8 +531,9 @@ pub struct KnowledgeBackend {
 ///
 /// `openai` is skipped whenever `OPENAI_BASE_URL` is set alongside the key.
 /// That pair is a local, OpenAI-protocol server, not a paid OpenAI account:
-/// Agency writes exactly it into every agent session for its own local-model
-/// support, so an app started from one inherits it. Offering it as "OpenAI"
+/// Agency writes exactly it into every agent session when the user has
+/// configured a local model, so an app started from one inherits it. Offering
+/// it as "OpenAI"
 /// would name the wrong vendor, and graphify's own auto-detection making that
 /// mistake is what sent an entire corpus at an LM Studio that wasn't running.
 pub fn env_backend_keys(env: impl Fn(&str) -> Option<String>) -> Vec<String> {
@@ -733,9 +734,9 @@ pub fn build_selection(command: &str) -> (String, String) {
 ///
 /// Only two of the offers are safe to pick on someone's behalf, and this picks
 /// between them: the CLI that is sitting right there on the PATH, or no LLM at
-/// all. An API key can be a placeholder (Agency injects `OPENAI_API_KEY` for
-/// its own local-model support, and graphify's auto-detection reads that as a
-/// paid OpenAI account), and a local server that isn't running fails the same
+/// all. An API key can be a placeholder (Agency injects `OPENAI_API_KEY` for a
+/// configured local model, and graphify's auto-detection reads that as a paid
+/// OpenAI account), and a local server that isn't running fails the same
 /// way. Both are real choices, but a user makes them, having read what they
 /// cost. Auto-detection is never left to graphify: a build of an 85-file corpus
 /// went to an LM Studio that wasn't listening and wrote no graph at all.

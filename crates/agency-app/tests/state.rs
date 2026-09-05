@@ -218,7 +218,9 @@ fn settings_default_and_roundtrip() {
     let dir = tempfile::tempdir().unwrap();
     let state = common::state(&dir);
     let s = state.get_settings().unwrap();
-    assert_eq!(s.lm_studio_base_url, "http://localhost:1234/v1");
+    // AGE-186: no local model until the user names one. The settings field
+    // shows LM Studio's port as a placeholder, not as text they have to delete.
+    assert_eq!(s.lm_studio_base_url, "");
     // Unset by default (empty string surfaces as None, i.e. "auto").
     assert_eq!(s.default_agent, None);
     // Unset means worktrees on, so an upgrade doesn't silently change where
@@ -265,6 +267,13 @@ fn create_run_injects_provider_env() {
     std::fs::create_dir_all(&repo).unwrap();
     init_repo(&repo);
 
+    // Sentinels in the environment the daemon inherits, so the two halves of
+    // this test can tell "Agency injected it" from "it was already there".
+    // Agency is routinely run from a shell that already has these two set,
+    // because Agency itself sets them in every shell it opens.
+    std::env::set_var("OPENAI_BASE_URL", "http://inherited.invalid/v1");
+    std::env::set_var("OPENAI_API_KEY", "inherited-key");
+
     let state = common::state(&dir);
     state
         .save_settings(&agency_app_lib::ProviderSettings {
@@ -280,7 +289,7 @@ fn create_run_injects_provider_env() {
             command: "sh".into(),
             args: vec![
                 "-c".into(),
-                "echo BASE=$OPENAI_BASE_URL; echo KEYSET=${OPENAI_API_KEY:+yes}; sleep 2".into(),
+                "echo BASE=$OPENAI_BASE_URL; echo KEY=$OPENAI_API_KEY; sleep 2".into(),
             ],
             env: vec![],
             resume_args: None,
@@ -305,9 +314,66 @@ fn create_run_injects_provider_env() {
     }
 
     assert!(out.contains("BASE=http://localhost:1234/v1"), "got: {out}");
-    assert!(out.contains("KEYSET=yes"), "got: {out}");
+    assert!(out.contains("KEY=lm-studio"), "got: {out}");
 
     state.discard_run(&info.id).unwrap();
+
+    // AGE-186: blanking the field has to set neither variable. It used to set
+    // OPENAI_BASE_URL="" and a placeholder OPENAI_API_KEY regardless, which
+    // shadowed the user's real key in every session Agency opens.
+    state
+        .save_settings(&agency_app_lib::ProviderSettings {
+            lm_studio_base_url: "".into(),
+            default_agent: None,
+            default_worktree: true,
+        })
+        .unwrap();
+    let off = state.create_run(&project.id, "p", "envcheck", None, "HEAD", None).unwrap();
+    let mut out = String::new();
+    let start = std::time::Instant::now();
+    while start.elapsed() < std::time::Duration::from_secs(5) {
+        if let Ok(s) = state.run_preview(&off.id, 20) {
+            out = s;
+            if out.contains("KEY=") {
+                break;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    // The inherited values come through untouched: Agency set neither.
+    assert!(out.contains("BASE=http://inherited.invalid/v1"), "got: {out}");
+    assert!(out.contains("KEY=inherited-key"), "got: {out}");
+
+    state.discard_run(&off.id).unwrap();
+}
+
+/// AGE-186: the local-model URL used to arrive prefilled with LM Studio's
+/// default port as real, selectable text, under copy that said "leave blank to
+/// disable". Nobody chose it: the getter invented it whenever the row was
+/// unset, and any unrelated save (the worktree toggle, the default-agent
+/// select) persisted the whole struct and wrote it back. The clear runs once,
+/// so the same URL typed in deliberately survives the next launch.
+#[test]
+fn the_prefilled_local_model_url_is_cleared_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("agency.db");
+    {
+        let reg = agency_core::registry::Registry::open(&db).unwrap();
+        reg.set_setting("lm_studio_base_url", "http://localhost:1234/v1").unwrap();
+    }
+    {
+        let state = common::state(&dir);
+        assert_eq!(state.get_settings().unwrap().lm_studio_base_url, "");
+        state
+            .save_settings(&agency_app_lib::ProviderSettings {
+                lm_studio_base_url: "http://localhost:1234/v1".into(),
+                default_agent: None,
+                default_worktree: true,
+            })
+            .unwrap();
+    }
+    let state = common::state(&dir);
+    assert_eq!(state.get_settings().unwrap().lm_studio_base_url, "http://localhost:1234/v1");
 }
 
 /// The model a run is started on has to reach the agent's real command line —

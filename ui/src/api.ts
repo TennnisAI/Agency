@@ -593,6 +593,8 @@ export const agentCliInfo = () => invoke<AgentCliInfo[]>("agent_cli_info");
 export const createInstallTerminal = (projectId: string, agent: string, command: string) =>
   invoke<RunInfo>("create_install_terminal", { projectId, agent, command });
 export const confirmQuit = () => invoke<void>("confirm_quit");
+// Fills an empty title from the first prompt, and when the branch is still the
+// empty-prompt `agent/<id>` fallback, renames it to match (AGE-183).
 export const setRunTitle = (id: string, firstPrompt: string) =>
   invoke<void>("set_run_title", { id, firstPrompt });
 // Rename a run: overwrites the display title (empty clears it → falls back to prompt/branch).

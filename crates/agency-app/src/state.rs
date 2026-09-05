@@ -1635,6 +1635,53 @@ fn short_suffix() -> String {
     String::from_utf8_lossy(&s).into_owned()
 }
 
+/// The four-character disambiguator `new_task_id` appends. Used when a
+/// first-prompt rename rebuilds the branch leaf so the worktree dir and
+/// daemon session (which stay on the original id) keep matching the suffix.
+fn id_suffix(run_id: &str) -> Option<&str> {
+    let (_, suf) = run_id.rsplit_once('-')?;
+    if suf.len() == 4 && suf.chars().all(|c| c.is_ascii_alphanumeric()) {
+        Some(suf)
+    } else {
+        None
+    }
+}
+
+/// Whether `branch` is still the *empty-prompt* auto-cut name for `run_id`,
+/// i.e. `agent/agent-<suffix>`. Both halves are load-bearing. A manual rename
+/// (AGE-148) or an earlier first-prompt rename (AGE-183) moves the branch off
+/// that shape, and neither should be overwritten by a later pass.
+///
+/// The id check is what keeps a prompt-derived name safe. `create_run_spec`
+/// titles any run created with a real prompt, so the title guard in
+/// `apply_first_prompt` normally short-circuits before this is reached — but
+/// `rename_run` stores a trimmed title, and an empty one is the documented way
+/// to clear it. Observed on a probe of that path: clearing the title on a
+/// weekly-narration run and typing one line renamed
+/// `agent/narrate-the-weekly-review-note-docs-week-q3w7` to
+/// `agent/continue-please-q3w7`. Matching only the `agent-<suffix>` id shape
+/// means there is no good name to lose.
+fn is_auto_cut_branch(run_id: &str, branch: &str) -> bool {
+    let Some(suffix) = id_suffix(run_id) else { return false };
+    run_id == format!("agent-{suffix}") && branch == format!("agent/{run_id}")
+}
+
+/// The branch leaf a first-prompt rename would apply: `<slug>-<suffix>`,
+/// reusing the suffix already on the run id. `None` when the prompt still
+/// slugifies to the empty-prompt fallback (`agent`), which would leave the
+/// branch as `agent/agent-<suffix>` and only churn git for nothing.
+///
+/// AGE-183: promptless starts cut `agent/agent-<suffix>` before anyone types;
+/// the first prompt titles the run but used to leave the branch stuck there.
+fn branch_leaf_from_first_prompt(run_id: &str, prompt: &str) -> Option<String> {
+    let suffix = id_suffix(run_id)?;
+    let slug = slugify(prompt);
+    if slug == "agent" {
+        return None;
+    }
+    Some(format!("{slug}-{suffix}"))
+}
+
 /// Lowest free port-block base: the first `base + slot*block_size` (slot = 0,1,2…)
 /// not already in `used`. Returns `None` only if the `u16` space overflows first.
 fn pick_port(used: &std::collections::HashSet<u16>, base: u16, block_size: u16) -> Option<u16> {
@@ -2308,6 +2355,62 @@ impl AppState {
 
     pub fn store_run_title(&self, id: &str, title: &str) -> Result<()> {
         self.registry.lock().unwrap().set_run_title(id, title)
+    }
+
+    /// Fill the run's title (and stored prompt) from the first line typed into
+    /// a promptless agent. When the branch is still the empty-prompt fallback
+    /// (`agent/agent-<suffix>`), rename it to a slug of that prompt plus the
+    /// same short suffix — the title already became memorable; the branch
+    /// follows.
+    ///
+    /// AGE-183: observed on promptless starts where the agent chip read a real
+    /// first prompt while the branch chip stayed on `agent/agent-<suffix>`.
+    ///
+    /// Refusals are logged, not returned: this runs on the keystroke that
+    /// submits the first prompt, so a toast would interrupt the user about an
+    /// action they never asked for, and returning would undo the title we just
+    /// set. Every refusal `rename_run_branch` can raise is also unreachable
+    /// this early — a run seconds old is not mid-merge, not published, and its
+    /// `<slug>-<suffix>` leaf carries a suffix unique to it, so nothing can
+    /// have taken the name. The log line is for the case that proves that
+    /// wrong.
+    ///
+    /// The rename races the agent's first turn and is safe anyway, which is
+    /// worth writing down because the shape invites the opposite conclusion:
+    /// `FocusTerminal` sends the keystroke to the PTY before calling this, so
+    /// the agent starts thinking while `rename_run_branch` moves the branch and
+    /// rewrites the workspace skill under it. Neither half can be caught in the
+    /// act. `skills::emit_for_agent` writes through `issuefs::atomic_write`, so
+    /// a reader sees the whole old file or the whole new one; and the branch
+    /// name sits in that skill's *body*, below the frontmatter, so it is read
+    /// only when the skill is invoked — which costs a model round-trip, orders
+    /// of magnitude longer than the local git calls here.
+    pub fn apply_first_prompt(&self, id: &str, first_prompt: &str) -> Result<()> {
+        let _ = self.store_run_prompt(id, first_prompt);
+        if let Ok(Some(existing)) = self.run_title(id) {
+            if !existing.is_empty() {
+                return Ok(());
+            }
+        }
+        let title = agency_core::title::fallback_title(first_prompt);
+        if title.is_empty() {
+            return Ok(());
+        }
+        self.store_run_title(id, &title)?;
+
+        let Ok(run) = self.run_record(id) else {
+            return Ok(());
+        };
+        if !run.worktree || !is_auto_cut_branch(&run.id, &run.branch) {
+            return Ok(());
+        }
+        let Some(leaf) = branch_leaf_from_first_prompt(&run.id, first_prompt) else {
+            return Ok(());
+        };
+        if let Err(e) = self.rename_run_branch(id, &leaf) {
+            log::warn!("first-prompt branch rename for {id} to agent/{leaf} skipped: {e:#}");
+        }
+        Ok(())
     }
 
     // ── the user's word on a run (AGE-141) ─────────────────────────────────
@@ -8618,9 +8721,10 @@ fn validate_project_path(repo_path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_argv, command_on_path, failure_tail, graphify_server, id_source, new_task_id,
-        pick_port, preview_mcp_port_for, require_branch_exists, require_gitless_known,
-        require_own_branch, slugify, split_session_id, validate_race, RaceAttempt,
+        agent_argv, branch_leaf_from_first_prompt, command_on_path, failure_tail, graphify_server,
+        id_source, id_suffix, is_auto_cut_branch, new_task_id, pick_port, preview_mcp_port_for,
+        require_branch_exists, require_gitless_known, require_own_branch, slugify,
+        split_session_id, validate_race, RaceAttempt,
     };
     use agency_core::config::KnowledgeConfig;
     use agency_core::profile::AgentProfile;
@@ -9645,6 +9749,54 @@ mod tests {
         let a = new_task_id("same prompt");
         let b = new_task_id("same prompt");
         assert_ne!(a, b);
+    }
+
+    /// AGE-183: the first-prompt rename rebuilds the leaf from the prompt but
+    /// keeps the four-character suffix already on the run id, so the worktree
+    /// dir and daemon session (which stay on that id) still match the branch.
+    #[test]
+    fn branch_leaf_from_first_prompt_keeps_the_run_suffix() {
+        let leaf = branch_leaf_from_first_prompt(
+            "agent-36a2",
+            "interesting/memorable names? I'm thinking about like",
+        )
+        .unwrap();
+        assert!(leaf.ends_with("-36a2"), "unexpected leaf: {leaf}");
+        assert!(leaf.starts_with("interesting-memorable-names"), "unexpected leaf: {leaf}");
+        assert!(!leaf.starts_with("agent-"), "fallback slug leaked into the leaf: {leaf}");
+    }
+
+    #[test]
+    fn branch_leaf_from_first_prompt_skips_the_empty_fallback() {
+        assert!(branch_leaf_from_first_prompt("agent-36a2", "").is_none());
+        assert!(branch_leaf_from_first_prompt("agent-36a2", "!!! ???").is_none());
+    }
+
+    #[test]
+    fn id_suffix_reads_the_four_char_disambiguator() {
+        assert_eq!(id_suffix("add-a-login-page-a3k2"), Some("a3k2"));
+        assert_eq!(id_suffix("agent-36a2"), Some("36a2"));
+        // No hyphen at all, and a trailing segment that is not the 4-char shape.
+        assert_eq!(id_suffix("nope"), None);
+        assert_eq!(id_suffix("add-a-login-page-toolong"), None);
+    }
+
+    #[test]
+    fn is_auto_cut_branch_matches_only_the_empty_prompt_fallback() {
+        assert!(is_auto_cut_branch("agent-36a2", "agent/agent-36a2"));
+        assert!(!is_auto_cut_branch("agent-36a2", "agent/interesting-memorable-names-36a2"));
+        assert!(!is_auto_cut_branch("agent-36a2", "agent/agent-other"));
+    }
+
+    /// A branch derived from a real prompt is a good name, so it is not the
+    /// fallback and is not the first prompt's to overwrite — even though it is
+    /// still exactly `agent/<id>`, the shape this used to test for alone.
+    #[test]
+    fn is_auto_cut_branch_spares_a_prompt_derived_name() {
+        assert!(!is_auto_cut_branch(
+            "narrate-the-weekly-review-note-docs-week-q3w7",
+            "agent/narrate-the-weekly-review-note-docs-week-q3w7"
+        ));
     }
 
     #[test]

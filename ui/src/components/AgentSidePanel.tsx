@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { Project, setRunTitle } from "../api";
+import { Project } from "../api";
 import { useRuns } from "../store/runs";
 import { runStatus } from "../lib/runstate";
 import { agentLabel, runListLabel } from "../agents";
 import { useDismissOnResize } from "../hooks/useDismissOnResize";
 import { useRepoReadiness, isGitless } from "../hooks/useRepoReadiness";
+import { useFirstPromptCapture } from "../hooks/useFirstPromptCapture";
 import { useSpawnAgent } from "../hooks/useSpawnAgent";
 import AgentAddMenu from "./AgentAddMenu";
 import FocusTerminal from "./FocusTerminal";
@@ -26,6 +27,7 @@ export default function AgentSidePanel({ project }: { project: Project }) {
   const gitless = isGitless(readiness);
 
   const focused = runs.find((r) => r.id === focusedRunId) ?? null;
+  const captureFirstPrompt = useFirstPromptCapture(focused?.id, focused?.title);
   // Picker menu, anchored in viewport coordinates so the panel's own overflow
   // can't clip it (same trick as AgentAddMenu).
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -131,9 +133,9 @@ export default function AgentSidePanel({ project }: { project: Project }) {
             // xterm's wheel-to-arrow fallback, which an agent prompt would read
             // as history (see lib/termScroll).
             altScrollArrows={focused.agent === "shell"}
-            onFirstPrompt={focused.kind === "agent" && !focused.title
-              ? (line) => { setRunTitle(focused.id, line).catch(() => {}); }
-              : undefined}
+            // A terminal is not a run anyone named from a prompt, so it has
+            // nothing to capture.
+            onFirstPrompt={focused.kind === "agent" ? captureFirstPrompt : undefined}
           />
         </>
       ) : (

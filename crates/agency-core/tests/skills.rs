@@ -135,23 +135,32 @@ fn a_skill_the_repo_tracks_under_our_own_name_is_left_alone() {
 }
 
 #[test]
-fn dsh_reads_the_vendor_neutral_root_and_git_never_offers_it() {
-    // DeepSeek Harness discovers `<projectRoot>/.agents/skills` on its own, so
-    // the kit lands there — and the exclude for that root has to exist too, or
-    // a dsh run's reflexive `git add -A` sweeps the kit onto the branch.
-    let repo = init_repo();
-    let mgr = WorktreeManager::new(repo.path().to_path_buf());
-    let wt = mgr.create("task-5", "HEAD").unwrap();
+fn the_vendor_neutral_root_lands_once_per_agent_and_git_never_offers_it() {
+    // Every agent but Claude Code discovers `<projectRoot>/.agents/skills` on
+    // its own (probed 2026-09-05; the table in `skills.rs` has the per-agent
+    // record), so the kit lands there — and the exclude for that root has to
+    // exist too, or a run's reflexive `git add -A` sweeps the kit onto the
+    // branch. Claude Code does not read it, which is why it is not in this
+    // list.
+    for (i, agent) in
+        ["codex", "pi", "opencode", "copilot", "cursor", "hermes", "gemini", "kimi", "dsh"]
+            .iter()
+            .enumerate()
+    {
+        let repo = init_repo();
+        let mgr = WorktreeManager::new(repo.path().to_path_buf());
+        let wt = mgr.create(&format!("task-5-{i}"), "HEAD").unwrap();
 
-    assert!(skills::emit_for_agent("dsh", &workspace(&wt, repo.path())).unwrap());
-    for name in [skills::DATE_SKILL, skills::WORKSPACE_SKILL] {
-        let md = wt.path.join(".agents/skills").join(name).join("SKILL.md");
-        assert!(md.is_file(), "{name} not written under .agents/skills");
+        assert!(skills::emit_for_agent(agent, &workspace(&wt, repo.path())).unwrap(), "{agent}");
+        for name in [skills::DATE_SKILL, skills::WORKSPACE_SKILL] {
+            let md = wt.path.join(".agents/skills").join(name).join("SKILL.md");
+            assert!(md.is_file(), "{agent}: {name} not written under .agents/skills");
+        }
+        assert!(!wt.path.join(".claude").exists(), "{agent}'s kit leaked into claude's root");
+        assert_eq!(status(&wt.path), "", "{agent}: the kit is visible to git in the worktree");
+        git(&wt.path, &["add", "-A"]);
+        assert_eq!(status(&wt.path), "", "{agent}: the kit was staged by `git add -A`");
     }
-    assert!(!wt.path.join(".claude").exists(), "dsh's kit leaked into claude's root");
-    assert_eq!(status(&wt.path), "", "the kit is visible to git in the worktree");
-    git(&wt.path, &["add", "-A"]);
-    assert_eq!(status(&wt.path), "", "the kit was staged by `git add -A`");
 }
 
 #[test]
@@ -160,7 +169,10 @@ fn an_agent_with_no_known_convention_gets_nothing() {
     let mgr = WorktreeManager::new(repo.path().to_path_buf());
     let wt = mgr.create("task-4", "HEAD").unwrap();
 
-    assert!(!skills::emit_for_agent("codex", &workspace(&wt, repo.path())).unwrap());
+    // Crush's skills roots are global only (probed 2026-09-05), so there is
+    // nowhere in the worktree it would read a kit from.
+    assert!(!skills::emit_for_agent("crush", &workspace(&wt, repo.path())).unwrap());
     assert!(!wt.path.join(".claude").exists(), "wrote a kit for an agent that can't read it");
+    assert!(!wt.path.join(".agents").exists(), "wrote a kit for an agent that can't read it");
     assert_eq!(status(&wt.path), "");
 }

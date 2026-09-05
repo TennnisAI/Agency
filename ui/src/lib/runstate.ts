@@ -1,4 +1,4 @@
-import { RunInfo, RunStanding } from "../api";
+import { RunInfo } from "../api";
 
 // Presentation of a run's live state, shared by every dot/label surface
 // (tiles, sidebar tree, focus rail). States for a live agent:
@@ -9,10 +9,8 @@ import { RunInfo, RunStanding } from "../api";
 //   exited  — gray: finished / failed / session ended
 // Terminals keep plain running/ended: a quiet shell isn't "waiting on you".
 //
-// Over the top of that sits what the user has said about the run — settled,
-// active, snoozed, pinned (`RunAttention`). The state stays what the pane
-// says; the standing decides whether it is worth surfacing, and takes the
-// amber down when the answer is no.
+// A pin (`RunInfo.pinRank`) only changes board order — it does not change how a
+// quiet run classifies or whether it needs attention.
 
 /** Milliseconds elapsed rendered at the coarsest honest granularity. */
 export function fmtDur(ms: number): string {
@@ -25,23 +23,21 @@ export function fmtDur(ms: number): string {
   return `${Math.floor(h / 24)}d`;
 }
 
-/** A running agent that went quiet after a user-driven turn. */
-export function isWaiting(run: RunInfo): boolean {
+/**
+ * A run that is asking for the user right now: a live agent that went quiet
+ * after a turn the user drove. What the header counts and the tiles badge.
+ *
+ * The backend's `waiting` is about the pane alone, so the other two conditions
+ * are composed in here rather than there — they are the same conditions the
+ * dots and labels below already key off, and a terminal or a dead session is
+ * never waiting on you whatever its last sample said.
+ */
+export function needsAttention(run: RunInfo): boolean {
   return run.kind === "agent" && run.status.state === "running" && run.activity?.state === "waiting";
 }
 
-/**
- * A run that is asking for the user right now: waiting, and nothing the user
- * has said about it says otherwise. This, not `isWaiting`, is what the counts
- * and the attention badges read — settling a run is meant to take it off the
- * list, not to relabel it.
- */
-export function needsAttention(run: RunInfo): boolean {
-  return isWaiting(run) && run.attention.needsAttention;
-}
-
 export function isPinned(run: RunInfo): boolean {
-  return run.attention.pinRank != null;
+  return run.pinRank != null;
 }
 
 /**
@@ -52,8 +48,8 @@ export function isPinned(run: RunInfo): boolean {
  * happen inside each half.
  */
 function byPin(a: RunInfo, b: RunInfo): number {
-  const pa = a.attention.pinRank;
-  const pb = b.attention.pinRank;
+  const pa = a.pinRank;
+  const pb = b.pinRank;
   if (pa == null && pb == null) return 0;
   if (pa == null) return 1;
   if (pb == null) return -1;
@@ -63,42 +59,6 @@ function byPin(a: RunInfo, b: RunInfo): number {
 /** `list` in board order, without mutating it. */
 export function pinnedFirst(runs: RunInfo[]): RunInfo[] {
   return [...runs].sort(byPin);
-}
-
-/** Wake times a snooze can be set to, as epoch ms from `now`. */
-export const SNOOZE_PRESETS: { label: string; ms: number }[] = [
-  { label: "15 minutes", ms: 15 * 60 * 1000 },
-  { label: "1 hour", ms: 60 * 60 * 1000 },
-  { label: "4 hours", ms: 4 * 60 * 60 * 1000 },
-];
-
-/** Clock time a snooze wakes at, for a menu label and a tooltip. */
-export function fmtWake(untilMs: number): string {
-  return new Date(untilMs).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-}
-
-/**
- * How a standing reads where it replaces the status line. Snoozing shows the
- * time left rather than the wake time: the question a glance is asking is "how
- * long until this is back", and the exact clock time is in the tooltip. An
- * active run keeps its own waiting line, so that label is only for a surface
- * that names the standing outright.
- */
-export function standingLabel(standing: RunStanding, now: number = Date.now()): string {
-  if (standing.kind === "settled") return "settled";
-  if (standing.kind === "active") return "active";
-  return `snoozed · ${fmtDur(Math.max(0, standing.untilMs - now))}`;
-}
-
-/** The hover text that goes with `standingLabel`. */
-export function standingTitle(standing: RunStanding): string {
-  if (standing.kind === "settled") {
-    return "You have dealt with this run. It raises its hand again when the agent comes back.";
-  }
-  if (standing.kind === "active") {
-    return "You marked this run as still needing you, so it keeps its place on the list.";
-  }
-  return `Snoozed until ${fmtWake(standing.untilMs)}. New output wakes it early.`;
 }
 
 /** A running agent actively producing output (no activity sample yet counts:
@@ -129,18 +89,10 @@ export function runStatus(
     if (run.kind === "terminal") return { cls: "running", text: "running" };
     const a = run.activity;
     if (a?.state === "waiting") {
-      // The user has answered this one already: no amber, no climbing timer,
-      // and the line says what they said rather than what the pane did.
-      const standing = run.attention.standing;
-      if (standing && standing.kind !== "active") {
-        return { cls: "idle", text: standingLabel(standing, now), title: standingTitle(standing) };
-      }
       return {
         cls: "awaiting",
         text: `waiting · ${fmtDur(now - a.since)}`,
-        title: standing
-          ? standingTitle(standing)
-          : "The agent finished a turn or needs input. Waiting on you.",
+        title: "The agent finished a turn or needs input. Waiting on you.",
       };
     }
     if (a?.state === "idle") {

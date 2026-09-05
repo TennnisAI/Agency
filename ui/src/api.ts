@@ -56,40 +56,13 @@ export interface LoopState {
 // Live activity signal derived from pane output (camelCase serde, see
 // agency_app::activity). "working" = output recently; "waiting" = quiet after
 // a user-driven turn (finished, or blocked on input); "idle" = quiet with no
-// turn in flight (never prompted, or waited too long). A waiting run the user
-// has never classified decays to idle after ~30m; one carrying a standing
-// below does not, because there is nothing left to guess. `since` is epoch ms
-// when the current state began. Null until the backend's first 2s poll
+// turn in flight (never prompted, or waited too long). A waiting run decays to
+// idle after ~30m so an urgent badge does not climb forever. `since` is epoch
+// ms when the current state began. Null until the backend's first 2s poll
 // observes the run.
 export interface RunActivity {
   state: "working" | "waiting" | "idle";
   since: number;
-}
-
-// The user's own word on a run (agency_core::attention), as it applies right
-// now: a settle the run has already answered, or a snooze that has run out,
-// arrives as null rather than as a stale record.
-//   settled — "I have dealt with this". Off the attention list until the run
-//             comes back asking, which un-settles it.
-//   active  — "this one still needs me". Stays on the list, and the time decay
-//             stops applying to it.
-//   snoozed — "not now". Off the list until untilMs, or until new output makes
-//             it raise its hand early.
-export type RunStanding =
-  | { kind: "settled" }
-  | { kind: "active" }
-  | { kind: "snoozed"; untilMs: number };
-
-// What the user has said about a run and what it means right now. Always
-// present, unlike `activity`: the standing and the pin are their record, not a
-// sample the backend may not have taken yet.
-export interface RunAttention {
-  standing: RunStanding | null;
-  // Ascending order among pinned runs; null = unpinned. Untouched by activity.
-  pinRank: number | null;
-  // The bottom line: this run is waiting on the user and nothing they have
-  // said suppresses it.
-  needsAttention: boolean;
 }
 
 // Tokens and cost for a run, read from the agent's own transcript (see
@@ -115,7 +88,10 @@ export interface RunInfo {
   branch: string;
   status: SessionStatus;
   activity: RunActivity | null;
-  attention: RunAttention;
+  // Ascending order among the project's pinned runs; null = unpinned. Board
+  // order only: it never changes how a run classifies above. Never null-as-in-
+  // unknown the way `activity` is, because it is a stored value, not a sample.
+  pinRank: number | null;
   // Null means this agent's spend is not visible to us at all, which is true
   // of every agent whose transcript format we have not read. Not the same as
   // zero, and the UI must never render it as one.
@@ -606,11 +582,6 @@ export const renameRun = (id: string, title: string) =>
 // the published copy, and any PR from it, behind).
 export const renameRunBranch = (id: string, branch: string) =>
   invoke<string>("rename_run_branch", { id, branch });
-// Record what the user has said about a run, or clear it with null — which
-// hands the run back to the time decay. The moment is stamped backend-side:
-// it is what decides whether later output has un-settled the run.
-export const setRunStanding = (id: string, standing: RunStanding | null) =>
-  invoke<void>("set_run_standing", { id, standing });
 // Pin a run to the end of its project's pinned runs, or unpin it. Pinned order
 // is the order they were pinned in; unpin and pin again to move one to the end.
 export const pinRun = (id: string, pinned: boolean) =>

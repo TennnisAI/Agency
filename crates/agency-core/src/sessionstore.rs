@@ -24,13 +24,22 @@
 //!   directory per process, so pointing each Agency session at one of its own
 //!   makes "the most recent conversation here" that session's, with no state
 //!   for Agency to keep.
-//! - **A conversation of its own** ([`Pin::Id`], claude and copilot). The CLI
-//!   names conversations, so Agency mints an id, opens the conversation under
-//!   it, records it against the session, and later reopens that exact one.
+//! - **A conversation of its own** ([`Pin::Id`], claude, copilot, cursor and
+//!   kimi). The CLI names conversations, so Agency mints an id, opens the
+//!   conversation under it, records it against the session, and later
+//!   reopens that exact one.
 //!
 //! Everything else keeps its old resume recipe. A guessed flag would be worse
 //! than the bug: `claude --session-id` on an id already in use and
 //! `claude --resume` on one that is not there both refuse to start.
+//!
+//! Cursor and kimi shipped with no resume recipe at all until AGE-190, on the
+//! belief that they keyed sessions globally rather than by cwd, so that
+//! "continue the last conversation" would have picked up whatever the user
+//! last did anywhere on the machine. Driven, both turned out to key by cwd
+//! after all (an md5 of it, see [`store_dir`]), so their generic `--continue`
+//! stands on the same footing as claude's; and both name conversations, so
+//! a session's own is reopened exactly the way claude's and copilot's are.
 //!
 //! Verified live rather than read off `--help` alone. Pi 0.84.4: two processes
 //! in one cwd, `-p "run one"`, `-p "run two"`, then `-c` in the first — the
@@ -45,7 +54,20 @@
 //! came back with the first one's, which is the fix. Then the same flag in a
 //! pty on the interactive launch Agency actually uses, where it wrote a
 //! `workspace.yaml` naming that exact id.
+//!
+//! Cursor 2026.09.02 and kimi 1.50.0 (AGE-190), each driven headless in two
+//! directories and then interactively in a pty: two conversations opened in
+//! one directory under ids of Agency's choosing, each asked for a word of its
+//! own, and the first reopened by id came back with the first one's word.
+//! Cursor answered through the user's own account; kimi (and hermes, below)
+//! had no credential here and were driven against a local stand-in for an
+//! OpenAI-compatible endpoint that replies with the first user message in
+//! the request, which shows exactly which conversation the CLI sent and is
+//! the whole question. What each writes at launch and what only a turn adds
+//! is recorded on [`conversation_path`] and [`turn_marker`], because the two
+//! differ.
 
+use md5::{Digest, Md5};
 use std::path::{Path, PathBuf};
 
 /// How Agency keeps one session's conversation to itself, per agent. A
@@ -89,9 +111,42 @@ pub enum Pin {
 ///   `OPENCODE_DB` (or `XDG_DATA_HOME` above it, which also carries
 ///   `auth.json`) would log the user out on every Agency launch.
 ///
-/// Cursor, hermes, gemini and kimi key their sessions globally rather than by
-/// cwd and so ship with no resume recipe at all; there is nothing here for
-/// them to cross.
+/// Hermes and gemini stay absent too, after AGE-190 installed and read all
+/// four agents that had no resume recipe (cursor and kimi are in
+/// [`id_flags`] now):
+///
+/// - **hermes** mints its own session id, `<YYYYmmdd_HHMMSS>_<6 hex>`, in its
+///   CLI and takes none from outside: no flag, and the one variable that
+///   carries an id (`HERMES_TUI_RESUME`) is the TUI's own resume handoff.
+///   `--resume <id>` reopens exactly that session and answers an unknown id
+///   with "Session not found" and exit 1. `--continue` is the newest session
+///   for the source (cli or tui) in the one global `state.db`, with no cwd
+///   filter: driven in 0.19.0, from one directory with a newer session in
+///   another, it came back with the other's conversation *and moved into
+///   that directory* ("restored workspace dir"), which is the AGE-175 bug
+///   with a `cd` on top. So the generic recipe stays empty. Its store is
+///   `HERMES_HOME`, which also carries `config.yaml`, the `.env` of API keys,
+///   skills and memory, so a per-session store would launch an agent with no
+///   provider. Sessions do record their cwd in `state.db`, so an id could be
+///   read back after the first turn (the newest row whose cwd is the
+///   worktree); that is a third lever, discovering rather than naming, and
+///   is not built.
+/// - **gemini** has claude's shape, read off 0.58.0's `--help` and source:
+///   `--session-id <id>` "Start a new session with a manually provided UUID"
+///   and refuses one already present ("already exists. Use --resume to
+///   resume it"), `--resume <uuid>` reopens exactly and exits on an unknown
+///   one. It is not here because no turn could be driven (it takes a
+///   `GEMINI_API_KEY` or a login, and this machine had neither), and the
+///   probe would need more than a path: the transcript is
+///   `~/.gemini/tmp/<slug>/chats/session-<YYYY-MM-DDTHH-MM>-<first 8 of
+///   id>.jsonl`, where the slug is assigned per project root in
+///   `~/.gemini/projects.json` rather than derived from it, so the file is
+///   found by registry lookup and glob. Launched in a pty with a fresh id,
+///   it wrote that file at once with the metadata line alone; on the next
+///   launch `--resume <that id>` said "No previous sessions found for this
+///   project" and the file was gone. So a session with no turn is not a
+///   session, and the probe's question would be whether the file has a
+///   second line.
 pub fn pin(command: &str) -> Pin {
     match base(command) {
         "pi" => Pin::Store,
@@ -119,10 +174,48 @@ pub fn pin(command: &str) -> Pin {
 /// cannot refuse: copilot creates the session when the id is unknown instead
 /// of failing to start, which is the risk that keeps a guessed recipe out of
 /// here in the first place.
+///
+/// Cursor has claude's shape behind a flag its `--help` does not list:
+/// `--new-session-id <uuid>`, "Create a new session with a caller-provided
+/// ID", found in 2026.09.02's bundle as a hidden option and driven. It wants
+/// a UUIDv4 ("expected a UUIDv4"), refuses an id already in use ("Session ID
+/// ... is already in use.") and refuses to be combined with `--resume` or
+/// `--continue`. `--resume <chatId>` reopened the exact chat, with the other
+/// chat in the same directory left alone. What `--resume` does with an id it
+/// does not have is the reason the probe has to be exact: it does not refuse.
+/// In the chat's own directory it opened an empty chat under that id; from
+/// another directory it came back with *that* directory's latest chat while
+/// creating a folder named for the id there. So a wrong "Has" resumes
+/// someone else's conversation silently, which is the AGE-188 bug.
+///
+/// Kimi has copilot's shape, and says so in its source rather than its
+/// `--help`: `--session <id>` ("With ID: resume that session") is
+/// `Session.find` and, when that finds nothing, "Session not found, creating
+/// new session" under that same id. Driven in 1.50.0: a fresh id opened a
+/// session, the same id later reopened it with its first prompt still in the
+/// request, and a second id in the same directory stayed separate.
 fn id_flags(command: &str) -> Option<IdFlags> {
     match base(command) {
-        "claude" => Some(IdFlags { open: "--session-id", resume: "--resume" }),
-        "copilot" => Some(IdFlags { open: "--session-id", resume: "--session-id" }),
+        "claude" => Some(IdFlags {
+            open: "--session-id",
+            resume: "--resume",
+            theirs: &["--session-id", "--resume", "-r"],
+        }),
+        "copilot" => Some(IdFlags {
+            open: "--session-id",
+            resume: "--session-id",
+            theirs: &["--session-id", "--resume", "-r"],
+        }),
+        "cursor-agent" => Some(IdFlags {
+            open: "--new-session-id",
+            resume: "--resume",
+            theirs: &["--new-session-id", "--resume", "--continue"],
+        }),
+        "kimi" => Some(IdFlags {
+            open: "--session",
+            resume: "--session",
+            theirs: &["--session", "-S", "--resume", "-r", "--continue", "-C"],
+        }),
         _ => None,
     }
 }
@@ -133,22 +226,27 @@ struct IdFlags {
     open: &'static str,
     /// Reopens exactly the conversation named by the id that follows.
     resume: &'static str,
+    /// Flags that mean the user has named the conversation themselves, in
+    /// either direction, so Agency's own argument stands down. Broader than
+    /// the flags Agency adds: `claude --resume other --session-id <ours>` is
+    /// two answers to one question even on a fresh launch, and the CLI
+    /// rejects it; cursor refuses `--new-session-id` beside `--continue` in
+    /// as many words. Per agent because the short forms collide: `-r` is
+    /// resume for claude and kimi alike, but kimi's `-c` is `--command`, its
+    /// prompt, and `-C` its continue.
+    theirs: &'static [&'static str],
 }
-
-/// Flags that mean the user has named the conversation themselves, in either
-/// direction, so Agency's own argument stands down. Broader than the flags
-/// Agency adds: `claude --resume other --session-id <ours>` is two answers to
-/// one question even on a fresh launch, and the CLI rejects it.
-const USER_NAMED: &[&str] = &["--session-id", "--resume", "-r"];
 
 /// A conversation id `command` will accept for a conversation that does not
 /// exist yet, or `None` for an agent that does not name them.
 ///
-/// A UUID because both agents that name conversations want one: claude's
+/// A UUID because every agent that names conversations wants one: claude's
 /// "--session-id <uuid>: Use a specific session ID for the conversation (must
-/// be a valid UUID)", and copilot's "or set the UUID for a new session". Never
-/// reused, minted per fresh launch: a rerun is a new conversation by
-/// definition, and claude refuses an id already in use.
+/// be a valid UUID)", copilot's "or set the UUID for a new session", cursor's
+/// "expected a UUIDv4" (a version-4 one specifically, which is what `new_v4`
+/// mints), and kimi's own ids are UUIDs. Never reused, minted per fresh
+/// launch: a rerun is a new conversation by definition, and claude and cursor
+/// refuse an id already in use.
 pub fn mint(command: &str) -> Option<String> {
     match pin(command) {
         Pin::Id => Some(uuid::Uuid::new_v4().to_string()),
@@ -162,7 +260,7 @@ pub fn mint(command: &str) -> Option<String> {
 /// theirs, and claude refuses a second `--session-id` outright.
 pub fn open_args(command: &str, conversation: &str, so_far: &[String]) -> Vec<String> {
     match id_flags(command) {
-        Some(f) if !has_flag(so_far, USER_NAMED) => vec![f.open.into(), conversation.to_string()],
+        Some(f) if !has_flag(so_far, f.theirs) => vec![f.open.into(), conversation.to_string()],
         _ => Vec::new(),
     }
 }
@@ -172,13 +270,14 @@ pub fn open_args(command: &str, conversation: &str, so_far: &[String]) -> Vec<St
 /// what keeps that recipe in use for them.
 pub fn resume_args(command: &str, conversation: &str, so_far: &[String]) -> Vec<String> {
     match id_flags(command) {
-        Some(f) if !has_flag(so_far, USER_NAMED) => vec![f.resume.into(), conversation.to_string()],
+        Some(f) if !has_flag(so_far, f.theirs) => vec![f.resume.into(), conversation.to_string()],
         _ => Vec::new(),
     }
 }
 
 /// The file `conversation` is kept in, for an agent that names them, so a
-/// caller can ask whether there is anything to reopen before trying.
+/// caller can ask whether there is anything to reopen before trying. Whether
+/// the file existing is enough of an answer is [`turn_marker`]'s to say.
 pub fn conversation_path(
     home: &Path,
     command: &str,
@@ -208,8 +307,98 @@ pub fn conversation_path(
         "copilot" => {
             Some(home.join(".copilot").join("session-state").join(name).join("events.jsonl"))
         }
+        // Cursor keys chats by cwd (see `store_dir`) and keeps each in a
+        // directory named for its id, with the transcript in a sqlite
+        // `store.db` beside a `meta.json`. Both are written at launch: in a
+        // pty, `--new-session-id <fresh id>` with no prompt produced the
+        // directory, `store.db` and a `meta.json` saying
+        // `"hasConversation":false` before any turn, and the first turn,
+        // typed or passed on argv, flipped it to `true`. So the file to read
+        // is `meta.json`, and reading it is the probe's job
+        // (`turn_marker`); `prompt_history.json` would be the file that
+        // appears with a turn, but only a *typed* one, and a run's prompt
+        // arrives on argv.
+        "cursor-agent" => Some(store_dir(home, command, worktree)?.join(name).join("meta.json")),
+        // Kimi keys sessions by cwd too (see `store_dir`) and keeps each in a
+        // directory named for its id. `context.jsonl` is not the marker:
+        // `Session.create` touches it at launch and writes the system prompt
+        // into it, 18 KB before a word is said. `wire.jsonl`, the turn log,
+        // appeared only with the first turn (driven in a pty, 1.50.0), and
+        // it is what kimi's own session list keys on: a session whose wire
+        // file is empty is skipped as if it were not there.
+        "kimi" => Some(store_dir(home, command, worktree)?.join(name).join("wire.jsonl")),
         _ => None,
     }
+}
+
+/// What has to be true of the file at [`conversation_path`] before it counts
+/// as a conversation with a turn in it, per agent. Copilot's lesson (AGE-188):
+/// ask about what the first turn wrote, never what the launch wrote, or a run
+/// whose agent never answered resumes empty with its prompt undelivered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Turn {
+    /// The file appears with the first turn, so existing is the answer.
+    Exists,
+    /// The file is written at launch and the first turn changes what it says:
+    /// cursor's `meta.json`, which the caller reads and hands to
+    /// [`cursor_meta_records_turn`].
+    CursorMeta,
+}
+
+/// See [`Turn`].
+pub fn turn_marker(command: &str) -> Turn {
+    match base(command) {
+        "cursor-agent" => Turn::CursorMeta,
+        _ => Turn::Exists,
+    }
+}
+
+/// Whether cursor's `meta.json`, given as `contents`, records a turn.
+/// `{"schemaVersion":1,"createdAtMs":…,"hasConversation":true,"title":"Kiwi
+/// Only","updatedAtMs":…,"cwd":"…"}` after the first turn; the same with
+/// `"hasConversation":false` and no title straight after launch. Anything
+/// unparseable is no turn: the probe then starts fresh with the prompt
+/// delivered, which beats reopening a chat that may be empty.
+pub fn cursor_meta_records_turn(contents: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(contents)
+        .ok()
+        .and_then(|v| v.get("hasConversation")?.as_bool())
+        .unwrap_or(false)
+}
+
+/// The directory an agent keeps every conversation from `worktree` in, for
+/// the agents that key their store by cwd with a hash rather than by an
+/// encoding of the path ([`crate::usage::session_dir`] has those). `None`
+/// for everyone else. Used to place a named conversation and, by the resume
+/// probe, to ask whether the generic `--continue` has anything to continue.
+///
+/// Both hash the cwd string with md5, hex-encoded, and neither resolves
+/// symlinks first: cursor's `chats` state module does
+/// `createHash("md5").update(path.resolve(cwd))`, and kimi's `WorkDirMeta`
+/// does `md5(path.encode())` of a path canonicalised "unlike
+/// `pathlib.Path.resolve`" without following links. Checked against a live
+/// store: `<home>/agency/.agency/worktrees/agent-mm1d` sat under
+/// `6ec98378c414e4520a0db1e8e84037b8`, which is that string's md5. The cwd
+/// each hashes is the one the process was started in, so a worktree reached
+/// through a symlink would hash to the resolved path; Agency's worktrees are
+/// not.
+///
+/// The roots can be moved by the agents' own variables (`CURSOR_CONFIG_DIR`
+/// or `XDG_CONFIG_HOME` for cursor, `KIMI_SHARE_DIR` for kimi). Not honoured
+/// here, the same as `~/.claude` and `~/.copilot` above: a user who moves a
+/// store is a user whose probe answers "None" and gets a fresh launch, not
+/// a wrong resume.
+pub fn store_dir(home: &Path, command: &str, worktree: &Path) -> Option<PathBuf> {
+    let root = match base(command) {
+        "cursor-agent" => home.join(".cursor").join("chats"),
+        "kimi" => home.join(".kimi").join("sessions"),
+        _ => return None,
+    };
+    Some(root.join(md5_hex(&worktree.to_string_lossy())))
+}
+
+fn md5_hex(s: &str) -> String {
+    format!("{:x}", Md5::digest(s.as_bytes()))
 }
 
 /// Whether `so_far` already sets one of `flags`, so Agency's own argument can
@@ -314,10 +503,11 @@ mod tests {
     fn agents_whose_cli_offers_no_lever_are_left_alone() {
         let home = Path::new("/home/u");
         let wt = Path::new("/w");
-        // codex and opencode are here having been asked, not assumed: codex
-        // will not be told a thread id, and opencode refuses one it has not
-        // seen (see `pin`). The rest key sessions globally and never resume.
-        for command in ["codex", "opencode", "cursor-agent", "hermes", "gemini", "kimi"] {
+        // All four are here having been asked, not assumed: codex will not be
+        // told a thread id, opencode refuses one it has not seen, hermes
+        // mints its own and keys `--continue` globally, and gemini has the
+        // lever but no driven turn behind it (see `pin`).
+        for command in ["codex", "opencode", "hermes", "gemini"] {
             assert_eq!(pin(command), Pin::None, "{command}");
             assert_eq!(dir(home, command, wt, "agent-3f9c"), None, "{command}");
             assert!(env(home, command, wt, "agent-3f9c").is_empty(), "{command}");
@@ -325,6 +515,7 @@ mod tests {
             assert!(open_args(command, "x", &[]).is_empty(), "{command}");
             assert!(resume_args(command, "x", &[]).is_empty(), "{command}");
             assert_eq!(conversation_path(home, command, wt, "x"), None, "{command}");
+            assert_eq!(store_dir(home, command, wt), None, "{command}");
         }
     }
 
@@ -336,7 +527,7 @@ mod tests {
         let home = Path::new("/home/u");
         let wt = Path::new("/Users/x/proj");
         let id = "9674f5a1-334c-49a5-9952-89e592b0bc5b";
-        for command in ["claude", "copilot"] {
+        for command in ["claude", "copilot", "cursor-agent", "kimi"] {
             assert_eq!(pin(command), Pin::Id, "{command}");
             assert!(mint(command).is_some(), "{command}");
             assert!(!open_args(command, id, &[]).is_empty(), "{command}");
@@ -381,11 +572,86 @@ mod tests {
         assert!(open_args("pi", "x", &[]).is_empty());
         assert!(resume_args("pi", "x", &[]).is_empty(), "pi keeps -c, scoped by its own store");
 
-        for named in ["claude", "copilot"] {
+        for named in ["claude", "copilot", "cursor-agent", "kimi"] {
             assert_eq!(pin(named), Pin::Id, "{named}");
             assert_eq!(dir(home, named, wt, "agent-3f9c"), None, "{named}");
             assert!(env(home, named, wt, "agent-3f9c").is_empty(), "{named}");
         }
+    }
+
+    /// Cursor's opening flag is the hidden `--new-session-id`, which refuses
+    /// an id already in use, and its resume is `--resume`, which does not
+    /// refuse anything: exactly claude's split, so the recipe is the same.
+    #[test]
+    fn cursor_opens_with_the_hidden_flag_and_reopens_with_resume() {
+        let id = "712a88f3-e1c4-40f9-b5c3-842d55dc410a";
+        assert_eq!(open_args("cursor-agent", id, &[]), vec!["--new-session-id", id]);
+        assert_eq!(resume_args("cursor-agent", id, &[]), vec!["--resume", id]);
+        assert_eq!(
+            open_args("/Users/x/.local/bin/cursor-agent", id, &[]),
+            vec!["--new-session-id", id]
+        );
+        // Keyed by cwd: the same id in two directories is two chats, which is
+        // what `--resume` from the wrong directory quietly demonstrated.
+        let home = Path::new("/home/u");
+        let a = conversation_path(home, "cursor-agent", Path::new("/Users/x/proj"), id).unwrap();
+        let b = conversation_path(home, "cursor-agent", Path::new("/Users/x/other"), id).unwrap();
+        assert_ne!(a, b);
+        assert!(a.ends_with(Path::new(id).join("meta.json")), "{}", a.display());
+        assert!(a.starts_with("/home/u/.cursor/chats"), "{}", a.display());
+        assert_eq!(turn_marker("cursor-agent"), Turn::CursorMeta);
+    }
+
+    /// Kimi's one flag opens and reopens, like copilot's, so a fresh launch
+    /// and a resume are the same argument.
+    #[test]
+    fn kimi_opens_and_reopens_with_the_same_flag() {
+        let id = "1bb18ec4-6ddb-474b-96c3-b55c73a027a8";
+        assert_eq!(open_args("kimi", id, &[]), vec!["--session", id]);
+        assert_eq!(resume_args("kimi", id, &[]), vec!["--session", id]);
+        let home = Path::new("/home/u");
+        let a = conversation_path(home, "kimi", Path::new("/Users/x/proj"), id).unwrap();
+        let b = conversation_path(home, "kimi", Path::new("/Users/x/other"), id).unwrap();
+        assert_ne!(a, b);
+        assert!(a.ends_with(Path::new(id).join("wire.jsonl")), "{}", a.display());
+        assert!(a.starts_with("/home/u/.kimi/sessions"), "{}", a.display());
+        // The wire file appears with the first turn, so existing is enough.
+        assert_eq!(turn_marker("kimi"), Turn::Exists);
+    }
+
+    /// The hash is the one the CLIs compute, checked against a chat cursor
+    /// itself filed under this directory.
+    #[test]
+    fn store_dir_is_the_md5_of_the_worktree_path() {
+        let home = Path::new("/home/u");
+        let wt = Path::new("<home>/agency/.agency/worktrees/agent-mm1d");
+        assert_eq!(
+            store_dir(home, "cursor-agent", wt).unwrap(),
+            Path::new("/home/u/.cursor/chats/6ec98378c414e4520a0db1e8e84037b8")
+        );
+        assert_eq!(
+            store_dir(home, "kimi", wt).unwrap(),
+            Path::new("/home/u/.kimi/sessions/6ec98378c414e4520a0db1e8e84037b8")
+        );
+        // Not resolved, not normalised: the string as given is what is hashed.
+        assert_ne!(
+            store_dir(home, "kimi", wt),
+            store_dir(home, "kimi", Path::new("<home>/agency/.agency/worktrees/agent-mm1d/"))
+        );
+    }
+
+    /// The two `meta.json` shapes seen in a pty: straight after launch, and
+    /// after the first turn. Only the second is a conversation to reopen.
+    #[test]
+    fn cursor_meta_records_a_turn_only_once_it_says_so() {
+        let launched = r#"{"schemaVersion":1,"createdAtMs":1788619512182,"hasConversation":false,"updatedAtMs":1788619512736,"cwd":"/Users/x/proj"}"#;
+        let answered = r#"{"schemaVersion":1,"createdAtMs":1788619512182,"hasConversation":true,"title":"Kiwi Only","updatedAtMs":1788619525193,"cwd":"/Users/x/proj"}"#;
+        assert!(!cursor_meta_records_turn(launched));
+        assert!(cursor_meta_records_turn(answered));
+        // Half-written or missing: no turn, and the launch starts fresh.
+        assert!(!cursor_meta_records_turn(""));
+        assert!(!cursor_meta_records_turn("{\"schemaVersion\":1"));
+        assert!(!cursor_meta_records_turn("{}"));
     }
 
     #[test]
@@ -426,6 +692,27 @@ mod tests {
                 assert!(resume_args(command, id, &theirs).is_empty(), "{command} {theirs:?}");
             }
         }
+        // Cursor refuses `--new-session-id` beside `--continue` outright, so
+        // a profile carrying either direction stands Agency's down.
+        for theirs in [
+            vec!["--continue".to_string()],
+            vec!["--resume".to_string(), "other".to_string()],
+            vec!["--new-session-id=other".to_string()],
+        ] {
+            assert!(open_args("cursor-agent", id, &theirs).is_empty(), "{theirs:?}");
+            assert!(resume_args("cursor-agent", id, &theirs).is_empty(), "{theirs:?}");
+        }
+        for theirs in [
+            vec!["-S".to_string(), "other".to_string()],
+            vec!["--session=other".to_string()],
+            vec!["-C".to_string()],
+        ] {
+            assert!(open_args("kimi", id, &theirs).is_empty(), "{theirs:?}");
+            assert!(resume_args("kimi", id, &theirs).is_empty(), "{theirs:?}");
+        }
+        // The short flags are per agent: kimi's `-c` is its prompt, not a
+        // conversation, so it does not stand anything down.
+        assert!(!open_args("kimi", id, &["-c".to_string(), "hi".to_string()]).is_empty());
     }
 
     #[test]

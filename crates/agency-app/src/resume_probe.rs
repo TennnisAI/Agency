@@ -2,6 +2,7 @@
 //! Used so we never launch a resume command (e.g. `claude --continue`) when there
 //! is nothing to resume — claude does not exit on resume-failure in a PTY, so the
 //! daemon's early-exit fallback cannot recover it.
+use agency_core::sessionstore::{self, Turn};
 use agency_core::usage::{claude_enc, pi_enc};
 use std::path::Path;
 
@@ -29,13 +30,21 @@ pub enum ResumeProbe {
 ///   so a sibling session's conversation in the shared directory is not
 ///   something it can continue, and reading it as "Has" would resume an empty
 ///   store with the run's prompt nowhere;
-/// - an agent that names conversations (claude, copilot) is about to ask for
-///   that one conversation, so the question is whether that one transcript
-///   exists and nothing else. A sibling's conversation next to it is no
-///   answer, and for claude a wrong "Has" does not even start:
-///   `--resume <id>` refuses outright when the id is not there;
+/// - an agent that names conversations (claude, copilot, cursor, kimi) is
+///   about to ask for that one conversation, so the question is whether that
+///   one transcript exists and nothing else. A sibling's conversation next to
+///   it is no answer, and for claude a wrong "Has" does not even start:
+///   `--resume <id>` refuses outright when the id is not there. Cursor's does
+///   not refuse, which is worse: it reopens the directory's latest chat under
+///   the missing id, so a wrong "Has" there is AGE-188's crossed run;
+/// - whether the transcript existing is the answer is per agent
+///   ([`sessionstore::turn_marker`]): cursor writes its `meta.json` at launch
+///   and only the first turn sets `hasConversation` in it, so that file is
+///   read, not stat'ed;
 /// - a run with no conversation on record — every run that predates Agency
 ///   minting them — falls back to the directory question it always asked.
+///   Cursor and kimi key that directory by cwd too ([`sessionstore::store_dir`]),
+///   so their generic `--continue` gets the same question as claude's.
 pub fn resume_probe(
     home: &Path,
     command: &str,
@@ -46,10 +55,18 @@ pub fn resume_probe(
     if let Some(dir) = agency_core::sessionstore::dir(home, command, worktree, session) {
         return dir_probe(&dir);
     }
-    if let Some(file) = conversation
-        .and_then(|c| agency_core::sessionstore::conversation_path(home, command, worktree, c))
+    if let Some(file) =
+        conversation.and_then(|c| sessionstore::conversation_path(home, command, worktree, c))
     {
-        return if file.exists() { ResumeProbe::Has } else { ResumeProbe::None };
+        let has = match sessionstore::turn_marker(command) {
+            Turn::Exists => file.exists(),
+            Turn::CursorMeta => std::fs::read_to_string(&file)
+                .is_ok_and(|meta| sessionstore::cursor_meta_records_turn(&meta)),
+        };
+        return if has { ResumeProbe::Has } else { ResumeProbe::None };
+    }
+    if let Some(dir) = sessionstore::store_dir(home, command, worktree) {
+        return dir_probe(&dir);
     }
     let base = Path::new(command).file_name().and_then(|s| s.to_str()).unwrap_or(command);
     match base {
@@ -167,21 +184,113 @@ mod tests {
         );
     }
 
+    /// Cursor writes `meta.json` and `store.db` at launch and flips
+    /// `hasConversation` with the first turn, so a chat that was opened and
+    /// never answered is not one to reopen: `--resume` on it would come up
+    /// empty with the run's prompt dropped by the resume argv.
+    #[test]
+    fn cursor_probe_reads_the_meta_file_for_a_turn() {
+        let home = tempfile::tempdir().unwrap();
+        let wt = Path::new("<home>/agency/.agency/worktrees/agent-mm1d");
+        let ours = "712a88f3-e1c4-40f9-b5c3-842d55dc410a";
+        let theirs = "ae94ccd1-b6b7-4195-b8db-52ddff3ac702";
+        let chats =
+            home.path().join(".cursor").join("chats").join("6ec98378c414e4520a0db1e8e84037b8");
+        fs::create_dir_all(chats.join(theirs)).unwrap();
+        fs::write(chats.join(theirs).join("meta.json"), r#"{"hasConversation":true}"#).unwrap();
+        assert_eq!(
+            resume_probe(home.path(), "cursor-agent", wt, "agent-abcd", Some(ours)),
+            ResumeProbe::None,
+            "a sibling's chat in the same directory is not ours to resume"
+        );
+        fs::create_dir_all(chats.join(ours)).unwrap();
+        fs::write(chats.join(ours).join("store.db"), "x").unwrap();
+        fs::write(
+            chats.join(ours).join("meta.json"),
+            r#"{"schemaVersion":1,"createdAtMs":1,"hasConversation":false,"updatedAtMs":1,"cwd":"/w"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            resume_probe(home.path(), "cursor-agent", wt, "agent-abcd", Some(ours)),
+            ResumeProbe::None,
+            "opened at launch, never answered"
+        );
+        fs::write(
+            chats.join(ours).join("meta.json"),
+            r#"{"schemaVersion":1,"createdAtMs":1,"hasConversation":true,"title":"T","updatedAtMs":2,"cwd":"/w"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            resume_probe(home.path(), "cursor-agent", wt, "agent-abcd", Some(ours)),
+            ResumeProbe::Has
+        );
+        // With nothing on record the question is the directory, since
+        // cursor's `--continue` is the latest chat there and nowhere else.
+        assert_eq!(
+            resume_probe(home.path(), "cursor-agent", wt, "agent-abcd", None),
+            ResumeProbe::Has
+        );
+        assert_eq!(
+            resume_probe(
+                home.path(),
+                "cursor-agent",
+                Path::new("/Users/x/elsewhere"),
+                "agent-abcd",
+                None
+            ),
+            ResumeProbe::None
+        );
+    }
+
+    /// Kimi touches `context.jsonl` at launch, so that file says nothing; the
+    /// wire log appears with the first turn and is what the probe reads.
+    #[test]
+    fn kimi_probe_asks_for_the_wire_file_of_the_conversation_on_record() {
+        let home = tempfile::tempdir().unwrap();
+        let wt = Path::new("<home>/agency/.agency/worktrees/agent-mm1d");
+        let ours = "1bb18ec4-6ddb-474b-96c3-b55c73a027a8";
+        let sessions =
+            home.path().join(".kimi").join("sessions").join("6ec98378c414e4520a0db1e8e84037b8");
+        fs::create_dir_all(sessions.join(ours)).unwrap();
+        fs::write(sessions.join(ours).join("context.jsonl"), "system prompt").unwrap();
+        assert_eq!(
+            resume_probe(home.path(), "kimi", wt, "agent-abcd", Some(ours)),
+            ResumeProbe::None,
+            "launched, never answered"
+        );
+        fs::write(sessions.join(ours).join("wire.jsonl"), "x").unwrap();
+        assert_eq!(
+            resume_probe(home.path(), "kimi", wt, "agent-abcd", Some(ours)),
+            ResumeProbe::Has
+        );
+        assert_eq!(
+            resume_probe(
+                home.path(),
+                "kimi",
+                wt,
+                "agent-abcd",
+                Some("2b98c936-5172-4be7-ba80-15a1660a8230")
+            ),
+            ResumeProbe::None,
+            "another id in the same directory is not ours"
+        );
+        assert_eq!(resume_probe(home.path(), "kimi", wt, "agent-abcd", None), ResumeProbe::Has);
+        assert_eq!(
+            resume_probe(home.path(), "kimi", Path::new("/Users/x/elsewhere"), "agent-abcd", None),
+            ResumeProbe::None
+        );
+    }
+
     #[test]
     fn unknown_agents_are_unknown() {
         let home = tempfile::tempdir().unwrap();
         let wt = Path::new("/x");
-        assert_eq!(
-            resume_probe(home.path(), "opencode", wt, "agent-abcd", None),
-            ResumeProbe::Unknown
-        );
-        assert_eq!(
-            resume_probe(home.path(), "cursor-agent", wt, "agent-abcd", None),
-            ResumeProbe::Unknown
-        );
-        assert_eq!(
-            resume_probe(home.path(), "hermes", wt, "agent-abcd", None),
-            ResumeProbe::Unknown
-        );
+        for command in ["opencode", "codex", "hermes", "gemini"] {
+            assert_eq!(
+                resume_probe(home.path(), command, wt, "agent-abcd", None),
+                ResumeProbe::Unknown,
+                "{command}"
+            );
+        }
     }
 }

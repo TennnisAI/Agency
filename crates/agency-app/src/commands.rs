@@ -1348,11 +1348,12 @@ pub fn save_knowledge_config(
     state: State<'_, AppState>,
     project_id: String,
     graph: bool,
+    rebuild_on_merge: bool,
     serve_command: Option<String>,
     build_command: Option<String>,
 ) -> Result<(), String> {
     state
-        .save_knowledge_config(&project_id, graph, serve_command, build_command)
+        .save_knowledge_config(&project_id, graph, rebuild_on_merge, serve_command, build_command)
         .map_err(|e| e.to_string())
 }
 

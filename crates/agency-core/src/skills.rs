@@ -65,10 +65,10 @@ pub fn exclude_pattern(segments: &[&str]) -> String {
 ///
 /// - `claude` 2.1.261, live: `.claude/skills` only. The binary has no
 ///   `.agents` literal at all; its project roots are
-///   `[".claude/skills", ".claude/commands"]`. That refutes the claim in the
-///   2026-08-20 reading in `docs/competitive-landscape.md`, where a competitor's
-///   `ClaudeSkills.ts` comment says Claude Code reads `<cwd>/.agents/skills`
-///   too. It does not, so this row stays on its own path until a Claude Code
+///   `[".claude/skills", ".claude/commands"]`. That refutes a claim read in a
+///   third-party codebase on 2026-08-20, whose `ClaudeSkills.ts` comment says
+///   Claude Code reads `<cwd>/.agents/skills` too. It does not, so this row
+///   stays on its own path until a Claude Code
 ///   release says otherwise; do not re-propose the merge without re-running
 ///   the probe.
 /// - `codex` 0.153.4, live: skill roots are `~/.codex/skills`,

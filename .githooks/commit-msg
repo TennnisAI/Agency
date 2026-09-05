@@ -42,7 +42,17 @@ fi
 #    five characters, which trips on test fixtures and ref names. Note that
 #    substrings match: a bare `difflin` would fire on the identifier
 #    `DiffLineRow`, which appears throughout the UI.
+#
+#    Looked up in this checkout first, then in the main checkout. Every agent
+#    run commits from a worktree under .agency/worktrees/, where
+#    --show-toplevel is the worktree and the gitignored file does not exist, so
+#    the lookup as first written skipped the check on exactly the commits it
+#    was added for. --git-common-dir is the main checkout's .git from any
+#    worktree, and its parent is the checkout that holds the file.
 COMPETITORS_FILE="$(git rev-parse --show-toplevel)/.githooks/competitors.local"
+if [ ! -f "$COMPETITORS_FILE" ]; then
+  COMPETITORS_FILE="$(cd "$(git rev-parse --git-common-dir)/.." && pwd)/.githooks/competitors.local"
+fi
 if [ -f "$COMPETITORS_FILE" ]; then
   COMPETITORS="$(tr -d '[:space:]' <"$COMPETITORS_FILE")"
   if [ -n "$COMPETITORS" ] &&

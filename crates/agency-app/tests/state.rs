@@ -2000,8 +2000,237 @@ fn archiving_merged_work_takes_the_branch_and_leaves_a_record() {
         state.list_project_branches(&project.id).unwrap().branches.contains(&info.branch),
         "the run's branch is back, cut fresh from main"
     );
-    assert!(state.read_run_record(&info.id).unwrap().is_none(), "a live run has no record");
+    // `<run>.md` is gone, because a record beside a running agent reads as the
+    // account of a run that has finished. It is set aside rather than deleted:
+    // it is the only account of the stint that just ended.
+    assert!(!agency_core::record::path(&repo, &info.id).exists(), "a live run has no live record");
+    let earlier = state.read_run_record(&info.id).unwrap().expect("the ended stint is kept");
+    assert!(earlier.contains("## Superseded"), "{earlier}");
+    assert!(earlier.contains("add the feature"), "with the commits it accounted for: {earlier}");
     session_gone_or_cleanup(&state, &info.id);
+}
+
+/// A claude session file, as the real store writes them.
+fn claude_session(user: &str, assistant: &str) -> String {
+    format!(
+        "{}\n{}\n",
+        format_args!(
+            r#"{{"type":"user","timestamp":"2026-08-02T16:11:21.491Z","message":{{"role":"user","content":"{user}"}}}}"#
+        ),
+        format_args!(
+            r#"{{"type":"assistant","timestamp":"2026-08-02T16:11:25.000Z","message":{{"id":"m1","role":"assistant","content":[{{"type":"text","text":"{assistant}"}}]}}}}"#
+        ),
+    )
+}
+
+fn set_mtime(path: &Path, at: std::time::SystemTime) {
+    let times = std::fs::FileTimes::new().set_modified(at);
+    std::fs::File::options().write(true).open(path).unwrap().set_times(times).unwrap();
+}
+
+/// The conversation's round trip: rescued into the archive when the worktree
+/// goes, put back in the agent's own store when the run is restored, swept
+/// when it is deleted.
+///
+/// AGE-152 built this and AGE-157 rests its whole answer on it — a merged
+/// run's branch is cut again from the base, and the only reason the restored
+/// run is worth having is that its agent picks the conversation back up — and
+/// none of it was tested. Every step reads
+/// `$HOME/.claude/projects/<encoded worktree>/`, so until that home became
+/// injectable the only files a test could have moved were the developer's own
+/// sessions.
+///
+/// The agent is a stub *named* `claude`: `usage::session_dir` and
+/// `state::resume_command` both key off the command's basename, so a script by
+/// that name gets the real claude layout without the real claude.
+#[test]
+fn a_merged_runs_conversation_is_rescued_reinstated_and_swept() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let home = dir.path().join("home");
+    let bin = dir.path().join("bin");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&bin).unwrap();
+    let stub = bin.join("claude");
+    std::fs::write(&stub, "#!/bin/sh\nexec sleep 30\n").unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let state = common::state_with_agent_home(&dir, &home);
+    state
+        .register_profile(AgentProfile {
+            name: "claude".into(),
+            command: stub.to_string_lossy().into_owned(),
+            args: vec![],
+            env: vec![],
+            resume_args: Some(vec!["--continue".into()]),
+            loop_args: None,
+        })
+        .unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+    let info =
+        state.create_run(&project.id, "add a feature", "claude", None, "main", None).unwrap();
+    let wt = state.worktree_path(&info.id).unwrap();
+
+    // Two conversations in the worktree's store, the way claude keeps them:
+    // one file per session, named for the session id. The mtimes are set
+    // apart on purpose — "the newest session" is an mtime decision, both in
+    // claude's own resume and in the resume line the record writes.
+    let store = home.join(".claude").join("projects").join(agency_core::usage::claude_enc(&wt));
+    std::fs::create_dir_all(&store).unwrap();
+    let older = "1a4970ef-de34-4b3c-a444-41e9a73722fb";
+    let newest = "9674f5a1-334c-49a5-9952-89e592b0bc5b";
+    let older_text = claude_session("what is here?", "A README.");
+    let newest_text = claude_session("add a feature", "Done.");
+    std::fs::write(store.join(format!("{older}.jsonl")), &older_text).unwrap();
+    std::fs::write(store.join(format!("{newest}.jsonl")), &newest_text).unwrap();
+    let then = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_756_000_000);
+    let later = then + std::time::Duration::from_secs(600);
+    set_mtime(&store.join(format!("{older}.jsonl")), then);
+    set_mtime(&store.join(format!("{newest}.jsonl")), later);
+
+    // Merge it, which is the ending that deletes the branch and so the one
+    // AGE-157 is about.
+    std::fs::write(wt.join("feature.txt"), "x\n").unwrap();
+    Command::new("git").args(["add", "-A"]).current_dir(&wt).status().unwrap();
+    Command::new("git")
+        .args(["commit", "-qm", "add the feature"])
+        .current_dir(&wt)
+        .status()
+        .unwrap();
+    assert!(matches!(state.merge_task(&info.id).unwrap(), MergeOutcome::Clean { .. }));
+
+    state.archive_run(&info.id).unwrap();
+
+    // The store is keyed by the worktree path, which has just stopped
+    // existing, so the archive takes the whole directory rather than leaving
+    // it to leak.
+    let rescued = repo.join(".agency").join("records").join(format!("{}.transcript", info.id));
+    assert!(!store.exists(), "the agent's own directory for a path that is gone goes with it");
+    assert_eq!(
+        std::fs::read_to_string(rescued.join(format!("{newest}.jsonl"))).unwrap(),
+        newest_text,
+        "the conversation is in the archive, byte for byte"
+    );
+    assert!(rescued.join(format!("{older}.jsonl")).exists(), "both sessions, not just the last");
+
+    let archived = state.list_archived_runs(&project.id).unwrap();
+    assert!(archived[0].archived.as_ref().unwrap().has_conversation);
+    let record = state.read_run_record(&info.id).unwrap().unwrap();
+    assert!(record.contains("2 session files"), "{record}");
+    assert!(
+        record.contains(&format!("claude --resume {newest}")),
+        "the resume line names the newest session by mtime, not the first one read: {record}"
+    );
+    // And it can be read without restoring anything, which is the whole point
+    // of rescuing it rather than naming where it used to be.
+    let convo = state.read_run_conversation(&info.id).unwrap();
+    assert!(convo.supported);
+    assert_eq!(convo.sessions.len(), 2);
+
+    state.restore_run(&info.id).unwrap();
+
+    // The worktree comes back at the path it had, which is why the store
+    // directory's name still fits it — and why AGE-157 needed no per-agent
+    // proof that a session file's own `cwd` may name somewhere else.
+    assert_eq!(state.worktree_path(&info.id).unwrap(), wt);
+    assert_eq!(
+        std::fs::read_to_string(store.join(format!("{newest}.jsonl"))).unwrap(),
+        newest_text,
+        "the conversation is back in the agent's own store, so its resume finds it"
+    );
+    assert_eq!(
+        std::fs::metadata(store.join(format!("{newest}.jsonl"))).unwrap().modified().unwrap(),
+        later,
+        "with its mtime, which is what \"resume the most recent session\" goes by"
+    );
+    assert!(!rescued.exists(), "moved back, not copied: one archive, one store, never both");
+
+    // Delete sweeps what restore reinstated. Before AGE-152 this directory was
+    // keyed to a path that no longer existed and nothing ever removed it.
+    state.discard_run(&info.id).unwrap();
+    assert!(!store.exists(), "the conversation goes with the run the user deleted");
+}
+
+/// A run archived twice keeps both accounts.
+///
+/// Restoring used to delete the record outright, so a run that was archived,
+/// restored and archived again remembered only the second stint: the first
+/// one's commits, outcome and cost went with the file. The conversation
+/// survived the same cycle, which made the loss easy to miss and strange when
+/// found. Now the record is set aside as `<run>.1.md` and the two point at
+/// each other.
+#[test]
+fn a_run_archived_twice_keeps_the_account_of_both_stints() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let state = common::state(&dir);
+    state
+        .register_profile(AgentProfile {
+            name: "noop".into(),
+            command: "sh".into(),
+            args: vec!["-c".into(), "sleep 1".into()],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+    let info = state.create_run(&project.id, "add a feature", "noop", None, "main", None).unwrap();
+
+    let commit = |wt: &Path, file: &str, subject: &str| {
+        std::fs::write(wt.join(file), "x\n").unwrap();
+        Command::new("git").args(["add", "-A"]).current_dir(wt).status().unwrap();
+        Command::new("git").args(["commit", "-qm", subject]).current_dir(wt).status().unwrap();
+    };
+
+    // First stint: one commit, merged, archived.
+    let wt = state.worktree_path(&info.id).unwrap();
+    commit(&wt, "first.txt", "the first thing");
+    assert!(matches!(state.merge_task(&info.id).unwrap(), MergeOutcome::Clean { .. }));
+    state.archive_run(&info.id).unwrap();
+    let first = state.read_run_record(&info.id).unwrap().unwrap();
+    assert!(first.contains("the first thing"), "{first}");
+    assert!(!first.contains("## Earlier"), "nothing came before it: {first}");
+
+    state.restore_run(&info.id).unwrap();
+
+    // Second stint: another commit, merged, archived again.
+    commit(&wt, "second.txt", "the second thing");
+    assert!(matches!(state.merge_task(&info.id).unwrap(), MergeOutcome::Clean { .. }));
+    state.archive_run(&info.id).unwrap();
+
+    let records = repo.join(".agency").join("records");
+    let retired = std::fs::read_to_string(records.join(format!("{}.1.md", info.id))).unwrap();
+    let current = std::fs::read_to_string(records.join(format!("{}.md", info.id))).unwrap();
+    assert!(retired.contains("the first thing"), "the first stint is still accounted for");
+    assert!(!retired.contains("the second thing"), "and says only what it knew: {retired}");
+    assert!(retired.contains("## Superseded"), "and says why it is not the current one");
+    assert!(current.contains("the second thing"), "{current}");
+    assert!(
+        current.contains(&format!("`{}.1.md`", info.id)),
+        "the current record names the one it was restored out of: {current}"
+    );
+
+    // The dialog has no way to open a sibling file, so the read hands back
+    // both, newest first.
+    let shown = state.read_run_record(&info.id).unwrap().unwrap();
+    let second = shown.find("the second thing").expect("the current stint");
+    let earlier = shown.find("the first thing").expect("and the one before it");
+    assert!(second < earlier, "newest first: {shown}");
+
+    // Deleting the run takes every stint's record, not just the last.
+    state.discard_run(&info.id).unwrap();
+    assert!(!records.join(format!("{}.md", info.id)).exists());
+    assert!(!records.join(format!("{}.1.md", info.id)).exists(), "no orphan no run names");
 }
 
 /// The other half of AGE-149: work that landed nowhere keeps its branch, and
@@ -2043,11 +2272,12 @@ fn archiving_unmerged_work_keeps_the_branch_and_stays_restorable() {
     assert!(record.contains("outcome: kept"), "{record}");
     assert!(record.contains("carrying 1 commit that is nowhere else"), "{record}");
 
-    // Restoring cuts the worktree again and clears the record, which described
-    // a finished run.
+    // Restoring cuts the worktree again and sets the record aside: it
+    // described a finished run, and this one is going again.
     let restored = state.restore_run(&info.id).unwrap();
     assert!(restored.worktree);
-    assert!(state.read_run_record(&info.id).unwrap().is_none());
+    assert!(!agency_core::record::path(&repo, &info.id).exists());
+    assert!(state.read_run_record(&info.id).unwrap().unwrap().contains("carrying 1 commit"));
     session_gone_or_cleanup(&state, &info.id);
 }
 

@@ -1514,11 +1514,16 @@ fn same_dir(a: &Path, b: &Path) -> bool {
 /// — comes back into the same one. Applied on fresh launches as much as on
 /// resumes: the store a session resumes from is the one its first launch
 /// wrote to.
-fn session_store_env(command: &str, worktree: &Path, session: &str) -> Vec<(String, String)> {
-    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+fn session_store_env(
+    home: Option<&Path>,
+    command: &str,
+    worktree: &Path,
+    session: &str,
+) -> Vec<(String, String)> {
+    let Some(home) = home else {
         return Vec::new();
     };
-    agency_core::sessionstore::env(&home, command, worktree, session)
+    agency_core::sessionstore::env(home, command, worktree, session)
 }
 
 /// The directory a run's agent, scripts and git commands operate in: its own
@@ -1585,6 +1590,51 @@ fn resume_command(command: &str, dir: &Path) -> Option<String> {
         }
     }
     newest.map(|(_, id)| format!("claude --resume {id}"))
+}
+
+/// A run's superseded records (`record::prior_path`), oldest first: the ones
+/// left behind by earlier restores. Empty for a run that has ended once, which
+/// is nearly all of them.
+///
+/// Read off the directory rather than counted in the database, on the same
+/// principle as `list_archived_runs` asking git whether a branch is still
+/// there: a file deleted by hand stops being named instead of being promised.
+fn prior_records(repo: &Path, run_id: &str) -> Vec<(u32, PathBuf)> {
+    let Ok(entries) = std::fs::read_dir(agency_core::record::dir(repo)) else { return Vec::new() };
+    let mut out: Vec<(u32, PathBuf)> = entries
+        .flatten()
+        .filter_map(|e| {
+            let n = agency_core::record::prior_ordinal(run_id, e.file_name().to_str()?)?;
+            Some((n, e.path()))
+        })
+        .collect();
+    out.sort_by_key(|(n, _)| *n);
+    out
+}
+
+/// Set a run's record aside as the account of the stint that just ended, so
+/// restoring it does not throw that account away.
+///
+/// A rename, not a copy: `<run>.md` has to stop existing, because a live run
+/// with a record beside the archived ones reads as a run that has already
+/// finished. Best-effort like everything else in a restore; a record that will
+/// not move must not stop the run coming back.
+fn retire_run_record(repo: &Path, run_id: &str, restored_at: i64) {
+    let current = agency_core::record::path(repo, run_id);
+    let Ok(text) = std::fs::read_to_string(&current) else { return };
+    let next = prior_records(repo, run_id).last().map_or(1, |(n, _)| n + 1);
+    let stamped = agency_core::record::mark_superseded(&text, run_id, restored_at);
+    let dst = agency_core::record::prior_path(repo, run_id, next);
+    // Written before the original goes, and only removed once it is there:
+    // the failure that leaves both is a duplicate, the one that leaves neither
+    // is the account gone for good.
+    if let Err(e) = std::fs::write(&dst, stamped) {
+        log::warn!("restore {run_id}: couldn't set the run record aside: {e}");
+        return;
+    }
+    if let Err(e) = std::fs::remove_file(&current) {
+        log::warn!("restore {run_id}: couldn't remove the superseded run record: {e}");
+    }
 }
 
 /// Delete a file, treating "it was not there" as success. Both callers are
@@ -1932,6 +1982,19 @@ pub struct AppState {
     shell_attaches: Mutex<HashMap<String, Subscription>>,
     term: RwLock<TermClient>,
     data_dir: PathBuf,
+    /// The home directory the agents' own session stores hang off:
+    /// `$HOME/.claude/projects/<encoded worktree>/`, `$HOME/.pi/agent/sessions/…`.
+    ///
+    /// Read once here rather than from the environment at each use so that a
+    /// test can point it somewhere else. Everything AGE-152 built — rescuing a
+    /// conversation into the archive, reinstating it on restore, sweeping it on
+    /// delete — moves files under this directory, and while it was read from
+    /// `$HOME` inline the only thing a test could have exercised it against was
+    /// the developer's own conversations. So it was exercised by hand instead,
+    /// and the archive-to-restore round trip went untested through two issues.
+    /// `None` when the process has no `HOME` at all, which every reader already
+    /// had to handle.
+    agent_home: Option<PathBuf>,
     /// Run id → the branch the main checkout was on when that run's merge hit
     /// conflicts, so finishing or aborting the merge can put it back. Only
     /// `merge()`'s own clean path restores by itself; a conflicted merge stays
@@ -2146,6 +2209,16 @@ impl AppState {
     }
 
     pub fn new(db_path: &Path, data_dir: &Path) -> Result<AppState> {
+        Self::with_agent_home(db_path, data_dir, std::env::var_os("HOME").map(PathBuf::from))
+    }
+
+    /// [`AppState::new`] with the agents' session-store home given rather than
+    /// read from `$HOME`. For tests: see [`AppState::agent_home`].
+    pub fn with_agent_home(
+        db_path: &Path,
+        data_dir: &Path,
+        agent_home: Option<PathBuf>,
+    ) -> Result<AppState> {
         let registry = Registry::open(db_path)?;
         // Terminals are not agents: they run `login_shell()` directly, so no
         // profile row backs them. Older installs seeded a "shell" profile that
@@ -2178,6 +2251,7 @@ impl AppState {
             shell_attaches: Mutex::new(HashMap::new()),
             term: RwLock::new(TermClient::connect_or_spawn(termd_socket(data_dir), termd_bin())?),
             data_dir: data_dir.to_path_buf(),
+            agent_home,
             merge_origins: Mutex::new(HashMap::new()),
             ui: Mutex::new(UiState { focused: true, active_run: None, pending_open: None }),
             input_seen: Mutex::new(HashSet::new()),
@@ -5850,7 +5924,7 @@ impl AppState {
     /// only files whose length or mtime moved, so a board of idle runs costs
     /// one readdir apiece.
     pub fn refresh_usage(&self) -> Result<()> {
-        let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
+        let Some(home) = self.agent_home() else {
             return Ok(());
         };
         // Every registry read binds to a local before the loop that uses it. A
@@ -6052,7 +6126,12 @@ impl AppState {
         let mut env = self.provider_env()?;
         env.extend(profile.env.iter().cloned());
         env.extend(agency_core::scripts::script_env(worktree, repo, run_id, port));
-        env.extend(session_store_env(&profile.command, worktree, session));
+        env.extend(session_store_env(
+            self.agent_home().as_deref(),
+            &profile.command,
+            worktree,
+            session,
+        ));
         Ok(env)
     }
 
@@ -6110,7 +6189,7 @@ impl AppState {
     /// user's own checkout, shared with whatever pi sessions they have had
     /// there themselves.
     fn session_stores(&self, run: &agency_core::registry::Run, repo: &Path) -> Vec<PathBuf> {
-        let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+        let Some(home) = self.agent_home() else {
             return Vec::new();
         };
         let worktree = workspace_dir(repo, run);
@@ -6133,10 +6212,15 @@ impl AppState {
             .collect()
     }
 
+    /// The home directory the agents' session stores hang off. See the field.
+    fn agent_home(&self) -> Option<PathBuf> {
+        self.agent_home.clone()
+    }
+
     /// Where this run's agent keeps its transcript for this workspace, for the
     /// agents whose layout `usage::session_dir` knows. `None` for the rest.
     fn agent_session_dir(&self, run: &agency_core::registry::Run, repo: &Path) -> Option<PathBuf> {
-        let home = std::env::var_os("HOME").map(PathBuf::from)?;
+        let home = self.agent_home()?;
         agency_core::usage::session_dir(&home, &self.agent_command(run), &workspace_dir(repo, run))
     }
 
@@ -6169,7 +6253,7 @@ impl AppState {
         run: &agency_core::registry::Run,
         repo: &Path,
     ) -> Vec<PathBuf> {
-        let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else { return Vec::new() };
+        let Some(home) = self.agent_home() else { return Vec::new() };
         let worktree = workspace_dir(repo, run);
         self.workspace_agents(run)
             .iter()
@@ -6239,7 +6323,7 @@ impl AppState {
             return None;
         }
         let worktree = workspace_dir(repo, run);
-        let home = std::env::var_os("HOME").map(PathBuf::from)?;
+        let home = self.agent_home()?;
         let mut sessions = 0;
         let mut own: Option<PathBuf> = None;
         for agent in agents {
@@ -6302,7 +6386,7 @@ impl AppState {
                 moves.push((entry.path(), agent));
             }
         }
-        let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else { return };
+        let Some(home) = self.agent_home() else { return };
         let worktree = workspace_dir(repo, run);
         for (src, agent) in moves {
             let command = self.profile_command(&agent);
@@ -6407,6 +6491,12 @@ impl AppState {
             diffstat,
             usage,
             transcript,
+            // What earlier stints of this run left behind, so this record is
+            // read as the most recent account rather than the whole of one.
+            prior: prior_records(repo, &run.id)
+                .into_iter()
+                .filter_map(|(_, p)| p.file_name()?.to_str().map(str::to_string))
+                .collect(),
         };
         let path = agency_core::record::path(repo, &run.id);
         if let Some(parent) = path.parent() {
@@ -6433,17 +6523,36 @@ impl AppState {
         Some(format!("{key}-{}", issue.seq))
     }
 
-    /// The archive record for a run, as markdown. `None` when there is none:
-    /// the run predates records, or its project folder has moved.
+    /// The archive record for a run, as markdown: the account of the stint it
+    /// has just finished, followed by the ones it was restored out of, newest
+    /// first. `None` when there is none at all: the run predates records, or
+    /// its project folder has moved.
+    ///
+    /// Joined here rather than left to the reader because a restored run's
+    /// history is spread over files the dialog has no way to open. On disk
+    /// each stint stays its own file, which is what makes them greppable and
+    /// worth keeping once Agency is gone; each one carries its own frontmatter
+    /// and heading, so the join reads as a stack of records rather than one
+    /// run-on account.
     pub fn read_run_record(&self, id: &str) -> Result<Option<String>> {
         let run = self.run_record(id)?;
         let repo = self.project_repo(&run.project_id)?;
-        let path = agency_core::record::path(&repo, &run.id);
-        match std::fs::read_to_string(&path) {
+        let read = |path: &Path| match std::fs::read_to_string(path) {
             Ok(text) => Ok(Some(text)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(e.into()),
+            Err(e) => Err(anyhow::Error::from(e)),
+        };
+        let mut parts: Vec<String> =
+            read(&agency_core::record::path(&repo, &run.id))?.into_iter().collect();
+        for (_, prior) in prior_records(&repo, &run.id).into_iter().rev() {
+            parts.extend(read(&prior)?);
         }
+        // A blank line between them, always: each record opens on its own `---`
+        // frontmatter, and `---` on the line straight after a paragraph is a
+        // setext heading rather than a rule, so a file that happened not to end
+        // in a newline would turn the one above it into a title.
+        Ok((!parts.is_empty())
+            .then(|| parts.iter().map(|p| p.trim_end()).collect::<Vec<_>>().join("\n\n") + "\n"))
     }
 
     /// The run's conversation, parsed from its transcript: the rescued copy
@@ -6483,7 +6592,7 @@ impl AppState {
             let archived = agency_core::record::transcript_dir_for(&repo, &run.id, &agent)
                 .filter(|d| d.exists());
             let dir = archived.or_else(|| {
-                let home = std::env::var_os("HOME").map(PathBuf::from)?;
+                let home = self.agent_home()?;
                 agency_core::usage::session_dir(
                     &home,
                     &self.profile_command(&agent),
@@ -6569,6 +6678,15 @@ impl AppState {
             let path = agency_core::record::path(&repo, &run.id);
             if let Err(e) = remove_if_present(&path) {
                 log::warn!("discard_run {id}: couldn't remove the run record: {e}");
+            }
+            // And the records of its earlier stints, if it was ever restored.
+            // They are the same run's account, so "delete this agent and its
+            // record" means all of them or the folder keeps orphans no run
+            // names any more.
+            for (_, prior) in prior_records(&repo, &run.id) {
+                if let Err(e) = remove_if_present(&prior) {
+                    log::warn!("discard_run {id}: couldn't remove {}: {e}", prior.display());
+                }
             }
             // The transcripts go with the record: the rescued copy beside it,
             // and the agent's own directory for this worktree, which is keyed
@@ -6868,10 +6986,10 @@ impl AppState {
         }
         // The record describes a run that ended; this one is live again, and a
         // record left behind would be read as the account of a run still going.
-        // It is written afresh whenever this one is archived again.
-        if let Err(e) = remove_if_present(&agency_core::record::path(&repo, &run.id)) {
-            log::warn!("restore_run {id}: couldn't remove the stale run record: {e}");
-        }
+        // It is set aside rather than deleted: it is the only account of what
+        // this run did in the stint that just ended, and the run is about to
+        // start another one that will end with a record of its own.
+        retire_run_record(&repo, &run.id, now_secs());
         self.registry.lock().unwrap().set_archived(id, None)?;
         let refreshed = self.run_record(id)?;
         Ok(self.run_info(&refreshed))
@@ -7645,10 +7763,11 @@ impl AppState {
         // session exists (they don't exit on resume-failure, so the daemon
         // fallback can't save them); other resume-capable agents fall through to
         // the resume-with-fallback path (the fallback catches their fast exits).
-        let probe = std::env::var_os("HOME")
+        let probe = self
+            .agent_home()
             .map(|h| {
                 crate::resume_probe::resume_probe(
-                    std::path::Path::new(&h),
+                    &h,
                     &profile.command,
                     &worktree,
                     id,

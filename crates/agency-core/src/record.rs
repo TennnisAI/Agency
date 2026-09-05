@@ -27,6 +27,50 @@ pub fn path(repo: &Path, run_id: &str) -> PathBuf {
     dir(repo).join(format!("{run_id}.md"))
 }
 
+/// Where a run's *superseded* record goes when the run is restored: a numbered
+/// sibling of [`path`], oldest first, so `<run>.1.md` is the account of the run
+/// as it stood at its first archive.
+///
+/// Restoring used to delete the record outright, on the grounds that a file
+/// left in place would be read as the account of a run that is live again.
+/// That is true of `<run>.md` and is why this is a rename rather than nothing,
+/// but the deletion also threw away the only account of what the run had done
+/// up to that point: its commit list, how the work ended, what it cost. The
+/// conversation survived a restore-and-archive cycle and those did not, so a
+/// run archived twice remembered everything it *said* and nothing it *did*.
+pub fn prior_path(repo: &Path, run_id: &str, n: u32) -> PathBuf {
+    dir(repo).join(format!("{run_id}.{n}.md"))
+}
+
+/// The ordinal in `<run>.<n>.md`, for the callers that have to find every
+/// superseded record a run has: the next free number, and the sweep that
+/// deletes them all with the run.
+///
+/// Deliberately strict about the shape. Run ids are minted by
+/// [`crate::branchname`] and carry no dots, so nothing else in the records
+/// directory can collide with this, and a name that does not parse is left
+/// alone rather than guessed at.
+pub fn prior_ordinal(run_id: &str, file_name: &str) -> Option<u32> {
+    file_name.strip_prefix(&format!("{run_id}."))?.strip_suffix(".md")?.parse().ok()
+}
+
+/// Stamp a record that is about to be superseded, so the file says why it is
+/// not the current one. Pure: text in, text out.
+pub fn mark_superseded(text: &str, run_id: &str, restored_at: i64) -> String {
+    let mut out = text.trim_end().to_string();
+    out.push_str("\n\n## Superseded\n\n");
+    // Named as a convention rather than as one file: a run restored twice
+    // pushes this stint's successor down to `<run>.2.md`, so a pointer at
+    // `<run>.md` alone would go stale the second time round.
+    out.push_str(&format!(
+        "This agent was restored on {} and went on working, so this is the account of one stint \
+         of it, not of the whole run. The others are the records beside this one, numbered in \
+         order, ending with `{run_id}.md` when the run is next archived.\n",
+        epoch_to_rfc3339(restored_at)
+    ));
+    out
+}
+
 /// Where a run's rescued transcript lives: a directory beside the record file
 /// holding the agent's session files exactly as it wrote them, moved here at
 /// archive time because their original home was keyed by a worktree path that
@@ -152,6 +196,10 @@ pub struct RunRecord {
     /// What became of the agent's own transcript, when it exists and we know
     /// the shape of it: rescued into the archive, or named where it still is.
     pub transcript: Option<TranscriptNote>,
+    /// The file names of this run's superseded records, oldest first, when it
+    /// has been restored and archived before (see [`prior_path`]). Empty for
+    /// the run that has only ended once, which is nearly all of them.
+    pub prior: Vec<String>,
 }
 
 /// Render the record. Deterministic; the only clock is in the caller.
@@ -251,6 +299,25 @@ pub fn render(r: &RunRecord) -> String {
         }
         None => {}
     }
+
+    // The pointer that keeps a restored run's history legible. Without it the
+    // numbered files beside this one are unexplained, and this record reads as
+    // the whole of a run that had already been archived once.
+    if !r.prior.is_empty() {
+        // The transcript section ends on a single newline; every other one
+        // ends on a blank line. Separate on whichever came before.
+        if !out.ends_with("\n\n") {
+            out.push('\n');
+        }
+        out.push_str("## Earlier\n\n");
+        out.push_str(&format!(
+            "This agent was archived and restored {} before, so what is above covers its most \
+             recent stint only. The earlier record{} beside this one, oldest first: {}.\n",
+            if r.prior.len() == 1 { "once".into() } else { format!("{} times", r.prior.len()) },
+            if r.prior.len() == 1 { " is" } else { "s are" },
+            r.prior.iter().map(|f| format!("`{f}`")).collect::<Vec<_>>().join(", ")
+        ));
+    }
     out
 }
 
@@ -327,6 +394,7 @@ mod tests {
                 sessions: 2,
                 resume: Some("claude --resume 16fc10c1".into()),
             }),
+            prior: Vec::new(),
         }
     }
 
@@ -465,6 +533,58 @@ mod tests {
         assert_eq!(own.file_name().unwrap(), "fix-a1.transcript");
         assert_eq!(tab.file_name().unwrap(), "fix-a1.transcript.pi");
         assert_eq!(own.parent(), tab.parent());
+    }
+
+    /// A restored run's earlier record is a numbered sibling, and the run that
+    /// is live again owns `<run>.md` alone.
+    #[test]
+    fn a_superseded_record_is_a_numbered_sibling() {
+        let repo = Path::new("/repo");
+        assert_eq!(prior_path(repo, "fix-a1", 1).file_name().unwrap(), "fix-a1.1.md");
+        assert_eq!(prior_path(repo, "fix-a1", 2).parent(), path(repo, "fix-a1").parent());
+        assert_eq!(prior_ordinal("fix-a1", "fix-a1.1.md"), Some(1));
+        assert_eq!(prior_ordinal("fix-a1", "fix-a1.12.md"), Some(12));
+        // The live record, a neighbour's, a rescue directory and anything else
+        // in the folder are all left alone.
+        assert_eq!(prior_ordinal("fix-a1", "fix-a1.md"), None);
+        assert_eq!(prior_ordinal("fix-a1", "fix-a12.1.md"), None);
+        assert_eq!(prior_ordinal("fix-a1", "fix-a1.transcript"), None);
+        assert_eq!(prior_ordinal("fix-a1", "fix-a1.transcript.pi"), None);
+        assert_eq!(prior_ordinal("fix-a1", "fix-a1.notes.md"), None);
+    }
+
+    /// The stamp is what stops a numbered file from being an unexplained
+    /// duplicate: it says the run went on, and where the rest of it is.
+    #[test]
+    fn a_superseded_record_says_it_was_restored() {
+        let md = mark_superseded(&render(&sample()), "agent-3f9c", 1_785_231_600);
+        assert!(md.starts_with("---\nrun: agent-3f9c\n"), "the original is left intact");
+        assert!(md.contains("## Commits"), "including everything it accounted for");
+        assert!(md.contains("## Superseded"));
+        assert!(md.contains("restored on 2026-07-28T09:40:00Z"), "{md}");
+        assert!(md.contains("`agent-3f9c.md`"), "and where the rest of the run is: {md}");
+    }
+
+    /// And the current record points back, so the history reads in either
+    /// direction.
+    #[test]
+    fn the_current_record_names_the_ones_it_was_restored_out_of() {
+        let one = render(&RunRecord { prior: vec!["agent-3f9c.1.md".into()], ..sample() });
+        assert!(one.contains("## Earlier"));
+        assert!(one.contains("archived and restored once before"), "{one}");
+        assert!(one.contains("The earlier record is beside this one"), "{one}");
+        assert!(one.contains("`agent-3f9c.1.md`."), "{one}");
+
+        let two = render(&RunRecord {
+            prior: vec!["agent-3f9c.1.md".into(), "agent-3f9c.2.md".into()],
+            ..sample()
+        });
+        assert!(two.contains("archived and restored 2 times before"), "{two}");
+        assert!(two.contains("The earlier records are beside this one"), "{two}");
+        assert!(two.contains("`agent-3f9c.1.md`, `agent-3f9c.2.md`."), "{two}");
+
+        // The common run has ended once and says nothing about stints at all.
+        assert!(!render(&sample()).contains("## Earlier"));
     }
 
     #[test]

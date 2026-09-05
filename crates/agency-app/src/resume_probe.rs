@@ -29,9 +29,11 @@ pub enum ResumeProbe {
 ///   so a sibling session's conversation in the shared directory is not
 ///   something it can continue, and reading it as "Has" would resume an empty
 ///   store with the run's prompt nowhere;
-/// - an agent that names conversations (claude) is about to run
-///   `--resume <id>`, which refuses outright when that id is not there, so the
-///   question is whether that one file exists and nothing else;
+/// - an agent that names conversations (claude, copilot) is about to ask for
+///   that one conversation, so the question is whether that one transcript
+///   exists and nothing else. A sibling's conversation next to it is no
+///   answer, and for claude a wrong "Has" does not even start:
+///   `--resume <id>` refuses outright when the id is not there;
 /// - a run with no conversation on record — every run that predates Agency
 ///   minting them — falls back to the directory question it always asked.
 pub fn resume_probe(
@@ -136,6 +138,31 @@ mod tests {
         fs::write(dir.join(format!("{ours}.jsonl")), "x").unwrap();
         assert_eq!(
             resume_probe(home.path(), "claude", wt, "agent-abcd", Some(ours)),
+            ResumeProbe::Has
+        );
+    }
+
+    /// Copilot keys sessions by id alone, under `~/.copilot/session-state/`,
+    /// so the probe reads the transcript of the recorded conversation and
+    /// ignores the worktree the run works in.
+    #[test]
+    fn copilot_probe_asks_about_the_conversation_on_record() {
+        let home = tempfile::tempdir().unwrap();
+        let wt = Path::new("/Users/x/proj");
+        let state = home.path().join(".copilot").join("session-state");
+        let ours = "3f1c9a20-0001-4aaa-9aaa-000000000001";
+        let theirs = "3f1c9a20-0001-4aaa-9aaa-000000000002";
+        fs::create_dir_all(state.join(theirs)).unwrap();
+        fs::write(state.join(theirs).join("events.jsonl"), "x").unwrap();
+        assert_eq!(
+            resume_probe(home.path(), "copilot", wt, "agent-abcd", Some(ours)),
+            ResumeProbe::None,
+            "a sibling's session in the same directory is not ours to resume"
+        );
+        fs::create_dir_all(state.join(ours)).unwrap();
+        fs::write(state.join(ours).join("events.jsonl"), "x").unwrap();
+        assert_eq!(
+            resume_probe(home.path(), "copilot", wt, "agent-abcd", Some(ours)),
             ResumeProbe::Has
         );
     }

@@ -161,10 +161,12 @@ tests: 82 core + 54 app), `tsc --noEmit` exit 0, `vite build` exit 0.
 
 45. **[done]** Per-worktree skills kit (`skills.rs`). Two skills, namespaced
     `agency-*`, written into each worktree wherever the agent reads
-    project-local skills from (`.claude/skills/` for Claude Code, and since
-    the DeepSeek Harness catalog entry, the vendor-neutral `.agents/skills/`
-    that dsh discovers on its own; an agent with no known convention gets
-    nothing). `agency-date-range` ships a POSIX-shell resolver
+    project-local skills from: `.claude/skills/` for Claude Code, and the
+    vendor-neutral `.agents/skills/` for every other agent Agency ships except
+    Crush, which has only global skills roots and gets nothing. Each agent was
+    probed on 2026-09-05 (AGE-145); the per-agent record is on the table in
+    `skills.rs`. Claude Code is the one that does not read `.agents/skills`,
+    so the two-root split stays. `agency-date-range` ships a POSIX-shell resolver
     that turns "last quarter" or "the past 30 days" into exact inclusive dates,
     doing the arithmetic on day numbers so leap years and quarter edges fall
     out of the algorithm. `agency-workspace` is the boot-time catalog: worktree

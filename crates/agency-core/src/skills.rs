@@ -20,10 +20,13 @@
 //!
 //! Only agents with a known project-local skills convention get an entry in
 //! [`skills_target`]; everything else returns `None` and nothing is written.
-//! Our directories are upserted one at a time, so a repo's own
-//! `.claude/skills/` is never replaced, and a skill directory the repo *tracks*
-//! is left completely alone: a diff on a tracked file rides into the project's
-//! main branch at merge, which is not a change Agency gets to make.
+//! Most of them share the vendor-neutral `.agents/skills/`; Claude Code is the
+//! one that does not read it, so its kit goes to `.claude/skills/` (see
+//! [`SKILLS_TARGETS`] for what was checked, and when). Our directories are
+//! upserted one at a time, so a repo's own skills directory is never replaced,
+//! and a skill directory the repo *tracks* is left completely alone: a diff on
+//! a tracked file rides into the project's main branch at merge, which is not
+//! a change Agency gets to make.
 
 use anyhow::Result;
 use std::path::Path;
@@ -53,14 +56,65 @@ pub fn exclude_pattern(segments: &[&str]) -> String {
 /// exclude and the tests all read the same rows: a new agent added here cannot
 /// land without the exclude that covers it.
 ///
-/// Claude Code reads `.claude/skills/<name>/SKILL.md` from the directory it was
-/// launched in. DeepSeek Harness discovers `<projectRoot>/.agents/skills` on
-/// its own (rank 200 in its `skill-filesystem` roots, read at 0.1.0-rc.7), the
-/// vendor-neutral directory its own repo symlinks `.claude/skills` to. The
-/// other agents Agency ships either have no skills mechanism or have only a
-/// user-scope one, and Agency writes inside the workspace only.
-const SKILLS_TARGETS: &[(&str, &[&str])] =
-    &[("claude", &[".claude", "skills"]), ("dsh", &[".agents", "skills"])];
+/// Checked 2026-09-05 against the installed CLIs, with a scratch repo holding
+/// one skill only under `.agents/skills/`, one only under `.claude/skills/`,
+/// and one under both with different descriptions. "Live" means the agent was
+/// launched headless there and asked to list its skills, or its outbound model
+/// request was captured and read; "static" means the shipped code was read
+/// because the CLI could not be run here.
+///
+/// - `claude` 2.1.261, live: `.claude/skills` only. The binary has no
+///   `.agents` literal at all; its project roots are
+///   `[".claude/skills", ".claude/commands"]`. That refutes the claim in the
+///   2026-08-20 reading in `docs/competitive-landscape.md`, where a competitor's
+///   `ClaudeSkills.ts` comment says Claude Code reads `<cwd>/.agents/skills`
+///   too. It does not, so this row stays on its own path until a Claude Code
+///   release says otherwise; do not re-propose the merge without re-running
+///   the probe.
+/// - `codex` 0.153.4, live: skill roots are `~/.codex/skills`,
+///   `~/.agents/skills`, the bundled `.system` and `<cwd>/.agents/skills`. It
+///   does not read `.claude/skills`.
+/// - `pi` 0.80.3, static: `join(cwd, ".agents", "skills")` from the cwd up to
+///   the root, plus `.pi/skills`. (Live run blocked: no provider credentials,
+///   and it ignores base-URL overrides.)
+/// - `opencode` 1.17.10, live: `.opencode/skills`, `.claude/skills` and
+///   `.agents/skills`; on a name collision the `.agents` copy won.
+/// - `copilot` 1.0.83, live: `.github/skills`, `.claude/skills` and
+///   `.agents/skills`; the `.agents` copy won a collision.
+/// - `cursor` (cursor-agent 2026.09.02), live: `[".cursor/skills/",
+///   ".claude/skills/", ".agents/skills/"]`, first match wins, so the `.claude`
+///   copy won a collision.
+/// - `hermes` (source, 2026-09-05), static: `.hermes/skills` and
+///   `.agents/skills` under the project root, but only once that root is in
+///   the user's `skills.trusted_project_dirs`; an untrusted root is offered to
+///   the user, not loaded. The kit is written anyway: the gate is hermes's own
+///   and stays visible, and Agency never edits the user's global config.
+/// - `gemini` 0.58.0, static: workspace `.agents/skills/` is an alias of
+///   `.gemini/skills/` and takes precedence over it.
+/// - `dsh` 0.1.1-rc.2, live (captured request): `<projectRoot>/.agents/skills`
+///   at rank 200, as its `skill-filesystem` roots table says.
+/// - `crush` 0.51.2, live (captured request): the prompt carried an
+///   `<available_skills>` block with neither probe in it. Its only skills roots
+///   are global (`CRUSH_SKILLS_DIR`), so there is nowhere in the worktree to
+///   write, and it gets nothing.
+/// - `kimi` 0.41.0, static: project roots are `.kimi-code/skills` and, as its
+///   generic project dir, `.agents/skills`.
+///
+/// Agency writes inside the workspace only, so an agent with a user-scope
+/// convention and no project-scope one gets no row.
+const AGENTS_SKILLS: &[&str] = &[".agents", "skills"];
+const SKILLS_TARGETS: &[(&str, &[&str])] = &[
+    ("claude", &[".claude", "skills"]),
+    ("codex", AGENTS_SKILLS),
+    ("pi", AGENTS_SKILLS),
+    ("opencode", AGENTS_SKILLS),
+    ("copilot", AGENTS_SKILLS),
+    ("cursor", AGENTS_SKILLS),
+    ("hermes", AGENTS_SKILLS),
+    ("gemini", AGENTS_SKILLS),
+    ("kimi", AGENTS_SKILLS),
+    ("dsh", AGENTS_SKILLS),
+];
 
 /// Where `agent` reads project-local skills from (see [`SKILLS_TARGETS`]).
 /// `None` means the agent has no convention Agency knows, and nothing is
@@ -124,6 +178,10 @@ pub struct Workspace {
 /// writes and what the tests read: pure, so every line of agent-facing copy is
 /// checkable without a worktree.
 pub fn kit(ws: &Workspace, skills_dir: &Path) -> Vec<Skill> {
+    // The catalog tells the agent which generated files never to commit, by
+    // path. Named from the root the kit is written under, not from a constant,
+    // so an `.agents/skills` agent is not told about `.claude/skills`.
+    let skills_rel = skills_dir.strip_prefix(&ws.worktree).unwrap_or(skills_dir);
     vec![
         Skill {
             name: DATE_SKILL,
@@ -144,7 +202,7 @@ pub fn kit(ws: &Workspace, skills_dir: &Path) -> Vec<Skill> {
             name: WORKSPACE_SKILL,
             files: vec![SkillFile {
                 name: SKILL_FILE,
-                contents: workspace_skill_md(ws),
+                contents: workspace_skill_md(ws, skills_rel),
                 executable: false,
             }],
         },
@@ -275,8 +333,9 @@ fn date_skill_md(resolver: &Path) -> String {
 }
 
 /// `agency-workspace/SKILL.md`: the catalog of the workspace this run was
-/// dropped into.
-fn workspace_skill_md(ws: &Workspace) -> String {
+/// dropped into. `skills_rel` is the skills root this kit lands in, relative
+/// to the worktree, so the catalog can name the files it must not commit.
+fn workspace_skill_md(ws: &Workspace, skills_rel: &Path) -> String {
     let issues = ws.repo_root.join(crate::issuefs::ISSUES_DIR);
     let mut body = String::new();
     body.push_str(&format!(
@@ -390,7 +449,7 @@ fn workspace_skill_md(ws: &Workspace) -> String {
          if there was one, so there is no status to set by hand at the end.\n\
          \n\
          Do not commit anything Agency generated here. `AGENTS.md`, \
-         `.claude/skills/agency-*` and the MCP config (`.mcp.json`, or the equivalent for the \
+         `{skills_rel}/agency-*` and the MCP config (`.mcp.json`, or the equivalent for the \
          agent running here) are written into every worktree and excluded from git in the \
          repository's `.git/info/exclude`, which is why `git status` does not show them; \
          `git add -f` would defeat that permanently and put generated files in the project at \
@@ -398,6 +457,7 @@ fn workspace_skill_md(ws: &Workspace) -> String {
          \n\
          Agency generates this skill. Edits are replaced on the next run.\n",
         branch = ws.branch,
+        skills_rel = skills_rel.display(),
     ));
     body
 }
@@ -824,11 +884,44 @@ mod tests {
 
     #[test]
     fn only_agents_with_a_known_convention_get_a_kit() {
-        assert!(agent_supported("claude"));
-        assert!(agent_supported("dsh"));
-        for other in ["codex", "cursor", "opencode", "copilot", "shell", ""] {
+        for agent in [
+            "claude", "codex", "pi", "opencode", "copilot", "cursor", "hermes", "gemini", "kimi",
+            "dsh",
+        ] {
+            assert!(agent_supported(agent), "{agent} lost its skills convention");
+        }
+        for other in ["crush", "shell", ""] {
             assert!(!agent_supported(other), "{other} claims a skills convention");
         }
+    }
+
+    /// Claude Code reads `.claude/skills` and not `.agents/skills` (probed
+    /// 2026-09-05, see [`SKILLS_TARGETS`]); every other listed agent reads the
+    /// vendor-neutral root and not necessarily Claude's. Writing to the wrong
+    /// one is a kit that silently never loads, so the split is pinned.
+    #[test]
+    fn claude_keeps_its_own_root_and_the_rest_share_the_vendor_neutral_one() {
+        assert_eq!(skills_target("claude"), Some(&[".claude", "skills"][..]));
+        for (agent, segments) in SKILLS_TARGETS {
+            if *agent != "claude" {
+                assert_eq!(*segments, &[".agents", "skills"][..], "{agent}");
+            }
+        }
+    }
+
+    /// The catalog names the files the agent must not commit by path, and that
+    /// path is the root the kit was written under: an `.agents/skills` agent
+    /// told about `.claude/skills/agency-*` is looking at a directory that
+    /// does not exist.
+    #[test]
+    fn the_catalog_names_the_root_the_kit_was_written_under() {
+        let ws = workspace();
+        let root = ws.worktree.join(".agents").join("skills");
+        let skills = kit(&ws, &root);
+        let s = skills.iter().find(|s| s.name == WORKSPACE_SKILL).expect("workspace skill");
+        let text = &s.files[0].contents;
+        assert!(text.contains(".agents/skills/agency-*"), "{text}");
+        assert!(!text.contains(".claude/skills"), "{text}");
     }
 
     /// The exclude pattern has to cover the path the kit is actually written

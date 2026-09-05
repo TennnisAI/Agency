@@ -21,6 +21,7 @@ import { fullClipboardText } from "../lib/clipboard";
 import { FindRank, registerFindTarget } from "../lib/findBus";
 import { installTermLinks } from "../lib/termLinkProvider";
 import { fileRootKey, requestOpenFile } from "../lib/openFile";
+import { focusReport } from "../lib/terminalFocus";
 import { toastError } from "../lib/toast";
 
 export interface TerminalStream {
@@ -392,7 +393,21 @@ export default function FocusTerminal(
           // nothing else, and `liveStarted` still flips the moment the first live
           // bytes exist, so the preview seed above cannot paint over them.
           const resume = input.suspend();
-          term.write(recolor(bytes, paperSurface()), resume);
+          term.write(recolor(bytes, paperSurface()), () => {
+            resume();
+            // Then say where focus actually is, which the mute has just
+            // swallowed the terminal's own answer to. A child that tracks focus
+            // hides its text cursor when told the pane lost it, and this pane is
+            // the one that was navigated back to: nothing else will ever tell it
+            // otherwise, because a terminal built already holding focus fires no
+            // focus event of its own (see lib/terminalFocus, AGE-171).
+            if (disposed) return;
+            const report = focusReport(
+              term.modes.sendFocusMode,
+              document.activeElement === term.textarea,
+            );
+            if (report) input.write(report);
+          });
           return;
         }
         output.write(bytes);

@@ -37,8 +37,13 @@ export interface InputWriter {
    * (`InputHandler.ts`), so every reattach sends the agent an `ESC[I` or `ESC[O`
    * that nobody generated — and which of the two depends on whether the pane
    * element happened to carry the `focus` class mid-repaint, not on anything the
-   * user did. Real focus changes still reach the child: xterm reports those from
-   * its own textarea focus and blur handlers, which this does not touch.
+   * user did. Real focus changes made while the pane is up still reach the
+   * child: xterm reports those from its own textarea focus and blur handlers,
+   * which this does not touch. The reattach itself is not one of them, though —
+   * the pane already holds focus by the time it is rebuilt, so no focus event
+   * ever fires in the new terminal and the muted `ESC[I` was the child's only
+   * word that focus came back. The pane sends that one itself, from what the
+   * DOM says, once the replay is through (see `terminalFocus.focusReport`).
    *
    * The window is one repaint, before the pane can take focus, and a keystroke
    * that lands inside it is dropped rather than queued: the reply we are here to

@@ -14,6 +14,11 @@ import Markdown from "./Markdown";
  * the project's own `.agency/records/`, so it outlives Agency and can be read
  * without it; this dialog is a convenience, not the only way in.
  *
+ * A run that was restored has one record per stint, and the backend hands them
+ * over as one stack, newest first: on disk they are separate files so each
+ * stays a complete account of the run it describes, and a dialog cannot open a
+ * sibling file the way a folder can.
+ *
  * The conversation is the other half of the same question, "what did it say",
  * rendered read-only from the transcript the archive rescued (AGE-152). Only
  * two agents' transcript formats have been read for real, so for the rest

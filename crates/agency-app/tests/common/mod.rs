@@ -40,3 +40,18 @@ pub fn state(dir: &TempDir) -> TestState {
     let state = AppState::new(&dir.path().join("agency.db"), dir.path()).unwrap();
     TestState { state }
 }
+
+/// [`state`] with the agents' session-store home pointed at `home` instead of
+/// `$HOME`. Everything the archive does with a conversation — rescue it,
+/// reinstate it, sweep it — reads and writes under that directory, so a test
+/// that cannot move it can only be run against the developer's own sessions.
+#[allow(dead_code)] // not every test file in this directory uses it
+pub fn state_with_agent_home(dir: &TempDir, home: &std::path::Path) -> TestState {
+    let state = AppState::with_agent_home(
+        &dir.path().join("agency.db"),
+        dir.path(),
+        Some(home.to_path_buf()),
+    )
+    .unwrap();
+    TestState { state }
+}

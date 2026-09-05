@@ -316,8 +316,9 @@ from there with `WorktreeManager::recreate_on`. The worktree comes back holding
 that work, `reinstate_transcript` puts the rescued sessions back, and the next
 launch resumes into them the same way a branch-kept restore always did.
 
-Three consequences are worth writing down, because they are why the larger
-design was not needed:
+Three things are worth writing down. The first two are why the larger design
+was not needed; the third is what the smaller one got wrong on its way past,
+and had to be fixed here.
 
 - **The cwd question evaporates.** A fresh-worktree run would have put the
   rescued session files under a *different* path's encoded directory, while
@@ -332,10 +333,32 @@ design was not needed:
   branch alone. `restore_start_point` looks for branches only; a run whose base
   branch was itself deleted could in principle be cut from the `base_commit`
   the record names, which is not done.
-- **The old run's record does not survive its own restore.** Restore deletes
-  it, because a record left in place would be read as the account of a run
-  still going, and a fresh one is written when the run is archived again. The
-  conversation survives (it is reinstated, and re-rescued on the next archive),
-  but the first stint's commit list, outcome and cost line do not. A run
-  restored and archived twice therefore has one record, describing the second
-  stint.
+- **A restored run keeps the account of the stint it just finished.** Restore
+  used to delete the record, on the grounds that a file left in place would be
+  read as the account of a run that is live again. That is true of `<run>.md`,
+  which is why this is a rename rather than nothing, but the deletion also
+  threw away the only account of what the run had done: its commit list, how
+  the work ended, what it cost. The conversation survived the cycle and those
+  did not, so a run archived twice remembered everything it *said* and nothing
+  it *did*. The record is now set aside as `<run>.1.md`
+  (`record.rs::prior_path`), stamped with a Superseded section saying why it is
+  not the current one, and the next archive's record names it back under
+  Earlier. `read_run_record` hands the dialog the stack, newest first, because
+  a sibling file is not something the dialog can open; on disk each stint stays
+  its own greppable file. Deleting the run takes all of them.
+
+One more thing was missing rather than wrong: none of AGE-152's round trip had
+a test. Every step of it reads `$HOME/.claude/projects/<encoded worktree>/` or
+`$HOME/.pi/agent/sessions/<encoded>/`, and while that home was read from the
+environment at each use, the only files a test could have moved were the
+developer's own conversations — so it was checked by hand, twice, and shipped
+untested through two issues. `AppState` now holds the agents' session-store
+home as a field (`AppState::with_agent_home`), read from `$HOME` in the
+ordinary constructor and pointed at a tempdir by the test harness. The round
+trip is covered end to end against a stub agent *named* `claude`, since
+`usage::session_dir` and `resume_command` both key off the command's basename:
+a merged run's two sessions are rescued into the archive, the record names the
+newer of the two in its `claude --resume` line, the conversation reads back out
+of the archive copy, restore puts both files back with their mtimes intact (the
+thing "resume the most recent session" goes by), and deleting the run sweeps
+them.

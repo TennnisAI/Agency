@@ -759,12 +759,52 @@ mod tests {
         )
     }
 
-    fn dead_port() -> u16 {
-        TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+    /// A loopback port that nothing serves on and nothing can start to serve
+    /// on while this is alive: a TCP socket bound to it that never listens.
+    /// Connecting gets ECONNREFUSED, which is what `serving` reads as "nothing
+    /// there", and the kernel will not hand the port to another `bind(0)`.
+    ///
+    /// This used to bind a listener, read the port, and drop it. The tests in
+    /// this module all bind ephemeral ports in parallel, and in 1 run of 60
+    /// the released port was taken again before `serving` probed it:
+    /// `tools_error_with_start_guidance_when_nothing_serves` got the
+    /// "something is serving on port 55905" branch instead of the start
+    /// guidance (AGE-185). Reserved this way, 0 of 200. std's
+    /// `TcpListener::bind` always listens, so reserving without serving needs
+    /// socket2.
+    struct DeadPort(socket2::Socket);
+
+    impl DeadPort {
+        fn reserve() -> DeadPort {
+            use socket2::{Domain, Protocol, Socket, Type};
+            let sock = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)).unwrap();
+            sock.bind(&SocketAddr::from(([127, 0, 0, 1], 0)).into()).unwrap();
+            DeadPort(sock)
+        }
+
+        fn port(&self) -> u16 {
+            self.0.local_addr().unwrap().as_socket().unwrap().port()
+        }
     }
 
-    fn start(hooks: Hooks) -> PreviewServer {
-        PreviewServer::start(0, dead_port(), hooks).unwrap()
+    /// A server under test together with the reservation on its app port, so
+    /// the port stays dead for as long as the server may probe it.
+    struct Srv {
+        inner: PreviewServer,
+        _app_port: DeadPort,
+    }
+
+    impl std::ops::Deref for Srv {
+        type Target = PreviewServer;
+        fn deref(&self) -> &PreviewServer {
+            &self.inner
+        }
+    }
+
+    fn start(hooks: Hooks) -> Srv {
+        let app_port = DeadPort::reserve();
+        let inner = PreviewServer::start(0, app_port.port(), hooks).unwrap();
+        Srv { inner, _app_port: app_port }
     }
 
     #[test]

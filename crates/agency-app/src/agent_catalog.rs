@@ -312,8 +312,15 @@ pub fn builtins() -> &'static [CatalogEntry] {
             CatalogEntry {
                 id: "kimi",
                 command: "kimi",
-                // Unverified (not installed here).
-                prompt: PromptDelivery::Positional,
+                // No way in. `kimi [OPTIONS] [COMMAND] [ARGS]...`: a positional
+                // is read as a subcommand, and 1.50.0 answers `kimi "Reply
+                // with only the word apple"` with "No such command" and exit
+                // 2. `-p, --prompt` exists but is one turn and out even in the
+                // TUI (its shell runs "single command and exit"), which is the
+                // headless shape, not an opening prompt. So a run starts
+                // promptless and the user hands the prompt over in the pane,
+                // as with crush. Found while driving it for AGE-190.
+                prompt: PromptDelivery::Unsupported,
                 // `-C, --continue`: "Continue the previous session for the
                 // working directory", and it is: kimi files sessions under
                 // `~/.kimi/sessions/<md5 of cwd>/` and remembers the last

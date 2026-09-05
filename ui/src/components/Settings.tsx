@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { appLogDir } from "@tauri-apps/api/path";
 import { revealItemInDir, openUrl } from "@tauri-apps/plugin-opener";
@@ -66,6 +66,16 @@ import { getWordWrap, setWordWrap } from "../lib/editorPrefs";
 import { useAgentModels } from "../hooks/useAgentModels";
 import { setWorkspaceHidden, workspaceHidden } from "../lib/workspacePref";
 import { HUSHABLE, HushId, isHushed, setHushed } from "../lib/hushed";
+import { FindRank, registerFindTarget } from "../lib/findBus";
+import {
+  ExtraTerms,
+  GROUPS,
+  SECTIONS,
+  SECTION_BY_ID,
+  SectionId,
+  matchSections,
+  scopeOf,
+} from "../lib/settingsSections";
 
 // One editable row of an MCP server's headers or environment. Kept as an
 // ordered pair list rather than a Record while editing so a half-typed row
@@ -86,6 +96,26 @@ const pairsToRecord = (pairs: KeyValue[]): Record<string, string> =>
 // has a duration for).
 const buildTook = (kg: KnowledgeConfig): string =>
   kg.last_build_secs === null ? "" : ` after ${fmtDur(kg.last_build_secs * 1000)}`;
+
+// Which section Settings reopens on. Kept in the module rather than in storage:
+// coming straight back to where you were is worth having within a session,
+// remembering it a week later is not.
+let lastSection: SectionId = "appearance";
+
+// The heading of one section, with the tag that says who it applies to. The
+// project-scoped tag carries the project's own name rather than the bare word
+// "project", so the heading answers "which one" in the same glance.
+function SectionHead({ id, projectName }: { id: SectionId; projectName: string | null }) {
+  const scope = scopeOf(id);
+  return (
+    <div className="settings-section-head">
+      <span className="settings-section-label">{SECTION_BY_ID[id].label}</span>
+      <span className="settings-scope-tag" data-scope={scope}>
+        {scope === "global" ? "Global" : projectName ? `Project · ${projectName}` : "No project"}
+      </span>
+    </div>
+  );
+}
 
 // The three shapes an MCP server can take, as offered by the transport picker.
 // "Local" spawns a command over stdio; the other two are remote endpoints.
@@ -451,51 +481,94 @@ export default function Settings({
     agentCliInfo().then(setCliInfo).catch(() => {});
   }, []);
 
-  // Knowledge-graph config is per-project — (re)load whenever the selected
-  // project changes; clear it when there is no project to configure.
+  // The project the three per-project loads below belong to. Settings now
+  // stays open across a project switch (AGE-187), so those loads race where
+  // they never used to: the heading renders the new project's name from its
+  // prop immediately, while a reply for the project you just left is still in
+  // flight. knowledge_config probes PATH for claude and ollama on every call,
+  // so the window is wide enough to click in, and toggling "Share the backlog"
+  // inside it wrote the old project's remote into the new project's
+  // .agency/agency.local.toml. Assigned during render so an in-flight loader
+  // always compares against the project actually on screen.
+  const shownProject = useRef<string | null>(projectId);
+  shownProject.current = projectId;
+
+  /**
+   * True while `id` is still the project on screen. Every per-project load and
+   * save calls this after its await, before touching state: the reply belongs
+   * to whichever project was selected when the call went out, and by the time
+   * it lands that may not be the one the headings are naming.
+   */
+  const stillShowing = (id: string | null) => id === shownProject.current;
+
+  // Knowledge-graph config is per-project — clear and reload whenever the
+  // selected project changes.
   async function loadKnowledge(id: string) {
     try {
       const cfg = await getKnowledgeConfig(id);
+      if (!stillShowing(id)) return;
       setKg(cfg);
       setKgDraft({ serve: cfg.serve_command ?? "", build: cfg.build_command ?? "" });
       setKgModel(cfg.build_model);
     } catch (e) {
+      if (!stillShowing(id)) return;
       setError(String(e));
     }
   }
 
-  useEffect(() => {
+  // useLayoutEffect, not useEffect, for this and the two below: clearing first
+  // is the point, and a passive effect runs after the commit that already
+  // rendered the new project's name beside the old project's values. A layout
+  // effect lands the clear in the same paint as the name, so that frame never
+  // exists.
+  useLayoutEffect(() => {
+    // Clear first: the section renders nothing without a config, which is the
+    // honest state while the new project's load is out, and is what a fresh
+    // mount shows anyway. Leaving the old values up put the wrong project's
+    // settings under the right project's name.
+    setKg(null);
+    setKgDraft({ serve: "", build: "" });
+    setKgModel("");
     if (projectId) loadKnowledge(projectId);
-    else setKg(null);
   }, [projectId]);
 
   // Backlog sharing is per-project too, and loads on the same schedule.
   async function loadBacklog(id: string) {
     try {
       const cfg = await getIssueSyncConfig(id);
+      if (!stillShowing(id)) return;
       setBacklog(cfg);
       setBacklogRemote(cfg.remote);
     } catch (e) {
+      if (!stillShowing(id)) return;
       setError(String(e));
     }
   }
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    setBacklog(null);
+    setBacklogRemote("");
     if (projectId) loadBacklog(projectId);
-    else setBacklog(null);
   }, [projectId]);
 
   // One write for both fields: the remote is meaningless with sync off, and
   // saving them separately would let a half-applied state reach disk.
   async function persistBacklog(sync: boolean, remote: string) {
-    if (!projectId) return;
+    const id = projectId;
+    if (!id) return;
     const prev = backlog;
     setBacklog((b) => (b ? { ...b, sync, remote } : b));
     try {
-      await saveIssueSyncConfig(projectId, sync, remote);
-      await loadBacklog(projectId);
+      await saveIssueSyncConfig(id, sync, remote);
+      await loadBacklog(id);
     } catch (e) {
-      setBacklog(prev);
+      // The revert is guarded for the same reason the loaders are, and it is
+      // the worse half of the race: it puts a whole config object back, so
+      // switching project during a failing save restored the project you left
+      // under the name of the one on screen, and the next toggle wrote that
+      // remote into this project's .agency/agency.local.toml. The toast is not
+      // guarded — the write really did fail, whatever is on screen now.
+      if (stillShowing(id)) setBacklog(prev);
       toastError(e, "Couldn't save backlog settings");
     }
   }
@@ -529,42 +602,48 @@ export default function Settings({
     pickedBackend?.id === "claude-cli" && models.claude?.supported ? models.claude : undefined;
 
   async function buildGraph() {
-    if (!projectId) return;
+    const id = projectId;
+    if (!id) return;
     setKgBuildError(null);
     try {
-      await buildKnowledgeGraph(projectId);
+      await buildKnowledgeGraph(id);
     } catch (e) {
-      setKgBuildError(String(e));
+      // Guarded: the error renders inside the knowledge section, under the
+      // selected project's name, so the project it is about has to be the one
+      // being named.
+      if (stillShowing(id)) setKgBuildError(String(e));
     }
-    await loadKnowledge(projectId);
+    await loadKnowledge(id);
   }
 
   // The way out of a build that is going nowhere. Without it a wedged build
   // holds the slot until the app restarts, and every later build (including
   // every post-merge rebuild) is refused as already running.
   async function stopBuild() {
-    if (!projectId) return;
+    const id = projectId;
+    if (!id) return;
     setKgBuildError(null);
     try {
-      await stopKnowledgeBuild(projectId);
+      await stopKnowledgeBuild(id);
     } catch (e) {
-      setKgBuildError(String(e));
+      if (stillShowing(id)) setKgBuildError(String(e));
     }
-    await loadKnowledge(projectId);
+    await loadKnowledge(id);
   }
 
   // Choosing a model writes the build command and stops there. The build is a
   // separate, deliberate press: this panel exists so that what a build costs
   // and where it sends the project's docs is known before that.
   async function chooseBackend(backend: string, model: string) {
-    if (!projectId) return;
+    const id = projectId;
+    if (!id) return;
     setKgBuildError(null);
     try {
-      await setKnowledgeBackend(projectId, backend, model);
+      await setKnowledgeBackend(id, backend, model);
     } catch (e) {
       toastError(e, "Couldn't save that model");
     }
-    await loadKnowledge(projectId);
+    await loadKnowledge(id);
   }
 
   // Install the tooling the way a missing agent CLI is installed: in a visible
@@ -586,24 +665,28 @@ export default function Settings({
   async function loadFiles(id: string) {
     try {
       const cfg = await getFilesConfig(id);
+      if (!stillShowing(id)) return;
       setFiles(cfg);
       setFilesDraft(cfg.copy.join("\n"));
     } catch (e) {
+      if (!stillShowing(id)) return;
       setError(String(e));
     }
   }
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    setFiles(null);
+    setFilesDraft("");
     if (projectId) loadFiles(projectId);
-    else setFiles(null);
   }, [projectId]);
 
   async function persistFiles() {
-    if (!projectId) return;
+    const id = projectId;
+    if (!id) return;
     const copy = filesDraft.split("\n").map((l) => l.trim()).filter(Boolean);
     try {
-      await saveFilesConfig(projectId, copy);
-      await loadFiles(projectId);
+      await saveFilesConfig(id, copy);
+      await loadFiles(id);
     } catch (e) {
       toastError(e, "Couldn't save worktree files");
     }
@@ -613,7 +696,8 @@ export default function Settings({
   // here) so an in-progress command edit is never dropped by a toggle, then
   // reload to refresh the derived install-status flags.
   async function persistKnowledge(patch: Partial<Pick<KnowledgeConfig, "graph" | "rebuild_on_merge">>) {
-    if (!projectId || !kg) return;
+    const id = projectId;
+    if (!id || !kg) return;
     // Optimistic: reflect the toggle immediately so it doesn't lag the save
     // round-trip; revert if the write fails.
     const prev = kg;
@@ -621,15 +705,16 @@ export default function Settings({
     setKg(next);
     try {
       await saveKnowledgeConfig(
-        projectId,
+        id,
         next.graph,
         next.rebuild_on_merge,
         kgDraft.serve.trim() || null,
         kgDraft.build.trim() || null,
       );
-      await loadKnowledge(projectId);
+      await loadKnowledge(id);
     } catch (e) {
-      setKg(prev);
+      // Guarded like persistBacklog's revert, and for the same reason.
+      if (stillShowing(id)) setKg(prev);
       toastError(e, "Couldn't save knowledge settings");
     }
   }
@@ -929,6 +1014,65 @@ export default function Settings({
     }
   }
 
+  // ── nav and search ─────────────────────────────────────────────────────
+  const [query, setQuery] = useState("");
+  const [active, setActive] = useState<SectionId>(lastSection);
+  const pageRef = useRef<HTMLElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+
+  // What the sections hold that the static `terms` can't: the agents and MCP
+  // servers this machine actually has, and the project's name. Typing "linear"
+  // or the project's own name is how people look for a server or a
+  // project-scoped setting, and neither word exists until runtime.
+  const extraTerms = useMemo<ExtraTerms>(
+    () => ({
+      messages: HUSHABLE.map((h) => h.label).join(" "),
+      agents: profiles.map((p) => agentLabel(p.name)).join(" "),
+      mcp: mcpServers.map((s) => s.name).join(" "),
+      backlog: projectName ?? "",
+      knowledge: projectName ?? "",
+      // Diagnostics is a per-agent list of CLI versions and update commands, so
+      // "claude version" is a question it answers and used to find nothing: the
+      // section's own label says neither word, and the agents' names are not
+      // static (this is whatever is installed on this machine).
+      diagnostics: cliInfo.map((c) => agentLabel(c.agent)).join(" "),
+      files: projectName ?? "",
+    }),
+    [profiles, mcpServers, projectName, cliInfo],
+  );
+
+  // null while the box is empty: no search is running, so the nav shows every
+  // section and the page shows the selected one.
+  const matched = useMemo(() => matchSections(query, extraTerms), [query, extraTerms]);
+
+  // A search puts every match on screen at once rather than listing links to
+  // them: the setting you were hunting for is then already there to change.
+  const visible = (id: SectionId) => (matched ? matched.has(id) : active === id);
+
+  function pickSection(id: SectionId) {
+    lastSection = id;
+    setActive(id);
+    setQuery("");
+    scrollRef.current?.scrollTo({ top: 0 });
+  }
+
+  // ⌘F belongs to this box while Settings is on screen. Settings takes over
+  // the whole content area, so nothing else searchable is visible behind it.
+  useEffect(
+    () =>
+      registerFindTarget({
+        host: () => pageRef.current,
+        open: () => {
+          searchRef.current?.focus();
+          searchRef.current?.select();
+        },
+        canReplace: false,
+        rank: FindRank.list,
+      }),
+    [],
+  );
+
   // The agent the default-model row is for, or null when there is none to
   // name: no default agent chosen, its models not loaded yet, or an agent
   // whose CLI takes no model flag at all.
@@ -938,916 +1082,999 @@ export default function Settings({
       : null;
 
   return (
-    <main className="settings-page">
-      <div className="settings-inner">
+    <main className="settings-page" ref={pageRef}>
+      {/* The section rail. It stands where the project tree does one pane over,
+          and for the same reason: thirteen sections on one scroll is a page you
+          read top to bottom looking for something, not one you navigate. */}
+      <div className="settings-rail">
         <button className="settings-back" onClick={onClose}>← Back</button>
         <h1 className="settings-title">Settings</h1>
-        {error && <div className="git-error">{error}</div>}
-
-        <section className="settings-section">
-          <div className="settings-section-label">Appearance</div>
-          <div className="settings-theme-grid">
-            {THEMES.map((t) => (
-              <button
-                key={t.id}
-                type="button"
-                className="settings-theme-card"
-                data-active={t.id === themeId}
-                onClick={() => pickTheme(t.id)}
-              >
-                <span className="settings-theme-name">{t.label}</span>
-                <span className="settings-theme-swatches">
-                  {([t.vars.base, t.vars.s1, t.vars.text, t.vars.green, t.vars.yellow, t.vars.red] as const).map(
-                    (c, i) => (
-                      <span key={i} className="settings-theme-dot" style={{ background: c }} />
-                    ),
-                  )}
-                </span>
-              </button>
-            ))}
-          </div>
-        </section>
-
-        <section className="settings-section">
-          <div className="settings-section-label">Workspace</div>
-          <p className="settings-section-hint">
-            Your home for journaling, planning, and cross-project notes: plain
-            markdown files on disk. <kbd>⌘⇧D</kbd> opens today's journal note.
-          </p>
-          <div className="settings-group-card">
-            <div className="settings-notif-row">
-              <span className="settings-notif-label">
-                Show the workspace
-                {wsOff && " (currently hidden; nothing on disk was deleted)"}
-              </span>
-              <Toggle checked={!wsOff} onChange={(on) => { void toggleWorkspaceVisible(on); }} />
-            </div>
-            {!wsOff && (workspace ? (
-              <>
-                <div className="settings-notif-row">
-                  <span className="settings-notif-label">
-                    Location: <code className="settings-meta-val">{workspace.repo_path}</code>
-                  </span>
-                  <span style={{ display: "flex", gap: 8 }}>
-                    <button
-                      className="settings-save"
-                      title="Move this folder somewhere else on disk"
-                      onClick={doMoveWorkspace}
-                    >Move…</button>
-                    <button
-                      className="settings-save"
-                      title="Use a different folder as the workspace; this one stays on disk"
-                      onClick={() => { void pickSwitchWorkspace(); }}
-                    >Switch…</button>
+        <input
+          ref={searchRef}
+          className="settings-search-input"
+          type="text"
+          aria-label="Search settings"
+          placeholder="Search settings"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Escape") setQuery(""); }}
+        />
+        <nav className="settings-nav" aria-label="Settings sections">
+          {GROUPS.map((g) => {
+            const items = SECTIONS.filter((s) => s.group === g.id && (!matched || matched.has(s.id)));
+            if (items.length === 0) return null;
+            return (
+              <div className="settings-nav-group" key={g.id}>
+                <div className="settings-nav-group-head">
+                  <span className="settings-nav-group-label">{g.label}</span>
+                  {/* The whole point of the grouping: the project group is
+                      labelled with the project it is about, so a setting that
+                      only applies to one checkout never reads as a preference. */}
+                  <span className="settings-scope-tag" data-scope={g.scope}>
+                    {g.scope === "global" ? "Global" : projectName ?? "No project"}
                   </span>
                 </div>
-                {wsGitless && (
-                  <div className="settings-notif-row">
-                    <span className="settings-notif-label">
-                      Git is off, so agents work directly in the folder: no branches,
-                      no Source Control, nothing to merge. Initialize a repository to
-                      give each one its own branch; nothing is ever pushed anywhere.
+                {items.map((s) => (
+                  <button
+                    key={s.id}
+                    type="button"
+                    className="settings-nav-item"
+                    data-active={!matched && s.id === active}
+                    // data-active is the styling hook and says nothing to a
+                    // screen reader; aria-current is what announces which of
+                    // the thirteen is the one on screen.
+                    aria-current={!matched && s.id === active ? "true" : undefined}
+                    onClick={() => pickSection(s.id)}
+                  >
+                    {s.label}
+                  </button>
+                ))}
+              </div>
+            );
+          })}
+        </nav>
+      </div>
+      <div className="settings-scroll" ref={scrollRef}>
+        <div className="settings-inner">
+          {error && <div className="git-error">{error}</div>}
+          {matched?.size === 0 && (
+            <p className="settings-no-match">
+              No settings match "{query.trim()}". Search by feature, by an agent's name, or by
+              the name of an MCP server.
+            </p>
+          )}
+
+          {visible("appearance") && (
+            <section className="settings-section">
+              <SectionHead id="appearance" projectName={projectName} />
+              <div className="settings-theme-grid">
+                {THEMES.map((t) => (
+                  <button
+                    key={t.id}
+                    type="button"
+                    className="settings-theme-card"
+                    data-active={t.id === themeId}
+                    onClick={() => pickTheme(t.id)}
+                  >
+                    <span className="settings-theme-name">{t.label}</span>
+                    <span className="settings-theme-swatches">
+                      {([t.vars.base, t.vars.s1, t.vars.text, t.vars.green, t.vars.yellow, t.vars.red] as const).map(
+                        (c, i) => (
+                          <span key={i} className="settings-theme-dot" style={{ background: c }} />
+                        ),
+                      )}
                     </span>
-                    <button className="settings-save" onClick={enableWorkspaceGit}>Enable git</button>
+                  </button>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {visible("editor") && (
+            <section className="settings-section">
+              <SectionHead id="editor" projectName={projectName} />
+              <div className="settings-group-card">
+                <div className="settings-notif-row">
+                  <span className="settings-notif-label">Word wrap in file viewer</span>
+                  <Toggle checked={wordWrap} onChange={pickWordWrap} />
+                </div>
+              </div>
+            </section>
+          )}
+
+          {visible("messages") && (
+            <section className="settings-section">
+              <SectionHead id="messages" projectName={projectName} />
+              <p className="settings-section-hint">
+                Explanations you can switch off once you know the workflow, and switch back on here.
+                Warnings about work that can't be recovered always show.
+              </p>
+              <div className="settings-group-card">
+                {HUSHABLE.map((h) => (
+                  <div key={h.id} className="settings-notif-row">
+                    <span className="settings-notif-label" title={h.hint}>{h.label}</span>
+                    <Toggle
+                      checked={!hushed.includes(h.id)}
+                      onChange={(next) => pickMessage(h.id, next)}
+                    />
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {visible("notifications") && (
+            <section className="settings-section">
+              <SectionHead id="notifications" projectName={projectName} />
+              <div className="settings-group-card">
+                {([
+                  ["agentIdle", "Agent finished a turn"],
+                  ["agentFinished", "Agent exited"],
+                  ["runCrashed", "Run script crashed"],
+                  ["mergeAttention", "Merge needs attention"],
+                  ["loopEvents", "Loop complete or stalled"],
+                  [
+                    "onlyWhenWatching",
+                    "Skip the agent you're watching",
+                    "No notification for the agent open in front of you. Every other agent still notifies, even while you're using Agency.",
+                  ],
+                ] as [keyof NotifSettings, string, string?][]).map(([key, label, hint]) => (
+                  <div key={key} className="settings-notif-row">
+                    <span className="settings-notif-label" title={hint}>{label}</span>
+                    <Toggle
+                      checked={notif[key] as boolean}
+                      onChange={(next) => persistNotif({ ...notif, [key]: next })}
+                    />
+                  </div>
+                ))}
+                <div className="settings-notif-row">
+                  <span className="settings-notif-label">Idle after (seconds)</span>
+                  <input
+                    className="settings-input settings-notif-secs"
+                    type="number"
+                    min={5}
+                    value={notif.idleSecs}
+                    onChange={(e) => persistNotif({ ...notif, idleSecs: Number(e.target.value) || 30 })}
+                  />
+                </div>
+              </div>
+            </section>
+          )}
+
+          {visible("agents") && (
+            <section className="settings-section">
+              <SectionHead id="agents" projectName={projectName} />
+              <div className="settings-group-card">
+                <div className="settings-notif-row">
+                  <span className="settings-notif-label">Default agent for new tasks</span>
+                  <select
+                    className="settings-input"
+                    style={{ maxWidth: 220 }}
+                    value={settings.defaultAgent ?? ""}
+                    onChange={(e) => pickDefaultAgent(e.target.value)}
+                  >
+                    {/* Auto = fall back to the project's last-used agent (prior behavior). */}
+                    <option value="">Auto (last used in project)</option>
+                    {profiles.map((p) => (
+                      <option key={p.name} value={p.name}>{agentLabel(p.name)}</option>
+                    ))}
+                  </select>
+                </div>
+                {/* A model id only means anything for one agent, so this row is
+                    the default agent's. On Auto the agent isn't known until a
+                    spawn picks one, and it renders nothing for a CLI that takes
+                    no model flag, the same case ModelSelect itself sits out. */}
+                {defaultModelAgent && (
+                  <div className="settings-notif-row">
+                    <span className="settings-notif-label">Default model for new tasks</span>
+                    <ModelSelect
+                      info={models[defaultModelAgent]}
+                      projectId={projectId}
+                      value={models[defaultModelAgent]?.selected ?? null}
+                      onChange={(model) =>
+                        setAgentModel(defaultModelAgent, model)
+                          .then(reloadModels)
+                          .catch((e) => toastError(e, "Couldn't set the default model"))
+                      }
+                    />
                   </div>
                 )}
-              </>
-            ) : (
-              <div className="settings-notif-row">
-                <span className="settings-notif-label">
-                  Not created yet. By default it will live at{" "}
-                  <code className="settings-meta-val">{wsDefault || "~/Agency"}</code>.
-                </span>
-                <button
-                  className="settings-save"
-                  onClick={() => {
-                    onClose();
-                    window.dispatchEvent(new CustomEvent("agency:create-workspace"));
-                  }}
-                >Create…</button>
+                <div className="settings-notif-row">
+                  <span className="settings-notif-label">Give new agents their own worktree</span>
+                  <Toggle
+                    checked={settings.defaultWorktree}
+                    onChange={(next) => persistSettingsNow({ ...settings, defaultWorktree: next })}
+                  />
+                </div>
               </div>
-            ))}
-          </div>
-        </section>
-
-        <section className="settings-section">
-          <div className="settings-section-label">Agent profiles</div>
-          <div className="settings-group-card">
-            <div className="settings-notif-row">
-              <span className="settings-notif-label">Default agent for new tasks</span>
-              <select
-                className="settings-input"
-                style={{ maxWidth: 220 }}
-                value={settings.defaultAgent ?? ""}
-                onChange={(e) => pickDefaultAgent(e.target.value)}
-              >
-                {/* Auto = fall back to the project's last-used agent (prior behavior). */}
-                <option value="">Auto (last used in project)</option>
+              <p className="settings-section-hint">
+                A default model belongs to one agent, so that row appears once you
+                have chosen a default agent above; on Auto each agent keeps the
+                model it last ran on. Every menu that starts an agent still offers
+                the full list, and starting one on another model moves that agent's
+                default there.
+              </p>
+              <p className="settings-section-hint">
+                Off means new agents work in the project checkout, on the branch you
+                have open, with no branch of their own to merge. This sets how the
+                add-agent menu starts; the Own worktree box there still decides each
+                spawn. Races, loops and issue dispatch always take a worktree.
+              </p>
+              <div className="settings-card-list">
                 {profiles.map((p) => (
-                  <option key={p.name} value={p.name}>{agentLabel(p.name)}</option>
-                ))}
-              </select>
-            </div>
-            {/* A model id only means anything for one agent, so this row is
-                the default agent's. On Auto the agent isn't known until a
-                spawn picks one, and it renders nothing for a CLI that takes
-                no model flag, the same case ModelSelect itself sits out. */}
-            {defaultModelAgent && (
-              <div className="settings-notif-row">
-                <span className="settings-notif-label">Default model for new tasks</span>
-                <ModelSelect
-                  info={models[defaultModelAgent]}
-                  projectId={projectId}
-                  value={models[defaultModelAgent]?.selected ?? null}
-                  onChange={(model) =>
-                    setAgentModel(defaultModelAgent, model)
-                      .then(reloadModels)
-                      .catch((e) => toastError(e, "Couldn't set the default model"))
-                  }
-                />
-              </div>
-            )}
-            <div className="settings-notif-row">
-              <span className="settings-notif-label">Give new agents their own worktree</span>
-              <Toggle
-                checked={settings.defaultWorktree}
-                onChange={(next) => persistSettingsNow({ ...settings, defaultWorktree: next })}
-              />
-            </div>
-          </div>
-          <p className="settings-section-hint">
-            A default model belongs to one agent, so that row appears once you
-            have chosen a default agent above; on Auto each agent keeps the
-            model it last ran on. Every menu that starts an agent still offers
-            the full list, and starting one on another model moves that agent's
-            default there.
-          </p>
-          <p className="settings-section-hint">
-            Off means new agents work in the project checkout, on the branch you
-            have open, with no branch of their own to merge. This sets how the
-            add-agent menu starts; the Own worktree box there still decides each
-            spawn. Races, loops and issue dispatch always take a worktree.
-          </p>
-          <div className="settings-card-list">
-            {profiles.map((p) => (
-              <div key={p.name} className="settings-profile-card">
-                <div className="settings-profile-head">
-                  <span className="agent-dot" style={{ background: agentColor(p.name) }} />
-                  <span className="settings-profile-name">{agentLabel(p.name)}</span>
-                  <code className="settings-profile-cmd">{p.command}</code>
-                  <span className="spacer" />
-                  <button className="settings-ghost-btn" onClick={() => editProfile(p)}>Edit</button>
-                  <button className="settings-ghost-btn settings-del-btn" onClick={() => deleteProfile(p.name).then(refresh).catch((e) => toastError(e, "Couldn't delete profile"))}>Delete</button>
-                </div>
-                <div className="settings-profile-meta">
-                  {([
-                    ["Arguments", p.args.join(" ")],
-                    ["Resume", (p.resume_args ?? []).join(" ")],
-                    ["Loop", (p.loop_args ?? []).join(" ")],
-                    ["Environment", p.env.map(([k]) => k).join(", ")],
-                  ] as [string, string][])
-                    .filter(([, val]) => val)
-                    .map(([key, val]) => (
-                      <Fragment key={key}>
-                        <span className="settings-meta-key">{key}</span>
-                        <code className="settings-meta-val" title={val}>{val}</code>
-                      </Fragment>
-                    ))}
-                </div>
-              </div>
-            ))}
-          </div>
-          {catalog.some((e) => e.enabled && !e.acceptsPrompt) && (
-            <p className="settings-section-hint">
-              {catalog.filter((e) => e.enabled && !e.acceptsPrompt).map((e) => agentLabel(e.id)).join(", ")}{" "}
-              take no opening prompt on the command line, so a dispatched issue or review starts
-              them promptless in the worktree and the ask has to go into their terminal by hand.
-            </p>
-          )}
-          <div className="settings-add-row">
-            {catalog.some((e) => !e.enabled) && (
-              <div className="settings-add-dropdown">
-                <button className="settings-add-profile" onClick={() => setCatalogOpen((o) => !o)}>
-                  + Add agent ▾
-                </button>
-                {catalogOpen && (
-                  <>
-                    <div className="settings-menu-backdrop" onClick={() => setCatalogOpen(false)} />
-                    <div className="settings-menu">
-                      {catalog.filter((e) => !e.enabled).map((e) => (
-                        <button key={e.id} onClick={() => { setCatalogOpen(false); addFromCatalog(e.id); }}>
-                          <span className="agent-dot" style={{ background: agentColor(e.id) }} />
-                          <span className="settings-menu-name">{agentLabel(e.id)}</span>
-                          <code className="settings-menu-cmd">{e.command}</code>
-                        </button>
-                      ))}
+                  <div key={p.name} className="settings-profile-card">
+                    <div className="settings-profile-head">
+                      <span className="agent-dot" style={{ background: agentColor(p.name) }} />
+                      <span className="settings-profile-name">{agentLabel(p.name)}</span>
+                      <code className="settings-profile-cmd">{p.command}</code>
+                      <span className="spacer" />
+                      <button className="settings-ghost-btn" onClick={() => editProfile(p)}>Edit</button>
+                      <button className="settings-ghost-btn settings-del-btn" onClick={() => deleteProfile(p.name).then(refresh).catch((e) => toastError(e, "Couldn't delete profile"))}>Delete</button>
                     </div>
-                  </>
-                )}
+                    <div className="settings-profile-meta">
+                      {([
+                        ["Arguments", p.args.join(" ")],
+                        ["Resume", (p.resume_args ?? []).join(" ")],
+                        ["Loop", (p.loop_args ?? []).join(" ")],
+                        ["Environment", p.env.map(([k]) => k).join(", ")],
+                      ] as [string, string][])
+                        .filter(([, val]) => val)
+                        .map(([key, val]) => (
+                          <Fragment key={key}>
+                            <span className="settings-meta-key">{key}</span>
+                            <code className="settings-meta-val" title={val}>{val}</code>
+                          </Fragment>
+                        ))}
+                    </div>
+                  </div>
+                ))}
               </div>
-            )}
-            <button className="settings-add-profile" onClick={openAddProfile}>+ Custom agent</button>
-          </div>
-        </section>
-
-        <section className="settings-section">
-          <div className="settings-section-label">MCP servers</div>
-          <p className="settings-section-hint">
-            Emitted into each agent workspace, in the agent's native config format (
-            {catalog.filter((e) => e.supportsMcp).map((e) => agentLabel(e.id)).join(", ") ||
-              "Claude Code, Copilot CLI, Cursor, OpenCode"}
-            ). Copilot is handed its file on the command line, since it waits for folder trust
-            before reading workspace config on its own.
-            Servers that need an OAuth sign-in can't live in workspace config; use{" "}
-            <b>Authenticate</b> to register one with an agent's own CLI instead. That agent then
-            reads it from its user config, and Agency keeps emitting it for the others. Projects
-            can add their own via <code>[mcp.servers]</code> in <code>.agency/agency.toml</code>;
-            project entries win on name conflicts.
-          </p>
-          {catalog.some((e) => e.enabled && !e.supportsMcp) && (
-            <p className="settings-section-hint">
-              {catalog.filter((e) => e.enabled && !e.supportsMcp).map((e) => agentLabel(e.id)).join(", ")}{" "}
-              manage MCP servers in their own global config and won't see the servers below.
-            </p>
+              {catalog.some((e) => e.enabled && !e.acceptsPrompt) && (
+                <p className="settings-section-hint">
+                  {catalog.filter((e) => e.enabled && !e.acceptsPrompt).map((e) => agentLabel(e.id)).join(", ")}{" "}
+                  take no opening prompt on the command line, so a dispatched issue or review starts
+                  them promptless in the worktree and the ask has to go into their terminal by hand.
+                </p>
+              )}
+              <div className="settings-add-row">
+                {catalog.some((e) => !e.enabled) && (
+                  <div className="settings-add-dropdown">
+                    <button className="settings-add-profile" onClick={() => setCatalogOpen((o) => !o)}>
+                      + Add agent ▾
+                    </button>
+                    {catalogOpen && (
+                      <>
+                        <div className="settings-menu-backdrop" onClick={() => setCatalogOpen(false)} />
+                        <div className="settings-menu">
+                          {catalog.filter((e) => !e.enabled).map((e) => (
+                            <button key={e.id} onClick={() => { setCatalogOpen(false); addFromCatalog(e.id); }}>
+                              <span className="agent-dot" style={{ background: agentColor(e.id) }} />
+                              <span className="settings-menu-name">{agentLabel(e.id)}</span>
+                              <code className="settings-menu-cmd">{e.command}</code>
+                            </button>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
+                <button className="settings-add-profile" onClick={openAddProfile}>+ Custom agent</button>
+              </div>
+            </section>
           )}
-          <div className="settings-card-list">
-            {mcpServers.map((s) => {
-              // Agents that could still take this server at their own user scope:
-              // remote servers only, minus the ones already registered with it.
-              const authable = s.url
-                ? catalog.filter((e) => e.supportsMcpAuth && !s.userScopeAgents.includes(e.id))
-                : [];
-              return (
-              <div key={s.name} className="settings-profile-card">
-                <div className="settings-profile-head">
-                  <span className="settings-profile-name">{s.name}</span>
-                  <span className="mcp-transport-tag">{s.url ? (s.transport ?? "http") : "local"}</span>
-                  <span className="spacer" />
-                  {authable.length > 0 && (
-                    <div className="settings-add-dropdown">
+
+          {visible("mcp") && (
+            <section className="settings-section">
+              <SectionHead id="mcp" projectName={projectName} />
+              <p className="settings-section-hint">
+                Emitted into each agent workspace, in the agent's native config format (
+                {catalog.filter((e) => e.supportsMcp).map((e) => agentLabel(e.id)).join(", ") ||
+                  "Claude Code, Copilot CLI, Cursor, OpenCode"}
+                ). Copilot is handed its file on the command line, since it waits for folder trust
+                before reading workspace config on its own.
+                Servers that need an OAuth sign-in can't live in workspace config; use{" "}
+                <b>Authenticate</b> to register one with an agent's own CLI instead. That agent then
+                reads it from its user config, and Agency keeps emitting it for the others. Projects
+                can add their own via <code>[mcp.servers]</code> in <code>.agency/agency.toml</code>;
+                project entries win on name conflicts.
+              </p>
+              {catalog.some((e) => e.enabled && !e.supportsMcp) && (
+                <p className="settings-section-hint">
+                  {catalog.filter((e) => e.enabled && !e.supportsMcp).map((e) => agentLabel(e.id)).join(", ")}{" "}
+                  manage MCP servers in their own global config and won't see the servers below.
+                </p>
+              )}
+              <div className="settings-card-list">
+                {mcpServers.map((s) => {
+                  // Agents that could still take this server at their own user scope:
+                  // remote servers only, minus the ones already registered with it.
+                  const authable = s.url
+                    ? catalog.filter((e) => e.supportsMcpAuth && !s.userScopeAgents.includes(e.id))
+                    : [];
+                  return (
+                  <div key={s.name} className="settings-profile-card">
+                    <div className="settings-profile-head">
+                      <span className="settings-profile-name">{s.name}</span>
+                      <span className="mcp-transport-tag">{s.url ? (s.transport ?? "http") : "local"}</span>
+                      <span className="spacer" />
+                      {authable.length > 0 && (
+                        <div className="settings-add-dropdown">
+                          <button
+                            className="settings-ghost-btn"
+                            disabled={!projectId}
+                            title={
+                              projectId
+                                ? "Register this server with an agent's own CLI and sign in"
+                                : "Select a project first"
+                            }
+                            onClick={() => setMcpAuthMenu((n) => (n === s.name ? null : s.name))}
+                          >
+                            Authenticate ▾
+                          </button>
+                          {mcpAuthMenu === s.name && (
+                            <>
+                              <div className="settings-menu-backdrop" onClick={() => setMcpAuthMenu(null)} />
+                              <div className="settings-menu">
+                                {authable.map((e) => (
+                                  <button
+                                    key={e.id}
+                                    // Registering shells out to the agent's own CLI, so
+                                    // an uninstalled one can only fail — say so up front.
+                                    disabled={!e.installed}
+                                    title={e.installed ? undefined : `${e.command} is not on PATH`}
+                                    onClick={() => authenticateMcp(e.id, s.name)}
+                                  >
+                                    <span className="agent-dot" style={{ background: agentColor(e.id) }} />
+                                    <span className="settings-menu-name">{agentLabel(e.id)}</span>
+                                    <code className="settings-menu-cmd">
+                                      {e.installed ? `${e.command} mcp add` : "not installed"}
+                                    </code>
+                                  </button>
+                                ))}
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      )}
+                      <button className="settings-ghost-btn" onClick={() => editMcpServer(s)}>Edit</button>
                       <button
-                        className="settings-ghost-btn"
-                        disabled={!projectId}
-                        title={
-                          projectId
-                            ? "Register this server with an agent's own CLI and sign in"
-                            : "Select a project first"
-                        }
-                        onClick={() => setMcpAuthMenu((n) => (n === s.name ? null : s.name))}
+                        className="settings-ghost-btn settings-del-btn"
+                        onClick={() => persistMcp(mcpServers.filter((x) => x.name !== s.name))}
                       >
-                        Authenticate ▾
+                        Delete
                       </button>
-                      {mcpAuthMenu === s.name && (
+                    </div>
+                    <div className="settings-profile-meta">
+                      {s.url ? (
                         <>
-                          <div className="settings-menu-backdrop" onClick={() => setMcpAuthMenu(null)} />
-                          <div className="settings-menu">
-                            {authable.map((e) => (
-                              <button
-                                key={e.id}
-                                // Registering shells out to the agent's own CLI, so
-                                // an uninstalled one can only fail — say so up front.
-                                disabled={!e.installed}
-                                title={e.installed ? undefined : `${e.command} is not on PATH`}
-                                onClick={() => authenticateMcp(e.id, s.name)}
-                              >
-                                <span className="agent-dot" style={{ background: agentColor(e.id) }} />
-                                <span className="settings-menu-name">{agentLabel(e.id)}</span>
-                                <code className="settings-menu-cmd">
-                                  {e.installed ? `${e.command} mcp add` : "not installed"}
-                                </code>
-                              </button>
-                            ))}
-                          </div>
+                          <span className="settings-meta-key">url</span>
+                          <code className="settings-meta-val">{s.url}</code>
+                        </>
+                      ) : (
+                        <>
+                          <span className="settings-meta-key">command</span>
+                          <code className="settings-meta-val">{[s.command, ...s.args].filter(Boolean).join(" ")}</code>
+                        </>
+                      )}
+                      {Object.keys(s.headers).length > 0 && (
+                        <>
+                          <span className="settings-meta-key">headers</span>
+                          <code className="settings-meta-val">{Object.keys(s.headers).join(", ")}</code>
+                        </>
+                      )}
+                      {Object.keys(s.env).length > 0 && (
+                        <>
+                          <span className="settings-meta-key">env</span>
+                          <code className="settings-meta-val">{Object.keys(s.env).join(", ")}</code>
                         </>
                       )}
                     </div>
-                  )}
-                  <button className="settings-ghost-btn" onClick={() => editMcpServer(s)}>Edit</button>
-                  <button
-                    className="settings-ghost-btn settings-del-btn"
-                    onClick={() => persistMcp(mcpServers.filter((x) => x.name !== s.name))}
-                  >
-                    Delete
-                  </button>
-                </div>
-                <div className="settings-profile-meta">
-                  {s.url ? (
-                    <>
-                      <span className="settings-meta-key">url</span>
-                      <code className="settings-meta-val">{s.url}</code>
-                    </>
-                  ) : (
-                    <>
-                      <span className="settings-meta-key">command</span>
-                      <code className="settings-meta-val">{[s.command, ...s.args].filter(Boolean).join(" ")}</code>
-                    </>
-                  )}
-                  {Object.keys(s.headers).length > 0 && (
-                    <>
-                      <span className="settings-meta-key">headers</span>
-                      <code className="settings-meta-val">{Object.keys(s.headers).join(", ")}</code>
-                    </>
-                  )}
-                  {Object.keys(s.env).length > 0 && (
-                    <>
-                      <span className="settings-meta-key">env</span>
-                      <code className="settings-meta-val">{Object.keys(s.env).join(", ")}</code>
-                    </>
-                  )}
-                </div>
-                {s.userScopeAgents.length > 0 && (
-                  <div className="mcp-auth-row">
-                    <span className="settings-meta-key">signed in via</span>
-                    {s.userScopeAgents.map((id) => (
-                      <button
-                        key={id}
-                        className="mcp-auth-chip"
-                        title={`Registered with ${agentLabel(id)} at user scope, so Agency does not write it into ${agentLabel(id)} worktrees. Click to undo.`}
-                        onClick={() => deauthenticateMcp(id, s.name)}
-                      >
-                        <span className="agent-dot" style={{ background: agentColor(id) }} />
-                        {agentLabel(id)}
-                        <span className="mcp-auth-chip-x">✕</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-              );
-            })}
-          </div>
-          <div className="row-actions">
-            <button className="settings-add-profile" onClick={() => setMcpFormOpen(true)}>+ Add MCP server</button>
-            <label className="settings-add-profile" style={{ cursor: "pointer" }}>
-              Import mcp.json
-              <input
-                type="file"
-                accept=".json,application/json"
-                style={{ display: "none" }}
-                onChange={(e) => {
-                  const f = e.target.files?.[0];
-                  if (f) importMcp(f);
-                  e.target.value = "";
-                }}
-              />
-            </label>
-          </div>
-        </section>
-
-        <section className="settings-section">
-          <div className="settings-section-label">Backlog</div>
-          <p className="settings-section-hint">
-            Shares this project's issues through its git remote, so the same backlog is on every
-            machine you work from, and on your team's if you have one. Issues travel on a ref of
-            their own that is never checked out, so nothing lands in a branch, in a diff or in a
-            pull request. Status, priority and attachments all travel; syncing is manual, from the
-            issues view.
-          </p>
-          {!projectId ? (
-            <div className="settings-group-card">
-              <span className="settings-notif-label">Select a project to configure its backlog.</span>
-            </div>
-          ) : backlog ? (
-            <div className="settings-group-card">
-              <div className="settings-notif-row">
-                <span className="settings-notif-label">
-                  Share the backlog{projectName ? ` for ${projectName}` : ""}
-                </span>
-                <Toggle
-                  checked={backlog.sync}
-                  onChange={(next) => persistBacklog(next, backlogRemote)}
-                />
-              </div>
-              {backlog.remotes.length === 0 ? (
-                <p className="settings-section-hint">
-                  This project has no git remote, so there is nowhere to share a backlog to yet.
-                </p>
-              ) : (
-                backlog.sync && (
-                  <>
-                    <div className="settings-notif-row">
-                      <span className="settings-notif-label">Remote</span>
-                      <select
-                        className="settings-input"
-                        style={{ maxWidth: 220 }}
-                        value={
-                          backlog.remotes.includes(backlogRemote) ? backlogRemote : "__custom"
-                        }
-                        onChange={(e) => {
-                          const next = e.target.value === "__custom" ? "" : e.target.value;
-                          setBacklogRemote(next);
-                          if (next) persistBacklog(true, next);
-                        }}
-                      >
-                        {backlog.remotes.map((r) => (
-                          <option key={r} value={r}>
-                            {r}
-                          </option>
+                    {s.userScopeAgents.length > 0 && (
+                      <div className="mcp-auth-row">
+                        <span className="settings-meta-key">signed in via</span>
+                        {s.userScopeAgents.map((id) => (
+                          <button
+                            key={id}
+                            className="mcp-auth-chip"
+                            title={`Registered with ${agentLabel(id)} at user scope, so Agency does not write it into ${agentLabel(id)} worktrees. Click to undo.`}
+                            onClick={() => deauthenticateMcp(id, s.name)}
+                          >
+                            <span className="agent-dot" style={{ background: agentColor(id) }} />
+                            {agentLabel(id)}
+                            <span className="mcp-auth-chip-x">✕</span>
+                          </button>
                         ))}
-                        <option value="__custom">Another remote…</option>
-                      </select>
-                    </div>
-                    {!backlog.remotes.includes(backlogRemote) && (
-                      <input
-                        className="settings-input"
-                        value={backlogRemote}
-                        placeholder="Remote name or URL"
-                        onChange={(e) => setBacklogRemote(e.target.value)}
-                        onBlur={() => backlogRemote.trim() && persistBacklog(true, backlogRemote)}
-                      />
+                      </div>
                     )}
-                    {/* The one thing a reader can't check for themselves, and
-                        the case this repo is in: public code, private backlog. */}
-                    <p className="settings-section-hint">
-                      Anyone who can read <code>{backlogRemote || "this remote"}</code> can read the
-                      backlog. If the repository is public, point this at a private remote instead.
-                    </p>
-                  </>
-                )
-              )}
-              {backlog.fromRepo && (
-                <p className="settings-section-hint">
-                  This project's <code>agency.toml</code> asks for a shared backlog, so anyone who
-                  clones it gets this on by default. Turning it off here only affects this machine.
-                </p>
-              )}
-              <p className="settings-section-hint">
-                Saved to this machine only (<code>.agency/agency.local.toml</code>). To share the
-                choice with the repository, commit <code>[issues] sync = true</code> into{" "}
-                <code>.agency/agency.toml</code>.
-              </p>
-            </div>
-          ) : null}
-        </section>
-
-        <section className="settings-section">
-          <div className="settings-section-label">Knowledge graph</div>
-          <p className="settings-section-hint">
-            Builds a graphify code-knowledge graph for this project and exposes it to every agent as an
-            MCP server, rebuilding after each clean merge. Agents only get the server once a graph
-            exists, and the first one is built when you ask for it. Saved to this machine only
-            (<code>.agency/agency.local.toml</code>), not shared with the team. Needs the{" "}
-            <code>graphify</code> / <code>uv</code> tooling on your <code>PATH</code>. Code is
-            indexed locally; your docs are read by whichever model you pick below, and nothing
-            runs until you build. A first build of a large project takes minutes; its output
-            appears here while it runs, and you can stop it.
-          </p>
-          {!projectId ? (
-            <div className="settings-group-card">
-              <span className="settings-notif-label">Select a project to configure its knowledge graph.</span>
-            </div>
-          ) : kg ? (
-            <div className="settings-group-card">
-              <div className="settings-notif-row">
-                <span className="settings-notif-label">
-                  Enable knowledge graph{projectName ? ` for ${projectName}` : ""}
-                </span>
-                <Toggle checked={kg.graph} onChange={(graph) => persistKnowledge({ graph })} />
+                  </div>
+                  );
+                })}
               </div>
-              {kg.graph && (
-                <>
-                  {/* Also offered after a failed build, not just when the
-                      commands are missing: an install made before the extras
-                      were pinned leaves `graphify` right there on the PATH and
-                      still fails every build on a package it does not have, and
-                      there is otherwise nowhere left to repair that from. */}
-                  {(!kg.serve_installed || !kg.build_installed || !!kg.last_build_error) && (
-                    <div className="settings-kg-warn">
-                      <div>
-                        {!kg.serve_installed && !kg.build_installed
-                          ? "The serve and build commands aren't on your PATH. The graph is enabled but will be skipped until the tooling is installed."
-                          : !kg.serve_installed
-                          ? "The serve command isn't on your PATH. The graph is enabled but will be skipped until the tooling is installed."
-                          : !kg.build_installed
-                          ? "The build command isn't on your PATH. The graph is enabled but will be skipped until the tooling is installed."
-                          : "A build can also fail on a package an older install of the tooling is missing."}{" "}
-                        Agency can install it for you in a terminal:
-                      </div>
-                      <pre className="install-cmd">{kg.install_command}</pre>
-                      <div className="settings-kg-actions">
-                        <button className="settings-secondary" onClick={installKgTooling}>
-                          Install tooling
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                  {/* AGE-180: a build of this repository runs for ten minutes.
-                      Saying only "Building the graph" for all of it left no way
-                      to tell a working build from a wedged one, so the elapsed
-                      time and the build's own output are both on screen. */}
-                  {kg.build_installed && (
-                    <div className={kg.graph_built && !kg.last_build_error ? "settings-kg-note" : "settings-kg-warn"}>
-                      {kg.building
-                        ? kg.graph_built
-                          ? `Rebuilding the graph, ${fmtDur((kg.build_elapsed_secs ?? 0) * 1000)} so far. Agents keep using the graph that is already there until this one finishes.`
-                          : `Building the graph, ${fmtDur((kg.build_elapsed_secs ?? 0) * 1000)} so far. Agents started after it finishes will get the knowledge-graph server.`
-                        : kg.last_build_error
-                        ? `The last graph build failed${buildTook(kg)}: ${kg.last_build_error}`
-                        : kg.last_build_stopped
-                        ? `You stopped the last build${buildTook(kg)}. Agents keep using whatever graph was built before it.`
-                        : kg.graph_built
-                        ? `Graph built at ${kg.graph_path}, and kept out of git.${
-                            kg.last_build_secs === null
-                              ? ""
-                              : ` The last build took ${fmtDur(kg.last_build_secs * 1000)}.`
-                          }`
-                        : "No graph has been built yet, so agents get no knowledge-graph server. Build one to start using it."}
-                    </div>
-                  )}
-                  {/* The build's own output, which is the only thing that says
-                      what it is doing right now. Kept after it ends: a failure's
-                      last lines are the context for the reason above. */}
-                  {kg.build_log.length > 0 && (
-                    <pre
-                      className="settings-kg-log"
-                      ref={kgLogRef}
-                      onScroll={(e) => {
-                        const el = e.currentTarget;
-                        kgLogFollow.current =
-                          el.scrollHeight - el.scrollTop - el.clientHeight < 8;
-                      }}
-                    >
-                      {kg.build_log.join("\n")}
-                    </pre>
-                  )}
-                  {kgBuildError && <div className="settings-kg-warn">{kgBuildError}</div>}
-                  {/* The picker and its note are the "before it runs" half of
-                      this feature: a build reads every doc in the project with
-                      whichever model is named here, so what that costs and who
-                      receives the docs is on screen before the Build button is
-                      reachable. Choosing writes the build command below, which
-                      stays editable for anything the picker doesn't cover. */}
-                  <div className="settings-provider-field">
-                    <label className="settings-field-key">model</label>
-                    <PillSelect
-                      value={kg.build_backend}
-                      options={backendOptions}
-                      onChange={(id) => {
-                        // "Custom" is a readout of a hand-written build
-                        // command, not something to switch to: composing
-                        // `--backend custom` would just break the build.
-                        if (id !== "custom") chooseBackend(id, "");
-                      }}
-                    />
-                    {/* No name to give a build that runs no model at all. */}
-                    {pickedBackend && pickedBackend.id !== "code-only" && (
-                      // The claude CLI is the one backend whose models Agency
-                      // already knows, so its model is picked from the same
-                      // menu every agent uses rather than typed from memory.
-                      // Picking "Agent's default" there writes this backend's
-                      // own default (haiku) into the command, not an unnamed
-                      // model: the build is a per-file `claude -p` loop, and an
-                      // unnamed one answering on the plan's default spent a
-                      // 5-hour usage window in 30 minutes. Every other backend
-                      // takes a typed id, since what those can run is the
-                      // vendor's business and not a list Agency holds.
-                      claudeCliModels ? (
-                        <ModelSelect
-                          info={claudeCliModels}
-                          projectId={projectId}
-                          value={kg.build_model || null}
-                          onChange={(model) => chooseBackend(pickedBackend.id, model ?? "")}
-                        />
-                      ) : (
-                        <input
-                          className="settings-field-input"
-                          placeholder={pickedBackend.default_model || "name the model it serves"}
-                          value={kgModel}
-                          onChange={(e) => setKgModel(e.target.value)}
-                          // On blur, not on keystroke: a half-typed model name is
-                          // not a choice, and every save rewrites the command.
-                          onBlur={() => {
-                            if (kgModel.trim() !== kg.build_model) {
-                              chooseBackend(pickedBackend.id, kgModel.trim());
-                            }
-                          }}
-                          onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
-                        />
-                      )
-                    )}
-                  </div>
-                  <div className="settings-kg-cost">
-                    {pickedBackend
-                      ? pickedBackend.note
-                      : "This build command was written by hand, so the picker leaves it alone. Clear it to go back to a listed model."}
-                  </div>
-                  {/* What size of model this actually needs, which is the
-                      question the picker raises and used to leave unanswered.
-                      Stated once rather than per backend, because it is a fact
-                      about the job and not about the vendor. */}
-                  <div className="settings-kg-cost">
-                    The model only reads docs, papers and images. Code is indexed locally by
-                    tree-sitter, so this is a strict-format extraction job rather than a reasoning
-                    one, and a light model is the right default. Reach for a heavier one when the
-                    substance of the project is in its prose, or when you have edited the build
-                    command to run deep mode.
-                  </div>
-                  {/* A command saved before the model was part of this choice.
-                      It leaves the model to the CLI, which answered on the
-                      plan's default and spent a 5-hour usage window on one
-                      build, so it is called out rather than quietly rewritten:
-                      picking a model above is what fixes it. */}
-                  {pickedBackend?.id === "claude-cli" && !kg.build_model && (
-                    <div className="settings-kg-warn">
-                      This build names no model, so it runs on whatever claude defaults to. Pick
-                      one above. A build reads every file in the project, and a large model can
-                      spend a whole usage window on a single build.
-                    </div>
-                  )}
-                  {/* The only build nobody presses. It runs the command above
-                      over the whole project after every clean merge, so on a
-                      busy day it is the largest thing this feature spends, and
-                      it is a switch rather than something to find out about
-                      afterwards. On by default: a graph that has stopped
-                      matching the code is worse than no graph. */}
-                  <div className="settings-notif-row">
-                    <span className="settings-notif-label">Rebuild after every merge</span>
-                    <Toggle
-                      checked={kg.rebuild_on_merge}
-                      onChange={(rebuild_on_merge) => persistKnowledge({ rebuild_on_merge })}
-                    />
+              <div className="row-actions">
+                <button className="settings-add-profile" onClick={() => setMcpFormOpen(true)}>+ Add MCP server</button>
+                <label className="settings-add-profile" style={{ cursor: "pointer" }}>
+                  Import mcp.json
+                  <input
+                    type="file"
+                    accept=".json,application/json"
+                    style={{ display: "none" }}
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      if (f) importMcp(f);
+                      e.target.value = "";
+                    }}
+                  />
+                </label>
+              </div>
+            </section>
+          )}
+
+          {visible("localModel") && (
+            <section className="settings-section">
+              <SectionHead id="localModel" projectName={projectName} />
+              <p className="settings-section-hint">
+                Points OpenAI-compatible agents at a local, OpenAI-protocol server via{" "}
+                <code>OPENAI_BASE_URL</code>. Agents with their own login (Claude, Codex, …) ignore it.
+                Leave blank to disable.
+              </p>
+              <div className="settings-providers">
+                <div className="settings-provider-card">
+                  <div className="settings-provider-title">
+                    LM Studio <span className="settings-provider-sub">· local, OpenAI-compatible</span>
                   </div>
                   <div className="settings-provider-field">
-                    <label className="settings-field-key">serve</label>
+                    <label className="settings-field-key">base URL</label>
                     <input
                       className="settings-field-input"
-                      placeholder={kg.serve_default}
-                      value={kgDraft.serve}
-                      onChange={(e) => setKgDraft({ ...kgDraft, serve: e.target.value })}
-                    />
-                  </div>
-                  <div className="settings-provider-field">
-                    <label className="settings-field-key">build</label>
-                    <input
-                      className="settings-field-input"
-                      placeholder={kg.build_default}
-                      value={kgDraft.build}
-                      onChange={(e) => setKgDraft({ ...kgDraft, build: e.target.value })}
+                      value={settings.lmStudioBaseUrl}
+                      onChange={(e) => setSettings({ ...settings, lmStudioBaseUrl: e.target.value })}
                     />
                   </div>
                   <div className="settings-card-foot">
-                    {kg.building ? (
-                      <button className="settings-secondary" onClick={stopBuild}>
-                        Stop build
-                      </button>
-                    ) : (
-                      <button
-                        className="settings-secondary"
-                        disabled={!kg.build_installed}
-                        onClick={buildGraph}
-                      >
-                        {kg.graph_built ? "Rebuild graph" : "Build graph"}
-                      </button>
-                    )}
-                    <button className="settings-save" onClick={() => persistKnowledge({})}>Save commands</button>
+                    <button className="settings-save" onClick={persistSettings}>Save</button>
                   </div>
-                </>
-              )}
-            </div>
-          ) : null}
-        </section>
+                </div>
+              </div>
+            </section>
+          )}
 
-        <section className="settings-section">
-          <div className="settings-section-label">Worktree files</div>
-          <p className="settings-section-hint">
-            Files copied into every new agent worktree. Git worktrees only contain
-            committed files, so untracked essentials (local certs, service-account
-            keys) must be listed here to reach agents. Untracked{" "}
-            <code>.env</code> / <code>.env.*</code> files in the repo root are copied
-            automatically. Saved to this machine only (<code>.agency/agency.local.toml</code>).
-          </p>
-          {!projectId ? (
-            <div className="settings-group-card">
-              <span className="settings-notif-label">Select a project to configure its worktree files.</span>
-            </div>
-          ) : files ? (
-            <div className="settings-group-card">
-              {files.detectedEnv.length > 0 && (
+          {visible("backlog") && (
+            <section className="settings-section">
+              <SectionHead id="backlog" projectName={projectName} />
+              <p className="settings-section-hint">
+                Shares this project's issues through its git remote, so the same backlog is on every
+                machine you work from, and on your team's if you have one. Issues travel on a ref of
+                their own that is never checked out, so nothing lands in a branch, in a diff or in a
+                pull request. Status, priority and attachments all travel; syncing is manual, from the
+                issues view.
+              </p>
+              {!projectId ? (
+                <div className="settings-group-card">
+                  <span className="settings-notif-label">Pick a project in the sidebar to configure its backlog.</span>
+                </div>
+              ) : backlog ? (
+                <div className="settings-group-card">
+                  <div className="settings-notif-row">
+                    <span className="settings-notif-label">
+                      Share the backlog{projectName ? ` for ${projectName}` : ""}
+                    </span>
+                    <Toggle
+                      checked={backlog.sync}
+                      onChange={(next) => persistBacklog(next, backlogRemote)}
+                    />
+                  </div>
+                  {backlog.remotes.length === 0 ? (
+                    <p className="settings-section-hint">
+                      This project has no git remote, so there is nowhere to share a backlog to yet.
+                    </p>
+                  ) : (
+                    backlog.sync && (
+                      <>
+                        <div className="settings-notif-row">
+                          <span className="settings-notif-label">Remote</span>
+                          <select
+                            className="settings-input"
+                            style={{ maxWidth: 220 }}
+                            value={
+                              backlog.remotes.includes(backlogRemote) ? backlogRemote : "__custom"
+                            }
+                            onChange={(e) => {
+                              const next = e.target.value === "__custom" ? "" : e.target.value;
+                              setBacklogRemote(next);
+                              if (next) persistBacklog(true, next);
+                            }}
+                          >
+                            {backlog.remotes.map((r) => (
+                              <option key={r} value={r}>
+                                {r}
+                              </option>
+                            ))}
+                            <option value="__custom">Another remote…</option>
+                          </select>
+                        </div>
+                        {!backlog.remotes.includes(backlogRemote) && (
+                          <input
+                            className="settings-input"
+                            value={backlogRemote}
+                            placeholder="Remote name or URL"
+                            onChange={(e) => setBacklogRemote(e.target.value)}
+                            onBlur={() => backlogRemote.trim() && persistBacklog(true, backlogRemote)}
+                          />
+                        )}
+                        {/* The one thing a reader can't check for themselves, and
+                            the case this repo is in: public code, private backlog. */}
+                        <p className="settings-section-hint">
+                          Anyone who can read <code>{backlogRemote || "this remote"}</code> can read the
+                          backlog. If the repository is public, point this at a private remote instead.
+                        </p>
+                      </>
+                    )
+                  )}
+                  {backlog.fromRepo && (
+                    <p className="settings-section-hint">
+                      This project's <code>agency.toml</code> asks for a shared backlog, so anyone who
+                      clones it gets this on by default. Turning it off here only affects this machine.
+                    </p>
+                  )}
+                  <p className="settings-section-hint">
+                    Saved to this machine only (<code>.agency/agency.local.toml</code>). To share the
+                    choice with the repository, commit <code>[issues] sync = true</code> into{" "}
+                    <code>.agency/agency.toml</code>.
+                  </p>
+                </div>
+              ) : null}
+            </section>
+          )}
+
+          {visible("knowledge") && (
+            <section className="settings-section">
+              <SectionHead id="knowledge" projectName={projectName} />
+              <p className="settings-section-hint">
+                Builds a graphify code-knowledge graph for this project and exposes it to every agent as an
+                MCP server, rebuilding after each clean merge. Agents only get the server once a graph
+                exists, and the first one is built when you ask for it. Saved to this machine only
+                (<code>.agency/agency.local.toml</code>), not shared with the team. Needs the{" "}
+                <code>graphify</code> / <code>uv</code> tooling on your <code>PATH</code>. Code is
+                indexed locally; your docs are read by whichever model you pick below, and nothing
+                runs until you build. A first build of a large project takes minutes; its output
+                appears here while it runs, and you can stop it.
+              </p>
+              {!projectId ? (
+                <div className="settings-group-card">
+                  <span className="settings-notif-label">Pick a project in the sidebar to configure its knowledge graph.</span>
+                </div>
+              ) : kg ? (
+                <div className="settings-group-card">
+                  <div className="settings-notif-row">
+                    <span className="settings-notif-label">
+                      Enable knowledge graph{projectName ? ` for ${projectName}` : ""}
+                    </span>
+                    <Toggle checked={kg.graph} onChange={(graph) => persistKnowledge({ graph })} />
+                  </div>
+                  {kg.graph && (
+                    <>
+                      {/* Also offered after a failed build, not just when the
+                          commands are missing: an install made before the extras
+                          were pinned leaves `graphify` right there on the PATH and
+                          still fails every build on a package it does not have, and
+                          there is otherwise nowhere left to repair that from. */}
+                      {(!kg.serve_installed || !kg.build_installed || !!kg.last_build_error) && (
+                        <div className="settings-kg-warn">
+                          <div>
+                            {!kg.serve_installed && !kg.build_installed
+                              ? "The serve and build commands aren't on your PATH. The graph is enabled but will be skipped until the tooling is installed."
+                              : !kg.serve_installed
+                              ? "The serve command isn't on your PATH. The graph is enabled but will be skipped until the tooling is installed."
+                              : !kg.build_installed
+                              ? "The build command isn't on your PATH. The graph is enabled but will be skipped until the tooling is installed."
+                              : "A build can also fail on a package an older install of the tooling is missing."}{" "}
+                            Agency can install it for you in a terminal:
+                          </div>
+                          <pre className="install-cmd">{kg.install_command}</pre>
+                          <div className="settings-kg-actions">
+                            <button className="settings-secondary" onClick={installKgTooling}>
+                              Install tooling
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                      {/* AGE-180: a build of this repository runs for ten minutes.
+                          Saying only "Building the graph" for all of it left no way
+                          to tell a working build from a wedged one, so the elapsed
+                          time and the build's own output are both on screen. */}
+                      {kg.build_installed && (
+                        <div className={kg.graph_built && !kg.last_build_error ? "settings-kg-note" : "settings-kg-warn"}>
+                          {kg.building
+                            ? kg.graph_built
+                              ? `Rebuilding the graph, ${fmtDur((kg.build_elapsed_secs ?? 0) * 1000)} so far. Agents keep using the graph that is already there until this one finishes.`
+                              : `Building the graph, ${fmtDur((kg.build_elapsed_secs ?? 0) * 1000)} so far. Agents started after it finishes will get the knowledge-graph server.`
+                            : kg.last_build_error
+                            ? `The last graph build failed${buildTook(kg)}: ${kg.last_build_error}`
+                            : kg.last_build_stopped
+                            ? `You stopped the last build${buildTook(kg)}. Agents keep using whatever graph was built before it.`
+                            : kg.graph_built
+                            ? `Graph built at ${kg.graph_path}, and kept out of git.${
+                                kg.last_build_secs === null
+                                  ? ""
+                                  : ` The last build took ${fmtDur(kg.last_build_secs * 1000)}.`
+                              }`
+                            : "No graph has been built yet, so agents get no knowledge-graph server. Build one to start using it."}
+                        </div>
+                      )}
+                      {/* The build's own output, which is the only thing that says
+                          what it is doing right now. Kept after it ends: a failure's
+                          last lines are the context for the reason above. */}
+                      {kg.build_log.length > 0 && (
+                        <pre
+                          className="settings-kg-log"
+                          ref={kgLogRef}
+                          onScroll={(e) => {
+                            const el = e.currentTarget;
+                            kgLogFollow.current =
+                              el.scrollHeight - el.scrollTop - el.clientHeight < 8;
+                          }}
+                        >
+                          {kg.build_log.join("\n")}
+                        </pre>
+                      )}
+                      {kgBuildError && <div className="settings-kg-warn">{kgBuildError}</div>}
+                      {/* The picker and its note are the "before it runs" half of
+                          this feature: a build reads every doc in the project with
+                          whichever model is named here, so what that costs and who
+                          receives the docs is on screen before the Build button is
+                          reachable. Choosing writes the build command below, which
+                          stays editable for anything the picker doesn't cover. */}
+                      <div className="settings-provider-field">
+                        <label className="settings-field-key">model</label>
+                        <PillSelect
+                          value={kg.build_backend}
+                          options={backendOptions}
+                          onChange={(id) => {
+                            // "Custom" is a readout of a hand-written build
+                            // command, not something to switch to: composing
+                            // `--backend custom` would just break the build.
+                            if (id !== "custom") chooseBackend(id, "");
+                          }}
+                        />
+                        {/* No name to give a build that runs no model at all. */}
+                        {pickedBackend && pickedBackend.id !== "code-only" && (
+                          // The claude CLI is the one backend whose models Agency
+                          // already knows, so its model is picked from the same
+                          // menu every agent uses rather than typed from memory.
+                          // Picking "Agent's default" there writes this backend's
+                          // own default (haiku) into the command, not an unnamed
+                          // model: the build is a per-file `claude -p` loop, and an
+                          // unnamed one answering on the plan's default spent a
+                          // 5-hour usage window in 30 minutes. Every other backend
+                          // takes a typed id, since what those can run is the
+                          // vendor's business and not a list Agency holds.
+                          claudeCliModels ? (
+                            <ModelSelect
+                              info={claudeCliModels}
+                              projectId={projectId}
+                              value={kg.build_model || null}
+                              onChange={(model) => chooseBackend(pickedBackend.id, model ?? "")}
+                            />
+                          ) : (
+                            <input
+                              className="settings-field-input"
+                              placeholder={pickedBackend.default_model || "name the model it serves"}
+                              value={kgModel}
+                              onChange={(e) => setKgModel(e.target.value)}
+                              // On blur, not on keystroke: a half-typed model name is
+                              // not a choice, and every save rewrites the command.
+                              onBlur={() => {
+                                if (kgModel.trim() !== kg.build_model) {
+                                  chooseBackend(pickedBackend.id, kgModel.trim());
+                                }
+                              }}
+                              onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+                            />
+                          )
+                        )}
+                      </div>
+                      <div className="settings-kg-cost">
+                        {pickedBackend
+                          ? pickedBackend.note
+                          : "This build command was written by hand, so the picker leaves it alone. Clear it to go back to a listed model."}
+                      </div>
+                      {/* What size of model this actually needs, which is the
+                          question the picker raises and used to leave unanswered.
+                          Stated once rather than per backend, because it is a fact
+                          about the job and not about the vendor. */}
+                      <div className="settings-kg-cost">
+                        The model only reads docs, papers and images. Code is indexed locally by
+                        tree-sitter, so this is a strict-format extraction job rather than a reasoning
+                        one, and a light model is the right default. Reach for a heavier one when the
+                        substance of the project is in its prose, or when you have edited the build
+                        command to run deep mode.
+                      </div>
+                      {/* A command saved before the model was part of this choice.
+                          It leaves the model to the CLI, which answered on the
+                          plan's default and spent a 5-hour usage window on one
+                          build, so it is called out rather than quietly rewritten:
+                          picking a model above is what fixes it. */}
+                      {pickedBackend?.id === "claude-cli" && !kg.build_model && (
+                        <div className="settings-kg-warn">
+                          This build names no model, so it runs on whatever claude defaults to. Pick
+                          one above. A build reads every file in the project, and a large model can
+                          spend a whole usage window on a single build.
+                        </div>
+                      )}
+                      {/* The only build nobody presses. It runs the command above
+                          over the whole project after every clean merge, so on a
+                          busy day it is the largest thing this feature spends, and
+                          it is a switch rather than something to find out about
+                          afterwards. On by default: a graph that has stopped
+                          matching the code is worse than no graph. */}
+                      <div className="settings-notif-row">
+                        <span className="settings-notif-label">Rebuild after every merge</span>
+                        <Toggle
+                          checked={kg.rebuild_on_merge}
+                          onChange={(rebuild_on_merge) => persistKnowledge({ rebuild_on_merge })}
+                        />
+                      </div>
+                      <div className="settings-provider-field">
+                        <label className="settings-field-key">serve</label>
+                        <input
+                          className="settings-field-input"
+                          placeholder={kg.serve_default}
+                          value={kgDraft.serve}
+                          onChange={(e) => setKgDraft({ ...kgDraft, serve: e.target.value })}
+                        />
+                      </div>
+                      <div className="settings-provider-field">
+                        <label className="settings-field-key">build</label>
+                        <input
+                          className="settings-field-input"
+                          placeholder={kg.build_default}
+                          value={kgDraft.build}
+                          onChange={(e) => setKgDraft({ ...kgDraft, build: e.target.value })}
+                        />
+                      </div>
+                      <div className="settings-card-foot">
+                        {kg.building ? (
+                          <button className="settings-secondary" onClick={stopBuild}>
+                            Stop build
+                          </button>
+                        ) : (
+                          <button
+                            className="settings-secondary"
+                            disabled={!kg.build_installed}
+                            onClick={buildGraph}
+                          >
+                            {kg.graph_built ? "Rebuild graph" : "Build graph"}
+                          </button>
+                        )}
+                        <button className="settings-save" onClick={() => persistKnowledge({})}>Save commands</button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              ) : null}
+            </section>
+          )}
+
+          {visible("files") && (
+            <section className="settings-section">
+              <SectionHead id="files" projectName={projectName} />
+              <p className="settings-section-hint">
+                Files copied into every new agent worktree. Git worktrees only contain
+                committed files, so untracked essentials (local certs, service-account
+                keys) must be listed here to reach agents. Untracked{" "}
+                <code>.env</code> / <code>.env.*</code> files in the repo root are copied
+                automatically. Saved to this machine only (<code>.agency/agency.local.toml</code>).
+              </p>
+              {!projectId ? (
+                <div className="settings-group-card">
+                  <span className="settings-notif-label">Pick a project in the sidebar to configure its worktree files.</span>
+                </div>
+              ) : files ? (
+                <div className="settings-group-card">
+                  {files.detectedEnv.length > 0 && (
+                    <div className="settings-notif-row">
+                      <span className="settings-notif-label">
+                        Auto-copied env files:{" "}
+                        {files.detectedEnv.map((f) => <code key={f} className="settings-meta-val">{f}</code>)}
+                      </span>
+                    </div>
+                  )}
+                  <div className="settings-field-stack">
+                    <label className="settings-field-key">Files to copy</label>
+                    <textarea
+                      className="settings-input"
+                      placeholder={"One repo-relative path per line, e.g.\nconfig/service-account.json\ncerts/dev.pem"}
+                      value={filesDraft}
+                      onChange={(e) => setFilesDraft(e.target.value)}
+                    />
+                  </div>
+                  <div className="settings-card-foot">
+                    <button className="settings-save" onClick={persistFiles}>Save file list</button>
+                  </div>
+                </div>
+              ) : null}
+            </section>
+          )}
+
+          {visible("workspace") && (
+            <section className="settings-section">
+              <SectionHead id="workspace" projectName={projectName} />
+              <p className="settings-section-hint">
+                Your home for journaling, planning, and cross-project notes: plain
+                markdown files on disk. <kbd>⌘⇧D</kbd> opens today's journal note.
+              </p>
+              <div className="settings-group-card">
                 <div className="settings-notif-row">
                   <span className="settings-notif-label">
-                    Auto-copied env files:{" "}
-                    {files.detectedEnv.map((f) => <code key={f} className="settings-meta-val">{f}</code>)}
+                    Show the workspace
+                    {wsOff && " (currently hidden; nothing on disk was deleted)"}
                   </span>
+                  <Toggle checked={!wsOff} onChange={(on) => { void toggleWorkspaceVisible(on); }} />
                 </div>
-              )}
-              <div className="settings-field-stack">
-                <label className="settings-field-key">Files to copy</label>
-                <textarea
-                  className="settings-input"
-                  placeholder={"One repo-relative path per line, e.g.\nconfig/service-account.json\ncerts/dev.pem"}
-                  value={filesDraft}
-                  onChange={(e) => setFilesDraft(e.target.value)}
-                />
+                {!wsOff && (workspace ? (
+                  <>
+                    <div className="settings-notif-row">
+                      <span className="settings-notif-label">
+                        Location: <code className="settings-meta-val">{workspace.repo_path}</code>
+                      </span>
+                      <span style={{ display: "flex", gap: 8 }}>
+                        <button
+                          className="settings-save"
+                          title="Move this folder somewhere else on disk"
+                          onClick={doMoveWorkspace}
+                        >Move…</button>
+                        <button
+                          className="settings-save"
+                          title="Use a different folder as the workspace; this one stays on disk"
+                          onClick={() => { void pickSwitchWorkspace(); }}
+                        >Switch…</button>
+                      </span>
+                    </div>
+                    {wsGitless && (
+                      <div className="settings-notif-row">
+                        <span className="settings-notif-label">
+                          Git is off, so agents work directly in the folder: no branches,
+                          no Source Control, nothing to merge. Initialize a repository to
+                          give each one its own branch; nothing is ever pushed anywhere.
+                        </span>
+                        <button className="settings-save" onClick={enableWorkspaceGit}>Enable git</button>
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <div className="settings-notif-row">
+                    <span className="settings-notif-label">
+                      Not created yet. By default it will live at{" "}
+                      <code className="settings-meta-val">{wsDefault || "~/Agency"}</code>.
+                    </span>
+                    <button
+                      className="settings-save"
+                      onClick={() => {
+                        onClose();
+                        window.dispatchEvent(new CustomEvent("agency:create-workspace"));
+                      }}
+                    >Create…</button>
+                  </div>
+                ))}
               </div>
-              <div className="settings-card-foot">
-                <button className="settings-save" onClick={persistFiles}>Save file list</button>
-              </div>
-            </div>
-          ) : null}
-        </section>
+            </section>
+          )}
 
-        <section className="settings-section">
-          <div className="settings-section-label">Local model (optional)</div>
-          <p className="settings-section-hint">
-            Points OpenAI-compatible agents at a local, OpenAI-protocol server via{" "}
-            <code>OPENAI_BASE_URL</code>. Agents with their own login (Claude, Codex, …) ignore it.
-            Leave blank to disable.
-          </p>
-          <div className="settings-providers">
-            <div className="settings-provider-card">
-              <div className="settings-provider-title">
-                LM Studio <span className="settings-provider-sub">· local, OpenAI-compatible</span>
-              </div>
-              <div className="settings-provider-field">
-                <label className="settings-field-key">base URL</label>
-                <input
-                  className="settings-field-input"
-                  value={settings.lmStudioBaseUrl}
-                  onChange={(e) => setSettings({ ...settings, lmStudioBaseUrl: e.target.value })}
-                />
-              </div>
-              <div className="settings-card-foot">
-                <button className="settings-save" onClick={persistSettings}>Save</button>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <section className="settings-section">
-          <div className="settings-section-label">Editor</div>
-          <div className="settings-group-card">
-            <div className="settings-notif-row">
-              <span className="settings-notif-label">Word wrap in file viewer</span>
-              <Toggle checked={wordWrap} onChange={pickWordWrap} />
-            </div>
-          </div>
-        </section>
-
-        <section className="settings-section">
-          <div className="settings-section-label">Messages</div>
-          <p className="settings-section-hint">
-            Explanations you can switch off once you know the workflow, and switch back on here.
-            Warnings about work that can't be recovered always show.
-          </p>
-          <div className="settings-group-card">
-            {HUSHABLE.map((h) => (
-              <div key={h.id} className="settings-notif-row">
-                <span className="settings-notif-label" title={h.hint}>{h.label}</span>
-                <Toggle
-                  checked={!hushed.includes(h.id)}
-                  onChange={(next) => pickMessage(h.id, next)}
-                />
-              </div>
-            ))}
-          </div>
-        </section>
-
-        <section className="settings-section">
-          <div className="settings-section-label">Notifications</div>
-          <div className="settings-group-card">
-            {([
-              ["agentIdle", "Agent finished a turn"],
-              ["agentFinished", "Agent exited"],
-              ["runCrashed", "Run script crashed"],
-              ["mergeAttention", "Merge needs attention"],
-              ["loopEvents", "Loop complete or stalled"],
-              [
-                "onlyWhenWatching",
-                "Skip the agent you're watching",
-                "No notification for the agent open in front of you. Every other agent still notifies, even while you're using Agency.",
-              ],
-            ] as [keyof NotifSettings, string, string?][]).map(([key, label, hint]) => (
-              <div key={key} className="settings-notif-row">
-                <span className="settings-notif-label" title={hint}>{label}</span>
-                <Toggle
-                  checked={notif[key] as boolean}
-                  onChange={(next) => persistNotif({ ...notif, [key]: next })}
-                />
-              </div>
-            ))}
-            <div className="settings-notif-row">
-              <span className="settings-notif-label">Idle after (seconds)</span>
-              <input
-                className="settings-input settings-notif-secs"
-                type="number"
-                min={5}
-                value={notif.idleSecs}
-                onChange={(e) => persistNotif({ ...notif, idleSecs: Number(e.target.value) || 30 })}
-              />
-            </div>
-          </div>
-        </section>
-
-        <section className="settings-section">
-          <div className="settings-section-label">Diagnostics</div>
-          <div className="settings-group-card">
-            <div className="settings-notif-row">
-              <span className="settings-notif-label">Version</span>
-              <span className="settings-notif-label">{version ? `Agency ${version}` : "Agency"}</span>
-            </div>
-            <div className="settings-notif-row">
-              <span className="settings-notif-label">
-                {update?.updateAvailable
-                  ? `Agency ${update.latest} is available`
-                  : update?.error
-                    ? "Couldn't reach the releases feed"
-                    : update
-                      ? "Up to date"
-                      : "Updates"}
-              </span>
-              {update?.updateAvailable ? (
-                <button
-                  className="settings-ghost-btn"
-                  onClick={() => { openUrl(update.url).catch(() => {}); }}
-                >Download</button>
-              ) : (
-                <button className="settings-ghost-btn" disabled={checking} onClick={runUpdateCheck}>
-                  {checking ? "Checking…" : "Check now"}
-                </button>
-              )}
-            </div>
-            <div className="settings-notif-row">
-              <span className="settings-notif-label">Check for updates on launch</span>
-              <Toggle checked={autoCheck} onChange={pickAutoCheck} />
-            </div>
-            {/* Facts about each agent's CLI, with no staleness verdict: the
-                vendors' own update banners already carry that with real data
-                (AGE-146). The copy offer exists because the right update
-                command depends on how the CLI was installed, which the user
-                often does not remember and the resolved path does. */}
-            {cliInfo.map((c) => {
-              const cmd = updateCommand(c);
-              return (
-                <div key={c.agent} className="settings-notif-row">
-                  <span className="settings-notif-label" title={c.path ?? undefined}>
-                    {agentLabel(c.agent)}
-                    {c.version ? <> <code className="settings-meta-val">{c.version}</code></> : null}
+          {visible("diagnostics") && (
+            <section className="settings-section">
+              <SectionHead id="diagnostics" projectName={projectName} />
+              <div className="settings-group-card">
+                <div className="settings-notif-row">
+                  <span className="settings-notif-label">Version</span>
+                  <span className="settings-notif-label">{version ? `Agency ${version}` : "Agency"}</span>
+                </div>
+                <div className="settings-notif-row">
+                  <span className="settings-notif-label">
+                    {update?.updateAvailable
+                      ? `Agency ${update.latest} is available`
+                      : update?.error
+                        ? "Couldn't reach the releases feed"
+                        : update
+                          ? "Up to date"
+                          : "Updates"}
                   </span>
-                  {cmd ? (
+                  {update?.updateAvailable ? (
                     <button
                       className="settings-ghost-btn"
-                      title={cmd}
-                      onClick={() => {
-                        navigator.clipboard.writeText(cmd)
-                          .then(() => toastSuccess(`Copied: ${cmd}`))
-                          .catch(() => {});
-                      }}
-                    >Copy update command</button>
-                  ) : !c.path ? (
-                    <span className="settings-notif-label">Not found on PATH</span>
-                  ) : null}
+                      onClick={() => { openUrl(update.url).catch(() => {}); }}
+                    >Download</button>
+                  ) : (
+                    <button className="settings-ghost-btn" disabled={checking} onClick={runUpdateCheck}>
+                      {checking ? "Checking…" : "Check now"}
+                    </button>
+                  )}
                 </div>
-              );
-            })}
-            <div className="settings-notif-row">
-              <span className="settings-notif-label">Log files</span>
-              <button className="settings-ghost-btn" onClick={openLogs}>Open logs</button>
-            </div>
-            <div className="settings-notif-row">
-              <span className="settings-notif-label">Report an issue</span>
-              <button
-                className="settings-ghost-btn"
-                onClick={() => { openUrl("https://github.com/TennnisAI/Agency/issues/new").catch(() => {}); }}
-              >Open GitHub issues</button>
-            </div>
-          </div>
-          <p className="settings-section-hint">
-            Agent versions are read from the CLIs on your machine, and each
-            update command matches how that CLI was installed: npm, Homebrew,
-            or the vendor's own installer. Agency never updates an agent
-            itself.
-          </p>
-        </section>
+                <div className="settings-notif-row">
+                  <span className="settings-notif-label">Check for updates on launch</span>
+                  <Toggle checked={autoCheck} onChange={pickAutoCheck} />
+                </div>
+                {/* Facts about each agent's CLI, with no staleness verdict: the
+                    vendors' own update banners already carry that with real data
+                    (AGE-146). The copy offer exists because the right update
+                    command depends on how the CLI was installed, which the user
+                    often does not remember and the resolved path does. */}
+                {cliInfo.map((c) => {
+                  const cmd = updateCommand(c);
+                  return (
+                    <div key={c.agent} className="settings-notif-row">
+                      <span className="settings-notif-label" title={c.path ?? undefined}>
+                        {agentLabel(c.agent)}
+                        {c.version ? <> <code className="settings-meta-val">{c.version}</code></> : null}
+                      </span>
+                      {cmd ? (
+                        <button
+                          className="settings-ghost-btn"
+                          title={cmd}
+                          onClick={() => {
+                            navigator.clipboard.writeText(cmd)
+                              .then(() => toastSuccess(`Copied: ${cmd}`))
+                              .catch(() => {});
+                          }}
+                        >Copy update command</button>
+                      ) : !c.path ? (
+                        <span className="settings-notif-label">Not found on PATH</span>
+                      ) : null}
+                    </div>
+                  );
+                })}
+                <div className="settings-notif-row">
+                  <span className="settings-notif-label">Log files</span>
+                  <button className="settings-ghost-btn" onClick={openLogs}>Open logs</button>
+                </div>
+                <div className="settings-notif-row">
+                  <span className="settings-notif-label">Report an issue</span>
+                  <button
+                    className="settings-ghost-btn"
+                    onClick={() => { openUrl("https://github.com/TennnisAI/Agency/issues/new").catch(() => {}); }}
+                  >Open GitHub issues</button>
+                </div>
+              </div>
+              <p className="settings-section-hint">
+                Agent versions are read from the CLIs on your machine, and each
+                update command matches how that CLI was installed: npm, Homebrew,
+                or the vendor's own installer. Agency never updates an agent
+                itself.
+              </p>
+            </section>
+          )}
 
-        <section className="settings-section">
-          <div className="settings-section-label">About</div>
-          <div className="settings-group-card">
-            <div className="settings-notif-row">
-              <span className="settings-notif-label">Licence</span>
-              <span className="settings-notif-label">Apache-2.0</span>
-            </div>
-            <div className="settings-notif-row">
-              <span className="settings-notif-label">Third-party notices</span>
-              <button className="settings-ghost-btn" onClick={() => setNoticesOpen(true)}>
-                View notices
-              </button>
-            </div>
-            <div className="settings-notif-row">
-              <span className="settings-notif-label">Source code</span>
-              <button
-                className="settings-ghost-btn"
-                onClick={() => { openUrl("https://github.com/TennnisAI/Agency").catch(() => {}); }}
-              >Open GitHub</button>
-            </div>
-          </div>
-          <p className="settings-section-hint">
-            Agency is built on Rust crates, JavaScript packages and two
-            typefaces other people wrote. The notices list every one of them
-            and the licence it comes under. The coding agents are not in that
-            list: they are separate programs you install yourself, under their
-            own licences.
-          </p>
-        </section>
+          {visible("about") && (
+            <section className="settings-section">
+              <SectionHead id="about" projectName={projectName} />
+              <div className="settings-group-card">
+                <div className="settings-notif-row">
+                  <span className="settings-notif-label">Licence</span>
+                  <span className="settings-notif-label">Apache-2.0</span>
+                </div>
+                <div className="settings-notif-row">
+                  <span className="settings-notif-label">Third-party notices</span>
+                  <button className="settings-ghost-btn" onClick={() => setNoticesOpen(true)}>
+                    View notices
+                  </button>
+                </div>
+                <div className="settings-notif-row">
+                  <span className="settings-notif-label">Source code</span>
+                  <button
+                    className="settings-ghost-btn"
+                    onClick={() => { openUrl("https://github.com/TennnisAI/Agency").catch(() => {}); }}
+                  >Open GitHub</button>
+                </div>
+              </div>
+              <p className="settings-section-hint">
+                Agency is built on Rust crates, JavaScript packages and two
+                typefaces other people wrote. The notices list every one of them
+                and the licence it comes under. The coding agents are not in that
+                list: they are separate programs you install yourself, under their
+                own licences.
+              </p>
+            </section>
+          )}
+        </div>
       </div>
 
       {noticesOpen && <NoticesDialog onClose={() => setNoticesOpen(false)} />}

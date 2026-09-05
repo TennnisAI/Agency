@@ -27,6 +27,7 @@ export default function ProjectTree({
   selectedId,
   focusedRunId,
   onSelect,
+  onOpen,
   onSelectRun,
   onHome,
   onSelectionGone,
@@ -36,7 +37,17 @@ export default function ProjectTree({
 }: {
   selectedId: string | null;
   focusedRunId: string | null;
+  /** Select a project and stay where we are. The row click and "Open project". */
   onSelect: (p: Project) => void;
+  /**
+   * Select a project on the way to showing something inside it, so this one
+   * also leaves whatever screen is up. Settings stays open across a bare
+   * `onSelect` (AGE-187), and the context menu's New agent went through it:
+   * `createAgent` ends in setFocusedRun/setView("focus"), which points the main
+   * area at the new run, and with Settings still covering that area the agent
+   * started with nothing on screen to show for it.
+   */
+  onOpen: (p: Project) => void;
   onSelectRun: (p: Project, run: RunInfo) => void;
   onHome: () => void;
   /** The selected project is gone from the list; drop back to the overview. */
@@ -255,7 +266,9 @@ export default function ProjectTree({
     const start = (agent: string) => {
       // Both creations run in the *selected* project — the store reads the
       // selection rather than taking a project argument — so select it first.
-      onSelect(p);
+      // onOpen, not onSelect: the run this is about to focus has to be on
+      // screen when it arrives.
+      onOpen(p);
       if (agent === "shell") void createTerminal();
       else void spawn(agent);
     };

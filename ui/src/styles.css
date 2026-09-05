@@ -321,11 +321,61 @@ button > .btn-ico:not(:only-child) { margin-right: 4px; }
 }
 .git-error-text { flex: 1; color: var(--text); word-break: break-word; }
 /* Settings full view (design handoff: takes over the main area) */
-.settings-page { flex: 1; min-width: 0; overflow-y: auto; background: var(--base); }
+.settings-page { flex: 1; min-width: 0; min-height: 0; display: flex; background: var(--base); }
+/* Section rail (AGE-187). Same face as the project tree one pane over (mantle,
+   hairline rule), so Settings reads as a place in the app rather than a sheet
+   over it. Not the same width: the tree's is the user's, --sidebar-w and
+   resizable, and there is no handle on this one to drag. */
+.settings-rail {
+  width: 216px; flex: none; min-height: 0; overflow-y: auto;
+  border-right: 1px solid var(--line); background: var(--mantle);
+  padding: 14px 12px 24px; display: flex; flex-direction: column; gap: 12px;
+}
+.settings-nav { display: flex; flex-direction: column; gap: 12px; }
+.settings-scroll { flex: 1; min-width: 0; overflow-y: auto; }
 .settings-inner { max-width: 780px; margin: 0 auto; padding: 34px 28px 60px; display: flex; flex-direction: column; gap: 26px; }
 .settings-back { align-self: flex-start; background: transparent; border: none; color: var(--o1); font-size: 12px; font-weight: 400; padding: 0; cursor: pointer; }
 .settings-back:hover { color: var(--text); background: transparent; }
-.settings-title { font-size: 24px; font-weight: 600; margin: -18px 0 0; color: var(--text); }
+.settings-title { font-size: 19px; font-weight: 600; margin: -4px 0 0; color: var(--text); }
+.settings-search-input {
+  /* border-box or the padding and border are added *outside* the rail's 192px
+     content box: 212px in 192px flips .settings-rail's overflow-x to auto,
+     giving the rail a horizontal scrollbar and clipping the input's right
+     edge. There is no global reset in this file; .docs-search-input and
+     .modal-input each carry this for the same reason. */
+  width: 100%; box-sizing: border-box;
+  background: var(--base); border: 1px solid var(--s1); border-radius: 7px;
+  color: var(--text); padding: 6px 9px; font-family: var(--sans); font-size: 12px;
+}
+.settings-search-input:focus { outline: none; border-color: var(--blue); }
+.settings-search-input::placeholder { color: var(--o0); opacity: 0.85; }
+.settings-nav-group { display: flex; flex-direction: column; gap: 1px; }
+.settings-nav-group-head { display: flex; align-items: center; gap: 6px; padding: 4px 8px 3px; min-width: 0; }
+.settings-nav-group-label {
+  font-size: 10.5px; font-weight: 600; letter-spacing: 0.13em;
+  text-transform: uppercase; color: var(--o0); flex: none;
+}
+.settings-nav-item {
+  text-align: left; background: transparent; border: none; border-radius: 6px;
+  padding: 6px 9px; font-family: var(--sans); font-size: 12.5px; color: var(--sub1); cursor: pointer;
+}
+.settings-nav-item:hover { background: var(--s0); color: var(--text); }
+.settings-nav-item[data-active="true"] { background: var(--s1); color: var(--text); }
+/* "Global" or the project's name, on the group in the rail and again on the
+   section itself. Outline chips rather than filled ones: this is a label on
+   every heading in the app's busiest screen, so it has to sit still. */
+.settings-scope-tag {
+  /* No text-transform: half of these tags are a project's own name, and a name
+     is not ours to shout. */
+  font-size: 10px; font-weight: 500; color: var(--o0);
+  border: 1px solid var(--s0); border-radius: 5px; padding: 1px 6px;
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.settings-scope-tag[data-scope="project"] {
+  border-color: color-mix(in srgb, var(--blue) 40%, transparent); color: var(--blue);
+}
+.settings-section-head { display: flex; align-items: center; gap: 9px; }
+.settings-no-match { margin: 0; font-size: 13px; line-height: 1.55; color: var(--sub0); }
 .settings-add-profile { align-self: flex-start; font-size: 12px; font-weight: 400; padding: 8px 13px; border-radius: 8px; border: 1px dashed var(--s1); background: transparent; color: var(--sub0); }
 .settings-add-profile:hover { background: var(--mantle); color: var(--text); }
 /* Add-agent row: the built-in dropdown trigger + the custom-agent button. */

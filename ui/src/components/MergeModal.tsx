@@ -93,7 +93,7 @@ export default function MergeModal({
   // that a bare "Deleting…" label reads as a frozen app.
   const [cleanup, setCleanup] = useState<CloneProgress | null>(null);
   // Both post-merge explanations can be switched off once the workflow is
-  // habit, and switched back on from Settings ▸ Hidden messages.
+  // habit, and switched back on from Settings ▸ Messages.
   const [hushNote, setHushNote] = useHushed("merge-cleanup");
   const [hushConfirm, setHushConfirm] = useHushed("merge-delete");
   // Ticked inside the confirm; only applied if the delete goes ahead.

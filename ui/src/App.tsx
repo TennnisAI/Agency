@@ -320,10 +320,26 @@ function Shell() {
     setMenuContext(hasProject, hasFocusedAgent).catch(() => {});
   }, [hasProject, hasFocusedAgent]);
 
-  function selectProject(p: Project) {
-    setShowSettings(false);
+  // Picking a project from the tree leaves Settings up (AGE-187). Settings has
+  // a Project group whose sections are all about one checkout, and its empty
+  // state asks you to choose one in the sidebar; closing the screen out from
+  // under that click made the request impossible to satisfy. Same reasoning as
+  // leaveProject below. This is the tree's plain selection only: the tree also
+  // selects on the way to starting an agent, and that goes to selectProject
+  // through its onOpen, because the run it focuses has to be visible.
+  function selectProjectFromTree(p: Project) {
     setProject(p);
     setSelectedProject(p.id);
+  }
+
+  // Point the app at a project on the way to showing something inside it, so
+  // this closes Settings. Every caller here sets a tab and then dispatches at
+  // it: ⌘⇧D's daily note, the weekly note, the palette's Workspace Guide, a
+  // note/file/issue link, a tray click. With Settings left up they all landed
+  // behind it, the work done and nothing on screen but Settings.
+  function selectProject(p: Project) {
+    setShowSettings(false);
+    selectProjectFromTree(p);
   }
 
   // The selected project went away under the view — closed, or deleted along
@@ -528,7 +544,8 @@ function Shell() {
             <ProjectTree
               selectedId={selectedProjectId}
               focusedRunId={focusedRunId}
-              onSelect={selectProject}
+              onSelect={selectProjectFromTree}
+              onOpen={selectProject}
               onSelectRun={(p: Project, run: RunInfo) => openRun(p, run.id)}
               onHome={goHome}
               onSelectionGone={leaveProject}

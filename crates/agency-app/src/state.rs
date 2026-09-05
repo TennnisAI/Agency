@@ -14,7 +14,13 @@ use std::time::{Duration, Instant};
 use uuid;
 
 const SETTING_LM_STUDIO_URL: &str = "lm_studio_base_url";
-const DEFAULT_LM_STUDIO_URL: &str = "http://localhost:1234/v1";
+/// LM Studio's own default port. The settings field's *placeholder*, never a
+/// stored value: an unconfigured local model is off, and off has to look empty.
+/// See `unprefill_local_model_url`.
+const LM_STUDIO_PLACEHOLDER_URL: &str = "http://localhost:1234/v1";
+/// Set to "1" once the old prefilled local-model URL has been cleared, so the
+/// clear happens once and a user who deliberately types that same URL keeps it.
+const SETTING_LOCAL_MODEL_UNPREFILLED: &str = "local_model_unprefilled";
 // Agent the "New Agent" menu/shortcut spawns. Empty = auto (project's last-used).
 const SETTING_DEFAULT_AGENT: &str = "default_agent";
 const SETTING_NOTIF: &str = "notification_settings";
@@ -1353,6 +1359,32 @@ fn login_shell() -> String {
     std::env::var("SHELL").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "/bin/zsh".to_string())
 }
 
+/// Clear the local-model URL once, where it still holds the value the app used
+/// to prefill it with.
+///
+/// AGE-186: "Local model" said "leave blank to disable" while arriving filled
+/// in with `http://localhost:1234/v1` as real, selectable text. No user chose
+/// it. `get_settings` invented it whenever the setting was unset, and every
+/// unrelated save wrote it straight back into the row, because the panel
+/// persists the whole `ProviderSettings` struct on the worktree toggle and the
+/// default-agent select. So a machine that had never run a local model still
+/// pointed every agent session, run script and terminal tab at a port with
+/// nothing listening on it.
+///
+/// Narrow on purpose: only the exact old default, and only until the flag is
+/// set. A user who genuinely serves that port types it back in (it is the
+/// field's placeholder) and it survives from then on.
+fn unprefill_local_model_url(registry: &Registry) -> Result<()> {
+    if registry.get_setting(SETTING_LOCAL_MODEL_UNPREFILLED)?.is_some() {
+        return Ok(());
+    }
+    if registry.get_setting(SETTING_LM_STUDIO_URL)?.as_deref() == Some(LM_STUDIO_PLACEHOLDER_URL) {
+        registry.set_setting(SETTING_LM_STUDIO_URL, "")?;
+    }
+    registry.set_setting(SETTING_LOCAL_MODEL_UNPREFILLED, "1")?;
+    Ok(())
+}
+
 fn validate_provider_url(raw: &str) -> Result<()> {
     if raw.is_empty() {
         return Ok(());
@@ -2106,6 +2138,7 @@ impl AppState {
         if !onboarding_done && !registry.list_profiles()?.is_empty() {
             registry.set_setting(SETTING_AGENT_ONBOARDING, "1")?;
         }
+        unprefill_local_model_url(&registry)?;
         let state = AppState {
             registry: Mutex::new(registry),
             attaches: Mutex::new(HashMap::new()),
@@ -2156,13 +2189,24 @@ impl AppState {
 
     fn provider_env(&self) -> Result<Vec<(String, String)>> {
         // Point OpenAI-protocol agents at the configured local model (LM Studio
-        // by default). Agents with their own CLI auth (claude, codex, …) ignore
-        // these. No cloud keys are injected — each agent uses its own login.
+        // and friends). Agents with their own CLI auth (claude, codex, …)
+        // ignore these. No cloud keys are injected — each agent uses its own
+        // login.
+        //
+        // AGE-186: nothing is injected when no local model is configured, which
+        // is what the panel's "leave blank to disable" has always claimed.
+        // Injecting the pair unconditionally set them even with the field
+        // blank. Observed in an Agency-launched agent while fixing this:
+        // `OPENAI_API_KEY=lm-studio` with `OPENAI_BASE_URL=` empty. That
+        // shadows the user's own key in everything Agency opens, and a bare
+        // OPENAI_API_KEY is exactly what graphify's auto-detection reads as a
+        // paid OpenAI account (see `config::env_backend_keys`).
         let s = self.get_settings()?;
-        let mut env = vec![
-            ("OPENAI_BASE_URL".into(), s.lm_studio_base_url),
-            ("OPENAI_API_KEY".into(), "lm-studio".into()),
-        ];
+        let mut env = Vec::new();
+        if !s.lm_studio_base_url.trim().is_empty() {
+            env.push(("OPENAI_BASE_URL".into(), s.lm_studio_base_url));
+            env.push(("OPENAI_API_KEY".into(), "lm-studio".into()));
+        }
         // Finder-launched bundles inherit no user secrets. dsh's first-run
         // modal asks for DEEPSEEK_API_KEY on every launch until the process
         // environment (or $DSH_HOME) already has one; passing the login-shell
@@ -2380,9 +2424,11 @@ impl AppState {
     pub fn get_settings(&self) -> Result<ProviderSettings> {
         let reg = self.registry.lock().unwrap();
         Ok(ProviderSettings {
-            lm_studio_base_url: reg
-                .get_setting(SETTING_LM_STUDIO_URL)?
-                .unwrap_or_else(|| DEFAULT_LM_STUDIO_URL.to_string()),
+            // Unset means no local model. The field shows
+            // LM_STUDIO_PLACEHOLDER_URL as a placeholder, not as a value: a
+            // prefilled URL is a configured one, and this one configures every
+            // shell Agency opens (see `provider_env`).
+            lm_studio_base_url: reg.get_setting(SETTING_LM_STUDIO_URL)?.unwrap_or_default(),
             // Stored as "" when unset; surface that as None so the UI shows "Auto".
             default_agent: reg.get_setting(SETTING_DEFAULT_AGENT)?.filter(|s| !s.is_empty()),
             // Unset = on, so existing installs keep cutting worktrees.

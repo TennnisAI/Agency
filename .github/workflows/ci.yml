@@ -132,6 +132,16 @@ jobs:
       - name: Test agency-app
         run: cargo test -p agency-app --locked
 
+      # THIRD-PARTY.md reproduces the licence of every crate and package the
+      # .app ships, which MIT and Apache-2.0 s4(a) both require of a binary
+      # distribution. Nothing about a `cargo add` or a `pnpm add` reminds anyone
+      # to regenerate it, and a notices file that has quietly fallen behind the
+      # dependency tree is worse than none: it is a claim, and it is wrong. This
+      # is the only job with both toolchains and both dependency trees resolved,
+      # so it is the only one that can check.
+      - name: Check third-party notices are current
+        run: python3 scripts/third-party.py --check
+
   ui:
     runs-on: ubuntu-latest
     steps:

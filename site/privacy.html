@@ -73,15 +73,22 @@
     configured. Those connections are yours. Agency neither proxies them nor sees
     what goes over them, and we do not want the phrase "nothing leaves your machine"
     to give you the wrong idea about them.</p>
+    <p>Two optional features run other people's programs on your behalf, and both are
+    off until you turn them on. If a project's knowledge graph is enabled, Agency runs
+    graphify: it indexes your code locally, and it sends the documents in that project's
+    corpus to whichever model provider you picked for it. If you accept an offer to
+    install a missing tool, Agency runs that vendor's own installer, which fetches from
+    npm, PyPI or the vendor's site. Agency shows you the command before it runs it.</p>
     <p>Your code, your issues, your notes and your agent transcripts stay on your disk
     as ordinary files and git objects.</p>
 
     <h2>Check it yourself</h2>
     <p>You do not have to take our word for any of the above. Point a network monitor
     at Agency and watch what it does. Apart from the update check on launch, every
-    connection you see will belong to the coding agent you started or to git talking
-    to your remotes. The docs explain where Agency keeps everything on disk, so you
-    can go and look at that too.</p>
+    connection you see will belong to the coding agent you started, to git talking
+    to your remotes, or to a knowledge-graph build or an install you asked for.
+    The docs explain where Agency keeps everything on disk, so you can go and
+    look at that too.</p>
 
     <h2>This website</h2>
     <p>Static pages. No analytics, no tag manager, no session recording, no advertising

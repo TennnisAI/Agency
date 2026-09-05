@@ -57,6 +57,7 @@ import PillSelect from "./PillSelect";
 import Toggle from "./Toggle";
 import ConfirmDialog from "./ConfirmDialog";
 import FormDialog, { Field } from "./FormDialog";
+import NoticesDialog from "./NoticesDialog";
 import { toastError, toastSuccess } from "../lib/toast";
 import { fmtDur } from "../lib/runstate";
 import { agentColor, agentLabel, updateCommand } from "../agents";
@@ -255,6 +256,9 @@ export default function Settings({
   const [update, setUpdate] = useState<UpdateCheck | null>(null);
   const [checking, setChecking] = useState(false);
   const [autoCheck, setAutoCheck] = useState(true);
+  // The third-party licence notices, shown on demand: the file is 650 KB, so
+  // the dialog fetches it rather than the bundle carrying it at startup.
+  const [noticesOpen, setNoticesOpen] = useState(false);
 
   useEffect(() => {
     getVersion().then(setVersion).catch(() => {});
@@ -1747,7 +1751,39 @@ export default function Settings({
             itself.
           </p>
         </section>
+
+        <section className="settings-section">
+          <div className="settings-section-label">About</div>
+          <div className="settings-group-card">
+            <div className="settings-notif-row">
+              <span className="settings-notif-label">Licence</span>
+              <span className="settings-notif-label">Apache-2.0</span>
+            </div>
+            <div className="settings-notif-row">
+              <span className="settings-notif-label">Third-party notices</span>
+              <button className="settings-ghost-btn" onClick={() => setNoticesOpen(true)}>
+                View notices
+              </button>
+            </div>
+            <div className="settings-notif-row">
+              <span className="settings-notif-label">Source code</span>
+              <button
+                className="settings-ghost-btn"
+                onClick={() => { openUrl("https://github.com/TennnisAI/Agency").catch(() => {}); }}
+              >Open GitHub</button>
+            </div>
+          </div>
+          <p className="settings-section-hint">
+            Agency is built on Rust crates, JavaScript packages and two
+            typefaces other people wrote. The notices list every one of them
+            and the licence it comes under. The coding agents are not in that
+            list: they are separate programs you install yourself, under their
+            own licences.
+          </p>
+        </section>
       </div>
+
+      {noticesOpen && <NoticesDialog onClose={() => setNoticesOpen(false)} />}
 
       {formOpen && renderProfileDialog()}
 

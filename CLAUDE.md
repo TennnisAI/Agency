@@ -61,6 +61,14 @@ ui/node_modules/.bin/vite build
   `crates/agency-core/src/term/`.
 - Tests leak orphan `agency-termd` processes. Never kill the one under
   Application Support; that is the user's live daemon.
+- **Regenerate the notices after any dependency change.** `python3
+  scripts/third-party.py` (needs `ui/node_modules` installed) rewrites
+  `THIRD-PARTY.md`, which reproduces the licence of every crate and package the
+  .app ships. MIT wants its notice in every copy and Apache-2.0 s4(a) wants the
+  licence to travel with the binary, and a linked binary is both; before this
+  existed the bundle carried 315 crates and 111 packages and not one of their
+  copyright notices. The `app` job in `.github/workflows/ci.yml` fails a PR
+  whose notices file has fallen behind.
 
 ## User-facing copy
 

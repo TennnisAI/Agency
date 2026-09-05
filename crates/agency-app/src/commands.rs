@@ -13,7 +13,6 @@ use crate::state::{
     AppState, DiscardSummary, FilesConfigDto, KnowledgeConfigDto, McpImportResult, MergePreview,
     ProviderSettings, RaceAttempt, RunInfo, RunScriptConfigDto, RunScriptStatusDto, RunSessionInfo,
 };
-use agency_core::title::fallback_title;
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -308,29 +307,16 @@ pub fn confirm_quit(app: tauri::AppHandle) {
     crate::lifecycle::confirm_quit(&app);
 }
 
-/// Derive a short title for a run from its first prompt. No-ops if the run is
-/// already titled; otherwise stores the first words of the prompt as the title.
+/// Derive a short title for a run from its first prompt, and when the branch is
+/// still the empty-prompt `agent/<id>` fallback, rename it to match (AGE-183).
+/// No-ops if the run is already titled.
 #[tauri::command]
 pub fn set_run_title(
     state: State<'_, AppState>,
     id: String,
     first_prompt: String,
 ) -> Result<(), String> {
-    // The first prompt doubles as the run's stored prompt (runs are created
-    // promptless; the user types into the live agent). Kept even when the
-    // title guard below short-circuits.
-    let _ = state.store_run_prompt(&id, &first_prompt);
-    // Skip if already titled.
-    if let Ok(Some(existing)) = state.run_title(&id) {
-        if !existing.is_empty() {
-            return Ok(());
-        }
-    }
-    let title = fallback_title(&first_prompt);
-    if !title.is_empty() {
-        let _ = state.store_run_title(&id, &title);
-    }
-    Ok(())
+    state.apply_first_prompt(&id, &first_prompt).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

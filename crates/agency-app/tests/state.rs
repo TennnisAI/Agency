@@ -3042,6 +3042,210 @@ fn renaming_a_branch_refuses_a_run_in_the_project_checkout() {
     let _ = state.discard_run(&info.id);
 }
 
+/// AGE-183. A promptless start cuts `agent/agent-<suffix>` before anyone types.
+/// The first prompt already titled the run; the branch stayed on the fallback
+/// until someone renamed it by hand. Applying the first prompt now renames
+/// both, keeping the same short suffix so the worktree and session id stay put.
+#[test]
+fn first_prompt_renames_the_empty_prompt_fallback_branch() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let state = common::state(&dir);
+    state
+        .register_profile(AgentProfile {
+            name: "claude".into(),
+            command: "sh".into(),
+            args: vec!["-c".into(), "sleep 3".into()],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+    let info = state.create_run(&project.id, "", "claude", None, "HEAD", None).unwrap();
+    let old = info.branch.clone();
+    assert!(
+        old.starts_with("agent/agent-"),
+        "promptless start should cut the empty-prompt fallback, got {old}"
+    );
+    assert!(info.title.as_deref().unwrap_or("").is_empty(), "promptless start has no title yet");
+    let suffix = info.id.rsplit_once('-').unwrap().1;
+    let wt = state.worktree_path(&info.id).unwrap();
+
+    state
+        .apply_first_prompt(&info.id, "interesting/memorable names? I'm thinking about like")
+        .unwrap();
+
+    let listed = state.list_runs(&project.id).unwrap();
+    let run = &listed[0];
+    let title = run.title.as_deref().unwrap_or("");
+    assert!(!title.is_empty(), "first prompt should title the run");
+    assert!(title.to_lowercase().contains("interesting"), "unexpected title: {title}");
+
+    assert!(
+        run.branch.starts_with("agent/interesting-memorable-names"),
+        "branch should follow the first prompt, got {}",
+        run.branch
+    );
+    assert!(
+        run.branch.ends_with(&format!("-{suffix}")),
+        "branch should keep the run id's suffix, got {}",
+        run.branch
+    );
+    assert_ne!(run.branch, old);
+    assert!(!agency_core::merge::branch_exists(&repo, &old));
+    assert!(agency_core::merge::branch_exists(&repo, &run.branch));
+    assert_eq!(state.worktree_path(&info.id).unwrap(), wt);
+    assert_eq!(agency_core::merge::current_branch(&wt).as_deref(), Some(run.branch.as_str()));
+
+    // A second capture must not rename again (title already set).
+    let after_first = run.branch.clone();
+    state.apply_first_prompt(&info.id, "a completely different second line").unwrap();
+    assert_eq!(state.list_runs(&project.id).unwrap()[0].branch, after_first);
+    assert_eq!(state.list_runs(&project.id).unwrap()[0].title.as_deref(), Some(title));
+
+    let _ = state.discard_run(&info.id);
+}
+
+/// A branch the user already renamed is theirs: the first prompt still titles
+/// the run, but must not move the branch out from under that choice.
+#[test]
+fn first_prompt_leaves_a_manually_renamed_branch_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let state = common::state(&dir);
+    state
+        .register_profile(AgentProfile {
+            name: "noop".into(),
+            command: "sh".into(),
+            args: vec!["-c".into(), "sleep 3".into()],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+    let info = state.create_run(&project.id, "", "noop", None, "HEAD", None).unwrap();
+    state.rename_run_branch(&info.id, "already-chosen").unwrap();
+
+    state.apply_first_prompt(&info.id, "fix the login page").unwrap();
+
+    let run = &state.list_runs(&project.id).unwrap()[0];
+    assert_eq!(run.branch, "agent/already-chosen");
+    assert!(run.title.as_deref().unwrap_or("").contains("fix"));
+
+    let _ = state.discard_run(&info.id);
+}
+
+/// A run created with a real prompt already has a branch named after it. The
+/// title normally guards that, but `rename_run` stores a trimmed title and an
+/// empty one is the documented way to clear it, which puts a prompt-derived
+/// branch in front of the first-prompt pass with the title guard down.
+///
+/// Observed on a probe of exactly this path before `is_auto_cut_branch` also
+/// checked the id shape: clearing the title and typing one line renamed
+/// `agent/narrate-the-weekly-review-note-docs-week-q3w7` to
+/// `agent/continue-please-q3w7`. The title is the first prompt's to set; a
+/// branch that was never the empty-prompt fallback is not.
+#[test]
+fn first_prompt_spares_a_prompt_derived_branch_after_the_title_is_cleared() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let state = common::state(&dir);
+    state
+        .register_profile(AgentProfile {
+            name: "noop".into(),
+            command: "sh".into(),
+            args: vec!["-c".into(), "sleep 3".into()],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+    let info = state
+        .create_run(
+            &project.id,
+            "Narrate the weekly review note docs/week.md",
+            "noop",
+            None,
+            "HEAD",
+            None,
+        )
+        .unwrap();
+    let named = info.branch.clone();
+    assert!(named.starts_with("agent/narrate-the-weekly-review"), "unexpected branch: {named}");
+
+    // What `rename_run` does with an empty title.
+    state.store_run_title(&info.id, "").unwrap();
+
+    state.apply_first_prompt(&info.id, "continue please").unwrap();
+
+    let run = &state.list_runs(&project.id).unwrap()[0];
+    assert_eq!(run.branch, named, "a prompt-derived branch is not the first prompt's to rename");
+    assert!(agency_core::merge::branch_exists(&repo, &named));
+    // The title still refills, which is the whole point of clearing it.
+    assert!(run.title.as_deref().unwrap_or("").to_lowercase().contains("continue"));
+
+    let _ = state.discard_run(&info.id);
+}
+
+/// AGE-183: a blocked rename must not undo the title. Pre-cut the leaf the
+/// first prompt would want so `rename_run_branch` refuses (name taken); the
+/// title still lands and the fallback branch stays put.
+#[test]
+fn first_prompt_keeps_the_title_when_the_branch_rename_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let state = common::state(&dir);
+    state
+        .register_profile(AgentProfile {
+            name: "noop".into(),
+            command: "sh".into(),
+            args: vec!["-c".into(), "sleep 3".into()],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+    let info = state.create_run(&project.id, "", "noop", None, "HEAD", None).unwrap();
+    let old = info.branch.clone();
+    let suffix = info.id.rsplit_once('-').unwrap().1;
+    let taken = format!("agent/fix-the-login-page-{suffix}");
+    assert!(Command::new("git")
+        .args(["branch", &taken])
+        .current_dir(&repo)
+        .status()
+        .unwrap()
+        .success());
+
+    state.apply_first_prompt(&info.id, "fix the login page").unwrap();
+
+    let run = &state.list_runs(&project.id).unwrap()[0];
+    assert!(
+        run.title.as_deref().unwrap_or("").contains("fix"),
+        "title must land even when rename is refused"
+    );
+    assert_eq!(run.branch, old, "refused rename must leave the fallback branch alone");
+    assert!(agency_core::merge::branch_exists(&repo, &old));
+    assert!(agency_core::merge::branch_exists(&repo, &taken));
+
+    let _ = state.discard_run(&info.id);
+}
+
 // ── the user's word on a run (AGE-141) ──────────────────────────────────────
 
 /// Settling is a record, not an inference: it survives the round trip through

@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useRuns, SpawnOpts } from "../store/runs";
 import {
-  setRunTitle,
   listProfiles, AgentProfile,
   listRunSessions, startRunSession, closeRunSession, RunSessionInfo,
   RunInfo, SessionStatus, stopLoop, listIssues, listProjects, ensureRunActive,
@@ -20,6 +19,7 @@ import Resizer from "./Resizer";
 import ArchivedSection from "./ArchivedSection";
 import { useDismissOnResize } from "../hooks/useDismissOnResize";
 import { useRunMenu } from "../hooks/useRunMenu";
+import { useFirstPromptCapture } from "../hooks/useFirstPromptCapture";
 import { usePaneWidth, loadFold, saveFold } from "../hooks/usePaneWidth";
 import { agentViewTab, loadFocusTab, saveFocusTab, resolveFocusTab, PRIMARY_TAB, RUN_TAB, LOG_TAB } from "../lib/focusTab";
 import AgentAddMenu from "./AgentAddMenu";
@@ -416,6 +416,7 @@ export default function AgentFocus({
       return next;
     });
   const focused = runs.find((r) => r.id === focusedRunId) ?? null;
+  const captureFirstPrompt = useFirstPromptCapture(focused?.id, focused?.title);
 
   // The one session in this workspace serving a browser GUI, if any. It is the
   // primary agent's session most of the time, but a web agent can also be
@@ -691,7 +692,9 @@ export default function AgentFocus({
                       <FocusTerminal key={termId}
                         runId={termId}
                         altScrollArrows={panelIsShell}
-                        onFirstPrompt={panel === PRIMARY_TAB && !focused.title ? (line) => { setRunTitle(focused.id, line).catch(() => {}); } : undefined} />
+                        // Only the primary tab is the agent the run is named
+                        // after; an extra tab or a companion shell is not.
+                        onFirstPrompt={panel === PRIMARY_TAB ? captureFirstPrompt : undefined} />
                     )}
                   </div>
                   {shellOpen && (

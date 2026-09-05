@@ -172,7 +172,8 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
     try {
       // Runs start promptless by design — the user types the real prompt into
       // the live agent terminal, and the first line is captured as the run's
-      // prompt + title (see set_run_title).
+      // prompt + title, renaming the empty-prompt branch when it still is one
+      // (see set_run_title / AGE-183).
       const run = await createRun(pid, "", agentId, model, base, mergeTarget, setSpawnProgress, worktree).catch((e) => {
         toastError(e, `Couldn't start ${agentId}`);
         return null;

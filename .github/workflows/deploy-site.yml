@@ -1,0 +1,48 @@
+name: Deploy site
+
+# Publishes site/ to Cloudflare Pages (project agency-site, serving
+# getagency.dev) by direct upload.
+#
+# Direct upload rather than Cloudflare's Git integration, which needs the
+# Cloudflare Pages GitHub App installed on the TennnisAI org. Nothing here has a
+# build step for that integration to run, so it would only be copying files, and
+# this way the deploy lives in the CI that already exists.
+#
+# `push` to main only. This job holds a Cloudflare API token that can write to
+# the account's Pages projects, and on a public repo anyone can open a pull
+# request. GitHub withholds secrets from fork-originated `pull_request` runs, so
+# that trigger would fail rather than leak, but `pull_request_target` would hand
+# the token to a stranger's branch. Pushing to main needs write access.
+# Do not add either trigger here.
+#
+# Required repository secrets (Settings -> Secrets and variables -> Actions):
+#   CLOUDFLARE_API_TOKEN   custom token, Account -> Cloudflare Pages -> Edit,
+#                          scoped to the one account. Not the "Edit Cloudflare
+#                          Workers" template, which also grants Workers, KV, R2
+#                          and D1 that nothing here needs.
+#   CLOUDFLARE_ACCOUNT_ID  the account id wrangler whoami prints.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "site/**"
+      - "scripts/deploy-site.sh"
+      - ".github/workflows/deploy-site.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Deploy to Cloudflare Pages
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: ./scripts/deploy-site.sh

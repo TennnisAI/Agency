@@ -18,7 +18,12 @@ trap 'rm -rf "$STAGE"' EXIT
 rsync -a --exclude 'README.md' "$ROOT/site/" "$STAGE/"
 
 echo "Staged $(find "$STAGE" -type f | wc -l | tr -d ' ') files from site/"
-npx --yes wrangler@latest pages deploy "$STAGE" \
+# Pinned, not @latest. This repo pins every third-party action to a commit SHA
+# so a re-pointed tag cannot change what runs; resolving `wrangler@latest` at
+# deploy time is the same hole with extra steps, and this script runs in CI
+# holding a Cloudflare write token.
+WRANGLER_VERSION="${WRANGLER_VERSION:-4.129.0}"
+npx --yes "wrangler@${WRANGLER_VERSION}" pages deploy "$STAGE" \
   --project-name agency-site \
   --branch main \
   --commit-dirty=true

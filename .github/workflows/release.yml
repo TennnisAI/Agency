@@ -101,11 +101,46 @@ jobs:
         # consequence of which prebuilt CLI the installer happened to pick.
         run: cargo tauri build --target aarch64-apple-darwin
 
-      - name: Verify notarization ticket is stapled
+      # Tauri notarizes and staples the .app, then builds the DMG around it and
+      # only signs the DMG; it never submits the disk image. So the DMG people
+      # download carried no ticket of its own, and download.html promises one
+      # ("signed and notarized by Apple, so it opens without a Gatekeeper
+      # prompt"). Submitting it here is what makes that sentence true. The app
+      # inside is already stapled, which Apple is fine with and which is why
+      # this second pass is quick.
+      - name: Notarize and staple the DMG
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
+          set -o pipefail
           dmg="$(find target/aarch64-apple-darwin/release/bundle/dmg -maxdepth 1 -name '*.dmg' | head -n1)"
           echo "DMG: $dmg"
+          out="$(xcrun notarytool submit "$dmg" \
+            --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" --wait 2>&1)" && rc=0 || rc=$?
+          echo "$out"
+          if [ "$rc" -ne 0 ]; then
+            # A rejection says only "Invalid" without --wait output; the log has
+            # the actual reason, and it is the only thing worth reading here.
+            id="$(printf '%s' "$out" | awk '/^ *id: /{print $2; exit}')"
+            if [ -n "$id" ]; then
+              xcrun notarytool log "$id" --apple-id "$APPLE_ID" \
+                --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" || true
+            fi
+            exit "$rc"
+          fi
+          xcrun stapler staple "$dmg"
+
+      - name: Verify both tickets are stapled
+        run: |
+          app="target/aarch64-apple-darwin/release/bundle/macos/Agency.app"
+          dmg="$(find target/aarch64-apple-darwin/release/bundle/dmg -maxdepth 1 -name '*.dmg' | head -n1)"
+          xcrun stapler validate "$app"
           xcrun stapler validate "$dmg"
+          # Gatekeeper's own verdict, which is the one the user's machine gives.
+          spctl --assess --verbose=4 --type execute "$app"
 
       - name: Publish draft release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3

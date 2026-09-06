@@ -11,7 +11,7 @@ the **Security** tab → **Report a vulnerability**. Reports go only to the
 maintainer.
 
 If you would rather not use GitHub, or you cannot, email
-**nick@tennnis.no** instead.
+**hello@tennnis.no** instead.
 
 Please include the app version (Settings ▸ Diagnostics), what you found, and
 how to reproduce it. You'll get an acknowledgement as soon as the report is

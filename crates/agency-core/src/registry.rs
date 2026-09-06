@@ -535,10 +535,16 @@ impl Registry {
     /// constraint: two projects may share a key deliberately (two checkouts of
     /// one repo, sharing one backlog, is the case this was added for). The
     /// caller shows it, and the user decides.
+    ///
+    /// Open projects only. A closed one keeps its row and its key so it can be
+    /// reopened, but it is not on any list the user can see, and "Old Fork
+    /// also uses AGE" about a project they closed last year is a warning
+    /// about nothing they can act on.
     pub fn projects_using_issue_key(&self, key: &str, except: &str) -> Result<Vec<String>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT name FROM projects WHERE issue_key = ?1 AND id <> ?2 ORDER BY name")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT name FROM projects WHERE issue_key = ?1 AND id <> ?2 AND closed = 0 \
+             ORDER BY name",
+        )?;
         let rows = stmt.query_map(rusqlite::params![key, except], |r| r.get::<_, String>(0))?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
@@ -1336,6 +1342,18 @@ impl Registry {
         Ok(out)
     }
 
+    /// How many issues the index holds for a project. For the caller that
+    /// wants only the number and was loading every row, body and comment
+    /// thread included, to take its length.
+    pub fn count_issues(&self, project_id: &str) -> Result<usize> {
+        let n: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM issues WHERE project_id = ?1",
+            [project_id],
+            |r| r.get(0),
+        )?;
+        Ok(n as usize)
+    }
+
     pub fn delete_issue(&self, id: &str) -> Result<()> {
         self.conn.execute("DELETE FROM issues WHERE id = ?1", [id])?;
         Ok(())
@@ -1483,18 +1501,22 @@ pub fn backup_before_migrations(db_path: &Path, app_version: &str) -> Result<Opt
 /// case, because every key the app has ever derived is upper-case and the
 /// distinction would only ever be a way to get two keys that look identical.
 ///
-/// The eight-character ceiling is `ISSUE_TARGET_RE` in `ui/src/lib/links.ts`:
-/// a longer key would produce issue labels that no wikilink could resolve.
+/// The length ceiling is `issuefs::KEY_PREFIX_MAX`, which the frontend's
+/// `ISSUE_TARGET_RE` mirrors: a longer key would produce issue labels that no
+/// wikilink could resolve.
 pub fn validate_issue_key(key: &str) -> Result<String> {
     let key = key.trim().to_ascii_uppercase();
     if key.is_empty() {
         bail!("an issue key cannot be empty");
     }
-    if !key.chars().all(|c| c.is_ascii_alphanumeric()) {
+    // The shape is `parse_key`'s, and only `parse_key`'s: a prefix this
+    // accepts that the filename filter then rejects would be a key that hides
+    // every file written under it.
+    if crate::issuefs::parse_key(&format!("{key}-1")).is_none_or(|(p, _)| p != key) {
         bail!("an issue key can only use letters and digits");
     }
-    if key.len() > 8 {
-        bail!("an issue key can be at most 8 characters");
+    if key.len() > crate::issuefs::KEY_PREFIX_MAX {
+        bail!("an issue key can be at most {} characters", crate::issuefs::KEY_PREFIX_MAX);
     }
     Ok(key)
 }

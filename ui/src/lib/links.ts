@@ -46,7 +46,9 @@ export interface CrossRefs {
 // start with a digit ("3D Print" → 3DP). Whether a match *means* an issue is
 // decided by the known-prefix gate in classifyTarget — date-like note names
 // ("2026-07") fit the shape, but no project key is "2026", so they stay
-// notes, as does "FOO-3" when no project uses the FOO key.
+// notes, as does "FOO-3" when no project uses the FOO key. The prefix ceiling
+// mirrors `KEY_PREFIX_MAX` in crates/agency-core/src/issuefs.rs, which is
+// what `validate_issue_key` enforces on a hand-typed key; change them together.
 export const ISSUE_TARGET_RE = /^([A-Za-z0-9]{1,8})-(\d+)$/;
 
 const RUN_PREFIX = "run:";

@@ -155,6 +155,16 @@ fn days_in_month(y: i64, m: i64) -> i64 {
 // ---------------------------------------------------------------------------
 // Keys and filenames
 
+/// The grammar of a key, in one place. `parse_key` reads it, `rekey_text`
+/// matches it in running text and `registry::validate_issue_key` accepts a
+/// hand-typed prefix by it; the frontend's `ISSUE_TARGET_RE` in
+/// `ui/src/lib/links.ts` mirrors it and has to be changed with it.
+pub const KEY_PREFIX_PATTERN: &str = "[A-Z0-9]+";
+/// A positive number with no leading zero.
+pub const KEY_SEQ_PATTERN: &str = "[1-9][0-9]*";
+/// Longest prefix a wikilink can name: `ISSUE_TARGET_RE` allows eight.
+pub const KEY_PREFIX_MAX: usize = 8;
+
 /// `AGE-14` → `("AGE", 14)`. The shape every issue key and filename stem must
 /// match: uppercase alphanumeric prefix, dash, positive number with no leading
 /// zero.
@@ -165,7 +175,9 @@ fn days_in_month(y: i64, m: i64) -> i64 {
 /// to the filename filter — and reconcile then deleted the rows behind them.
 pub fn parse_key(key: &str) -> Option<(&str, i64)> {
     static RE: OnceLock<regex::Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| regex::Regex::new(r"^([A-Z0-9]+)-([1-9][0-9]*)$").unwrap());
+    let re = RE.get_or_init(|| {
+        regex::Regex::new(&format!("^({KEY_PREFIX_PATTERN})-({KEY_SEQ_PATTERN})$")).unwrap()
+    });
     let caps = re.captures(key)?;
     let seq: i64 = caps.get(2)?.as_str().parse().ok()?;
     Some((caps.get(1).unwrap().as_str(), seq))
@@ -703,7 +715,8 @@ struct Rekey<'a> {
 
 impl<'a> Rekey<'a> {
     fn new(from: &str, to: &'a str, renumber: &'a std::collections::BTreeMap<i64, i64>) -> Self {
-        let re = regex::Regex::new(&format!(r"\b{}-([1-9][0-9]*)\b", regex::escape(from))).unwrap();
+        let re = regex::Regex::new(&format!(r"\b{}-({KEY_SEQ_PATTERN})\b", regex::escape(from)))
+            .unwrap();
         Rekey { re, to, renumber }
     }
 

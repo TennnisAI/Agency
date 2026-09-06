@@ -175,12 +175,9 @@ fn rev(repo: &Path, r: &str) -> Option<String> {
 /// Is `a` reachable from `b`? What tells a commit that would only re-say what
 /// the ref already contains from one that would add a parent it lacks.
 fn is_ancestor(repo: &Path, a: &str, b: &str) -> bool {
-    Command::new("git")
-        .args(["merge-base", "--is-ancestor", a, b])
-        .current_dir(repo)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .output()
-        .is_ok_and(|o| o.status.success())
+    // `git()` fails on a non-zero exit, which for `--is-ancestor` is the
+    // answer "no", so the answer is its success alone.
+    git(repo, &["merge-base", "--is-ancestor", a, b]).is_ok()
 }
 
 /// The commit both refs descend from, or `None` when they share no history.

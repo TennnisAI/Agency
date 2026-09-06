@@ -4201,7 +4201,7 @@ impl AppState {
         // Rows, not the summary's counters: what decides this is whether the
         // project has a backlog of its own that adopting would strand, and
         // after reconcile the index is exactly that.
-        let ours = reg.list_issues(project_id)?.len();
+        let ours = reg.count_issues(project_id)?;
         let key_mismatch = match agency_core::issuefs::adoptable_key(ours, &summary.foreign) {
             Some(theirs) => {
                 let theirs = theirs.to_string();

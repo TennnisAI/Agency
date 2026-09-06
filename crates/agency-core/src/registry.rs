@@ -1316,6 +1316,20 @@ impl Registry {
         Ok(self.get_issue(&id)?.expect("issue just inserted"))
     }
 
+    /// The row already holding this uuid, as `(project_id, seq)`. `issues.id`
+    /// is unique across every project in the index, but a file's `uid:` is
+    /// only unique within one backlog, and two checkouts of one repo share a
+    /// backlog by design (see `projects_using_issue_key`). Reconcile asks
+    /// before importing a file under the uid it carries.
+    pub fn issue_id_owner(&self, id: &str) -> Result<Option<(String, i64)>> {
+        Ok(self
+            .conn
+            .query_row("SELECT project_id, seq FROM issues WHERE id = ?1", [id], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+            })
+            .optional()?)
+    }
+
     pub fn get_issue(&self, id: &str) -> Result<Option<Issue>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, project_id, seq, title, body, status, priority, created_at, updated_at, due, scheduled, rank, links, comments

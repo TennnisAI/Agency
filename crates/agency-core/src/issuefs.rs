@@ -1253,6 +1253,10 @@ pub struct ReconcileSummary {
     pub updated: usize,
     /// Files that carried no `uid:` and had one written into them.
     pub backfilled: usize,
+    /// Files whose `uid:` is already some other row's id: imported under a
+    /// fresh uuid instead, and the file left alone. Two checkouts of one repo
+    /// carry the same uids, and `issues.id` is unique across projects.
+    pub remapped: usize,
     /// Rows whose file is gone: row deleted.
     pub dropped: usize,
     /// Issue-shaped files that failed to parse: `(filename, reason)`. Their
@@ -1269,9 +1273,11 @@ pub struct ReconcileSummary {
 
 /// Make the project's index rows follow its issue files. A row keyed by a seq
 /// no file (healthy or corrupt) covers is deleted; a file with no row is
-/// imported under the uuid its `uid:` names, or a fresh one when it names none;
-/// on both, the row is overwritten from the file (the existing uuid survives,
-/// so `runs.issue_id` links hold). Every file's seq raises the high-water mark
+/// imported under the uuid its `uid:` names, or a fresh one when it names none
+/// (or when that uuid is already another row's id: `issues.id` is unique across
+/// projects, a `uid` only within one backlog); on both, the row is overwritten
+/// from the file (the existing uuid survives, so `runs.issue_id` links hold).
+/// Every file's seq raises the high-water mark
 /// — numbers consumed by hand-authored files are never handed out again. Files
 /// that omit `created`/`updated` get the file's mtime.
 ///
@@ -1300,7 +1306,7 @@ pub fn reconcile(
     root: &Path,
 ) -> Result<ReconcileSummary> {
     let read = read_issue_dir(root)?;
-    let existing: std::collections::HashMap<i64, Issue> =
+    let mut existing: std::collections::HashMap<i64, Issue> =
         reg.list_issues(project_id)?.into_iter().map(|i| (i.seq, i)).collect();
     if read.missing && !existing.is_empty() {
         log::warn!(
@@ -1321,18 +1327,49 @@ pub fn reconcile(
         ours
     });
 
-    let mut seen = std::collections::HashSet::new();
+    // Which seqs the files cover, and how many carry someone else's prefix,
+    // both settled before a single row is written.
     let mut foreign: std::collections::BTreeMap<String, usize> = Default::default();
+    let mut seen = std::collections::HashSet::new();
     for f in &read.issues {
         match parse_key(&f.key) {
-            Some((prefix, _)) if prefix == issue_key => {}
-            Some((prefix, _)) => {
-                *foreign.entry(prefix.to_string()).or_default() += 1;
-                continue;
+            Some((prefix, _)) if prefix == issue_key => {
+                seen.insert(f.seq);
             }
-            None => continue,
+            Some((prefix, _)) => *foreign.entry(prefix.to_string()).or_default() += 1,
+            None => {}
         }
-        seen.insert(f.seq);
+    }
+    // Seqs covered by a corrupt file keep their rows.
+    for (name, _) in &summary.skipped {
+        if let Some(seq) = name.strip_suffix(".md").and_then(|s| parse_key(s)).map(|(_, n)| n) {
+            seen.insert(seq);
+        }
+    }
+
+    // Rows whose seq no file covers are dropped first, before anything is
+    // imported. A file renumbered outside the app (AGE-3.md arriving as
+    // AGE-20.md on a branch checkout) then finds its own uid free at the new
+    // number and keeps it, and with it every `runs.issue_id` pointing at it.
+    // Dropping at the end of the pass instead met the old row still holding
+    // that uid, and failed the whole sync with `UNIQUE constraint failed:
+    // issues.id`.
+    let stale: Vec<(i64, String)> = existing
+        .iter()
+        .filter(|(seq, _)| !seen.contains(*seq))
+        .map(|(seq, row)| (*seq, row.id.clone()))
+        .collect();
+    for (seq, id) in stale {
+        reg.delete_issue(&id)?;
+        existing.remove(&seq);
+        summary.dropped += 1;
+    }
+
+    let mut divergent = 0usize;
+    for f in &read.issues {
+        if !matches!(parse_key(&f.key), Some((prefix, _)) if prefix == issue_key) {
+            continue;
+        }
         reg.ensure_issue_seq_at_least(project_id, f.seq)?;
         let (created_at, updated_at) = if f.created_at == 0 || f.updated_at == 0 {
             let mtime = std::fs::metadata(issue_path(root, &f.key))
@@ -1359,14 +1396,31 @@ pub fn reconcile(
         // needs a common ancestor, which only a sync pass has.
         let id = match (f.uid.as_deref(), prev) {
             (Some(u), Some(p)) if u != p.id => {
-                log::warn!(
+                divergent += 1;
+                log::debug!(
                     "issue {} carries uid {u} but is indexed as {}; keeping the indexed id",
                     f.key,
                     p.id
                 );
                 p.id.clone()
             }
-            (Some(u), _) => u.to_string(),
+            // A uid is unique within one backlog; `issues.id` is unique across
+            // every project in the index, and two checkouts of one repo share
+            // a backlog by design. Both of them reconciling the same files
+            // claimed the same uid, and the second project failed its whole
+            // sync on `UNIQUE constraint failed: issues.id`: 185 issues
+            // indexed under one checkout, 0 under the clone, with the toast
+            // the only sign of it. A uid another row already holds is not this
+            // row's identity, so this row gets its own. The file is left
+            // alone: the uid in it belongs to the checkout that got there
+            // first, and rewriting it would break that one's links.
+            (Some(u), _) => match reg.issue_id_owner(u)? {
+                Some((owner, seq)) if (owner.as_str(), seq) != (project_id, f.seq) => {
+                    summary.remapped += 1;
+                    uuid::Uuid::new_v4().to_string()
+                }
+                _ => u.to_string(),
+            },
             (None, Some(p)) => p.id.clone(),
             (None, None) => uuid::Uuid::new_v4().to_string(),
         };
@@ -1397,17 +1451,19 @@ pub fn reconcile(
         }
     }
 
-    // Seqs covered by a corrupt file keep their rows.
-    for (name, _) in &summary.skipped {
-        if let Some(seq) = name.strip_suffix(".md").and_then(|s| parse_key(s)).map(|(_, n)| n) {
-            seen.insert(seq);
-        }
+    // One line per pass for these two as well, for the reason `foreign` has
+    // one: a shared backlog remaps every file it holds, every pass.
+    if summary.remapped > 0 {
+        log::warn!(
+            "{} issue files carry a uid another project already indexes; \
+             imported under fresh ids",
+            summary.remapped
+        );
     }
-    for (seq, row) in &existing {
-        if !seen.contains(seq) {
-            reg.delete_issue(&row.id)?;
-            summary.dropped += 1;
-        }
+    if divergent > 0 {
+        log::warn!(
+            "{divergent} issue files carry a uid the index disagrees with; kept the indexed ids"
+        );
     }
     // One line per pass, not one per file: this used to log 186 warnings every
     // time the board polled, which buried everything else in the log and was
@@ -1992,6 +2048,78 @@ owner: nic\nepic: platform\n---\n# Five\n\nBody with an ![](assets/a.png).\n\
         let s = reconcile(&reg, "p1", "AGE", root).unwrap();
         assert_eq!((s.imported, s.backfilled), (1, 0));
         assert_eq!(reg.list_issues("p1").unwrap()[0].id, UID);
+    }
+
+    #[test]
+    fn reconcile_mints_a_fresh_id_when_another_project_holds_the_uid() {
+        let db = tempfile::tempdir().unwrap();
+        let reg = Registry::open(&db.path().join("r.db")).unwrap();
+        let one = tempfile::tempdir().unwrap();
+        let two = tempfile::tempdir().unwrap();
+
+        // Two checkouts of one repo, sharing a backlog and so sharing uids.
+        // The second used to fail the whole pass on `UNIQUE constraint failed:
+        // issues.id` and index nothing.
+        write_issue_uid(one.path(), "AGE-3", UID);
+        write_issue_uid(two.path(), "AGE-3", UID);
+        let s = reconcile(&reg, "p1", "AGE", one.path()).unwrap();
+        assert_eq!((s.imported, s.remapped), (1, 0));
+        let s = reconcile(&reg, "p2", "AGE", two.path()).unwrap();
+        assert_eq!((s.imported, s.remapped), (1, 1));
+
+        assert_eq!(reg.list_issues("p1").unwrap()[0].id, UID);
+        let theirs = reg.list_issues("p2").unwrap()[0].id.clone();
+        assert_ne!(theirs, UID);
+        // The file keeps the uid it came with: it belongs to the checkout that
+        // indexed it first, and rewriting it would break that one's links.
+        assert!(std::fs::read_to_string(issue_path(two.path(), "AGE-3"))
+            .unwrap()
+            .contains(&format!("uid: {UID}\n")));
+        // Stable across passes, and no second remap.
+        let s = reconcile(&reg, "p2", "AGE", two.path()).unwrap();
+        assert_eq!((s.imported, s.updated, s.remapped), (0, 0, 0));
+        assert_eq!(reg.list_issues("p2").unwrap()[0].id, theirs);
+    }
+
+    #[test]
+    fn reconcile_carries_a_renumbered_files_id_to_its_new_seq() {
+        let db = tempfile::tempdir().unwrap();
+        let reg = Registry::open(&db.path().join("r.db")).unwrap();
+        let root_dir = tempfile::tempdir().unwrap();
+        let root = root_dir.path();
+
+        write_issue_uid(root, "AGE-3", UID);
+        reconcile(&reg, "p1", "AGE", root).unwrap();
+
+        // Renumbered behind the app's back (a branch checkout bringing someone
+        // else's rename in). The row at the old seq is dropped before the new
+        // one is imported, so the uid is free and the issue keeps its identity
+        // instead of failing the pass on `UNIQUE constraint failed: issues.id`.
+        std::fs::remove_file(issue_path(root, "AGE-3")).unwrap();
+        write_issue_uid(root, "AGE-20", UID);
+        let s = reconcile(&reg, "p1", "AGE", root).unwrap();
+        assert_eq!((s.imported, s.dropped, s.remapped), (1, 1, 0));
+        let rows = reg.list_issues("p1").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!((rows[0].seq, rows[0].id.as_str()), (20, UID));
+    }
+
+    #[test]
+    fn reconcile_survives_two_files_sharing_one_uid() {
+        let db = tempfile::tempdir().unwrap();
+        let reg = Registry::open(&db.path().join("r.db")).unwrap();
+        let root_dir = tempfile::tempdir().unwrap();
+        let root = root_dir.path();
+
+        // AGE-3.md copied to AGE-4.md, uid and all. One of them keeps the uid,
+        // the other gets its own; neither takes the board down.
+        write_issue_uid(root, "AGE-3", UID);
+        write_issue_uid(root, "AGE-4", UID);
+        let s = reconcile(&reg, "p1", "AGE", root).unwrap();
+        assert_eq!((s.imported, s.remapped), (2, 1));
+        let rows = reg.list_issues("p1").unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_ne!(rows[0].id, rows[1].id);
     }
 
     #[test]

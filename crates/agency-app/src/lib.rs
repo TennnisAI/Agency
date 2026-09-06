@@ -29,7 +29,10 @@ mod webview_menu;
 pub use sendq::{Notice, NoticeKind};
 // The derived state a run is in, so the attention tests can assert on it.
 pub use activity::ActivityState;
-pub use state::{AppState, KnowledgeConfigDto, ProviderSettings, RunInfo};
+pub use state::{
+    AppState, IssueKeyPreview, KeyMismatch, KnowledgeConfigDto, ProviderSettings, RunInfo,
+    SyncResult,
+};
 
 /// Log every panic (the default hook only writes to stderr, which a bundled
 /// app loses) so post-mortems in the log file show why a thread died.
@@ -230,6 +233,8 @@ pub fn run() {
             commands::sync_issues,
             commands::get_issue_sync_config,
             commands::save_issue_sync_config,
+            commands::preview_issue_key,
+            commands::set_project_issue_key,
             commands::add_issue_comment,
             commands::update_issue_comment,
             commands::delete_issue_comment,

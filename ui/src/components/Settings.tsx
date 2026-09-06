@@ -8,6 +8,7 @@ import {
   AgentProfile,
   CatalogEntry,
   FilesConfig,
+  IssueKeyPreview,
   IssueSyncConfig,
   KnowledgeConfig,
   McpServer,
@@ -40,6 +41,8 @@ import {
   moveWorkspace,
   saveFilesConfig,
   saveIssueSyncConfig,
+  previewIssueKey,
+  setProjectIssueKey,
   saveKnowledgeConfig,
   setKnowledgeBackend,
   buildKnowledgeGraph,
@@ -56,6 +59,7 @@ import ModelSelect from "./ModelSelect";
 import PillSelect from "./PillSelect";
 import Toggle from "./Toggle";
 import ConfirmDialog from "./ConfirmDialog";
+import { notifyProjectsChanged } from "../lib/projectEvents";
 import FormDialog, { Field } from "./FormDialog";
 import NoticesDialog from "./NoticesDialog";
 import { toastError, toastSuccess } from "../lib/toast";
@@ -265,6 +269,13 @@ export default function Settings({
   // Editable remote text, kept out of `backlog` so it survives re-renders
   // between saves, the same way `kgDraft` does.
   const [backlogRemote, setBacklogRemote] = useState("");
+  // The issue key input's own text, for the same reason the remote has one: it
+  // is deliberately mid-edit between the first keystroke and the blur that
+  // commits it, and nothing saved must read from it.
+  const [backlogKey, setBacklogKey] = useState("");
+  // The rename the user is being asked to confirm, and whether it is running.
+  const [keyPreview, setKeyPreview] = useState<IssueKeyPreview | null>(null);
+  const [keyBusy, setKeyBusy] = useState(false);
   const [kg, setKg] = useState<KnowledgeConfig | null>(null);
   const [kgDraft, setKgDraft] = useState({ serve: "", build: "" });
   // The model name typed under the backend picker, saved on blur (a keystroke
@@ -546,6 +557,7 @@ export default function Settings({
       if (!stillShowing(id)) return;
       setBacklog(cfg);
       setBacklogRemote(cfg.remote);
+      setBacklogKey(cfg.issueKey);
     } catch (e) {
       if (!stillShowing(id)) return;
       setError(String(e));
@@ -555,6 +567,7 @@ export default function Settings({
   useLayoutEffect(() => {
     setBacklog(null);
     setBacklogRemote("");
+    setBacklogKey("");
     if (projectId) loadBacklog(projectId);
   }, [projectId]);
 
@@ -589,6 +602,58 @@ export default function Settings({
       // guarded — the write really did fail, whatever is on screen now.
       if (stillShowing(id)) setBacklog(prev);
       toastError(e, "Couldn't save backlog settings");
+    }
+  }
+
+  // The key the input holds, as the backend would store it, when it differs
+  // from the saved one. What enables Rename.
+  const pendingKey = (() => {
+    const next = backlogKey.trim().toUpperCase();
+    return backlog && next && next !== backlog.issueKey ? next : null;
+  })();
+
+  // Renaming the key moves every issue file, so nothing commits until the
+  // user has read what will move and said so. This used to commit on blur,
+  // which renamed the whole backlog to `AG` on the way to typing `AGE` and
+  // then renamed it all again, and showed the "another project uses this key"
+  // warning only for the key already saved, which is to say after the fact.
+  async function previewKeyRename() {
+    const id = projectId;
+    if (!id || !pendingKey) return;
+    try {
+      const preview = await previewIssueKey(id, pendingKey);
+      if (stillShowing(id)) setKeyPreview(preview);
+    } catch (e) {
+      toastError(e, "Couldn't change the issue key");
+    }
+  }
+
+  async function doKeyRename(preview: IssueKeyPreview) {
+    const id = projectId;
+    if (!id) return;
+    setKeyBusy(true);
+    try {
+      const plan = await setProjectIssueKey(id, preview.key);
+      const n = plan.moves.length;
+      const renumbered = plan.renumbered.map((m) => `${m.from} is now ${m.to}`).join(", ");
+      toastSuccess(
+        n === 0
+          ? `Issue key set to ${preview.key}`
+          : `${n} issue file${n === 1 ? "" : "s"} renamed to ${preview.key}` +
+              (renumbered ? `. ${renumbered}.` : ""),
+      );
+      setKeyPreview(null);
+      // The project row every open view holds now names the old key.
+      notifyProjectsChanged();
+      await loadBacklog(id);
+    } catch (e) {
+      toastError(e, "Couldn't change the issue key");
+      if (stillShowing(id)) {
+        setKeyPreview(null);
+        await loadBacklog(id);
+      }
+    } finally {
+      setKeyBusy(false);
     }
   }
 
@@ -1585,6 +1650,48 @@ export default function Settings({
               ) : backlog ? (
                 <div className="settings-group-card">
                   <div className="settings-notif-row">
+                    <span className="settings-notif-label">Issue key</span>
+                    <input
+                      className="settings-input"
+                      style={{ maxWidth: 120, textTransform: "uppercase" }}
+                      value={backlogKey}
+                      maxLength={8}
+                      placeholder="AGE"
+                      onChange={(e) => setBacklogKey(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") void previewKeyRename();
+                        else if (e.key === "Escape") setBacklogKey(backlog.issueKey);
+                      }}
+                    />
+                    <button
+                      className="settings-ghost-btn"
+                      disabled={!pendingKey}
+                      onClick={() => void previewKeyRename()}
+                    >
+                      Rename
+                    </button>
+                  </div>
+                  {/* The whole reason this is editable. The key is derived from
+                      the project name and shifted off any key already in use,
+                      so a second checkout of one repo lands on a different key
+                      than the backlog it is about to sync with, and then hides
+                      every issue in it. */}
+                  <p className="settings-section-hint">
+                    Numbers issues in this project, as in <code>{backlogKey || "AGE"}-14</code>, and
+                    names their files. A shared backlog has a key of its own: if this one does not
+                    match it, the issues sync but stay off the board. Changing it renames this
+                    project's issue files and the links between them. Links to them from other
+                    projects and from notes keep the old key.
+                  </p>
+                  {backlog.keySharedWith.length > 0 && (
+                    <p className="settings-section-hint">
+                      {backlog.keySharedWith.join(", ")} also use{backlog.keySharedWith.length === 1 ? "s" : ""}{" "}
+                      <code>{backlog.issueKey}</code>. That is what you want for two checkouts of one
+                      repo sharing a backlog; otherwise a <code>[[{backlog.issueKey}-14]]</code> link
+                      can only reach one of them.
+                    </p>
+                  )}
+                  <div className="settings-notif-row">
                     <span className="settings-notif-label">
                       Share the backlog{projectName ? ` for ${projectName}` : ""}
                     </span>
@@ -2237,6 +2344,43 @@ export default function Settings({
             </>
           )}
         </FormDialog>
+      )}
+
+      {keyPreview && (
+        <ConfirmDialog
+          title={`Rename the issue key to ${keyPreview.key}?`}
+          body={
+            <>
+              <p>
+                {keyPreview.plan.moves.length === 0
+                  ? `This project has no issue files under ${keyPreview.current}, so only the key changes.`
+                  : `${keyPreview.plan.moves.length} issue file${keyPreview.plan.moves.length === 1 ? "" : "s"} ` +
+                    `move${keyPreview.plan.moves.length === 1 ? "s" : ""} from ${keyPreview.current} to ` +
+                    `${keyPreview.key}, and the links between them are rewritten. Links to them from ` +
+                    `other projects and from notes keep the old key.`}
+              </p>
+              {keyPreview.plan.renumbered.length > 0 && (
+                <p>
+                  {keyPreview.plan.renumbered.length === 1 ? "One number is" : `${keyPreview.plan.renumbered.length} numbers are`}{" "}
+                  already taken under {keyPreview.key}, so{" "}
+                  {keyPreview.plan.renumbered.map((m) => `${m.from} becomes ${m.to}`).join(", ")}.
+                  Links to {keyPreview.plan.renumbered.length === 1 ? "it" : "them"} follow.
+                </p>
+              )}
+              {keyPreview.sharedWith.length > 0 && (
+                <p>
+                  {keyPreview.sharedWith.join(", ")} already use{keyPreview.sharedWith.length === 1 ? "s" : ""}{" "}
+                  {keyPreview.key}. That is what you want for two checkouts of one repo sharing a
+                  backlog; otherwise a [[{keyPreview.key}-14]] link can only reach one of them.
+                </p>
+              )}
+            </>
+          }
+          confirmLabel="Rename"
+          busy={keyBusy}
+          onConfirm={() => void doKeyRename(keyPreview)}
+          onCancel={() => setKeyPreview(null)}
+        />
       )}
 
       {wsSwitch && (

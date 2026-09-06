@@ -29,6 +29,7 @@ import { Removal } from "./lib/runRemoval";
 import PreviewKeeper from "./components/PreviewKeeper";
 import RepoSetupDialog from "./components/RepoSetupDialog";
 import RunRemoveDialog from "./components/RunRemoveDialog";
+import { PROJECTS_CHANGED_EVENT } from "./lib/projectEvents";
 
 const REPO_URL = "https://github.com/TennnisAI/Agency";
 
@@ -483,6 +484,25 @@ function Shell() {
   }
   const navRef = useRef(onNavigate);
   navRef.current = onNavigate;
+
+  // The selected project's row is a copy taken when it was clicked, and every
+  // panel renders against it. A row that changes underneath (a sync adopting
+  // the shared backlog's issue key, Settings renaming it) has to be re-read,
+  // or the board labels, links and conflict markers keep the old key until
+  // the app restarts. Replaced only when still selected and actually changed,
+  // so an unchanged row does not re-render every panel.
+  useEffect(() => {
+    const onProjects = async () => {
+      const fresh = await listProjects().catch(() => null);
+      if (!fresh) return;
+      setProject((prev) => {
+        const next = prev && fresh.find((p) => p.id === prev.id);
+        return next && JSON.stringify(next) !== JSON.stringify(prev) ? next : prev;
+      });
+    };
+    window.addEventListener(PROJECTS_CHANGED_EVENT, onProjects);
+    return () => window.removeEventListener(PROJECTS_CHANGED_EVENT, onProjects);
+  }, []);
 
   // Backend-driven navigation: quit confirmations, tray-menu and app-menu
   // clicks arrive as Tauri events.

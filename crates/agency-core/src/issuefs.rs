@@ -627,6 +627,416 @@ pub fn read_issue_dir(root: &Path) -> Result<IssueDirRead> {
     Ok(out)
 }
 
+// ---------------------------------------------------------------------------
+// Keys
+
+/// The shared tracker's key, when this project should take it on rather than
+/// go on ignoring every file in it.
+///
+/// Only when this project has nothing of its own under its own key: adopting is
+/// then pure gain, because there is nothing the rename could strand. A project
+/// holding its own issues has two real backlogs in one directory and no
+/// automatic answer — the user picks, which is what the key setting is for.
+///
+/// One foreign key only. Two means a directory that has been shared with two
+/// different projects, and guessing which one this checkout is would be
+/// choosing whose issues to keep showing.
+pub fn adoptable_key(ours_count: usize, foreign: &[(String, usize)]) -> Option<&str> {
+    match (ours_count, foreign) {
+        (0, [(prefix, _)]) => Some(prefix.as_str()),
+        _ => None,
+    }
+}
+
+/// One file's move under a key rename: `DEM-7` to `AGE-7`, or to `AGE-9` when
+/// `AGE-7` was already someone else's.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct KeyMove {
+    pub from: String,
+    pub to: String,
+}
+
+/// What a key rename would do to a directory, worked out before anything is
+/// touched so the settings UI can say it before the user commits.
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize)]
+pub struct RekeyPlan {
+    /// Every file that moves, in seq order.
+    pub moves: Vec<KeyMove>,
+    /// The subset that also takes a new number, because the old one was taken
+    /// under the new key. An issue's identity is its `uid`, not its number, so
+    /// renumbering loses nothing; every `links:` and wikilink that named the
+    /// old number is rewritten to the new one in the same pass.
+    pub renumbered: Vec<KeyMove>,
+}
+
+/// Is the `FROM-n` match at `start..end` in `line` a reference to an issue, as
+/// opposed to a run of the same characters inside something longer?
+///
+/// Word-bounded matching is not enough, because `-` and `/` are word
+/// boundaries. Every key `validate_issue_key` accepts is a valid prefix here,
+/// and a project keyed `2026` saw its `updated: 2026-11-01T00:00:00Z` become
+/// `AGE-11-01T00:00:00Z` on rename: the frontmatter then failed to parse, so
+/// the rename was refused with a message blaming the file, and every comment
+/// heading with an October-or-later date lost its shape silently, which folded
+/// the comment into the body. `assets/AGN-14-shot.png` was rewritten the same
+/// way, and nothing renames the attachment, so the link broke.
+///
+/// So a reference is not preceded by `/`, `-` or `.` (a path segment, or the
+/// tail of a hyphenated token like a date or a uuid), and is not followed by
+/// `-` or `.` and an alphanumeric (the head of one, or a filename's
+/// extension). `AGN-14.` at the end of a sentence is still a reference.
+fn is_key_reference(line: &str, start: usize, end: usize) -> bool {
+    let before = line[..start].chars().next_back();
+    if matches!(before, Some('/' | '-' | '.')) {
+        return false;
+    }
+    let mut after = line[end..].chars();
+    !matches!((after.next(), after.next()), (Some('-' | '.'), Some(c)) if c.is_ascii_alphanumeric())
+}
+
+/// The rename, compiled once for every line of every file it touches.
+struct Rekey<'a> {
+    re: regex::Regex,
+    to: &'a str,
+    renumber: &'a std::collections::BTreeMap<i64, i64>,
+}
+
+impl<'a> Rekey<'a> {
+    fn new(from: &str, to: &'a str, renumber: &'a std::collections::BTreeMap<i64, i64>) -> Self {
+        let re = regex::Regex::new(&format!(r"\b{}-([1-9][0-9]*)\b", regex::escape(from))).unwrap();
+        Rekey { re, to, renumber }
+    }
+
+    /// The key `FROM-seq` moves to.
+    fn key(&self, seq: i64) -> String {
+        format!("{}-{}", self.to, self.renumber.get(&seq).copied().unwrap_or(seq))
+    }
+
+    /// Rewrite every reference in one line of running text.
+    fn refs(&self, line: &str) -> String {
+        self.re
+            .replace_all(line, |caps: &regex::Captures| {
+                let m = caps.get(0).unwrap();
+                if !is_key_reference(line, m.start(), m.end()) {
+                    return m.as_str().to_string();
+                }
+                match caps[1].parse::<i64>() {
+                    Ok(seq) => self.key(seq),
+                    Err(_) => m.as_str().to_string(),
+                }
+            })
+            .into_owned()
+    }
+
+    /// Rewrite a whole issue file, by its structure: in the frontmatter only
+    /// the `key:` and `links:` values hold references, and below it only the
+    /// title, the body and the comment bodies do. A comment heading is an
+    /// author and a timestamp, and is left alone whatever it looks like.
+    fn text(&self, text: &str) -> String {
+        let mut out = String::with_capacity(text.len() + 16);
+        let mut in_frontmatter = false;
+        let mut seen_fence = false;
+        for raw in text.split_inclusive('\n') {
+            let line = raw.trim_end_matches('\n').trim_end_matches('\r');
+            let eol = &raw[line.len()..];
+            let rewritten = if !seen_fence {
+                seen_fence = true;
+                if line.trim_end() == "---" {
+                    in_frontmatter = true;
+                    line.to_string()
+                } else {
+                    self.refs(line)
+                }
+            } else if in_frontmatter {
+                if line.trim_end() == "---" {
+                    in_frontmatter = false;
+                    line.to_string()
+                } else {
+                    match line.split_once(':').map(|(k, _)| k.trim()) {
+                        Some("key" | "links") => self.refs(line),
+                        _ => line.to_string(),
+                    }
+                }
+            } else if comment_head(line).is_some() {
+                line.to_string()
+            } else {
+                self.refs(line)
+            };
+            out.push_str(&rewritten);
+            out.push_str(eol);
+        }
+        out
+    }
+
+    /// What `parse_issue_file` has to return for the rewritten file, derived
+    /// from the parse of the original rather than from the bytes we wrote.
+    /// Every field a reference cannot live in (uid, status, timestamps, the
+    /// comment authors and dates, the unknown lines) is carried over as it
+    /// was, so a rewrite that strayed outside the references is caught.
+    fn expect(&self, f: &IssueFile, new_key: &str) -> IssueFile {
+        let (_, new_seq) = parse_key(new_key).expect("a planned key parses");
+        let mut links: Vec<String> = Vec::new();
+        for l in &f.links {
+            let l = self.refs(l);
+            if l != new_key && !links.contains(&l) {
+                links.push(l);
+            }
+        }
+        let lines = |s: &str| s.lines().map(|l| self.refs(l)).collect::<Vec<_>>().join("\n");
+        IssueFile {
+            key: new_key.to_string(),
+            seq: new_seq,
+            title: self.refs(&f.title),
+            body: lines(&f.body),
+            comments: f
+                .comments
+                .iter()
+                .map(|c| IssueComment { body: lines(&c.body), ..c.clone() })
+                .collect(),
+            links,
+            ..f.clone()
+        }
+    }
+}
+
+/// Rewrite every `FROM-n` this text uses as an issue key into `TO-n` (or
+/// `TO-m`, for the seqs `renumber` maps) — the `key:` line, the `links:`
+/// line, and any `[[FROM-n]]` or bare `FROM-n` the title, body or a comment
+/// refers to. See `Rekey::text` for what is and is not a reference.
+///
+/// Byte-level, for the reason `splice_uid` is: a parse/serialize round trip
+/// drops the trailing `# backlog|todo|…` comments the README teaches people to
+/// write, normalizes whitespace and rewrites CRLF. Renaming a file is not a
+/// licence to reformat it.
+pub fn rekey_text(
+    text: &str,
+    from: &str,
+    to: &str,
+    renumber: &std::collections::BTreeMap<i64, i64>,
+) -> String {
+    Rekey::new(from, to, renumber).text(text)
+}
+
+/// Read the directory and decide what a rename from `from` to `to` moves where,
+/// without touching anything.
+///
+/// A file whose number is already taken under `to` (this project's `DEM-7`
+/// meeting a shared `AGE-7` that is a different issue) takes the next free
+/// number instead of being refused. Both sides of a shared backlog number from
+/// 1 by their own counters, so in the one case this rename exists for, a
+/// collision is the normal shape, and a refusal there left the user with the
+/// instruction to rename and no way to follow it. New numbers start above
+/// every number in use under either key and above `seq_floor`, the project's
+/// own high-water mark, so a number a deleted issue once carried is not handed
+/// to a different issue.
+pub fn plan_rekey(root: &Path, from: &str, to: &str, seq_floor: i64) -> Result<RekeyPlan> {
+    if from == to {
+        return Ok(RekeyPlan::default());
+    }
+    let read = read_issue_dir(root)?;
+    plan_rekey_from(&read, from, to, seq_floor).map(|(p, _)| p)
+}
+
+fn plan_rekey_from<'a>(
+    read: &'a IssueDirRead,
+    from: &str,
+    to: &str,
+    seq_floor: i64,
+) -> Result<(RekeyPlan, Vec<&'a IssueFile>)> {
+    if read.missing {
+        bail!("this project's issues directory could not be read");
+    }
+    // A file under the old key that we cannot parse is one we cannot verify,
+    // and leaving it behind would split the backlog silently. One under any
+    // other key is not ours to move and is none of this operation's business.
+    let skipped_keys = read.skipped.iter().filter_map(|(n, r)| {
+        let stem = n.strip_suffix(".md")?;
+        parse_key(stem).map(|(p, s)| (p, s, n.as_str(), r.as_str()))
+    });
+    let mut taken: std::collections::BTreeSet<i64> = Default::default();
+    let mut max_seq = 0;
+    for (prefix, seq, name, reason) in skipped_keys {
+        if prefix == from {
+            bail!("{name} could not be read ({reason}); fix or remove it, then rename the key");
+        }
+        if prefix == to {
+            taken.insert(seq);
+            max_seq = max_seq.max(seq);
+        }
+    }
+    let mut ours: Vec<&IssueFile> = Vec::new();
+    for f in &read.issues {
+        match parse_key(&f.key) {
+            Some((p, seq)) if p == from => {
+                ours.push(f);
+                max_seq = max_seq.max(seq);
+            }
+            Some((p, seq)) if p == to => {
+                taken.insert(seq);
+                max_seq = max_seq.max(seq);
+            }
+            _ => {}
+        }
+    }
+    let mut next = seq_floor.max(max_seq + 1);
+    let mut plan = RekeyPlan::default();
+    for f in &ours {
+        let mv = if taken.contains(&f.seq) {
+            let mv = KeyMove { from: f.key.clone(), to: format!("{to}-{next}") };
+            next += 1;
+            plan.renumbered.push(mv.clone());
+            mv
+        } else {
+            KeyMove { from: f.key.clone(), to: format!("{to}-{}", f.seq) }
+        };
+        plan.moves.push(mv);
+    }
+    Ok((plan, ours))
+}
+
+/// A rename that happened, and enough to take it back.
+#[derive(Debug)]
+pub struct Rekeyed {
+    pub plan: RekeyPlan,
+    /// `(old path, new path, old bytes)` per file moved.
+    originals: Vec<(PathBuf, PathBuf, String)>,
+}
+
+impl Rekeyed {
+    /// Put every file back where it was, byte for byte. For the caller whose
+    /// own next step failed after the files had moved: an index that still
+    /// says `DEM` over files that now say `AGE` treats every one of them as
+    /// foreign and drops its row, so the files have to follow the index back.
+    pub fn restore(&self) -> Result<()> {
+        let mut left: Vec<String> = Vec::new();
+        for (src, dest, text) in &self.originals {
+            if let Err(e) = atomic_write(src, text) {
+                left.push(format!("{} ({e})", src.display()));
+                continue;
+            }
+            if let Err(e) = std::fs::remove_file(dest) {
+                left.push(format!("{} ({e})", dest.display()));
+            }
+        }
+        if left.is_empty() {
+            Ok(())
+        } else {
+            bail!("could not put back {}", left.join(", "))
+        }
+    }
+}
+
+/// Remove what a failed rename had written so far. Returns what it could not
+/// remove, so the error the caller raises can say "nothing was changed" only
+/// when that is true.
+fn remove_all(paths: &[PathBuf]) -> Vec<String> {
+    paths
+        .iter()
+        .filter_map(|p| match std::fs::remove_file(p) {
+            Ok(()) => None,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => Some(format!("{} ({e})", p.display())),
+        })
+        .collect()
+}
+
+fn unchanged_or(left: Vec<String>) -> String {
+    if left.is_empty() {
+        "nothing was changed".to_string()
+    } else {
+        format!("and {} could not be removed", left.join(", "))
+    }
+}
+
+/// Move this project's issue files from one key prefix to another, as
+/// `plan_rekey` lays it out.
+///
+/// Every new file is written and read back before a single old one is removed,
+/// so a failure part-way through leaves the directory exactly as it was. That
+/// is the rule for anything that rewrites a user's files, and it matters more
+/// than usual here: the alternative is a backlog half under each key, which is
+/// the state this whole function exists to get someone out of. The read-back
+/// is checked against what the *old* file parsed to, with only the reference
+/// fields allowed to differ, so a rewrite that strayed into a timestamp or a
+/// comment heading is refused rather than shipped.
+///
+/// The removals are part of that contract. An old file that cannot be removed
+/// used to be logged and counted as moved: the index then took the new key,
+/// and the file left behind read as a foreign one the next sync nagged about,
+/// with advice that led straight back to a refusal. Now a removal that fails
+/// puts everything back and reports it.
+pub fn rekey_issue_files(root: &Path, from: &str, to: &str, seq_floor: i64) -> Result<Rekeyed> {
+    if from == to {
+        return Ok(Rekeyed { plan: RekeyPlan::default(), originals: Vec::new() });
+    }
+    let read = read_issue_dir(root)?;
+    let (plan, ours) = plan_rekey_from(&read, from, to, seq_floor)?;
+    let renumber: std::collections::BTreeMap<i64, i64> = plan
+        .renumbered
+        .iter()
+        .filter_map(|m| Some((parse_key(&m.from)?.1, parse_key(&m.to)?.1)))
+        .collect();
+    let rekey = Rekey::new(from, to, &renumber);
+
+    // (source, destination, original bytes, rewritten bytes, expected parse)
+    let mut moves: Vec<(PathBuf, PathBuf, String, String, IssueFile)> = Vec::new();
+    for (f, mv) in ours.iter().zip(&plan.moves) {
+        let dest = issue_path(root, &mv.to);
+        if dest.exists() {
+            bail!("{}.md already exists here, so {} cannot take that name", mv.to, mv.from);
+        }
+        let src = issue_path(root, &mv.from);
+        let text = std::fs::read_to_string(&src)?;
+        let rewritten = rekey.text(&text);
+        moves.push((src, dest, text, rewritten, rekey.expect(f, &mv.to)));
+    }
+
+    let mut written: Vec<PathBuf> = Vec::new();
+    for (_, dest, _, rewritten, want) in &moves {
+        let stem = dest.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+        if let Err(e) = atomic_write(dest, rewritten) {
+            let left = remove_all(&written);
+            bail!("could not write {stem}.md ({e}); {}", unchanged_or(left));
+        }
+        written.push(dest.clone());
+        match std::fs::read_to_string(dest)
+            .map_err(anyhow::Error::from)
+            .and_then(|t| parse_issue_file(&stem, &t))
+        {
+            Ok(got) if got == *want => {}
+            Ok(_) => {
+                let left = remove_all(&written);
+                bail!(
+                    "{stem}.md did not read back as the issue it was renamed from; {}",
+                    unchanged_or(left)
+                );
+            }
+            Err(e) => {
+                let left = remove_all(&written);
+                bail!("{stem}.md could not be read back ({e}); {}", unchanged_or(left));
+            }
+        }
+    }
+
+    // Every new file is on disk and verified; only now is anything removed.
+    for (i, (src, _, _, _, _)) in moves.iter().enumerate() {
+        if let Err(e) = std::fs::remove_file(src) {
+            let mut left: Vec<String> = Vec::new();
+            for (s, _, text, _, _) in &moves[..i] {
+                if let Err(e) = atomic_write(s, text) {
+                    left.push(format!("{} ({e})", s.display()));
+                }
+            }
+            left.extend(remove_all(&written));
+            bail!("could not remove {} ({e}); {}", src.display(), unchanged_or(left));
+        }
+    }
+    Ok(Rekeyed {
+        plan,
+        originals: moves.into_iter().map(|(src, dest, text, _, _)| (src, dest, text)).collect(),
+    })
+}
+
 /// Stat-only pass over the issues dir — `(filename, mtime, size)` per issue-
 /// shaped file, no reads. Polls diff this signature and reconcile only on
 /// change, so an idle board costs one readdir per tick. Flat directory: no
@@ -836,6 +1246,12 @@ pub struct ReconcileSummary {
     /// rows, if any, are kept — absence drops rows, corruption doesn't (a
     /// half-written agent edit must not vanish an issue from the board).
     pub skipped: Vec<(String, String)>,
+    /// Files ignored because their key prefix is not this project's, as
+    /// `(prefix, count)`, most files first. Reconcile only ever logged these,
+    /// which made a sync that pulled 186 issues keyed `AGE` into a project
+    /// keyed `AGN` report a clean success over an empty board. The caller is
+    /// the only layer that can do anything about it, so it has to be told.
+    pub foreign: Vec<(String, usize)>,
 }
 
 /// Make the project's index rows follow its issue files. A row keyed by a seq
@@ -893,13 +1309,15 @@ pub fn reconcile(
     });
 
     let mut seen = std::collections::HashSet::new();
+    let mut foreign: std::collections::BTreeMap<String, usize> = Default::default();
     for f in &read.issues {
-        if parse_key(&f.key).is_none_or(|(prefix, _)| prefix != issue_key) {
-            log::warn!(
-                "issue file {}.md ignored: key prefix does not match project key {issue_key}",
-                f.key
-            );
-            continue;
+        match parse_key(&f.key) {
+            Some((prefix, _)) if prefix == issue_key => {}
+            Some((prefix, _)) => {
+                *foreign.entry(prefix.to_string()).or_default() += 1;
+                continue;
+            }
+            None => continue,
         }
         seen.insert(f.seq);
         reg.ensure_issue_seq_at_least(project_id, f.seq)?;
@@ -977,6 +1395,14 @@ pub fn reconcile(
             reg.delete_issue(&row.id)?;
             summary.dropped += 1;
         }
+    }
+    // One line per pass, not one per file: this used to log 186 warnings every
+    // time the board polled, which buried everything else in the log and was
+    // the only place the problem was stated at all.
+    summary.foreign = foreign.into_iter().collect();
+    summary.foreign.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    for (prefix, n) in &summary.foreign {
+        log::warn!("{n} issue files keyed {prefix} ignored: this project's key is {issue_key}");
     }
     Ok(summary)
 }
@@ -1653,6 +2079,186 @@ owner: nic\nepic: platform\n---\n# Five\n\nBody with an ![](assets/a.png).\n\
         std::fs::write(root.join(ISSUES_DIR).join("XYZ-2.md"), "garbage").unwrap();
         let s = reconcile(&reg, "p1", "AGE", root).unwrap();
         assert!(s.skipped.is_empty());
+    }
+
+    /// Ignoring a file is a decision the caller has to be able to see. This
+    /// went unreported for as long as it existed, which is how a sync that
+    /// pulled a whole backlog into a project keyed differently reported
+    /// success over an empty board.
+    #[test]
+    fn reconcile_reports_the_files_it_ignored() {
+        let db = tempfile::tempdir().unwrap();
+        let reg = Registry::open(&db.path().join("r.db")).unwrap();
+        let root_dir = tempfile::tempdir().unwrap();
+        let root = root_dir.path();
+
+        write_issue(root, "AGE-1", "todo", "Theirs one");
+        write_issue(root, "AGE-2", "todo", "Theirs two");
+        write_issue(root, "XYZ-9", "todo", "Someone else's");
+        let s = reconcile(&reg, "p1", "AGN", root).unwrap();
+
+        assert_eq!(s.imported, 0, "nothing here is this project's");
+        // Most files first, so the caller can name the one that matters.
+        assert_eq!(s.foreign, vec![("AGE".to_string(), 2), ("XYZ".to_string(), 1)]);
+        assert_eq!(adoptable_key(0, &s.foreign), None, "two keys is not a decision to make alone");
+        assert_eq!(adoptable_key(0, &s.foreign[..1]), Some("AGE"));
+        assert_eq!(
+            adoptable_key(3, &s.foreign[..1]),
+            None,
+            "a project with its own issues chooses"
+        );
+    }
+
+    #[test]
+    fn rekey_moves_only_the_keys_that_are_references() {
+        let none = std::collections::BTreeMap::new();
+        let text = "---\nkey: AGN-3\nlinks: AGN-4, AGE-1\n---\n# T\n\nSee [[AGN-4]] and AGN-40, \
+                    not MAGN-3 or AGN-3x.\n";
+        let got = rekey_text(text, "AGN", "AGE", &none);
+        assert!(got.contains("key: AGE-3"));
+        assert!(got.contains("links: AGE-4, AGE-1"), "a link to our own old key did not follow");
+        assert!(got.contains("[[AGE-4]]"));
+        assert!(got.contains("AGE-40"), "a longer seq is still a key");
+        assert!(got.contains("MAGN-3"), "a word ending in the key was rewritten");
+        assert!(got.contains("AGN-3x"), "a token that is not a key was rewritten");
+    }
+
+    /// The characters a key is made of also make up dates, uuids and
+    /// filenames, and `-` is a word boundary. A project keyed `2026` had its
+    /// timestamps rewritten on rename, which refused the rename with a message
+    /// blaming the file and, for the comment headings, silently folded every
+    /// comment into the body. An attachment path was rewritten the same way
+    /// while the attachment itself stayed put.
+    #[test]
+    fn rekey_leaves_dates_uuids_headings_and_paths_alone() {
+        let none = std::collections::BTreeMap::new();
+        let text = "---\nkey: 2026-3\nuid: 20262026-1234-4123-8123-123456789012\nstatus: todo\n\
+                    due: 2026-11-01\nupdated: 2026-11-01T00:00:00Z\n---\n# Fix 2026-4\n\n\
+                    Broke on 2026-12-31. See [[2026-4]] and ![](assets/2026-3-shot.png) \
+                    and 2026-3.png, also 2026-3.\n\n## nic · 2026-10-01T10:00:00Z\n\n\
+                    Still 2026-4 here.\n";
+        let got = rekey_text(text, "2026", "AGE", &none);
+        assert!(got.contains("key: AGE-3"));
+        assert!(got.contains("uid: 20262026-1234-4123-8123-123456789012"), "{got}");
+        assert!(got.contains("due: 2026-11-01"), "{got}");
+        assert!(got.contains("updated: 2026-11-01T00:00:00Z"), "{got}");
+        assert!(got.contains("# Fix AGE-4"), "{got}");
+        assert!(got.contains("Broke on 2026-12-31."), "a date in the body was rewritten: {got}");
+        assert!(got.contains("[[AGE-4]]"), "{got}");
+        assert!(got.contains("assets/2026-3-shot.png"), "an attachment path moved: {got}");
+        assert!(got.contains("2026-3.png"), "a filename was rewritten: {got}");
+        assert!(got.contains("also AGE-3."), "a reference ending a sentence was skipped: {got}");
+        assert!(got.contains("## nic · 2026-10-01T10:00:00Z"), "a comment heading: {got}");
+        assert!(got.contains("Still AGE-4 here."), "{got}");
+        // The proof that matters: the rewritten file parses to the same issue
+        // with its references moved and nothing else touched.
+        let before = parse_issue_file("2026-3", text).unwrap();
+        let after = parse_issue_file("AGE-3", &got).unwrap();
+        assert_eq!(after.comments.len(), 1, "a comment folded into the body");
+        assert_eq!(after.comments[0].created_at, before.comments[0].created_at);
+        assert_eq!((after.due, after.updated_at), (before.due, before.updated_at));
+        assert_eq!(after.uid, before.uid);
+    }
+
+    #[test]
+    fn rekey_renumbers_the_seqs_it_is_told_to() {
+        let renumber = [(7, 9)].into_iter().collect();
+        let got = rekey_text(
+            "---\nkey: AGN-8\nlinks: AGN-7\n---\n# T\n\nAGN-7 AGN-8\n",
+            "AGN",
+            "AGE",
+            &renumber,
+        );
+        assert_eq!(got, "---\nkey: AGE-8\nlinks: AGE-9\n---\n# T\n\nAGE-9 AGE-8\n");
+    }
+
+    #[test]
+    fn rekeying_files_is_all_or_nothing() {
+        let root_dir = tempfile::tempdir().unwrap();
+        let root = root_dir.path();
+        write_issue(root, "AGN-1", "todo", "One");
+        write_issue(root, "AGN-2", "todo", "Two");
+        write_issue(root, "AGE-7", "todo", "Already theirs");
+
+        let done = rekey_issue_files(root, "AGN", "AGE", 1).unwrap();
+        assert_eq!(done.plan.moves.len(), 2);
+        assert!(done.plan.renumbered.is_empty());
+        assert!(issue_path(root, "AGE-1").exists() && issue_path(root, "AGE-2").exists());
+        assert!(!issue_path(root, "AGN-1").exists(), "the old file was left behind");
+        assert!(issue_path(root, "AGE-7").exists(), "a file we do not own was touched");
+        let one =
+            parse_issue_file("AGE-1", &std::fs::read_to_string(issue_path(root, "AGE-1")).unwrap())
+                .unwrap();
+        assert_eq!(one.key, "AGE-1");
+        assert_eq!(one.title, "One");
+
+        // A file under the old key that cannot be verified refuses the whole
+        // rename: the half that could have moved must not move, or the backlog
+        // ends up under two keys.
+        write_issue(root, "AGE-3", "todo", "Three");
+        std::fs::write(issue_path(root, "AGE-4"), "---\nkey: AGE-4\n---\n# no status\n").unwrap();
+        let err = rekey_issue_files(root, "AGE", "AGN", 1).unwrap_err().to_string();
+        assert!(err.contains("AGE-4.md"), "the refusal did not name the file: {err}");
+        assert!(issue_path(root, "AGE-1").exists() && issue_path(root, "AGE-3").exists());
+        assert!(!issue_path(root, "AGN-1").exists(), "a file moved despite the refusal");
+    }
+
+    /// Both sides of a shared backlog number from 1 by their own counters, so
+    /// the rename that joins them collides on the low numbers as a rule. A
+    /// refusal there left the user holding advice they could not follow.
+    #[test]
+    fn rekeying_renumbers_a_file_whose_number_is_taken() {
+        let root_dir = tempfile::tempdir().unwrap();
+        let root = root_dir.path();
+        write_issue(root, "AGE-7", "todo", "Already theirs");
+        write_issue(root, "AGN-7", "todo", "Collides");
+        std::fs::write(
+            issue_path(root, "AGN-8"),
+            "---\nkey: AGN-8\nstatus: todo\nlinks: AGN-7\n---\n# Links to the collision\n\nSee [[AGN-7]].\n",
+        )
+        .unwrap();
+
+        let plan = plan_rekey(root, "AGN", "AGE", 1).unwrap();
+        assert_eq!(
+            plan.renumbered,
+            vec![KeyMove { from: "AGN-7".into(), to: "AGE-9".into() }],
+            "the next free number is above every number in use under either key"
+        );
+        assert!(issue_path(root, "AGN-7").exists(), "planning moved something");
+
+        let done = rekey_issue_files(root, "AGN", "AGE", 1).unwrap();
+        assert_eq!(done.plan, plan);
+        let seven = std::fs::read_to_string(issue_path(root, "AGE-7")).unwrap();
+        assert!(seven.contains("Already theirs"), "the collision was overwritten");
+        let nine =
+            parse_issue_file("AGE-9", &std::fs::read_to_string(issue_path(root, "AGE-9")).unwrap())
+                .unwrap();
+        assert_eq!(nine.title, "Collides");
+        let eight =
+            parse_issue_file("AGE-8", &std::fs::read_to_string(issue_path(root, "AGE-8")).unwrap())
+                .unwrap();
+        assert_eq!(
+            eight.links,
+            vec!["AGE-9"],
+            "a link to the renumbered issue still names the old number"
+        );
+        assert!(eight.body.contains("[[AGE-9]]"), "{}", eight.body);
+        assert!(!issue_path(root, "AGN-7").exists() && !issue_path(root, "AGN-8").exists());
+
+        // The project's own counter is a floor: a number a deleted issue once
+        // carried is never handed to a different issue.
+        write_issue(root, "AGN-1", "todo", "Late");
+        write_issue(root, "AGE-1", "todo", "Taken");
+        let plan = plan_rekey(root, "AGN", "AGE", 40).unwrap();
+        assert_eq!(plan.renumbered[0].to, "AGE-40");
+
+        // And the whole thing comes back on request, byte for byte.
+        let before = std::fs::read_to_string(issue_path(root, "AGN-1")).unwrap();
+        let done = rekey_issue_files(root, "AGN", "AGE", 40).unwrap();
+        assert!(issue_path(root, "AGE-40").exists());
+        done.restore().unwrap();
+        assert!(!issue_path(root, "AGE-40").exists(), "restore left the new file");
+        assert_eq!(std::fs::read_to_string(issue_path(root, "AGN-1")).unwrap(), before);
     }
 
     #[test]

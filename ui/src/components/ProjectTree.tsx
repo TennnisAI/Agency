@@ -16,6 +16,7 @@ import CloneDialog from "./CloneDialog";
 import SidebarToggle from "./SidebarToggle";
 import WorkspaceCreateDialog from "./WorkspaceCreateDialog";
 import { WORKSPACE_HIDDEN_EVENT, workspaceHidden } from "../lib/workspacePref";
+import { PROJECTS_CHANGED_EVENT } from "../lib/projectEvents";
 
 type Pending = { project: Project } | null;
 
@@ -98,8 +99,13 @@ export default function ProjectTree({
   const [wsHidden, setWsHidden] = useState(workspaceHidden());
   useEffect(() => {
     const onChange = () => { setWsHidden(workspaceHidden()); void refresh(); };
+    const onProjects = () => { void refresh(); };
     window.addEventListener(WORKSPACE_HIDDEN_EVENT, onChange);
-    return () => window.removeEventListener(WORKSPACE_HIDDEN_EVENT, onChange);
+    window.addEventListener(PROJECTS_CHANGED_EVENT, onProjects);
+    return () => {
+      window.removeEventListener(WORKSPACE_HIDDEN_EVENT, onChange);
+      window.removeEventListener(PROJECTS_CHANGED_EVENT, onProjects);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

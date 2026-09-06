@@ -321,6 +321,14 @@ export interface IssueSyncConfig {
   remote: string;
   remotes: string[];
   fromRepo: boolean;
+  /** This project's issue key prefix (`AGE` in `AGE-14`). */
+  issueKey: string;
+  /**
+   * Names of other projects already on this key. Allowed on purpose — two
+   * checkouts of one repo sharing one backlog need the same key — but a
+   * `[[AGE-14]]` wikilink can then only resolve to one of them.
+   */
+  keySharedWith: string[];
 }
 // Whole-file last-writer-wins is not what happens; the merge is field by field,
 // and a conflict is one field of one issue that both sides changed.
@@ -352,13 +360,57 @@ export const saveIssueSyncConfig = (
   auto: boolean,
   remote: string,
 ) => invoke<void>("save_issue_sync_config", { projectId, sync, auto, remote });
+/** One file's move under a key rename: `DEM-7` to `AGE-7`, or to `AGE-9`
+ * when `AGE-7` was already someone else's. */
+export interface KeyMove {
+  from: string;
+  to: string;
+}
+/**
+ * What a key rename does to the issue files. `renumbered` is the subset that
+ * also took a new number because the old one was taken under the new key; an
+ * issue's identity is its uid, and every link to it is rewritten in the same
+ * pass, so nothing is lost, but the user should hear the new numbers.
+ */
+export interface RekeyPlan {
+  moves: KeyMove[];
+  renumbered: KeyMove[];
+}
+/** What `setProjectIssueKey` would do, for the dialog that asks first. */
+export interface IssueKeyPreview {
+  /** The key as it would be stored: trimmed and upper-cased. */
+  key: string;
+  current: string;
+  plan: RekeyPlan;
+  /** Other projects already on `key`. Allowed, and said. */
+  sharedWith: string[];
+}
+export const previewIssueKey = (projectId: string, key: string) =>
+  invoke<IssueKeyPreview>("preview_issue_key", { projectId, key });
+/** Renames the project's issue files onto `key`; resolves with what moved where. */
+export const setProjectIssueKey = (projectId: string, key: string) =>
+  invoke<RekeyPlan>("set_project_issue_key", { projectId, key });
 // "Needs seeding" is an outcome, not an error: two already-populated machines
 // with no history in common is a question for the user (which side seeds the
 // other), and the UI has to tell it apart from a broken remote without reading
 // an error string.
 export type IssueSyncResult =
-  | { kind: "done"; outcome: IssueSyncOutcome }
+  | { kind: "done"; outcome: IssueSyncOutcome; keyMismatch: KeyMismatch | null }
   | { kind: "needsSeeding"; local: number; remote: number };
+
+/**
+ * The pass merged issue files whose key prefix this project does not use, so
+ * they are on disk and off the board. `adopted` means the project had no
+ * issues of its own and has been moved onto the shared tracker's key; false
+ * means both keys hold real issues and only the user can say which this
+ * project is.
+ */
+export interface KeyMismatch {
+  ours: string;
+  theirs: string;
+  count: number;
+  adopted: boolean;
+}
 
 // Streamed, like the git commands: a pass fetches, reads one blob per issue per
 // tree, then pushes, so it is seconds on a real backlog and the board shows a

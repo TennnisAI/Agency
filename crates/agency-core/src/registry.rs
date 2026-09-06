@@ -1,5 +1,5 @@
-use anyhow::{Context, Result};
-use rusqlite::Connection;
+use anyhow::{bail, Context, Result};
+use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
@@ -493,6 +493,54 @@ impl Registry {
             )?;
         }
         Ok(())
+    }
+
+    /// Point this project's issues at a different key prefix. The caller has
+    /// already moved the files (`issuefs::rekey_issue_files`); this is the
+    /// index's half, in one transaction.
+    ///
+    /// `renumbered` is `(old seq, new seq)` for every file the rename had to
+    /// give a new number, and their rows move with them. Left where they were,
+    /// reconcile found the file at the old number carrying someone else's
+    /// uid, kept the row's id for it, and then met the same id again at the
+    /// new number: `UNIQUE constraint failed: issues.id`, with the board
+    /// refusing to load until the index was rebuilt. Every new number is above
+    /// every number in use, so the moves cannot collide with each other.
+    pub fn set_issue_key(
+        &self,
+        project_id: &str,
+        key: &str,
+        renumbered: &[(i64, i64)],
+    ) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        let n = tx.execute(
+            "UPDATE projects SET issue_key = ?2 WHERE id = ?1",
+            rusqlite::params![project_id, key],
+        )?;
+        if n == 0 {
+            bail!("no such project: {project_id}");
+        }
+        for (old, new) in renumbered {
+            tx.execute(
+                "UPDATE issues SET seq = ?3 WHERE project_id = ?1 AND seq = ?2",
+                rusqlite::params![project_id, old, new],
+            )?;
+            self.ensure_issue_seq_at_least_in(&tx, project_id, *new)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Every project already using `key`, other than `except`. Not a
+    /// constraint: two projects may share a key deliberately (two checkouts of
+    /// one repo, sharing one backlog, is the case this was added for). The
+    /// caller shows it, and the user decides.
+    pub fn projects_using_issue_key(&self, key: &str, except: &str) -> Result<Vec<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT name FROM projects WHERE issue_key = ?1 AND id <> ?2 ORDER BY name")?;
+        let rows = stmt.query_map(rusqlite::params![key, except], |r| r.get::<_, String>(0))?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
     fn used_issue_keys(&self) -> Result<Vec<String>> {
@@ -1154,11 +1202,33 @@ impl Registry {
         )?)
     }
 
+    /// The number `alloc_issue_seq` would hand out next, without handing it
+    /// out. A key rename numbers the files it has to renumber from here, so a
+    /// number a deleted issue once carried is not given to a different one.
+    pub fn next_issue_seq(&self, project_id: &str) -> Result<i64> {
+        let next = self
+            .conn
+            .query_row("SELECT next FROM issue_seqs WHERE project_id = ?1", [project_id], |r| {
+                r.get::<_, i64>(0)
+            })
+            .optional()?;
+        Ok(next.unwrap_or(1))
+    }
+
     /// Raise the high-water mark so `seq` is never handed out again — an agent
     /// that filed `AGE-15.md` by hand consumed 15, whatever the counter said.
     /// Monotonic: never lowers `next`.
     pub fn ensure_issue_seq_at_least(&self, project_id: &str, seq: i64) -> Result<()> {
-        self.conn.execute(
+        self.ensure_issue_seq_at_least_in(&self.conn, project_id, seq)
+    }
+
+    fn ensure_issue_seq_at_least_in(
+        &self,
+        conn: &Connection,
+        project_id: &str,
+        seq: i64,
+    ) -> Result<()> {
+        conn.execute(
             "INSERT INTO issue_seqs (project_id, next) VALUES (?1, ?2 + 1)
              ON CONFLICT(project_id) DO UPDATE SET next = MAX(next, ?2 + 1)",
             rusqlite::params![project_id, seq],
@@ -1403,6 +1473,30 @@ pub fn backup_before_migrations(db_path: &Path, app_version: &str) -> Result<Opt
         .with_context(|| format!("opening db at {} to stamp version", db_path.display()))?;
     conn.pragma_update(None, "user_version", current)?;
     Ok(backup)
+}
+
+/// Normalize and check a hand-typed issue key, or say why it cannot be one.
+///
+/// The shape is `parse_key`'s prefix: ASCII letters and digits, which is what
+/// makes `{key}-{seq}.md` a filename and `[[KEY-14]]` a wikilink the frontend
+/// can tell from a note called `2026-07`. Upper-cased rather than rejected for
+/// case, because every key the app has ever derived is upper-case and the
+/// distinction would only ever be a way to get two keys that look identical.
+///
+/// The eight-character ceiling is `ISSUE_TARGET_RE` in `ui/src/lib/links.ts`:
+/// a longer key would produce issue labels that no wikilink could resolve.
+pub fn validate_issue_key(key: &str) -> Result<String> {
+    let key = key.trim().to_ascii_uppercase();
+    if key.is_empty() {
+        bail!("an issue key cannot be empty");
+    }
+    if !key.chars().all(|c| c.is_ascii_alphanumeric()) {
+        bail!("an issue key can only use letters and digits");
+    }
+    if key.len() > 8 {
+        bail!("an issue key can be at most 8 characters");
+    }
+    Ok(key)
 }
 
 /// Derive a project's 3-letter issue key from its name: word initials for
@@ -2309,6 +2403,16 @@ mod tests {
         let active: Vec<String> =
             reg.runs_for_issue(&issue.id).unwrap().into_iter().map(|r| r.id).collect();
         assert_eq!(active, vec!["x-2"]);
+    }
+
+    #[test]
+    fn a_hand_typed_issue_key_is_normalized_or_refused() {
+        assert_eq!(validate_issue_key(" age ").unwrap(), "AGE");
+        assert_eq!(validate_issue_key("1lb").unwrap(), "1LB", "keys may lead with a digit");
+        assert_eq!(validate_issue_key("ABCDEFGH").unwrap(), "ABCDEFGH");
+        for bad in ["", "   ", "ABCDEFGHI", "AG-E", "AG E", "AGÉ", "AG_E"] {
+            assert!(validate_issue_key(bad).is_err(), "accepted {bad:?}");
+        }
     }
 
     #[test]

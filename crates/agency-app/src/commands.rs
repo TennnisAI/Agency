@@ -1173,6 +1173,38 @@ pub fn save_issue_sync_config(
     state.save_issue_sync_config(&project_id, sync, auto, &remote).map_err(|e| e.to_string())
 }
 
+/// What `set_project_issue_key` would do, so the settings UI can say it
+/// before the user commits: which files move, which are renumbered, and which
+/// other projects already use the key.
+#[tauri::command]
+pub async fn preview_issue_key(
+    state: State<'_, AppState>,
+    project_id: String,
+    key: String,
+) -> Result<crate::state::IssueKeyPreview, String> {
+    state.preview_issue_key(&project_id, &key).map_err(|e| e.to_string())
+}
+
+/// Move this project's tracker onto a different key prefix, renaming its issue
+/// files and the references inside them. Returns what moved where.
+///
+/// Two projects may end up on one key deliberately — two checkouts of one repo
+/// sharing one backlog — so this does not refuse a key another project uses.
+///
+/// async, like `sync_issues`: its first act is taking the sync gate, and a
+/// scheduled pass holds that gate across a fetch and a push with no timeout.
+/// As a plain `fn` this ran on the main thread, so committing a key while a
+/// pass was in flight froze the window for as long as the remote took. The
+/// gate and the registry lock are the mutual exclusion the NOTE above asks for.
+#[tauri::command]
+pub async fn set_project_issue_key(
+    state: State<'_, AppState>,
+    project_id: String,
+    key: String,
+) -> Result<agency_core::issuefs::RekeyPlan, String> {
+    state.set_project_issue_key(&project_id, &key).map_err(|e| e.to_string())
+}
+
 /// Sync the backlog with the remote this project's config names.
 ///
 /// `mode` is `merge` in the steady state. Two already-populated machines

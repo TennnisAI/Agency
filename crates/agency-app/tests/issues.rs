@@ -448,3 +448,154 @@ fn links_patch_writes_the_file_and_survives_reconcile() {
     let listed = state.list_issues(&p.id).unwrap();
     assert_eq!(listed[0].links, vec!["DEM-2"], "hand-written link not indexed");
 }
+
+/// The state a second checkout of an already-shared project lands in. Its key
+/// is derived from its own folder name and shifted off any key already in use,
+/// so it does not match the backlog it is about to sync with — and every issue
+/// the sync pulls down is then a file the index refuses to import.
+///
+/// Observed for real: 186 files on disk, 0 rows in the index, and a sync that
+/// reported success over an empty board.
+#[test]
+fn a_shared_backlog_keyed_differently_is_adopted_rather_than_hidden() {
+    let dir = tempfile::tempdir().unwrap();
+
+    // The machine that owns the backlog publishes it, keyed AGE.
+    let origin = dir.path().join("origin.git");
+    std::fs::create_dir_all(&origin).unwrap();
+    assert!(Command::new("git")
+        .args(["init", "-q", "--bare"])
+        .current_dir(&origin)
+        .status()
+        .unwrap()
+        .success());
+    let url = origin.to_string_lossy().to_string();
+
+    let first = dir.path().join("first");
+    std::fs::create_dir_all(&first).unwrap();
+    init_repo(&first);
+    agency_core::worktree::ensure_agency_excludes(&first).unwrap();
+    std::fs::create_dir_all(issues_dir(&first)).unwrap();
+    for (n, title) in [(1, "One"), (2, "Two")] {
+        std::fs::write(
+            issues_dir(&first).join(format!("AGE-{n}.md")),
+            format!(
+                "---\nkey: AGE-{n}\nuid: 1111111{n}-1111-4111-8111-111111111111\nstatus: todo\n\
+                 updated: 2026-09-01T00:00:00Z\n---\n# {title}\n"
+            ),
+        )
+        .unwrap();
+    }
+    agency_core::issueref::sync(&first, &url, agency_core::issuesync::Mode::Publish).unwrap();
+
+    // This machine adds the same project under a folder name that derives a
+    // different key, and points it at the shared backlog.
+    let repo = dir.path().join("second");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let project_id = {
+        let reg = Registry::open(&dir.path().join("agency.db")).unwrap();
+        reg.add_project("second", &repo).unwrap().id
+    };
+    agency_core::config::save_issues(
+        &repo,
+        &agency_core::config::IssuesConfig { sync: true, auto: false, remote: url.clone() },
+    )
+    .unwrap();
+
+    let state = common::state(&dir);
+    assert_ne!(state.issue_sync_config(&project_id).unwrap().issue_key, "AGE");
+
+    let res = state.sync_issues(&project_id, agency_core::issuesync::Mode::Merge, |_| {}).unwrap();
+    let agency_app_lib::SyncResult::Done { outcome, key_mismatch } = res else {
+        panic!("sync did not complete");
+    };
+    assert_eq!(outcome.written, 2, "the files did not arrive");
+
+    let km = key_mismatch.expect("a whole backlog under another key went unreported");
+    assert_eq!((km.theirs.as_str(), km.count, km.adopted), ("AGE", 2, true));
+    assert_eq!(state.issue_sync_config(&project_id).unwrap().issue_key, "AGE");
+
+    let rows = state.list_issues(&project_id).unwrap();
+    assert_eq!(rows.len(), 2, "the synced issues are still off the board");
+    let mut titles: Vec<&str> = rows.iter().map(|r| r.title.as_str()).collect();
+    titles.sort();
+    assert_eq!(titles, vec!["One", "Two"]);
+}
+
+/// A project holding its own issues has two real backlogs in one directory,
+/// and no automatic answer. It gets told, and the key setting is how it is
+/// answered — files and links moving together, board following.
+#[test]
+fn a_key_with_issues_on_both_sides_is_reported_and_then_settled_by_hand() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let project_id = {
+        let reg = Registry::open(&dir.path().join("agency.db")).unwrap();
+        reg.add_project("demo", &repo).unwrap().id
+    };
+
+    let state = common::state(&dir);
+    let mine = state.create_issue(&project_id, "Mine", "see DEM-2", IssueStatus::Todo).unwrap();
+    state.create_issue(&project_id, "Also mine", "", IssueStatus::Todo).unwrap();
+    assert_eq!(mine.seq, 1);
+
+    // A foreign-keyed file arrives the way a sync would land one.
+    std::fs::write(
+        issues_dir(&repo).join("AGE-9.md"),
+        "---\nkey: AGE-9\nuid: 99999999-9999-4999-8999-999999999999\nstatus: todo\n\
+         updated: 2026-09-01T00:00:00Z\n---\n# Theirs\n",
+    )
+    .unwrap();
+    assert_eq!(state.list_issues(&project_id).unwrap().len(), 2, "a foreign file became a row");
+
+    // The shared copy already has an AGE-2, which is what both sides numbering
+    // from 1 produces: the project's own DEM-2 takes the next free number
+    // rather than refusing the whole rename, and the reference to it follows.
+    std::fs::write(
+        issues_dir(&repo).join("AGE-2.md"),
+        "---\nkey: AGE-2\nuid: 22222222-2222-4222-8222-222222222222\nstatus: todo\n\
+         updated: 2026-09-01T00:00:00Z\n---\n# Theirs too\n",
+    )
+    .unwrap();
+
+    // Said before it happens: the preview is what the settings dialog shows.
+    let preview = state.preview_issue_key(&project_id, " age ").unwrap();
+    assert_eq!((preview.key.as_str(), preview.current.as_str()), ("AGE", "DEM"));
+    assert_eq!(preview.plan.moves.len(), 2);
+    assert_eq!(preview.plan.renumbered.len(), 1);
+    assert_eq!(preview.plan.renumbered[0].from, "DEM-2");
+    assert!(issues_dir(&repo).join("DEM-1.md").exists(), "a preview moved a file");
+
+    let done = state.set_project_issue_key(&project_id, "age").unwrap();
+    assert_eq!(done, preview.plan, "the rename did something other than it said it would");
+    let renumbered = done.renumbered[0].to.clone();
+    assert!(
+        renumbered.starts_with("AGE-") && renumbered != "AGE-2",
+        "the collision was not renumbered: {renumbered}"
+    );
+    assert_eq!(state.issue_sync_config(&project_id).unwrap().issue_key, "AGE");
+    let rows = state.list_issues(&project_id).unwrap();
+    assert_eq!(rows.len(), 4, "the board did not pick up both backlogs");
+    let one = rows.iter().find(|r| r.title == "Mine").unwrap();
+    assert!(
+        one.body.contains(&renumbered),
+        "a reference to a renumbered issue still names its old number: {}",
+        one.body
+    );
+    assert_eq!(
+        rows.iter().find(|r| r.title == "Theirs too").unwrap().seq,
+        2,
+        "the collision was overwritten"
+    );
+    assert!(issues_dir(&repo).join("AGE-1.md").exists());
+    assert!(!issues_dir(&repo).join("DEM-1.md").exists());
+    assert!(!issues_dir(&repo).join("DEM-2.md").exists());
+
+    // Shape is enforced; the files are not touched by a refusal.
+    assert!(state.set_project_issue_key(&project_id, "not a key").is_err());
+    assert_eq!(state.issue_sync_config(&project_id).unwrap().issue_key, "AGE");
+    assert_eq!(state.list_issues(&project_id).unwrap().len(), 4);
+}

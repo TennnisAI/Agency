@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createAutoSchedules } from "./autoSync";
+import { createAutoSchedules, shouldSayKeyMismatch } from "./autoSync";
 
 describe("autoSchedules", () => {
   it("keeps a pause and a pass time across the board's mounts", () => {
@@ -18,6 +18,7 @@ describe("autoSchedules", () => {
       paused: true,
       fails: 3,
       pushFailed: true,
+      keyMismatchSaid: null,
       lastPassAt: 1000,
       setting: true,
     });
@@ -39,5 +40,21 @@ describe("autoSchedules", () => {
     store.forProject("p1", true).paused = true;
     expect(store.forProject("p2", true).paused).toBe(false);
     expect(store.forProject("p1", true).paused).toBe(true);
+  });
+
+  it("says a key mismatch once on the schedule and every time by hand", () => {
+    // The regression: the mismatch is recomputed on every pass and the same
+    // one came back every two minutes, which is the toast people learn to
+    // dismiss unread. The push-failure rule a few lines below it already said
+    // why that must not happen.
+    const s = { keyMismatchSaid: null as string | null };
+    expect(shouldSayKeyMismatch(s, "AGE", true)).toBe(true);
+    expect(shouldSayKeyMismatch(s, "AGE", true)).toBe(false);
+    expect(shouldSayKeyMismatch(s, "AGE", false)).toBe(true);
+    // A different foreign key is different news.
+    expect(shouldSayKeyMismatch(s, "XYZ", true)).toBe(true);
+    // A clean pass resets it, so the same key coming back is said again.
+    expect(shouldSayKeyMismatch(s, null, true)).toBe(false);
+    expect(shouldSayKeyMismatch(s, "XYZ", true)).toBe(true);
   });
 });

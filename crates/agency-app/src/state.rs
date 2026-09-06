@@ -79,8 +79,31 @@ pub struct ProviderSettings {
 #[derive(Debug, serde::Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum SyncResult {
-    Done { outcome: agency_core::issueref::Outcome },
-    NeedsSeeding { local: usize, remote: usize },
+    Done {
+        outcome: agency_core::issueref::Outcome,
+        /// The pass merged files this project's key does not cover, so they
+        /// are on disk and off the board. `adopted` is set when the key was
+        /// taken on automatically; otherwise the user has to choose, and the
+        /// UI says so rather than reporting a clean sync over an empty board.
+        key_mismatch: Option<KeyMismatch>,
+    },
+    NeedsSeeding {
+        local: usize,
+        remote: usize,
+    },
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KeyMismatch {
+    /// This project's key, the one the files do not match.
+    pub ours: String,
+    /// The shared tracker's key, and how many files carry it.
+    pub theirs: String,
+    pub count: usize,
+    /// True when this pass moved the project onto `theirs` by itself, which it
+    /// only does for a project that had no issues of its own to strand.
+    pub adopted: bool,
 }
 
 /// A project's backlog-sharing config for the settings UI, plus the two facts
@@ -101,6 +124,29 @@ pub struct IssueSyncDto {
     /// The UI says so, because turning it off here is a local override of a
     /// decision the repo made, not a change everyone sees.
     pub from_repo: bool,
+    /// This project's issue key. Editable: it is derived from the project name
+    /// at creation and collision-shifted away from keys already in use, which
+    /// is the wrong answer whenever a shared backlog already has a key of its
+    /// own.
+    pub issue_key: String,
+    /// Other projects already on this key. Not a refusal — two checkouts of one
+    /// repo sharing one backlog is the case this exists for — but a wikilink
+    /// like `[[AGE-14]]` can then only resolve to one of them, so the UI says
+    /// so before the user commits to it.
+    pub key_shared_with: Vec<String>,
+}
+
+/// What a key rename would do, for the settings UI to say before it happens.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IssueKeyPreview {
+    /// The key as it would be stored: trimmed and upper-cased.
+    pub key: String,
+    /// The key the project has now.
+    pub current: String,
+    pub plan: agency_core::issuefs::RekeyPlan,
+    /// Other projects already on `key`. Allowed, and said.
+    pub shared_with: Vec<String>,
 }
 
 /// A project's effective knowledge-graph config for the settings UI. Command
@@ -3963,13 +4009,106 @@ impl AppState {
     pub fn issue_sync_config(&self, project_id: &str) -> Result<IssueSyncDto> {
         let repo = self.project_repo(project_id)?;
         let cfg = agency_core::config::load(&repo).issues;
+        // `git remote` before the registry lock, not under it: the board polls
+        // the registry every 1.5s and a git call has no business holding it.
+        let remotes = agency_core::git::remotes(&repo).unwrap_or_default();
+        let reg = self.registry.lock().unwrap();
+        let (_, issue_key) = self.issue_root(&reg, project_id)?;
+        let key_shared_with = reg.projects_using_issue_key(&issue_key, project_id)?;
         Ok(IssueSyncDto {
             sync: cfg.sync,
             auto: cfg.auto,
             remote: cfg.remote,
-            remotes: agency_core::git::remotes(&repo).unwrap_or_default(),
+            remotes,
             from_repo: agency_core::config::issue_sync_declared_by_repo(&repo),
+            issue_key,
+            key_shared_with,
         })
+    }
+
+    /// What renaming this project's key to `key` would do, for the settings
+    /// UI to say before the user commits: the normalized key, every file that
+    /// moves and the ones that also take a new number, and the projects
+    /// already on that key. Reads only; `set_project_issue_key` plans again
+    /// from the directory as it is when it runs.
+    pub fn preview_issue_key(&self, project_id: &str, key: &str) -> Result<IssueKeyPreview> {
+        let key = agency_core::registry::validate_issue_key(key)?;
+        let reg = self.registry.lock().unwrap();
+        self.ensure_issue_files(&reg, project_id)?;
+        let (root, current) = self.issue_root(&reg, project_id)?;
+        let shared_with = reg.projects_using_issue_key(&key, project_id)?;
+        let plan = if current == key {
+            Default::default()
+        } else {
+            let floor = reg.next_issue_seq(project_id)?;
+            agency_core::issuefs::plan_rekey(&root, &current, &key, floor)?
+        };
+        Ok(IssueKeyPreview { key, current, plan, shared_with })
+    }
+
+    /// Point this project's tracker at a different key prefix: its files move
+    /// from `AGN-14.md` to `AGE-14.md`, and every reference *within those
+    /// files* moves with them.
+    ///
+    /// Files first, index second, and the files are all-or-nothing
+    /// (`issuefs::rekey_issue_files`), so a refusal leaves the project exactly
+    /// as it was. If the index then refuses the new key the files are put
+    /// back, because the two disagreeing is the one state neither side
+    /// recovers from: reconcile under the old key reads every renamed file as
+    /// foreign and drops its row. References from *other* projects' issues and
+    /// from notes are not rewritten — they name a key that is no longer this
+    /// project's, which is a thing the UI has to say rather than a thing this
+    /// can fix.
+    pub fn set_project_issue_key(
+        &self,
+        project_id: &str,
+        key: &str,
+    ) -> Result<agency_core::issuefs::RekeyPlan> {
+        let key = agency_core::registry::validate_issue_key(key)?;
+        let _sync_gate = self.issue_sync_gate.lock().unwrap();
+        let reg = self.registry.lock().unwrap();
+        self.ensure_issue_files(&reg, project_id)?;
+        let (root, current) = self.issue_root(&reg, project_id)?;
+        if current == key {
+            return Ok(Default::default());
+        }
+        let floor = reg.next_issue_seq(project_id)?;
+        let done = agency_core::issuefs::rekey_issue_files(&root, &current, &key, floor)?;
+        let renumbered: Vec<(i64, i64)> = done
+            .plan
+            .renumbered
+            .iter()
+            .filter_map(|m| {
+                Some((
+                    agency_core::issuefs::parse_key(&m.from)?.1,
+                    agency_core::issuefs::parse_key(&m.to)?.1,
+                ))
+            })
+            .collect();
+        if let Err(e) = reg.set_issue_key(project_id, &key, &renumbered) {
+            return Err(match done.restore() {
+                Ok(()) => e.context("the index refused the new key; the files were put back"),
+                Err(undo) => e.context(format!(
+                    "the index refused the new key and the files could not all be put back \
+                     ({undo}); this project's issue files are under {key} and its index \
+                     under {current}, and renaming to {key} again will repair it"
+                )),
+            });
+        }
+        // The rename went behind the index's back on both counts: the rows are
+        // keyed by the old seq/prefix and the stat signature no longer means
+        // what it did. Files and index now agree, so a reconcile that fails
+        // here is the next poll's to retry, not a failed rename.
+        self.issue_sigs.lock().unwrap().remove(project_id);
+        if let Err(e) = agency_core::issuefs::reconcile(&reg, project_id, &key, &root) {
+            log::warn!("reconcile after renaming {current} -> {key} for {project_id}: {e}");
+        }
+        log::info!(
+            "project {project_id} issue key {current} -> {key} ({} files, {} renumbered)",
+            done.plan.moves.len(),
+            done.plan.renumbered.len()
+        );
+        Ok(done.plan)
     }
 
     /// Persist this project's backlog-sharing settings to its local config.
@@ -4050,8 +4189,45 @@ impl AppState {
             detail: String::new(),
         });
         let reg = self.registry.lock().unwrap();
-        agency_core::issuefs::reconcile(&reg, project_id, &key, &root)?;
-        Ok(SyncResult::Done { outcome })
+        let summary = agency_core::issuefs::reconcile(&reg, project_id, &key, &root)?;
+
+        // A merge that lands files this project's key does not cover puts them
+        // on disk and off the board, and every layer below here is entitled to
+        // call that a success: the transport moved the bytes, the merge agreed
+        // with the remote, the index did what it is told. The 186 issues a
+        // clone of an already-keyed project pulls down fall through all of it,
+        // and the user is told "Already up to date" over an empty board.
+        //
+        // Rows, not the summary's counters: what decides this is whether the
+        // project has a backlog of its own that adopting would strand, and
+        // after reconcile the index is exactly that.
+        let ours = reg.list_issues(project_id)?.len();
+        let key_mismatch = match agency_core::issuefs::adoptable_key(ours, &summary.foreign) {
+            Some(theirs) => {
+                let theirs = theirs.to_string();
+                let count =
+                    summary.foreign.iter().find(|(p, _)| *p == theirs).map_or(0, |(_, n)| *n);
+                // Nothing of our own to strand, so taking the shared tracker's
+                // key on is pure gain and needs no dialog. The files are
+                // already the right shape; only the index and the project row
+                // were looking for the wrong prefix.
+                reg.set_issue_key(project_id, &theirs, &[])?;
+                self.issue_sigs.lock().unwrap().remove(project_id);
+                agency_core::issuefs::reconcile(&reg, project_id, &theirs, &root)?;
+                log::info!("project {project_id} adopted the shared backlog's key {theirs} ({count} issues)");
+                Some(KeyMismatch { ours: key, theirs, count, adopted: true })
+            }
+            // Either this project has issues of its own under its own key, or
+            // the directory carries more than one foreign key. Both are the
+            // user's call; say what is there and leave it alone.
+            None => summary.foreign.first().map(|(theirs, count)| KeyMismatch {
+                ours: key,
+                theirs: theirs.clone(),
+                count: *count,
+                adopted: false,
+            }),
+        };
+        Ok(SyncResult::Done { outcome, key_mismatch })
     }
 
     pub fn list_issues(&self, project_id: &str) -> Result<Vec<agency_core::registry::Issue>> {

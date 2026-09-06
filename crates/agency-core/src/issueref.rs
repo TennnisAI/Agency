@@ -57,6 +57,44 @@ pub struct Outcome {
     pub pushed: bool,
 }
 
+impl Outcome {
+    /// Fold a retry's pass into the one it followed, so a race that took two
+    /// passes to settle is reported as the one sync the user asked for.
+    ///
+    /// The first pass's writes already landed on disk, so its counts are part
+    /// of what happened and are kept; only the second pass can speak for the
+    /// push. Without this a retry reported the second pass alone, which is
+    /// "Already up to date" for the 186 issues the first pass had just
+    /// written.
+    ///
+    /// Conflicts are deduplicated on `(key, field)`. Most are settled by the
+    /// first pass's writes and do not recur, but a contested key (two uids
+    /// claiming one number) is reported from disk state that neither pass
+    /// changes, so the retry reported it again: "2 conflicts decided for you"
+    /// for one, and the row marker carrying the same line twice.
+    fn followed_by(self, next: Outcome) -> Outcome {
+        let mut conflicts = self.conflicts;
+        for c in next.conflicts {
+            if !conflicts.iter().any(|p| p.key == c.key && p.field == c.field) {
+                conflicts.push(c);
+            }
+        }
+        Outcome {
+            written: self.written + next.written,
+            deleted: self.deleted + next.deleted,
+            assets_fetched: self.assets_fetched + next.assets_fetched,
+            assets_deleted: self.assets_deleted + next.assets_deleted,
+            conflicts,
+            // Not summed: `skipped` is the current state of the directory (a
+            // file still carrying no `uid`), not a count of events, and the
+            // second read is the later one.
+            skipped: next.skipped,
+            committed: self.committed || next.committed,
+            pushed: next.pushed,
+        }
+    }
+}
+
 /// Why a sync could not run as asked.
 #[derive(Debug, PartialEq)]
 pub enum Blocked {
@@ -134,6 +172,17 @@ fn rev(repo: &Path, r: &str) -> Option<String> {
     git_opt(repo, &["rev-parse", "--verify", "--quiet", r])
 }
 
+/// Is `a` reachable from `b`? What tells a commit that would only re-say what
+/// the ref already contains from one that would add a parent it lacks.
+fn is_ancestor(repo: &Path, a: &str, b: &str) -> bool {
+    Command::new("git")
+        .args(["merge-base", "--is-ancestor", a, b])
+        .current_dir(repo)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .is_ok_and(|o| o.status.success())
+}
+
 /// The commit both refs descend from, or `None` when they share no history.
 fn merge_base(repo: &Path, a: &str, b: &str) -> Option<String> {
     git_opt(repo, &["merge-base", a, b])
@@ -173,9 +222,20 @@ fn write_tree(repo: &Path) -> Result<String> {
 /// descends from — both sides after a merge, which is what gives the *next*
 /// sync a merge base to work from.
 ///
-/// Returns `None` when the tree already matches the ref's tree: an unchanged
-/// backlog must not produce a commit per sync, or the ref's history becomes
-/// noise and every merge base is the previous minute.
+/// Returns `None` only when the commit would say nothing new — the tree
+/// already matches the ref's tree *and* every parent is already reachable from
+/// it. An unchanged backlog must not produce a commit per sync, or the ref's
+/// history becomes noise and every merge base is the previous minute; but the
+/// tree is only half of what a commit carries.
+///
+/// The other half is load-bearing. A pass that merged a remote commit whose
+/// content this side already had produces exactly the state the tree test
+/// alone gets wrong: same tree, and the remote commit still not an ancestor of
+/// the local ref. Skipping the commit there leaves the ref unable to
+/// fast-forward the remote, and no later pass repairs it, because every later
+/// pass reaches the same tree and skips again. Observed as `! [rejected]
+/// refs/agency/issues -> refs/agency/issues (non-fast-forward)` on every push
+/// from that moment on, with "Try again" as the only advice the UI could give.
 fn commit_tree(
     repo: &Path,
     tree: &str,
@@ -183,7 +243,9 @@ fn commit_tree(
     message: &str,
 ) -> Result<Option<String>> {
     if let Some(head) = rev(repo, LOCAL_REF) {
-        if git_opt(repo, &["rev-parse", &format!("{head}^{{tree}}")]).as_deref() == Some(tree) {
+        let same_tree =
+            git_opt(repo, &["rev-parse", &format!("{head}^{{tree}}")]).as_deref() == Some(tree);
+        if same_tree && parents.iter().all(|p| is_ancestor(repo, p, &head)) {
             return Ok(None);
         }
     }
@@ -418,6 +480,29 @@ fn fetch(repo: &Path, remote: &str, on_progress: &mut dyn FnMut(CloneProgress)) 
     Ok(ok && rev(repo, REMOTE_REF).is_some())
 }
 
+/// How a push attempt came back. `Stale` is the one worth telling apart: the
+/// remote moved between this pass's fetch and its push, which one more pass
+/// fixes by itself, where every other failure needs a person.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Push {
+    Done,
+    Stale,
+    Failed,
+}
+
+/// Does git's refusal mean "you are behind"? Matched across the phrasings git
+/// uses for it, since the reject line and the hint word it differently and
+/// which of them appears depends on the git version.
+///
+/// Deliberately narrow. Everything that is not recognised here is treated as a
+/// failure that a retry cannot help, which is the safe way round: a needless
+/// retry costs a second round-trip, but treating an auth failure as a race
+/// would retry it forever.
+fn is_stale_push(stderr: &str) -> bool {
+    let s = stderr.to_ascii_lowercase();
+    s.contains("non-fast-forward") || s.contains("fetch first") || s.contains("behind its remote")
+}
+
 // ---------------------------------------------------------------------------
 // The pass
 
@@ -515,12 +600,40 @@ pub fn sync_with_progress(
     sync_streaming(repo, remote, mode, &mut on_progress)
 }
 
+/// A pass, plus one retry when the only thing that went wrong was losing a
+/// race for the ref.
+///
+/// Two projects sharing one backlog remote (two clones of a repo on one
+/// machine, or two machines with the schedule on) push the same ref, so a pass
+/// that fetched before the other side pushed and pushed after it is rejected
+/// through no fault of the user. The state that fixes it is one more fetch.
+///
+/// Merge only: re-running a `Publish` or an `Adopt` would re-apply a seed the
+/// user chose once, and a seed is the operation that discards one side. One
+/// retry, not a loop — a remote still ahead of a fresh fetch is not racing, it
+/// is being written by something faster than we can answer, and the toast is
+/// then the right outcome.
 fn sync_streaming(
     repo: &Path,
     remote: &str,
     mode: Mode,
     on_progress: &mut dyn FnMut(CloneProgress),
 ) -> Result<Outcome> {
+    let (out, push) = one_pass(repo, remote, mode, on_progress)?;
+    if push != Push::Stale || mode != Mode::Merge {
+        return Ok(out);
+    }
+    log::info!("issue sync: remote moved under this pass, merging again");
+    let (again, _) = one_pass(repo, remote, Mode::Merge, on_progress)?;
+    Ok(out.followed_by(again))
+}
+
+fn one_pass(
+    repo: &Path,
+    remote: &str,
+    mode: Mode,
+    on_progress: &mut dyn FnMut(CloneProgress),
+) -> Result<(Outcome, Push)> {
     report(on_progress, &format!("Fetching from {remote}"), None, "");
     let have_remote = fetch(repo, remote, on_progress)?;
     let local_files = issuefs::read_issue_dir(repo)?.issues;
@@ -592,7 +705,7 @@ fn sync_streaming(
     };
     let committed = commit_tree(repo, &tree, &parents, message)?.is_some();
 
-    let pushed = if rev(repo, LOCAL_REF).is_some() {
+    let push = if rev(repo, LOCAL_REF).is_some() {
         report(on_progress, &format!("Publishing to {remote}"), None, "");
         let spec = format!("{LOCAL_REF}:{LOCAL_REF}");
         let mut cmd = Command::new("git");
@@ -600,32 +713,39 @@ fn sync_streaming(
             .current_dir(repo)
             .env("GIT_TERMINAL_PROMPT", "0");
         match crate::setup::run_clone_streaming(cmd, &CancelToken::new(), on_progress) {
-            Ok((true, _)) => true,
+            Ok((true, _)) => Push::Done,
             // A push that git refused says why on stderr, and that line is the
             // whole diagnosis when the shared copy silently stops updating.
             Ok((false, stderr)) => {
                 log::warn!("issue sync push failed: {}", stderr.trim());
-                false
+                if is_stale_push(&stderr) {
+                    Push::Stale
+                } else {
+                    Push::Failed
+                }
             }
             Err(e) => {
                 log::warn!("issue sync push failed: {e}");
-                false
+                Push::Failed
             }
         }
     } else {
-        false
+        Push::Failed
     };
 
-    Ok(Outcome {
-        written,
-        deleted,
-        assets_fetched,
-        assets_deleted,
-        conflicts: plan.conflicts,
-        skipped: plan.skipped,
-        committed,
-        pushed,
-    })
+    Ok((
+        Outcome {
+            written,
+            deleted,
+            assets_fetched,
+            assets_deleted,
+            conflicts: plan.conflicts,
+            skipped: plan.skipped,
+            committed,
+            pushed: push == Push::Done,
+        },
+        push,
+    ))
 }
 
 #[cfg(test)]
@@ -732,6 +852,77 @@ mod tests {
         );
     }
 
+    /// The tree test alone is not enough to call a commit redundant: a commit
+    /// also carries parents, and a merge whose result happens to match what we
+    /// already had is exactly where those two disagree.
+    #[test]
+    fn an_unchanged_tree_still_commits_to_take_on_a_new_parent() {
+        let dir = tempdir().unwrap();
+        let repo = repo(dir.path());
+        put(&repo, "AGE-1", U1, "todo", "One");
+        let tree = write_tree(&repo).unwrap();
+        let head = commit_tree(&repo, &tree, &[], "first").unwrap().unwrap();
+
+        // A commit with the same tree that the ref does not descend from — the
+        // shape of the other side having reached our content by its own route.
+        let other = sh(&repo, &["commit-tree", &tree, "-m", "elsewhere"]).trim().to_string();
+
+        assert!(
+            commit_tree(&repo, &tree, std::slice::from_ref(&head), "again").unwrap().is_none(),
+            "a commit that adds nothing was still written"
+        );
+        let merged = commit_tree(&repo, &tree, &[head, other.clone()], "merge").unwrap();
+        assert!(merged.is_some(), "the ref never took on the parent it has to push past");
+        assert!(
+            is_ancestor(&repo, &other, LOCAL_REF),
+            "the new parent is not reachable from the ref"
+        );
+    }
+
+    /// A contested key is re-derived from disk on every pass, and a retry is
+    /// two passes over the same disk.
+    #[test]
+    fn a_retry_does_not_report_the_same_conflict_twice() {
+        let conflict = |key: &str, field: &str| crate::issuesync::Conflict {
+            key: key.into(),
+            field: field.into(),
+            detail: "two different issues both claim it".into(),
+        };
+        let first = Outcome {
+            written: 2,
+            conflicts: vec![conflict("AGE-3", "key"), conflict("AGE-4", "title")],
+            ..Default::default()
+        };
+        let second = Outcome {
+            conflicts: vec![conflict("AGE-3", "key"), conflict("AGE-3", "body")],
+            pushed: true,
+            ..Default::default()
+        };
+        let out = first.followed_by(second);
+        assert_eq!(out.written, 2);
+        assert!(out.pushed);
+        let seen: Vec<(&str, &str)> =
+            out.conflicts.iter().map(|c| (c.key.as_str(), c.field.as_str())).collect();
+        assert_eq!(seen, vec![("AGE-3", "key"), ("AGE-4", "title"), ("AGE-3", "body")]);
+    }
+
+    #[test]
+    fn gits_ways_of_saying_you_are_behind_are_all_read_as_a_race() {
+        for s in [
+            " ! [rejected]        refs/agency/issues -> refs/agency/issues (non-fast-forward)",
+            "! [rejected] main -> main (fetch first)",
+            "hint: Updates were rejected because a pushed branch tip is behind its remote",
+        ] {
+            assert!(is_stale_push(s), "not read as a race: {s}");
+        }
+        for s in [
+            "fatal: unable to access 'https://example.com/': Could not resolve host: example.com",
+            "remote: Permission to x/y.git denied to z.",
+        ] {
+            assert!(!is_stale_push(s), "read as a race, and would retry forever: {s}");
+        }
+    }
+
     /// Two checkouts of one project, syncing through a bare remote — the real
     /// shape of "the same person on two machines".
     fn two_machines() -> (tempfile::TempDir, PathBuf, PathBuf, String) {
@@ -743,6 +934,92 @@ mod tests {
         let b = repo(&dir.path().join("b"));
         let url = bare.to_string_lossy().to_string();
         (dir, a, b, url)
+    }
+
+    /// Install a `pre-receive` on the bare remote. `once` rejects only the
+    /// first push; otherwise every push is rejected, in git's own words for
+    /// being behind.
+    fn reject_pushes(url: &str, once: bool) -> PathBuf {
+        let hooks = Path::new(url).join("hooks");
+        std::fs::create_dir_all(&hooks).unwrap();
+        let marker = hooks.join("rejected");
+        let guard = if once {
+            format!("if [ -e '{}' ]; then exit 0; fi\n", marker.display())
+        } else {
+            String::new()
+        };
+        let path = hooks.join("pre-receive");
+        std::fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\n{guard}touch '{}'\necho 'rejected (non-fast-forward)' >&2\nexit 1\n",
+                marker.display()
+            ),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        marker
+    }
+
+    fn allow_pushes(url: &str, marker: PathBuf) {
+        std::fs::remove_file(Path::new(url).join("hooks/pre-receive")).unwrap();
+        let _ = std::fs::remove_file(marker);
+    }
+
+    /// The bug that made one lost race permanent. Both machines reach the same
+    /// content by their own route, so the merge has nothing to write — but the
+    /// ref still has to take on the other side's commit, or it can never fast
+    /// forward the remote again. Nothing about that state decays, so before the
+    /// parent check in `commit_tree` every later pass reached the same tree,
+    /// skipped the same commit, and was rejected the same way.
+    #[test]
+    fn a_merge_that_changes_nothing_can_still_push() {
+        let (_d, a, b, url) = two_machines();
+        put(&a, "AGE-1", U1, "todo", "One");
+        assert!(sync(&a, &url, Mode::Merge).unwrap().pushed);
+        // b joins, so the two now share history and later passes are merges.
+        assert!(sync(&b, &url, Mode::Merge).unwrap().pushed);
+
+        // a commits its own AGE-2 but cannot publish it: offline, or a remote
+        // that was briefly refusing. Its ref moves; the shared copy does not.
+        let marker = reject_pushes(&url, false);
+        put(&a, "AGE-2", U2, "todo", "Two");
+        assert!(!sync(&a, &url, Mode::Merge).unwrap().pushed);
+        allow_pushes(&url, marker);
+
+        // b files the same issue, byte for byte — same uid, same fields — and
+        // gets there first. Two people acting on one instruction, or the same
+        // issue arriving through a third checkout.
+        put(&b, "AGE-2", U2, "todo", "Two");
+        assert!(sync(&b, &url, Mode::Merge).unwrap().pushed);
+
+        let out = sync(&a, &url, Mode::Merge).unwrap();
+        assert_eq!(
+            out.written, 0,
+            "the two sides already agreed; nothing should have been written"
+        );
+        assert!(out.pushed, "the shared copy was left behind by a merge that agreed with it");
+        let mine = sh(&a, &["rev-parse", LOCAL_REF]).trim().to_string();
+        let theirs = sh(&a, &["ls-remote", &url, LOCAL_REF]);
+        assert_eq!(mine, theirs.split_whitespace().next().unwrap(), "the remote did not take it");
+    }
+
+    /// A push that loses the ref to someone faster is not a failure to report,
+    /// it is a fetch that has not happened yet. Two projects sharing one backlog
+    /// remote do exactly this to each other on the schedule.
+    #[test]
+    fn a_push_that_lost_a_race_is_retried_rather_than_reported() {
+        let (_d, a, _b, url) = two_machines();
+        let marker = reject_pushes(&url, true);
+
+        put(&a, "AGE-1", U1, "todo", "One");
+        let out = sync(&a, &url, Mode::Merge).unwrap();
+        assert!(marker.exists(), "the hook never ran, so nothing was rejected to retry");
+        assert!(out.pushed, "a lost race was reported to the user as a failed sync");
     }
 
     #[test]

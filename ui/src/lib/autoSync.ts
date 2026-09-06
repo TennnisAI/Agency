@@ -25,6 +25,14 @@ export type AutoSchedule = {
    */
   pushFailed: boolean;
   /**
+   * The shared tracker's key the schedule has already said this project does
+   * not match, or null. Said once per key, like `pushFailed`: the mismatch is
+   * recomputed from the directory on every pass, and until the user changes
+   * the key every pass finds the same one, so without this the toast came
+   * back every two minutes for as long as the board was open.
+   */
+  keyMismatchSaid: string | null;
+  /**
    * When the last pass started, so returning to the board mid-window waits out
    * the remainder rather than starting the clock over.
    */
@@ -58,6 +66,7 @@ export function createAutoSchedules(): AutoScheduleStore {
         paused: false,
         fails: 0,
         pushFailed: false,
+        keyMismatchSaid: null,
         lastPassAt: 0,
         setting,
       };
@@ -65,6 +74,27 @@ export function createAutoSchedules(): AutoScheduleStore {
       return next;
     },
   };
+}
+
+/**
+ * Whether a pass's key mismatch is worth a toast, and the record updated to
+ * say it was (or was not) said. A manual pass always says it: the user pressed
+ * Sync and is owed the reason the board is empty. A scheduled pass says it
+ * once per key, and starts over once a pass comes back without one, so a
+ * mismatch that goes away and comes back is news again.
+ */
+export function shouldSayKeyMismatch(
+  s: Pick<AutoSchedule, "keyMismatchSaid">,
+  theirs: string | null,
+  auto: boolean,
+): boolean {
+  if (theirs === null) {
+    s.keyMismatchSaid = null;
+    return false;
+  }
+  const say = !auto || s.keyMismatchSaid !== theirs;
+  s.keyMismatchSaid = theirs;
+  return say;
 }
 
 /** The app's one store, keyed by project: a pause is a fact about one remote. */

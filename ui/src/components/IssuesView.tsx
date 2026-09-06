@@ -36,8 +36,9 @@ import {
   seedingRisk,
   stepSelection,
 } from "../lib/issues";
-import { autoSchedules } from "../lib/autoSync";
+import { autoSchedules, shouldSayKeyMismatch } from "../lib/autoSync";
 import { ConflictReport, conflictReports } from "../lib/syncConflicts";
+import { notifyProjectsChanged } from "../lib/projectEvents";
 import { pickDefaultAgent } from "../lib/defaultAgent";
 import { loadFold, saveFold, usePaneWidth } from "../hooks/usePaneWidth";
 import { useRepoReadiness, isGitless } from "../hooks/useRepoReadiness";
@@ -519,6 +520,34 @@ export default function IssuesView({
       s.fails = 0;
       const o = res.outcome;
       await refresh();
+      // A pass that merged issues this project's key does not cover has put
+      // them on disk and left them off the board, and every count below is
+      // about to report that as a clean sync. Said before the summary, because
+      // it is the reason the summary looks the way it does.
+      const km = res.keyMismatch;
+      if (km?.adopted) {
+        toastInfo(
+          `This project now uses the shared backlog's issue key, ${km.theirs}.`,
+          8000,
+        );
+        // The project row changed under every view that holds it; the board
+        // labels issues with the key it was handed, and that key is now wrong.
+        notifyProjectsChanged();
+      }
+      // Once per key on the schedule, every time by hand, for the reason the
+      // push-failure rule below gives: this pass and every pass after it find
+      // the same mismatch until the user changes the key.
+      const theirs = km && !km.adopted ? km.theirs : null;
+      if (shouldSayKeyMismatch(s, theirs, auto) && km) {
+        const one = km.count === 1;
+        toastError(
+          `${km.count} issue${one ? "" : "s"} in the shared copy ${one ? "is" : "are"} keyed ` +
+            `${km.theirs}, and this project uses ${km.ours}, so ${one ? "it is" : "they are"} not ` +
+            `on this board. Set this project's issue key to ${km.theirs} in Settings to see ` +
+            `${one ? "it" : "them"}.`,
+          "Sync",
+        );
+      }
       // The rules for what a pass does to the markers and the prompt live in
       // the store, which is where they can be tested: a pass that decided
       // nothing leaves both alone, and only an automatic one raises a dialog.

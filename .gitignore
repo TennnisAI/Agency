@@ -27,6 +27,11 @@ ui/vitest.config.d.ts
 # Claude Code harness worktrees / local state
 .claude/
 
+# Superpowers/SDD scratch state. Only .superpowers/sdd/ self-ignores (a
+# tool-written nested .gitignore holding `*`), so anything the tool writes
+# beside that directory would otherwise show up as committable.
+.superpowers/
+
 # Agency's own worktrees + local state for this repo. Mirrors the exclude list
 # the app writes into .git/info/exclude for every project it manages
 # (worktree::ensure_agency_excludes) — deliberately per-path, not a blanket

@@ -300,10 +300,7 @@ mod tests {
         // hermes here: a wrapper script sitting directly in ~/.local/bin, no
         // installer tree behind it. Offering any update command for it would
         // be a guess.
-        assert_eq!(
-            classify(Path::new("<home>/.local/bin/hermes"), home()),
-            InstallMethod::Unknown
-        );
+        assert_eq!(classify(Path::new("<home>/.local/bin/hermes"), home()), InstallMethod::Unknown);
         assert_eq!(classify(Path::new("<home>/bin/mytool"), home()), InstallMethod::Unknown);
         assert_eq!(classify(Path::new("/usr/local/bin/something"), home()), InstallMethod::Unknown);
     }

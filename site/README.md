@@ -45,7 +45,10 @@ media query guarded by `:root:not([data-theme="dark"])` plus an explicit
 `[data-theme="light"]` block, so the toggle wins in both directions.
 
 Screenshots are dark-theme captures. They sit directly on the page with a
-rounded box-shadow; there is no light-mode mat.
+`filter: drop-shadow`, which traces the window silhouette in the image's alpha;
+there is no light-mode mat. Do not put the shadow back into `box-shadow`: the
+element is a rectangle, the window in it is not, and on the dark ground the
+mismatch reads as a box rather than a shadow.
 
 ## The release switch
 
@@ -92,9 +95,23 @@ Still worth capturing, in value order: SHOT-01 proper (Agents tab, grid layout,
 SHOT-16 (history graph with a run of `agent/` merges, for the "Agency built
 Agency" block, which is typographic until then).
 
-Regenerate site images from new captures with the same treatment: trim the
-transparent margin, resize to 2560 wide for the hero and 2400 for the rest,
-`cwebp -q 82 -alpha_q 100 -m 6`.
+Regenerate site images from new captures with the same treatment: **crop to
+the window itself, keeping none of the shadow margin macOS bakes into a window
+capture**, then `cwebp -q 82 -alpha_q 100 -m 6`. Downscale to 2560 wide for the
+hero and 2400 for the rest only when the capture is larger than that; the
+current four are cropped at their captured scale rather than resampled, which is
+why the intrinsic widths vary (2346 to 2502) and why `index.html` carries a
+different `width`/`height` pair per image. Those attributes reserve layout
+space, so a stale pair buys a layout shift on a lazy-loaded image.
+
+Cropping to the window is what makes the shadow work, and "trim the transparent
+margin" is what this line used to say. That is not the same instruction: the
+margin is not transparent, it holds the baked shadow at alpha 35 to 146, and
+trimming to its edge leaves it in. The corner notches need clearing too, or a
+dark wedge sits outside the window's rounded corners: the baked shadow is offset
+downward, so the residue is roughly 26 at the sides and 73 at the bottom corners
+and no single alpha cut removes both. Take the cleaned top-left corner's own
+silhouette and mirror it into the other three.
 
 **The exclusion list in `05-assets.md` was reviewed against this set and
 partly overruled, deliberately, on 2026-09-06.** The captures are from the real

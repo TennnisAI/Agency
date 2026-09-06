@@ -295,20 +295,29 @@ code, kbd { font-family: var(--mono); }
   .hero-shot { margin-left: -120px; margin-right: -120px; }
 }
 
-/* Screenshots carry their own window chrome. No mat or padding; a rounded
-   box-shadow matches the app window's corners. */
+/* Screenshots carry their own window chrome, rounded corners included, in the
+   image's alpha. `drop-shadow` traces that silhouette, so the shadow follows
+   the window's real corners at every column width. `box-shadow` traced the
+   element's rectangle instead, and the captures used to carry a baked drop
+   shadow in a transparent margin around the window, which made the rectangle
+   ~27px wider than the window on each side and 53px taller below. On the light
+   ground that composited to a convincing shadow and hid the mismatch. On the
+   dark ground it composited to a flat box a few steps darker than the page,
+   with square edges and no relation to the corners inside it, while the CSS
+   shadow underneath it was black on near-black and invisible. The margin is
+   cropped out of the images now; a `border-radius` here cannot replace it,
+   because the image scales with the column and a CSS radius does not. */
 .shot img {
   width: 100%;
   display: block;
-  border-radius: 12px;
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45);
+  filter: drop-shadow(0 16px 36px rgba(0, 0, 0, 0.55));
 }
 :root[data-theme="light"] .shot img {
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
+  filter: drop-shadow(0 12px 30px rgba(0, 0, 0, 0.22));
 }
 @media (prefers-color-scheme: light) {
   :root:not([data-theme="dark"]) .shot img {
-    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
+    filter: drop-shadow(0 12px 30px rgba(0, 0, 0, 0.22));
   }
 }
 

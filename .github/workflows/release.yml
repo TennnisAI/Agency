@@ -69,6 +69,19 @@ jobs:
       - name: Build agency-termd sidecar
         run: ./crates/agency-app/build-termd.sh
 
+      # The bundler only checks for the sidecar after a full release compile, so
+      # a triple mismatch costs six minutes before it says anything. Assert the
+      # exact path the next step will ask for, while it is still cheap to fix.
+      - name: Check the sidecar is where the bundler will look
+        run: |
+          want="target/release/agency-termd-aarch64-apple-darwin"
+          if [ ! -x "$want" ]; then
+            echo "::error::missing $want; build-termd.sh produced:"
+            ls -l target/release/agency-termd* || true
+            exit 1
+          fi
+          file "$want"
+
       - name: Build, sign, and notarize
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -77,11 +90,20 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: cargo tauri build
+        # --target is not optional here, and not merely belt-and-braces. Tauri
+        # reads the sidecar's triple suffix off the CLI binary's own
+        # architecture, not off the Rust toolchain, and taiki-e/install-action
+        # fetched tauri-cli 2.11.4 as x86_64-apple-darwin on this ARM64 runner.
+        # Under Rosetta it demanded agency-termd-x86_64-apple-darwin while
+        # build-termd.sh had correctly built -aarch64-apple-darwin from the
+        # aarch64 host, and the bundle step died after a 5m39s release compile.
+        # Naming the target makes the triple a stated fact rather than a
+        # consequence of which prebuilt CLI the installer happened to pick.
+        run: cargo tauri build --target aarch64-apple-darwin
 
       - name: Verify notarization ticket is stapled
         run: |
-          dmg="$(find target/release/bundle/dmg -maxdepth 1 -name '*.dmg' | head -n1)"
+          dmg="$(find target/aarch64-apple-darwin/release/bundle/dmg -maxdepth 1 -name '*.dmg' | head -n1)"
           echo "DMG: $dmg"
           xcrun stapler validate "$dmg"
 
@@ -90,5 +112,5 @@ jobs:
         with:
           draft: true
           name: Agency ${{ github.ref_name }}
-          files: target/release/bundle/dmg/*.dmg
+          files: target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
           fail_on_unmatched_files: true

@@ -11,11 +11,19 @@ the two out of step silently.
 ## Preview
 
 ```sh
-python3 -m http.server 5230 -d site
+npx wrangler pages dev site
 ```
 
-Then open http://localhost:5230. A plain `open site/index.html` does not work:
+Then open the URL it prints. A plain `open site/index.html` does not work:
 links and assets are root-relative.
+
+`wrangler pages dev` rather than `python3 -m http.server`, because it is the
+only local server that behaves like the thing we deploy to. Two ways that
+matters. Links are extensionless (`/download`, not `/download.html`), which
+Pages resolves to the `.html` file and a plain static server 404s. And it
+applies `_headers`, so the CSP is actually exercised: under `http.server` the
+policy is never sent, and a stale script hash looks fine locally and breaks the
+theme toggle in production.
 
 ## What is here
 

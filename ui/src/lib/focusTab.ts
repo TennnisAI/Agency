@@ -45,22 +45,24 @@ export function saveFocusTab(
 
 // The tab to land on when the remembered one cannot be drawn. Normally the
 // primary agent; once that tab has been closed (AGE-184) the run is carried by
-// its extra tabs, so it is the leftmost of those that is still alive. With
-// none, the primary stands: the strip draws it again the moment the run has an
-// agent of its own, and a tab id nothing renders would be worse.
+// its extra tabs, so it is the leftmost of those. With none, the primary
+// stands: the strip draws it again the moment the run has an agent of its own,
+// and a tab id nothing renders would be worse.
 function fallbackTab(
-  sessions: { id: string; status: { state: string } }[],
+  sessions: { id: string }[],
   primaryClosed: boolean,
 ): string {
   if (!primaryClosed) return PRIMARY_TAB;
-  return sessions.find((s) => s.status.state !== "gone")?.id ?? PRIMARY_TAB;
+  return sessions[0]?.id ?? PRIMARY_TAB;
 }
 
 // Vets a remembered tab against the sessions the run actually has now. A tab
-// whose session was closed while we were away (or died, and so no longer
-// renders) would otherwise restore as a dead pane, so it falls back to the
-// primary agent. Sessions that merely exited keep their tab, matching the tab
-// strip, which only drops "gone" ones.
+// closed while we were away would otherwise restore as a pane with nothing
+// behind it, so it falls back to the primary agent.
+//
+// Existence, not liveness — the same question the tab strip asks. A remembered
+// tab whose agent is not running is exactly what a restart leaves behind (the
+// quit killed every session), and landing on it is what brings the agent back.
 //
 // `hasLog` says whether this run still serves a browser GUI. It stops being one
 // when its web session is closed (or a loop takes the run over), and the log
@@ -71,7 +73,7 @@ function fallbackTab(
 // does not draw it either and it cannot be the fallback.
 export function resolveFocusTab(
   remembered: string,
-  sessions: { id: string; status: { state: string } }[],
+  sessions: { id: string }[],
   hasLog = false,
   primaryClosed = false,
 ): string {
@@ -79,8 +81,7 @@ export function resolveFocusTab(
   if (remembered === PRIMARY_TAB) return primaryClosed ? fallback : remembered;
   if (remembered === RUN_TAB) return remembered;
   if (remembered === LOG_TAB) return hasLog ? remembered : fallback;
-  const live = sessions.some((s) => s.id === remembered && s.status.state !== "gone");
-  return live ? remembered : fallback;
+  return sessions.some((s) => s.id === remembered) ? remembered : fallback;
 }
 
 // The tab an "open this agent" click should land on: the focus rail's rows, the

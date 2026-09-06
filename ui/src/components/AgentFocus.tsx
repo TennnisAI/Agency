@@ -305,9 +305,8 @@ export default function AgentFocus({
     if (!focusedRunId) return;
     // `live` drops a response that lands after the run changed (a slow fetch for
     // the previous run must not repopulate this one's tab strip). The interval
-    // re-polls so a tab whose session died — agent exited, or the app was quit
-    // and reopened — updates its status and drops out of the strip on its own,
-    // instead of lingering as a dead tab until the next focus change.
+    // re-polls so a tab opened or closed elsewhere — a PR review that had to
+    // share this worktree, say — turns up without a focus change.
     let live = true;
     // Only the first response vets the restored tab. Later polls leave the
     // visible tab alone: a session that dies while you're watching it keeps its
@@ -485,10 +484,13 @@ export default function AgentFocus({
   // produces that refusal is a ✕ that should not be there.
   const drawnTabs = [
     ...(primaryClosed ? [] : [PRIMARY_TAB]),
-    // Same filter the strip below uses: a tab whose session has gone drops
-    // out, unless it is the one being looked at, which keeps its pane (and so
-    // its ✕ — a dead tab you cannot dismiss is worse than a dead tab).
-    ...sessions.filter((s) => s.status.state !== "gone" || s.id === panel).map((s) => s.id),
+    // Every tab the run has a row for, running or not. The strip used to drop
+    // a tab whose session had gone, which quitting the app makes true of all
+    // of them (the quit kills every session and shuts the daemon down): three
+    // agents in a worktree came back from a restart as one. A tab is the row,
+    // not the process — same as the run's own tab above, which was never
+    // dropped for being dead — and selecting one revives it.
+    ...sessions.map((s) => s.id),
   ];
   drawnTabsRef.current = drawnTabs;
   const canCloseTabs = drawnTabs.length > 1;
@@ -683,9 +685,7 @@ export default function AgentFocus({
                     </button>
                   )}
                   {guiSession === focused.id && <LogTab panel={panel} onSelect={selectPanel} />}
-                  {sessions
-                    .filter((s) => s.status.state !== "gone" || s.id === panel)
-                    .map((s) => (
+                  {sessions.map((s) => (
                     <React.Fragment key={s.id}>
                     <button
                       className={`session-tab ${panel === s.id ? "on" : ""}`}

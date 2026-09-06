@@ -7592,17 +7592,51 @@ impl AppState {
 
     // ── Extra agent sessions (additional agent tabs sharing a run's worktree) ──
 
-    /// Launch (or relaunch) an extra session's agent in the parent run's
-    /// worktree, opening with `prompt` (empty for the usual promptless tab).
-    /// Always a fresh launch — resume recipes pick the cwd's most recent
-    /// conversation, which in a shared worktree may belong to a sibling tab,
-    /// so extras never resume.
+    /// Open an extra session's agent fresh in the parent run's worktree, with
+    /// `prompt` (empty for the usual promptless tab). A new tab is a new
+    /// conversation; [`Self::relaunch_run_session`] is the one that goes back
+    /// to an existing one.
     fn launch_run_session(
         &self,
         sid: &str,
         run: &agency_core::registry::Run,
         agent: &str,
         prompt: &str,
+    ) -> Result<()> {
+        self.spawn_run_session(sid, run, agent, prompt, false)
+    }
+
+    /// Bring an extra tab's agent back up on the conversation it was in, for a
+    /// tab whose daemon session has gone — which after every quit is all of
+    /// them, since quitting kills each session and shuts the daemon down.
+    ///
+    /// Extras used to relaunch blank here, because a resume recipe means
+    /// "continue the most recent conversation in this directory" and in a
+    /// shared worktree that is whichever sibling tab was touched last
+    /// (AGE-175). That is the bug [`agency_core::sessionstore`] fixed: a tab
+    /// gets a session store of its own or a conversation of its own, and
+    /// [`crate::resume_probe`] asks about that one and no other. So a tab with
+    /// a pin comes back on its own conversation, and a tab without one — an
+    /// agent whose CLI offers neither lever, or a row from before Agency
+    /// minted ids — still opens fresh rather than risking a sibling's.
+    fn relaunch_run_session(
+        &self,
+        sid: &str,
+        run: &agency_core::registry::Run,
+        agent: &str,
+    ) -> Result<()> {
+        self.spawn_run_session(sid, run, agent, "", true)
+    }
+
+    /// The launch both of those share. `resume` is the only difference: a tab
+    /// coming back asks to reopen its own conversation, a new one never does.
+    fn spawn_run_session(
+        &self,
+        sid: &str,
+        run: &agency_core::registry::Run,
+        agent: &str,
+        prompt: &str,
+        resume: bool,
     ) -> Result<()> {
         let repo = self.project_repo(&run.project_id)?;
         let config = agency_core::config::load(&repo);
@@ -7668,15 +7702,62 @@ impl AppState {
         // worktree is exactly how a tab used to take over the run's resume
         // (AGE-175).
         let env = self.agent_env(&profile, &worktree, &repo, &run.id, sid, run.port_base)?;
-        let conversation = self.open_conversation(&profile.command, &run.id, sid);
-        let (command, args) = fresh_agent_argv(
-            &profile,
-            &worktree,
-            prompt,
-            config.scripts.setup.as_deref(),
-            conversation.as_deref(),
-        );
-        self.term.read().unwrap().start_session(
+        let setup = config.scripts.setup.as_deref();
+        // Resume only what this tab can prove is its own: a conversation it
+        // has on record, or a session store of its own. Without one of those,
+        // the CLI's generic recipe would reach for the worktree's most recent
+        // conversation, which is a sibling tab's (AGE-175).
+        let recorded = if resume { self.conversation_of(sid) } else { None };
+        let pinned = resume
+            && (recorded.is_some()
+                || matches!(
+                    agency_core::sessionstore::pin(&profile.command),
+                    agency_core::sessionstore::Pin::Store
+                ));
+        // Same question the run's own session asks, about this session's
+        // conversation: claude will not start on a `--resume` id that is not
+        // there, and cursor answers a missing one with the directory's latest
+        // chat, which is the crossing all over again.
+        let probe = if pinned {
+            self.agent_home()
+                .map(|h| {
+                    crate::resume_probe::resume_probe(
+                        &h,
+                        &profile.command,
+                        &worktree,
+                        sid,
+                        recorded.as_deref(),
+                    )
+                })
+                .unwrap_or(crate::resume_probe::ResumeProbe::Unknown)
+        } else {
+            crate::resume_probe::ResumeProbe::None
+        };
+        let use_resume = pinned
+            && profile.resume_args.is_some()
+            && probe != crate::resume_probe::ResumeProbe::None;
+        // A fresh launch mints a new name; never the recorded one, which
+        // claude refuses as already in use.
+        let conversation = if use_resume {
+            recorded
+        } else {
+            self.open_conversation(&profile.command, &run.id, sid)
+        };
+        let (command, args) =
+            agent_argv(&profile, &worktree, prompt, use_resume, setup, conversation.as_deref());
+        // The daemon's early-exit fallback, for the resume-capable agents the
+        // probe cannot answer for. Promptless like the tab itself: a relaunch
+        // is a blank slate, not a re-run of whatever job first opened it.
+        let fallback = use_resume.then(|| {
+            let (fresh_cmd, fresh_args) =
+                fresh_agent_argv(&profile, &worktree, prompt, setup, None);
+            agency_core::term::protocol::FallbackSpec {
+                command: fresh_cmd,
+                args: fresh_args,
+                grace_ms: 3000,
+            }
+        });
+        self.term.read().unwrap().start_session_with_fallback(
             &session_name(sid),
             &worktree,
             &command,
@@ -7684,6 +7765,7 @@ impl AppState {
             &env,
             220,
             50,
+            fallback,
         )?;
         self.kick_web_ui(
             sid,
@@ -7777,8 +7859,7 @@ impl AppState {
     pub fn close_run_session(&self, id: &str) -> Result<()> {
         let (run_id, seq) = split_session_id(id);
         let run = self.run_record(run_id)?;
-        let live = self.term.read().unwrap().list().unwrap_or_default();
-        if self.drawn_tabs(&run, &live).into_iter().filter(|t| t != id).count() == 0 {
+        if self.drawn_tabs(&run).into_iter().filter(|t| t != id).count() == 0 {
             bail!(
                 "this is the last agent in this workspace. Archive or delete the agent instead, \
                  or open another tab first."
@@ -7820,25 +7901,21 @@ impl AppState {
     }
 
     /// The session ids the run's tab strip actually draws: its own agent
-    /// unless that tab has been closed, plus every extra tab whose session is
-    /// still alive. A tab whose agent has gone is dropped from the strip, so
-    /// it cannot be what stops a close from leaving the strip empty.
-    fn drawn_tabs(
-        &self,
-        run: &agency_core::registry::Run,
-        live: &[(String, SessionStatus)],
-    ) -> Vec<String> {
+    /// unless that tab has been closed, plus every extra tab it has a row for.
+    ///
+    /// Rows, not live daemon sessions. A tab exists because the registry says
+    /// so, and whether its agent happens to be running is a separate question
+    /// — quitting the app kills every session and shuts the daemon down, so
+    /// asking the daemon would say "no tabs" on every launch. Closing a tab is
+    /// what removes it (`close_run_session`), which is also why this is the
+    /// list a close must not be allowed to empty.
+    fn drawn_tabs(&self, run: &agency_core::registry::Run) -> Vec<String> {
         let mut out = Vec::new();
         if run.primary_closed_at.is_none() {
             out.push(run.id.clone());
         }
         let rows = self.registry.lock().unwrap().list_run_sessions(&run.id).unwrap_or_default();
-        for s in rows {
-            let name = session_name(&s.id);
-            if live.iter().any(|(n, _)| *n == name) {
-                out.push(s.id);
-            }
-        }
+        out.extend(rows.into_iter().map(|s| s.id));
         out
     }
 
@@ -7882,17 +7959,16 @@ impl AppState {
         if !matches!(self.run_status(id)?, SessionStatus::Gone) {
             return Ok(());
         }
-        // Extra tab (`<run>--<n>`): relaunch its agent fresh in the parent
-        // run's worktree (see launch_run_session for why extras never resume).
+        // Extra tab (`<run>--<n>`): bring its agent back up in the parent run's
+        // worktree, on the conversation it owns where it has one to come back
+        // to (see `relaunch_run_session`).
         if let (run_id, Some(_)) = split_session_id(id) {
             let session = {
                 let reg = self.registry.lock().unwrap();
                 reg.get_run_session(id)?.ok_or_else(|| anyhow!("unknown session: {id}"))?
             };
             let run = self.run_record(run_id)?;
-            // A relaunch is a blank slate, not a re-run of whatever job first
-            // opened the tab: the original prompt is not replayed.
-            return self.launch_run_session(id, &run, &session.agent, "");
+            return self.relaunch_run_session(id, &run, &session.agent);
         }
         let run = self.run_record(id)?;
         // The user closed this tab (AGE-184). Every other caller of this

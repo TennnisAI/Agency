@@ -1208,6 +1208,162 @@ fn extra_session_lifecycle_shares_worktree_and_cascades() {
     assert!(state.run_sessions(&run.id).unwrap().is_empty());
 }
 
+/// The regression this pins: quitting Agency kills every daemon session and
+/// shuts the daemon down, so on the next launch every extra tab reads as gone.
+/// The strip dropped a gone tab, so a worktree with three agents in it came
+/// back from a restart with one. A tab is the registry row, not the process.
+#[test]
+fn extra_tabs_outlive_their_sessions_and_come_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let state = common::state(&dir);
+    state
+        .register_profile(AgentProfile {
+            name: "sleeper".into(),
+            command: "/bin/sh".into(),
+            args: vec!["-c".into(), "sleep 30".into()],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+    let run = state.create_run(&project.id, "p", "sleeper", None, "HEAD", None).unwrap();
+    let s2 = state.start_run_session(&run.id, None, "").unwrap();
+    let s3 = state.start_run_session(&run.id, None, "").unwrap();
+
+    // The quit, as far as an extra tab can tell: its session is killed and
+    // nothing revives it until the tab is looked at again.
+    for id in [&s2.id, &s3.id] {
+        state.stop_run(id).unwrap();
+        let mut gone = false;
+        for _ in 0..75 {
+            if matches!(state.run_status(id).unwrap(), SessionStatus::Gone) {
+                gone = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(40));
+        }
+        assert!(gone, "extra session {id} did not become Gone after stop_run");
+    }
+
+    // Both tabs are still the run's, dead sessions and all.
+    assert_eq!(state.run_sessions(&run.id).unwrap().len(), 2);
+
+    // And they still count as tabs. The run's own can go because two are left
+    // to carry the workspace; the last one standing is still refused, even
+    // though nothing of it is running.
+    state.close_run_session(&run.id).unwrap();
+    state.close_run_session(&s3.id).unwrap();
+    let err = state.close_run_session(&s2.id).unwrap_err().to_string();
+    assert!(err.contains("last agent"), "expected a last-agent refusal, got: {err}");
+
+    // Selecting the tab is what brings its agent back — the same call the
+    // terminal pane makes on mount.
+    state.ensure_run_active(&s2.id).unwrap();
+    let mut back = false;
+    for _ in 0..150 {
+        if !matches!(state.run_status(&s2.id).unwrap(), SessionStatus::Gone) {
+            back = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    assert!(back, "the tab's agent did not come back up");
+    state.discard_run(&run.id).unwrap();
+}
+
+/// AGE-175 made extras launch fresh every time, because a resume recipe means
+/// "the most recent conversation in this directory" and a sibling tab shares
+/// the directory. Session stores and minted conversation ids answered that, so
+/// a tab coming back after a restart comes back into its own conversation
+/// rather than staring at a blank agent.
+#[test]
+fn an_extra_tab_relaunches_on_the_conversation_it_owns() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let state = common::state_with_agent_home(&dir, home.path());
+    // The launch command's basename is what decides whether Agency can name
+    // this agent's conversations, so the fake has to be called `claude`.
+    let bin = dir.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let fake = bin.join("claude");
+    std::fs::write(&fake, "#!/bin/sh\nprintf 'ARGV[%s]' \"$@\"\nsleep 30\n").unwrap();
+    std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    state
+        .register_profile(AgentProfile {
+            name: "claude".into(),
+            command: fake.to_string_lossy().into_owned(),
+            args: vec![],
+            env: vec![],
+            resume_args: Some(vec!["--continue".into()]),
+            loop_args: None,
+        })
+        .unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+    let run = state.create_run(&project.id, "p", "claude", None, "HEAD", None).unwrap();
+    let tab = state.start_run_session(&run.id, None, "").unwrap();
+
+    // The conversation Agency minted for this tab, read off the argv the tab
+    // was opened with.
+    let mut argv = String::new();
+    for _ in 0..150 {
+        argv = state.run_preview(&tab.id, 10).unwrap_or_default().replace('\n', "");
+        if argv.contains("ARGV[--session-id]") {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    let conversation = argv
+        .split("ARGV[--session-id]ARGV[")
+        .nth(1)
+        .and_then(|rest| rest.split(']').next())
+        .unwrap_or_else(|| panic!("the tab opened no named conversation: {argv:?}"))
+        .to_string();
+
+    // The transcript is what the resume probe asks about: without one there is
+    // nothing to come back to, and claude will not start on a `--resume` id
+    // that is not there.
+    let wt = state.worktree_path(&run.id).unwrap();
+    let transcript =
+        home.path().join(".claude").join("projects").join(agency_core::usage::claude_enc(&wt));
+    std::fs::create_dir_all(&transcript).unwrap();
+    std::fs::write(transcript.join(format!("{conversation}.jsonl")), "{}\n").unwrap();
+
+    state.stop_run(&tab.id).unwrap();
+    let mut gone = false;
+    for _ in 0..75 {
+        if matches!(state.run_status(&tab.id).unwrap(), SessionStatus::Gone) {
+            gone = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    assert!(gone, "the tab's session did not become Gone after stop_run");
+
+    state.ensure_run_active(&tab.id).unwrap();
+    let want = format!("ARGV[--resume]ARGV[{conversation}]");
+    let mut resumed = String::new();
+    for _ in 0..150 {
+        resumed = state.run_preview(&tab.id, 10).unwrap_or_default().replace('\n', "");
+        if resumed.contains(&want) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    assert!(
+        resumed.contains(&want),
+        "the tab did not come back on its own conversation: {resumed:?}"
+    );
+    state.discard_run(&run.id).unwrap();
+}
+
 #[test]
 fn shell_tab_needs_no_profile_and_runs_in_the_worktree() {
     // A terminal tab is not an agent: no "shell" row exists in the profiles

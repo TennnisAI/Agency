@@ -50,9 +50,12 @@ describe("resolveFocusTab", () => {
     expect(resolveFocusTab("run-1--2", sessions)).toBe("run-1--2");
   });
 
-  it("falls back when the remembered session is gone", () => {
+  // Every session reads as gone right after a restart — the quit killed them
+  // all — and that tab is exactly the one to land on, so mounting it revives
+  // the agent. Dropping it here is what left a restart on the primary tab.
+  it("keeps a remembered session whose agent is not running", () => {
     const sessions = [{ id: "run-1--2", status: { state: "gone" } }];
-    expect(resolveFocusTab("run-1--2", sessions)).toBe(PRIMARY_TAB);
+    expect(resolveFocusTab("run-1--2", sessions)).toBe("run-1--2");
   });
 
   it("falls back when the remembered session no longer exists", () => {
@@ -66,7 +69,7 @@ describe("resolveFocusTab", () => {
 
   // AGE-184: with the run's own tab closed the strip does not draw it, so
   // falling back to it would strand an empty pane with no way out.
-  it("falls back to the leftmost live tab when the primary is closed", () => {
+  it("falls back to the leftmost tab when the primary is closed", () => {
     const sessions = [running("run-1--2"), running("run-1--3")];
     expect(resolveFocusTab(PRIMARY_TAB, sessions, false, true)).toBe("run-1--2");
     expect(resolveFocusTab("run-1--9", sessions, false, true)).toBe("run-1--2");
@@ -74,14 +77,15 @@ describe("resolveFocusTab", () => {
     // A tab that is merely exited still renders, so it is still a landing spot.
     const exited = [{ id: "run-1--2", status: { state: "exited", code: 0 } }];
     expect(resolveFocusTab(PRIMARY_TAB, exited, false, true)).toBe("run-1--2");
+    // So does one whose agent is down: the strip draws the row, not the process.
+    const gone = [{ id: "run-1--2", status: { state: "gone" } }];
+    expect(resolveFocusTab(PRIMARY_TAB, gone, false, true)).toBe("run-1--2");
   });
 
   it("keeps the primary as the last resort when nothing is left to draw", () => {
     // The strip draws it again the moment the run has an agent of its own,
     // and a tab id nothing renders would be worse than a dead pane.
     expect(resolveFocusTab(PRIMARY_TAB, [], false, true)).toBe(PRIMARY_TAB);
-    const gone = [{ id: "run-1--2", status: { state: "gone" } }];
-    expect(resolveFocusTab(PRIMARY_TAB, gone, false, true)).toBe(PRIMARY_TAB);
   });
 
   it("leaves the run tab alone whatever the primary is doing", () => {

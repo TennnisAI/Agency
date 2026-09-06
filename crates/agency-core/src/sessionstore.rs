@@ -377,8 +377,8 @@ pub fn cursor_meta_records_turn(contents: &str) -> bool {
 /// `createHash("md5").update(path.resolve(cwd))`, and kimi's `WorkDirMeta`
 /// does `md5(path.encode())` of a path canonicalised "unlike
 /// `pathlib.Path.resolve`" without following links. Checked against a live
-/// store: `<home>/agency/.agency/worktrees/agent-mm1d` sat under
-/// `6ec98378c414e4520a0db1e8e84037b8`, which is that string's md5. The cwd
+/// store: the worktree's path sat under that exact string's md5 and nothing
+/// else. `store_dir_is_the_md5_of_the_worktree_path` pins the pairing. The cwd
 /// each hashes is the one the process was started in, so a worktree reached
 /// through a symlink would hash to the resolved path; Agency's worktrees are
 /// not.
@@ -620,23 +620,26 @@ mod tests {
     }
 
     /// The hash is the one the CLIs compute, checked against a chat cursor
-    /// itself filed under this directory.
+    /// itself filed under this directory. The worktree path is synthetic on
+    /// purpose: the digest is coupled to the exact string, so a real home
+    /// directory here fails the moment anything rewrites that path, and it
+    /// fails as a bare digest mismatch that says nothing about the cause.
     #[test]
     fn store_dir_is_the_md5_of_the_worktree_path() {
         let home = Path::new("/home/u");
-        let wt = Path::new("<home>/agency/.agency/worktrees/agent-mm1d");
+        let wt = Path::new("/Users/x/agency/.agency/worktrees/agent-mm1d");
         assert_eq!(
             store_dir(home, "cursor-agent", wt).unwrap(),
-            Path::new("/home/u/.cursor/chats/6ec98378c414e4520a0db1e8e84037b8")
+            Path::new("/home/u/.cursor/chats/4bfe083e18e07a7bf883f1f391d9c337")
         );
         assert_eq!(
             store_dir(home, "kimi", wt).unwrap(),
-            Path::new("/home/u/.kimi/sessions/6ec98378c414e4520a0db1e8e84037b8")
+            Path::new("/home/u/.kimi/sessions/4bfe083e18e07a7bf883f1f391d9c337")
         );
         // Not resolved, not normalised: the string as given is what is hashed.
         assert_ne!(
             store_dir(home, "kimi", wt),
-            store_dir(home, "kimi", Path::new("<home>/agency/.agency/worktrees/agent-mm1d/"))
+            store_dir(home, "kimi", Path::new("/Users/x/agency/.agency/worktrees/agent-mm1d/"))
         );
     }
 

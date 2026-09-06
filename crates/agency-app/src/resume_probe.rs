@@ -191,11 +191,13 @@ mod tests {
     #[test]
     fn cursor_probe_reads_the_meta_file_for_a_turn() {
         let home = tempfile::tempdir().unwrap();
-        let wt = Path::new("<home>/agency/.agency/worktrees/agent-mm1d");
+        // Synthetic path: the directory name below is its md5, so a real home
+        // directory here breaks the test under any later rewrite of that path.
+        let wt = Path::new("/Users/x/agency/.agency/worktrees/agent-mm1d");
         let ours = "712a88f3-e1c4-40f9-b5c3-842d55dc410a";
         let theirs = "ae94ccd1-b6b7-4195-b8db-52ddff3ac702";
         let chats =
-            home.path().join(".cursor").join("chats").join("6ec98378c414e4520a0db1e8e84037b8");
+            home.path().join(".cursor").join("chats").join("4bfe083e18e07a7bf883f1f391d9c337");
         fs::create_dir_all(chats.join(theirs)).unwrap();
         fs::write(chats.join(theirs).join("meta.json"), r#"{"hasConversation":true}"#).unwrap();
         assert_eq!(
@@ -247,10 +249,11 @@ mod tests {
     #[test]
     fn kimi_probe_asks_for_the_wire_file_of_the_conversation_on_record() {
         let home = tempfile::tempdir().unwrap();
-        let wt = Path::new("<home>/agency/.agency/worktrees/agent-mm1d");
+        // Synthetic, as above: the directory name is the md5 of this string.
+        let wt = Path::new("/Users/x/agency/.agency/worktrees/agent-mm1d");
         let ours = "1bb18ec4-6ddb-474b-96c3-b55c73a027a8";
         let sessions =
-            home.path().join(".kimi").join("sessions").join("6ec98378c414e4520a0db1e8e84037b8");
+            home.path().join(".kimi").join("sessions").join("4bfe083e18e07a7bf883f1f391d9c337");
         fs::create_dir_all(sessions.join(ours)).unwrap();
         fs::write(sessions.join(ours).join("context.jsonl"), "system prompt").unwrap();
         assert_eq!(

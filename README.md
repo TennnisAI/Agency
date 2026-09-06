@@ -11,14 +11,15 @@ git worktree.** Watch them live, review what they changed, merge the good ones.
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-macOS%20(Apple%20Silicon)-lightgrey.svg)](#requirements)
 
-<!-- SCREENSHOT
-     Add the hero capture here once one exists from a demo repo. The images in
-     site/assets/img/ are from the real working machine: they show fifteen real
-     project names, a home-directory path in agent output, and the machine
-     hostname in a terminal prompt. Recapture before using any of them here.
+<!-- The site's hero capture, reused rather than recaptured. It is from the real
+     working machine: it shows real project names, a home-directory path in
+     agent output, and the machine hostname in a terminal prompt. Blessed
+     deliberately, because the same image already ships on the public site.
+     When a demo-repo capture exists, replace both together. -->
 
-     ![Agency](docs/img/hero.webp)
--->
+![The Agency window showing the all-projects overview: 16 projects and 13
+agents, with live terminal output from several Claude Code runs, each on its own
+agent branch, and a plain terminal alongside.](site/assets/img/shot-overview.webp)
 
 Built with [Tauri 2](https://tauri.app): a Rust backend (`crates/`) and a React
 + Vite frontend (`ui/`).

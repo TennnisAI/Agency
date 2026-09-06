@@ -1,11 +1,7 @@
-<img src="app-icon/agency-icon-128.png" alt="" width="96" align="left" hspace="4" vspace="4">
-
-# Agency
+# <img src="app-icon/agency-icon-128.png" alt="" width="44" align="middle" hspace="6"> Agency
 
 **A desktop app for running coding agents in parallel, each isolated in its own
 git worktree.** Watch them live, review what they changed, merge the good ones.
-
-<br clear="left">
 
 [![CI](https://github.com/TennnisAI/Agency/actions/workflows/ci.yml/badge.svg)](https://github.com/TennnisAI/Agency/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)

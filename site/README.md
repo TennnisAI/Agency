@@ -52,13 +52,18 @@ mismatch reads as a box rather than a shadow.
 
 ## The release switch
 
-There is no published release yet, so both download buttons render the
-documented empty state: an inert `Coming shortly` with `No release published
-yet` as the sub-label. The release-state markup sits in an HTML comment
-directly above each one, in `index.html` (hero and closing CTA) and
-`download.html` (plus its version/size sub-label). When v0.1.0 is published,
-swap them in and fill the real DMG URL, filename and size. Per
-`07-build-and-delivery.md`, the site does not go live before that day.
+Thrown on 2026-09-06, when v0.1.0 was published. All three buttons are live:
+the hero and closing CTA in `index.html` link to `/download.html`, and
+`download.html` links straight at the asset. The hero meta line carries the
+version, and the sub-label carries the filename and size.
+
+The download link is the `releases/latest/download/` form, which resolves only
+on a public repo with a **published** release; a draft returns 404, as does a
+private repo, which is the same pair of conditions the app's update check needs.
+The filename in that URL carries the version, so it is not self-updating:
+**every release has to edit `download.html`** for the URL, the filename and the
+size, and `index.html` for the version in the meta line. Read the size off the
+built DMG rather than the release page, in Finder's decimal MB.
 
 ## Before launch, in order
 

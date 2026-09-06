@@ -2331,12 +2331,12 @@ input, textarea, code,
 /* First-run hero */
 .home-blank { align-items: center; justify-content: center; }
 .home-hero { display: flex; flex-direction: column; align-items: center; gap: 10px; max-width: 400px; text-align: center; }
+/* No tile behind the mark. A 64px rounded rect with a gradient fill, a border
+   and a muted glyph inside it is the shape of an image that failed to load, so
+   the empty state read as broken rather than empty. The mark carries itself. */
 .home-hero-mark {
-  width: 64px; height: 64px; border-radius: 18px;
-  background: linear-gradient(135deg, var(--s0), var(--crust));
-  border: 1px solid var(--s1);
-  display: flex; align-items: center; justify-content: center;
-  font-size: 26px; color: var(--sub0);
+  width: 46px; height: 46px;
+  color: var(--text);
 }
 .home-hero h1 { margin: 8px 0 0; font-size: 20px; font-weight: 600; color: var(--text); }
 .home-hero p { margin: 0; font-size: 13px; line-height: 1.65; color: var(--sub0); }

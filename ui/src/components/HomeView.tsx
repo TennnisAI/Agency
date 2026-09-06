@@ -33,6 +33,43 @@ function saveFolded(folded: Set<string>) {
 // ordered most-active first; clicking a tile jumps straight into that agent's
 // focus mode, clicking an issue opens its project's board, clicking a project
 // header selects the project.
+/* The app's own mark, monochrome and in `currentColor`, rather than the
+   gradient app icon: on the light theme that icon's dark tile is a heavy block,
+   and it would be the only full-colour art in a UI that is otherwise text
+   glyphs. Geometry is lifted from app-icon/agency-icon.svg, which is an "A"
+   that doubles as a branch diagram, so it says what the product does instead of
+   just branding the screen.
+
+   The mask exists because the chevron's apex sits inside the node ring. The
+   source SVG hides it by filling the circle with the icon's tile colour; there
+   is no tile here and `.home` sets no background of its own, so there is no
+   colour to fill with. Punching the chevron instead works on any surface. */
+function AgencyMark() {
+  return (
+    <svg className="home-hero-mark" viewBox="0 0 100 100" aria-hidden="true">
+      {/* maskUnits is spelled out because the default is objectBoundingBox,
+          which sizes the mask region off the masked path's bbox plus 10% and
+          would clip the knockout as the geometry changed. */}
+      <mask id="agency-mark-node" maskUnits="userSpaceOnUse" x="0" y="0" width="100" height="100">
+        <rect x="0" y="0" width="100" height="100" fill="#fff" />
+        <circle cx="50" cy="22" r="9.2" fill="#000" />
+      </mask>
+      <path
+        d="M22 84 L50 24 L78 84"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        mask="url(#agency-mark-node)"
+      />
+      <rect x="36" y="55" width="20" height="7.5" rx="3.75" fill="currentColor" fillOpacity=".55" />
+      <rect x="44" y="67" width="20" height="7.5" rx="3.75" fill="currentColor" />
+      <circle cx="50" cy="22" r="7.5" fill="none" stroke="currentColor" strokeWidth="3.4" />
+    </svg>
+  );
+}
+
 export default function HomeView({
   onOpenRun,
   onOpenProject,
@@ -149,7 +186,7 @@ export default function HomeView({
     return (
       <div className="home home-blank">
         <div className="home-hero">
-          <div className="home-hero-mark">▦</div>
+          <AgencyMark />
           <h1>Welcome to Agency</h1>
           <p>Add a project from a local folder, or clone an existing repository, then dispatch agents to work on it in parallel.</p>
           <div className="home-hero-actions">

@@ -84,7 +84,7 @@ against the shot list in `05-assets.md`:
 | `shot-overview.webp` | all-projects overview, 13 agents | stands in for SHOT-01 (hero) |
 | `shot-focus.webp` | focus view, agent working an issue | SHOT-02 |
 | `shot-issues.webp` | Issues board and detail (1bit-launcher) | SHOT-04/05 |
-| `shot-docs.webp` | note with an agent in the side panel | SHOT-06 |
+| `shot-docs.webp` | a design spec open, with its outline and backlinks panel | SHOT-06 |
 | `shot-merge.webp` | Source Control Changes, side-by-side diff | SHOT-11/12 |
 
 Still worth capturing, in value order: SHOT-01 proper (Agents tab, grid layout,
@@ -96,8 +96,13 @@ Regenerate site images from new captures with the same treatment: trim the
 transparent margin, resize to 2560 wide for the hero and 2400 for the rest,
 `cwebp -q 82 -alpha_q 100 -m 6`.
 
-**Check every capture against the exclusion list in `05-assets.md` before the
-site ships.** The current set is from the real working machine and shows real
-project names, `<home>/...` paths in agent output, and the machine
-hostname in a terminal prompt. That list rules those out, so either bless them
-deliberately or recapture from a demo repo before launch.
+**The exclusion list in `05-assets.md` was reviewed against this set and
+partly overruled, deliberately, on 2026-09-06.** The captures are from the real
+working machine and show real project names, `<home>/...` paths in agent output,
+and the machine hostname in a terminal prompt. Every project shown belongs to
+the author, none is client work, and a populated window is most of what makes
+the shots persuasive, so the list loses to that here. What was not blessed was
+a competitor's product name, legible in the body of the note in the original
+`shot-docs` capture; it was reshot rather than cropped, because using a rival's
+name as the label for your own product category concedes the category in your
+own marketing. Recheck a new capture for that, not for the project names.

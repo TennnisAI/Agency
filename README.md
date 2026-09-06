@@ -1,4 +1,4 @@
-# <img src="app-icon/agency-icon-128.png" alt="" width="44" align="middle" hspace="6"> Agency
+# <img src="app-icon/agency-icon-128.png" alt="" width="44" align="top" hspace="6"> Agency
 
 **A desktop app for running coding agents in parallel, each isolated in its own
 git worktree.** Watch them live, review what they changed, merge the good ones.

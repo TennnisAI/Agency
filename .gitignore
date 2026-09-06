@@ -56,3 +56,8 @@ ui/vitest.config.d.ts
 # it enforces exists to prevent. Absent the file, the hook skips that check.
 .githooks/competitors.local
 /.vite/
+
+# Wrangler's local cache. `wrangler pages deploy` writes the Cloudflare account
+# id and email here, in the repo root, without being asked. Untracked is not
+# enough on a public repo: one `git add -A` and it is published.
+.wrangler/

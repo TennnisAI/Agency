@@ -30,7 +30,7 @@ describe("scanLine", () => {
 
   it("finds paths in every shape a tool prints them", () => {
     expect(targets("edited src/lib/termLinks.ts today")).toEqual(["src/lib/termLinks.ts"]);
-    expect(targets("see <home>/agency/README.md")).toEqual(["<home>/agency/README.md"]);
+    expect(targets("see /Users/x/agency/README.md")).toEqual(["/Users/x/agency/README.md"]);
     expect(targets("run ./dev.sh and ../other/x.rs")).toEqual(["./dev.sh", "../other/x.rs"]);
     expect(targets("open ~/notes/today.md")).toEqual(["~/notes/today.md"]);
     expect(targets("bumped package.json and Cargo.toml")).toEqual(["package.json", "Cargo.toml"]);

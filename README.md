@@ -66,7 +66,8 @@ by pointing it at a local git repo.
 
 - **macOS 11 (Big Sur) or later on Apple Silicon.** Release builds are `aarch64`
   only; there is no Intel or universal build yet.
-- **Git**, and Xcode Command Line Tools (`xcode-select --install`).
+- **Git**. If you do not have it, macOS offers to install it the first time you
+  run `git`.
 - **At least one coding-agent CLI** from the list above. Agency offers to install
   a missing one for you; most install via `npm install -g`, so those need
   **Node**.

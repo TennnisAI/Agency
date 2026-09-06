@@ -432,7 +432,6 @@ code, kbd { font-family: var(--mono); }
 .dl-hero .display { margin-bottom: 40px; }
 .dl-button-wrap { display: flex; flex-direction: column; align-items: center; gap: 12px; }
 .dl-sub { font-family: var(--mono); font-size: 13px; color: var(--sub0); }
-.dl-note { margin-top: 12px; font-size: 15px; color: var(--sub0); max-width: 52ch; margin-left: auto; margin-right: auto; }
 .dl-platform-note { font-size: 15px; color: var(--sub0); margin-bottom: 16px; }
 .dl-cards {
   display: grid;

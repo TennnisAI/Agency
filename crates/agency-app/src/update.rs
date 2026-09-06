@@ -6,7 +6,8 @@
 //!
 //! This is the only outbound network call Agency's own code makes. It sends no
 //! identifiers: a plain GET, a User-Agent naming the app, and nothing else. It
-//! can be turned off in Settings, and it is skipped entirely for dev builds.
+//! runs once per launch and can be turned off in Settings, which suppresses the
+//! automatic check only; the manual button in Diagnostics still works.
 
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};

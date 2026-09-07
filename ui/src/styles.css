@@ -2171,8 +2171,12 @@ input, textarea, code,
 /* ── File editor (CodeMirror) ────────────────────────────────── */
 /* position: anchors the floating find bar (AGE-63). */
 .file-editor-wrap { position: relative; display: flex; flex-direction: column; flex: 1; min-height: 0; }
-.file-editor-bar { display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-bottom: 1px solid var(--line); font-size: 12px; }
-.file-editor-path { opacity: 0.85; }
+.file-editor-bar { display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-bottom: 1px solid var(--line); font-size: 12px; min-width: 0; overflow: hidden; }
+/* Truncating, not just clipped: a deep path (target/release/bundle/dmg/…) is
+   wider than the pane, and a flex item that cannot shrink pushed the toolbar
+   buttons out and painted the path over the agent panel beside it (AGE-200). */
+.file-editor-path { opacity: 0.85; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-editor-dirty { flex: none; color: var(--yellow); font-size: 9px; line-height: 1; }
 /* Icon buttons in the editor bar (save / revert). */
 .file-editor-btn {
   display: inline-flex; align-items: center; justify-content: center;

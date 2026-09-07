@@ -145,9 +145,9 @@ export default function HomeIssues({
     (a, b) => issuesOf(b).length - issuesOf(a).length || a.name.localeCompare(b.name),
   );
 
-  // Navigating resets the tab to "agents" (setSelectedProject), so re-assert
-  // the Issues tab after — React batches both in this handler. The clicked
-  // issue rides sessionStorage; IssuesView selects it once its list loads.
+  // Navigating resets the tab to the project's own (setSelectedProject), so
+  // re-assert the Issues tab after — React batches both in this handler. The
+  // clicked issue rides sessionStorage; IssuesView selects it once its list loads.
   function openIssue(p: Project, issue: Issue) {
     sessionStorage.setItem(PENDING_ISSUE_KEY, issue.id);
     onOpenProject(p);

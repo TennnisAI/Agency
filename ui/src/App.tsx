@@ -344,7 +344,9 @@ function Shell() {
   // through its onOpen, because the run it focuses has to be visible.
   function selectProjectFromTree(p: Project) {
     setProject(p);
-    setSelectedProject(p.id);
+    // The kind rides along so the store knows which tab this project opens on
+    // the first time it is selected: Docs for the workspace, Agents otherwise.
+    setSelectedProject(p.id, p.kind);
   }
 
   // Point the app at a project on the way to showing something inside it, so

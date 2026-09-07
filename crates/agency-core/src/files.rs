@@ -371,6 +371,51 @@ pub fn read_file(root: &Path, rel: &str) -> Result<FileContents> {
     }
 }
 
+/// Whether the file at `rel` still has a conflict marker at the start of a
+/// line.
+///
+/// The conflict pane answers this from the text it read, but it cannot read
+/// every file: a binary one, or one over [`MAX_FILE_BYTES`], arrives with no
+/// text at all and its "Mark resolved" button had nothing to check. A
+/// conflicted `pnpm-lock.yaml` is routinely past 2 MB, and lockfiles are among
+/// the files that conflict most, so that button could stage a `UU` file with
+/// `<<<<<<< HEAD` still in it — the AGE-199 failure by another route. Reading
+/// a line at a time here holds no more than one line of any size of file in
+/// memory, so the check is the same for a 2 KB file and a 200 MB one.
+///
+/// Only the two outer markers count, and only as whole markers, matching what
+/// the pane's own parser treats as one: a row of seven equals signs is an RST
+/// heading's underline, and calling that a conflict would refuse to stage a
+/// file that was never conflicted.
+pub fn has_conflict_markers(root: &Path, rel: &str) -> Result<bool> {
+    use std::io::BufRead;
+    let path = resolve_within(root, rel)?;
+    let mut reader = std::io::BufReader::new(std::fs::File::open(&path)?);
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        if reader.read_until(b'\n', &mut line)? == 0 {
+            return Ok(false);
+        }
+        if is_conflict_marker(&line) {
+            return Ok(true);
+        }
+    }
+}
+
+/// One line of [`has_conflict_markers`]: seven `<` or seven `>`, then the end
+/// of the line or a space. A carriage return ends the line too, for the same
+/// reason the UI's parser accepts one: in a CRLF checkout every marker git
+/// wrote arrives with a `\r` where this looks for the end.
+fn is_conflict_marker(line: &[u8]) -> bool {
+    for m in [b"<<<<<<<", b">>>>>>>"] {
+        if let Some(rest) = line.strip_prefix(m.as_slice()) {
+            return matches!(rest.first(), None | Some(b' ') | Some(b'\r') | Some(b'\n'));
+        }
+    }
+    false
+}
+
 /// Write `contents` to the file at `rel` within `root`.
 pub fn write_file(root: &Path, rel: &str, contents: &str) -> Result<()> {
     let path = resolve_within(root, rel)?;

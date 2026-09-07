@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hasConflicts, parseConflicts, resolveAll, resolveBlock } from "./conflictFile";
+import { hasConflicts, hasMarkers, parseConflicts, resolveAll, resolveBlock } from "./conflictFile";
 
 // The shape git leaves behind, written out rather than built from a helper: the
 // exact bytes are what this module is about.
@@ -150,11 +150,80 @@ describe("parseConflicts", () => {
     expect(parseConflicts(late)).toEqual([]);
   });
 
+  it("refuses a conflict whose incoming side holds a line of angle brackets", () => {
+    // The block used to end on the first `>>>>>>>` in the "theirs" phase,
+    // whether or not git wrote it: the file below parsed as one block with an
+    // empty Incoming side and "quoted text in the file" for its ref, and
+    // "Keep current" wrote git's real terminator back into the file. The
+    // block-count check passed, because a lone `>>>>>>>` parses to zero
+    // blocks, and the pane then said there were no markers left in a file that
+    // had one in it.
+    const quoted = [
+      "<<<<<<< HEAD",
+      "mine",
+      "=======",
+      ">>>>>>> quoted text in the file",
+      "theirs",
+      ">>>>>>> agent/feature",
+      "",
+    ].join("\n");
+    expect(parseConflicts(quoted)).toEqual([]);
+    expect(resolveBlock(quoted, 0, "current")).toBe(quoted);
+    expect(resolveAll(quoted, "incoming")).toBe(quoted);
+    // And the pane can still tell the user why: the markers are there, they
+    // are just not a shape this module will rewrite.
+    expect(hasMarkers(quoted)).toBe(true);
+  });
+
+  it("refuses a stray terminator after an otherwise well-formed block", () => {
+    // Same ambiguity from the other end: which of the two is the one git
+    // wrote cannot be told from the text, and taking the first leaves the
+    // second behind.
+    const stray = [
+      "<<<<<<< HEAD",
+      "mine",
+      "=======",
+      "theirs",
+      ">>>>>>> agent/feature",
+      "tail",
+      ">>>>>>> agent/feature",
+      "",
+    ].join("\n");
+    expect(parseConflicts(stray)).toEqual([]);
+  });
+
+  it("still reads the block before a later, unrelated conflict", () => {
+    // The scan for a second terminator stops at the next `<<<<<<<`, so the
+    // `>>>>>>>` that closes the *second* block is not read as a stray one in
+    // the first. Without that stop a file with two conflicts would refuse
+    // itself, which is the common case.
+    expect(parseConflicts(TWO)).toHaveLength(2);
+  });
+
   it("refuses a block it cannot read rather than guessing at one", () => {
     // Truncated (no `=======`), and nested — both leave the file alone, which
     // is the only safe answer when the buttons this feeds rewrite it.
     expect(parseConflicts("<<<<<<< HEAD\nmine\nthe end\n")).toEqual([]);
     expect(parseConflicts("<<<<<<< HEAD\n<<<<<<< HEAD\nx\n=======\ny\n>>>>>>> b\n")).toEqual([]);
+  });
+});
+
+describe("hasMarkers", () => {
+  it("sees a marker the parser refuses, and nothing in an ordinary file", () => {
+    expect(hasMarkers(ONE)).toBe(true);
+    expect(hasMarkers(CRLF)).toBe(true);
+    // A resolution done by hand, or by an agent, that left the terminator
+    // behind: no block parses, so the pane has only this to go on.
+    expect(hasMarkers("kept\n>>>>>>> agent/feature\n")).toBe(true);
+    expect(hasMarkers(resolveAll(TWO, "current"))).toBe(false);
+  });
+
+  it("does not call a heading underline or a table rule a conflict", () => {
+    expect(hasMarkers("Changes\n=======\ntext\n")).toBe(false);
+    expect(hasMarkers("| a | b |\n||||||| \n")).toBe(false);
+    // Seven angle brackets with something joined to them is a line of text,
+    // the same rule the parser reads markers by.
+    expect(hasMarkers(">>>>>>>>text\n")).toBe(false);
   });
 });
 

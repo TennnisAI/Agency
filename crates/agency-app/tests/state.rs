@@ -800,12 +800,63 @@ fn a_new_conflict_agent_that_takes_no_argv_prompt_gets_the_queue() {
     git(&repo, &["commit", "-qam", "main edit"]);
     assert!(matches!(state.merge_task(&run.id).unwrap(), MergeOutcome::Conflicts { .. }));
 
-    let tab = state.spawn_merge_conflict_agent(&run.id, None).unwrap();
+    let spawn = state.spawn_merge_conflict_agent(&run.id, None).unwrap();
+    assert!(spawn.queued, "the modal has to be able to say the prompt is waiting");
     let waiting = state.list_queued_messages(&run.id);
     assert_eq!(waiting.len(), 1, "the prompt has to be queued, not dropped: {waiting:?}");
-    assert_eq!(waiting[0].session_id, tab.id, "queued against the new tab, not the run");
+    assert_eq!(waiting[0].session_id, spawn.session.id, "queued against the new tab, not the run");
     assert_eq!(waiting[0].origin, "merge conflict");
     assert!(waiting[0].text.contains("README.md"), "got: {}", waiting[0].text);
+
+    let _ = state.discard_run(&run.id);
+}
+
+/// The other half of that: a crush profile that places `{{prompt}}` itself.
+/// `fresh_agent_argv` honours the profile over the catalog — the documented
+/// override for a user whose CLI has moved on — so the tab launched with the
+/// conflict already in its argv. Asking the catalog alone queued a second copy
+/// anyway, to be typed into the agent ten seconds later, on top of whatever it
+/// was doing with the first.
+#[test]
+fn a_new_conflict_agent_whose_profile_places_the_prompt_is_not_sent_it_twice() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let git = |dir: &Path, args: &[&str]| {
+        assert!(
+            Command::new("git").args(args).current_dir(dir).status().unwrap().success(),
+            "git {args:?}"
+        );
+    };
+
+    let state = common::state(&dir);
+    state
+        .register_profile(AgentProfile {
+            name: "crush".into(),
+            command: "/bin/sh".into(),
+            args: vec!["-c".into(), "sleep 30".into(), "--prompt".into(), "{{prompt}}".into()],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+    let run = state.create_run(&project.id, "p", "crush", None, "HEAD", None).unwrap();
+
+    let wt = state.worktree_path(&run.id).unwrap();
+    std::fs::write(wt.join("README.md"), "from the branch").unwrap();
+    git(&wt, &["commit", "-qam", "branch edit"]);
+    std::fs::write(repo.join("README.md"), "from main").unwrap();
+    git(&repo, &["commit", "-qam", "main edit"]);
+    assert!(matches!(state.merge_task(&run.id).unwrap(), MergeOutcome::Conflicts { .. }));
+
+    let spawn = state.spawn_merge_conflict_agent(&run.id, None).unwrap();
+    assert!(!spawn.queued, "the profile put the conflict in the argv; nothing is waiting");
+    assert!(
+        state.list_queued_messages(&run.id).is_empty(),
+        "a second copy of the conflict was queued behind the one it launched with"
+    );
 
     let _ = state.discard_run(&run.id);
 }
@@ -859,7 +910,7 @@ fn a_new_conflict_agent_falls_back_off_a_web_gui_profile() {
     assert!(state.run_sessions(&run.id).unwrap().is_empty(), "refusal left a tab behind");
 
     state.register_profile(profile("claude")).unwrap();
-    let tab = state.spawn_merge_conflict_agent(&run.id, None).unwrap();
+    let tab = state.spawn_merge_conflict_agent(&run.id, None).unwrap().session;
     assert_eq!(tab.agent, "claude", "the tab must not be a second dsh");
 
     let _ = state.discard_run(&run.id);

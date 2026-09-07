@@ -281,3 +281,39 @@ fn allows_symlink_within_root() {
     let fc = files::read_file(root.path(), "alias.txt").unwrap();
     assert_eq!(fc.text, "hi\n");
 }
+
+/// The check behind "Mark resolved" for a file the conflict pane cannot read
+/// into the UI. It has to answer for a file of any size, and it has to say no
+/// to the things that merely look like markers.
+#[test]
+fn conflict_marker_scan_reads_files_the_pane_cannot() {
+    let dir = tempfile::tempdir().unwrap();
+    let conflicted = "a\n<<<<<<< HEAD\nmine\n=======\ntheirs\n>>>>>>> agent/feature\n";
+    fs::write(dir.path().join("small.txt"), conflicted).unwrap();
+    assert!(files::has_conflict_markers(dir.path(), "small.txt").unwrap());
+
+    // Over the 2 MB ceiling read_file refuses at, which is where a conflicted
+    // lockfile lands and where this check is the only one there is.
+    let mut big = "key: value\n".repeat(400_000);
+    assert!(big.len() > 2_000_000);
+    big.push_str(">>>>>>> agent/feature\n");
+    fs::write(dir.path().join("big.yaml"), &big).unwrap();
+    assert!(files::has_conflict_markers(dir.path(), "big.yaml").unwrap());
+    assert!(files::read_file(dir.path(), "big.yaml").unwrap().too_large);
+
+    // A resolved file, a heading underline, a marker with something joined to
+    // it, and one that does not start the line: none of them are markers.
+    fs::write(dir.path().join("resolved.md"), "Changes\n=======\ntext\n").unwrap();
+    fs::write(dir.path().join("joined.txt"), ">>>>>>>>text\n  <<<<<<< HEAD\n").unwrap();
+    assert!(!files::has_conflict_markers(dir.path(), "resolved.md").unwrap());
+    assert!(!files::has_conflict_markers(dir.path(), "joined.txt").unwrap());
+
+    // A CRLF checkout, where every marker git wrote ends in a carriage return.
+    fs::write(dir.path().join("crlf.txt"), "a\r\n<<<<<<< HEAD\r\nmine\r\n").unwrap();
+    assert!(files::has_conflict_markers(dir.path(), "crlf.txt").unwrap());
+
+    // Binary, and containment: the same rules the rest of this module keeps.
+    fs::write(dir.path().join("bin.dat"), [0u8, 1, 2, 0, 3]).unwrap();
+    assert!(!files::has_conflict_markers(dir.path(), "bin.dat").unwrap());
+    assert!(files::has_conflict_markers(dir.path(), "../../etc/hosts").is_err());
+}

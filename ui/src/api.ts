@@ -1498,10 +1498,16 @@ export const abortMergeTask = (taskId: string, onProgress?: (p: CloneProgress) =
 export const sendMergeConflict = (taskId: string, sessionId?: string) =>
   invoke<boolean>("send_merge_conflict", { taskId, sessionId: sessionId ?? null });
 // "Fix with a new agent": opens a fresh agent tab in this run's worktree,
-// launched on the conflict. The prompt is that agent's opening argv, so unlike
-// the above there is nothing to queue and nothing to wait for.
+// launched on the conflict. `queued` is false when the prompt went in as that
+// agent's opening argv, which is the usual case and means it is already
+// working; true for a CLI that takes no prompt on the command line, where the
+// conflict waits in the send queue until the new agent reaches its prompt.
+export interface MergeConflictSpawn {
+  session: RunSessionInfo;
+  queued: boolean;
+}
 export const spawnMergeConflictAgent = (taskId: string, agent?: string) =>
-  invoke<RunSessionInfo>("spawn_merge_conflict_agent", { taskId, agent: agent ?? null });
+  invoke<MergeConflictSpawn>("spawn_merge_conflict_agent", { taskId, agent: agent ?? null });
 
 export interface Hunk {
   header: string;
@@ -1739,6 +1745,12 @@ export const listDir = (root: FileRoot, relPath: string) =>
 
 export const readFile = (root: FileRoot, relPath: string) =>
   invoke<FileContents>("read_file", { root, relPath });
+
+// Whether a file still holds conflict markers, asked of the backend because it
+// can scan a file the UI cannot hold: `readFile` refuses a binary file and
+// anything over 2 MB, which a conflicted lockfile usually is.
+export const fileHasConflictMarkers = (root: FileRoot, relPath: string) =>
+  invoke<boolean>("file_has_conflict_markers", { root, relPath });
 
 export interface BinaryContents {
   b64: string;

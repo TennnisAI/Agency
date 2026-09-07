@@ -275,21 +275,26 @@ export default function MergeModal({
   //
   // "New agent" is the other shape of the same gesture: a tab opened for this
   // job, with the conflict as its opening prompt. Nothing can be queued behind
-  // a session that did not exist a moment ago, so that one never waits.
+  // a session that did not exist a moment ago, so that one usually never waits
+  // — except for a CLI that takes no prompt on the command line, where the
+  // backend falls back to the queue and says so, because a brand-new agent has
+  // no activity entry yet and the queue reads that as working: the prompt is
+  // held for at least ten seconds, and "Started it on the conflict" would be
+  // the modal talking about work that had not begun.
   async function fixWithAgent() {
     setError("");
     setSending(true);
     try {
       if (target === NEW_AGENT) {
-        const s = await spawnMergeConflictAgent(taskId);
+        const { session, queued } = await spawnMergeConflictAgent(taskId);
         // Into the picker and selected, so the sentence below names the agent
         // that got it and the strip behind this window has it too. Pending, so
         // "Close and watch" lands on it rather than on the tab you came from.
-        setTabs((prev) => [...prev, s]);
-        setTarget(s.id);
-        setPendingSession(s.id);
+        setTabs((prev) => [...prev, session]);
+        setTarget(session.id);
+        setPendingSession(session.id);
         setSpawned(true);
-        setQueued(false);
+        setQueued(queued);
       } else {
         // False means the agent is not free — mid-turn, or with something
         // half-typed on its prompt line — and the prompt is held behind that;
@@ -610,11 +615,13 @@ export default function MergeModal({
                 </ul>
                 {sent ? (
                   <p className="merge-note">
-                    {spawned
+                    {spawned && !queued
                       ? `Started ${targetLabel} on it, with git's status of the merge. `
-                      : queued
-                        ? `Queued for ${targetLabel}, with git's status of the merge. That agent isn't free yet (mid-turn, or with something half-typed on its prompt line), so the prompt goes in as soon as it is. `
-                        : `Sent to ${targetLabel}, with git's status of the merge. `}
+                      : spawned
+                        ? `Started ${targetLabel}, with git's status of the merge. That agent's CLI takes no prompt on the command line, so the conflict goes in as soon as it's up at its prompt. `
+                        : queued
+                          ? `Queued for ${targetLabel}, with git's status of the merge. That agent isn't free yet (mid-turn, or with something half-typed on its prompt line), so the prompt goes in as soon as it is. `
+                          : `Sent to ${targetLabel}, with git's status of the merge. `}
                     Close this window to watch it work; the merge is in the project's checkout, not
                     the agent's worktree, so the prompt points git there. Reopen this window when
                     it's done, or leave it open: it rechecks git every few seconds either way.

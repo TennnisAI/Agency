@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { fileRootOf, gitStage, readFile, trashPath, writeFile } from "../../api";
-import { Side, parseConflicts, resolveAll, resolveBlock } from "../../lib/conflictFile";
+import {
+  fileHasConflictMarkers, fileRootOf, gitStage, readFile, trashPath, writeFile,
+} from "../../api";
+import { Side, hasMarkers, parseConflicts, resolveAll, resolveBlock } from "../../lib/conflictFile";
 
 // The five unmerged states that carry no conflict markers, because one side has
 // the file and the other has nothing to merge into it. `AA` and `UU` are the two
@@ -156,6 +158,19 @@ export default function ConflictView({
     setBusy(true);
     setError("");
     try {
+      // A file this pane could not read has no blocks and no marker check
+      // behind it, so the button was live for a `UU` file nobody had looked
+      // at: `MAX_FILE_BYTES` is 2 MB and a conflicted `pnpm-lock.yaml` is well
+      // past it, which is the file that conflicts most often of any in a repo.
+      // The paragraph above tells the user to resolve it in their editor
+      // first, and this is the pane checking that they did. The backend does
+      // the scan because it can read a file of any size, and a binary one.
+      if (here != null && text == null && !markerless) {
+        if (await fileHasConflictMarkers(root, path)) {
+          setError("This file still has conflict markers in it, so Agency didn't stage it. Resolve it in your editor, then mark it resolved.");
+          return;
+        }
+      }
       await gitStage(taskId, path);
       onChanged();
     } catch (e) {
@@ -199,7 +214,15 @@ export default function ConflictView({
   // Markers are in the file but none of them parsed. Saying so is the honest
   // answer: this pane will not touch a file it cannot account for, and the
   // editor can.
-  const tangled = text != null && blocks.length === 0 && text.includes("<<<<<<<");
+  //
+  // A leftover `>>>>>>>` counts, not just a `<<<<<<<`. A resolution done by
+  // hand or by an agent that took the opening marker and the separator but
+  // left the terminator behind used to land here as "No conflict markers left
+  // in this file", and "Mark resolved" then staged the branch name along with
+  // it. The file row's own menu still stages anything, so this refusing a file
+  // whose prose happens to open a line with seven angle brackets is a detour,
+  // not a dead end.
+  const tangled = text != null && blocks.length === 0 && hasMarkers(text);
 
   // Which of the markerless states this is, in the user's terms.
   const markerlessIntro = code === "DD"

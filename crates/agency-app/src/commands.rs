@@ -10,8 +10,9 @@ use tauri::ipc::Channel;
 use tauri::State;
 
 use crate::state::{
-    AppState, DiscardSummary, FilesConfigDto, KnowledgeConfigDto, McpImportResult, MergePreview,
-    ProviderSettings, RaceAttempt, RunInfo, RunScriptConfigDto, RunScriptStatusDto, RunSessionInfo,
+    AppState, DiscardSummary, FilesConfigDto, KnowledgeConfigDto, McpImportResult,
+    MergeConflictSpawn, MergePreview, ProviderSettings, RaceAttempt, RunInfo, RunScriptConfigDto,
+    RunScriptStatusDto, RunSessionInfo,
 };
 
 #[derive(Clone, Serialize)]
@@ -1482,7 +1483,7 @@ pub fn spawn_merge_conflict_agent(
     state: State<'_, AppState>,
     task_id: String,
     agent: Option<String>,
-) -> Result<RunSessionInfo, String> {
+) -> Result<MergeConflictSpawn, String> {
     state.spawn_merge_conflict_agent(&task_id, agent.as_deref()).map_err(|e| e.to_string())
 }
 
@@ -2366,6 +2367,20 @@ pub async fn read_file(
 ) -> Result<agency_core::files::FileContents, String> {
     let base = resolve_root(&state, &root)?;
     agency_core::files::read_file(&base, &rel_path).map_err(|e| e.to_string())
+}
+
+/// Whether a file still holds conflict markers, for the conflict pane's "Mark
+/// resolved" on a file it could not read into the UI: binary, or over the read
+/// ceiling, which a conflicted lockfile routinely is. Everything the pane can
+/// read it checks itself; this is the one case where it has nothing to check.
+#[tauri::command]
+pub async fn file_has_conflict_markers(
+    state: State<'_, AppState>,
+    root: FileRoot,
+    rel_path: String,
+) -> Result<bool, String> {
+    let base = resolve_root(&state, &root)?;
+    agency_core::files::has_conflict_markers(&base, &rel_path).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

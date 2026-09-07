@@ -486,6 +486,17 @@ pub struct RunSessionInfo {
     pub status: SessionStatus,
 }
 
+/// What "Fix with a new agent" did: the tab it opened, and whether the conflict
+/// went in as that agent's opening argv or is waiting in the send queue for it
+/// to reach its prompt. The modal's wording turns on the difference, and the
+/// tab alone cannot answer it.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MergeConflictSpawn {
+    pub session: RunSessionInfo,
+    pub queued: bool,
+}
+
 /// Where an agent started on a PR (a review, or a conflict resolution) landed.
 /// `session_id` is set when it had to run as an extra tab inside an existing
 /// run (the PR's branch was already checked out there); the UI focuses that tab
@@ -9316,24 +9327,44 @@ impl AppState {
     /// "Started crush on it" for an agent that had been handed nothing at all.
     /// They go through the send queue instead, the same delivery the hand-off to
     /// a live tab uses, which the tick drains once the new agent is at its
-    /// prompt.
+    /// prompt. The return says which of the two happened, because a queued
+    /// prompt waits at least a tick behind an agent that has only just started
+    /// and the modal has to be able to say so.
     pub fn spawn_merge_conflict_agent(
         &self,
         id: &str,
         agent: Option<&str>,
-    ) -> anyhow::Result<RunSessionInfo> {
+    ) -> anyhow::Result<MergeConflictSpawn> {
         let prompt = self.merge_conflict_prompt(id)?;
         let agent = match agent {
             Some(a) => a.to_string(),
             None => self.conflict_agent_for(id)?,
         };
         let session = self.start_run_session(id, Some(&agent), &prompt)?;
-        if crate::agent_catalog::prompt_delivery(&session.agent)
+        // The same condition `fresh_agent_argv` launches by, not just the
+        // catalog's half of it. A profile that places `{{prompt}}` itself wins
+        // over the catalog there — that is the documented override for a user
+        // whose CLI has moved on — so asking the catalog alone said "this agent
+        // was handed nothing" about an agent that had just been launched with
+        // the conflict in its argv, and queued a second copy to be typed in on
+        // top of whatever it was doing ten seconds later.
+        let queued = crate::agent_catalog::prompt_delivery(&session.agent)
             == crate::agent_catalog::PromptDelivery::Unsupported
-        {
+            && !self.profile_places_prompt(&session.agent);
+        if queued {
             self.queue_send(&session.id, "merge conflict", prompt)?;
         }
-        Ok(session)
+        Ok(MergeConflictSpawn { session, queued })
+    }
+
+    /// Whether `agent`'s profile puts the prompt in the argv itself, which is
+    /// the override [`fresh_agent_argv`] honours over the catalog's recipe. A
+    /// profile that has gone missing since the tab launched answers false: the
+    /// launch used *some* argv, and the fallback that matters is the one that
+    /// leaves the agent with a prompt rather than the one that doubles it.
+    fn profile_places_prompt(&self, agent: &str) -> bool {
+        let profile = self.registry.lock().unwrap().get_profile(agent);
+        matches!(profile, Ok(Some(p)) if p.args.iter().any(|a| a.contains("{{prompt}}")))
     }
 
     /// Which profile "New agent" opens when the caller named none: the run's

@@ -62,10 +62,10 @@ function label(line: string, m: string): string {
  *
  * Conservative by design: only well-formed blocks are returned, and anything
  * unparseable (a `<<<<<<<` with no `=======` after it, a second `<<<<<<<`,
- * `=======` or `|||||||` inside a block) yields no block at all, so the buttons
- * this feeds are simply not offered rather than offered for a rewrite that
- * would lose text. diff3 conflicts carry a `|||||||` base section, which
- * belongs to neither side and is dropped with the markers; only the first
+ * `=======`, `|||||||` or `>>>>>>>` inside a block) yields no block at all, so
+ * the buttons this feeds are simply not offered rather than offered for a
+ * rewrite that would lose text. diff3 conflicts carry a `|||||||` base section,
+ * which belongs to neither side and is dropped with the markers; only the first
  * marker after `<<<<<<<` opens one.
  */
 export function parseConflicts(text: string): ConflictBlock[] {
@@ -128,6 +128,22 @@ export function parseConflicts(text: string): ConflictBlock[] {
     // what keeps a rewrite from leaving the odd `<<<<<<<` behind — which is the
     // failure this whole view exists to stop.
     if (end === -1) return [];
+    // A second `>>>>>>>` between here and the next `<<<<<<<` means the one
+    // just paired up may not be git's. `>>>>>>>` was the last marker whose
+    // appearance inside a side was read rather than refused: a line of seven
+    // angle brackets in the *incoming* side ended the block on itself, so the
+    // block came back well formed with an empty Incoming side, that line's
+    // text as its ref, and git's real `>>>>>>> agent/feature` left outside it.
+    // "Keep current" then wrote that terminator back into the file, the
+    // block-count check passed (a lone terminator no longer parses, so the
+    // result is still zero blocks), and the pane said "No conflict markers
+    // left in this file" over a file with a marker in it, which is the exact
+    // AGE-199 failure this module exists to stop. Which of the two is git's
+    // cannot be told from the text, so refuse the file, as a second `=======`
+    // and a nested `<<<<<<<` already do.
+    for (let j = end + 1; j < lines.length && !marker(lines[j], OURS); j++) {
+      if (marker(lines[j], THEIRS)) return [];
+    }
     out.push({
       start,
       end,
@@ -144,6 +160,21 @@ export function parseConflicts(text: string): ConflictBlock[] {
 /** Whether `text` still holds a conflict this module can resolve. */
 export function hasConflicts(text: string): boolean {
   return parseConflicts(text).length > 0;
+}
+
+/**
+ * Whether any line of `text` is a conflict marker, whether or not the file
+ * around it parses into blocks. This is what "the file still has markers in it"
+ * means for a file this module refuses: the two are not the same question, and
+ * the pane needs both.
+ *
+ * Only the two outer markers count. A line of seven equals signs is an RST
+ * heading's underline and a line of seven pipes is a table rule; calling either
+ * one evidence of a conflict would tell the user a file they had already
+ * resolved was one Agency can't read.
+ */
+export function hasMarkers(text: string): boolean {
+  return text.split("\n").some((line) => marker(line, OURS) || marker(line, THEIRS));
 }
 
 function chosen(block: ConflictBlock, side: Side): string[] {

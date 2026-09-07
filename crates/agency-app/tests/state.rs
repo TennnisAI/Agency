@@ -810,6 +810,61 @@ fn a_new_conflict_agent_that_takes_no_argv_prompt_gets_the_queue() {
     let _ = state.discard_run(&run.id);
 }
 
+/// AGE-199: "Fix with a new agent" is offered on every run, and it opened the
+/// tab with the run's own profile. On a dsh run that could only ever fail: dsh
+/// serves its GUI on the workspace's one port, the run's own session already
+/// holds it, and `start_run_session` refuses a second — so the user got the
+/// port refusal as a raw backend error, with no picker to choose another agent
+/// with. The spawn falls back to a terminal profile instead.
+#[test]
+fn a_new_conflict_agent_falls_back_off_a_web_gui_profile() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let git = |dir: &Path, args: &[&str]| {
+        assert!(
+            Command::new("git").args(args).current_dir(dir).status().unwrap().success(),
+            "git {args:?}"
+        );
+    };
+
+    let state = common::state(&dir);
+    // Under the catalog's own name, which is what `web_ui` is keyed by; the
+    // command only has to exist so the tab can be launched.
+    let profile = |name: &str| AgentProfile {
+        name: name.into(),
+        command: "/bin/sh".into(),
+        args: vec!["-c".into(), "sleep 30".into()],
+        env: vec![],
+        resume_args: None,
+        loop_args: None,
+    };
+    state.register_profile(profile("dsh")).unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+    let run = state.create_run(&project.id, "p", "dsh", None, "HEAD", None).unwrap();
+
+    // Two edits of one line, which is the conflict git cannot settle itself.
+    let wt = state.worktree_path(&run.id).unwrap();
+    std::fs::write(wt.join("README.md"), "from the branch").unwrap();
+    git(&wt, &["commit", "-qam", "branch edit"]);
+    std::fs::write(repo.join("README.md"), "from main").unwrap();
+    git(&repo, &["commit", "-qam", "main edit"]);
+    assert!(matches!(state.merge_task(&run.id).unwrap(), MergeOutcome::Conflicts { .. }));
+
+    // With dsh the only profile there is nothing to fall back to, and the
+    // refusal has to say what to do about it rather than name a port.
+    let err = state.spawn_merge_conflict_agent(&run.id, None).unwrap_err().to_string();
+    assert!(err.contains("no other agent is set up"), "got: {err}");
+    assert!(state.run_sessions(&run.id).unwrap().is_empty(), "refusal left a tab behind");
+
+    state.register_profile(profile("claude")).unwrap();
+    let tab = state.spawn_merge_conflict_agent(&run.id, None).unwrap();
+    assert_eq!(tab.agent, "claude", "the tab must not be a second dsh");
+
+    let _ = state.discard_run(&run.id);
+}
+
 /// AGE-199: the busy/idle bookkeeping the send queue decides against is one
 /// entry per *run*, read from whichever session speaks for the run — so an
 /// extra agent tab had no entry at all. No entry reads as "working", so a

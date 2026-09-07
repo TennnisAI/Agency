@@ -9307,7 +9307,8 @@ impl AppState {
     ///
     /// The prompt goes in as the tab's opening argv, so for most agents there is
     /// no queue and nothing to wait for: the hand-off cannot be held behind
-    /// another turn. `agent` picks the profile; `None` uses the run's own.
+    /// another turn. `agent` picks the profile; `None` leaves the choice to
+    /// [`Self::conflict_agent_for`].
     ///
     /// crush and kimi are the exception. Their CLIs take no prompt on the
     /// command line, so `prompt_args` answers for them with an empty argv and a
@@ -9322,13 +9323,65 @@ impl AppState {
         agent: Option<&str>,
     ) -> anyhow::Result<RunSessionInfo> {
         let prompt = self.merge_conflict_prompt(id)?;
-        let session = self.start_run_session(id, agent, &prompt)?;
+        let agent = match agent {
+            Some(a) => a.to_string(),
+            None => self.conflict_agent_for(id)?,
+        };
+        let session = self.start_run_session(id, Some(&agent), &prompt)?;
         if crate::agent_catalog::prompt_delivery(&session.agent)
             == crate::agent_catalog::PromptDelivery::Unsupported
         {
             self.queue_send(&session.id, "merge conflict", prompt)?;
         }
         Ok(session)
+    }
+
+    /// Which profile "New agent" opens when the caller named none: the run's
+    /// own, unless that agent serves its interactive surface as a browser GUI.
+    ///
+    /// A run has one GUI port and the run's own agent already answers for it,
+    /// so `start_run_session` refuses a second web-GUI session in the same
+    /// workspace. dsh is the only such profile, and the modal offers "New
+    /// agent" on every run with no way to name a different one — so on a dsh
+    /// run the option could only ever fail, and it failed with the port
+    /// refusal, which reads as a bug rather than as "pick another agent".
+    /// Falling back to a terminal profile is the answer that keeps the option
+    /// working: the tab is opened to read a conflict and edit files, which is
+    /// not what the browser GUI was wanted for.
+    fn conflict_agent_for(&self, run_id: &str) -> anyhow::Result<String> {
+        let run = self.run_record(run_id)?;
+        if crate::agent_catalog::web_ui(&run.agent).is_none() {
+            return Ok(run.agent);
+        }
+        let profiles = self.registry.lock().unwrap().list_profiles()?;
+        // Enabled *and* on PATH: a profile row whose CLI was never installed
+        // would open a tab that dies on "command not found", which is the same
+        // dead end by another route.
+        let usable: Vec<_> = profiles
+            .iter()
+            .filter(|p| {
+                crate::agent_catalog::web_ui(&p.name).is_none() && command_on_path(&p.command)
+            })
+            .collect();
+        // Prompt-capable first. One of those has the conflict as its opening
+        // argv and is working the moment the tab opens; crush and kimi wait for
+        // the send queue to reach them.
+        let pick = usable
+            .iter()
+            .find(|p| {
+                crate::agent_catalog::prompt_delivery(&p.name)
+                    != crate::agent_catalog::PromptDelivery::Unsupported
+            })
+            .or(usable.first());
+        match pick {
+            Some(p) => Ok(p.name.clone()),
+            None => bail!(
+                "{} serves its GUI on this workspace's port, so a second one can't start here, \
+                 and no other agent is set up to take the conflict — enable one in Settings, or \
+                 hand the conflict to an agent already in this workspace",
+                run.agent
+            ),
+        }
     }
 
     /// The prompt both hand-offs send, and the checks both owe the user before

@@ -25,6 +25,11 @@ interface Loaded {
   text: string | null;
   // Why there is nothing to show, when the file is one this pane cannot edit.
   unreadable: string;
+  // The read itself failed, on a path that should have had a file (anything but
+  // `DD`). Not the same as `unreadable`, which is a file this pane looked at and
+  // decided not to edit: here nothing was looked at, so nothing below may act as
+  // if it had been.
+  failed: boolean;
 }
 
 // Resolving a merge conflict by hand, in the file rather than in a diff.
@@ -62,6 +67,9 @@ export default function ConflictView({
   const here = loaded?.path === path ? loaded : null;
   const text = here?.text ?? null;
   const unreadable = here?.unreadable ?? "";
+  // The read failed outright, so this pane knows nothing about the file: not
+  // whether it still holds markers, not whether it is even there.
+  const failed = here?.failed ?? false;
   // One side of the merge has the file and the other has nothing, which is why
   // there is nothing in it to pick between.
   const markerless = !!code && MARKERLESS.includes(code);
@@ -72,6 +80,7 @@ export default function ConflictView({
       const f = await readFile(root, path);
       setLoaded({
         path,
+        failed: false,
         text: f.binary || f.tooLarge ? null : f.text,
         unreadable: f.binary
           ? "Git can't merge this file's contents, so there are no sides to pick. Keep one version by checking it out in a terminal, then mark it resolved."
@@ -85,7 +94,13 @@ export default function ConflictView({
       // so a failure there is a real one — and either way the read has to land
       // as this file's result, or a failed Reload leaves the previous content
       // standing with the buttons live.
-      setLoaded({ path, text: null, unreadable: "" });
+      //
+      // A real failure is recorded as one. It used to land as the same
+      // `{ text: null, unreadable: "" }` a `DD` gets, which renders no
+      // explanation at all and left "Mark resolved" live: a click then staged a
+      // `UU` file nobody had read, conflict markers and all, which is the exact
+      // failure this pane exists to stop.
+      setLoaded({ path, text: null, unreadable: "", failed: code !== "DD" });
       if (code !== "DD") setError(String(e));
     }
   }, [root, path, code]);
@@ -228,11 +243,13 @@ export default function ConflictView({
             with its conflict markers still in it. Every other control here
             reads off the completed load for the same reason. */}
         <button className="git-iconbtn"
-          disabled={busy || here == null || blocks.length > 0 || !!tangled || markerless}
+          disabled={busy || here == null || failed || blocks.length > 0 || !!tangled || markerless}
           onClick={markResolved}
-          title={blocks.length > 0
-            ? "Pick a side for every conflict first"
-            : "Stage this file, which is how git is told the conflict is settled"}>
+          title={failed
+            ? "Agency couldn't read this file, so it won't stage it"
+            : blocks.length > 0
+              ? "Pick a side for every conflict first"
+              : "Stage this file, which is how git is told the conflict is settled"}>
           Mark resolved
         </button>
       </div>
@@ -244,6 +261,13 @@ export default function ConflictView({
             `UD` used to render both, which read as two different explanations
             of the same row. */}
         {unreadable && !markerless && <p className="diff-empty">{unreadable}</p>}
+        {failed && !markerless && (
+          <p className="diff-empty">
+            Agency couldn't read this file, so there are no sides to show and no way to tell
+            whether the conflict is settled. Try Reload; if it keeps failing, resolve the file in
+            your editor and stage it there.
+          </p>
+        )}
         {tangled && (
           <p className="diff-empty">
             This file has conflict markers Agency can't read, so it won't rewrite them. Open it in

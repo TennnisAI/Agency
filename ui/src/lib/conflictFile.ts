@@ -61,11 +61,12 @@ function label(line: string, m: string): string {
  * The conflicts in `text`, in the order they appear.
  *
  * Conservative by design: only well-formed blocks are returned, and anything
- * unparseable (a `<<<<<<<` with no `=======` after it, a second `<<<<<<<` or
- * `=======` inside a block) yields no block at all, so the buttons this feeds
- * are simply not offered rather than offered for a rewrite that would lose
- * text. diff3 conflicts carry a `|||||||` base section, which belongs to
- * neither side and is dropped with the markers.
+ * unparseable (a `<<<<<<<` with no `=======` after it, a second `<<<<<<<`,
+ * `=======` or `|||||||` inside a block) yields no block at all, so the buttons
+ * this feeds are simply not offered rather than offered for a rewrite that
+ * would lose text. diff3 conflicts carry a `|||||||` base section, which
+ * belongs to neither side and is dropped with the markers; only the first
+ * marker after `<<<<<<<` opens one.
  */
 export function parseConflicts(text: string): ConflictBlock[] {
   const lines = text.split("\n");
@@ -85,7 +86,18 @@ export function parseConflicts(text: string): ConflictBlock[] {
     for (let j = start + 1; j < lines.length; j++) {
       const line = lines[j];
       if (marker(line, OURS)) break; // nested: malformed, leave the file alone
-      if (phase !== "theirs" && marker(line, BASE)) {
+      if (marker(line, BASE)) {
+        // Only the first marker after `<<<<<<<` is git's diff3 base section.
+        // A second `|||||||`, or one after the `=======`, is not a section git
+        // wrote, and it is the one marker whose appearance inside a side used
+        // to be read rather than refused: a line of seven pipes in the current
+        // side flipped the phase to "base", every remaining current-side line
+        // was dropped with the base, and the block still came back well
+        // formed, so "Keep current" wrote a file silently missing that text
+        // and the block-count check passed (the result is still zero blocks).
+        // Refuse the file, which is what a second `=======` and a nested
+        // `<<<<<<<` already do.
+        if (phase !== "ours") break;
         phase = "base";
         continue;
       }

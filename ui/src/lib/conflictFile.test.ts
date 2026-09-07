@@ -115,6 +115,41 @@ describe("parseConflicts", () => {
     expect(resolveAll(rst, "current")).toBe(rst);
   });
 
+  it("refuses a conflict that holds a second base marker", () => {
+    // `|||||||` was the one marker whose appearance inside a side was read
+    // rather than refused: the first one flipped the phase to "base" and every
+    // line after it was dropped with the base section, so "Keep current" wrote
+    // a file silently missing that text and the block-count check passed,
+    // because the result still parses to zero blocks.
+    const doubled = [
+      "<<<<<<< HEAD",
+      "mine",
+      "|||||||",
+      "still mine",
+      "||||||| merged common ancestors",
+      "original",
+      "=======",
+      "theirs",
+      ">>>>>>> other",
+      "",
+    ].join("\n");
+    expect(parseConflicts(doubled)).toEqual([]);
+    expect(resolveAll(doubled, "current")).toBe(doubled);
+  });
+
+  it("refuses a base marker after the split, where git never writes one", () => {
+    const late = [
+      "<<<<<<< HEAD",
+      "mine",
+      "=======",
+      "|||||||",
+      "theirs",
+      ">>>>>>> other",
+      "",
+    ].join("\n");
+    expect(parseConflicts(late)).toEqual([]);
+  });
+
   it("refuses a block it cannot read rather than guessing at one", () => {
     // Truncated (no `=======`), and nested — both leave the file alone, which
     // is the only safe answer when the buttons this feeds rewrite it.

@@ -138,18 +138,48 @@ impl Caps {
 
 /// The file the user has open in Agency, as this run's agent should hear it.
 /// The app decides relevance before it gets here: a file open in some other
-/// project's window is not this run's business and arrives as `None`.
+/// project's window is not this run's business and never arrives with a path.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OpenFile {
-    /// Relative to the workspace (or to the project checkout it is in), as the
-    /// user would type it.
+    /// Relative to the checkout it is in, as the user would type it.
     pub rel_path: String,
-    /// Where it actually is on disk, which for a checkout copy is not under
-    /// this workspace at all.
+    /// Where it actually is on disk, which for any copy but this workspace's
+    /// is not under this workspace at all.
     pub abs_path: String,
-    /// True when the path is this run's own workspace copy — the file the
-    /// agent edits when it opens `rel_path`.
-    pub in_workspace: bool,
+    /// Which of the project's checkouts that is.
+    pub copy: OpenCopy,
+}
+
+/// Which checkout of the project the open file is in, as seen from the run
+/// being told about it. Three cases and not two: a `bool` for "is it mine"
+/// made a sibling run's worktree indistinguishable from the project checkout,
+/// so an agent browsing next to another run was told the user's file was "in
+/// the project's own checkout at .../worktrees/run-a/docs/plan.md", which is
+/// a path in neither place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpenCopy {
+    /// This run's own worktree: the file the agent edits at `rel_path`.
+    Workspace,
+    /// The project checkout this workspace merges back into.
+    Checkout,
+    /// Another run's worktree in the same project.
+    OtherWorkspace,
+}
+
+/// Everything `editor_open_file` can be told about the user's focus. `None`
+/// used to answer for two different facts, and the tool stated the wrong one
+/// as fact: with the user reading a file in another project, an agent asking
+/// what they were looking at was told there was "simply no file in focus".
+#[derive(Debug, Clone, PartialEq)]
+pub enum OpenFocus {
+    /// Nothing is in focus anywhere.
+    Nothing,
+    /// The user is looking at a file in some other project. Which file is
+    /// deliberately not carried here: another project's paths are not this
+    /// run's business.
+    OtherProject,
+    /// A file in this run's project.
+    File(OpenFile),
 }
 
 /// What the embedding app provides: fresh facts for guidance, the native pixel
@@ -161,7 +191,7 @@ pub struct Hooks {
     pub facts: Arc<dyn Fn() -> Facts + Send + Sync>,
     pub screenshot: Arc<dyn Fn() -> std::result::Result<Vec<u8>, String> + Send + Sync>,
     pub caps: Arc<dyn Fn() -> Caps + Send + Sync>,
-    pub open_file: Arc<dyn Fn() -> Option<OpenFile> + Send + Sync>,
+    pub open_file: Arc<dyn Fn() -> OpenFocus + Send + Sync>,
 }
 
 /// One console line reported by the bridge.
@@ -738,28 +768,43 @@ fn exec_tool(id: Value, name: &str, args: &Value, ctx: &Ctx) -> Value {
 
 /// What `editor_open_file` says. The distinction it has to draw every time is
 /// which copy of the file the user is on: an agent handed a bare relative path
-/// edits its own workspace, and if the user is reading the project checkout,
+/// edits its own workspace, and if the user is reading any other checkout,
 /// that is a different file with the same name.
-fn format_open_file(open: Option<OpenFile>) -> String {
-    let Some(f) = open else {
-        return "The user has no file open in Agency right now. Nothing is being hidden from \
-                you: sharing is on, and there is simply no file in focus."
-            .to_string();
+fn format_open_file(focus: OpenFocus) -> String {
+    let f = match focus {
+        OpenFocus::Nothing => {
+            return "The user has no file open in Agency right now. Nothing is being hidden \
+                    from you: sharing is on, and there is simply no file in focus."
+                .to_string();
+        }
+        OpenFocus::OtherProject => {
+            return "The user has no file from this project open in Agency right now. Nothing \
+                    is being hidden from you: sharing is on, but they are looking at another \
+                    project, and what they have open there is not this run's business."
+                .to_string();
+        }
+        OpenFocus::File(f) => f,
     };
-    if f.in_workspace {
-        format!(
+    match f.copy {
+        OpenCopy::Workspace => format!(
             "The user has {} open in Agency. That is this workspace's own copy, at {}: the \
              same file you edit at that relative path.",
             f.rel_path, f.abs_path,
-        )
-    } else {
-        format!(
+        ),
+        OpenCopy::Checkout => format!(
             "The user has {rel} open in Agency, in the project's own checkout at {abs}, not in \
              this workspace. Your copy of {rel} is the one to change; this workspace is where \
              your work has to land.",
             rel = f.rel_path,
             abs = f.abs_path,
-        )
+        ),
+        OpenCopy::OtherWorkspace => format!(
+            "The user has {rel} open in Agency, in another run's workspace at {abs}, not in \
+             yours and not in the project checkout either. Your copy of {rel} is the one to \
+             change; this workspace is where your work has to land.",
+            rel = f.rel_path,
+            abs = f.abs_path,
+        ),
     }
 }
 
@@ -802,14 +847,14 @@ mod tests {
     use std::io::{Read, Write};
 
     fn hooks(script: Option<(&str, &str)>, shot: Result<Vec<u8>, &str>) -> Hooks {
-        with_open_file(script, shot, Caps { preview: true, editor: true }, None)
+        with_open_file(script, shot, Caps { preview: true, editor: true }, OpenFocus::Nothing)
     }
 
     fn with_open_file(
         script: Option<(&str, &str)>,
         shot: Result<Vec<u8>, &str>,
         caps: Caps,
-        open: Option<OpenFile>,
+        open: OpenFocus,
     ) -> Hooks {
         let script = script.map(|(n, c)| (n.to_string(), c.to_string()));
         let shot = shot.map_err(str::to_string);
@@ -969,10 +1014,10 @@ mod tests {
             None,
             Err("n/a"),
             Caps { preview: false, editor: true },
-            Some(OpenFile {
+            OpenFocus::File(OpenFile {
                 rel_path: "docs/plan.md".into(),
                 abs_path: "/w/run-1/docs/plan.md".into(),
-                in_workspace: true,
+                copy: OpenCopy::Workspace,
             }),
         ));
         let r = tool_call(srv.port(), "editor_open_file", json!({}));
@@ -991,10 +1036,10 @@ mod tests {
             None,
             Err("n/a"),
             Caps { preview: false, editor: true },
-            Some(OpenFile {
+            OpenFocus::File(OpenFile {
                 rel_path: "docs/plan.md".into(),
                 abs_path: "/repo/docs/plan.md".into(),
-                in_workspace: false,
+                copy: OpenCopy::Checkout,
             }),
         ));
         let text = tool_call(srv.port(), "editor_open_file", json!({}))["result"]["content"][0]
@@ -1007,14 +1052,35 @@ mod tests {
 
     #[test]
     fn editor_open_file_with_nothing_in_focus_says_nothing_is_hidden() {
-        let srv =
-            start(with_open_file(None, Err("n/a"), Caps { preview: false, editor: true }, None));
+        let srv = start(with_open_file(
+            None,
+            Err("n/a"),
+            Caps { preview: false, editor: true },
+            OpenFocus::Nothing,
+        ));
         let text = tool_call(srv.port(), "editor_open_file", json!({}))["result"]["content"][0]
             ["text"]
             .as_str()
             .unwrap()
             .to_string();
         assert!(text.contains("no file open"), "{text}");
+    }
+
+    /// The two answers that used to be one. Neither may claim the other's
+    /// fact: a sibling run's worktree is not the project checkout, and a user
+    /// reading another project is not a user with nothing open.
+    #[test]
+    fn editor_open_file_separates_the_cases_the_bool_ran_together() {
+        let sibling = format_open_file(OpenFocus::File(OpenFile {
+            rel_path: "docs/plan.md".into(),
+            abs_path: "/repo/.agency/worktrees/run-a/docs/plan.md".into(),
+            copy: OpenCopy::OtherWorkspace,
+        }));
+        assert!(sibling.contains("another run's workspace"), "{sibling}");
+        assert!(!sibling.contains("project's own checkout"), "{sibling}");
+        let elsewhere = format_open_file(OpenFocus::OtherProject);
+        assert!(elsewhere.contains("another project"), "{elsewhere}");
+        assert!(!elsewhere.contains("no file in focus"), "{elsewhere}");
     }
 
     #[test]
@@ -1256,16 +1322,22 @@ mod tests {
             ),
             format_console(&[], 0),
             format_network(&[], 0),
-            format_open_file(None),
-            format_open_file(Some(OpenFile {
+            format_open_file(OpenFocus::Nothing),
+            format_open_file(OpenFocus::OtherProject),
+            format_open_file(OpenFocus::File(OpenFile {
                 rel_path: "docs/plan.md".into(),
                 abs_path: "/w/docs/plan.md".into(),
-                in_workspace: true,
+                copy: OpenCopy::Workspace,
             })),
-            format_open_file(Some(OpenFile {
+            format_open_file(OpenFocus::File(OpenFile {
                 rel_path: "docs/plan.md".into(),
                 abs_path: "/repo/docs/plan.md".into(),
-                in_workspace: false,
+                copy: OpenCopy::Checkout,
+            })),
+            format_open_file(OpenFocus::File(OpenFile {
+                rel_path: "docs/plan.md".into(),
+                abs_path: "/repo/.agency/worktrees/run-a/docs/plan.md".into(),
+                copy: OpenCopy::OtherWorkspace,
             })),
         ];
         let srv = start(hooks(None, Err("n/a")));

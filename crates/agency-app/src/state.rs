@@ -1909,11 +1909,38 @@ fn preview_tools_on(config: &agency_core::config::AgencyConfig) -> bool {
 /// What a run in this project would serve an agent: the two switches behind
 /// the MCP server's two halves. One function so the port that gets emitted and
 /// the tools that answer on it can never disagree about what is on.
-fn run_caps(
-    config: &agency_core::config::AgencyConfig,
-    share_open_file: bool,
-) -> agency_core::preview::Caps {
-    agency_core::preview::Caps { preview: preview_tools_on(config), editor: share_open_file }
+fn run_caps(preview_tools: bool, share_open_file: bool) -> agency_core::preview::Caps {
+    agency_core::preview::Caps { preview: preview_tools, editor: share_open_file }
+}
+
+/// The config half of a run's `Caps`, cached for a second. `serves_preview()`
+/// reads it, `preview_targets` calls that for every live server while holding
+/// the preview map's lock, and the frontend's keeper polls it every 3s: with N
+/// runs that was 2N TOML reads and parses every 3s, on top of the notifier's
+/// own 2s converge loading the same two files. The switch behind it only moves
+/// when the user edits a run script or the preview setting, so a second of
+/// staleness cannot be observed. The editor half is deliberately not cached:
+/// it is a privacy switch, and switching sharing off has to bite on the very
+/// next call.
+struct PreviewToolsCache {
+    repo: PathBuf,
+    cell: Mutex<Option<(Instant, bool)>>,
+}
+
+impl PreviewToolsCache {
+    const TTL: Duration = Duration::from_secs(1);
+
+    fn get(&self) -> bool {
+        let mut cell = self.cell.lock().unwrap();
+        if let Some((at, on)) = *cell {
+            if at.elapsed() < Self::TTL {
+                return on;
+            }
+        }
+        let on = preview_tools_on(&agency_core::config::load(&self.repo));
+        *cell = Some((Instant::now(), on));
+        on
+    }
 }
 
 /// The port a run's MCP server binds — the last of the run's port block — or
@@ -1930,7 +1957,7 @@ fn preview_mcp_port_for(
     port_base: Option<u16>,
     share_open_file: bool,
 ) -> Option<u16> {
-    if !run_caps(config, share_open_file).any() {
+    if !run_caps(preview_tools_on(config), share_open_file).any() {
         return None;
     }
     agency_core::preview::mcp_port(port_base?, config.ports.block_size)
@@ -1948,15 +1975,26 @@ fn open_file_for(
     open: Option<&OpenFileRef>,
     run_id: &str,
     repo: &Path,
-) -> Option<agency_core::preview::OpenFile> {
-    let open = open?;
+) -> agency_core::preview::OpenFocus {
+    use agency_core::preview::{OpenCopy, OpenFile, OpenFocus};
+    let Some(open) = open else { return OpenFocus::Nothing };
+    // Another project's file is not this run's business, but "not yours" and
+    // "there isn't one" are different answers and the tool has to give the
+    // right one.
     if open.repo != repo {
-        return None;
+        return OpenFocus::OtherProject;
     }
-    Some(agency_core::preview::OpenFile {
+    OpenFocus::File(OpenFile {
         rel_path: open.rel_path.clone(),
         abs_path: open.abs_path.clone(),
-        in_workspace: open.run_id.as_deref() == Some(run_id),
+        copy: match open.run_id.as_deref() {
+            Some(id) if id == run_id => OpenCopy::Workspace,
+            // A sibling run's worktree: neither this workspace nor the
+            // checkout, and naming it as either would name a path that is not
+            // where the file is.
+            Some(_) => OpenCopy::OtherWorkspace,
+            None => OpenCopy::Checkout,
+        },
     })
 }
 
@@ -5240,6 +5278,7 @@ impl AppState {
         loop_config: Option<&agency_core::loops::LoopConfig>,
         port: Option<u16>,
     ) {
+        let served = preview_mcp_port_for(config, port, self.shares_open_file()).is_some();
         let ws = agency_core::skills::Workspace {
             worktree: worktree.to_path_buf(),
             repo_root: repo.to_path_buf(),
@@ -5258,8 +5297,14 @@ impl AppState {
                 .filter(|c| !c.check_command.trim().is_empty())
                 .map(|c| (c.check_command.clone(), c.max_attempts)),
             port,
-            preview_tools: preview_tools_on(config),
-            open_file_tool: self.shares_open_file(),
+            // Both halves are described to the agent as "the `agency-preview`
+            // server already in your MCP config", so they have to be gated on
+            // the same thing that decides whether that entry gets written at
+            // all. A run with no port block, or a block too small to hold the
+            // server's port, gets no server however the switches are set, and
+            // the catalog used to promise it tools that were never emitted.
+            preview_tools: served && preview_tools_on(config),
+            open_file_tool: served && self.shares_open_file(),
         };
         if let Err(e) = agency_core::skills::emit_for_agent(agent, &ws) {
             log::warn!("emitting the skills kit for {agent} into {}: {e}", worktree.display());
@@ -5313,13 +5358,10 @@ impl AppState {
                          now. preview_snapshot works without it."
                 .to_string()),
         });
-        let caps_repo = repo.clone();
+        let tools = PreviewToolsCache { repo: repo.clone(), cell: Mutex::new(None) };
         let share = self.share_open_file.clone();
         let caps = std::sync::Arc::new(move || {
-            run_caps(
-                &agency_core::config::load(&caps_repo),
-                share.load(std::sync::atomic::Ordering::SeqCst),
-            )
+            run_caps(tools.get(), share.load(std::sync::atomic::Ordering::SeqCst))
         });
         // Reads the cell, not the app state: a server outlives nothing here,
         // but capturing `self` would tie every run's server to its lifetime.
@@ -5329,7 +5371,7 @@ impl AppState {
         let open_repo = repo.clone();
         let open_file = std::sync::Arc::new(move || {
             if !share_flag.load(std::sync::atomic::Ordering::SeqCst) {
-                return None;
+                return agency_core::preview::OpenFocus::Nothing;
             }
             let open = cell.lock().unwrap().clone();
             open_file_for(open.as_ref(), &open_run, &open_repo)
@@ -9959,22 +10001,37 @@ mod tests {
     /// The rule that decides what a run's agent hears about the user's screen.
     #[test]
     fn only_this_projects_open_file_reaches_this_projects_runs() {
+        use agency_core::preview::{OpenCopy, OpenFocus};
         let open = OpenFileRef {
             repo: PathBuf::from("/repo/one"),
             run_id: Some("run-a".into()),
             rel_path: "docs/plan.md".into(),
             abs_path: "/repo/one/.agency/worktrees/run-a/docs/plan.md".into(),
         };
+        let copy = |focus| match focus {
+            OpenFocus::File(f) => Some(f),
+            _ => None,
+        };
         // The run whose workspace it is: its own copy, the one it edits.
-        let mine = open_file_for(Some(&open), "run-a", Path::new("/repo/one")).unwrap();
-        assert!(mine.in_workspace);
+        let mine = copy(open_file_for(Some(&open), "run-a", Path::new("/repo/one"))).unwrap();
+        assert_eq!(mine.copy, OpenCopy::Workspace);
         assert_eq!(mine.rel_path, "docs/plan.md");
         // A sibling run in the same project hears about it, told plainly that
-        // the file on the user's screen is not the one under its own feet.
-        assert!(!open_file_for(Some(&open), "run-b", Path::new("/repo/one")).unwrap().in_workspace);
-        // Another project's run hears nothing at all.
-        assert!(open_file_for(Some(&open), "run-c", Path::new("/repo/two")).is_none());
-        assert!(open_file_for(None, "run-a", Path::new("/repo/one")).is_none());
+        // the file on the user's screen is neither the one under its own feet
+        // nor the checkout's.
+        let sibling = copy(open_file_for(Some(&open), "run-b", Path::new("/repo/one"))).unwrap();
+        assert_eq!(sibling.copy, OpenCopy::OtherWorkspace);
+        // The checkout's own copy is the third case.
+        let in_checkout = OpenFileRef { run_id: None, ..open.clone() };
+        let checkout =
+            copy(open_file_for(Some(&in_checkout), "run-a", Path::new("/repo/one"))).unwrap();
+        assert_eq!(checkout.copy, OpenCopy::Checkout);
+        // Another project's run hears no path, and hears why.
+        assert_eq!(
+            open_file_for(Some(&open), "run-c", Path::new("/repo/two")),
+            OpenFocus::OtherProject
+        );
+        assert_eq!(open_file_for(None, "run-a", Path::new("/repo/one")), OpenFocus::Nothing);
     }
 
     /// The GUI port is derived from config like the preview port, never

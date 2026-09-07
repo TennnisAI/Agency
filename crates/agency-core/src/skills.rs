@@ -343,16 +343,6 @@ fn date_skill_md(resolver: &Path) -> String {
 fn workspace_skill_md(ws: &Workspace, skills_rel: &Path) -> String {
     let issues = ws.repo_root.join(crate::issuefs::ISSUES_DIR);
     let mut body = String::new();
-    if ws.open_file_tool {
-        body.push_str(
-            "\nThe `agency-preview` server in your MCP config also has `editor_open_file`: \
-             which file the user has open in Agency right now. That is what \"this file\", \
-             \"this note\" and \"here\" mean when the user says one without naming a file, so \
-             call it then rather than guessing or asking. It is a live reading and the user can \
-             switch the sharing off, so call it when you need it instead of relying on an \
-             earlier answer.\n",
-        );
-    }
     body.push_str(&format!(
         "---\n\
          name: {WORKSPACE_SKILL}\n\
@@ -430,6 +420,25 @@ fn workspace_skill_md(ws: &Workspace, skills_rel: &Path) -> String {
              own within a few seconds; start the web run script yourself in the background if \
              it is not running. The last port of this workspace's block belongs to that \
              server, so leave it unbound.\n",
+        );
+    }
+    // After the frontmatter, never before it. This paragraph was once pushed
+    // first, which put the `---` block in the middle of the document: the
+    // frontmatter stopped parsing and the workspace skill lost its name and
+    // description in every kit emitted with sharing on.
+    if ws.open_file_tool {
+        body.push_str(if ws.preview_tools {
+            "\nThat same server also has `editor_open_file`. It answers with"
+        } else {
+            "\nAgency also serves you one tool over MCP, on the `agency-preview` server \
+             already in your MCP config: `editor_open_file`. It answers with"
+        });
+        body.push_str(
+            " the file the user has open in Agency right now. That is what \"this file\", \
+             \"this note\" and \"here\" mean when the user says one without naming a file, so \
+             call it then rather than guessing or asking. It is a live reading and the user can \
+             switch the sharing off, so call it when you need it instead of relying on an \
+             earlier answer.\n",
         );
     }
     body.push_str(&format!(
@@ -1040,6 +1049,13 @@ mod tests {
         assert!(with.contains("`editor_open_file`"), "{with}");
         // Said without the preview half, which this workspace does not have.
         assert!(!with.contains("screenshot of the preview pane"), "{with}");
+        // And said after the frontmatter. Emitted in front of it, the paragraph
+        // cost the skill its name and description everywhere.
+        assert!(with.starts_with("---\nname: "), "{with}");
+        assert!(
+            with.find("`editor_open_file`") > with.find("\n---\n"),
+            "the tool paragraph must follow the frontmatter: {with}"
+        );
     }
 
     /// A looping run finishes on its check command, so the agent is told what

@@ -2175,7 +2175,15 @@ input, textarea, code,
 /* Truncating, not just clipped: a deep path (target/release/bundle/dmg/…) is
    wider than the pane, and a flex item that cannot shrink pushed the toolbar
    buttons out and painted the path over the agent panel beside it (AGE-200). */
-.file-editor-path { opacity: 0.85; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Elide the *head* of the path, not the tail: a deep path truncated at the end
+   ("target/release/bundle/dm...") drops the one segment that says which file
+   this is. `direction: rtl` moves the ellipsis to the start; `unicode-bidi:
+   plaintext` keeps the path itself reading left to right, so the leading "/"
+   does not jump to the other end. */
+.file-editor-path {
+  opacity: 0.85; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  direction: rtl; unicode-bidi: plaintext;
+}
 .file-editor-dirty { flex: none; color: var(--yellow); font-size: 9px; line-height: 1; }
 /* Icon buttons in the editor bar (save / revert). */
 .file-editor-btn {

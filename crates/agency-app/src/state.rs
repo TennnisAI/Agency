@@ -943,11 +943,65 @@ fn args_without_prompt(profile: &AgentProfile) -> Vec<String> {
     out
 }
 
+/// The command [`agency_core::sessionstore`]'s recipes are looked up under for
+/// this profile: its own, unless that name is one of a known CLI's aliases
+/// (see [`crate::agent_catalog::recipe_command`]).
+fn recipe_command(profile: &AgentProfile) -> String {
+    crate::agent_catalog::recipe_command(&profile.command)
+}
+
+/// The argv that reopens exactly `conversation` for this profile's CLI. Empty
+/// for a CLI that does not name conversations, and empty when the profile's own
+/// arguments already name one.
+fn exact_resume_args(profile: &AgentProfile, conversation: &str, so_far: &[String]) -> Vec<String> {
+    agency_core::sessionstore::resume_args(&recipe_command(profile), conversation, so_far)
+}
+
+/// The argv that opens `conversation` as a fresh one, same rules as
+/// [`exact_resume_args`].
+fn open_conversation_args(
+    profile: &AgentProfile,
+    conversation: &str,
+    so_far: &[String],
+) -> Vec<String> {
+    agency_core::sessionstore::open_args(&recipe_command(profile), conversation, so_far)
+}
+
+/// Whether this launch reopens what the session was in, rather than starting
+/// something new: there has to be a recipe that says how, and the probe has to
+/// have found something for it to reopen.
+///
+/// Two recipes qualify, and either is enough on its own. The profile's generic
+/// one ("continue the last conversation here") is the one every resume used to
+/// need. The other is the exact one: for a CLI that names conversations, Agency
+/// minted the id, opened the conversation under it, recorded it against the
+/// session, and [`crate::resume_probe`] has read a turn out of that exact
+/// transcript. Nothing in that chain goes through the profile.
+///
+/// AGE-197: requiring the generic recipe anyway meant a profile without one
+/// never resumed. A custom profile has none — the retrofit in
+/// [`AppState::with_agent_home`] only fills catalog ids — so a hand-made cursor
+/// card threw a proven conversation away and opened a fresh chat, with the
+/// run's prompt replayed, on every launch after a quit.
+fn should_resume(
+    profile: &AgentProfile,
+    conversation: Option<&str>,
+    probe: crate::resume_probe::ResumeProbe,
+) -> bool {
+    if probe == crate::resume_probe::ResumeProbe::None {
+        return false;
+    }
+    let base_args = args_without_prompt(profile);
+    let exact = conversation.is_some_and(|c| !exact_resume_args(profile, c, &base_args).is_empty());
+    exact || profile.resume_args.is_some()
+}
+
 /// Decide the (command, args) to launch for an agent run. With `use_resume` and
-/// a resume recipe present, launch the profile's own args minus the prompt (see
-/// [`args_without_prompt`]) followed by the resume recipe. Otherwise hand the
-/// whole decision to [`fresh_agent_argv`], the one fresh recipe. The optional
-/// setup script wraps the command in both cases (same as create_run/rerun).
+/// a resume recipe of either kind (see [`should_resume`]), launch the profile's
+/// own args minus the prompt (see [`args_without_prompt`]) followed by that
+/// recipe. Otherwise hand the whole decision to [`fresh_agent_argv`], the one
+/// fresh recipe. The optional setup script wraps the command in both cases
+/// (same as create_run/rerun).
 ///
 /// AGE-137: the fresh branch used to render the profile's args and stop there,
 /// which was the same thing only while profiles carried a `{{prompt}}` token.
@@ -959,7 +1013,9 @@ fn args_without_prompt(profile: &AgentProfile) -> Vec<String> {
 /// `conversation` is the conversation this session owns, for an agent that
 /// names them (AGE-177). It replaces the profile's recipe rather than joining
 /// it: `claude --continue --resume <id>` is two answers to one question, and
-/// the generic half is the one that crossed two runs sharing a directory.
+/// the generic half is the one that crossed two runs sharing a directory. It
+/// also stands in for a recipe that is not there at all, which is what
+/// [`should_resume`] lets through.
 fn agent_argv(
     profile: &AgentProfile,
     worktree: &Path,
@@ -968,17 +1024,37 @@ fn agent_argv(
     setup: Option<&str>,
     conversation: Option<&str>,
 ) -> (String, Vec<String>) {
-    let Some(generic) = profile.resume_args.as_ref().filter(|_| use_resume) else {
-        return fresh_agent_argv(profile, worktree, prompt, setup, conversation);
-    };
     // The profile's flags first, the resume recipe last: `codex resume --last`
     // is a subcommand, and a flag written after it would be read as the
     // subcommand's rather than the CLI's.
     let mut base_args = args_without_prompt(profile);
     let exact = conversation
-        .map(|c| agency_core::sessionstore::resume_args(&profile.command, c, &base_args))
+        .filter(|_| use_resume)
+        .map(|c| exact_resume_args(profile, c, &base_args))
         .filter(|args| !args.is_empty());
-    base_args.extend(exact.unwrap_or_else(|| generic.to_vec()));
+    // The exact recipe first and on its own terms: it is the whole answer, and
+    // an agent Agency can name a conversation to needs no generic recipe
+    // behind it. Requiring one was AGE-197's second half — a custom profile
+    // carries none, so a conversation Agency had minted, opened and proved was
+    // thrown away on every relaunch.
+    let Some(resume) = exact.or_else(|| profile.resume_args.clone().filter(|_| use_resume)) else {
+        // A resuming caller passes the *recorded* conversation, and this
+        // fallback opens a fresh launch: forwarding it would emit
+        // `--session-id <id already in use>`, which claude refuses to start on
+        // and cursor answers with a second chat under a name it already knows.
+        // No caller reaches here with `use_resume` today, because
+        // `should_resume` asks `exact_resume_args` the same question this line
+        // just asked — but both answers now come from a PATH lookup, so make
+        // the invariant hold here rather than two functions away.
+        return fresh_agent_argv(
+            profile,
+            worktree,
+            prompt,
+            setup,
+            conversation.filter(|_| !use_resume),
+        );
+    };
+    base_args.extend(resume);
     let mcp = mcp_launch_args(profile, worktree, &base_args);
     base_args.extend(mcp);
     agency_core::scripts::wrap_setup(setup, &profile.command, &base_args)
@@ -1044,9 +1120,8 @@ fn fresh_agent_argv(
         }
         args.push(rendered);
     }
-    let mut ours = conversation
-        .map(|c| agency_core::sessionstore::open_args(&profile.command, c, &args))
-        .unwrap_or_default();
+    let mut ours =
+        conversation.map(|c| open_conversation_args(profile, c, &args)).unwrap_or_default();
     ours.extend(mcp_launch_args(profile, worktree, &args));
     match prompt_at {
         Some(i) => {
@@ -1299,9 +1374,8 @@ fn loop_argv(
     let mut args: Vec<String> = recipe.iter().map(|a| a.replace("{{prompt}}", prompt)).collect();
     // Ahead of wherever the prompt lands, for the same reason as the
     // interactive path: keep Agency's flags out from behind a positional.
-    let mut ours = conversation
-        .map(|c| agency_core::sessionstore::open_args(&profile.command, c, &args))
-        .unwrap_or_default();
+    let mut ours =
+        conversation.map(|c| open_conversation_args(profile, c, &args)).unwrap_or_default();
     ours.extend(mcp_launch_args(profile, worktree, &args));
     match recipe.iter().position(|a| a.contains("{{prompt}}")) {
         Some(i) => {
@@ -6339,7 +6413,7 @@ impl AppState {
         env.extend(agency_core::scripts::script_env(worktree, repo, run_id, port));
         env.extend(session_store_env(
             self.agent_home().as_deref(),
-            &profile.command,
+            &recipe_command(profile),
             worktree,
             session,
         ));
@@ -6356,7 +6430,7 @@ impl AppState {
     /// pointing at it. A record that cannot be written gives up the pin rather
     /// than the launch — an id nothing remembers would resume nothing.
     fn open_conversation(&self, command: &str, run_id: &str, session: &str) -> Option<String> {
-        let id = agency_core::sessionstore::mint(command)?;
+        let id = agency_core::sessionstore::mint(&crate::agent_catalog::recipe_command(command))?;
         let write =
             self.registry.lock().unwrap().set_conversation(session, run_id, &id, now_secs());
         match write {
@@ -6415,7 +6489,7 @@ impl AppState {
             .filter_map(|(sid, agent)| {
                 agency_core::sessionstore::dir(
                     &home,
-                    &self.profile_command(&agent),
+                    &crate::agent_catalog::recipe_command(&self.profile_command(&agent)),
                     &worktree,
                     &sid,
                 )
@@ -7711,7 +7785,7 @@ impl AppState {
         let pinned = resume
             && (recorded.is_some()
                 || matches!(
-                    agency_core::sessionstore::pin(&profile.command),
+                    agency_core::sessionstore::pin(&recipe_command(&profile)),
                     agency_core::sessionstore::Pin::Store
                 ));
         // Same question the run's own session asks, about this session's
@@ -7723,7 +7797,7 @@ impl AppState {
                 .map(|h| {
                     crate::resume_probe::resume_probe(
                         &h,
-                        &profile.command,
+                        &recipe_command(&profile),
                         &worktree,
                         sid,
                         recorded.as_deref(),
@@ -7733,9 +7807,7 @@ impl AppState {
         } else {
             crate::resume_probe::ResumeProbe::None
         };
-        let use_resume = pinned
-            && profile.resume_args.is_some()
-            && probe != crate::resume_probe::ResumeProbe::None;
+        let use_resume = pinned && should_resume(&profile, recorded.as_deref(), probe);
         // A fresh launch mints a new name; never the recorded one, which
         // claude refuses as already in use.
         let conversation = if use_resume {
@@ -8055,15 +8127,14 @@ impl AppState {
             .map(|h| {
                 crate::resume_probe::resume_probe(
                     &h,
-                    &profile.command,
+                    &recipe_command(&profile),
                     &worktree,
                     id,
                     recorded.as_deref(),
                 )
             })
             .unwrap_or(crate::resume_probe::ResumeProbe::Unknown);
-        let use_resume =
-            profile.resume_args.is_some() && probe != crate::resume_probe::ResumeProbe::None;
+        let use_resume = should_resume(&profile, recorded.as_deref(), probe);
         // Resuming reopens the conversation on record; starting fresh opens a
         // new one under a new name. Never the recorded name on a fresh launch:
         // claude refuses `--session-id` for an id already in use, and the run
@@ -9741,7 +9812,7 @@ mod tests {
     use super::{
         agent_argv, branch_leaf_from_first_prompt, command_on_path, graphify_server, id_source,
         id_suffix, is_auto_cut_branch, new_task_id, pick_port, preview_mcp_port_for,
-        require_branch_exists, require_gitless_known, require_own_branch, slugify,
+        require_branch_exists, require_gitless_known, require_own_branch, should_resume, slugify,
         split_session_id, validate_race, RaceAttempt,
     };
     use agency_core::config::KnowledgeConfig;
@@ -10032,6 +10103,110 @@ mod tests {
         // the prompt, and never `--resume`: there is nothing to reopen yet.
         let (_cmd, args) = agent_argv(&claude, no_worktree(), "go", false, None, Some(id));
         assert_eq!(args, vec!["--permission-mode", "acceptEdits", "--session-id", id, "go"]);
+    }
+
+    /// AGE-197: a hand-made profile carries no resume recipe at all — the
+    /// retrofit in `with_agent_home` only fills catalog ids — and the exact
+    /// conversation was being thrown away for want of a generic one behind it.
+    /// The user's own cursor card is the shape: `agent`, cursor's second
+    /// installed name for `cursor-agent`, with every recipe field empty.
+    #[test]
+    fn a_recorded_conversation_resumes_without_a_generic_recipe_behind_it() {
+        let id = "712a88f3-e1c4-40f9-b5c3-842d55dc410a";
+        let custom = AgentProfile {
+            name: "Cursor".into(),
+            command: "cursor-agent".into(),
+            args: vec![],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        };
+        assert!(should_resume(&custom, Some(id), crate::resume_probe::ResumeProbe::Has));
+        let (cmd, args) = agent_argv(&custom, no_worktree(), "go", true, None, Some(id));
+        assert_eq!(cmd, "cursor-agent");
+        assert_eq!(args, vec!["--resume", id]);
+
+        // Without a conversation there is still nothing to say, so the launch
+        // is the fresh one it has always been.
+        assert!(!should_resume(&custom, None, crate::resume_probe::ResumeProbe::Has));
+        let (_cmd, args) = agent_argv(&custom, no_worktree(), "go", true, None, None);
+        assert_eq!(args, vec!["go".to_string()]);
+    }
+
+    /// The whole of AGE-197 end to end, on the profile that was reported: a
+    /// card named "Cursor" pointing at `agent`, the second name cursor's
+    /// installer gives `cursor-agent` and the one its own `--help` prints. The
+    /// alias is resolved to the binary it names, so the launch opens a
+    /// conversation of its own, and the next one reopens that exact chat
+    /// instead of leaving it for cursor's `/resume` picker to find.
+    #[test]
+    fn a_cursor_profile_named_after_the_alias_opens_and_reopens_its_own_chat() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("cursor-agent");
+        std::fs::write(&real, "#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::os::unix::fs::symlink(&real, dir.path().join("agent")).unwrap();
+        }
+        let profile = AgentProfile {
+            name: "Cursor".into(),
+            command: dir.path().join("agent").to_string_lossy().into_owned(),
+            args: vec![],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        };
+        let id = "712a88f3-e1c4-40f9-b5c3-842d55dc410a";
+        let (_cmd, args) = agent_argv(&profile, no_worktree(), "go", false, None, Some(id));
+        assert_eq!(args, vec!["--new-session-id", id, "go"], "the first launch names the chat");
+        assert!(should_resume(&profile, Some(id), crate::resume_probe::ResumeProbe::Has));
+        let (_cmd, args) = agent_argv(&profile, no_worktree(), "go", true, None, Some(id));
+        assert_eq!(args, vec!["--resume", id], "the next one comes back to it");
+    }
+
+    /// The probe is still the veto: cursor answers `--resume` on an id it does
+    /// not have with the directory's latest chat rather than an error, which is
+    /// the crossing this whole path exists to avoid.
+    #[test]
+    fn a_conversation_the_probe_cannot_find_does_not_resume() {
+        let id = "712a88f3-e1c4-40f9-b5c3-842d55dc410a";
+        let custom = AgentProfile {
+            name: "Cursor".into(),
+            command: "cursor-agent".into(),
+            args: vec![],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        };
+        assert!(!should_resume(&custom, Some(id), crate::resume_probe::ResumeProbe::None));
+        // An agent Agency cannot name a conversation to keeps the old rule:
+        // its generic recipe is the only one it has.
+        let codex = AgentProfile { name: "codex".into(), command: "codex".into(), ..custom };
+        assert!(!should_resume(&codex, Some(id), crate::resume_probe::ResumeProbe::Unknown));
+        let codex =
+            AgentProfile { resume_args: Some(vec!["resume".into(), "--last".into()]), ..codex };
+        assert!(should_resume(&codex, None, crate::resume_probe::ResumeProbe::Unknown));
+    }
+
+    /// A profile that names the conversation itself is answering the question,
+    /// so Agency's own flag stands down — and with it the reason to resume at
+    /// all when that is the only recipe there is.
+    #[test]
+    fn a_profile_that_names_its_own_conversation_keeps_the_wheel() {
+        let id = "712a88f3-e1c4-40f9-b5c3-842d55dc410a";
+        let theirs = AgentProfile {
+            name: "Cursor".into(),
+            command: "cursor-agent".into(),
+            args: vec!["--resume".into(), "one-of-their-own".into()],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        };
+        assert!(!should_resume(&theirs, Some(id), crate::resume_probe::ResumeProbe::Has));
+        let (_cmd, args) = agent_argv(&theirs, no_worktree(), "go", true, None, Some(id));
+        assert_eq!(args, vec!["--resume", "one-of-their-own", "go"]);
     }
 
     /// Pi is pinned by its store instead, so its recipe is untouched: `-c`

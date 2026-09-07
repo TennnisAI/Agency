@@ -1077,21 +1077,19 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
   mask-image: linear-gradient(to bottom, black 60%, transparent 100%);
 }
 
-/* Status on the left, the close control on the right — kept clear of the
-   status text so the row never shuffles as the control appears. */
+/* Pin, status and the queued marker pack against the left in that order; the
+   close control is pushed to the right edge. Everything used to be spaced apart
+   instead, which left the pin wherever the gap fell — bottom-centre on a tile
+   with no queued marker, somewhere else on one with. */
 .tile-foot {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
   min-height: 20px;
   font-size: 11px;
   color: var(--o0);
 }
-.tile-close-wrap { display: flex; flex-shrink: 0; }
-/* The queued marker sits with the status it belongs beside, so the close button
-   keeps the right edge of the foot to itself. */
-.tile-foot .queued-wrap { margin-right: auto; }
+.tile-close-wrap { display: flex; flex-shrink: 0; margin-left: auto; }
 .tile:hover .tile-close { opacity: 1; }
 
 /* Placeholder tile shown while a workspace is being created (worktree +
@@ -2011,6 +2009,14 @@ input.settings-notif-secs { width: 90px; flex: 0 0 auto; }
 .tile:hover .attn-chip.quiet,
 .tile.ctx .attn-chip.quiet,
 .attn-chip.quiet:focus-visible { opacity: 1; }
+
+/* The same pin, read-only, on the rows that list a run instead of tiling it:
+   the projects tree and the agents rail. Dimmer than the name it leads, and it
+   never takes the pointer — the row's own click and right-click still work. */
+.pin-mark {
+  display: inline-flex; align-items: center; flex-shrink: 0;
+  color: var(--sub0); line-height: 0; pointer-events: none;
+}
 
 .queued-wrap { display: inline-flex; flex-shrink: 0; }
 .queued-chip {

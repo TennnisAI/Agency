@@ -2894,6 +2894,19 @@ impl AppState {
         }
         {
             let reg = self.registry.lock().unwrap();
+            // Refuse a folder another project already claims, open or closed.
+            // `repo_path` has no unique index and this is a bare UPDATE, so
+            // picking project B's folder in A's "Locate folder..." dialog put
+            // both rows on one checkout: they then share `.agency/worktrees`
+            // and `.agency/agency.toml`, and reviving a closed one by its path
+            // can no longer tell them apart. `add_project` dedupes by reviving
+            // the row that is already there; a relocate has no equivalent move
+            // to make, so it stops instead.
+            if let Some(other) = reg.find_project_by_path(new_path)? {
+                if other.id != project.id {
+                    bail!("{} is already open as \"{}\"", new_path.display(), other.name);
+                }
+            }
             reg.set_project_repo_path(id, new_path)?;
         }
         // The agents' worktrees live under `<repo>/.agency/worktrees/`, so they

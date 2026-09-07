@@ -7,6 +7,22 @@ import { Project, folderMissing } from "../api";
 const FOLDER_POLL_MS = 5_000;
 
 
+/** A probe's answer, together with the folder it was asked about. */
+export type FolderAnswer = { path: string; missing: boolean } | null;
+
+/**
+ * The answer to show for `repoPath`: an answer recorded for any other folder
+ * is no answer at all.
+ *
+ * Split out because the alternative — clearing the answer from an effect when
+ * the project changes — clears it after paint, so switching away from a project
+ * whose folder was gone painted one frame of "This project's folder is missing"
+ * under the new project's name.
+ */
+export function missingFor(answer: FolderAnswer, repoPath: string | null): boolean | null {
+  return answer?.path === repoPath ? answer.missing : null;
+}
+
 /**
  * Whether a project's source folder has gone from disk (AGE-203): moved,
  * renamed, deleted, or on a volume that is no longer mounted.
@@ -25,7 +41,9 @@ export function useFolderMissing(project: Project | null): {
   missing: boolean | null;
   refresh: () => void;
 } {
-  const [missing, setMissing] = useState<boolean | null>(null);
+  // The answer carries the folder it is about; `missingFor` above discards it
+  // the instant the project changes, with no effect having to run first.
+  const [answer, setAnswer] = useState<FolderAnswer>(null);
   const repoPath = project?.repo_path ?? null;
   // Request token: a slow probe from the previously selected project must not
   // land over the current one's answer.
@@ -34,12 +52,13 @@ export function useFolderMissing(project: Project | null): {
   const refresh = () => {
     const seq = ++seqRef.current;
     if (!repoPath) {
-      setMissing(null);
+      setAnswer(null);
       return;
     }
-    folderMissing(repoPath)
+    const path = repoPath;
+    folderMissing(path)
       .then((m) => {
-        if (seq === seqRef.current) setMissing(m);
+        if (seq === seqRef.current) setAnswer({ path, missing: m });
       })
       // No answer is no claim: leave the last one standing rather than
       // accusing a working folder of being gone because one IPC call failed.
@@ -49,7 +68,6 @@ export function useFolderMissing(project: Project | null): {
   refreshRef.current = refresh;
 
   useEffect(() => {
-    setMissing(null);
     refreshRef.current();
     const t = window.setInterval(() => refreshRef.current(), FOLDER_POLL_MS);
     // A folder is usually moved or a disk ejected while Agency is in the
@@ -63,7 +81,7 @@ export function useFolderMissing(project: Project | null): {
     };
   }, [repoPath]);
 
-  return { missing, refresh };
+  return { missing: missingFor(answer, repoPath), refresh };
 }
 
 /**

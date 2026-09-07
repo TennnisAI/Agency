@@ -221,3 +221,32 @@ fn relocate_project_repoints_a_moved_folder_and_keeps_the_project() {
     let same = state.relocate_project(&project.id, &moved).unwrap();
     assert_eq!(same.repo_path, moved);
 }
+
+/// AGE-203: the "Locate folder..." picker is an ordinary folder picker, so the
+/// folder it comes back with can be one another project already occupies. Two
+/// rows on one checkout share its `.agency/worktrees` and `.agency/agency.toml`
+/// and cannot be told apart by path afterwards, so relocate refuses.
+#[test]
+fn relocate_project_refuses_a_folder_another_project_already_has() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = dir.path().join("a");
+    let b = dir.path().join("b");
+    std::fs::create_dir_all(&a).unwrap();
+    std::fs::create_dir_all(&b).unwrap();
+
+    let state = common::state(&dir);
+    let pa = state.add_project("a", &a).unwrap();
+    let pb = state.add_project("b", &b).unwrap();
+
+    assert!(state.relocate_project(&pa.id, &b).is_err(), "b is taken by an open project");
+    assert_eq!(
+        state.list_projects().unwrap().iter().find(|p| p.id == pa.id).unwrap().repo_path,
+        a,
+        "a refused relocate leaves the row where it was"
+    );
+
+    // Closed is still taken: closing keeps every record, and re-adding the
+    // path is how a closed project comes back.
+    state.close_project(&pb.id).unwrap();
+    assert!(state.relocate_project(&pa.id, &b).is_err(), "b is taken by a closed project");
+}

@@ -142,8 +142,15 @@ pub async fn delete_project(
 /// Point a project at the folder its source moved to. Nothing on disk is
 /// touched: this rewrites the recorded path and repairs the agents' worktree
 /// links, which record absolute paths and so broke with the move.
+///
+/// async for the same reason `delete_project` above is: `repair()` shells out
+/// to `git worktree list --porcelain` and then one `git worktree repair` over
+/// every worktree path, with a `read_dir` and a `read_to_string` per
+/// candidate. Sync, all of that ran on the main thread, so a project with many
+/// agents — or a folder just remounted from a slow network volume — froze the
+/// whole UI until it finished.
 #[tauri::command]
-pub fn relocate_project(
+pub async fn relocate_project(
     state: State<'_, AppState>,
     id: String,
     new_path: String,

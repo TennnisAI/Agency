@@ -1058,6 +1058,11 @@ export default function Settings({
       refreshWorkspace();
       // Same-value re-fire: makes ProjectTree refetch the repointed row.
       setWorkspaceHidden(wsOff);
+      // And the app's own copy of the row, which that event does not reach: it
+      // still held the old repo_path, so closing Settings remounted the view
+      // against the folder that is not there and put the missing-folder screen
+      // back up over the workspace just reconnected.
+      notifyProjectsChanged();
       toastSuccess("Workspace reconnected");
     } catch (e) {
       toastError(e, "Couldn't reconnect the workspace");
@@ -1093,6 +1098,8 @@ export default function Settings({
       refreshWorkspace();
       // Same-value re-fire: makes ProjectTree refetch the repointed row.
       setWorkspaceHidden(wsOff);
+      // The app's copy of the row too; see locateWorkspace above.
+      notifyProjectsChanged();
       toastSuccess("Workspace switched");
     } catch (e) {
       toastError(e, "Couldn't switch workspace");

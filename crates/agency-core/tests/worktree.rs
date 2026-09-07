@@ -349,3 +349,32 @@ fn remove_deregisters_only_its_own_worktree() {
     );
     assert!(!branch_exists(repo.path(), "agent/task-1"));
 }
+
+#[test]
+fn remove_deregisters_its_own_worktree_recorded_by_a_relative_gitdir() {
+    let repo = init_repo();
+    let mgr = WorktreeManager::new(repo.path().to_path_buf());
+    mgr.create("task-1", "HEAD").unwrap();
+    let admin = repo.path().join(".git").join("worktrees").join("task-1");
+
+    // What git 2.48's `worktree.useRelativePaths` (and `worktree add
+    // --relative-paths`) writes: the tree's path relative to the admin dir,
+    // not the absolute one. Written by hand rather than by setting the config,
+    // so the case is covered whatever git the machine running the tests has.
+    std::fs::write(admin.join("gitdir"), "../../../.agency/worktrees/task-1/.git\n").unwrap();
+
+    // Gone from disk, and locked so that `git worktree remove --force` refuses
+    // (it wants a second `-f` for a lock) — which is the only way to reach the
+    // deregistering fallback on a git new enough to deregister a missing tree
+    // by itself.
+    git(repo.path(), &["worktree", "lock", ".agency/worktrees/task-1"]);
+    std::fs::remove_dir_all(repo.path().join(".agency").join("worktrees").join("task-1")).unwrap();
+
+    mgr.remove("task-1").unwrap();
+
+    assert!(
+        !admin.is_dir(),
+        "a relative gitdir still names our own worktree: the entry must go, \
+         or a later create for the same id has no name left to use"
+    );
+}

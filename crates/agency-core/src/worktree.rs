@@ -1,7 +1,7 @@
 use crate::setup::CloneProgress;
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -424,11 +424,19 @@ impl WorktreeManager {
             return;
         };
         // `gitdir` holds the worktree's `.git` file, so its parent is the tree.
+        // It is relative to this admin directory whenever the repo has git
+        // 2.48's `worktree.useRelativePaths` set (or the worktree was added
+        // with `--relative-paths`): the file then reads
+        // `../../../.agency/worktrees/<id>/.git`, which can never equal an
+        // absolute root, so this returned early and left registered the one
+        // entry it exists to remove.
         let recorded = PathBuf::from(recorded.trim());
+        let recorded = if recorded.is_absolute() { recorded } else { admin.join(recorded) };
+        let recorded = lexical_normalize(&recorded);
         let Some(tree) = recorded.parent() else {
             return;
         };
-        if tree != self.worktrees_root().join(task_id).as_path() || tree.exists() {
+        if tree != lexical_normalize(&self.worktrees_root().join(task_id)) || tree.exists() {
             return;
         }
         let _ = std::fs::remove_dir_all(&admin);
@@ -639,6 +647,31 @@ pub fn untrack_issue_files(repo_path: &std::path::Path) -> Result<bool> {
         );
     }
     Ok(true)
+}
+
+/// Resolve `.` and `..` in a path textually, without touching the disk.
+///
+/// `Path::canonicalize` cannot stand in for this: the caller compares paths to
+/// a worktree directory that has just been deleted, and canonicalize fails on
+/// anything that is not there. Symlinks therefore go unresolved, which is the
+/// same footing the rest of this module works on (`WorktreeManager::new`
+/// canonicalizes the repo root once, and git records resolved paths from it).
+fn lexical_normalize(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in path.components() {
+        match c {
+            Component::CurDir => {}
+            // A `..` with nothing to pop (a relative path that climbs above
+            // its own start) is kept, so the result still names what it named.
+            Component::ParentDir => {
+                if !out.pop() {
+                    out.push("..");
+                }
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 /// Best-effort recursive count of regular files under `dir` (directories are

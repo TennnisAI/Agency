@@ -40,10 +40,40 @@ fn git(repo: &Path, args: &[&str]) -> Result<std::process::Output> {
 }
 
 /// [`git`] for a command that talks to a remote. There is no TTY behind the
-/// app, so a credential prompt would hang the call forever rather than asking
-/// anyone anything; this fails fast instead.
+/// app, so anything that stops to ask a question hangs the call forever rather
+/// than asking anyone anything; this fails fast instead.
+///
+/// `GIT_TERMINAL_PROMPT=0` alone does not buy that: it silences git's own
+/// prompts and nothing else. An SSH remote whose key has a passphrase and no
+/// agent loaded still stops on ssh's own `/dev/tty` prompt, and so does an
+/// unknown host key; a credential helper still blocks on its own UI. Started
+/// from a terminal by `./dev.sh` that is a real hang, with the merge window
+/// sitting on "Deleting origin/agent/x…" for good and a runtime thread pinned
+/// behind it. `BatchMode=yes` turns ssh's prompts into a refusal and the
+/// askpass pair does the same for git's credential path. The `http.lowSpeed*`
+/// settings cover the other half, a transfer that connects and then stalls,
+/// which no prompt setting can reach.
+///
+/// The credential *helpers* are untouched, and they are consulted first: a
+/// working osxkeychain still answers. `GIT_ASKPASS` is only reached once every
+/// helper has failed, which is exactly the prompt this must not draw.
 fn git_net(repo: &Path, args: &[&str]) -> Result<std::process::Output> {
-    Ok(Command::new("git").args(args).current_dir(repo).env("GIT_TERMINAL_PROMPT", "0").output()?)
+    // Appended to whatever the user already set rather than replacing it: a
+    // custom `GIT_SSH_COMMAND` is usually an `-i <key>`, and dropping that
+    // breaks the push we are trying to make.
+    let ssh = std::env::var("GIT_SSH_COMMAND").unwrap_or_else(|_| "ssh".to_string());
+    Ok(Command::new("git")
+        .args(["-c", "http.lowSpeedLimit=1000", "-c", "http.lowSpeedTime=20"])
+        .args(args)
+        .current_dir(repo)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        // `echo` exits 0 with an empty answer, which git reads as a failed
+        // credential rather than as a password to retry with.
+        .env("GIT_ASKPASS", "echo")
+        .env("SSH_ASKPASS", "echo")
+        .env("SSH_ASKPASS_REQUIRE", "never")
+        .env("GIT_SSH_COMMAND", format!("{ssh} -o BatchMode=yes -o ConnectTimeout=10"))
+        .output()?)
 }
 
 fn git_ok(repo: &Path, args: &[&str]) -> Result<String> {
@@ -252,62 +282,90 @@ pub fn remote_name<'a>(tracking_ref: &'a str, branch: &str) -> Option<&'a str> {
     (!remote.is_empty()).then_some(remote)
 }
 
-/// Delete `branch` from the remote it was published to, once the remote's copy
-/// is proved to hold nothing `base` does not already have.
+/// Delete `branch` from every remote it was published to, once each remote's
+/// copy is proved to hold nothing `base` does not already have.
 ///
-/// Returns the remote-tracking ref that went, or `None` when the branch was
-/// already gone from the remote (GitHub deleted it on merge, or another
-/// machine did). Deleting a branch nobody has is what the user asked for, so
-/// that is a success with nothing to report, not a failure.
+/// Returns the remote-tracking refs that went, empty when the branch was
+/// already gone from every remote (GitHub deleted it on merge, or another
+/// machine did) or was never published at all. Deleting a branch nobody has is
+/// what the user asked for, so that is a success with nothing to report, not a
+/// failure.
 ///
-/// The remote is asked with `ls-remote` rather than read from the tracking
+/// *Every* copy, not the first one this checkout happens to list. A clone with
+/// a fork remote beside `origin` has the branch on both, and taking one while
+/// reporting "deleted" leaves behind exactly the branch that hangs around
+/// forever, which is the whole thing this is here to stop. Every copy is
+/// checked before any is deleted: a refusal on the second remote must not
+/// leave the first already gone, with nothing on screen saying which.
+///
+/// Each remote is asked with `ls-remote` rather than read from its tracking
 /// ref: the local one is only as fresh as the last fetch, and a colleague's
 /// push landing after it is exactly the work this must not delete unseen. Two
 /// refusals guard that. The tip must be an object this checkout actually has —
 /// a commit we have never fetched cannot be weighed against anything — and it
-/// must be contained in `base`, so that every commit under the ref survives
-/// the deletion on the base branch.
-pub fn delete_published_branch(repo: &Path, branch: &str, base: &str) -> Result<Option<String>> {
-    let Some(tracking) = remote_copies(repo, branch).into_iter().next() else {
-        return Ok(None);
-    };
-    let Some(remote) = remote_name(&tracking, branch) else {
-        bail!("{tracking} does not name a remote copy of {branch}");
-    };
+/// must be contained in `base`.
+///
+/// `base` is resolved as the **local** branch, so what the containment check
+/// proves is that the work survives in this repo, not that it survives
+/// anywhere else. A merge made from the merge window is local and unpushed at
+/// the moment this runs, so straight after it the commits are on no remote at
+/// all. That is the intended flow, a merge you have not pushed yet is still a
+/// merge, but it makes this a guard against losing work rather than a promise
+/// about the remote's own history; the window's checkbox says as much.
+pub fn delete_published_branch(repo: &Path, branch: &str, base: &str) -> Result<Vec<String>> {
+    // Tracking ref, its remote, and whether that remote still has the branch.
+    let mut checked: Vec<(String, String, bool)> = Vec::new();
     let head = format!("refs/heads/{branch}");
-    let out = git_net(repo, &["ls-remote", "--heads", remote, &head])?;
-    if !out.status.success() {
-        bail!("couldn't reach {remote}: {}", String::from_utf8_lossy(&out.stderr).trim());
+    for tracking in remote_copies(repo, branch) {
+        let Some(remote) = remote_name(&tracking, branch) else {
+            bail!("{tracking} does not name a remote copy of {branch}");
+        };
+        let remote = remote.to_string();
+        let out = git_net(repo, &["ls-remote", "--heads", &remote, &head])?;
+        if !out.status.success() {
+            bail!("couldn't reach {remote}: {}", String::from_utf8_lossy(&out.stderr).trim());
+        }
+        let listing = String::from_utf8_lossy(&out.stdout).to_string();
+        let Some(sha) = listing.split_whitespace().next() else {
+            checked.push((tracking, remote, false));
+            continue;
+        };
+        if rev(repo, sha).is_none() {
+            bail!(
+                "{tracking} is at {} on {remote}, a commit this checkout has never fetched; \
+                 fetch it and merge that work before deleting the branch",
+                &sha[..sha.len().min(10)]
+            );
+        }
+        if !is_ancestor(repo, sha, base) {
+            bail!(
+                "{tracking} has commits that aren't on {base}; merge them before deleting the \
+                 branch, or delete it on the remote yourself"
+            );
+        }
+        checked.push((tracking, remote, true));
     }
-    let listing = String::from_utf8_lossy(&out.stdout).to_string();
-    let Some(sha) = listing.split_whitespace().next() else {
-        // Gone already. The stale tracking ref would go on offering a branch
-        // that isn't there, so drop it; `-d` refuses nothing here, since the
-        // ref it deletes is a remote-tracking one.
+
+    let mut deleted = Vec::new();
+    for (tracking, remote, present) in checked {
+        if present {
+            let out = git_net(repo, &["push", &remote, "--delete", branch])?;
+            if !out.status.success() {
+                bail!(
+                    "deleting {tracking} failed: {}",
+                    String::from_utf8_lossy(&out.stderr).trim()
+                );
+            }
+            deleted.push(tracking.clone());
+        }
+        // `push --delete` prunes the tracking ref itself; this is the backstop
+        // for a git that didn't, and the only cleanup in the already-gone case,
+        // where the stale ref would otherwise go on offering a branch that
+        // isn't there. `-d` refuses nothing, since what it deletes is a
+        // remote-tracking ref.
         let _ = git(repo, &["branch", "-r", "-d", &tracking]);
-        return Ok(None);
-    };
-    if rev(repo, sha).is_none() {
-        bail!(
-            "{tracking} is at {} on {remote}, a commit this checkout has never fetched; \
-             fetch it and merge that work before deleting the branch",
-            &sha[..sha.len().min(10)]
-        );
     }
-    if !is_ancestor(repo, sha, base) {
-        bail!(
-            "{tracking} has commits that aren't on {base}; merge them before deleting the \
-             branch, or delete it on the remote yourself"
-        );
-    }
-    let out = git_net(repo, &["push", remote, "--delete", branch])?;
-    if !out.status.success() {
-        bail!("deleting {tracking} failed: {}", String::from_utf8_lossy(&out.stderr).trim());
-    }
-    // `push --delete` prunes the tracking ref itself; this is the backstop for
-    // a git that didn't, so the caller's next `remote_copies` is honest.
-    let _ = git(repo, &["branch", "-r", "-d", &tracking]);
-    Ok(Some(tracking))
+    Ok(deleted)
 }
 
 /// The branch the checkout is on, or `None` on detached HEAD.

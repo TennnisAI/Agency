@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   CloneProgress,
   MergeOutcome,
@@ -30,6 +30,20 @@ import ProgressReadout from "./ProgressReadout";
 import { useRuns } from "../store/runs";
 import { useModalKeys } from "../hooks/useModalKeys";
 import { useHushed } from "../lib/hushed";
+
+// Remote-tracking refs as a readable list: `origin/agent/x`, or
+// `fork/agent/x and origin/agent/x` for a checkout that publishes to both.
+// Every line here that mentions the remote copy names all of them, because
+// deleting them is all-or-nothing and a line that named one would be a
+// promise about the other.
+function refList(refs: string[]) {
+  return refs.map((r, i) => (
+    <span key={r}>
+      {i > 0 && (i === refs.length - 1 ? " and " : ", ")}
+      <code>{r}</code>
+    </span>
+  ));
+}
 
 // `onRemoved` fires after a post-merge cleanup action (archive or delete) so
 // the host view can drop focus and refresh its rail.
@@ -77,17 +91,49 @@ export default function MergeModal({
   // the worktree and the local branch, and every locally merged agent branch
   // stayed on the remote for good.
   const [deleteRemote, setDeleteRemote] = useState(true);
+  // Read instead of the state when the deletion actually runs. `attempt` and
+  // `finish` are rebuilt every render, so the `tidyRemoteBranch` they call is
+  // the one from the render the button was clicked on, and the value it closes
+  // over is the checkbox as it stood then. Anything that unticks the box while
+  // the merge is out (an open PR arriving, below) would be read past, and the
+  // branch deleted anyway.
+  const deleteRemoteRef = useRef(deleteRemote);
+  deleteRemoteRef.current = deleteRemote;
   // The branch's PR, probed once by the section below and reported up here.
   // Null both before the probe answers and when there is no PR; only an
   // explicitly open one changes anything above.
   const [pr, setPr] = useState<PrInfo | null>(null);
+  // Whether that probe is still out. It is two IPC round-trips, the second of
+  // which shells out to `gh`, and until it lands `pr` is null and reads as "no
+  // PR". See `prUnknown` below for what waits on it.
+  const [prProbing, setPrProbing] = useState(true);
+  const prProbingRef = useRef(prProbing);
+  prProbingRef.current = prProbing;
+  // The probe has been out long enough that the merge stops waiting for it.
+  // `gh` has no timeout of its own, so a stalled network can leave it out for
+  // as long as it likes, and holding a purely local merge behind a GitHub API
+  // request that may never answer is not a trade this window gets to make.
+  // Past the cap the merge goes ahead and the remote copy is left alone, which
+  // is the safe half of an answer we never got.
+  const [prProbeSlow, setPrProbeSlow] = useState(false);
+  // Timed from the preview landing, not from the window opening: the section
+  // that runs the probe is inside the preview, so before then the clock would
+  // be running on a probe that has not started.
+  useEffect(() => {
+    if (!prProbing || !preview) return;
+    const t = window.setTimeout(() => setPrProbeSlow(true), 5000);
+    return () => window.clearTimeout(t);
+  }, [prProbing, preview]);
+  // Set when a merge landed with the box still ticked but the PR state still
+  // unknown, so the panel can say the branch is still out there and why.
+  const [remoteSkipped, setRemoteSkipped] = useState(false);
   // Whether the user has had an opinion about the checkbox yet. An open PR
   // arrives after the modal has already drawn the box ticked, and unticking it
   // under a user who ticked it themselves would be the app overruling them.
   const [remoteTouched, setRemoteTouched] = useState(false);
-  // What became of that once the merge landed: the ref that went, or null when
-  // the remote turned out not to have the branch any more.
-  const [remoteGone, setRemoteGone] = useState<{ ref: string | null } | null>(null);
+  // What became of that once the merge landed: the refs that went, empty when
+  // the remotes turned out not to have the branch any more.
+  const [remoteGone, setRemoteGone] = useState<{ refs: string[] } | null>(null);
   const [deletingRemote, setDeletingRemote] = useState(false);
   // Kept apart from the modal's own error line: the merge has already
   // succeeded by the time this can fail, and a refused branch deletion must
@@ -157,7 +203,14 @@ export default function MergeModal({
   // A git operation is running in the project's shared checkout. Closing the
   // window wouldn't stop it, and leaving mid-merge is how a half-finished merge
   // gets forgotten about, so the exits are shut for the few seconds it takes.
-  const gitBusy = merging || finishing || aborting;
+  //
+  // The remote deletion counts, though it runs after the merge rather than as
+  // part of it. It is the one step here that waits on a network, and its
+  // result is the only place a refusal ("origin/agent/x has commits that
+  // aren't on main") is ever said. Tearing the run down while `git push
+  // --delete` is out drops that message on an unmounted modal, leaving the
+  // branch out there with unmerged work on it and nothing on screen about it.
+  const gitBusy = merging || finishing || aborting || deletingRemote;
 
   // Escape mirrors the header ✕; disabled while cleaning up or mid-git (the
   // modal's other cancel affordances are disabled then too).
@@ -262,17 +315,25 @@ export default function MergeModal({
     }
   }
 
-  // The branch's remote copy, deleted after the merge has committed and never
-  // before: until the commits are on the base, that copy is the only one off
-  // this machine, and the backend refuses to delete it. Best effort by
+  // The branch's remote copies, deleted after the merge has committed and never
+  // before: until the commits are on the base, those copies are the only ones
+  // off this machine, and the backend refuses to delete them. Best effort by
   // contract — the merge has landed, so a remote that says no is a note under
   // the outcome rather than an error over it.
   async function tidyRemoteBranch() {
-    if (!deleteRemote || !preview?.remoteBranch) return;
+    if (!deleteRemoteRef.current || !preview?.remoteBranches.length) return;
+    // The PR probe never answered, and the merge stopped waiting for it (see
+    // `prProbeSlow`). GitHub closes a PR whose head branch is deleted rather
+    // than marking it merged, so a branch whose PR state is unknown is one
+    // this does not touch.
+    if (projectId && prProbingRef.current) {
+      setRemoteSkipped(true);
+      return;
+    }
     setDeletingRemote(true);
     setRemoteError("");
     try {
-      setRemoteGone({ ref: await deleteRunRemoteBranch(taskId) });
+      setRemoteGone({ refs: await deleteRunRemoteBranch(taskId) });
     } catch (e) {
       setRemoteError(String(e));
     } finally {
@@ -430,6 +491,29 @@ export default function MergeModal({
   // Another run left a merge unfinished in the shared project checkout. Nothing
   // here can proceed until that one is finished or aborted, from its own window.
   const blockedBy = state?.blockedBy ?? null;
+  // The PR probe hasn't answered and there is a remote copy riding on what it
+  // says. Merging now deletes that copy on a default that was never checked
+  // against an open PR, and GitHub closes a PR whose head branch goes rather
+  // than marking it merged. The probe is two IPC round-trips and the button
+  // below has `autoFocus`, so Enter beats it comfortably; worse, the section
+  // that runs it unmounts the moment merging starts, so a probe that hasn't
+  // landed by then never lands. Waiting is only needed while something is
+  // actually at stake: no remote copy, or no project to ask about, and there
+  // is nothing for the answer to change.
+  const prUnknown =
+    !!projectId &&
+    prProbing &&
+    !prProbeSlow &&
+    !!preview &&
+    preview.remoteBranches.length > 0 &&
+    !nothingToMerge;
+  const mergeBtn = useRef<HTMLButtonElement>(null);
+  // `autoFocus` does nothing to a button that is disabled when it mounts, which
+  // is the normal case above. Take the focus when the wait ends so Enter still
+  // merges: driving this window from the keyboard is the point of the autofocus.
+  useEffect(() => {
+    if (!prUnknown) mergeBtn.current?.focus();
+  }, [prUnknown]);
 
   return (
     // Click-outside-to-close is off while the delete confirm is up. The confirm
@@ -500,20 +584,26 @@ export default function MergeModal({
               {/* Only for a branch that has a remote copy: everything else has
                   nothing to offer deleting, and an unticked box for a branch
                   that was never pushed is one more thing to read past. */}
-              {!nothingToMerge && preview.remoteBranch && (
+              {!nothingToMerge && preview.remoteBranches.length > 0 && (
                 <label
                   className="merge-option"
-                  title="Deletes the branch on the remote once the merge has landed. The agent's worktree and its local branch stay until you archive or delete the agent."
+                  // The second sentence is the honest version of what the
+                  // backend checks: it proves the commits are on the local
+                  // base, which is not the same as proving they are anywhere
+                  // else. A merge from this window is unpushed when the
+                  // deletion runs, so for that moment this checkout is the
+                  // only copy of the work.
+                  title="Deletes the branch on the remotes it was pushed to, once the merge has landed. The merge itself is local until you push it, so until then the merged commits live only in this checkout. The agent's worktree and its local branch stay until you archive or delete the agent."
                 >
                   <input
                     type="checkbox"
                     checked={deleteRemote}
                     onChange={(e) => { setRemoteTouched(true); setDeleteRemote(e.target.checked); }}
                   />
-                  <span>Delete <code>{preview.remoteBranch}</code> after merging</span>
+                  <span>Delete {refList(preview.remoteBranches)} after merging</span>
                 </label>
               )}
-              {!nothingToMerge && preview.remoteBranch && pr?.state === "OPEN" && (
+              {!nothingToMerge && preview.remoteBranches.length > 0 && pr?.state === "OPEN" && (
                 <p className="merge-warn">
                   #{pr.number} is open on this branch. Deleting the branch on the remote closes
                   that PR rather than marking it merged, so merging the PR from Source Control is
@@ -522,8 +612,15 @@ export default function MergeModal({
               )}
               {!nothingToMerge && (
                 <div className="git-actions">
-                  <button autoFocus onClick={attempt} disabled={!!blockedBy}
-                    title={blockedBy ? `Blocked: ${blockedBy} is mid-merge` : undefined}>
+                  <button ref={mergeBtn} autoFocus onClick={attempt}
+                    disabled={!!blockedBy || prUnknown}
+                    title={
+                      blockedBy
+                        ? `Blocked: ${blockedBy} is mid-merge`
+                        : prUnknown
+                          ? "Checking whether this branch has an open pull request, which decides whether the merge takes the remote branch with it."
+                          : undefined
+                    }>
                     Merge into {preview.base}
                   </button>
                   <button className="ghost" onClick={onClose}>Cancel</button>
@@ -536,6 +633,7 @@ export default function MergeModal({
                   canCreate={!nothingToMerge}
                   onLeave={onClose}
                   onPr={setPr}
+                  onProbing={setPrProbing}
                   onReviewPr={onReviewPr}
                 />
               )}
@@ -555,14 +653,25 @@ export default function MergeModal({
                 it are about what is left. */}
             {deletingRemote && (
               <p className="merge-note">
-                <span className="spinner" /> Deleting <code>{preview?.remoteBranch}</code>…
+                <span className="spinner" /> Deleting {refList(preview?.remoteBranches ?? [])}…
               </p>
             )}
             {remoteGone && (
               <p className="merge-note">
-                {remoteGone.ref
-                  ? <>Deleted <code>{remoteGone.ref}</code> from the remote.</>
-                  : "The remote copy of the branch was already gone."}
+                {remoteGone.refs.length > 0
+                  ? <>Deleted {refList(remoteGone.refs)} from
+                      {remoteGone.refs.length > 1 ? " their remotes." : " the remote."}</>
+                  : `The remote cop${(preview?.remoteBranches.length ?? 0) > 1 ? "ies" : "y"} of the branch ${
+                      (preview?.remoteBranches.length ?? 0) > 1 ? "were" : "was"
+                    } already gone.`}
+              </p>
+            )}
+            {remoteSkipped && (
+              <p className="removal-warn">
+                Kept {refList(preview?.remoteBranches ?? [])} on the remote. The check for an open
+                pull request on this branch didn't answer, and deleting the branch under an open
+                PR closes it rather than marking it merged. Delete it from Source Control once
+                you've looked.
               </p>
             )}
             {remoteError && <p className="removal-warn">{remoteError}</p>}
@@ -601,16 +710,20 @@ export default function MergeModal({
               )}
               {tidy.caveat && <p className="removal-warn">{tidy.caveat}</p>}
             </div>
+            {/* `gitBusy` alongside `busy` here for the remote deletion, which
+                is still out when this panel first draws. Every button below
+                either tears the run down or closes the window, and doing
+                either mid-deletion drops the result, refusal and all. */}
             <div className="git-actions">
               {losers.length > 0 ? (
-                <button disabled={busy} onClick={() => archiveWorkspace(true)}>
+                <button disabled={busy || gitBusy} onClick={() => archiveWorkspace(true)}>
                   {archiving
                     ? "Cleaning up…"
                     : `Archive + delete ${losers.length} losing attempt${losers.length === 1 ? "" : "s"}`}
                 </button>
               ) : (
                 <button
-                  disabled={busy}
+                  disabled={busy || gitBusy}
                   title="Stop the agent, remove its worktree, and keep a record of what it did."
                   onClick={() => archiveWorkspace(false)}
                 >
@@ -618,7 +731,7 @@ export default function MergeModal({
                 </button>
               )}
               {losers.length > 0 && (
-                <button className="ghost" disabled={busy} onClick={() => archiveWorkspace(false)}>
+                <button className="ghost" disabled={busy || gitBusy} onClick={() => archiveWorkspace(false)}>
                   Archive, keep losers
                 </button>
               )}
@@ -627,7 +740,7 @@ export default function MergeModal({
                 // nothing can, and a warning colour that fires anyway is one
                 // nobody reads on the day it means something.
                 className={`ghost${deleteCopy.danger ? " danger" : ""}`}
-                disabled={busy}
+                disabled={busy || gitBusy}
                 title="Remove the worktree, the branch and the run. The merged commit stays on the base branch."
                 // Hushed and nothing else to decide: go straight to the delete.
                 // With losing attempts around, the confirm carries a real
@@ -639,7 +752,7 @@ export default function MergeModal({
               >
                 {deleting ? "Deleting…" : "Delete agent"}
               </button>
-              <button className="ghost" disabled={busy} onClick={onClose} title="Leave the agent as it is">
+              <button className="ghost" disabled={busy || gitBusy} onClick={onClose} title="Leave the agent as it is">
                 Keep agent
               </button>
             </div>

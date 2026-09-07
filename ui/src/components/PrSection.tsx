@@ -30,6 +30,7 @@ export default function PrSection({
   canCreate,
   onLeave,
   onPr,
+  onProbing,
   onReviewPr,
 }: {
   taskId: string;
@@ -41,6 +42,12 @@ export default function PrSection({
   // setter does): it is a dependency of the probe that calls it, and a new
   // function every render would re-run that probe every render.
   onPr?: (pr: PrInfo | null) => void;
+  // Whether that probe is still out. The host waits for it before letting a
+  // merge start: `onPr` decides whether the merge takes the remote branch with
+  // it, and this section is unmounted the moment merging begins, so a probe
+  // that hasn't answered by then never answers at all. Same stability rule as
+  // `onPr`.
+  onProbing?: (probing: boolean) => void;
   // Deep-links "View PR" to the review panel for the created/existing PR.
   // Required, not optional: a missing handler is how this button silently
   // regressed to opening github.com instead (AGE-59).
@@ -86,12 +93,17 @@ export default function PrSection({
       })
       .catch(() => {})
       .finally(() => {
-        if (live) setProbing(false);
+        if (!live) return;
+        setProbing(false);
+        // Settled either way, including the paths that never asked about a PR
+        // (no gh, not signed in, no GitHub remote). "No PR" is an answer, and
+        // the host is holding its merge button until it has one.
+        onProbing?.(false);
       });
     return () => {
       live = false;
     };
-  }, [projectId, refreshStatus]);
+  }, [projectId, refreshStatus, onProbing]);
 
   // Live check rollup while a PR exists and the modal is open.
   useEffect(() => {

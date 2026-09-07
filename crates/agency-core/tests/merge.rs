@@ -544,7 +544,7 @@ fn deletes_a_published_branch_whose_work_is_on_the_base() {
     merge::merge(dir.path(), "agent/x", "main").unwrap();
 
     let gone = merge::delete_published_branch(dir.path(), "agent/x", "main").unwrap();
-    assert_eq!(gone, Some("origin/agent/x".to_string()));
+    assert_eq!(gone, vec!["origin/agent/x".to_string()]);
     // The remote really lost the ref, and the tracking ref went with it.
     let refs = String::from_utf8(
         Command::new("git").args(["branch"]).current_dir(origin.path()).output().unwrap().stdout,
@@ -554,6 +554,75 @@ fn deletes_a_published_branch_whose_work_is_on_the_base() {
     assert!(merge::remote_copies(dir.path(), "agent/x").is_empty());
     // The local branch is the archive/delete flow's to remove, not this one's.
     assert!(merge::branch_exists(dir.path(), "agent/x"));
+}
+
+/// Names the refs a checkout has, and a bare repo's branch listing, for the
+/// two-remote tests below.
+fn branches_in(bare: &Path) -> String {
+    String::from_utf8(
+        Command::new("git").args(["branch"]).current_dir(bare).output().unwrap().stdout,
+    )
+    .unwrap()
+}
+
+/// A fork checkout publishes to `origin` and to the fork, so the branch has two
+/// remote copies. Taking only the first and reporting "deleted" is how the
+/// second one survives forever, which is the failure this whole path exists to
+/// stop.
+#[test]
+fn deletes_every_remote_copy_of_the_branch() {
+    let (dir, origin) = repo_with_origin();
+    let fork = tempfile::tempdir().unwrap();
+    run(fork.path(), &["init", "-q", "--bare", "-b", "main", "."]);
+    run(dir.path(), &["remote", "add", "fork", fork.path().to_str().unwrap()]);
+    run(dir.path(), &["push", "-q", "fork", "main"]);
+
+    run(dir.path(), &["checkout", "-q", "-b", "agent/x"]);
+    commit_file(dir.path(), "new.txt");
+    run(dir.path(), &["push", "-q", "origin", "agent/x"]);
+    run(dir.path(), &["push", "-q", "fork", "agent/x"]);
+    run(dir.path(), &["checkout", "-q", "main"]);
+    merge::merge(dir.path(), "agent/x", "main").unwrap();
+
+    let mut gone = merge::delete_published_branch(dir.path(), "agent/x", "main").unwrap();
+    gone.sort();
+    assert_eq!(gone, vec!["fork/agent/x".to_string(), "origin/agent/x".to_string()]);
+    assert!(!branches_in(origin.path()).contains("agent/x"), "origin kept it");
+    assert!(!branches_in(fork.path()).contains("agent/x"), "the fork kept it");
+    assert!(merge::remote_copies(dir.path(), "agent/x").is_empty());
+}
+
+/// Every copy is checked before any is deleted. A refusal on the second remote
+/// that had already taken the first would leave the user with one remote
+/// tidied, one not, and an error message that mentions neither.
+#[test]
+fn one_remote_ahead_of_the_base_stops_the_deletion_on_all_of_them() {
+    let (dir, origin) = repo_with_origin();
+    let fork = tempfile::tempdir().unwrap();
+    run(fork.path(), &["init", "-q", "--bare", "-b", "main", "."]);
+    run(dir.path(), &["remote", "add", "fork", fork.path().to_str().unwrap()]);
+    run(dir.path(), &["push", "-q", "fork", "main"]);
+
+    run(dir.path(), &["checkout", "-q", "-b", "agent/x"]);
+    commit_file(dir.path(), "one.txt");
+    run(dir.path(), &["push", "-q", "origin", "agent/x"]);
+    run(dir.path(), &["push", "-q", "fork", "agent/x"]);
+    run(dir.path(), &["checkout", "-q", "main"]);
+    merge::merge(dir.path(), "agent/x", "main").unwrap();
+    // A second commit reaches origin only, so the fork's copy is merged and
+    // origin's is not. That way round on purpose: the refs come back sorted, so
+    // the fork is reached first, and a loop that deleted as it went would
+    // already have taken it by the time origin refuses.
+    run(dir.path(), &["checkout", "-q", "agent/x"]);
+    commit_file(dir.path(), "two.txt");
+    run(dir.path(), &["push", "-q", "origin", "agent/x"]);
+    run(dir.path(), &["checkout", "-q", "main"]);
+
+    let err =
+        merge::delete_published_branch(dir.path(), "agent/x", "main").unwrap_err().to_string();
+    assert!(err.contains("origin/agent/x"), "names the remote that refused: {err}");
+    assert!(branches_in(origin.path()).contains("agent/x"), "origin's copy went anyway");
+    assert!(branches_in(fork.path()).contains("agent/x"), "the fork's copy went anyway");
 }
 
 /// The whole point of the guard: work that hasn't landed is not deleted,
@@ -617,7 +686,7 @@ fn a_branch_already_gone_from_the_remote_is_not_a_failure() {
     // GitHub's "delete branch on merge", or another clone, got there first.
     run(origin.path(), &["update-ref", "-d", "refs/heads/agent/x"]);
 
-    assert_eq!(merge::delete_published_branch(dir.path(), "agent/x", "main").unwrap(), None);
+    assert!(merge::delete_published_branch(dir.path(), "agent/x", "main").unwrap().is_empty());
     assert!(merge::remote_copies(dir.path(), "agent/x").is_empty(), "the stale ref goes too");
 }
 
@@ -632,8 +701,7 @@ fn an_unpublished_branch_has_nothing_to_delete() {
     run(dir.path(), &["checkout", "-q", "main"]);
     merge::merge(dir.path(), "agent/local-only", "main").unwrap();
 
-    assert_eq!(
-        merge::delete_published_branch(dir.path(), "agent/local-only", "main").unwrap(),
-        None
-    );
+    assert!(merge::delete_published_branch(dir.path(), "agent/local-only", "main")
+        .unwrap()
+        .is_empty());
 }

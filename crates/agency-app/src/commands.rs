@@ -922,7 +922,7 @@ pub async fn merge_pr(
 pub async fn delete_run_remote_branch(
     state: State<'_, AppState>,
     task_id: String,
-) -> Result<Option<String>, String> {
+) -> Result<Vec<String>, String> {
     state.delete_run_remote_branch(&task_id).map_err(|e| e.to_string())
 }
 

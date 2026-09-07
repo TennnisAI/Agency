@@ -924,7 +924,7 @@ fn merging_can_take_the_agent_branch_off_the_remote() {
     // The window can only offer this because the preview says the name is out
     // there; an unpublished branch has nothing to offer.
     let preview = state.merge_preview(&info.id).unwrap();
-    assert_eq!(preview.remote_branch.as_deref(), Some(tracking.as_str()));
+    assert_eq!(preview.remote_branches, vec![tracking.clone()]);
 
     // Before the merge the remote copy is the only copy off this machine, and
     // the deletion is refused rather than trusted to the caller's ordering.
@@ -932,13 +932,13 @@ fn merging_can_take_the_agent_branch_off_the_remote() {
     assert!(err.contains("aren't on main"), "explains the refusal: {err}");
 
     assert!(matches!(state.merge_task(&info.id).unwrap(), MergeOutcome::Clean { .. }));
-    assert_eq!(state.delete_run_remote_branch(&info.id).unwrap(), Some(tracking.clone()));
+    assert_eq!(state.delete_run_remote_branch(&info.id).unwrap(), vec![tracking.clone()]);
     let listed = Command::new("git").args(["branch"]).current_dir(&origin).output().unwrap();
     let listed = String::from_utf8_lossy(&listed.stdout).to_string();
     assert!(!listed.contains(&info.branch), "origin still has the branch: {listed}");
     // A second press is a no-op, not an error: the window offers this straight
     // after a merge, and by then GitHub may have deleted the branch itself.
-    assert_eq!(state.delete_run_remote_branch(&info.id).unwrap(), None);
+    assert!(state.delete_run_remote_branch(&info.id).unwrap().is_empty());
     // The local branch is the teardown's to take, with the worktree, once the
     // user picks archive or delete.
     assert!(state.run_cleanup(&info.id).unwrap().facts.merged);

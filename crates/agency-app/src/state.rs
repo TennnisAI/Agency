@@ -595,11 +595,14 @@ pub struct MergePreview {
     pub commits_behind: usize,
     pub worktree_dirty: bool,
     pub dirty_files: Vec<String>,
-    /// The branch's remote-tracking ref (`origin/agent/foo`) when it has been
-    /// published, so the merge window can offer to delete the remote copy on
-    /// the way past. `None` for a branch that never left this machine, which
-    /// is what keeps that offer from appearing with nothing behind it.
-    pub remote_branch: Option<String>,
+    /// The branch's remote-tracking refs (`origin/agent/foo`) when it has been
+    /// published, so the merge window can offer to delete the remote copies on
+    /// the way past. Empty for a branch that never left this machine, which is
+    /// what keeps that offer from appearing with nothing behind it.
+    ///
+    /// All of them, not the first: a clone with a fork remote beside `origin`
+    /// publishes to both, and the window names what it is about to delete.
+    pub remote_branches: Vec<String>,
 }
 
 /// Outcome of a bulk discard of a project's archived runs. Reported per-run
@@ -8760,8 +8763,7 @@ impl AppState {
         } else {
             Vec::new()
         };
-        let remote_branch =
-            agency_core::merge::remote_copies(&repo, &run.branch).into_iter().next();
+        let remote_branches = agency_core::merge::remote_copies(&repo, &run.branch);
         Ok(MergePreview {
             base,
             branch: run.branch,
@@ -8769,7 +8771,7 @@ impl AppState {
             commits_behind,
             worktree_dirty: !dirty_files.is_empty(),
             dirty_files,
-            remote_branch,
+            remote_branches,
         })
     }
 
@@ -8901,10 +8903,10 @@ impl AppState {
     /// The local branch is not touched — archiving or deleting the agent takes
     /// that, along with the worktree, and does it with the whole plan in view.
     ///
-    /// Returns the ref that went, or `None` when the remote no longer had the
-    /// branch. No checkout gate: this reads and writes refs on a remote, and
-    /// the project's working tree is not involved.
-    pub fn delete_run_remote_branch(&self, id: &str) -> anyhow::Result<Option<String>> {
+    /// Returns the refs that went, empty when no remote had the branch any
+    /// more. No checkout gate: this reads and writes refs on a remote, and the
+    /// project's working tree is not involved.
+    pub fn delete_run_remote_branch(&self, id: &str) -> anyhow::Result<Vec<String>> {
         let run = self.run_record(id)?;
         let repo = self.project_repo(&run.project_id)?;
         require_own_branch(&run, &repo, "delete from the remote")?;

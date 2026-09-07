@@ -1,5 +1,12 @@
 # Beta readiness plan
 
+> **Historical snapshot, not current status.** This is where the project stood
+> on 2026-07-08, between the pre-beta review and the first public release.
+> v0.1.0 shipped on 2026-09-06 and settled several things listed below as open,
+> so read "Still open" as *open at the time of writing*. The numbered items
+> refer to Agency's own issue tracker, which lives outside this repository, so
+> those numbers do not resolve to anything here.
+
 Tracks the findings from the 2026-07-07 pre-beta review (bug hunt + UX pass +
 gap analysis). Updated 2026-07-08 after the bug-fix pass: every verified bug in
 Phases 3–5 is fixed, plus the diagnosability/distribution work and the first
@@ -236,7 +243,8 @@ tests: 82 core + 54 app), `tsc --noEmit` exit 0, `vite build` exit 0.
      `latest.json` (only a `darwin-aarch64` key while builds are Apple Silicon
      only).
    - Requires a **public repo** — `releases/latest/download/` won't serve
-     private assets.
+     private assets. (Settled: the repo went public for v0.1.0, and the same
+     endpoint is what the passive update check reads.)
    - **Must not install while agents are running.** `TermClient::connect_or_spawn`
      handles a `PROTOCOL_VERSION` bump by killing the old daemon, and its own
      log says "its sessions are lost" — an eager install would destroy in-flight

@@ -8,6 +8,7 @@ import Resizer from "./Resizer";
 import { usePaneWidth } from "../hooks/usePaneWidth";
 import { useDocs } from "../hooks/useDocs";
 import { useCrossRefs } from "../hooks/useCrossRefs";
+import { useReportOpenFile } from "../hooks/useOpenFile";
 import DocsTree from "./DocsTree";
 import FileTabs from "./FileTabs";
 import DocsEditor, { DocsEditorHandle } from "./DocsEditor";
@@ -95,6 +96,9 @@ export default function DocsView({ project, onOpenCheckout }: {
   const tabsRef = useRef(tabs);
   tabsRef.current = tabs;
   const selected = tabs.active;
+  // What an agent hears when the user says "this note" (AGE-200). Repo-relative
+  // like every other path the backend takes, so the docs folder is on the front.
+  useReportOpenFile(root, docsDir != null && selected ? joinPath(docsDir, selected) : null);
 
   // Every mutation is scoped to the current project; one sneaking in before the
   // restore is dropped rather than corrupting the outgoing project's state.

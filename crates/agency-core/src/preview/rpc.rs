@@ -13,6 +13,7 @@
 //! names) would break prompt-cache stability. Volatile facts travel in tool
 //! *results* instead — see `guidance` in the parent module.
 
+use super::Caps;
 use serde_json::{json, Value};
 
 /// Protocol revisions this server behaves correctly under. The negotiation
@@ -35,7 +36,13 @@ pub enum Handled {
 /// Route one raw POST body. Malformed JSON and batches produce complete error
 /// responses rather than errors, so the HTTP layer can always just send what
 /// comes back.
-pub fn handle(body: &[u8]) -> Handled {
+///
+/// `caps` says which tool groups this run is actually serving, read fresh per
+/// request: the user can switch either off in Agency while an agent is mid-run,
+/// and a tool that is no longer there must stop being listed and stop
+/// answering. It only ever subtracts — the descriptions themselves are static,
+/// so what does remain in the agent's context stays byte-identical.
+pub fn handle(body: &[u8], caps: Caps) -> Handled {
     let msg: Value = match serde_json::from_slice(body) {
         Ok(v) => v,
         Err(e) => {
@@ -59,12 +66,18 @@ pub fn handle(body: &[u8]) -> Handled {
     match method.as_str() {
         "initialize" => Handled::Response(result(id, initialize_result(&params))),
         "ping" => Handled::Response(result(id, json!({}))),
-        "tools/list" => Handled::Response(result(id, json!({ "tools": tools() }))),
+        "tools/list" => Handled::Response(result(id, json!({ "tools": tools(caps) }))),
         "tools/call" => {
             let name = params.get("name").and_then(Value::as_str).unwrap_or_default().to_string();
             let args = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
-            if !TOOL_NAMES.contains(&name.as_str()) {
-                return Handled::Response(error(id, -32602, &format!("unknown tool: {name}")));
+            if !enabled(&name, caps) {
+                // A tool the user has switched off is not the same mistake as a
+                // tool that never existed, and an agent that hears "unknown"
+                // for one goes looking for a typo instead of asking.
+                return Handled::Response(match switched_off_reason(&name) {
+                    Some(why) => error(id, -32602, why),
+                    None => error(id, -32602, &format!("unknown tool: {name}")),
+                });
             }
             Handled::Call { id, name, args }
         }
@@ -87,15 +100,20 @@ fn initialize_result(params: &Value) -> Value {
             "title": "Agency preview",
             "version": env!("CARGO_PKG_VERSION"),
         },
-        "instructions": "These tools see and drive the live preview of this workspace's web app \
-            inside Agency, the desktop app this run was dispatched from. The preview renders \
-            whatever the workspace's web run script serves on the workspace's port, and the user \
-            sees the same pane you are driving. Take a preview_snapshot before clicking or \
-            typing, and read preview_console after acting instead of assuming an action worked.",
+        "instructions": "These tools reach into Agency, the desktop app this run was dispatched \
+            from, for two things the workspace on disk cannot tell you. The preview tools see and \
+            drive the live preview of this workspace's web app: it renders whatever the \
+            workspace's web run script serves on the workspace's port, and the user sees the same \
+            pane you are driving, so take a preview_snapshot before clicking or typing and read \
+            preview_console after acting instead of assuming an action worked. editor_open_file \
+            says which file the user has open in front of them right now, which is what \
+            \"this file\" and \"here\" mean when they say it. Whichever of the two the user has \
+            switched off is not listed.",
     })
 }
 
-pub const TOOL_NAMES: &[&str] = &[
+/// The preview half: everything that needs a page to act on.
+pub const PREVIEW_TOOLS: &[&str] = &[
     "preview_console",
     "preview_network",
     "preview_snapshot",
@@ -105,9 +123,37 @@ pub const TOOL_NAMES: &[&str] = &[
     "preview_type",
 ];
 
-fn tools() -> Value {
+/// The editor half: what Agency's own window is showing (AGE-200).
+pub const EDITOR_TOOLS: &[&str] = &["editor_open_file"];
+
+/// Whether `name` is a tool this server is serving right now.
+pub fn enabled(name: &str, caps: Caps) -> bool {
+    (caps.preview && PREVIEW_TOOLS.contains(&name)) || (caps.editor && EDITOR_TOOLS.contains(&name))
+}
+
+/// Why a real tool is not answering, when the reason is a switch rather than a
+/// typo. `None` for a name no version of this server has ever had.
+fn switched_off_reason(name: &str) -> Option<&'static str> {
+    if PREVIEW_TOOLS.contains(&name) {
+        Some(
+            "the preview tools are switched off for this project: `agent_tools = false` under \
+              [preview] in .agency/agency.toml, or the project has no web run script for a \
+              preview to render. Ask the user to turn them on in Agency.",
+        )
+    } else if EDITOR_TOOLS.contains(&name) {
+        Some(
+            "editor_open_file is switched off: Agency shares the file the user has open only \
+              when \"Let agents see the file you have open\" is on in its settings, and it is off \
+              by default. Ask the user which file they mean, or ask them to turn it on.",
+        )
+    } else {
+        None
+    }
+}
+
+fn tools(caps: Caps) -> Value {
     let none = json!({ "type": "object", "properties": {}, "additionalProperties": false });
-    json!([
+    let all = json!([
         {
             "name": "preview_console",
             "description": "Console output from the preview page since the last call to this \
@@ -182,7 +228,25 @@ fn tools() -> Value {
                 "additionalProperties": false,
             },
         },
-    ])
+        {
+            "name": "editor_open_file",
+            "description": "The file the user has open in front of them in Agency right now, \
+                with the path and whether it is this workspace's copy or the project's own \
+                checkout. This is what \"this file\", \"this note\" and \"here\" refer to when the \
+                user says one of them without naming a file. Call it then, and before asking \
+                which file they mean; the answer is a live reading, so ask again rather than \
+                relying on an earlier one.",
+            "inputSchema": none,
+        },
+    ]);
+    Value::Array(
+        all.as_array()
+            .expect("tools() builds an array")
+            .iter()
+            .filter(|t| enabled(t["name"].as_str().unwrap_or_default(), caps))
+            .cloned()
+            .collect(),
+    )
 }
 
 pub fn result(id: Value, result: Value) -> Value {
@@ -217,8 +281,24 @@ pub fn tool_image(id: Value, base64_png: &str, caption: &str) -> Value {
 mod tests {
     use super::*;
 
+    const ALL: Caps = Caps { preview: true, editor: true };
+
     fn call(body: &str) -> Handled {
-        handle(body.as_bytes())
+        handle(body.as_bytes(), ALL)
+    }
+
+    fn tool_names(caps: Caps) -> Vec<String> {
+        let Handled::Response(r) =
+            handle(br#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#, caps)
+        else {
+            panic!("expected response");
+        };
+        r["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap().to_string())
+            .collect()
     }
 
     #[test]
@@ -251,11 +331,59 @@ mod tests {
             .iter()
             .map(|t| t["name"].as_str().unwrap())
             .collect();
-        assert_eq!(names, TOOL_NAMES);
+        let every: Vec<&str> = PREVIEW_TOOLS.iter().chain(EDITOR_TOOLS.iter()).copied().collect();
+        assert_eq!(names, every);
         // Every tool must carry a schema, or some clients refuse the server.
         for t in r["result"]["tools"].as_array().unwrap() {
             assert_eq!(t["inputSchema"]["type"], "object", "{}", t["name"]);
         }
+    }
+
+    #[test]
+    fn a_switched_off_half_is_not_listed() {
+        assert_eq!(tool_names(Caps { preview: true, editor: false }), PREVIEW_TOOLS);
+        assert_eq!(tool_names(Caps { preview: false, editor: true }), EDITOR_TOOLS);
+        assert!(tool_names(Caps::none()).is_empty());
+    }
+
+    #[test]
+    fn descriptions_do_not_move_when_the_other_half_is_switched_off() {
+        // The tool list lands in the agent's context; only its length may
+        // change with the switches, never a byte of what stays.
+        let Handled::Response(all) = call(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#)
+        else {
+            panic!("expected response");
+        };
+        let Handled::Response(half) = handle(
+            br#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+            Caps { preview: true, editor: false },
+        ) else {
+            panic!("expected response");
+        };
+        let all = all["result"]["tools"].as_array().unwrap();
+        let half = half["result"]["tools"].as_array().unwrap();
+        assert_eq!(&all[..half.len()], &half[..]);
+    }
+
+    #[test]
+    fn a_switched_off_tool_says_so_instead_of_denying_it_exists() {
+        let Handled::Response(r) = handle(
+            br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"editor_open_file"}}"#,
+            Caps { preview: true, editor: false },
+        ) else {
+            panic!("expected response");
+        };
+        let msg = r["error"]["message"].as_str().unwrap();
+        assert!(msg.contains("switched off"), "{msg}");
+        assert!(!msg.contains("unknown tool"), "{msg}");
+
+        let Handled::Response(r) = handle(
+            br##"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"preview_click","arguments":{"selector":"#go"}}}"##,
+            Caps { preview: false, editor: true },
+        ) else {
+            panic!("expected response");
+        };
+        assert!(r["error"]["message"].as_str().unwrap().contains("switched off"));
     }
 
     #[test]

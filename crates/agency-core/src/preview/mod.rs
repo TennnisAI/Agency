@@ -1,9 +1,9 @@
 //! The preview MCP server: Agency serving tools *to* a dispatched agent.
 //!
 //! [`crate::mcp`] emits MCP configuration *for* each agent; this module is the
-//! other direction (AGE-143). Per run whose project has a web run script,
-//! Agency listens on the last port of that run's port block — loopback only,
-//! never any other interface — and serves two things from one origin:
+//! other direction (AGE-143). Per run that has something to serve, Agency
+//! listens on the last port of that run's port block — loopback only, never any
+//! other interface — and serves two things from one origin:
 //!
 //! - `/__agency__/…`: a stateless MCP endpoint (tools scoped to this one
 //!   run's preview and nothing else), the bridge script, and the bridge's
@@ -22,6 +22,19 @@
 //! The agent's config gets the endpoint through the same machinery as every
 //! other server — [`server_entry`] rides into [`crate::mcp::emit_for_agent`]'s
 //! merged list — so nothing here invents a second emission path.
+//!
+//! The tools are two groups behind two switches ([`Caps`]). The preview group
+//! needs a web run script to render and `[preview] agent_tools`; the editor
+//! group is one tool, `editor_open_file`, which says what the user has open in
+//! Agency's own window (AGE-200) and is off until they turn it on. A run whose
+//! project has no web script but whose user shares their open file gets a
+//! server serving only that, which is why the gate is "either", not "preview".
+//! Both are read per request, so revoking one mid-run takes it away mid-run.
+//!
+//! The server keeps the name `agency-preview` now that it serves more than the
+//! preview. Renaming it would orphan the entry in every worktree already
+//! emitted and break the permission rules users have written against the tool
+//! prefix it gives them; neither is worth a tidier name.
 
 mod http;
 pub(crate) mod proxy;
@@ -97,13 +110,58 @@ pub struct Facts {
     pub script: Option<(String, String)>,
 }
 
-/// What the embedding app provides: fresh facts for guidance, and the native
-/// pixel screenshot of the preview pane (which only the app, owner of the
-/// window, can take — see the app crate's preview_shot).
+/// Which halves of this server are switched on. Read per request, never
+/// cached: both are switches the user holds while a run is going, and a tool
+/// the user has just revoked has to stop being listed and stop answering.
+///
+/// A server runs while *either* is on. Neither being on is the case that never
+/// starts one at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Caps {
+    /// The preview tools: this project has a web run script and `[preview]
+    /// agent_tools` is on.
+    pub preview: bool,
+    /// `editor_open_file`: the user turned on sharing the file they have open.
+    pub editor: bool,
+}
+
+impl Caps {
+    /// Nothing to serve — the state in which no server should be listening.
+    pub fn none() -> Caps {
+        Caps { preview: false, editor: false }
+    }
+
+    pub fn any(&self) -> bool {
+        self.preview || self.editor
+    }
+}
+
+/// The file the user has open in Agency, as this run's agent should hear it.
+/// The app decides relevance before it gets here: a file open in some other
+/// project's window is not this run's business and arrives as `None`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OpenFile {
+    /// Relative to the workspace (or to the project checkout it is in), as the
+    /// user would type it.
+    pub rel_path: String,
+    /// Where it actually is on disk, which for a checkout copy is not under
+    /// this workspace at all.
+    pub abs_path: String,
+    /// True when the path is this run's own workspace copy — the file the
+    /// agent edits when it opens `rel_path`.
+    pub in_workspace: bool,
+}
+
+/// What the embedding app provides: fresh facts for guidance, the native pixel
+/// screenshot of the preview pane (which only the app, owner of the window, can
+/// take — see the app crate's preview_shot), which tool groups are switched on,
+/// and what the user is looking at.
 #[derive(Clone)]
 pub struct Hooks {
     pub facts: Arc<dyn Fn() -> Facts + Send + Sync>,
     pub screenshot: Arc<dyn Fn() -> std::result::Result<Vec<u8>, String> + Send + Sync>,
+    pub caps: Arc<dyn Fn() -> Caps + Send + Sync>,
+    pub open_file: Arc<dyn Fn() -> Option<OpenFile> + Send + Sync>,
 }
 
 /// One console line reported by the bridge.
@@ -468,6 +526,12 @@ impl PreviewServer {
         self.app_port
     }
 
+    /// Whether this server is serving the preview tools right now. The hidden
+    /// preview host is only worth mounting for a run whose agent can act on it.
+    pub fn serves_preview(&self) -> bool {
+        (self.ctx.hooks.caps)().preview
+    }
+
     /// How long this server has been up. Lets a reconciling caller give a
     /// freshly started server a grace period against state it races with (a
     /// run started but not yet registered anywhere the reconciler looks).
@@ -533,7 +597,7 @@ fn control(stream: &mut TcpStream, req: &http::Request, ctx: &Ctx) {
     let body: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
     let str_at = |k: &str| body.get(k).and_then(Value::as_str).map(str::to_string);
     match (req.method.as_str(), req.path()) {
-        ("POST", MCP_PATH) => match rpc::handle(&req.body) {
+        ("POST", MCP_PATH) => match rpc::handle(&req.body, (ctx.hooks.caps)()) {
             rpc::Handled::Response(v) => http::respond_json(stream, 200, &v),
             rpc::Handled::Notification => http::respond_status(stream, 202, "Accepted"),
             rpc::Handled::Call { id, name, args } => {
@@ -638,6 +702,7 @@ fn exec_tool(id: Value, name: &str, args: &Value, ctx: &Ctx) -> Value {
             }
             Err(reason) => rpc::tool_text(id, &reason, true),
         },
+        "editor_open_file" => rpc::tool_text(id, &format_open_file((ctx.hooks.open_file)()), false),
         "preview_snapshot" => bridge_tool(id, name, json!({ "kind": "snapshot" }), ctx),
         "preview_navigate" => {
             let path = arg("path");
@@ -668,6 +733,33 @@ fn exec_tool(id: Value, name: &str, args: &Value, ctx: &Ctx) -> Value {
             bridge_tool(id, name, cmd, ctx)
         }
         _ => rpc::error(id, -32602, &format!("unknown tool: {name}")),
+    }
+}
+
+/// What `editor_open_file` says. The distinction it has to draw every time is
+/// which copy of the file the user is on: an agent handed a bare relative path
+/// edits its own workspace, and if the user is reading the project checkout,
+/// that is a different file with the same name.
+fn format_open_file(open: Option<OpenFile>) -> String {
+    let Some(f) = open else {
+        return "The user has no file open in Agency right now. Nothing is being hidden from \
+                you: sharing is on, and there is simply no file in focus."
+            .to_string();
+    };
+    if f.in_workspace {
+        format!(
+            "The user has {} open in Agency. That is this workspace's own copy, at {}: the \
+             same file you edit at that relative path.",
+            f.rel_path, f.abs_path,
+        )
+    } else {
+        format!(
+            "The user has {rel} open in Agency, in the project's own checkout at {abs}, not in \
+             this workspace. Your copy of {rel} is the one to change; this workspace is where \
+             your work has to land.",
+            rel = f.rel_path,
+            abs = f.abs_path,
+        )
     }
 }
 
@@ -710,11 +802,22 @@ mod tests {
     use std::io::{Read, Write};
 
     fn hooks(script: Option<(&str, &str)>, shot: Result<Vec<u8>, &str>) -> Hooks {
+        with_open_file(script, shot, Caps { preview: true, editor: true }, None)
+    }
+
+    fn with_open_file(
+        script: Option<(&str, &str)>,
+        shot: Result<Vec<u8>, &str>,
+        caps: Caps,
+        open: Option<OpenFile>,
+    ) -> Hooks {
         let script = script.map(|(n, c)| (n.to_string(), c.to_string()));
         let shot = shot.map_err(str::to_string);
         Hooks {
             facts: Arc::new(move || Facts { script: script.clone() }),
             screenshot: Arc::new(move || shot.clone()),
+            caps: Arc::new(move || caps),
+            open_file: Arc::new(move || open.clone()),
         }
     }
 
@@ -854,7 +957,64 @@ mod tests {
             post(srv.port(), MCP_PATH, r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#);
         assert_eq!(status, 202);
         let r = rpc_call(srv.port(), r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#);
-        assert_eq!(r["result"]["tools"].as_array().unwrap().len(), rpc::TOOL_NAMES.len());
+        assert_eq!(
+            r["result"]["tools"].as_array().unwrap().len(),
+            rpc::PREVIEW_TOOLS.len() + rpc::EDITOR_TOOLS.len(),
+        );
+    }
+
+    #[test]
+    fn editor_open_file_answers_from_the_hook() {
+        let srv = start(with_open_file(
+            None,
+            Err("n/a"),
+            Caps { preview: false, editor: true },
+            Some(OpenFile {
+                rel_path: "docs/plan.md".into(),
+                abs_path: "/w/run-1/docs/plan.md".into(),
+                in_workspace: true,
+            }),
+        ));
+        let r = tool_call(srv.port(), "editor_open_file", json!({}));
+        let text = r["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("docs/plan.md"), "{text}");
+        assert!(text.contains("/w/run-1/docs/plan.md"), "{text}");
+        assert_eq!(r["result"]["isError"], false);
+        // With the preview half off, its tools are gone from the same server.
+        let r = rpc_call(srv.port(), r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#);
+        assert_eq!(r["result"]["tools"].as_array().unwrap().len(), rpc::EDITOR_TOOLS.len());
+    }
+
+    #[test]
+    fn editor_open_file_says_when_the_file_is_the_checkout_copy() {
+        let srv = start(with_open_file(
+            None,
+            Err("n/a"),
+            Caps { preview: false, editor: true },
+            Some(OpenFile {
+                rel_path: "docs/plan.md".into(),
+                abs_path: "/repo/docs/plan.md".into(),
+                in_workspace: false,
+            }),
+        ));
+        let text = tool_call(srv.port(), "editor_open_file", json!({}))["result"]["content"][0]
+            ["text"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(text.contains("not in this workspace"), "{text}");
+    }
+
+    #[test]
+    fn editor_open_file_with_nothing_in_focus_says_nothing_is_hidden() {
+        let srv =
+            start(with_open_file(None, Err("n/a"), Caps { preview: false, editor: true }, None));
+        let text = tool_call(srv.port(), "editor_open_file", json!({}))["result"]["content"][0]
+            ["text"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(text.contains("no file open"), "{text}");
     }
 
     #[test]
@@ -1096,6 +1256,17 @@ mod tests {
             ),
             format_console(&[], 0),
             format_network(&[], 0),
+            format_open_file(None),
+            format_open_file(Some(OpenFile {
+                rel_path: "docs/plan.md".into(),
+                abs_path: "/w/docs/plan.md".into(),
+                in_workspace: true,
+            })),
+            format_open_file(Some(OpenFile {
+                rel_path: "docs/plan.md".into(),
+                abs_path: "/repo/docs/plan.md".into(),
+                in_workspace: false,
+            })),
         ];
         let srv = start(hooks(None, Err("n/a")));
         let init =

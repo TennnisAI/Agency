@@ -318,6 +318,7 @@ pub fn run() {
             commands::trash_path,
             commands::add_to_gitignore,
             commands::abs_path,
+            commands::set_open_file,
             commands::reveal_path,
             commands::resolve_term_paths,
             commands::open_term_path,

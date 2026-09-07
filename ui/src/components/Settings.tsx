@@ -209,6 +209,7 @@ export default function Settings({
     lmStudioBaseUrl: "",
     defaultAgent: null,
     defaultWorktree: true,
+    shareOpenFile: false,
   });
   const [profiles, setProfiles] = useState<AgentProfile[]>([]);
   const { models, reload: reloadModels } = useAgentModels();
@@ -1270,7 +1271,25 @@ export default function Settings({
                   <span className="settings-notif-label">Word wrap in file viewer</span>
                   <Toggle checked={wordWrap} onChange={pickWordWrap} />
                 </div>
+                <div className="settings-notif-row">
+                  <span className="settings-notif-label">Let agents see the file you have open</span>
+                  <Toggle
+                    checked={settings.shareOpenFile}
+                    onChange={(next) => persistSettingsNow({ ...settings, shareOpenFile: next })}
+                  />
+                </div>
               </div>
+              <p className="settings-section-hint">
+                Off by default. On, an agent can ask Agency which file or note you
+                have in focus, so "fix this file" means the one in front of you. It
+                learns the path, never the contents, and only agents working in the
+                same project as the file.
+              </p>
+              <p className="settings-section-hint">
+                Agents pick the tool up when they start, and only agents with their
+                own worktree: that is the one place Agency writes an agent's tool
+                config. Switching this off stops it answering right away.
+              </p>
             </section>
           )}
 

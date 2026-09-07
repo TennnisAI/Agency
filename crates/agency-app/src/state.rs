@@ -29,6 +29,10 @@ const SETTING_MCP: &str = "mcp_servers";
 const SETTING_AGENT_ONBOARDING: &str = "agent_onboarding_completed";
 /// "0" disables the passive update check. Unset = enabled (the beta default).
 const SETTING_UPDATE_CHECK: &str = "update_check_enabled";
+/// Whether a dispatched agent may ask which file the user has open (AGE-200).
+/// Unset means off: an agent seeing the user's screen is a thing to opt into,
+/// once, knowingly.
+const SETTING_SHARE_OPEN_FILE: &str = "share_open_file";
 /// "0" makes the add-agent menu default to working in the project checkout
 /// instead of cutting a worktree. Unset = worktrees on, the isolated default.
 const SETTING_DEFAULT_WORKTREE: &str = "default_worktree";
@@ -70,6 +74,10 @@ pub struct ProviderSettings {
     /// new agents work in the project checkout unless the user ticks the box
     /// for that spawn. A default only: every menu still offers both.
     pub default_worktree: bool,
+    /// Whether agents may read which file the user has open in Agency, through
+    /// the `editor_open_file` MCP tool. Off by default, and off is a real off:
+    /// the tool is not listed, and nothing about the open file is recorded.
+    pub share_open_file: bool,
 }
 
 /// How a sync pass ended. "Needs seeding" is an outcome rather than an error
@@ -1890,21 +1898,66 @@ fn pick_port(used: &std::collections::HashSet<u16>, base: u16, block_size: u16) 
     }
 }
 
-/// The port a run's preview MCP server binds — the last of the run's port
-/// block — or `None` when the run gets no preview server: switched off in
-/// `[preview]`, no web run script to preview, no port block at all, or a
-/// block too small to hold a second port beside the app's (AGE-143).
+/// Whether this project's runs serve the *preview* tools: switched on in
+/// `[preview]`, and a web run script for the preview to render (AGE-143).
+/// Separate from whether a server runs at all, which since AGE-200 is a wider
+/// question — see [`preview_mcp_port_for`].
+fn preview_tools_on(config: &agency_core::config::AgencyConfig) -> bool {
+    config.preview.agent_tools && config.scripts.run_list().iter().any(|s| s.web)
+}
+
+/// What a run in this project would serve an agent: the two switches behind
+/// the MCP server's two halves. One function so the port that gets emitted and
+/// the tools that answer on it can never disagree about what is on.
+fn run_caps(
+    config: &agency_core::config::AgencyConfig,
+    share_open_file: bool,
+) -> agency_core::preview::Caps {
+    agency_core::preview::Caps { preview: preview_tools_on(config), editor: share_open_file }
+}
+
+/// The port a run's MCP server binds — the last of the run's port block — or
+/// `None` when the run gets no server at all: nothing to serve, no port block,
+/// or a block too small to hold a second port beside the app's.
+///
+/// "Nothing to serve" is both halves being off: no preview tools *and* no
+/// open-file sharing. A project with no web run script still gets a server
+/// while the user shares the file they have open, which is the whole point of
+/// that switch — it is the projects that are not web apps where "which file are
+/// you looking at" is most of the context.
 fn preview_mcp_port_for(
     config: &agency_core::config::AgencyConfig,
     port_base: Option<u16>,
+    share_open_file: bool,
 ) -> Option<u16> {
-    if !config.preview.agent_tools {
-        return None;
-    }
-    if !config.scripts.run_list().iter().any(|s| s.web) {
+    if !run_caps(config, share_open_file).any() {
         return None;
     }
     agency_core::preview::mcp_port(port_base?, config.ports.block_size)
+}
+
+/// What the run `run_id`, in the project checked out at `repo`, should hear
+/// about the file the user has open (AGE-200).
+///
+/// The relevance rule is project-wide: a file open anywhere in this run's own
+/// project is context for it, and a file open in another project is not its
+/// business at all. Which copy it is has to be said out loud either way, since
+/// the same relative path is a different file in the checkout and in each
+/// worktree.
+fn open_file_for(
+    open: Option<&OpenFileRef>,
+    run_id: &str,
+    repo: &Path,
+) -> Option<agency_core::preview::OpenFile> {
+    let open = open?;
+    if open.repo != repo {
+        return None;
+    }
+    Some(agency_core::preview::OpenFile {
+        rel_path: open.rel_path.clone(),
+        abs_path: open.abs_path.clone(),
+        in_workspace: open.run_id.as_deref() == Some(run_id),
+    })
 }
 
 /// The port a web-GUI agent's server is told to bind: the second-to-last of
@@ -2204,6 +2257,36 @@ pub struct AppState {
     /// capture the cell and read it at call time — preview servers start
     /// before the window is up, and tests never install one at all.
     preview_shot: std::sync::Arc<std::sync::OnceLock<PreviewShotFn>>,
+    /// The file the user has open in Agency's editor right now, or `None`.
+    /// One cell for the whole app: one window, one file in focus.
+    ///
+    /// An `Arc<Mutex<_>>` for the same reason `preview_shot` is an `Arc`: each
+    /// run's preview server captures the cell and reads it when a tool call
+    /// arrives, so what the agent hears is what the user is looking at, not
+    /// what they were looking at when the server started.
+    ///
+    /// Empty whenever sharing is off. The setter refuses to record while the
+    /// switch is off and `save_settings` clears it when the switch goes off, so
+    /// "off" is not a filter over data we kept anyway.
+    open_file: Arc<Mutex<Option<OpenFileRef>>>,
+    /// Mirror of the `share_open_file` setting, so the per-request capability
+    /// read is an atomic load rather than a database round trip on a mutex the
+    /// notifier tick also wants.
+    share_open_file: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// Where the file the user has open actually is, and whose it is.
+#[derive(Debug, Clone)]
+pub struct OpenFileRef {
+    /// The project checkout the file's root belongs to. Runs are matched to it
+    /// by path, which is what a run's preview server knows about itself.
+    pub repo: PathBuf,
+    /// The run whose workspace holds it, when the user is browsing a worktree
+    /// rather than the checkout.
+    pub run_id: Option<String>,
+    /// Relative to that root, as the user sees it in the tree.
+    pub rel_path: String,
+    pub abs_path: String,
 }
 
 /// When a project's origin was last contacted, and when it may be again.
@@ -2302,6 +2385,8 @@ impl AppState {
             registry.set_setting(SETTING_AGENT_ONBOARDING, "1")?;
         }
         unprefill_local_model_url(&registry)?;
+        let share_open_file =
+            registry.get_setting(SETTING_SHARE_OPEN_FILE)?.as_deref() == Some("1");
         let state = AppState {
             registry: Mutex::new(registry),
             attaches: Mutex::new(HashMap::new()),
@@ -2338,6 +2423,8 @@ impl AppState {
             preview_failures: Mutex::new(HashMap::new()),
             preview_rects: Mutex::new(HashMap::new()),
             preview_shot: std::sync::Arc::new(std::sync::OnceLock::new()),
+            open_file: Arc::new(Mutex::new(None)),
+            share_open_file: Arc::new(std::sync::atomic::AtomicBool::new(share_open_file)),
         };
         // Rehydrate: any run the daemon still hosts is adopted as-is; the watch
         // loop (watch_snapshot) then reports live status. Nothing to spawn here —
@@ -2598,6 +2685,9 @@ impl AppState {
             default_agent: reg.get_setting(SETTING_DEFAULT_AGENT)?.filter(|s| !s.is_empty()),
             // Unset = on, so existing installs keep cutting worktrees.
             default_worktree: reg.get_setting(SETTING_DEFAULT_WORKTREE)? != Some("0".to_string()),
+            // Unset = off, unlike every other flag here: this one lets an agent
+            // see something about the user rather than about the project.
+            share_open_file: reg.get_setting(SETTING_SHARE_OPEN_FILE)?.as_deref() == Some("1"),
         })
     }
 
@@ -2607,6 +2697,15 @@ impl AppState {
         reg.set_setting(SETTING_LM_STUDIO_URL, &s.lm_studio_base_url)?;
         reg.set_setting(SETTING_DEFAULT_AGENT, s.default_agent.as_deref().unwrap_or(""))?;
         reg.set_setting(SETTING_DEFAULT_WORKTREE, if s.default_worktree { "1" } else { "0" })?;
+        reg.set_setting(SETTING_SHARE_OPEN_FILE, if s.share_open_file { "1" } else { "0" })?;
+        drop(reg);
+        // The switch and what it guards move together: turning it off has to
+        // drop the path already recorded, or the last file the user had open
+        // stays answerable until they open another one.
+        self.share_open_file.store(s.share_open_file, std::sync::atomic::Ordering::SeqCst);
+        if !s.share_open_file {
+            *self.open_file.lock().unwrap() = None;
+        }
         Ok(())
     }
 
@@ -2962,6 +3061,14 @@ impl AppState {
         self.project_repo(project_id)
     }
 
+    /// The checkout a run's project lives in — the run's own workspace is a
+    /// worktree cut from it. Which project a path belongs to is the question
+    /// the open-file rule turns on (see [`open_file_for`]).
+    pub fn run_repo_path(&self, run_id: &str) -> anyhow::Result<std::path::PathBuf> {
+        let run = self.run_record(run_id)?;
+        self.project_repo(&run.project_id)
+    }
+
     // ── private helpers ────────────────────────────────────────────────────────
 
     fn project_repo(&self, project_id: &str) -> Result<std::path::PathBuf> {
@@ -3290,7 +3397,7 @@ impl AppState {
                 &repo,
                 &workspace.path,
                 &config,
-                preview_mcp_port_for(&config, Some(port)),
+                preview_mcp_port_for(&config, Some(port), self.shares_open_file()),
             );
             // The agent's MCP client connects while its CLI boots, so the
             // preview server must already be listening when the session
@@ -5151,20 +5258,43 @@ impl AppState {
                 .filter(|c| !c.check_command.trim().is_empty())
                 .map(|c| (c.check_command.clone(), c.max_attempts)),
             port,
-            preview_tools: preview_mcp_port_for(config, port).is_some(),
+            preview_tools: preview_tools_on(config),
+            open_file_tool: self.shares_open_file(),
         };
         if let Err(e) = agency_core::skills::emit_for_agent(agent, &ws) {
             log::warn!("emitting the skills kit for {agent} into {}: {e}", worktree.display());
         }
     }
 
+    /// Whether the user lets agents read the file they have open. Read on every
+    /// path that decides whether a run needs an MCP server at all, so the
+    /// switch takes effect on the notifier's next converge rather than at the
+    /// next dispatch.
+    pub fn shares_open_file(&self) -> bool {
+        self.share_open_file.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// The UI reporting which file it has in focus, or `None` for "nothing".
+    /// Dropped on the floor while sharing is off — the frontend does not report
+    /// either, but a switch the user can see has to hold on this side too.
+    pub fn set_open_file(&self, open: Option<OpenFileRef>) {
+        if !self.share_open_file.load(std::sync::atomic::Ordering::SeqCst) {
+            *self.open_file.lock().unwrap() = None;
+            return;
+        }
+        *self.open_file.lock().unwrap() = open;
+    }
+
     /// The hooks one run's preview server calls back through: facts read
     /// fresh per call (so guidance in tool errors never names a stale
-    /// command), screenshots via whatever the app shell installed.
+    /// command), screenshots via whatever the app shell installed, and the two
+    /// live reads that make the tools honest about the moment they are called
+    /// — which halves are switched on, and what the user has open.
     fn preview_hooks(&self, run_id: &str, repo: &Path) -> agency_core::preview::Hooks {
         let repo = repo.to_path_buf();
+        let facts_repo = repo.clone();
         let facts = std::sync::Arc::new(move || {
-            let config = agency_core::config::load(&repo);
+            let config = agency_core::config::load(&facts_repo);
             agency_core::preview::Facts {
                 script: config
                     .scripts
@@ -5176,13 +5306,35 @@ impl AppState {
         });
         let shot_cell = self.preview_shot.clone();
         let run_id = run_id.to_string();
+        let shot_run = run_id.clone();
         let screenshot = std::sync::Arc::new(move || match shot_cell.get() {
-            Some(shot) => shot(&run_id),
+            Some(shot) => shot(&shot_run),
             None => Err("Screenshots need the Agency app window, which is not available right \
                          now. preview_snapshot works without it."
                 .to_string()),
         });
-        agency_core::preview::Hooks { facts, screenshot }
+        let caps_repo = repo.clone();
+        let share = self.share_open_file.clone();
+        let caps = std::sync::Arc::new(move || {
+            run_caps(
+                &agency_core::config::load(&caps_repo),
+                share.load(std::sync::atomic::Ordering::SeqCst),
+            )
+        });
+        // Reads the cell, not the app state: a server outlives nothing here,
+        // but capturing `self` would tie every run's server to its lifetime.
+        let cell = self.open_file.clone();
+        let share_flag = self.share_open_file.clone();
+        let open_run = run_id.clone();
+        let open_repo = repo.clone();
+        let open_file = std::sync::Arc::new(move || {
+            if !share_flag.load(std::sync::atomic::Ordering::SeqCst) {
+                return None;
+            }
+            let open = cell.lock().unwrap().clone();
+            open_file_for(open.as_ref(), &open_run, &open_repo)
+        });
+        agency_core::preview::Hooks { facts, screenshot, caps, open_file }
     }
 
     /// Have this run's preview server listening on the port its emitted MCP
@@ -5195,7 +5347,9 @@ impl AppState {
         port_base: Option<u16>,
         config: &agency_core::config::AgencyConfig,
     ) {
-        let Some(bind) = preview_mcp_port_for(config, port_base) else { return };
+        let Some(bind) = preview_mcp_port_for(config, port_base, self.shares_open_file()) else {
+            return;
+        };
         let Some(app_port) = port_base else { return };
         let mut servers = self.preview.lock().unwrap();
         if servers.get(run_id).is_some_and(|s| s.port() == bind && s.app_port() == app_port) {
@@ -5245,9 +5399,10 @@ impl AppState {
                 .collect()
         };
         let mut desired: HashMap<String, (PathBuf, Option<u16>, u16)> = HashMap::new();
+        let shares = self.shares_open_file();
         for (id, repo, port_base) in runs {
             let config = agency_core::config::load(&repo);
-            if let Some(bind) = preview_mcp_port_for(&config, port_base) {
+            if let Some(bind) = preview_mcp_port_for(&config, port_base, shares) {
                 desired.insert(id, (repo, port_base, bind));
             }
         }
@@ -5287,11 +5442,17 @@ impl AppState {
     /// keeper. `active` is a liveness probe of the run's app port: the moment
     /// anything serves there, a preview host is worth mounting (however the
     /// dev server was started — Run tab or the agent's own shell).
+    ///
+    /// Servers that are up only to share the open file are skipped: the hidden
+    /// page exists so the preview *tools* have something to act on, and a run
+    /// whose agent has no preview tools has nothing to gain from a page loaded
+    /// behind its back.
     pub fn preview_targets(&self) -> Vec<PreviewTargetDto> {
         self.preview
             .lock()
             .unwrap()
             .iter()
+            .filter(|(_, srv)| srv.serves_preview())
             .map(|(run_id, srv)| PreviewTargetDto {
                 run_id: run_id.clone(),
                 url: srv.preview_url(),
@@ -7173,7 +7334,7 @@ impl AppState {
                 &repo,
                 &worktree,
                 &config,
-                preview_mcp_port_for(&config, port),
+                preview_mcp_port_for(&config, port, self.shares_open_file()),
             );
             // `restore` cuts the worktree again from the kept branch, so the
             // generated files are gone with the old one; both come back here.
@@ -7680,7 +7841,7 @@ impl AppState {
                 &repo,
                 &worktree,
                 &config,
-                preview_mcp_port_for(&config, run.port_base),
+                preview_mcp_port_for(&config, run.port_base, self.shares_open_file()),
             );
             // Likewise the skills kit: the tab's agent may have a skills
             // convention the worktree's agent doesn't, so the kit it reads may
@@ -9740,13 +9901,14 @@ fn validate_project_path(repo_path: &Path) -> Result<()> {
 mod tests {
     use super::{
         agent_argv, branch_leaf_from_first_prompt, command_on_path, graphify_server, id_source,
-        id_suffix, is_auto_cut_branch, new_task_id, pick_port, preview_mcp_port_for,
-        require_branch_exists, require_gitless_known, require_own_branch, slugify,
-        split_session_id, validate_race, RaceAttempt,
+        id_suffix, is_auto_cut_branch, new_task_id, open_file_for, pick_port, preview_mcp_port_for,
+        preview_tools_on, require_branch_exists, require_gitless_known, require_own_branch,
+        slugify, split_session_id, validate_race, OpenFileRef, RaceAttempt,
     };
     use agency_core::config::KnowledgeConfig;
     use agency_core::profile::AgentProfile;
     use std::collections::HashSet;
+    use std::path::PathBuf;
 
     /// AGE-143: the preview MCP server exists exactly where the user has said
     /// "this project serves a web app" — a web run script — and nowhere else.
@@ -9764,17 +9926,55 @@ mod tests {
         let build = RunScript { name: "build".into(), web: false, ..web.clone() };
 
         let mut config = AgencyConfig::default();
-        assert_eq!(preview_mcp_port_for(&config, Some(5240)), None, "no scripts at all");
+        assert_eq!(preview_mcp_port_for(&config, Some(5240), false), None, "no scripts at all");
 
         config.scripts.runs = vec![build.clone()];
-        assert_eq!(preview_mcp_port_for(&config, Some(5240)), None, "no *web* script");
+        assert_eq!(preview_mcp_port_for(&config, Some(5240), false), None, "no *web* script");
 
         config.scripts.runs = vec![build, web];
-        assert_eq!(preview_mcp_port_for(&config, Some(5240)), Some(5249));
-        assert_eq!(preview_mcp_port_for(&config, None), None, "no port block, no server");
+        assert_eq!(preview_mcp_port_for(&config, Some(5240), false), Some(5249));
+        assert_eq!(preview_mcp_port_for(&config, None, false), None, "no port block, no server");
 
         config.preview.agent_tools = false;
-        assert_eq!(preview_mcp_port_for(&config, Some(5240)), None, "the off switch is real");
+        assert_eq!(
+            preview_mcp_port_for(&config, Some(5240), false),
+            None,
+            "the off switch is real"
+        );
+    }
+
+    /// Sharing the open file is the other reason to run a server, and it is the
+    /// only one a project that is not a web app ever has (AGE-200).
+    #[test]
+    fn sharing_the_open_file_earns_a_server_of_its_own() {
+        use agency_core::config::AgencyConfig;
+        let config = AgencyConfig::default();
+        assert!(!preview_tools_on(&config), "no web script, no preview tools");
+        assert_eq!(preview_mcp_port_for(&config, Some(5240), false), None);
+        assert_eq!(preview_mcp_port_for(&config, Some(5240), true), Some(5249));
+        // Still nowhere to bind, whatever is switched on.
+        assert_eq!(preview_mcp_port_for(&config, None, true), None);
+    }
+
+    /// The rule that decides what a run's agent hears about the user's screen.
+    #[test]
+    fn only_this_projects_open_file_reaches_this_projects_runs() {
+        let open = OpenFileRef {
+            repo: PathBuf::from("/repo/one"),
+            run_id: Some("run-a".into()),
+            rel_path: "docs/plan.md".into(),
+            abs_path: "/repo/one/.agency/worktrees/run-a/docs/plan.md".into(),
+        };
+        // The run whose workspace it is: its own copy, the one it edits.
+        let mine = open_file_for(Some(&open), "run-a", Path::new("/repo/one")).unwrap();
+        assert!(mine.in_workspace);
+        assert_eq!(mine.rel_path, "docs/plan.md");
+        // A sibling run in the same project hears about it, told plainly that
+        // the file on the user's screen is not the one under its own feet.
+        assert!(!open_file_for(Some(&open), "run-b", Path::new("/repo/one")).unwrap().in_workspace);
+        // Another project's run hears nothing at all.
+        assert!(open_file_for(Some(&open), "run-c", Path::new("/repo/two")).is_none());
+        assert!(open_file_for(None, "run-a", Path::new("/repo/one")).is_none());
     }
 
     /// The GUI port is derived from config like the preview port, never

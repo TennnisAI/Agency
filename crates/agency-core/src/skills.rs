@@ -171,6 +171,11 @@ pub struct Workspace {
     /// The preview MCP server is attached to this run (see `crate::preview`),
     /// so the catalog tells the agent the tools exist and what they act on.
     pub preview_tools: bool,
+    /// The user shares the file they have open in Agency (AGE-200), so the
+    /// catalog says the tool for asking exists. Read at dispatch like every
+    /// other fact here; the switch is the user's and they can withdraw it
+    /// mid-run, which is why the tool itself says so when they have.
+    pub open_file_tool: bool,
 }
 
 /// The kit for this workspace, to be written into `skills_dir` (which the
@@ -338,6 +343,16 @@ fn date_skill_md(resolver: &Path) -> String {
 fn workspace_skill_md(ws: &Workspace, skills_rel: &Path) -> String {
     let issues = ws.repo_root.join(crate::issuefs::ISSUES_DIR);
     let mut body = String::new();
+    if ws.open_file_tool {
+        body.push_str(
+            "\nThe `agency-preview` server in your MCP config also has `editor_open_file`: \
+             which file the user has open in Agency right now. That is what \"this file\", \
+             \"this note\" and \"here\" mean when the user says one without naming a file, so \
+             call it then rather than guessing or asking. It is a live reading and the user can \
+             switch the sharing off, so call it when you need it instead of relying on an \
+             earlier answer.\n",
+        );
+    }
     body.push_str(&format!(
         "---\n\
          name: {WORKSPACE_SKILL}\n\
@@ -771,6 +786,7 @@ mod tests {
             loop_check: None,
             port: None,
             preview_tools: false,
+            open_file_tool: false,
         }
     }
 
@@ -1010,6 +1026,20 @@ mod tests {
         assert!(with.contains("`agency-preview`"), "{with}");
         assert!(with.contains("screenshot of the preview pane"), "{with}");
         assert!(with.contains("last port of this workspace's block"), "{with}");
+    }
+
+    /// The other half of that server is a switch of the user's, and the catalog
+    /// mentions it on the same terms: only when it is on for this run.
+    #[test]
+    fn the_catalog_mentions_the_open_file_tool_only_when_it_is_shared() {
+        let without = skill(&workspace(), WORKSPACE_SKILL);
+        assert!(!without.contains("editor_open_file"), "{without}");
+
+        let ws = Workspace { open_file_tool: true, ..workspace() };
+        let with = skill(&ws, WORKSPACE_SKILL);
+        assert!(with.contains("`editor_open_file`"), "{with}");
+        // Said without the preview half, which this workspace does not have.
+        assert!(!with.contains("screenshot of the preview pane"), "{with}");
     }
 
     /// A looping run finishes on its check command, so the agent is told what

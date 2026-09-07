@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  BackendSearchHit, DirEntry, FileRoot, listDir, searchFiles,
+  BackendSearchHit, DirEntry, FileRoot, absPath, listDir, searchFiles,
   createFile, createDir, copyPath, importFile, renamePath, trashPath,
 } from "../api";
 import { ancestorDirs, joinPath, parentPath, baseName } from "../lib/filePath";
@@ -15,6 +15,7 @@ import { sameListing, visibleDirs } from "../lib/dirListing";
 import { Transfer, transferProblem } from "../lib/fileTransfer";
 import { toastError, toastInfo } from "../lib/toast";
 import { revealLabel, reveal, copyAbsPath, copyRelPath, ignorePath } from "../lib/fileActions";
+import { PathSink, createSinkTracker } from "../lib/pathDrop";
 
 /** One row of the tree, as the menu, the keyboard cursor and the drag see it. */
 type Entry = { path: string; isDir: boolean };
@@ -383,8 +384,26 @@ export default function FileTree({
   // Mouse events outrun React renders, so the live value is a ref and `drag`
   // only mirrors it for the hint and the target highlight.
   const dragLive = useRef<Drag | null>(null);
+  // The same drag, when it has left the tree and is over a terminal instead:
+  // released there it types the path at the agent's prompt rather than moving
+  // the file anywhere (AGE-200). Mutually exclusive with `drag` — a point is
+  // either inside the tree or outside it.
+  const [sink, setSink] = useState<PathSink | null>(null);
+  const sinkLive = useRef<PathSink | null>(null);
   // A completed drag must not read as a click on the row it started from.
   const suppressClick = useRef(false);
+
+  // A row released over a terminal: hand it the path the way a Finder drop
+  // would, absolute, so it means the same thing whatever directory the agent
+  // is sitting in. Resolved here rather than at mousedown because a drag that
+  // ends in the tree never needs it.
+  const dropOnSink = async (target: PathSink, path: string) => {
+    try {
+      target.accept([await absPath(root, path)]);
+    } catch (e) {
+      toastError(e, "Couldn't resolve that path");
+    }
+  };
 
   const onRowMouseDown = (entry: Entry, e: React.MouseEvent) => {
     if (e.button !== 0) return;
@@ -401,6 +420,8 @@ export default function FileTree({
     // mousemove; the still-held button then releases as a no-op.
     let cancelled = false;
 
+    const track = createSinkTracker();
+
     const onMove = (ev: MouseEvent) => {
       if (cancelled) return;
       if (!started) {
@@ -415,28 +436,49 @@ export default function FileTree({
         ? null
         : { src: entry.path, dir, mode, problem: transferProblem(entry.path, dir, mode) };
       setDrag(dragLive.current);
+      // Only once the pointer has left the tree: inside it, the tree's own
+      // drop rules win, and a terminal underneath is not a target.
+      if (dir === null) {
+        sinkLive.current = track.over(ev.clientX, ev.clientY);
+      } else {
+        track.clear();
+        sinkLive.current = null;
+      }
+      setSink(sinkLive.current);
     };
     const onKey = (ev: KeyboardEvent) => {
       if (ev.key !== "Escape") return;
       cancelled = true;
       dragLive.current = null;
+      sinkLive.current = null;
+      track.clear();
       setDrag(null);
+      setSink(null);
     };
     const onUp = () => {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
       window.removeEventListener("keydown", onKey, true);
       const d = dragLive.current;
+      const s = sinkLive.current;
       dragLive.current = null;
+      sinkLive.current = null;
+      track.clear();
       setDrag(null);
+      setSink(null);
       if (started) {
         // Neither a completed nor a cancelled drag may open the file or toggle
         // the folder the pointer started on.
         suppressClick.current = true;
         window.setTimeout(() => { suppressClick.current = false; }, 0);
       }
+      if (cancelled) return;
+      if (s) {
+        void dropOnSink(s, entry.path);
+        return;
+      }
       // A refused drop is a no-op: the hint already said why while it hovered.
-      if (!d || cancelled || d.problem) return;
+      if (!d || d.problem) return;
       void doTransfer(d.src, d.dir, d.mode);
     };
     window.addEventListener("mousemove", onMove);
@@ -627,7 +669,9 @@ export default function FileTree({
 
   // Both kinds of drag paint the same target: one from Finder (`dropDir`), one
   // from inside the tree. A refused in-tree drop highlights nothing, so the row
-  // under the cursor never looks like it would accept it.
+  // under the cursor never looks like it would accept it. A drag that has left
+  // for a terminal lights nothing here either: the target is over there, and the
+  // terminal lights itself.
   const dropActive = drag !== null || dropDir !== null;
   const dropInto = drag ? (drag.problem ? null : drag.dir) : dropDir;
 
@@ -704,13 +748,15 @@ export default function FileTree({
         )}
       </div>
 
-      {(dropActive || importing) && (
+      {(dropActive || sink !== null || importing) && (
         <div className={`tree-drop-hint${drag?.problem ? " refused" : ""}`}>
           {importing
             ? "Adding…"
-            : drag
-              ? drag.problem ?? `${drag.mode === "copy" ? "Copy" : "Move"} into ${dirLabel(drag.dir)}`
-              : `Drop into ${dirLabel(dropDir ?? "")}`}
+            : sink
+              ? `Add the path to ${sink.label}`
+              : drag
+                ? drag.problem ?? `${drag.mode === "copy" ? "Copy" : "Move"} into ${dirLabel(drag.dir)}`
+                : `Drop into ${dirLabel(dropDir ?? "")}`}
         </div>
       )}
 

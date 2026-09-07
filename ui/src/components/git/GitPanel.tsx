@@ -10,6 +10,7 @@ import ChangesPanel from "./ChangesPanel";
 import HistoryPanel from "./HistoryPanel";
 import CommitDetail from "./CommitDetail";
 import DiffViewer from "./DiffViewer";
+import ConflictView from "./ConflictView";
 import ReviewComments from "./ReviewComments";
 import BranchBar from "./BranchBar";
 import GitSections from "./GitSections";
@@ -241,6 +242,13 @@ function GitRepoPanel({
   const diffMode = (group: string): "working-unstaged" | "working-staged" =>
     group === "index" ? "working-staged" : "working-unstaged";
 
+  // The unmerged row's two porcelain letters, which say whether the conflict is
+  // one of the delete-against-edit kinds that leave no markers in the file.
+  const conflictCode = (path: string) => {
+    const c = changes.find((ch) => ch.path === path);
+    return c ? `${c.index}${c.worktree}` : undefined;
+  };
+
   const branchBar = (
     <BranchBar taskId={taskId} info={branch} busy={busy} onAct={act}
       onPush={push} onForcePush={forcePush} onRefresh={refresh} onUndoCommit={undoCommit} />
@@ -347,7 +355,15 @@ function GitRepoPanel({
         </div>
         <Resizer size={leftPane.width} min={300} max={720} onChange={leftPane.setWidth} />
         <div className="git-full-right">
-          {selection?.kind === "file" && <DiffViewer taskId={taskId} path={selection.path} mode={diffMode(selection.group)} onChanged={refresh} onCommentAdded={() => setCommentsKey((k) => k + 1)} allowComments={allowComments} onRevealInFiles={onRevealInFiles} />}
+          {/* An unmerged file gets the conflict view, not the diff viewer: git
+              answers `git diff` for one of those with a combined diff, whose
+              lines are not the file's lines, so the ordinary stage-by-line
+              buttons wrote conflict markers into the file (AGE-199). */}
+          {selection?.kind === "file" && selection.group === "merge" && (
+            <ConflictView taskId={taskId} path={selection.path} code={conflictCode(selection.path)}
+              onChanged={refresh} onRevealInFiles={onRevealInFiles} />
+          )}
+          {selection?.kind === "file" && selection.group !== "merge" && <DiffViewer taskId={taskId} path={selection.path} mode={diffMode(selection.group)} onChanged={refresh} onCommentAdded={() => setCommentsKey((k) => k + 1)} allowComments={allowComments} onRevealInFiles={onRevealInFiles} />}
           {selection?.kind === "commit" && <CommitDetail taskId={taskId} item={selection.item} onRevealInFiles={onRevealInFiles} />}
           {!selection && <div className="diff-empty">Select a file or commit.</div>}
         </div>

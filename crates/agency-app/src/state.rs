@@ -765,6 +765,14 @@ fn split_session_id(id: &str) -> (&str, Option<u32>) {
     }
 }
 
+/// A pane's content as one number, for the "did anything change since the last
+/// tick" bit the activity bookkeeping is built on.
+fn pane_hash(pane: &str) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    std::hash::Hash::hash(&pane, &mut hasher);
+    std::hash::Hasher::finish(&hasher)
+}
+
 /// The daemon session that speaks for a run: its status dot, the notifier's
 /// busy/idle watch, and the default target for text Agency types in.
 ///
@@ -9282,19 +9290,7 @@ impl AppState {
     /// go to the run's own every time — which after a day's work is often the
     /// one with the least to do with the branch being merged (AGE-184).
     pub fn send_merge_conflict(&self, id: &str, session: Option<&str>) -> anyhow::Result<bool> {
-        let run = self.run_record(id)?;
-        let repo = self.project_repo(&run.project_id)?;
-        let base = agency_core::merge::resolve_target(run.merge_target.as_deref(), &repo)
-            .unwrap_or_else(|_| "main".to_string());
-        match agency_core::merge::in_progress_merge(&repo) {
-            None => bail!("no merge is in progress, so there is no conflict to send"),
-            // Another run's conflict describes files this agent never touched;
-            // handing it that prompt would send it off editing someone else's work.
-            Some(m) if !agency_core::merge::owns_merge(&repo, &run.branch) => {
-                bail!("the merge in progress is {}'s, not this run's", m.branch)
-            }
-            Some(_) => {}
-        }
+        let msg = self.merge_conflict_prompt(id)?;
         let target = self.send_target(id, session)?;
         if !matches!(
             self.term.read().unwrap().status(&session_name(&target)),
@@ -9302,8 +9298,42 @@ impl AppState {
         ) {
             bail!("agent session {target} is not running");
         }
-        let msg = compose_merge_conflict(&repo, &run.branch, &base, &conflict_status(&repo));
         self.queue_send(&target, "merge conflict", msg)
+    }
+
+    /// Open a *new* agent tab in the run's worktree and launch it on the
+    /// conflict, rather than handing the prompt to an agent that is already in
+    /// the middle of something else (AGE-199).
+    ///
+    /// The prompt goes in as the tab's opening argv, so there is no queue and
+    /// nothing to wait for: this is the one hand-off that cannot be held behind
+    /// another turn. `agent` picks the profile; `None` uses the run's own.
+    pub fn spawn_merge_conflict_agent(
+        &self,
+        id: &str,
+        agent: Option<&str>,
+    ) -> anyhow::Result<RunSessionInfo> {
+        let prompt = self.merge_conflict_prompt(id)?;
+        self.start_run_session(id, agent, &prompt)
+    }
+
+    /// The prompt both hand-offs send, and the checks both owe the user before
+    /// composing it: there has to be a merge in progress, and it has to be this
+    /// run's. Another run's conflict describes files this agent never touched,
+    /// and handing it that prompt would send it off editing someone else's work.
+    fn merge_conflict_prompt(&self, id: &str) -> anyhow::Result<String> {
+        let run = self.run_record(id)?;
+        let repo = self.project_repo(&run.project_id)?;
+        let base = agency_core::merge::resolve_target(run.merge_target.as_deref(), &repo)
+            .unwrap_or_else(|_| "main".to_string());
+        match agency_core::merge::in_progress_merge(&repo) {
+            None => bail!("no merge is in progress, so there is no conflict to send"),
+            Some(m) if !agency_core::merge::owns_merge(&repo, &run.branch) => {
+                bail!("the merge in progress is {}'s, not this run's", m.branch)
+            }
+            Some(_) => {}
+        }
+        Ok(compose_merge_conflict(&repo, &run.branch, &base, &conflict_status(&repo)))
     }
 
     /// Update focus/active-run state. On an unfocused→focused edge, hand back a
@@ -9485,6 +9515,38 @@ impl AppState {
         self.registry.lock().unwrap().set_setting(SETTING_NOTIF, &json)
     }
 
+    /// Pane hashes for the agent tabs [`watch_snapshot`] does not cover.
+    ///
+    /// That snapshot is one entry per *run*, and it reads whichever session
+    /// speaks for the run. An extra tab (`<run>--<n>`) therefore had no
+    /// activity bookkeeping of its own — and the send queue reads exactly that
+    /// bookkeeping to decide whether an agent is mid-turn, with "no entry"
+    /// meaning working. So "Fix with agent" aimed at a tab held its prompt for
+    /// the full five-minute timeout while the agent sat at an empty prompt,
+    /// under a marker that said it was waiting for a turn to finish (AGE-199).
+    ///
+    /// Read from the daemon's own listing rather than the registry: a tab is a
+    /// session here only if it is actually running, which is the same thing
+    /// the drain is about to ask about.
+    pub fn extra_session_panes(&self) -> Vec<(String, u64)> {
+        let live = self.term.read().unwrap().list().unwrap_or_default();
+        live.iter()
+            .filter(|(_, status)| matches!(status, SessionStatus::Running))
+            .filter_map(|(name, _)| {
+                let id = name.strip_prefix("agency-")?;
+                // `#` is the run-script separator (`agency-run-<id>#dev`) and
+                // can never appear in a run or tab id, so this is what keeps a
+                // script called `foo--2` out of the agent tabs.
+                if id.contains('#') {
+                    return None;
+                }
+                split_session_id(id).1?;
+                let pane = self.term.read().unwrap().capture(name, 50).unwrap_or_default();
+                Some((id.to_string(), pane_hash(&pane)))
+            })
+            .collect()
+    }
+
     /// Snapshot every non-archived run across all projects for the watcher:
     /// agent + run-script session status and a hash of the agent pane (for idle).
     pub fn watch_snapshot(&self) -> Result<Vec<notifier::RunSnapshot>> {
@@ -9535,9 +9597,7 @@ impl AppState {
                 let agent = self.term.read().unwrap().status(&lead).unwrap_or(SessionStatus::Gone);
                 let run_scripts = run_scripts_of(&run.id);
                 let pane = self.term.read().unwrap().capture(&lead, 50).unwrap_or_default();
-                let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                std::hash::Hash::hash(&pane, &mut hasher);
-                let pane_hash = std::hash::Hasher::finish(&hasher);
+                let pane_hash = pane_hash(&pane);
                 let label = format!(
                     "{}: {}",
                     run.agent,

@@ -16,6 +16,7 @@ import {
   mergeTask,
   runCleanup,
   sendMergeConflict,
+  spawnMergeConflictAgent,
 } from "../api";
 import { mergeTidyCopy, removalCopy } from "../lib/runRemoval";
 import { loadFocusTab, PRIMARY_TAB } from "../lib/focusTab";
@@ -28,6 +29,18 @@ import ProgressReadout from "./ProgressReadout";
 import { useRuns } from "../store/runs";
 import { useModalKeys } from "../hooks/useModalKeys";
 import { useHushed } from "../lib/hushed";
+
+// The picker's last option: not an agent that exists, but one to start. Every
+// agent already in the worktree may be mid-turn on something else, and a
+// prompt handed to one of those waits for it; a tab opened for the conflict
+// takes it as its opening prompt and begins at once (AGE-199). The space in
+// the value is what keeps it apart from every real session id, which is either
+// a run id or `<run id>--<n>` and can hold neither a space nor this word.
+const NEW_AGENT = "new agent";
+
+// How an extra tab is named in the picker and in the sentence that follows:
+// the agent, then the tab number the strip draws.
+const tabLabel = (agent: string, id: string) => `${agentLabel(agent)} · ${id.split("--").pop()}`;
 
 // `onRemoved` fires after a post-merge cleanup action (archive or delete) so
 // the host view can drop focus and refresh its rail.
@@ -54,6 +67,9 @@ export default function MergeModal({
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState(false);
   const [queued, setQueued] = useState(false);
+  // The hand-off opened a new agent tab rather than typing into one that was
+  // already there, which is a different sentence afterwards: nothing waited.
+  const [spawned, setSpawned] = useState(false);
   // The agent tabs sharing this run's worktree, so the conflict can be handed
   // to the one whose context has something to do with it (AGE-184). This used
   // to go to the run's own agent every time, which after a day's work is
@@ -98,7 +114,7 @@ export default function MergeModal({
   const [hushConfirm, setHushConfirm] = useHushed("merge-delete");
   // Ticked inside the confirm; only applied if the delete goes ahead.
   const [hushNext, setHushNext] = useState(false);
-  const { runs } = useRuns();
+  const { runs, setPendingSession } = useRuns();
   const me = runs.find((r) => r.id === taskId);
   const projectId = me?.projectId ?? null;
   // Losing race attempts: siblings sharing this run's race_id. Offered for
@@ -108,12 +124,15 @@ export default function MergeModal({
     : [];
   // Who "Fix with agent" can hand the conflict to: the same tabs the run's
   // strip draws, in the same order. A shell tab is left out — it is a login
-  // shell, not something that reads a prompt.
+  // shell, not something that reads a prompt. A fresh agent goes last, after
+  // the ones that exist: it is what to reach for when none of them is free,
+  // not the first choice (AGE-199).
   const targets: { value: string; label: string }[] = [
     ...(me && !me.primaryClosed ? [{ value: me.id, label: agentLabel(me.agent) }] : []),
     ...tabs
       .filter((t) => t.status.state !== "gone" && t.agent !== "shell")
-      .map((t) => ({ value: t.id, label: `${agentLabel(t.agent)} · ${t.id.split("--").pop()}` })),
+      .map((t) => ({ value: t.id, label: tabLabel(t.agent, t.id) })),
+    { value: NEW_AGENT, label: "New agent" },
   ];
   // Default to the tab this run was last open on, which is the app's best
   // record of "the agent I was just working with". Falls back to the leftmost
@@ -249,18 +268,36 @@ export default function MergeModal({
     }
   }
 
-  // Hand the conflict to the agent that produced the branch: it already has the
+  // Hand the conflict to one of the workspace's agents: it already has the
   // context for the change, and it is a session the user can watch and talk to.
   // The backend submits the prompt, so this really does start the agent working
   // rather than leaving a composed message sitting in its prompt box.
+  //
+  // "New agent" is the other shape of the same gesture: a tab opened for this
+  // job, with the conflict as its opening prompt. Nothing can be queued behind
+  // a session that did not exist a moment ago, so that one never waits.
   async function fixWithAgent() {
     setError("");
     setSending(true);
     try {
-      // False means the agent is mid-turn and the prompt is queued behind it;
-      // saying "sent" then would have the user watching for work that has not
-      // started yet.
-      setQueued(!(await sendMergeConflict(taskId, target ?? undefined)));
+      if (target === NEW_AGENT) {
+        const s = await spawnMergeConflictAgent(taskId);
+        // Into the picker and selected, so the sentence below names the agent
+        // that got it and the strip behind this window has it too. Pending, so
+        // "Close and watch" lands on it rather than on the tab you came from.
+        setTabs((prev) => [...prev, s]);
+        setTarget(s.id);
+        setPendingSession(s.id);
+        setSpawned(true);
+        setQueued(false);
+      } else {
+        // False means the agent is not free — mid-turn, or with something
+        // half-typed on its prompt line — and the prompt is held behind that;
+        // saying "sent" then would have the user watching for work that has
+        // not started yet.
+        setQueued(!(await sendMergeConflict(taskId, target ?? undefined)));
+        setSpawned(false);
+      }
       setSent(true);
     } catch (e) {
       setError(String(e));
@@ -306,6 +343,12 @@ export default function MergeModal({
   }, [taskId, outcome?.kind, state?.merged]);
 
   const conflicts = outcome?.kind === "conflicts";
+  // The hand-off's own wording, which the sentinel changes: a new agent is
+  // started, an existing one is sent to.
+  const newAgent = target === NEW_AGENT;
+  const sendLabel = newAgent ? "Start a new agent" : "Fix with agent";
+  const sendingLabel = newAgent ? "Starting…" : "Sending…";
+  const targetLabel = targets.find((t) => t.value === target)?.label ?? "this agent";
   // The same sentences the tile and rail teardown dialogs use, so the merge
   // window and the ✕ menu describe one action rather than two that sound
   // different. `me` is missing only for the frame between a teardown landing
@@ -567,27 +610,30 @@ export default function MergeModal({
                 </ul>
                 {sent ? (
                   <p className="merge-note">
-                    {queued
-                      ? `Queued for ${targets.find((t) => t.value === target)?.label ?? "this agent"}, with git's status of the merge. It is part-way through a turn, so the prompt goes in as soon as that finishes. `
-                      : `Sent to ${targets.find((t) => t.value === target)?.label ?? "this agent"}, with git's status of the merge. `}
+                    {spawned
+                      ? `Started ${targetLabel} on it, with git's status of the merge. `
+                      : queued
+                        ? `Queued for ${targetLabel}, with git's status of the merge. That agent isn't free yet (mid-turn, or with something half-typed on its prompt line), so the prompt goes in as soon as it is. `
+                        : `Sent to ${targetLabel}, with git's status of the merge. `}
                     Close this window to watch it work; the merge is in the project's checkout, not
                     the agent's worktree, so the prompt points git there. Reopen this window when
                     it's done, or leave it open: it rechecks git every few seconds either way.
                   </p>
                 ) : (
                   <p className="merge-note">
-                    Nothing has been committed. Hand the conflict to
-                    {targets.length > 1 ? " one of this workspace's agents" : " this agent"}, or
-                    resolve it yourself in the project's checkout and come back here to finish.
+                    Nothing has been committed. Hand the conflict to one of this workspace's
+                    agents, or to a fresh one started for the job, or resolve it yourself: the
+                    merge is in the project's checkout, so open the file under that project's
+                    Source Control, pick a side on each conflict, then come back here to finish.
                   </p>
                 )}
                 <div className="git-actions">
-                  {/* Which agent, before the button that sends to it. Only
-                      when there is a choice: one agent in the worktree and
-                      this is noise; several and picking is the whole point,
-                      since the run's own is not usually the one that has been
-                      near this branch lately (AGE-184). */}
-                  {targets.length > 1 && target && (
+                  {/* Which agent, before the button that sends to it. Always
+                      offered: the run's own is not usually the one that has
+                      been near this branch lately (AGE-184), and even in a
+                      workspace with one agent, starting a fresh one is a real
+                      answer when that one is busy (AGE-199). */}
+                  {target && (
                     <PillSelect
                       value={target}
                       options={targets}
@@ -599,12 +645,12 @@ export default function MergeModal({
                     <button autoFocus onClick={onClose}>Close and watch</button>
                   ) : (
                     <button autoFocus disabled={sending} onClick={fixWithAgent}>
-                      {sending ? "Sending…" : "Fix with agent"}
+                      {sending ? sendingLabel : sendLabel}
                     </button>
                   )}
                   {sent && (
                     <button className="ghost" disabled={sending} onClick={fixWithAgent}>
-                      {sending ? "Sending…" : "Send again"}
+                      {sending ? sendingLabel : "Send again"}
                     </button>
                   )}
                   <button

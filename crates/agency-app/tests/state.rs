@@ -748,7 +748,60 @@ fn send_merge_conflict_requires_a_merge_in_progress() {
     let err = state.send_merge_conflict(&info.id, None).unwrap_err().to_string();
     assert!(err.contains("no merge is in progress"), "got: {err}");
 
+    // "Fix with a new agent" answers for the same thing before it spawns
+    // anything: a fresh tab launched on an empty conflict would be a tab the
+    // user has to close again.
+    let err = state.spawn_merge_conflict_agent(&info.id, None).unwrap_err().to_string();
+    assert!(err.contains("no merge is in progress"), "got: {err}");
+    assert!(state.run_sessions(&info.id).unwrap().is_empty(), "refusal left a tab behind");
+
     state.discard_run(&info.id).unwrap();
+}
+
+/// AGE-199: the busy/idle bookkeeping the send queue decides against is one
+/// entry per *run*, read from whichever session speaks for the run — so an
+/// extra agent tab had no entry at all. No entry reads as "working", so a
+/// merge conflict handed to a tab was held for the full five-minute timeout
+/// while that agent sat at an empty prompt, under a marker saying it was
+/// waiting for a turn to finish. This is the listing the tick now observes
+/// them from.
+#[test]
+fn extra_session_panes_cover_the_tabs_the_run_snapshot_misses() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let state = common::state(&dir);
+    state
+        .register_profile(AgentProfile {
+            name: "idler".into(),
+            command: "/bin/sh".into(),
+            args: vec!["-c".into(), "sleep 30".into()],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+    let run = state.create_run(&project.id, "p", "idler", None, "HEAD", None).unwrap();
+    let tab = state.start_run_session(&run.id, None, "").unwrap();
+
+    let mut seen = false;
+    for _ in 0..150 {
+        let panes = state.extra_session_panes();
+        if panes.iter().any(|(id, _)| *id == tab.id) {
+            // The run's own session is the run snapshot's job; listing it here
+            // too would have two observers writing one entry.
+            assert!(panes.iter().all(|(id, _)| *id != run.id), "got: {panes:?}");
+            seen = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    assert!(seen, "the extra tab is missing from the panes the tick observes");
+
+    state.discard_run(&run.id).unwrap();
 }
 
 #[test]

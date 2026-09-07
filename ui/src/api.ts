@@ -1497,6 +1497,11 @@ export const abortMergeTask = (taskId: string, onProgress?: (p: CloneProgress) =
 // queued behind the agent's current turn.
 export const sendMergeConflict = (taskId: string, sessionId?: string) =>
   invoke<boolean>("send_merge_conflict", { taskId, sessionId: sessionId ?? null });
+// "Fix with a new agent": opens a fresh agent tab in this run's worktree,
+// launched on the conflict. The prompt is that agent's opening argv, so unlike
+// the above there is nothing to queue and nothing to wait for.
+export const spawnMergeConflictAgent = (taskId: string, agent?: string) =>
+  invoke<RunSessionInfo>("spawn_merge_conflict_agent", { taskId, agent: agent ?? null });
 
 export interface Hunk {
   header: string;

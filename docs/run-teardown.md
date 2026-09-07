@@ -362,3 +362,54 @@ newer of the two in its `claude --resume` line, the conversation reads back out
 of the archive copy, restore puts both files back with their mtimes intact (the
 thing "resume the most recent session" goes by), and deleting the run sweeps
 them.
+
+## Addendum: a conflict handed to an agent that never took it (AGE-199, 2026-09-07)
+
+The picker the AGE-184 section describes worked, and then the prompt sat there.
+Handing the conflict to any tab but the one that speaks for the run put the
+message in the queue under "waiting for it to finish its turn", on an agent
+sitting at an empty prompt with no turn in flight, and left it there for five
+minutes before it went in on top of whatever was on the line.
+
+The queue was not the bug. `sendq::decide` reads one observation of a session,
+and the field it holds out for is `working`, which comes from `crate::activity`
+— bookkeeping the notifier tick keeps. That tick writes one entry per *run*,
+keyed by the run id, from the pane of whichever session speaks for it
+(`watch_snapshot`). An extra tab has no entry at all, and no entry reads as
+working, deliberately: unknown holds, which is the right answer for a session
+spawned seconds ago and the wrong one forever for a session nobody watches. So
+every prompt aimed at a tab was held until `MAX_HOLD_MS` overrode it, and the
+marker said the one thing that was not true about why.
+
+The tick now observes those tabs too — `extra_session_panes`, the same pane
+hash diffed the same way, into the same map, keyed by session id. Nothing else
+follows from it: no notification, no tray entry, no watch. A tab is not a run
+and a notification is about a run. Only the busy/idle bit, which is the one
+thing the queue was reading and could not find.
+
+Two things the issue asked for sit on top of that.
+
+**A new agent is a target.** Every agent in the worktree may be busy with
+something else, and waiting out someone else's turn is a poor answer when the
+alternative costs a tab. "New agent" is the last option in the picker;
+`spawn_merge_conflict_agent` runs the same two checks (a merge is in progress,
+and it is this run's), then opens a tab with the conflict as its *opening
+argv*. Nothing can be queued behind a session that did not exist a moment ago,
+so that hand-off cannot wait. The tab is selected in the picker afterwards and
+set as the run's pending session, so "Close and watch" lands on it.
+
+**A conflict can be resolved by hand.** It could not be, and the way it failed
+was expensive: a row under "Merge Changes" opened the ordinary diff viewer,
+whose stage-by-hunk and stage-by-line buttons were the only thing on offer. But
+`git diff` answers for an unmerged path with a *combined* diff — `diff --cc`,
+`@@@` headers, two columns of prefixes — whose lines are not the file's lines.
+Picking the side you wanted out of that and staging it fed marker lines back
+through `git apply`, which is how `<<<<<<< HEAD` and a branch name ended up
+written into the file. An unmerged row now opens `ConflictView` instead, which
+reads the *file*: `lib/conflictFile.ts` parses it into blocks and rebuilds it
+without the markers and without the side you did not pick, and the pane writes
+that back and stages it. The transformation is pure and tested on its own,
+including the cases where it must refuse — a marker it cannot pair up returns
+no blocks at all, because a rewrite that leaves one `<<<<<<<` behind is the
+failure the whole view exists to stop. Delete-against-edit conflicts, which
+carry no markers, get their own two buttons; a `DD` gets the one that applies.

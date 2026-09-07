@@ -1473,6 +1473,19 @@ pub fn send_merge_conflict(
     state.send_merge_conflict(&task_id, session_id.as_deref()).map_err(|e| e.to_string())
 }
 
+/// "Fix with a new agent": open a fresh agent tab in this run's worktree,
+/// launched on the merge conflict. The alternative to picking one of the
+/// agents already there, all of which may be mid-turn on something else
+/// (AGE-199). `agent` defaults to the run's own profile.
+#[tauri::command]
+pub fn spawn_merge_conflict_agent(
+    state: State<'_, AppState>,
+    task_id: String,
+    agent: Option<String>,
+) -> Result<RunSessionInfo, String> {
+    state.spawn_merge_conflict_agent(&task_id, agent.as_deref()).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn git_parse_diff(
     state: State<'_, AppState>,

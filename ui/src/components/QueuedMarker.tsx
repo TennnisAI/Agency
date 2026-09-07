@@ -84,8 +84,8 @@ export default function QueuedMarker({ run }: { run: RunInfo }) {
           <div className="agent-menu-backdrop" onClick={() => setOpen(false)} />
           <div className="queued-pop" role="dialog" style={{ position: "fixed", ...coords }}>
             <div className="queued-pop-head">
-              Waiting to go into this agent, as soon as it finishes its turn and its prompt line is
-              free.
+              Waiting to go into this agent, as soon as it is between turns with an empty prompt
+              line.
             </div>
             {items.length === 0 && <div className="queued-pop-empty">Nothing is waiting now.</div>}
             {items.map((m, i) => (

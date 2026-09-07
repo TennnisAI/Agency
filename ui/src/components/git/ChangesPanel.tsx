@@ -138,6 +138,7 @@ export default function ChangesPanel({
       <CommitBox
         taskId={taskId}
         branch={branch?.branch ?? "?"}
+        changes={changes}
         hasUpstream={!!branch?.upstream}
         hasRemote={!!branch?.hasRemote}
         ahead={branch?.ahead ?? 0}
@@ -147,7 +148,12 @@ export default function ChangesPanel({
         onCommit={(m) => onAct(() => gitCommit(taskId, m), "Committed")}
         onCommitAll={(m) => onAct(async () => { await gitStageAll(taskId); await gitCommit(taskId, m); }, "Committed all changes")}
         onCommitPush={(m) => onPush("Committed & pushed", () => gitCommit(taskId, m))}
+        onCommitAllPush={(m) => onPush("Committed & pushed", async () => {
+          await gitStageAll(taskId);
+          await gitCommit(taskId, m);
+        })}
         onAmend={(m) => onAct(() => gitCommitAmend(taskId, m), "Amended")}
+        onStageAll={() => { void onAct(() => gitStageAll(taskId)); }}
         onSync={onSync}
         onPublish={() => onPush("Branch published")}
         onPublishRemote={(url) => onPush("Branch published", () => gitSetRemote(taskId, url))}

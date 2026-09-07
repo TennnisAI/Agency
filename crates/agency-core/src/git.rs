@@ -28,9 +28,21 @@ fn git(worktree: &Path, args: &[&str]) -> Result<String> {
         .env("GIT_TERMINAL_PROMPT", "0")
         .output()?;
     if !output.status.success() {
-        bail!("git {:?} failed: {}", args, String::from_utf8_lossy(&output.stderr));
+        bail!("git {:?} failed: {}", args, failure_detail(&output));
     }
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// What a failed git run said, wherever it said it. Not every failure is on
+/// stderr: `commit` with nothing staged exits 1 and prints "no changes added to
+/// commit" on *stdout*, so the panel's error banner read `git ["commit", "-m",
+/// "Fix review findings"] failed:` and then nothing at all (AGE-205).
+fn failure_detail(output: &std::process::Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !stderr.trim().is_empty() {
+        return stderr.trim().to_string();
+    }
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
 
 /// `git`, but handing back stdout unchanged. Blob contents are not text: the
@@ -1648,6 +1660,19 @@ mod branch_tests {
         let changes = status(repo).unwrap();
         assert_eq!(changes.len(), 1);
         assert_eq!(changes[0].index, "M", "change is staged after soft reset");
+    }
+
+    #[test]
+    fn a_commit_with_nothing_staged_says_why() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path();
+        init_repo(repo);
+        std::fs::write(repo.join("f"), "edited but never staged").unwrap();
+
+        let err = commit(repo, "Fix review findings").unwrap_err().to_string();
+        // git says this on stdout, not stderr: before AGE-205 the message
+        // ended at "failed:" and told the user nothing.
+        assert!(err.contains("no changes added to commit"), "got: {err}");
     }
 
     #[test]

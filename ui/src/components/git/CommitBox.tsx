@@ -1,17 +1,27 @@
 import { useEffect, useState } from "react";
+import type { FileChange } from "../../api";
+import { useHushed } from "../../lib/hushed";
+import ConfirmDialog from "../ConfirmDialog";
 import { CloudUploadIcon } from "./gitIcons";
+import { commitGuard, stagingAll, type CommitAction } from "./commitGuard";
+import { setGitOp } from "./ops";
 
 // In-progress commit messages outlive the commit box being unmounted (switching
 // tabs, toggling the review pane). Keyed by repo so each keeps its own draft for
 // the session; cleared once the commit lands.
 const draftStore = new Map<string, string>();
 
+const plural = (n: number, one: string, many: string) => (n === 1 ? one : many);
+
 export default function CommitBox({
-  taskId, branch, hasUpstream, hasRemote, ahead, behind, busy = false, restoreMessage,
-  onCommit, onCommitAll, onCommitPush, onAmend, onSync, onPublish, onPublishRemote,
+  taskId, branch, changes, hasUpstream, hasRemote, ahead, behind, busy = false, restoreMessage,
+  onCommit, onCommitAll, onCommitPush, onCommitAllPush, onAmend, onStageAll,
+  onSync, onPublish, onPublishRemote,
 }: {
   taskId: string;
   branch: string;
+  /** The working tree's status, to say why a commit can't run before running it. */
+  changes: FileChange[];
   hasUpstream: boolean;
   hasRemote: boolean;
   ahead: number;
@@ -24,7 +34,10 @@ export default function CommitBox({
   onCommit: (m: string) => Promise<boolean>;
   onCommitAll: (m: string) => Promise<boolean>;
   onCommitPush: (m: string) => Promise<boolean>;
+  onCommitAllPush: (m: string) => Promise<boolean>;
   onAmend: (m: string) => Promise<boolean>;
+  /** Stage everything without committing: the "stage, then let me look" way out. */
+  onStageAll: () => void;
   onSync: () => void;
   onPublish: () => void;
   onPublishRemote: (url: string) => void;
@@ -33,6 +46,11 @@ export default function CommitBox({
   const [menu, setMenu] = useState(false);
   const [addingRemote, setAddingRemote] = useState(false);
   const [remoteUrl, setRemoteUrl] = useState("");
+  // The action the user asked for, held while the "nothing is staged" prompt
+  // asks what to do about it.
+  const [offer, setOffer] = useState<{ action: CommitAction; count: number } | null>(null);
+  const [dontAsk, setDontAsk] = useHushed("commit-stage-all");
+  const [hushNext, setHushNext] = useState(false);
   // Keep the per-repo draft store in sync so the message survives unmounts.
   const setMessage = (m: string) => {
     setMessageState(m);
@@ -45,11 +63,44 @@ export default function CommitBox({
     if (restoreMessage) setMessage(restoreMessage.text);
   }, [restoreMessage]);
   const canCommit = message.trim().length > 0;
-  const send = async (fn: (m: string) => Promise<boolean>) => {
+
+  const runners: Record<CommitAction, (m: string) => Promise<boolean>> = {
+    commit: onCommit,
+    commitAll: onCommitAll,
+    commitPush: onCommitPush,
+    commitAllPush: onCommitAllPush,
+    amend: onAmend,
+  };
+  const send = async (action: CommitAction) => {
+    if (await runners[action](message)) setMessage("");
+  };
+
+  // Every commit goes through here so none of them can reach git in a state git
+  // will only refuse: an empty index, a clean tree, an unresolved conflict. The
+  // reason goes where the raw failure used to (the panel's banner), and the one
+  // that has a way out gets the prompt instead (AGE-205).
+  const run = async (action: CommitAction) => {
     if (!canCommit) return; // empty/whitespace message: nothing to commit with
     setMenu(false);
-    if (await fn(message)) setMessage("");
+    const guard = commitGuard(action, changes);
+    if (guard.kind === "ok") { await send(action); return; }
+    if (guard.kind === "conflicts") {
+      const n = guard.count;
+      setGitOp(taskId, {
+        error: `Nothing was committed: ${n} ${plural(n, "file", "files")} still ${plural(n, "has", "have")} merge conflicts. Resolve each one, then stage it to mark it resolved.`,
+      });
+      return;
+    }
+    if (guard.kind === "empty") {
+      setGitOp(taskId, { error: "Nothing to commit: this working tree has no changes." });
+      return;
+    }
+    // Asked once and told not to ask again: do what the prompt would have done.
+    if (dontAsk) { await send(stagingAll(action)); return; }
+    setHushNext(false);
+    setOffer({ action, count: guard.count });
   };
+
   const submitRemote = () => {
     const url = remoteUrl.trim();
     if (!url) return;
@@ -61,19 +112,19 @@ export default function CommitBox({
     <div className="git-commit">
       <textarea className="git-commit-input" placeholder={`Message (commit on ${branch})`}
         value={message} onChange={(e) => setMessage(e.target.value)}
-        onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); send(onCommit); } }} />
+        onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); run("commit"); } }} />
       <div className="git-commit-bar">
         <div className="git-split">
-          <button className="git-primary" onClick={() => send(onCommit)} disabled={busy || !canCommit}
+          <button className="git-primary" onClick={() => run("commit")} disabled={busy || !canCommit}
             title="Commit staged changes (⌘Enter)">
             {busy ? <span className="spinner" aria-label="working" /> : "✓"} Commit
           </button>
           <button className="git-primary git-caret" onClick={() => setMenu((o) => !o)} disabled={busy || !canCommit}>▾</button>
           {menu && (
             <div className="git-menu" onMouseLeave={() => setMenu(false)}>
-              <button onClick={() => send(onCommitAll)}>Commit All</button>
-              <button onClick={() => send(onCommitPush)}>Commit &amp; Push</button>
-              <button onClick={() => send(onAmend)}>Commit (Amend)</button>
+              <button onClick={() => run("commitAll")}>Commit All</button>
+              <button onClick={() => run("commitPush")}>Commit &amp; Push</button>
+              <button onClick={() => run("amend")}>Commit (Amend)</button>
             </div>
           )}
         </div>
@@ -106,6 +157,24 @@ export default function CommitBox({
           <button className="git-secondary" disabled={!remoteUrl.trim()} onClick={submitRemote}>Publish ↑{ahead}</button>
           <button className="git-secondary" onClick={() => setAddingRemote(false)}>Cancel</button>
         </div>
+      )}
+      {offer && (
+        <ConfirmDialog
+          title="Nothing is staged"
+          body={`Nothing is staged, so this commit would be empty. ${offer.count} ${plural(offer.count, "file has", "files have")} changes you can include. Stage everything and commit it, or just stage it and look at the diff first.`}
+          confirmLabel={offer.action === "commitPush" ? "Stage All, Commit & Push" : "Stage All & Commit"}
+          altLabel="Stage All"
+          onAlt={() => { setOffer(null); onStageAll(); }}
+          hushLabel="Don't ask again"
+          hushed={hushNext}
+          onHush={setHushNext}
+          onConfirm={() => {
+            setOffer(null);
+            if (hushNext) setDontAsk(true);
+            void send(stagingAll(offer.action));
+          }}
+          onCancel={() => setOffer(null)}
+        />
       )}
     </div>
   );

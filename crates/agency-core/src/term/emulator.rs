@@ -17,10 +17,6 @@ use alacritty_terminal::vte::ansi::{Color, NamedColor, Processor, StdSyncHandler
 
 const SCROLLBACK: usize = 10_000;
 
-/// The line-breaking controls xterm.js's `convertEol` applies to: LF, VT, FF.
-/// See [`Emulator::feed`].
-const LINE_BREAKS: [u8; 3] = [b'\n', 0x0b, 0x0c];
-
 pub struct Snapshot {
     pub cols: u16,
     pub rows: u16,
@@ -61,46 +57,34 @@ impl Emulator {
         Emulator { term, parser: Processor::<StdSyncHandler>::new(), cols, rows }
     }
 
-    /// Feed PTY output, returning the carriage on every line break.
+    /// Feed PTY output.
     ///
-    /// The client is xterm.js with `convertEol` on, which resets the column on
-    /// LF, VT and FF; alacritty, faithful to a real terminal, only moves down.
-    /// The difference is invisible while a pane is live — the client is the
-    /// only thing drawing — and surfaces the moment the pane is re-opened,
-    /// because the reattach snapshot is generated from *this* grid. So a child
-    /// that emits a bare LF (any TUI in raw mode, or a shell whose tty was left
-    /// with `-onlcr` by one that died without restoring it) writes clean lines
-    /// in the pane and a staircase in here:
+    /// A bare line feed moves down and holds the column, the way a real
+    /// terminal does. It used to have a carriage return spliced in after it, to
+    /// match xterm.js's `convertEol` in the pane; both are gone. The pty is
+    /// opened with the default termios, so `ONLCR` is on and the kernel has
+    /// already turned every `\n` a cooked-mode child writes into `\r\n` by the
+    /// time it reaches us. A bare LF can therefore only come from a child that
+    /// turned `ONLCR` off — a TUI in raw mode — and there it means "down one
+    /// row, same column", which is exactly what returning the carriage
+    /// destroyed.
     ///
-    /// ```text
-    /// one
-    ///    two
-    ///       three
-    /// ```
+    /// AGE-204: crush blanks the area behind its command palette by erasing a
+    /// run of cells and stepping down while holding the column,
+    /// `\x1b[69X\n\x1b[69X\n`. With the carriage returned every erase after the
+    /// first landed at column 0 instead: the palette's rows lost their
+    /// left-hand labels, shreds of the sidebar behind it ("LSPs" as `l`, then
+    /// `Ldes  e`) were left down the left edge of the pane, and the rows below
+    /// drifted apart. Reproduced from a captured crush stream; the pattern is
+    /// in `tests::a_bare_line_feed_holds_the_column`.
     ///
-    /// and the staircase is what the snapshot paints on return — the "banding"
-    /// of AGE-67. It takes the cursor with it, too: the position the snapshot
-    /// restores is the end of the staircase rather than where the child left
-    /// it, so the child's next cursor-relative redraw lands somewhere else
-    /// again. Matching the client is what keeps live and reattached agreeing.
-    ///
-    /// ANSI mode 20 (LNM) would be the tidy way to ask for this, but alacritty
-    /// 0.26 only honours it for NEL — vte dispatches a C0 line feed straight to
-    /// `linefeed()`, which doesn't consult the mode. Hence the carriage return
-    /// spliced into the stream. It is safe to splice in mid-sequence: CR is a
-    /// C0 control, so both parsers ignore it inside an OSC/DCS/APC string
-    /// exactly as they ignore the LF it follows, and it can never fall inside a
-    /// UTF-8 sequence (no continuation byte is 0x0a).
+    /// The AGE-67 banding this replaces was the two sides *disagreeing*, not
+    /// the carriage return itself: the pane converted, the daemon did not, so a
+    /// re-opened pane painted a staircase the live one had never shown. They
+    /// agree again here, on the faithful reading, so a pane and its reattach
+    /// both show whatever the child really drew.
     pub fn feed(&mut self, bytes: &[u8]) {
-        let mut start = 0;
-        for (i, b) in bytes.iter().enumerate() {
-            if LINE_BREAKS.contains(b) {
-                self.parser.advance(&mut self.term, &bytes[start..=i]);
-                self.parser.advance(&mut self.term, b"\r");
-                start = i + 1;
-            }
-        }
-        self.parser.advance(&mut self.term, &bytes[start..]);
+        self.parser.advance(&mut self.term, bytes);
     }
 
     pub fn resize(&mut self, cols: u16, rows: u16) {
@@ -685,30 +669,30 @@ mod tests {
     }
 
     #[test]
-    fn bare_line_feed_returns_the_carriage() {
-        // AGE-67: the client (xterm.js, convertEol) resets the column on every
-        // LF. Without matching it here, output from a child in raw mode walks
-        // right across the grid — and the snapshot replays that staircase into
-        // the pane the next time it is opened.
-        let mut e = Emulator::new(40, 6);
-        e.feed(b"one\ntwo\nthree");
-        let cap = e.capture(6);
+    fn a_bare_line_feed_holds_the_column() {
+        // AGE-204: the shape crush draws with. It erases a run of cells, steps
+        // down with a bare LF expecting to keep its column, and erases the same
+        // run again — one row of a dialog's interior per step. Returning the
+        // carriage (the pane's old `convertEol`, mirrored here) put every step
+        // after the first at column 0, which is what tore the dialog apart.
+        let mut e = Emulator::new(20, 4);
+        e.feed(b"\x1b[1;6Habcd\x1b[6X\nefgh\x1b[6X\nij");
+        let cap = e.capture(4);
         let rows: Vec<&str> = cap.lines().take(3).collect();
-        assert_eq!(rows, vec!["one", "two", "three"], "bare LF staircased");
+        assert_eq!(rows, vec!["     abcd", "         efgh", "             ij"]);
     }
 
     #[test]
-    fn line_feed_returns_the_carriage_across_reads_and_resets() {
+    fn a_bare_line_feed_reads_the_same_across_reads_and_resets() {
         // Nothing about this may depend on where the PTY reads happen to split,
-        // and `reset` (RIS) must not switch it off — the client's convertEol is
-        // an option rather than a mode and survives its own reset.
+        // and `reset` (RIS) must not change it either.
         let mut e = Emulator::new(40, 6);
-        e.feed(b"\x1bcon");
+        e.feed(b"\x1bc\x1b[1;3Hon");
         e.feed(b"e\n");
         e.feed(b"two");
         let cap = e.capture(6);
         let rows: Vec<&str> = cap.lines().take(2).collect();
-        assert_eq!(rows, vec!["one", "two"]);
+        assert_eq!(rows, vec!["  one", "     two"]);
     }
 
     #[test]
@@ -730,26 +714,23 @@ mod tests {
     }
 
     #[test]
-    fn a_line_feed_inside_an_osc_string_stays_inert() {
-        // The carriage return is spliced in without parsing, so it has to be
-        // harmless where the line feed it follows is: both are C0 controls the
-        // parser ignores inside a string. A title set either side of one must
-        // still land on screen unchanged.
-        let mut e = Emulator::new(40, 6);
-        e.feed(b"\x1b]0;ti\ntle\x07after");
-        assert_eq!(e.capture(6).lines().next(), Some("after"));
-    }
-
-    #[test]
-    fn snapshot_of_bare_line_feed_output_is_not_a_staircase() {
+    fn snapshot_replays_the_staircase_a_bare_line_feed_really_draws() {
+        // AGE-67 in its corrected form. The pane and the daemon read a bare LF
+        // the same way now, so the question is no longer whether the snapshot
+        // paints a staircase — it must, because that is what the child drew —
+        // but whether it paints the *same* one, at the same columns.
+        let line = "Recycle mTLS Workloads 0:36";
         let mut e = Emulator::new(60, 6);
-        e.feed(b"Recycle mTLS Workloads 0:36\nRecycle mTLS Workloads 0:37\n");
+        e.feed(format!("{line}\n{line}").as_bytes());
+        // The second line starts where the first one ended, because that is
+        // where the child left the cursor.
+        let cap = e.capture(6);
+        assert_eq!(cap.lines().nth(1), Some(format!("{}{line}", " ".repeat(line.len())).as_str()));
+
         let snap = e.snapshot();
-        let text = String::from_utf8_lossy(&snap.data);
-        assert!(
-            !text.contains("  Recycle"),
-            "snapshot indents a line the pane drew at column 0: {text:?}",
-        );
+        let mut back = Emulator::new(snap.cols, snap.rows);
+        back.feed(&snap.data);
+        assert_eq!(back.capture(10).trim_end(), cap.trim_end());
     }
 
     #[test]

@@ -6,12 +6,22 @@
 //! xterm.js in the pane, which owns what the user actually sees. They agree only
 //! as far as they read the specification the same way, and where they differ the
 //! difference is invisible while a pane is live, because the pane is the only
-//! thing drawing. It surfaces on reattach and nowhere else. That is the shape of
-//! every emulator bug this code has had: the AGE-67 staircase (bare LF), the
-//! double-spaced rows (trailing padding against a narrower client), the cursor
-//! stranded at the bottom (a trailing CRLF on a full screen). Each was these two
-//! disagreeing, and each cost an investigation to find because the symptom
-//! appeared a switch-away-and-back after the cause.
+//! thing drawing. It surfaces on reattach. That is the shape of every emulator
+//! bug this code has had: the AGE-67 staircase (bare LF), the double-spaced rows
+//! (trailing padding against a narrower client), the cursor stranded at the
+//! bottom (a trailing CRLF on a full screen). Each was these two disagreeing,
+//! and each cost an investigation to find because the symptom appeared a
+//! switch-away-and-back after the cause.
+//!
+//! Agreement is necessary and not sufficient, though, because the two can be
+//! made to agree on the wrong reading — and that one shows up live, where it is
+//! mistaken for the agent's own bug. AGE-67 settled the bare line feed by
+//! teaching the daemon the pane's `convertEol`, and a terminal that returns the
+//! carriage on a line feed is not a terminal: it tore the command palette out of
+//! any TUI that erases a run of cells and steps down a column, which is how
+//! every Bubble Tea app draws (AGE-204). Both sides read it faithfully now. When
+//! they are pinned to each other, the question to keep asking is which of them a
+//! real terminal agrees with.
 //!
 //! Two implementations of one specification will drift; the only question is
 //! whether anything notices. So each side is pinned to an exact version rather

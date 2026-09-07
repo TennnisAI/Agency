@@ -68,6 +68,7 @@ import { agentColor, agentLabel, updateCommand } from "../agents";
 import { THEMES, ThemeId, applyTheme, getStoredTheme } from "../lib/themes";
 import { getWordWrap, setWordWrap } from "../lib/editorPrefs";
 import { useAgentModels } from "../hooks/useAgentModels";
+import { resendOpenFile } from "../hooks/useOpenFile";
 import { setWorkspaceHidden, workspaceHidden } from "../lib/workspacePref";
 import { HUSHABLE, HushId, isHushed, setHushed } from "../lib/hushed";
 import { FindRank, registerFindTarget } from "../lib/findBus";
@@ -826,9 +827,9 @@ export default function Settings({
   // Save-on-change for the controls with no blur to flush on (the default-agent
   // select, the worktree toggle), keeping `loadedRef` in step so the exit flush
   // sees nothing left to do.
-  function persistSettingsNow(next: ProviderSettings) {
+  function persistSettingsNow(next: ProviderSettings): Promise<void> {
     setSettings(next);
-    saveSettings(next)
+    return saveSettings(next)
       .then(() => { loadedRef.current = next; })
       .catch((e) => toastError(e, "Couldn't save settings"));
   }
@@ -1275,7 +1276,14 @@ export default function Settings({
                   <span className="settings-notif-label">Let agents see the file you have open</span>
                   <Toggle
                     checked={settings.shareOpenFile}
-                    onChange={(next) => persistSettingsNow({ ...settings, shareOpenFile: next })}
+                    onChange={(next) => {
+                      const saved = persistSettingsNow({ ...settings, shareOpenFile: next });
+                      // The backend dropped every report made while this was
+                      // off, so turning it on has to hand it the file the user
+                      // already has open. Only after the save lands, or that
+                      // report is dropped as well.
+                      if (next) saved.then(resendOpenFile);
+                    }}
                   />
                 </div>
               </div>

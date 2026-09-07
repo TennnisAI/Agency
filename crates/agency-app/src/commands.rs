@@ -2464,24 +2464,29 @@ pub fn set_open_file(state: State<'_, AppState>, open: Option<OpenFileArg>) -> R
     // deleted, a path that escapes its root — clears rather than leaves the
     // previous file standing. "I don't know what they have open" is the honest
     // answer to a path we cannot name.
-    let resolved = resolve_root(&state, &open.root)
-        .and_then(|base| agency_core::files::abs_path(&base, &open.path).map_err(|e| e.to_string()))
-        .and_then(|abs| {
-            let (run_id, repo) = match &open.root {
-                FileRoot::Run { id } => {
-                    (Some(id.clone()), state.run_repo_path(id).map_err(|e| e.to_string())?)
-                }
-                FileRoot::Project { id } => {
-                    (None, state.project_repo_path(id).map_err(|e| e.to_string())?)
-                }
-            };
-            Ok(crate::state::OpenFileRef {
-                repo,
-                run_id,
-                rel_path: open.path.clone(),
-                abs_path: abs.to_string_lossy().into_owned(),
-            })
-        });
+    let resolved = resolve_root(&state, &open.root).and_then(|workspace| {
+        let abs =
+            agency_core::files::abs_path(&workspace, &open.path).map_err(|e| e.to_string())?;
+        let (run_id, repo) = match &open.root {
+            FileRoot::Run { id } => {
+                (Some(id.clone()), state.run_repo_path(id).map_err(|e| e.to_string())?)
+            }
+            FileRoot::Project { id } => {
+                (None, state.project_repo_path(id).map_err(|e| e.to_string())?)
+            }
+        };
+        Ok(crate::state::OpenFileRef {
+            repo,
+            run_id,
+            // The root the tree was browsed from, which for a run started
+            // without a worktree is the checkout itself. Carried so the tool
+            // can say which copy of the file this is without guessing from the
+            // run id.
+            workspace,
+            rel_path: open.path.clone(),
+            abs_path: abs.to_string_lossy().into_owned(),
+        })
+    });
     match resolved {
         Ok(open) => {
             state.set_open_file(Some(open));

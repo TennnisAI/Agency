@@ -1913,22 +1913,24 @@ fn run_caps(preview_tools: bool, share_open_file: bool) -> agency_core::preview:
     agency_core::preview::Caps { preview: preview_tools, editor: share_open_file }
 }
 
-/// The config half of a run's `Caps`, cached for a second. `serves_preview()`
-/// reads it, `preview_targets` calls that for every live server while holding
-/// the preview map's lock, and the frontend's keeper polls it every 3s: with N
+/// The config half of a run's `Caps`, cached. `serves_preview()` reads it,
+/// `preview_targets` calls that for every live server while holding the
+/// preview map's lock, and the frontend's keeper polls it every 3s: with N
 /// runs that was 2N TOML reads and parses every 3s, on top of the notifier's
-/// own 2s converge loading the same two files. The switch behind it only moves
-/// when the user edits a run script or the preview setting, so a second of
-/// staleness cannot be observed. The editor half is deliberately not cached:
-/// it is a privacy switch, and switching sharing off has to bite on the very
-/// next call.
+/// own 2s converge loading the same two files. The TTL has to *exceed* that
+/// 3s poll to do anything for it — at the 1s it was first written with, every
+/// entry had expired again by the next poll and the sweep still did N loads.
+/// The switch behind it only moves when the user edits a run script or the
+/// preview setting, so a few seconds of staleness cannot be observed. The
+/// editor half is deliberately not cached: it is a privacy switch, and
+/// switching sharing off has to bite on the very next call.
 struct PreviewToolsCache {
     repo: PathBuf,
     cell: Mutex<Option<(Instant, bool)>>,
 }
 
 impl PreviewToolsCache {
-    const TTL: Duration = Duration::from_secs(1);
+    const TTL: Duration = Duration::from_secs(5);
 
     fn get(&self) -> bool {
         let mut cell = self.cell.lock().unwrap();
@@ -1963,6 +1965,33 @@ fn preview_mcp_port_for(
     agency_core::preview::mcp_port(port_base?, config.ports.block_size)
 }
 
+/// The port a run's preview server should be on for the length of this sweep:
+/// the one [`preview_mcp_port_for`] would start it on, or — for a run that
+/// already has a server — the port it keeps for the rest of the run's life.
+///
+/// The switches decide whether a run's server *starts*. They never decide that
+/// it stops. Switching "let agents see the file you have open" off used to drop
+/// a non-web project's run straight out of `sync_preview_servers`'s desired
+/// set, so the port closed under a live agent whose emitted MCP config still
+/// named it: that agent's next `tools/list` got a connection refused, which is
+/// a hard server failure in most CLIs, instead of the "editor_open_file is
+/// switched off ... ask them to turn it on" text written for exactly that case.
+/// A server outlives its switches and dies with its run.
+fn preview_port_this_sweep(
+    config: &agency_core::config::AgencyConfig,
+    port_base: Option<u16>,
+    share_open_file: bool,
+    already_serving: bool,
+) -> Option<u16> {
+    match preview_mcp_port_for(config, port_base, share_open_file) {
+        Some(port) => Some(port),
+        None if already_serving => {
+            agency_core::preview::mcp_port(port_base?, config.ports.block_size)
+        }
+        None => None,
+    }
+}
+
 /// What the run `run_id`, in the project checked out at `repo`, should hear
 /// about the file the user has open (AGE-200).
 ///
@@ -1987,13 +2016,21 @@ fn open_file_for(
     OpenFocus::File(OpenFile {
         rel_path: open.rel_path.clone(),
         abs_path: open.abs_path.clone(),
-        copy: match open.run_id.as_deref() {
-            Some(id) if id == run_id => OpenCopy::Workspace,
-            // A sibling run's worktree: neither this workspace nor the
-            // checkout, and naming it as either would name a path that is not
-            // where the file is.
-            Some(_) => OpenCopy::OtherWorkspace,
-            None => OpenCopy::Checkout,
+        copy: if open.run_id.as_deref() == Some(run_id) {
+            OpenCopy::Workspace
+        // Which copy it is is a question about the workspace, not the run id.
+        // A run started without a worktree works in the checkout itself, so
+        // deciding on the run id alone told a sibling the user's file was "in
+        // another run's workspace at /repo/docs/plan.md, not in yours and not
+        // in the project checkout either" — a sentence that names the checkout
+        // path while denying it is the checkout.
+        } else if open.workspace == repo {
+            OpenCopy::Checkout
+        // A sibling run's worktree: neither this workspace nor the checkout,
+        // and naming it as either would name a path that is not where the
+        // file is.
+        } else {
+            OpenCopy::OtherWorkspace
         },
     })
 }
@@ -2319,9 +2356,15 @@ pub struct OpenFileRef {
     /// The project checkout the file's root belongs to. Runs are matched to it
     /// by path, which is what a run's preview server knows about itself.
     pub repo: PathBuf,
-    /// The run whose workspace holds it, when the user is browsing a worktree
-    /// rather than the checkout.
+    /// The run whose workspace holds it, when the user is browsing a run
+    /// rather than the project. Identity only: whether that workspace is a
+    /// worktree or the checkout itself is `workspace`'s question, not this
+    /// one's.
     pub run_id: Option<String>,
+    /// The root the path is relative to: a run's worktree, or the checkout.
+    /// Equal to `repo` whenever the file is the checkout's copy, however it
+    /// was browsed to.
+    pub workspace: PathBuf,
     /// Relative to that root, as the user sees it in the tree.
     pub rel_path: String,
     pub abs_path: String,
@@ -5320,8 +5363,11 @@ impl AppState {
     }
 
     /// The UI reporting which file it has in focus, or `None` for "nothing".
-    /// Dropped on the floor while sharing is off — the frontend does not report
-    /// either, but a switch the user can see has to hold on this side too.
+    /// Dropped on the floor while sharing is off, so the cell is never a store
+    /// of something the user said not to share. The frontend sends its focus
+    /// again the moment the switch goes on (`resendOpenFile` in the UI), which
+    /// is what keeps this from answering "no file in focus" to a user who has
+    /// one open and has just ticked the setting.
     pub fn set_open_file(&self, open: Option<OpenFileRef>) {
         if !self.share_open_file.load(std::sync::atomic::Ordering::SeqCst) {
             *self.open_file.lock().unwrap() = None;
@@ -5442,9 +5488,14 @@ impl AppState {
         };
         let mut desired: HashMap<String, (PathBuf, Option<u16>, u16)> = HashMap::new();
         let shares = self.shares_open_file();
+        // Snapshot rather than lock per run: `config::load` below is a file
+        // read, and the preview map is what the notifier and every tool call
+        // contend on.
+        let serving: HashSet<String> = self.preview.lock().unwrap().keys().cloned().collect();
         for (id, repo, port_base) in runs {
             let config = agency_core::config::load(&repo);
-            if let Some(bind) = preview_mcp_port_for(&config, port_base, shares) {
+            let has_server = serving.contains(&id);
+            if let Some(bind) = preview_port_this_sweep(&config, port_base, shares, has_server) {
                 desired.insert(id, (repo, port_base, bind));
             }
         }
@@ -5476,6 +5527,9 @@ impl AppState {
                 continue;
             }
             let config = agency_core::config::load(&repo);
+            // A no-op for a run kept only because it already has a server:
+            // `ensure_preview_server` asks the switches, so the sweep keeps
+            // such a server alive without ever starting a fresh one.
             self.ensure_preview_server(&id, &repo, port_base, &config);
         }
     }
@@ -9944,8 +9998,8 @@ mod tests {
     use super::{
         agent_argv, branch_leaf_from_first_prompt, command_on_path, graphify_server, id_source,
         id_suffix, is_auto_cut_branch, new_task_id, open_file_for, pick_port, preview_mcp_port_for,
-        preview_tools_on, require_branch_exists, require_gitless_known, require_own_branch,
-        slugify, split_session_id, validate_race, OpenFileRef, RaceAttempt,
+        preview_port_this_sweep, preview_tools_on, require_branch_exists, require_gitless_known,
+        require_own_branch, slugify, split_session_id, validate_race, OpenFileRef, RaceAttempt,
     };
     use agency_core::config::KnowledgeConfig;
     use agency_core::profile::AgentProfile;
@@ -9998,6 +10052,25 @@ mod tests {
         assert_eq!(preview_mcp_port_for(&config, None, true), None);
     }
 
+    /// A server the switches would not start today, but which a live agent's
+    /// emitted MCP config already names, keeps its port. Closing it under the
+    /// agent turns a tool that should answer "switched off" into a connection
+    /// refused.
+    #[test]
+    fn a_running_preview_server_survives_its_switches_going_off() {
+        use agency_core::config::AgencyConfig;
+        let config = AgencyConfig::default(); // No web run script: preview half off.
+
+        // Sharing on is the only reason this run has a server at all.
+        assert_eq!(preview_port_this_sweep(&config, Some(5240), true, false), Some(5249));
+        // Sharing off, and it has one: it keeps the port it was emitted with.
+        assert_eq!(preview_port_this_sweep(&config, Some(5240), false, true), Some(5249));
+        // Sharing off and no server: still nothing to start.
+        assert_eq!(preview_port_this_sweep(&config, Some(5240), false, false), None);
+        // Nowhere to bind is nowhere to bind, server or not.
+        assert_eq!(preview_port_this_sweep(&config, None, false, true), None);
+    }
+
     /// The rule that decides what a run's agent hears about the user's screen.
     #[test]
     fn only_this_projects_open_file_reaches_this_projects_runs() {
@@ -10005,6 +10078,7 @@ mod tests {
         let open = OpenFileRef {
             repo: PathBuf::from("/repo/one"),
             run_id: Some("run-a".into()),
+            workspace: PathBuf::from("/repo/one/.agency/worktrees/run-a"),
             rel_path: "docs/plan.md".into(),
             abs_path: "/repo/one/.agency/worktrees/run-a/docs/plan.md".into(),
         };
@@ -10022,10 +10096,24 @@ mod tests {
         let sibling = copy(open_file_for(Some(&open), "run-b", Path::new("/repo/one"))).unwrap();
         assert_eq!(sibling.copy, OpenCopy::OtherWorkspace);
         // The checkout's own copy is the third case.
-        let in_checkout = OpenFileRef { run_id: None, ..open.clone() };
+        let in_checkout = OpenFileRef {
+            run_id: None,
+            workspace: PathBuf::from("/repo/one"),
+            abs_path: "/repo/one/docs/plan.md".into(),
+            ..open.clone()
+        };
         let checkout =
             copy(open_file_for(Some(&in_checkout), "run-a", Path::new("/repo/one"))).unwrap();
         assert_eq!(checkout.copy, OpenCopy::Checkout);
+        // Browsed through a run that has no worktree of its own: the file is
+        // the checkout's copy, whatever root the user clicked through to reach
+        // it. Deciding on the run id alone called this one another run's
+        // workspace and then printed the checkout's path for it.
+        let via_checkout_run = OpenFileRef { run_id: Some("run-z".into()), ..in_checkout.clone() };
+        let via =
+            copy(open_file_for(Some(&via_checkout_run), "run-a", Path::new("/repo/one"))).unwrap();
+        assert_eq!(via.copy, OpenCopy::Checkout);
+        assert_eq!(via.abs_path, "/repo/one/docs/plan.md");
         // Another project's run hears no path, and hears why.
         assert_eq!(
             open_file_for(Some(&open), "run-c", Path::new("/repo/two")),

@@ -860,7 +860,10 @@ export default function Settings({
         return [l.slice(0, i), l.slice(i + 1)] as [string, string];
       })
       .filter(([k]) => k);
-    // Empty resume field = no resume recipe: the agent always starts fresh.
+    // Empty resume field = no generic resume recipe. The agent then starts
+    // fresh unless Agency named its conversation itself, which is a resume
+    // recipe of its own and does not come from the profile (see
+    // `state.rs::should_resume`).
     const resume = draft.resume.trim();
     const resume_args = resume ? resume.split(/\s+/) : null;
     // Empty loop field = no headless one-shot recipe: the agent can't loop.
@@ -954,7 +957,7 @@ export default function Settings({
         <Field
           label="Resume arguments"
           optional
-          hint="Added after the arguments above when reopening an existing session, in place of the prompt. Leave empty to always start fresh."
+          hint="Added after the arguments above when reopening an existing session, in place of the prompt. Leave empty if this CLI has no resume flag. Agents whose conversations Agency can name come back to their own either way, so emptying this won't start them fresh. To take that over, name the conversation yourself in the arguments above (--session-id, --resume, --continue) and Agency stands down."
         >
           <input
             className="settings-input mono"

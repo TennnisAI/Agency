@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { CloneProgress, RunInfo, createRun, createTerminal as createTerminalApi, getSettings, listRuns, projectTarget, rememberedModel, runScriptsLive } from "../api";
 import { loadFold, saveFold } from "../hooks/usePaneWidth";
+import { Tab, openingTab } from "../lib/projectTab";
 import { pinnedFirst } from "../lib/runstate";
 import { toastError } from "../lib/toast";
 
@@ -19,7 +20,6 @@ export type SpawnOpts = {
   // default).
   model?: string | null;
 };
-type Tab = "agents" | "source" | "files" | "issues" | "docs" | "run";
 
 interface RunStore {
   runs: RunInfo[];
@@ -28,7 +28,9 @@ interface RunStore {
   // tick as the runs, so the project's Run tab can show a dot too.
   projectRunLive: boolean;
   selectedProjectId: string | null;
-  setSelectedProject: (id: string | null) => void;
+  // `kind` is the incoming project's Project.kind, which decides the tab a
+  // project opens on the first time it is selected (see openingTab).
+  setSelectedProject: (id: string | null, kind?: string | null) => void;
   view: View;
   setView: (v: View) => void;
   focusedRunId: string | null;
@@ -206,7 +208,7 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
     }
   }, [refreshRuns]);
 
-  function setSelectedProject(id: string | null) {
+  function setSelectedProject(id: string | null, kind?: string | null) {
     setSelectedProjectId(id);
     // Point the ref at the incoming project immediately, before React re-renders.
     // Callers routinely follow this with setTab (open an agent, an issue, a note),
@@ -218,10 +220,10 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
     // The dot belongs to the project we just left; the next tick sets this
     // project's own.
     setProjectRunLive(false);
-    // Restore this project's last-viewed tab (defaults to "agents" the first
-    // time a project is opened). Viewing Files for one project and clicking
-    // another lands you on that project's Files.
-    if (id) setTabState(tabByProject.current[id] ?? "agents");
+    // Restore this project's last-viewed tab, falling back to the tab its kind
+    // opens on the first time it is selected. Viewing Files for one project and
+    // clicking another lands you on that project's Files.
+    if (id) setTabState(tabByProject.current[id] ?? openingTab(kind));
     // Clear any pending merge-approval so switching projects can't re-open the
     // MergeModal for a run from the old project. Same for a pending session tab:
     // its run belongs to the project we just left.

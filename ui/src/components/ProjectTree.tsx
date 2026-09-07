@@ -10,6 +10,7 @@ import { newAgentItems, useAgentProfiles, useRunMenu } from "../hooks/useRunMenu
 import { useSpawnAgent } from "../hooks/useSpawnAgent";
 import Menu, { MenuEntry } from "./git/Menu";
 import ConfirmDialog from "./ConfirmDialog";
+import { PinMark } from "./AttentionMarker";
 import ProjectColorPicker from "./ProjectColorPicker";
 import RepoSetupDialog from "./RepoSetupDialog";
 import CloneDialog from "./CloneDialog";
@@ -408,6 +409,7 @@ export default function ProjectTree({
                   onClick={(e) => { e.stopPropagation(); onSelectRun(workspace, r); }}
                   onContextMenu={(e) => openRunMenu(e, r, (run) => onSelectRun(workspace, run))}
                 >
+                  <PinMark run={r} />
                   <span className={`dot ${runStatus(r).cls}`} />
                   <span className="tree-child-name tl">{r.agent}: {runName(r)}</span>
                 </li>
@@ -461,6 +463,7 @@ export default function ProjectTree({
                     onClick={(e) => { e.stopPropagation(); onSelectRun(p, r); }}
                     onContextMenu={(e) => openRunMenu(e, r, (run) => onSelectRun(p, run))}
                   >
+                    <PinMark run={r} />
                     <span className={`dot ${runStatus(r).cls}`} />
                     <span className="tree-child-name tl">{r.agent}: {runName(r)}</span>
                   </li>

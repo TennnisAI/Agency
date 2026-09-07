@@ -13,9 +13,9 @@ git worktree.** Watch them live, review what they changed, merge the good ones.
      deliberately, because the same image already ships on the public site.
      When a demo-repo capture exists, replace both together. -->
 
-![The Agency window showing the all-projects overview: 16 projects and 13
-agents, with live terminal output from several Claude Code runs, each on its own
-agent branch, and a plain terminal alongside.](site/assets/img/shot-overview.webp)
+![The Agency window showing the all-projects overview: 18 projects and 12
+agents, with live terminal output from several Claude Code runs and a Cursor
+agent, each on its own agent branch.](site/assets/img/shot-overview.webp)
 
 Built with [Tauri 2](https://tauri.app): a Rust backend (`crates/`) and a React
 + Vite frontend (`ui/`).

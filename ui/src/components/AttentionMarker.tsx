@@ -18,6 +18,22 @@ async function togglePin(run: RunInfo, onChanged: () => void) {
   }
 }
 
+/**
+ * The read-only mark a pinned run wears where it is listed as a row rather than
+ * a tile: the projects tree and the agents rail. Nothing to click — the row's
+ * right-click menu already carries Pin/Unpin — it is there so a pinned run is
+ * recognisable as one. Pinned runs sort first in both panes, so the extra
+ * leading glyph indents a contiguous block at the top, not scattered rows.
+ */
+export function PinMark({ run }: { run: RunInfo }) {
+  if (!isPinned(run)) return null;
+  return (
+    <span className="pin-mark" title="Pinned" aria-label="Pinned">
+      <PinIcon size={11} filled />
+    </span>
+  );
+}
+
 /** Menu entry for hosts that already have an overflow or right-click menu. */
 export function pinItems(run: RunInfo, onChanged: () => void): OverflowItem[] {
   const pinned = isPinned(run);

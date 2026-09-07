@@ -93,12 +93,15 @@ export default function AgentTile({ run }: { run: RunInfo }) {
       )}
       <pre className="tile-preview">{preview}</pre>
       <div className="tile-foot">
-        <span title={st.title}>{st.text}</span>
-        {/* Same register as the status above: what the agent is doing, and what
-            it has not been handed yet. */}
-        <QueuedMarker run={run} />
-        {/* And whether you have pinned it to the top of the board. */}
+        {/* Whether you have pinned it to the top of the board, then what it is
+            doing. The pin leads the foot: with the foot spaced apart it used to
+            land wherever the row's other contents left a gap, which moved as
+            the queued marker came and went. */}
         <AttentionMarker run={run} onChanged={refreshRuns} />
+        <span title={st.title}>{st.text}</span>
+        {/* Same register as the status beside it: what the agent is doing, and
+            what it has not been handed yet. */}
+        <QueuedMarker run={run} />
         {/* The same close button and menu the agents rail carries, so an agent
             offers the same ways out wherever it is listed: archived, keeping
             its record for the Archived section, or deleted outright. The

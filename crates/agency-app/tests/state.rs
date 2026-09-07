@@ -917,6 +917,70 @@ fn terminal_survives_attach_detach_reattach() {
     assert_eq!(state.list_runs(&project.id).unwrap().len(), 0);
 }
 
+/// AGE-201: merging an agent's branch here is the one ending that could not
+/// reach the remote. The teardown that follows takes the worktree and the
+/// local branch; the published copy stayed on the remote for good, and a
+/// month of agents leaves a month of branches.
+#[test]
+fn merging_can_take_the_agent_branch_off_the_remote() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let git = |at: &Path, args: &[&str]| {
+        let out = Command::new("git").args(args).current_dir(at).output().unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    };
+    let origin = dir.path().join("origin.git");
+    git(dir.path(), &["init", "-q", "--bare", "-b", "main", origin.to_str().unwrap()]);
+    git(&repo, &["remote", "add", "origin", origin.to_str().unwrap()]);
+    git(&repo, &["push", "-q", "origin", "main"]);
+
+    let state = common::state(&dir);
+    state
+        .register_profile(AgentProfile {
+            name: "noop".into(),
+            command: "sh".into(),
+            args: vec!["-c".into(), "sleep 1".into()],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+    let info = state.create_run(&project.id, "p", "noop", None, "HEAD", None).unwrap();
+    let wt = state.worktree_path(&info.id).unwrap();
+    std::fs::write(wt.join("feature.txt"), "x\n").unwrap();
+    git(&wt, &["add", "-A"]);
+    git(&wt, &["commit", "-qm", "feat"]);
+    git(&wt, &["push", "-q", "origin", &info.branch]);
+
+    let tracking = format!("origin/{}", info.branch);
+    // The window can only offer this because the preview says the name is out
+    // there; an unpublished branch has nothing to offer.
+    let preview = state.merge_preview(&info.id).unwrap();
+    assert_eq!(preview.remote_branches, vec![tracking.clone()]);
+
+    // Before the merge the remote copy is the only copy off this machine, and
+    // the deletion is refused rather than trusted to the caller's ordering.
+    let err = state.delete_run_remote_branch(&info.id).unwrap_err().to_string();
+    assert!(err.contains("aren't on main"), "explains the refusal: {err}");
+
+    assert!(matches!(state.merge_task(&info.id).unwrap(), MergeOutcome::Clean { .. }));
+    assert_eq!(state.delete_run_remote_branch(&info.id).unwrap(), vec![tracking.clone()]);
+    let listed = Command::new("git").args(["branch"]).current_dir(&origin).output().unwrap();
+    let listed = String::from_utf8_lossy(&listed.stdout).to_string();
+    assert!(!listed.contains(&info.branch), "origin still has the branch: {listed}");
+    // A second press is a no-op, not an error: the window offers this straight
+    // after a merge, and by then GitHub may have deleted the branch itself.
+    assert!(state.delete_run_remote_branch(&info.id).unwrap().is_empty());
+    // The local branch is the teardown's to take, with the worktree, once the
+    // user picks archive or delete.
+    assert!(state.run_cleanup(&info.id).unwrap().facts.merged);
+
+    let _ = state.discard_run(&info.id);
+}
+
 #[test]
 fn merge_task_clean_merges_branch_into_base() {
     let dir = tempfile::tempdir().unwrap();

@@ -10,7 +10,8 @@ import { attachRun, detachRun, resizeRun, runInput, runPreview, ensureRunActive,
   attachShell, detachShell, resizeShell, shellInput, shellPreview, startShell,
   FileRoot, openTermPath } from "../api";
 import { useRuns } from "../store/runs";
-import { currentXtermTheme, minContrastRatio, paperSurface, TERMINAL_FONT_FAMILY } from "../lib/themes";
+import { currentXtermTheme, minContrastRatio, paperSurface } from "../lib/themes";
+import { paneOptions } from "../lib/termOptions";
 import { initialCapture, feed } from "../lib/firstPrompt";
 import { shouldSwallowWheel, createPageScroller } from "../lib/termScroll";
 import { follow, GESTURE_MS } from "../lib/termFollow";
@@ -122,11 +123,7 @@ export default function FocusTerminal(
     // there" is not something to raise a toast over.
     const input = createInputWriter((data) => { stream.input(runId, data).catch(() => {}); });
     inputRef.current = input;
-    // Large scrollback: this is the live scroll depth (xterm accumulates the
-    // streamed output into its own buffer), so a small cap is what makes long
-    // agent conversations "stop" scrolling well before their start. xterm
-    // allocates lines lazily, so the ceiling only costs memory once it's filled.
-    const term = new Terminal({ convertEol: true, fontSize: 13, fontFamily: TERMINAL_FONT_FAMILY, cursorBlink: true, theme: currentXtermTheme(), minimumContrastRatio: minContrastRatio(), scrollback: 50000 });
+    const term = new Terminal(paneOptions());
     const fit = new FitAddon();
     const search = new SearchAddon();
     term.loadAddon(fit);

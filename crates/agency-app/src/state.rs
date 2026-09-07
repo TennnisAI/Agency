@@ -2873,6 +2873,48 @@ impl AppState {
         self.registry.lock().unwrap().set_project_color(id, color)
     }
 
+    /// Point an existing project at a new folder: the AGE-203 reconnect, for a
+    /// source folder that was moved, renamed, or restored from a volume that
+    /// had been unmounted.
+    ///
+    /// Nothing on disk is moved (unlike [`move_workspace`], which relocates the
+    /// folder itself); this only rewrites where the project believes its folder
+    /// is. Every run row, issue, note and setting is keyed on the project id,
+    /// so all of it comes back with the folder.
+    pub fn relocate_project(&self, id: &str, new_path: &Path) -> Result<Project> {
+        validate_project_path(new_path)?;
+        let project = self
+            .registry
+            .lock()
+            .unwrap()
+            .get_project(id)?
+            .ok_or_else(|| anyhow!("unknown project: {id}"))?;
+        if project.repo_path == new_path {
+            return Ok(project);
+        }
+        {
+            let reg = self.registry.lock().unwrap();
+            reg.set_project_repo_path(id, new_path)?;
+        }
+        // The agents' worktrees live under `<repo>/.agency/worktrees/`, so they
+        // travelled with the folder and their absolute git links are now stale.
+        // Repair them here rather than leaving each agent's tab to report "not
+        // a git repository" one at a time. Best-effort: a folder with no
+        // repository, or one the user pointed at by mistake, still reconnects.
+        //
+        // The agents' own sessions are deliberately left running. A shell's cwd
+        // is a reference to the directory, not to its path, so a folder moved
+        // rather than deleted takes every process working in it along: those
+        // agents are fine where they are, and killing them would throw away
+        // live work to fix a path that was never broken for them.
+        agency_core::worktree::WorktreeManager::new(new_path.to_path_buf()).repair().ok();
+        self.registry
+            .lock()
+            .unwrap()
+            .get_project(id)?
+            .ok_or_else(|| anyhow!("project row vanished"))
+    }
+
     pub fn close_project(&self, id: &str) -> Result<()> {
         self.close_project_with_progress(id, &mut |_| {})
     }

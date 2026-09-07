@@ -210,3 +210,55 @@ fn create_on_branch_checks_out_existing_branch() {
     // No agent/ branch was created for it.
     assert!(!branch_exists(repo.path(), "agent/task-pr"));
 }
+
+/// AGE-203: the project folder is dragged somewhere else in Finder. Agency
+/// keeps its worktrees inside it, so they move too, and both halves of every
+/// worktree link record absolute paths: the worktree's `.git` file points at
+/// `<repo>/.git/worktrees/<id>`, and that directory's `gitdir` file points back
+/// at the worktree. After the move neither resolves, and every agent's tab
+/// reports "not a git repository" until `repair` rewrites them.
+#[test]
+fn repair_reattaches_worktrees_after_the_project_folder_moves() {
+    let parent = tempdir().unwrap();
+    let repo = parent.path().join("proj");
+    std::fs::create_dir(&repo).unwrap();
+    git(&repo, &["init", "-q"]);
+    git(&repo, &["config", "user.email", "t@t.t"]);
+    git(&repo, &["config", "user.name", "t"]);
+    std::fs::write(repo.join("README.md"), "hi").unwrap();
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-q", "-m", "init"]);
+
+    let mgr = WorktreeManager::new(repo.clone());
+    mgr.create("task-1", "HEAD").unwrap();
+
+    let moved = parent.path().join("proj-elsewhere");
+    std::fs::rename(&repo, &moved).unwrap();
+    let wt = moved.join(".agency").join("worktrees").join("task-1");
+    assert!(wt.is_dir(), "the worktree moved with the folder");
+    let broken =
+        Command::new("git").args(["status", "--porcelain"]).current_dir(&wt).output().unwrap();
+    assert!(!broken.status.success(), "the moved worktree's git link is stale");
+
+    let moved_mgr = WorktreeManager::new(moved.clone());
+    moved_mgr.repair().unwrap();
+
+    let fixed =
+        Command::new("git").args(["status", "--porcelain"]).current_dir(&wt).output().unwrap();
+    assert!(
+        fixed.status.success(),
+        "repair must reattach the worktree: {}",
+        String::from_utf8_lossy(&fixed.stderr)
+    );
+    // And the main repo knows where the worktree went, so archive, merge and
+    // restore address the right tree.
+    let listed = moved_mgr.list().unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].task_id, "task-1");
+    assert_eq!(listed[0].branch, "agent/task-1");
+
+    // Repair on a repo whose worktrees are all present and correct is a no-op,
+    // not a failure: the reconnect calls it unconditionally.
+    moved_mgr.repair().unwrap();
+    assert_eq!(moved_mgr.list().unwrap().len(), 1);
+}

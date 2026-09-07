@@ -65,6 +65,13 @@ function Shell() {
     // in it. The in-view add menu forces the same thing; this is its copy for
     // the menu bar and the keyboard shortcut.
     const r = project ? await inspectRepo(project.repo_path).catch(() => null) : null;
+    // A folder that has gone from disk is not a folder to work in: without this
+    // the "no repository, so work in the folder itself" arm below started an
+    // agent against a path that is not there (AGE-203).
+    if (r?.state === "missing") {
+      toastInfo(`${project?.name ?? "This project"} can't start an agent: its folder is missing.`);
+      return;
+    }
     if (r?.state === "notARepo") {
       createAgent(agent, { base: "HEAD", mergeTarget: "", worktree: false });
       return;
@@ -245,6 +252,12 @@ function Shell() {
     const r = await inspectRepo(ws.repo_path).catch(() => null);
     if (!r) {
       toastInfo("Couldn't read the workspace folder.");
+      return;
+    }
+    // The workspace folder itself has gone (AGE-203): the note this would
+    // narrate was written into a folder that is no longer there.
+    if (r.state === "missing") {
+      toastInfo("The workspace folder is missing. Open the workspace to reconnect it.");
       return;
     }
     // With no repository the agent edits the note where it lies, so there is no

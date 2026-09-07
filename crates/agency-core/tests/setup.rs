@@ -1,8 +1,8 @@
 use agency_core::setup::{
-    clone_destination, clone_repo, clone_repo_with_progress, init_repo, initial_commit,
-    initial_commit_with_progress, inside_work_tree, repo_name_from_url, repo_readiness,
-    scan_large_files, write_default_gitignore, CancelToken, CommitOptions, RepoReadiness,
-    CANCELLED, LARGE_FILE_BYTES,
+    clone_destination, clone_repo, clone_repo_with_progress, folder_missing, init_repo,
+    initial_commit, initial_commit_with_progress, inside_work_tree, repo_name_from_url,
+    repo_readiness, scan_large_files, write_default_gitignore, CancelToken, CommitOptions,
+    RepoReadiness, CANCELLED, LARGE_FILE_BYTES,
 };
 use std::path::Path;
 use std::process::Command;
@@ -43,10 +43,39 @@ fn inside_work_tree_answers_yes_no_or_dont_know() {
     // git can't even be spawned against a folder that isn't there. That is not
     // "no repository here" — callers that skip a run's isolated worktree on a
     // gitless folder must not act on it, so it has to stay distinguishable.
-    // `repo_readiness` deliberately folds it into NotARepo for setup UI.
     let gone = plain.path().join("removed");
     assert_eq!(inside_work_tree(&gone), None);
-    assert_eq!(repo_readiness(&gone), RepoReadiness::NotARepo);
+    // And `repo_readiness` says so in its own right: it used to fold this into
+    // NotARepo, which every caller read as "a plain folder, so run the agent
+    // in it" against a folder that was not there (AGE-203).
+    assert_eq!(repo_readiness(&gone), RepoReadiness::Missing);
+}
+
+#[test]
+fn a_moved_or_deleted_folder_reads_as_missing() {
+    let parent = tempfile::tempdir().unwrap();
+    let repo = parent.path().join("proj");
+    std::fs::create_dir(&repo).unwrap();
+    init_bare_repo(&repo);
+    std::fs::write(repo.join("a.txt"), "hi\n").unwrap();
+    initial_commit(&repo, false).unwrap();
+    assert_eq!(repo_readiness(&repo), RepoReadiness::Ready { dirty: false });
+    assert!(!folder_missing(&repo));
+
+    // Moved out from under us, exactly as a drag in Finder does.
+    let moved = parent.path().join("proj-elsewhere");
+    std::fs::rename(&repo, &moved).unwrap();
+    assert!(folder_missing(&repo));
+    assert_eq!(repo_readiness(&repo), RepoReadiness::Missing);
+    // The folder at its new home is untouched, so a reconnect has something to
+    // point at.
+    assert_eq!(repo_readiness(&moved), RepoReadiness::Ready { dirty: false });
+
+    // A path taken over by a file is as unusable as one that is not there.
+    let file = parent.path().join("a-file");
+    std::fs::write(&file, "not a folder\n").unwrap();
+    assert!(folder_missing(&file));
+    assert_eq!(repo_readiness(&file), RepoReadiness::Missing);
 }
 
 #[test]

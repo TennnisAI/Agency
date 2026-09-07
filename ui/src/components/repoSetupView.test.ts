@@ -9,6 +9,18 @@ import {
 import type { LargeFileScan } from "../api";
 
 describe("repoSetupView", () => {
+  // AGE-203. Both of this dialog's actions run git inside the folder, so on a
+  // folder that is not there every button it could offer can only fail. It
+  // must say what is wrong and offer nothing but Cancel.
+  it("missing → says the folder is gone and offers no action", () => {
+    for (const ctx of ["add", "spawn"] as const) {
+      const v = repoSetupView({ state: "missing", stageable: false, dirty: false }, ctx);
+      expect(v.kind).toBe("missing");
+      expect(v.title).toMatch(/missing/i);
+      expect(v.primaryLabel).toBe("");
+      expect(v.secondaryLabel).toBeNull();
+    }
+  });
   it("notARepo in add context → init prompt with a way past it", () => {
     const v = repoSetupView({ state: "notARepo", stageable: false, dirty: false }, "add");
     expect(v.kind).toBe("init");

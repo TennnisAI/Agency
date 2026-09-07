@@ -31,6 +31,7 @@ pub struct ReadinessDto {
 fn readiness_dto(r: agency_core::setup::RepoReadiness) -> ReadinessDto {
     use agency_core::setup::RepoReadiness::*;
     match r {
+        Missing => ReadinessDto { state: "missing".into(), stageable: false, dirty: false },
         NotARepo => ReadinessDto { state: "notARepo".into(), stageable: false, dirty: false },
         NoCommits { stageable } => {
             ReadinessDto { state: "noCommits".into(), stageable, dirty: false }
@@ -136,6 +137,18 @@ pub async fn delete_project(
             let _ = on_progress.send(p);
         })
         .map_err(|e| e.to_string())
+}
+
+/// Point a project at the folder its source moved to. Nothing on disk is
+/// touched: this rewrites the recorded path and repairs the agents' worktree
+/// links, which record absolute paths and so broke with the move.
+#[tauri::command]
+pub fn relocate_project(
+    state: State<'_, AppState>,
+    id: String,
+    new_path: String,
+) -> Result<Project, String> {
+    state.relocate_project(&id, std::path::Path::new(&new_path)).map_err(|e| e.to_string())
 }
 
 /// Recolor a project's sidebar icon. `color` must be a palette accent name
@@ -1582,6 +1595,16 @@ pub async fn inspect_repo(
     repo_path: String,
 ) -> Result<ReadinessDto, String> {
     Ok(readiness_dto(state.inspect_repo(std::path::Path::new(&repo_path))))
+}
+
+/// Whether a project's folder has gone from disk. One `stat`, so the UI can
+/// poll it on every surface that would otherwise sit on a loading screen or a
+/// git error, which is what a moved or deleted folder used to produce
+/// (AGE-203). `inspect_repo` answers this too, but it shells out to git over
+/// the whole tree and is far too heavy to ask on a timer.
+#[tauri::command]
+pub async fn folder_missing(repo_path: String) -> Result<bool, String> {
+    Ok(agency_core::setup::folder_missing(std::path::Path::new(&repo_path)))
 }
 
 #[tauri::command]

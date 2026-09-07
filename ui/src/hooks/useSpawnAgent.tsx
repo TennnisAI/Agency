@@ -48,6 +48,15 @@ export function useSpawnAgent(project: Project | null, onRepoResolved?: () => vo
         return;
       }
       const r = await inspectRepo(project.repo_path);
+      // The folder is not there at all (AGE-203). Nothing this hook can raise
+      // fixes that: the setup dialog only offers `git init` and a first commit,
+      // both of which need a folder to run in. Say what is wrong and stop. The
+      // project's own screen carries Locate folder and Remove project; this is
+      // for the surfaces that spawn from outside it, like the sidebar menu.
+      if (r.state === "missing") {
+        setError(`${project.repo_path} is missing, so nothing can start there. Open the project to reconnect it or remove it.`);
+        return;
+      }
       // A folder with no repository has nothing to set up: there is no branch to
       // cut from, so the agent works in the folder as it stands. The add menu
       // already clears the worktree flag here; this restates it so a stale menu

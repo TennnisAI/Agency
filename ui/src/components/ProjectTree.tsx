@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { CloneProgress, FileRoot, Project, RunInfo, RepoReadiness, addProject, closeProject, deleteProject, inspectRepo, listProjects, listRuns, setProjectColor } from "../api";
+import { CloneProgress, FileRoot, Project, RunInfo, RepoReadiness, addProject, closeProject, deleteProject, inspectRepo, listProjects, listRuns, relocateProject, setProjectColor } from "../api";
 import { projectAccent, runName } from "../agents";
 import { useRuns } from "../store/runs";
-import { toastError } from "../lib/toast";
+import { toastError, toastInfo } from "../lib/toast";
 import { copyAbsPath, reveal, revealLabel } from "../lib/fileActions";
 import { pinnedFirst, runStatus } from "../lib/runstate";
 import { newAgentItems, useAgentProfiles, useRunMenu } from "../hooks/useRunMenu";
 import { useSpawnAgent } from "../hooks/useSpawnAgent";
+import { useMissingFolders } from "../hooks/useFolderMissing";
 import Menu, { MenuEntry } from "./git/Menu";
 import ConfirmDialog from "./ConfirmDialog";
 import ProjectColorPicker from "./ProjectColorPicker";
@@ -16,7 +17,7 @@ import CloneDialog from "./CloneDialog";
 import SidebarToggle from "./SidebarToggle";
 import WorkspaceCreateDialog from "./WorkspaceCreateDialog";
 import { WORKSPACE_HIDDEN_EVENT, workspaceHidden } from "../lib/workspacePref";
-import { PROJECTS_CHANGED_EVENT } from "../lib/projectEvents";
+import { PROJECTS_CHANGED_EVENT, notifyProjectsChanged } from "../lib/projectEvents";
 
 type Pending = { project: Project } | null;
 
@@ -90,6 +91,11 @@ export default function ProjectTree({
   // be clicked, so `spawn` is always bound to the right one.
   const [menuProject, setMenuProject] = useState<Project | null>(null);
   const { spawn, error: spawnError, dialogs: spawnDialogs } = useSpawnAgent(menuProject);
+
+  // Projects whose source folder has gone from disk (AGE-203). Marked here, in
+  // the one list that shows every project, so a folder moved in Finder is
+  // visible without opening the project and watching its tabs fail.
+  const missing = useMissingFolders(projects);
 
   // The pinned workspace is a project row flagged `kind: "workspace"` — shown
   // above the list, never part of the active filter, not closable. Users who
@@ -233,6 +239,27 @@ export default function ProjectTree({
     }
   }
 
+  // Point a project at the folder its source moved to. Same picker as Add, but
+  // it repoints the existing project rather than making a new one: the id stays,
+  // so every agent, issue and note kept against it comes back with the folder.
+  // The full explanation lives on the project's own screen; this is the way in
+  // for someone who can see the marker in the sidebar and wants it fixed now.
+  async function handleLocate(p: Project) {
+    const sel = await open({
+      directory: true,
+      multiple: false,
+      title: `Locate the folder for "${p.name}"`,
+    });
+    if (typeof sel !== "string") return;
+    try {
+      await relocateProject(p.id, sel);
+      await refresh();
+      notifyProjectsChanged();
+    } catch (e) {
+      toastError(e, "Couldn't reconnect the project");
+    }
+  }
+
   // A freshly cloned repo already has commits and a clean tree, so it's ready to
   // add straight away — no setup dialog needed. Auto-open it like a fresh add.
   async function handleCloned(path: string) {
@@ -278,6 +305,32 @@ export default function ProjectTree({
       if (agent === "shell") void createTerminal();
       else void spawn(agent);
     };
+    // With the folder gone there is nothing to open, browse or start an agent
+    // in, so the menu offers the one thing that helps and the way out.
+    if (missing.has(p.id)) {
+      const gone: MenuEntry[] = [
+        { label: "Locate folder…", onClick: () => void handleLocate(p) },
+        // The recorded path, copied straight from the row: `copyAbsPath` asks
+        // the backend to resolve it on disk, which is the one thing that
+        // cannot be done here.
+        {
+          label: "Copy old path",
+          onClick: () => {
+            navigator.clipboard
+              .writeText(p.repo_path)
+              .then(() => toastInfo("Path copied"))
+              .catch((e) => toastError(e, "Couldn't copy path"));
+          },
+        },
+      ];
+      if (p.kind !== "workspace") {
+        gone.push(
+          { kind: "separator" },
+          { label: "Close project…", onClick: () => setPending({ project: p }) },
+        );
+      }
+      return gone;
+    }
     const items: MenuEntry[] = [
       { label: p.kind === "workspace" ? "Open workspace" : "Open project", onClick: () => onSelect(p) },
       { kind: "submenu", label: "New agent", items: newAgentItems(profiles, start) },
@@ -380,8 +433,10 @@ export default function ProjectTree({
         {!wsHidden && (
         <li className="tree-workspace">
           <div
-            className={`tree-row ${workspace && workspace.id === selectedId ? (focusedRunId ? "selected ancestor" : "selected") : ""}${workspace ? "" : " ws-absent"}${workspace && projMenu?.project.id === workspace.id ? " ctx" : ""}`}
-            title={workspace ? workspace.repo_path : "Create your workspace: a home for journaling, planning, and notes"}
+            className={`tree-row ${workspace && workspace.id === selectedId ? (focusedRunId ? "selected ancestor" : "selected") : ""}${workspace ? "" : " ws-absent"}${workspace && projMenu?.project.id === workspace.id ? " ctx" : ""}${workspace && missing.has(workspace.id) ? " gone" : ""}`}
+            title={workspace
+              ? (missing.has(workspace.id) ? `Folder missing: ${workspace.repo_path}` : workspace.repo_path)
+              : "Create your workspace: a home for journaling, planning, and notes"}
             onClick={() => openWorkspace(null)}
             onContextMenu={(e) => { if (workspace) openProjectMenu(e, workspace); }}
           >
@@ -396,6 +451,9 @@ export default function ProjectTree({
               onDoubleClick={(e) => { if (workspace) openRecolor(e, workspace); }}
             >◈</span>
             <span className="tree-name tl">{workspace?.name ?? "Workspace"}</span>
+            {workspace && missing.has(workspace.id) && (
+              <span className="tree-gone" aria-label="Folder missing" title={`Folder missing: ${workspace.repo_path}`}>{"⚠︎"}</span>
+            )}
           </div>
           {workspace && openIds.has(workspace.id) && (
             <ul className="tree-children">
@@ -422,7 +480,8 @@ export default function ProjectTree({
         {visible.map((p) => (
           <li key={p.id}>
             <div
-              className={`tree-row ${p.id === selectedId ? (focusedRunId ? "selected ancestor" : "selected") : ""}${projMenu?.project.id === p.id ? " ctx" : ""}`}
+              className={`tree-row ${p.id === selectedId ? (focusedRunId ? "selected ancestor" : "selected") : ""}${projMenu?.project.id === p.id ? " ctx" : ""}${missing.has(p.id) ? " gone" : ""}`}
+              title={missing.has(p.id) ? `Folder missing: ${p.repo_path}` : undefined}
               onClick={() => onSelect(p)}
               onContextMenu={(e) => openProjectMenu(e, p)}
             >
@@ -437,6 +496,15 @@ export default function ProjectTree({
                 onDoubleClick={(e) => openRecolor(e, p)}
               >{p.name.slice(0, 1).toUpperCase()}</span>
               <span className="tree-name tl">{p.name}</span>
+              {/* The folder is gone from disk. A marker, not a badge that
+                  explains itself: the project's own screen carries the
+                  explanation and the two ways out, and this is what gets you
+                  there. Unlike the "needs a commit" badge that used to sit
+                  here, it can't go stale — the probe behind it re-runs every
+                  few seconds and whenever the window comes back. */}
+              {missing.has(p.id) && (
+                <span className="tree-gone" aria-label="Folder missing" title={`Folder missing: ${p.repo_path}`}>{"⚠︎"}</span>
+              )}
               {/* No "needs a commit" badge here. A repository with no commits
                   is not a broken project, it is a new one: agents run in the
                   checkout either way, and a folder with no repository at all

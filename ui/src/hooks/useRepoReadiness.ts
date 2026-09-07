@@ -42,6 +42,12 @@ export function useRepoReadiness(project: Project | null) {
  * itself, so everything that needs a branch to exist (Source Control, races,
  * loops, GitHub import, the worktree checkbox) hides until a repo is
  * initialized.
+ *
+ * A folder that has gone from disk ("missing") is deliberately not one of
+ * these, even though it has no repository in it either: this answer sends an
+ * agent into the folder as it stands, and there is no folder. That is
+ * `useFolderMissing`, which polls a single `stat` rather than a whole
+ * `inspect_repo`, and whose panel replaces the tabs outright (AGE-203).
  */
 export function isGitless(readiness: RepoReadiness | null): boolean {
   return readiness?.state === "notARepo";

@@ -2,9 +2,10 @@ import { LargeFileScan, RepoReadiness } from "../api";
 import { formatSize } from "./git/binary";
 
 export type RepoSetupView = {
-  kind: "init" | "commit" | "dirty" | "ready";
+  kind: "missing" | "init" | "commit" | "dirty" | "ready";
   title: string;
   body: string;
+  /** Empty for a view with nothing this dialog can do about it. */
   primaryLabel: string;
   secondaryLabel: string | null;
 };
@@ -12,6 +13,22 @@ export type RepoSetupView = {
 // Pure mapping from a folder's git readiness (+ where we're asking) to what the
 // setup dialog should show. `ready` means nothing to do (caller treats as no-op).
 export function repoSetupView(readiness: RepoReadiness, context: "add" | "spawn"): RepoSetupView {
+  // The folder is gone (AGE-203). Every caller's pre-flight now catches this
+  // before opening the dialog, so this is the backstop rather than the path:
+  // both of the dialog's actions shell out to git inside the folder, so on a
+  // folder that is not there "Initialize repository" is a button that can only
+  // fail. Say what is wrong and leave Cancel as the way out; Locate folder and
+  // Remove project live on the project's own screen, which is where the user
+  // is being sent.
+  if (readiness.state === "missing") {
+    return {
+      kind: "missing",
+      title: "This folder is missing",
+      body: "Agency can't find this folder. It may have been moved or renamed, it may have been deleted, or it may be on a disk that isn't connected. Open the project to reconnect it to its folder, or to remove it.",
+      primaryLabel: "",
+      secondaryLabel: null,
+    };
+  }
   if (readiness.state === "notARepo") {
     return {
       kind: "init",

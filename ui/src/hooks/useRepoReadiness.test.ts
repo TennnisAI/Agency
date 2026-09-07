@@ -14,6 +14,12 @@ describe("isGitless", () => {
   it("claims nothing while the first inspection is in flight", () => {
     expect(isGitless(null)).toBe(false);
   });
+  // AGE-203: a folder that is gone is not a folder with no repository in it.
+  // Everything gated on `gitless` reads it as "no branch here, so let the agent
+  // work in the folder itself", and there is no folder to work in.
+  it("is false for a folder that has gone from disk", () => {
+    expect(isGitless(readiness("missing"))).toBe(false);
+  });
 });
 
 describe("pathsToProbe", () => {

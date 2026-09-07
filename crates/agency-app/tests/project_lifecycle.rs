@@ -128,3 +128,53 @@ fn tearing_a_project_down_reports_each_step() {
         "delete_project must leave no worktrees behind"
     );
 }
+
+/// AGE-203: the source folder is moved (or its volume unmounted and remounted
+/// somewhere else). The project must be repointable in place, keeping its id
+/// and everything keyed on it, rather than closed and re-added.
+#[test]
+fn relocate_project_repoints_a_moved_folder_and_keeps_the_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let git = |args: &[&str]| {
+        std::process::Command::new("git").args(args).current_dir(&repo).output().unwrap()
+    };
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "t@e.com"]);
+    git(&["config", "user.name", "T"]);
+    git(&["commit", "-q", "--allow-empty", "-m", "init"]);
+
+    let state = common::state(&dir);
+    let project = state.add_project("repo", &repo).unwrap();
+    let issue = state
+        .create_issue(&project.id, "still here", "", agency_core::registry::IssueStatus::Todo)
+        .unwrap();
+
+    let moved = dir.path().join("repo-elsewhere");
+    std::fs::rename(&repo, &moved).unwrap();
+    assert_eq!(state.inspect_repo(&repo), agency_core::setup::RepoReadiness::Missing);
+
+    let back = state.relocate_project(&project.id, &moved).unwrap();
+    assert_eq!(back.id, project.id, "relocating must not make a new project");
+    assert_eq!(back.repo_path, moved);
+    assert_eq!(
+        state.inspect_repo(&back.repo_path),
+        agency_core::setup::RepoReadiness::Ready { dirty: false }
+    );
+    // Everything keyed on the project id comes back with the folder.
+    assert!(state.list_issues(&project.id).unwrap().iter().any(|i| i.id == issue.id));
+
+    // A folder that is not there is not somewhere to reconnect to: the picker
+    // cannot produce one, but a stale window or a scripted call can.
+    let nowhere = dir.path().join("nowhere");
+    assert!(state.relocate_project(&project.id, &nowhere).is_err());
+    assert_eq!(
+        state.list_projects().unwrap().iter().find(|p| p.id == project.id).unwrap().repo_path,
+        moved
+    );
+
+    // Relocating to where it already is is a no-op, not an error.
+    let same = state.relocate_project(&project.id, &moved).unwrap();
+    assert_eq!(same.repo_path, moved);
+}

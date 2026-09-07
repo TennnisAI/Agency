@@ -293,6 +293,42 @@ impl WorktreeManager {
         Ok(worktrees)
     }
 
+    /// Reattach this repo's linked worktrees after the project folder itself
+    /// moved on disk (the AGE-203 reconnect).
+    ///
+    /// Both halves of the link are absolute paths: a worktree's `.git` file
+    /// records `gitdir: <repo>/.git/worktrees/<id>`, and the repo's
+    /// `.git/worktrees/<id>/gitdir` records the worktree's own `.git` file.
+    /// Agency keeps its worktrees under `<repo>/.agency/worktrees/`, so a
+    /// folder dragged in Finder moves both and invalidates both: every agent's
+    /// tab then answers "not a git repository" until the paths are rewritten.
+    /// `git worktree repair` is git's own fix for exactly this, and it takes
+    /// the moved trees' paths to mend the main repo's side of each link.
+    ///
+    /// Best-effort by design: a run whose worktree was already gone, or a
+    /// folder the user pointed at that is a different repository entirely,
+    /// must not fail the reconnect. Nothing here can destroy work; the worst
+    /// case is a link left broken, which is where it started.
+    pub fn repair(&self) -> Result<()> {
+        let root = self.worktrees_root();
+        let mut paths: Vec<String> = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&root) {
+            for entry in entries.flatten() {
+                if entry.path().is_dir() {
+                    paths.push(entry.path().to_string_lossy().to_string());
+                }
+            }
+        }
+        // Sorted so a failure is reproducible from the log; read_dir is not
+        // ordered.
+        paths.sort();
+        let mut args = vec!["worktree", "repair"];
+        args.extend(paths.iter().map(|p| p.as_str()));
+        let _ = self.git(&args);
+        let _ = self.git(&["worktree", "prune"]);
+        Ok(())
+    }
+
     /// Remove the worktree and delete its branch. Tolerant: each git step is
     /// best-effort so it works whether or not the worktree still exists (e.g.
     /// discarding an already-archived run), and still deletes the branch.

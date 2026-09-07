@@ -90,14 +90,17 @@ export function useMissingFolders(projects: Project[]): Set<string> {
       if (!live) return;
       const found = answers.filter((a): a is readonly [string, boolean] => a !== null);
       if (found.length === 0) return;
-      const next = Object.fromEntries(found);
-      // Only when the answer actually changed: the sidebar re-renders every
+      // Merged, not replaced: a probe that failed is absent from `found`, and
+      // replacing the whole map with it dropped every other folder's answer
+      // too, so one hung network mount cleared the ⚠︎ from every other
+      // project's row until a later sweep happened to succeed. No answer is no
+      // claim, here as in the single-project hook above.
+      //
+      // Only when an answer actually changed: the sidebar re-renders every
       // project row and its agents, and a sweep that says the same thing as
       // the last one has nothing to show for it.
       setMissingBy((prev) =>
-        found.length === Object.keys(prev).length && found.every(([p, m]) => prev[p] === m)
-          ? prev
-          : next,
+        found.every(([p, m]) => prev[p] === m) ? prev : { ...prev, ...Object.fromEntries(found) },
       );
     };
     void sweep();

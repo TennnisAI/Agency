@@ -25,6 +25,13 @@ export default function ProjectMissingView({
   /** The project was closed; the caller drops back to the overview. */
   onRemoved: () => void;
 }) {
+  // The workspace is pinned: Settings hides it rather than closing it, and
+  // ProjectTree's menus leave "Close project…" off it for the same reason.
+  // Offering it here took the ◈ row away for a workspace whose disk was merely
+  // unmounted, and the only way back, "Create your workspace", repoints the row
+  // at the default location: the recorded path of the folder the user was about
+  // to reconnect is then gone.
+  const removable = project.kind !== "workspace";
   const [busy, setBusy] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [progress, setProgress] = useState<CloneProgress | null>(null);
@@ -101,9 +108,11 @@ export default function ProjectMissingView({
         <button className="ghost" disabled={busy} onClick={() => void checkAgain()}>
           Check again
         </button>
-        <button className="ghost" disabled={busy} onClick={() => setConfirmRemove(true)}>
-          Remove project…
-        </button>
+        {removable && (
+          <button className="ghost" disabled={busy} onClick={() => setConfirmRemove(true)}>
+            Remove project…
+          </button>
+        )}
       </div>
       {confirmRemove && (
         <ConfirmDialog

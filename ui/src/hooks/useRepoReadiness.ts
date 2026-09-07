@@ -53,6 +53,22 @@ export function isGitless(readiness: RepoReadiness | null): boolean {
   return readiness?.state === "notARepo";
 }
 
+/**
+ * The same question as `isGitless`, but as an answer a sweep may record, with
+ * `null` for "no answer yet".
+ *
+ * A folder that has gone from disk says nothing about whether it holds a
+ * repository, and `isGitless` reads it as "it does" — which `pathsToProbe`
+ * then latches forever, since it never asks again once it holds a `false`. A
+ * gitless project on an external disk that happened to be unplugged during the
+ * first sweep therefore kept the branch-shaped issue-row entries ("Race
+ * agents…", "Loop agent…") for the life of the app, even after the disk came
+ * back. Missing is not an answer; leave the key unset and ask again.
+ */
+export function gitlessAnswer(readiness: RepoReadiness | null): boolean | null {
+  return readiness?.state === "missing" ? null : isGitless(readiness);
+}
+
 // How often a folder still believed to have no repository is asked again.
 // Much slower than the boards that use it poll (2.5s), because this is a
 // self-heal for `git init` happening elsewhere, not a live reading.
@@ -102,7 +118,8 @@ export function useGitlessProjects(projects: Project[]): Set<string> {
         inFlight.current.add(path);
         inspectRepo(path)
           .then((r) => {
-            if (live) setGitlessBy((m) => ({ ...m, [path]: isGitless(r) }));
+            const answer = gitlessAnswer(r);
+            if (live && answer !== null) setGitlessBy((m) => ({ ...m, [path]: answer }));
           })
           // No answer means no claim: the menu keeps its branch entries and the
           // backend's refusal is what the user sees, exactly as before.

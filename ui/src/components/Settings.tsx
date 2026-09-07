@@ -993,13 +993,25 @@ export default function Settings({
   const [workspace, setWorkspace] = useState<Project | null>(null);
   const [wsDefault, setWsDefault] = useState("");
   const [wsGitless, setWsGitless] = useState(false);
+  // Whether the folder itself is gone, kept apart from `wsGitless`: the two
+  // agree about what Switch should do with git and disagree about what to say
+  // to the user, since "Git is off" is not what is wrong with a workspace on a
+  // disk that is unplugged.
+  const [wsMissing, setWsMissing] = useState(false);
   const refreshWorkspace = () => {
     getWorkspace()
       .then(async (ws) => {
         setWorkspace(ws);
         if (ws) {
           const r = await inspectRepo(ws.repo_path).catch(() => null);
-          setWsGitless(r?.state === "notARepo");
+          // "missing" too, and deliberately: it used to be folded into
+          // `notARepo`, and reading it as "this workspace has git" makes
+          // Switch pass `git: true` for a workspace whose folder is only
+          // unmounted, so the folder the user then picks gets a `git init` and
+          // a first commit of everything already in it. Unknown has to mean
+          // gitless here: that way round the mistake costs nothing.
+          setWsGitless(r?.state === "notARepo" || r?.state === "missing");
+          setWsMissing(r?.state === "missing");
         }
       })
       .catch(() => {});
@@ -2087,7 +2099,7 @@ export default function Settings({
                         >Switch…</button>
                       </span>
                     </div>
-                    {wsGitless && (
+                    {wsGitless && !wsMissing && (
                       <div className="settings-notif-row">
                         <span className="settings-notif-label">
                           Git is off, so agents work directly in the folder: no branches,

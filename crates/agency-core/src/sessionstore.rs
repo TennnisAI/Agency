@@ -455,6 +455,12 @@ pub fn env(home: &Path, command: &str, worktree: &Path, session: &str) -> Vec<(S
 }
 
 /// Only the basename is matched, since a profile may carry an absolute path.
+///
+/// The basename as written, and nothing is resolved here: a CLI installed
+/// under a second name (cursor ships `agent` beside `cursor-agent`) is mapped
+/// back to the name these recipes are keyed by before it arrives, by
+/// `agent_catalog::recipe_command`. AGE-197 is what that costs when it does
+/// not happen.
 fn base(command: &str) -> &str {
     Path::new(command).file_name().and_then(|s| s.to_str()).unwrap_or(command)
 }

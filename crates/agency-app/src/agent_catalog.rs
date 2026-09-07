@@ -520,6 +520,61 @@ pub fn find(id: &str) -> Option<&'static CatalogEntry> {
     builtins().iter().find(|e| e.id == id)
 }
 
+/// Look up a catalog entry by the binary it launches, matched on the basename
+/// alone (a profile may carry an absolute path). The counterpart to [`find`]
+/// for the recipes that are keyed by command rather than by agent id — every
+/// one in [`agency_core::sessionstore`].
+pub fn find_by_command(command: &str) -> Option<&'static CatalogEntry> {
+    let name = base(command);
+    builtins().iter().find(|e| e.command == name)
+}
+
+/// `command`'s basename, since a profile may carry an absolute path.
+fn base(command: &str) -> &str {
+    std::path::Path::new(command).file_name().and_then(|s| s.to_str()).unwrap_or(command)
+}
+
+/// The command name Agency's per-command recipes are keyed by, for a profile
+/// whose command is one of a CLI's *other* installed names.
+///
+/// AGE-197: cursor's installer symlinks two names at one binary, `cursor-agent`
+/// and `agent`, and its own `--help` calls itself `agent`, so a hand-made
+/// profile pointing at `agent` is the natural one to write. Every recipe in
+/// [`agency_core::sessionstore`] is keyed by basename, so that profile matched
+/// none of them: cursor was launched with no conversation of its own and
+/// resumed with nothing, and after a quit — which kills every session and shuts
+/// the daemon down — each run came back on a brand new chat with the run's
+/// prompt replayed. The conversation was still on disk, reachable only through
+/// cursor's own `/resume` picker, which is how the bug was reported.
+///
+/// Default-deny in both directions, so a resolved name can only ever add a
+/// recipe where there was none:
+///
+/// - a basename the catalog already knows is returned untouched, never
+///   resolved. `claude` on an npm install is a shim whose target is a
+///   `cli.js`, and following the link there would lose every recipe it has;
+/// - a resolved name is adopted only when it is itself a catalog command.
+///   Anything else keeps the name the user wrote, and gets what a custom
+///   profile has always got.
+pub fn recipe_command(command: &str) -> String {
+    let resolved = crate::agent_diag::resolve_on_path(command)
+        .and_then(|p| p.canonicalize().ok())
+        .map(|p| base(&p.to_string_lossy()).to_string());
+    pick_recipe_command(base(command), resolved.as_deref()).to_string()
+}
+
+/// The pure half of [`recipe_command`]: `literal` is the basename the profile
+/// carries and `resolved` the basename its binary turns out to have.
+fn pick_recipe_command<'a>(literal: &'a str, resolved: Option<&'a str>) -> &'a str {
+    if find_by_command(literal).is_some() {
+        return literal;
+    }
+    match resolved {
+        Some(r) if find_by_command(r).is_some() => r,
+        _ => literal,
+    }
+}
+
 /// Build an `AgentProfile` from a catalog entry (empty args/env).
 pub fn profile_for(entry: &CatalogEntry) -> AgentProfile {
     AgentProfile {
@@ -738,5 +793,56 @@ mod tests {
         assert_eq!(prompt_delivery("crush"), PromptDelivery::Unsupported);
         assert_eq!(prompt_delivery("dsh"), PromptDelivery::AfterGuiReady);
         assert_eq!(prompt_delivery("my-own-agent"), PromptDelivery::Positional);
+    }
+
+    #[test]
+    fn a_catalog_entry_is_findable_by_its_binary_and_by_a_path_to_it() {
+        assert_eq!(find_by_command("cursor-agent").map(|e| e.id), Some("cursor"));
+        assert_eq!(
+            find_by_command("/Users/x/.local/bin/cursor-agent").map(|e| e.id),
+            Some("cursor")
+        );
+        assert_eq!(find_by_command("cursor").map(|e| e.id), None, "the id is not the binary");
+        assert!(find_by_command("my-own-agent").is_none());
+    }
+
+    /// AGE-197's first half, as the decision alone (see [`recipe_command`] for
+    /// what does the resolving). Cursor installs `agent` beside `cursor-agent`
+    /// as a second name for one binary, and a profile written against the name
+    /// its own `--help` prints matched no recipe at all.
+    #[test]
+    fn an_alias_takes_the_recipes_of_the_binary_it_resolves_to() {
+        assert_eq!(pick_recipe_command("agent", Some("cursor-agent")), "cursor-agent");
+        // A name the catalog knows is never resolved away, whatever it points
+        // at: npm installs `claude` as a shim over a `cli.js`, and following
+        // that link would cost claude every recipe it has.
+        assert_eq!(pick_recipe_command("claude", Some("cli.js")), "claude");
+        // Default-deny: an unknown name resolving to another unknown name is
+        // still an unknown name, and gets what a custom profile always got.
+        assert_eq!(pick_recipe_command("my-own-agent", Some("wrapper.sh")), "my-own-agent");
+        assert_eq!(pick_recipe_command("my-own-agent", None), "my-own-agent");
+    }
+
+    /// The resolving half, over a real symlink: an absolute command needs no
+    /// PATH, so this says nothing about the machine it runs on.
+    #[test]
+    fn recipe_command_follows_a_symlink_to_the_binary_it_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("cursor-agent");
+        std::fs::write(&real, "#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let alias = dir.path().join("agent");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real, &alias).unwrap();
+        assert_eq!(recipe_command(&alias.to_string_lossy()), "cursor-agent");
+        // Nothing on disk under that name: the literal basename stands.
+        assert_eq!(
+            recipe_command(&dir.path().join("agent-that-is-not-there").to_string_lossy()),
+            "agent-that-is-not-there"
+        );
     }
 }

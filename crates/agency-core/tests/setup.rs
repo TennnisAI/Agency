@@ -78,6 +78,36 @@ fn a_moved_or_deleted_folder_reads_as_missing() {
     assert_eq!(repo_readiness(&file), RepoReadiness::Missing);
 }
 
+/// "The folder is not there" and "we could not look" are different answers, and
+/// only the first one is missing. The whole project view is replaced by the
+/// missing screen on a `true` here, so a share that is merely slow, or a
+/// location the app is not allowed to stat, must not produce one.
+#[cfg(unix)]
+#[test]
+fn a_folder_we_cannot_stat_is_not_reported_missing() {
+    use std::os::unix::fs::PermissionsExt;
+    let parent = tempfile::tempdir().unwrap();
+    let outer = parent.path().join("outer");
+    let repo = outer.join("proj");
+    std::fs::create_dir_all(&repo).unwrap();
+    assert!(!folder_missing(&repo));
+
+    // Drop the search bit on the parent: `stat` on the child now fails with
+    // EACCES, which is "could not ask", not "gone". (As root the permission is
+    // bypassed and the folder simply stats fine, which asserts the same thing.)
+    let saved = std::fs::metadata(&outer).unwrap().permissions();
+    std::fs::set_permissions(&outer, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let answer = folder_missing(&repo);
+    // Restore before asserting, so a failure still leaves a removable tempdir.
+    std::fs::set_permissions(&outer, saved).unwrap();
+    assert!(!answer, "an unsearchable parent is 'could not ask', not 'the folder is gone'");
+
+    // A path whose parent is a file, though, cannot be holding anything.
+    let file = parent.path().join("a-file");
+    std::fs::write(&file, "not a folder\n").unwrap();
+    assert!(folder_missing(&file.join("proj")));
+}
+
 #[test]
 fn repo_with_no_commits_and_files_is_stageable() {
     let dir = tempfile::tempdir().unwrap();

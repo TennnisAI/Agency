@@ -39,6 +39,7 @@ import {
   listMcpServers,
   listProfiles,
   moveWorkspace,
+  relocateProject,
   saveFilesConfig,
   saveIssueSyncConfig,
   previewIssueKey,
@@ -1038,6 +1039,31 @@ export default function Settings({
     }
   }
 
+  // Reconnect a workspace whose folder has moved. `relocate_project` keeps the
+  // project id, so the journal, notes and issues come back with it, and it
+  // repairs the agents' worktree links, which record absolute paths and so
+  // travelled with the folder and broke. Neither Move nor Switch can do this:
+  // Move renames a folder that is not there, and Switch repoints the row
+  // without repairing anything.
+  async function locateWorkspace() {
+    if (!workspace) return;
+    const sel = await openDialog({
+      directory: true,
+      multiple: false,
+      title: "Locate the workspace folder",
+    });
+    if (typeof sel !== "string") return;
+    try {
+      setWorkspace(await relocateProject(workspace.id, sel));
+      refreshWorkspace();
+      // Same-value re-fire: makes ProjectTree refetch the repointed row.
+      setWorkspaceHidden(wsOff);
+      toastSuccess("Workspace reconnected");
+    } catch (e) {
+      toastError(e, "Couldn't reconnect the workspace");
+    }
+  }
+
   // Switch = point the workspace at a different folder (picked directly,
   // unlike Move which picks a parent and renames on disk). The old folder
   // stays untouched, so switching back is choosing it again; the idempotent
@@ -1053,6 +1079,14 @@ export default function Settings({
   }
   async function doSwitchWorkspace(dest: string) {
     try {
+      // A workspace whose folder is missing has usually moved, and the folder
+      // being picked here is where it went, so relocate first: that is what
+      // runs `WorktreeManager::repair()` over the agents' worktrees, whose
+      // absolute git links travelled with the folder and are now stale.
+      // `create_workspace` on its own repoints the row and repairs nothing, so
+      // reconnecting this way left every agent's worktree broken. Against a
+      // genuinely fresh folder it finds no worktrees and does nothing.
+      if (wsMissing && workspace) await relocateProject(workspace.id, dest);
       // Keep the current git preference; a gitless workspace stays gitless
       // (Enable git stays one click away in this section).
       await createWorkspace(dest, !wsGitless);
@@ -2089,7 +2123,10 @@ export default function Settings({
                       <span style={{ display: "flex", gap: 8 }}>
                         <button
                           className="settings-save"
-                          title="Move this folder somewhere else on disk"
+                          disabled={wsMissing}
+                          title={wsMissing
+                            ? "The workspace folder isn't there, so there is nothing to move"
+                            : "Move this folder somewhere else on disk"}
                           onClick={doMoveWorkspace}
                         >Move…</button>
                         <button
@@ -2099,6 +2136,22 @@ export default function Settings({
                         >Switch…</button>
                       </span>
                     </div>
+                    {/* The folder is gone, so this section's other two actions
+                        are the wrong ones: Move can only fail on a folder that
+                        is not there, and Switch is for giving up on it. */}
+                    {wsMissing && (
+                      <div className="settings-notif-row">
+                        <span className="settings-notif-label">
+                          This folder isn't there. It may have been moved or renamed, or it may
+                          be on a disk that isn't connected. Nothing has been lost: point Agency
+                          at it again and your journal, notes and issues come back with it.
+                        </span>
+                        <button
+                          className="settings-save"
+                          onClick={() => { void locateWorkspace(); }}
+                        >Locate folder…</button>
+                      </div>
+                    )}
                     {wsGitless && !wsMissing && (
                       <div className="settings-notif-row">
                         <span className="settings-notif-label">
@@ -2398,7 +2451,9 @@ export default function Settings({
       {wsSwitch && (
         <ConfirmDialog
           title="Switch workspace?"
-          body={`Your journal, notes, and workspace issues will now live in "${wsSwitch}". The current folder stays on disk untouched; choose it again later to switch back. A fresh folder starts with the Welcome guide.`}
+          body={wsMissing
+            ? `Your journal, notes, and workspace issues will now live in "${wsSwitch}". If that folder is this workspace in its new place, the agents' worktrees in it are reconnected too. A fresh folder starts with the Welcome guide.`
+            : `Your journal, notes, and workspace issues will now live in "${wsSwitch}". The current folder stays on disk untouched; choose it again later to switch back. A fresh folder starts with the Welcome guide.`}
           confirmLabel="Switch"
           onConfirm={() => { const d = wsSwitch; setWsSwitch(null); void doSwitchWorkspace(d); }}
           onCancel={() => setWsSwitch(null)}

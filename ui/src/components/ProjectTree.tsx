@@ -406,6 +406,17 @@ export default function ProjectTree({
     }
   }
 
+  // Whether the project the confirm dialog is about has lost its folder. With
+  // it gone, "Delete worktrees & close" cannot do the one thing it names:
+  // `WorktreeManager::remove` needs git in the project folder, every call fails
+  // and the error is discarded, yet `delete_project` goes on to delete the
+  // runs, the issues and the project row. An unplugged disk therefore cost the
+  // user the whole issue history and left the worktrees behind anyway, the
+  // opposite of what the dialog promises. ProjectMissingView offers close only
+  // for the same reason; this is the sidebar's half of it, covering both the
+  // "folder gone" menu and the row's hover ×.
+  const pendingGone = pending !== null && missing.has(pending.project.id);
+
   return (
     <aside className="tree">
       <div className="tree-head">
@@ -587,14 +598,22 @@ export default function ProjectTree({
       {pending && (
         <ConfirmDialog
           title="Close project?"
-          body={`Stop all agents in "${pending.project.name}" and remove it from the sidebar. Everything on disk is kept; add the project again to pick up where you left off. "Delete worktrees & close" also deletes the agents' worktrees and branches, including unmerged work. Your repository files are never touched.`}
+          body={pendingGone ? (
+            <>
+              Stop all agents in "{pending.project.name}" and take it out of the sidebar. Its
+              agents, issues and notes are kept: add the folder again at{" "}
+              <code>{pending.project.repo_path}</code> and they all come back. If it has moved
+              somewhere else, use "Locate folder…" instead; added at a new path it comes back as
+              a new, empty project.
+            </>
+          ) : `Stop all agents in "${pending.project.name}" and remove it from the sidebar. Everything on disk is kept; add the project again to pick up where you left off. "Delete worktrees & close" also deletes the agents' worktrees and branches, including unmerged work. Your repository files are never touched.`}
           confirmLabel="Close project"
-          altLabel="Delete worktrees & close"
+          altLabel={pendingGone ? undefined : "Delete worktrees & close"}
           altDanger
           busy={busy !== null}
           progress={progress}
           progressLabel={busy === "delete" ? "Deleting worktrees…" : "Closing…"}
-          onAlt={() => confirmPending("delete")}
+          onAlt={pendingGone ? undefined : () => confirmPending("delete")}
           onConfirm={() => confirmPending("close")}
           onCancel={() => setPending(null)}
         />

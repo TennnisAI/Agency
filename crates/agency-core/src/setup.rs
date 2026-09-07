@@ -95,11 +95,31 @@ pub fn inside_work_tree(path: &Path) -> Option<bool> {
 /// Whether a project's folder is gone from disk: moved, renamed, deleted, or
 /// sitting on a volume that is no longer mounted.
 ///
-/// `is_dir` and not `exists`: a path replaced by a file is as unusable as one
-/// that is not there, and it follows symlinks, so a link left dangling by the
-/// move it was pointing into reads as missing too.
+/// A `stat` that is not there and a `stat` we could not perform are different
+/// answers, and only the first one is "missing". This was `!path.is_dir()`, and
+/// `Path::is_dir()` folds every error into `false`: a network share whose
+/// server was timing out, an `ESTALE` after a remount, an `EPERM` from a
+/// sandboxed or TCC-protected location all read as "the folder is gone" with
+/// exactly the confidence of a deleted one, and the whole project view was
+/// replaced by the missing screen. The UI's rule for this ("no answer is no
+/// claim", `useFolderMissing`) cannot defend against it, because the IPC call
+/// *succeeds*, returning `true`. So "could not ask" lands on the same side as
+/// [`inside_work_tree`]'s `None`: say nothing, and leave the tabs to fail in
+/// their own words as they did before any of this existed.
+///
+/// `metadata` follows symlinks, like the `is_dir` it replaces, so a link left
+/// dangling by the move it was pointing into is `NotFound` and reads as missing
+/// too; and a path taken over by a file is as unusable as one that is not
+/// there, so a successful stat of a non-directory is missing as well.
 pub fn folder_missing(path: &Path) -> bool {
-    !path.is_dir()
+    match std::fs::metadata(path) {
+        Ok(md) => !md.is_dir(),
+        // NotADirectory: a component of the path is itself a file, so nothing
+        // can be at the end of it either.
+        Err(e) => {
+            matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory)
+        }
+    }
 }
 
 /// Inspect a folder and classify how ready it is to host agent worktrees.

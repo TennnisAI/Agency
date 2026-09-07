@@ -73,7 +73,12 @@ export default function ProjectMissingView({
 
   // Close, never delete: "Delete worktrees & close" tears down each agent's
   // worktree on disk, and there is no disk here to tear anything down on. The
-  // records are kept, so adding the folder back later revives every one of them.
+  // records are kept, and adding the folder back revives every one of them,
+  // but only at the path recorded here: `Registry::add_project` looks a closed
+  // project up with `WHERE repo_path = ?1 AND closed = 1`, so the folder this
+  // screen is usually about, one that has *moved*, matches nothing when it is
+  // added at its new home and comes back as an empty project instead. The
+  // dialog says so, and points at Locate, which keeps the project's id.
   async function remove() {
     setBusy(true);
     setProgress(null);
@@ -117,7 +122,15 @@ export default function ProjectMissingView({
       {confirmRemove && (
         <ConfirmDialog
           title="Remove project?"
-          body={`Stop everything running in "${project.name}" and take it out of the sidebar. Its agents, issues and notes are kept: add the folder again and they all come back.`}
+          body={(
+            <>
+              Stop everything running in "{project.name}" and take it out of the sidebar. Its
+              agents, issues and notes are kept: add the folder again at{" "}
+              <code>{project.repo_path}</code> and they all come back. If it has moved somewhere
+              else, use "Locate folder…" instead; added at a new path it comes back as a new,
+              empty project.
+            </>
+          )}
           confirmLabel="Remove project"
           busy={busy}
           progress={progress}

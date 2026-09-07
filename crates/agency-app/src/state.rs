@@ -2955,8 +2955,29 @@ impl AppState {
         id: &str,
         on_progress: &mut dyn FnMut(agency_core::setup::CloneProgress),
     ) -> Result<()> {
+        // The sidebar leaves "Delete worktrees & close" off a project whose
+        // folder is gone; this is the backstop, and the reason both exist. With
+        // the folder missing, every `WorktreeManager::remove` below fails (git
+        // cannot run in a directory that is not there) and the failure is
+        // discarded, yet the runs, the issues and the project row are deleted
+        // all the same: an external disk that was only unplugged cost the user
+        // the project's entire issue history and still left its worktrees to
+        // find by hand when it came back, which is the opposite of what the
+        // dialog offering this promises (AGE-203). Closing keeps every record,
+        // and is what a missing folder is offered instead.
+        //
+        // `folder_missing` only claims a folder that is definitively not there,
+        // so an unreachable one still takes the path below and fails per
+        // worktree as it always did.
+        let repo = self.project_repo(id)?;
+        if agency_core::setup::folder_missing(&repo) {
+            bail!(
+                "{} is not there, so this project's worktrees cannot be removed; \
+                 reconnect the folder first, or close the project to keep every record",
+                repo.display()
+            );
+        }
         let runs = self.registry.lock().unwrap().list_runs(id)?;
-        let repo = self.project_repo(id).ok();
         let total = runs.len();
         for (i, run) in runs.iter().enumerate() {
             // Position in the sweep, not the branch name: how far through the
@@ -2965,8 +2986,8 @@ impl AppState {
             let detail = sweep_detail(&run_label(run), i, total);
             step(on_progress, "Stopping the agents", &detail);
             self.kill_run_terminals(&run.id);
-            if let Some(repo) = &repo {
-                step(on_progress, "Removing the worktrees", &detail);
+            step(on_progress, "Removing the worktrees", &detail);
+            {
                 // Same mutual exclusion `create_run` takes: this command is
                 // async now (off the main thread), so nothing else serializes
                 // it against a concurrent worktree add on the same repo. Held

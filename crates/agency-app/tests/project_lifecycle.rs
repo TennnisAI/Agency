@@ -129,6 +129,49 @@ fn tearing_a_project_down_reports_each_step() {
     );
 }
 
+/// AGE-203: a project whose folder is gone can be closed, never deleted. The
+/// worktree removal that "Delete worktrees & close" is named for cannot run
+/// without the folder, and deleting regardless threw away the issues and the
+/// run history of a project whose disk was merely unplugged, worktrees and all
+/// still waiting on it.
+#[test]
+fn deleting_a_project_whose_folder_is_gone_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let git = |args: &[&str]| {
+        std::process::Command::new("git").args(args).current_dir(&repo).output().unwrap()
+    };
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "t@e.com"]);
+    git(&["config", "user.name", "T"]);
+    git(&["commit", "-q", "--allow-empty", "-m", "init"]);
+
+    let state = common::state(&dir);
+    let project = state.add_project("repo", &repo).unwrap();
+    let issue = state
+        .create_issue(
+            &project.id,
+            "not yours to delete",
+            "",
+            agency_core::registry::IssueStatus::Todo,
+        )
+        .unwrap();
+
+    std::fs::rename(&repo, dir.path().join("repo-elsewhere")).unwrap();
+    let err = state.delete_project(&project.id).unwrap_err().to_string();
+    assert!(err.contains("is not there"), "{err}");
+    assert!(
+        state.list_projects().unwrap().iter().any(|p| p.id == project.id),
+        "a refused delete must leave the project alone"
+    );
+    assert!(state.list_issues(&project.id).unwrap().iter().any(|i| i.id == issue.id));
+
+    // Closing is what a missing folder is offered instead, and it still works.
+    state.close_project(&project.id).unwrap();
+    assert!(!state.list_projects().unwrap().iter().any(|p| p.id == project.id));
+}
+
 /// AGE-203: the source folder is moved (or its volume unmounted and remounted
 /// somewhere else). The project must be repointable in place, keeping its id
 /// and everything keyed on it, rather than closed and re-added.

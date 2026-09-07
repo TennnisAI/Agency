@@ -595,6 +595,11 @@ pub struct MergePreview {
     pub commits_behind: usize,
     pub worktree_dirty: bool,
     pub dirty_files: Vec<String>,
+    /// The branch's remote-tracking ref (`origin/agent/foo`) when it has been
+    /// published, so the merge window can offer to delete the remote copy on
+    /// the way past. `None` for a branch that never left this machine, which
+    /// is what keeps that offer from appearing with nothing behind it.
+    pub remote_branch: Option<String>,
 }
 
 /// Outcome of a bulk discard of a project's archived runs. Reported per-run
@@ -8755,6 +8760,8 @@ impl AppState {
         } else {
             Vec::new()
         };
+        let remote_branch =
+            agency_core::merge::remote_copies(&repo, &run.branch).into_iter().next();
         Ok(MergePreview {
             base,
             branch: run.branch,
@@ -8762,6 +8769,7 @@ impl AppState {
             commits_behind,
             worktree_dirty: !dirty_files.is_empty(),
             dirty_files,
+            remote_branch,
         })
     }
 
@@ -8882,6 +8890,26 @@ impl AppState {
             Ok(agency_core::merge::MergeOutcome::Clean { commit })
         });
         finished.unwrap_or_else(|| Err(anyhow!(busy_checkout_error())))
+    }
+
+    /// Delete this run's branch from the remote it was published to, once its
+    /// work is on the base branch.
+    ///
+    /// Offered by the merge window rather than done for you: the remote copy
+    /// is the one thing a teardown here cannot reach, so before this every
+    /// locally merged agent branch stayed on the remote for good (AGE-201).
+    /// The local branch is not touched — archiving or deleting the agent takes
+    /// that, along with the worktree, and does it with the whole plan in view.
+    ///
+    /// Returns the ref that went, or `None` when the remote no longer had the
+    /// branch. No checkout gate: this reads and writes refs on a remote, and
+    /// the project's working tree is not involved.
+    pub fn delete_run_remote_branch(&self, id: &str) -> anyhow::Result<Option<String>> {
+        let run = self.run_record(id)?;
+        let repo = self.project_repo(&run.project_id)?;
+        require_own_branch(&run, &repo, "delete from the remote")?;
+        let base = agency_core::merge::resolve_target(run.merge_target.as_deref(), &repo)?;
+        agency_core::merge::delete_published_branch(&repo, &run.branch, &base)
     }
 
     pub fn abort_merge_task(&self, id: &str) -> anyhow::Result<()> {

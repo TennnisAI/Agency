@@ -915,6 +915,17 @@ pub async fn merge_pr(
     state.merge_pr(&project_id, number, &method, delete_branch).map_err(|e| e.to_string())
 }
 
+/// Delete a merged run's branch from its remote. Best effort by contract: the
+/// caller is a merge that has already landed, so a refusal here is a note, not
+/// a failed merge.
+#[tauri::command]
+pub async fn delete_run_remote_branch(
+    state: State<'_, AppState>,
+    task_id: String,
+) -> Result<Option<String>, String> {
+    state.delete_run_remote_branch(&task_id).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn pr_diff(
     state: State<'_, AppState>,

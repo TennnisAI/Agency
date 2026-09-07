@@ -1239,6 +1239,9 @@ export interface MergePreview {
   commitsBehind: number;
   worktreeDirty: boolean;
   dirtyFiles: string[];
+  /** The branch's remote-tracking ref (`origin/agent/foo`), or null when the
+   *  branch was never pushed and so has no remote copy to offer deleting. */
+  remoteBranch: string | null;
 }
 
 // How far the user is from usable PR features; each non-ready state maps to a
@@ -1461,6 +1464,11 @@ export const createPrFromBranch = (
 
 export const mergePreview = (taskId: string) =>
   invoke<MergePreview>("merge_preview", { taskId });
+/** Delete a merged run's branch from its remote. Resolves to the ref that went,
+ *  or null when the remote no longer had it. Rejects when the remote branch
+ *  carries commits the base doesn't have. */
+export const deleteRunRemoteBranch = (taskId: string) =>
+  invoke<string | null>("delete_run_remote_branch", { taskId });
 // The merge family streams progress like the teardowns do: it runs `git merge`
 // in the project's shared checkout, which is a branch checkout plus a merge, and
 // on a large repo that is seconds with nothing else to show.

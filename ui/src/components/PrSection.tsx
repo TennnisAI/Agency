@@ -29,12 +29,18 @@ export default function PrSection({
   projectId,
   canCreate,
   onLeave,
+  onPr,
   onReviewPr,
 }: {
   taskId: string;
   projectId: string;
   canCreate: boolean;
   onLeave: () => void;
+  // Reports the branch's PR up to the host, which probes GitHub once for the
+  // whole window. Must keep a stable identity across renders (a `useState`
+  // setter does): it is a dependency of the probe that calls it, and a new
+  // function every render would re-run that probe every render.
+  onPr?: (pr: PrInfo | null) => void;
   // Deep-links "View PR" to the review panel for the created/existing PR.
   // Required, not optional: a missing handler is how this button silently
   // regressed to opening github.com instead (AGE-59).
@@ -63,11 +69,12 @@ export default function PrSection({
     try {
       const s = await prStatus(taskId);
       setPr(s.pr);
+      onPr?.(s.pr);
       setChecks(s.checks);
     } catch {
       /* transient — next poll retries */
     }
-  }, [taskId]);
+  }, [taskId, onPr]);
 
   useEffect(() => {
     let live = true;
@@ -97,7 +104,9 @@ export default function PrSection({
     setBusy(true);
     setError("");
     try {
-      setPr(await createPr(taskId));
+      const created = await createPr(taskId);
+      setPr(created);
+      onPr?.(created);
       await refreshStatus();
     } catch (e) {
       setError(String(e));

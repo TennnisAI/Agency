@@ -4,10 +4,12 @@ import {
   MergeOutcome,
   MergePreview,
   MergeState,
+  PrInfo,
   RunCleanup,
   RunSessionInfo,
   abortMergeTask,
   archiveRun,
+  deleteRunRemoteBranch,
   discardRun,
   finishMergeTask,
   listRunSessions,
@@ -68,6 +70,29 @@ export default function MergeModal({
   // "the one I was just using" is what the user means by "this agent", and the
   // focus view already remembers it per run.
   const [target, setTarget] = useState<string | null>(null);
+  // Whether the merge takes the branch's remote copy with it. Ticked by
+  // default, as the PR merge dialog's own delete-branch box is, and offered
+  // only for a branch that has actually been published. Before AGE-201 nothing
+  // in this window could reach the remote at all: the teardown under it takes
+  // the worktree and the local branch, and every locally merged agent branch
+  // stayed on the remote for good.
+  const [deleteRemote, setDeleteRemote] = useState(true);
+  // The branch's PR, probed once by the section below and reported up here.
+  // Null both before the probe answers and when there is no PR; only an
+  // explicitly open one changes anything above.
+  const [pr, setPr] = useState<PrInfo | null>(null);
+  // Whether the user has had an opinion about the checkbox yet. An open PR
+  // arrives after the modal has already drawn the box ticked, and unticking it
+  // under a user who ticked it themselves would be the app overruling them.
+  const [remoteTouched, setRemoteTouched] = useState(false);
+  // What became of that once the merge landed: the ref that went, or null when
+  // the remote turned out not to have the branch any more.
+  const [remoteGone, setRemoteGone] = useState<{ ref: string | null } | null>(null);
+  const [deletingRemote, setDeletingRemote] = useState(false);
+  // Kept apart from the modal's own error line: the merge has already
+  // succeeded by the time this can fail, and a refused branch deletion must
+  // not read as a failed merge.
+  const [remoteError, setRemoteError] = useState("");
   // What git says about the merge after a resolver has had a go at it. Null
   // until the first check; `probeError` is why, when it stays null.
   const [state, setState] = useState<MergeState | null>(null);
@@ -153,6 +178,15 @@ export default function MergeModal({
       .catch(() => {});
   }, [taskId]);
 
+  // GitHub closes a pull request whose head branch is deleted; it only marks it
+  // merged once the commits reach the base branch on the remote, which a local
+  // merge hasn't done yet. So an open PR turns the default off, with the reason
+  // beside the box: the branch is better deleted by merging that PR from Source
+  // Control, which is what leaves the PR saying "merged".
+  useEffect(() => {
+    if (pr?.state === "OPEN" && !remoteTouched) setDeleteRemote(false);
+  }, [pr, remoteTouched]);
+
   // The run's agent tabs, loaded once: "Fix with agent" needs to know whether
   // there is a choice to offer before it offers one.
   useEffect(() => {
@@ -228,6 +262,24 @@ export default function MergeModal({
     }
   }
 
+  // The branch's remote copy, deleted after the merge has committed and never
+  // before: until the commits are on the base, that copy is the only one off
+  // this machine, and the backend refuses to delete it. Best effort by
+  // contract — the merge has landed, so a remote that says no is a note under
+  // the outcome rather than an error over it.
+  async function tidyRemoteBranch() {
+    if (!deleteRemote || !preview?.remoteBranch) return;
+    setDeletingRemote(true);
+    setRemoteError("");
+    try {
+      setRemoteGone({ ref: await deleteRunRemoteBranch(taskId) });
+    } catch (e) {
+      setRemoteError(String(e));
+    } finally {
+      setDeletingRemote(false);
+    }
+  }
+
   async function attempt() {
     setError("");
     setMerging(true);
@@ -236,8 +288,11 @@ export default function MergeModal({
     // conflict panel from rendering a stale "nothing in progress" for the frame
     // between the merge landing and the first poll answering.
     setState(null);
+    let landed = false;
     try {
-      setOutcome(await mergeTask(taskId, setGitStep));
+      const result = await mergeTask(taskId, setGitStep);
+      setOutcome(result);
+      landed = result.kind === "clean";
     } catch (e) {
       setError(String(e));
       // Re-read rather than leave the failure as a bare string: if another run
@@ -247,6 +302,7 @@ export default function MergeModal({
       setMerging(false);
       setGitStep(null);
     }
+    if (landed) await tidyRemoteBranch();
   }
 
   // Hand the conflict to the agent that produced the branch: it already has the
@@ -275,8 +331,11 @@ export default function MergeModal({
     setError("");
     setFinishing(true);
     setGitStep(null);
+    let landed = false;
     try {
-      setOutcome(await finishMergeTask(taskId, setGitStep));
+      const result = await finishMergeTask(taskId, setGitStep);
+      setOutcome(result);
+      landed = result.kind === "clean";
     } catch (e) {
       setError(String(e));
       // The failure is usually "still conflicted"; re-read so the file list
@@ -286,6 +345,10 @@ export default function MergeModal({
       setFinishing(false);
       setGitStep(null);
     }
+    // A merge that came through conflicts ends where a clean one does, so it
+    // tidies the same way. Skipping it here is how the resolved half of the
+    // flow quietly keeps a remote branch the clean half deletes.
+    if (landed) await tidyRemoteBranch();
   }
 
   // Read when the modal opens and again whenever the merge state changes, so
@@ -434,6 +497,29 @@ export default function MergeModal({
                   in the meantime.
                 </p>
               )}
+              {/* Only for a branch that has a remote copy: everything else has
+                  nothing to offer deleting, and an unticked box for a branch
+                  that was never pushed is one more thing to read past. */}
+              {!nothingToMerge && preview.remoteBranch && (
+                <label
+                  className="merge-option"
+                  title="Deletes the branch on the remote once the merge has landed. The agent's worktree and its local branch stay until you archive or delete the agent."
+                >
+                  <input
+                    type="checkbox"
+                    checked={deleteRemote}
+                    onChange={(e) => { setRemoteTouched(true); setDeleteRemote(e.target.checked); }}
+                  />
+                  <span>Delete <code>{preview.remoteBranch}</code> after merging</span>
+                </label>
+              )}
+              {!nothingToMerge && preview.remoteBranch && pr?.state === "OPEN" && (
+                <p className="merge-warn">
+                  #{pr.number} is open on this branch. Deleting the branch on the remote closes
+                  that PR rather than marking it merged, so merging the PR from Source Control is
+                  the tidier ending; it deletes the branch for you.
+                </p>
+              )}
               {!nothingToMerge && (
                 <div className="git-actions">
                   <button autoFocus onClick={attempt} disabled={!!blockedBy}
@@ -449,6 +535,7 @@ export default function MergeModal({
                   projectId={projectId}
                   canCreate={!nothingToMerge}
                   onLeave={onClose}
+                  onPr={setPr}
                   onReviewPr={onReviewPr}
                 />
               )}
@@ -463,6 +550,22 @@ export default function MergeModal({
             <p className="merge-ok">
               ✓ Merged cleanly into {preview?.base ?? "main"} · <code>{outcome.commit.slice(0, 10)}</code>
             </p>
+            {/* What happened to the remote copy, said here rather than in a
+                toast: it is part of what this merge did, and the buttons under
+                it are about what is left. */}
+            {deletingRemote && (
+              <p className="merge-note">
+                <span className="spinner" /> Deleting <code>{preview?.remoteBranch}</code>…
+              </p>
+            )}
+            {remoteGone && (
+              <p className="merge-note">
+                {remoteGone.ref
+                  ? <>Deleted <code>{remoteGone.ref}</code> from the remote.</>
+                  : "The remote copy of the branch was already gone."}
+              </p>
+            )}
+            {remoteError && <p className="removal-warn">{remoteError}</p>}
             {/* The three buttons under this are the whole decision, so the
                 copy is those three verbs and nothing else. It used to be the
                 archive teardown's own Removes/Keeps lists under a heading,

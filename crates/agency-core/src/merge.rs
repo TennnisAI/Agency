@@ -39,6 +39,13 @@ fn git(repo: &Path, args: &[&str]) -> Result<std::process::Output> {
     Ok(Command::new("git").args(args).current_dir(repo).output()?)
 }
 
+/// [`git`] for a command that talks to a remote. There is no TTY behind the
+/// app, so a credential prompt would hang the call forever rather than asking
+/// anyone anything; this fails fast instead.
+fn git_net(repo: &Path, args: &[&str]) -> Result<std::process::Output> {
+    Ok(Command::new("git").args(args).current_dir(repo).env("GIT_TERMINAL_PROMPT", "0").output()?)
+}
+
 fn git_ok(repo: &Path, args: &[&str]) -> Result<String> {
     let out = git(repo, args)?;
     if !out.status.success() {
@@ -230,6 +237,77 @@ pub fn remote_copies(repo: &Path, branch: &str) -> Vec<String> {
             out.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect()
         })
         .unwrap_or_default()
+}
+
+/// The remote a published branch was pushed to, read off its remote-tracking
+/// ref: `origin/agent/foo` for `agent/foo` is `origin`.
+///
+/// Not the first path segment of the ref. Every branch Agency creates has
+/// slashes of its own, so splitting on the first one names a remote called
+/// "origin" only by luck and calls the branch "agent/foo" something it isn't.
+/// `None` when the ref does not end in the branch, which means it was never
+/// this branch's copy.
+pub fn remote_name<'a>(tracking_ref: &'a str, branch: &str) -> Option<&'a str> {
+    let remote = tracking_ref.strip_suffix(branch)?.strip_suffix('/')?;
+    (!remote.is_empty()).then_some(remote)
+}
+
+/// Delete `branch` from the remote it was published to, once the remote's copy
+/// is proved to hold nothing `base` does not already have.
+///
+/// Returns the remote-tracking ref that went, or `None` when the branch was
+/// already gone from the remote (GitHub deleted it on merge, or another
+/// machine did). Deleting a branch nobody has is what the user asked for, so
+/// that is a success with nothing to report, not a failure.
+///
+/// The remote is asked with `ls-remote` rather than read from the tracking
+/// ref: the local one is only as fresh as the last fetch, and a colleague's
+/// push landing after it is exactly the work this must not delete unseen. Two
+/// refusals guard that. The tip must be an object this checkout actually has —
+/// a commit we have never fetched cannot be weighed against anything — and it
+/// must be contained in `base`, so that every commit under the ref survives
+/// the deletion on the base branch.
+pub fn delete_published_branch(repo: &Path, branch: &str, base: &str) -> Result<Option<String>> {
+    let Some(tracking) = remote_copies(repo, branch).into_iter().next() else {
+        return Ok(None);
+    };
+    let Some(remote) = remote_name(&tracking, branch) else {
+        bail!("{tracking} does not name a remote copy of {branch}");
+    };
+    let head = format!("refs/heads/{branch}");
+    let out = git_net(repo, &["ls-remote", "--heads", remote, &head])?;
+    if !out.status.success() {
+        bail!("couldn't reach {remote}: {}", String::from_utf8_lossy(&out.stderr).trim());
+    }
+    let listing = String::from_utf8_lossy(&out.stdout).to_string();
+    let Some(sha) = listing.split_whitespace().next() else {
+        // Gone already. The stale tracking ref would go on offering a branch
+        // that isn't there, so drop it; `-d` refuses nothing here, since the
+        // ref it deletes is a remote-tracking one.
+        let _ = git(repo, &["branch", "-r", "-d", &tracking]);
+        return Ok(None);
+    };
+    if rev(repo, sha).is_none() {
+        bail!(
+            "{tracking} is at {} on {remote}, a commit this checkout has never fetched; \
+             fetch it and merge that work before deleting the branch",
+            &sha[..sha.len().min(10)]
+        );
+    }
+    if !is_ancestor(repo, sha, base) {
+        bail!(
+            "{tracking} has commits that aren't on {base}; merge them before deleting the \
+             branch, or delete it on the remote yourself"
+        );
+    }
+    let out = git_net(repo, &["push", remote, "--delete", branch])?;
+    if !out.status.success() {
+        bail!("deleting {tracking} failed: {}", String::from_utf8_lossy(&out.stderr).trim());
+    }
+    // `push --delete` prunes the tracking ref itself; this is the backstop for
+    // a git that didn't, so the caller's next `remote_copies` is honest.
+    let _ = git(repo, &["branch", "-r", "-d", &tracking]);
+    Ok(Some(tracking))
 }
 
 /// The branch the checkout is on, or `None` on detached HEAD.

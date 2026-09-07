@@ -61,11 +61,11 @@ function label(line: string, m: string): string {
  * The conflicts in `text`, in the order they appear.
  *
  * Conservative by design: only well-formed blocks are returned, and anything
- * unparseable (a `<<<<<<<` with no `=======` after it, a second `<<<<<<<`
- * inside a block) yields no block at all, so the buttons this feeds are simply
- * not offered rather than offered for a rewrite that would lose text. diff3
- * conflicts carry a `|||||||` base section, which belongs to neither side and
- * is dropped with the markers.
+ * unparseable (a `<<<<<<<` with no `=======` after it, a second `<<<<<<<` or
+ * `=======` inside a block) yields no block at all, so the buttons this feeds
+ * are simply not offered rather than offered for a rewrite that would lose
+ * text. diff3 conflicts carry a `|||||||` base section, which belongs to
+ * neither side and is dropped with the markers.
  */
 export function parseConflicts(text: string): ConflictBlock[] {
   const lines = text.split("\n");
@@ -89,7 +89,17 @@ export function parseConflicts(text: string): ConflictBlock[] {
         phase = "base";
         continue;
       }
-      if (phase !== "theirs" && marker(line, SPLIT)) {
+      if (marker(line, SPLIT)) {
+        // A second `=======` after the split is not a separator, so the first
+        // one was not either: it was a line of the file that happens to look
+        // like a marker — an RST heading's underline, `Changes` over
+        // `=======`, is the case this was found on. Read as the separator it
+        // put our side's remaining text into `incoming`, so "Keep current"
+        // silently dropped it and "Keep incoming" wrote a literal `=======`
+        // back into the file. Both slipped past the block-count check, because
+        // either result parses to zero blocks. Refuse the file instead, which
+        // is what this module does with everything else it cannot account for.
+        if (phase === "theirs") break;
         phase = "theirs";
         continue;
       }

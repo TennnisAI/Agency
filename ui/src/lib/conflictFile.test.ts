@@ -91,6 +91,30 @@ describe("parseConflicts", () => {
     expect(b.incomingLabel).toBe("agent/feature");
   });
 
+  it("refuses a conflict whose own side holds a line of equals signs", () => {
+    // An RST or Markdown heading underline in the checkout's side. The first
+    // `=======` was taken for the separator, so "We fixed the bug." landed in
+    // `incoming` and the real separator became a line of it: "Keep current"
+    // dropped our text and "Keep incoming" wrote `=======` back into the file,
+    // and the block-count check passed either way, because both results parse
+    // to zero blocks.
+    const rst = [
+      "<<<<<<< HEAD",
+      "Changes",
+      "=======",
+      "We fixed the bug.",
+      "=======",
+      "Changes",
+      "We broke it.",
+      ">>>>>>> agent/feature",
+      "",
+    ].join("\n");
+    expect(parseConflicts(rst)).toEqual([]);
+    // Nothing to offer means nothing to rewrite: the pane says it can't read
+    // the markers and points at the editor.
+    expect(resolveAll(rst, "current")).toBe(rst);
+  });
+
   it("refuses a block it cannot read rather than guessing at one", () => {
     // Truncated (no `=======`), and nested — both leave the file alone, which
     // is the only safe answer when the buttons this feeds rewrite it.

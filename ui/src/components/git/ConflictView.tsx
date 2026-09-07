@@ -159,6 +159,13 @@ export default function ConflictView({
     try {
       await trashPath(root, path);
       await gitStage(taskId, path);
+      // Before `onChanged`, as `apply` does: `loaded` still held the deleted
+      // file's text, so the pane went on rendering "No conflict markers left in
+      // this file" for a file that had just been moved to the Trash. Reload was
+      // no way out either — this button is only offered on a row that has a
+      // file (`UD`, `AU`, …), never `DD`, so the read of the now-missing file
+      // came back as git's raw "No such file or directory" in the error banner.
+      await load();
       onChanged();
     } catch (e) {
       setError(String(e));
@@ -215,8 +222,13 @@ export default function ConflictView({
             </button>
           </>
         )}
+        {/* `here == null` is the read that has not come back yet. Without it
+            the button is live for the whole round trip, because a pending read
+            has no text and so no blocks: a click in that window staged a file
+            with its conflict markers still in it. Every other control here
+            reads off the completed load for the same reason. */}
         <button className="git-iconbtn"
-          disabled={busy || blocks.length > 0 || !!tangled || markerless}
+          disabled={busy || here == null || blocks.length > 0 || !!tangled || markerless}
           onClick={markResolved}
           title={blocks.length > 0
             ? "Pick a side for every conflict first"

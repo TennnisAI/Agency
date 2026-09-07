@@ -9305,16 +9305,30 @@ impl AppState {
     /// conflict, rather than handing the prompt to an agent that is already in
     /// the middle of something else (AGE-199).
     ///
-    /// The prompt goes in as the tab's opening argv, so there is no queue and
-    /// nothing to wait for: this is the one hand-off that cannot be held behind
+    /// The prompt goes in as the tab's opening argv, so for most agents there is
+    /// no queue and nothing to wait for: the hand-off cannot be held behind
     /// another turn. `agent` picks the profile; `None` uses the run's own.
+    ///
+    /// crush and kimi are the exception. Their CLIs take no prompt on the
+    /// command line, so `prompt_args` answers for them with an empty argv and a
+    /// log line — the tab opened, this returned `Ok`, and the modal said
+    /// "Started crush on it" for an agent that had been handed nothing at all.
+    /// They go through the send queue instead, the same delivery the hand-off to
+    /// a live tab uses, which the tick drains once the new agent is at its
+    /// prompt.
     pub fn spawn_merge_conflict_agent(
         &self,
         id: &str,
         agent: Option<&str>,
     ) -> anyhow::Result<RunSessionInfo> {
         let prompt = self.merge_conflict_prompt(id)?;
-        self.start_run_session(id, agent, &prompt)
+        let session = self.start_run_session(id, agent, &prompt)?;
+        if crate::agent_catalog::prompt_delivery(&session.agent)
+            == crate::agent_catalog::PromptDelivery::Unsupported
+        {
+            self.queue_send(&session.id, "merge conflict", prompt)?;
+        }
+        Ok(session)
     }
 
     /// The prompt both hand-offs send, and the checks both owe the user before

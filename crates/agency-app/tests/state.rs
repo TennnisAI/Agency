@@ -758,6 +758,58 @@ fn send_merge_conflict_requires_a_merge_in_progress() {
     state.discard_run(&info.id).unwrap();
 }
 
+/// AGE-199: crush and kimi take no prompt on the command line, so `prompt_args`
+/// answers for them with an empty argv and a log line. "Fix with a new agent"
+/// delivered the conflict as opening argv and nothing else, so for those two the
+/// tab opened, the call returned Ok, and the modal said it had started the agent
+/// on a conflict the agent had been told nothing about. They get the queue.
+#[test]
+fn a_new_conflict_agent_that_takes_no_argv_prompt_gets_the_queue() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let git = |dir: &Path, args: &[&str]| {
+        assert!(
+            Command::new("git").args(args).current_dir(dir).status().unwrap().success(),
+            "git {args:?}"
+        );
+    };
+
+    let state = common::state(&dir);
+    // Named for the catalog entry, because the id is what `prompt_delivery`
+    // reads; the command is a sleep, so the tab starts without crush installed.
+    state
+        .register_profile(AgentProfile {
+            name: "crush".into(),
+            command: "/bin/sh".into(),
+            args: vec!["-c".into(), "sleep 30".into()],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+    let run = state.create_run(&project.id, "p", "crush", None, "HEAD", None).unwrap();
+
+    // Two edits of one line, which is the conflict git cannot settle itself.
+    let wt = state.worktree_path(&run.id).unwrap();
+    std::fs::write(wt.join("README.md"), "from the branch").unwrap();
+    git(&wt, &["commit", "-qam", "branch edit"]);
+    std::fs::write(repo.join("README.md"), "from main").unwrap();
+    git(&repo, &["commit", "-qam", "main edit"]);
+    assert!(matches!(state.merge_task(&run.id).unwrap(), MergeOutcome::Conflicts { .. }));
+
+    let tab = state.spawn_merge_conflict_agent(&run.id, None).unwrap();
+    let waiting = state.list_queued_messages(&run.id);
+    assert_eq!(waiting.len(), 1, "the prompt has to be queued, not dropped: {waiting:?}");
+    assert_eq!(waiting[0].session_id, tab.id, "queued against the new tab, not the run");
+    assert_eq!(waiting[0].origin, "merge conflict");
+    assert!(waiting[0].text.contains("README.md"), "got: {}", waiting[0].text);
+
+    let _ = state.discard_run(&run.id);
+}
+
 /// AGE-199: the busy/idle bookkeeping the send queue decides against is one
 /// entry per *run*, read from whichever session speaks for the run — so an
 /// extra agent tab had no entry at all. No entry reads as "working", so a

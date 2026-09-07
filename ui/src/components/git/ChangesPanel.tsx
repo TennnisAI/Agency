@@ -1,9 +1,10 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import {
   FileChange, BranchInfo, StashEntry, fileRootOf, gitStage, gitUnstage, gitStageAll, gitUnstageAll,
   gitDiscard, gitDiscardAll, gitCommit, gitCommitAmend, gitSetRemote,
-  gitStashApply, gitStashDrop, gitStashPop,
+  gitStashApply, gitStashDrop, gitStashPop, gitStatus, gitBranchInfo,
 } from "../../api";
+import type { CommitState } from "./commitGuard";
 import { baseName } from "../../lib/filePath";
 import { revealLabel, reveal, copyAbsPath, copyRelPath, ignorePath } from "../../lib/fileActions";
 import { decorateIn, partition, type GitGroup } from "./status";
@@ -45,6 +46,19 @@ export default function ChangesPanel({
   // staged and unstaged edits has a row (and its own menu) in two groups.
   const [menu, setMenu] = useState<{ x: number; y: number; change: FileChange; group: GitGroup } | null>(null);
   const root = useMemo(() => fileRootOf(taskId), [taskId]);
+  // What the commit guard decides on, read at press time rather than taken from
+  // the panel's poll: that poll backs off to 10s on a large changeset and keeps
+  // its previous value when a refresh throws, and a refusal worked out from
+  // either is a refusal of a commit git would have accepted. Null when git
+  // can't be read at all, which the guard treats as nothing to refuse.
+  const readStatus = useCallback(async (): Promise<CommitState | null> => {
+    try {
+      const [changes, info] = await Promise.all([gitStatus(taskId), gitBranchInfo(taskId)]);
+      return { changes, merging: info.merging };
+    } catch {
+      return null;
+    }
+  }, [taskId]);
 
   const openMenu = (change: FileChange, group: GitGroup, e: React.MouseEvent) => {
     e.preventDefault();
@@ -138,7 +152,7 @@ export default function ChangesPanel({
       <CommitBox
         taskId={taskId}
         branch={branch?.branch ?? "?"}
-        changes={changes}
+        readStatus={readStatus}
         hasUpstream={!!branch?.upstream}
         hasRemote={!!branch?.hasRemote}
         ahead={branch?.ahead ?? 0}

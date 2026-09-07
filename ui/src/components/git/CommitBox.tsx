@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
-import type { FileChange } from "../../api";
+import { useEffect, useRef, useState } from "react";
 import { useHushed } from "../../lib/hushed";
 import ConfirmDialog from "../ConfirmDialog";
 import { CloudUploadIcon } from "./gitIcons";
-import { commitGuard, stagingAll, type CommitAction } from "./commitGuard";
+import {
+  commitGuard, stagingAll, type CommitAction, type CommitState, type StageableAction,
+} from "./commitGuard";
 import { setGitOp } from "./ops";
 
 // In-progress commit messages outlive the commit box being unmounted (switching
@@ -13,15 +14,26 @@ const draftStore = new Map<string, string>();
 
 const plural = (n: number, one: string, many: string) => (n === 1 ? one : many);
 
+/** "3 files and 1 folder have", for the "nothing staged" prompt's count. */
+const changedSubject = (files: number, folders: number) => {
+  const parts: string[] = [];
+  if (files) parts.push(`${files} ${plural(files, "file", "files")}`);
+  if (folders) parts.push(`${folders} ${plural(folders, "folder", "folders")}`);
+  return `${parts.join(" and ")} ${files + folders === 1 ? "has" : "have"}`;
+};
+
 export default function CommitBox({
-  taskId, branch, changes, hasUpstream, hasRemote, ahead, behind, busy = false, restoreMessage,
+  taskId, branch, readStatus, hasUpstream, hasRemote, ahead, behind, busy = false, restoreMessage,
   onCommit, onCommitAll, onCommitPush, onCommitAllPush, onAmend, onStageAll,
   onSync, onPublish, onPublishRemote,
 }: {
   taskId: string;
   branch: string;
-  /** The working tree's status, to say why a commit can't run before running it. */
-  changes: FileChange[];
+  /**
+   * The working tree's status, read fresh, to say why a commit can't run before
+   * running it. Null when git couldn't be read, which lets the commit through.
+   */
+  readStatus: () => Promise<CommitState | null>;
   hasUpstream: boolean;
   hasRemote: boolean;
   ahead: number;
@@ -48,7 +60,8 @@ export default function CommitBox({
   const [remoteUrl, setRemoteUrl] = useState("");
   // The action the user asked for, held while the "nothing is staged" prompt
   // asks what to do about it.
-  const [offer, setOffer] = useState<{ action: CommitAction; count: number } | null>(null);
+  const [offer, setOffer] =
+    useState<{ action: StageableAction; files: number; folders: number } | null>(null);
   const [dontAsk, setDontAsk] = useHushed("commit-stage-all");
   const [hushNext, setHushNext] = useState(false);
   // Keep the per-repo draft store in sync so the message survives unmounts.
@@ -63,6 +76,9 @@ export default function CommitBox({
     if (restoreMessage) setMessage(restoreMessage.text);
   }, [restoreMessage]);
   const canCommit = message.trim().length > 0;
+  // `busy` only goes up once the op starts, so without this a second press
+  // during the status read below would start a second commit behind the first.
+  const checking = useRef(false);
 
   const runners: Record<CommitAction, (m: string) => Promise<boolean>> = {
     commit: onCommit,
@@ -80,9 +96,24 @@ export default function CommitBox({
   // reason goes where the raw failure used to (the panel's banner), and the one
   // that has a way out gets the prompt instead (AGE-205).
   const run = async (action: CommitAction) => {
-    if (!canCommit) return; // empty/whitespace message: nothing to commit with
+    // No message (empty or whitespace), or a press that landed while the last
+    // one was still reading git.
+    if (!canCommit || checking.current) return;
     setMenu(false);
-    const guard = commitGuard(action, changes);
+    // Read git now rather than guarding on the panel's poll. That poll backs
+    // off to 10s once there are thousands of changes and keeps its last good
+    // value when a refresh throws, and both make the guard refuse a commit git
+    // would have taken: a `git add` in a terminal inside the window read as
+    // "nothing is staged", and with the prompt hushed that staged and committed
+    // everything the user had deliberately left out.
+    checking.current = true;
+    let state: CommitState | null;
+    try {
+      state = await readStatus();
+    } finally {
+      checking.current = false;
+    }
+    const guard = commitGuard(action, state);
     if (guard.kind === "ok") { await send(action); return; }
     if (guard.kind === "conflicts") {
       const n = guard.count;
@@ -96,9 +127,9 @@ export default function CommitBox({
       return;
     }
     // Asked once and told not to ask again: do what the prompt would have done.
-    if (dontAsk) { await send(stagingAll(action)); return; }
+    if (dontAsk) { await send(stagingAll(guard.action)); return; }
     setHushNext(false);
-    setOffer({ action, count: guard.count });
+    setOffer({ action: guard.action, files: guard.files, folders: guard.folders });
   };
 
   const submitRemote = () => {
@@ -161,10 +192,12 @@ export default function CommitBox({
       {offer && (
         <ConfirmDialog
           title="Nothing is staged"
-          body={`Nothing is staged, so this commit would be empty. ${offer.count} ${plural(offer.count, "file has", "files have")} changes you can include. Stage everything and commit it, or just stage it and look at the diff first.`}
+          body={`Nothing is staged, so this commit would be empty. ${changedSubject(offer.files, offer.folders)} changes you can include.${offer.folders ? " Staging a folder includes every file inside it." : ""} Stage everything and commit it, or just stage it and look at the diff first.`}
           confirmLabel={offer.action === "commitPush" ? "Stage All, Commit & Push" : "Stage All & Commit"}
           altLabel="Stage All"
-          onAlt={() => { setOffer(null); onStageAll(); }}
+          // Stage All is a choice, not a cancellation, so a ticked "Don't ask
+          // again" is honoured here too rather than quietly thrown away.
+          onAlt={() => { setOffer(null); if (hushNext) setDontAsk(true); onStageAll(); }}
           hushLabel="Don't ask again"
           hushed={hushNext}
           onHush={setHushNext}

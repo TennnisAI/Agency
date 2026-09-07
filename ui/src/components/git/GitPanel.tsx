@@ -10,6 +10,7 @@ import ChangesPanel from "./ChangesPanel";
 import HistoryPanel from "./HistoryPanel";
 import CommitDetail from "./CommitDetail";
 import DiffViewer from "./DiffViewer";
+import ConflictView from "./ConflictView";
 import ReviewComments from "./ReviewComments";
 import BranchBar from "./BranchBar";
 import GitSections from "./GitSections";
@@ -17,9 +18,10 @@ import GitOutputModal from "./GitOutputModal";
 import Resizer from "../Resizer";
 import { usePaneWidth } from "../../hooks/usePaneWidth";
 import { useGitOp, gitOp, setGitOp, isCancelled } from "./ops";
+import { GitGroup, groupOf } from "./status";
 
 export type GitSelection =
-  | { kind: "file"; path: string; group: "index" | "workingTree" | "merge" | "untracked" }
+  | { kind: "file"; path: string; group: GitGroup }
   | { kind: "commit"; item: HistoryItem }
   | null;
 
@@ -235,11 +237,35 @@ function GitRepoPanel({
     setRestoreMessage((p) => ({ text: message, nonce: (p?.nonce ?? 0) + 1 }));
   }, "Last commit undone; changes kept staged");
 
-  const onSelectFile = (path: string, group: "index" | "workingTree" | "merge" | "untracked") =>
+  const onSelectFile = (path: string, group: GitGroup) =>
     onSelect({ kind: "file", path, group });
 
   const diffMode = (group: string): "working-unstaged" | "working-staged" =>
     group === "index" ? "working-staged" : "working-unstaged";
+
+  // The unmerged row's two porcelain letters, which say whether the conflict is
+  // one of the delete-against-edit kinds that leave no markers in the file.
+  const conflictCode = (path: string) => {
+    const c = changes.find((ch) => ch.path === path);
+    return c ? `${c.index}${c.worktree}` : undefined;
+  };
+
+  // Which pane the selection gets, read off the file's status *now* rather than
+  // off the group its row was in when it was clicked. Marking a conflict
+  // resolved moves the file out of "Merge Changes" (`UU` becomes `M `), and the
+  // selection's own group stayed "merge": the pane went on rendering the
+  // conflict view, whose empty state then told the user to mark the file
+  // resolved, which is what they had just done.
+  //
+  // Only a row that has left or joined the merge group is re-derived. A path
+  // with both staged and unstaged edits is in two groups at once, and there the
+  // click is the only thing that says which of them the pane is showing.
+  const paneGroup = (sel: { path: string; group: GitGroup }): GitGroup => {
+    const c = changes.find((ch) => ch.path === sel.path);
+    if (!c) return sel.group;
+    const live = groupOf(c);
+    return live === "merge" || sel.group === "merge" ? live : sel.group;
+  };
 
   const branchBar = (
     <BranchBar taskId={taskId} info={branch} busy={busy} onAct={act}
@@ -347,7 +373,19 @@ function GitRepoPanel({
         </div>
         <Resizer size={leftPane.width} min={300} max={720} onChange={leftPane.setWidth} />
         <div className="git-full-right">
-          {selection?.kind === "file" && <DiffViewer taskId={taskId} path={selection.path} mode={diffMode(selection.group)} onChanged={refresh} onCommentAdded={() => setCommentsKey((k) => k + 1)} allowComments={allowComments} onRevealInFiles={onRevealInFiles} />}
+          {/* An unmerged file gets the conflict view, not the diff viewer: git
+              answers `git diff` for one of those with a combined diff, whose
+              lines are not the file's lines, so the ordinary stage-by-line
+              buttons wrote conflict markers into the file (AGE-199).
+              Keyed by path: the pane holds the file it read, so a different
+              file gets a fresh pane rather than inheriting the last one's
+              error or in-flight write. */}
+          {selection?.kind === "file" && paneGroup(selection) === "merge" && (
+            <ConflictView key={selection.path} taskId={taskId} path={selection.path}
+              code={conflictCode(selection.path)}
+              onChanged={refresh} onRevealInFiles={onRevealInFiles} />
+          )}
+          {selection?.kind === "file" && paneGroup(selection) !== "merge" && <DiffViewer taskId={taskId} path={selection.path} mode={diffMode(paneGroup(selection))} onChanged={refresh} onCommentAdded={() => setCommentsKey((k) => k + 1)} allowComments={allowComments} onRevealInFiles={onRevealInFiles} />}
           {selection?.kind === "commit" && <CommitDetail taskId={taskId} item={selection.item} onRevealInFiles={onRevealInFiles} />}
           {!selection && <div className="diff-empty">Select a file or commit.</div>}
         </div>

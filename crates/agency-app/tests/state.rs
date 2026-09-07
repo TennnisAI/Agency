@@ -780,7 +780,218 @@ fn send_merge_conflict_requires_a_merge_in_progress() {
     let err = state.send_merge_conflict(&info.id, None).unwrap_err().to_string();
     assert!(err.contains("no merge is in progress"), "got: {err}");
 
+    // "Fix with a new agent" answers for the same thing before it spawns
+    // anything: a fresh tab launched on an empty conflict would be a tab the
+    // user has to close again.
+    let err = state.spawn_merge_conflict_agent(&info.id, None).unwrap_err().to_string();
+    assert!(err.contains("no merge is in progress"), "got: {err}");
+    assert!(state.run_sessions(&info.id).unwrap().is_empty(), "refusal left a tab behind");
+
     state.discard_run(&info.id).unwrap();
+}
+
+/// AGE-199: crush and kimi take no prompt on the command line, so `prompt_args`
+/// answers for them with an empty argv and a log line. "Fix with a new agent"
+/// delivered the conflict as opening argv and nothing else, so for those two the
+/// tab opened, the call returned Ok, and the modal said it had started the agent
+/// on a conflict the agent had been told nothing about. They get the queue.
+#[test]
+fn a_new_conflict_agent_that_takes_no_argv_prompt_gets_the_queue() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let git = |dir: &Path, args: &[&str]| {
+        assert!(
+            Command::new("git").args(args).current_dir(dir).status().unwrap().success(),
+            "git {args:?}"
+        );
+    };
+
+    let state = common::state(&dir);
+    // Named for the catalog entry, because the id is what `prompt_delivery`
+    // reads; the command is a sleep, so the tab starts without crush installed.
+    state
+        .register_profile(AgentProfile {
+            name: "crush".into(),
+            command: "/bin/sh".into(),
+            args: vec!["-c".into(), "sleep 30".into()],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+    let run = state.create_run(&project.id, "p", "crush", None, "HEAD", None).unwrap();
+
+    // Two edits of one line, which is the conflict git cannot settle itself.
+    let wt = state.worktree_path(&run.id).unwrap();
+    std::fs::write(wt.join("README.md"), "from the branch").unwrap();
+    git(&wt, &["commit", "-qam", "branch edit"]);
+    std::fs::write(repo.join("README.md"), "from main").unwrap();
+    git(&repo, &["commit", "-qam", "main edit"]);
+    assert!(matches!(state.merge_task(&run.id).unwrap(), MergeOutcome::Conflicts { .. }));
+
+    let spawn = state.spawn_merge_conflict_agent(&run.id, None).unwrap();
+    assert!(spawn.queued, "the modal has to be able to say the prompt is waiting");
+    let waiting = state.list_queued_messages(&run.id);
+    assert_eq!(waiting.len(), 1, "the prompt has to be queued, not dropped: {waiting:?}");
+    assert_eq!(waiting[0].session_id, spawn.session.id, "queued against the new tab, not the run");
+    assert_eq!(waiting[0].origin, "merge conflict");
+    assert!(waiting[0].text.contains("README.md"), "got: {}", waiting[0].text);
+
+    let _ = state.discard_run(&run.id);
+}
+
+/// The other half of that: a crush profile that places `{{prompt}}` itself.
+/// `fresh_agent_argv` honours the profile over the catalog — the documented
+/// override for a user whose CLI has moved on — so the tab launched with the
+/// conflict already in its argv. Asking the catalog alone queued a second copy
+/// anyway, to be typed into the agent ten seconds later, on top of whatever it
+/// was doing with the first.
+#[test]
+fn a_new_conflict_agent_whose_profile_places_the_prompt_is_not_sent_it_twice() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let git = |dir: &Path, args: &[&str]| {
+        assert!(
+            Command::new("git").args(args).current_dir(dir).status().unwrap().success(),
+            "git {args:?}"
+        );
+    };
+
+    let state = common::state(&dir);
+    state
+        .register_profile(AgentProfile {
+            name: "crush".into(),
+            command: "/bin/sh".into(),
+            args: vec!["-c".into(), "sleep 30".into(), "--prompt".into(), "{{prompt}}".into()],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+    let run = state.create_run(&project.id, "p", "crush", None, "HEAD", None).unwrap();
+
+    let wt = state.worktree_path(&run.id).unwrap();
+    std::fs::write(wt.join("README.md"), "from the branch").unwrap();
+    git(&wt, &["commit", "-qam", "branch edit"]);
+    std::fs::write(repo.join("README.md"), "from main").unwrap();
+    git(&repo, &["commit", "-qam", "main edit"]);
+    assert!(matches!(state.merge_task(&run.id).unwrap(), MergeOutcome::Conflicts { .. }));
+
+    let spawn = state.spawn_merge_conflict_agent(&run.id, None).unwrap();
+    assert!(!spawn.queued, "the profile put the conflict in the argv; nothing is waiting");
+    assert!(
+        state.list_queued_messages(&run.id).is_empty(),
+        "a second copy of the conflict was queued behind the one it launched with"
+    );
+
+    let _ = state.discard_run(&run.id);
+}
+
+/// AGE-199: "Fix with a new agent" is offered on every run, and it opened the
+/// tab with the run's own profile. On a dsh run that could only ever fail: dsh
+/// serves its GUI on the workspace's one port, the run's own session already
+/// holds it, and `start_run_session` refuses a second — so the user got the
+/// port refusal as a raw backend error, with no picker to choose another agent
+/// with. The spawn falls back to a terminal profile instead.
+#[test]
+fn a_new_conflict_agent_falls_back_off_a_web_gui_profile() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let git = |dir: &Path, args: &[&str]| {
+        assert!(
+            Command::new("git").args(args).current_dir(dir).status().unwrap().success(),
+            "git {args:?}"
+        );
+    };
+
+    let state = common::state(&dir);
+    // Under the catalog's own name, which is what `web_ui` is keyed by; the
+    // command only has to exist so the tab can be launched.
+    let profile = |name: &str| AgentProfile {
+        name: name.into(),
+        command: "/bin/sh".into(),
+        args: vec!["-c".into(), "sleep 30".into()],
+        env: vec![],
+        resume_args: None,
+        loop_args: None,
+    };
+    state.register_profile(profile("dsh")).unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+    let run = state.create_run(&project.id, "p", "dsh", None, "HEAD", None).unwrap();
+
+    // Two edits of one line, which is the conflict git cannot settle itself.
+    let wt = state.worktree_path(&run.id).unwrap();
+    std::fs::write(wt.join("README.md"), "from the branch").unwrap();
+    git(&wt, &["commit", "-qam", "branch edit"]);
+    std::fs::write(repo.join("README.md"), "from main").unwrap();
+    git(&repo, &["commit", "-qam", "main edit"]);
+    assert!(matches!(state.merge_task(&run.id).unwrap(), MergeOutcome::Conflicts { .. }));
+
+    // With dsh the only profile there is nothing to fall back to, and the
+    // refusal has to say what to do about it rather than name a port.
+    let err = state.spawn_merge_conflict_agent(&run.id, None).unwrap_err().to_string();
+    assert!(err.contains("no other agent is set up"), "got: {err}");
+    assert!(state.run_sessions(&run.id).unwrap().is_empty(), "refusal left a tab behind");
+
+    state.register_profile(profile("claude")).unwrap();
+    let tab = state.spawn_merge_conflict_agent(&run.id, None).unwrap().session;
+    assert_eq!(tab.agent, "claude", "the tab must not be a second dsh");
+
+    let _ = state.discard_run(&run.id);
+}
+
+/// AGE-199: the busy/idle bookkeeping the send queue decides against is one
+/// entry per *run*, read from whichever session speaks for the run — so an
+/// extra agent tab had no entry at all. No entry reads as "working", so a
+/// merge conflict handed to a tab was held for the full five-minute timeout
+/// while that agent sat at an empty prompt, under a marker saying it was
+/// waiting for a turn to finish. This is the listing the tick now observes
+/// them from.
+#[test]
+fn extra_session_panes_cover_the_tabs_the_run_snapshot_misses() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let state = common::state(&dir);
+    state
+        .register_profile(AgentProfile {
+            name: "idler".into(),
+            command: "/bin/sh".into(),
+            args: vec!["-c".into(), "sleep 30".into()],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+    let run = state.create_run(&project.id, "p", "idler", None, "HEAD", None).unwrap();
+    let tab = state.start_run_session(&run.id, None, "").unwrap();
+
+    let mut seen = false;
+    for _ in 0..150 {
+        let panes = state.extra_session_panes();
+        if panes.iter().any(|(id, _)| *id == tab.id) {
+            // The run's own session is the run snapshot's job; listing it here
+            // too would have two observers writing one entry.
+            assert!(panes.iter().all(|(id, _)| *id != run.id), "got: {panes:?}");
+            seen = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    assert!(seen, "the extra tab is missing from the panes the tick observes");
+
+    state.discard_run(&run.id).unwrap();
 }
 
 #[test]

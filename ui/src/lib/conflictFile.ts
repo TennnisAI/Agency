@@ -1,0 +1,215 @@
+// Conflict markers in a file git left unmerged, and what taking a side does to
+// the text.
+//
+// This exists because there was no way to resolve a conflict in Agency by hand
+// (AGE-199). The diff pane offered the ordinary stage/revert-by-line buttons on
+// a conflicted file, but `git diff` answers for one of those with a *combined*
+// diff — `diff --cc`, `@@@` hunk headers, two columns of prefixes — whose lines
+// are not the file's lines. Selecting the side you wanted and staging it fed
+// that back through `git apply`, which is how `<<<<<<< HEAD` and the branch
+// name ended up written into the file itself.
+//
+// So the file, not the diff, is what the conflict view reads, and every
+// resolution here is a pure rewrite of it: parse into blocks, drop the markers
+// and the side you did not pick, put the rest back untouched. The caller writes
+// the result and stages it.
+
+/** Which side of a conflict to keep. `both` keeps them in the order git wrote. */
+export type Side = "current" | "incoming" | "both";
+
+export interface ConflictBlock {
+  /** Line index of the `<<<<<<<` marker. */
+  start: number;
+  /** Line index of the `>>>>>>>` marker. */
+  end: number;
+  /** What git wrote after `<<<<<<<`: the branch being merged into (usually `HEAD`). */
+  currentLabel: string;
+  /** What git wrote after `>>>>>>>`: the branch being merged in. */
+  incomingLabel: string;
+  current: string[];
+  incoming: string[];
+}
+
+const OURS = "<<<<<<<";
+const BASE = "|||||||";
+const SPLIT = "=======";
+const THEIRS = ">>>>>>>";
+
+// A marker is the seven characters at the start of a line, followed by end of
+// line or a space. Anything else — a row of equals signs under a heading, a
+// shell heredoc — is ordinary text, and treating it as a marker would carve up
+// a file that has no conflict in it at all.
+//
+// A carriage return counts as end of line. The split above is on "\n", so in a
+// CRLF checkout every line arrives with a trailing "\r", and `=======\r` has a
+// `\r` where this looked for a space or the end of the string. `<<<<<<< HEAD\r`
+// still matched (a label follows it), so the opening marker was found and the
+// split never was: `end` stayed -1 and parseConflicts returned [] for the whole
+// file. Every conflict in a CRLF repo reached the view as "conflict markers
+// Agency can't read" and could not be resolved in the pane at all.
+function marker(line: string, m: string): boolean {
+  if (!line.startsWith(m)) return false;
+  const next = line[m.length];
+  return next === undefined || next === " " || next === "\r";
+}
+
+function label(line: string, m: string): string {
+  return line.slice(m.length).trim();
+}
+
+/**
+ * The conflicts in `text`, in the order they appear.
+ *
+ * Conservative by design: only well-formed blocks are returned, and anything
+ * unparseable (a `<<<<<<<` with no `=======` after it, a second `<<<<<<<`,
+ * `=======`, `|||||||` or `>>>>>>>` inside a block) yields no block at all, so
+ * the buttons this feeds are simply not offered rather than offered for a
+ * rewrite that would lose text. diff3 conflicts carry a `|||||||` base section,
+ * which belongs to neither side and is dropped with the markers; only the first
+ * marker after `<<<<<<<` opens one.
+ */
+export function parseConflicts(text: string): ConflictBlock[] {
+  const lines = text.split("\n");
+  const out: ConflictBlock[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    if (!marker(lines[i], OURS)) {
+      i++;
+      continue;
+    }
+    const start = i;
+    const current: string[] = [];
+    const incoming: string[] = [];
+    // "ours" until the base or the split, "theirs" after the split.
+    let phase: "ours" | "base" | "theirs" = "ours";
+    let end = -1;
+    for (let j = start + 1; j < lines.length; j++) {
+      const line = lines[j];
+      if (marker(line, OURS)) break; // nested: malformed, leave the file alone
+      if (marker(line, BASE)) {
+        // Only the first marker after `<<<<<<<` is git's diff3 base section.
+        // A second `|||||||`, or one after the `=======`, is not a section git
+        // wrote, and it is the one marker whose appearance inside a side used
+        // to be read rather than refused: a line of seven pipes in the current
+        // side flipped the phase to "base", every remaining current-side line
+        // was dropped with the base, and the block still came back well
+        // formed, so "Keep current" wrote a file silently missing that text
+        // and the block-count check passed (the result is still zero blocks).
+        // Refuse the file, which is what a second `=======` and a nested
+        // `<<<<<<<` already do.
+        if (phase !== "ours") break;
+        phase = "base";
+        continue;
+      }
+      if (marker(line, SPLIT)) {
+        // A second `=======` after the split is not a separator, so the first
+        // one was not either: it was a line of the file that happens to look
+        // like a marker — an RST heading's underline, `Changes` over
+        // `=======`, is the case this was found on. Read as the separator it
+        // put our side's remaining text into `incoming`, so "Keep current"
+        // silently dropped it and "Keep incoming" wrote a literal `=======`
+        // back into the file. Both slipped past the block-count check, because
+        // either result parses to zero blocks. Refuse the file instead, which
+        // is what this module does with everything else it cannot account for.
+        if (phase === "theirs") break;
+        phase = "theirs";
+        continue;
+      }
+      if (marker(line, THEIRS)) {
+        // A `>>>>>>>` before the `=======` is not the end of a conflict.
+        if (phase === "theirs") end = j;
+        break;
+      }
+      if (phase === "ours") current.push(line);
+      else if (phase === "theirs") incoming.push(line);
+    }
+    // A marker we cannot pair up means the file is not shaped the way this
+    // module thinks. Refusing all of it, rather than the blocks around it, is
+    // what keeps a rewrite from leaving the odd `<<<<<<<` behind — which is the
+    // failure this whole view exists to stop.
+    if (end === -1) return [];
+    // A second `>>>>>>>` between here and the next `<<<<<<<` means the one
+    // just paired up may not be git's. `>>>>>>>` was the last marker whose
+    // appearance inside a side was read rather than refused: a line of seven
+    // angle brackets in the *incoming* side ended the block on itself, so the
+    // block came back well formed with an empty Incoming side, that line's
+    // text as its ref, and git's real `>>>>>>> agent/feature` left outside it.
+    // "Keep current" then wrote that terminator back into the file, the
+    // block-count check passed (a lone terminator no longer parses, so the
+    // result is still zero blocks), and the pane said "No conflict markers
+    // left in this file" over a file with a marker in it, which is the exact
+    // AGE-199 failure this module exists to stop. Which of the two is git's
+    // cannot be told from the text, so refuse the file, as a second `=======`
+    // and a nested `<<<<<<<` already do.
+    for (let j = end + 1; j < lines.length && !marker(lines[j], OURS); j++) {
+      if (marker(lines[j], THEIRS)) return [];
+    }
+    out.push({
+      start,
+      end,
+      currentLabel: label(lines[start], OURS),
+      incomingLabel: label(lines[end], THEIRS),
+      current,
+      incoming,
+    });
+    i = end + 1;
+  }
+  return out;
+}
+
+/** Whether `text` still holds a conflict this module can resolve. */
+export function hasConflicts(text: string): boolean {
+  return parseConflicts(text).length > 0;
+}
+
+/**
+ * Whether any line of `text` is a conflict marker, whether or not the file
+ * around it parses into blocks. This is what "the file still has markers in it"
+ * means for a file this module refuses: the two are not the same question, and
+ * the pane needs both.
+ *
+ * Only the two outer markers count. A line of seven equals signs is an RST
+ * heading's underline and a line of seven pipes is a table rule; calling either
+ * one evidence of a conflict would tell the user a file they had already
+ * resolved was one Agency can't read.
+ */
+export function hasMarkers(text: string): boolean {
+  return text.split("\n").some((line) => marker(line, OURS) || marker(line, THEIRS));
+}
+
+function chosen(block: ConflictBlock, side: Side): string[] {
+  if (side === "current") return block.current;
+  if (side === "incoming") return block.incoming;
+  return [...block.current, ...block.incoming];
+}
+
+/**
+ * `text` with the `index`th conflict replaced by the side chosen. Every other
+ * line, conflict markers of later blocks included, comes through unchanged —
+ * which is what makes resolving one block at a time safe.
+ *
+ * An index that is not a block is returned unchanged rather than throwing: the
+ * view re-reads the file after every write, and a stale click is a no-op, not
+ * a rewrite of the wrong region.
+ */
+export function resolveBlock(text: string, index: number, side: Side): string {
+  const blocks = parseConflicts(text);
+  const block = blocks[index];
+  if (!block) return text;
+  const lines = text.split("\n");
+  return [...lines.slice(0, block.start), ...chosen(block, side), ...lines.slice(block.end + 1)]
+    .join("\n");
+}
+
+/**
+ * `text` with every conflict resolved the same way. Applied back to front so
+ * each block's recorded line numbers still describe the text being cut.
+ */
+export function resolveAll(text: string, side: Side): string {
+  const blocks = parseConflicts(text);
+  let lines = text.split("\n");
+  for (const block of [...blocks].reverse()) {
+    lines = [...lines.slice(0, block.start), ...chosen(block, side), ...lines.slice(block.end + 1)];
+  }
+  return lines.join("\n");
+}

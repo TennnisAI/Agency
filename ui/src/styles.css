@@ -1688,6 +1688,21 @@ button.diff-path:hover { color: var(--text); text-decoration: underline; }
 .diff-hunks { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 10px; border-top: 1px solid var(--line); }
 .diff-sel-actions { display: flex; gap: 4px; }
 
+/* ── ConflictView: taking a side on an unmerged file (AGE-199) ─── */
+.conflict-body { overflow: auto; flex: 1; padding: 10px; }
+.conflict-intro { color: var(--sub0); font-size: 12px; margin: 0 0 10px; max-width: 70ch; }
+.conflict-block { border: 1px solid var(--line); border-radius: 8px; margin-bottom: 10px; overflow: hidden; }
+.conflict-head { display: flex; align-items: center; gap: 4px; padding: 5px 8px; background: var(--mantle); border-bottom: 1px solid var(--line); }
+.conflict-count { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--o1); }
+.conflict-label { display: flex; align-items: baseline; gap: 8px; padding: 4px 8px; font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--o1); }
+.conflict-ref { font-family: var(--mono); font-size: 11px; font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--o0); }
+.conflict-side.current { background: color-mix(in srgb, var(--blue) 8%, transparent); }
+.conflict-side.incoming { background: color-mix(in srgb, var(--green) 8%, transparent); }
+.conflict-side + .conflict-side { border-top: 1px solid var(--line); }
+.conflict-lines { margin: 0; padding: 0 8px 8px; font-family: var(--mono); font-size: 12.5px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
+.conflict-lines.empty { color: var(--o0); font-style: italic; }
+.conflict-actions { display: flex; gap: 6px; }
+
 /* ── ImageDiff: before/after for changes git calls binary ─────── */
 .imgdiff-body { flex: 1; min-height: 0; display: flex; overflow: hidden; }
 .imgdiff-body.twoup > .imgdiff-pane + .imgdiff-pane { border-left: 1px solid var(--line); }

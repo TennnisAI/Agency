@@ -69,7 +69,12 @@ export default function ChangesPanel({
     const name = isFolder ? baseName(c.path.slice(0, -1)) : baseName(c.path);
     const items: MenuEntry[] = [
       { kind: "header", label: name },
-      { label: "Open Changes", onClick: () => onSelectFile(c.path, group) },
+      {
+        // A conflicted file opens the conflict view rather than a diff, so the
+        // entry says what it opens (AGE-199).
+        label: group === "merge" ? "Resolve Conflict" : "Open Changes",
+        onClick: () => onSelectFile(c.path, group),
+      },
       { kind: "separator" },
     ];
     if (group === "index") {

@@ -494,6 +494,17 @@ pub struct RunSessionInfo {
     pub status: SessionStatus,
 }
 
+/// What "Fix with a new agent" did: the tab it opened, and whether the conflict
+/// went in as that agent's opening argv or is waiting in the send queue for it
+/// to reach its prompt. The modal's wording turns on the difference, and the
+/// tab alone cannot answer it.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MergeConflictSpawn {
+    pub session: RunSessionInfo,
+    pub queued: bool,
+}
+
 /// Where an agent started on a PR (a review, or a conflict resolution) landed.
 /// `session_id` is set when it had to run as an extra tab inside an existing
 /// run (the PR's branch was already checked out there); the UI focuses that tab
@@ -779,6 +790,14 @@ fn split_session_id(id: &str) -> (&str, Option<u32>) {
         },
         None => (id, None),
     }
+}
+
+/// A pane's content as one number, for the "did anything change since the last
+/// tick" bit the activity bookkeeping is built on.
+fn pane_hash(pane: &str) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    std::hash::Hash::hash(&pane, &mut hasher);
+    std::hash::Hasher::finish(&hasher)
 }
 
 /// The daemon session that speaks for a run: its status dot, the notifier's
@@ -9716,19 +9735,7 @@ impl AppState {
     /// go to the run's own every time — which after a day's work is often the
     /// one with the least to do with the branch being merged (AGE-184).
     pub fn send_merge_conflict(&self, id: &str, session: Option<&str>) -> anyhow::Result<bool> {
-        let run = self.run_record(id)?;
-        let repo = self.project_repo(&run.project_id)?;
-        let base = agency_core::merge::resolve_target(run.merge_target.as_deref(), &repo)
-            .unwrap_or_else(|_| "main".to_string());
-        match agency_core::merge::in_progress_merge(&repo) {
-            None => bail!("no merge is in progress, so there is no conflict to send"),
-            // Another run's conflict describes files this agent never touched;
-            // handing it that prompt would send it off editing someone else's work.
-            Some(m) if !agency_core::merge::owns_merge(&repo, &run.branch) => {
-                bail!("the merge in progress is {}'s, not this run's", m.branch)
-            }
-            Some(_) => {}
-        }
+        let msg = self.merge_conflict_prompt(id)?;
         let target = self.send_target(id, session)?;
         if !matches!(
             self.term.read().unwrap().status(&session_name(&target)),
@@ -9736,8 +9743,129 @@ impl AppState {
         ) {
             bail!("agent session {target} is not running");
         }
-        let msg = compose_merge_conflict(&repo, &run.branch, &base, &conflict_status(&repo));
         self.queue_send(&target, "merge conflict", msg)
+    }
+
+    /// Open a *new* agent tab in the run's worktree and launch it on the
+    /// conflict, rather than handing the prompt to an agent that is already in
+    /// the middle of something else (AGE-199).
+    ///
+    /// The prompt goes in as the tab's opening argv, so for most agents there is
+    /// no queue and nothing to wait for: the hand-off cannot be held behind
+    /// another turn. `agent` picks the profile; `None` leaves the choice to
+    /// [`Self::conflict_agent_for`].
+    ///
+    /// crush and kimi are the exception. Their CLIs take no prompt on the
+    /// command line, so `prompt_args` answers for them with an empty argv and a
+    /// log line — the tab opened, this returned `Ok`, and the modal said
+    /// "Started crush on it" for an agent that had been handed nothing at all.
+    /// They go through the send queue instead, the same delivery the hand-off to
+    /// a live tab uses, which the tick drains once the new agent is at its
+    /// prompt. The return says which of the two happened, because a queued
+    /// prompt waits at least a tick behind an agent that has only just started
+    /// and the modal has to be able to say so.
+    pub fn spawn_merge_conflict_agent(
+        &self,
+        id: &str,
+        agent: Option<&str>,
+    ) -> anyhow::Result<MergeConflictSpawn> {
+        let prompt = self.merge_conflict_prompt(id)?;
+        let agent = match agent {
+            Some(a) => a.to_string(),
+            None => self.conflict_agent_for(id)?,
+        };
+        let session = self.start_run_session(id, Some(&agent), &prompt)?;
+        // The same condition `fresh_agent_argv` launches by, not just the
+        // catalog's half of it. A profile that places `{{prompt}}` itself wins
+        // over the catalog there — that is the documented override for a user
+        // whose CLI has moved on — so asking the catalog alone said "this agent
+        // was handed nothing" about an agent that had just been launched with
+        // the conflict in its argv, and queued a second copy to be typed in on
+        // top of whatever it was doing ten seconds later.
+        let queued = crate::agent_catalog::prompt_delivery(&session.agent)
+            == crate::agent_catalog::PromptDelivery::Unsupported
+            && !self.profile_places_prompt(&session.agent);
+        if queued {
+            self.queue_send(&session.id, "merge conflict", prompt)?;
+        }
+        Ok(MergeConflictSpawn { session, queued })
+    }
+
+    /// Whether `agent`'s profile puts the prompt in the argv itself, which is
+    /// the override [`fresh_agent_argv`] honours over the catalog's recipe. A
+    /// profile that has gone missing since the tab launched answers false: the
+    /// launch used *some* argv, and the fallback that matters is the one that
+    /// leaves the agent with a prompt rather than the one that doubles it.
+    fn profile_places_prompt(&self, agent: &str) -> bool {
+        let profile = self.registry.lock().unwrap().get_profile(agent);
+        matches!(profile, Ok(Some(p)) if p.args.iter().any(|a| a.contains("{{prompt}}")))
+    }
+
+    /// Which profile "New agent" opens when the caller named none: the run's
+    /// own, unless that agent serves its interactive surface as a browser GUI.
+    ///
+    /// A run has one GUI port and the run's own agent already answers for it,
+    /// so `start_run_session` refuses a second web-GUI session in the same
+    /// workspace. dsh is the only such profile, and the modal offers "New
+    /// agent" on every run with no way to name a different one — so on a dsh
+    /// run the option could only ever fail, and it failed with the port
+    /// refusal, which reads as a bug rather than as "pick another agent".
+    /// Falling back to a terminal profile is the answer that keeps the option
+    /// working: the tab is opened to read a conflict and edit files, which is
+    /// not what the browser GUI was wanted for.
+    fn conflict_agent_for(&self, run_id: &str) -> anyhow::Result<String> {
+        let run = self.run_record(run_id)?;
+        if crate::agent_catalog::web_ui(&run.agent).is_none() {
+            return Ok(run.agent);
+        }
+        let profiles = self.registry.lock().unwrap().list_profiles()?;
+        // Enabled *and* on PATH: a profile row whose CLI was never installed
+        // would open a tab that dies on "command not found", which is the same
+        // dead end by another route.
+        let usable: Vec<_> = profiles
+            .iter()
+            .filter(|p| {
+                crate::agent_catalog::web_ui(&p.name).is_none() && command_on_path(&p.command)
+            })
+            .collect();
+        // Prompt-capable first. One of those has the conflict as its opening
+        // argv and is working the moment the tab opens; crush and kimi wait for
+        // the send queue to reach them.
+        let pick = usable
+            .iter()
+            .find(|p| {
+                crate::agent_catalog::prompt_delivery(&p.name)
+                    != crate::agent_catalog::PromptDelivery::Unsupported
+            })
+            .or(usable.first());
+        match pick {
+            Some(p) => Ok(p.name.clone()),
+            None => bail!(
+                "{} serves its GUI on this workspace's port, so a second one can't start here, \
+                 and no other agent is set up to take the conflict — enable one in Settings, or \
+                 hand the conflict to an agent already in this workspace",
+                run.agent
+            ),
+        }
+    }
+
+    /// The prompt both hand-offs send, and the checks both owe the user before
+    /// composing it: there has to be a merge in progress, and it has to be this
+    /// run's. Another run's conflict describes files this agent never touched,
+    /// and handing it that prompt would send it off editing someone else's work.
+    fn merge_conflict_prompt(&self, id: &str) -> anyhow::Result<String> {
+        let run = self.run_record(id)?;
+        let repo = self.project_repo(&run.project_id)?;
+        let base = agency_core::merge::resolve_target(run.merge_target.as_deref(), &repo)
+            .unwrap_or_else(|_| "main".to_string());
+        match agency_core::merge::in_progress_merge(&repo) {
+            None => bail!("no merge is in progress, so there is no conflict to send"),
+            Some(m) if !agency_core::merge::owns_merge(&repo, &run.branch) => {
+                bail!("the merge in progress is {}'s, not this run's", m.branch)
+            }
+            Some(_) => {}
+        }
+        Ok(compose_merge_conflict(&repo, &run.branch, &base, &conflict_status(&repo)))
     }
 
     /// Update focus/active-run state. On an unfocused→focused edge, hand back a
@@ -9919,6 +10047,38 @@ impl AppState {
         self.registry.lock().unwrap().set_setting(SETTING_NOTIF, &json)
     }
 
+    /// Pane hashes for the agent tabs [`watch_snapshot`] does not cover.
+    ///
+    /// That snapshot is one entry per *run*, and it reads whichever session
+    /// speaks for the run. An extra tab (`<run>--<n>`) therefore had no
+    /// activity bookkeeping of its own — and the send queue reads exactly that
+    /// bookkeeping to decide whether an agent is mid-turn, with "no entry"
+    /// meaning working. So "Fix with agent" aimed at a tab held its prompt for
+    /// the full five-minute timeout while the agent sat at an empty prompt,
+    /// under a marker that said it was waiting for a turn to finish (AGE-199).
+    ///
+    /// Read from the daemon's own listing rather than the registry: a tab is a
+    /// session here only if it is actually running, which is the same thing
+    /// the drain is about to ask about.
+    pub fn extra_session_panes(&self) -> Vec<(String, u64)> {
+        let live = self.term.read().unwrap().list().unwrap_or_default();
+        live.iter()
+            .filter(|(_, status)| matches!(status, SessionStatus::Running))
+            .filter_map(|(name, _)| {
+                let id = name.strip_prefix("agency-")?;
+                // `#` is the run-script separator (`agency-run-<id>#dev`) and
+                // can never appear in a run or tab id, so this is what keeps a
+                // script called `foo--2` out of the agent tabs.
+                if id.contains('#') {
+                    return None;
+                }
+                split_session_id(id).1?;
+                let pane = self.term.read().unwrap().capture(name, 50).unwrap_or_default();
+                Some((id.to_string(), pane_hash(&pane)))
+            })
+            .collect()
+    }
+
     /// Snapshot every non-archived run across all projects for the watcher:
     /// agent + run-script session status and a hash of the agent pane (for idle).
     pub fn watch_snapshot(&self) -> Result<Vec<notifier::RunSnapshot>> {
@@ -9969,9 +10129,7 @@ impl AppState {
                 let agent = self.term.read().unwrap().status(&lead).unwrap_or(SessionStatus::Gone);
                 let run_scripts = run_scripts_of(&run.id);
                 let pane = self.term.read().unwrap().capture(&lead, 50).unwrap_or_default();
-                let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                std::hash::Hash::hash(&pane, &mut hasher);
-                let pane_hash = std::hash::Hasher::finish(&hasher);
+                let pane_hash = pane_hash(&pane);
                 let label = format!(
                     "{}: {}",
                     run.agent,

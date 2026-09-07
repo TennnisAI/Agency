@@ -244,6 +244,7 @@ pub fn run() {
             commands::start_issue_race,
             commands::start_issue_loop,
             commands::send_merge_conflict,
+            commands::spawn_merge_conflict_agent,
             commands::git_parse_diff,
             commands::git_blob_sides,
             commands::git_stage_hunk,
@@ -313,6 +314,7 @@ pub fn run() {
             commands::cancel_queued_message,
             commands::list_dir,
             commands::read_file,
+            commands::file_has_conflict_markers,
             commands::write_file,
             commands::create_file,
             commands::create_dir,
@@ -446,6 +448,11 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 
         let poll_secs: u64 = 2;
         let mut watches: HashMap<String, crate::notifier::RunWatch> = HashMap::new();
+        // Last pane hash of each extra agent tab, which the run snapshots above
+        // don't carry one for. Kept here, beside `watches`, because it is the
+        // same "did this pane change since the previous tick" bit — see
+        // `extra_session_panes`.
+        let mut tab_panes: HashMap<String, u64> = HashMap::new();
         let mut tick: u64 = 0;
         let mut tray_items: Vec<crate::tray::TrayRun> = Vec::new();
         loop {
@@ -535,6 +542,18 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                     watches.insert(snap.id.clone(), watch);
                 }
                 watches.retain(|id, _| seen.contains(id));
+                // The run's extra agent tabs, which the loop above does not
+                // reach: no notification of their own (the run is the thing
+                // notifications are about), but the same busy/idle
+                // bookkeeping, because the send queue below decides against it
+                // for whichever tab the user handed a prompt to (AGE-199).
+                for (id, hash) in state.extra_session_panes() {
+                    let changed = tab_panes.get(&id).is_none_or(|h| *h != hash);
+                    tab_panes.insert(id.clone(), hash);
+                    state.update_activity(&id, changed, now_ms);
+                    seen.insert(id);
+                }
+                tab_panes.retain(|id, _| seen.contains(id));
                 state.retain_activity(&seen);
                 // Text Agency owes an agent goes out here, after the loop above
                 // has refreshed the busy/idle bookkeeping the decision reads.

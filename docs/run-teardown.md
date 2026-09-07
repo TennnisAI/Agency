@@ -362,3 +362,46 @@ newer of the two in its `claude --resume` line, the conversation reads back out
 of the archive copy, restore puts both files back with their mtimes intact (the
 thing "resume the most recent session" goes by), and deleting the run sweeps
 them.
+
+## Addendum: the remote copy (AGE-201, 2026-09-07)
+
+The table above has three columns, and until now that was the whole ending:
+worktree, branch, record. It never had a fourth for the copy of the branch on
+the remote, and nothing in the app took it. Merging a PR from Source Control
+did (`gh.rs::merge_pr` deletes the head ref through the API, and has since it
+shipped), but merging the *agent's* branch from the Approve window did not, and
+that is the path the approve flow leads to. So every locally merged agent
+branch that had ever been pushed stayed on the remote for good, one per run,
+which is what the issue reported: "it leaves all these remote branches hanging
+around".
+
+The merge window now offers it as a checkbox beside the merge, the way the PR
+merge dialog offers its own, and `merge.rs::delete_published_branch` runs after
+the merge has committed. Three things it does deliberately:
+
+- **It asks the remote, not the ref store.** Everything in `cleanup.rs` is
+  answered locally, on purpose, because it is read while a menu is opening. This
+  is not: it is a button press, it already costs a `git push`, and the local
+  remote-tracking ref is only as fresh as the last fetch. A colleague's push
+  that landed after that fetch is precisely the work this must not delete
+  unseen, so the tip comes from `ls-remote` and is then required to be an object
+  this checkout actually has *and* an ancestor of the base. A commit we have
+  never fetched cannot be weighed against anything, so it is refused rather than
+  assumed harmless.
+- **It runs after the merge, never before.** The same guard makes the ordering
+  structural rather than a convention: before the merge commits, the remote copy
+  is the only copy off this machine and the deletion refuses itself.
+- **It leaves the local branch alone.** That is `cleanup.rs`'s to take, with the
+  worktree, once the user picks archive or delete, and it decides that from the
+  whole plan. Two places deleting branches by two rules is how they drift.
+
+The one thing this cannot make safe is an **open PR**. GitHub closes a pull
+request whose head branch is deleted; it only marks one merged once the commits
+reach the base branch *on the remote*, which a local merge has not done yet. So
+a branch with an open PR would be traded for a PR that says "closed" — the
+record of how the work landed, lost to save a ref. The window unticks the box
+when the PR probe it already runs reports an open one, says why beside it, and
+points at merging the PR from Source Control instead, which ends with the PR
+merged and the branch deleted. It unticks rather than refuses, and only while
+the user has not touched the box themselves: this is the user's remote and
+their PR.

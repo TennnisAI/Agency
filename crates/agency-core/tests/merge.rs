@@ -502,3 +502,206 @@ fn remote_copies_finds_the_published_name_only() {
         vec!["origin/agent/local-only".to_string()]
     );
 }
+
+/// The remote is read off the tracking ref by taking the branch away, not by
+/// splitting on the first slash: every branch Agency makes has slashes of its
+/// own.
+#[test]
+fn remote_name_strips_the_branch_not_the_first_segment() {
+    assert_eq!(merge::remote_name("origin/agent/foo", "agent/foo"), Some("origin"));
+    assert_eq!(merge::remote_name("upstream/agent/foo", "agent/foo"), Some("upstream"));
+    // A ref that isn't this branch's copy at all.
+    assert_eq!(merge::remote_name("origin/agent/other", "agent/foo"), None);
+    // No remote left once the branch is taken away.
+    assert_eq!(merge::remote_name("agent/foo", "agent/foo"), None);
+}
+
+/// Repo with a bare `origin` beside it, both on `main` with one commit.
+fn repo_with_origin() -> (tempfile::TempDir, tempfile::TempDir) {
+    let origin = tempfile::tempdir().unwrap();
+    run(origin.path(), &["init", "-q", "--bare", "-b", "main", "."]);
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    run(dir.path(), &["remote", "add", "origin", origin.path().to_str().unwrap()]);
+    run(dir.path(), &["push", "-q", "origin", "main"]);
+    (dir, origin)
+}
+
+/// A commit adding `file` on the branch the checkout is on.
+fn commit_file(dir: &Path, file: &str) {
+    std::fs::write(dir.join(file), "hi\n").unwrap();
+    run(dir, &["add", "-A"]);
+    run(dir, &["commit", "-q", "-m", file]);
+}
+
+#[test]
+fn deletes_a_published_branch_whose_work_is_on_the_base() {
+    let (dir, origin) = repo_with_origin();
+    run(dir.path(), &["checkout", "-q", "-b", "agent/x"]);
+    commit_file(dir.path(), "new.txt");
+    run(dir.path(), &["push", "-q", "origin", "agent/x"]);
+    run(dir.path(), &["checkout", "-q", "main"]);
+    merge::merge(dir.path(), "agent/x", "main").unwrap();
+
+    let gone = merge::delete_published_branch(dir.path(), "agent/x", "main").unwrap();
+    assert_eq!(gone, vec!["origin/agent/x".to_string()]);
+    // The remote really lost the ref, and the tracking ref went with it.
+    let refs = String::from_utf8(
+        Command::new("git").args(["branch"]).current_dir(origin.path()).output().unwrap().stdout,
+    )
+    .unwrap();
+    assert!(!refs.contains("agent/x"), "origin still has the branch: {refs}");
+    assert!(merge::remote_copies(dir.path(), "agent/x").is_empty());
+    // The local branch is the archive/delete flow's to remove, not this one's.
+    assert!(merge::branch_exists(dir.path(), "agent/x"));
+}
+
+/// Names the refs a checkout has, and a bare repo's branch listing, for the
+/// two-remote tests below.
+fn branches_in(bare: &Path) -> String {
+    String::from_utf8(
+        Command::new("git").args(["branch"]).current_dir(bare).output().unwrap().stdout,
+    )
+    .unwrap()
+}
+
+/// A fork checkout publishes to `origin` and to the fork, so the branch has two
+/// remote copies. Taking only the first and reporting "deleted" is how the
+/// second one survives forever, which is the failure this whole path exists to
+/// stop.
+#[test]
+fn deletes_every_remote_copy_of_the_branch() {
+    let (dir, origin) = repo_with_origin();
+    let fork = tempfile::tempdir().unwrap();
+    run(fork.path(), &["init", "-q", "--bare", "-b", "main", "."]);
+    run(dir.path(), &["remote", "add", "fork", fork.path().to_str().unwrap()]);
+    run(dir.path(), &["push", "-q", "fork", "main"]);
+
+    run(dir.path(), &["checkout", "-q", "-b", "agent/x"]);
+    commit_file(dir.path(), "new.txt");
+    run(dir.path(), &["push", "-q", "origin", "agent/x"]);
+    run(dir.path(), &["push", "-q", "fork", "agent/x"]);
+    run(dir.path(), &["checkout", "-q", "main"]);
+    merge::merge(dir.path(), "agent/x", "main").unwrap();
+
+    let mut gone = merge::delete_published_branch(dir.path(), "agent/x", "main").unwrap();
+    gone.sort();
+    assert_eq!(gone, vec!["fork/agent/x".to_string(), "origin/agent/x".to_string()]);
+    assert!(!branches_in(origin.path()).contains("agent/x"), "origin kept it");
+    assert!(!branches_in(fork.path()).contains("agent/x"), "the fork kept it");
+    assert!(merge::remote_copies(dir.path(), "agent/x").is_empty());
+}
+
+/// Every copy is checked before any is deleted. A refusal on the second remote
+/// that had already taken the first would leave the user with one remote
+/// tidied, one not, and an error message that mentions neither.
+#[test]
+fn one_remote_ahead_of_the_base_stops_the_deletion_on_all_of_them() {
+    let (dir, origin) = repo_with_origin();
+    let fork = tempfile::tempdir().unwrap();
+    run(fork.path(), &["init", "-q", "--bare", "-b", "main", "."]);
+    run(dir.path(), &["remote", "add", "fork", fork.path().to_str().unwrap()]);
+    run(dir.path(), &["push", "-q", "fork", "main"]);
+
+    run(dir.path(), &["checkout", "-q", "-b", "agent/x"]);
+    commit_file(dir.path(), "one.txt");
+    run(dir.path(), &["push", "-q", "origin", "agent/x"]);
+    run(dir.path(), &["push", "-q", "fork", "agent/x"]);
+    run(dir.path(), &["checkout", "-q", "main"]);
+    merge::merge(dir.path(), "agent/x", "main").unwrap();
+    // A second commit reaches origin only, so the fork's copy is merged and
+    // origin's is not. That way round on purpose: the refs come back sorted, so
+    // the fork is reached first, and a loop that deleted as it went would
+    // already have taken it by the time origin refuses.
+    run(dir.path(), &["checkout", "-q", "agent/x"]);
+    commit_file(dir.path(), "two.txt");
+    run(dir.path(), &["push", "-q", "origin", "agent/x"]);
+    run(dir.path(), &["checkout", "-q", "main"]);
+
+    let err =
+        merge::delete_published_branch(dir.path(), "agent/x", "main").unwrap_err().to_string();
+    assert!(err.contains("origin/agent/x"), "names the remote that refused: {err}");
+    assert!(branches_in(origin.path()).contains("agent/x"), "origin's copy went anyway");
+    assert!(branches_in(fork.path()).contains("agent/x"), "the fork's copy went anyway");
+}
+
+/// The whole point of the guard: work that hasn't landed is not deleted,
+/// however the branch got ahead.
+#[test]
+fn refuses_a_published_branch_with_commits_the_base_lacks() {
+    let (dir, _origin) = repo_with_origin();
+    run(dir.path(), &["checkout", "-q", "-b", "agent/x"]);
+    commit_file(dir.path(), "one.txt");
+    run(dir.path(), &["push", "-q", "origin", "agent/x"]);
+    run(dir.path(), &["checkout", "-q", "main"]);
+    merge::merge(dir.path(), "agent/x", "main").unwrap();
+    // A second commit lands on the branch after the merge and is published.
+    run(dir.path(), &["checkout", "-q", "agent/x"]);
+    commit_file(dir.path(), "two.txt");
+    run(dir.path(), &["push", "-q", "origin", "agent/x"]);
+    run(dir.path(), &["checkout", "-q", "main"]);
+
+    let err =
+        merge::delete_published_branch(dir.path(), "agent/x", "main").unwrap_err().to_string();
+    assert!(err.contains("aren't on main"), "says what is unmerged: {err}");
+    assert!(!merge::remote_copies(dir.path(), "agent/x").is_empty(), "the branch stays");
+}
+
+/// The remote is asked live, so a push this checkout has never seen is caught
+/// even though every local ref says the branch is merged and safe.
+#[test]
+fn refuses_a_remote_tip_this_checkout_has_never_fetched() {
+    let (dir, origin) = repo_with_origin();
+    run(dir.path(), &["checkout", "-q", "-b", "agent/x"]);
+    commit_file(dir.path(), "one.txt");
+    run(dir.path(), &["push", "-q", "origin", "agent/x"]);
+    run(dir.path(), &["checkout", "-q", "main"]);
+    merge::merge(dir.path(), "agent/x", "main").unwrap();
+
+    // Another machine pushes to the same branch; nothing here fetches it.
+    let other = tempfile::tempdir().unwrap();
+    run(other.path(), &["clone", "-q", origin.path().to_str().unwrap(), "."]);
+    run(other.path(), &["config", "user.email", "t@e.com"]);
+    run(other.path(), &["config", "user.name", "T"]);
+    run(other.path(), &["checkout", "-q", "agent/x"]);
+    commit_file(other.path(), "theirs.txt");
+    run(other.path(), &["push", "-q", "origin", "agent/x"]);
+
+    let err =
+        merge::delete_published_branch(dir.path(), "agent/x", "main").unwrap_err().to_string();
+    assert!(err.contains("never fetched"), "says why it can't judge it: {err}");
+}
+
+/// Deleting a branch the remote no longer has is what was asked for. It
+/// reports nothing to say rather than an error, and clears the stale tracking
+/// ref that would otherwise go on offering the branch.
+#[test]
+fn a_branch_already_gone_from_the_remote_is_not_a_failure() {
+    let (dir, origin) = repo_with_origin();
+    run(dir.path(), &["checkout", "-q", "-b", "agent/x"]);
+    commit_file(dir.path(), "one.txt");
+    run(dir.path(), &["push", "-q", "origin", "agent/x"]);
+    run(dir.path(), &["checkout", "-q", "main"]);
+    merge::merge(dir.path(), "agent/x", "main").unwrap();
+    // GitHub's "delete branch on merge", or another clone, got there first.
+    run(origin.path(), &["update-ref", "-d", "refs/heads/agent/x"]);
+
+    assert!(merge::delete_published_branch(dir.path(), "agent/x", "main").unwrap().is_empty());
+    assert!(merge::remote_copies(dir.path(), "agent/x").is_empty(), "the stale ref goes too");
+}
+
+/// A branch that was never pushed has no remote copy to delete, which is a
+/// no-op and not an error: the merge window offers this after a merge, and a
+/// run whose branch never left the machine must not fail there.
+#[test]
+fn an_unpublished_branch_has_nothing_to_delete() {
+    let (dir, _origin) = repo_with_origin();
+    run(dir.path(), &["checkout", "-q", "-b", "agent/local-only"]);
+    commit_file(dir.path(), "one.txt");
+    run(dir.path(), &["checkout", "-q", "main"]);
+    merge::merge(dir.path(), "agent/local-only", "main").unwrap();
+
+    assert!(merge::delete_published_branch(dir.path(), "agent/local-only", "main")
+        .unwrap()
+        .is_empty());
+}

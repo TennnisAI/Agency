@@ -195,6 +195,7 @@ pub fn run() {
             commands::gh_current_login,
             commands::pr_merge_methods,
             commands::merge_pr,
+            commands::delete_run_remote_branch,
             commands::pr_diff,
             commands::pr_review_threads,
             commands::submit_pr_review,

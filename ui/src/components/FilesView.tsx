@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { FileRoot, Project } from "../api";
 import Resizer from "./Resizer";
 import { usePaneWidth } from "../hooks/usePaneWidth";
+import { useReportOpenFile } from "../hooks/useOpenFile";
 import FileTree from "./FileTree";
 import FileTabs from "./FileTabs";
 import FileEditor, { FileEditorHandle } from "./FileEditor";
@@ -61,6 +62,10 @@ export default function FilesView({ root, project, agentsOpen, onOpenCheckout }:
   const tabs = rootTabs.key === rootKey ? rootTabs.tabs : emptyTabs();
   const tabsRef = useRef(tabs);
   tabsRef.current = tabs;
+  // What an agent hears when the user says "this file" (AGE-200). The root
+  // matters as much as the path: the same path is a different file in the
+  // checkout and in each worktree.
+  useReportOpenFile(root, tabs.active);
 
   // Every mutation is scoped to the current root; a transition sneaking in
   // between root switch and load is dropped rather than corrupting the

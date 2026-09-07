@@ -2456,6 +2456,67 @@ pub fn abs_path(
     Ok(p.to_string_lossy().into_owned())
 }
 
+/// The file the user has in focus in Agency's editor, for the `editor_open_file`
+/// MCP tool to answer with (AGE-200). `None` clears it: no file open, or a view
+/// that has no file in it at all.
+///
+/// Reported by the frontend on every change of the active tab, and dropped on
+/// the floor here whenever the user has not switched sharing on. The absolute
+/// path is resolved now rather than at read time so a tool call is a lock and a
+/// clone, and so a path that escapes its root is refused where every other file
+/// command refuses it.
+#[tauri::command]
+pub fn set_open_file(state: State<'_, AppState>, open: Option<OpenFileArg>) -> Result<(), String> {
+    let Some(open) = open.filter(|_| state.shares_open_file()) else {
+        state.set_open_file(None);
+        return Ok(());
+    };
+    // Anything that fails to resolve — a restored tab whose file has since been
+    // deleted, a path that escapes its root — clears rather than leaves the
+    // previous file standing. "I don't know what they have open" is the honest
+    // answer to a path we cannot name.
+    let resolved = resolve_root(&state, &open.root).and_then(|workspace| {
+        let abs =
+            agency_core::files::abs_path(&workspace, &open.path).map_err(|e| e.to_string())?;
+        let (run_id, repo) = match &open.root {
+            FileRoot::Run { id } => {
+                (Some(id.clone()), state.run_repo_path(id).map_err(|e| e.to_string())?)
+            }
+            FileRoot::Project { id } => {
+                (None, state.project_repo_path(id).map_err(|e| e.to_string())?)
+            }
+        };
+        Ok(crate::state::OpenFileRef {
+            repo,
+            run_id,
+            // The root the tree was browsed from, which for a run started
+            // without a worktree is the checkout itself. Carried so the tool
+            // can say which copy of the file this is without guessing from the
+            // run id.
+            workspace,
+            rel_path: open.path.clone(),
+            abs_path: abs.to_string_lossy().into_owned(),
+        })
+    });
+    match resolved {
+        Ok(open) => {
+            state.set_open_file(Some(open));
+            Ok(())
+        }
+        Err(e) => {
+            state.set_open_file(None);
+            Err(e)
+        }
+    }
+}
+
+/// One reported focus: which root, and the path within it.
+#[derive(Deserialize)]
+pub struct OpenFileArg {
+    pub root: FileRoot,
+    pub path: String,
+}
+
 /// Reveal a file/dir in the OS file manager (Finder / Explorer). Runs the
 /// opener plugin from Rust, so the path is validated by `resolve_within` rather
 /// than the plugin's static capability scope.

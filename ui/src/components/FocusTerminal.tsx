@@ -22,6 +22,7 @@ import { FindRank, registerFindTarget } from "../lib/findBus";
 import { installTermLinks } from "../lib/termLinkProvider";
 import { fileRootKey, requestOpenFile } from "../lib/openFile";
 import { focusReport } from "../lib/terminalFocus";
+import { pathsToInput, registerPathSink } from "../lib/pathDrop";
 import { toastError } from "../lib/toast";
 
 export interface TerminalStream {
@@ -512,6 +513,28 @@ export default function FocusTerminal(
     };
   }, [runId, stream]);
 
+  // What a dropped path does, wherever it came from: type it at the prompt and
+  // put the cursor back in the pane. Held in a ref so the two drop routes (the
+  // OS stream, the in-app sink) share one write instead of drifting apart.
+  const insertPaths = useRef((paths: string[]) => {
+    if (paths.length === 0) return;
+    inputRef.current?.write(pathsToInput(paths));
+    termRef.current?.focus();
+  });
+
+  // The in-app half of that gesture: a row dragged out of the Files or Docs
+  // sidebar beside this pane (AGE-200). Tauri's stream below carries OS drags
+  // only, so the tree tracks its own drag and hands the path over here.
+  // `altScrollArrows` is off exactly for panes running an agent, which is the
+  // distinction the hint wants to draw.
+  const dropLabel = altScrollArrows ? "the terminal" : "the agent";
+  useEffect(() => registerPathSink({
+    host: () => ref.current,
+    label: dropLabel,
+    accept: (paths) => insertPaths.current(paths),
+    setOver: setDragOver,
+  }), [dropLabel]);
+
   // Dropping files/images from Finder. Tauri intercepts OS-level drag-drop at the
   // webview boundary, so HTML5 drop events never reach the terminal div — we listen
   // to Tauri's own drag-drop stream instead. The event is window-global and fires for
@@ -530,8 +553,6 @@ export default function FocusTerminal(
       const r = el.getBoundingClientRect();
       return pos.x >= r.left && pos.x <= r.right && pos.y >= r.top && pos.y <= r.bottom;
     };
-    // Quote paths with whitespace so a multi-word path lands as one argument.
-    const quote = (p: string) => (/\s/.test(p) ? `'${p.replace(/'/g, `'\\''`)}'` : p);
     getCurrentWebview().onDragDropEvent((event) => {
       if (disposed) return;
       const p = event.payload;
@@ -540,8 +561,7 @@ export default function FocusTerminal(
       } else if (p.type === "drop") {
         setDragOver(false);
         if (hit(p.position) && p.paths.length) {
-          inputRef.current?.write(p.paths.map(quote).join(" ") + " ");
-          termRef.current?.focus();
+          insertPaths.current(p.paths);
         }
       } else {
         setDragOver(false);

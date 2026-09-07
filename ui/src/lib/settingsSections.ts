@@ -67,7 +67,9 @@ export const SECTIONS: Section[] = [
   { id: "appearance", label: "Appearance", group: "interface",
     terms: "theme colour color dark light mode palette contrast accent swatches" },
   { id: "editor", label: "Editor", group: "interface",
-    terms: "word wrap file viewer code text lines" },
+    // "agent", "share" and "context" because the open-file switch lives here
+    // and is looked for by what it does, not by the word "editor".
+    terms: "word wrap file viewer code text lines agents share open file focus note context privacy see" },
   { id: "messages", label: "Messages", group: "interface",
     // "hidden" because this section was called Hidden messages until AGE-187,
     // and "ask" because "don't ask again" is the wording on the checkboxes

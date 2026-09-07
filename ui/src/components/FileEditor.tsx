@@ -390,7 +390,8 @@ const FileEditor = forwardRef<FileEditorHandle, {
     <div className="file-editor-wrap" ref={wrapRefEl}>
       {findBar}
       <div className="file-editor-bar">
-        <span className="file-editor-path">{path}{dirty ? " ●" : ""}</span>
+        <span className="file-editor-path" title={path}>{path}</span>
+        {dirty && <span className="file-editor-dirty" title="Unsaved changes">●</span>}
         <span className="spacer" style={{ flex: 1 }} />
         {previewable && status === "ready" && (
           <div className="seg seg-mini">

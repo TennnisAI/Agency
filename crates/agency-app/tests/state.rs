@@ -226,12 +226,16 @@ fn settings_default_and_roundtrip() {
     // Unset means worktrees on, so an upgrade doesn't silently change where
     // the next agent runs.
     assert!(s.default_worktree);
+    // Unset means agents are told nothing about what the user has open.
+    assert!(!s.share_open_file);
+    assert!(!state.shares_open_file());
 
     state
         .save_settings(&agency_app_lib::ProviderSettings {
             lm_studio_base_url: "http://localhost:9999/v1".into(),
             default_agent: Some("codex".into()),
             default_worktree: true,
+            share_open_file: false,
         })
         .unwrap();
     let s2 = state.get_settings().unwrap();
@@ -244,6 +248,7 @@ fn settings_default_and_roundtrip() {
             lm_studio_base_url: "http://localhost:9999/v1".into(),
             default_agent: None,
             default_worktree: false,
+            share_open_file: false,
         })
         .unwrap();
     assert_eq!(state.get_settings().unwrap().default_agent, None);
@@ -254,9 +259,33 @@ fn settings_default_and_roundtrip() {
             lm_studio_base_url: "http://localhost:9999/v1".into(),
             default_agent: None,
             default_worktree: true,
+            share_open_file: false,
         })
         .unwrap();
     assert!(state.get_settings().unwrap().default_worktree);
+
+    // Sharing the open file persists, and switching it back off drops what was
+    // recorded under it rather than leaving the last file answerable (AGE-200).
+    state
+        .save_settings(&agency_app_lib::ProviderSettings {
+            lm_studio_base_url: "http://localhost:9999/v1".into(),
+            default_agent: None,
+            default_worktree: true,
+            share_open_file: true,
+        })
+        .unwrap();
+    assert!(state.get_settings().unwrap().share_open_file);
+    assert!(state.shares_open_file());
+    state
+        .save_settings(&agency_app_lib::ProviderSettings {
+            lm_studio_base_url: "http://localhost:9999/v1".into(),
+            default_agent: None,
+            default_worktree: true,
+            share_open_file: false,
+        })
+        .unwrap();
+    assert!(!state.get_settings().unwrap().share_open_file);
+    assert!(!state.shares_open_file());
 }
 
 #[test]
@@ -280,6 +309,7 @@ fn create_run_injects_provider_env() {
             lm_studio_base_url: "http://localhost:1234/v1".into(),
             default_agent: None,
             default_worktree: true,
+            share_open_file: false,
         })
         .unwrap();
     // Profile echoes env vars and then sleeps so we can capture output.
@@ -326,6 +356,7 @@ fn create_run_injects_provider_env() {
             lm_studio_base_url: "".into(),
             default_agent: None,
             default_worktree: true,
+            share_open_file: false,
         })
         .unwrap();
     let off = state.create_run(&project.id, "p", "envcheck", None, "HEAD", None).unwrap();
@@ -369,6 +400,7 @@ fn the_prefilled_local_model_url_is_cleared_once() {
                 lm_studio_base_url: "http://localhost:1234/v1".into(),
                 default_agent: None,
                 default_worktree: true,
+                share_open_file: false,
             })
             .unwrap();
     }
@@ -760,6 +792,7 @@ fn save_settings_rejects_bad_provider_url() {
         lm_studio_base_url: "http://evil.example.com/v1".into(),
         default_agent: None,
         default_worktree: true,
+        share_open_file: false,
     };
     assert!(state.save_settings(&bad).is_err());
     // embedded credentials are rejected
@@ -767,6 +800,7 @@ fn save_settings_rejects_bad_provider_url() {
         lm_studio_base_url: "http://user:pass@localhost:1234/v1".into(),
         default_agent: None,
         default_worktree: true,
+        share_open_file: false,
     };
     assert!(state.save_settings(&creds).is_err());
     // localhost, IPv6 loopback http, and https are allowed
@@ -776,6 +810,7 @@ fn save_settings_rejects_bad_provider_url() {
             lm_studio_base_url: ok.into(),
             default_agent: None,
             default_worktree: true,
+            share_open_file: false,
         };
         assert!(state.save_settings(&s).is_ok(), "should accept {ok}");
     }

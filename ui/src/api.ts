@@ -953,6 +953,9 @@ export interface ProviderSettings {
   // Whether the add-agent menu starts with "Own worktree" ticked. A default
   // only: the menu still offers both on every spawn.
   defaultWorktree: boolean;
+  // Whether a dispatched agent may ask which file this window has open, through
+  // the editor_open_file MCP tool. Off unless the user turns it on.
+  shareOpenFile: boolean;
 }
 
 export type McpTransport = "stdio" | "http" | "sse";
@@ -1775,6 +1778,12 @@ export const addToGitignore = (root: FileRoot, relPath: string) =>
   invoke<boolean>("add_to_gitignore", { root, relPath });
 export const absPath = (root: FileRoot, relPath: string) =>
   invoke<string>("abs_path", { root, relPath });
+
+// Which file this window has in focus, for the editor_open_file MCP tool to
+// answer with; null when there is none. Ignored by the backend unless the user
+// has turned sharing on, so the caller does not have to know whether they have.
+export const setOpenFile = (open: { root: FileRoot; path: string } | null) =>
+  invoke<void>("set_open_file", { open });
 export const revealPath = (root: FileRoot, relPath: string) =>
   invoke<void>("reveal_path", { root, relPath });
 

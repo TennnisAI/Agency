@@ -97,7 +97,7 @@ against the shot list in `05-assets.md`:
 
 | Site image | Capture | Shot-list slot |
 |---|---|---|
-| `shot-overview.webp` | all-projects overview, 13 agents | stands in for SHOT-01 (hero) |
+| `shot-overview.webp` | all-projects overview, 12 agents | stands in for SHOT-01 (hero) |
 | `shot-focus.webp` | focus view, agent working an issue | SHOT-02 |
 | `shot-issues.webp` | Issues board and detail (1bit-launcher) | SHOT-04/05 |
 | `shot-docs.webp` | a design spec open, with its outline and backlinks panel | SHOT-06 |

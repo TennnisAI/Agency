@@ -1,7 +1,7 @@
 use crate::setup::CloneProgress;
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -293,6 +293,155 @@ impl WorktreeManager {
         Ok(worktrees)
     }
 
+    /// Every worktree this repo holds an admin entry for, at the path git has
+    /// recorded (so a stale one after a move), the main worktree excluded.
+    /// `list` answers the same question for Agency's own runs; this one is
+    /// about the whole repo, the user's own worktrees included.
+    fn recorded_worktree_paths(&self) -> Vec<PathBuf> {
+        let Ok(out) = self.git(&["worktree", "list", "--porcelain"]) else {
+            return Vec::new();
+        };
+        // The first block is always the main worktree, which git resolves from
+        // the working directory and so always reports at its real path.
+        out.lines().filter_map(|l| l.strip_prefix("worktree ")).skip(1).map(PathBuf::from).collect()
+    }
+
+    /// Where a worktree git still records at `stale` has ended up, if it moved
+    /// as part of this project folder: the longest tail of `stale` that names a
+    /// worktree inside the folder's new home.
+    ///
+    /// The old folder path is nowhere on disk to subtract, so the tail is found
+    /// by trying each one, deepest first, so that a `wt/feature` is preferred
+    /// to a `feature` at the root. A candidate counts only if its `.git` is a
+    /// *file* naming a worktree admin directory: that is what a linked worktree
+    /// has, and what a submodule (`gitdir: …/.git/modules/…`) does not.
+    fn relocated_to(&self, stale: &std::path::Path) -> Option<PathBuf> {
+        let comps: Vec<_> = stale.components().collect();
+        // From 1, since component 0 is the root: joining an absolute path onto
+        // the repo just hands back `stale`, which is the path we know is gone.
+        for start in 1..comps.len() {
+            let candidate =
+                self.repo_path.join(comps[start..].iter().copied().collect::<PathBuf>());
+            let dot_git = candidate.join(".git");
+            if dot_git.is_file()
+                && std::fs::read_to_string(&dot_git).is_ok_and(|s| s.contains("/.git/worktrees/"))
+            {
+                return Some(candidate);
+            }
+        }
+        None
+    }
+
+    /// Reattach this repo's linked worktrees after the project folder itself
+    /// moved on disk (the AGE-203 reconnect).
+    ///
+    /// Both halves of the link are absolute paths: a worktree's `.git` file
+    /// records `gitdir: <repo>/.git/worktrees/<id>`, and the repo's
+    /// `.git/worktrees/<id>/gitdir` records the worktree's own `.git` file.
+    /// Agency keeps its worktrees under `<repo>/.agency/worktrees/`, so a
+    /// folder dragged in Finder moves both and invalidates both: every agent's
+    /// tab then answers "not a git repository" until the paths are rewritten.
+    /// `git worktree repair` is git's own fix for exactly this, and it takes
+    /// the moved trees' paths to mend the main repo's side of each link.
+    ///
+    /// Best-effort by design: a run whose worktree was already gone, or a
+    /// folder the user pointed at that is a different repository entirely,
+    /// must not fail the reconnect. Nothing here can destroy work; the worst
+    /// case is a link left broken, which is where it started.
+    pub fn repair(&self) -> Result<()> {
+        let root = self.worktrees_root();
+        let mut paths: Vec<String> = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&root) {
+            for entry in entries.flatten() {
+                if entry.path().is_dir() {
+                    paths.push(entry.path().to_string_lossy().to_string());
+                }
+            }
+        }
+        // The user's own worktrees, when they lived inside the folder too:
+        // they moved with it and their links went stale in exactly the same
+        // way, and nothing else in Agency will ever mend them. Their new paths
+        // are not somewhere we can enumerate, so they are matched back from
+        // what git still records. Left broken they are also the one thing a
+        // later `worktree prune` would delete outright.
+        for stale in self.recorded_worktree_paths() {
+            // Still where git thinks it is: nothing to mend. A path that is
+            // merely unreachable (an unmounted volume) finds no match below
+            // and is left registered, which is the recoverable state.
+            if stale.exists() {
+                continue;
+            }
+            if let Some(moved) = self.relocated_to(&stale) {
+                paths.push(moved.to_string_lossy().to_string());
+            }
+        }
+        // Sorted so a failure is reproducible from the log; read_dir is not
+        // ordered. Deduped because one of ours can arrive down both routes.
+        paths.sort();
+        paths.dedup();
+        let mut args = vec!["worktree", "repair"];
+        args.extend(paths.iter().map(|p| p.as_str()));
+        let _ = self.git(&args);
+        // No `worktree prune` here, however natural it looks next to a repair.
+        // Prune deregisters every worktree whose recorded path is not on disk,
+        // and after the folder moved that is every worktree the *user* made
+        // inside it, which are not ours to repair and not in `paths`: on a repo
+        // with a `<repo>/wt/feature` alongside our own, prune answered
+        // "Removing worktrees/feature: gitdir file points to non-existent
+        // location" and deleted `.git/worktrees/feature`. The checkout is then
+        // dead and beyond hand-repair too (`git worktree repair <path>` answers
+        // "unable to locate repository"), taking any uncommitted work in it
+        // with it. A volume that is merely unmounted reads the same way. A
+        // stale entry left registered costs nothing by comparison: `list`
+        // ignores anything outside our own root, `remove` prunes its own entry
+        // by name, and the user can still mend theirs by hand.
+        Ok(())
+    }
+
+    /// Delete the admin entry for one of our own worktrees whose directory is
+    /// gone, and nobody else's.
+    ///
+    /// `git worktree prune` is the tool git offers for this and it is
+    /// repo-wide: it deregisters every worktree whose recorded path is not on
+    /// disk, which after a project folder moves (or a volume unmounts) is also
+    /// every worktree the user made themselves. A deregistered worktree cannot
+    /// be repaired afterwards — `git worktree repair` then answers "unable to
+    /// locate repository" — so whatever was uncommitted in it is stranded. The
+    /// reconnect made that reachable from an ordinary archive, since it mends
+    /// our own links and cannot always mend theirs. This removes the one entry
+    /// prune would have removed for `task_id`, and only once its `gitdir`
+    /// confirms it is ours and the tree really has gone.
+    fn prune_entry(&self, task_id: &str) {
+        let Ok(common) = self.git(&["rev-parse", "--git-common-dir"]) else {
+            return;
+        };
+        let common = PathBuf::from(common.trim());
+        let common = if common.is_absolute() { common } else { self.repo_path.join(common) };
+        let admin = common.join("worktrees").join(task_id);
+        // Gone already: `worktree remove` deregisters on its way out, and this
+        // only has anything to do when that could not run.
+        let Ok(recorded) = std::fs::read_to_string(admin.join("gitdir")) else {
+            return;
+        };
+        // `gitdir` holds the worktree's `.git` file, so its parent is the tree.
+        // It is relative to this admin directory whenever the repo has git
+        // 2.48's `worktree.useRelativePaths` set (or the worktree was added
+        // with `--relative-paths`): the file then reads
+        // `../../../.agency/worktrees/<id>/.git`, which can never equal an
+        // absolute root, so this returned early and left registered the one
+        // entry it exists to remove.
+        let recorded = PathBuf::from(recorded.trim());
+        let recorded = if recorded.is_absolute() { recorded } else { admin.join(recorded) };
+        let recorded = lexical_normalize(&recorded);
+        let Some(tree) = recorded.parent() else {
+            return;
+        };
+        if tree != lexical_normalize(&self.worktrees_root().join(task_id)) || tree.exists() {
+            return;
+        }
+        let _ = std::fs::remove_dir_all(&admin);
+    }
+
     /// Remove the worktree and delete its branch. Tolerant: each git step is
     /// best-effort so it works whether or not the worktree still exists (e.g.
     /// discarding an already-archived run), and still deletes the branch.
@@ -300,7 +449,7 @@ impl WorktreeManager {
         let path = self.worktrees_root().join(task_id);
         let path_str = path.to_string_lossy().to_string();
         let _ = self.git(&["worktree", "remove", &path_str, "--force"]);
-        let _ = self.git(&["worktree", "prune"]);
+        self.prune_entry(task_id);
         let branch = Self::branch_for(task_id);
         let _ = self.git(&["branch", "-D", &branch]);
         Ok(())
@@ -311,7 +460,7 @@ impl WorktreeManager {
         let path = self.worktrees_root().join(task_id);
         let path_str = path.to_string_lossy().to_string();
         self.git(&["worktree", "remove", &path_str, "--force"])?;
-        self.git(&["worktree", "prune"])?;
+        self.prune_entry(task_id);
         Ok(())
     }
 
@@ -498,6 +647,31 @@ pub fn untrack_issue_files(repo_path: &std::path::Path) -> Result<bool> {
         );
     }
     Ok(true)
+}
+
+/// Resolve `.` and `..` in a path textually, without touching the disk.
+///
+/// `Path::canonicalize` cannot stand in for this: the caller compares paths to
+/// a worktree directory that has just been deleted, and canonicalize fails on
+/// anything that is not there. Symlinks therefore go unresolved, which is the
+/// same footing the rest of this module works on (`WorktreeManager::new`
+/// canonicalizes the repo root once, and git records resolved paths from it).
+fn lexical_normalize(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in path.components() {
+        match c {
+            Component::CurDir => {}
+            // A `..` with nothing to pop (a relative path that climbs above
+            // its own start) is kept, so the result still names what it named.
+            Component::ParentDir => {
+                if !out.pop() {
+                    out.push("..");
+                }
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 /// Best-effort recursive count of regular files under `dir` (directories are

@@ -279,6 +279,25 @@ button > .btn-ico:not(:only-child) { margin-right: 4px; }
 /* Board */
 .board { flex: 1; display: flex; flex-direction: column; padding: 16px; gap: 12px; }
 .board.empty { align-items: center; justify-content: center; color: var(--o0); }
+/* The project name in a header that has nothing else in it (the missing-folder
+   screen). Reads as a label, not a tab. */
+.content-head-name { font-size: 12.5px; color: var(--o1); padding: 0 4px; }
+/* The missing-folder screen: what a project shows in place of its tabs once
+   its source folder is gone. Centred on the .board.empty grid, but with real
+   copy and buttons rather than one grey line, because this is the only place
+   the two fixes (reconnect, remove) are offered. */
+.project-missing { gap: 10px; text-align: center; padding: 24px; }
+.project-missing h2 { margin: 0; font-size: 15px; color: var(--text); }
+.project-missing p { margin: 0; max-width: 460px; line-height: 1.5; }
+.project-missing-icon { font-size: 26px; color: var(--yellow); opacity: .8; line-height: 1; }
+/* Wrapped, not ellipsised: the tail of a path is the half that says which
+   folder this was, and `direction: rtl` (the usual trick for keeping it)
+   throws a leading "/" to the wrong end. */
+.project-missing-path {
+  font-family: var(--mono); font-size: 11.5px; color: var(--o1);
+  max-width: 460px; word-break: break-all;
+}
+.project-missing-actions { display: flex; gap: 8px; align-items: center; margin-top: 4px; }
 .board-header { display: flex; align-items: baseline; gap: 10px; }
 .board-header h2 { margin: 0; font-size: 16px; }
 .board-header code { color: var(--o1); font-size: 12px; }
@@ -852,6 +871,14 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
   border-right: 1.5px solid var(--sel-accent, var(--blue));
   border-bottom-right-radius: 5px;
 }
+/* A project whose source folder has gone from disk (AGE-203). The name dims
+   and a marker sits where the close button would, so the row reads as
+   unavailable rather than merely unselected; the row title and the project's
+   own screen carry the path and the way out. Not red: nothing is broken and
+   nothing is lost, the folder is somewhere else. */
+.tree-row.gone .tree-name { color: var(--o0); font-style: italic; }
+.tree-row.gone .proj-icon { opacity: .5; }
+.tree-gone { color: var(--yellow); font-size: 11px; line-height: 1; flex-shrink: 0; padding: 0 2px; }
 .tree-row.selected.ancestor { background: var(--s0); }
 .tree-row.selected.ancestor .tree-name { color: var(--sub1); }
 .tree-child-name {

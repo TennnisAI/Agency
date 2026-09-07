@@ -13,6 +13,7 @@ import AgentAddMenu from "./AgentAddMenu";
 import Resizer from "./Resizer";
 import { usePaneWidth } from "../hooks/usePaneWidth";
 import { useRepoReadiness, isGitless } from "../hooks/useRepoReadiness";
+import { useFolderMissing } from "../hooks/useFolderMissing";
 import { useSpawnAgent } from "../hooks/useSpawnAgent";
 import FilesView from "./FilesView";
 import DocsView from "./DocsView";
@@ -20,10 +21,12 @@ import HomeView from "./HomeView";
 import IssuesView from "./IssuesView";
 import MapView from "./MapView";
 import RunPanel from "./RunPanel";
+import ProjectMissingView from "./ProjectMissingView";
 import SidebarToggle from "./SidebarToggle";
 import RightPanelToggle from "./RightPanelToggle";
 import QuickOpen from "./QuickOpen";
 import { useElementWidth } from "../hooks/useElementWidth";
+import { notifyProjectsChanged } from "../lib/projectEvents";
 
 // Main content area. With a project selected this is that project's agents /
 // source control / files; with none it hosts the all-projects overview under
@@ -64,6 +67,9 @@ export default function AgentsView({
   // Control, the review panel) hides until a repo is initialized.
   const { readiness: projReadiness, refresh: refreshReadiness } = useRepoReadiness(project);
   const gitless = isGitless(projReadiness);
+  // A project whose folder has gone from disk entirely. Every tab below reads
+  // that folder, so this is checked before any of them is rendered.
+  const { missing: folderMissing, refresh: refreshFolder } = useFolderMissing(project);
   // The spawn pre-flight (missing CLI, unready repo) and its dialogs, shared
   // with the agents side panel in the Docs / Files tabs.
   const { spawn, error, dialogs: spawnDialogs } = useSpawnAgent(project, refreshReadiness);
@@ -157,6 +163,37 @@ export default function AgentsView({
   // (the Run tab added one more), ~730 once the long labels shorten, ~540 once
   // the tabs are glyphs only.
   const density = headWidth === 0 ? "" : headWidth < 750 ? " is-tight" : headWidth < 850 ? " is-compact" : "";
+
+  // The folder is gone: one screen saying so, with the two things that fix it,
+  // in place of six tabs that would each fail differently against a path that
+  // is not there. The header keeps only the sidebar toggle, because every
+  // control on it (the tabs, the add menu, the panel toggles) acts on the
+  // folder.
+  if (project && folderMissing) {
+    return (
+      <main className="agents">
+        <div className="content-head" ref={headRef}>
+          {!sidebarOpen && <SidebarToggle open={false} onToggle={onToggleSidebar} />}
+          {/* The tabs, the view switches and the add menu all act on the
+              folder, so none of them belongs here. The name stays: with the
+              sidebar closed it is the only thing saying which project this is. */}
+          <span className="content-head-name">{project.name}</span>
+          <div className="spacer" />
+        </div>
+        <ProjectMissingView
+          project={project}
+          onReconnected={() => {
+            // The row every panel renders against still holds the old path;
+            // this is what re-reads it, and the probe above follows the new one.
+            notifyProjectsChanged();
+            refreshFolder();
+            refreshReadiness();
+          }}
+          onRemoved={notifyProjectsChanged}
+        />
+      </main>
+    );
+  }
 
   return (
     <main className="agents">

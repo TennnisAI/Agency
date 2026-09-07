@@ -42,9 +42,31 @@ export function useRepoReadiness(project: Project | null) {
  * itself, so everything that needs a branch to exist (Source Control, races,
  * loops, GitHub import, the worktree checkbox) hides until a repo is
  * initialized.
+ *
+ * A folder that has gone from disk ("missing") is deliberately not one of
+ * these, even though it has no repository in it either: this answer sends an
+ * agent into the folder as it stands, and there is no folder. That is
+ * `useFolderMissing`, which polls a single `stat` rather than a whole
+ * `inspect_repo`, and whose panel replaces the tabs outright (AGE-203).
  */
 export function isGitless(readiness: RepoReadiness | null): boolean {
   return readiness?.state === "notARepo";
+}
+
+/**
+ * The same question as `isGitless`, but as an answer a sweep may record, with
+ * `null` for "no answer yet".
+ *
+ * A folder that has gone from disk says nothing about whether it holds a
+ * repository, and `isGitless` reads it as "it does" — which `pathsToProbe`
+ * then latches forever, since it never asks again once it holds a `false`. A
+ * gitless project on an external disk that happened to be unplugged during the
+ * first sweep therefore kept the branch-shaped issue-row entries ("Race
+ * agents…", "Loop agent…") for the life of the app, even after the disk came
+ * back. Missing is not an answer; leave the key unset and ask again.
+ */
+export function gitlessAnswer(readiness: RepoReadiness | null): boolean | null {
+  return readiness?.state === "missing" ? null : isGitless(readiness);
 }
 
 // How often a folder still believed to have no repository is asked again.
@@ -96,7 +118,8 @@ export function useGitlessProjects(projects: Project[]): Set<string> {
         inFlight.current.add(path);
         inspectRepo(path)
           .then((r) => {
-            if (live) setGitlessBy((m) => ({ ...m, [path]: isGitless(r) }));
+            const answer = gitlessAnswer(r);
+            if (live && answer !== null) setGitlessBy((m) => ({ ...m, [path]: answer }));
           })
           // No answer means no claim: the menu keeps its branch entries and the
           // backend's refusal is what the user sees, exactly as before.

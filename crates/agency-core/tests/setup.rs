@@ -1,8 +1,8 @@
 use agency_core::setup::{
-    clone_destination, clone_repo, clone_repo_with_progress, init_repo, initial_commit,
-    initial_commit_with_progress, inside_work_tree, repo_name_from_url, repo_readiness,
-    scan_large_files, write_default_gitignore, CancelToken, CommitOptions, RepoReadiness,
-    CANCELLED, LARGE_FILE_BYTES,
+    clone_destination, clone_repo, clone_repo_with_progress, folder_missing, init_repo,
+    initial_commit, initial_commit_with_progress, inside_work_tree, repo_name_from_url,
+    repo_readiness, scan_large_files, write_default_gitignore, CancelToken, CommitOptions,
+    RepoReadiness, CANCELLED, LARGE_FILE_BYTES,
 };
 use std::path::Path;
 use std::process::Command;
@@ -43,10 +43,69 @@ fn inside_work_tree_answers_yes_no_or_dont_know() {
     // git can't even be spawned against a folder that isn't there. That is not
     // "no repository here" — callers that skip a run's isolated worktree on a
     // gitless folder must not act on it, so it has to stay distinguishable.
-    // `repo_readiness` deliberately folds it into NotARepo for setup UI.
     let gone = plain.path().join("removed");
     assert_eq!(inside_work_tree(&gone), None);
-    assert_eq!(repo_readiness(&gone), RepoReadiness::NotARepo);
+    // And `repo_readiness` says so in its own right: it used to fold this into
+    // NotARepo, which every caller read as "a plain folder, so run the agent
+    // in it" against a folder that was not there (AGE-203).
+    assert_eq!(repo_readiness(&gone), RepoReadiness::Missing);
+}
+
+#[test]
+fn a_moved_or_deleted_folder_reads_as_missing() {
+    let parent = tempfile::tempdir().unwrap();
+    let repo = parent.path().join("proj");
+    std::fs::create_dir(&repo).unwrap();
+    init_bare_repo(&repo);
+    std::fs::write(repo.join("a.txt"), "hi\n").unwrap();
+    initial_commit(&repo, false).unwrap();
+    assert_eq!(repo_readiness(&repo), RepoReadiness::Ready { dirty: false });
+    assert!(!folder_missing(&repo));
+
+    // Moved out from under us, exactly as a drag in Finder does.
+    let moved = parent.path().join("proj-elsewhere");
+    std::fs::rename(&repo, &moved).unwrap();
+    assert!(folder_missing(&repo));
+    assert_eq!(repo_readiness(&repo), RepoReadiness::Missing);
+    // The folder at its new home is untouched, so a reconnect has something to
+    // point at.
+    assert_eq!(repo_readiness(&moved), RepoReadiness::Ready { dirty: false });
+
+    // A path taken over by a file is as unusable as one that is not there.
+    let file = parent.path().join("a-file");
+    std::fs::write(&file, "not a folder\n").unwrap();
+    assert!(folder_missing(&file));
+    assert_eq!(repo_readiness(&file), RepoReadiness::Missing);
+}
+
+/// "The folder is not there" and "we could not look" are different answers, and
+/// only the first one is missing. The whole project view is replaced by the
+/// missing screen on a `true` here, so a share that is merely slow, or a
+/// location the app is not allowed to stat, must not produce one.
+#[cfg(unix)]
+#[test]
+fn a_folder_we_cannot_stat_is_not_reported_missing() {
+    use std::os::unix::fs::PermissionsExt;
+    let parent = tempfile::tempdir().unwrap();
+    let outer = parent.path().join("outer");
+    let repo = outer.join("proj");
+    std::fs::create_dir_all(&repo).unwrap();
+    assert!(!folder_missing(&repo));
+
+    // Drop the search bit on the parent: `stat` on the child now fails with
+    // EACCES, which is "could not ask", not "gone". (As root the permission is
+    // bypassed and the folder simply stats fine, which asserts the same thing.)
+    let saved = std::fs::metadata(&outer).unwrap().permissions();
+    std::fs::set_permissions(&outer, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let answer = folder_missing(&repo);
+    // Restore before asserting, so a failure still leaves a removable tempdir.
+    std::fs::set_permissions(&outer, saved).unwrap();
+    assert!(!answer, "an unsearchable parent is 'could not ask', not 'the folder is gone'");
+
+    // A path whose parent is a file, though, cannot be holding anything.
+    let file = parent.path().join("a-file");
+    std::fs::write(&file, "not a folder\n").unwrap();
+    assert!(folder_missing(&file.join("proj")));
 }
 
 #[test]

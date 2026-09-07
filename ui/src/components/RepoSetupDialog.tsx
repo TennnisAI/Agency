@@ -55,7 +55,8 @@ export default function RepoSetupDialog({ readiness, context, repoPath, onResolv
   // Only for folders that still need one, so adding a normal project never
   // waits on it, and off the button's path: it lands when it lands.
   useEffect(() => {
-    if (readiness.state === "ready") return;
+    // Nothing to scan in a folder that is ready, or in one that isn't there.
+    if (readiness.state === "ready" || readiness.state === "missing") return;
     let live = true;
     scanLargeFiles(repoPath)
       .then((s) => {
@@ -182,7 +183,9 @@ export default function RepoSetupDialog({ readiness, context, repoPath, onResolv
           {view.secondaryLabel && (
             <button className="btn-secondary" disabled={busy} onClick={onResolved}>{view.secondaryLabel}</button>
           )}
-          <button className="btn-primary" disabled={busy} onClick={onPrimary}>{view.primaryLabel}</button>
+          {view.primaryLabel && (
+            <button className="btn-primary" disabled={busy} onClick={onPrimary}>{view.primaryLabel}</button>
+          )}
         </div>
       </div>
     </ModalBackdrop>

@@ -8,9 +8,17 @@ use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum RepoReadiness {
+    /// The folder itself is not on disk: moved, renamed, deleted, or on a
+    /// volume that is no longer mounted. Nothing in the app works against it,
+    /// so it is its own answer rather than a flavour of `NotARepo`.
+    Missing,
     NotARepo,
-    NoCommits { stageable: bool },
-    Ready { dirty: bool },
+    NoCommits {
+        stageable: bool,
+    },
+    Ready {
+        dirty: bool,
+    },
 }
 
 /// A cancel flag shared with a running git command. The setup and clone dialogs'
@@ -72,7 +80,9 @@ fn git(dir: &Path, args: &[&str]) -> std::io::Result<(bool, String)> {
 ///
 /// "This is not a repository" and "we could not ask" are different answers, and
 /// any caller that acts on the difference must use this rather than reading
-/// [`RepoReadiness::NotARepo`], which folds the two together.
+/// [`RepoReadiness::NotARepo`], which still folds an unrunnable git into
+/// "plain folder". (A folder that is not there at all is the one case
+/// `repo_readiness` does separate out, as [`RepoReadiness::Missing`].)
 pub fn inside_work_tree(path: &Path) -> Option<bool> {
     match git(path, &["rev-parse", "--is-inside-work-tree"]) {
         // git ran and answered: success means inside, a non-zero exit ("not a
@@ -82,13 +92,53 @@ pub fn inside_work_tree(path: &Path) -> Option<bool> {
     }
 }
 
+/// Whether a project's folder is gone from disk: moved, renamed, deleted, or
+/// sitting on a volume that is no longer mounted.
+///
+/// A `stat` that is not there and a `stat` we could not perform are different
+/// answers, and only the first one is "missing". This was `!path.is_dir()`, and
+/// `Path::is_dir()` folds every error into `false`: a network share whose
+/// server was timing out, an `ESTALE` after a remount, an `EPERM` from a
+/// sandboxed or TCC-protected location all read as "the folder is gone" with
+/// exactly the confidence of a deleted one, and the whole project view was
+/// replaced by the missing screen. The UI's rule for this ("no answer is no
+/// claim", `useFolderMissing`) cannot defend against it, because the IPC call
+/// *succeeds*, returning `true`. So "could not ask" lands on the same side as
+/// [`inside_work_tree`]'s `None`: say nothing, and leave the tabs to fail in
+/// their own words as they did before any of this existed.
+///
+/// `metadata` follows symlinks, like the `is_dir` it replaces, so a link left
+/// dangling by the move it was pointing into is `NotFound` and reads as missing
+/// too; and a path taken over by a file is as unusable as one that is not
+/// there, so a successful stat of a non-directory is missing as well.
+pub fn folder_missing(path: &Path) -> bool {
+    match std::fs::metadata(path) {
+        Ok(md) => !md.is_dir(),
+        // NotADirectory: a component of the path is itself a file, so nothing
+        // can be at the end of it either.
+        Err(e) => {
+            matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory)
+        }
+    }
+}
+
 /// Inspect a folder and classify how ready it is to host agent worktrees.
 /// Worktrees branch from `HEAD`, so a repo needs at least one commit to be `Ready`.
 ///
-/// This drives setup UI, where an unrunnable git and a plain folder both mean
-/// "nothing to show yet", so both land on `NotARepo`. Callers deciding what to
-/// *do* with a folder want [`inside_work_tree`] instead.
+/// A folder that is not there at all answers `Missing`, ahead of every git
+/// question: git cannot be spawned in a directory that does not exist, so
+/// without that arm a moved project folder read as `NotARepo` and every caller
+/// took the gitless path — "no branch here, so run the agent in the folder
+/// itself" — against a folder there was nothing in. That is what AGE-203 saw
+/// as a mix of errors and loading screens across the tabs.
+///
+/// An unrunnable git in a folder that *is* there still lands on `NotARepo`,
+/// which is what setup UI wants. Callers deciding what to *do* with a folder
+/// want [`inside_work_tree`] instead.
 pub fn repo_readiness(path: &Path) -> RepoReadiness {
+    if folder_missing(path) {
+        return RepoReadiness::Missing;
+    }
     if inside_work_tree(path) != Some(true) {
         return RepoReadiness::NotARepo;
     }

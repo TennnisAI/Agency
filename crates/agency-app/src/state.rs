@@ -3135,6 +3135,61 @@ impl AppState {
         self.registry.lock().unwrap().set_project_color(id, color)
     }
 
+    /// Point an existing project at a new folder: the AGE-203 reconnect, for a
+    /// source folder that was moved, renamed, or restored from a volume that
+    /// had been unmounted.
+    ///
+    /// Nothing on disk is moved (unlike [`move_workspace`], which relocates the
+    /// folder itself); this only rewrites where the project believes its folder
+    /// is. Every run row, issue, note and setting is keyed on the project id,
+    /// so all of it comes back with the folder.
+    pub fn relocate_project(&self, id: &str, new_path: &Path) -> Result<Project> {
+        validate_project_path(new_path)?;
+        let project = self
+            .registry
+            .lock()
+            .unwrap()
+            .get_project(id)?
+            .ok_or_else(|| anyhow!("unknown project: {id}"))?;
+        if project.repo_path == new_path {
+            return Ok(project);
+        }
+        {
+            let reg = self.registry.lock().unwrap();
+            // Refuse a folder another project already claims, open or closed.
+            // `repo_path` has no unique index and this is a bare UPDATE, so
+            // picking project B's folder in A's "Locate folder..." dialog put
+            // both rows on one checkout: they then share `.agency/worktrees`
+            // and `.agency/agency.toml`, and reviving a closed one by its path
+            // can no longer tell them apart. `add_project` dedupes by reviving
+            // the row that is already there; a relocate has no equivalent move
+            // to make, so it stops instead.
+            if let Some(other) = reg.find_project_by_path(new_path)? {
+                if other.id != project.id {
+                    bail!("{} is already open as \"{}\"", new_path.display(), other.name);
+                }
+            }
+            reg.set_project_repo_path(id, new_path)?;
+        }
+        // The agents' worktrees live under `<repo>/.agency/worktrees/`, so they
+        // travelled with the folder and their absolute git links are now stale.
+        // Repair them here rather than leaving each agent's tab to report "not
+        // a git repository" one at a time. Best-effort: a folder with no
+        // repository, or one the user pointed at by mistake, still reconnects.
+        //
+        // The agents' own sessions are deliberately left running. A shell's cwd
+        // is a reference to the directory, not to its path, so a folder moved
+        // rather than deleted takes every process working in it along: those
+        // agents are fine where they are, and killing them would throw away
+        // live work to fix a path that was never broken for them.
+        agency_core::worktree::WorktreeManager::new(new_path.to_path_buf()).repair().ok();
+        self.registry
+            .lock()
+            .unwrap()
+            .get_project(id)?
+            .ok_or_else(|| anyhow!("project row vanished"))
+    }
+
     pub fn close_project(&self, id: &str) -> Result<()> {
         self.close_project_with_progress(id, &mut |_| {})
     }
@@ -3175,8 +3230,29 @@ impl AppState {
         id: &str,
         on_progress: &mut dyn FnMut(agency_core::setup::CloneProgress),
     ) -> Result<()> {
+        // The sidebar leaves "Delete worktrees & close" off a project whose
+        // folder is gone; this is the backstop, and the reason both exist. With
+        // the folder missing, every `WorktreeManager::remove` below fails (git
+        // cannot run in a directory that is not there) and the failure is
+        // discarded, yet the runs, the issues and the project row are deleted
+        // all the same: an external disk that was only unplugged cost the user
+        // the project's entire issue history and still left its worktrees to
+        // find by hand when it came back, which is the opposite of what the
+        // dialog offering this promises (AGE-203). Closing keeps every record,
+        // and is what a missing folder is offered instead.
+        //
+        // `folder_missing` only claims a folder that is definitively not there,
+        // so an unreachable one still takes the path below and fails per
+        // worktree as it always did.
+        let repo = self.project_repo(id)?;
+        if agency_core::setup::folder_missing(&repo) {
+            bail!(
+                "{} is not there, so this project's worktrees cannot be removed; \
+                 reconnect the folder first, or close the project to keep every record",
+                repo.display()
+            );
+        }
         let runs = self.registry.lock().unwrap().list_runs(id)?;
-        let repo = self.project_repo(id).ok();
         let total = runs.len();
         for (i, run) in runs.iter().enumerate() {
             // Position in the sweep, not the branch name: how far through the
@@ -3185,8 +3261,8 @@ impl AppState {
             let detail = sweep_detail(&run_label(run), i, total);
             step(on_progress, "Stopping the agents", &detail);
             self.kill_run_terminals(&run.id);
-            if let Some(repo) = &repo {
-                step(on_progress, "Removing the worktrees", &detail);
+            step(on_progress, "Removing the worktrees", &detail);
+            {
                 // Same mutual exclusion `create_run` takes: this command is
                 // async now (off the main thread), so nothing else serializes
                 // it against a concurrent worktree add on the same repo. Held

@@ -713,6 +713,24 @@ impl Registry {
         Ok(())
     }
 
+    /// Any project recorded at `repo_path`, open or closed. There is no unique
+    /// index on the column, so two rows can name one folder, and then they
+    /// share its `.agency/worktrees` and `.agency/agency.toml` and
+    /// `find_closed_project` can no longer say which one a re-add should
+    /// revive. `add_project` avoids that by reviving the closed row instead of
+    /// inserting; a relocate has no such move, so it asks this and refuses.
+    pub fn find_project_by_path(&self, repo_path: &Path) -> Result<Option<Project>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, repo_path, default_agent, default_provider, color, issue_key, kind
+             FROM projects WHERE repo_path = ?1",
+        )?;
+        let mut rows = stmt.query([repo_path.to_string_lossy()])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(row_to_project(row)?)),
+            None => Ok(None),
+        }
+    }
+
     fn find_closed_project(&self, repo_path: &Path) -> Result<Option<Project>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, repo_path, default_agent, default_provider, color, issue_key, kind

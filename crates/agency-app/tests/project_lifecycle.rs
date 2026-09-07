@@ -128,3 +128,125 @@ fn tearing_a_project_down_reports_each_step() {
         "delete_project must leave no worktrees behind"
     );
 }
+
+/// AGE-203: a project whose folder is gone can be closed, never deleted. The
+/// worktree removal that "Delete worktrees & close" is named for cannot run
+/// without the folder, and deleting regardless threw away the issues and the
+/// run history of a project whose disk was merely unplugged, worktrees and all
+/// still waiting on it.
+#[test]
+fn deleting_a_project_whose_folder_is_gone_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let git = |args: &[&str]| {
+        std::process::Command::new("git").args(args).current_dir(&repo).output().unwrap()
+    };
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "t@e.com"]);
+    git(&["config", "user.name", "T"]);
+    git(&["commit", "-q", "--allow-empty", "-m", "init"]);
+
+    let state = common::state(&dir);
+    let project = state.add_project("repo", &repo).unwrap();
+    let issue = state
+        .create_issue(
+            &project.id,
+            "not yours to delete",
+            "",
+            agency_core::registry::IssueStatus::Todo,
+        )
+        .unwrap();
+
+    std::fs::rename(&repo, dir.path().join("repo-elsewhere")).unwrap();
+    let err = state.delete_project(&project.id).unwrap_err().to_string();
+    assert!(err.contains("is not there"), "{err}");
+    assert!(
+        state.list_projects().unwrap().iter().any(|p| p.id == project.id),
+        "a refused delete must leave the project alone"
+    );
+    assert!(state.list_issues(&project.id).unwrap().iter().any(|i| i.id == issue.id));
+
+    // Closing is what a missing folder is offered instead, and it still works.
+    state.close_project(&project.id).unwrap();
+    assert!(!state.list_projects().unwrap().iter().any(|p| p.id == project.id));
+}
+
+/// AGE-203: the source folder is moved (or its volume unmounted and remounted
+/// somewhere else). The project must be repointable in place, keeping its id
+/// and everything keyed on it, rather than closed and re-added.
+#[test]
+fn relocate_project_repoints_a_moved_folder_and_keeps_the_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let git = |args: &[&str]| {
+        std::process::Command::new("git").args(args).current_dir(&repo).output().unwrap()
+    };
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "t@e.com"]);
+    git(&["config", "user.name", "T"]);
+    git(&["commit", "-q", "--allow-empty", "-m", "init"]);
+
+    let state = common::state(&dir);
+    let project = state.add_project("repo", &repo).unwrap();
+    let issue = state
+        .create_issue(&project.id, "still here", "", agency_core::registry::IssueStatus::Todo)
+        .unwrap();
+
+    let moved = dir.path().join("repo-elsewhere");
+    std::fs::rename(&repo, &moved).unwrap();
+    assert_eq!(state.inspect_repo(&repo), agency_core::setup::RepoReadiness::Missing);
+
+    let back = state.relocate_project(&project.id, &moved).unwrap();
+    assert_eq!(back.id, project.id, "relocating must not make a new project");
+    assert_eq!(back.repo_path, moved);
+    assert_eq!(
+        state.inspect_repo(&back.repo_path),
+        agency_core::setup::RepoReadiness::Ready { dirty: false }
+    );
+    // Everything keyed on the project id comes back with the folder.
+    assert!(state.list_issues(&project.id).unwrap().iter().any(|i| i.id == issue.id));
+
+    // A folder that is not there is not somewhere to reconnect to: the picker
+    // cannot produce one, but a stale window or a scripted call can.
+    let nowhere = dir.path().join("nowhere");
+    assert!(state.relocate_project(&project.id, &nowhere).is_err());
+    assert_eq!(
+        state.list_projects().unwrap().iter().find(|p| p.id == project.id).unwrap().repo_path,
+        moved
+    );
+
+    // Relocating to where it already is is a no-op, not an error.
+    let same = state.relocate_project(&project.id, &moved).unwrap();
+    assert_eq!(same.repo_path, moved);
+}
+
+/// AGE-203: the "Locate folder..." picker is an ordinary folder picker, so the
+/// folder it comes back with can be one another project already occupies. Two
+/// rows on one checkout share its `.agency/worktrees` and `.agency/agency.toml`
+/// and cannot be told apart by path afterwards, so relocate refuses.
+#[test]
+fn relocate_project_refuses_a_folder_another_project_already_has() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = dir.path().join("a");
+    let b = dir.path().join("b");
+    std::fs::create_dir_all(&a).unwrap();
+    std::fs::create_dir_all(&b).unwrap();
+
+    let state = common::state(&dir);
+    let pa = state.add_project("a", &a).unwrap();
+    let pb = state.add_project("b", &b).unwrap();
+
+    assert!(state.relocate_project(&pa.id, &b).is_err(), "b is taken by an open project");
+    assert_eq!(
+        state.list_projects().unwrap().iter().find(|p| p.id == pa.id).unwrap().repo_path,
+        a,
+        "a refused relocate leaves the row where it was"
+    );
+
+    // Closed is still taken: closing keeps every record, and re-adding the
+    // path is how a closed project comes back.
+    state.close_project(&pb.id).unwrap();
+    assert!(state.relocate_project(&pa.id, &b).is_err(), "b is taken by a closed project");
+}

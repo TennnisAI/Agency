@@ -467,6 +467,10 @@ export const defaultWorkspaceLocation = () => invoke<string>("default_workspace_
 // given an initial commit so agents can run in it; without, it's just a folder.
 export const createWorkspace = (path: string, useGit: boolean) =>
   invoke<Project>("create_workspace", { path, useGit });
+// Points a project at the folder its source moved to. Nothing on disk moves;
+// the project keeps its id, so its runs, issues and notes come back with it.
+export const relocateProject = (id: string, newPath: string) =>
+  invoke<Project>("relocate_project", { id, newPath });
 // Moves the workspace folder on disk and repoints the project at it.
 export const moveWorkspace = (newPath: string) =>
   invoke<Project>("move_workspace", { newPath });
@@ -475,13 +479,21 @@ export const ensureWorkspaceGuide = (projectId: string) =>
   invoke<string>("ensure_workspace_guide", { projectId });
 
 export type RepoReadiness = {
-  state: "notARepo" | "noCommits" | "ready";
+  // "missing" = the folder itself is gone: moved, renamed, deleted, or on a
+  // volume that isn't mounted. It is not a flavour of "notARepo" — nothing
+  // works against it, so surfaces that would otherwise offer the gitless path
+  // ("no branch here, so the agent works in the folder") must not.
+  state: "missing" | "notARepo" | "noCommits" | "ready";
   stageable: boolean;
   dirty: boolean;
 };
 
 export const inspectRepo = (repoPath: string) =>
   invoke<RepoReadiness>("inspect_repo", { repoPath });
+// Whether a folder has gone from disk. One stat, unlike inspectRepo, which
+// shells out to git over the whole tree: this is the one that can be polled.
+export const folderMissing = (repoPath: string) =>
+  invoke<boolean>("folder_missing", { repoPath });
 export const initRepo = (repoPath: string) =>
   invoke<void>("init_repo", { repoPath });
 // A progress update streamed from `git clone --progress` during a clone.

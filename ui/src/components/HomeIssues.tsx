@@ -188,6 +188,14 @@ export default function HomeIssues({
         return;
       }
       const r = await inspectRepo(project.repo_path);
+      // The project's folder has gone (AGE-203). The setup dialog below can
+      // only offer `git init` and a first commit, neither of which has a folder
+      // to run in, so it would be a dead end. Send the user to the project,
+      // where Locate folder and Remove project are.
+      if (r.state === "missing") {
+        toastError(`${project.name} can't start an agent: its folder is missing. Open the project to reconnect it or remove it.`);
+        return;
+      }
       // A folder with no repository has nothing to set up: there is no branch to
       // cut from, so the agent takes the issue on in the folder as it stands.
       // Without that arm the board opened the setup dialog on "Initialize

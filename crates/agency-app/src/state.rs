@@ -1038,7 +1038,21 @@ fn agent_argv(
     // carries none, so a conversation Agency had minted, opened and proved was
     // thrown away on every relaunch.
     let Some(resume) = exact.or_else(|| profile.resume_args.clone().filter(|_| use_resume)) else {
-        return fresh_agent_argv(profile, worktree, prompt, setup, conversation);
+        // A resuming caller passes the *recorded* conversation, and this
+        // fallback opens a fresh launch: forwarding it would emit
+        // `--session-id <id already in use>`, which claude refuses to start on
+        // and cursor answers with a second chat under a name it already knows.
+        // No caller reaches here with `use_resume` today, because
+        // `should_resume` asks `exact_resume_args` the same question this line
+        // just asked — but both answers now come from a PATH lookup, so make
+        // the invariant hold here rather than two functions away.
+        return fresh_agent_argv(
+            profile,
+            worktree,
+            prompt,
+            setup,
+            conversation.filter(|_| !use_resume),
+        );
     };
     base_args.extend(resume);
     let mcp = mcp_launch_args(profile, worktree, &base_args);

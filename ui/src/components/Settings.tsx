@@ -955,7 +955,7 @@ export default function Settings({
         <Field
           label="Resume arguments"
           optional
-          hint="Added after the arguments above when reopening an existing session, in place of the prompt. Leave empty if this CLI has no resume flag. Agents whose conversations Agency can name come back to their own either way."
+          hint="Added after the arguments above when reopening an existing session, in place of the prompt. Leave empty if this CLI has no resume flag. Agents whose conversations Agency can name come back to their own either way, so emptying this won't start them fresh. To take that over, name the conversation yourself in the arguments above (--session-id, --resume, --continue) and Agency stands down."
         >
           <input
             className="settings-input mono"

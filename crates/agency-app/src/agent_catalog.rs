@@ -557,10 +557,20 @@ fn base(command: &str) -> &str {
 ///   Anything else keeps the name the user wrote, and gets what a custom
 ///   profile has always got.
 pub fn recipe_command(command: &str) -> String {
+    let literal = base(command);
+    // Resolve only for a name no recipe is keyed by. `resolve_on_path` stats
+    // every directory on PATH and `canonicalize` walks the link, and a launch
+    // decision asks this three or four times over (`should_resume`,
+    // `agent_argv`, `agent_env`, `open_conversation`) — for `claude` and every
+    // other catalog command the answer was computed and then thrown away, so a
+    // stale network mount on PATH held up a launch for nothing.
+    if find_by_command(literal).is_some() {
+        return literal.to_string();
+    }
     let resolved = crate::agent_diag::resolve_on_path(command)
         .and_then(|p| p.canonicalize().ok())
         .map(|p| base(&p.to_string_lossy()).to_string());
-    pick_recipe_command(base(command), resolved.as_deref()).to_string()
+    pick_recipe_command(literal, resolved.as_deref()).to_string()
 }
 
 /// The pure half of [`recipe_command`]: `literal` is the basename the profile

@@ -369,9 +369,10 @@ function HomeTile({ run, onOpen, onChanged }: { run: RunInfo; onOpen: () => void
         </div>
       )}
       {preview && <pre className="tile-preview">{preview}</pre>}
+      {/* Pin first, then status: the same foot order as the agents board. */}
       <div className="tile-foot">
-        <span title={st.title}>{st.text}</span>
         <AttentionMarker run={run} onChanged={onChanged} />
+        <span title={st.title}>{st.text}</span>
       </div>
       {runMenu}
     </div>

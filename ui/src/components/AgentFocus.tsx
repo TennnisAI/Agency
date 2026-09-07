@@ -25,7 +25,7 @@ import { agentViewTab, loadFocusTab, saveFocusTab, resolveFocusTab, PRIMARY_TAB,
 import AgentAddMenu from "./AgentAddMenu";
 import QueuedMarker from "./QueuedMarker";
 import OverflowMenu from "./OverflowMenu";
-import { pinItems } from "./AttentionMarker";
+import { PinMark, pinItems } from "./AttentionMarker";
 import { TrashIcon, InboxIcon, TerminalIcon, PencilIcon, CheckIcon, BranchIcon } from "./icons";
 
 const SHELL_MIN = 120;
@@ -213,6 +213,7 @@ function RailRow({
         onDoubleClick={onRename}
         title="Double-click to rename"
       >
+        <PinMark run={run} />
         <span className={`dot ${runStatus(run).cls}`} />
         <span className="rail-name">{runListLabel(run)}</span>
         {run.runScriptsLive && (

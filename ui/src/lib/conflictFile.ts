@@ -39,8 +39,18 @@ const THEIRS = ">>>>>>>";
 // line or a space. Anything else — a row of equals signs under a heading, a
 // shell heredoc — is ordinary text, and treating it as a marker would carve up
 // a file that has no conflict in it at all.
+//
+// A carriage return counts as end of line. The split above is on "\n", so in a
+// CRLF checkout every line arrives with a trailing "\r", and `=======\r` has a
+// `\r` where this looked for a space or the end of the string. `<<<<<<< HEAD\r`
+// still matched (a label follows it), so the opening marker was found and the
+// split never was: `end` stayed -1 and parseConflicts returned [] for the whole
+// file. Every conflict in a CRLF repo reached the view as "conflict markers
+// Agency can't read" and could not be resolved in the pane at all.
 function marker(line: string, m: string): boolean {
-  return line.startsWith(m) && (line.length === m.length || line[m.length] === " ");
+  if (!line.startsWith(m)) return false;
+  const next = line[m.length];
+  return next === undefined || next === " " || next === "\r";
 }
 
 function label(line: string, m: string): string {

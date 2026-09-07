@@ -29,6 +29,20 @@ const TWO = [
   "",
 ].join("\n");
 
+// The same file as checked out with CRLF endings, which is what a repo with
+// `core.autocrlf` or a `* text eol=crlf` attribute hands the view on any
+// platform.
+const CRLF = [
+  "one",
+  "<<<<<<< HEAD",
+  "mine",
+  "=======",
+  "theirs",
+  ">>>>>>> agent/feature",
+  "three",
+  "",
+].join("\r\n");
+
 describe("parseConflicts", () => {
   it("reads both sides and the branch names off the markers", () => {
     const [b] = parseConflicts(ONE);
@@ -63,6 +77,18 @@ describe("parseConflicts", () => {
     const doc = "Heading\n=======\ntext\n>>>>>>> quoted\n";
     expect(parseConflicts(doc)).toEqual([]);
     expect(hasConflicts(doc)).toBe(false);
+  });
+
+  it("reads a conflict in a CRLF checkout, where every line ends in a carriage return", () => {
+    // The split is on "\n", so each marker arrives as `"=======\r"`. The
+    // opening `<<<<<<< HEAD\r` matched anyway (a label follows it) and the
+    // `=======\r` did not, so the whole file parsed as zero blocks and every
+    // conflict in such a repo reached the view as unreadable markers.
+    const [b] = parseConflicts(CRLF);
+    expect(b.current).toEqual(["mine\r"]);
+    expect(b.incoming).toEqual(["theirs\r"]);
+    expect(b.currentLabel).toBe("HEAD");
+    expect(b.incomingLabel).toBe("agent/feature");
   });
 
   it("refuses a block it cannot read rather than guessing at one", () => {
@@ -105,6 +131,11 @@ describe("resolveAll", () => {
   it("takes the same side everywhere and leaves nothing unmerged", () => {
     expect(resolveAll(TWO, "incoming")).toBe("a-feat\nmiddle\nb-feat\n");
     expect(hasConflicts(resolveAll(TWO, "current"))).toBe(false);
+  });
+
+  it("keeps CRLF endings when it takes a side", () => {
+    expect(resolveAll(CRLF, "current")).toBe("one\r\nmine\r\nthree\r\n");
+    expect(hasConflicts(resolveAll(CRLF, "incoming"))).toBe(false);
   });
 
   it("returns a file with no conflicts in it byte for byte", () => {

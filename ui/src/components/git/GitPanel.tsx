@@ -358,9 +358,13 @@ function GitRepoPanel({
           {/* An unmerged file gets the conflict view, not the diff viewer: git
               answers `git diff` for one of those with a combined diff, whose
               lines are not the file's lines, so the ordinary stage-by-line
-              buttons wrote conflict markers into the file (AGE-199). */}
+              buttons wrote conflict markers into the file (AGE-199).
+              Keyed by path: the pane holds the file it read, so a different
+              file gets a fresh pane rather than inheriting the last one's
+              error or in-flight write. */}
           {selection?.kind === "file" && selection.group === "merge" && (
-            <ConflictView taskId={taskId} path={selection.path} code={conflictCode(selection.path)}
+            <ConflictView key={selection.path} taskId={taskId} path={selection.path}
+              code={conflictCode(selection.path)}
               onChanged={refresh} onRevealInFiles={onRevealInFiles} />
           )}
           {selection?.kind === "file" && selection.group !== "merge" && <DiffViewer taskId={taskId} path={selection.path} mode={diffMode(selection.group)} onChanged={refresh} onCommentAdded={() => setCommentsKey((k) => k + 1)} allowComments={allowComments} onRevealInFiles={onRevealInFiles} />}

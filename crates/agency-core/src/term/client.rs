@@ -234,8 +234,14 @@ impl TermClient {
     }
 
     pub fn capture(&self, id: &str, lines: usize) -> Result<String> {
+        Ok(self.capture_styled(id, lines)?.0)
+    }
+
+    /// A capture with the cell-style map alongside it, or None for that map
+    /// when the daemon on the other end predates the field.
+    pub fn capture_styled(&self, id: &str, lines: usize) -> Result<(String, Option<String>)> {
         match self.request(|seq| ClientMsg::Capture { id: id.into(), lines, seq })? {
-            ServerMsg::Captured { text, .. } => Ok(text),
+            ServerMsg::Captured { text, style, .. } => Ok((text, style)),
             other => Err(anyhow!("unexpected reply: {other:?}")),
         }
     }

@@ -6482,8 +6482,10 @@ impl AppState {
         if draft {
             // One line asked for, the whole visible screen returned (the
             // emulator always renders every row); scrollback stays out of it.
-            if let Ok(pane) = self.term.read().unwrap().capture(&session_name(id), 1) {
-                if crate::sendq::prompt_looks_empty(&pane) {
+            if let Ok((pane, style)) =
+                self.term.read().unwrap().capture_styled(&session_name(id), 1)
+            {
+                if crate::sendq::prompt_looks_empty(&pane, style.as_deref()) {
                     draft = false;
                     if let Some(h) = self.human_input.lock().unwrap().get_mut(id) {
                         h.draft = false;

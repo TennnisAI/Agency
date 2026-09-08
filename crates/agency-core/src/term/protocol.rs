@@ -100,6 +100,13 @@ pub enum ServerMsg {
     Captured {
         id: String,
         text: String,
+        /// How each cell of `text` was drawn, in the encoding
+        /// `Emulator::capture_styled` documents. Optional so this rides along
+        /// with the next daemon start instead of costing a PROTOCOL_VERSION
+        /// bump: a daemon predating it simply omits the field, and the client
+        /// reads None and falls back (see `sendq::prompt_looks_empty`).
+        #[serde(default)]
+        style: Option<String>,
         #[serde(default)]
         seq: u64,
     },

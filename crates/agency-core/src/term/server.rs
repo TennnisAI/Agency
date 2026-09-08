@@ -156,8 +156,11 @@ fn dispatch(frame: ClientFrame, client_id: u64, registry: &Arc<Registry>, out: &
             }
         }
         ClientFrame::Msg(ClientMsg::Capture { id, lines, seq }) => match registry.get(&id) {
-            Some(s) => reply(ServerMsg::Captured { id: id.clone(), text: s.capture(lines), seq }),
-            None => reply(ServerMsg::Captured { id, text: String::new(), seq }),
+            Some(s) => {
+                let (text, style) = s.capture_styled(lines);
+                reply(ServerMsg::Captured { id: id.clone(), text, style: Some(style), seq })
+            }
+            None => reply(ServerMsg::Captured { id, text: String::new(), style: None, seq }),
         },
         ClientFrame::Msg(ClientMsg::Status { id, seq }) => {
             let status = registry.get(&id).map(|s| s.status()).unwrap_or(SessionStatus::Gone);

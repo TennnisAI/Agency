@@ -167,6 +167,38 @@ fn start_subscribe_input_capture_kill() {
     assert_eq!(client.list().unwrap().len(), 0);
 }
 
+/// The cell styles have to survive the daemon round trip: they are what tells
+/// an agent's painted hint from the human's draft, and they are read on the app
+/// side, a socket away from the grid that has them.
+#[test]
+fn a_capture_carries_the_cell_styles_over_the_wire() {
+    let (_dir, client) = server_and_client();
+    client
+        .start_session(
+            "st",
+            std::path::Path::new("/tmp"),
+            "/bin/sh",
+            &["-c".into(), "printf '\\033[2mfaint\\033[0m plain'; sleep 5".into()],
+            &[],
+            80,
+            24,
+        )
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        let (text, style) = client.capture_styled("st", 5).unwrap();
+        if text.contains("faint plain") {
+            let style = style.expect("a current daemon always sends the styles");
+            let row = style.lines().find(|l| l.contains('d')).expect("a faint row");
+            assert_eq!(row, "ddddd .....");
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "never painted: {text:?}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    client.kill("st").unwrap();
+}
+
 /// The Enter that `send_text` appends has to reach the session as input of its
 /// own, a beat after the message: a TUI agent that reads the whole thing in one
 /// go treats it as a paste, and the carriage return lands in its prompt box as a

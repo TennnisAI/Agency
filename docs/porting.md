@@ -66,12 +66,27 @@ What Linux would still need after that:
   it builds in a container, since Tauri links against the host's webkit2gtk and
   cannot cross-compile.
 
-  Two things it does not solve. **glibc decides Ubuntu reach**, not the package
-  format: built on bookworm the binary wants glibc 2.36, which covers Debian 12+
-  and Ubuntu 24.04 but not Ubuntu 22.04 LTS (2.35) — build the release on a
-  22.04 base if that matters. And **Arch has no Tauri target**; the bundler
-  offers `deb`, `rpm` and `appimage` only, so Arch is served by the AppImage
-  unless someone maintains a PKGBUILD on the AUR.
+  For both architectures, build on native runners:
+  `.github/workflows/linux-packages.yml` runs the same script on its
+  native-Linux path across an x86_64 and an aarch64 leg. Locally, `--arch both`
+  works but x86_64 on an Apple Silicon Mac is qemu, which is slow enough to be
+  impractical for a release.
+
+  **The build image sets a glibc floor, and it is the whole ballgame for
+  distribution.** A Linux binary runs on any glibc at least as new as the one it
+  linked against and on none older, and nothing declares this: the `.deb`
+  depends on `libwebkit2gtk-4.1-0`, `libgtk-3-0` and
+  `libayatana-appindicator3-1`, all satisfiable on Debian 12, so a too-new
+  package installs perfectly and then dies at the dynamic linker. Observed: a
+  build on `ubuntu-latest` (24.04, glibc 2.39) installed on Debian 12 and
+  refused to start with ``version `GLIBC_2.39' not found``. Pinned to 22.04 the
+  binary needs only GLIBC_2.34, and it installs and starts on Debian 12.
+  AppImages do not help — they bundle libraries but never libc. Raise the
+  runner only when dropping those distros is a decision someone has made.
+
+  **Arch has no Tauri target.** The bundler offers `deb`, `rpm` and `appimage`
+  only, so Arch is served by the AppImage unless someone maintains a PKGBUILD
+  on the AUR.
 - **The install-command table** below, which is per-platform work Linux shares
   with Windows. The `npm install -g` rows already work as-is.
 - **Two accepted degradations.** Tauri's Linux tray wants

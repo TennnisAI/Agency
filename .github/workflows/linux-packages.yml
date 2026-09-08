@@ -81,7 +81,11 @@ jobs:
       # so CI and a local build cannot drift into producing different packages.
       - name: Build packages
         env:
-          BUNDLES: ${{ inputs.bundles }}
+          # `inputs` only exists for workflow_dispatch, so on the pull_request
+          # trigger this is empty and the script is handed `--bundles ""`,
+          # which it rejects. The fallback belongs here rather than in the
+          # script: an empty --bundles is a caller mistake worth reporting.
+          BUNDLES: ${{ inputs.bundles || 'deb,rpm,appimage' }}
         run: ./scripts/release-linux.sh --native --bundles "$BUNDLES"
 
       - name: Upload packages

@@ -29,6 +29,10 @@ pub struct FallbackSpec {
     pub grace_ms: u64,
 }
 
+fn styles_wanted() -> bool {
+    true
+}
+
 // Request/reply variants carry `seq` (client-assigned, >= 1, echoed by the
 // server) so the client can match replies to requests. `#[serde(default)]`
 // keeps decoding tolerant of the seq-less v1 wire format: a legacy peer's
@@ -67,6 +71,23 @@ pub enum ClientMsg {
     Capture {
         id: String,
         lines: usize,
+        /// Whether the reply should carry the cell-style map.
+        ///
+        /// The map is a second string the size of the capture, and every
+        /// caller but `TermClient::capture_styled` throws it away. Two of them
+        /// run on the notifier's 2 s tick, 50 rows at a time, once per run and
+        /// once per extra tab (`watch_snapshot`, `extra_session_panes`), so
+        /// computing it unasked roughly doubled the app's highest-frequency
+        /// IPC payload to carry something nothing read.
+        ///
+        /// Defaults to *true*, so a client too old to send the field keeps the
+        /// map its `capture_styled` needs. One socket is shared by the
+        /// installed app and any dev build, which makes that pairing routine
+        /// rather than hypothetical, and like `Captured::style` it rides along
+        /// with the next daemon start instead of costing a PROTOCOL_VERSION
+        /// bump.
+        #[serde(default = "styles_wanted")]
+        style: bool,
         #[serde(default)]
         seq: u64,
     },
@@ -100,6 +121,13 @@ pub enum ServerMsg {
     Captured {
         id: String,
         text: String,
+        /// How each cell of `text` was drawn, in the encoding
+        /// `Emulator::capture_styled` documents. Optional so this rides along
+        /// with the next daemon start instead of costing a PROTOCOL_VERSION
+        /// bump: a daemon predating it simply omits the field, and the client
+        /// reads None and falls back (see `sendq::prompt_looks_empty`).
+        #[serde(default)]
+        style: Option<String>,
         #[serde(default)]
         seq: u64,
     },
@@ -268,10 +296,27 @@ mod tests {
 
     #[test]
     fn json_client_msg_round_trips() {
-        let payload = encode_json(&ClientMsg::Capture { id: "a".into(), lines: 50, seq: 7 });
+        let payload =
+            encode_json(&ClientMsg::Capture { id: "a".into(), lines: 50, style: false, seq: 7 });
         match decode_client(&payload).unwrap() {
-            ClientFrame::Msg(ClientMsg::Capture { id, lines, seq }) => {
-                assert_eq!((id.as_str(), lines, seq), ("a", 50, 7));
+            ClientFrame::Msg(ClientMsg::Capture { id, lines, style, seq }) => {
+                assert_eq!((id.as_str(), lines, style, seq), ("a", 50, false, 7));
+            }
+            other => panic!("wrong decode: {other:?}"),
+        }
+    }
+
+    /// The app and the daemon can be from different builds while
+    /// PROTOCOL_VERSION matches, so a `Capture` from a client too old to know
+    /// about the flag has to keep the styles it was written to expect.
+    #[test]
+    fn a_capture_without_the_style_flag_still_asks_for_the_styles() {
+        let mut payload = vec![T_JSON];
+        payload.extend_from_slice(br#"{"Capture":{"id":"a","lines":50}}"#);
+        match decode_client(&payload).unwrap() {
+            ClientFrame::Msg(ClientMsg::Capture { style, seq, .. }) => {
+                assert!(style, "an older client's capture must not lose the style map");
+                assert_eq!(seq, 0, "and reads as untagged, as v1 always did");
             }
             other => panic!("wrong decode: {other:?}"),
         }

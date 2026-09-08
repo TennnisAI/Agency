@@ -138,6 +138,10 @@ impl Session {
         self.ctx.emu.lock().unwrap().capture(lines)
     }
 
+    pub fn capture_styled(&self, lines: usize) -> (String, String) {
+        self.ctx.emu.lock().unwrap().capture_styled(lines)
+    }
+
     pub fn status(&self) -> SessionStatus {
         match self.ctx.pty.lock().unwrap().as_ref().map(|p| p.status()) {
             Some(ProcStatus::Running) | None => SessionStatus::Running,

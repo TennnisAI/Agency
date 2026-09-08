@@ -103,6 +103,32 @@ impl Emulator {
     /// `grid.total_lines()` returns actual history-in-use + screen (not max
     /// capacity), so `history = total - rows` is always safe.
     pub fn capture(&self, lines: usize) -> String {
+        self.render(lines, false).0
+    }
+
+    /// [`capture`](Self::capture)'s text, with a parallel map of how the child
+    /// drew each cell.
+    ///
+    /// The map has the same rows and the same columns as the text: row `i` of
+    /// one lines up character-for-character with row `i` of the other, so a
+    /// column index found in the text indexes the map directly. Per cell:
+    ///
+    /// - `' '` the cell is blank,
+    /// - `'d'` faint (SGR 2),
+    /// - `'i'` inverse (SGR 7),
+    /// - `'.'` drawn plainly.
+    ///
+    /// This exists to tell an agent's own painted hint text from the human's
+    /// half-typed draft, which read identically as glyphs. See
+    /// `agency-app`'s `sendq::prompt_looks_empty`, which is the only caller.
+    pub fn capture_styled(&self, lines: usize) -> (String, String) {
+        self.render(lines, true)
+    }
+
+    /// Both captures. `want_style` off leaves the second string empty rather
+    /// than building a per-cell map for a caller that discards it: a plain
+    /// capture is the common one by far (see `ClientMsg::Capture::style`).
+    fn render(&self, lines: usize, want_style: bool) -> (String, String) {
         let grid = self.term.grid();
         let total = grid.total_lines();
         let history = total.saturating_sub(self.rows as usize) as i32;
@@ -112,15 +138,39 @@ impl Emulator {
         let start = -scrollback_to_include;
 
         let mut out = String::new();
+        let mut styles = String::new();
         for li in start..self.rows as i32 {
             let mut row = String::new();
+            let mut style = String::new();
             for col in 0..self.cols as usize {
-                row.push(grid[Line(li)][Column(col)].c);
+                let cell = &grid[Line(li)][Column(col)];
+                row.push(cell.c);
+                if want_style {
+                    style.push(if cell.c == ' ' {
+                        ' '
+                    } else if cell.flags.contains(Flags::DIM) {
+                        'd'
+                    } else if cell.flags.contains(Flags::INVERSE) {
+                        'i'
+                    } else {
+                        '.'
+                    });
+                }
             }
-            out.push_str(row.trim_end());
+            let row = row.trim_end();
+            out.push_str(row);
             out.push('\n');
+            if want_style {
+                // Truncate the style row to the text row rather than trimming
+                // it on its own: the two must stay column-aligned, and a blank
+                // cell's style is a space, which would trim to a different
+                // length.
+                let kept: String = style.chars().take(row.chars().count()).collect();
+                styles.push_str(&kept);
+                styles.push('\n');
+            }
         }
-        out
+        (out, styles)
     }
 
     /// Reconstruct scrollback + screen as an ANSI repaint stream that, fed into a
@@ -666,6 +716,20 @@ mod tests {
         let mut e = Emulator::new(80, 24);
         e.feed(b"hello world");
         assert!(e.capture(5).contains("hello world"));
+    }
+
+    /// The style map has to line up with the text column for column, including
+    /// through a leading indent, because its only consumer indexes it by a
+    /// column it found in the text (`sendq::prompt_looks_empty`).
+    #[test]
+    fn capture_styled_marks_faint_and_inverse_cells_in_step_with_the_text() {
+        let mut e = Emulator::new(40, 3);
+        e.feed(b"  \x1b[2mdim\x1b[0m \x1b[7mI\x1b[0m plain");
+        let (text, style) = e.capture_styled(3);
+        let (text, style) = (text.lines().next().unwrap(), style.lines().next().unwrap());
+        assert_eq!(text, "  dim I plain");
+        assert_eq!(style, "  ddd i .....");
+        assert_eq!(text.chars().count(), style.chars().count());
     }
 
     #[test]

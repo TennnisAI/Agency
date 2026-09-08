@@ -233,9 +233,26 @@ impl TermClient {
         send_msg(&self.shared, &ClientMsg::Resize { id: id.into(), cols, rows })
     }
 
+    /// The pane's text, and nothing else: this asks the daemon not to build
+    /// the style map, which every caller here discards.
     pub fn capture(&self, id: &str, lines: usize) -> Result<String> {
-        match self.request(|seq| ClientMsg::Capture { id: id.into(), lines, seq })? {
-            ServerMsg::Captured { text, .. } => Ok(text),
+        Ok(self.request_capture(id, lines, false)?.0)
+    }
+
+    /// A capture with the cell-style map alongside it, or None for that map
+    /// when the daemon on the other end predates the field.
+    pub fn capture_styled(&self, id: &str, lines: usize) -> Result<(String, Option<String>)> {
+        self.request_capture(id, lines, true)
+    }
+
+    fn request_capture(
+        &self,
+        id: &str,
+        lines: usize,
+        style: bool,
+    ) -> Result<(String, Option<String>)> {
+        match self.request(|seq| ClientMsg::Capture { id: id.into(), lines, style, seq })? {
+            ServerMsg::Captured { text, style, .. } => Ok((text, style)),
             other => Err(anyhow!("unexpected reply: {other:?}")),
         }
     }

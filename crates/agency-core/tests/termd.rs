@@ -1,7 +1,7 @@
 use agency_core::term::client::TermClient;
 use agency_core::term::protocol::{
-    decode_client, encode_json, read_frame, write_frame, ClientFrame, ClientMsg, ServerMsg,
-    SessionStatus, PROTOCOL_VERSION,
+    decode_client, decode_server, encode_json, read_frame, write_frame, ClientFrame, ClientMsg,
+    ServerFrame, ServerMsg, SessionStatus, PROTOCOL_VERSION,
 };
 use agency_core::term::registry::Registry;
 use agency_core::term::server;
@@ -22,9 +22,15 @@ fn server_and_client() -> (tempfile::TempDir, TermClient) {
             let _ = server::run_with_registry(&sock, registry, clients);
         });
     }
-    // Wait for the socket to appear.
-    for _ in 0..50 {
-        if sock.exists() {
+    // Wait for a connection to actually be accepted, not for the file to
+    // appear. The path exists from the moment bind() creates the inode, which
+    // is before listen() has set up the backlog; connecting inside that window
+    // gets ECONNREFUSED, and `connect_or_spawn` answers a refused connection by
+    // spawning the daemon at the deliberately bogus path below, which fails as
+    // `spawn "/nonexistent": No such file or directory`. Observed once in six
+    // full-suite runs, where this binary competes with 563 other tests.
+    for _ in 0..100 {
+        if std::os::unix::net::UnixStream::connect(&sock).is_ok() {
             break;
         }
         std::thread::sleep(Duration::from_millis(20));
@@ -165,6 +171,72 @@ fn start_subscribe_input_capture_kill() {
     drop(sub);
     client.kill("r1").unwrap();
     assert_eq!(client.list().unwrap().len(), 0);
+}
+
+/// The cell styles have to survive the daemon round trip: they are what tells
+/// an agent's painted hint from the human's draft, and they are read on the app
+/// side, a socket away from the grid that has them.
+#[test]
+fn a_capture_carries_the_cell_styles_over_the_wire() {
+    let (_dir, client) = server_and_client();
+    client
+        .start_session(
+            "st",
+            std::path::Path::new("/tmp"),
+            "/bin/sh",
+            &["-c".into(), "printf '\\033[2mfaint\\033[0m plain'; sleep 5".into()],
+            &[],
+            80,
+            24,
+        )
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        let (text, style) = client.capture_styled("st", 5).unwrap();
+        if text.contains("faint plain") {
+            let style = style.expect("a current daemon always sends the styles");
+            let row = style.lines().find(|l| l.contains('d')).expect("a faint row");
+            assert_eq!(row, "ddddd .....");
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "never painted: {text:?}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    client.kill("st").unwrap();
+}
+
+/// The plain capture must leave the style map off the wire. It is a second
+/// string the size of the capture, and the two captures on the notifier's 2 s
+/// tick (50 rows, per run and per extra tab) discard it, so sending it unasked
+/// roughly doubled the app's highest-frequency IPC payload for nothing.
+#[test]
+fn a_plain_capture_leaves_the_style_map_off_the_wire() {
+    let (dir, client) = server_and_client();
+    client
+        .start_session(
+            "p",
+            std::path::Path::new("/tmp"),
+            "/bin/sh",
+            &["-c".into(), "printf hi; sleep 5".into()],
+            &[],
+            80,
+            24,
+        )
+        .unwrap();
+
+    let sock = dir.path().join("termd.sock");
+    let mut write = std::os::unix::net::UnixStream::connect(&sock).unwrap();
+    let mut read = write.try_clone().unwrap();
+    let mut style_of = |style: bool| {
+        let msg = ClientMsg::Capture { id: "p".into(), lines: 5, style, seq: 1 };
+        write_frame(&mut write, &encode_json(&msg)).unwrap();
+        match decode_server(&read_frame(&mut read).unwrap()).unwrap() {
+            ServerFrame::Msg(ServerMsg::Captured { style, .. }) => style,
+            other => panic!("wrong reply: {other:?}"),
+        }
+    };
+    assert!(style_of(false).is_none(), "a plain capture must not carry the map");
+    assert!(style_of(true).is_some(), "and asking for it must still get it");
 }
 
 /// The Enter that `send_text` appends has to reach the session as input of its

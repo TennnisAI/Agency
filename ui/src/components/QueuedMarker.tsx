@@ -47,6 +47,19 @@ export default function QueuedMarker({ run }: { run: RunInfo }) {
     setOpen(true);
   };
 
+  // The row clamps the prompt to three lines, so what is waiting is
+  // recognisable but not readable: the merge-conflict prompt names every
+  // unmerged file and runs well past that. This hands over the whole of it, to
+  // paste into the agent by hand rather than waiting for the queue to reach it.
+  const copy = async (m: QueuedMessage) => {
+    try {
+      await navigator.clipboard.writeText(m.text);
+      toastInfo("Prompt copied");
+    } catch (e) {
+      toastError(e, "Couldn't copy the prompt");
+    }
+  };
+
   const drop = async (m: QueuedMessage) => {
     let dropped = false;
     try {
@@ -94,11 +107,18 @@ export default function QueuedMarker({ run }: { run: RunInfo }) {
                   <span className="queued-origin">{m.origin}</span>
                   <span className="queued-body">{m.text}</span>
                 </div>
-                <button
-                  className="queued-drop"
-                  title="Drop this message. Nothing is typed into the agent."
-                  onClick={() => drop(m)}
-                >Drop</button>
+                <div className="queued-actions">
+                  <button
+                    className="queued-act queued-copy"
+                    title="Copy the whole prompt, to paste into the agent yourself"
+                    onClick={() => copy(m)}
+                  >Copy</button>
+                  <button
+                    className="queued-act queued-drop"
+                    title="Drop this message. Nothing is typed into the agent."
+                    onClick={() => drop(m)}
+                  >Drop</button>
+                </div>
               </div>
             ))}
           </div>

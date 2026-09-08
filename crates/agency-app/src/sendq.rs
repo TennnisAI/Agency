@@ -44,13 +44,58 @@ pub const MAX_HOLD_MS: i64 = 5 * 60 * 1_000;
 pub const MAX_PENDING: usize = 8;
 
 /// How far up from the bottom of the pane [`prompt_looks_empty`] looks for the
-/// live prompt line. Deep enough to clear the hint lines agents draw under
-/// their prompt box, shallow enough that a `>` left in scrollback cannot pass
-/// for the prompt itself.
-const PROMPT_SCAN_LINES: usize = 8;
+/// live prompt line, counted in non-blank rows.
+///
+/// Deep enough to clear the status rows agents draw *under* their prompt box:
+/// observed 2026-09-08, cursor-agent draws two of them (`Auto · 21.2%   Run
+/// Everything`, then the cwd and branch), which puts its prompt line third from
+/// the bottom.
+///
+/// It was 8, which left five rows of the agent's own *output* inside the
+/// window. That was survivable while a marker row could only answer through the
+/// exact [`PROMPT_PLACEHOLDERS`] prose; with the all-faint rule in
+/// [`agent_painted`] an ordinary dim trace line beginning `→` now answers
+/// "empty" instead, and the scan returns on the first marker row it reaches.
+/// The exposed agents are the ones that put no marker on the row their draft
+/// lands on (opencode, crush, pi): the scan walks past the draft and answers
+/// from a line further up, and the queued text is typed over a prompt the human
+/// is half-way through. Keeping the window to the agent's own chrome is what
+/// stops it.
+const PROMPT_SCAN_LINES: usize = 4;
 
 /// Prompt markers agents draw at the start of their input line.
-const PROMPT_MARKERS: [char; 3] = ['>', '❯', '›'];
+///
+/// → is cursor-agent's. Without it the scan walked past cursor's prompt line
+/// entirely and answered "cannot tell" for every pane it ever drew, so a draft
+/// in a cursor tab could not be lifted by a pane read at all (AGE-199).
+const PROMPT_MARKERS: [char; 4] = ['>', '❯', '›', '→'];
+
+/// Placeholder prose an agent writes *inside* its own empty input line, which
+/// is otherwise indistinguishable from a half-typed draft: the marker is there
+/// and there is text after it.
+///
+/// cursor-agent draws `→ Plan, search, build anything` on a fresh session and
+/// `→ Add a follow-up` after a turn (both observed; the second is the pane in
+/// AGE-199's screenshot). A merge conflict handed to that tab was held the full
+/// [`MAX_HOLD_MS`] and then appended, under a marker saying the agent was
+/// mid-turn, while it sat at an empty prompt with nothing to finish.
+///
+/// The *fallback*. [`prompt_looks_empty`] prefers the cell styles, which say
+/// the same thing without knowing any prose; this catches the case where the
+/// daemon is too old to send them, or an agent paints its hint in plain cells.
+///
+/// An exact-match allowlist, not a heuristic: this is the one function allowed
+/// to lift a draft block, and the cost of a wrong "empty" is typing over a
+/// prompt the human is half-way through. A placeholder that changes with the
+/// CLI simply stops matching, which puts that tab back to holding, which is the
+/// safe direction.
+///
+/// Each is paired with the marker it was seen on, so it counts as empty only in
+/// the agent that draws it. Matched against every marker, a human in a `>` tab
+/// whose whole draft is "Add a follow-up" reads as an empty prompt, and the
+/// queued text is typed onto their line and submitted with it.
+const PROMPT_PLACEHOLDERS: [(char, &str); 2] =
+    [('→', "Add a follow-up"), ('→', "Plan, search, build anything")];
 
 /// One message waiting for a session.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -310,22 +355,122 @@ fn skip_escape(data: &[u8], start: usize) -> usize {
 
 /// Whether the pane's live prompt line is visibly empty.
 ///
-/// True only when a prompt marker is found with nothing after it. Everything
-/// else — text after the marker, no marker in range, a pane we cannot parse —
-/// is "cannot tell", which holds. That asymmetry is the point: this may only
-/// clear a draft block, never create one, so a wrong answer costs a few seconds
-/// of delay rather than a clobbered prompt.
-pub fn prompt_looks_empty(pane: &str) -> bool {
-    for line in
-        pane.lines().rev().map(strip_frame).filter(|l| !l.is_empty()).take(PROMPT_SCAN_LINES)
-    {
+/// True only when a prompt marker is found and what follows it is not the
+/// human's: nothing at all, prose the agent painted (see [`agent_painted`]), or
+/// a known [`PROMPT_PLACEHOLDERS`] string. Everything else — text after the
+/// marker, no marker in range, a pane we cannot parse — is "cannot tell", which
+/// holds. That asymmetry is the point: this may only clear a draft block, never
+/// create one, so a wrong answer costs a few seconds of delay rather than a
+/// clobbered prompt.
+///
+/// `style` is the cell-style map from `Emulator::capture_styled`, or None from
+/// a daemon that predates it.
+pub fn prompt_looks_empty(pane: &str, style: Option<&str>) -> bool {
+    let styles: Vec<&str> = style.map(|s| s.lines().collect()).unwrap_or_default();
+    let rows: Vec<&str> = pane.lines().collect();
+    let mut scanned = 0;
+    for (i, raw) in rows.iter().enumerate().rev() {
+        let line = strip_frame(raw);
+        if line.is_empty() {
+            continue;
+        }
+        scanned += 1;
+        if scanned > PROMPT_SCAN_LINES {
+            break;
+        }
         let mut chars = line.chars();
         let Some(first) = chars.next() else { continue };
-        if PROMPT_MARKERS.contains(&first) {
-            return chars.as_str().trim().is_empty();
+        if !PROMPT_MARKERS.contains(&first) {
+            continue;
         }
+        let rest = chars.as_str().trim();
+        if rest.is_empty() {
+            return true;
+        }
+        let style_row = styles.get(i).copied().unwrap_or("");
+        let painted = match (column_of(raw, line), column_of(raw, rest)) {
+            (Some(from), Some(at)) => agent_painted(style_row, from, at + rest.chars().count()),
+            _ => false,
+        };
+        return painted || PROMPT_PLACEHOLDERS.contains(&(first, rest));
     }
     false
+}
+
+/// Whether columns `from..to` of one row were drawn by the agent rather than
+/// typed by the human, going on how they were drawn rather than what they say.
+///
+/// An agent draws the hint sitting in its empty input line faint and the
+/// human's keystrokes plainly, so "all faint" is the same judgement
+/// [`PROMPT_PLACEHOLDERS`] makes without having to know the prose.
+/// Observed 2026-09-08 against a real cursor-agent pty: the placeholder row
+/// `→ Plan, search, build anything` comes back with SGR 2 on the arrow and on
+/// every letter, and the same row holding the draft `→ half a thou` comes back
+/// with no attributes at all.
+///
+/// The one exception is a single inverse cell. cursor-agent hides the hardware
+/// cursor and paints its own block over the hint's first character, so `P` in
+/// that row arrives INVERSE while its neighbours are DIM; requiring faintness
+/// with no exceptions would call that row plain and hold the message the full
+/// [`MAX_HOLD_MS`], which is the bug this is here to fix. Exactly one, though:
+/// a *run* of inverse cells is a selection, or the block cursor sitting on a
+/// draft short enough to fit under it, and either read as empty is the human's
+/// own line typed over.
+///
+/// A style row that does not reach `to` decides nothing and answers false.
+/// Today the emulator renders text and styles in lockstep, but the client takes
+/// whatever the daemon sends: on a short row the span would be the visible
+/// *prefix* of the line, and a dim marker followed by the human's plainly drawn
+/// draft would read as empty precisely because the draft was cut off.
+///
+/// The known way to be wrong is an agent that draws the human's draft faint
+/// too, which would read as empty and be typed over. cursor-agent and claude
+/// were checked at a real pty and neither does; opencode, crush and pi were
+/// not. Those three put no marker on the row their draft lands on, so the scan
+/// walks past it, which means this can still be asked about a row *above* the
+/// draft; [`PROMPT_SCAN_LINES`] is what keeps that row inside the agent's own
+/// chrome rather than out in its output. The symptom, if one appears, is the
+/// clobbered prompt this module exists to prevent, so a new agent's empty and
+/// typed-in prompt rows are worth a look before trusting this.
+fn agent_painted(style_row: &str, from: usize, to: usize) -> bool {
+    let cells: Vec<char> = style_row.chars().collect();
+    if to > cells.len() {
+        return false;
+    }
+    let Some(span) = cells.get(from..to) else { return false };
+    let mut faint = false;
+    let mut inverse = 0;
+    for c in span {
+        match c {
+            'd' => faint = true,
+            // A gap.
+            ' ' => {}
+            // The block cursor the agent drew over its own hint.
+            'i' => {
+                inverse += 1;
+                if inverse > 1 {
+                    return false;
+                }
+            }
+            // A plainly drawn cell: the human typed this.
+            _ => return false,
+        }
+    }
+    faint
+}
+
+/// The column `inner`, a slice of `outer`, starts at. Used to line a row of
+/// text up with its row of cell styles, which is indexed by column.
+///
+/// None if `inner` is not in fact a slice of `outer`. Every caller passes one
+/// (`strip_frame`, `trim` and `chars().as_str()` all return subslices), but the
+/// subtraction below is unchecked pointer arithmetic: an owned or reallocated
+/// string underflows it, and the enormous offset that comes back panics on the
+/// slice, inside the notifier's 2 s tick. The caller reads None as "cannot
+/// tell", which holds the message.
+fn column_of(outer: &str, inner: &str) -> Option<usize> {
+    let offset = (inner.as_ptr() as usize).checked_sub(outer.as_ptr() as usize)?;
+    outer.get(..offset).map(|s| s.chars().count())
 }
 
 /// A pane line with the box drawing agents wrap their prompt in taken off, so
@@ -621,26 +766,193 @@ mod tests {
         let boxed = |line: &str| {
             format!("thinking about the tests…\n╭──────────────╮\n│ {line} │\n╰──────────────╯\n  ? for shortcuts\n")
         };
-        assert!(prompt_looks_empty(&boxed(">           ")));
-        assert!(prompt_looks_empty(&boxed("❯           ")));
-        assert!(!prompt_looks_empty(&boxed("> half a tho")), "a draft must keep the block");
+        assert!(prompt_looks_empty(&boxed(">           "), None));
+        assert!(prompt_looks_empty(&boxed("❯           "), None));
+        assert!(!prompt_looks_empty(&boxed("> half a tho"), None), "a draft must keep the block");
     }
 
     #[test]
     fn a_pane_with_no_prompt_in_range_cannot_tell() {
-        assert!(!prompt_looks_empty(""));
-        assert!(!prompt_looks_empty("Running tests…\nok 1\nok 2\n"));
+        assert!(!prompt_looks_empty("", None));
+        assert!(!prompt_looks_empty("Running tests…\nok 1\nok 2\n", None));
         // A `>` far enough up is scrollback, not the live prompt.
         let mut pane = String::from("> \n");
         for i in 0..PROMPT_SCAN_LINES {
             pane.push_str(&format!("output line {i}\n"));
         }
-        assert!(!prompt_looks_empty(&pane), "an old prompt in scrollback must not qualify");
+        assert!(!prompt_looks_empty(&pane, None), "an old prompt in scrollback must not qualify");
     }
 
     #[test]
     fn a_quoted_line_in_output_does_not_read_as_an_empty_prompt() {
-        assert!(!prompt_looks_empty("summary:\n> the fix landed\n"));
+        assert!(!prompt_looks_empty("summary:\n> the fix landed\n", None));
+    }
+
+    /// cursor-agent's prompt line, as it draws it: a → rather than a >, and its
+    /// own placeholder prose sitting where an empty line would be. Neither the
+    /// marker nor the placeholder was known, so a draft in a cursor tab was
+    /// never lifted by a pane read and every hand-off to it waited out
+    /// MAX_HOLD_MS (AGE-199).
+    #[test]
+    fn cursor_agents_empty_prompt_line_reads_as_empty() {
+        let pane = |line: &str| {
+            format!(
+                "Updated agency.webp to the released site shot.\n  {line}\n                   Auto · 21.2%   Run Everything\n  ~/Dev/site · agent/overhaul\n"
+            )
+        };
+        assert!(prompt_looks_empty(&pane("→ Add a follow-up"), None));
+        assert!(prompt_looks_empty(&pane("→ Plan, search, build anything"), None));
+        assert!(prompt_looks_empty(&pane("→"), None));
+        assert!(
+            !prompt_looks_empty(&pane("→ half a thou"), None),
+            "a real draft on cursor's line must still keep the block"
+        );
+    }
+
+    /// The placeholders are matched whole, not as a prefix: a draft that starts
+    /// with one is still a draft, and a line of output that merely contains one
+    /// is not the prompt.
+    #[test]
+    fn a_placeholder_only_counts_as_the_whole_prompt_line() {
+        assert!(!prompt_looks_empty("→ Add a follow-up to the changelog\n", None));
+        assert!(!prompt_looks_empty("> Add a follow-up, she said\n", None));
+    }
+
+    /// A placeholder counts only under the marker it was observed on. The prose
+    /// is ordinary enough to be someone's whole prompt, and in a `>` tab nobody
+    /// draws it, so reading it as empty would clear the draft block and type the
+    /// queued text onto a line the human is still writing.
+    #[test]
+    fn a_placeholder_does_not_read_as_empty_under_another_agents_marker() {
+        assert!(!prompt_looks_empty("> Add a follow-up\n", None));
+        assert!(!prompt_looks_empty("❯ Plan, search, build anything\n", None));
+        assert!(prompt_looks_empty("> \n", None), "a bare marker is still empty in any agent");
+    }
+
+    /// The rows a real cursor-agent pty produced on 2026-09-08, cell styles and
+    /// all: its placeholder line, and the same line holding a draft. The styles
+    /// alone separate them, so a reworded hint is still read as empty — which
+    /// is the whole reason they are on the wire.
+    #[test]
+    fn a_faintly_drawn_prompt_line_reads_as_empty_whatever_it_says() {
+        let hint = "  \u{2192} Plan, search, build anything";
+        let hint_style = "  d idddd ddddddd ddddd dddddddd";
+        let draft = "  \u{2192} half a thou";
+        let draft_style = "  . .... . ....";
+        aligned(hint, hint_style);
+        aligned(draft, draft_style);
+
+        assert!(prompt_looks_empty(hint, Some(hint_style)));
+        assert!(
+            !prompt_looks_empty(draft, Some(draft_style)),
+            "a plainly drawn line is the human's, whatever it says"
+        );
+
+        // The prose is not in PROMPT_PLACEHOLDERS and never has to be.
+        let reworded = "  \u{2192} Ask for anything";
+        let reworded_style = "  d iddddddddddddddd";
+        aligned(reworded, reworded_style);
+        assert!(prompt_looks_empty(reworded, Some(reworded_style)));
+        assert!(
+            !prompt_looks_empty(reworded, None),
+            "without the styles the same row is a draft, and holds"
+        );
+    }
+
+    /// The style map is indexed by column, so it has to survive the box drawing
+    /// `strip_frame` takes off the text. An off-by-one here reads the wrong
+    /// cells and can call a draft empty.
+    #[test]
+    fn the_style_map_stays_aligned_through_a_boxed_prompt() {
+        let text = "  \u{2502} \u{2192} Plan, search  \u{2502}";
+        let style = "  . d idddd dddddd  .";
+        aligned(text, style);
+        assert!(prompt_looks_empty(text, Some(style)));
+
+        let typed_style = "  . . ..... ......  .";
+        aligned(text, typed_style);
+        assert!(!prompt_looks_empty(text, Some(typed_style)), "same glyphs, typed by a human");
+    }
+
+    /// Both style fixtures above were a cell longer than the row they claimed
+    /// to describe (22 against 21, 19 against 20), so the test that says an
+    /// off-by-one reads the wrong cells passed only because every span in it
+    /// was uniform. Nothing checks a fixture but the fixture's author.
+    fn aligned(text: &str, style: &str) {
+        assert_eq!(
+            text.chars().count(),
+            style.chars().count(),
+            "the style map is indexed by column, so the fixture has to be one cell per glyph"
+        );
+    }
+
+    /// A line of the agent's own output that happens to begin with a prompt
+    /// marker, drawn dim like the rest of a tool trace, is not the prompt line.
+    /// Widening the markers to include → (AGE-199) put a very common trace
+    /// idiom in range of a scan that returns on the first marker it finds, and
+    /// the all-faint rule answers "empty" for it. Only the scan window keeps it
+    /// out: the two panes below differ in nothing but how far up the line sits.
+    #[test]
+    fn a_dim_trace_line_further_up_the_pane_is_not_the_prompt() {
+        let pane = "\u{2192} read\nout\nout\nout\nhalf a thou\n";
+        let style = "dddddd\n...\n...\n...\n...........\n";
+        for (text, cells) in pane.lines().zip(style.lines()) {
+            aligned(text, cells);
+        }
+        assert!(!prompt_looks_empty(pane, Some(style)));
+        assert!(
+            prompt_looks_empty("\u{2192} read\nout\n", Some("dddddd\n...\n")),
+            "the same row inside the window is the prompt, and answers"
+        );
+    }
+
+    /// `column_of` is unchecked pointer arithmetic on the assumption that the
+    /// inner string is a slice of the outer one. When that stopped being true
+    /// the subtraction underflowed, and the enormous offset it returned then
+    /// panicked on the slice below, inside the notifier's 2 s tick.
+    #[test]
+    fn a_column_from_outside_the_row_is_not_a_column() {
+        let row = "  \u{2192} hi";
+        assert_eq!(column_of(row, &row[2..]), Some(2), "the marker is the third column");
+        assert_eq!(column_of(&row[2..], row), None, "an inner string that starts earlier");
+        assert_eq!(column_of(&row[..2], &row[5..]), None, "one that ends past the row");
+    }
+
+    /// The block cursor is one cell. A whole row of inverse cells is the human
+    /// selecting their draft, or the cursor sitting on a draft short enough to
+    /// fit under it, and calling that empty types the queued text onto it.
+    #[test]
+    fn a_run_of_inverse_cells_is_a_draft_not_a_block_cursor() {
+        let text = "\u{2192} hi";
+        aligned(text, "d ii");
+        assert!(!prompt_looks_empty(text, Some("d ii")), "two inverse cells are not a cursor");
+        assert!(prompt_looks_empty(text, Some("d id")), "one still is");
+    }
+
+    /// A style row shorter than the text row describes only the line's visible
+    /// prefix, and reading the span it does cover would call a dim marker
+    /// followed by the human's plainly drawn draft empty, on the strength of
+    /// the part that was cut off. The emulator sends them in lockstep; the
+    /// client takes what the daemon gives it.
+    #[test]
+    fn a_style_row_that_stops_short_of_the_draft_decides_nothing() {
+        let text = "\u{2192} Ask for anything";
+        let whole = "didddddddddddddddd";
+        aligned(text, whole);
+        assert!(!prompt_looks_empty(text, Some("diddd")), "a prefix of the styles decides nothing");
+        assert!(prompt_looks_empty(text, Some(whole)), "the whole row answers");
+    }
+
+    /// A style map that does not reach the prompt line — a short row, or a
+    /// daemon too old to send one — decides nothing on its own and leaves the
+    /// prose allowlist to answer.
+    #[test]
+    fn a_missing_style_row_falls_back_to_the_allowlist() {
+        let pane = "\u{2192} Add a follow-up\n";
+        assert!(prompt_looks_empty(pane, None));
+        assert!(prompt_looks_empty(pane, Some("")));
+        assert!(prompt_looks_empty(pane, Some(".")), "a truncated row must not be read past");
+        assert!(!prompt_looks_empty("\u{2192} Ask for anything\n", Some("")));
     }
 
     #[test]

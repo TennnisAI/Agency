@@ -1371,20 +1371,6 @@ pub fn reconcile(
             continue;
         }
         reg.ensure_issue_seq_at_least(project_id, f.seq)?;
-        let (created_at, updated_at) = if f.created_at == 0 || f.updated_at == 0 {
-            let mtime = std::fs::metadata(issue_path(root, &f.key))
-                .ok()
-                .and_then(|m| m.modified().ok())
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_secs() as i64)
-                .unwrap_or(0);
-            (
-                if f.created_at == 0 { mtime } else { f.created_at },
-                if f.updated_at == 0 { mtime } else { f.updated_at },
-            )
-        } else {
-            (f.created_at, f.updated_at)
-        };
         let prev = existing.get(&f.seq);
         // Identity comes from the file when the file carries one — that is what
         // `uid` is for, and it is what lets an issue copied to another machine
@@ -1437,6 +1423,29 @@ pub fn reconcile(
                 None => log::warn!("could not place a uid in {}", f.key),
             }
         }
+        // After the backfill, not before it: a file with no `created`/`updated`
+        // of its own falls back to its mtime, and the backfill above rewrites
+        // that same file. Read first, the row kept the mtime the file had
+        // *before* the uid was spliced in, so the next pass read a newer one
+        // and wrote the row again for nothing. Only when the two writes fell
+        // either side of a whole second, which is why it showed up as one
+        // flaky test in six full-suite runs rather than every time
+        // (`reconcile_backfills_a_uid_and_converges`, expecting the second
+        // pass to be a no-op and getting `updated: 1`).
+        let (created_at, updated_at) = if f.created_at == 0 || f.updated_at == 0 {
+            let mtime = std::fs::metadata(issue_path(root, &f.key))
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            (
+                if f.created_at == 0 { mtime } else { f.created_at },
+                if f.updated_at == 0 { mtime } else { f.updated_at },
+            )
+        } else {
+            (f.created_at, f.updated_at)
+        };
         let issue = issue_from_file(f, id, project_id, created_at, updated_at);
         match prev {
             None => {
@@ -2012,11 +2021,38 @@ owner: nic\nepic: platform\n---\n# Five\n\nBody with an ![](assets/a.png).\n\
         let root = root_dir.path();
 
         write_issue(root, "AGE-7", "todo", "Seven");
+        // Backdate it so the mtime the reconcile reads and the one its backfill
+        // write leaves behind cannot coincide. Left to the clock they land in
+        // the same second nearly every time, which is what made the stale-row
+        // bug below a rare flake instead of a failing test.
+        std::fs::File::options()
+            .write(true)
+            .open(issue_path(root, "AGE-7"))
+            .unwrap()
+            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000))
+            .unwrap();
+
         let s = reconcile(&reg, "p1", "AGE", root).unwrap();
         assert_eq!(s.backfilled, 1);
         let id = reg.list_issues("p1").unwrap()[0].id.clone();
         let on_disk = std::fs::read_to_string(issue_path(root, "AGE-7")).unwrap();
         assert!(on_disk.contains(&format!("uid: {id}\n")), "uid not written: {on_disk}");
+
+        // The row's timestamps have to describe the file the backfill left
+        // behind, not the one it read: this file carries no `created`/`updated`
+        // of its own, so they come from its mtime, and the backfill rewrites
+        // it. Taken before that write the row held a stale second, and the next
+        // pass rewrote it for nothing. Asserting the second pass is a no-op
+        // catches that only when the two writes straddle a second boundary,
+        // which made it a flaky test rather than a failing one.
+        let mtime = std::fs::metadata(issue_path(root, "AGE-7"))
+            .and_then(|m| m.modified())
+            .unwrap()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let row = reg.list_issues("p1").unwrap().remove(0);
+        assert_eq!((row.created_at, row.updated_at), (mtime, mtime), "row predates its own file");
 
         // Second pass has nothing to write: the backfill is a one-time,
         // converging write, not churn on every issue-touching call.

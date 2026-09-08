@@ -478,6 +478,25 @@ export default function MergeModal({
   const sendLabel = newAgent ? "Start a new agent" : "Fix with agent";
   const sendingLabel = newAgent ? "Starting…" : "Sending…";
   const targetLabel = targets.find((t) => t.value === target)?.label ?? "this agent";
+  // A tab created a moment ago can open on the agent's own first-run gate
+  // rather than on the prompt it was launched with. All three of the agents
+  // checked ask before reading their argv: cursor-agent draws "Workspace Trust
+  // Required", copilot "Do you trust the files in this folder?", and Claude
+  // Code "Is this a project you created or one you trust?" (verified in a
+  // fresh worktree against cursor-agent 2026.09.02, copilot 1.0.78 and Claude
+  // Code). So it is the agent's habit, not one CLI's quirk. Answering is one
+  // keystroke, and cursor's answer then covers the whole project tree,
+  // worktrees included. But this window said "Started X on it" and sent you
+  // off to watch an agent that was sitting on a question, which is the one
+  // case where "close and watch" is the wrong advice (AGE-199).
+  //
+  // Only for a tab this window opened: anything already in the strip is long
+  // past its own first run.
+  const firstRunNote = spawned
+    ? "A tab this new can open on the agent's own first-run question, like whether it "
+      + "trusts this folder; it waits there until you answer, so look at the tab if "
+      + "nothing starts. "
+    : "";
   // The same sentences the tile and rail teardown dialogs use, so the merge
   // window and the ✕ menu describe one action rather than two that sound
   // different. `me` is missing only for the frame between a teardown landing
@@ -838,6 +857,7 @@ export default function MergeModal({
                         : queued
                           ? `Queued for ${targetLabel}, with git's status of the merge. That agent isn't free yet (mid-turn, or with something half-typed on its prompt line), so the prompt goes in as soon as it is. `
                           : `Sent to ${targetLabel}, with git's status of the merge. `}
+                    {firstRunNote}
                     Close this window to watch it work; the merge is in the project's checkout, not
                     the agent's worktree, so the prompt points git there. Reopen this window when
                     it's done, or leave it open: it rechecks git every few seconds either way.

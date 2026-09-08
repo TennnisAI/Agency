@@ -34,7 +34,14 @@ tauri-plugin-notification = "2"
 # dialogs work before/without the Tauri event loop, which the plugin's
 # blocking_show (main-thread dispatch) does not — needed for the startup
 # failure dialog shown from setup().
-rfd = "0.16"
+# `default-features = false`: rfd's defaults turn on `xdg-portal`, while
+# tauri-plugin-dialog's defaults turn on `gtk3`, and rfd's build script
+# refuses both at once ("You can't enable both `gtk3` and `xdg-portal`
+# features at once") — so on Linux the two together fail to build before
+# reaching a line of our code. The only use here is one synchronous
+# MessageDialog (`lib.rs`, the setup-failure fallback), which needs none of
+# the defaults, so dropping them leaves gtk3 as the single backend.
+rfd = { version = "0.16", default-features = false }
 # Direct dep on the same backend tauri-plugin-notification uses, only to call
 # set_application() on macOS so notifications carry the Agency icon.
 notify-rust = "4"

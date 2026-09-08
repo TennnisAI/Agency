@@ -479,14 +479,16 @@ export default function MergeModal({
   const sendingLabel = newAgent ? "Starting…" : "Sending…";
   const targetLabel = targets.find((t) => t.value === target)?.label ?? "this agent";
   // A tab created a moment ago can open on the agent's own first-run gate
-  // rather than on the prompt it was launched with. cursor-agent draws
-  // "Workspace Trust Required" and copilot "Do you trust the files in this
-  // folder?" before either of them reads its argv (verified against
-  // cursor-agent 2026.09.02 and copilot 1.0.78 in a fresh worktree). Answering
-  // is one keystroke, and cursor's answer covers the whole project tree
-  // afterwards, worktrees included. But this window said "Started X on it" and
-  // sent you off to watch an agent that was sitting on a question, which is
-  // the one case where "close and watch" is the wrong advice (AGE-199).
+  // rather than on the prompt it was launched with. All three of the agents
+  // checked ask before reading their argv: cursor-agent draws "Workspace Trust
+  // Required", copilot "Do you trust the files in this folder?", and Claude
+  // Code "Is this a project you created or one you trust?" (verified in a
+  // fresh worktree against cursor-agent 2026.09.02, copilot 1.0.78 and Claude
+  // Code). So it is the agent's habit, not one CLI's quirk. Answering is one
+  // keystroke, and cursor's answer then covers the whole project tree,
+  // worktrees included. But this window said "Started X on it" and sent you
+  // off to watch an agent that was sitting on a question, which is the one
+  // case where "close and watch" is the wrong advice (AGE-199).
   //
   // Only for a tab this window opened: anything already in the strip is long
   // past its own first run.

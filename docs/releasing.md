@@ -4,6 +4,33 @@ Maintainer-only. Cutting a signed, notarized macOS build and publishing it.
 Split out of the README, which had grown to more signing instructions than
 product description.
 
+## Bumping the version
+
+There is no single source of truth for the version, and nothing in CI compares
+these files, so bump all four by hand before tagging:
+
+| File | Why |
+| --- | --- |
+| `crates/agency-app/tauri.conf.json` | names the DMG and the bundle's `CFBundleShortVersionString` |
+| `crates/agency-app/Cargo.toml` | `AppState::version()`, which the update check compares to the latest release tag |
+| `crates/agency-core/Cargo.toml` | the daemon's own `CARGO_PKG_VERSION`, reported over the preview RPC |
+| `ui/package.json` | cosmetic, but drifts silently if skipped |
+
+Then `cargo update -p agency-core -p agency-app` to move `Cargo.lock`, and
+`cargo test -p agency-core -p agency-app`: `tests/smoke.rs` fails when the crate
+version and `tauri.conf.json` have drifted apart, which is the pair that
+actually matters.
+
+The site carries the version twice, and one of them is a **hard-coded DMG
+filename**: `site/download.html` links
+`releases/latest/download/Agency_<version>_aarch64.dmg`, and `site/index.html`
+shows `v<version>` in the hero. That link 404s the moment the new release
+becomes `latest` unless the filename has been bumped, so keep the site bump in
+its own commit and push it to `main` **after** publishing the release, not
+before: `deploy-site.yml` fires on every push to `main`, and a site that names a
+DMG the published release does not have yet is a broken download button for the
+length of the build.
+
 ## Automated (the normal path)
 
 `.github/workflows/release.yml` builds, signs, notarizes, and attaches a DMG to

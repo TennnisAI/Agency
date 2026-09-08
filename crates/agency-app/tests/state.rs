@@ -7,7 +7,7 @@ mod common;
 fn new_opens_clean_and_version_holds() {
     let dir = tempfile::tempdir().unwrap();
     let state = common::state(&dir);
-    assert_eq!(AppState::version(), "0.1.0");
+    assert!(!AppState::version().is_empty());
     // Nothing is auto-seeded: agents come from onboarding, terminals aren't
     // profiles. Fresh-DB profile behavior is covered in tests/profiles.rs.
     assert!(state.profile_names().unwrap().is_empty());

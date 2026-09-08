@@ -20,6 +20,18 @@ on:
         description: "Formats to build (comma separated: deb,rpm,appimage)"
         required: false
         default: "deb,rpm,appimage"
+  # Also on a PR that touches the packaging itself. Two reasons. It is the only
+  # way to get artifacts before this file reaches the default branch, since
+  # workflow_dispatch refuses to run a workflow main has never seen ("not found
+  # on the default branch"). And it is worth keeping afterwards: a change to the
+  # bundler config or the build script is exactly when a package quietly stops
+  # being installable, and the path filter keeps it off every other PR.
+  pull_request:
+    paths:
+      - ".github/workflows/linux-packages.yml"
+      - "scripts/release-linux.sh"
+      - "crates/agency-app/tauri.conf.json"
+      - "crates/agency-app/build-termd.sh"
 
 jobs:
   package:

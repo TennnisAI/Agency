@@ -35,9 +35,10 @@ out to:
 - `tray.rs`'s only macOS-specific line is `set_title`, the count badge beside
   the menu-bar icon.
 
-**agency-app compiles on Linux.** Checked 2026-09-08 in a Debian container
-(`cargo check -p agency-app`, rustc 1.98, aarch64): it needed **no source
-changes at all**, and exactly one dependency change.
+**agency-app compiles on Linux.** Found 2026-09-08 in a Debian container and
+confirmed the same day by the `linux-check` job on an x86_64 CI runner (PR #1),
+which now blocks like any other job. It needed **no source changes at all**,
+and exactly one dependency change.
 
 That change is worth reading, because it is why this went untested for so long.
 `agency-app` depended on `rfd` directly with default features, which turn on

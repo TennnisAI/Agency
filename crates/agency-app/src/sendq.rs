@@ -50,7 +50,28 @@ pub const MAX_PENDING: usize = 8;
 const PROMPT_SCAN_LINES: usize = 8;
 
 /// Prompt markers agents draw at the start of their input line.
-const PROMPT_MARKERS: [char; 3] = ['>', '❯', '›'];
+///
+/// → is cursor-agent's. Without it the scan walked past cursor's prompt line
+/// entirely and answered "cannot tell" for every pane it ever drew, so a draft
+/// in a cursor tab could not be lifted by a pane read at all (AGE-199).
+const PROMPT_MARKERS: [char; 4] = ['>', '❯', '›', '→'];
+
+/// Placeholder prose an agent writes *inside* its own empty input line, which
+/// is otherwise indistinguishable from a half-typed draft: the marker is there
+/// and there is text after it.
+///
+/// cursor-agent draws `→ Plan, search, build anything` on a fresh session and
+/// `→ Add a follow-up` after a turn (both observed; the second is the pane in
+/// AGE-199's screenshot). A merge conflict handed to that tab was held the full
+/// [`MAX_HOLD_MS`] and then appended, under a marker saying the agent was
+/// mid-turn, while it sat at an empty prompt with nothing to finish.
+///
+/// An exact-match allowlist, not a heuristic: this is the one function allowed
+/// to lift a draft block, and the cost of a wrong "empty" is typing over a
+/// prompt the human is half-way through. A placeholder that changes with the
+/// CLI simply stops matching, which puts that tab back to holding, which is the
+/// safe direction.
+const PROMPT_PLACEHOLDERS: [&str; 2] = ["Add a follow-up", "Plan, search, build anything"];
 
 /// One message waiting for a session.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -310,7 +331,8 @@ fn skip_escape(data: &[u8], start: usize) -> usize {
 
 /// Whether the pane's live prompt line is visibly empty.
 ///
-/// True only when a prompt marker is found with nothing after it. Everything
+/// True only when a prompt marker is found with nothing after it, or with one
+/// of the [`PROMPT_PLACEHOLDERS`] an agent draws in place of nothing. Everything
 /// else — text after the marker, no marker in range, a pane we cannot parse —
 /// is "cannot tell", which holds. That asymmetry is the point: this may only
 /// clear a draft block, never create one, so a wrong answer costs a few seconds
@@ -322,7 +344,8 @@ pub fn prompt_looks_empty(pane: &str) -> bool {
         let mut chars = line.chars();
         let Some(first) = chars.next() else { continue };
         if PROMPT_MARKERS.contains(&first) {
-            return chars.as_str().trim().is_empty();
+            let rest = chars.as_str().trim();
+            return rest.is_empty() || PROMPT_PLACEHOLDERS.contains(&rest);
         }
     }
     false
@@ -641,6 +664,36 @@ mod tests {
     #[test]
     fn a_quoted_line_in_output_does_not_read_as_an_empty_prompt() {
         assert!(!prompt_looks_empty("summary:\n> the fix landed\n"));
+    }
+
+    /// cursor-agent's prompt line, as it draws it: a → rather than a >, and its
+    /// own placeholder prose sitting where an empty line would be. Neither the
+    /// marker nor the placeholder was known, so a draft in a cursor tab was
+    /// never lifted by a pane read and every hand-off to it waited out
+    /// MAX_HOLD_MS (AGE-199).
+    #[test]
+    fn cursor_agents_empty_prompt_line_reads_as_empty() {
+        let pane = |line: &str| {
+            format!(
+                "Updated agency.webp to the released site shot.\n  {line}\n                   Auto · 21.2%   Run Everything\n  ~/Dev/site · agent/overhaul\n"
+            )
+        };
+        assert!(prompt_looks_empty(&pane("→ Add a follow-up")));
+        assert!(prompt_looks_empty(&pane("→ Plan, search, build anything")));
+        assert!(prompt_looks_empty(&pane("→")));
+        assert!(
+            !prompt_looks_empty(&pane("→ half a thou")),
+            "a real draft on cursor's line must still keep the block"
+        );
+    }
+
+    /// The placeholders are matched whole, not as a prefix: a draft that starts
+    /// with one is still a draft, and a line of output that merely contains one
+    /// is not the prompt.
+    #[test]
+    fn a_placeholder_only_counts_as_the_whole_prompt_line() {
+        assert!(!prompt_looks_empty("→ Add a follow-up to the changelog\n"));
+        assert!(!prompt_looks_empty("> Add a follow-up, she said\n"));
     }
 
     #[test]

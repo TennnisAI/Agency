@@ -419,7 +419,24 @@ impl Emulator {
         // is and however far the paint scrolled it. Everything else above is
         // height-independent already (rows scroll, modes are modes), so this
         // one move was the whole of the frame's dependence on the client's
-        // geometry.
+        // *height*.
+        //
+        // Its width it still depends on, and that is not fixed here. `up`
+        // counts grid rows, and a grid row is one client row only while the
+        // client is `self.cols` wide: wider, and a soft-wrapped row does not
+        // wrap there, so it and its continuation merge into one row; narrower,
+        // and a row longer than the client splits into two. Rows above the
+        // cursor are free, since the count starts below them, but every row
+        // between the cursor and the end of the paint that disagrees moves the
+        // cursor one row off. Observed both ways against a fresh emulator: a
+        // 34-column status row under the input row brought the cursor back onto
+        // the status row in a 30-column client, and a soft-wrapped row under it
+        // brought the cursor back a row high in a client wider than the frame.
+        // A client narrower than the emulator is the normal case, not the odd
+        // one (see the note on `content_end`). The fix would be hard-breaking
+        // every row, which costs the reflow the CRLF note above exists to keep,
+        // so the frame stays pinned to `snap.cols` and the pane's fit is what
+        // has to agree.
         //
         // AGE-222: it used to be a single absolute CUP, whose row was worked
         // out from `self.rows` — the height the daemon was last *told*, at

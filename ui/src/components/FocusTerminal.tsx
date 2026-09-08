@@ -18,6 +18,7 @@ import { follow, GESTURE_MS } from "../lib/termFollow";
 import { createInputWriter, type InputWriter } from "../lib/termInput";
 import { createOutputWriter } from "../lib/termOutput";
 import { createRecolor, recolor } from "../lib/termPaper";
+import { seedFrame } from "../lib/termSeed";
 import { fullClipboardText } from "../lib/clipboard";
 import { FindRank, registerFindTarget } from "../lib/findBus";
 import { installTermLinks } from "../lib/termLinkProvider";
@@ -343,11 +344,10 @@ export default function FocusTerminal(
       // (now stale) snapshot on top of that corrupts the live screen — e.g. an
       // extra line above the prompt. The live attach is authoritative.
       if (disposed || liveStarted || !seed) return;
-      // the daemon snapshot may pad with blank lines up to the pane height;
-      // we also used to force a trailing newline. Both rendered as a block of empty
-      // lines on every open. Trim trailing blank lines.
-      const trimmed = seed.replace(/[\r\n]+$/, "");
-      if (trimmed) term.write(trimmed);
+      // The preview is a plain-text listing of the daemon's grid, not a stream
+      // a child drew, so it is turned into lines here (see lib/termSeed).
+      const frame = seedFrame(seed);
+      if (frame) term.write(frame);
     });
     (async () => {
       try {

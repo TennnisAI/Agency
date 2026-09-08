@@ -47,8 +47,9 @@ browser with `support.js` beside it).
 
 ## Living documents
 
-- [`windows-compat.md`](windows-compat.md) — every macOS/Unix assumption a
-  Windows port would need to touch. Kept current as shell-outs are added.
+- [`porting.md`](porting.md) — every macOS assumption a port would need to
+  touch, and why Linux and Windows are two very differently sized projects
+  rather than one. Kept current as shell-outs are added.
 - [`tracked-issues.md`](tracked-issues.md) — syncing `.agency/issues/` across a
   person's machines and across a team, as one mechanism: a git ref used as
   transport, never checked out. Direction settled; the `uid` groundwork is in,

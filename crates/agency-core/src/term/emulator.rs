@@ -103,7 +103,7 @@ impl Emulator {
     /// `grid.total_lines()` returns actual history-in-use + screen (not max
     /// capacity), so `history = total - rows` is always safe.
     pub fn capture(&self, lines: usize) -> String {
-        self.capture_styled(lines).0
+        self.render(lines, false).0
     }
 
     /// [`capture`](Self::capture)'s text, with a parallel map of how the child
@@ -122,6 +122,13 @@ impl Emulator {
     /// half-typed draft, which read identically as glyphs. See
     /// `agency-app`'s `sendq::prompt_looks_empty`, which is the only caller.
     pub fn capture_styled(&self, lines: usize) -> (String, String) {
+        self.render(lines, true)
+    }
+
+    /// Both captures. `want_style` off leaves the second string empty rather
+    /// than building a per-cell map for a caller that discards it: a plain
+    /// capture is the common one by far (see `ClientMsg::Capture::style`).
+    fn render(&self, lines: usize, want_style: bool) -> (String, String) {
         let grid = self.term.grid();
         let total = grid.total_lines();
         let history = total.saturating_sub(self.rows as usize) as i32;
@@ -138,25 +145,30 @@ impl Emulator {
             for col in 0..self.cols as usize {
                 let cell = &grid[Line(li)][Column(col)];
                 row.push(cell.c);
-                style.push(if cell.c == ' ' {
-                    ' '
-                } else if cell.flags.contains(Flags::DIM) {
-                    'd'
-                } else if cell.flags.contains(Flags::INVERSE) {
-                    'i'
-                } else {
-                    '.'
-                });
+                if want_style {
+                    style.push(if cell.c == ' ' {
+                        ' '
+                    } else if cell.flags.contains(Flags::DIM) {
+                        'd'
+                    } else if cell.flags.contains(Flags::INVERSE) {
+                        'i'
+                    } else {
+                        '.'
+                    });
+                }
             }
             let row = row.trim_end();
-            // Truncate the style row to the text row rather than trimming it
-            // on its own: the two must stay column-aligned, and a blank cell's
-            // style is a space, which would trim to a different length.
-            let kept: String = style.chars().take(row.chars().count()).collect();
             out.push_str(row);
             out.push('\n');
-            styles.push_str(&kept);
-            styles.push('\n');
+            if want_style {
+                // Truncate the style row to the text row rather than trimming
+                // it on its own: the two must stay column-aligned, and a blank
+                // cell's style is a space, which would trim to a different
+                // length.
+                let kept: String = style.chars().take(row.chars().count()).collect();
+                styles.push_str(&kept);
+                styles.push('\n');
+            }
         }
         (out, styles)
     }

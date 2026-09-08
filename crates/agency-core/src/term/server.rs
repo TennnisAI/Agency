@@ -155,13 +155,21 @@ fn dispatch(frame: ClientFrame, client_id: u64, registry: &Arc<Registry>, out: &
                 s.resize(cols, rows);
             }
         }
-        ClientFrame::Msg(ClientMsg::Capture { id, lines, seq }) => match registry.get(&id) {
-            Some(s) => {
-                let (text, style) = s.capture_styled(lines);
-                reply(ServerMsg::Captured { id: id.clone(), text, style: Some(style), seq })
+        ClientFrame::Msg(ClientMsg::Capture { id, lines, style, seq }) => {
+            match (registry.get(&id), style) {
+                (Some(s), true) => {
+                    let (text, style) = s.capture_styled(lines);
+                    reply(ServerMsg::Captured { id: id.clone(), text, style: Some(style), seq })
+                }
+                (Some(s), false) => {
+                    let text = s.capture(lines);
+                    reply(ServerMsg::Captured { id: id.clone(), text, style: None, seq })
+                }
+                (None, _) => {
+                    reply(ServerMsg::Captured { id, text: String::new(), style: None, seq })
+                }
             }
-            None => reply(ServerMsg::Captured { id, text: String::new(), style: None, seq }),
-        },
+        }
         ClientFrame::Msg(ClientMsg::Status { id, seq }) => {
             let status = registry.get(&id).map(|s| s.status()).unwrap_or(SessionStatus::Gone);
             reply(ServerMsg::Status { id, status, seq });
@@ -204,15 +212,20 @@ mod tests {
             let _ = run_with_registry(&sock_clone, registry_clone, clients_clone);
         });
 
-        // Wait for the socket to appear (up to ~1 s).
-        let deadline = std::time::Instant::now() + Duration::from_secs(1);
-        while !sock.exists() {
-            assert!(std::time::Instant::now() < deadline, "socket never appeared");
+        // Wait for a connection to be accepted, not for the socket file: the
+        // path exists from the moment bind() creates the inode, and connecting
+        // before listen() has set the backlog up gets ECONNREFUSED.
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let _stream = loop {
+            match UnixStream::connect(&sock) {
+                Ok(s) => break s,
+                Err(e) => assert!(
+                    std::time::Instant::now() < deadline,
+                    "server never accepted a connection: {e}"
+                ),
+            }
             std::thread::sleep(Duration::from_millis(20));
-        }
-
-        // Connect — clients counter must reach 1.
-        let _stream = UnixStream::connect(&sock).expect("connect");
+        };
 
         let deadline = std::time::Instant::now() + Duration::from_secs(1);
         loop {

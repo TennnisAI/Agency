@@ -388,9 +388,11 @@ pub fn prompt_looks_empty(pane: &str, style: Option<&str>) -> bool {
             return true;
         }
         let style_row = styles.get(i).copied().unwrap_or("");
-        let from = column_of(raw, line);
-        let to = column_of(raw, rest) + rest.chars().count();
-        return agent_painted(style_row, from, to) || PROMPT_PLACEHOLDERS.contains(&(first, rest));
+        let painted = match (column_of(raw, line), column_of(raw, rest)) {
+            (Some(from), Some(at)) => agent_painted(style_row, from, at + rest.chars().count()),
+            _ => false,
+        };
+        return painted || PROMPT_PLACEHOLDERS.contains(&(first, rest));
     }
     false
 }
@@ -459,9 +461,16 @@ fn agent_painted(style_row: &str, from: usize, to: usize) -> bool {
 
 /// The column `inner`, a slice of `outer`, starts at. Used to line a row of
 /// text up with its row of cell styles, which is indexed by column.
-fn column_of(outer: &str, inner: &str) -> usize {
-    let offset = inner.as_ptr() as usize - outer.as_ptr() as usize;
-    outer[..offset].chars().count()
+///
+/// None if `inner` is not in fact a slice of `outer`. Every caller passes one
+/// (`strip_frame`, `trim` and `chars().as_str()` all return subslices), but the
+/// subtraction below is unchecked pointer arithmetic: an owned or reallocated
+/// string underflows it, and the enormous offset that comes back panics on the
+/// slice, inside the notifier's 2 s tick. The caller reads None as "cannot
+/// tell", which holds the message.
+fn column_of(outer: &str, inner: &str) -> Option<usize> {
+    let offset = (inner.as_ptr() as usize).checked_sub(outer.as_ptr() as usize)?;
+    outer.get(..offset).map(|s| s.chars().count())
 }
 
 /// A pane line with the box drawing agents wrap their prompt in taken off, so
@@ -895,6 +904,18 @@ mod tests {
             prompt_looks_empty("\u{2192} read\nout\n", Some("dddddd\n...\n")),
             "the same row inside the window is the prompt, and answers"
         );
+    }
+
+    /// `column_of` is unchecked pointer arithmetic on the assumption that the
+    /// inner string is a slice of the outer one. When that stopped being true
+    /// the subtraction underflowed, and the enormous offset it returned then
+    /// panicked on the slice below, inside the notifier's 2 s tick.
+    #[test]
+    fn a_column_from_outside_the_row_is_not_a_column() {
+        let row = "  \u{2192} hi";
+        assert_eq!(column_of(row, &row[2..]), Some(2), "the marker is the third column");
+        assert_eq!(column_of(&row[2..], row), None, "an inner string that starts earlier");
+        assert_eq!(column_of(&row[..2], &row[5..]), None, "one that ends past the row");
     }
 
     /// The block cursor is one cell. A whole row of inverse cells is the human

@@ -22,9 +22,11 @@ exist until the release is published.
 6. Only if a dependency changed: `python3 scripts/third-party.py`. CI diffs
    `THIRD-PARTY.md` on every pull request, so it is normally already current.
 7. Commit the bump. **Keep the site out of this commit** (step 12 says why).
-8. Write the release notes. `git log --no-merges --format='%h %s' v<previous>..main`
-   is the raw material; read the bodies before believing the subjects, since
-   some of what looks like a feature is a design note with nothing built.
+8. Write the release notes into `CHANGELOG.md`, newest section first.
+   `git log --no-merges --format='%h %s' v<previous>..main` is the raw
+   material; read the bodies before believing the subjects, since some of what
+   looks like a feature is a design note with nothing built. The same text goes
+   in the GitHub release at step 12, so write it once, here.
 
 **Tagging**
 
@@ -50,7 +52,8 @@ exist until the release is published.
 
 11. Read the DMG's actual size off the file, and correct `site/download.html` if
     it has moved. The page prints it next to the filename.
-12. Paste the notes into the draft and **publish the release**. Until you do,
+12. Paste the `CHANGELOG.md` section into the draft and **publish the
+    release**. Until you do,
     it is not `releases/latest`, which is both why the download link 404s and
     why nobody on the previous version is offered the update yet.
 13. Now push the site commit to `main`. `deploy-site.yml` fires on the push and

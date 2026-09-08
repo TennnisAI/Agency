@@ -57,11 +57,21 @@ So Linux is within reach of packaging, and `linux-check` in
 
 What Linux would still need after that:
 
-- **Packaging.** `externalBin` in `tauri.conf.json` points at
-  `../../target/release/agency-termd` and the bundle block only configures
-  `macOS`. Linux needs its sidecar triple and AppImage/deb targets. It needs no
-  signing or notarization, so `scripts/release-macos.sh` has no equivalent to
-  port, only a simpler sibling to write.
+- **Packaging: done.** `scripts/release-linux.sh` builds `.deb`, `.rpm` and
+  AppImage, and needed no changes to `tauri.conf.json` at all — the existing
+  `externalBin` and icon entries are already platform-neutral, and both
+  binaries land in the package (`/usr/bin/Agency` and `/usr/bin/agency-termd`).
+  The script has no signing, notarization or stapling steps because Linux has
+  no equivalent, which is why it is half the length of the macOS one. On macOS
+  it builds in a container, since Tauri links against the host's webkit2gtk and
+  cannot cross-compile.
+
+  Two things it does not solve. **glibc decides Ubuntu reach**, not the package
+  format: built on bookworm the binary wants glibc 2.36, which covers Debian 12+
+  and Ubuntu 24.04 but not Ubuntu 22.04 LTS (2.35) — build the release on a
+  22.04 base if that matters. And **Arch has no Tauri target**; the bundler
+  offers `deb`, `rpm` and `appimage` only, so Arch is served by the AppImage
+  unless someone maintains a PKGBUILD on the AUR.
 - **The install-command table** below, which is per-platform work Linux shares
   with Windows. The `npm install -g` rows already work as-is.
 - **Two accepted degradations.** Tauri's Linux tray wants

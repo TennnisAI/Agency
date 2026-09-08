@@ -92,6 +92,67 @@ jobs:
       - name: Test agency-core
         run: cargo test -p agency-core --locked
 
+  # The Tauri shell compiles on Linux (AGE-218, verified 2026-09-08).
+  #
+  # `agency-core` has been green on ubuntu since this workflow existed, so the
+  # PTY daemon, the Unix-socket protocol, git, worktrees and merge were already
+  # Linux-clean. Nobody had tried `agency-app`, and the assumption that it is
+  # macOS-only turned out to be wrong: every macOS module already carries a
+  # `cfg(not(target_os = "macos"))` arm and the objc2 stack is already scoped
+  # under a macOS-only target table, so the crate needed no source changes at
+  # all. It needed exactly one dependency change — see the `rfd` comment in
+  # crates/agency-app/Cargo.toml, which is a build-script abort you hit before
+  # a line of our code is reached, and which is why this went untested for so
+  # long: the first attempt looks like "Linux is broken" rather than "one
+  # feature flag collides".
+  #
+  # Kept `continue-on-error` until this has been observed green on a real PR
+  # runner — it was proven in an aarch64 container, and CI is x86_64. Drop the
+  # flag then, and promote it to a full build when AGE-219 lands.
+  linux-check:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Tauri 2's Linux backend is webkit2gtk 4.1; the appindicator package is
+      # what the tray needs, and its absence is a link error rather than a
+      # missing-feature warning.
+      - name: Install Tauri system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev libsoup-3.0-dev pkg-config
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 11
+
+      - name: Install Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+
+      - name: Cache Rust build
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      # Same reason as the macOS job: tauri-build wants frontendDist to exist.
+      - name: Build frontend
+        run: |
+          pnpm --dir ui install --frozen-lockfile
+          pnpm --dir ui build
+
+      - name: Check agency-app
+        run: cargo check -p agency-app --locked
+
   # The Tauri shell only compiles against macOS frameworks.
   app:
     runs-on: macos-14

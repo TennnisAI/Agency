@@ -35,11 +35,24 @@ out to:
 - `tray.rs`'s only macOS-specific line is `set_title`, the count badge beside
   the menu-bar icon.
 
-**So agency-app may already compile on Linux. Nobody knows, because no CI job
-would say.** The cheapest high-information step in this whole document is a
-`cargo check -p agency-app` on `ubuntu-latest`: it either goes green, which
-puts Linux within reach of packaging alone, or it prints the exact remaining
-list. Do that before estimating anything else.
+**agency-app compiles on Linux.** Checked 2026-09-08 in a Debian container
+(`cargo check -p agency-app`, rustc 1.98, aarch64): it needed **no source
+changes at all**, and exactly one dependency change.
+
+That change is worth reading, because it is why this went untested for so long.
+`agency-app` depended on `rfd` directly with default features, which turn on
+`xdg-portal`, while `tauri-plugin-dialog`'s defaults turn on `gtk3`. Cargo
+unifies the two and rfd's build script aborts: *"You can't enable both `gtk3`
+and `xdg-portal` features at once."* It fires partway through the dependency
+tree, long before any Agency code is reached, so a first attempt reads as
+"Linux is broken" rather than "one feature flag collides". The only rfd use
+here is a single synchronous `MessageDialog` in `lib.rs` (the setup-failure
+fallback), so `default-features = false` fixes it and costs nothing. macOS
+still compiles, and the resolve graph loses eleven crates it never needed
+(`ashpd`, `pollster`, the wayland stack).
+
+So Linux is within reach of packaging, and `linux-check` in
+`.github/workflows/ci.yml` keeps it that way.
 
 What Linux would still need after that:
 

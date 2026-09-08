@@ -106,12 +106,11 @@ jobs:
   # long: the first attempt looks like "Linux is broken" rather than "one
   # feature flag collides".
   #
-  # Kept `continue-on-error` until this has been observed green on a real PR
-  # runner — it was proven in an aarch64 container, and CI is x86_64. Drop the
-  # flag then, and promote it to a full build when AGE-219 lands.
+  # Green on an x86_64 runner as of PR #1, so this blocks like any other job
+  # rather than reporting for information. Promote it to a full build (and to
+  # `cargo test`) when the Linux packaging work lands.
   linux-check:
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

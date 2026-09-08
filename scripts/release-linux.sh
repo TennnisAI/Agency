@@ -6,10 +6,11 @@
 # macOS script have no analogue here. What you get out is what you ship.
 #
 # Usage:
-#   ./scripts/release-linux.sh                  # deb + rpm + AppImage
-#   ./scripts/release-linux.sh --bundles deb     # just one of them
+#   ./scripts/release-linux.sh                  # deb + rpm + AppImage, this arch
+#   ./scripts/release-linux.sh --arch amd64      # x86_64, via emulation
+#   ./scripts/release-linux.sh --arch both       # what a release ships
+#   ./scripts/release-linux.sh --bundles deb     # just one format
 #   ./scripts/release-linux.sh --native          # build here, no container
-#   AGENCY_LINUX_PLATFORM=linux/amd64 ./scripts/release-linux.sh
 #
 # Three formats cover the desktop Linux that matters, and Tauri can build all
 # three: .deb is Debian *and* Ubuntu (one package, same format), .rpm is Fedora
@@ -37,20 +38,29 @@ cd "$REPO_ROOT"
 
 NATIVE=0
 BUNDLES="deb,rpm,appimage"
+ARCH="host"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --native)  NATIVE=1; shift ;;
     --bundles) BUNDLES="${2:?--bundles needs a value, e.g. deb or deb,rpm}"; shift 2 ;;
-    -h|--help) sed -n '2,36p' "$0"; exit 0 ;;
+    --arch)    ARCH="${2:?--arch needs one of: host, amd64, arm64, both}"; shift 2 ;;
+    -h|--help) sed -n '2,37p' "$0"; exit 0 ;;
     *) echo "error: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
 
 if [[ "$(uname -s)" != "Linux" && "$NATIVE" -eq 0 ]]; then
   # ---- Docker path -------------------------------------------------------
-  PLATFORM="${AGENCY_LINUX_PLATFORM:-}"
   IMAGE="rust:1-bookworm"
   OUT="$REPO_ROOT/target/linux"
+
+  case "$ARCH" in
+    host)  PLATFORMS=("") ;;
+    amd64) PLATFORMS=("linux/amd64") ;;
+    arm64) PLATFORMS=("linux/arm64") ;;
+    both)  PLATFORMS=("linux/arm64" "linux/amd64") ;;
+    *) echo "error: --arch must be one of: host, amd64, arm64, both" >&2; exit 2 ;;
+  esac
 
   command -v docker >/dev/null 2>&1 || {
     echo "error: docker not found, and a Linux build needs it on $(uname -s)." >&2
@@ -86,15 +96,26 @@ if [[ "$(uname -s)" != "Linux" && "$NATIVE" -eq 0 ]]; then
     | tar --null -T - -cf "$STAGE/src.tar"
   mkdir -p "$OUT"
 
+  for PLATFORM in "${PLATFORMS[@]}"; do
   echo "==> Building in $IMAGE${PLATFORM:+ ($PLATFORM)}; artifacts land in target/linux/"
+  if [[ "$PLATFORM" == "linux/amd64" && "$(uname -m)" == "arm64" ]]; then
+    echo "    (x86_64 under emulation on Apple Silicon; expect this to take a while)"
+  fi
 
   # Named volumes so the crate registry and the build cache survive between
   # runs — without them every invocation recompiles the whole tree.
+  #
+  # The target volume is per-architecture and the registry is not. Registry
+  # entries are unpacked crate *sources*, identical everywhere; build artifacts
+  # are not, and nothing here passes `--target`, so every arch would otherwise
+  # write its objects to the same target/release and evict the other one on
+  # each switch.
+  VOL_SUFFIX="$(printf '%s' "${PLATFORM:-host}" | tr '/' '-')"
   docker run --rm ${PLATFORM:+--platform "$PLATFORM"} \
     -v "$STAGE:/stage:ro" \
     -v "$OUT:/out" \
     -v agency-linux-cargo:/usr/local/cargo/registry \
-    -v agency-linux-target:/work/target \
+    -v "agency-linux-target-$VOL_SUFFIX:/work/target" \
     -e "BUNDLES=$BUNDLES" \
     "$IMAGE" bash -euo pipefail -c '
       export DEBIAN_FRONTEND=noninteractive
@@ -103,18 +124,23 @@ if [[ "$(uname -s)" != "Linux" && "$NATIVE" -eq 0 ]]; then
       # shells out to it at runtime. Without it the deb and rpm bundle fine and
       # only the AppImage dies, with "xdg-open binary not found".
       echo "==> Installing build dependencies in the container"
-      apt-get update -qq
-      apt-get install -y -qq --no-install-recommends \
+      # Log rather than discard. Sending apt to /dev/null meant a failed
+      # install surfaced as nothing but "E: Sub-process /usr/bin/dpkg returned
+      # an error code (1)", with the line naming the actual package thrown
+      # away — which is a bad trade for quiet output in a build script.
+      apt() { apt-get "$@" >>/tmp/apt.log 2>&1 || { echo "apt failed:"; tail -40 /tmp/apt.log; exit 1; }; }
+      apt update -qq
+      apt install -y --no-install-recommends \
         libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
         librsvg2-dev libsoup-3.0-dev pkg-config file desktop-file-utils \
-        curl ca-certificates xdg-utils >/dev/null
+        curl ca-certificates xdg-utils
       # Node from nodesource, not the nodejs package in bookworm: that one is
       # Node 18, and pnpm 11 refuses to run on anything below 22.13 ("This
       # version of pnpm requires at least Node.js v22.13"). 22 is also what the
       # ui job in .github/workflows/ci.yml pins.
-      curl -fsSL https://deb.nodesource.com/setup_22.x | bash - >/dev/null 2>&1
-      apt-get install -y -qq --no-install-recommends nodejs >/dev/null
-      npm install -g pnpm@11 >/dev/null 2>&1
+      curl -fsSL https://deb.nodesource.com/setup_22.x | bash - >>/tmp/apt.log 2>&1
+      apt install -y --no-install-recommends nodejs
+      npm install -g pnpm@11 >>/tmp/apt.log 2>&1
       mkdir -p /work && cd /work && tar xf /stage/src.tar
       /work/scripts/release-linux.sh --native
       echo "==> Copying packages out"
@@ -122,6 +148,7 @@ if [[ "$(uname -s)" != "Linux" && "$NATIVE" -eq 0 ]]; then
         \( -name "*.deb" -o -name "*.AppImage" -o -name "*.rpm" \) \
         -exec cp -v {} /out/ \;
     '
+  done
 
   echo
   echo "Done. Packages in target/linux/:"

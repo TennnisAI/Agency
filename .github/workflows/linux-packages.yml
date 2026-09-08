@@ -84,8 +84,16 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
 
+      # Keyed by runner image, not just by OS. rust-cache's default key covers
+      # `runner.os` ("Linux") and the rustc version, neither of which
+      # distinguishes ubuntu-24.04 from ubuntu-22.04. Moving this matrix from
+      # ubuntu-latest to 22.04 therefore restored a target/ built on 24.04, and
+      # the build died with five "can't find crate for `tauri`" errors and no
+      # upstream failure to explain them.
       - name: Cache Rust build
         uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: ${{ matrix.runner }}
 
       # The same script the maintainer runs locally, on its native-Linux path,
       # so CI and a local build cannot drift into producing different packages.

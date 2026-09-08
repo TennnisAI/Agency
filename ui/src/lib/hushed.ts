@@ -6,7 +6,7 @@ import { useEffect, useState } from "react";
 // A per-machine preference (localStorage): what you already understand is not
 // a property of the project.
 
-export type HushId = "merge-cleanup" | "merge-delete";
+export type HushId = "merge-cleanup" | "merge-delete" | "commit-stage-all";
 
 export type Hushable = {
   id: HushId;
@@ -29,6 +29,14 @@ export const HUSHABLE: Hushable[] = [
     id: "merge-delete",
     label: "Confirm before deleting a merged agent",
     hint: "Deletes straight away instead of asking. Only when the merge landed cleanly.",
+  },
+  {
+    // Off, this makes Commit with an empty index stage everything and commit
+    // it, which is what the prompt offers anyway. Safe to lose because it is
+    // the one commit the branch bar's Undo Last Commit puts straight back.
+    id: "commit-stage-all",
+    label: "Ask before staging everything to commit",
+    hint: "The prompt when you commit with nothing staged. Off, it stages all changes and commits.",
   },
 ];
 

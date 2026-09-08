@@ -1586,6 +1586,12 @@ export interface BranchInfo {
   behind: number;
   base: string | null;
   hasRemote: boolean;
+  /**
+   * A merge started and not yet concluded. Its commit is required even when the
+   * resolution left the tree identical to HEAD, so a clean tree here does not
+   * mean there is nothing to commit.
+   */
+  merging: boolean;
 }
 
 export const gitLogGraph = (taskId: string, limit: number) =>

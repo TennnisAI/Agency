@@ -28,9 +28,38 @@ fn git(worktree: &Path, args: &[&str]) -> Result<String> {
         .env("GIT_TERMINAL_PROMPT", "0")
         .output()?;
     if !output.status.success() {
-        bail!("git {:?} failed: {}", args, String::from_utf8_lossy(&output.stderr));
+        bail!("git {:?} failed: {}", args, failure_detail(&output));
     }
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// What a failed git run said, wherever it said it. Not every failure is on
+/// stderr: `commit` with nothing staged exits 1 and prints "no changes added to
+/// commit" on *stdout*, so the panel's error banner read `git ["commit", "-m",
+/// "Fix review findings"] failed:` and then nothing at all (AGE-205).
+///
+/// git puts its conclusion *last* on stdout: the empty-index failure opens with
+/// four lines of "On branch main / Changes not staged for commit" and only says
+/// "no changes added to commit" on line 5. The panel shows the first line and
+/// keeps the rest behind its Output button, so leading with stdout unchanged
+/// traded one uninformative banner ("failed:") for another ("failed: On branch
+/// main"). The last line goes first and the whole output follows it.
+fn failure_detail(output: &std::process::Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !stderr.trim().is_empty() {
+        return stderr.trim().to_string();
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    lead_with_conclusion(stdout.trim())
+}
+
+/// `text` with its last non-empty line moved to the front, unless it is already
+/// there (a one-line message, which needs no lead).
+fn lead_with_conclusion(text: &str) -> String {
+    match text.lines().map(str::trim).rfind(|l| !l.is_empty()) {
+        Some(last) if !text.starts_with(last) => format!("{last}\n{text}"),
+        _ => text.to_string(),
+    }
 }
 
 /// `git`, but handing back stdout unchanged. Blob contents are not text: the
@@ -878,6 +907,11 @@ pub struct BranchInfo {
     /// Whether an `origin` remote is configured — i.e. whether publishing is
     /// even possible. `push` targets `origin`, so without it Publish can't work.
     pub has_remote: bool,
+    /// Whether a merge is started and not yet concluded (`MERGE_HEAD` exists).
+    /// The commit that concludes one is required even when the resolution left
+    /// the tree identical to HEAD, so the panel must not read "no changes" as
+    /// "nothing to commit" while this is set (AGE-205).
+    pub merging: bool,
 }
 
 /// HEAD ancestry, newest first. Fields are unit-separated (\x1f); parents and
@@ -989,7 +1023,10 @@ pub fn branch_info(worktree: &Path) -> Result<BranchInfo> {
         }
     }
     let has_remote = has_origin(worktree);
-    Ok(BranchInfo { branch, upstream, ahead, behind, base, has_remote })
+    // Per-worktree state, so `rev-parse` rather than a path under `.git`: in a
+    // linked worktree `.git` is a file and MERGE_HEAD lives beside its own HEAD.
+    let merging = git(worktree, &["rev-parse", "--verify", "--quiet", "MERGE_HEAD"]).is_ok();
+    Ok(BranchInfo { branch, upstream, ahead, behind, base, has_remote, merging })
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1384,6 +1421,27 @@ pub fn stash_drop(worktree: &Path, index: usize) -> Result<()> {
 }
 
 #[cfg(test)]
+mod failure_detail_tests {
+    use super::*;
+
+    #[test]
+    fn leads_with_gits_conclusion_and_keeps_the_rest() {
+        // Verbatim stdout of `git commit -m x` with an unstaged edit and an
+        // empty index. stderr is empty, so this is all the banner has (AGE-205).
+        let out = "On branch main\nChanges not staged for commit:\n  (use \"git add <file>...\")\n\tmodified:   f\n\nno changes added to commit (use \"git add\" and/or \"git commit -a\")";
+        let detail = lead_with_conclusion(out);
+        assert!(detail.starts_with("no changes added to commit"));
+        assert!(detail.contains("modified:   f"));
+    }
+
+    #[test]
+    fn leaves_a_single_line_alone() {
+        assert_eq!(lead_with_conclusion("nothing to commit"), "nothing to commit");
+        assert_eq!(lead_with_conclusion(""), "");
+    }
+}
+
+#[cfg(test)]
 mod status_tests {
     use super::*;
     use std::process::Command;
@@ -1603,6 +1661,35 @@ mod branch_tests {
     }
 
     #[test]
+    fn a_merge_resolved_to_head_is_still_unconcluded() {
+        // Resolving every conflict in favour of what HEAD already has (the
+        // panel's "Keep all current") leaves the index identical to HEAD, so
+        // `status --porcelain` prints nothing. The merge commit is still
+        // required, and the panel needs `merging` to know that a clean tree is
+        // not the same as nothing to commit (AGE-205).
+        let dir = tempdir().unwrap();
+        let repo = dir.path();
+        init_repo(repo);
+        run(repo, &["checkout", "-qb", "other"]);
+        std::fs::write(repo.join("f"), "theirs").unwrap();
+        run(repo, &["commit", "-aqm", "theirs"]);
+        run(repo, &["checkout", "-q", "main"]);
+        std::fs::write(repo.join("f"), "ours").unwrap();
+        run(repo, &["commit", "-aqm", "ours"]);
+
+        let merged =
+            Command::new("git").args(["merge", "other"]).current_dir(repo).status().unwrap();
+        assert!(!merged.success(), "expected a conflict to resolve");
+        run(repo, &["checkout", "--ours", "--", "f"]);
+        run(repo, &["add", "f"]);
+
+        assert!(status(repo).unwrap().is_empty(), "resolution matches HEAD, so the tree is clean");
+        assert!(branch_info(repo).unwrap().merging);
+        commit(repo, "merge other").unwrap();
+        assert!(!branch_info(repo).unwrap().merging);
+    }
+
+    #[test]
     fn create_branch_from_commit() {
         let dir = tempdir().unwrap();
         let repo = dir.path();
@@ -1648,6 +1735,19 @@ mod branch_tests {
         let changes = status(repo).unwrap();
         assert_eq!(changes.len(), 1);
         assert_eq!(changes[0].index, "M", "change is staged after soft reset");
+    }
+
+    #[test]
+    fn a_commit_with_nothing_staged_says_why() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path();
+        init_repo(repo);
+        std::fs::write(repo.join("f"), "edited but never staged").unwrap();
+
+        let err = commit(repo, "Fix review findings").unwrap_err().to_string();
+        // git says this on stdout, not stderr: before AGE-205 the message
+        // ended at "failed:" and told the user nothing.
+        assert!(err.contains("no changes added to commit"), "got: {err}");
     }
 
     #[test]

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { gitBranchInfo, projectTarget, runBranches } from "../api";
+import { shortcutLabel } from "../lib/platform";
 
 // What the project's own checkout looks like from here: the branch you have
 // checked out, and how many commits on it origin hasn't seen. The count is the
@@ -92,7 +93,9 @@ export default function StatusBar({
           )}
         </span>
       </span>
-      <span className="kbd-hints">⌘N new · ⌘D source · ⌘↵ approve · ⌘, settings</span>
+      <span className="kbd-hints">
+        {shortcutLabel("⌘N")} new · {shortcutLabel("⌘D")} source · {shortcutLabel("⌘↵")} approve · {shortcutLabel("⌘,")} settings
+      </span>
     </footer>
   );
 }

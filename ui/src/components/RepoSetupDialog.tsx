@@ -19,10 +19,11 @@ import {
 import { formatSize } from "./git/binary";
 import { useModalKeys } from "../hooks/useModalKeys";
 import ModalBackdrop from "./ModalBackdrop";
+import { missingToolFor, offerToolInstall } from "../lib/missingTool";
 
 type Props = {
   readiness: RepoReadiness;
-  context: "add" | "spawn";
+  context: "add" | "spawn" | "init";
   repoPath: string;
   onResolved: () => void;
   onCancel: () => void;
@@ -77,7 +78,14 @@ export default function RepoSetupDialog({ readiness, context, repoPath, onResolv
       // After init the folder always has no commits — advance to the commit step.
       const next = await inspectRepo(repoPath);
       if (!cancelled.current) setCurrent(next);
-    } catch (e) { if (!cancelled.current) setError(String(e)); }
+    } catch (e) {
+      if (cancelled.current) return;
+      setError(String(e));
+      // "git is not installed" gets the install offer on top of this dialog;
+      // once git lands, Initialize repository works on the next click.
+      const tool = missingToolFor(e);
+      if (tool) offerToolInstall(tool, `Couldn't initialize the repository: ${e instanceof Error ? e.message : String(e)}`);
+    }
     finally { setBusy(false); setProgress(null); }
   }
 

@@ -9,6 +9,7 @@ import { pinnedFirst, runStatus } from "../lib/runstate";
 import { newAgentItems, useAgentProfiles, useRunMenu } from "../hooks/useRunMenu";
 import { useSpawnAgent } from "../hooks/useSpawnAgent";
 import { useMissingFolders } from "../hooks/useFolderMissing";
+import { useGitlessProjects } from "../hooks/useRepoReadiness";
 import Menu, { MenuEntry } from "./git/Menu";
 import ConfirmDialog from "./ConfirmDialog";
 import { PinMark } from "./AttentionMarker";
@@ -73,6 +74,10 @@ export default function ProjectTree({
   const [progress, setProgress] = useState<CloneProgress | null>(null);
   const [error, setError] = useState("");
   const [setup, setSetup] = useState<{ path: string; name: string; readiness: RepoReadiness; existing: boolean } | null>(null);
+  // Projects sitting in a folder with no repository: the ones whose menu offers
+  // to initialise one. "Add without git" used to be a one-way door (observed
+  // 2026-09-10): nothing offered the init again afterwards.
+  const gitless = useGitlessProjects(projects);
   const [cloning, setCloning] = useState(false);
   // Workspace-creation dialog; `intent` (e.g. "daily-note") is re-emitted via
   // an `agency:workspace-ready` event once the workspace exists, so the flow
@@ -179,13 +184,17 @@ export default function ProjectTree({
     const clone = () => setCloning(true);
     const ws = (e: Event) =>
       openWorkspaceRef.current((e as CustomEvent<{ intent?: string }>).detail?.intent ?? null);
+    // File ▸ Initialize Git Repository… acts on the selected project.
+    const init = () => initRef.current();
     window.addEventListener("agency:add-project", add);
     window.addEventListener("agency:clone-project", clone);
     window.addEventListener("agency:create-workspace", ws);
+    window.addEventListener("agency:init-repo", init);
     return () => {
       window.removeEventListener("agency:add-project", add);
       window.removeEventListener("agency:clone-project", clone);
       window.removeEventListener("agency:create-workspace", ws);
+      window.removeEventListener("agency:init-repo", init);
     };
   }, []);
 
@@ -220,6 +229,26 @@ export default function ProjectTree({
       return n;
     });
   }
+
+  // Give an existing project's folder a repository. The same dialog as Add,
+  // in its "init" context: no "without git" exit, the project already is.
+  async function handleInit(p: Project) {
+    try {
+      const r = await inspectRepo(p.repo_path);
+      if (r.state === "ready") return;
+      setSetup({ path: p.repo_path, name: p.name, readiness: r, existing: true });
+    } catch (e) {
+      toastError(e, "Couldn't inspect the folder");
+    }
+  }
+  const initRef = useRef(() => {
+    const p = projects.find((x) => x.id === selectedId);
+    if (p) void handleInit(p);
+  });
+  initRef.current = () => {
+    const p = projects.find((x) => x.id === selectedId);
+    if (p) void handleInit(p);
+  };
 
   async function handleAdd() {
     const sel = await open({ directory: true, multiple: false });
@@ -285,6 +314,9 @@ export default function ProjectTree({
       // Auto-open a freshly added project; the badge (commit) flow leaves the
       // current selection alone.
       if (created) onSelect(created);
+      // An existing project's folder may just have become a repository: the
+      // readiness hooks re-ask on this, and the menus grow their branch items.
+      if (setup.existing) notifyProjectsChanged();
     } catch (e) {
       setError(String(e));
     }
@@ -340,6 +372,11 @@ export default function ProjectTree({
       { label: revealLabel, onClick: () => void reveal(root, "") },
       { label: "Copy path", onClick: () => void copyAbsPath(root, "") },
     ];
+    // A plain folder can become a repository from here; the workspace stays
+    // as the user chose it at creation.
+    if (gitless.has(p.id) && p.kind !== "workspace") {
+      items.push({ kind: "separator" }, { label: "Initialize git repository…", onClick: () => void handleInit(p) });
+    }
     // The workspace is pinned: it is hidden from Settings, never closed.
     if (p.kind !== "workspace") {
       items.push(
@@ -583,7 +620,7 @@ export default function ProjectTree({
       {setup && (
         <RepoSetupDialog
           readiness={setup.readiness}
-          context="add"
+          context={setup.existing ? "init" : "add"}
           repoPath={setup.path}
           onResolved={finishSetup}
           onCancel={() => setSetup(null)}

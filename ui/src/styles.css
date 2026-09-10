@@ -704,17 +704,41 @@ textarea.settings-input { min-height: 64px; resize: vertical; }
   height: var(--titlebar-h);
   min-height: var(--titlebar-h);
   display: flex; align-items: center; justify-content: space-between;
-  /* Left inset clears the native macOS traffic lights, which now overlay this
-     row (titleBarStyle: Transparent) instead of sitting in a separate bar. */
-  padding: 0 8px 0 78px;
+  padding: 0 8px;
   background: var(--mantle);
   border-bottom: 1px solid var(--line);
   /* Window dragging is handled by data-tauri-drag-region on the header, not
      by Electron's -webkit-app-region (which Tauri's WKWebView ignores). */
   user-select: none;
 }
-.titlebar-left { display: flex; align-items: center; gap: 6px; }
-.titlebar-right { display: flex; align-items: center; gap: 6px; }
+/* Left inset clears the native macOS traffic lights, which overlay this row
+   (titleBarStyle: Overlay) instead of sitting in a separate bar. Linux draws
+   no native chrome at all (tauri.linux.conf.json): the menus sit on the left
+   and the window controls on the right, both Agency's. */
+:root[data-platform="mac"] .titlebar { padding-left: 78px; }
+:root[data-platform="linux"] .titlebar { padding-right: 0; }
+.titlebar-left { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; }
+.titlebar-right { display: flex; align-items: center; gap: 6px; flex: 1; justify-content: flex-end; }
+/* The frontend-drawn menu bar (Linux). Titles read as a menu bar: flat until
+   hovered, held open while a dropdown is up. The bar rises above the
+   dropdown's overlay while open so a hover on the next title switches menus. */
+.menubar { display: flex; align-items: center; gap: 1px; }
+.menubar.open { position: relative; z-index: 61; }
+.menubar-title {
+  background: none; border: none; padding: 4px 8px; border-radius: 5px; cursor: default;
+  font-family: var(--sans); font-size: 12.5px; color: var(--sub0);
+}
+.menubar-title:hover, .menubar-title.open { background: var(--s0); color: var(--text); }
+/* Minimize, maximize, close: the size and spacing of the GNOME defaults, in
+   the app's own glyphs. Close goes red on hover, as every desktop's does. */
+.win-controls { display: flex; align-items: stretch; height: var(--titlebar-h); }
+.win-btn {
+  width: 46px; background: none; border: none; padding: 0; cursor: default;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--sub0); font-size: 12px; line-height: 1;
+}
+.win-btn:hover { background: var(--s0); color: var(--text); }
+.win-btn.close:hover { background: var(--red); color: var(--crust); }
 .icon-btn {
   background: none; border: none; color: var(--sub0); cursor: pointer;
   display: flex; align-items: center; justify-content: center;
@@ -2535,15 +2559,58 @@ input, textarea, code,
   font-family: var(--mono); font-size: 11px; color: var(--o0);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.onboard-tile-foot { display: flex; align-items: center; gap: 8px; margin-top: auto; }
-.onboard-state { font-size: 11px; color: var(--o0); }
+/* Wraps: a tile carrying "Not installed", "Browser GUI" and the button (the
+   dsh tile, the only one with a web UI) is wider than the 128px column, and
+   the button used to run out past the border (observed 2026-09-10). */
+.onboard-tile-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-top: auto; }
+.onboard-state { font-size: 11px; color: var(--o0); white-space: nowrap; display: inline-flex; align-items: center; gap: 5px; }
 .onboard-state.is-ok { color: var(--green); }
+.onboard-state.is-busy { color: var(--blue); }
+.onboard-state.is-bad { color: var(--red); }
 .onboard-install {
   margin-left: auto; padding: 3px 8px; border-radius: 6px;
   background: transparent; border: 1px solid var(--s1); color: var(--sub0);
   font-family: var(--sans); font-size: 11px; cursor: pointer;
 }
 .onboard-install:hover { background: var(--s0); color: var(--text); }
+.onboard-tools { display: flex; flex-direction: column; gap: 10px; }
+.onboard-tools > * { animation: onboard-rise .52s cubic-bezier(.22,.7,.28,1) backwards; animation-delay: var(--d, 0ms); }
+.tool-row {
+  display: flex; align-items: flex-start; gap: 14px;
+  padding: 12px 14px; border-radius: 12px;
+  background: var(--mantle); border: 1px solid var(--s0);
+}
+.tool-row.is-ok { border-color: color-mix(in srgb, var(--green) 35%, var(--s0)); }
+.modal-body .tool-row { margin-top: 12px; }
+.tool-row-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+.tool-row-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.tool-name { font-size: 13px; font-weight: 550; color: var(--text); }
+.tool-state { font-size: 11px; color: var(--o0); display: inline-flex; align-items: center; gap: 5px; }
+.tool-state.is-ok { color: var(--green); }
+.tool-state.is-busy { color: var(--blue); }
+.tool-state.is-bad { color: var(--red); }
+.tool-why { margin: 0; font-size: 12px; line-height: 1.5; color: var(--o1); }
+.tool-note { margin: 0; font-size: 11.5px; line-height: 1.5; color: var(--sub0); }
+.tool-cmd {
+  font-family: var(--mono); font-size: 11px; color: var(--o0);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  user-select: text; -webkit-user-select: text;
+}
+.tool-link {
+  align-self: flex-start; background: none; border: none; padding: 0; cursor: pointer;
+  font-family: var(--sans); font-size: 11.5px; color: var(--blue);
+}
+.tool-link:hover { background: none; text-decoration: underline; }
+.tool-output {
+  margin: 0; max-height: 180px; overflow: auto;
+  font-family: var(--mono); font-size: 11px; line-height: 1.45; color: var(--text);
+  background: var(--crust); border: 1px solid var(--s0); border-radius: 8px; padding: 8px 10px;
+  white-space: pre-wrap; word-break: break-all;
+  user-select: text; -webkit-user-select: text;
+}
+.tool-actions { display: flex; flex-direction: column; gap: 6px; flex: none; }
+.tool-actions .btn-primary, .tool-actions .btn-secondary { white-space: nowrap; padding: 6px 11px; }
+.spinner.small { width: 9px; height: 9px; border-width: 1.5px; vertical-align: 0; }
 .onboard-tile-add {
   align-items: center; justify-content: center; gap: 8px; flex-direction: row;
   background: transparent; border-style: dashed; color: var(--o1); font-size: 12.5px;

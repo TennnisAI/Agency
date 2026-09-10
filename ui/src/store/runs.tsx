@@ -4,6 +4,7 @@ import { loadFold, saveFold } from "../hooks/usePaneWidth";
 import { Tab, openingTab } from "../lib/projectTab";
 import { pinnedFirst } from "../lib/runstate";
 import { toastError } from "../lib/toast";
+import { reportFailure } from "../lib/missingTool";
 
 type View = "grid" | "focus";
 // What the add-menu hands to a spawn. `worktree: false` means "run in the
@@ -177,7 +178,7 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
       // prompt + title, renaming the empty-prompt branch when it still is one
       // (see set_run_title / AGE-183).
       const run = await createRun(pid, "", agentId, model, base, mergeTarget, setSpawnProgress, worktree).catch((e) => {
-        toastError(e, `Couldn't start ${agentId}`);
+        reportFailure(e, `Couldn't start ${agentId}`);
         return null;
       });
       if (!run) return;

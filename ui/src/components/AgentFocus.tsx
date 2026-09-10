@@ -27,6 +27,7 @@ import QueuedMarker from "./QueuedMarker";
 import OverflowMenu from "./OverflowMenu";
 import { PinMark, pinItems } from "./AttentionMarker";
 import { TrashIcon, InboxIcon, TerminalIcon, PencilIcon, CheckIcon, BranchIcon } from "./icons";
+import { shortcutLabel } from "../lib/platform";
 
 const SHELL_MIN = 120;
 const SHELL_MAX = 640;
@@ -657,7 +658,7 @@ export default function AgentFocus({
                   <button className="btn-approve" title="Approve & merge this agent's branch" onClick={() => setApproveRun(focused.id)}>
                     <CheckIcon />
                     <span>Approve</span>
-                    <kbd className="btn-approve-kbd">⌘↵</kbd>
+                    <kbd className="btn-approve-kbd">{shortcutLabel("⌘↵")}</kbd>
                   </button>
                 )}
               </div>

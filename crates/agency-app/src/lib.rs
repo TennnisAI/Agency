@@ -6,6 +6,7 @@ mod commands;
 mod datadir;
 mod foreground;
 mod gates;
+mod installer;
 mod lifecycle;
 mod looper;
 mod menu;
@@ -18,6 +19,7 @@ mod preview_shot;
 mod resume_probe;
 mod sendq;
 mod state;
+mod tools;
 mod tray;
 mod update;
 mod web_ui;
@@ -80,13 +82,22 @@ pub fn run() {
     // which omits Homebrew etc., so spawning the daemon/agent CLIs fails with ENOENT.
     pathenv::repair();
     install_panic_hook();
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(log_plugin())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
-        .menu(|app| menu::build(app))
-        .on_menu_event(|app, event| menu::on_event(app, event))
+        .manage(installer::Installs::default());
+    // The native menu bar is macOS's (and, for now, Windows's). On Linux it
+    // would be a GTK strip inside the window, under the window manager's own
+    // title bar and above Agency's: three bars before any content. The Linux
+    // window is undecorated instead (tauri.linux.conf.json) and the frontend
+    // draws the menus and the window controls in its own title bar, routing
+    // every item through the same `menu` actions (see ui/src/lib/appMenu.ts).
+    #[cfg(not(target_os = "linux"))]
+    let builder =
+        builder.menu(|app| menu::build(app)).on_menu_event(|app, event| menu::on_event(app, event));
+    builder
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 // Don't quit — retreat to the menu bar. Quit happens only via the
@@ -343,9 +354,14 @@ pub fn run() {
             commands::write_file_base64,
             commands::import_file,
             commands::confirm_quit,
+            commands::request_quit,
             commands::agent_installed,
             commands::agent_cli_info,
             commands::create_install_terminal,
+            commands::tool_status,
+            commands::install_tool,
+            commands::install_agent,
+            commands::list_installs,
         ])
         .build(tauri::generate_context!())
         .expect("error while running Agency")

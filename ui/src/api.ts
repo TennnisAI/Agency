@@ -1232,6 +1232,36 @@ export const rememberedModel = (agent: string) =>
     .then((ms) => ms.find((m) => m.agent === agent)?.selected ?? null)
     .catch(() => null);
 
+/** How one of the tools Agency shells out to (git, npm, gh) stands on this machine. */
+export interface ToolStatus {
+  id: "git" | "node" | "gh";
+  label: string;
+  binary: string;
+  why: string;
+  required: boolean;
+  installed: boolean;
+  path: string | null;
+  plan:
+    | { kind: "run"; command: string; note: string | null }
+    | { kind: "manual"; command: string | null; hint: string; url: string };
+}
+
+/** A background install job: `tool:<id>` or `agent:<id>`. */
+export interface InstallJob {
+  key: string;
+  state: "running" | "succeeded" | "failed";
+  exitCode: number | null;
+  /** The last lines the installer printed. */
+  output: string;
+}
+
+export const toolStatus = () => invoke<ToolStatus[]>("tool_status");
+export const installTool = (id: string) => invoke<void>("install_tool", { id });
+export const installAgent = (agent: string, command: string) =>
+  invoke<void>("install_agent", { agent, command });
+export const listInstalls = () => invoke<InstallJob[]>("list_installs");
+export const requestQuit = () => invoke<void>("request_quit");
+
 export const agentOnboardingNeeded = () => invoke<boolean>("agent_onboarding_needed");
 export const listAgentCatalog = () => invoke<CatalogEntry[]>("list_agent_catalog");
 export const enableAgentProfiles = (ids: string[]) =>
@@ -1690,8 +1720,8 @@ export const setUiState = (focused: boolean, activeRun: string | null) =>
   invoke<void>("set_ui_state", { focused, activeRun });
 // Toggle the native menu's context-dependent items: project-gated (New
 // Agent/Terminal, Source) and agent-gated (the Agent menu).
-export const setMenuContext = (project: boolean, focusedAgent: boolean) =>
-  invoke<void>("set_menu_context", { project, focusedAgent });
+export const setMenuContext = (project: boolean, focusedAgent: boolean, gitless: boolean) =>
+  invoke<void>("set_menu_context", { project, focusedAgent, gitless });
 export const getNotifSettings = () => invoke<NotifSettings>("get_notif_settings");
 export const saveNotifSettings = (settings: NotifSettings) =>
   invoke<void>("save_notif_settings", { settings });

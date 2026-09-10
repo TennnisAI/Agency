@@ -362,6 +362,8 @@ pub fn run() {
             commands::install_tool,
             commands::install_agent,
             commands::list_installs,
+            commands::get_git_identity,
+            commands::set_git_identity,
         ])
         .build(tauri::generate_context!())
         .expect("error while running Agency")

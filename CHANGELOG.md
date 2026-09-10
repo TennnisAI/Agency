@@ -28,6 +28,14 @@ leaving the repository.
 - An npm install on a machine whose Node came from a system package no longer
   fails with a permissions error on the root-owned global prefix; the agent
   goes under `~/.local` instead.
+- Installing more than one dependency at once no longer makes them fail on each
+  other. System package installs share the machine's one package lock, so they
+  run in turn instead of colliding with "Could not get lock"; a tool waiting
+  its turn shows "Waiting…".
+- A first commit on a freshly installed git, which has no name or email set,
+  no longer just fails with "Author identity unknown". Agency asks for a name
+  and email, saves them for the repository, and makes the commit. The same
+  form appears wherever a commit hits that error, including Source Control.
 
 ### Projects
 

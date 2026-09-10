@@ -314,6 +314,7 @@ export default function AgentOnboarding({ onDone }: { onDone: () => void }) {
     }
     const job = jobFor(jobs, `agent:${id}`);
     if (!job) return null;
+    if (job.state === "queued") return { text: "Waiting…", state: "busy" };
     if (job.state === "running") return { text: "Installing…", state: "busy" };
     if (job.state === "failed") return { text: "Install failed", state: "bad" };
     return null;

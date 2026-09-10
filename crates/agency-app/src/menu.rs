@@ -17,9 +17,12 @@
 use tauri::menu::Menu;
 #[cfg(not(target_os = "linux"))]
 use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
+// `Emitter` (emit the menu action) and `Manager` (surface the window on a
+// click) are only used by `on_event`, which Linux does not build — the
+// frontend draws and routes its menu there.
+use tauri::{AppHandle, Wry};
 #[cfg(not(target_os = "linux"))]
-use tauri::Emitter;
-use tauri::{AppHandle, Manager, Wry};
+use tauri::{Emitter, Manager};
 
 /// Build the whole menu bar. Called once from `setup`. Not on Linux, where
 /// the frontend draws the menu (see lib.rs); `set_context` is still called

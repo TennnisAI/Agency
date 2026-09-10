@@ -2321,7 +2321,11 @@ pub async fn install_tool(
             return Err(format!("{} has to be installed by hand on this machine", tool.label()));
         }
     };
-    start_install(&app, &installs, &format!("tool:{id}"), &command)
+    let key = format!("tool:{id}");
+    // System package installs share a lane (one dpkg/rpm/pacman lock); a
+    // stand-alone install (xcode-select) runs in a lane of its own.
+    let lane = crate::tools::install_lane(tool, &platform).unwrap_or_else(|| key.clone());
+    start_install(&app, &installs, &key, &lane, &command)
 }
 
 /// Install an agent CLI in the background from its catalog line (the same
@@ -2335,7 +2339,13 @@ pub async fn install_agent(
     command: String,
 ) -> Result<(), String> {
     let script = crate::tools::install_script(&command);
-    start_install(&app, &installs, &format!("agent:{agent}"), &script)
+    let key = format!("agent:{agent}");
+    // The lane keys off the original command: `install_script` has by now
+    // rewritten an npm line into a prefix probe that no longer starts with
+    // `npm`. npm globals share one lane (one prefix, one cache); a curl
+    // installer runs in its own.
+    let lane = crate::tools::agent_install_lane(&command).unwrap_or_else(|| key.clone());
+    start_install(&app, &installs, &key, &lane, &script)
 }
 
 /// Every background install started this session, running or finished, so a
@@ -2347,16 +2357,41 @@ pub fn list_installs(
     installs.list()
 }
 
+/// The commit identity a repository would use, for prefilling the identity
+/// form when git reports it is missing.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitIdentity {
+    pub name: Option<String>,
+    pub email: Option<String>,
+}
+
+#[tauri::command]
+pub fn get_git_identity(repo_path: String) -> GitIdentity {
+    let (name, email) = agency_core::git::identity(std::path::Path::new(&repo_path));
+    GitIdentity { name, email }
+}
+
+/// Set a repository's commit identity (local scope; never the user's global
+/// git config). The walk-through for the "Author identity unknown" failure a
+/// fresh git install produces on the first commit.
+#[tauri::command]
+pub fn set_git_identity(repo_path: String, name: String, email: String) -> Result<(), String> {
+    agency_core::git::set_identity(std::path::Path::new(&repo_path), name.trim(), email.trim())
+        .map_err(|e| e.to_string())
+}
+
 fn start_install(
     app: &tauri::AppHandle,
     installs: &crate::installer::Installs,
     key: &str,
+    lane: &str,
     script: &str,
 ) -> Result<(), String> {
     use tauri::Emitter;
-    log::info!("install {key}: {script}");
+    log::info!("install {key} (lane {lane}): {script}");
     let handle = app.clone();
-    installs.start(key, &crate::state::install_shell(), script, move |status| {
+    installs.start(key, lane, &crate::state::install_shell(), script, move |status| {
         // Whatever just landed may sit in a directory that was not on PATH
         // at startup; adopt it before the UI re-probes.
         for dir in crate::pathenv::adopt_new_dirs() {

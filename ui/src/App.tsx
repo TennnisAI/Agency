@@ -4,6 +4,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { RunStoreProvider, useRuns } from "./store/runs";
 import TitleBar from "./components/TitleBar";
 import ToolInstallHost from "./components/ToolInstallHost";
+import GitIdentityHost from "./components/GitIdentityHost";
 import StatusBar from "./components/StatusBar";
 import ProjectTree from "./components/ProjectTree";
 import AgentsView from "./components/AgentsView";
@@ -651,6 +652,7 @@ function Shell() {
       />
       <Toasts />
       <ToolInstallHost />
+      <GitIdentityHost />
       {paletteOpen && (
         <CommandPalette
           onClose={() => setPaletteOpen(false)}
@@ -736,6 +738,7 @@ export default function App() {
         <AgentOnboarding onDone={() => setNeedsOnboarding(false)} />
         <Toasts />
         <ToolInstallHost />
+        <GitIdentityHost />
       </div>
     );
   }

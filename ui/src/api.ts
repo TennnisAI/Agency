@@ -1249,7 +1249,7 @@ export interface ToolStatus {
 /** A background install job: `tool:<id>` or `agent:<id>`. */
 export interface InstallJob {
   key: string;
-  state: "running" | "succeeded" | "failed";
+  state: "queued" | "running" | "succeeded" | "failed";
   exitCode: number | null;
   /** The last lines the installer printed. */
   output: string;
@@ -1260,6 +1260,13 @@ export const installTool = (id: string) => invoke<void>("install_tool", { id });
 export const installAgent = (agent: string, command: string) =>
   invoke<void>("install_agent", { agent, command });
 export const listInstalls = () => invoke<InstallJob[]>("list_installs");
+
+/** A repository's configured commit identity, for prefilling the form. */
+export interface GitIdentity { name: string | null; email: string | null }
+export const getGitIdentity = (repoPath: string) =>
+  invoke<GitIdentity>("get_git_identity", { repoPath });
+export const setGitIdentity = (repoPath: string, name: string, email: string) =>
+  invoke<void>("set_git_identity", { repoPath, name, email });
 export const requestQuit = () => invoke<void>("request_quit");
 
 export const agentOnboardingNeeded = () => invoke<boolean>("agent_onboarding_needed");

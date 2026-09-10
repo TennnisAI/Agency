@@ -4,6 +4,7 @@ import { Issue, Project, RunInfo, RepoReadiness, addProject, inspectRepo, listIs
 import { projectAccent, runName } from "../agents";
 import { inGitlessFolder, isWorking, needsAttention, pinnedFirst, runStatus } from "../lib/runstate";
 import { useRunMenu } from "../hooks/useRunMenu";
+import { notifyProjectsChanged } from "../lib/projectEvents";
 import RepoSetupDialog from "./RepoSetupDialog";
 import CloneDialog from "./CloneDialog";
 import HomeIssues from "./HomeIssues";
@@ -89,6 +90,15 @@ export default function HomeView({
   const [setup, setSetup] = useState<{ path: string; name: string; readiness: RepoReadiness } | null>(null);
   const [cloning, setCloning] = useState(false);
 
+  // The Projects pane owns its own copy of the project list, and a project
+  // added from here used to be invisible to it until the next add, close or
+  // restart (AGE-223): the pane refetches on its own "+" but had no way to
+  // hear about this one. Tell it, then open the new project.
+  function openCreated(p: Project) {
+    notifyProjectsChanged();
+    onOpenProject(p);
+  }
+
   // Same add-project flow as the Projects pane "+" control: pick a directory,
   // add it straight away if the repo is ready, otherwise route through the
   // setup dialog. A freshly added project is auto-opened.
@@ -100,7 +110,7 @@ export default function HomeView({
     try {
       const r = await inspectRepo(sel);
       if (r.state === "ready" && !r.dirty) {
-        onOpenProject(await addProject(name, sel));
+        openCreated(await addProject(name, sel));
       } else {
         setSetup({ path: sel, name, readiness: r });
       }
@@ -112,7 +122,7 @@ export default function HomeView({
   async function finishSetup() {
     if (!setup) return;
     try {
-      onOpenProject(await addProject(setup.name, setup.path));
+      openCreated(await addProject(setup.name, setup.path));
     } catch (e) {
       setAddError(String(e));
     }
@@ -125,7 +135,7 @@ export default function HomeView({
     const name = path.split("/").filter(Boolean).pop() ?? path;
     setAddError("");
     try {
-      onOpenProject(await addProject(name, path));
+      openCreated(await addProject(name, path));
     } catch (e) {
       setAddError(String(e));
     }

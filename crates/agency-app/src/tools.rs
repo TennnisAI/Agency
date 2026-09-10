@@ -314,6 +314,32 @@ pub fn install_plan(tool: Tool, platform: &Platform) -> InstallPlan {
     }
 }
 
+/// The serialization lane a tool's install shares with others, or `None` when
+/// it holds no lock anything else contends for.
+///
+/// A system package manager takes one machine-wide lock (dpkg's
+/// `lock-frontend`, rpm's `__db`, pacman's `db.lck`): two installs at once
+/// fail with "Could not get lock" (observed 2026-09-10, git and gh together),
+/// so every tool that installs through one shares a lane and waits its turn.
+/// Homebrew and winget serialize internally, but a shared lane spares the
+/// confusing mid-install error. `xcode-select --install` and the download
+/// fallbacks contend for nothing, so they run free.
+pub fn install_lane(tool: Tool, platform: &Platform) -> Option<String> {
+    match install_plan(tool, platform) {
+        InstallPlan::Run { .. } => {
+            platform.package_manager.map(|pm| format!("pkg:{}", pm.binary()))
+        }
+        InstallPlan::Manual { .. } => None,
+    }
+}
+
+/// The lane an agent CLI install shares. Every `npm install -g` writes the one
+/// global prefix and shares npm's cache, so parallel ones race; they share a
+/// lane. A curl-piped vendor installer contends for nothing and runs free.
+pub fn agent_install_lane(command: &str) -> Option<String> {
+    command.starts_with("npm install -g ").then(|| "npm-global".to_string())
+}
+
 /// Single-quote `s` for `sh -c`. The only character that needs care inside
 /// single quotes is the single quote itself.
 fn shell_quote(s: &str) -> String {
@@ -521,6 +547,31 @@ mod tests {
     #[test]
     fn shell_quote_survives_an_embedded_quote() {
         assert_eq!(shell_quote("it's"), "'it'\\''s'");
+    }
+
+    #[test]
+    fn every_system_package_install_shares_one_lane() {
+        // The dpkg-lock collision: git, node and gh all install through apt,
+        // so all three must land in the same lane and serialize.
+        let apt = detect_platform(Os::Linux, on(&["apt-get", "pkexec"]));
+        let lanes: Vec<_> = TOOLS.into_iter().map(|t| install_lane(t, &apt)).collect();
+        assert!(lanes.iter().all(|l| l.as_deref() == Some("pkg:apt-get")));
+
+        // Homebrew is one lane too; a mac without it installs git through
+        // xcode-select, which contends for nothing.
+        let brew = detect_platform(Os::MacOs, on(&["brew"]));
+        assert_eq!(install_lane(Tool::Node, &brew).as_deref(), Some("pkg:brew"));
+        let bare = detect_platform(Os::MacOs, on(&[]));
+        assert_eq!(install_lane(Tool::Git, &bare), None);
+    }
+
+    #[test]
+    fn npm_agents_share_a_lane_and_curl_installers_do_not() {
+        assert_eq!(
+            agent_install_lane("npm install -g @anthropic-ai/claude-code").as_deref(),
+            Some("npm-global")
+        );
+        assert_eq!(agent_install_lane("curl -fsSL https://x/install.sh | bash"), None);
     }
 
     #[test]

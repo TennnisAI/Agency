@@ -24,6 +24,7 @@ export default function ToolRow({
 }) {
   const [showOutput, setShowOutput] = useState(false);
   const running = job?.state === "running";
+  const queued = job?.state === "queued";
   const failed = job?.state === "failed";
   // A job that succeeded but left the tool missing is macOS's Command Line
   // Tools installer: the command returns once the window opens.
@@ -45,6 +46,8 @@ export default function ToolRow({
           <span className="tool-name">{tool.label}</span>
           {tool.installed ? (
             <span className="tool-state is-ok">Found</span>
+          ) : queued ? (
+            <span className="tool-state is-busy"><span className="spinner small" /> Waiting…</span>
           ) : running ? (
             <span className="tool-state is-busy"><span className="spinner small" /> Installing…</span>
           ) : failed ? (
@@ -81,7 +84,7 @@ export default function ToolRow({
         )}
       </div>
       <div className="tool-actions">
-        {!tool.installed && tool.plan.kind === "run" && !running && !finishedButMissing && (
+        {!tool.installed && tool.plan.kind === "run" && !running && !queued && !finishedButMissing && (
           <button type="button" className="btn-primary" onClick={onInstall}>
             {failed ? "Try again" : "Install"}
           </button>

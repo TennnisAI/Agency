@@ -13,7 +13,7 @@
 //! only reader is the failure dialog, which shows the last lines.
 
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::Read;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -27,6 +27,8 @@ pub const TAIL_LINES: usize = 40;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum JobState {
+    /// Accepted, waiting for another job in its lane to finish (see `start`).
+    Queued,
     Running,
     Succeeded,
     Failed,
@@ -38,7 +40,7 @@ pub enum JobState {
 pub struct JobStatus {
     pub key: String,
     pub state: JobState,
-    /// `None` while running, or when the process died to a signal.
+    /// `None` while running or queued, or when the process died to a signal.
     pub exit_code: Option<i32>,
     pub output: String,
 }
@@ -49,21 +51,51 @@ struct Job {
     output: Arc<Mutex<String>>,
 }
 
-/// The job table, managed by Tauri for the process's lifetime. The map is
-/// shared with each job's thread, which writes the exit back into it.
+/// A job accepted into a lane but not yet spawned.
+struct Pending {
+    key: String,
+    shell: String,
+    script: String,
+    output: Arc<Mutex<String>>,
+    on_exit: Box<dyn FnOnce(JobStatus) + Send>,
+}
+
+/// One serialization lane: at most one job runs, the rest wait in order.
+#[derive(Default)]
+struct Lane {
+    running: bool,
+    queue: VecDeque<Pending>,
+}
+
+type Jobs = Arc<Mutex<HashMap<String, Job>>>;
+type Lanes = Arc<Mutex<HashMap<String, Lane>>>;
+
+/// Background installs, managed by Tauri for the process's lifetime.
+///
+/// Jobs in the same lane run one at a time; different lanes run in parallel.
+/// The lane exists because system package managers hold a single machine-wide
+/// lock: two `apt-get install` at once fail with "Could not get lock ... held
+/// by process N" (observed 2026-09-10, git and gh installed together), and so
+/// do parallel `npm install -g` to one prefix. The caller names the lane
+/// (`commands::start_install`); a job with no shared resource gets its own key
+/// as its lane and so never waits.
 #[derive(Default)]
 pub struct Installs {
-    jobs: Arc<Mutex<HashMap<String, Job>>>,
+    jobs: Jobs,
+    lanes: Lanes,
 }
 
 impl Installs {
-    /// Start `script` under `shell -lc` as job `key`. Refused while a job with
-    /// that key is still running: two installs of one thing racing each
-    /// other is how a half-written `node_modules` happens. `on_exit` runs on
-    /// the job's own thread once the process is gone, with the final status.
+    /// Accept `script` (run under `shell -lc`) as job `key` in serialization
+    /// lane `lane`. Runs at once if the lane is idle, else waits its turn.
+    /// Refused while a job with the same `key` is still queued or running: two
+    /// installs of one thing racing each other is how a half-written
+    /// `node_modules` happens. `on_exit` runs on the job's own thread once the
+    /// process is gone, with the final status.
     pub fn start(
         &self,
         key: &str,
+        lane: &str,
         shell: &str,
         script: &str,
         on_exit: impl FnOnce(JobStatus) + Send + 'static,
@@ -71,59 +103,37 @@ impl Installs {
         let output = Arc::new(Mutex::new(String::new()));
         {
             let mut jobs = self.jobs.lock().unwrap();
-            if jobs.get(key).is_some_and(|j| j.state == JobState::Running) {
+            if jobs
+                .get(key)
+                .is_some_and(|j| matches!(j.state, JobState::Running | JobState::Queued))
+            {
                 return Err(format!("{key} is already installing"));
             }
             jobs.insert(
                 key.to_string(),
-                Job { state: JobState::Running, exit_code: None, output: output.clone() },
+                Job { state: JobState::Queued, exit_code: None, output: output.clone() },
             );
         }
-        let mut child = Command::new(shell)
-            .arg("-lc")
-            .arg(script)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| {
-                self.jobs.lock().unwrap().remove(key);
-                format!("could not start {shell}: {e}")
-            })?;
-        let stdout = child.stdout.take();
-        let stderr = child.stderr.take();
-        let readers =
-            [stdout.map(|s| pump(s, output.clone())), stderr.map(|s| pump(s, output.clone()))];
-        let key = key.to_string();
-        let table = self.jobs.clone();
-        std::thread::Builder::new()
-            .name(format!("install {key}"))
-            .spawn(move || {
-                let status = child.wait().ok();
-                for r in readers.into_iter().flatten() {
-                    let _ = r.join();
-                }
-                let exit_code = status.and_then(|s| s.code());
-                let state = if status.is_some_and(|s| s.success()) {
-                    JobState::Succeeded
-                } else {
-                    JobState::Failed
-                };
-                {
-                    let mut jobs = table.lock().unwrap();
-                    if let Some(job) = jobs.get_mut(&key) {
-                        job.state = state;
-                        job.exit_code = exit_code;
-                    }
-                }
-                let output = tail(&output.lock().unwrap(), TAIL_LINES);
-                on_exit(JobStatus { key, state, exit_code, output });
-            })
-            .map_err(|e| format!("could not start the install thread: {e}"))?;
+        let pending = Pending {
+            key: key.to_string(),
+            shell: shell.to_string(),
+            script: script.to_string(),
+            output,
+            on_exit: Box::new(on_exit),
+        };
+        let mut lanes = self.lanes.lock().unwrap();
+        let l = lanes.entry(lane.to_string()).or_default();
+        if l.running {
+            l.queue.push_back(pending);
+        } else {
+            l.running = true;
+            drop(lanes);
+            spawn_pending(self.jobs.clone(), self.lanes.clone(), lane.to_string(), pending);
+        }
         Ok(())
     }
 
-    /// Every job started this session, running or finished.
+    /// Every job started this session, running, queued or finished.
     pub fn list(&self) -> Vec<JobStatus> {
         let jobs = self.jobs.lock().unwrap();
         let mut out: Vec<JobStatus> = jobs
@@ -137,6 +147,79 @@ impl Installs {
             .collect();
         out.sort_by(|a, b| a.key.cmp(&b.key));
         out
+    }
+}
+
+/// Spawn `p`, and when it finishes run the next job waiting in `lane` (or free
+/// the lane). A free function over the shared maps, not a method, so the job's
+/// own thread can advance the lane without a handle to `Installs`.
+fn spawn_pending(jobs: Jobs, lanes: Lanes, lane: String, p: Pending) {
+    let Pending { key, shell, script, output, on_exit } = p;
+    if let Some(job) = jobs.lock().unwrap().get_mut(&key) {
+        job.state = JobState::Running;
+    }
+    let mut child = match Command::new(&shell)
+        .arg("-lc")
+        .arg(&script)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            // Could not even start the shell: record the failure, report it,
+            // then let the lane move on rather than wedging every queued job.
+            let msg = format!("could not start {shell}: {e}");
+            if let Some(job) = jobs.lock().unwrap().get_mut(&key) {
+                job.state = JobState::Failed;
+            }
+            on_exit(JobStatus { key, state: JobState::Failed, exit_code: None, output: msg });
+            advance_lane(jobs, lanes, lane);
+            return;
+        }
+    };
+    let readers = [
+        child.stdout.take().map(|s| pump(s, output.clone())),
+        child.stderr.take().map(|s| pump(s, output.clone())),
+    ];
+    let _ = std::thread::Builder::new().name(format!("install {key}")).spawn(move || {
+        let status = child.wait().ok();
+        for r in readers.into_iter().flatten() {
+            let _ = r.join();
+        }
+        let exit_code = status.and_then(|s| s.code());
+        let state = if status.is_some_and(|s| s.success()) {
+            JobState::Succeeded
+        } else {
+            JobState::Failed
+        };
+        if let Some(job) = jobs.lock().unwrap().get_mut(&key) {
+            job.state = state;
+            job.exit_code = exit_code;
+        }
+        let tailed = tail(&output.lock().unwrap(), TAIL_LINES);
+        on_exit(JobStatus { key, state, exit_code, output: tailed });
+        advance_lane(jobs, lanes, lane);
+    });
+}
+
+/// Run the next job in `lane`, or mark the lane idle when its queue is empty.
+fn advance_lane(jobs: Jobs, lanes: Lanes, lane: String) {
+    let next = {
+        let mut map = lanes.lock().unwrap();
+        match map.get_mut(&lane).and_then(|l| l.queue.pop_front()) {
+            Some(p) => Some(p),
+            None => {
+                if let Some(l) = map.get_mut(&lane) {
+                    l.running = false;
+                }
+                None
+            }
+        }
+    };
+    if let Some(p) = next {
+        spawn_pending(jobs, lanes, lane, p);
     }
 }
 
@@ -218,7 +301,7 @@ mod tests {
         let installs = Installs::default();
         let (tx, rx) = std::sync::mpsc::channel();
         installs
-            .start("test:ok", "/bin/sh", "echo one; echo two >&2; exit 0", move |s| {
+            .start("test:ok", "lane:a", "/bin/sh", "echo one; echo two >&2; exit 0", move |s| {
                 tx.send(s).unwrap();
             })
             .unwrap();
@@ -235,7 +318,7 @@ mod tests {
         let installs = Installs::default();
         let (tx, rx) = std::sync::mpsc::channel();
         installs
-            .start("test:fail", "/bin/sh", "echo nope >&2; exit 3", move |s| {
+            .start("test:fail", "lane:a", "/bin/sh", "echo nope >&2; exit 3", move |s| {
                 tx.send(s).unwrap();
             })
             .unwrap();
@@ -250,12 +333,53 @@ mod tests {
         let installs = Installs::default();
         let (tx, rx) = std::sync::mpsc::channel();
         installs
-            .start("test:busy", "/bin/sh", "sleep 2", move |s| {
+            .start("test:busy", "lane:a", "/bin/sh", "sleep 2", move |s| {
                 tx.send(s).unwrap();
             })
             .unwrap();
-        let err = installs.start("test:busy", "/bin/sh", "true", |_| {}).unwrap_err();
+        let err = installs.start("test:busy", "lane:a", "/bin/sh", "true", |_| {}).unwrap_err();
         assert!(err.contains("already installing"), "{err}");
         let _ = rx.recv_timeout(std::time::Duration::from_secs(10));
+    }
+
+    #[test]
+    fn jobs_in_one_lane_run_one_at_a_time_and_keep_their_order() {
+        // Two jobs, same lane, each appends to a shared file. The lane must run
+        // the first to completion before the second starts, so the file ends
+        // "a\nb" and never interleaves — the apt-lock collision this prevents.
+        let installs = Installs::default();
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("order");
+        let f = f.to_string_lossy().to_string();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let script = |tag: &str| {
+            format!("printf 'start-{tag}\\n' >> {f}; sleep 0.3; printf 'end-{tag}\\n' >> {f}")
+        };
+        for tag in ["a", "b"] {
+            let tx = tx.clone();
+            installs
+                .start(&format!("t:{tag}"), "shared", "/bin/sh", &script(tag), move |s| {
+                    tx.send(s.key).unwrap();
+                })
+                .unwrap();
+        }
+        // The second was queued behind the first, not run in parallel.
+        assert!(installs.list().iter().any(|j| j.key == "t:b" && j.state == JobState::Queued));
+        let first = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+        let second = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+        assert_eq!((first.as_str(), second.as_str()), ("t:a", "t:b"));
+        let body = std::fs::read_to_string(dir.path().join("order")).unwrap();
+        assert_eq!(body, "start-a\nend-a\nstart-b\nend-b\n", "the lane interleaved");
+    }
+
+    #[test]
+    fn separate_lanes_run_in_parallel() {
+        // Two long jobs in different lanes are both Running at once.
+        let installs = Installs::default();
+        installs.start("p:1", "lane:1", "/bin/sh", "sleep 1", |_| {}).unwrap();
+        installs.start("p:2", "lane:2", "/bin/sh", "sleep 1", |_| {}).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let running = installs.list().into_iter().filter(|j| j.state == JobState::Running).count();
+        assert_eq!(running, 2, "different lanes should not serialize");
     }
 }

@@ -20,6 +20,7 @@ import { formatSize } from "./git/binary";
 import { useModalKeys } from "../hooks/useModalKeys";
 import ModalBackdrop from "./ModalBackdrop";
 import { missingToolFor, offerToolInstall } from "../lib/missingTool";
+import { GIT_IDENTITY_SET_EVENT, needsGitIdentity, offerGitIdentity } from "../lib/gitIdentity";
 
 type Props = {
   readiness: RepoReadiness;
@@ -69,6 +70,21 @@ export default function RepoSetupDialog({ readiness, context, repoPath, onResolv
     };
   }, [repoPath]);
 
+  // Retry the commit the moment the identity is saved (the host fires this),
+  // so the user sees the dialog they were in simply proceed. Declared before
+  // the early return below so the hook order never changes; `doCommit` is
+  // assigned into the ref further down, once it exists.
+  const doCommitRef = useRef<() => Promise<void>>(async () => {});
+  useEffect(() => {
+    const onSet = (e: Event) => {
+      if ((e as CustomEvent<{ repoPath: string }>).detail?.repoPath === repoPath) {
+        void doCommitRef.current();
+      }
+    };
+    window.addEventListener(GIT_IDENTITY_SET_EVENT, onSet);
+    return () => window.removeEventListener(GIT_IDENTITY_SET_EVENT, onSet);
+  }, [repoPath]);
+
   if (view.kind === "ready") return null;
 
   async function doInit() {
@@ -98,9 +114,23 @@ export default function RepoSetupDialog({ readiness, context, repoPath, onResolv
       // uncommitted changes we don't touch it.
       await commitRepo(repoPath, view.kind === "commit", ignorePaths(), setProgress);
       if (!cancelled.current) onResolved();
-    } catch (e) { if (!cancelled.current) setError(String(e)); }
+    } catch (e) {
+      if (cancelled.current) return;
+      // A fresh git has no commit identity, so the first commit fails with
+      // "Author identity unknown". Walk the user through name + email rather
+      // than showing that; the host announces when it's set and we retry.
+      if (needsGitIdentity(e)) {
+        setError("Git needs your name and email before it can make a commit.");
+        offerGitIdentity(repoPath, "Set the name and email git signs commits with, then this commit runs.");
+      } else {
+        setError(String(e));
+      }
+    }
     finally { setBusy(false); setProgress(null); }
   }
+  // Keep the retry effect (declared above the early return) pointed at the
+  // live doCommit.
+  doCommitRef.current = doCommit;
 
   // The large files the user chose to leave out, if any.
   function ignorePaths(): string[] {

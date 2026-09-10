@@ -412,18 +412,59 @@ impl Emulator {
             data.extend_from_slice(b"\x1b[?1004h");
         }
 
-        // Where the cursor lands on the *client's* screen, which is not `cy`.
-        // The paint starts from home and every row above consumes one row, so
-        // the client scrolls once for each row past its last: what the snapshot
-        // drew sits `start + scrolled` rows off the emulator's own numbering,
-        // and sending `cy` straight through put the cursor above the newest
-        // line whenever the two disagreed. Rows painted is `end - start`; the
-        // last of them does not advance, hence `rows` and not `rows - 1`.
+        // Put the cursor back, counted up from the end of the paint rather than
+        // down from the top of the client's screen. The paint leaves it on the
+        // last row it drew, so the row the child left it on is a fixed number
+        // of rows above that one — the same number whatever height the client
+        // is and however far the paint scrolled it. Everything else above is
+        // height-independent already (rows scroll, modes are modes), so this
+        // one move was the whole of the frame's dependence on the client's
+        // *height*.
+        //
+        // Its width it still depends on, and that is not fixed here. `up`
+        // counts grid rows, and a grid row is one client row only while the
+        // client is `self.cols` wide: wider, and a soft-wrapped row does not
+        // wrap there, so it and its continuation merge into one row; narrower,
+        // and a row longer than the client splits into two. Rows above the
+        // cursor are free, since the count starts below them, but every row
+        // between the cursor and the end of the paint that disagrees moves the
+        // cursor one row off. Observed both ways against a fresh emulator: a
+        // 34-column status row under the input row brought the cursor back onto
+        // the status row in a 30-column client, and a soft-wrapped row under it
+        // brought the cursor back a row high in a client wider than the frame.
+        // A client narrower than the emulator is the normal case, not the odd
+        // one (see the note on `content_end`). The fix would be hard-breaking
+        // every row, which costs the reflow the CRLF note above exists to keep,
+        // so the frame stays pinned to `snap.cols` and the pane's fit is what
+        // has to agree.
+        //
+        // AGE-222: it used to be a single absolute CUP, whose row was worked
+        // out from `self.rows` — the height the daemon was last *told*, at
+        // attach. That is only the pane's height until the pane fits again, and
+        // a pane refits on its own: it watches its container with a
+        // ResizeObserver, and `FitAddon.fit()` is a silent no-op until the
+        // renderer has measured a cell, so an early fit can leave xterm's
+        // placeholder geometry standing. A frame drawn for a screen 16 rows
+        // shorter than the pane it landed in put the cursor 16 rows above the
+        // child's last line, and cursor-agent — which erases the frame it drew
+        // last relative to the cursor and draws it again the moment it is told
+        // focus came back — then painted its input box and status bar over the
+        // middle of the transcript, leaving the real ones untouched at the
+        // bottom. Two input bars, and the typing going into the top one.
+        let up = end - 1 - cy;
+        // Column first: CHA also clears the deferred wrap a full-width last row
+        // leaves the client holding, which is the state CUU would carry up.
+        data.extend_from_slice(format!("\x1b[{}G", cx + 1).as_bytes());
+        if up > 0 {
+            data.extend_from_slice(format!("\x1b[{up}A").as_bytes());
+        }
+        // The same row, numbered from the top, for the frame header. Nothing
+        // reads it today — the pane takes its cursor from the stream above —
+        // and it is only true for a client of exactly `snap.rows` rows, which
+        // is why the stream stopped saying it this way.
         let scrolled = ((end - start) as usize).saturating_sub(self.rows as usize) as i32;
         let bottom = (self.rows as i32 - 1).max(0);
         let cy = (cy - start - scrolled).clamp(0, bottom) as u16;
-        // Position the cursor (1-based) after the repaint.
-        data.extend_from_slice(format!("\x1b[{};{}H", cy + 1, cx + 1).as_bytes());
         // Hide the hardware cursor if the child had (full-screen TUIs draw their
         // own). A fresh client shows it by default, which is the phantom cursor
         // that appears where input isn't going.
@@ -853,12 +894,43 @@ mod tests {
         let mut b = Emulator::new(snap.cols, snap.rows);
         b.feed(&snap.data);
         assert_eq!(cursor_view(&b), cursor_view(a), "cursor moved on reattach: {what}");
-        // And the frame's own cursor fields describe the same place, since a
-        // client is entitled to read them instead of the CUP in the stream.
+        // And the frame header's own cursor fields describe the same place. No
+        // client reads them — the pane takes the cursor from the stream — but a
+        // header that says something the frame does not is a trap for the one
+        // that starts to.
         assert_eq!(
             (snap.cx as usize, snap.cy as i32),
             (b.term.grid().cursor.point.column.0, b.term.grid().cursor.point.line.0),
             "snapshot cx/cy disagree with the stream it carries: {what}",
+        );
+    }
+
+    #[test]
+    fn snapshot_keeps_the_cursor_on_its_line_in_a_client_taller_than_the_frame() {
+        // AGE-222. A frame is drawn for the height the daemon was told at
+        // attach, and lands in whatever height the pane has by then: a pane
+        // watches its container and refits on its own, and `FitAddon.fit()` is
+        // a silent no-op until xterm has measured a cell, so the two part by
+        // however many rows the pane gained in between. Counted from the top of
+        // the screen the cursor then came back that many rows high, and
+        // cursor-agent redrew its input box and status bar there — over the
+        // middle of the transcript, with the real ones still at the bottom.
+        let mut e = Emulator::new(40, 10);
+        for i in 0..30 {
+            e.feed(format!("line{i}\r\n").as_bytes());
+        }
+        // A TUI's footer, with the cursor parked at the top of it: that is the
+        // row the next frame erases from, and the row this has to restore.
+        e.feed(b"> type here\r\nstatus");
+        e.feed(b"\x1b[1A\r");
+        let snap = e.snapshot();
+
+        let mut tall = Emulator::new(snap.cols, snap.rows + 16);
+        tall.feed(&snap.data);
+        assert_eq!(
+            cursor_view(&tall),
+            cursor_view(&e),
+            "the cursor came back off its line in a client taller than the frame",
         );
     }
 
@@ -1349,13 +1421,15 @@ mod tests {
     }
 
     /// Default-deny: the exact sequences `snapshot` declares it emits, plus the
-    /// two parameterised shapes (SGR and cursor position). Nothing here provokes
-    /// a reply from a client except `?1004h`; see the note on `snapshot`.
+    /// three parameterised shapes (SGR, and the column-then-up pair that puts
+    /// the cursor back). Nothing here provokes a reply from a client except
+    /// `?1004h`; see the note on `snapshot`.
     fn is_declared(seq: &[u8]) -> bool {
-        const EXACT: [&[u8]; 15] = [
+        const EXACT: [&[u8]; 16] = [
             b"\x1b[?1049h",
             b"\x1b[2J",
             b"\x1b[3J",
+            b"\x1b[H",
             b"\x1b[?1h",
             b"\x1b=",
             b"\x1b[?2004h",
@@ -1387,8 +1461,10 @@ mod tests {
             // SGR. `:` as well as `;`, for the sub-parameter of an underline
             // style (`4:2`); see `underline_sgr`.
             b'm' => params.iter().all(|b| b.is_ascii_digit() || matches!(b, b';' | b':')),
-            // Cursor position, which has no sub-parameters.
-            b'H' => params.iter().all(|b| b.is_ascii_digit() || *b == b';'),
+            // The cursor's column (CHA) and the rows it goes up (CUU). One
+            // parameter each, no sub-parameters, and an absolute CUP is no
+            // longer among them — see the note above the pair in `snapshot`.
+            b'G' | b'A' => !params.is_empty() && params.iter().all(u8::is_ascii_digit),
             _ => false,
         }
     }

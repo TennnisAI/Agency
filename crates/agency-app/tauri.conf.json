@@ -17,6 +17,12 @@
   },
   "bundle": {
     "active": true,
+    "homepage": "https://getagency.dev/",
+    "license": "Apache-2.0",
+    "copyright": "Copyright 2026 Nicholas Counts",
+    "category": "DeveloperTool",
+    "shortDescription": "Run coding agents side by side, each in its own git worktree",
+    "longDescription": "Agency runs AI coding agents in parallel on your own machine. Each agent gets\na real terminal, its own git worktree and its own branch, so agents never step\non each other or on your checkout.\n\nGive an agent a task, watch it work live, review what it changed and merge the\nruns you like. Agency launches the agent command line tools you already have\ninstalled; the agents are third party and talk to their own providers.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -25,6 +31,33 @@
       "icons/icon.ico"
     ],
     "externalBin": ["../../target/release/agency-termd"],
+    "linux": {
+      "deb": {
+        "section": "devel",
+        "depends": ["libc6 (>= 2.34)"],
+        "files": {
+          "/usr/share/metainfo/build.agency.app.metainfo.xml": "linux/build.agency.app.metainfo.xml",
+          "/usr/share/doc/agency/copyright": "linux/copyright",
+          "/usr/share/doc/agency/LICENSE": "../../LICENSE",
+          "/usr/share/doc/agency/NOTICE": "../../NOTICE",
+          "/usr/share/doc/agency/THIRD-PARTY.md": "../../THIRD-PARTY.md"
+        }
+      },
+      "rpm": {
+        "files": {
+          "/usr/share/metainfo/build.agency.app.metainfo.xml": "linux/build.agency.app.metainfo.xml",
+          "/usr/share/doc/agency/copyright": "linux/copyright",
+          "/usr/share/doc/agency/LICENSE": "../../LICENSE",
+          "/usr/share/doc/agency/NOTICE": "../../NOTICE",
+          "/usr/share/doc/agency/THIRD-PARTY.md": "../../THIRD-PARTY.md"
+        }
+      },
+      "appimage": {
+        "files": {
+          "/usr/share/metainfo/build.agency.app.metainfo.xml": "linux/build.agency.app.metainfo.xml"
+        }
+      }
+    },
     "macOS": {
       "signingIdentity": "Developer ID Application: Nicholas Counts (9XD5R448N5)",
       "hardenedRuntime": true,

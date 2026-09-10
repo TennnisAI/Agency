@@ -13,7 +13,7 @@ exist until the release is published.
 **Before tagging**
 
 1. Land everything the release should carry on `main`.
-2. Bump the version in the four files below.
+2. Bump the version in the five files below.
 3. `cargo update -p agency-core -p agency-app` to move `Cargo.lock`.
 4. `cargo fmt` and `cargo test -p agency-core -p agency-app`. Build the sidecar
    first (`./crates/agency-app/build-termd.sh`) or the tests that need a daemon
@@ -67,7 +67,7 @@ publishing is the whole of it.
 ## Bumping the version
 
 There is no single source of truth for the version, and nothing in CI compares
-these files, so bump all four by hand:
+these files, so bump all five by hand:
 
 | File | Why |
 | --- | --- |
@@ -75,10 +75,12 @@ these files, so bump all four by hand:
 | `crates/agency-app/Cargo.toml` | `AppState::version()`, which the update check compares to the latest release tag |
 | `crates/agency-core/Cargo.toml` | the daemon's own `CARGO_PKG_VERSION`, reported over the preview RPC |
 | `ui/package.json` | cosmetic, but drifts silently if skipped |
+| `crates/agency-app/linux/build.agency.app.metainfo.xml` | add a `<release>` at the top; it is the version Linux software centres report for the installed package |
 
 `tests/smoke.rs` fails when the first two have drifted apart, which is the pair
 that actually matters: one names the DMG, the other is what the app reports
-about itself. The other two are on you.
+about itself. `tests/linux_packaging.rs` fails when the metainfo's newest
+release is not the bundle version. The other two are on you.
 
 The site carries the version twice, and one of them is a **hard-coded DMG
 filename**: `site/download.html` links

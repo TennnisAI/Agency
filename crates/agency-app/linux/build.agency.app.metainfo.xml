@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  AppStream metadata for the Linux packages. Installed to
+  /usr/share/metainfo/ by the deb, rpm and AppImage bundlers (the `files` maps
+  in tauri.conf.json), and read by every software centre once the package is
+  on the machine: it is where the name, icon, developer, licence, description
+  and screenshot on the "installed" page come from.
+
+  It does not change what a software centre shows *before* install. Observed
+  on Ubuntu 24.04's App Center (2026-09-08): for a local .deb the page shows
+  the package name as the title, "Unknown publisher", a placeholder icon and a
+  third-party warning. Each of those is hard-coded for every local .deb in
+  that app; the only fields it reads from the package are the summary, the
+  long description, the homepage and the size. Those come from the control
+  file, not from here.
+
+  Keep in step with tauri.conf.json: `id` is the identifier, `summary` is
+  shortDescription, the newest `release` is the version. tests/linux_packaging.rs
+  pins all three.
+-->
+<component type="desktop-application">
+  <id>build.agency.app</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>Apache-2.0</project_license>
+  <name>Agency</name>
+  <summary>Run coding agents side by side, each in its own git worktree</summary>
+  <developer id="dev.getagency">
+    <name>Nicholas Counts</name>
+  </developer>
+  <description>
+    <p>
+      Agency runs AI coding agents in parallel on your own machine. Each agent
+      gets a real terminal, its own git worktree and its own branch, so agents
+      never step on each other or on your checkout.
+    </p>
+    <p>
+      Give an agent a task, watch it work live, review what it changed and
+      merge the runs you like. Agency launches the agent command line tools you
+      already have installed; the agents are third party and talk to their own
+      providers.
+    </p>
+  </description>
+  <launchable type="desktop-id">Agency.desktop</launchable>
+  <provides>
+    <binary>Agency</binary>
+  </provides>
+  <url type="homepage">https://getagency.dev/</url>
+  <url type="bugtracker">https://github.com/TennnisAI/Agency/issues</url>
+  <url type="vcs-browser">https://github.com/TennnisAI/Agency</url>
+  <categories>
+    <category>Development</category>
+  </categories>
+  <keywords>
+    <keyword>agents</keyword>
+    <keyword>coding</keyword>
+    <keyword>git</keyword>
+    <keyword>worktree</keyword>
+    <keyword>terminal</keyword>
+  </keywords>
+  <screenshots>
+    <screenshot type="default">
+      <image>https://getagency.dev/assets/img/shot-overview.webp</image>
+      <caption>The all-projects overview, with several agents running side by side</caption>
+    </screenshot>
+  </screenshots>
+  <content_rating type="oars-1.1" />
+  <releases>
+    <release version="0.1.1" date="2026-09-08" />
+    <release version="0.1.0" date="2026-09-06" />
+  </releases>
+</component>

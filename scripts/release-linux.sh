@@ -130,10 +130,12 @@ if [[ "$(uname -s)" != "Linux" && "$NATIVE" -eq 0 ]]; then
       # away — which is a bad trade for quiet output in a build script.
       apt() { apt-get "$@" >>/tmp/apt.log 2>&1 || { echo "apt failed:"; tail -40 /tmp/apt.log; exit 1; }; }
       apt update -qq
+      # appstream and lintian are for the verification step, not the build;
+      # see verify_deb below for what each catches.
       apt install -y --no-install-recommends \
         libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
         librsvg2-dev libsoup-3.0-dev pkg-config file desktop-file-utils \
-        curl ca-certificates xdg-utils
+        curl ca-certificates xdg-utils appstream lintian
       # Node from nodesource, not the nodejs package in bookworm: that one is
       # Node 18, and pnpm 11 refuses to run on anything below 22.13 ("This
       # version of pnpm requires at least Node.js v22.13"). 22 is also what the
@@ -142,7 +144,10 @@ if [[ "$(uname -s)" != "Linux" && "$NATIVE" -eq 0 ]]; then
       apt install -y --no-install-recommends nodejs
       npm install -g pnpm@11 >>/tmp/apt.log 2>&1
       mkdir -p /work && cd /work && tar xf /stage/src.tar
-      /work/scripts/release-linux.sh --native
+      # Passed as a flag, not left to the exported variable: the script sets
+      # its own default before parsing arguments, so `--bundles deb` on the
+      # outside used to build all three formats on the inside.
+      /work/scripts/release-linux.sh --native --bundles "$BUNDLES"
       echo "==> Copying packages out"
       find /work/target/release/bundle -maxdepth 2 -type f \
         \( -name "*.deb" -o -name "*.AppImage" -o -name "*.rpm" \) \
@@ -155,7 +160,9 @@ if [[ "$(uname -s)" != "Linux" && "$NATIVE" -eq 0 ]]; then
   ls -1sh "$OUT" | sed "s|^|  |"
   echo
   echo "Install one on a Linux box with:"
-  echo "  sudo apt install ./$(basename "$(find "$OUT" -name '*.deb' | head -n1)" 2>/dev/null || echo 'Agency_*.deb')"
+  # Newest by name, not first found: target/linux/ keeps earlier versions, and
+  # the hint used to name the 0.1.0 package after building 0.1.1.
+  echo "  sudo apt install ./$(basename "$(find "$OUT" -name '*.deb' | sort -V | tail -n1)" 2>/dev/null || echo 'Agency_*.deb')"
   exit 0
 fi
 
@@ -165,6 +172,25 @@ if [[ "$(uname -s)" != "Linux" ]]; then
   echo "       so a Linux package can only be built on Linux." >&2
   exit 1
 fi
+
+# Everything the verification step needs, checked before the twenty-minute
+# build rather than after it. binutils is readelf; the rest are named after
+# their apt packages.
+for tool in dpkg-deb readelf desktop-file-validate appstreamcli lintian; do
+  command -v "$tool" >/dev/null 2>&1 || {
+    echo "error: $tool not found. The verification step needs:" >&2
+    echo "       apt install binutils dpkg desktop-file-utils appstream lintian" >&2
+    exit 1
+  }
+done
+
+# Strip the release binaries. Nothing in the workspace sets a release profile,
+# so the first package carried 32 MB of symbols in /usr/bin/Agency and lintian
+# flagged both binaries as unstripped-binary-or-object. Set here rather than in
+# Cargo.toml so it is a Linux packaging decision and not a change to what the
+# macOS build produces; cargo reads it for build-termd.sh and `tauri build`
+# alike.
+export CARGO_PROFILE_RELEASE_STRIP=true
 
 echo "==> [1/4] Installing frontend dependencies"
 pnpm --dir ui install --frozen-lockfile
@@ -189,12 +215,63 @@ if [[ "${#PACKAGES[@]}" -eq 0 ]]; then
   exit 1
 fi
 
+# What a .deb has to get right before anyone installs it. Each check is here
+# because the first package to reach an Ubuntu desktop (2026-09-08) got it
+# wrong and the build was green regardless; none of these fails at build time
+# on its own.
+verify_deb() {
+  local pkg="$1" scratch
+  scratch="$(mktemp -d)"
+  # A .deb whose control file is unreadable fails on install rather than at
+  # build time, which is the wrong end to find out.
+  dpkg-deb --info "$pkg" > "$scratch/info" \
+    || { echo "error: $pkg is not a readable .deb" >&2; exit 1; }
+  # The whole tree, not a member list: the bundler writes members as
+  # `usr/...`, and a `./usr/...` pattern is "Not found in archive".
+  dpkg-deb -x "$pkg" "$scratch"
+
+  # The glibc floor. A binary runs on any glibc at least as new as the one it
+  # was linked against and on none older, and nothing declares that unless we
+  # do: a package built on glibc 2.39 installed on Debian 12 (2.36) without a
+  # word and died at launch with "version `GLIBC_2.39' not found". With a libc6
+  # floor in Depends the same package refuses to install instead, which is the
+  # right end. The floor is typed by hand into tauri.conf.json, so check it
+  # against what the shipped binaries actually import.
+  local need declared
+  need="$(readelf -V "$scratch"/usr/bin/* | grep -o 'GLIBC_[0-9]\+\.[0-9]\+' \
+    | sed 's/GLIBC_//' | sort -V | tail -n1)"
+  declared="$(grep -o 'libc6 (>= [0-9.]*)' "$scratch/info" | grep -o '[0-9.]*)$' | tr -d ')' || true)"
+  if [[ -z "$declared" ]]; then
+    echo "error: $pkg does not depend on libc6; the binaries need GLIBC_$need." >&2
+    echo "       Add \"libc6 (>= $need)\" to bundle.linux.deb.depends in tauri.conf.json." >&2
+    exit 1
+  fi
+  if dpkg --compare-versions "$declared" lt "$need"; then
+    echo "error: $pkg declares libc6 (>= $declared) but its binaries need GLIBC_$need." >&2
+    echo "       Raise the floor in tauri.conf.json, or build on an older image." >&2
+    exit 1
+  fi
+  echo "    glibc floor: declared $declared, binaries need $need"
+
+  # The desktop file and the AppStream metainfo are what a software centre
+  # reads; a malformed one is a launcher that does not appear, or an
+  # "installed" page with no name and a placeholder icon.
+  desktop-file-validate "$scratch"/usr/share/applications/*.desktop
+  appstreamcli validate --no-net "$scratch"/usr/share/metainfo/*.metainfo.xml
+
+  # Debian policy, at the error level only. The first package tripped five:
+  # malformed-contact ("Maintainer: agency"), missing-dependency-on-libc,
+  # no-copyright-file, and unstripped-binary-or-object twice. no-changelog is
+  # suppressed on purpose: CHANGELOG.md is Markdown, and a Debian-format
+  # changelog would be a second copy of it maintained by hand.
+  lintian --fail-on error --suppress-tags no-changelog "$pkg"
+  rm -rf "$scratch"
+}
+
 for pkg in "${PACKAGES[@]}"; do
   echo "  $pkg"
-  # A .deb whose control file is unreadable is a .deb that fails on install
-  # rather than at build time, which is the wrong end to find out.
   if [[ "$pkg" == *.deb ]]; then
-    dpkg-deb --info "$pkg" >/dev/null || { echo "error: $pkg is not a readable .deb" >&2; exit 1; }
+    verify_deb "$pkg"
   fi
 done
 

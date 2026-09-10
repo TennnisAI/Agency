@@ -256,7 +256,11 @@ code, kbd { font-family: var(--mono); }
   margin-right: auto;
 }
 .brand:hover { color: var(--text); }
-.brand svg { width: 22px; height: 22px; }
+/* Flex items shrink before a row overflows, and these two glyphs are the only
+   things in the nav that can once the labels are nowrap: at 320px the brand
+   mark collapsed to a 4px sliver and the theme toggle to a slice of its ring,
+   while the text beside them kept every pixel. */
+.brand svg { width: 22px; height: 22px; flex: none; }
 .nav-links { display: flex; align-items: center; gap: 28px; }
 .nav-links a {
   color: var(--sub1);
@@ -264,7 +268,17 @@ code, kbd { font-family: var(--mono); }
   font-weight: 500;
 }
 .nav-links a:hover, .nav-links a[aria-current="page"] { color: var(--text); }
+
+/* Every link with a trailing glyph joined it with U+200A, which is a breakable
+   space, and the nav is where it broke: on a phone "GitHub" held the line and
+   the arrow after it wrapped alone onto a second row, so the header stood two
+   rows tall. Label and glyph are one unbreakable inline-flex row now, and on
+   the GitHub link the glyph is the GitHub mark rather than the arrow. */
+.nav-links a, .footer-links a, .footer-fine a { white-space: nowrap; }
+.gh-link { display: inline-flex; align-items: center; gap: 6px; }
+.gh-mark { width: 16px; height: 16px; fill: currentColor; flex: none; }
 .theme-toggle {
+  flex: none; /* see .brand svg */
   background: none;
   border: 0;
   color: var(--o1);
@@ -507,8 +521,28 @@ code, kbd { font-family: var(--mono); }
   .hero { padding: 64px 0 0; }
   .cards { grid-template-columns: 1fr; }
   .dl-cards { grid-template-columns: 1fr; }
-  .nav-inner { gap: 16px; }
-  .nav-links { gap: 16px; }
+  /* Five items at the desktop's 15px labels and 28px gaps do not fit a phone.
+     Tightened this far the row holds on one line down to 340px; below that it
+     overruns the gutter (20px over at 320px, where .strip-names already
+     scrolls the page sideways anyway). */
+  .nav-inner { gap: 12px; }
+  .nav-links { gap: 12px; }
+  .nav-links a { font-size: 14px; }
+  .theme-toggle { padding: 6px; }
+  /* Nowrap would trade that wrap for an overflow: with the label shown the
+     links measure 239px and clear no phone's gutter, 1px over at 390 and 16px
+     over at 375. The mark carries the link on its own here, and the label is
+     clipped rather than display: none so the link keeps its accessible name.
+     The padding gives the 16px mark a 32px touch target; the negative margin
+     keeps that off the gaps either side. */
+  .nav-links .gh-link { padding: 8px; margin: -8px; }
+  .nav-links .gh-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
   /* The hero screenshot is the one place a horizontal scroll container is
      acceptable, so the app window stays legible instead of shrinking. */
   .hero-shot { overflow-x: auto; }

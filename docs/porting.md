@@ -58,13 +58,12 @@ So Linux is within reach of packaging, and `linux-check` in
 What Linux would still need after that:
 
 - **Packaging: done.** `scripts/release-linux.sh` builds `.deb`, `.rpm` and
-  AppImage, and needed no changes to `tauri.conf.json` at all — the existing
-  `externalBin` and icon entries are already platform-neutral, and both
-  binaries land in the package (`/usr/bin/Agency` and `/usr/bin/agency-termd`).
-  The script has no signing, notarization or stapling steps because Linux has
-  no equivalent, which is why it is half the length of the macOS one. On macOS
-  it builds in a container, since Tauri links against the host's webkit2gtk and
-  cannot cross-compile.
+  AppImage. The existing `externalBin` and icon entries were already
+  platform-neutral, and both binaries land in the package (`/usr/bin/Agency`
+  and `/usr/bin/agency-termd`). The script has no signing, notarization or
+  stapling steps because Linux has no equivalent, which is why it is half the
+  length of the macOS one. On macOS it builds in a container, since Tauri
+  links against the host's webkit2gtk and cannot cross-compile.
 
   For both architectures, build on native runners:
   `.github/workflows/linux-packages.yml` runs the same script on its
@@ -72,17 +71,57 @@ What Linux would still need after that:
   works but x86_64 on an Apple Silicon Mac is qemu, which is slow enough to be
   impractical for a release.
 
+  **The first package looked untrustworthy, and that was mostly us.** Opened
+  in Ubuntu 24.04's App Center (2026-09-08) it showed "agency", "Unknown
+  publisher", a placeholder icon, "License unknown", the one-line description
+  "Tauri app shell for Agency" and a long description of "(none)". The control
+  file said `Maintainer: agency` (the bundler's last-resort fallback, the first
+  word of the identifier), had no `Homepage` or `Section`, and the desktop file
+  had an empty `Categories=`. lintian counted five errors: malformed-contact,
+  missing-dependency-on-libc, no-copyright-file, and unstripped binaries
+  twice. Fixed at the source: `authors` and `homepage` in
+  `crates/agency-app/Cargo.toml`, and `homepage`, `license`, `copyright`,
+  `category`, `shortDescription`, `longDescription`, `linux.deb.section` and
+  the `files` maps in `tauri.conf.json`. The `files` maps install an AppStream
+  metainfo (`crates/agency-app/linux/`), the Debian copyright file, and
+  `LICENSE`, `NOTICE` and `THIRD-PARTY.md` under `/usr/share/doc/agency/`, so
+  the notices travel with the Linux binaries the way the DMG carries them.
+  `tests/linux_packaging.rs` pins the metainfo to the config, and the
+  script's verification step runs desktop-file-validate, appstreamcli and
+  lintian on the built .deb.
+
+  What that does *not* fix is App Center's page for a local .deb, and it is
+  worth knowing where the line is before spending more time on it. That page
+  hard-codes the title to the package name, passes no publisher (so "Unknown
+  publisher") and no icon (so the placeholder), shows "License unknown"
+  because PackageKit's apt backend has no licence field to read from a .deb,
+  and shows the "Potentially unsafe / third party" warnings for every local
+  package regardless of contents. The only fields it takes from the package
+  are the summary, the long description, the homepage link and the size. The
+  metainfo and the icon take effect after install, on the installed-apps page
+  and in the launcher.
+
+  **App Center's install itself hung at "Installing" indefinitely** on the
+  same machine, and that is not the package either: the identical file
+  installs with `sudo apt install ./Agency_0.1.1_amd64.deb` on Ubuntu 24.04
+  (verified in a container, both architectures, 2026-09-10), and the installed
+  app starts, launches its daemon and creates its data directory under a
+  headless X server. Tell Linux users to install with apt, or to run the
+  AppImage, and do not route them through App Center.
+
   **The build image sets a glibc floor, and it is the whole ballgame for
   distribution.** A Linux binary runs on any glibc at least as new as the one it
-  linked against and on none older, and nothing declares this: the `.deb`
-  depends on `libwebkit2gtk-4.1-0`, `libgtk-3-0` and
-  `libayatana-appindicator3-1`, all satisfiable on Debian 12, so a too-new
-  package installs perfectly and then dies at the dynamic linker. Observed: a
-  build on `ubuntu-latest` (24.04, glibc 2.39) installed on Debian 12 and
-  refused to start with ``version `GLIBC_2.39' not found``. Pinned to 22.04 the
-  binary needs only GLIBC_2.34, and it installs and starts on Debian 12.
-  AppImages do not help — they bundle libraries but never libc. Raise the
-  runner only when dropping those distros is a decision someone has made.
+  linked against and on none older. Observed: a build on `ubuntu-latest`
+  (24.04, glibc 2.39) installed on Debian 12 and refused to start with
+  ``version `GLIBC_2.39' not found``. Pinned to 22.04 the binary needs only
+  GLIBC_2.34, and it installs and starts on Debian 12. The .deb now declares
+  the floor (`libc6 (>= 2.34)` in `linux.deb.depends`), so a too-old system
+  refuses the package instead of installing it and dying at launch, and the
+  release script fails the build if the declared floor is lower than what the
+  binaries actually import. The rpm cannot carry a version there: the bundler
+  hands each `depends` entry to the package as a bare name. AppImages do not
+  help either, since they bundle libraries but never libc. Raise the runner
+  only when dropping those distros is a decision someone has made.
 
   **Arch has no Tauri target.** The bundler offers `deb`, `rpm` and `appimage`
   only, so Arch is served by the AppImage unless someone maintains a PKGBUILD

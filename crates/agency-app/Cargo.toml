@@ -5,6 +5,14 @@ edition = "2021"
 license = "Apache-2.0"
 description = "Tauri app shell for Agency"
 repository = "https://github.com/TennnisAI/Agency"
+homepage = "https://getagency.dev/"
+# The .deb's Maintainer field is this list, and Debian wants "Name <email>" in
+# it. Without it the bundler falls back to the publisher, and without that to
+# the first word of the identifier, which is how the first package shipped as
+# "Maintainer: agency": lintian calls it malformed-contact, and a software
+# centre shows a package with no contact as exactly what it looks like. The
+# address is the one SECURITY.md already publishes.
+authors = ["Nicholas Counts <hello@tennnis.no>"]
 
 [lib]
 name = "agency_app_lib"

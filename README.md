@@ -62,6 +62,8 @@ launch") and Agency makes no network calls of its own at all.
 On first launch, Agency asks you to pick a default agent, then you add a project
 by pointing it at a local git repo.
 
+What changed in each release is in [`CHANGELOG.md`](CHANGELOG.md).
+
 ### Requirements
 
 - **macOS 11 (Big Sur) or later on Apple Silicon.** Release builds are `aarch64`

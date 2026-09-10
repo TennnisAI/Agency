@@ -1,0 +1,112 @@
+# Changelog
+
+Notable changes in each release. The GitHub release for a version carries the
+same notes alongside the DMG; this file is so the history is readable without
+leaving the repository.
+
+## 0.1.1 (2026-09-08)
+
+The first update since launch. Most of it is the merge hand-off, the conflict
+view, and agent resuming: the paths where Agency was leaving an agent waiting,
+or writing the wrong thing to a file.
+
+macOS 11 or later, Apple Silicon.
+
+### Conflicts
+
+- A conflicted file under Source Control opens a conflict view instead of the
+  diff viewer. `git diff` answers for an unmerged path with a combined diff
+  whose lines are not the file's lines, so staging a side out of the old view
+  could write `<<<<<<< HEAD` and the branch name into your file.
+- Hand a conflict to any agent in the worktree, or to a new one. Handing it to
+  a tab other than the run's lead used to queue the prompt behind an agent that
+  was already sitting idle, for the full five-minute timeout.
+- The pane no longer keeps one file's text on screen while the next file loads,
+  so "Keep current" cannot write the previous file's contents to the path you
+  selected.
+- It re-reads from disk before applying. Resolving a conflict with an agent
+  while the pane is open on it no longer puts the conflicted version back.
+- Conflicts parse in a CRLF checkout. Every conflict in such a repo used to
+  land in "markers Agency can't read", unresolvable in the pane.
+- A line of seven pipes inside a side is refused rather than silently dropping
+  the rest of that side from the file it writes.
+- Add and delete conflicts each explain themselves and offer a way out, instead
+  of quietly meaning "keep this side".
+
+### Merging into main
+
+- Agency offers to delete the remote branch when a merge lands, the way the PR
+  merge dialog already did. Every locally merged agent branch that had been
+  pushed used to stay on the remote for good, one per run.
+- The box unticks itself when the branch has an open PR, and says why: GitHub
+  closes a PR whose head branch is deleted rather than marking it merged.
+- The merge waits for that PR check, so pressing Enter can no longer beat it.
+- A branch published to more than one remote has every copy deleted, and all of
+  them are checked before any is deleted.
+- Deleting a branch cannot hang on an SSH key passphrase prompt.
+- The teardown buttons are disabled while a remote delete is in flight.
+
+### Committing
+
+- Pressing Commit with nothing staged showed a git error with nothing after the
+  colon. It now says what is wrong and offers Stage All or Stage All & Commit,
+  with a "Don't ask again" that skips the prompt from then on. A clean tree and
+  an unresolved conflict explain themselves in the panel.
+
+### Agents
+
+- Cursor resumes its conversation when the profile points at `agent` rather
+  than `cursor-agent`. Both names are the same binary, and `--help` calls
+  itself `agent`, so it is the natural profile to write by hand. Runs on such a
+  profile came back on a brand new chat every time.
+- A half-typed draft at cursor-agent's prompt no longer holds a queued message
+  for five minutes and then types over it.
+- The check that decides whether a prompt line is empty reads a narrower window
+  and refuses more, so a dim line of an agent's own output cannot be mistaken
+  for an empty prompt.
+- When a run opens a tab that will ask its own first-run question, the note says
+  so rather than telling you to close the window and watch. Cursor and Copilot
+  both gate on trusting the folder before they read what they were launched
+  with.
+- Copy a queued prompt out of its popover. The row clamps to three lines, which
+  is enough to recognise a merge-conflict prompt and not enough to read one.
+
+### Terminal
+
+- Typing into crush's command palette no longer tears the pane apart. The pane
+  returned the carriage on a bare line feed, so every erase after the first
+  landed at column 0 instead of inside the dialog.
+- Pane captures no longer carry cell styles to the callers that do not read
+  them, roughly halving the payload of the app's busiest IPC.
+
+### Projects
+
+- A project folder that is moved, renamed, deleted or ejected is detected and
+  marked in the sidebar. You get one screen saying what happened and where it
+  was, instead of every tab failing on its own timer in its own words.
+  Reconnecting repoints the project at the folder's new home and keeps its
+  agents, issues and notes, and mends the worktrees underneath.
+- The workspace opens on Docs rather than on an agents grid that is empty for
+  most of its life.
+- Pinned runs show the pin in the projects tree and the agents rail, not only
+  on the tile, and the pin now sits in the same place on every tile.
+
+### Editor
+
+- Drag a file or a note out of the sidebar onto an agent to type its path at
+  that prompt, the way a drop from Finder already did.
+- An agent can ask which file you have open, so "fix this file" resolves. It is
+  behind a switch in Settings, Editor, off until you turn it on, and nothing
+  about the open file is recorded while it is down.
+- A deep path in the editor toolbar truncates instead of pushing Revert and
+  Save out of the pane.
+
+### Site
+
+- getagency.dev links the repository from the header and footer.
+- The requirements no longer list Xcode. Agency needs git, which macOS offers
+  to install if it is missing.
+
+## 0.1.0 (2026-09-06)
+
+First public release.

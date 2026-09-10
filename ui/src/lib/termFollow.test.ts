@@ -200,4 +200,29 @@ describe("follow, on a live xterm buffer", () => {
     expect(p.behind()).toBe(0);
     expect(p.isFollowing()).toBe(true);
   });
+
+  it("cannot undo a phantom that arrived wearing a gesture, so the claim is scoped", async () => {
+    // Why the window-level pointerup is scoped to a pane that saw the
+    // pointerdown (see the note on it in FocusTerminal). Toggling the in-agent
+    // terminal landed a pointerup, which claimed the next `GESTURE_MS`, and the
+    // fit the same click causes lands inside that window — so the fit's phantom
+    // scroll reached the policy indistinguishable from a reader scrolling up.
+    // `userScroll` here *is* that phantom: by the time it arrives there is
+    // nothing left to tell them apart, which is the point.
+    const p = pane();
+    await p.print("line", 60);
+    p.userScroll(-9);
+
+    // Parked, and permanently: an idle pane has nothing coming to re-judge it,
+    // and closing the terminal again is one more phantom, not a rescue. That is
+    // the pane sitting above cursor-agent's input box with its scrollbar
+    // looking near the bottom, which only typing cleared — xterm's own
+    // `scrollOnUserInput`, going over the top of the policy.
+    expect(p.behind()).toBe(9);
+    expect(p.isFollowing()).toBe(false);
+    p.viewportScroll(-4);
+    await p.print("more", 20);
+    expect(p.behind()).toBe(33);
+    expect(p.isFollowing()).toBe(false);
+  });
 });

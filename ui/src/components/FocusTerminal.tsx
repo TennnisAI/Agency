@@ -25,6 +25,7 @@ import { installTermLinks } from "../lib/termLinkProvider";
 import { fileRootKey, requestOpenFile } from "../lib/openFile";
 import { focusReport } from "../lib/terminalFocus";
 import { pathsToInput, registerPathSink } from "../lib/pathDrop";
+import { unlistenQuietly } from "../lib/unlisten";
 import { toastError } from "../lib/toast";
 
 export interface TerminalStream {
@@ -217,8 +218,30 @@ export default function FocusTerminal(
     markGestureRef.current = markGesture;
     const onPointerDown = () => { dragging = true; markGesture(); };
     // The gesture outlives the button: a drag-selection past the top edge keeps
-    // auto-scrolling for as long as it is held.
-    const onPointerUp = () => { dragging = false; markGesture(); };
+    // auto-scrolling for as long as it is held. That is why this half is on the
+    // window rather than the container — but a pointerup on the window is every
+    // click anywhere in the app, and claiming all of them claimed the resize
+    // each one goes on to cause.
+    //
+    // Toggling the in-agent terminal is exactly that shape: the click lands a
+    // pointerup, `markGesture` claims the next `GESTURE_MS`, and the fit the
+    // click triggers happens well inside it. The phantom scroll a fit produces
+    // (the viewport's scrollTop is a frame behind the resized buffer — the same
+    // one AGE-19 is about) then reached `follow` wearing a gesture, so it was
+    // read as the reader scrolling away: latch set, `following` false, and the
+    // pane left parked above cursor-agent's input box. Closing the terminal
+    // never cleared it, because an idle pane has nothing coming to re-judge it
+    // and the latch only ever clears on a scroll that lands back at the bottom.
+    // What did clear it was typing, which is xterm's own `scrollOnUserInput`
+    // going over the top of the policy — the tell that the buffer was holding
+    // the missing rows the whole time (AGE-222 follow-up).
+    //
+    // A pane owns the pointerup only if it saw the pointerdown.
+    const onPointerUp = () => {
+      if (!dragging) return;
+      dragging = false;
+      markGesture();
+    };
     const onScrollKey = (e: KeyboardEvent) => {
       if (e.key === "PageUp" || e.key === "PageDown" || e.key === "Home" || e.key === "End") markGesture();
     };
@@ -563,8 +586,8 @@ export default function FocusTerminal(
       } else {
         setDragOver(false);
       }
-    }).then((u) => { if (disposed) u(); else unlisten = u; });
-    return () => { disposed = true; unlisten?.(); };
+    }).then((u) => { if (disposed) unlistenQuietly(u); else unlisten = u; });
+    return () => { disposed = true; unlistenQuietly(unlisten); };
   }, [runId, stream]);
 
   const onSearch = (q: string, prev = false) => {

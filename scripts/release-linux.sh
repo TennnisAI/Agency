@@ -92,8 +92,13 @@ if [[ "$(uname -s)" != "Linux" && "$NATIVE" -eq 0 ]]; then
   # run — it was untracked, so it was not in its own tarball, and the container
   # failed with "/work/scripts/release-linux.sh: No such file or directory".
   # Ignored paths (target/, ui/node_modules) stay out either way.
+  # COPYFILE_DISABLE: without it macOS tar writes an AppleDouble `._name`
+  # sidecar for every file carrying an extended attribute, and tauri-build
+  # then reads `capabilities/._default.json` as a capability file and fails
+  # with "stream did not contain valid UTF-8" (observed 2026-09-10; files
+  # saved by some editors and agents carry com.apple.provenance).
   git ls-files --cached --others --exclude-standard -z \
-    | tar --null -T - -cf "$STAGE/src.tar"
+    | COPYFILE_DISABLE=1 tar --null -T - -cf "$STAGE/src.tar"
   mkdir -p "$OUT"
 
   for PLATFORM in "${PLATFORMS[@]}"; do

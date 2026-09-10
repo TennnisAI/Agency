@@ -161,9 +161,29 @@ pub fn repo_readiness(path: &Path) -> RepoReadiness {
 
 const DEFAULT_GITIGNORE: &str = "node_modules/\n.env\ndist/\ntarget/\n.DS_Store\n";
 
+/// The error for a git that could not be started at all. `Command::output`
+/// reports a missing binary as the bare `No such file or directory (os error
+/// 2)`, which is also what it says about a missing working directory; the
+/// setup dialog showed exactly that on a Linux machine with no git (observed
+/// 2026-09-10), and the user had no way to tell which of the two it meant.
+/// The UI matches on the wording to offer the install (lib/missingTool.ts).
+pub fn git_spawn_error(e: std::io::Error, dir: &Path) -> anyhow::Error {
+    match e.kind() {
+        std::io::ErrorKind::NotFound if !dir.is_dir() => {
+            anyhow::anyhow!("{} is not there, so git cannot run in it", dir.display())
+        }
+        std::io::ErrorKind::NotFound => anyhow::anyhow!("git is not installed"),
+        _ => anyhow::anyhow!("could not run git: {e}"),
+    }
+}
+
 /// Run a git command in `dir`, returning Err with stderr on failure.
 fn git_checked(dir: &Path, args: &[&str]) -> Result<()> {
-    let out = Command::new("git").args(args).current_dir(dir).output()?;
+    let out = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .map_err(|e| git_spawn_error(e, dir))?;
     if !out.status.success() {
         bail!("git {:?} failed: {}", args, String::from_utf8_lossy(&out.stderr));
     }
@@ -813,6 +833,20 @@ fn scan_files_over(root: &Path, threshold: u64) -> LargeFileScan {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_missing_git_and_a_missing_folder_get_different_sentences() {
+        let not_found = || std::io::Error::from(std::io::ErrorKind::NotFound);
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(git_spawn_error(not_found(), dir.path()).to_string(), "git is not installed");
+        let gone = dir.path().join("gone");
+        assert_eq!(
+            git_spawn_error(not_found(), &gone).to_string(),
+            format!("{} is not there, so git cannot run in it", gone.display())
+        );
+        let denied = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        assert!(git_spawn_error(denied, dir.path()).to_string().starts_with("could not run git: "));
+    }
 
     #[test]
     fn recognizes_github_urls() {

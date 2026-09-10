@@ -12,6 +12,7 @@ import {
   toggleInline, toggleList, toggleQuote,
 } from "../lib/mdFormat";
 import type { MenuEntry } from "./git/Menu";
+import { shortcutLabel } from "../lib/platform";
 
 /** Run a formatting transform against the view, then hand focus back. */
 function apply(view: EditorView, f: (state: EditorState) => TransactionSpec | null) {
@@ -50,7 +51,7 @@ async function pasteClipboard(view: EditorView) {
     }
   } catch (e) {
     // Reading the clipboard can be refused by the webview; the key still works.
-    toastError(e, "Couldn't paste (⌘V still works)");
+    toastError(e, `Couldn't paste (${shortcutLabel("⌘V")} still works)`);
   }
   view.focus();
 }
@@ -107,13 +108,13 @@ export function markdownMenuItems(view: EditorView): MenuEntry[] {
       ],
     },
     { kind: "separator" },
-    { label: "Cut", hint: "⌘X", disabled: !hasSelection, onClick: () => void copySelection(view, true) },
-    { label: "Copy", hint: "⌘C", disabled: !hasSelection, onClick: () => void copySelection(view, false) },
-    { label: "Paste", hint: "⌘V", onClick: () => void pasteClipboard(view) },
+    { label: "Cut", hint: shortcutLabel("⌘X"), disabled: !hasSelection, onClick: () => void copySelection(view, true) },
+    { label: "Copy", hint: shortcutLabel("⌘C"), disabled: !hasSelection, onClick: () => void copySelection(view, false) },
+    { label: "Paste", hint: shortcutLabel("⌘V"), onClick: () => void pasteClipboard(view) },
     { kind: "separator" },
     {
       label: "Select all",
-      hint: "⌘A",
+      hint: shortcutLabel("⌘A"),
       onClick: apply(view, (s) => ({ selection: { anchor: 0, head: s.doc.length } })),
     },
   ];

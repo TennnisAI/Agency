@@ -126,8 +126,38 @@ What Linux would still need after that:
   **Arch has no Tauri target.** The bundler offers `deb`, `rpm` and `appimage`
   only, so Arch is served by the AppImage unless someone maintains a PKGBUILD
   on the AUR.
-- **The install-command table** below, which is per-platform work Linux shares
-  with Windows. The `npm install -g` rows already work as-is.
+- **The tools Agency itself needs: done.** Observed 2026-09-10 on a fresh
+  Ubuntu desktop: every agent's install line began with `npm` on a machine
+  with no npm, and "Initialize repository" failed with `No such file or
+  directory (os error 2)` because there was no git. `crates/agency-app/src/tools.rs`
+  is the catalog (git, Node.js and npm, gh) with a per-platform install
+  recipe: Homebrew or `xcode-select --install` on macOS; apt, dnf, pacman or
+  zypper under `pkexec` on Linux, so the desktop's own polkit prompt asks
+  for the password and no terminal is needed; winget on Windows, written
+  but not yet exercised. Onboarding grows a first step when any are
+  missing, and an error that says "git is not installed" opens the same
+  install row instead of a toast (`ui/src/lib/missingTool.ts`). Without
+  polkit or Homebrew the row shows a line to copy and the download page.
+- **Installs run in the background, not in a terminal.**
+  `crates/agency-app/src/installer.rs` runs an install line under the login
+  shell with its output captured, and the onboarding tile ticks itself when
+  the command lands on PATH. An npm global on a machine whose node came from
+  a distribution package (or the nodejs.org .pkg) would die with EACCES on
+  the root-owned prefix; `tools::install_script` falls back to
+  `--prefix ~/.local` only in that case, and `pathenv::adopt_new_dirs` picks
+  the new `~/.local/bin` up without restarting the app.
+- **Window chrome: done.** `titleBarStyle: Overlay` is macOS-only, so Linux
+  showed the window manager's title bar, then the GTK menu strip, then
+  Agency's own 40px title row: three bars before any content. The Linux
+  window is undecorated (`tauri.linux.conf.json`), the native menu is not
+  built there (`lib.rs`), and the frontend's title bar carries the menus
+  (`ui/src/lib/appMenu.ts`, mirrored against `menu.rs` by a test) and the
+  minimize, maximize and close buttons. tao already edge-resizes an
+  undecorated GTK window (5px hit-test border) and Tauri's drag region
+  maximizes on double-click, so nothing else was needed. Accepted: the
+  window has square corners and no compositor shadow, as any undecorated
+  X11 window does. Shortcut labels go through `ui/src/lib/platform.ts`,
+  which spells ⌘ as Ctrl off macOS.
 - **Two accepted degradations.** Tauri's Linux tray wants
   libayatana-appindicator and has no `set_title`, so the count badge becomes
   tooltip-only; and there is no delegate to patch for notification clicks, so
@@ -145,9 +175,11 @@ later, so that part is not wasted.
 
 ## Install one-liners (highest impact)
 
-All "this CLI isn't installed" flows open an in-app terminal that runs a
-Unix-shaped command. Each needs a per-platform variant (a
-`INSTALL_COMMANDS[platform][agent]` table, or detection at runtime):
+The tools Agency itself needs (git, npm, gh) are handled per platform in
+`tools.rs`, see above. The agent CLIs' own install lines are still the one
+table in `ui/src/agents.ts`, run either in an in-app terminal (from a
+project) or in the background (from onboarding). Each still needs a
+per-platform variant for Windows:
 
 | Site | Today (macOS) | Windows equivalent |
 | --- | --- | --- |

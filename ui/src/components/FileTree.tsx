@@ -16,6 +16,7 @@ import { Transfer, transferProblem } from "../lib/fileTransfer";
 import { toastError, toastInfo } from "../lib/toast";
 import { revealLabel, reveal, copyAbsPath, copyRelPath, ignorePath } from "../lib/fileActions";
 import { PathSink, createSinkTracker } from "../lib/pathDrop";
+import { shortcutLabel } from "../lib/platform";
 
 /** One row of the tree, as the menu, the keyboard cursor and the drag see it. */
 type Entry = { path: string; isDir: boolean };
@@ -521,7 +522,7 @@ export default function FileTree({
     // than an item that silently isn't there.
     const paste: MenuEntry = {
       label: "Paste",
-      hint: "⌘V",
+      hint: shortcutLabel("⌘V"),
       disabled: !clip || transferProblem(clip.path, dir, clip.mode) !== null,
       onClick: () => doPaste(dir),
     };
@@ -532,8 +533,8 @@ export default function FileTree({
     if (entry) {
       items.push(
         { kind: "separator" },
-        { label: "Cut", hint: "⌘X", onClick: () => setClip({ mode: "move", path: entry.path }) },
-        { label: "Copy", hint: "⌘C", onClick: () => setClip({ mode: "copy", path: entry.path }) },
+        { label: "Cut", hint: shortcutLabel("⌘X"), onClick: () => setClip({ mode: "move", path: entry.path }) },
+        { label: "Copy", hint: shortcutLabel("⌘C"), onClick: () => setClip({ mode: "copy", path: entry.path }) },
         paste,
         { label: "Duplicate", onClick: () => void doTransfer(entry.path, parentPath(entry.path), "copy") },
         { kind: "separator" },

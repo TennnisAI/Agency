@@ -4,6 +4,42 @@ Notable changes in each release. The GitHub release for a version carries the
 same notes alongside the DMG; this file is so the history is readable without
 leaving the repository.
 
+## Unreleased
+
+### Linux
+
+- The window is one bar high, not three. Linux showed the window manager's
+  title bar, then a menu strip, then Agency's own title row. The Linux window
+  is now undecorated and Agency's title bar carries the menus and the
+  minimize, maximize and close buttons, the way the macOS one carries the
+  traffic lights.
+- Shortcut hints say Ctrl where the key is Ctrl, not ⌘.
+
+### First run
+
+- Onboarding checks for git, Node.js and npm, and the GitHub CLI, and offers
+  to install whichever is missing: through Homebrew or the Command Line
+  Tools on macOS, through the distribution's package manager on Linux (the
+  desktop asks for your password). Without either it shows the line to copy.
+- Installing an agent from onboarding runs the install in the background and
+  ticks the agent when it lands, rather than handing over a command to paste
+  into a terminal that the first run has no way to open. An agent that needs
+  npm on a machine without it installs Node.js first.
+- An npm install on a machine whose Node came from a system package no longer
+  fails with a permissions error on the root-owned global prefix; the agent
+  goes under `~/.local` instead.
+
+### Projects
+
+- A project added without git can be given a repository later: from its
+  right-click menu, from File in the menu bar, and from the command palette.
+- "Couldn't start claude: could not run git…" now says "git is not
+  installed" when that is what happened, and offers to install it. The same
+  for "Initialize repository" in the folder setup dialog, which used to fail
+  with a bare `No such file or directory (os error 2)`.
+- The DeepSeek Harness tile in onboarding no longer runs its install button
+  out past the tile's border.
+
 ## 0.1.1 (2026-09-08)
 
 The first update since launch. Most of it is the merge hand-off, the conflict

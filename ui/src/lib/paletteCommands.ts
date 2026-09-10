@@ -4,7 +4,7 @@
 // sources). Excluded on purpose: "palette" (it's already open) and "quit"
 // (routed backend-side via lifecycle::request_quit, never through onMenu).
 
-export type CommandWhen = "always" | "project" | "focusedAgent" | "workspaceVisible";
+export type CommandWhen = "always" | "project" | "focusedAgent" | "workspaceVisible" | "gitless";
 
 export interface PaletteCommand {
   /** onMenu action id. */
@@ -36,6 +36,7 @@ export const PALETTE_COMMANDS: PaletteCommand[] = [
   { id: "discard", label: "Delete Agent", sublabel: "Stop the focused agent and remove its run", when: "focusedAgent" },
   { id: "add-project", label: "Add Project…", sublabel: "Pick a folder to work in", when: "always" },
   { id: "clone-project", label: "Clone Repository…", sublabel: "Clone a repo and add it as a project", when: "always" },
+  { id: "init-repo", label: "Initialize Git Repository…", sublabel: "Give this project's folder a repository, so agents get branches", when: "gitless" },
   { id: "toggle-sidebar", label: "Toggle Sidebar", sublabel: "Show or hide the project list", when: "always" },
   { id: "home", label: "All Projects", sublabel: "Back to the overview", when: "always" },
   { id: "settings", label: "Settings…", sublabel: "Open settings", when: "always" },
@@ -47,6 +48,8 @@ export interface CommandContext {
   hasProject: boolean;
   hasFocusedAgent: boolean;
   workspaceVisible: boolean;
+  /** The selected project sits in a folder with no git repository. */
+  gitless: boolean;
 }
 
 /** The commands that would actually do something right now (mirrors the
@@ -56,5 +59,6 @@ export function availableCommands(ctx: CommandContext): PaletteCommand[] {
     c.when === "always"
     || (c.when === "project" && ctx.hasProject)
     || (c.when === "focusedAgent" && ctx.hasFocusedAgent)
-    || (c.when === "workspaceVisible" && ctx.workspaceVisible));
+    || (c.when === "workspaceVisible" && ctx.workspaceVisible)
+    || (c.when === "gitless" && ctx.hasProject && ctx.gitless));
 }

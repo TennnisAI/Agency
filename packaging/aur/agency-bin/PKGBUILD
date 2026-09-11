@@ -7,10 +7,9 @@
 # truth: update.sh there points it at a release, and the AUR is pushed from it.
 
 pkgname=agency-bin
-# The version the tree is at. No release carries Linux packages yet, so this
-# cannot be fetched until the first one does; update.sh rewrites it and the
-# checksums below from that release.
-pkgver=0.1.1
+# The published release this points at. update.sh rewrites it, pkgrel and the
+# checksums below from that release; 0.2.0 is the first to carry Linux packages.
+pkgver=0.2.0
 pkgrel=1
 pkgdesc='Run coding agents side by side, each in its own git worktree'
 arch=('x86_64' 'aarch64')
@@ -29,10 +28,11 @@ conflicts=('agency')
 _release="https://github.com/TennnisAI/Agency/releases/download/v${pkgver}"
 source_x86_64=("${_release}/Agency_${pkgver}_amd64.deb")
 source_aarch64=("${_release}/Agency_${pkgver}_arm64.deb")
-# Not real checksums until update.sh has run against a published release; as
-# they stand, makepkg fails the integrity check rather than building anything.
-sha256sums_x86_64=('run-update.sh')
-sha256sums_aarch64=('run-update.sh')
+# Written by update.sh from the release's own .deb files, never by hand. A value
+# that is not a real checksum makes makepkg fail the integrity check rather than
+# build anything.
+sha256sums_x86_64=('5df96ce5a97771fda41d711f961b599a9a7ee1c3db10152c160442cef4daf560')
+sha256sums_aarch64=('b677465e1aa1d3f43c033b3124868f57b8ed0ca0a7470a20197a660d3c2b1fb9')
 
 package() {
   bsdtar -xf data.tar.* -C "$pkgdir"

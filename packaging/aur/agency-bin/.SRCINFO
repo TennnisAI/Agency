@@ -1,0 +1,25 @@
+pkgbase = agency-bin
+	pkgdesc = Run coding agents side by side, each in its own git worktree
+	pkgver = 0.2.0
+	pkgrel = 1
+	url = https://getagency.dev/
+	arch = x86_64
+	arch = aarch64
+	license = Apache-2.0
+	depends = glibc
+	depends = gtk3
+	depends = webkit2gtk-4.1
+	depends = libayatana-appindicator
+	depends = xdg-utils
+	depends = hicolor-icon-theme
+	optdepends = git: every project is a git repository; Agency offers to install it
+	optdepends = npm: most agent CLIs install through npm
+	optdepends = github-cli: the GitHub import and pull request flows
+	provides = agency
+	conflicts = agency
+	source_x86_64 = https://github.com/TennnisAI/Agency/releases/download/v0.2.0/Agency_0.2.0_amd64.deb
+	sha256sums_x86_64 = 5df96ce5a97771fda41d711f961b599a9a7ee1c3db10152c160442cef4daf560
+	source_aarch64 = https://github.com/TennnisAI/Agency/releases/download/v0.2.0/Agency_0.2.0_arm64.deb
+	sha256sums_aarch64 = b677465e1aa1d3f43c033b3124868f57b8ed0ca0a7470a20197a660d3c2b1fb9
+
+pkgname = agency-bin

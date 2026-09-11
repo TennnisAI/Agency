@@ -68,6 +68,19 @@ exist until the release is published.
     release**. Until you do,
     it is not `releases/latest`, which is both why the download link 404s and
     why nobody on the previous version is offered the update yet.
+
+    Check the draft's tag reads `v<version>` first. The 0.2.0 draft came out
+    of `release.yml` carrying the placeholder tag `untagged-56b3f8556ed4…`;
+    publishing it through the API kept that tag, and GitHub created a git tag
+    of the same name to match. The update check reads the latest release's
+    tag, so for the minute before it was repointed at `v0.2.0` the release
+    told everyone on 0.1.1 it was a version called `untagged-…`. Publishing
+    with the tag named leaves no room for it:
+
+    ```sh
+    gh api -X PATCH repos/TennnisAI/Agency/releases/<id> \
+      -F draft=false -f make_latest=true -f tag_name=v<version>
+    ```
 13. Now push the site commit to `main`. `deploy-site.yml` fires on the push and
     the download button starts working.
 14. Load getagency.dev/download and click the macOS button and one Linux

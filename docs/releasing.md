@@ -70,6 +70,19 @@ exist until the release is published.
 13. Now push the site commit to `main`. `deploy-site.yml` fires on the push and
     the download button starts working.
 14. Load getagency.dev/download and click the macOS button and a Linux one.
+15. Point the AUR package at the release, commit that here, and push it to the
+    AUR (the clone is from the one-time setup below):
+
+    ```sh
+    packaging/aur/update.sh <version>
+    git add packaging/aur && git commit -m "point the AUR package at <version>"
+    git push origin main
+    cp packaging/aur/agency-bin/PKGBUILD packaging/aur/agency-bin/.SRCINFO ~/aur-agency-bin/
+    git -C ~/aur-agency-bin commit -am "agency-bin <version>" && git -C ~/aur-agency-bin push
+    ```
+
+    `update.sh` reads the checksums off the published .deb files, so it fails
+    until step 12 is done.
 
 Nothing else needs doing for the update check: it reads the latest release tag
 from the GitHub API at launch and compares it to the running version, so
@@ -224,6 +237,40 @@ Needed on a machine that has not cut a release before.
 
    `release-macos.sh` reads the `agency-notary` profile; override with
    `AGENCY_NOTARY_PROFILE`.
+
+### AUR
+
+`agency-bin` on the AUR is how Arch users install Agency with their own tools
+(`yay -S agency-bin`, or `makepkg -si` in a clone), and how they get updates.
+`packaging/aur/agency-bin/` is the source of truth; the AUR repository is a
+two-file mirror of it (`PKGBUILD` and `.SRCINFO`). The PKGBUILD repackages the
+release .deb rather than building from source.
+
+1. Create an account at aur.archlinux.org and add an SSH public key to it.
+2. After the first release carrying Linux packages is published, point the
+   package at it and create the AUR repository by pushing to it. Cloning a
+   package name that does not exist yet gives an empty repository, and the
+   first push creates the package:
+
+   ```sh
+   packaging/aur/update.sh <version>
+   git clone ssh://aur@aur.archlinux.org/agency-bin.git ~/aur-agency-bin
+   cp packaging/aur/agency-bin/PKGBUILD packaging/aur/agency-bin/.SRCINFO ~/aur-agency-bin/
+   git -C ~/aur-agency-bin add PKGBUILD .SRCINFO
+   git -C ~/aur-agency-bin commit -m "agency-bin <version>" && git -C ~/aur-agency-bin push
+   ```
+
+3. Once it is live, the download page and the README stop saying there is no
+   AUR package: the Arch line becomes `yay -S agency-bin`.
+
+`update.sh` writes `.SRCINFO` itself, from the PKGBUILD, because `makepkg
+--printsrcinfo` needs Arch. It knows the fields the PKGBUILD uses today, so
+after adding a field to the PKGBUILD, compare the two on Arch (a container
+will do) before pushing:
+
+```sh
+makepkg --printsrcinfo | diff - .SRCINFO
+```
 
 ### CI secrets
 

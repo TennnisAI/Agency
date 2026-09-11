@@ -1,13 +1,21 @@
 # Changelog
 
 Notable changes in each release. The GitHub release for a version carries the
-same notes alongside the DMG; this file is so the history is readable without
+same notes alongside the downloads; this file is so the history is readable without
 leaving the repository.
 
 ## Unreleased
 
 ### Linux
 
+- Agency runs on Linux. Each release carries a `.deb` for Debian and Ubuntu, an
+  `.rpm` for Fedora, and an AppImage for Arch and everything else, each for
+  x86_64 and arm64. They need glibc 2.34 or later: Ubuntu 22.04 and Debian 12
+  onwards, and current Fedora and Arch.
+- Two things are weaker than on macOS. The tray shows the running-agent count
+  in its tooltip rather than beside the icon. And Linux does not tell Agency
+  when you click a notification, so the click does not open the run it was
+  about.
 - The window is one bar high, not three. Linux showed the window manager's
   title bar, then a menu strip, then Agency's own title row. The Linux window
   is now undecorated and Agency's title bar carries the menus and the

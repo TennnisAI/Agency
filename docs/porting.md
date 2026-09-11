@@ -1,7 +1,8 @@
 # Porting notes: Linux and Windows
 
-Agency ships macOS-only. This file catalogs every place that assumes a
-macOS environment so a port knows exactly what to touch. Keep it updated when
+Agency ships for macOS and Linux. This file catalogs every place that assumes
+a macOS environment so a port knows exactly what to touch, and records how the
+Linux port went. Keep it updated when
 adding new shell-outs or install flows.
 
 Renamed from `windows-compat.md` on 2026-09-08. The old name encoded an
@@ -126,6 +127,14 @@ What Linux would still need after that:
   **Arch has no Tauri target.** The bundler offers `deb`, `rpm` and `appimage`
   only, so Arch is served by the AppImage unless someone maintains a PKGBUILD
   on the AUR.
+- **Release: done.** `release.yml` calls `linux-packages.yml` on a version tag
+  and attaches all six packages to the same draft as the DMG, and the download
+  page links them with install steps for Debian and Ubuntu, Fedora and Arch.
+  Installed and launched in containers on 2026-09-11 from the arm64 CI build:
+  the .deb on Debian 12 and Ubuntu 22.04, the .rpm on Fedora 44. Each resolved
+  its libraries from the distribution, started `agency-termd` and created its
+  data directory. The AppImage has not been run on Arch: the official Arch image
+  is x86_64 only, and the colima VM it was tried in cannot emulate x86_64.
 - **The tools Agency itself needs: done.** Observed 2026-09-10 on a fresh
   Ubuntu desktop: every agent's install line began with `npm` on a machine
   with no npm, and "Initialize repository" failed with `No such file or

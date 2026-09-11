@@ -197,6 +197,7 @@ Cutting a release, and building the Linux packages yourself, is in
 | `ui/` | React + Vite frontend (pnpm) |
 | `site/` | The getagency.dev marketing site; static, no build step |
 | `scripts/` | Release tooling, and the third-party notices generator |
+| `packaging/` | Distribution packages built from a release, not by it: the AUR package |
 | `docs/` | Design notes and plans |
 
 ## Project status

@@ -126,15 +126,24 @@ What Linux would still need after that:
 
   **Arch has no Tauri target.** The bundler offers `deb`, `rpm` and `appimage`
   only, so Arch is served by the AppImage unless someone maintains a PKGBUILD
-  on the AUR.
+  on the AUR. `packaging/aur/agency-bin/` is that PKGBUILD, and it repackages
+  the release .deb rather than building from source. Tested 2026-09-11 on Arch
+  Linux ARM in a container: `makepkg -si` validated the checksum, pulled
+  WebKitGTK and the rest from the Arch repositories and installed, and the app
+  started its daemon. The `.SRCINFO` that `packaging/aur/update.sh` generates on
+  a Mac matched `makepkg --printsrcinfo` line for line. Not published yet: the
+  AUR needs the maintainer's own account (AGE-227).
 - **Release: done.** `release.yml` calls `linux-packages.yml` on a version tag
   and attaches all six packages to the same draft as the DMG, and the download
   page links them with install steps for Debian and Ubuntu, Fedora and Arch.
   Installed and launched in containers on 2026-09-11 from the arm64 CI build:
   the .deb on Debian 12 and Ubuntu 22.04, the .rpm on Fedora 44. Each resolved
   its libraries from the distribution, started `agency-termd` and created its
-  data directory. The AppImage has not been run on Arch: the official Arch image
-  is x86_64 only, and the colima VM it was tried in cannot emulate x86_64.
+  data directory. The arm64 AppImage ran on Arch Linux ARM, installed by
+  `site/install.sh` (started with `APPIMAGE_EXTRACT_AND_RUN=1`, since a
+  container has no FUSE). The x86_64 .rpm and AppImage have not been run
+  anywhere: the official Arch image is x86_64 only, and the colima VM these
+  tests ran in cannot emulate x86_64.
 - **The tools Agency itself needs: done.** Observed 2026-09-10 on a fresh
   Ubuntu desktop: every agent's install line began with `npm` on a machine
   with no npm, and "Initialize repository" failed with `No such file or

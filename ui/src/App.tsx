@@ -34,7 +34,7 @@ import { PROJECTS_CHANGED_EVENT } from "./lib/projectEvents";
 const REPO_URL = "https://github.com/TennnisAI/Agency";
 
 function Shell() {
-  const { selectedProjectId, setSelectedProject, createAgent, createTerminal, setTab, focusedRunId, selectedRunId, onScreenRunId, setApproveRun, setFocusedRun, setView, requestAgentView, runs } = useRuns();
+  const { selectedProjectId, setSelectedProject, createAgent, createTerminal, setTab, focusedRunId, selectedRunId, onScreenRunId, setApproveRun, setFocusedRun, setView, requestAgentView, setPendingSession, runs } = useRuns();
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [project, setProject] = useState<Project | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -396,7 +396,12 @@ function Shell() {
   // requestAgentView is the same problem one level in: a run left on its Run tab
   // reopens there, so opening it by name landed on the run panel rather than the
   // agent, and a run already focused didn't move at all.
-  function openRun(p: Project, runId: string) {
+  //
+  // `session` names one of the run's agent tabs to land on (AGE-225): the run's
+  // own id for its first agent, `<runId>--<n>` for an extra one. Set last,
+  // because setSelectedProject clears any pending tab and the later write is
+  // the one that survives the batch.
+  function openRun(p: Project, runId: string, session?: string) {
     setShowSettings(false);
     setProject(p);
     setSelectedProject(p.id);
@@ -404,6 +409,7 @@ function Shell() {
     setFocusedRun(runId);
     setView("focus");
     requestAgentView(runId);
+    if (session) setPendingSession(session);
   }
 
   // Route a native-menu action (payload of the backend "menu" event) to the
@@ -595,7 +601,7 @@ function Shell() {
               focusedRunId={focusedRunId}
               onSelect={selectProjectFromTree}
               onOpen={selectProject}
-              onSelectRun={(p: Project, run: RunInfo) => openRun(p, run.id)}
+              onSelectRun={(p: Project, run: RunInfo, session?: string) => openRun(p, run.id, session)}
               onHome={goHome}
               onSelectionGone={leaveProject}
               onToggleSidebar={() => setSidebarOpen(false)}

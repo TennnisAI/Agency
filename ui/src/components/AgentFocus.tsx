@@ -22,6 +22,8 @@ import { useRunMenu } from "../hooks/useRunMenu";
 import { useFirstPromptCapture } from "../hooks/useFirstPromptCapture";
 import { usePaneWidth, loadFold, saveFold } from "../hooks/usePaneWidth";
 import { agentViewTab, loadFocusTab, saveFocusTab, resolveFocusTab, PRIMARY_TAB, RUN_TAB, LOG_TAB } from "../lib/focusTab";
+import { RunTab, runTabs, showsTabs, tabLabel } from "../lib/runTabs";
+import TabCount from "./TabCount";
 import AgentAddMenu from "./AgentAddMenu";
 import QueuedMarker from "./QueuedMarker";
 import OverflowMenu from "./OverflowMenu";
@@ -186,10 +188,18 @@ function LoopStrip({ run, onChanged }: { run: RunInfo; onChanged: () => void }) 
 // having to open it: archived, so its branch survives and the Archived section
 // can restore it, or deleted outright. A terminal only closes. Right-clicking
 // the row opens the run's full menu, the same one its tile carries.
+//
+// A row is a worktree, named after its first agent, and a worktree can hold
+// several (AGE-225). With more than one, a count sits beside the name; clicking
+// it lists every tab under the row, each opening straight onto that agent.
 function RailRow({
   run,
   on,
+  panel,
+  tabsOpen,
+  onToggleTabs,
   onSelect,
+  onSelectTab,
   onRename,
   onRemove,
   onContextMenu,
@@ -197,7 +207,12 @@ function RailRow({
 }: {
   run: RunInfo;
   on: boolean;
+  /** The focus view's visible tab, which only means something when `on`. */
+  panel: string;
+  tabsOpen: boolean;
+  onToggleTabs: () => void;
   onSelect: () => void;
+  onSelectTab: (tab: RunTab) => void;
   onRename: () => void;
   onRemove: (action: Removal) => void;
   onContextMenu: (e: React.MouseEvent) => void;
@@ -205,8 +220,12 @@ function RailRow({
   menuOpen: boolean;
 }) {
   const isTerminal = run.kind === "terminal";
+  const tabs = runTabs(run);
+  const listed = showsTabs(run, tabs);
+  const open = listed && tabsOpen;
   return (
-    <div className={`rail-row-wrap${menuOpen ? " ctx" : ""}`} onContextMenu={onContextMenu}>
+    <>
+    <div className={`rail-row-wrap${menuOpen ? " ctx" : ""}${open ? " tabs-open" : ""}`} onContextMenu={onContextMenu}>
       <button
         className={`rail-row ${on ? "on" : ""}`}
         onClick={onSelect}
@@ -219,6 +238,7 @@ function RailRow({
         {run.runScriptsLive && (
           <span className="run-dot" title="A run script is running in this workspace" />
         )}
+        {listed && <TabCount tabs={tabs} open={open} onToggle={onToggleTabs} />}
       </button>
       {/* Sibling of the row rather than a child of it: a button inside a button
           is invalid markup, and the row keeps its own click target intact. */}
@@ -234,6 +254,22 @@ function RailRow({
         }))}
       />
     </div>
+    {open && (
+      <div className="rail-tabs">
+        {tabs.map((t) => (
+          <button
+            key={t.session}
+            className={`rail-tab${on && panel === t.panel ? " on" : ""}`}
+            title={`${t.label}: ${t.status}`}
+            onClick={() => onSelectTab(t)}
+          >
+            <span className={`dot ${t.cls}`} />
+            <span className="rail-tab-name">{t.label}</span>
+          </button>
+        ))}
+      </div>
+    )}
+    </>
   );
 }
 
@@ -249,7 +285,7 @@ export default function AgentFocus({
   // everything that needs a branch (see AgentAddMenu).
   gitless?: boolean;
 }) {
-  const { runs, focusedRunId, setFocusedRun, refreshRuns, createAgent, createTerminal, selectedProjectId, pendingSessionId, setPendingSession, agentViewRunId, requestAgentView, setApproveRun } = useRuns();
+  const { runs, focusedRunId, setFocusedRun, refreshRuns, createAgent, createTerminal, selectedProjectId, pendingSessionId, setPendingSession, agentViewRunId, requestAgentView, setApproveRun, setShownTab } = useRuns();
   // The rail's right-click menu, and the dialogs its entries raise: renaming a
   // run or its branch, archiving, deleting. The header menu below drives the
   // same actions rather than keeping a second copy of them.
@@ -339,14 +375,19 @@ export default function AgentFocus({
     return () => { live = false; clearInterval(iv); };
   }, [focusedRunId, selectPanel, setApproveRun]);
 
-  // A run opened for a specific extra tab (an agent PR review that had to share
-  // this worktree) lands on that tab instead of the one it remembers. Declared
-  // after the restore above so it wins on the render that focuses the run, and
-  // cleared once applied — from here on it is simply this run's last-used tab.
+  // A run opened for a specific tab lands on that tab instead of the one it
+  // remembers: an agent PR review that had to share this worktree, or a tab
+  // picked by name from the rail or the sidebar tree (AGE-225), where the run's
+  // own id names its first agent. Declared after the restore above so it wins
+  // on the render that focuses the run, and cleared once applied — from here on
+  // it is simply this run's last-used tab.
   useEffect(() => {
     if (!pendingSessionId || !focusedRunId) return;
-    if (!pendingSessionId.startsWith(`${focusedRunId}--`)) return;
-    selectPanel(pendingSessionId);
+    const tab = pendingSessionId === focusedRunId
+      ? PRIMARY_TAB
+      : pendingSessionId.startsWith(`${focusedRunId}--`) ? pendingSessionId : null;
+    if (!tab) return;
+    selectPanel(tab);
     setPendingSession(null);
   }, [pendingSessionId, focusedRunId, setPendingSession, selectPanel]);
 
@@ -367,6 +408,14 @@ export default function AgentFocus({
       : next;
     if (shown !== panelRef.current) selectPanel(shown);
   }, [agentViewRunId, focusedRunId, requestAgentView, selectPanel]);
+
+  // Tell the sidebar tree which of this worktree's agents is on screen
+  // (AGE-225). panelRef rather than `panel`: the effects above set it in the
+  // same commit as a focus change, while `panel` still holds the previous
+  // run's tab until the next render.
+  useEffect(() => {
+    if (focusedRunId) setShownTab({ runId: focusedRunId, tab: panelRef.current });
+  }, [focusedRunId, panel, setShownTab]);
 
   const toggleAddMenu = () => {
     setAddOpen((o) => {
@@ -394,6 +443,9 @@ export default function AgentFocus({
       const s = await startRunSession(focusedRunId, agent);
       setSessions((prev) => [...prev, s]);
       selectPanel(s.id);
+      // The rail and the sidebar count tabs off the run list; without this the
+      // new one showed up in the strip a poll before it showed up there.
+      void refreshRuns();
     } catch (e) {
       toastError(e, "Couldn't open agent tab");
     }
@@ -423,6 +475,20 @@ export default function AgentFocus({
       ?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [panel, sessions.length]);
   const [railOpen, setRailOpen] = useState(true);
+  // Which rail rows list their agent tabs (AGE-225), remembered per run: the
+  // rail remounts on every trip to the grid or another tab, and a list that
+  // folded itself up each time would have to be reopened on every visit.
+  const [railTabs, setRailTabs] = useState<Record<string, boolean>>({});
+  const railTabsKey = (id: string) => `rail-tabs:${id}`;
+  const railTabsOpen = (id: string) =>
+    railTabs[id] ?? (typeof localStorage !== "undefined" && loadFold(localStorage, railTabsKey(id), false));
+  const toggleRailTabs = (id: string) => {
+    const next = !railTabsOpen(id);
+    setRailTabs((m) => ({ ...m, [id]: next }));
+    try {
+      if (typeof localStorage !== "undefined") saveFold(localStorage, railTabsKey(id), next);
+    } catch { /* ignore quota / security errors */ }
+  };
   const rail = usePaneWidth("rail", 312, 220, 520);
   // Companion terminal (bottom panel) — height shared across runs, but the
   // open-state is per-run (per-worktree): keyed by the focused run id so
@@ -550,7 +616,18 @@ export default function AgentFocus({
                 key={r.id}
                 run={r}
                 on={r.id === focusedRunId}
+                panel={panel}
+                tabsOpen={railTabsOpen(r.id)}
+                onToggleTabs={() => toggleRailTabs(r.id)}
                 onSelect={() => { setFocusedRun(r.id); requestAgentView(r.id); }}
+                onSelectTab={(t) => {
+                  // Straight onto that agent (AGE-225). Through the pending-tab
+                  // hand-off rather than selectPanel, so a run not yet focused
+                  // lands on it too: focusing restores the run's remembered
+                  // tab first, and the hand-off is applied after it.
+                  setFocusedRun(r.id);
+                  setPendingSession(t.session);
+                }}
                 onRename={() => rename(r)}
                 onRemove={(action) => remove(r, action)}
                 onContextMenu={(e) => openRunMenu(e, r)}
@@ -695,7 +772,7 @@ export default function AgentFocus({
                         : `${agentLabel(s.agent)}: extra agent in this workspace`}
                       onClick={() => selectPanel(s.id)}
                     >
-                      {s.agent === "shell" ? "≳ terminal" : agentLabel(s.agent)} · {s.id.split("--").pop()}
+                      {tabLabel(s.agent, s.id, false)}
                       {canCloseTabs && (
                         <span
                           className="tab-close"
@@ -824,7 +901,9 @@ export default function AgentFocus({
                         t !== (sid === focused.id ? PRIMARY_TAB : sid));
                       const next = left[0] ?? PRIMARY_TAB;
                       if (sid !== focused.id) setSessions((prev) => prev.filter((s) => s.id !== sid));
-                      else await refreshRuns();
+                      // Either way the run list changes: the primary's closed
+                      // flag, or the tab count the rail and the sidebar read.
+                      await refreshRuns();
                       if (panel === sid || (sid === focused.id && panel === PRIMARY_TAB)) selectPanel(next);
                       if (beforeRun.current === sid || (sid === focused.id && beforeRun.current === PRIMARY_TAB)) {
                         beforeRun.current = next;

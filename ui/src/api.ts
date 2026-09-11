@@ -138,6 +138,10 @@ export interface RunInfo {
   // and `status` above describes whichever extra tab is standing in for it.
   // Rerunning the agent brings it back.
   primaryClosed: boolean;
+  // The run's extra agent tabs, in the order the tab strip draws them after its
+  // own agent. The rail, the sidebar tree and the tiles list them from here
+  // (AGE-225). Empty for a terminal, which has no strip.
+  sessions: RunSessionInfo[];
   // What is left of an archived run. Only set by listArchivedRuns — answering
   // it asks git a question per run, and the live board polls every 1.5s.
   archived: ArchivedInfo | null;

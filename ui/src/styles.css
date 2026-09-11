@@ -677,6 +677,10 @@ textarea.settings-input { min-height: 64px; resize: vertical; }
 .dot.review { background: var(--review); }
 .dot.exited { background: var(--exited); }
 .dot.crashed { background: var(--crashed); }
+/* An extra agent tab that is up (AGE-225). Activity is sampled for a run's
+   lead session only, so this one says "running" and nothing about busy: lit
+   like a working dot, without the pulse that would claim output. */
+.dot.live { background: var(--running); }
 /* Run-script dot: "a run script is live in this workspace", on the agent tile,
    the rail row and both Run tabs. Smaller and unanimated next to the agent's
    own status dot — it reports the workspace, not the agent, and two pulsing
@@ -884,6 +888,20 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
 .tree-child-name {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+/* A run's agent tabs under its row in the sidebar (AGE-225): the count sits at
+   the row's right edge, and the tabs indent under the run they belong to. The
+   one on screen takes the project's accent as an edge, quieter than the
+   viewfinder corners its run carries. */
+.tree-child .tab-count { margin-left: auto; }
+.tree-tabs { list-style: none; margin: 0; padding: 0 0 2px 15px; }
+.tree-tab {
+  display: flex; align-items: center; gap: 6px;
+  padding: 2px 6px; border-radius: 4px;
+  font-size: 11.5px; color: var(--o1); cursor: pointer;
+}
+.tree-tab:hover { background: var(--s0); color: var(--text); }
+.tree-tab.on { color: var(--text); box-shadow: inset 2px 0 0 var(--sel-accent, var(--blue)); }
+.tree-tab-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Status bar (Task 9 override — replaces old statusbar rules above) */
 .statusbar {
   height: var(--statusbar-h);
@@ -1303,6 +1321,45 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* How many agent tabs a workspace holds (AGE-225), beside a run listed by one
+   name: the rail, the sidebar tree, the tiles. In the rail and the tree it is
+   also the disclosure that lists them. Outlined rather than filled, so it
+   reads the same on a plain row, a hovered one and the selected one. */
+.tab-count {
+  flex-shrink: 0;
+  display: inline-flex; align-items: center; gap: 3px;
+  padding: 0 5px; border-radius: 4px;
+  border: 1px solid var(--line);
+  color: var(--sub0);
+  font-family: var(--mono); font-size: 10px; line-height: 15px;
+}
+.tab-count.toggle { cursor: pointer; }
+.tab-count.toggle:hover { background: var(--s2); color: var(--text); }
+.tab-count.open { border-color: var(--s2); color: var(--text); }
+.tab-count-chev { font-size: 8px; opacity: .75; }
+
+/* A workspace's agent tabs, listed under its rail row. Indented to the row's
+   name and ruled off below as one group, so the next run still reads as the
+   next run rather than one more tab. */
+.rail-row-wrap.tabs-open .rail-row { border-bottom-color: transparent; }
+.rail-tabs {
+  display: flex; flex-direction: column;
+  padding: 0 0 4px;
+  border-bottom: 1px solid var(--line);
+}
+.rail-tab {
+  display: flex; align-items: center; gap: 8px;
+  width: 100%; padding: 4px 12px 4px 29px;
+  background: none; border: none; border-radius: 0;
+  color: var(--o1); font-size: 12px; font-weight: 400;
+  text-align: left; cursor: pointer;
+}
+.rail-tab:hover { background: var(--s0); color: var(--text); }
+/* The tab on screen: the same blue edge the strip's own active tab carries. */
+.rail-tab.on { color: var(--text); box-shadow: inset 2px 0 0 var(--blue); }
+.rail-tab .dot, .tree-tab .dot { width: 7px; height: 7px; }
+.rail-tab-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .rail-stub {
   width: 38px; flex-shrink: 0; background: var(--mantle);

@@ -402,6 +402,12 @@ pub struct RunInfo {
     /// stops drawing it and `status` above describes whichever extra tab is
     /// standing in for it. See `lead_session_name`.
     pub primary_closed: bool,
+    /// The run's extra agent tabs, in the order the tab strip draws them after
+    /// its own agent (see `drawn_tabs`). The rail, the sidebar tree and the
+    /// tiles list a run by one name, its first agent's, so three agents in one
+    /// worktree read as one until you opened it (AGE-225); this is what lets
+    /// them say how many there are. Empty for a terminal, which has no strip.
+    pub sessions: Vec<RunSessionInfo>,
     /// Epoch seconds. Exposed for time views (the weekly note); archived_at is
     /// None for live runs and last-archive-wins after a restore cycle.
     pub created_at: i64,
@@ -3456,6 +3462,25 @@ impl AppState {
             running && agency_core::preview::serving(port) && handshake_done
         });
         let activity = self.read_activity(run, crate::activity::now_ms());
+        // The extra tabs' statuses come out of the listing already in hand, so
+        // listing them costs one registry read per run and no daemon call.
+        let sessions = self
+            .registry
+            .lock()
+            .unwrap()
+            .list_run_sessions(&run.id)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|s| {
+                let name = session_name(&s.id);
+                let status = live
+                    .iter()
+                    .find(|(n, _)| *n == name)
+                    .map(|(_, st)| st.clone())
+                    .unwrap_or(SessionStatus::Gone);
+                RunSessionInfo { id: s.id, run_id: s.run_id, agent: s.agent, status }
+            })
+            .collect();
         RunInfo {
             id: run.id.clone(),
             project_id: run.project_id.clone(),
@@ -3478,6 +3503,7 @@ impl AppState {
             run_scripts_live: any_run_script_live(&run.id, live),
             queued_messages: self.queued_message_count(&run.id),
             primary_closed: run.primary_closed_at.is_some(),
+            sessions,
             worktree: run.worktree,
             race_id: run.race_id.clone(),
             loop_config: run.loop_config.clone(),

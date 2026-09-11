@@ -20,8 +20,9 @@ name: Release
 # Neither build job touches the release. Each uploads an artifact, and the
 # publish job creates the draft once both have passed. When the DMG job created
 # the release itself, adding a second platform would have meant a release that
-# goes out with half its downloads whenever one leg fails; the site links every
-# one of them by name, so a missing .deb is a broken button, not a gap.
+# goes out with half its downloads whenever one leg fails; the README (and the
+# site, once it carries the Linux packages) names every one of them, so a
+# missing .deb is a broken link, not a gap.
 #
 # Required repository secrets (Settings -> Secrets and variables -> Actions):
 #   APPLE_CERTIFICATE           base64 of the exported Developer ID .p12

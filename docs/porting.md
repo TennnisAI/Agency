@@ -134,14 +134,15 @@ What Linux would still need after that:
   a Mac matched `makepkg --printsrcinfo` line for line. Not published yet: the
   AUR needs the maintainer's own account (AGE-227).
 - **Release: done.** `release.yml` calls `linux-packages.yml` on a version tag
-  and attaches all six packages to the same draft as the DMG, and the download
-  page links them with install steps for Debian and Ubuntu, Fedora and Arch.
+  and attaches all six packages to the same draft as the DMG. The README
+  carries the install steps for Debian and Ubuntu, Fedora and Arch; the
+  download page does not link the Linux packages yet (that is the site's own
+  change, kept separate from this one).
   Installed and launched in containers on 2026-09-11 from the arm64 CI build:
   the .deb on Debian 12 and Ubuntu 22.04, the .rpm on Fedora 44. Each resolved
   its libraries from the distribution, started `agency-termd` and created its
-  data directory. The arm64 AppImage ran on Arch Linux ARM, installed by
-  `site/install.sh` (started with `APPIMAGE_EXTRACT_AND_RUN=1`, since a
-  container has no FUSE). The x86_64 .rpm and AppImage have not been run
+  data directory. The arm64 AppImage ran on Arch Linux ARM, started with
+  `APPIMAGE_EXTRACT_AND_RUN=1` since a container has no FUSE. The x86_64 .rpm and AppImage have not been run
   anywhere: the official Arch image is x86_64 only, and the colima VM these
   tests ran in cannot emulate x86_64.
 - **The tools Agency itself needs: done.** Observed 2026-09-10 on a fresh

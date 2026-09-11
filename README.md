@@ -53,8 +53,9 @@ launch") and Agency makes no network calls of its own at all.
 ## Installing (beta)
 
 Every [release](https://github.com/TennnisAI/Agency/releases) carries a DMG for
-macOS and packages for Linux, and
-[getagency.dev/download](https://getagency.dev/download) links each one.
+macOS and packages for Linux.
+[getagency.dev/download](https://getagency.dev/download) links the DMG; the
+Linux packages are on the release page until the download page carries them.
 
 ### macOS
 
@@ -66,8 +67,9 @@ macOS and packages for Linux, and
 
 ### Linux
 
-Each package comes for x86_64 (`amd64`) and arm64 (`aarch64`); `uname -m` says
-which you have. Install from a terminal, in the folder you downloaded to.
+Each package comes for x86_64 and arm64; `uname -m` says which you have. The
+.deb spells them `amd64` and `arm64`, the .rpm and the AppImage `x86_64` and
+`aarch64`. Install from a terminal, in the folder you downloaded to.
 
 - **Debian and Ubuntu:** the `.deb`.
 
@@ -88,10 +90,13 @@ which you have. Install from a terminal, in the folder you downloaded to.
   libraries and needs only FUSE from the system.
 
   ```sh
-  sudo pacman -S --needed fuse3        # on Arch; elsewhere, your fuse3 package
   chmod +x Agency_<version>_amd64.AppImage
   ./Agency_<version>_amd64.AppImage
   ```
+
+  If it stops with a `libfuse` error, install your distribution's FUSE package
+  (`fuse2` or `fuse3`, whichever the message names), or run it with
+  `APPIMAGE_EXTRACT_AND_RUN=1` set, which needs no FUSE at all.
 
   There is no AUR package yet, and the AppImage does not add itself to your
   application menu.

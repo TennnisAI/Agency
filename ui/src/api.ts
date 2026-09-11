@@ -1749,7 +1749,7 @@ export interface UpdateCheck {
 }
 
 /** Asks GitHub for the latest release. Resolves (never rejects) when offline —
- *  inspect `error`. Agency downloads nothing; the user installs the DMG. */
+ *  inspect `error`. Agency downloads nothing; the user installs the new version. */
 export const checkForUpdate = () => invoke<UpdateCheck>("check_for_update");
 export const getUpdateCheckEnabled = () => invoke<boolean>("get_update_check_enabled");
 export const setUpdateCheckEnabled = (enabled: boolean) =>

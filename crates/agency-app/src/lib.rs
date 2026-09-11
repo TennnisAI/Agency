@@ -325,6 +325,7 @@ pub fn run() {
             commands::cancel_queued_message,
             commands::list_dir,
             commands::read_file,
+            commands::stat_file,
             commands::file_has_conflict_markers,
             commands::write_file,
             commands::create_file,

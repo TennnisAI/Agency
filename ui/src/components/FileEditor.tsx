@@ -4,7 +4,7 @@ import { EditorView, keymap } from "@codemirror/view";
 import { basicSetup } from "codemirror";
 import { defaultKeymap } from "@codemirror/commands";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { FileRoot, readFile, readFileBase64, writeFile } from "../api";
+import { FileRoot, FileStat, readFile, readFileBase64, statFile, writeFile } from "../api";
 import { loadLanguage } from "../lib/cmLanguage";
 import { editorChromeTheme, editorHighlight } from "../lib/cmTheme";
 import { cmFindEngine, cmFindExtensions } from "../lib/cmFind";
@@ -12,6 +12,7 @@ import { FindRank } from "../lib/findBus";
 import { useFind } from "../hooks/useFind";
 import { getWordWrap } from "../lib/editorPrefs";
 import { bufferKey, dropBuffer, stashBuffer, takeBuffer } from "../lib/editorBuffers";
+import { mayHaveChanged, minimalChange } from "../lib/diskSync";
 import { isExternalHref, onMarkdownLinkClick, renderMarkdown } from "../lib/mdHtml";
 import { toastError } from "../lib/toast";
 import ConfirmDialog from "./ConfirmDialog";
@@ -95,6 +96,12 @@ const FileEditor = forwardRef<FileEditorHandle, {
   const markDirtyRef = useRef(markDirty);
   markDirtyRef.current = markDirty;
   const [errorMsg, setErrorMsg] = useState("");
+  // The signature of the disk text the editor holds, from the read that
+  // filled it. The poll below stats the file against this and re-reads only
+  // when they disagree. Null after our own save: nothing has stat'ed the
+  // result, so the next tick re-reads once, finds the text equal, and records
+  // the signature then.
+  const seenStatRef = useRef<FileStat | null>(null);
   // Binary payload (data URL) for image/pdf files.
   const [dataUrl, setDataUrl] = useState("");
   // Preview toggle for md/html/svg. previewContent holds sanitized HTML for
@@ -130,6 +137,7 @@ const FileEditor = forwardRef<FileEditorHandle, {
     if (!view) return;
     try {
       await writeFile(root, path, view.state.doc.toString());
+      seenStatRef.current = null;
       markDirtyRef.current(false);
       dropBuffer(bufferKey(root, path));
     } catch (e) {
@@ -147,6 +155,7 @@ const FileEditor = forwardRef<FileEditorHandle, {
     try {
       const fc = await readFile(root, path);
       if (fc.binary || fc.tooLarge) return;
+      seenStatRef.current = { mtimeMs: fc.mtimeMs, size: fc.size };
       view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: fc.text } });
       // The dispatch above flips `dirty` back on via the update listener; clear
       // it after so a freshly-reverted buffer reads as clean.
@@ -160,11 +169,16 @@ const FileEditor = forwardRef<FileEditorHandle, {
 
   // The file changed underneath us — edited in Finder, or written by an agent
   // working in the same tree — while its tab sat open. Re-read when the window
-  // comes back, which is the moment after the detour that caused it (AGE-162).
+  // comes back, which is the moment after the detour that caused it (AGE-162),
+  // and while it stays in front, whenever the poll below sees the file move
+  // (AGE-228: an agent's edit to the open file showed nothing until the tab
+  // was closed and the file reopened, because focus never changed hands).
   //
   // Never over unsaved work: a dirty buffer keeps what was typed, and Revert
-  // stays the way to take the disk copy instead. The cursor is carried across
-  // (clamped) and the view is not scrolled, so a background tab that quietly
+  // stays the way to take the disk copy instead. The disk text lands as the
+  // smallest single edit that produces it, so the lines above the change stay
+  // put, the cursor maps through it, and the view is not scrolled: the user
+  // reading the file keeps their place, and a background tab that quietly
   // re-reads doesn't jump when it is next looked at.
   const syncFromDisk = useRef(async () => {});
   syncFromDisk.current = async () => {
@@ -176,15 +190,12 @@ const FileEditor = forwardRef<FileEditorHandle, {
       // user can have started typing in the middle of it.
       if (viewRef.current !== view || dirtyRef.current) return;
       if (fc.binary || fc.tooLarge) return;
-      if (fc.text === view.state.doc.toString()) return;
-      const { anchor, head } = view.state.selection.main;
-      view.dispatch({
-        changes: { from: 0, to: view.state.doc.length, insert: fc.text },
-        selection: {
-          anchor: Math.min(anchor, fc.text.length),
-          head: Math.min(head, fc.text.length),
-        },
-      });
+      // Recorded before the text comparison, so a re-read that finds nothing
+      // new (our own save, a touch) still settles the poll.
+      seenStatRef.current = { mtimeMs: fc.mtimeMs, size: fc.size };
+      const change = minimalChange(view.state.doc.toString(), fc.text);
+      if (change === null) return;
+      view.dispatch({ changes: change });
       // The dispatch flips `dirty` on via the update listener; this is the
       // disk's own text, so clear it again.
       markDirtyRef.current(false);
@@ -198,6 +209,30 @@ const FileEditor = forwardRef<FileEditorHandle, {
     const onFocus = () => { void syncFromDisk.current(); };
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
+  }, []);
+
+  // The poll: stat the file on the tree's own two-second cadence and re-read
+  // only when the signature moves. A stat is cheap enough for every warm tab,
+  // active or not, so switching to a tab shows the current text rather than
+  // a tick-old one. Nobody is reading the editor while another app is in
+  // front; the focus listener above catches up on that stretch.
+  const pollDisk = useRef(async () => {});
+  pollDisk.current = async () => {
+    const view = viewRef.current;
+    if (!view || dirtyRef.current) return;
+    try {
+      const now = await statFile(root, path);
+      if (viewRef.current !== view || dirtyRef.current) return;
+      if (mayHaveChanged(seenStatRef.current, now)) await syncFromDisk.current();
+    } catch {
+      // Gone or renamed: the tree's sweep reports it; the last good text stays.
+    }
+  };
+
+  useEffect(() => {
+    const tick = () => { if (document.hasFocus()) void pollDisk.current(); };
+    const t = window.setInterval(tick, 2000);
+    return () => window.clearInterval(t);
   }, []);
 
   useImperativeHandle(ref, () => ({
@@ -226,6 +261,7 @@ const FileEditor = forwardRef<FileEditorHandle, {
     let cancelled = false;
     setStatus("loading");
     markDirtyRef.current(false);
+    seenStatRef.current = null;
     setErrorMsg("");
     setDataUrl("");
     setPreviewing(false);
@@ -250,6 +286,7 @@ const FileEditor = forwardRef<FileEditorHandle, {
       if (cancelled) return;
       if (fc.tooLarge) { setStatus("tooLarge"); return; }
       if (fc.binary) { setStatus("binary"); return; }
+      seenStatRef.current = { mtimeMs: fc.mtimeMs, size: fc.size };
       setStatus("ready");
       const host = hostRef.current;
       if (!host) { setStatus("error"); setErrorMsg("Editor failed to mount."); return; }

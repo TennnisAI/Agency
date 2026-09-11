@@ -1558,12 +1558,6 @@ fn login_shell() -> String {
     std::env::var("SHELL").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| fallback.to_string())
 }
 
-/// The shell background installs run under. Same answer as the terminals get,
-/// exposed for the install commands.
-pub(crate) fn install_shell() -> String {
-    login_shell()
-}
-
 /// Clear the local-model URL once, where it still holds the value the app used
 /// to prefill it with.
 ///

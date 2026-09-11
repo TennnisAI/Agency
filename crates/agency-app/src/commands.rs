@@ -2391,7 +2391,7 @@ fn start_install(
     use tauri::Emitter;
     log::info!("install {key} (lane {lane}): {script}");
     let handle = app.clone();
-    installs.start(key, lane, &crate::state::install_shell(), script, move |status| {
+    installs.start(key, lane, &crate::pathenv::effective_path(), script, move |status| {
         // Whatever just landed may sit in a directory that was not on PATH
         // at startup; adopt it before the UI re-probes.
         for dir in crate::pathenv::adopt_new_dirs() {

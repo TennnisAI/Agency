@@ -7,8 +7,6 @@
 // name-and-email form; the backend sets the identity on the repository (local
 // scope only, per the house rule that Agency never writes global git config).
 
-import { toastError } from "./toast";
-
 /** True when a git error is really "no commit identity is configured". */
 export function needsGitIdentity(err: unknown): boolean {
   const t = err instanceof Error ? err.message : String(err ?? "");
@@ -24,6 +22,12 @@ export const GIT_IDENTITY_EVENT = "agency:git-identity";
 // Fired once the identity is saved, so the surface that hit the error can
 // retry the commit it was mid-way through.
 export const GIT_IDENTITY_SET_EVENT = "agency:git-identity-set";
+// Fired when the form is dismissed without saving. The surface that was
+// waiting drops its pending retry and shows why the commit did not happen;
+// without this the git panel sat with its error blanked and the retry armed,
+// so a later save from another surface replayed a commit the user had
+// abandoned.
+export const GIT_IDENTITY_CANCELLED_EVENT = "agency:git-identity-cancelled";
 
 export type GitIdentityOffer = { repoPath: string; reason: string };
 export type GitIdentitySet = { repoPath: string };
@@ -37,16 +41,6 @@ export function offerGitIdentity(repoPath: string, reason: string): boolean {
   if (typeof window === "undefined" || !window.__agencyGitIdentityHost) return false;
   window.dispatchEvent(new CustomEvent<GitIdentityOffer>(GIT_IDENTITY_EVENT, { detail: { repoPath, reason } }));
   return true;
-}
-
-/**
- * Report a failed git action: the identity form when the error is a missing
- * identity and a host is mounted, the usual error toast otherwise.
- */
-export function reportGitFailure(err: unknown, context: string, repoPath: string): void {
-  const raw = err instanceof Error ? err.message : String(err);
-  if (needsGitIdentity(err) && offerGitIdentity(repoPath, `${context}: ${raw}`)) return;
-  toastError(err, context);
 }
 
 declare global {

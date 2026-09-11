@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import {
+  GIT_IDENTITY_CANCELLED_EVENT,
   GIT_IDENTITY_EVENT,
   GIT_IDENTITY_SET_EVENT,
   GitIdentityOffer,
@@ -11,8 +12,10 @@ import GitIdentityDialog from "./GitIdentityDialog";
  * Mounted once at the shell root (and once under onboarding): listens for
  * `offerGitIdentity` and shows the form. On save it announces
  * `agency:git-identity-set` with the repo path, so whatever surface hit the
- * missing-identity error can retry the commit it was mid-way through. Marks
- * itself on `window` so the offer knows a host is listening.
+ * missing-identity error can retry the commit it was mid-way through; on
+ * cancel it announces `agency:git-identity-cancelled` so that surface can
+ * stand down instead. Marks itself on `window` so the offer knows a host is
+ * listening.
  */
 export default function GitIdentityHost() {
   const [offer, setOffer] = useState<GitIdentityOffer | null>(null);
@@ -40,7 +43,13 @@ export default function GitIdentityHost() {
           new CustomEvent(GIT_IDENTITY_SET_EVENT, { detail: { repoPath } }),
         );
       }}
-      onClose={() => setOffer(null)}
+      onClose={() => {
+        const { repoPath } = offer;
+        setOffer(null);
+        window.dispatchEvent(
+          new CustomEvent(GIT_IDENTITY_CANCELLED_EVENT, { detail: { repoPath } }),
+        );
+      }}
     />
   );
 }

@@ -5,7 +5,7 @@ import {
   gitAutoFetch, cancelPush, gitPushForce, absPath,
 } from "../../api";
 import { toastSuccess } from "../../lib/toast";
-import { GIT_IDENTITY_SET_EVENT, needsGitIdentity, offerGitIdentity } from "../../lib/gitIdentity";
+import { GIT_IDENTITY_CANCELLED_EVENT, GIT_IDENTITY_SET_EVENT, needsGitIdentity, offerGitIdentity } from "../../lib/gitIdentity";
 import ConfirmDialog from "../ConfirmDialog";
 import ChangesPanel from "./ChangesPanel";
 import HistoryPanel from "./HistoryPanel";
@@ -172,17 +172,33 @@ function GitRepoPanel({
     return ok;
   }, [refresh, taskId]);
 
-  // Replay the failed commit once the identity is saved for this worktree.
+  // Replay the failed commit once the identity is saved for this worktree;
+  // on cancel, drop it and say why the commit did not happen. The retry must
+  // not outlive the form: a worktree-less run shares its path with the setup
+  // dialog, whose later save would otherwise replay an abandoned commit.
   useEffect(() => {
-    const onSet = async (e: Event) => {
+    const forThisRepo = async (e: Event) => {
       const repo = await absPath({ kind: "run", id: taskId }, "").catch(() => null);
-      if (!repo || (e as CustomEvent<{ repoPath: string }>).detail?.repoPath !== repo) return;
+      return !!repo && (e as CustomEvent<{ repoPath: string }>).detail?.repoPath === repo;
+    };
+    const onSet = async (e: Event) => {
+      if (!(await forThisRepo(e))) return;
       const pending = retryRef.current;
       retryRef.current = null;
       if (pending) void act(pending.fn, pending.label);
     };
+    const onCancelled = async (e: Event) => {
+      if (!(await forThisRepo(e))) return;
+      if (!retryRef.current) return;
+      retryRef.current = null;
+      setGitOp(taskId, { error: "The commit needs a git identity. Set one and try again." });
+    };
     window.addEventListener(GIT_IDENTITY_SET_EVENT, onSet);
-    return () => window.removeEventListener(GIT_IDENTITY_SET_EVENT, onSet);
+    window.addEventListener(GIT_IDENTITY_CANCELLED_EVENT, onCancelled);
+    return () => {
+      window.removeEventListener(GIT_IDENTITY_SET_EVENT, onSet);
+      window.removeEventListener(GIT_IDENTITY_CANCELLED_EVENT, onCancelled);
+    };
   }, [act, taskId]);
 
   // Cancel means cancel, mid-push included: a branch with large objects uploads

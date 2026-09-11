@@ -1,6 +1,7 @@
-name: Release (macOS)
+name: Release
 
-# Cuts a signed + notarized Agency DMG and attaches it to a draft GitHub Release.
+# Cuts a release: a signed + notarized Agency DMG and the Linux packages, all
+# attached to one draft GitHub Release.
 #
 # Trigger by pushing a version tag:
 #   git tag v0.1.0 && git push origin v0.1.0
@@ -12,6 +13,15 @@ name: Release (macOS)
 # notarizes and staples the DMG. This mirrors scripts/release-macos.sh, except
 # the cert comes from a secret and notarization uses an app-specific password
 # instead of a local keychain profile.
+#
+# The Linux packages come from linux-packages.yml, called rather than copied,
+# so a release ships exactly what that workflow builds and verifies on a PR.
+#
+# Neither build job touches the release. Each uploads an artifact, and the
+# publish job creates the draft once both have passed. When the DMG job created
+# the release itself, adding a second platform would have meant a release that
+# goes out with half its downloads whenever one leg fails; the site links every
+# one of them by name, so a missing .deb is a broken button, not a gap.
 #
 # Required repository secrets (Settings -> Secrets and variables -> Actions):
 #   APPLE_CERTIFICATE           base64 of the exported Developer ID .p12
@@ -27,11 +37,12 @@ on:
       - "v*"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
-  release-macos:
+  macos:
     runs-on: macos-14 # Apple Silicon runner -> aarch64 build
-    permissions:
-      contents: write # create the release and upload the DMG
     steps:
       # Third-party actions are pinned to commit SHAs (comment records the
       # moving tag each SHA was resolved from). This workflow handles the
@@ -142,10 +153,43 @@ jobs:
           # Gatekeeper's own verdict, which is the one the user's machine gives.
           spctl --assess --verbose=4 --type execute "$app"
 
+      - name: Upload DMG
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: agency-macos
+          path: target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+
+  linux:
+    uses: ./.github/workflows/linux-packages.yml
+
+  publish:
+    needs: [macos, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release and upload the packages
+    steps:
+      # Every artifact into one tree. The Linux ones keep the bundler's
+      # deb/, rpm/ and appimage/ folders, and the two architectures merge
+      # into each: their filenames differ by arch, so nothing collides.
+      - name: Download artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: agency-*
+          path: dist
+          merge-multiple: true
+
+      - name: List what will be attached
+        run: find dist -type f -exec ls -l {} \;
+
       - name: Publish draft release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           draft: true
           name: Agency ${{ github.ref_name }}
-          files: target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+          files: |
+            dist/*.dmg
+            dist/deb/*.deb
+            dist/rpm/*.rpm
+            dist/appimage/*.AppImage
           fail_on_unmatched_files: true

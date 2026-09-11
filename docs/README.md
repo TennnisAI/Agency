@@ -42,8 +42,9 @@ browser with `support.js` beside it).
 
 ## Maintainer procedure
 
-- [`releasing.md`](releasing.md) — cutting a signed, notarized macOS build and
-  publishing it, plus the one-time certificate, notary and CI-secret setup.
+- [`releasing.md`](releasing.md) — cutting a release (the signed, notarized
+  macOS build and the Linux packages) and publishing it, plus the one-time
+  certificate, notary and CI-secret setup.
 
 ## Living documents
 

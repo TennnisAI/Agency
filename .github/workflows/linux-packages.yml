@@ -20,14 +20,25 @@ name: Linux packages
 # libraries but never libc. Raise this only when dropping those distros is a
 # decision someone has actually made.
 #
-# Manual trigger: the packages are not signed and this is not the release
-# mechanism, it is "give me something to install and try".
+# Three triggers. By hand, for "give me something to install and try". From
+# release.yml on a version tag, which is how the packages reach a release. And
+# on a PR that touches the packaging (see below). The packages are not signed
+# on any path: Linux has no platform notary, and the .deb and .rpm are
+# downloaded and installed by hand rather than from a repository with a key.
 
 on:
   workflow_dispatch:
     inputs:
       bundles:
         description: "Formats to build (comma separated: deb,rpm,appimage)"
+        required: false
+        default: "deb,rpm,appimage"
+  # Called by release.yml, which attaches the uploaded artifacts to the draft
+  # release. It passes no bundles, so a release gets all three formats.
+  workflow_call:
+    inputs:
+      bundles:
+        type: string
         required: false
         default: "deb,rpm,appimage"
   # Also on a PR that touches the packaging itself. Two reasons. It is the only
@@ -102,9 +113,9 @@ jobs:
       # so CI and a local build cannot drift into producing different packages.
       - name: Build packages
         env:
-          # `inputs` only exists for workflow_dispatch, so on the pull_request
-          # trigger this is empty and the script is handed `--bundles ""`,
-          # which it rejects. The fallback belongs here rather than in the
+          # `inputs` exists for workflow_dispatch and workflow_call only, so on
+          # the pull_request trigger this is empty and the script is handed
+          # `--bundles ""`, which it rejects. The fallback belongs here rather than in the
           # script: an empty --bundles is a caller mistake worth reporting.
           BUNDLES: ${{ inputs.bundles || 'deb,rpm,appimage' }}
         run: ./scripts/release-linux.sh --native --bundles "$BUNDLES"

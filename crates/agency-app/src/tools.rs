@@ -96,7 +96,8 @@ impl Tool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Os {
-    MacOs,
+    #[serde(rename = "macos")]
+    Mac,
     Linux,
     Windows,
 }
@@ -142,7 +143,7 @@ pub struct Platform {
 /// The current OS, at compile time.
 pub fn current_os() -> Os {
     if cfg!(target_os = "macos") {
-        Os::MacOs
+        Os::Mac
     } else if cfg!(target_os = "windows") {
         Os::Windows
     } else {
@@ -154,7 +155,7 @@ pub fn current_os() -> Os {
 /// a parameter so the table below can be tested against any machine.
 pub fn detect_platform(os: Os, on_path: impl Fn(&str) -> bool) -> Platform {
     let candidates: &[PackageManager] = match os {
-        Os::MacOs => &[PackageManager::Brew],
+        Os::Mac => &[PackageManager::Brew],
         // Ordered by how often a desktop has exactly one of them. apt before
         // dnf: a Debian with `dnf` installed is a curiosity, a Fedora with
         // `apt-get` is a real (and broken) thing, and both are rare.
@@ -247,7 +248,7 @@ pub fn install_plan(tool: Tool, platform: &Platform) -> InstallPlan {
         url: tool.url().to_string(),
     };
     match platform.os {
-        Os::MacOs => match platform.package_manager {
+        Os::Mac => match platform.package_manager {
             Some(PackageManager::Brew) => InstallPlan::Run {
                 command: format!("brew install {}", packages(tool, PackageManager::Brew).unwrap()),
                 note: None,
@@ -462,7 +463,7 @@ mod tests {
 
     #[test]
     fn a_mac_with_homebrew_installs_through_it() {
-        let p = detect_platform(Os::MacOs, on(&["brew", "git"]));
+        let p = detect_platform(Os::Mac, on(&["brew", "git"]));
         assert_eq!(p.package_manager, Some(PackageManager::Brew));
         assert!(!p.pkexec, "pkexec is a Linux thing even when a mac has one");
         assert_eq!(command(&install_plan(Tool::Node, &p)), "brew install node");
@@ -471,7 +472,7 @@ mod tests {
 
     #[test]
     fn a_mac_without_homebrew_gets_the_command_line_tools_for_git_only() {
-        let p = detect_platform(Os::MacOs, on(&[]));
+        let p = detect_platform(Os::Mac, on(&[]));
         assert_eq!(p.package_manager, None);
         assert_eq!(command(&install_plan(Tool::Git, &p)), "xcode-select --install");
         assert!(matches!(install_plan(Tool::Node, &p), InstallPlan::Manual { command: None, .. }));
@@ -559,9 +560,9 @@ mod tests {
 
         // Homebrew is one lane too; a mac without it installs git through
         // xcode-select, which contends for nothing.
-        let brew = detect_platform(Os::MacOs, on(&["brew"]));
+        let brew = detect_platform(Os::Mac, on(&["brew"]));
         assert_eq!(install_lane(Tool::Node, &brew).as_deref(), Some("pkg:brew"));
-        let bare = detect_platform(Os::MacOs, on(&[]));
+        let bare = detect_platform(Os::Mac, on(&[]));
         assert_eq!(install_lane(Tool::Git, &bare), None);
     }
 

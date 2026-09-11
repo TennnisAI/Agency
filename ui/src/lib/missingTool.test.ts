@@ -16,9 +16,4 @@ describe("missingToolFor", () => {
     expect(missingToolFor("No such file or directory (os error 2)")).toBeNull();
     expect(missingToolFor(null)).toBeNull();
   });
-
-  it("recognises a shell that could not find npm", () => {
-    expect(missingToolFor("sh: 1: npm: not found")).toBe("node");
-    expect(missingToolFor("bash: npm: command not found")).toBe("node");
-  });
 });

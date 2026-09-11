@@ -202,7 +202,7 @@ pub fn repo_name_from_url(url: &str) -> String {
     let trimmed = url.trim().trim_end_matches('/');
     // scp-style `git@host:owner/repo` separates the path with ':'; splitting on
     // both '/' and ':' lands on the final segment for either URL shape.
-    let last = trimmed.rsplit(|c| c == '/' || c == ':').next().unwrap_or(trimmed);
+    let last = trimmed.rsplit(['/', ':']).next().unwrap_or(trimmed);
     last.strip_suffix(".git").unwrap_or(last).to_string()
 }
 

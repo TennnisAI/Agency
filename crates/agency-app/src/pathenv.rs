@@ -155,7 +155,7 @@ fn login_shell_probe() -> Probe {
     };
     let mut child = match Command::new(&shell)
         .arg("-ilc")
-        .arg(&harvest_script())
+        .arg(harvest_script())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())

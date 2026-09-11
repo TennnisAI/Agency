@@ -18,7 +18,6 @@ export type ToolId = "git" | "node" | "gh";
 export function missingToolFor(error: unknown): ToolId | null {
   const text = error instanceof Error ? error.message : String(error ?? "");
   if (/\bgit is not installed\b/i.test(text)) return "git";
-  if (/\b(npm|node): (command )?not found\b/i.test(text)) return "node";
   if (/\bgh is not installed\b/i.test(text)) return "gh";
   return null;
 }

@@ -43,12 +43,19 @@ account, no vendor backend. There is no server of ours for it to talk to.
 Outbound traffic is only what you initiate, and the coding agents are third
 party and talk to their own providers.
 
-The one exception is the update check: on launch Agency asks GitHub's public API
-for the latest release tag and compares it to the running version. It sends no
-identifiers, and it downloads and installs nothing. If a newer version exists,
-Agency dots the Settings button and offers a link; you install the new version
-yourself, whenever suits you. Turn it off in Settings ▸ Diagnostics ("Check for updates on
-launch") and Agency makes no network calls of its own at all.
+The one exception is the update check: Agency asks GitHub's public API for the
+latest release tag and compares it to the running version, on launch and every
+six hours after that while the app is open. It sends no identifiers, and the
+check itself downloads nothing. If a newer version exists, Agency dots the
+Settings button; Help ▸ Check for Updates… opens the panel that offers it. Turn
+the automatic check off in Settings ▸ Diagnostics ("Check for updates
+automatically") and Agency makes no network calls of its own at all.
+
+Pressing **Install** there downloads that release, checks it against a signing
+key compiled into the app, and puts the new version in place. Restarting is a
+separate press, so an update never closes Agency over a running agent. A `.deb`,
+`.rpm` or AUR install is owned by its package manager, so the panel shows the
+command for it instead of an Install button.
 
 ## Installing (beta)
 

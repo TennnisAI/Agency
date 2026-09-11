@@ -2467,6 +2467,11 @@ pub struct AppState {
     /// read is an atomic load rather than a database round trip on a mutex the
     /// notifier tick also wants.
     share_open_file: Arc<std::sync::atomic::AtomicBool>,
+    /// The last answer the update thread got from GitHub, so a frontend that
+    /// mounts after the check has already run still learns about it. The thread
+    /// emits `update-available` as well; the event alone would be a race
+    /// nobody can see losing. In-memory: the next check re-derives it.
+    last_update_check: Mutex<Option<crate::update::UpdateCheck>>,
 }
 
 /// Where the file the user has open actually is, and whose it is.
@@ -2625,6 +2630,7 @@ impl AppState {
             preview_shot: std::sync::Arc::new(std::sync::OnceLock::new()),
             open_file: Arc::new(Mutex::new(None)),
             share_open_file: Arc::new(std::sync::atomic::AtomicBool::new(share_open_file)),
+            last_update_check: Mutex::new(None),
         };
         // Rehydrate: any run the daemon still hosts is adopted as-is; the watch
         // loop (watch_snapshot) then reports live status. Nothing to spawn here —
@@ -10081,6 +10087,15 @@ impl AppState {
             .lock()
             .unwrap()
             .set_setting(SETTING_UPDATE_CHECK, if enabled { "1" } else { "0" })
+    }
+
+    /// The last release check's result, or `None` before the first one lands.
+    pub fn last_update_check(&self) -> Option<crate::update::UpdateCheck> {
+        self.last_update_check.lock().unwrap().clone()
+    }
+
+    pub fn set_last_update_check(&self, check: crate::update::UpdateCheck) {
+        *self.last_update_check.lock().unwrap() = Some(check);
     }
 
     pub fn notif_settings(&self) -> Result<notifier::NotifSettings> {

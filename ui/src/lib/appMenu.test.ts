@@ -51,7 +51,7 @@ describe("the menu model", () => {
   it("names every action App.onMenu routes and no duplicates", () => {
     const actions = items().map((i) => i.action);
     expect(new Set(actions).size).toBe(actions.length - 1); // Close Window sits in File and Window, like the native one.
-    for (const a of ["settings", "new-agent", "add-project", "init-repo", "find-next", "palette", "approve", "report-issue"]) {
+    for (const a of ["settings", "new-agent", "add-project", "init-repo", "find-next", "palette", "approve", "check-updates", "report-issue"]) {
       expect(actions).toContain(a);
     }
   });

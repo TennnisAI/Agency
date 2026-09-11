@@ -40,6 +40,7 @@ export const PALETTE_COMMANDS: PaletteCommand[] = [
   { id: "toggle-sidebar", label: "Toggle Sidebar", sublabel: "Show or hide the project list", when: "always" },
   { id: "home", label: "All Projects", sublabel: "Back to the overview", when: "always" },
   { id: "settings", label: "Settings…", sublabel: "Open settings", when: "always" },
+  { id: "check-updates", label: "Check for Updates…", sublabel: "Ask GitHub whether a newer Agency is out", when: "always" },
   { id: "report-issue", label: "Report an Issue…", sublabel: "Open the GitHub issue form", when: "always" },
   { id: "github", label: "Agency on GitHub", sublabel: "Open the repository", when: "always" },
 ];

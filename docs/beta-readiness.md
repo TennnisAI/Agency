@@ -126,13 +126,36 @@ tests: 82 core + 54 app), `tsc --noEmit` exit 0, `vite build` exit 0.
 
 ### Phase 2 — update + recovery
 
-4. **[partial]** Passive update check shipped (the documented fallback). On
-   launch — unless disabled in Settings ▸ Diagnostics — `update::check` curls
-   GitHub's latest-release API, compares tags via `version::is_newer`, and dots
-   the Settings button. Agency downloads and installs nothing, so an update can
-   never restart the app over running agents. Full `tauri-plugin-updater`
-   auto-update is still open; see **Still open** for what it needs.
-   (update.rs, version.rs, App.tsx, ProjectTree.tsx, Settings.tsx)
+4. **[done]** One-click updates (AGE-229). Three parts.
+
+   *The check.* `update::check` curls GitHub's latest-release API and compares
+   tags via `version::is_newer`, as before, but now from an `update-check`
+   thread in `lib.rs`: on launch and every `CHECK_INTERVAL_SECS` (6h) after,
+   with exponential backoff on a failed one (`update::Cadence`, pure and
+   tested). The launch-only check meant an app left open never heard about a
+   release at all. The Settings toggle is read every tick, so turning it off
+   takes effect immediately rather than next launch.
+
+   *The install.* `tauri-plugin-updater` against `latest.json` on the latest
+   GitHub release, verified against the minisign public key in
+   `tauri.conf.json`. `install_update` downloads and applies; it never
+   restarts. `restart_app` is a second, separate press, which is what keeps the
+   original "an update must not restart the app over running agents" property —
+   the restart prompt names the running session count for the same reason the
+   quit confirmation does.
+
+   *Who it is for.* `update::classify` works out how this copy was installed
+   from `$APPIMAGE`, the running exe path and the package databases present.
+   A `.app` bundle and an AppImage are Agency's to replace; a `.deb`, `.rpm` or
+   AUR install belongs to its package manager, and `manual_hint` gives those
+   the exact command instead of a button that would corrupt the package
+   database. A dev build is `Unknown` and is never replaced.
+
+   Help ▸ Check for Updates… (`menu.rs`, `appMenu.ts`, `paletteCommands.ts`)
+   opens the same dialog Settings ▸ Diagnostics does.
+   (update.rs, version.rs, lib.rs, commands.rs, state.rs, menu.rs,
+   UpdateDialog.tsx, App.tsx, Settings.tsx, scripts/updater-manifest.py,
+   release.yml, linux-packages.yml)
 5. **[done]** DB safety net. `registry::backup_before_migrations` stamps
    `PRAGMA user_version` with the encoded app version and copies `agency.db` →
    `agency.db.bak` once per version change, before `Registry::open` migrates.
@@ -231,26 +254,21 @@ tests: 82 core + 54 app), `tsc --noEmit` exit 0, `vite build` exit 0.
 
 ### Phase 2 — update + recovery (before build #2)
 
-4. **Auto-updater.** The passive check (above) covers the beta; this is the
-   upgrade to real one-click updates via tauri-plugin-updater against a static
-   manifest on GitHub Releases. Outstanding work: (M)
-   - `tauri-plugin-updater` + `tauri-plugin-process`, `updater:default`
-     capability, `bundle.createUpdaterArtifacts: true`.
-   - A Tauri signing keypair, distinct from the Apple Developer ID. **The
-     private key is unrecoverable** — lose it and every installed client is
-     stranded on its current version permanently. Back it up before first use.
-   - `release.yml`: signing env vars, upload `.app.tar.gz` + `.sig`, generate
-     `latest.json` (only a `darwin-aarch64` key while builds are Apple Silicon
-     only).
-   - Requires a **public repo** — `releases/latest/download/` won't serve
-     private assets. (Settled: the repo went public for v0.1.0, and the same
-     endpoint is what the passive update check reads.)
-   - **Must not install while agents are running.** `TermClient::connect_or_spawn`
-     handles a `PROTOCOL_VERSION` bump by killing the old daemon, and its own
-     log says "its sessions are lost" — an eager install would destroy in-flight
-     work on relaunch. Needs a gate, and overlaps with #36.
-   - Can't be verified without two real releases; plan a throwaway manifest test
-     before testers depend on it.
+4. **Auto-updater — built (see Done, Phase 2 #4), unverified end to end.** The
+   one thing left is the thing that needs two real releases: nothing has ever
+   applied a `latest.json`. Before testers depend on it:
+   - Cut a release, then a second one, and take the upgrade on a Mac and on an
+     AppImage. `updater-manifest.py` fails the publish when a `.sig` is
+     missing, so an unsigned build cannot reach a release quietly, but only a
+     real upgrade proves the endpoint, the signature and the bundle swap.
+   - The restart is where the risk sits: agents survive it through the daemon,
+     *unless* the release bumps `term::protocol::PROTOCOL_VERSION`, where
+     `TermClient::connect_or_spawn` replaces the daemon and its own log says
+     "its sessions are lost". The dialog warns; a release that bumps the
+     protocol should say so in its notes too.
+   - Intel Macs get no `darwin-x86_64` entry because CI builds Apple Silicon
+     only. They are told there is nothing to install, which is better than
+     being handed an ARM build, but it is not the same as being up to date.
 
 ### Phase 6 — feature gaps (post-first-beta unless testers scream)
 

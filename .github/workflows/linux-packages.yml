@@ -25,6 +25,12 @@ name: Linux packages
 # on a PR that touches the packaging (see below). The packages are not signed
 # on any path: Linux has no platform notary, and the .deb and .rpm are
 # downloaded and installed by hand rather than from a repository with a key.
+#
+# The AppImage is the exception, and only for the in-app updater: when
+# TAURI_SIGNING_PRIVATE_KEY is present (release.yml passes it, a PR run does
+# not) the bundler writes a minisign `.sig` beside it, which the app checks
+# before it replaces itself. That signature is Agency's own and says nothing to
+# the desktop about the package's provenance.
 
 on:
   workflow_dispatch:
@@ -124,6 +130,10 @@ jobs:
           # `--bundles ""`, which it rejects. The fallback belongs here rather than in the
           # script: an empty --bundles is a caller mistake worth reporting.
           BUNDLES: ${{ inputs.bundles || 'deb,rpm,appimage' }}
+          # Empty on a PR run, which is fine: the bundler then skips the
+          # updater signature and builds the same packages it always did.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: ./scripts/release-linux.sh --native --bundles "$BUNDLES"
 
       - name: Upload packages
@@ -134,4 +144,5 @@ jobs:
             target/release/bundle/deb/*.deb
             target/release/bundle/rpm/*.rpm
             target/release/bundle/appimage/*.AppImage
+            target/release/bundle/appimage/*.AppImage.sig
           if-no-files-found: error

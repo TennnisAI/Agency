@@ -1737,6 +1737,10 @@ export const getNotifSettings = () => invoke<NotifSettings>("get_notif_settings"
 export const saveNotifSettings = (settings: NotifSettings) =>
   invoke<void>("save_notif_settings", { settings });
 
+/** How this copy of Agency was installed, which decides whether it can replace
+ *  itself or has to hand the job to a package manager. */
+export type InstallKind = "mac-app" | "app-image" | "deb" | "rpm" | "pacman" | "unknown";
+
 export interface UpdateCheck {
   current: string;
   /** Latest published release, or null when the check couldn't complete. */
@@ -1744,13 +1748,39 @@ export interface UpdateCheck {
   updateAvailable: boolean;
   /** Releases page to send the user to. */
   url: string;
+  /** The release notes, as Markdown; null when the release carries none. */
+  notes: string | null;
+  installKind: InstallKind;
+  /** Whether to offer the in-app install. False for package-manager installs,
+   *  for a dev build, and whenever there is nothing to install. */
+  canInstall: boolean;
+  /** The command a package-manager install needs instead, ready to copy. */
+  manualHint: string | null;
   /** Why the check came back empty; null on success. */
   error: string | null;
 }
 
+/** Bytes of the update downloaded so far (payload of the `update-progress`
+ *  event). `total` is null when the server declared no length. */
+export interface UpdateProgress {
+  downloaded: number;
+  total: number | null;
+}
+
 /** Asks GitHub for the latest release. Resolves (never rejects) when offline —
- *  inspect `error`. Agency downloads nothing; the user installs the new version. */
+ *  inspect `error`. Downloads nothing: `installUpdate` is the only thing that
+ *  writes to disk, and only when the user presses the button. */
 export const checkForUpdate = () => invoke<UpdateCheck>("check_for_update");
+/** The last check's result with no request of its own; null before the first
+ *  check of this launch has landed. */
+export const lastUpdateCheck = () => invoke<UpdateCheck | null>("last_update_check");
+/** Download the new version, verify its signature and put it in place.
+ *  Resolves with the version installed. Never restarts — see `restartApp`. */
+export const installUpdate = () => invoke<string>("install_update");
+/** Sessions the terminal daemon is running, for the restart warning. */
+export const runningSessions = () => invoke<number>("running_sessions");
+/** Relaunch into the version that was just installed. */
+export const restartApp = () => invoke<void>("restart_app");
 export const getUpdateCheckEnabled = () => invoke<boolean>("get_update_check_enabled");
 export const setUpdateCheckEnabled = (enabled: boolean) =>
   invoke<void>("set_update_check_enabled", { enabled });

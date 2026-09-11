@@ -38,6 +38,11 @@ tauri-plugin-dialog = "2"
 tauri-plugin-log = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-notification = "2"
+# One-click updates (AGE-229). Pulls in an HTTP/TLS stack, which is why the
+# passive "is there a newer release" check next door still shells out to curl:
+# the check runs on every launch and on a timer, the download only when the
+# user presses a button, and only the second one needs this.
+tauri-plugin-updater = "2"
 # Direct dep on the dialog backend tauri-plugin-dialog already uses: its sync
 # dialogs work before/without the Tauri event loop, which the plugin's
 # blocking_show (main-thread dispatch) does not — needed for the startup

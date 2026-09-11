@@ -17,6 +17,14 @@ name: Release
 # The Linux packages come from linux-packages.yml, called rather than copied,
 # so a release ships exactly what that workflow builds and verifies on a PR.
 #
+# Both build jobs also emit the artifacts the in-app updater applies, signed
+# with Agency's own minisign key (TAURI_SIGNING_*, nothing to do with Apple):
+# `Agency.app.tar.gz` on macOS, a `.sig` beside each AppImage on Linux. The
+# publish job turns those into `latest.json`, which is the file the app's
+# updater endpoint reads. Without it the app can still tell you a release
+# exists — that check reads the GitHub API directly — but pressing Install
+# fails, so the manifest has to reach every release.
+#
 # Neither build job touches the release. Each uploads an artifact, and the
 # publish job creates the draft once both have passed. When the DMG job created
 # the release itself, adding a second platform would have meant a release that
@@ -31,6 +39,13 @@ name: Release
 #   APPLE_ID                    Apple ID email used for notarization
 #   APPLE_PASSWORD              app-specific password for that Apple ID
 #   APPLE_TEAM_ID               9XD5R448N5
+#   TAURI_SIGNING_PRIVATE_KEY   the updater's minisign private key (the whole
+#                               file, not a path). Generated once with
+#                               `cargo tauri signer generate`; its public half
+#                               is compiled into the app from tauri.conf.json,
+#                               so LOSING IT STRANDS EVERY INSTALLED CLIENT on
+#                               whatever version it is running, permanently.
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  that key's password ("" if none)
 
 on:
   push:
@@ -102,6 +117,12 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Signs `Agency.app.tar.gz` for the in-app updater. Nothing to do with
+          # Apple: the app verifies this signature against the public key in
+          # tauri.conf.json before it replaces itself, which is what stops a
+          # compromised download from being installed.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         # --target is not optional here, and not merely belt-and-braces. Tauri
         # reads the sidecar's triple suffix off the CLI binary's own
         # architecture, not off the Rust toolchain, and taiki-e/install-action
@@ -154,15 +175,31 @@ jobs:
           # Gatekeeper's own verdict, which is the one the user's machine gives.
           spctl --assess --verbose=4 --type execute "$app"
 
-      - name: Upload DMG
+      # The DMG and the updater tarball live in different bundle/ subfolders.
+      # Staged flat rather than uploaded with two globs, because upload-artifact
+      # roots an artifact at the common ancestor of its paths: two globs would
+      # put everything under dmg/ and macos/, and the publish job below reads
+      # this artifact flat.
+      - name: Stage the macOS files
+        run: |
+          set -eu
+          mkdir -p dist-macos
+          b=target/aarch64-apple-darwin/release/bundle
+          cp "$b"/dmg/*.dmg dist-macos/
+          # .sig included: the publish job reads it into latest.json.
+          cp "$b"/macos/*.app.tar.gz "$b"/macos/*.app.tar.gz.sig dist-macos/
+          ls -l dist-macos
+
+      - name: Upload macOS files
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: agency-macos
-          path: target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+          path: dist-macos/*
           if-no-files-found: error
 
   linux:
     uses: ./.github/workflows/linux-packages.yml
+    secrets: inherit
 
   publish:
     needs: [macos, linux]
@@ -183,6 +220,29 @@ jobs:
       - name: List what will be attached
         run: find dist -type f -exec ls -l {} \;
 
+      # The version comes from the bundle config rather than from the tag. The
+      # 0.2.0 draft came out of this workflow carrying a placeholder tag
+      # (`untagged-56b3f8…`, see docs/releasing.md step 12), and a manifest that
+      # took its version from that would have offered every client an update to
+      # a version called "untagged".
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: repo
+
+      # latest.json is what the app's updater endpoint reads: the version on
+      # offer, and per platform the artifact's URL and its minisign signature.
+      # Asset URLs go through `releases/latest/download/` rather than the tag,
+      # for the same reason the version does not come from the tag — and
+      # because the manifest and the files it names are attached to the same
+      # release, so "latest" cannot resolve them to different builds.
+      - name: Build latest.json
+        run: |
+          python3 repo/scripts/updater-manifest.py \
+            --config repo/crates/agency-app/tauri.conf.json \
+            --dist dist --out dist/latest.json
+          cat dist/latest.json
+
       - name: Publish draft release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
@@ -190,7 +250,9 @@ jobs:
           name: Agency ${{ github.ref_name }}
           files: |
             dist/*.dmg
+            dist/*.app.tar.gz
             dist/deb/*.deb
             dist/rpm/*.rpm
             dist/appimage/*.AppImage
+            dist/latest.json
           fail_on_unmatched_files: true

@@ -2425,9 +2425,102 @@ pub fn set_ui_state(
 #[tauri::command]
 pub async fn check_for_update(app: tauri::AppHandle) -> Result<crate::update::UpdateCheck, String> {
     let current = app.package_info().version.to_string();
-    tauri::async_runtime::spawn_blocking(move || crate::update::check(&current))
+    let kind = crate::update::current_kind();
+    let check = tauri::async_runtime::spawn_blocking(move || crate::update::check(&current, kind))
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    // Cache it the way the background thread does, so the two paths cannot
+    // leave the UI reading a stale answer from whichever ran last.
+    {
+        use tauri::Manager;
+        app.state::<AppState>().set_last_update_check(check.clone());
+    }
+    Ok(check)
+}
+
+/// The last check's result without making a request, for a frontend that has
+/// just mounted. `None` before the first check of this launch has landed.
+#[tauri::command]
+pub fn last_update_check(state: State<'_, AppState>) -> Option<crate::update::UpdateCheck> {
+    state.last_update_check()
+}
+
+/// Download the new version, verify its signature, and put it in place.
+///
+/// Deliberately does not restart: `restart_app` is a separate call the user
+/// makes when they are ready. An update that relaunched on its own would take
+/// every running agent's terminal with it, which is exactly the failure the
+/// passive-check-only design was avoiding before this existed (AGE-229).
+///
+/// Returns the version that was installed.
+#[tauri::command]
+pub async fn install_update(app: tauri::AppHandle) -> Result<String, String> {
+    use tauri::Emitter;
+    use tauri_plugin_updater::UpdaterExt;
+
+    let kind = crate::update::current_kind();
+    if !kind.self_updating() {
+        // The UI hides the button for these, so reaching here means the install
+        // changed under us (an AppImage the user moved into /usr/bin) rather
+        // than a user pressing something they shouldn't.
+        return Err("This copy of Agency is managed by something else, so it can't \
+                    update itself. Settings, Diagnostics has the command for it."
+            .to_string());
+    }
+
+    let update = app
+        .updater()
+        .map_err(|e| format!("The updater could not start: {e}"))?
+        .check()
+        .await
+        .map_err(|e| format!("Could not fetch the update: {e}"))?
+        .ok_or_else(|| "Agency is already up to date.".to_string())?;
+
+    let version = update.version.clone();
+    let mut downloaded: u64 = 0;
+    let app_for_progress = app.clone();
+    update
+        .download_and_install(
+            move |chunk, total| {
+                downloaded += chunk as u64;
+                let _ =
+                    app_for_progress.emit("update-progress", UpdateProgress { downloaded, total });
+            },
+            || {},
+        )
+        .await
+        .map_err(|e| format!("The update could not be installed: {e}"))?;
+
+    log::info!("installed update {version}; waiting for the user to restart");
+    Ok(version)
+}
+
+/// Bytes in so far, and the total when the server declared one.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateProgress {
+    downloaded: u64,
+    total: Option<u64>,
+}
+
+/// How many sessions the terminal daemon is running right now. The restart
+/// prompt shows it for the same reason the quit confirmation does: "restart"
+/// means something different with four agents mid-turn than with none.
+#[tauri::command]
+pub fn running_sessions(state: State<'_, AppState>) -> usize {
+    state.session_count()
+}
+
+/// Relaunch Agency, after the user has said the running agents can take it.
+///
+/// Agents live in the terminal daemon, which outlives the app, so they are
+/// normally still there afterwards; a release that bumps the daemon's
+/// `PROTOCOL_VERSION` is the exception, and `TermClient::connect_or_spawn`
+/// replaces the old daemon and loses its sessions. The UI says so before
+/// calling this whenever anything is running.
+#[tauri::command]
+pub fn restart_app(app: tauri::AppHandle) {
+    app.restart();
 }
 
 #[tauri::command]

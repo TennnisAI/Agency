@@ -119,6 +119,8 @@ export const APP_MENUS: MenuSpec[] = [
   {
     title: "Help",
     items: [
+      { label: "Check for Updates…", action: "check-updates" },
+      sep,
       { label: "Report an Issue…", action: "report-issue" },
       { label: "Agency on GitHub", action: "github" },
     ],

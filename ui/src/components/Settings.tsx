@@ -20,6 +20,7 @@ import {
   agentCliInfo,
   authenticateMcpServer,
   checkForUpdate,
+  lastUpdateCheck,
   closeProject,
   createWorkspace,
   deauthenticateMcpServer,
@@ -63,6 +64,7 @@ import ConfirmDialog from "./ConfirmDialog";
 import { notifyProjectsChanged } from "../lib/projectEvents";
 import FormDialog, { Field } from "./FormDialog";
 import NoticesDialog from "./NoticesDialog";
+import UpdateDialog from "./UpdateDialog";
 import { toastError, toastSuccess } from "../lib/toast";
 import { fmtDur } from "../lib/runstate";
 import { agentColor, agentLabel, updateCommand } from "../agents";
@@ -312,9 +314,17 @@ export default function Settings({
   // the dialog fetches it rather than the bundle carrying it at startup.
   const [noticesOpen, setNoticesOpen] = useState(false);
 
+  // The update dialog, or null when it is closed; `initial` is the check it
+  // opens on (null makes it run a fresh one).
+  const [updateDialog, setUpdateDialog] = useState<{ initial: UpdateCheck | null } | null>(null);
+
   useEffect(() => {
     getVersion().then(setVersion).catch(() => {});
     getUpdateCheckEnabled().then(setAutoCheck).catch(() => {});
+    // The background thread has usually already asked by the time anyone opens
+    // Settings, so show that answer rather than making the row say nothing
+    // until the user presses a button.
+    lastUpdateCheck().then((res) => { if (res) setUpdate(res); }).catch(() => {});
   }, []);
 
   async function runUpdateCheck() {
@@ -2239,10 +2249,13 @@ export default function Settings({
                           : "Updates"}
                   </span>
                   {update?.updateAvailable ? (
+                    // Straight into the dialog on the check already in hand:
+                    // asking GitHub a second time to show the same answer is a
+                    // spinner for nothing.
                     <button
                       className="settings-ghost-btn"
-                      onClick={() => { openUrl(update.url).catch(() => {}); }}
-                    >Download</button>
+                      onClick={() => setUpdateDialog({ initial: update })}
+                    >{update.canInstall ? "Update…" : "How to update…"}</button>
                   ) : (
                     <button className="settings-ghost-btn" disabled={checking} onClick={runUpdateCheck}>
                       {checking ? "Checking…" : "Check now"}
@@ -2250,7 +2263,7 @@ export default function Settings({
                   )}
                 </div>
                 <div className="settings-notif-row">
-                  <span className="settings-notif-label">Check for updates on launch</span>
+                  <span className="settings-notif-label">Check for updates automatically</span>
                   <Toggle checked={autoCheck} onChange={pickAutoCheck} />
                 </div>
                 {/* Facts about each agent's CLI, with no staleness verdict: the
@@ -2338,6 +2351,13 @@ export default function Settings({
       </div>
 
       {noticesOpen && <NoticesDialog onClose={() => setNoticesOpen(false)} />}
+      {updateDialog && (
+        <UpdateDialog
+          initial={updateDialog.initial}
+          onClose={() => setUpdateDialog(null)}
+          onChecked={setUpdate}
+        />
+      )}
 
       {formOpen && renderProfileDialog()}
 

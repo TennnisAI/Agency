@@ -193,6 +193,10 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         .build()?;
 
     let help_menu = SubmenuBuilder::new(app, "Help")
+        // Where every desktop app puts it, and where people look for it when
+        // the app has been open long enough to have missed a release (AGE-229).
+        .item(&MenuItemBuilder::with_id("menu:check-updates", "Check for Updates…").build(app)?)
+        .separator()
         .item(&MenuItemBuilder::with_id("menu:report-issue", "Report an Issue…").build(app)?)
         .item(&MenuItemBuilder::with_id("menu:github", "Agency on GitHub").build(app)?)
         .build()?;

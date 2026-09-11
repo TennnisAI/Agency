@@ -14,6 +14,7 @@
     "opener:allow-open-url",
     "opener:allow-default-urls",
     "notification:default",
+    "updater:default",
     "log:default",
     {
       "identifier": "opener:allow-reveal-item-in-dir",

@@ -135,9 +135,9 @@ What Linux would still need after that:
   AUR needs the maintainer's own account (AGE-227).
 - **Release: done.** `release.yml` calls `linux-packages.yml` on a version tag
   and attaches all six packages to the same draft as the DMG. The README
-  carries the install steps for Debian and Ubuntu, Fedora and Arch; the
-  download page does not link the Linux packages yet (that is the site's own
-  change, kept separate from this one).
+  carries the install steps for Debian and Ubuntu, Fedora and Arch, and the
+  download page links all six packages from 0.2.0, the first release to carry
+  them.
   Installed and launched in containers on 2026-09-11 from the arm64 CI build:
   the .deb on Debian 12 and Ubuntu 22.04, the .rpm on Fedora 44. Each resolved
   its libraries from the distribution, started `agency-termd` and created its

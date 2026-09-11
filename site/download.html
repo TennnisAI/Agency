@@ -3,11 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Download Agency · macOS app for AI coding agents</title>
-<meta name="description" content="Download Agency for macOS 11 or later on Apple Silicon. Free, no account. Runs the AI coding agent CLIs you already use.">
+<title>Download Agency · macOS and Linux app for AI coding agents</title>
+<meta name="description" content="Download Agency for macOS 11 or later on Apple Silicon, or for Linux on x86_64 and arm64. Free, no account. Runs the AI coding agent CLIs you already use.">
 <link rel="canonical" href="https://getagency.dev/download">
 <meta property="og:title" content="Download Agency">
-<meta property="og:description" content="Free, no account, macOS 11 or later on Apple Silicon.">
+<meta property="og:description" content="Free, no account. macOS 11 or later on Apple Silicon, and Linux on x86_64 and arm64.">
 <meta property="og:url" content="https://getagency.dev/download">
 <meta property="og:type" content="website">
 <link rel="icon" href="/assets/img/agency-icon.svg" type="image/svg+xml">
@@ -53,18 +53,88 @@
 <section class="dl-hero">
   <div class="wrap">
     <h1 class="display">Download Agency</h1>
-    <p class="dl-platform-note" id="platform-note" hidden>Agency is macOS only today. Linux and Windows are planned.</p>
+    <p class="dl-platform-note" id="platform-note" hidden>Agency runs on macOS and Linux today. Windows is planned.</p>
     <div class="dl-button-wrap">
-      <a class="btn" href="https://github.com/TennnisAI/Agency/releases/latest/download/Agency_0.1.1_aarch64.dmg">Download for macOS</a>
-      <p class="dl-sub">Agency_0.1.1_aarch64.dmg &middot; 11.4 MB</p>
+      <a class="btn" href="https://github.com/TennnisAI/Agency/releases/latest/download/Agency_0.2.0_aarch64.dmg">Download for macOS</a>
+      <p class="dl-sub">Agency_0.2.0_aarch64.dmg &middot; 11.4 MB</p>
+      <a class="textlink" href="#linux">Packages for Linux</a>
     </div>
+
+    <div class="dl-linux" id="linux">
+      <h2 class="h2">Linux</h2>
+      <p class="dl-lead">Every package comes for x86_64 and arm64, and <code>uname -m</code> says
+      which you have. Install from a terminal, in the folder you downloaded to. The
+      commands use the x86_64 names; on arm64, use the name of the file you downloaded.</p>
+
+      <div class="dl-distro">
+        <h3 class="h3">Debian and Ubuntu</h3>
+        <div class="dl-files">
+          <div class="dl-file">
+            <a class="btn btn-quiet" href="https://github.com/TennnisAI/Agency/releases/latest/download/Agency_0.2.0_amd64.deb">.deb for x86_64</a>
+            <p class="dl-sub">Agency_0.2.0_amd64.deb &middot; 11.3 MB</p>
+          </div>
+          <div class="dl-file">
+            <a class="btn btn-quiet" href="https://github.com/TennnisAI/Agency/releases/latest/download/Agency_0.2.0_arm64.deb">.deb for arm64</a>
+            <p class="dl-sub">Agency_0.2.0_arm64.deb &middot; 10.7 MB</p>
+          </div>
+        </div>
+        <pre class="dl-cmd"><code>sudo apt install ./Agency_0.2.0_amd64.deb</code></pre>
+        <p>Use apt rather than opening the file in Ubuntu's App Center, which can stall
+        at "Installing" on a downloaded package.</p>
+      </div>
+
+      <div class="dl-distro">
+        <h3 class="h3">Fedora</h3>
+        <div class="dl-files">
+          <div class="dl-file">
+            <a class="btn btn-quiet" href="https://github.com/TennnisAI/Agency/releases/latest/download/Agency-0.2.0-1.x86_64.rpm">.rpm for x86_64</a>
+            <p class="dl-sub">Agency-0.2.0-1.x86_64.rpm &middot; 11.3 MB</p>
+          </div>
+          <div class="dl-file">
+            <a class="btn btn-quiet" href="https://github.com/TennnisAI/Agency/releases/latest/download/Agency-0.2.0-1.aarch64.rpm">.rpm for arm64</a>
+            <p class="dl-sub">Agency-0.2.0-1.aarch64.rpm &middot; 10.7 MB</p>
+          </div>
+        </div>
+        <pre class="dl-cmd"><code>sudo dnf install ./Agency-0.2.0-1.x86_64.rpm</code></pre>
+      </div>
+
+      <div class="dl-distro">
+        <h3 class="h3">Arch, and any other distribution</h3>
+        <div class="dl-files">
+          <div class="dl-file">
+            <a class="btn btn-quiet" href="https://github.com/TennnisAI/Agency/releases/latest/download/Agency_0.2.0_amd64.AppImage">AppImage for x86_64</a>
+            <p class="dl-sub">Agency_0.2.0_amd64.AppImage &middot; 88.3 MB</p>
+          </div>
+          <div class="dl-file">
+            <a class="btn btn-quiet" href="https://github.com/TennnisAI/Agency/releases/latest/download/Agency_0.2.0_aarch64.AppImage">AppImage for arm64</a>
+            <p class="dl-sub">Agency_0.2.0_aarch64.AppImage &middot; 85.9 MB</p>
+          </div>
+        </div>
+        <pre class="dl-cmd"><code>chmod +x Agency_0.2.0_amd64.AppImage
+./Agency_0.2.0_amd64.AppImage</code></pre>
+        <p>The AppImage carries its own libraries and needs only FUSE from the system.
+        If it stops with a <code>libfuse</code> error, install your distribution's FUSE
+        package, or run it with <code>APPIMAGE_EXTRACT_AND_RUN=1</code> set. It does not
+        add itself to your application menu, and there is no AUR package yet.</p>
+      </div>
+
+      <p class="small-print">apt and dnf fetch WebKitGTK and the other libraries Agency needs,
+      and a newer package installs over an older one the same way. The packages are not
+      signed. Two things are weaker than on macOS: the tray shows the running-agent count
+      in its tooltip rather than beside the icon, and clicking a notification does not
+      open the run it was about.</p>
+    </div>
+
     <div class="dl-cards">
       <div class="dl-card">
         <h2 class="h3">Requirements</h2>
         <ul>
           <li>macOS 11 or later, on Apple Silicon. There is no Intel or universal build.</li>
-          <li>Git. If you do not have it, macOS offers to install it the first time you
-          run <code>git</code>.</li>
+          <li>Or Linux with glibc 2.34 or later, on x86_64 or arm64: Ubuntu 22.04, Debian 12
+          and anything newer, and current Fedora and Arch.</li>
+          <li>Git. If you do not have it, Agency offers to install it: through Homebrew or the
+          Command Line Tools on macOS, and through your distribution's package manager on
+          Linux.</li>
           <li>No account, and nothing to sign up for.</li>
           <li>At least one agent CLI. Agency detects what is on your PATH and offers to
           install a missing one. Most install through npm, so those need Node.</li>
@@ -76,14 +146,15 @@
       </div>
       <div class="dl-card">
         <h2 class="h3">Other platforms</h2>
-        <p>Linux and Windows are planned. There is no build and no date yet.</p>
+        <p>Windows is planned. There is no build and no date yet.</p>
       </div>
     </div>
 
     <div class="install">
       <h2 class="h2">Install</h2>
       <ol>
-        <li>Open the DMG and drag Agency to Applications.</li>
+        <li>On macOS, open the DMG and drag Agency to Applications. On Linux, run the
+        command for your distribution above.</li>
         <li>Launch it and pick your default agent.</li>
         <li>Add a project by pointing Agency at a local git repo.</li>
       </ol>

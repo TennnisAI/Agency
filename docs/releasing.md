@@ -60,18 +60,18 @@ exist until the release is published.
     sudo apt install ./Agency_<version>_amd64.deb
     ```
 
-11. Read the DMG's actual size off the draft, and correct `site/download.html`
-    if it has moved. The page prints it next to the filename. (It does not link
-    the Linux packages yet; when it does, their sizes go under each
-    distribution's buttons the same way.)
+11. Read the actual sizes of all seven files off the draft, and correct
+    `site/download.html` wherever one has moved. The page prints each next to
+    its filename: the DMG under the macOS button, each Linux package under its
+    own button.
 12. Paste the `CHANGELOG.md` section into the draft and **publish the
     release**. Until you do,
     it is not `releases/latest`, which is both why the download link 404s and
     why nobody on the previous version is offered the update yet.
 13. Now push the site commit to `main`. `deploy-site.yml` fires on the push and
     the download button starts working.
-14. Load getagency.dev/download and click the macOS button. Check a Linux
-    package's link on the GitHub release page.
+14. Load getagency.dev/download and click the macOS button and one Linux
+    button.
 15. Point the AUR package at the release, commit that here, and push it to the
     AUR (the clone is from the one-time setup below):
 
@@ -109,14 +109,14 @@ about itself. `tests/linux_packaging.rs` fails when the metainfo's newest
 release is not the bundle version. The other two are on you.
 
 The site carries the version in two files, and in one of them it is part of
-a **hard-coded filename**: `site/download.html` links
-`releases/latest/download/Agency_<version>_aarch64.dmg`. (When the page gains
-the six Linux packages they will be linked the same way, and their names
-repeated in its install commands, so the same rule will apply to them.)
-`site/index.html` shows `v<version>` in the hero. Those links 404 the moment the
-new release becomes `latest` unless the filenames have been bumped, which is why the site
-bump is a separate commit held until step 13. Push it with the rest and the
-download button is broken for the length of the build instead.
+seven **hard-coded filenames**: `site/download.html` links
+`releases/latest/download/Agency_<version>_aarch64.dmg` and the six Linux
+packages the same way, and repeats three of those names in its install
+commands. `site/index.html` shows `v<version>` in the hero. Those links 404 the
+moment the new release becomes `latest` unless the filenames have been bumped,
+which is why the site bump is a separate commit held until step 13. Push it with
+the rest and every download button is broken for the length of the build
+instead.
 
 ## Automated (the normal path)
 

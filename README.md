@@ -53,9 +53,8 @@ launch") and Agency makes no network calls of its own at all.
 ## Installing (beta)
 
 Every [release](https://github.com/TennnisAI/Agency/releases) carries a DMG for
-macOS and packages for Linux.
-[getagency.dev/download](https://getagency.dev/download) links the DMG; the
-Linux packages are on the release page until the download page carries them.
+macOS and packages for Linux, and
+[getagency.dev/download](https://getagency.dev/download) links all of them.
 
 ### macOS
 
@@ -68,8 +67,9 @@ Linux packages are on the release page until the download page carries them.
 ### Linux
 
 Each package comes for x86_64 and arm64; `uname -m` says which you have. The
-.deb spells them `amd64` and `arm64`, the .rpm and the AppImage `x86_64` and
-`aarch64`. Install from a terminal, in the folder you downloaded to.
+.deb spells them `amd64` and `arm64`, the .rpm `x86_64` and `aarch64`, and the
+AppImage `amd64` and `aarch64`. Install from a terminal, in the folder you
+downloaded to.
 
 - **Debian and Ubuntu:** the `.deb`.
 

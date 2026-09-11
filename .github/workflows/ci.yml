@@ -107,8 +107,12 @@ jobs:
   # feature flag collides".
   #
   # Green on an x86_64 runner as of PR #1, so this blocks like any other job
-  # rather than reporting for information. Promote it to a full build (and to
-  # `cargo test`) when the Linux packaging work lands.
+  # rather than reporting for information. Still `cargo check`, not `cargo
+  # test`, now that the packaging has landed: the Linux-only branches of
+  # tools.rs are covered by pure table tests that run in the macOS `app` job
+  # (as does tests/linux_packaging.rs, which only reads files), and a full
+  # Linux test run would need the daemon build the `app` job does. Promote it
+  # when there is logic only a Linux process can exercise.
   linux-check:
     runs-on: ubuntu-latest
     steps:
@@ -152,7 +156,9 @@ jobs:
       - name: Check agency-app
         run: cargo check -p agency-app --locked
 
-  # The Tauri shell only compiles against macOS frameworks.
+  # The full build and test run. macOS because it is the platform the bundle
+  # is signed and notarized on; the Linux compile is covered by `linux-check`
+  # above and the Linux packages by linux-packages.yml.
   app:
     runs-on: macos-14
     steps:

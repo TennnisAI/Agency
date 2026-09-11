@@ -7,7 +7,10 @@
 # truth: update.sh there points it at a release, and the AUR is pushed from it.
 
 pkgname=agency-bin
-pkgver=0.2.0
+# The version the tree is at. No release carries Linux packages yet, so this
+# cannot be fetched until the first one does; update.sh rewrites it and the
+# checksums below from that release.
+pkgver=0.1.1
 pkgrel=1
 pkgdesc='Run coding agents side by side, each in its own git worktree'
 arch=('x86_64' 'aarch64')

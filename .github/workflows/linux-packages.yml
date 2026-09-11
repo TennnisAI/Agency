@@ -52,9 +52,15 @@ on:
       - ".github/workflows/linux-packages.yml"
       - "scripts/release-linux.sh"
       - "crates/agency-app/tauri.conf.json"
+      - "crates/agency-app/tauri.linux.conf.json"
       - "crates/agency-app/Cargo.toml"
+      - "crates/agency-app/build.rs"
       - "crates/agency-app/build-termd.sh"
       - "crates/agency-app/linux/**"
+      # Installed into every package by the `files` maps in tauri.conf.json.
+      - "LICENSE"
+      - "NOTICE"
+      - "THIRD-PARTY.md"
 
 jobs:
   package:

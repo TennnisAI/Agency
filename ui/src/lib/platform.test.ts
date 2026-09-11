@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { detectPlatform, shortcutLabel } from "./platform";
+import { detectPlatform, hasTauri, shortcutLabel } from "./platform";
 
 describe("detectPlatform", () => {
   it("reads the platform string first and the user agent second", () => {
@@ -29,5 +29,13 @@ describe("shortcutLabel", () => {
   it("keeps a bare key as it is", () => {
     expect(shortcutLabel("↵", "linux")).toBe("Enter");
     expect(shortcutLabel("F11", "linux")).toBe("F11");
+  });
+});
+
+describe("hasTauri", () => {
+  it("is true only when the Tauri internals are on the window", () => {
+    expect(hasTauri({ __TAURI_INTERNALS__: {} })).toBe(true);
+    expect(hasTauri({})).toBe(false);
+    expect(hasTauri(undefined)).toBe(false);
   });
 });

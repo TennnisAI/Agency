@@ -20,6 +20,20 @@ export const IS_MAC = PLATFORM === "mac";
 export const IS_LINUX = PLATFORM === "linux";
 
 /**
+ * Whether a Tauri runtime is underneath the page. The Linux chrome (the menu
+ * bar and the window buttons) calls into the window API on mount; opened in a
+ * plain browser on a Linux box, as the Vite dev server is, `getCurrentWindow()`
+ * throws on the missing `__TAURI_INTERNALS__` inside an effect and React
+ * unmounts the whole tree to a blank page. Gate that chrome on this as well as
+ * on the platform.
+ */
+export function hasTauri(win: object | undefined): boolean {
+  return win !== undefined && "__TAURI_INTERNALS__" in win;
+}
+
+export const IS_TAURI: boolean = hasTauri(typeof window === "undefined" ? undefined : window);
+
+/**
  * A shortcut written the Mac way ("⌘⇧D", "⌥⌘F", "⌘↵"), rendered for
  * `platform`. Everything is authored in Mac glyphs because that is how the
  * native menu and the design record spell them; this is the one translation.

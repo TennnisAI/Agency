@@ -1,5 +1,5 @@
 import { MenuContext } from "../lib/appMenu";
-import { IS_LINUX, shortcutLabel } from "../lib/platform";
+import { IS_LINUX, IS_TAURI, shortcutLabel } from "../lib/platform";
 import AppMenuBar from "./AppMenuBar";
 import WindowControls from "./WindowControls";
 
@@ -26,7 +26,7 @@ export default function TitleBar({
     // maximizes, which is what an undecorated Linux window's title row owes.
     <header className="titlebar" data-tauri-drag-region="deep">
       <div className="titlebar-left">
-        {IS_LINUX && !bare && onMenu && <AppMenuBar context={menuContext} onAction={onMenu} />}
+        {IS_LINUX && IS_TAURI && !bare && onMenu && <AppMenuBar context={menuContext} onAction={onMenu} />}
       </div>
       {!bare && (
         <button className="search-box" onClick={onOpenPalette}>
@@ -38,7 +38,7 @@ export default function TitleBar({
         </button>
       )}
       <div className="titlebar-right">
-        {IS_LINUX && <WindowControls />}
+        {IS_LINUX && IS_TAURI && <WindowControls />}
       </div>
     </header>
   );

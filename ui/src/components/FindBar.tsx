@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { FindQuery, FindState } from "../lib/find";
+import { shortcutLabel } from "../lib/platform";
 
 /**
  * The one find/replace bar, shared by the notes editor, the file editor and the
@@ -112,15 +113,15 @@ export default function FindBar({
           {toggle(query.wholeWord, "ab", "Whole word", () => set({ wholeWord: !query.wholeWord }), "find-opt-word")}
           {toggle(query.regexp, ".*", "Regular expression", () => set({ regexp: !query.regexp }))}
         </span>
-        <button type="button" className="find-btn" title="Previous match (⇧↵ or ⇧⌘G)" aria-label="Previous match"
+        <button type="button" className="find-btn" title={`Previous match (${shortcutLabel("⇧↵")} or ${shortcutLabel("⇧⌘G")})`} aria-label="Previous match"
           onMouseDown={(e) => e.preventDefault()} onClick={() => onStep(true)}>↑</button>
-        <button type="button" className="find-btn" title="Next match (↵ or ⌘G)" aria-label="Next match"
+        <button type="button" className="find-btn" title={`Next match (${shortcutLabel("↵")} or ${shortcutLabel("⌘G")})`} aria-label="Next match"
           onMouseDown={(e) => e.preventDefault()} onClick={() => onStep(false)}>↓</button>
         {canReplace && (
           <button
             type="button"
             className={`find-btn${showReplace ? " on" : ""}`}
-            title={showReplace ? "Hide replace" : "Show replace (⌥⌘F)"}
+            title={showReplace ? "Hide replace" : `Show replace (${shortcutLabel("⌥⌘F")})`}
             aria-label="Toggle replace"
             aria-expanded={showReplace}
             onMouseDown={(e) => e.preventDefault()}

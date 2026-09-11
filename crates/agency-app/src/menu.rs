@@ -14,10 +14,20 @@
 //! [`set_context`], which the frontend drives via the `set_menu_context`
 //! command as the selection changes — otherwise they'd be clickable no-ops.
 
-use tauri::menu::{Menu, MenuBuilder, MenuItemBuilder, SubmenuBuilder};
-use tauri::{AppHandle, Emitter, Manager, Wry};
+use tauri::menu::Menu;
+#[cfg(not(target_os = "linux"))]
+use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
+// `Emitter` (emit the menu action) and `Manager` (surface the window on a
+// click) are only used by `on_event`, which Linux does not build — the
+// frontend draws and routes its menu there.
+use tauri::{AppHandle, Wry};
+#[cfg(not(target_os = "linux"))]
+use tauri::{Emitter, Manager};
 
-/// Build the whole menu bar. Called once from `setup`.
+/// Build the whole menu bar. Called once from `setup`. Not on Linux, where
+/// the frontend draws the menu (see lib.rs); `set_context` is still called
+/// there and finds no menu to gate.
+#[cfg(not(target_os = "linux"))]
 pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     // App menu — on macOS its title is replaced by the app name automatically.
     let app_menu = SubmenuBuilder::new(app, "Agency")
@@ -76,6 +86,15 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
                 .build(app)?,
         )
         .item(&MenuItemBuilder::with_id("menu:clone-project", "Clone Repository…").build(app)?)
+        // Only for a selected project that has no repository: "Add without
+        // git" used to be a one-way door, since nothing offered the init
+        // again afterwards (observed 2026-09-10). The sidebar's project menu
+        // carries the same entry.
+        .item(
+            &MenuItemBuilder::with_id("menu:init-repo", "Initialize Git Repository…")
+                .enabled(false)
+                .build(app)?,
+        )
         .separator()
         .close_window()
         .build()?;
@@ -193,6 +212,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
 /// `Builder::on_menu_event`. Tray-menu clicks go through `tray::on_menu_event`
 /// instead, so the id namespaces (`menu:` vs bare `open`/`quit`/`run:`) never
 /// collide.
+#[cfg(not(target_os = "linux"))]
 pub fn on_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
     let Some(action) = event.id().as_ref().strip_prefix("menu:") else {
         return;
@@ -215,12 +235,15 @@ pub fn on_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
 
 /// Enable/disable the context-dependent items to match the frontend selection:
 /// `project` gates items that need a selected project, `focused_agent` gates the
-/// Agent menu. Must run on the main thread (menu mutation is main-thread-only on
-/// macOS); the `set_menu_context` command dispatches it there.
-pub fn set_context(app: &AppHandle, project: bool, focused_agent: bool) {
+/// Agent menu, `gitless` enables the repository init for a selected project
+/// that has none. Must run on the main thread (menu mutation is
+/// main-thread-only on macOS); the `set_menu_context` command dispatches it
+/// there. A no-op on Linux, which has no native menu (see lib.rs).
+pub fn set_context(app: &AppHandle, project: bool, focused_agent: bool, gitless: bool) {
     let Some(menu) = app.menu() else { return };
     set_enabled(&menu, &["menu:new-agent", "menu:new-terminal", "menu:source"], project);
     set_enabled(&menu, &["menu:approve", "menu:archive", "menu:discard"], focused_agent);
+    set_enabled(&menu, &["menu:init-repo"], project && gitless);
 }
 
 /// Set `enabled` on every item whose id is in `ids`. Items live one level deep

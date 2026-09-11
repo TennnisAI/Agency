@@ -73,6 +73,7 @@ import { resendOpenFile } from "../hooks/useOpenFile";
 import { setWorkspaceHidden, workspaceHidden } from "../lib/workspacePref";
 import { HUSHABLE, HushId, isHushed, setHushed } from "../lib/hushed";
 import { FindRank, registerFindTarget } from "../lib/findBus";
+import { shortcutLabel } from "../lib/platform";
 import {
   ExtraTerms,
   GROUPS,
@@ -2141,7 +2142,7 @@ export default function Settings({
               <SectionHead id="workspace" projectName={projectName} />
               <p className="settings-section-hint">
                 Your home for journaling, planning, and cross-project notes: plain
-                markdown files on disk. <kbd>⌘⇧D</kbd> opens today's journal note.
+                markdown files on disk. <kbd>{shortcutLabel("⌘⇧D")}</kbd> opens today's journal note.
               </p>
               <div className="settings-group-card">
                 <div className="settings-notif-row">

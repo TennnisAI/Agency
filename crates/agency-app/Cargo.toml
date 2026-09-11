@@ -5,6 +5,14 @@ edition = "2021"
 license = "Apache-2.0"
 description = "Tauri app shell for Agency"
 repository = "https://github.com/TennnisAI/Agency"
+homepage = "https://getagency.dev/"
+# The .deb's Maintainer field is this list, and Debian wants "Name <email>" in
+# it. Without it the bundler falls back to the publisher, and without that to
+# the first word of the identifier, which is how the first package shipped as
+# "Maintainer: agency": lintian calls it malformed-contact, and a software
+# centre shows a package with no contact as exactly what it looks like. The
+# address is the one SECURITY.md already publishes.
+authors = ["Nicholas Counts <hello@tennnis.no>"]
 
 [lib]
 name = "agency_app_lib"
@@ -34,7 +42,14 @@ tauri-plugin-notification = "2"
 # dialogs work before/without the Tauri event loop, which the plugin's
 # blocking_show (main-thread dispatch) does not — needed for the startup
 # failure dialog shown from setup().
-rfd = "0.16"
+# `default-features = false`: rfd's defaults turn on `xdg-portal`, while
+# tauri-plugin-dialog's defaults turn on `gtk3`, and rfd's build script
+# refuses both at once ("You can't enable both `gtk3` and `xdg-portal`
+# features at once") — so on Linux the two together fail to build before
+# reaching a line of our code. The only use here is one synchronous
+# MessageDialog (`lib.rs`, the setup-failure fallback), which needs none of
+# the defaults, so dropping them leaves gtk3 as the single backend.
+rfd = { version = "0.16", default-features = false }
 # Direct dep on the same backend tauri-plugin-notification uses, only to call
 # set_application() on macOS so notifications carry the Agency icon.
 notify-rust = "4"

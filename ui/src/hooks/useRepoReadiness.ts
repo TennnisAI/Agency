@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Project, RepoReadiness, inspectRepo } from "../api";
+import { PROJECTS_CHANGED_EVENT } from "../lib/projectEvents";
 
 /**
  * Live `inspect_repo` result for a project, shared by every surface that has to
@@ -32,6 +33,14 @@ export function useRepoReadiness(project: Project | null) {
     setReadiness(null);
     refreshRef.current();
   }, [repoPath]);
+
+  // A repository initialised from the sidebar (or a project relocated) changes
+  // this answer for a folder that has not changed name; the tree says so.
+  useEffect(() => {
+    const again = () => refreshRef.current();
+    window.addEventListener(PROJECTS_CHANGED_EVENT, again);
+    return () => window.removeEventListener(PROJECTS_CHANGED_EVENT, again);
+  }, []);
 
   return { readiness, refresh };
 }
@@ -129,9 +138,17 @@ export function useGitlessProjects(projects: Project[]): Set<string> {
     };
     sweep();
     const t = window.setInterval(sweep, GITLESS_RECHECK_MS);
+    // "Initialize git repository…" in the sidebar flips a folder's answer at
+    // once; forget the gitless ones so the next sweep, run now, asks again.
+    const again = () => {
+      setGitlessBy((m) => Object.fromEntries(Object.entries(m).filter(([, gitless]) => !gitless)));
+      window.setTimeout(sweep, 0);
+    };
+    window.addEventListener(PROJECTS_CHANGED_EVENT, again);
     return () => {
       live = false;
       window.clearInterval(t);
+      window.removeEventListener(PROJECTS_CHANGED_EVENT, again);
     };
   }, [key]);
 

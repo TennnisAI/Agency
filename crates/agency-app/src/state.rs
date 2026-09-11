@@ -402,6 +402,12 @@ pub struct RunInfo {
     /// stops drawing it and `status` above describes whichever extra tab is
     /// standing in for it. See `lead_session_name`.
     pub primary_closed: bool,
+    /// The run's extra agent tabs, in the order the tab strip draws them after
+    /// its own agent (see `drawn_tabs`). The rail, the sidebar tree and the
+    /// tiles list a run by one name, its first agent's, so three agents in one
+    /// worktree read as one until you opened it (AGE-225); this is what lets
+    /// them say how many there are. Empty for a terminal, which has no strip.
+    pub sessions: Vec<RunSessionInfo>,
     /// Epoch seconds. Exposed for time views (the weekly note); archived_at is
     /// None for live runs and last-archive-wins after a restore cycle.
     pub created_at: i64,
@@ -1546,7 +1552,10 @@ pub const SHELL_AGENT: &str = "shell";
 /// helper so the fallback can't drift between spawn sites (it previously varied
 /// between `/bin/zsh` and `/bin/bash` for the same feature).
 fn login_shell() -> String {
-    std::env::var("SHELL").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "/bin/zsh".to_string())
+    // The fallback is per platform: a Linux desktop session nearly always sets
+    // `$SHELL`, and when it does not, `/bin/zsh` is a path that is not there.
+    let fallback = if cfg!(target_os = "macos") { "/bin/zsh" } else { "/bin/bash" };
+    std::env::var("SHELL").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| fallback.to_string())
 }
 
 /// Clear the local-model URL once, where it still holds the value the app used
@@ -1823,6 +1832,15 @@ fn is_gitless(repo: &Path) -> Option<bool> {
 /// famously ended up without git on `PATH`. Fail loudly instead.
 fn require_gitless_known(repo: &Path) -> Result<bool> {
     is_gitless(repo).ok_or_else(|| {
+        // Say which of the two it was when it can be told: a git that is not
+        // installed at all is the case an install offer can fix, and the UI
+        // matches on the wording (see lib/missingTool.ts).
+        if !command_on_path("git") {
+            return anyhow!(
+                "git is not installed, so Agency cannot tell whether {} is a repository",
+                repo.display()
+            );
+        }
         anyhow!(
             "could not run git in {} to tell whether it is a repository; \
              check that git is installed and the folder is available",
@@ -3456,6 +3474,25 @@ impl AppState {
             running && agency_core::preview::serving(port) && handshake_done
         });
         let activity = self.read_activity(run, crate::activity::now_ms());
+        // The extra tabs' statuses come out of the listing already in hand, so
+        // listing them costs one registry read per run and no daemon call.
+        let sessions = self
+            .registry
+            .lock()
+            .unwrap()
+            .list_run_sessions(&run.id)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|s| {
+                let name = session_name(&s.id);
+                let status = live
+                    .iter()
+                    .find(|(n, _)| *n == name)
+                    .map(|(_, st)| st.clone())
+                    .unwrap_or(SessionStatus::Gone);
+                RunSessionInfo { id: s.id, run_id: s.run_id, agent: s.agent, status }
+            })
+            .collect();
         RunInfo {
             id: run.id.clone(),
             project_id: run.project_id.clone(),
@@ -3478,6 +3515,7 @@ impl AppState {
             run_scripts_live: any_run_script_live(&run.id, live),
             queued_messages: self.queued_message_count(&run.id),
             primary_closed: run.primary_closed_at.is_some(),
+            sessions,
             worktree: run.worktree,
             race_id: run.race_id.clone(),
             loop_config: run.loop_config.clone(),
@@ -6773,6 +6811,14 @@ impl AppState {
         let mut env = self.provider_env()?;
         env.extend(profile.env.iter().cloned());
         env.extend(agency_core::scripts::script_env(worktree, repo, run_id, port));
+        // The daemon inherited this process's PATH when it was spawned at
+        // startup; an agent installed since then may live in a directory
+        // adopted after that (pathenv::adopt_new_dirs), so the session gets
+        // the current answer rather than the daemon's copy.
+        // A profile that sets its own PATH keeps it.
+        if !env.iter().any(|(k, _)| k == "PATH") {
+            env.push(("PATH".to_string(), crate::pathenv::effective_path()));
+        }
         env.extend(session_store_env(
             self.agent_home().as_deref(),
             &recipe_command(profile),

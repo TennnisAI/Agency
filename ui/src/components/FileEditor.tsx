@@ -16,6 +16,7 @@ import { isExternalHref, onMarkdownLinkClick, renderMarkdown } from "../lib/mdHt
 import { toastError } from "../lib/toast";
 import ConfirmDialog from "./ConfirmDialog";
 import Menu, { MenuEntry } from "./git/Menu";
+import { shortcutLabel } from "../lib/platform";
 
 // How a file is displayed. Raster images, PDFs, and playable audio/video
 // render directly (no code view); md/html/svg open in the editor with a
@@ -376,7 +377,7 @@ const FileEditor = forwardRef<FileEditorHandle, {
     items.push(
       // No hint on Select all: the preview isn't a focusable text field, so ⌘A
       // reaches the app, not this pane.
-      { label: "Copy", hint: "⌘C", disabled: !selected, onClick: () => void copyText(selected, "Couldn't copy") },
+      { label: "Copy", hint: shortcutLabel("⌘C"), disabled: !selected, onClick: () => void copyText(selected, "Couldn't copy") },
       { label: "Select all", onClick: selectAllPreview },
       { kind: "separator" },
       { label: "Show source", onClick: () => setPreviewing(false) },
@@ -405,7 +406,7 @@ const FileEditor = forwardRef<FileEditorHandle, {
               disabled={!dirty || status !== "ready"} onClick={() => setConfirmRevert(true)}>
               <RevertGlyph />
             </button>
-            <button className="file-editor-btn" title="Save (⌘S)" aria-label="Save"
+            <button className="file-editor-btn" title={`Save (${shortcutLabel("⌘S")})`} aria-label="Save"
               disabled={!dirty || status !== "ready"} onClick={() => void save.current()}>
               <SaveGlyph />
             </button>

@@ -321,6 +321,14 @@ pub fn create_install_terminal(
     state.create_install_terminal(&project_id, &agent, &command).map_err(|e| e.to_string())
 }
 
+/// Ask to quit, through the same confirmation the native menu's Quit and the
+/// tray use. For the platforms where the menu is drawn by the frontend
+/// (Linux), whose Quit item has no native handler to route through.
+#[tauri::command]
+pub fn request_quit(app: tauri::AppHandle) {
+    crate::lifecycle::request_quit(&app);
+}
+
 /// Quit for real: invoked by the frontend once the user confirms the styled
 /// in-app quit dialog (see lifecycle::request_quit).
 #[tauri::command]
@@ -2263,11 +2271,135 @@ use crate::notifier::NotifSettings;
 /// only the fast `set_context` closure touches the main thread (menu mutation is
 /// main-thread-only on macOS).
 #[tauri::command]
-pub async fn set_menu_context(app: tauri::AppHandle, project: bool, focused_agent: bool) {
+pub async fn set_menu_context(
+    app: tauri::AppHandle,
+    project: bool,
+    focused_agent: bool,
+    gitless: bool,
+) {
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {
-        crate::menu::set_context(&handle, project, focused_agent);
+        crate::menu::set_context(&handle, project, focused_agent, gitless);
     });
+}
+
+/// The tools Agency shells out to (git, npm, gh): installed or not, and how
+/// this machine would install each. Reads PATH and, on macOS, asks
+/// `xcode-select` whether the stock git is real; no network.
+#[tauri::command]
+pub async fn tool_status() -> Result<Vec<crate::tools::ToolStatus>, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let resolve =
+            |b: &str| crate::agent_diag::resolve_on_path(b).map(|p| p.display().to_string());
+        let platform =
+            crate::tools::detect_platform(crate::tools::current_os(), |b| resolve(b).is_some());
+        crate::tools::statuses(&platform, resolve, |tool, path| {
+            tool != crate::tools::Tool::Git || crate::tools::git_works(path)
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Install one of the tools in the background, by the plan `tool_status`
+/// reported. Refused for a plan the app cannot run unattended; the UI shows
+/// that plan's copyable line instead. Completion arrives as an
+/// `install-finished` event carrying the job's status.
+#[tauri::command]
+pub async fn install_tool(
+    app: tauri::AppHandle,
+    installs: State<'_, crate::installer::Installs>,
+    id: String,
+) -> Result<(), String> {
+    let tool = crate::tools::Tool::from_id(&id).ok_or_else(|| format!("unknown tool: {id}"))?;
+    let platform = crate::tools::detect_platform(crate::tools::current_os(), |b| {
+        crate::agent_diag::resolve_on_path(b).is_some()
+    });
+    let command = match crate::tools::install_plan(tool, &platform) {
+        crate::tools::InstallPlan::Run { command, .. } => command,
+        crate::tools::InstallPlan::Manual { .. } => {
+            return Err(format!("{} has to be installed by hand on this machine", tool.label()));
+        }
+    };
+    let key = format!("tool:{id}");
+    // System package installs share a lane (one dpkg/rpm/pacman lock); a
+    // stand-alone install (xcode-select) runs in a lane of its own.
+    let lane = crate::tools::install_lane(tool, &platform).unwrap_or_else(|| key.clone());
+    start_install(&app, &installs, &key, &lane, &command)
+}
+
+/// Install an agent CLI in the background from its catalog line (the same
+/// string `create_install_terminal` takes). npm lines get the writable-prefix
+/// wrapper from `tools::install_script`.
+#[tauri::command]
+pub async fn install_agent(
+    app: tauri::AppHandle,
+    installs: State<'_, crate::installer::Installs>,
+    agent: String,
+    command: String,
+) -> Result<(), String> {
+    let script = crate::tools::install_script(&command);
+    let key = format!("agent:{agent}");
+    // The lane keys off the original command: `install_script` has by now
+    // rewritten an npm line into a prefix probe that no longer starts with
+    // `npm`. npm globals share one lane (one prefix, one cache); a curl
+    // installer runs in its own.
+    let lane = crate::tools::agent_install_lane(&command).unwrap_or_else(|| key.clone());
+    start_install(&app, &installs, &key, &lane, &script)
+}
+
+/// Every background install started this session, running or finished, so a
+/// remounted onboarding step can pick its progress back up.
+#[tauri::command]
+pub fn list_installs(
+    installs: State<'_, crate::installer::Installs>,
+) -> Vec<crate::installer::JobStatus> {
+    installs.list()
+}
+
+/// The commit identity a repository would use, for prefilling the identity
+/// form when git reports it is missing.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitIdentity {
+    pub name: Option<String>,
+    pub email: Option<String>,
+}
+
+#[tauri::command]
+pub fn get_git_identity(repo_path: String) -> GitIdentity {
+    let (name, email) = agency_core::git::identity(std::path::Path::new(&repo_path));
+    GitIdentity { name, email }
+}
+
+/// Set a repository's commit identity (local scope; never the user's global
+/// git config). The walk-through for the "Author identity unknown" failure a
+/// fresh git install produces on the first commit.
+#[tauri::command]
+pub fn set_git_identity(repo_path: String, name: String, email: String) -> Result<(), String> {
+    agency_core::git::set_identity(std::path::Path::new(&repo_path), name.trim(), email.trim())
+        .map_err(|e| e.to_string())
+}
+
+fn start_install(
+    app: &tauri::AppHandle,
+    installs: &crate::installer::Installs,
+    key: &str,
+    lane: &str,
+    script: &str,
+) -> Result<(), String> {
+    use tauri::Emitter;
+    log::info!("install {key} (lane {lane}): {script}");
+    let handle = app.clone();
+    installs.start(key, lane, &crate::pathenv::effective_path(), script, move |status| {
+        // Whatever just landed may sit in a directory that was not on PATH
+        // at startup; adopt it before the UI re-probes.
+        for dir in crate::pathenv::adopt_new_dirs() {
+            log::info!("PATH: adopted {} after {}", dir.display(), status.key);
+        }
+        log::info!("install {}: {:?} (exit {:?})", status.key, status.state, status.exit_code);
+        let _ = handle.emit("install-finished", status);
+    })
 }
 
 #[tauri::command]

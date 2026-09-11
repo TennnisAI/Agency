@@ -1,6 +1,7 @@
 # Releasing
 
-Maintainer-only. Cutting a signed, notarized macOS build and publishing it.
+Maintainer-only. Cutting a release, the signed and notarized macOS DMG plus
+the Linux packages, and publishing it.
 Split out of the README, which had grown to more signing instructions than
 product description.
 
@@ -13,7 +14,7 @@ exist until the release is published.
 **Before tagging**
 
 1. Land everything the release should carry on `main`.
-2. Bump the version in the four files below.
+2. Bump the version in the five files below.
 3. `cargo update -p agency-core -p agency-app` to move `Cargo.lock`.
 4. `cargo fmt` and `cargo test -p agency-core -p agency-app`. Build the sidecar
    first (`./crates/agency-app/build-termd.sh`) or the tests that need a daemon
@@ -37,9 +38,10 @@ exist until the release is published.
    git tag v<version> && git push origin v<version>
    ```
 
-   The tag is what fires `release.yml`. It builds, signs, notarizes and attaches
-   a DMG to a **draft** release, which takes a while; the signing steps are the
-   slow half.
+   The tag is what fires `release.yml`. It builds, signs and notarizes the DMG,
+   builds the Linux packages for both architectures, and attaches all seven
+   files to one **draft** release once every build has passed. That takes a
+   while; the signing steps are the slow half.
 
 **After the build, before publishing**
 
@@ -50,15 +52,39 @@ exist until the release is published.
     spctl -a -vvv -t install ~/Downloads/Agency_<version>_aarch64.dmg
     ```
 
-11. Read the DMG's actual size off the file, and correct `site/download.html` if
-    it has moved. The page prints it next to the filename.
+    Then install one Linux package and launch it. The build has already checked
+    the .deb the way a distribution would, but nothing in CI has started the
+    app from it:
+
+    ```sh
+    sudo apt install ./Agency_<version>_amd64.deb
+    ```
+
+11. Read the DMG's actual size off the draft, and correct `site/download.html`
+    if it has moved. The page prints it next to the filename. (It does not link
+    the Linux packages yet; when it does, their sizes go under each
+    distribution's buttons the same way.)
 12. Paste the `CHANGELOG.md` section into the draft and **publish the
     release**. Until you do,
     it is not `releases/latest`, which is both why the download link 404s and
     why nobody on the previous version is offered the update yet.
 13. Now push the site commit to `main`. `deploy-site.yml` fires on the push and
     the download button starts working.
-14. Load getagency.dev/download and click the button.
+14. Load getagency.dev/download and click the macOS button. Check a Linux
+    package's link on the GitHub release page.
+15. Point the AUR package at the release, commit that here, and push it to the
+    AUR (the clone is from the one-time setup below):
+
+    ```sh
+    packaging/aur/update.sh <version>
+    git add packaging/aur && git commit -m "point the AUR package at <version>"
+    git push origin main
+    cp packaging/aur/agency-bin/PKGBUILD packaging/aur/agency-bin/.SRCINFO ~/aur-agency-bin/
+    git -C ~/aur-agency-bin commit -am "agency-bin <version>" && git -C ~/aur-agency-bin push
+    ```
+
+    `update.sh` reads the checksums off the published .deb files, so it fails
+    until step 12 is done.
 
 Nothing else needs doing for the update check: it reads the latest release tag
 from the GitHub API at launch and compares it to the running version, so
@@ -67,35 +93,42 @@ publishing is the whole of it.
 ## Bumping the version
 
 There is no single source of truth for the version, and nothing in CI compares
-these files, so bump all four by hand:
+these files, so bump all five by hand:
 
 | File | Why |
 | --- | --- |
-| `crates/agency-app/tauri.conf.json` | names the DMG and the bundle's `CFBundleShortVersionString` |
+| `crates/agency-app/tauri.conf.json` | names the DMG and the Linux packages, and sets the bundle's `CFBundleShortVersionString` |
 | `crates/agency-app/Cargo.toml` | `AppState::version()`, which the update check compares to the latest release tag |
 | `crates/agency-core/Cargo.toml` | the daemon's own `CARGO_PKG_VERSION`, reported over the preview RPC |
 | `ui/package.json` | cosmetic, but drifts silently if skipped |
+| `crates/agency-app/linux/build.agency.app.metainfo.xml` | add a `<release>` at the top; it is the version Linux software centres report for the installed package |
 
 `tests/smoke.rs` fails when the first two have drifted apart, which is the pair
 that actually matters: one names the DMG, the other is what the app reports
-about itself. The other two are on you.
+about itself. `tests/linux_packaging.rs` fails when the metainfo's newest
+release is not the bundle version. The other two are on you.
 
-The site carries the version twice, and one of them is a **hard-coded DMG
-filename**: `site/download.html` links
-`releases/latest/download/Agency_<version>_aarch64.dmg`, and `site/index.html`
-shows `v<version>` in the hero. That link 404s the moment the new release
-becomes `latest` unless the filename has been bumped, which is why the site
+The site carries the version in two files, and in one of them it is part of
+a **hard-coded filename**: `site/download.html` links
+`releases/latest/download/Agency_<version>_aarch64.dmg`. (When the page gains
+the six Linux packages they will be linked the same way, and their names
+repeated in its install commands, so the same rule will apply to them.)
+`site/index.html` shows `v<version>` in the hero. Those links 404 the moment the
+new release becomes `latest` unless the filenames have been bumped, which is why the site
 bump is a separate commit held until step 13. Push it with the rest and the
 download button is broken for the length of the build instead.
 
 ## Automated (the normal path)
 
-`.github/workflows/release.yml` builds, signs, notarizes, and attaches a DMG to
-a **draft** GitHub Release on an Apple Silicon runner. A version tag is the
+`.github/workflows/release.yml` builds, signs and notarizes the DMG on an Apple
+Silicon runner, and calls `.github/workflows/linux-packages.yml` for the Linux
+packages, which build on native x86_64 and arm64 runners. A last job attaches
+everything to a **draft** GitHub Release once all of them have passed, so a
+release never goes out missing a platform. A version tag is the
 trigger (step 9 above); `workflow_dispatch` runs it by hand from the Actions tab
 if you need a build without cutting a tag.
 
-Review the attached DMG, then publish the release by hand. It runs the same
+Review the attached files, then publish the release by hand. It runs the same
 `cargo tauri build` as the local script; the only difference is that Tauri does
 signing **and** notarization from environment variables (certificate from a
 secret, notarization via an app-specific password) rather than from your local
@@ -131,6 +164,19 @@ cargo tauri build
 
 Output lands in `target/release/bundle/`: the `.app` under `macos/`, the `.dmg`
 under `dmg/`.
+
+### Linux packages
+
+```sh
+./scripts/release-linux.sh
+```
+
+Builds the `.deb`, `.rpm` and AppImage and checks the `.deb` the way a
+distribution would. On macOS it builds inside a container, since Tauri cannot
+cross-compile to Linux, and the packages land in `target/linux/`. The script's
+header lists the options. Release packages come from CI rather than from here:
+x86_64 on an Apple Silicon Mac runs under emulation, which is slow enough to be
+impractical.
 
 ### Signed and notarized
 
@@ -194,6 +240,40 @@ Needed on a machine that has not cut a release before.
 
    `release-macos.sh` reads the `agency-notary` profile; override with
    `AGENCY_NOTARY_PROFILE`.
+
+### AUR
+
+`agency-bin` on the AUR is how Arch users install Agency with their own tools
+(`yay -S agency-bin`, or `makepkg -si` in a clone), and how they get updates.
+`packaging/aur/agency-bin/` is the source of truth; the AUR repository is a
+two-file mirror of it (`PKGBUILD` and `.SRCINFO`). The PKGBUILD repackages the
+release .deb rather than building from source.
+
+1. Create an account at aur.archlinux.org and add an SSH public key to it.
+2. After the first release carrying Linux packages is published, point the
+   package at it and create the AUR repository by pushing to it. Cloning a
+   package name that does not exist yet gives an empty repository, and the
+   first push creates the package:
+
+   ```sh
+   packaging/aur/update.sh <version>
+   git clone ssh://aur@aur.archlinux.org/agency-bin.git ~/aur-agency-bin
+   cp packaging/aur/agency-bin/PKGBUILD packaging/aur/agency-bin/.SRCINFO ~/aur-agency-bin/
+   git -C ~/aur-agency-bin add PKGBUILD .SRCINFO
+   git -C ~/aur-agency-bin commit -m "agency-bin <version>" && git -C ~/aur-agency-bin push
+   ```
+
+3. Once it is live, the download page and the README stop saying there is no
+   AUR package: the Arch line becomes `yay -S agency-bin`.
+
+`update.sh` writes `.SRCINFO` itself, from the PKGBUILD, because `makepkg
+--printsrcinfo` needs Arch. It knows the fields the PKGBUILD uses today, so
+after adding a field to the PKGBUILD, compare the two on Arch (a container
+will do) before pushing:
+
+```sh
+makepkg --printsrcinfo | diff - .SRCINFO
+```
 
 ### CI secrets
 

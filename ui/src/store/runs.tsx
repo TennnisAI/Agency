@@ -4,6 +4,7 @@ import { loadFold, saveFold } from "../hooks/usePaneWidth";
 import { Tab, openingTab } from "../lib/projectTab";
 import { pinnedFirst } from "../lib/runstate";
 import { toastError } from "../lib/toast";
+import { reportFailure } from "../lib/missingTool";
 
 type View = "grid" | "focus";
 // What the add-menu hands to a spawn. `worktree: false` means "run in the
@@ -69,11 +70,18 @@ interface RunStore {
   spawnProgress: CloneProgress | null;
   approveRunId: string | null;
   setApproveRun: (id: string | null) => void;
-  // An extra agent tab to open once its run is focused (a PR review that had to
-  // share an existing run's worktree). AgentFocus consumes and clears it, so a
-  // later visit to the same run lands on the primary agent as usual.
+  // An agent tab to open once its run is focused: an extra tab (a PR review that
+  // had to share an existing run's worktree), or any tab picked by name from the
+  // rail or the sidebar tree (AGE-225), where the run's own id names its first
+  // agent. AgentFocus consumes and clears it, so a later visit to the same run
+  // lands on the tab it remembers as usual.
   pendingSessionId: string | null;
   setPendingSession: (id: string | null) => void;
+  // The tab the focus view last showed for a run, published by AgentFocus so
+  // the sidebar tree can mark which of a worktree's agents is the one on screen
+  // (AGE-225). Keyed by run because it only describes the run it was set for.
+  shownTab: { runId: string; tab: string } | null;
+  setShownTab: (t: { runId: string; tab: string } | null) => void;
   // A run whose agent the user asked to see by name — a row in the focus rail,
   // a row under a project in the sidebar tree, an entry in the palette. Focusing
   // the run is not enough on its own: it may already be the focused one, and it
@@ -100,6 +108,7 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
   const [approveRunId, setApproveRun] = useState<string | null>(null);
   const [pendingSessionId, setPendingSession] = useState<string | null>(null);
   const [agentViewRunId, requestAgentView] = useState<string | null>(null);
+  const [shownTab, setShownTab] = useState<{ runId: string; tab: string } | null>(null);
   const [sourcePanelOpen, setSourcePanelOpenState] = useState<boolean>(() =>
     typeof localStorage === "undefined" ? false : loadFold(localStorage, SOURCE_PANEL_KEY, false),
   );
@@ -177,7 +186,7 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
       // prompt + title, renaming the empty-prompt branch when it still is one
       // (see set_run_title / AGE-183).
       const run = await createRun(pid, "", agentId, model, base, mergeTarget, setSpawnProgress, worktree).catch((e) => {
-        toastError(e, `Couldn't start ${agentId}`);
+        reportFailure(e, `Couldn't start ${agentId}`);
         return null;
       });
       if (!run) return;
@@ -243,7 +252,7 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <Ctx.Provider
-      value={{ runs, projectRunLive, selectedProjectId, setSelectedProject, view, setView, focusedRunId, setFocusedRun, selectedRunId, sourcePanelOpen, setSourcePanelOpen, onScreenRunId, setOnScreenRun, refreshRuns, tab, setTab, createAgent, createTerminal, spawning: spawnCount > 0, spawnProgress, approveRunId, setApproveRun, pendingSessionId, setPendingSession, agentViewRunId, requestAgentView }}
+      value={{ runs, projectRunLive, selectedProjectId, setSelectedProject, view, setView, focusedRunId, setFocusedRun, selectedRunId, sourcePanelOpen, setSourcePanelOpen, onScreenRunId, setOnScreenRun, refreshRuns, tab, setTab, createAgent, createTerminal, spawning: spawnCount > 0, spawnProgress, approveRunId, setApproveRun, pendingSessionId, setPendingSession, shownTab, setShownTab, agentViewRunId, requestAgentView }}
     >
       {children}
     </Ctx.Provider>

@@ -1,8 +1,8 @@
 //! Passive update check: ask GitHub what the latest release is, compare it to
 //! the running version, and let the UI offer a download link. Agency never
 //! downloads or installs anything itself — the user goes to the releases page
-//! and installs the DMG when it suits them. That keeps a background update from
-//! ever restarting the app out from under running agents.
+//! and installs the new version when it suits them. That keeps a background
+//! update from ever restarting the app out from under running agents.
 //!
 //! This is the only outbound network call Agency's own code makes. It sends no
 //! identifiers: a plain GET, a User-Agent naming the app, and nothing else. It

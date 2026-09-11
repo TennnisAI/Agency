@@ -1,8 +1,60 @@
 # Changelog
 
 Notable changes in each release. The GitHub release for a version carries the
-same notes alongside the DMG; this file is so the history is readable without
+same notes alongside the downloads; this file is so the history is readable without
 leaving the repository.
+
+## Unreleased
+
+### Linux
+
+- Agency runs on Linux. Each release carries a `.deb` for Debian and Ubuntu, an
+  `.rpm` for Fedora, and an AppImage for Arch and everything else, each for
+  x86_64 and arm64. They need glibc 2.34 or later: Ubuntu 22.04 and Debian 12
+  onwards, and current Fedora and Arch.
+- Two things are weaker than on macOS. The tray shows the running-agent count
+  in its tooltip rather than beside the icon. And Linux does not tell Agency
+  when you click a notification, so the click does not open the run it was
+  about.
+- The window is one bar high, not three. Linux showed the window manager's
+  title bar, then a menu strip, then Agency's own title row. The Linux window
+  is now undecorated and Agency's title bar carries the menus and the
+  minimize, maximize and close buttons, the way the macOS one carries the
+  traffic lights.
+- Shortcut hints say Ctrl where the key is Ctrl, not ⌘.
+
+### First run
+
+- Onboarding checks for git, Node.js and npm, and the GitHub CLI, and offers
+  to install whichever is missing: through Homebrew or the Command Line
+  Tools on macOS, through the distribution's package manager on Linux (the
+  desktop asks for your password). Without either it shows the line to copy.
+- Installing an agent from onboarding runs the install in the background and
+  ticks the agent when it lands, rather than handing over a command to paste
+  into a terminal that the first run has no way to open. An agent that needs
+  npm on a machine without it installs Node.js first.
+- An npm install on a machine whose Node came from a system package no longer
+  fails with a permissions error on the root-owned global prefix; the agent
+  goes under `~/.local` instead.
+- Installing more than one dependency at once no longer makes them fail on each
+  other. System package installs share the machine's one package lock, so they
+  run in turn instead of colliding with "Could not get lock"; a tool waiting
+  its turn shows "Waiting…".
+- A first commit on a freshly installed git, which has no name or email set,
+  no longer just fails with "Author identity unknown". Agency asks for a name
+  and email, saves them for the repository, and makes the commit. The same
+  form appears wherever a commit hits that error, including Source Control.
+
+### Projects
+
+- A project added without git can be given a repository later: from its
+  right-click menu, from File in the menu bar, and from the command palette.
+- "Couldn't start claude: could not run git…" now says "git is not
+  installed" when that is what happened, and offers to install it. The same
+  for "Initialize repository" in the folder setup dialog, which used to fail
+  with a bare `No such file or directory (os error 2)`.
+- The DeepSeek Harness tile in onboarding no longer runs its install button
+  out past the tile's border.
 
 ## 0.1.1 (2026-09-08)
 

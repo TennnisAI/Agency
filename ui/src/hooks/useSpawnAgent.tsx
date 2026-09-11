@@ -3,6 +3,14 @@ import { Issue, Project, RepoReadiness, agentInstalled, inspectRepo, startIssueR
 import { useRuns, SpawnOpts } from "../store/runs";
 import RepoSetupDialog from "../components/RepoSetupDialog";
 import InstallAgentDialog from "../components/InstallAgentDialog";
+import { missingToolFor, offerToolInstall } from "../lib/missingTool";
+
+// A spawn that failed for want of git gets the install offer, not a red line
+// the user cannot act on. False when the error is something else.
+function offerIfMissingTool(e: unknown): boolean {
+  const tool = missingToolFor(e);
+  return !!tool && offerToolInstall(tool, `Couldn't start the agent: ${e instanceof Error ? e.message : String(e)}`);
+}
 
 type Pending = {
   agentId: string;
@@ -80,7 +88,7 @@ export function useSpawnAgent(project: Project | null, onRepoResolved?: () => vo
         setPending({ agentId, readiness: r, repoPath: project.repo_path, opts, issue });
       }
     } catch (e) {
-      setError(String(e));
+      if (!offerIfMissingTool(e)) setError(String(e));
     }
   }
 
@@ -99,7 +107,7 @@ export function useSpawnAgent(project: Project | null, onRepoResolved?: () => vo
               if (issue) await startIssue(issue, agentId, opts);
               else await createAgent(agentId, opts);
             } catch (e) {
-              setError(String(e));
+              if (!offerIfMissingTool(e)) setError(String(e));
             }
           }}
           onCancel={() => setPending(null)}

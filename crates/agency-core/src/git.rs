@@ -84,6 +84,41 @@ pub fn user_name(repo: &Path) -> Option<String> {
     (!name.is_empty()).then_some(name)
 }
 
+/// The name and email git would sign a commit with here, each present only
+/// when set to something non-empty (in any scope git can see). For prefilling
+/// the identity form, so a machine with half an identity does not ask twice.
+pub fn identity(repo: &Path) -> (Option<String>, Option<String>) {
+    let read = |key: &str| {
+        git(repo, &["config", key]).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+    };
+    (read("user.name"), read("user.email"))
+}
+
+/// Set this repository's commit identity, local scope only.
+///
+/// A fresh git install has no `user.name`/`user.email`, so the first commit
+/// fails with "Author identity unknown / *** Please tell me who you are"
+/// (observed 2026-09-10). Agency writes the repository's own config, never the
+/// user's global git config (the house rule): a git worktree shares its
+/// repository's config, so this still reaches every worktree Agency cuts. The
+/// values are passed as their own argv entries after `--`, so a name with
+/// spaces or an email that looks like a flag cannot be misread.
+///
+/// Empty values are refused here, not only in the form: `git config user.name
+/// ""` exits 0 and writes `user.name=`, after which the next commit fails with
+/// "empty ident name" instead of the "Author identity unknown" this flow
+/// recognises, and the dialog that "succeeded" is gone.
+pub fn set_identity(repo: &Path, name: &str, email: &str) -> Result<()> {
+    let name = name.trim();
+    let email = email.trim();
+    if name.is_empty() || email.is_empty() {
+        bail!("a git identity needs both a name and an email");
+    }
+    git(repo, &["config", "--", "user.name", name])?;
+    git(repo, &["config", "--", "user.email", email])?;
+    Ok(())
+}
+
 /// How many untracked files a folder may hold and still be listed file by file.
 /// Above it the folder stays one row: `git status -uall` on a 40,000-file
 /// unignored `node_modules` took 0.27s and produced 1.4 MB of output against
@@ -1929,5 +1964,20 @@ mod capped_tests {
         .to_string();
         assert!(err.contains("timed out"), "unexpected error: {err}");
         assert!(started.elapsed() < Duration::from_secs(10), "did not return promptly");
+    }
+
+    #[test]
+    fn set_identity_writes_local_scope_and_refuses_an_empty_half() {
+        let dir = repo();
+        assert!(set_identity(dir.path(), "  ", "a@b.c").is_err());
+        assert!(set_identity(dir.path(), "Name", "").is_err());
+        // Local scope only: the machine running the tests has a global identity.
+        let local = |key: &str| git(dir.path(), &["config", "--local", key]).ok();
+        assert_eq!(local("user.name"), None, "a refused write must leave nothing behind");
+        assert_eq!(local("user.email"), None);
+        // A value shaped like an option is still a value.
+        set_identity(dir.path(), "Flag Test", "--global").unwrap();
+        assert_eq!(local("user.name").as_deref().map(str::trim), Some("Flag Test"));
+        assert_eq!(local("user.email").as_deref().map(str::trim), Some("--global"));
     }
 }

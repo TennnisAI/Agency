@@ -3,6 +3,8 @@ import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { RunStoreProvider, useRuns } from "./store/runs";
 import TitleBar from "./components/TitleBar";
+import ToolInstallHost from "./components/ToolInstallHost";
+import GitIdentityHost from "./components/GitIdentityHost";
 import StatusBar from "./components/StatusBar";
 import ProjectTree from "./components/ProjectTree";
 import AgentsView from "./components/AgentsView";
@@ -24,6 +26,8 @@ import { requestFind, requestFindStep } from "./lib/findBus";
 import { DAILY_TEMPLATE_PATH, JOURNAL_DIR, dailyNotePath, defaultDailyContent, renderDailyTemplate } from "./lib/dailyNote";
 import { WEEKLY_DIR, buildWeeklyNote, isoWeekStamp, isoWeekStart, weeklyNotePath } from "./lib/weeklyNote";
 import { toastError, toastInfo } from "./lib/toast";
+import { reportFailure } from "./lib/missingTool";
+import { isGitless, useRepoReadiness } from "./hooks/useRepoReadiness";
 import { workspaceHidden } from "./lib/workspacePref";
 import { Removal } from "./lib/runRemoval";
 import PreviewKeeper from "./components/PreviewKeeper";
@@ -34,7 +38,7 @@ import { PROJECTS_CHANGED_EVENT } from "./lib/projectEvents";
 const REPO_URL = "https://github.com/TennnisAI/Agency";
 
 function Shell() {
-  const { selectedProjectId, setSelectedProject, createAgent, createTerminal, setTab, focusedRunId, selectedRunId, onScreenRunId, setApproveRun, setFocusedRun, setView, requestAgentView, runs } = useRuns();
+  const { selectedProjectId, setSelectedProject, createAgent, createTerminal, setTab, focusedRunId, selectedRunId, onScreenRunId, setApproveRun, setFocusedRun, setView, requestAgentView, setPendingSession, runs } = useRuns();
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [project, setProject] = useState<Project | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -238,7 +242,7 @@ function Shell() {
       );
       openRun(ws, run.id);
     } catch (e) {
-      toastError(e, "Couldn't start agent");
+      reportFailure(e, "Couldn't start agent");
     }
   }
 
@@ -344,9 +348,14 @@ function Shell() {
   // this to one IPC call per actual state change.
   const hasProject = !!selectedProjectId;
   const hasFocusedAgent = runs.some((r) => r.id === focusedRunId && r.kind === "agent");
+  // Whether the selected project sits in a folder with no repository, which is
+  // what enables File ▸ Initialize Git Repository…
+  const { readiness: selectedReadiness } = useRepoReadiness(project ?? null);
+  const selectedGitless = isGitless(selectedReadiness) && project?.kind !== "workspace";
   useEffect(() => {
-    setMenuContext(hasProject, hasFocusedAgent).catch(() => {});
-  }, [hasProject, hasFocusedAgent]);
+    setMenuContext(hasProject, hasFocusedAgent, selectedGitless).catch(() => {});
+  }, [hasProject, hasFocusedAgent, selectedGitless]);
+  const menuContext = { project: hasProject, focusedAgent: hasFocusedAgent, gitless: selectedGitless };
 
   // Picking a project from the tree leaves Settings up (AGE-187). Settings has
   // a Project group whose sections are all about one checkout, and its empty
@@ -396,7 +405,12 @@ function Shell() {
   // requestAgentView is the same problem one level in: a run left on its Run tab
   // reopens there, so opening it by name landed on the run panel rather than the
   // agent, and a run already focused didn't move at all.
-  function openRun(p: Project, runId: string) {
+  //
+  // `session` names one of the run's agent tabs to land on (AGE-225): the run's
+  // own id for its first agent, `<runId>--<n>` for an extra one. Set last,
+  // because setSelectedProject clears any pending tab and the later write is
+  // the one that survives the batch.
+  function openRun(p: Project, runId: string, session?: string) {
     setShowSettings(false);
     setProject(p);
     setSelectedProject(p.id);
@@ -404,6 +418,7 @@ function Shell() {
     setFocusedRun(runId);
     setView("focus");
     requestAgentView(runId);
+    if (session) setPendingSession(session);
   }
 
   // Route a native-menu action (payload of the backend "menu" event) to the
@@ -420,6 +435,7 @@ function Shell() {
       // signal it rather than duplicating that logic here.
       case "add-project": window.dispatchEvent(new CustomEvent("agency:add-project")); break;
       case "clone-project": window.dispatchEvent(new CustomEvent("agency:clone-project")); break;
+      case "init-repo": window.dispatchEvent(new CustomEvent("agency:init-repo")); break;
       case "source": setTab("source"); break;
       // Find routes to whichever surface is on screen and focused — the notes
       // editor, the file editor, an issue description, the issue board's
@@ -580,7 +596,11 @@ function Shell() {
 
   return (
     <div className="shell">
-      <TitleBar onOpenPalette={() => setPaletteOpen(true)} />
+      <TitleBar
+        onOpenPalette={() => setPaletteOpen(true)}
+        menuContext={menuContext}
+        onMenu={(a) => menuRef.current(a)}
+      />
       <div className="body">
         {/* The sidebar stays mounted while hidden (collapsed to width 0) so
             re-expanding is instant: remounting the tree used to leave the pane
@@ -595,7 +615,7 @@ function Shell() {
               focusedRunId={focusedRunId}
               onSelect={selectProjectFromTree}
               onOpen={selectProject}
-              onSelectRun={(p: Project, run: RunInfo) => openRun(p, run.id)}
+              onSelectRun={(p: Project, run: RunInfo, session?: string) => openRun(p, run.id, session)}
               onHome={goHome}
               onSelectionGone={leaveProject}
               onToggleSidebar={() => setSidebarOpen(false)}
@@ -637,10 +657,13 @@ function Shell() {
         onOpenCheckout={() => { setView("grid"); setTab("source"); }}
       />
       <Toasts />
+      <ToolInstallHost />
+      <GitIdentityHost />
       {paletteOpen && (
         <CommandPalette
           onClose={() => setPaletteOpen(false)}
           onAction={(id) => menuRef.current(id)}
+          gitless={selectedGitless}
           onOpenProject={selectProject}
           onOpenRun={(p, runId) => openRun(p, runId)}
         />
@@ -720,6 +743,8 @@ export default function App() {
         <TitleBar onOpenPalette={() => {}} bare />
         <AgentOnboarding onDone={() => setNeedsOnboarding(false)} />
         <Toasts />
+        <ToolInstallHost />
+        <GitIdentityHost />
       </div>
     );
   }

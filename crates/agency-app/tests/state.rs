@@ -1455,6 +1455,16 @@ fn extra_session_lifecycle_shares_worktree_and_cascades() {
     assert_eq!(s3.id, format!("{}--3", run.id));
     assert_eq!(state.run_sessions(&run.id).unwrap().len(), 2);
 
+    // AGE-225: the board's own poll carries the tabs, in strip order, so the
+    // rail and the sidebar can list every agent in the worktree without a
+    // listing per run.
+    let listed =
+        state.list_runs(&project.id).unwrap().into_iter().find(|r| r.id == run.id).unwrap();
+    assert_eq!(
+        listed.sessions.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+        vec![s2.id.as_str(), s3.id.as_str()],
+    );
+
     // Closing a tab kills only that session; siblings survive.
     state.close_run_session(&s2.id).unwrap();
     let mut gone = false;
@@ -1484,6 +1494,11 @@ fn extra_session_lifecycle_shares_worktree_and_cascades() {
     assert!(primary_gone, "the run's own session survived its tab being closed");
     let info = state.list_runs(&project.id).unwrap().into_iter().find(|r| r.id == run.id).unwrap();
     assert!(info.primary_closed, "the close must survive as more than a dead session");
+    assert_eq!(
+        info.sessions.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+        vec![s3.id.as_str()],
+        "only the tab still open is listed",
+    );
     assert!(
         !matches!(info.status, SessionStatus::Gone),
         "the remaining tab carries the run's status"

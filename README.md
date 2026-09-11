@@ -5,7 +5,7 @@ git worktree.** Watch them live, review what they changed, merge the good ones.
 
 [![CI](https://github.com/TennnisAI/Agency/actions/workflows/ci.yml/badge.svg)](https://github.com/TennnisAI/Agency/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-macOS%20(Apple%20Silicon)-lightgrey.svg)](#requirements)
+[![Platform](https://img.shields.io/badge/platform-macOS%20(Apple%20Silicon)%20%7C%20Linux-lightgrey.svg)](#requirements)
 
 <!-- The site's hero capture, reused rather than recaptured. It is from the real
      working machine: it shows real project names, a home-directory path in
@@ -46,21 +46,69 @@ party and talk to their own providers.
 The one exception is the update check: on launch Agency asks GitHub's public API
 for the latest release tag and compares it to the running version. It sends no
 identifiers, and it downloads and installs nothing. If a newer version exists,
-Agency dots the Settings button and offers a link; you install the DMG yourself,
-whenever suits you. Turn it off in Settings ▸ Diagnostics ("Check for updates on
+Agency dots the Settings button and offers a link; you install the new version
+yourself, whenever suits you. Turn it off in Settings ▸ Diagnostics ("Check for updates on
 launch") and Agency makes no network calls of its own at all.
 
 ## Installing (beta)
 
-1. Download the latest `Agency_*.dmg` from
-   [Releases](https://github.com/TennnisAI/Agency/releases).
+Every [release](https://github.com/TennnisAI/Agency/releases) carries a DMG for
+macOS and packages for Linux.
+[getagency.dev/download](https://getagency.dev/download) links the DMG; the
+Linux packages are on the release page until the download page carries them.
+
+### macOS
+
+1. Download the latest `Agency_*.dmg`.
 2. Open the DMG and drag **Agency** to Applications.
 3. Launch it. The build is signed and notarized, so it opens without a Gatekeeper
    prompt. If macOS says the app is damaged, you have an unsigned local build
    rather than a release DMG.
 
-On first launch, Agency asks you to pick a default agent, then you add a project
-by pointing it at a local git repo.
+### Linux
+
+Each package comes for x86_64 and arm64; `uname -m` says which you have. The
+.deb spells them `amd64` and `arm64`, the .rpm and the AppImage `x86_64` and
+`aarch64`. Install from a terminal, in the folder you downloaded to.
+
+- **Debian and Ubuntu:** the `.deb`.
+
+  ```sh
+  sudo apt install ./Agency_<version>_amd64.deb
+  ```
+
+  Use apt rather than opening the file in Ubuntu's App Center, which can stall
+  at "Installing" on a downloaded package.
+
+- **Fedora:** the `.rpm`.
+
+  ```sh
+  sudo dnf install ./Agency-<version>-1.x86_64.rpm
+  ```
+
+- **Arch, and any other distribution:** the AppImage. It carries its own
+  libraries and needs only FUSE from the system.
+
+  ```sh
+  chmod +x Agency_<version>_amd64.AppImage
+  ./Agency_<version>_amd64.AppImage
+  ```
+
+  If it stops with a `libfuse` error, install your distribution's FUSE package
+  (`fuse2` or `fuse3`, whichever the message names), or run it with
+  `APPIMAGE_EXTRACT_AND_RUN=1` set, which needs no FUSE at all.
+
+  There is no AUR package yet, and the AppImage does not add itself to your
+  application menu.
+
+apt and dnf fetch WebKitGTK and the other libraries Agency needs. A newer
+package installs over an older one the same way, and `sudo apt remove agency` or
+`sudo dnf remove agency` takes it out again. The packages are not signed.
+
+### First launch
+
+Agency asks you to pick a default agent, then you add a project by pointing it
+at a local git repo.
 
 What changed in each release is in [`CHANGELOG.md`](CHANGELOG.md).
 
@@ -68,13 +116,20 @@ What changed in each release is in [`CHANGELOG.md`](CHANGELOG.md).
 
 - **macOS 11 (Big Sur) or later on Apple Silicon.** Release builds are `aarch64`
   only; there is no Intel or universal build yet.
-- **Git**. If you do not have it, macOS offers to install it the first time you
-  run `git`.
+- **Linux with glibc 2.34 or later**, on x86_64 or arm64. That is Ubuntu 22.04,
+  Debian 12 and anything newer, and current Fedora and Arch.
+- **Git**. If you do not have it, Agency offers to install it: through Homebrew
+  or the Command Line Tools on macOS, and through your distribution's package
+  manager on Linux, where the desktop asks for your password.
 - **At least one coding-agent CLI** from the list above. Agency offers to install
   a missing one for you; most install via `npm install -g`, so those need
   **Node**.
 - **[gh](https://cli.github.com)** (optional) - needed only for the GitHub import
   and PR flows.
+
+**What Linux does less well.** The tray shows how many agents are running in its
+tooltip, not beside the icon. And Agency cannot tell when you click one of its
+notifications on Linux, so the click does not take you to the run it was about.
 
 ### Reporting problems
 
@@ -118,7 +173,12 @@ to that provider, and nothing is built until you ask for it.
 - **Rust** (stable; built with 1.96). Install via [rustup](https://rustup.rs).
 - **cargo-tauri** - `cargo install tauri-cli`.
 - **pnpm** 11+ and **Node** 22+. Use `pnpm`, not `npm`; the lockfile is pnpm's.
-- **Xcode Command Line Tools** - `xcode-select --install`.
+- **On macOS, the Xcode Command Line Tools** - `xcode-select --install`.
+- **On Linux, the WebKitGTK development packages.** On Debian and Ubuntu:
+  `sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev
+  libayatana-appindicator3-dev librsvg2-dev libsoup-3.0-dev pkg-config`. Tauri's
+  [prerequisites page](https://v2.tauri.app/start/prerequisites/) has the
+  equivalents for other distributions.
 
 ```sh
 pnpm --dir ui install   # once
@@ -128,9 +188,10 @@ pnpm --dir ui install   # once
 **Use `./dev.sh`, not `cargo tauri dev`.** Tauri's `beforeDevCommand` starts Vite
 only. It does not build the `agency-termd` daemon, and the app fails at startup
 without one. A dev build keeps its own data directory and daemon socket, so it
-never disturbs an installed Agency.app.
+never disturbs an installed Agency.
 
-Cutting a signed release is in [`docs/releasing.md`](docs/releasing.md).
+Cutting a release, and building the Linux packages yourself, is in
+[`docs/releasing.md`](docs/releasing.md).
 
 ## Repository layout
 
@@ -141,6 +202,7 @@ Cutting a signed release is in [`docs/releasing.md`](docs/releasing.md).
 | `ui/` | React + Vite frontend (pnpm) |
 | `site/` | The getagency.dev marketing site; static, no build step |
 | `scripts/` | Release tooling, and the third-party notices generator |
+| `packaging/` | Distribution packages built from a release, not by it: the AUR package |
 | `docs/` | Design notes and plans |
 
 ## Project status

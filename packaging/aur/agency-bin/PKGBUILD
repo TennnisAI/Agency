@@ -1,0 +1,43 @@
+# Maintainer: Nicholas Counts <hello@tennnis.no>
+#
+# The release .deb, repackaged. Tauri's bundler has no pacman target, and the
+# .deb is the build CI has already checked (glibc floor, desktop file,
+# AppStream metainfo, lintian), so this unpacks it rather than building from
+# source. The copy in the Agency repository (packaging/aur/) is the source of
+# truth: update.sh there points it at a release, and the AUR is pushed from it.
+
+pkgname=agency-bin
+# The version the tree is at. No release carries Linux packages yet, so this
+# cannot be fetched until the first one does; update.sh rewrites it and the
+# checksums below from that release.
+pkgver=0.1.1
+pkgrel=1
+pkgdesc='Run coding agents side by side, each in its own git worktree'
+arch=('x86_64' 'aarch64')
+url='https://getagency.dev/'
+license=('Apache-2.0')
+# The .deb's Depends under their Arch names, plus xdg-utils: tauri-plugin-opener
+# shells out to xdg-open for every link and file Agency opens, and the .deb gets
+# away without it only because every Debian desktop already has it.
+depends=('glibc' 'gtk3' 'webkit2gtk-4.1' 'libayatana-appindicator' 'xdg-utils'
+         'hicolor-icon-theme')
+optdepends=('git: every project is a git repository; Agency offers to install it'
+            'npm: most agent CLIs install through npm'
+            'github-cli: the GitHub import and pull request flows')
+provides=('agency')
+conflicts=('agency')
+_release="https://github.com/TennnisAI/Agency/releases/download/v${pkgver}"
+source_x86_64=("${_release}/Agency_${pkgver}_amd64.deb")
+source_aarch64=("${_release}/Agency_${pkgver}_arm64.deb")
+# Not real checksums until update.sh has run against a published release; as
+# they stand, makepkg fails the integrity check rather than building anything.
+sha256sums_x86_64=('run-update.sh')
+sha256sums_aarch64=('run-update.sh')
+
+package() {
+  bsdtar -xf data.tar.* -C "$pkgdir"
+  # Arch keeps licences under /usr/share/licenses; the .deb puts them with the
+  # docs, where they stay as well.
+  install -Dm644 -t "$pkgdir/usr/share/licenses/$pkgname/" \
+    "$pkgdir/usr/share/doc/agency/LICENSE" "$pkgdir/usr/share/doc/agency/NOTICE"
+}

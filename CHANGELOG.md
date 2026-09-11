@@ -4,7 +4,14 @@ Notable changes in each release. The GitHub release for a version carries the
 same notes alongside the downloads; this file is so the history is readable without
 leaving the repository.
 
-## Unreleased
+## 0.2.0 (2026-09-11)
+
+Agency runs on Linux. The rest is first-run setup, which now installs what a
+fresh machine is missing instead of stopping at it, and a handful of fixes for
+workspaces with more than one agent in them.
+
+macOS 11 or later, Apple Silicon. Linux with glibc 2.34 or later, x86_64 or
+arm64.
 
 ### Linux
 
@@ -55,6 +62,36 @@ leaving the repository.
   with a bare `No such file or directory (os error 2)`.
 - The DeepSeek Harness tile in onboarding no longer runs its install button
   out past the tile's border.
+- Add project and Clone a repository on the welcome screen no longer drop you
+  back to the overview the moment the project is added.
+
+### Agents
+
+- A worktree with several agents in its tab strip shows every one of them. The
+  focus rail, the sidebar tree and the tiles named a run after its first agent
+  alone, so three agents in one worktree read as one. A count beside the run
+  expands into its tabs, each opening straight onto that agent.
+- The agents side panel in Docs and Files reaches every agent tab in a
+  workspace, and shows the one the focus view last had on screen. It used to
+  attach the run's first agent only, and stayed on that session after its tab
+  was closed.
+
+### Editor
+
+- An open file tab follows an agent's edits while you watch. It used to keep
+  whatever it first read until the file was closed and reopened. The change
+  lands without moving the lines above it or your cursor, and unsaved edits in
+  the tab still win.
+
+### Terminal
+
+- Switching to another agent and back no longer paints cursor-agent's input
+  box and status bar over the middle of the transcript, with what you type going
+  into the copy that is not live.
+- Opening and closing the terminal inside an agent's pane no longer leaves the
+  pane parked above the agent's input box until you type.
+- A session being resumed no longer draws its placeholder as a staircase while
+  it attaches.
 
 ## 0.1.1 (2026-09-08)
 

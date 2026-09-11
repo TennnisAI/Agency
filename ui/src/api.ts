@@ -1806,7 +1806,15 @@ export interface DirEntry {
   hasChildren: boolean;
 }
 
-export interface FileContents {
+// A file's change signature: mtime and size, the pair the docs poll keys on.
+// An open editor keeps the one its read came with and re-reads when a later
+// stat disagrees (lib/diskSync).
+export interface FileStat {
+  mtimeMs: number;
+  size: number;
+}
+
+export interface FileContents extends FileStat {
   text: string;
   binary: boolean;
   tooLarge: boolean;
@@ -1817,6 +1825,10 @@ export const listDir = (root: FileRoot, relPath: string) =>
 
 export const readFile = (root: FileRoot, relPath: string) =>
   invoke<FileContents>("read_file", { root, relPath });
+
+// The signature alone, for an open tab's poll; rejects when the file is gone.
+export const statFile = (root: FileRoot, relPath: string) =>
+  invoke<FileStat>("stat_file", { root, relPath });
 
 // Whether a file still holds conflict markers, asked of the backend because it
 // can scan a file the UI cannot hold: `readFile` refuses a binary file and

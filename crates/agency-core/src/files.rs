@@ -26,6 +26,37 @@ pub struct FileContents {
     pub text: String,
     pub binary: bool,
     pub too_large: bool,
+    /// The file as it stood when `text` was read, so an open editor can ask
+    /// [`stat_file`] later whether the disk has moved on from what it holds.
+    #[serde(flatten)]
+    pub stat: FileStat,
+}
+
+/// A change signature for one file: what an open editor keeps to notice a
+/// write it did not make. Modification time and size together, because a
+/// write that keeps the size still moves the mtime, and a copy that keeps the
+/// mtime (`cp -p`, a checkout) still usually changes the size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileStat {
+    /// Modification time, epoch milliseconds (0 when the platform won't say).
+    pub mtime_ms: i64,
+    pub size: u64,
+}
+
+impl FileStat {
+    fn of(meta: &std::fs::Metadata) -> Self {
+        FileStat { mtime_ms: mtime_ms(meta), size: meta.len() }
+    }
+}
+
+/// Modification time as epoch milliseconds, 0 when the platform won't say.
+fn mtime_ms(meta: &std::fs::Metadata) -> i64 {
+    meta.modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 /// Join `rel` onto `root` and return a path guaranteed to stay inside `root`.
@@ -356,19 +387,38 @@ pub fn resolve_printed_path(root: &Path, text: &str, home: Option<&Path>) -> Opt
 pub fn read_file(root: &Path, rel: &str) -> Result<FileContents> {
     let path = resolve_within(root, rel)?;
     let meta = std::fs::metadata(&path)?;
+    // Taken before the read, never after: a write landing between the two
+    // then costs one spare re-read, whereas a stat taken after it would sign
+    // for text the editor never saw and that write would go unnoticed.
+    let stat = FileStat::of(&meta);
     if meta.len() > MAX_FILE_BYTES {
-        return Ok(FileContents { text: String::new(), binary: false, too_large: true });
+        return Ok(FileContents { text: String::new(), binary: false, too_large: true, stat });
     }
     let bytes = std::fs::read(&path)?;
     // NUL is valid UTF-8 (U+0000) but a reliable binary signal, so check it
     // first; then require the rest to decode losslessly.
     if bytes.contains(&0u8) {
-        return Ok(FileContents { text: String::new(), binary: true, too_large: false });
+        return Ok(FileContents { text: String::new(), binary: true, too_large: false, stat });
     }
     match String::from_utf8(bytes) {
-        Ok(text) => Ok(FileContents { text, binary: false, too_large: false }),
-        Err(_) => Ok(FileContents { text: String::new(), binary: true, too_large: false }),
+        Ok(text) => Ok(FileContents { text, binary: false, too_large: false, stat }),
+        Err(_) => Ok(FileContents { text: String::new(), binary: true, too_large: false, stat }),
     }
+}
+
+/// The change signature of the file at `rel`, without reading it.
+///
+/// An open editor tab held whatever it read until the tab was closed and the
+/// file reopened: an agent editing that same file in the worktree, the case
+/// the Files view exists for, showed nothing (AGE-228). The window-focus
+/// re-read of AGE-162 never fires while the user sits watching the agent
+/// work, which is exactly when they want to see the edit land. So each open
+/// tab asks this every couple of seconds, on the file tree's own cadence, and
+/// re-reads only when the answer moves. A stat is cheap enough to ask for a
+/// dozen open tabs; re-reading a dozen files every two seconds is not.
+pub fn stat_file(root: &Path, rel: &str) -> Result<FileStat> {
+    let path = resolve_within(root, rel)?;
+    Ok(FileStat::of(&std::fs::metadata(&path)?))
 }
 
 /// Whether the file at `rel` still has a conflict marker at the start of a
@@ -665,12 +715,7 @@ pub fn scan_markdown_stats(root: &Path, rel_dir: &str) -> Result<DocsScan> {
             .into_iter()
             .map(|(rel, _, meta)| DocStat {
                 path: rel,
-                mtime_ms: meta
-                    .modified()
-                    .ok()
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|d| d.as_millis() as i64)
-                    .unwrap_or(0),
+                mtime_ms: mtime_ms(&meta),
                 size: meta.len(),
             })
             .collect(),

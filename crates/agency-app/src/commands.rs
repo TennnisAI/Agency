@@ -2542,6 +2542,18 @@ pub async fn read_file(
     agency_core::files::read_file(&base, &rel_path).map_err(|e| e.to_string())
 }
 
+/// The change signature of a file, for an open editor tab's poll: it re-reads
+/// the file only when this moves (AGE-228).
+#[tauri::command]
+pub async fn stat_file(
+    state: State<'_, AppState>,
+    root: FileRoot,
+    rel_path: String,
+) -> Result<agency_core::files::FileStat, String> {
+    let base = resolve_root(&state, &root)?;
+    agency_core::files::stat_file(&base, &rel_path).map_err(|e| e.to_string())
+}
+
 /// Whether a file still holds conflict markers, for the conflict pane's "Mark
 /// resolved" on a file it could not read into the UI: binary, or over the read
 /// ceiling, which a conflicted lockfile routinely is. Everything the pane can

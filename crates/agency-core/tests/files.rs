@@ -78,6 +78,42 @@ fn read_file_returns_text() {
 }
 
 #[test]
+fn read_file_signs_for_the_text_it_returns() {
+    let dir = fixture();
+    let fc = files::read_file(dir.path(), "src/main.rs").unwrap();
+    let stat = files::stat_file(dir.path(), "src/main.rs").unwrap();
+    assert_eq!(fc.stat, stat, "an untouched file stats the same as its read");
+    assert_eq!(stat.size, "fn main() {}\n".len() as u64);
+    assert!(stat.mtime_ms > 0, "a fresh temp file has a modification time");
+    // The editor reads the signature off the same object as the text: the
+    // stat is flattened into it under the camelCase names api.ts expects.
+    let json = serde_json::to_value(&fc).unwrap();
+    assert_eq!(json["mtimeMs"], serde_json::json!(stat.mtime_ms));
+    assert_eq!(json["size"], serde_json::json!(stat.size));
+    assert!(json.get("stat").is_none(), "flattened, not nested");
+}
+
+#[test]
+fn stat_file_moves_when_the_file_is_rewritten() {
+    let dir = fixture();
+    let before = files::stat_file(dir.path(), "src/main.rs").unwrap();
+    // A rewrite that keeps the size is the case an editor must still notice:
+    // the mtime is what carries it. Sleep past the coarsest mtime clock in use
+    // (a second on some filesystems) so the test is not at its mercy.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    fs::write(dir.path().join("src/main.rs"), "fn main() {;}").unwrap();
+    let same_size = files::stat_file(dir.path(), "src/main.rs").unwrap();
+    assert_eq!(same_size.size, before.size);
+    assert_ne!(same_size, before, "a same-size rewrite still moves the signature");
+
+    fs::write(dir.path().join("src/main.rs"), "fn main() { todo!() }\n").unwrap();
+    let grown = files::stat_file(dir.path(), "src/main.rs").unwrap();
+    assert_ne!(grown.size, before.size);
+    assert!(files::stat_file(dir.path(), "src/gone.rs").is_err(), "a missing file is an error");
+    assert!(files::stat_file(dir.path(), "../etc/passwd").is_err(), "stat stays inside the root");
+}
+
+#[test]
 fn read_file_flags_binary() {
     let dir = fixture();
     let fc = files::read_file(dir.path(), "bin.dat").unwrap();

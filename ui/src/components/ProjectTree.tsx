@@ -140,10 +140,34 @@ export default function ProjectTree({
   // the one place all the removal routes meet — the row's Close/Delete dialog
   // and Settings hiding the workspace, which closes it — so the guard belongs
   // on the list itself, not on each caller.
+  //
+  // A miss against the list already in hand is not proof the project is gone,
+  // only that this list may be stale. The welcome screen's Add project and
+  // Clone a repository buttons (AGE-223) created a project and selected it
+  // before this tree had refetched, so the selection was "gone" the instant it
+  // was made: the app snapped back to the overview, the new row never showed
+  // in the pane, and clicking the project in All projects tripped the same
+  // check and bounced again. Re-read the list first, and leave only when a
+  // fresh fetch still lacks the row. `refreshSeq` orders this against any
+  // refresh already in flight; the cancel flag drops a fetch whose selection
+  // has since moved on.
   const goneRef = useRef(onSelectionGone);
   goneRef.current = onSelectionGone;
   useEffect(() => {
-    if (selectedId && !projects.some((p) => p.id === selectedId)) goneRef.current();
+    if (!selectedId || projects.some((p) => p.id === selectedId)) return;
+    let alive = true;
+    const seq = ++refreshSeq.current;
+    listProjects().then(
+      (ps) => {
+        if (!alive || seq !== refreshSeq.current) return;
+        setProjects(ps);
+        if (!ps.some((p) => p.id === selectedId)) goneRef.current();
+      },
+      () => {
+        /* transient backend error: keep the last list rather than eject the user */
+      },
+    );
+    return () => { alive = false; };
   }, [projects, selectedId]);
 
   // Open the workspace, creating it first if it doesn't exist yet (it is lazy

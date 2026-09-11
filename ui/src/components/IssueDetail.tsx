@@ -14,6 +14,7 @@ import { MenuCoords, anchorMenu } from "../lib/menuAnchor";
 import { toastError } from "../lib/toast";
 import { FindRank } from "../lib/findBus";
 import { cmFindEngine } from "../lib/cmFind";
+import { unlistenQuietly } from "../lib/unlisten";
 import { useFind } from "../hooks/useFind";
 import { useDismissOnResize } from "../hooks/useDismissOnResize";
 import { SpawnOpts } from "../store/runs";
@@ -450,8 +451,8 @@ export default function IssueDetail({
           setDragOver(false);
         }
       })
-      .then((u) => { if (disposed) u(); else unlisten = u; });
-    return () => { disposed = true; unlisten?.(); };
+      .then((u) => { if (disposed) unlistenQuietly(u); else unlisten = u; });
+    return () => { disposed = true; unlistenQuietly(unlisten); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [issue.id, label, root.kind, root.id]);
 

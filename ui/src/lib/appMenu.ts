@@ -64,7 +64,9 @@ export const APP_MENUS: MenuSpec[] = [
       { label: "Clone Repository…", action: "clone-project" },
       { label: "Initialize Git Repository…", action: "init-repo", needs: "gitless" },
       sep,
-      { label: "Close Window", action: "win:close", accel: "⌘W", boundElsewhere: true },
+      // No accelerator: Ctrl+W closes a file or docs tab in the app, and the
+      // label promised a chord nothing bound to the window.
+      { label: "Close Window", action: "win:close" },
     ],
   },
   {
@@ -139,7 +141,8 @@ export type KeyLike = {
 /**
  * Whether `e` is the chord `accel` spells. ⌘ is the platform command key,
  * which on Linux is Ctrl (and on a Mac keyboard plugged into one, still
- * Ctrl: `metaKey` there is the Super key, which no chord uses).
+ * Ctrl: `metaKey` there is the Super key, which no chord uses, so a chord
+ * with Super held is not the chord).
  */
 export function chordMatches(e: KeyLike, accel: string): boolean {
   let cmd = false;
@@ -153,10 +156,11 @@ export function chordMatches(e: KeyLike, accel: string): boolean {
     else key += ch;
   }
   const want = key === "↵" ? "enter" : key.toLowerCase();
-  const pressed = e.key.length === 1 ? e.key.toLowerCase() : e.key.toLowerCase();
+  const pressed = e.key.toLowerCase();
   return (
     pressed === want &&
-    (e.ctrlKey || e.metaKey) === cmd &&
+    e.ctrlKey === cmd &&
+    !e.metaKey &&
     e.shiftKey === shift &&
     e.altKey === alt
   );

@@ -14,9 +14,10 @@ const items = (): MenuItemSpec[] =>
   APP_MENUS.flatMap((m) => m.items).filter((i): i is MenuItemSpec => i.kind !== "separator");
 
 describe("chordMatches", () => {
-  it("reads ⌘ as Ctrl on the platforms this menu is drawn on", () => {
+  it("reads ⌘ as Ctrl on the platforms this menu is drawn on, never as Super", () => {
     expect(chordMatches(key("t", { ctrl: true }), "⌘T")).toBe(true);
-    expect(chordMatches(key("t", { meta: true }), "⌘T")).toBe(true);
+    expect(chordMatches(key("t", { meta: true }), "⌘T")).toBe(false);
+    expect(chordMatches(key("t", { ctrl: true, meta: true }), "⌘T")).toBe(false);
     expect(chordMatches(key("t"), "⌘T")).toBe(false);
   });
 

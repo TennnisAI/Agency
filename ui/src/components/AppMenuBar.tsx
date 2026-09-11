@@ -40,6 +40,18 @@ export default function AppMenuBar({
       }
       return;
     }
+    if (action === "edit:paste") {
+      // `execCommand("paste")` is refused for page script in WebKit (it
+      // returns false and inserts nothing), so read the clipboard, which a
+      // menu click is a user gesture for, and insert the text ourselves.
+      navigator.clipboard
+        .readText()
+        .then((text) => {
+          if (text) document.execCommand("insertText", false, text);
+        })
+        .catch(() => {});
+      return;
+    }
     if (action.startsWith("edit:")) {
       // The webview's own editing commands, aimed at whatever has focus.
       document.execCommand(action.slice("edit:".length));

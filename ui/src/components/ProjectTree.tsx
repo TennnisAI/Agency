@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { CloneProgress, FileRoot, Project, RunInfo, RepoReadiness, addProject, closeProject, deleteProject, inspectRepo, listProjects, listRuns, relocateProject, setProjectColor } from "../api";
 import { projectAccent, runName } from "../agents";
@@ -6,6 +6,8 @@ import { useRuns } from "../store/runs";
 import { toastError, toastInfo } from "../lib/toast";
 import { copyAbsPath, reveal, revealLabel } from "../lib/fileActions";
 import { pinnedFirst, runStatus } from "../lib/runstate";
+import { runTabs, showsTabs } from "../lib/runTabs";
+import TabCount from "./TabCount";
 import { newAgentItems, useAgentProfiles, useRunMenu } from "../hooks/useRunMenu";
 import { useSpawnAgent } from "../hooks/useSpawnAgent";
 import { useMissingFolders } from "../hooks/useFolderMissing";
@@ -51,7 +53,11 @@ export default function ProjectTree({
    * started with nothing on screen to show for it.
    */
   onOpen: (p: Project) => void;
-  onSelectRun: (p: Project, run: RunInfo) => void;
+  /**
+   * Open a run. `session` names one of its agent tabs to land on (AGE-225): the
+   * run's own id for its first agent, `<runId>--<n>` for an extra one.
+   */
+  onSelectRun: (p: Project, run: RunInfo, session?: string) => void;
   onHome: () => void;
   /** The selected project is gone from the list; drop back to the overview. */
   onSelectionGone: () => void;
@@ -60,9 +66,13 @@ export default function ProjectTree({
   /** Marks the Settings button with a dot — a newer release is on GitHub. */
   updateAvailable?: boolean;
 }) {
-  const { runs, createTerminal } = useRuns();
+  const { runs, createTerminal, shownTab } = useRuns();
   const [projects, setProjects] = useState<Project[]>([]);
   const [openIds, setOpenIds] = useState<Set<string>>(() => new Set());
+  // Runs whose agent tabs are listed under their row (AGE-225). Closed by
+  // default, the same as the projects above them: the count beside the row
+  // already says there is more than one agent in there.
+  const [tabsOpenIds, setTabsOpenIds] = useState<Set<string>>(() => new Set());
   const [projectRuns, setProjectRuns] = useState<Record<string, RunInfo[]>>({});
   const [filter, setFilter] = useState<Filter>("all");
   const [pending, setPending] = useState<Pending>(null);
@@ -442,6 +452,59 @@ export default function ProjectTree({
   // "folder gone" menu and the row's hover ×.
   const pendingGone = pending !== null && missing.has(pending.project.id);
 
+  // One run under its project. A run is a worktree, and a worktree can hold
+  // several agents in tabs (AGE-225): the row named only the first, so three
+  // agents read as one. The count at the row's edge says how many there are
+  // and lists them underneath, each opening straight onto its own tab.
+  function runRow(p: Project, r: RunInfo) {
+    const active = r.id === focusedRunId;
+    const accent = { "--sel-accent": projectAccent(p) } as React.CSSProperties;
+    const tabs = runTabs(r);
+    const listed = showsTabs(r, tabs);
+    const open = listed && tabsOpenIds.has(r.id);
+    // Only for the focused run: shownTab describes the run it was set for.
+    const onScreen = active && shownTab?.runId === r.id ? shownTab.tab : null;
+    const toggleTabs = () =>
+      setTabsOpenIds((s) => {
+        const n = new Set(s);
+        if (n.has(r.id)) n.delete(r.id); else n.add(r.id);
+        return n;
+      });
+    return (
+      <Fragment key={r.id}>
+        <li
+          className={`tree-child ${active ? "active" : ""}${menuRunId === r.id ? " ctx" : ""}`}
+          style={accent}
+          title={`Open ${r.agent}: ${runName(r)}`}
+          onClick={(e) => { e.stopPropagation(); onSelectRun(p, r); }}
+          onContextMenu={(e) => openRunMenu(e, r, (run) => onSelectRun(p, run))}
+        >
+          <PinMark run={r} />
+          <span className={`dot ${runStatus(r).cls}`} />
+          <span className="tree-child-name tl">{r.agent}: {runName(r)}</span>
+          {listed && <TabCount tabs={tabs} open={open} onToggle={toggleTabs} />}
+        </li>
+        {open && (
+          <li>
+            <ul className="tree-tabs" style={accent}>
+              {tabs.map((t) => (
+                <li
+                  key={t.session}
+                  className={`tree-tab${onScreen === t.panel ? " on" : ""}`}
+                  title={`Open ${t.label} (${t.status})`}
+                  onClick={(e) => { e.stopPropagation(); onSelectRun(p, r, t.session); }}
+                >
+                  <span className={`dot ${t.cls}`} />
+                  <span className="tree-tab-name tl">{t.label}</span>
+                </li>
+              ))}
+            </ul>
+          </li>
+        )}
+      </Fragment>
+    );
+  }
+
   return (
     <aside className="tree">
       <div className="tree-head">
@@ -493,20 +556,7 @@ export default function ProjectTree({
           </div>
           {workspace && openIds.has(workspace.id) && (
             <ul className="tree-children">
-              {(projectRuns[workspace.id] ?? []).map((r) => (
-                <li
-                  key={r.id}
-                  className={`tree-child ${r.id === focusedRunId ? "active" : ""}${menuRunId === r.id ? " ctx" : ""}`}
-                  style={{ "--sel-accent": projectAccent(workspace) } as React.CSSProperties}
-                  title={`Open ${r.agent}: ${runName(r)}`}
-                  onClick={(e) => { e.stopPropagation(); onSelectRun(workspace, r); }}
-                  onContextMenu={(e) => openRunMenu(e, r, (run) => onSelectRun(workspace, run))}
-                >
-                  <PinMark run={r} />
-                  <span className={`dot ${runStatus(r).cls}`} />
-                  <span className="tree-child-name tl">{r.agent}: {runName(r)}</span>
-                </li>
-              ))}
+              {(projectRuns[workspace.id] ?? []).map((r) => runRow(workspace, r))}
             </ul>
           )}
         </li>
@@ -557,20 +607,7 @@ export default function ProjectTree({
             </div>
             {openIds.has(p.id) && (
               <ul className="tree-children">
-                {(projectRuns[p.id] ?? []).map((r) => (
-                  <li
-                    key={r.id}
-                    className={`tree-child ${r.id === focusedRunId ? "active" : ""}${menuRunId === r.id ? " ctx" : ""}`}
-                    style={{ "--sel-accent": projectAccent(p) } as React.CSSProperties}
-                    title={`Open ${r.agent}: ${runName(r)}`}
-                    onClick={(e) => { e.stopPropagation(); onSelectRun(p, r); }}
-                    onContextMenu={(e) => openRunMenu(e, r, (run) => onSelectRun(p, run))}
-                  >
-                    <PinMark run={r} />
-                    <span className={`dot ${runStatus(r).cls}`} />
-                    <span className="tree-child-name tl">{r.agent}: {runName(r)}</span>
-                  </li>
-                ))}
+                {(projectRuns[p.id] ?? []).map((r) => runRow(p, r))}
               </ul>
             )}
           </li>

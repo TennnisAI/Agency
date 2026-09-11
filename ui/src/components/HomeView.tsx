@@ -3,6 +3,8 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { Issue, Project, RunInfo, RepoReadiness, addProject, inspectRepo, listIssues, listProjects, listRuns, runPreview } from "../api";
 import { projectAccent, runName } from "../agents";
 import { inGitlessFolder, isWorking, needsAttention, pinnedFirst, runStatus } from "../lib/runstate";
+import { runTabs, showsTabs } from "../lib/runTabs";
+import TabCount from "./TabCount";
 import { useRunMenu } from "../hooks/useRunMenu";
 import { notifyProjectsChanged } from "../lib/projectEvents";
 import RepoSetupDialog from "./RepoSetupDialog";
@@ -350,6 +352,7 @@ function HomeTile({ run, onOpen, onChanged }: { run: RunInfo; onOpen: () => void
 
   const st = runStatus(run);
   const isTerminal = run.kind === "terminal";
+  const tabs = runTabs(run);
   return (
     <div
       className={`tile${menuRunId === run.id ? " ctx" : ""}`}
@@ -363,6 +366,8 @@ function HomeTile({ run, onOpen, onChanged }: { run: RunInfo; onOpen: () => void
         {run.runScriptsLive && (
           <span className="run-dot" title="A run script is running in this workspace" />
         )}
+        {/* Same count as the board's tile: the badge names the first agent. */}
+        {showsTabs(run, tabs) && <TabCount tabs={tabs} />}
         <span className={isTerminal ? "badge" : badgeClass(run.agent)}>{isTerminal ? "terminal" : run.agent}</span>
       </div>
       {!isTerminal && (

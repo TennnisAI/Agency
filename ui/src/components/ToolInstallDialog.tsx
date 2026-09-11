@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useModalKeys } from "../hooks/useModalKeys";
 import { useToolInstalls, jobFor } from "../hooks/useToolInstalls";
 import { ToolId } from "../lib/missingTool";
@@ -26,9 +26,16 @@ export default function ToolInstallDialog({
 
   useModalKeys(onClose);
 
+  // Close once the tool turns up, and only then: on a false-to-true change
+  // seen after mount. Closing on the first status too meant a dialog raised
+  // by a stale error, or by a shell whose PATH lacks what the app's has,
+  // flashed and vanished with the reason unread.
+  const wasInstalled = useRef<boolean | null>(null);
   useEffect(() => {
-    if (row?.installed) onClose();
-  }, [row?.installed, onClose]);
+    if (!row) return;
+    if (wasInstalled.current === false && row.installed) onClose();
+    wasInstalled.current = row.installed;
+  }, [row, onClose]);
 
   return (
     <ModalBackdrop onBackdropClick={onClose}>

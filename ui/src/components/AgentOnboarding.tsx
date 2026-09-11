@@ -16,7 +16,7 @@ import {
 import { INSTALL_COMMANDS, agentColor, agentLabel } from "../agents";
 import { toastError } from "../lib/toast";
 import { IS_MAC } from "../lib/platform";
-import { jobFor, useToolInstalls } from "../hooks/useToolInstalls";
+import { jobFor, useToolInstalls, jobPending } from "../hooks/useToolInstalls";
 import ModalBackdrop from "./ModalBackdrop";
 import RepoSetupDialog from "./RepoSetupDialog";
 import CloneDialog from "./CloneDialog";
@@ -247,7 +247,7 @@ export default function AgentOnboarding({ onDone }: { onDone: () => void }) {
     if (!cmd) return;
     if (cmd.startsWith("npm ") && !nodeReady) {
       setAfterNode((s) => new Set([...s, id]));
-      if (nodeJob?.state !== "running") void installTool("node");
+      if (!jobPending(nodeJob)) void installTool("node");
       return;
     }
     void installAgent(id, cmd);

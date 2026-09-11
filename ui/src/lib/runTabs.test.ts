@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { RunInfo, RunSessionInfo } from "../api";
 import { PRIMARY_TAB } from "./focusTab";
-import { runTabs, showsTabs, tabCountLabel, tabLabel, tabsTitle } from "./runTabs";
+import { runTabs, showsTabs, sidePanelTab, tabCountLabel, tabLabel, tabsTitle } from "./runTabs";
 
 const session = (id: string, agent: string, status: RunSessionInfo["status"] = { state: "running" }) =>
   ({ id, runId: id.split("--")[0], agent, status }) as RunSessionInfo;
@@ -87,5 +87,35 @@ describe("tab labels", () => {
     expect(tabCountLabel(3)).toBe("3 tabs");
     const tabs = runTabs(run({ sessions: [session("r1--2", "codex")] }), 0);
     expect(tabsTitle(tabs)).toBe("2 tabs in this workspace: Claude Code, Codex · 2");
+  });
+});
+
+// The Docs and Files side panel attached the run's own session whatever tab
+// the workspace was on, so an extra tab was out of its reach and a closed first
+// tab (AGE-184) left it on a dead pane (AGE-226).
+describe("sidePanelTab", () => {
+  const r = run({ sessions: [session("r1--2", "codex"), session("r1--3", "shell")] });
+
+  it("follows the tab the focus view showed or remembers", () => {
+    expect(sidePanelTab(r, "r1--3", 0)).toMatchObject({ session: "r1--3", agent: "shell" });
+    expect(sidePanelTab(r, PRIMARY_TAB, 0)).toMatchObject({ session: "r1", agent: "claude" });
+  });
+
+  it("falls back to the first drawn tab when that tab is not an agent or is gone", () => {
+    expect(sidePanelTab(r, "run", 0)?.session).toBe("r1");
+    expect(sidePanelTab(r, "r1--9", 0)?.session).toBe("r1");
+    expect(sidePanelTab(r, null, 0)?.session).toBe("r1");
+  });
+
+  it("never attaches a closed primary, and lands on the tab standing in for it", () => {
+    const closed = run({ primaryClosed: true, sessions: [session("r1--2", "codex")] });
+    expect(sidePanelTab(closed, PRIMARY_TAB, 0)?.session).toBe("r1--2");
+    expect(sidePanelTab(closed, null, 0)?.session).toBe("r1--2");
+    expect(sidePanelTab(run({ primaryClosed: true }), null, 0)).toBeNull();
+  });
+
+  it("attaches a terminal's one session as its own tab", () => {
+    const t = run({ id: "t1", kind: "terminal", agent: "shell", title: "build" });
+    expect(sidePanelTab(t, "whatever", 0)).toMatchObject({ session: "t1", agent: "shell", panel: PRIMARY_TAB });
   });
 });

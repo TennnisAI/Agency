@@ -79,7 +79,9 @@ interface RunStore {
   setPendingSession: (id: string | null) => void;
   // The tab the focus view last showed for a run, published by AgentFocus so
   // the sidebar tree can mark which of a worktree's agents is the one on screen
-  // (AGE-225). Keyed by run because it only describes the run it was set for.
+  // (AGE-225). The agents side panel on Docs and Files reads and writes it too:
+  // it shows the same tab, and a pick there is the one on screen (AGE-226).
+  // Keyed by run because it only describes the run it was set for.
   shownTab: { runId: string; tab: string } | null;
   setShownTab: (t: { runId: string; tab: string } | null) => void;
   // A run whose agent the user asked to see by name — a row in the focus rail,

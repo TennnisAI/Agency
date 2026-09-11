@@ -4025,6 +4025,16 @@ input, textarea, code,
 .agent-side-menu button.on { background: var(--s1); color: var(--text); }
 .agent-side-menu-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agent-side-menu-none { color: var(--o0); font-size: 12px; padding: 6px 10px; }
+/* A workspace with several agent tabs (AGE-225): the run as a heading, its tabs
+   indented under it, each a pick of its own (AGE-226). The heading is not a
+   button because it is the tabs that are picked, not the run. */
+.agent-side-menu-run { display: flex; flex-direction: column; }
+.agent-side-menu-run-name {
+  display: flex; align-items: center; gap: 7px;
+  padding: 6px 10px 3px; color: var(--o1); font-size: 12px;
+}
+.agent-side-menu button.agent-side-menu-tab { padding: 6px 10px 6px 24px; font-size: 12px; }
+.agent-side-menu-tab .dot { width: 7px; height: 7px; }
 .agent-side-sub {
   display: flex; align-items: baseline; gap: 8px; flex-shrink: 0;
   padding: 3px 10px 4px; border-bottom: 1px solid var(--line);

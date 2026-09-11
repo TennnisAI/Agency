@@ -101,3 +101,32 @@ export function tabCountLabel(n: number): string {
 export function tabsTitle(tabs: RunTab[]): string {
   return `${tabCountLabel(tabs.length)} in this workspace: ${tabs.map((t) => t.label).join(", ")}`;
 }
+
+/**
+ * The tab the agents side panel on Docs and Files attaches for a run
+ * (AGE-226). `panel` is the tab the focus view last showed or remembers for
+ * the run; a tab the strip no longer draws (closed while you were on Docs, or
+ * the Run tab, which is not an agent) gives way to the first it does. The
+ * panel used to attach the run's own session whatever the strip held, so an
+ * extra tab could not be reached from it at all, and once the first agent's
+ * tab was closed (AGE-184) it showed a dead pane for a workspace whose other
+ * agents were still running.
+ *
+ * A terminal has no strip, so its one session stands as its own tab. Null only
+ * for an agent run with no tab left, which the backend refuses to produce.
+ */
+export function sidePanelTab(run: RunInfo, panel: string | null, now: number = Date.now()): RunTab | null {
+  if (run.kind === "terminal") {
+    const st = runStatus(run, now);
+    return {
+      panel: PRIMARY_TAB,
+      session: run.id,
+      agent: run.agent,
+      label: tabLabel(run.agent, run.id, true),
+      cls: st.cls,
+      status: st.text,
+    };
+  }
+  const tabs = runTabs(run, now);
+  return tabs.find((t) => t.panel === panel) ?? tabs[0] ?? null;
+}

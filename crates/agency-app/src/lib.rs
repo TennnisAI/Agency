@@ -517,6 +517,7 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                         .map(|w| w.pane_hash != snap.pane_hash)
                         .unwrap_or(true);
                     state.update_activity(&snap.id, pane_changed, now_ms);
+                    state.note_agent_liveness(&snap.id, &snap.agent);
                     let (watch, events) = crate::notifier::step(
                         watches.get(&snap.id),
                         snap,

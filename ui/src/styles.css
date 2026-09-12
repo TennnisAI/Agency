@@ -1129,6 +1129,18 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
   color: var(--o1);
 }
 
+/* The agent's own status line (AGE-208). One line, cut with an ellipsis: the
+   text is the agent's, and a long one must not reshape the card. Dimmed when it
+   predates the run going quiet, since it then describes finished work. */
+.tile-note {
+  font-size: 12px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tile-note.stale { color: var(--o1); }
+
 /* Terminal preview — fades at bottom */
 .tile-preview {
   font-family: var(--mono);

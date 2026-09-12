@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { RunInfo } from "../api";
-import { fmtDur, inGitlessFolder, isPinned, needsAttention, pinnedFirst, runStatus } from "./runstate";
+import {
+  agentNote,
+  fmtDur,
+  inGitlessFolder,
+  isPinned,
+  needsAttention,
+  pinnedFirst,
+  runStatus,
+} from "./runstate";
 
 /** A live agent, quiet after a turn the user drove. */
 const waitingRun = (over: Partial<RunInfo> = {}): RunInfo =>
@@ -92,6 +100,48 @@ describe("fmtDur", () => {
   it("never counts below zero, so a clock skew reads as 0s not -1s", () => {
     expect(fmtDur(-1)).toBe("0s");
     expect(fmtDur(-90_000)).toBe("0s");
+  });
+});
+
+describe("agentNote", () => {
+  const working = (over: Partial<RunInfo> = {}): RunInfo =>
+    waitingRun({
+      activity: { state: "working", since: 1_000 },
+      agentStatus: { text: "running the migration tests", since: 5_000 },
+      ...over,
+    });
+
+  it("shows the agent's line beside a live agent, with its age", () => {
+    expect(agentNote(working(), 245_000)).toEqual({
+      text: "running the migration tests",
+      title: "Written by the agent 4m ago",
+      stale: false,
+    });
+  });
+
+  it("is null when the agent has not set one", () => {
+    expect(agentNote(working({ agentStatus: null }))).toBeNull();
+  });
+
+  it("is null for a terminal or a stopped session, whatever was last set", () => {
+    expect(agentNote(working({ kind: "terminal" }))).toBeNull();
+    expect(agentNote(working({ status: { state: "exited", code: 0 } as never }))).toBeNull();
+  });
+
+  it("dims a line written before the run went quiet", () => {
+    const note = agentNote(working({ activity: { state: "waiting", since: 9_000 } }), 69_000);
+    expect(note?.stale).toBe(true);
+    expect(note?.title).toBe("Written by the agent 1m ago, before it went quiet");
+  });
+
+  it("keeps a line written during the quiet stretch current", () => {
+    const run = working({ activity: { state: "waiting", since: 2_000 } });
+    expect(agentNote(run)?.stale).toBe(false);
+  });
+
+  it("is not stale while working, and not before the first activity sample", () => {
+    expect(agentNote(working({ activity: { state: "working", since: 9_000 } }))?.stale).toBe(false);
+    expect(agentNote(working({ activity: null }))?.stale).toBe(false);
   });
 });
 

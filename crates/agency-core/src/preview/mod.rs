@@ -39,6 +39,7 @@
 mod http;
 pub(crate) mod proxy;
 mod rpc;
+pub mod status;
 
 use anyhow::{Context as _, Result};
 use base64::Engine as _;
@@ -185,13 +186,16 @@ pub enum OpenFocus {
 /// What the embedding app provides: fresh facts for guidance, the native pixel
 /// screenshot of the preview pane (which only the app, owner of the window, can
 /// take — see the app crate's preview_shot), which tool groups are switched on,
-/// and what the user is looking at.
+/// and what the user is looking at. `set_status` is the one hook that goes the
+/// other way: the agent's own status line, already cleaned by
+/// [`status::clean`], for the app to put on the board.
 #[derive(Clone)]
 pub struct Hooks {
     pub facts: Arc<dyn Fn() -> Facts + Send + Sync>,
     pub screenshot: Arc<dyn Fn() -> std::result::Result<Vec<u8>, String> + Send + Sync>,
     pub caps: Arc<dyn Fn() -> Caps + Send + Sync>,
     pub open_file: Arc<dyn Fn() -> OpenFocus + Send + Sync>,
+    pub set_status: Arc<dyn Fn(status::Status) + Send + Sync>,
 }
 
 /// One console line reported by the bridge.
@@ -733,6 +737,17 @@ fn exec_tool(id: Value, name: &str, args: &Value, ctx: &Ctx) -> Value {
             Err(reason) => rpc::tool_text(id, &reason, true),
         },
         "editor_open_file" => rpc::tool_text(id, &format_open_file((ctx.hooks.open_file)()), false),
+        "set_status" => {
+            // A missing or non-string `text` is a malformed call, not a clear:
+            // an agent that forgot the argument has not said it is done.
+            let Some(text) = args.get("text").and_then(Value::as_str) else {
+                return rpc::error(id, -32602, "set_status needs text (an empty string clears it)");
+            };
+            let status = status::clean(text);
+            let reply = status::reply(&status);
+            (ctx.hooks.set_status)(status);
+            rpc::tool_text(id, &reply, false)
+        }
         "preview_snapshot" => bridge_tool(id, name, json!({ "kind": "snapshot" }), ctx),
         "preview_navigate" => {
             let path = arg("path");
@@ -863,6 +878,7 @@ mod tests {
             screenshot: Arc::new(move || shot.clone()),
             caps: Arc::new(move || caps),
             open_file: Arc::new(move || open.clone()),
+            set_status: Arc::new(|_| {}),
         }
     }
 
@@ -1004,7 +1020,32 @@ mod tests {
         let r = rpc_call(srv.port(), r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#);
         assert_eq!(
             r["result"]["tools"].as_array().unwrap().len(),
-            rpc::PREVIEW_TOOLS.len() + rpc::EDITOR_TOOLS.len(),
+            rpc::STATUS_TOOLS.len() + rpc::PREVIEW_TOOLS.len() + rpc::EDITOR_TOOLS.len(),
+        );
+    }
+
+    #[test]
+    fn set_status_hands_the_cleaned_line_to_the_app() {
+        let seen: Arc<Mutex<Vec<status::Status>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let hooks = Hooks {
+            set_status: Arc::new(move |s| sink.lock().unwrap().push(s)),
+            ..with_open_file(None, Err("n/a"), Caps::none(), OpenFocus::Nothing)
+        };
+        let srv = start(hooks);
+        let r = tool_call(srv.port(), "set_status", json!({"text": "running\nthe tests"}));
+        assert_eq!(r["result"]["isError"], false, "{r}");
+        let r = tool_call(srv.port(), "set_status", json!({"text": ""}));
+        assert_eq!(r["result"]["isError"], false, "{r}");
+        // No text at all is a mistake to report, and must not clear the line.
+        let r = tool_call(srv.port(), "set_status", json!({}));
+        assert_eq!(r["error"]["code"], -32602, "{r}");
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![
+                status::Status::Set { text: "running the tests".into(), truncated: false },
+                status::Status::Clear,
+            ]
         );
     }
 
@@ -1025,9 +1066,13 @@ mod tests {
         assert!(text.contains("docs/plan.md"), "{text}");
         assert!(text.contains("/w/run-1/docs/plan.md"), "{text}");
         assert_eq!(r["result"]["isError"], false);
-        // With the preview half off, its tools are gone from the same server.
+        // With the preview half off, its tools are gone from the same server;
+        // the status line, behind no switch, stays.
         let r = rpc_call(srv.port(), r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#);
-        assert_eq!(r["result"]["tools"].as_array().unwrap().len(), rpc::EDITOR_TOOLS.len());
+        assert_eq!(
+            r["result"]["tools"].as_array().unwrap().len(),
+            rpc::STATUS_TOOLS.len() + rpc::EDITOR_TOOLS.len()
+        );
     }
 
     #[test]

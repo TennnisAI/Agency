@@ -323,6 +323,78 @@ struct GitTarget {
     primary: Option<String>,
 }
 
+/// An agent's own status line, as `RunInfo` carries it.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentStatusInfo {
+    pub text: String,
+    /// Epoch ms when the agent first set this text. Setting the same line again
+    /// keeps it, so the age reads as how long the agent has been on that step.
+    pub since: i64,
+}
+
+/// The status map after one `set_status` call: the last line set wins, and an
+/// empty one removes it.
+fn apply_agent_status(
+    map: &mut HashMap<String, AgentStatusInfo>,
+    run_id: &str,
+    status: agency_core::preview::status::Status,
+    now_ms: i64,
+) {
+    use agency_core::preview::status::Status;
+    match status {
+        Status::Clear => {
+            map.remove(run_id);
+        }
+        Status::Set { text, .. } => {
+            if map.get(run_id).is_some_and(|s| s.text == text) {
+                return;
+            }
+            map.insert(run_id.to_string(), AgentStatusInfo { text, since: now_ms });
+        }
+    }
+}
+
+#[cfg(test)]
+mod agent_status_tests {
+    use super::{apply_agent_status, AgentStatusInfo};
+    use agency_core::preview::status::Status;
+    use std::collections::HashMap;
+
+    fn set(text: &str) -> Status {
+        Status::Set { text: text.into(), truncated: false }
+    }
+
+    #[test]
+    fn the_last_line_wins_and_an_empty_one_clears() {
+        let mut map = HashMap::new();
+        apply_agent_status(&mut map, "r1", set("running tests"), 1_000);
+        apply_agent_status(&mut map, "r1", set("rewriting notifier.rs"), 2_000);
+        assert_eq!(
+            map.get("r1"),
+            Some(&AgentStatusInfo { text: "rewriting notifier.rs".into(), since: 2_000 })
+        );
+        apply_agent_status(&mut map, "r1", Status::Clear, 3_000);
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn setting_the_same_line_again_keeps_its_age() {
+        let mut map = HashMap::new();
+        apply_agent_status(&mut map, "r1", set("waiting on pnpm install"), 1_000);
+        apply_agent_status(&mut map, "r1", set("waiting on pnpm install"), 9_000);
+        assert_eq!(map["r1"].since, 1_000);
+    }
+
+    #[test]
+    fn runs_do_not_share_a_line() {
+        let mut map = HashMap::new();
+        apply_agent_status(&mut map, "r1", set("a"), 1_000);
+        apply_agent_status(&mut map, "r2", Status::Clear, 2_000);
+        assert_eq!(map["r1"].text, "a");
+    }
+}
+
 /// Result of importing an `mcp.json`: the full app-global list after the merge,
 /// plus how many servers the file contributed (so the UI can confirm the count).
 #[derive(Debug, Clone, serde::Serialize)]
@@ -346,6 +418,12 @@ pub struct RunInfo {
     /// until the first tick observes the run (~2s after spawn or app start);
     /// the UI treats a running agent without it as working.
     pub activity: Option<crate::activity::ActivityInfo>,
+    /// The one line the agent last wrote about what it is doing, through the
+    /// `set_status` tool (AGE-208). Agent-authored, so untrusted display text:
+    /// already cleaned to one short line, and the UI renders it as text, never
+    /// as markup or a link. Decoration over `activity`, never a substitute
+    /// for it. `None` unless the agent is running and has set one.
+    pub agent_status: Option<AgentStatusInfo>,
     /// Ascending order among this project's pinned runs; `None` = unpinned.
     /// Board order only: a pin never changes how a run classifies above, and
     /// nothing the agent does consumes one. Read straight off the stored
@@ -2467,6 +2545,12 @@ pub struct AppState {
     /// read is an atomic load rather than a database round trip on a mutex the
     /// notifier tick also wants.
     share_open_file: Arc<std::sync::atomic::AtomicBool>,
+    /// Run id → the line its agent last wrote about itself with `set_status`
+    /// (AGE-208). An `Arc` because each run's preview server captures it, like
+    /// `open_file` above. In-memory only, and dropped when the agent stops
+    /// running: the line is about what one live process is doing, so a
+    /// restarted app or a rerun agent starts with none rather than a stale one.
+    agent_status: Arc<Mutex<HashMap<String, AgentStatusInfo>>>,
 }
 
 /// Where the file the user has open actually is, and whose it is.
@@ -2625,6 +2709,7 @@ impl AppState {
             preview_shot: std::sync::Arc::new(std::sync::OnceLock::new()),
             open_file: Arc::new(Mutex::new(None)),
             share_open_file: Arc::new(std::sync::atomic::AtomicBool::new(share_open_file)),
+            agent_status: Arc::new(Mutex::new(HashMap::new())),
         };
         // Rehydrate: any run the daemon still hosts is adopted as-is; the watch
         // loop (watch_snapshot) then reports live status. Nothing to spawn here —
@@ -3474,6 +3559,11 @@ impl AppState {
             running && agency_core::preview::serving(port) && handshake_done
         });
         let activity = self.read_activity(run, crate::activity::now_ms());
+        // Only while the agent runs: the tick drops the line once it stops, but
+        // a board poll can land between the exit and that tick.
+        let agent_status = matches!(status, SessionStatus::Running)
+            .then(|| self.agent_status.lock().unwrap().get(&run.id).cloned())
+            .flatten();
         // The extra tabs' statuses come out of the listing already in hand, so
         // listing them costs one registry read per run and no daemon call.
         let sessions = self
@@ -3502,6 +3592,7 @@ impl AppState {
             branch,
             status,
             activity,
+            agent_status,
             pin_rank: run.pin_rank,
             usage: self.usage.lock().unwrap().get(&run.id).map(|(_, u)| u.into()),
             added: stat.added,
@@ -5637,7 +5728,13 @@ impl AppState {
             let open = cell.lock().unwrap().clone();
             open_file_for(open.as_ref(), &open_run, &open_repo)
         });
-        agency_core::preview::Hooks { facts, screenshot, caps, open_file }
+        let statuses = self.agent_status.clone();
+        let set_status =
+            std::sync::Arc::new(move |status: agency_core::preview::status::Status| {
+                let mut map = statuses.lock().unwrap();
+                apply_agent_status(&mut map, &run_id, status, crate::activity::now_ms());
+            });
+        agency_core::preview::Hooks { facts, screenshot, caps, open_file, set_status }
     }
 
     /// Have this run's preview server listening on the port its emitted MCP
@@ -6575,10 +6672,20 @@ impl AppState {
         map.insert(id.to_string(), next);
     }
 
+    /// Forget a run's `set_status` line once its agent is not running. The line
+    /// said what that process was doing; a finished, crashed or rerun agent is
+    /// not doing it.
+    pub fn note_agent_liveness(&self, id: &str, agent: &SessionStatus) {
+        if !matches!(agent, SessionStatus::Running) {
+            self.agent_status.lock().unwrap().remove(id);
+        }
+    }
+
     /// Drop activity entries for runs no longer in the watch snapshot
     /// (archived or discarded), mirroring the notifier's own watch pruning.
     pub fn retain_activity(&self, keep: &HashSet<String>) {
         self.activity.lock().unwrap().retain(|id, _| keep.contains(id));
+        self.agent_status.lock().unwrap().retain(|id, _| keep.contains(id));
         self.usage.lock().unwrap().retain(|id, _| keep.contains(id));
         // Both of these are keyed by *session*, and a run's extra tabs
         // (`<run>--2`) never appear in the watch snapshot — so prune on the run
@@ -8651,6 +8758,10 @@ impl AppState {
             conversation.as_deref(),
         );
         let _ = self.term.read().unwrap().kill(&session_name(id));
+        // The tick drops a stopped agent's status line, but a kill and respawn
+        // inside one 2s tick never shows it a stopped agent, and the new process
+        // would inherit a line about the old one's work.
+        self.agent_status.lock().unwrap().remove(id);
         self.term.read().unwrap().start_session(
             &session_name(id),
             &worktree,

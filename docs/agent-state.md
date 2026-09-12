@@ -114,7 +114,7 @@ Verified against the hooks reference on 2026-09-08:
 | hook event | matcher | what it means for us |
 | --- | --- | --- |
 | `UserPromptSubmit` | none | turn started → `working` |
-| `PreToolUse` | `*` | still working; `tool_name` is the status line (AGE-208) |
+| `PreToolUse` | `*` | still working |
 | `PostToolUse` | `*` | still working |
 | `Notification` | `permission_prompt` | **`blocked`** |
 | `Notification` | `idle_prompt` | `done` |
@@ -306,8 +306,8 @@ Three things to hold onto:
   makes a claim about, and nothing here changes that claim.
 - **Do not store what we do not need.** Hook payloads carry `tool_input`, which
   is the agent's actual commands and file contents, and `transcript_path`. We
-  need `hook_event_name`, `notification_type`, `session_id`, `cwd` and (for
-  AGE-208) `tool_name`. Parse those and drop the rest at the door, rather than
+  need `hook_event_name`, `notification_type`, `session_id` and `cwd`. Parse
+  those and drop the rest at the door, rather than
   keeping a payload we then have to be careful with. This is the same instinct
   the comparable tool showed in defaulting its scrollback replay to off because
   terminal output contains secrets.
@@ -331,8 +331,13 @@ Three things to hold onto:
 4. **The roll-up and the sort** (AGE-213, AGE-215), which are only worth
    building on top of a state that is real.
 
-AGE-207 (declarative screen rules) and AGE-208 (agent-authored status) both
-land after phase 1 and neither blocks it. AGE-209's `wait(run_id)` is gated on
+AGE-207 (declarative screen rules) does not block phase 1. AGE-208
+(agent-authored status) landed first, and not from hooks: a hook's `tool_name`
+says "Bash", not what the command is for, so the line comes from the agent
+itself through a `set_status` tool on the same per-run server, rendered as
+plain text under the run's state. The server only runs today while the preview
+or editor half is on, so the `state` cap proposed above is also what would give
+every run that tool. AGE-209's `wait(run_id)` is gated on
 phase 1: a blocking wait is only as trustworthy as the state it waits on.
 
 ## Open questions

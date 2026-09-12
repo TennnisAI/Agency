@@ -441,6 +441,14 @@ fn workspace_skill_md(ws: &Workspace, skills_rel: &Path) -> String {
              earlier answer.\n",
         );
     }
+    if ws.preview_tools || ws.open_file_tool {
+        body.push_str(
+            "\nThe `agency-preview` server also has `set_status`, which puts one short line on \
+             this run's card in Agency: what you are doing right now, such as \"running the \
+             migration tests\". The user triages every run on the board by it, so set it as you \
+             move between steps and clear it with an empty string when you finish.\n",
+        );
+    }
     body.push_str(&format!(
         "\n`AGENCY_WORKSPACE_PATH` (`{worktree}`), `AGENCY_ROOT_PATH` (`{repo_root}`) and \
          `AGENCY_WORKSPACE_NAME` are exported too.\n",
@@ -1056,6 +1064,21 @@ mod tests {
             with.find("`editor_open_file`") > with.find("\n---\n"),
             "the tool paragraph must follow the frontmatter: {with}"
         );
+    }
+
+    /// `set_status` is on whichever server a run has, so it is mentioned with
+    /// either half and never to a run that has no server to call.
+    #[test]
+    fn the_catalog_mentions_set_status_whenever_the_server_is_attached() {
+        assert!(!skill(&workspace(), WORKSPACE_SKILL).contains("set_status"));
+        for ws in [
+            Workspace { preview_tools: true, ..workspace() },
+            Workspace { open_file_tool: true, ..workspace() },
+        ] {
+            let with = skill(&ws, WORKSPACE_SKILL);
+            assert!(with.contains("`set_status`"), "{with}");
+            assert!(!with.contains('\u{2014}'), "{with}");
+        }
     }
 
     /// A looping run finishes on its check command, so the agent is told what

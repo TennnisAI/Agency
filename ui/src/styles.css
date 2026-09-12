@@ -2242,7 +2242,6 @@ input.settings-notif-secs { width: 90px; flex: 0 0 auto; }
 .checkout-branch { display: inline-flex; align-items: center; gap: 4px; min-width: 0; color: var(--blue); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .checkout-branch svg { flex-shrink: 0; }
 .checkout-kind { flex-shrink: 0; text-transform: uppercase; letter-spacing: 0.05em; font-size: 10px; color: var(--o0); }
-.checkout-note { min-width: 0; color: var(--o0); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ── Editor tabs (one-stop Phase 3) ──────────────────────────── */
 .file-tabs-wrap { display: flex; align-items: stretch; flex-shrink: 0; min-width: 0; border-bottom: 1px solid var(--line); background: var(--mantle); }

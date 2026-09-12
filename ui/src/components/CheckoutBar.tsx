@@ -12,13 +12,12 @@ const POLL_MS = 5000;
 /**
  * Which working tree the Docs / Files tab is showing, the way source control
  * shows it: the agent worktree or project checkout the tree is rooted in, and
- * the branch checked out there. Docs stays on the project checkout even with an
- * agent selected, so the bar is what keeps the two tabs from looking alike.
+ * the branch checked out there. Both tabs follow the selected agent, so the bar
+ * is what says where "here" is right now.
  *
  * It is also the way there: like the status bar's branch, clicking it opens
  * Source Control on the tree it names. The caller supplies that move, because
- * pointing source control at a tree is a change to the run selection, which
- * lives above both tabs.
+ * the tab lives above both views.
  */
 export default function CheckoutBar({ root, projectId, projectName, onOpen }: {
   root: FileRoot;
@@ -26,8 +25,8 @@ export default function CheckoutBar({ root, projectId, projectName, onOpen }: {
   projectName: string;
   onOpen: () => void;
 }) {
-  const { runs, selectedRunId } = useRuns();
-  const checkout = describeCheckout({ root, projectId, projectName, runs, selectedRunId });
+  const { runs } = useRuns();
+  const checkout = describeCheckout({ root, projectId, projectName, runs });
   const { taskId } = checkout;
   // undefined until the first read lands (the bar shows the place meanwhile, so
   // the usual case doesn't shift); null once git has declined to answer.
@@ -65,7 +64,6 @@ export default function CheckoutBar({ root, projectId, projectName, onOpen }: {
         </span>
       )}
       <span className="checkout-kind">{checkout.kind}</span>
-      {checkout.note && <span className="checkout-note">{checkout.note}</span>}
     </button>
   );
 }

@@ -27,11 +27,18 @@ import { adjacentDailyPath, isDailyNotePath } from "../lib/dailyNote";
 import { recordActivation } from "../lib/recency";
 import { terminalHasFocus } from "../lib/terminalFocus";
 
-const tabsKey = (projectId: string) => `docs:tabs:${projectId}`;
+// Tab memory is per working tree, like the Files tab's. The project checkout
+// keeps the bare project id it has always had, since the handoff below is
+// addressed to it; each agent worktree gets a key of its own.
+const viewKeyOf = (projectId: string, root: FileRoot) =>
+  root.kind === "project" ? projectId : `${projectId}:run:${root.id}`;
+const tabsKey = (viewKey: string) => `docs:tabs:${viewKey}`;
 // The open note, kept as its own key because it doubles as a handoff: the
 // palette, the menu, and cross-domain navigation stamp it before switching to
-// the Docs tab so a freshly mounting view restores straight to that note.
-const lastNoteKey = (projectId: string) => `docs:last:${projectId}`;
+// the Docs tab so a freshly mounting view restores straight to that note. They
+// all select the project first, which drops the run selection, so they stamp
+// the checkout's key.
+const lastNoteKey = (viewKey: string) => `docs:last:${viewKey}`;
 
 // Which side-panel tab is showing. Global (not per project): it's a working
 // mode — "I'm writing" vs "I'm pairing with an agent" — not a per-note fact.
@@ -47,14 +54,20 @@ function loadSideTab(): SideTab {
 }
 
 /**
- * The Docs tab: an Obsidian-lite over the project's `docs` folder. Always
- * rooted at the project's main checkout — docs are a project-level artifact
- * and shouldn't shift with the focused agent.
+ * The Docs tab: an Obsidian-lite over the project's `docs` folder, in the same
+ * working tree the Files tab shows: the selected agent's worktree, else the
+ * project checkout. It used to stay on the checkout whichever agent was
+ * selected (AGE-231), so Files showed a worktree's notes and Docs, one tab
+ * over, showed the checkout's, and an agent's edits to its notes were invisible
+ * in Docs until they merged.
  */
-export default function DocsView({ project, onOpenCheckout }: {
+export default function DocsView({ project, root, onOpenCheckout, onOpenFile }: {
   project: Project;
-  // Open Source Control on the project checkout the checkout bar names.
+  root: FileRoot;
+  // Open Source Control on the tree the checkout bar names.
   onOpenCheckout: () => void;
+  // Open a file in the Files tab, rooted where these notes are.
+  onOpenFile: (repoRel: string) => void;
 }) {
   const treePane = usePaneWidth("docs-tree", 240, 180, 480);
   const notePane = usePaneWidth("docs-side", 240, 180, 420);
@@ -69,11 +82,11 @@ export default function DocsView({ project, onOpenCheckout }: {
     setSideTabState(t);
     try { localStorage.setItem(SIDE_TAB_KEY, t); } catch { /* storage unavailable */ }
   };
-  const root: FileRoot = { kind: "project", id: project.id };
-  const { docsDir, index, refresh, createDocsDir } = useDocs(project.id, true);
+  const viewKey = viewKeyOf(project.id, root);
+  const { docsDir, index, refresh, createDocsDir } = useDocs(project.id, true, root);
   const { cross } = useCrossRefs(true);
-  // Tab state travels WITH the project it belongs to, so a project switch can
-  // never persist one project's tabs under another's key (same guard as
+  // Tab state travels WITH the project and tree it belongs to, so a switch can
+  // never persist one tree's tabs under another's key (same guard as
   // FilesView). The key is only stamped once the restore below has run.
   const [projectTabs, setProjectTabs] = useState<{ key: string | null; tabs: TabState }>(
     () => ({ key: null, tabs: emptyTabs() }),
@@ -90,9 +103,9 @@ export default function DocsView({ project, onOpenCheckout }: {
   // are folded in there rather than dropped.
   const pendingRef = useRef<string[]>([]);
 
-  // Never another project's tabs: the frame between a project switch and its
-  // restore renders empty instead of stale state.
-  const tabs = projectTabs.key === project.id ? projectTabs.tabs : emptyTabs();
+  // Never another tree's tabs: the frame between a switch and its restore
+  // renders empty instead of stale state.
+  const tabs = projectTabs.key === viewKey ? projectTabs.tabs : emptyTabs();
   const tabsRef = useRef(tabs);
   tabsRef.current = tabs;
   const selected = tabs.active;
@@ -100,10 +113,10 @@ export default function DocsView({ project, onOpenCheckout }: {
   // like every other path the backend takes, so the docs folder is on the front.
   useReportOpenFile(root, docsDir != null && selected ? joinPath(docsDir, selected) : null);
 
-  // Every mutation is scoped to the current project; one sneaking in before the
-  // restore is dropped rather than corrupting the outgoing project's state.
+  // Every mutation is scoped to the current tree; one sneaking in before the
+  // restore is dropped rather than corrupting the outgoing tree's state.
   const updateTabs = (fn: (s: TabState) => TabState) =>
-    setProjectTabs((r) => (r.key === project.id ? { ...r, tabs: fn(r.tabs) } : r));
+    setProjectTabs((r) => (r.key === viewKey ? { ...r, tabs: fn(r.tabs) } : r));
 
   const dropWarm = (gone: (path: string) => boolean) =>
     setWarm((w) => new Set([...w].filter((p) => !gone(p))));
@@ -145,8 +158,8 @@ export default function DocsView({ project, onOpenCheckout }: {
   const closeRef = useRef(closeNote);
   closeRef.current = closeNote;
 
-  // Reset on project switch; tabs are restored once the index has loaded (so
-  // stale paths can be validated and dropped).
+  // Reset on project or tree switch; tabs are restored once the index has
+  // loaded (so stale paths can be validated and dropped).
   useEffect(() => {
     setProjectTabs({ key: null, tabs: emptyTabs() });
     setWarm(new Set());
@@ -154,7 +167,7 @@ export default function DocsView({ project, onOpenCheckout }: {
     editorRefs.current.clear();
     pendingRef.current = [];
     restoredRef.current = false;
-  }, [project.id]);
+  }, [viewKey]);
 
   useEffect(() => {
     if (restoredRef.current || !index) return;
@@ -162,8 +175,8 @@ export default function DocsView({ project, onOpenCheckout }: {
     let raw: string | null = null;
     let stored: string | null = null;
     try {
-      raw = localStorage.getItem(tabsKey(project.id));
-      stored = localStorage.getItem(lastNoteKey(project.id));
+      raw = localStorage.getItem(tabsKey(viewKey));
+      stored = localStorage.getItem(lastNoteKey(viewKey));
     } catch { /* storage unavailable */ }
     const saved = deserializeTabs(raw);
     let s: TabState = {
@@ -183,21 +196,21 @@ export default function DocsView({ project, onOpenCheckout }: {
       const first = [...index.docs.values()].sort((a, b) => a.title.localeCompare(b.title))[0];
       if (first) s = openTab(s, first.path);
     }
-    setProjectTabs({ key: project.id, tabs: s });
+    setProjectTabs({ key: viewKey, tabs: s });
     setWarm((w) => (s.active ? new Set(w).add(s.active) : w));
-  }, [index, project.id]);
+  }, [index, viewKey]);
 
-  // Persist per project, only once the state actually belongs to it (before the
+  // Persist per tree, only once the state actually belongs to it (before the
   // restore, `key` is null and a write here would clobber the stored tabs).
   useEffect(() => {
-    if (projectTabs.key !== project.id) return;
+    if (projectTabs.key !== viewKey) return;
     try {
-      localStorage.setItem(tabsKey(project.id), serializeTabs(projectTabs.tabs));
+      localStorage.setItem(tabsKey(viewKey), serializeTabs(projectTabs.tabs));
       const active = projectTabs.tabs.active;
-      if (active) localStorage.setItem(lastNoteKey(project.id), active);
-      else localStorage.removeItem(lastNoteKey(project.id));
+      if (active) localStorage.setItem(lastNoteKey(viewKey), active);
+      else localStorage.removeItem(lastNoteKey(viewKey));
     } catch { /* storage unavailable */ }
-  }, [projectTabs, project.id]);
+  }, [projectTabs, viewKey]);
 
   // ⌘W closes the active note. Same binding as the Files tab (menu.rs claims no
   // ⌘W accelerator), minus the agents panel's terminal where Ctrl+W is
@@ -221,16 +234,22 @@ export default function DocsView({ project, onOpenCheckout }: {
   // mounted; a fresh mount is covered by the docs:last localStorage restore.
   const refreshRef = useRef(refresh);
   refreshRef.current = refresh;
+  const onCheckout = root.kind === "project";
   useEffect(() => {
     const onOpen = (e: Event) => {
       const d = (e as CustomEvent<{ projectId: string; path: string }>).detail;
       if (!d || d.projectId !== project.id) return;
+      // Every sender selects the project before dispatching, which drops the
+      // run selection, so the note is meant for the checkout. A worktree view
+      // still mounted for that one frame would open it among the worktree's
+      // tabs; it leaves it to the checkout's restore, which reads the stamp.
+      if (!onCheckout) return;
       void refreshRef.current().then(() => openRef.current(d.path));
     };
     window.addEventListener("agency:open-note", onOpen);
     return () => window.removeEventListener("agency:open-note", onOpen);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [project.id]);
+  }, [project.id, onCheckout]);
 
   // A wikilink pointed at a note that doesn't exist; confirm before creating.
   const [pendingCreate, setPendingCreate] = useState<string | null>(null);
@@ -241,7 +260,7 @@ export default function DocsView({ project, onOpenCheckout }: {
   // "and put it in what I'm writing".
   const [pendingLink, setPendingLink] = useState<{ note: string; paths: string[] } | null>(null);
 
-  /** Open an attachment row: `repoRel` is relative to the project checkout. */
+  /** Open an attachment row: `repoRel` is relative to the tree's root. */
   const openAttachment = (repoRel: string) => {
     // The workspace hides the Files tab (it would duplicate Docs), so there is
     // no in-app viewer to route to there. Hand it to the OS instead, the same
@@ -250,7 +269,9 @@ export default function DocsView({ project, onOpenCheckout }: {
       openTermPath(root, repoRel).catch((e) => toastError(e, "Couldn't open"));
       return;
     }
-    requestNavigate({ kind: "file", projectId: project.id, path: repoRel });
+    // Not requestNavigate: a link lands on the project checkout, and a
+    // screenshot dropped into a worktree's notes isn't there.
+    onOpenFile(repoRel);
   };
 
   const insertLinks = (note: string, paths: string[]) => {
@@ -346,8 +367,8 @@ export default function DocsView({ project, onOpenCheckout }: {
 
   return (
     <div className="files-view docs-view">
-      {/* Notes come from the project checkout whichever agent is selected, so
-          the bar says which checkout and which branch that is. */}
+      {/* Which working tree these notes come from. It follows the selected
+          agent, like Files, so it changes under you as you move around. */}
       <CheckoutBar root={root} projectId={project.id} projectName={project.name} onOpen={onOpenCheckout} />
       <div className="files-body">
         <div className="files-tree docs-tree" style={{ width: treePane.width }}>
@@ -387,7 +408,7 @@ export default function DocsView({ project, onOpenCheckout }: {
           )}
           {tabs.open.filter((p) => warm.has(p)).map((p) => (
             <div
-              key={`${project.id}:${p}`}
+              key={`${viewKey}:${p}`}
               className="files-editor-pane"
               style={{ display: p === tabs.active ? "flex" : "none" }}
             >

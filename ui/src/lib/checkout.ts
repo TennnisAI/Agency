@@ -13,10 +13,6 @@ export interface Checkout {
   name: string;
   /** An agent's private worktree, or the project's own checkout. */
   kind: "worktree" | "checkout";
-  /** Caption for a view that deliberately isn't following the selected agent. */
-  note: string | null;
-  /** The same, spelled out for the tooltip. */
-  noteDetail: string | null;
 }
 
 /**
@@ -25,12 +21,11 @@ export interface Checkout {
  * terminal) works directly in the project checkout, so it reads as that
  * checkout rather than as a second copy of it.
  */
-export function describeCheckout({ root, projectId, projectName, runs, selectedRunId }: {
+export function describeCheckout({ root, projectId, projectName, runs }: {
   root: FileRoot;
   projectId: string;
   projectName: string;
   runs: RunLike[];
-  selectedRunId: string | null;
 }): Checkout {
   const run = root.kind === "run" ? runs.find((r) => r.id === root.id) ?? null : null;
   // A run the store doesn't know (archived out from under the view) is still a
@@ -41,35 +36,16 @@ export function describeCheckout({ root, projectId, projectName, runs, selectedR
       taskId: root.id,
       name: run ? runListLabel(run) : "agent worktree",
       kind: "worktree",
-      note: null,
-      noteDetail: null,
     };
   }
-  // The project's own checkout. When an agent with a worktree of its own is
-  // selected, say so: this view isn't following that selection (Docs never
-  // does, since notes are a project-level artifact).
-  const stray = runs.find((r) => r.id === selectedRunId && r.worktree) ?? null;
-  return {
-    taskId: projectTarget(projectId),
-    name: projectName,
-    kind: "checkout",
-    note: stray ? "not the selected agent's worktree" : null,
-    noteDetail: stray
-      ? `${runListLabel(stray)} has a worktree of its own; browse it from the Files tab.`
-      : null,
-  };
+  return { taskId: projectTarget(projectId), name: projectName, kind: "checkout" };
 }
 
-/**
- * Hover text for the bar: where you are, on which branch, why, and where
- * clicking it goes. The tree is named again in that last clause because the
- * note before it can be about a *different* tree (the selected agent's).
- */
+/** Hover text for the bar: where you are, on which branch, and where clicking it goes. */
 export function checkoutTooltip(c: Checkout, branch: string | null): string {
   const where = c.kind === "worktree"
     ? `You are viewing ${c.name}'s own worktree`
     : `You are viewing the ${c.name} checkout`;
   const on = branch ? ` on branch ${branch}` : "";
-  const opens = ` Opens Source Control for this ${c.kind}.`;
-  return `${where}${on}.${c.noteDetail ? ` ${c.noteDetail}` : ""}${opens}`;
+  return `${where}${on}. Opens Source Control for this ${c.kind}.`;
 }

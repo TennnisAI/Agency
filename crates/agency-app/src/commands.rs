@@ -2818,18 +2818,24 @@ pub struct BinaryContents {
 
 /// Case-insensitive lookup of a project's top-level `docs` directory. Returns
 /// the actual on-disk name (`"Docs"`, `"DOCS"`, ...) or None when absent, so the
-/// Docs tab can offer to create one.
+/// Docs tab can offer to create one. `root` is the working tree to look in (the
+/// Docs tab follows the selected agent's worktree, like Files); without one it
+/// is the project's own checkout.
 #[tauri::command]
 pub async fn detect_docs_dir(
     state: State<'_, AppState>,
     project_id: String,
+    root: Option<FileRoot>,
 ) -> Result<Option<String>, String> {
     // The workspace's *whole folder* is the vault — its docs root is the empty
     // relative path, not a `docs/` subfolder.
     if state.project_is_workspace(&project_id).map_err(|e| e.to_string())? {
         return Ok(Some(String::new()));
     }
-    let base = state.project_repo_path(&project_id).map_err(|e| e.to_string())?;
+    let base = match root {
+        Some(root) => resolve_root(&state, &root)?,
+        None => state.project_repo_path(&project_id).map_err(|e| e.to_string())?,
+    };
     agency_core::files::find_dir_case_insensitive(&base, "docs").map_err(|e| e.to_string())
 }
 

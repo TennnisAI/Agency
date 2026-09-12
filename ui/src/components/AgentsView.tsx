@@ -94,8 +94,8 @@ export default function AgentsView({
   // open diff doesn't survive the switch.
   useEffect(() => { setGitSel(null); }, [gitRoot]);
 
-  // The root the Files tab shows (and quick-open must list): the selected run's
-  // worktree, else the project's own checkout.
+  // The root the Files and Docs tabs show (and quick-open must list): the
+  // selected run's worktree, else the project's own checkout.
   const filesRoot: FileRoot | null = project
     ? selectedRunId
       ? { kind: "run", id: selectedRunId }
@@ -118,18 +118,19 @@ export default function AgentsView({
   // sub-view left active the jump landed on it and the file never showed.
   useEffect(() => onAnyOpenFile(() => setFilesTab("files")), []);
 
-  // Where the Docs / Files checkout bar goes when clicked: Source Control on
-  // the tree it names. The Files tree is rooted at whatever source control
-  // already targets (both follow the run selection, and a run without a
-  // worktree resolves to the checkout either way), so the tab is the whole
-  // move. Docs is always the project checkout, so from an agent's worktree it
-  // has to drop the selection first — the grid is what points source control at
-  // the checkout, the same way the status bar's unpushed-commits button does.
-  const openFilesCheckout = () => setTab("source");
-  const openDocsCheckout = () => {
-    if (selected?.worktree) setView("grid");
-    setTab("source");
+  // Docs → Files, for an attachment row: into the tree the notes came from, so
+  // a screenshot in an agent's worktree opens from that worktree.
+  const openInFilesTab = (path: string) => {
+    if (!filesRoot) return;
+    setTab("files");
+    requestOpenFile({ rootKey: fileRootKey(filesRoot), path });
   };
+
+  // Where the Docs / Files checkout bar goes when clicked: Source Control on
+  // the tree it names. Both tabs are rooted at whatever source control already
+  // targets (all three follow the run selection, and a run without a worktree
+  // resolves to the checkout either way), so the tab is the whole move.
+  const openCheckout = () => setTab("source");
 
   // ⌘P quick-open, everywhere except the Docs tab — DocsView owns ⌘P there
   // (its note switcher) and is only mounted on that tab, so exactly one
@@ -318,9 +319,9 @@ export default function AgentsView({
             />
           )}
 
-          {tab === "docs" && (
+          {tab === "docs" && filesRoot && (
             <div className="source-wrap">
-              <DocsView project={project} onOpenCheckout={openDocsCheckout} />
+              <DocsView project={project} root={filesRoot} onOpenCheckout={openCheckout} onOpenFile={openInFilesTab} />
             </div>
           )}
 
@@ -339,7 +340,7 @@ export default function AgentsView({
           {tab === "files" && (
             <div className="source-wrap">
               {filesTab === "files" && (
-                <FilesView root={filesRoot} project={project} agentsOpen={filesAgents} onOpenCheckout={openFilesCheckout} />
+                <FilesView root={filesRoot} project={project} agentsOpen={filesAgents} onOpenCheckout={openCheckout} />
               )}
               {/* Keyed by project so a switch tears the map down rather than
                   painting one project's tree under another's breadcrumb. */}

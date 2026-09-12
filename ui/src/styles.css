@@ -3184,11 +3184,19 @@ input, textarea, code,
 /* Row actions surface on hover/selection, like tile buttons. A menu opened
    from one of them holds the strip up: its backdrop takes the pointer, so the
    row stops being hovered the moment it opens. */
-.issue-row-actions { display: flex; align-items: center; gap: 4px; visibility: hidden; }
+.issue-row-actions { display: flex; align-items: center; gap: 2px; visibility: hidden; }
 .issue-row:hover .issue-row-actions,
 .issue-row.selected .issue-row-actions,
 .issue-row.menu-open .issue-row-actions { visibility: visible; }
-.issue-row-actions .issue-status-pill { visibility: visible; }
+.issue-row-actions .issue-status-pill { visibility: visible; padding: 2px 7px; }
+/* AGE-232: the strip was sized like the toolbar: three 28px-square buttons with
+   a 16px glyph, 4px apart. In the sidebar list that was about 177px of a 250px
+   row, and a hovered title shrank to three or four letters. The buttons narrow
+   and the glyphs drop to the row's text size, and ▶ sits flush against its
+   caret as one split control. Height stays 28px, so no row changes height. */
+.issue-row-actions .icon-btn { width: 20px; font-size: 12px; }
+.issue-row-start { display: inline-flex; align-items: center; }
+.issue-row-start .agent-add .icon-btn { width: 14px; font-size: 11px; }
 
 /* Sidebar list (detail expanded). The actions reserve their own width in the
    normal layout, which would leave almost nothing for the title at 288px — so
@@ -3201,8 +3209,8 @@ input, textarea, code,
 .issues-list.compact .issue-due { display: none; }
 .issues-list.compact .issue-row-actions {
   position: absolute; right: 5px; top: 50%; transform: translateY(-50%);
-  display: none; padding-left: 20px; border-radius: 7px;
-  background: linear-gradient(to right, transparent, var(--s0) 20px);
+  display: none; padding-left: 12px; border-radius: 7px;
+  background: linear-gradient(to right, transparent, var(--s0) 12px);
 }
 .issues-list.compact .issue-row:hover .issue-row-actions,
 .issues-list.compact .issue-row.selected .issue-row-actions,

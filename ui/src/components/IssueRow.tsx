@@ -176,8 +176,8 @@ export default function IssueRow({
       {activity && <span className={`dot ${activity.cls}`} title={activity.title} />}
       <span className="issue-row-actions" onClick={(e) => e.stopPropagation()}>
         {startable && (
-          <>
-            <button className="icon-btn" title="Start agent on this issue" onClick={onStart}>▶</button>
+          <span className="issue-row-start">
+            <button className="icon-btn" title="Start agent on this issue" onClick={onStart}>{"▶︎"}</button>
             <AgentAddMenu
               variant="icon"
               projectId={issue.projectId}
@@ -188,7 +188,7 @@ export default function IssueRow({
               onOpenChange={setAgentOpen}
               gitless={gitless}
             />
-          </>
+          </span>
         )}
         <button
           ref={statusRef}

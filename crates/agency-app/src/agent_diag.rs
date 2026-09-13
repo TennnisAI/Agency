@@ -131,7 +131,9 @@ pub fn resolve_on_path(command: &str) -> Option<PathBuf> {
         let p = Path::new(command);
         return executable(p).then(|| p.to_path_buf());
     }
-    let paths = std::env::var_os("PATH")?;
+    // `effective_path`, not `$PATH`: a directory an install created after
+    // startup is on the former and not the latter (see pathenv::adopt_new_dirs).
+    let paths = crate::pathenv::effective_path();
     std::env::split_paths(&paths).map(|dir| dir.join(command)).find(|p| executable(p))
 }
 

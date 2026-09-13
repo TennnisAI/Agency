@@ -8,7 +8,7 @@ import appTsx from "../App.tsx?raw";
 const ids = PALETTE_COMMANDS.map((c) => c.id);
 
 describe("availableCommands", () => {
-  const all = { hasProject: true, hasFocusedAgent: true, workspaceVisible: true };
+  const all = { hasProject: true, hasFocusedAgent: true, workspaceVisible: true, gitless: true };
 
   it("returns everything when every context bit is on", () => {
     expect(availableCommands(all)).toHaveLength(PALETTE_COMMANDS.length);
@@ -26,6 +26,12 @@ describe("availableCommands", () => {
     expect(cmds).not.toContain("approve");
     expect(cmds).not.toContain("archive");
     expect(cmds).not.toContain("discard");
+  });
+
+  it("offers the repository init only for a selected project without one", () => {
+    expect(availableCommands({ ...all, gitless: false }).map((c) => c.id)).not.toContain("init-repo");
+    expect(availableCommands({ ...all, hasProject: false }).map((c) => c.id)).not.toContain("init-repo");
+    expect(availableCommands(all).map((c) => c.id)).toContain("init-repo");
   });
 
   it("hides Today's Note when the workspace is hidden", () => {

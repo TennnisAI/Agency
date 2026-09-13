@@ -4,6 +4,7 @@ import { fmtStamp } from "../lib/issues";
 import { toastError } from "../lib/toast";
 import Markdown from "./Markdown";
 import ConfirmDialog from "./ConfirmDialog";
+import { shortcutLabel } from "../lib/platform";
 
 // The discussion under an issue: the thread, then a box to add to it. Comment
 // bodies are markdown, rendered read-only the way PR comments are (the
@@ -147,7 +148,7 @@ export default function IssueComments({
         />
         {draft.trim() && (
           <div className="issue-comment-buttons">
-            <span className="issue-comment-hint">⌘↵ to post</span>
+            <span className="issue-comment-hint">{shortcutLabel("⌘↵")} to post</span>
             <button className="ghost" onClick={() => setDraft("")}>Cancel</button>
             <button className="issue-comment-post" disabled={busy} onClick={() => { void post(); }}>Comment</button>
           </div>

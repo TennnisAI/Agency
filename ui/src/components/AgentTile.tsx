@@ -6,6 +6,8 @@ import { useRunMenu } from "../hooks/useRunMenu";
 import { inGitlessFolder, runStatus } from "../lib/runstate";
 import { removalLabel, removalsFor } from "../lib/runRemoval";
 import { usageLabel, usageTitle } from "../lib/usage";
+import { runTabs, showsTabs } from "../lib/runTabs";
+import TabCount from "./TabCount";
 import AttentionMarker from "./AttentionMarker";
 import QueuedMarker from "./QueuedMarker";
 import OverflowMenu from "./OverflowMenu";
@@ -43,6 +45,7 @@ export default function AgentTile({ run }: { run: RunInfo }) {
 
   const st = runStatus(run);
   const isTerminal = run.kind === "terminal";
+  const tabs = runTabs(run);
   return (
     <div
       className={`tile${menuRunId === run.id ? " ctx" : ""}`}
@@ -58,6 +61,9 @@ export default function AgentTile({ run }: { run: RunInfo }) {
           <span className="run-dot" title="A run script is running in this workspace" />
         )}
         {run.raceId && <span className="badge race" title="Racing: same prompt, parallel attempts">∥</span>}
+        {/* The badge and the preview are the first agent's; the count says
+            they are not the whole workspace (AGE-225). */}
+        {showsTabs(run, tabs) && <TabCount tabs={tabs} />}
         {/* Agent, and the model it was started on when that was chosen. Racing
             the same agent's models is only readable if the tile says which one
             each attempt is, and a run's model is otherwise invisible once it

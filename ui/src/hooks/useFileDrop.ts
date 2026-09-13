@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { unlistenQuietly } from "../lib/unlisten";
 
 /**
  * Files dragged in from Finder (or the platform's file manager). Tauri
@@ -44,8 +45,8 @@ export function useFileDrop<T>(
         const target = targetRef.current(p.position.x, p.position.y);
         if (target !== null) dropRef.current(p.paths, target);
       })
-      .then((u) => { if (disposed) u(); else unlisten = u; });
-    return () => { disposed = true; unlisten?.(); };
+      .then((u) => { if (disposed) unlistenQuietly(u); else unlisten = u; });
+    return () => { disposed = true; unlistenQuietly(unlisten); };
   }, []);
 
   return over;

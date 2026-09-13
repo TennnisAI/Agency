@@ -49,9 +49,11 @@ function parseRecentKey(key: string): { kind: string; projectId: string; path: s
  * native menu or leave Shell's project state stale.
  */
 export default function CommandPalette({
-  onClose, onAction, onOpenProject, onOpenRun,
+  onClose, onAction, onOpenProject, onOpenRun, gitless = false,
 }: {
   onClose: () => void;
+  /** The selected project has no git repository (enables Initialize Git Repository…). */
+  gitless?: boolean;
   /** Route an onMenu action id (App.tsx routes it like a menu click). */
   onAction: (actionId: string) => void;
   onOpenProject: (p: Project) => void;
@@ -199,6 +201,7 @@ export default function CommandPalette({
     hasProject: !!selectedProjectId,
     hasFocusedAgent: runs.some((r) => r.id === focusedRunId && r.kind === "agent"),
     workspaceVisible: !workspaceHidden(),
+    gitless,
   };
   const commandRow = (id: string, label: string, sublabel: string): Row => ({
     kind: "command", id, projectId: "", label, sublabel, glyph: "›", section: "Commands",

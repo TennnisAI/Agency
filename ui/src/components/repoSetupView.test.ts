@@ -134,3 +134,15 @@ describe("ignoreRulesCaveat", () => {
     expect(ignoreRulesCaveat(scan({ truncated: true }))).toMatch(/may hold large files/);
   });
 });
+
+describe("repoSetupView for an existing project", () => {
+  it("offers no way through without git, since the project already exists", () => {
+    const notARepo = { state: "notARepo" as const, stageable: false, dirty: false };
+    expect(repoSetupView(notARepo, "init").secondaryLabel).toBeNull();
+    expect(repoSetupView(notARepo, "init").primaryLabel).toBe("Initialize repository");
+    const noCommits = { state: "noCommits" as const, stageable: true, dirty: false };
+    expect(repoSetupView(noCommits, "init").secondaryLabel).toBeNull();
+    const dirty = { state: "ready" as const, stageable: true, dirty: true };
+    expect(repoSetupView(dirty, "init").secondaryLabel).toBeNull();
+  });
+});

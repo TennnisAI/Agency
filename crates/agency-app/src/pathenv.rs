@@ -155,7 +155,7 @@ fn login_shell_probe() -> Probe {
     };
     let mut child = match Command::new(&shell)
         .arg("-ilc")
-        .arg(&harvest_script())
+        .arg(harvest_script())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -319,6 +319,44 @@ fn merge_path(current: &str, extra: &[PathBuf], exists: impl Fn(&Path) -> bool) 
         }
     }
     entries.join(":")
+}
+
+/// Directories adopted after startup, once something installed into them.
+///
+/// Observed 2026-09-10: an npm agent installed from onboarding on a Linux
+/// machine whose node came from apt has to go under `~/.local` (the default
+/// prefix is root-owned, see `tools::install_script`), and `~/.local/bin` did
+/// not exist when the app started, so [`repair`] had nothing to append. The
+/// tile then said "Not installed" about a binary that was right there, and a
+/// spawn would have failed the same way. Rather than mutate the process
+/// environment from a worker thread (a `setenv` racing another thread's
+/// `getenv` is undefined behaviour), the late arrivals are kept here and
+/// merged in by [`effective_path`], which every PATH lookup and every agent
+/// spawn reads.
+static ADOPTED: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+/// The process PATH plus every directory adopted since startup.
+pub fn effective_path() -> String {
+    let current = std::env::var("PATH").unwrap_or_default();
+    let adopted = ADOPTED.lock().unwrap();
+    merge_path(&current, &adopted, |p| p.exists())
+}
+
+/// Re-check the common tool directories and adopt the ones that now exist.
+/// Called after an install job finishes. Returns what was newly adopted, for
+/// the log.
+pub fn adopt_new_dirs() -> Vec<PathBuf> {
+    let home = std::env::var("HOME").map(PathBuf::from).unwrap_or_default();
+    let on_path: Vec<PathBuf> = path_dirs(&effective_path());
+    let mut adopted = ADOPTED.lock().unwrap();
+    let mut new = Vec::new();
+    for dir in common_bin_dirs(&home) {
+        if dir.exists() && !on_path.contains(&dir) && !adopted.contains(&dir) {
+            adopted.push(dir.clone());
+            new.push(dir);
+        }
+    }
+    new
 }
 
 /// Locale env vars to default when a Finder-launched bundle inherits none. Returns

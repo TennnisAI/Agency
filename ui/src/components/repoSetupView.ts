@@ -12,7 +12,10 @@ export type RepoSetupView = {
 
 // Pure mapping from a folder's git readiness (+ where we're asking) to what the
 // setup dialog should show. `ready` means nothing to do (caller treats as no-op).
-export function repoSetupView(readiness: RepoReadiness, context: "add" | "spawn"): RepoSetupView {
+// `init` is an existing project being given a repository after the fact (the
+// sidebar's "Initialize git repository…"), which has no "without git" way out
+// to offer: the project already exists without one.
+export function repoSetupView(readiness: RepoReadiness, context: "add" | "spawn" | "init"): RepoSetupView {
   // The folder is gone (AGE-203). Every caller's pre-flight now catches this
   // before opening the dialog, so this is the backstop rather than the path:
   // both of the dialog's actions shell out to git inside the folder, so on a
@@ -61,7 +64,7 @@ export function repoSetupView(readiness: RepoReadiness, context: "add" | "spawn"
       title: "Uncommitted changes",
       body: "Agents work from your last commit, so they won't see your current uncommitted changes until you commit them. Commit now?",
       primaryLabel: "Commit now",
-      secondaryLabel: context === "spawn" ? "Spawn anyway" : "Add anyway",
+      secondaryLabel: context === "spawn" ? "Spawn anyway" : context === "add" ? "Add anyway" : null,
     };
   }
   return { kind: "ready", title: "", body: "", primaryLabel: "", secondaryLabel: null };

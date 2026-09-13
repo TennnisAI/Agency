@@ -2,9 +2,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   FileChange, BranchInfo, HistoryItem, StashEntry, CloneProgress,
   gitStatus, gitBranchInfo, gitStashList, gitUndoLastCommit, gitPush, gitSync, gitPullRebase,
-  gitAutoFetch, cancelPush, gitPushForce,
+  gitAutoFetch, cancelPush, gitPushForce, absPath,
 } from "../../api";
 import { toastSuccess } from "../../lib/toast";
+import { GIT_IDENTITY_CANCELLED_EVENT, GIT_IDENTITY_SET_EVENT, needsGitIdentity, offerGitIdentity } from "../../lib/gitIdentity";
 import ConfirmDialog from "../ConfirmDialog";
 import ChangesPanel from "./ChangesPanel";
 import HistoryPanel from "./HistoryPanel";
@@ -136,6 +137,10 @@ function GitRepoPanel({
   // `label`, when given, raises a success toast once the op resolves.
   // Resolves true on success so callers can react (e.g. CommitBox only clears
   // the message once the commit actually landed); never rejects.
+  // The last action that failed for want of a git identity, kept so the retry
+  // after the user fills in name + email runs the same commit.
+  const retryRef = useRef<{ fn: () => Promise<unknown>; label?: string } | null>(null);
+
   const act = useCallback(async (fn: () => Promise<unknown>, label?: string): Promise<boolean> => {
     setGitOp(taskId, { busy: true, error: "" });
     let ok = false;
@@ -144,7 +149,20 @@ function GitRepoPanel({
       ok = true;
       if (label) toastSuccess(label);
     } catch (e) {
-      setGitOp(taskId, { error: String(e) });
+      // A commit on a machine with no git identity fails with "Author identity
+      // unknown". Offer the name + email form instead of the raw error, and
+      // remember this action so saving the identity replays it.
+      if (needsGitIdentity(e)) {
+        retryRef.current = { fn, label };
+        const repo = await absPath({ kind: "run", id: taskId }, "").catch(() => null);
+        if (repo && offerGitIdentity(repo, "Set the name and email git signs commits with, then this runs again.")) {
+          setGitOp(taskId, { error: "" });
+        } else {
+          setGitOp(taskId, { error: String(e) });
+        }
+      } else {
+        setGitOp(taskId, { error: String(e) });
+      }
     } finally {
       setGitOp(taskId, { busy: false });
     }
@@ -153,6 +171,35 @@ function GitRepoPanel({
     setHistoryKey((k) => k + 1);
     return ok;
   }, [refresh, taskId]);
+
+  // Replay the failed commit once the identity is saved for this worktree;
+  // on cancel, drop it and say why the commit did not happen. The retry must
+  // not outlive the form: a worktree-less run shares its path with the setup
+  // dialog, whose later save would otherwise replay an abandoned commit.
+  useEffect(() => {
+    const forThisRepo = async (e: Event) => {
+      const repo = await absPath({ kind: "run", id: taskId }, "").catch(() => null);
+      return !!repo && (e as CustomEvent<{ repoPath: string }>).detail?.repoPath === repo;
+    };
+    const onSet = async (e: Event) => {
+      if (!(await forThisRepo(e))) return;
+      const pending = retryRef.current;
+      retryRef.current = null;
+      if (pending) void act(pending.fn, pending.label);
+    };
+    const onCancelled = async (e: Event) => {
+      if (!(await forThisRepo(e))) return;
+      if (!retryRef.current) return;
+      retryRef.current = null;
+      setGitOp(taskId, { error: "The commit needs a git identity. Set one and try again." });
+    };
+    window.addEventListener(GIT_IDENTITY_SET_EVENT, onSet);
+    window.addEventListener(GIT_IDENTITY_CANCELLED_EVENT, onCancelled);
+    return () => {
+      window.removeEventListener(GIT_IDENTITY_SET_EVENT, onSet);
+      window.removeEventListener(GIT_IDENTITY_CANCELLED_EVENT, onCancelled);
+    };
+  }, [act, taskId]);
 
   // Cancel means cancel, mid-push included: a branch with large objects uploads
   // for minutes on a slow uplink, and until this existed the bar could only be

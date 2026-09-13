@@ -34,6 +34,7 @@ import { parentPath } from "../lib/filePath";
 import { requestNavigate } from "../lib/navigate";
 import { TaskExclusion, TaskGroup, isTaskExcluded, openTaskCount, promoteBody } from "../lib/tasks";
 import { toastError } from "../lib/toast";
+import { reportFailure } from "../lib/missingTool";
 import { useAllTasks } from "../hooks/useAllTasks";
 import { useGitlessProjects } from "../hooks/useRepoReadiness";
 import { useRuns, SpawnOpts } from "../store/runs";
@@ -210,7 +211,7 @@ export default function HomeIssues({
         setPendingSpawn({ project, issue, agentId, readiness: r, opts });
       }
     } catch (e) {
-      toastError(e, "Couldn't start agent");
+      reportFailure(e, "Couldn't start agent");
     }
   }
 
@@ -611,7 +612,7 @@ export default function HomeIssues({
               const run = await startIssueRun(issue.id, agentId, opts?.model ?? null, opts?.base, opts?.mergeTarget);
               onOpenRun(project, run.id);
             } catch (e) {
-              toastError(e, "Couldn't start agent");
+              reportFailure(e, "Couldn't start agent");
             }
           }}
           onCancel={() => setPendingSpawn(null)}

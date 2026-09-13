@@ -4,9 +4,9 @@ Thanks for your interest. A few honest expectations up front:
 
 - **Agency is a solo side project.** Issues and PRs are read and answered on a
   best-effort basis, usually within a week, sometimes slower.
-- **macOS on Apple Silicon is the only supported platform** right now.
-  `docs/windows-compat.md` catalogs what a port would touch, but there is no
-  Windows or Linux build to test against.
+- **macOS on Apple Silicon and Linux are the supported platforms.**
+  `docs/porting.md` catalogs what a Windows port would touch, but there is no
+  Windows build to test against.
 - **Bug reports are the most valuable contribution.** The bug template asks for
   your version and a log excerpt (both in Settings ▸ Diagnostics) — with those,
   most reports are actionable; without them, most aren't.

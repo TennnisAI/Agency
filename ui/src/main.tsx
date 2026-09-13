@@ -3,10 +3,14 @@ import ReactDOM from "react-dom/client";
 import App from "./App";
 import { applyTheme, getStoredTheme } from "./lib/themes";
 import { toastError } from "./lib/toast";
+import { PLATFORM } from "./lib/platform";
 import "./theme.css";
 import "./styles.css";
 
 applyTheme(getStoredTheme());
+// The stylesheet reads this for the one thing that differs per desktop: the
+// title bar's inset for the macOS traffic lights, and its own controls on Linux.
+document.documentElement.dataset.platform = PLATFORM;
 
 // Suppress the webview's default right-click menu (Reload / Developer Tools),
 // which is irrelevant to end users. Terminals and editable text fields keep

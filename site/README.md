@@ -30,11 +30,11 @@ theme toggle in production.
 | Path | What |
 |---|---|
 | `index.html` | Home: hero, agent strip, local-first block, four feature blocks, card grid, dogfooding block, closing CTA |
-| `download.html` | Requirements and install steps |
+| `download.html` | The DMG and the six Linux packages, requirements and install steps |
 | `privacy.html` | The privacy page, copy verbatim from the deck |
 | `404.html` | The one joke |
 | `assets/css/site.css` | Tokens (Catppuccin Mocha dark, lifted Paperback light) and all components |
-| `assets/js/site.js` | Theme toggle and the download page's non-Mac notice; the only external script |
+| `assets/js/site.js` | Theme toggle and the download page's notice for visitors on neither macOS nor Linux; the only external script |
 | `assets/fonts/` | Geist and JetBrains Mono, variable, latin subsets, self-hosted (69 KB total) |
 | `assets/img/` | Screenshots as trimmed WebP, plus the app icon |
 | `_headers` | Cloudflare Pages headers, including the CSP that enforces the privacy claims |
@@ -70,8 +70,11 @@ on a public repo with a **published** release; a draft returns 404, as does a
 private repo, which is the same pair of conditions the app's update check needs.
 The filename in that URL carries the version, so it is not self-updating:
 **every release has to edit `download.html`** for the URL, the filename and the
-size, and `index.html` for the version in the meta line. Read the size off the
-built DMG rather than the release page, in Finder's decimal MB.
+size of the DMG and of each of the six Linux packages (linked since 0.2.0, the
+first release to carry them), plus the three install commands that repeat an
+x86_64 filename, and `index.html` for the version in the meta line.
+`grep -n 'Agency[-_][0-9]' download.html` lists every one. Read each size off the
+built file rather than the release page, in decimal MB.
 
 ## Before launch, in order
 

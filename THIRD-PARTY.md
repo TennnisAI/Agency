@@ -8,7 +8,7 @@ This file covers what is inside the app. It does not cover the coding agents Age
 
 - Bundled fonts: 2
 - Rust crates: 316
-- JavaScript packages: 111
+- JavaScript packages: 112
 
 ## Bundled fonts
 
@@ -11542,6 +11542,7 @@ Bundled into the frontend that ships inside the app. Build tooling (vite, typesc
 | [@ungap/structured-clone](https://github.com/ungap/structured-clone#readme) | 1.3.1 | ISC |
 | [@xterm/addon-fit](https://github.com/xtermjs/xterm.js/tree/master/addons/addon-fit) | 0.10.0 | MIT |
 | [@xterm/addon-search](https://github.com/xtermjs/xterm.js/tree/master/addons/addon-search) | 0.16.0 | MIT |
+| [@xterm/addon-unicode11](https://github.com/xtermjs/xterm.js/tree/master/addons/addon-unicode11) | 0.8.0 | MIT |
 | [@xterm/xterm](https://github.com/xtermjs/xterm.js) | 5.5.0 | MIT |
 | [ccount](wooorm/ccount) | 2.0.1 | MIT |
 | [character-entities-html4](wooorm/character-entities-html4) | 2.1.0 | MIT |
@@ -12156,7 +12157,7 @@ OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
 PERFORMANCE OF THIS SOFTWARE.
 ```
 
-**@xterm/addon-fit 0.10.0**
+**@xterm/addon-fit 0.10.0, @xterm/addon-unicode11 0.8.0**
 
 ```text
 Copyright (c) 2019, The xterm.js authors (https://github.com/xtermjs/xterm.js)

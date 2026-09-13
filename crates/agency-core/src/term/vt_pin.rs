@@ -54,6 +54,16 @@ pub const ALACRITTY_TERMINAL: &str = "0.26.0";
 /// The VT parser in the pane. Pinned in `ui/package.json`.
 pub const XTERM_JS: &str = "5.5.0";
 
+/// The width table the pane measures a glyph with. Pinned in `ui/package.json`.
+///
+/// Part of the same agreement: the two sides must count a glyph as the same
+/// number of columns, or every cursor move aimed past it lands somewhere else
+/// in the pane. xterm's built-in table is Unicode 6, which made ❌ and 🟡 one
+/// column against alacritty's two and scattered stray letters through Claude
+/// Code's repaints (AGE-234). The widths themselves are compared in
+/// `term::emulator::a_wide_emoji_takes_the_columns_the_pane_gives_it`.
+pub const XTERM_UNICODE11: &str = "0.8.0";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -166,5 +176,20 @@ mod tests {
             locked_package(&read("ui/pnpm-lock.yaml"), "@xterm/xterm"),
             Some((XTERM_JS.to_string(), XTERM_JS.to_string())),
         );
+    }
+
+    #[test]
+    fn the_client_width_table_is_pinned_to_the_recorded_version() {
+        let pkg = read("ui/package.json");
+        assert!(
+            pkg.contains(&format!("\"@xterm/addon-unicode11\": \"{XTERM_UNICODE11}\"")),
+            "ui/package.json must pin @xterm/addon-unicode11 exactly, not with a caret",
+        );
+        let (specifier, version) =
+            locked_package(&read("ui/pnpm-lock.yaml"), "@xterm/addon-unicode11")
+                .expect("@xterm/addon-unicode11 in ui/pnpm-lock.yaml");
+        // An addon's resolved version carries its peer, e.g. `0.8.0(@xterm/xterm@5.5.0)`.
+        assert_eq!(specifier, XTERM_UNICODE11);
+        assert_eq!(version, format!("{XTERM_UNICODE11}(@xterm/xterm@{XTERM_JS})"));
     }
 }

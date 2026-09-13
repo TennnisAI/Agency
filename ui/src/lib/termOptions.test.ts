@@ -1,12 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { Terminal } from "@xterm/xterm";
-import { paneOptions } from "./termOptions";
+import type { Terminal } from "@xterm/xterm";
+import { createPaneTerminal, paneOptions } from "./termOptions";
 
 const bytes = (s: string) => new TextEncoder().encode(s);
 
 /** The pane's own terminal, headless, after parsing `data`. */
 const pane = async (data: string) => {
-  const term = new Terminal({ ...paneOptions(), cols: 20, rows: 4 });
+  const term = createPaneTerminal({ cols: 20, rows: 4 });
   await new Promise<void>((done) => term.write(bytes(data), done));
   return term;
 };
@@ -43,5 +43,30 @@ describe("the agent pane's terminal", () => {
     // changes those.
     const term = await pane("\x1b[1;6Habcd\r\nefgh");
     expect([row(term, 0), row(term, 1)]).toEqual(["     abcd", "efgh"]);
+  });
+
+  it("repaints after an emoji at the column the agent counted (AGE-234)", async () => {
+    // Claude Code draws "❌ Not yet", then rewrites the `t` of "Not" by moving
+    // to the column it counted: emoji in 1-2, space in 3, so `t` in 6. Under
+    // xterm's default Unicode 6 table the emoji took one column, so column 6 was
+    // the space and the row read "❌ Nottyet". The same bytes, the same columns,
+    // in `term/emulator.rs::a_wide_emoji_takes_the_columns_the_pane_gives_it`.
+    const term = await pane("❌ Not yet\x1b[1;6Ht\r\n🟡 Not yet\x1b[2;6Ht");
+    expect([row(term, 0), row(term, 1)]).toEqual(["❌ Not yet", "🟡 Not yet"]);
+  });
+
+  it("measures the glyphs agents draw with the daemon's widths", async () => {
+    // Each case is written at column 0 and read back as where the cursor ended
+    // up. The expected columns are alacritty's, from the daemon test named above.
+    const cases: [string, number][] = [
+      ["❌", 2], ["🟡", 2], ["✅", 2], ["🧪", 2], ["中", 2],
+      ["⚠️", 1], ["⏺", 1], ["⎿", 1], ["●", 1], ["✻", 1],
+    ];
+    const got: [string, number][] = [];
+    for (const [glyph] of cases) {
+      const term = await pane(glyph);
+      got.push([glyph, term.buffer.active.cursorX]);
+    }
+    expect(got).toEqual(cases);
   });
 });

@@ -14,6 +14,13 @@ use std::io::{self, Read, Write};
 // daemon start instead, and the client degrades gracefully until then.
 pub const PROTOCOL_VERSION: u32 = 2;
 
+/// The release this daemon, or the client talking to it, was built from. The
+/// daemon outlives the app's in-place update (AGE-229), and with the protocol
+/// unchanged nothing replaced it: the updated app kept driving the previous
+/// release's daemon until the user next quit. Found in review, before any
+/// release shipped the updater. `TermClient::connect_or_spawn` compares it.
+pub const BUILD: &str = env!("CARGO_PKG_VERSION");
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "camelCase")]
 pub enum SessionStatus {
@@ -112,6 +119,11 @@ pub enum ServerMsg {
         version: u32,
         #[serde(default)]
         seq: u64,
+        /// The daemon's [`BUILD`]. `None` from a daemon older than the field.
+        /// Optional so it rides along without a PROTOCOL_VERSION bump: serde
+        /// ignores the unknown field on an older client.
+        #[serde(default)]
+        build: Option<String>,
     },
     Started {
         id: String,
@@ -390,8 +402,9 @@ mod tests {
         let mut payload = vec![0u8];
         payload.extend_from_slice(json);
         match decode_server(&payload).unwrap() {
-            ServerFrame::Msg(ServerMsg::Hello { version, seq }) => {
+            ServerFrame::Msg(ServerMsg::Hello { version, seq, build }) => {
                 assert_eq!((version, seq), (1, 0));
+                assert_eq!(build, None, "a daemon from before builds were reported");
             }
             other => panic!("wrong decode: {other:?}"),
         }

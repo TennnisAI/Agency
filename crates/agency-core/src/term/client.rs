@@ -68,6 +68,44 @@ fn with_client_path(env: &[(String, String)], path: Option<String>) -> Vec<(Stri
     out
 }
 
+/// What `connect_or_spawn` does with the daemon it found on the socket.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reuse {
+    /// Same protocol, same build.
+    Keep,
+    /// Same protocol, another build, and hosting sessions that replacing it
+    /// would end.
+    KeepStale,
+    /// Same protocol, another build, hosting nothing: replacing it loses nothing.
+    ReplaceIdle,
+    /// Another protocol, or no working handshake at all.
+    ReplaceIncompatible,
+}
+
+/// Decide [`Reuse`] from the daemon's handshake. `protocol` is `None` when the
+/// handshake failed, `build` is `None` from a daemon older than the field, and
+/// `sessions` is `None` when the count could not be read.
+///
+/// The in-app updater restarts the app without going through quit, and quit is
+/// the only thing that shuts the daemon down, so the daemon survives into the
+/// new release still running the old one's code. Replacing it is harmless while
+/// it hosts nothing and ends every agent while it hosts anything, so only the
+/// first happens here. A count that could not be read is not permission to end
+/// sessions, and exited sessions count too, to stay on the side of losing
+/// nothing. Pure so the policy is testable without a daemon.
+fn reuse_daemon(protocol: Option<u32>, build: Option<&str>, sessions: Option<usize>) -> Reuse {
+    if protocol != Some(PROTOCOL_VERSION) {
+        return Reuse::ReplaceIncompatible;
+    }
+    if build == Some(BUILD) {
+        return Reuse::Keep;
+    }
+    match sessions {
+        Some(0) => Reuse::ReplaceIdle,
+        _ => Reuse::KeepStale,
+    }
+}
+
 impl TermClient {
     pub fn connect_or_spawn(socket_path: PathBuf, daemon_bin: PathBuf) -> Result<TermClient> {
         let client = Self::connect_once(&socket_path, &daemon_bin)?;
@@ -77,19 +115,47 @@ impl TermClient {
         // (Shutdown exists in every protocol version), wait for the socket to
         // die, spawn a fresh daemon. One recovery attempt, then give up.
         //
+        // A daemon on the same protocol but another release is the quieter
+        // survivor, and `reuse_daemon` says what to do with it.
+        //
         // Only ever the daemon on *our* socket: a dev build resolves a data dir
         // of its own (see the app's `datadir` module), so a protocol bump on a
         // branch cannot reach the installed app's daemon. The socket is named in
         // the log lines because it identifies whose sessions just died.
         let sock = socket_path.display();
-        match client.daemon_version() {
-            Ok(version) if version == PROTOCOL_VERSION => return Ok(client),
-            Ok(version) => log::warn!(
+        let handshake = client.handshake();
+        let (protocol, build) = match &handshake {
+            Ok((version, build)) => (Some(*version), build.as_deref()),
+            Err(_) => (None, None),
+        };
+        // Only asked when the answer matters: it is one more round trip, and a
+        // daemon on the current build is kept whatever it hosts.
+        let sessions = if protocol == Some(PROTOCOL_VERSION) && build != Some(BUILD) {
+            client.list().map(|s| s.len()).ok()
+        } else {
+            None
+        };
+        let old = build.unwrap_or("an unknown build");
+        match (reuse_daemon(protocol, build, sessions), &handshake) {
+            (Reuse::Keep, _) => return Ok(client),
+            (Reuse::KeepStale, _) => {
+                log::warn!(
+                    "termd on {sock} is from {old}, the app is {BUILD}; keeping it because it \
+                     hosts sessions. It is replaced at the first launch that finds it idle, or \
+                     when Agency quits"
+                );
+                return Ok(client);
+            }
+            (Reuse::ReplaceIdle, _) => log::info!(
+                "termd on {sock} is from {old}, the app is {BUILD}, and it hosts nothing; \
+                 replacing it"
+            ),
+            (Reuse::ReplaceIncompatible, Ok((version, _))) => log::warn!(
                 "termd protocol mismatch on {sock}: app speaks {PROTOCOL_VERSION}, daemon speaks \
                  {version}; shutting the old daemon down (its sessions are lost) and spawning a \
                  fresh one"
             ),
-            Err(e) => log::warn!(
+            (Reuse::ReplaceIncompatible, Err(e)) => log::warn!(
                 "termd handshake failed on {sock} ({e}); shutting the old daemon down \
                  (its sessions are lost) and spawning a fresh one"
             ),
@@ -153,8 +219,14 @@ impl TermClient {
     }
 
     pub fn daemon_version(&self) -> Result<u32> {
+        self.handshake().map(|(version, _)| version)
+    }
+
+    /// The daemon's protocol version and, from a daemon new enough to report
+    /// it, the release it was built from ([`BUILD`]).
+    pub fn handshake(&self) -> Result<(u32, Option<String>)> {
         match self.request(|seq| ClientMsg::Hello { version: PROTOCOL_VERSION, seq })? {
-            ServerMsg::Hello { version, .. } => Ok(version),
+            ServerMsg::Hello { version, build, .. } => Ok((version, build)),
             other => Err(anyhow!("unexpected reply: {other:?}")),
         }
     }
@@ -383,5 +455,29 @@ mod tests {
         assert_eq!(out[0].1, "/only/this");
         assert!(with_client_path(&env(&[]), Some(String::new())).is_empty());
         assert!(with_client_path(&env(&[]), None).is_empty());
+    }
+
+    #[test]
+    fn a_daemon_from_another_release_is_replaced_only_when_it_hosts_nothing() {
+        let v = Some(PROTOCOL_VERSION);
+        assert_eq!(reuse_daemon(v, Some(BUILD), Some(3)), Reuse::Keep);
+        assert_eq!(reuse_daemon(v, Some("0.0.1"), Some(0)), Reuse::ReplaceIdle);
+        assert_eq!(reuse_daemon(v, Some("0.0.1"), Some(2)), Reuse::KeepStale);
+        // A daemon from before builds were reported is another release.
+        assert_eq!(reuse_daemon(v, None, Some(0)), Reuse::ReplaceIdle);
+        assert_eq!(
+            reuse_daemon(v, Some("0.0.1"), None),
+            Reuse::KeepStale,
+            "a count that could not be read is not permission to end sessions"
+        );
+    }
+
+    #[test]
+    fn another_protocol_or_a_failed_handshake_is_replaced_whatever_it_hosts() {
+        assert_eq!(
+            reuse_daemon(Some(PROTOCOL_VERSION + 1), Some(BUILD), Some(4)),
+            Reuse::ReplaceIncompatible
+        );
+        assert_eq!(reuse_daemon(None, None, None), Reuse::ReplaceIncompatible);
     }
 }

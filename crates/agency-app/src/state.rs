@@ -2738,6 +2738,15 @@ pub struct AppState {
     /// about what a live process is doing, so a restarted app or a rerun agent
     /// starts with none rather than a stale one.
     agent_status: Arc<Mutex<HashMap<String, AgentStatusEntry>>>,
+    /// The last answer the update thread got from GitHub, so a frontend that
+    /// mounts after the check has already run still learns about it. The thread
+    /// emits `update-checked` as well; the event alone would be a race
+    /// nobody can see losing. In-memory: the next check re-derives it.
+    last_update_check: Mutex<Option<crate::update::UpdateCheck>>,
+    /// The in-app install: the version it put in place this launch, whether
+    /// one is downloading, and why the last one failed. In-memory on purpose:
+    /// the restart that applies a staged version is also what clears it.
+    update_install: Mutex<crate::update::Install>,
 }
 
 /// Where the file the user has open actually is, and whose it is.
@@ -2897,6 +2906,8 @@ impl AppState {
             open_file: Arc::new(Mutex::new(None)),
             share_open_file: Arc::new(std::sync::atomic::AtomicBool::new(share_open_file)),
             agent_status: Arc::new(Mutex::new(HashMap::new())),
+            last_update_check: Mutex::new(None),
+            update_install: Mutex::new(crate::update::Install::default()),
         };
         // Rehydrate: any run the daemon still hosts is adopted as-is; the watch
         // loop (watch_snapshot) then reports live status. Nothing to spawn here —
@@ -10384,6 +10395,40 @@ impl AppState {
             .lock()
             .unwrap()
             .set_setting(SETTING_UPDATE_CHECK, if enabled { "1" } else { "0" })
+    }
+
+    /// The last release check's result as the UI should see it, or `None`
+    /// before the first one lands.
+    pub fn last_update_check(&self) -> Option<crate::update::UpdateCheck> {
+        let cached = self.last_update_check.lock().unwrap().clone();
+        cached.map(|c| c.with_install(&self.update_install()))
+    }
+
+    /// Cache a check (keeping the last good one through a failure, see
+    /// `update::keep_known`) and return what the UI should now see.
+    pub fn record_update_check(
+        &self,
+        check: crate::update::UpdateCheck,
+    ) -> crate::update::UpdateCheck {
+        {
+            let mut cached = self.last_update_check.lock().unwrap();
+            *cached = Some(crate::update::keep_known(cached.take(), check));
+        }
+        self.last_update_check().expect("a check was just cached")
+    }
+
+    /// The in-app install's state; see `update::Install`.
+    pub fn update_install(&self) -> crate::update::Install {
+        self.update_install.lock().unwrap().clone()
+    }
+
+    /// Claim the in-app install. False when one is already running.
+    pub fn begin_update_install(&self) -> bool {
+        self.update_install.lock().unwrap().begin()
+    }
+
+    pub fn finish_update_install(&self, outcome: &Result<String, String>) {
+        self.update_install.lock().unwrap().finish(outcome)
     }
 
     pub fn notif_settings(&self) -> Result<notifier::NotifSettings> {

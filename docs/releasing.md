@@ -40,7 +40,8 @@ exist until the release is published.
 
    The tag is what fires `release.yml`. It builds, signs and notarizes the DMG,
    builds the Linux packages for both architectures, and attaches all seven
-   files to one **draft** release once every build has passed. That takes a
+   files to one **draft** release once every build has passed, plus the two the
+   in-app updater needs: `Agency.app.tar.gz` and `latest.json`. That takes a
    while; the signing steps are the slow half.
 
 **After the build, before publishing**
@@ -60,10 +61,16 @@ exist until the release is published.
     sudo apt install ./Agency_<version>_amd64.deb
     ```
 
-11. Read the actual sizes of all seven files off the draft, and correct
-    `site/download.html` wherever one has moved. The page prints each next to
-    its filename: the DMG under the macOS button, each Linux package under its
-    own button.
+11. Read the actual sizes of all seven installable files off the draft (not
+    `Agency.app.tar.gz` or `latest.json`, which nobody downloads by hand), and
+    correct `site/download.html` wherever one has moved. The page prints each
+    next to its filename: the DMG under the macOS button, each Linux package
+    under its own button.
+
+    Check `latest.json` is there and names the version you are releasing. The
+    publish job fails rather than write a manifest missing a platform, holding
+    an unsigned artifact, or signed with a key the app does not trust, so a
+    draft without it means a build leg is missing, not just the manifest.
 12. Paste the `CHANGELOG.md` section into the draft and **publish the
     release**. Until you do,
     it is not `releases/latest`, which is both why the download link 404s and
@@ -81,6 +88,10 @@ exist until the release is published.
     gh api -X PATCH repos/TennnisAI/Agency/releases/<id> \
       -F draft=false -f make_latest=true -f tag_name=v<version>
     ```
+
+    The tag now matters to installs as well. `latest.json` links each
+    artifact under `releases/download/v<version>/`, so a release published
+    under any other tag is offered to everyone and then fails on Install.
 13. Now push the site commit to `main`. `deploy-site.yml` fires on the push and
     the download button starts working.
 14. Load getagency.dev/download and click the macOS button and one Linux
@@ -99,9 +110,20 @@ exist until the release is published.
     `update.sh` reads the checksums off the published .deb files, so it fails
     until step 12 is done.
 
-Nothing else needs doing for the update check: it reads the latest release tag
-from the GitHub API at launch and compares it to the running version, so
-publishing is the whole of it.
+Nothing else needs doing for updates. The check reads the latest release tag
+from the GitHub API and compares it to the running version, and the in-app
+installer reads `latest.json` off the same release — `release.yml` builds that
+file from the signed artifacts and attaches it, so publishing is the whole of
+it. Step 12 is what makes both true at once: until the release is `latest`,
+nobody is offered the update and nothing can install it.
+
+One thing to watch on a release that bumps `term::protocol::PROTOCOL_VERSION`:
+agents normally survive the updater's restart, because they live in the daemon,
+but a protocol bump makes the new app replace the old daemon and lose its
+sessions. Say so in the release notes when it happens. Without a bump, a daemon
+that was hosting sessions through the restart keeps running the previous
+release's code until a launch finds it idle or the user quits, so a fix that
+lives in the daemon reaches those users late.
 
 ## Bumping the version
 
@@ -110,7 +132,7 @@ these files, so bump all five by hand:
 
 | File | Why |
 | --- | --- |
-| `crates/agency-app/tauri.conf.json` | names the DMG and the Linux packages, and sets the bundle's `CFBundleShortVersionString` |
+| `crates/agency-app/tauri.conf.json` | names the DMG and the Linux packages, sets the bundle's `CFBundleShortVersionString`, and is where `updater-manifest.py` reads the version it offers |
 | `crates/agency-app/Cargo.toml` | `AppState::version()`, which the update check compares to the latest release tag |
 | `crates/agency-core/Cargo.toml` | the daemon's own `CARGO_PKG_VERSION`, reported over the preview RPC |
 | `ui/package.json` | cosmetic, but drifts silently if skipped |
@@ -277,7 +299,9 @@ release .deb rather than building from source.
    ```
 
 3. Once it is live, the download page and the README stop saying there is no
-   AUR package: the Arch line becomes `yay -S agency-bin`.
+   AUR package: the Arch line becomes `yay -S agency-bin`. So does the
+   pacman line in `update::manual_hint` (and its note in `UpdateDialog.tsx`),
+   which until then tells a pacman install to rebuild from this PKGBUILD.
 
 `update.sh` writes `.SRCINFO` itself, from the PKGBUILD, because `makepkg
 --printsrcinfo` needs Arch. It knows the fields the PKGBUILD uses today, so
@@ -287,6 +311,38 @@ will do) before pushing:
 ```sh
 makepkg --printsrcinfo | diff - .SRCINFO
 ```
+
+### Updater signing key
+
+The in-app updater will not install anything whose minisign signature does not
+verify against the public key compiled into the app
+(`crates/agency-app/tauri.conf.json`, `plugins.updater.pubkey`). That key
+already exists; this section is here for the day it has to be replaced, and to
+say plainly what it costs.
+
+**The private key is unrecoverable, and replacing it strands everyone.** The
+public half is baked into every installed build. Publish a release signed with a
+different key and every copy already out there rejects it — permanently, because
+the only way to give them the new public key is an update they will not take.
+Back the key up somewhere that survives the machine.
+
+```sh
+cargo tauri signer generate -w ~/.tauri/agency-updater.key
+```
+
+That writes the private key to the path given and the public key beside it as
+`.pub`. The public key goes into `tauri.conf.json`; the private key and its
+password go into the two `TAURI_SIGNING_*` repository secrets below, and nowhere
+else. It is unrelated to the Apple Developer ID: Apple's signature tells the
+user's Mac the app is ours, this one tells the *running app* that an update is
+ours, and they protect different moments.
+
+No local build needs the key. `bundle.createUpdaterArtifacts` is off in
+`tauri.conf.json`, and `release.yml` turns it on for its own two builds with
+`--config '{"bundle":{"createUpdaterArtifacts":true}}'`. With it on in the
+config file, every build without the key failed at the signing step, a PR
+from a fork included. `./scripts/release-linux.sh --updater-artifacts` does the
+same locally, with `TAURI_SIGNING_PRIVATE_KEY` exported.
 
 ### CI secrets
 
@@ -302,6 +358,8 @@ repo.
 | `APPLE_ID` | Apple ID email used for notarization |
 | `APPLE_PASSWORD` | app-specific password for that Apple ID |
 | `APPLE_TEAM_ID` | the 10-character Apple team identifier |
+| `TAURI_SIGNING_PRIVATE_KEY` | the updater's minisign private key, the whole file |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | that key's password. **Leave it unset if the key has none**: GitHub will not store an empty secret, and `gh secret set --body ""` prompts for a value instead of setting one. An unset secret reaches the workflow as an empty string, which is the empty password |
 
 Export the certificate: in **Keychain Access → login → My Certificates**, select
 the Developer ID Application entry, right-click → **Export** to a `.p12` with a

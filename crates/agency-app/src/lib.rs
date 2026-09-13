@@ -87,6 +87,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(installer::Installs::default());
     // The native menu bar is macOS's (and, for now, Windows's). On Linux it
     // would be a GTK strip inside the window, under the window manager's own
@@ -315,6 +316,10 @@ pub fn run() {
             commands::get_notif_settings,
             commands::save_notif_settings,
             commands::check_for_update,
+            commands::last_update_check,
+            commands::install_update,
+            commands::running_sessions,
+            commands::restart_app,
             commands::get_update_check_enabled,
             commands::set_update_check_enabled,
             commands::add_review_comment,
@@ -682,6 +687,59 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             }));
             if tick_result.is_err() {
                 log::error!("loop-driver tick panicked; continuing");
+            }
+        }
+    })?;
+
+    // Release check: on launch, and every `update::CHECK_INTERVAL_SECS` after
+    // it for as long as the app stays open. Its own thread because the check
+    // shells out to curl and can sit for the whole of its ten-second timeout,
+    // which the notifier's two-second tick (notifications, tray) cannot
+    // afford. Nothing here writes to disk or installs anything: it lights the
+    // dot on Settings and hands the frontend a report.
+    let update_handle = app.handle().clone();
+    std::thread::Builder::new().name("update-check".into()).spawn(move || {
+        use tauri::{Emitter, Manager};
+        let mut cadence = crate::update::Cadence::default();
+        // Before the first check, not after it: the window is still coming up
+        // for the first second or so of a launch, and an `update-checked`
+        // emitted into no listener is an event nobody receives.
+        // `last_update_check` covers the race either way; this just keeps it
+        // from being the normal path.
+        let mut nap = std::time::Duration::from_secs(5);
+        loop {
+            std::thread::sleep(nap);
+            // A minute is fine after that: the cadence is measured in hours,
+            // and the only thing a tick costs when nothing is due is one
+            // settings read.
+            nap = std::time::Duration::from_secs(60);
+            let now = crate::update::now_secs();
+            // catch_unwind per tick, as the notifier and loop-driver threads
+            // do: a panic here would otherwise stop the app ever hearing about
+            // a release again, with nothing on screen to say so.
+            let tick = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let state = update_handle.state::<AppState>();
+                // Read every tick rather than once: the Settings toggle takes
+                // effect on the next tick, not on the next launch. With the
+                // check off the cadence never advances, so turning it back on
+                // checks straight away.
+                if !state.update_check_enabled().unwrap_or(true) || !cadence.due(now) {
+                    return;
+                }
+                let current = update_handle.package_info().version.to_string();
+                let check = crate::update::check(&current, crate::update::current_kind());
+                cadence.record(now, check.error.is_none());
+                if let Some(latest) = &check.latest {
+                    log::info!("update check: running {current}, latest {latest}");
+                }
+                // Every check, not only one that finds a release: a check that
+                // no longer finds one (or finds it already installed) is what
+                // puts the Settings dot back out.
+                let shown = state.record_update_check(check);
+                let _ = update_handle.emit("update-checked", &shown);
+            }));
+            if tick.is_err() {
+                log::error!("update check panicked; continuing");
             }
         }
     })?;

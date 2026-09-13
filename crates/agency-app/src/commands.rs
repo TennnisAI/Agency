@@ -2425,9 +2425,165 @@ pub fn set_ui_state(
 #[tauri::command]
 pub async fn check_for_update(app: tauri::AppHandle) -> Result<crate::update::UpdateCheck, String> {
     let current = app.package_info().version.to_string();
-    tauri::async_runtime::spawn_blocking(move || crate::update::check(&current))
+    let kind = crate::update::current_kind();
+    let check = tauri::async_runtime::spawn_blocking(move || crate::update::check(&current, kind))
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    // Cache and announce it the way the background thread does, so the two
+    // paths cannot leave the UI reading a stale answer from whichever ran last.
+    use tauri::{Emitter, Manager};
+    let state = app.state::<AppState>();
+    let shown = state.record_update_check(check.clone());
+    let _ = app.emit("update-checked", &shown);
+    // The caller gets this check's own answer, error included: it is what the
+    // dialog the user just opened has to show.
+    Ok(check.with_install(&state.update_install()))
+}
+
+/// The last check's result without making a request, for a frontend that has
+/// just mounted. `None` before the first check of this launch has landed.
+#[tauri::command]
+pub fn last_update_check(state: State<'_, AppState>) -> Option<crate::update::UpdateCheck> {
+    state.last_update_check()
+}
+
+/// Download the new version, verify its signature, and put it in place.
+///
+/// Deliberately does not restart: `restart_app` is a separate call the user
+/// makes when they are ready. An update that relaunched on its own would take
+/// every running agent's terminal with it, which is exactly the failure the
+/// passive-check-only design was avoiding before this existed (AGE-229).
+///
+/// Returns the version that was installed.
+#[tauri::command]
+pub async fn install_update(app: tauri::AppHandle) -> Result<String, String> {
+    use tauri::Manager;
+
+    let kind = crate::update::current_kind();
+    if !kind.self_updating() {
+        // The UI hides the button for these, so reaching here means the install
+        // changed under us (an AppImage the user moved into /usr/bin) rather
+        // than a user pressing something they shouldn't. This check is the only
+        // gate: the webview has no updater permission of its own, so nothing
+        // reaches the plugin except through this command.
+        return Err("This copy of Agency is managed by something else, so it can't \
+                    update itself. The update panel has the command for it."
+            .to_string());
+    }
+
+    let state = app.state::<AppState>();
+    if !state.begin_update_install() {
+        return Err("An update is already downloading.".to_string());
+    }
+    // Announced at the start as well as the end: a dialog opened meanwhile,
+    // and the Settings row, show the download rather than another Install.
+    announce_update(&app);
+    let outcome = download_update(&app).await;
+    state.finish_update_install(&outcome);
+    match &outcome {
+        Ok(version) => log::info!("installed update {version}; waiting for the user to restart"),
+        Err(e) => log::warn!("update install failed: {e}"),
+    }
+    // Until the restart the binary still reports the old version, so every
+    // later check would offer this same release again. The install state
+    // remembers it, and the UI hears now rather than at the next check hours
+    // from now. The dialog that started this may be closed by now, so the
+    // event is how anyone learns the outcome.
+    announce_update(&app);
+    outcome
+}
+
+/// Send the cached check, with the install folded in, to every listener.
+fn announce_update(app: &tauri::AppHandle) {
+    use tauri::{Emitter, Manager};
+    if let Some(shown) = app.state::<AppState>().last_update_check() {
+        let _ = app.emit("update-checked", &shown);
+    }
+}
+
+/// The body of `install_update`, once the install is claimed: fetch the
+/// manifest, download, verify, put in place. Returns the version installed.
+async fn download_update(app: &tauri::AppHandle) -> Result<String, String> {
+    use std::time::Duration;
+    use tauri::{Emitter, Manager};
+    use tauri_plugin_updater::{Error as UpdaterError, UpdaterExt};
+
+    let mut update = app
+        .updater_builder()
+        .timeout(Duration::from_secs(crate::update::MANIFEST_TIMEOUT_SECS))
+        .build()
+        .map_err(|e| format!("The updater could not start: {e}"))?
+        .check()
+        .await
+        .map_err(|e| match e {
+            // release.yml builds no Intel Mac, so a copy built on one by hand
+            // finds no entry in latest.json. The plugin's own wording ("the
+            // platform `darwin-x86_64` was not found in the response `platforms`
+            // object") reads like a broken release.
+            UpdaterError::TargetNotFound(target) => {
+                format!("This release has no build for this machine ({target}).")
+            }
+            UpdaterError::TargetsNotFound(targets) => {
+                format!("This release has no build for this machine ({}).", targets.join(", "))
+            }
+            e => format!("Could not fetch the update: {e}"),
+        })?
+        .ok_or_else(|| "Agency is already up to date.".to_string())?;
+
+    let version = update.version.clone();
+    // The UI stops offering a staged release, but a dialog left open from
+    // before the install still has the button, and the files are already there.
+    if app.state::<AppState>().update_install().staged.as_deref() == Some(version.as_str()) {
+        return Ok(version);
+    }
+    // The manifest's short cap carries over to the download, where it would cut
+    // off any real artifact.
+    update.timeout = Some(Duration::from_secs(crate::update::DOWNLOAD_TIMEOUT_SECS));
+
+    let mut downloaded: u64 = 0;
+    let app_for_progress = app.clone();
+    update
+        .download_and_install(
+            move |chunk, total| {
+                downloaded += chunk as u64;
+                let _ =
+                    app_for_progress.emit("update-progress", UpdateProgress { downloaded, total });
+            },
+            || {},
+        )
+        .await
+        .map_err(|e| format!("The update could not be installed: {e}"))?;
+    Ok(version)
+}
+
+/// Bytes in so far, and the total when the server declared one.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateProgress {
+    downloaded: u64,
+    total: Option<u64>,
+}
+
+/// How many sessions the terminal daemon is running right now. The restart
+/// prompt shows it for the same reason the quit confirmation does: "restart"
+/// means something different with four agents mid-turn than with none.
+#[tauri::command]
+pub fn running_sessions(state: State<'_, AppState>) -> usize {
+    state.session_count()
+}
+
+/// Relaunch Agency, after the user has said the running agents can take it.
+///
+/// Agents live in the terminal daemon, which outlives the app, so they are
+/// normally still there afterwards; a release that bumps the daemon's
+/// `PROTOCOL_VERSION` is the exception, and `TermClient::connect_or_spawn`
+/// replaces the old daemon and loses its sessions. The UI says so before
+/// calling this whenever anything is running. Without a bump the old release's
+/// daemon is replaced only if it hosts nothing, and otherwise kept until a
+/// launch finds it idle or the user quits.
+#[tauri::command]
+pub fn restart_app(app: tauri::AppHandle) {
+    app.restart();
 }
 
 #[tauri::command]

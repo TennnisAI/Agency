@@ -12,11 +12,12 @@ import Settings from "./components/Settings";
 import AgentOnboarding from "./components/AgentOnboarding";
 import CommandPalette from "./components/CommandPalette";
 import ConfirmDialog from "./components/ConfirmDialog";
+import UpdateDialog, { updateDialogOpen } from "./components/UpdateDialog";
 import Resizer from "./components/Resizer";
 import Toasts from "./components/Toasts";
 import { useShortcuts } from "./hooks/useShortcuts";
 import { usePaneWidth } from "./hooks/usePaneWidth";
-import { FileRoot, Project, QueueNotice, RepoReadiness, RunInfo, agentOnboardingNeeded, checkForUpdate, confirmQuit, createDir, createFile, createRun, ensureWorkspaceGuide, getUpdateCheckEnabled, getWorkspace, gitLogGraph, inspectRepo, listArchivedRuns, listIssues, listProjects, readFile, rememberedModel, setMenuContext, setUiState, writeFile } from "./api";
+import { FileRoot, Project, QueueNotice, RepoReadiness, RunInfo, UpdateCheck, agentOnboardingNeeded, confirmQuit, createDir, createFile, createRun, ensureWorkspaceGuide, getWorkspace, gitLogGraph, inspectRepo, lastUpdateCheck, listArchivedRuns, listIssues, listProjects, readFile, rememberedModel, setMenuContext, setUiState, writeFile } from "./api";
 import { pickDefaultAgent } from "./lib/defaultAgent";
 import { PENDING_ISSUE_KEY, PENDING_QUICKADD_KEY, isClosed, issueLabel } from "./lib/issues";
 import { NAVIGATE_EVENT, NavTarget } from "./lib/navigate";
@@ -47,9 +48,13 @@ function Shell() {
   // one: the empty backlog's own "set up sharing" button, and anything like it.
   // null leaves Settings on whichever section it was last left at.
   const [settingsSection, setSettingsSection] = useState<SectionId | null>(null);
-  // A newer release exists on GitHub. Dots the Settings button; the actual
-  // download link lives in Settings ▸ Diagnostics.
+  // A newer release exists on GitHub. Dots the Settings button; the install
+  // itself is the update dialog below.
   const [updateAvailable, setUpdateAvailable] = useState(false);
+  // The update dialog, or null when it is closed. `initial` is the check to
+  // show without asking GitHub again; null makes the dialog run its own check,
+  // which is what "Check for Updates…" means.
+  const [updateDialog, setUpdateDialog] = useState<{ initial: UpdateCheck | null } | null>(null);
   // Menu-driven archive/discard of the focused agent, awaiting the same
   // confirm dialog the tile, the rail and the focus header use.
   // null = no confirmation showing.
@@ -309,20 +314,45 @@ function Shell() {
     return () => window.removeEventListener("keydown", onKey, true);
   }, []);
 
-  // One passive release check per launch, when the user hasn't opted out. It
-  // only lights the dot on Settings — Agency never downloads or installs
-  // anything on its own, so this can't disturb running agents. Failures are
-  // silent by design: being offline is not something to interrupt anyone about.
+  // The release check runs in the backend now — on launch and every few hours
+  // after, for as long as the app stays open (crates/agency-app/src/update.rs).
+  // This is the two ways its answer reaches the UI: the event for a check that
+  // lands while the window is up, and `lastUpdateCheck` for one that landed
+  // before this component mounted. Nothing here downloads anything; it lights
+  // the dot on Settings and the user decides from there. Failures stay silent
+  // by design: being offline is not something to interrupt anyone about.
+  //
+  // The event is the only thing that turns the dot off. The backend sends it
+  // after every check (manual ones too) and after an install, carrying its
+  // cached answer, which keeps the last good result through a failed check. The
+  // dialog's own result used to set the dot as well, and an offline "Check for
+  // Updates…" put it out.
+  //
+  // The update dialog closes mid-download, so an install can finish with
+  // nothing on screen to say how it went. The toast says so, and only then: an
+  // open dialog is already showing the outcome.
+  const wasInstalling = useRef(false);
   useEffect(() => {
     let cancelled = false;
-    getUpdateCheckEnabled()
-      .then((enabled) => (enabled ? checkForUpdate() : null))
+    lastUpdateCheck()
       .then((res) => {
-        if (!cancelled && res?.updateAvailable) setUpdateAvailable(true);
+        if (cancelled || !res) return;
+        if (res.updateAvailable) setUpdateAvailable(true);
+        wasInstalling.current = res.installing;
       })
       .catch(() => {});
+    const sub = listen<UpdateCheck>("update-checked", (e) => {
+      const shown = e.payload;
+      setUpdateAvailable(shown.updateAvailable);
+      const finished = wasInstalling.current && !shown.installing;
+      wasInstalling.current = shown.installing;
+      if (!finished || updateDialogOpen()) return;
+      if (shown.installError) toastError(shown.installError, "The update didn't install");
+      else if (shown.staged) toastInfo(`Agency ${shown.staged} is installed. It takes effect when Agency restarts.`);
+    });
     return () => {
       cancelled = true;
+      sub.then((un) => un()).catch(() => {});
     };
   }, []);
 
@@ -472,6 +502,7 @@ function Shell() {
         if (focused) setAgentAction({ action: "delete", run: focused });
         break;
       }
+      case "check-updates": setUpdateDialog({ initial: null }); break;
       case "report-issue": openUrl(`${REPO_URL}/issues/new`).catch(() => {}); break;
       case "github": openUrl(REPO_URL).catch(() => {}); break;
     }
@@ -697,6 +728,12 @@ function Shell() {
             void dispatchWeeklyNarration(ws, path);
           }}
           onCancel={() => setWeeklySetup(null)}
+        />
+      )}
+      {updateDialog && (
+        <UpdateDialog
+          initial={updateDialog.initial}
+          onClose={() => setUpdateDialog(null)}
         />
       )}
       {quitPrompt !== null && (

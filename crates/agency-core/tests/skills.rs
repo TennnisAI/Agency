@@ -53,7 +53,7 @@ fn the_kit_lands_in_the_worktree_and_git_never_offers_it() {
     let ws = workspace(&wt, repo.path());
 
     assert!(skills::emit_for_agent("claude", &ws).unwrap());
-    for name in [skills::DATE_SKILL, skills::WORKSPACE_SKILL] {
+    for name in [skills::DATE_SKILL, skills::WORKSPACE_SKILL, skills::ISSUES_SKILL] {
         assert!(skill_md(&wt.path, name).is_file(), "{name} not written");
     }
     // The resolver runs where it was written, under a plain `sh`.
@@ -152,7 +152,7 @@ fn the_vendor_neutral_root_lands_once_per_agent_and_git_never_offers_it() {
         let wt = mgr.create(&format!("task-5-{i}"), "HEAD").unwrap();
 
         assert!(skills::emit_for_agent(agent, &workspace(&wt, repo.path())).unwrap(), "{agent}");
-        for name in [skills::DATE_SKILL, skills::WORKSPACE_SKILL] {
+        for name in [skills::DATE_SKILL, skills::WORKSPACE_SKILL, skills::ISSUES_SKILL] {
             let md = wt.path.join(".agents/skills").join(name).join("SKILL.md");
             assert!(md.is_file(), "{agent}: {name} not written under .agents/skills");
         }

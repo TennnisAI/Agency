@@ -6,9 +6,14 @@
 //! hook points: a small kit of skills, namespaced `agency-*`, in the location
 //! the agent already reads project-local skills from.
 //!
-//! Two skills, both aimed at things a dispatched agent is reliably bad at
+//! Three skills, all aimed at things a dispatched agent is reliably bad at
 //! without help:
 //!
+//! - `agency-issues` is how this project files and edits issues. It exists
+//!   for its description, which lists the skill alongside every tool in the
+//!   agent's context: a run asked to "file an issue" while a hosted tracker's
+//!   MCP tools were in view filed it there, because nothing in its list named
+//!   Agency's tracker in those words (AGE-233).
 //! - `agency-date-range` is a deterministic resolver. A model asked for "last
 //!   quarter" does the calendar arithmetic in its head and is wrong often
 //!   enough to matter; the resolver is a hundred lines of shell that is never
@@ -31,10 +36,11 @@
 use anyhow::Result;
 use std::path::Path;
 
-/// Skill directory names. Both are namespaced `agency-` so a repo's own skills
+/// Skill directory names. All are namespaced `agency-` so a repo's own skills
 /// can never collide with ours, and so one exclude pattern covers the kit.
 pub const DATE_SKILL: &str = "agency-date-range";
 pub const WORKSPACE_SKILL: &str = "agency-workspace";
+pub const ISSUES_SKILL: &str = "agency-issues";
 
 /// The file every agent's skill convention agrees on.
 pub const SKILL_FILE: &str = "SKILL.md";
@@ -211,6 +217,14 @@ pub fn kit(ws: &Workspace, skills_dir: &Path) -> Vec<Skill> {
                 executable: false,
             }],
         },
+        Skill {
+            name: ISSUES_SKILL,
+            files: vec![SkillFile {
+                name: SKILL_FILE,
+                contents: issues_skill_md(ws),
+                executable: false,
+            }],
+        },
     ]
 }
 
@@ -349,8 +363,9 @@ fn workspace_skill_md(ws: &Workspace, skills_rel: &Path) -> String {
          description: What this Agency workspace is: the worktree and branch this run owns, the \
          project checkout it merges back into, the absolute path of the issue tracker, the \
          setup, run and check commands, the AGENCY_* variables, and what happens to the work \
-         when the run ends. Use before looking for a tracker, a build or test command, or a \
-         place to put a file, and before deciding what to commit.\n\
+         when the run ends. Use before looking for a build or test command or a place to put \
+         a file, and before deciding what to commit. To file or edit an issue, use \
+         {ISSUES_SKILL}.\n\
          ---\n\
          \n\
          # This workspace\n\
@@ -368,13 +383,13 @@ fn workspace_skill_md(ws: &Workspace, skills_rel: &Path) -> String {
          `{issue_key}-<n>`, so `{issue_key}-14.md`. It lives in the project checkout, not \
          here, and it is untracked by git, so there is no copy in this worktree, nothing to \
          commit and nothing to merge. An edit to an issue file takes effect as soon as it is \
-         written. Read `{readme}` before filing, commenting or changing a status.\n",
+         written. {precedence} The `{ISSUES_SKILL}` skill has the file format.\n",
         worktree = ws.worktree.display(),
         branch = ws.branch,
         repo_root = ws.repo_root.display(),
         issues = issues.display(),
         issue_key = ws.issue_key,
-        readme = issues.join("README.md").display(),
+        precedence = crate::briefing::PRECEDENCE,
     ));
 
     body.push_str("\n## Running the project\n\n");
@@ -469,6 +484,13 @@ fn workspace_skill_md(ws: &Workspace, skills_rel: &Path) -> String {
         ));
     }
 
+    // Claude Code's briefing is a rules file rather than `AGENTS.md` (see
+    // `crate::briefing`), and a Claude kit is the only one under `.claude`.
+    let briefing_files = if skills_rel.starts_with(".claude") {
+        format!("`AGENTS.md`, `{}`", crate::briefing::CLAUDE_RULES_FILE)
+    } else {
+        "`AGENTS.md`".to_string()
+    };
     body.push_str(&format!(
         "\n## How this run finishes\n\
          \n\
@@ -480,7 +502,7 @@ fn workspace_skill_md(ws: &Workspace, skills_rel: &Path) -> String {
          opens a pull request from it. A merge closes the issue the run was dispatched from, \
          if there was one, so there is no status to set by hand at the end.\n\
          \n\
-         Do not commit anything Agency generated here. `AGENTS.md`, \
+         Do not commit anything Agency generated here. {briefing_files}, \
          `{skills_rel}/agency-*` and the MCP config (`.mcp.json`, or the equivalent for the \
          agent running here) are written into every worktree and excluded from git in the \
          repository's `.git/info/exclude`, which is why `git status` does not show them; \
@@ -492,6 +514,61 @@ fn workspace_skill_md(ws: &Workspace, skills_rel: &Path) -> String {
         skills_rel = skills_rel.display(),
     ));
     body
+}
+
+/// `agency-issues/SKILL.md`: how to file into this project's tracker, with the
+/// tracker's own README carried inline.
+///
+/// The description is the load-bearing line. It is what sits in the agent's
+/// skill list beside a hosted tracker's MCP tools, so it names the requests a
+/// user actually makes ("file an issue", "create a ticket") and says which
+/// tracker they mean. The README travels in the body because this is the one
+/// place its schema is wanted, and because in a project with no issues yet
+/// there is no README on disk to point at.
+fn issues_skill_md(ws: &Workspace) -> String {
+    let issues = ws.repo_root.join(crate::issuefs::ISSUES_DIR);
+    let key = &ws.issue_key;
+    let readme = crate::issuefs::ISSUES_README;
+    let readme = readme.strip_prefix("# Issues\n\n").unwrap_or(readme);
+    // The README's examples are written with `AGE` keys whatever the project.
+    let examples = if key == "AGE" {
+        String::new()
+    } else {
+        format!(" Its examples use the key `AGE`; this project's is `{key}`.")
+    };
+    format!(
+        "---\n\
+         name: {ISSUES_SKILL}\n\
+         description: File, update or comment on this project's issues, which are tracked in \
+         Agency. Use whenever you are asked to file an issue, open or create a ticket, log or \
+         report a bug, write up a follow-up, or add something to the backlog. Those go in this \
+         tracker and not in another tracker you have tools for, unless the user names that one.\n\
+         ---\n\
+         \n\
+         # Issues\n\
+         \n\
+         This project's issues are tracked in Agency, the desktop app that dispatched you. The \
+         tracker is a directory of markdown files, one per issue, at `{issues}`. This project's \
+         keys are `{key}-<n>`, so `{key}-14.md`.\n\
+         \n\
+         {precedence}\n\
+         \n\
+         The directory is in the project's own checkout, not in your worktree, and it is \
+         untracked by git: there is nothing to commit and nothing to merge, and an edit takes \
+         effect as soon as it is written. If it does not exist yet, this project has no issues: \
+         create it along with `{first}`, and Agency adds its README.\n\
+         \n\
+         ## The file format\n\
+         \n\
+         What follows is the tracker's README, `{readme_path}`.{examples}\n\
+         \n\
+         {readme}\n\
+         Agency generates this skill. Edits are replaced on the next run.\n",
+        issues = issues.display(),
+        precedence = crate::briefing::PRECEDENCE,
+        first = issues.join(format!("{key}-1.md")).display(),
+        readme_path = issues.join("README.md").display(),
+    )
 }
 
 /// The resolver, verbatim. POSIX shell so it runs under whatever `sh` is on
@@ -999,11 +1076,59 @@ mod tests {
         // Absolute, for the same reason the tracker briefing's paths are: from
         // inside a worktree, a relative `.agency/issues` is a dead path.
         assert!(text.contains("/repo/.agency/issues"), "{text}");
-        assert!(text.contains("/repo/.agency/issues/README.md"), "{text}");
         assert!(text.contains("`AGE-14.md`") || text.contains("AGE-14.md"), "{text}");
+        // The format lives in the issues skill, and the catalog says so.
+        assert!(text.contains("`agency-issues`"), "{text}");
+        assert!(text.contains(crate::briefing::PRECEDENCE), "{text}");
         assert!(text.contains("/repo/.agency/worktrees/fix-login-a3k2"), "{text}");
-        // The generated files it must not commit, named exactly.
+        // The generated files it must not commit, named exactly: a Claude kit
+        // is briefed in a rules file, and only a Claude kit is told about it.
         assert!(text.contains(".claude/skills/agency-*"), "{text}");
+        assert!(text.contains(crate::briefing::CLAUDE_RULES_FILE), "{text}");
+        let neutral = kit(&ws, &ws.worktree.join(".agents").join("skills"));
+        let neutral = &neutral.iter().find(|s| s.name == WORKSPACE_SKILL).unwrap().files[0];
+        assert!(!neutral.contents.contains(".claude/rules"), "{}", neutral.contents);
+    }
+
+    /// AGE-233: a run asked to "file an issue" filed it in a hosted tracker
+    /// whose MCP tools it had, since nothing in its context named Agency's
+    /// tracker in those words. The description is what the agent sees beside
+    /// those tools, so it has to carry the words a user asks with.
+    #[test]
+    fn the_issues_skill_is_found_by_the_words_a_user_asks_with() {
+        let ws = workspace();
+        let text = skill(&ws, ISSUES_SKILL);
+        assert!(text.starts_with(&format!("---\nname: {ISSUES_SKILL}\ndescription: ")), "{text}");
+        let description =
+            text.lines().find(|l| l.starts_with("description: ")).expect("a description");
+        for ask in ["file an issue", "create a ticket", "bug", "backlog", "Agency"] {
+            assert!(description.contains(ask), "{ask:?} missing from {description}");
+        }
+        assert!(text.contains(crate::briefing::PRECEDENCE), "{text}");
+
+        // Absolute, and with the first issue's path for a tracker that has no
+        // directory yet, since there is no README on disk to send it to then.
+        assert!(text.contains("/repo/.agency/issues/README.md"), "{text}");
+        assert!(text.contains("/repo/.agency/issues/AGE-1.md"), "{text}");
+
+        // The README's example is what the agent copies, so it has to survive
+        // being carried in here and still parse.
+        let example = text
+            .split("```markdown\n")
+            .nth(1)
+            .and_then(|t| t.split("```").next())
+            .expect("the README's fenced example");
+        let parsed = crate::issuefs::parse_issue_file("AGE-14", example).expect("example parses");
+        assert_eq!(parsed.title, "Issue title");
+
+        // Its examples say `AGE`, which only needs pointing out elsewhere.
+        assert!(!text.contains("Its examples use the key"), "{text}");
+        let other = skill(&Workspace { issue_key: "LBH".into(), ..workspace() }, ISSUES_SKILL);
+        assert!(
+            other.contains("Its examples use the key `AGE`; this project's is `LBH`."),
+            "{other}"
+        );
+        assert!(other.contains("`LBH-<n>`"), "{other}");
     }
 
     #[test]
@@ -1111,7 +1236,15 @@ mod tests {
                     skill.name,
                     file.name
                 );
-                assert!(file.contents.is_ascii(), "non-ascii in {}/{}", skill.name, file.name);
+                // Bar one character: `·` separates a comment heading's author
+                // from its timestamp in the tracker's README, which the issues
+                // skill carries. It is the file format, not decoration.
+                assert!(
+                    file.contents.chars().all(|c| c.is_ascii() || c == '\u{b7}'),
+                    "non-ascii in {}/{}",
+                    skill.name,
+                    file.name
+                );
             }
         }
     }

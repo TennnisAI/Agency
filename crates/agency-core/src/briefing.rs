@@ -1,7 +1,18 @@
 //! What a dispatched agent is told about the project's issue tracker, written
-//! into each fresh worktree as `AGENTS.md` — the one instructions file every
-//! agent Agency ships (Claude Code, Codex, Cursor, OpenCode, DeepSeek Harness)
-//! reads on its own, with no launch flag to arrange it.
+//! into each fresh worktree as `AGENTS.md`, the instructions file most agents
+//! Agency ships (Codex, Cursor, OpenCode, DeepSeek Harness) read on their own,
+//! with no launch flag to arrange it.
+//!
+//! Claude Code is the exception. Probed 2026-09-13 against `claude` 2.1.270,
+//! headless, with a codeword planted in each candidate file of a scratch repo:
+//! it answered from `CLAUDE.md`, `CLAUDE.local.md` and `.claude/rules/*.md`,
+//! and said it had no codeword when the only copy was in `AGENTS.md`. So every
+//! Claude run was briefed by nothing but the workspace skill, and one asked to
+//! "file an issue" with a hosted tracker's MCP tools in view filed it there
+//! (AGE-233). Claude gets the same briefing as a whole file of its own,
+//! [`CLAUDE_RULES_FILE`]: a rules file rather than `CLAUDE.local.md`, because
+//! that one is the user's to write in and a rules file under our namespace is
+//! not.
 //!
 //! Issue files live in the project's own checkout under `.agency/issues/` and
 //! are untracked by git, so `git worktree add` never materializes them: from
@@ -29,6 +40,11 @@ pub const AGENTS_FILE: &str = "AGENTS.md";
 pub const SECTION_START: &str = "<!-- agency:issues:start -->";
 pub const SECTION_END: &str = "<!-- agency:issues:end -->";
 
+/// Claude Code's copy of the briefing, relative to the worktree. The whole file
+/// is ours, so it needs no markers; the `agency-` prefix keeps it clear of a
+/// repo's own rules and lets one exclude pattern cover it.
+pub const CLAUDE_RULES_FILE: &str = ".claude/rules/agency-issues.md";
+
 /// The tracker briefing for a project rooted at `repo_root`, whose issue keys
 /// are prefixed `issue_key` (`AGE`).
 ///
@@ -46,6 +62,31 @@ pub const SECTION_END: &str = "<!-- agency:issues:end -->";
 /// file that `reconcile` skips as malformed without telling anyone. That case
 /// gets the minimum schema inline instead.
 pub fn issues_section(repo_root: &Path, issue_key: &str) -> String {
+    format!(
+        "{SECTION_START}\n\
+         {}\n\
+         Agency generates this section. Edits inside the markers are replaced.\n\
+         {SECTION_END}\n",
+        issues_briefing(repo_root, issue_key)
+    )
+}
+
+/// [`CLAUDE_RULES_FILE`]'s contents: the same briefing, as a file of its own.
+pub fn claude_rules(repo_root: &Path, issue_key: &str) -> String {
+    format!(
+        "{}\nAgency generates this file. Edits are replaced on the next run.\n",
+        issues_briefing(repo_root, issue_key)
+    )
+}
+
+/// The briefing both copies carry. See [`issues_section`] for what it holds
+/// back and why.
+///
+/// Knowing where the tracker is was not enough. AGE-233: a run asked to "file
+/// an issue" filed it in a hosted tracker, because that tracker's MCP tools
+/// were in the agent's context and nothing said which one a bare "issue"
+/// means. So the briefing says it outright, in the words a user asks with.
+fn issues_briefing(repo_root: &Path, issue_key: &str) -> String {
     let issues = repo_root.join(crate::issuefs::ISSUES_DIR);
     let readme = issues.join("README.md");
     let filing = if readme.is_file() {
@@ -78,26 +119,31 @@ pub fn issues_section(repo_root: &Path, issue_key: &str) -> String {
         )
     };
     format!(
-        "{SECTION_START}\n\
-         ## Issues\n\
+        "## Issues\n\
          \n\
          This project's issues are tracked in Agency, the app that dispatched \
          you. They are markdown files, one per issue, under `{issues}`, each \
          named for its issue key: this project's are `{issue_key}-<n>`, so \
          `{issue_key}-14.md`.\n\
          \n\
+         {PRECEDENCE}\n\
+         \n\
          That directory is in the project's own checkout, not in this worktree, \
          and it is untracked by git: there is no copy here, nothing to commit, \
          and nothing to merge. An edit to an issue file takes effect as soon as \
          it is written.\n\
          \n\
-         {filing}\n\
-         \n\
-         Agency generates this section. Edits inside the markers are replaced.\n\
-         {SECTION_END}\n",
+         {filing}\n",
         issues = issues.display(),
     )
 }
+
+/// Which tracker a bare "issue" means. Shared with the `agency-issues` skill so
+/// the two cannot come to disagree.
+pub const PRECEDENCE: &str = "When you are asked to file an issue, open or create a ticket, \
+    log a bug, or add something to the backlog, it goes in this tracker. That holds even when \
+    you also have tools for another tracker, such as an MCP server or a CLI: use one of those \
+    only when the user names it.";
 
 /// Splice the tracker section into `text`, replacing an existing one in place
 /// and otherwise appending it. Pure, so the merge rule is testable without a
@@ -124,26 +170,65 @@ pub fn splice_section(text: &str, section: &str) -> String {
     }
 }
 
-/// Whether git tracks `AGENTS.md` in this worktree.
+/// Whether git tracks `rel` in this worktree.
 ///
 /// A tracked file is the repo's own: appending to it would show up in the run's
 /// diff and ride into the project's main branch at merge, which is not a change
 /// Agency gets to make on the user's behalf.
-fn agents_file_tracked(worktree: &Path) -> bool {
+fn tracked(worktree: &Path, rel: &str) -> bool {
     std::process::Command::new("git")
-        .args(["ls-files", "--", AGENTS_FILE])
+        .args(["ls-files", "--", rel])
         .current_dir(worktree)
         .output()
         .is_ok_and(|o| o.status.success() && !o.stdout.is_empty())
+}
+
+/// Brief whichever agent is about to run in `worktree`: `AGENTS.md` always,
+/// since an extra tab may bring a different agent into the same worktree, and
+/// [`CLAUDE_RULES_FILE`] as well for Claude Code, which does not read
+/// `AGENTS.md`. Each file is best-effort on its own.
+pub fn emit_for_agent(agent: &str, worktree: &Path, repo_root: &Path, issue_key: &str) {
+    if let Err(e) = emit_agents_md(worktree, repo_root, issue_key) {
+        log::warn!("writing the tracker briefing into {}: {e}", worktree.display());
+    }
+    if agent == "claude" {
+        if let Err(e) = emit_claude_rules(worktree, repo_root, issue_key) {
+            log::warn!("writing {CLAUDE_RULES_FILE} into {}: {e}", worktree.display());
+        }
+    }
+}
+
+/// Write Claude Code's copy of the briefing, and keep it out of git.
+///
+/// Returns whether the file was written. Skipped, with a reason logged, when
+/// the repo tracks a file at that path: see [`tracked`].
+pub fn emit_claude_rules(worktree: &Path, repo_root: &Path, issue_key: &str) -> Result<bool> {
+    if tracked(worktree, CLAUDE_RULES_FILE) {
+        log::info!(
+            "{CLAUDE_RULES_FILE} is tracked in {}: leaving the repo's own file alone",
+            worktree.display()
+        );
+        return Ok(false);
+    }
+    let path = worktree.join(CLAUDE_RULES_FILE);
+    let next = claude_rules(repo_root, issue_key);
+    if std::fs::read_to_string(&path).ok().as_deref() != Some(next.as_str()) {
+        crate::issuefs::atomic_write(&path, &next)?;
+    }
+    // Anchored and namespaced, so a repo's own `.claude/rules` stays visible.
+    if let Err(e) = crate::worktree::ensure_exclude_pattern(repo_root, "/.claude/rules/agency-*") {
+        log::warn!("excluding {CLAUDE_RULES_FILE} in {}: {e}", repo_root.display());
+    }
+    Ok(true)
 }
 
 /// Write Agency's issue-tracker section into a fresh worktree's `AGENTS.md`,
 /// and keep the file out of git so no agent commits it into the project.
 ///
 /// Returns whether the file was written. Skipped, with a reason logged, when
-/// the repo tracks `AGENTS.md` itself — see [`agents_file_tracked`].
+/// the repo tracks `AGENTS.md` itself: see [`tracked`].
 pub fn emit_agents_md(worktree: &Path, repo_root: &Path, issue_key: &str) -> Result<bool> {
-    if agents_file_tracked(worktree) {
+    if tracked(worktree, AGENTS_FILE) {
         log::info!(
             "{AGENTS_FILE} is tracked in {}: leaving it alone, so the issue tracker is not \
              introduced to agents there",
@@ -204,6 +289,36 @@ mod tests {
         // front of every agent on every run.
         assert!(!s.contains("priority:"), "{s}");
         assert!(s.starts_with(SECTION_START) && s.trim_end().ends_with(SECTION_END), "{s}");
+    }
+
+    /// AGE-233: knowing where the tracker was did not stop a run asked to
+    /// "file an issue" from filing it in a hosted tracker whose MCP tools it
+    /// had. Both copies of the briefing say which one a bare "issue" means.
+    #[test]
+    fn the_briefing_says_which_tracker_an_issue_means() {
+        let root = stocked_root();
+        for s in [section_in(root.path()), claude_rules(root.path(), "AGE")] {
+            assert!(s.contains(PRECEDENCE), "{s}");
+            assert!(s.contains("file an issue") && s.contains("MCP server"), "{s}");
+            assert!(!s.contains('\u{2014}'), "{s}");
+        }
+    }
+
+    /// Claude Code does not read `AGENTS.md`, so its copy is the same briefing
+    /// as a whole file: no markers, and nothing said to one agent withheld from
+    /// the other.
+    #[test]
+    fn claudes_copy_is_the_same_briefing_as_a_file_of_its_own() {
+        let root = stocked_root();
+        let rules = claude_rules(root.path(), "AGE");
+        assert!(!rules.contains(SECTION_START) && !rules.contains(SECTION_END), "{rules}");
+        assert!(rules.starts_with("## Issues\n"), "{rules}");
+        let section = section_in(root.path());
+        let body = |s: &str| s[..s.find("Agency generates").expect("a footer")].to_string();
+        assert_eq!(
+            body(section.strip_prefix(&format!("{SECTION_START}\n")).unwrap()),
+            body(&rules)
+        );
     }
 
     #[test]

@@ -66,9 +66,12 @@ export interface RunActivity {
 }
 
 // An agent's own status line. `since` is epoch ms when it first set this text.
+// `stale` means the agent has since done a separate stretch of work and gone
+// quiet, so the line describes earlier work.
 export interface AgentStatus {
   text: string;
   since: number;
+  stale: boolean;
 }
 
 // Tokens and cost for a run, read from the agent's own transcript (see

@@ -517,7 +517,6 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                         .map(|w| w.pane_hash != snap.pane_hash)
                         .unwrap_or(true);
                     state.update_activity(&snap.id, pane_changed, now_ms);
-                    state.note_agent_liveness(&snap.id, &snap.agent);
                     let (watch, events) = crate::notifier::step(
                         watches.get(&snap.id),
                         snap,
@@ -562,6 +561,9 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                     watches.insert(snap.id.clone(), watch);
                 }
                 watches.retain(|id, _| seen.contains(id));
+                // Every agent tab, not just the lead in the snapshots above,
+                // can have written a run's status line.
+                state.settle_agent_status();
                 // The run's extra agent tabs, which the loop above does not
                 // reach: no notification of their own (the run is the thing
                 // notifications are about), but the same busy/idle

@@ -95,6 +95,23 @@ pub fn classify(entry: &ActivityEntry, turn_driven: bool, now_ms: i64) -> Activi
     }
 }
 
+/// Whether the run is quiet now after a busy streak that began strictly after
+/// something happened at `at_ms`: that is, whether its agent has gone on to a
+/// separate stretch of work since and finished it.
+///
+/// Not `at_ms < last_change_ms`. An agent's own tool call is drawn in its
+/// pane, so the last pane change always postdates the call, and that test
+/// called every line an agent set as its last act stale (AGE-208 review). The
+/// streak boundary is what separates "then" from "since": a new streak only
+/// starts after [`WORKING_TTL_MS`] with no pane change at all, and the call's
+/// own redraw is a change, so any later streak begins more than that past
+/// `at_ms`. The call's own streak begins at most a tick after it, which is why
+/// the margin is the TTL rather than zero: a quiet agent whose call is the
+/// first thing it draws starts its streak on the tick that sees the call.
+pub fn worked_and_went_quiet_since(entry: &ActivityEntry, at_ms: i64, now_ms: i64) -> bool {
+    now_ms - entry.last_change_ms >= WORKING_TTL_MS && entry.busy_since_ms > at_ms + WORKING_TTL_MS
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -168,6 +185,41 @@ mod tests {
         e = update(Some(e), true, 8_000); // output resumes before TTL
         assert_eq!(state(&e, false, 8_000), ActivityState::Working);
         assert_eq!(e.busy_since_ms, 0, "lull under TTL must not restart the streak");
+    }
+
+    /// An agent that sets a line as its last act, while quiet, and stops: the
+    /// call's redraw starts a streak on the next tick, and that streak is the
+    /// call's own, not work done since.
+    #[test]
+    fn a_last_act_does_not_count_as_work_since() {
+        let mut e = update(None, true, 0);
+        e = update(Some(e), false, 60_000); // long quiet
+        e = update(Some(e), true, 62_000); // the set_status call at 61s, seen at 62s
+        let quiet = 62_000 + WORKING_TTL_MS;
+        e = update(Some(e), false, quiet);
+        assert!(!worked_and_went_quiet_since(&e, 61_000, quiet));
+    }
+
+    #[test]
+    fn a_call_inside_a_streak_does_not_count_as_work_since() {
+        let mut e = update(None, true, 0);
+        for t in (2_000..=20_000).step_by(2_000) {
+            e = update(Some(e), true, t);
+        }
+        let quiet = 20_000 + WORKING_TTL_MS;
+        e = update(Some(e), false, quiet);
+        assert!(!worked_and_went_quiet_since(&e, 8_000, quiet));
+    }
+
+    #[test]
+    fn a_later_streak_that_has_gone_quiet_counts() {
+        let mut e = update(None, true, 0); // the call at 0, in this streak
+        e = update(Some(e), false, WORKING_TTL_MS); // quiet: streak over
+        e = update(Some(e), true, 30_000); // another stretch of work
+        assert!(!worked_and_went_quiet_since(&e, 0, 30_000), "still working is not gone quiet");
+        let quiet = 30_000 + WORKING_TTL_MS;
+        e = update(Some(e), false, quiet);
+        assert!(worked_and_went_quiet_since(&e, 0, quiet));
     }
 
     #[test]

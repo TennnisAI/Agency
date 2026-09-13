@@ -107,7 +107,7 @@ describe("agentNote", () => {
   const working = (over: Partial<RunInfo> = {}): RunInfo =>
     waitingRun({
       activity: { state: "working", since: 1_000 },
-      agentStatus: { text: "running the migration tests", since: 5_000 },
+      agentStatus: { text: "running the migration tests", since: 5_000, stale: false },
       ...over,
     });
 
@@ -128,20 +128,21 @@ describe("agentNote", () => {
     expect(agentNote(working({ status: { state: "exited", code: 0 } as never }))).toBeNull();
   });
 
-  it("dims a line written before the run went quiet", () => {
-    const note = agentNote(working({ activity: { state: "waiting", since: 9_000 } }), 69_000);
+  it("dims a line the backend marks stale, and says why", () => {
+    const run = working({
+      activity: { state: "waiting", since: 9_000 },
+      agentStatus: { text: "running the migration tests", since: 5_000, stale: true },
+    });
+    const note = agentNote(run, 65_000);
     expect(note?.stale).toBe(true);
-    expect(note?.title).toBe("Written by the agent 1m ago, before it went quiet");
+    expect(note?.title).toBe("Written by the agent 1m ago, before its latest work");
   });
 
-  it("keeps a line written during the quiet stretch current", () => {
-    const run = working({ activity: { state: "waiting", since: 2_000 } });
+  // A line set as the agent's last act predates the pane going quiet, because
+  // the call is drawn in the pane. Only the backend flag decides.
+  it("keeps a line current after the run goes quiet unless the backend says stale", () => {
+    const run = working({ activity: { state: "waiting", since: 9_000 } });
     expect(agentNote(run)?.stale).toBe(false);
-  });
-
-  it("is not stale while working, and not before the first activity sample", () => {
-    expect(agentNote(working({ activity: { state: "working", since: 9_000 } }))?.stale).toBe(false);
-    expect(agentNote(working({ activity: null }))?.stale).toBe(false);
   });
 });
 

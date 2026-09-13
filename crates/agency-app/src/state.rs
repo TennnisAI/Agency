@@ -3990,18 +3990,6 @@ impl AppState {
                 spec.loop_config.as_ref(),
                 Some(port),
             );
-            // Introduce the issue tracker. The prompt does this for an
-            // issue-dispatched run, but a plain run carries only the user's
-            // text and the default interactive run carries none at all, so
-            // without this an agent asked for a follow-up has never been told
-            // the tracker exists, let alone that it lives outside the worktree.
-            // Best-effort, like the copies above: a briefing that can't be
-            // written is not worth failing a run over.
-            if let Err(e) =
-                agency_core::briefing::emit_agents_md(&workspace.path, &repo, &issue_key)
-            {
-                log::warn!("writing the tracker briefing into worktree {id}: {e}");
-            }
         } else if !self.merged_mcp_servers(&repo, &config).is_empty() {
             // Emitting would rewrite `.mcp.json` (or the agent's equivalent) in
             // the user's own checkout — a tracked file in most repos. Dirtying
@@ -5848,6 +5836,15 @@ impl AppState {
         if let Err(e) = agency_core::skills::emit_for_agent(agent, &ws) {
             log::warn!("emitting the skills kit for {agent} into {}: {e}", worktree.display());
         }
+        // Introduce the issue tracker. The prompt does this for an
+        // issue-dispatched run, but a plain run carries only the user's text
+        // and the default interactive run carries none at all, so without this
+        // an agent asked for a follow-up has never been told the tracker
+        // exists, let alone that it lives outside the worktree. Emitted here,
+        // on every path the kit is, because the briefing used to be written at
+        // creation only: a restored worktree lost it, and an extra Claude tab
+        // in a worktree cut for another agent never had Claude's copy.
+        agency_core::briefing::emit_for_agent(agent, worktree, repo, issue_key);
     }
 
     /// Whether the user lets agents read the file they have open. Read on every

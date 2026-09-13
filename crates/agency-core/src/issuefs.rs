@@ -1482,6 +1482,16 @@ pub fn reconcile(
     for (prefix, n) in &summary.foreign {
         log::warn!("{n} issue files keyed {prefix} ignored: this project's key is {issue_key}");
     }
+    // An agent filing a project's first issue creates the directory itself,
+    // and the only writers of the README were export (once per project, long
+    // before) and the app's own issue writes. The agent's file was imported
+    // and the directory stayed README-less until someone edited an issue in
+    // the app, while every worktree's briefing promised it would appear.
+    // Best-effort, like the uid backfill: a read-only issues dir must not take
+    // the board down.
+    if let Err(e) = ensure_readme(root) {
+        log::warn!("could not write the issues README for {project_id}: {e}");
+    }
     Ok(summary)
 }
 
@@ -1906,6 +1916,32 @@ created: 2026-07-27T09:30:00Z\nupdated: 2026-07-27T14:02:00Z\n---\n\
         let s = reconcile(&reg, "p1", "AGE", root).unwrap();
         assert_eq!((s.imported, s.updated, s.dropped), (0, 0, 1));
         assert!(reg.list_issues("p1").unwrap().is_empty());
+    }
+
+    /// AGE-233: an agent that files a project's first issue creates the
+    /// directory by hand, and nothing but the app's own writes added the README
+    /// it is told will follow.
+    #[test]
+    fn reconcile_gives_a_hand_made_tracker_its_readme() {
+        let db = tempfile::tempdir().unwrap();
+        let reg = Registry::open(&db.path().join("r.db")).unwrap();
+        let root_dir = tempfile::tempdir().unwrap();
+        let root = root_dir.path();
+        let readme = root.join(ISSUES_DIR).join("README.md");
+
+        // No tracker: reconcile does not create one.
+        reconcile(&reg, "p1", "LBH", root).unwrap();
+        assert!(!root.join(ISSUES_DIR).exists());
+
+        write_issue(root, "LBH-1", "todo", "First");
+        let s = reconcile(&reg, "p1", "LBH", root).unwrap();
+        assert_eq!(s.imported, 1);
+        assert_eq!(std::fs::read_to_string(&readme).unwrap(), ISSUES_README);
+
+        // A README someone made their own is still left alone.
+        std::fs::write(&readme, "# Our tracker\n").unwrap();
+        reconcile(&reg, "p1", "LBH", root).unwrap();
+        assert_eq!(std::fs::read_to_string(&readme).unwrap(), "# Our tracker\n");
     }
 
     const UID: &str = "8fbc9e2a-3d41-4c7e-9a10-5b6d2f8e04c3";

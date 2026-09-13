@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
@@ -13,6 +13,7 @@ import {
 import { useModalKeys } from "../hooks/useModalKeys";
 import { onMarkdownLinkClick, renderMarkdown } from "../lib/mdHtml";
 import { toastSuccess } from "../lib/toast";
+import { EMPTY_CHECK, Phase, afterUpdateChecked, headline, phaseFor, subhead } from "../lib/updatePhase";
 import ModalBackdrop from "./ModalBackdrop";
 
 /**
@@ -28,34 +29,25 @@ import ModalBackdrop from "./ModalBackdrop";
  * terminal daemon and normally survive a relaunch, but a release that changes
  * the daemon's protocol does not, so the moment Agency goes away has to be a
  * moment the user picked (AGE-229).
+ *
+ * Closing it never stops an install. The download runs in the backend, and any
+ * dialog opened later picks it up from `installing` on the check.
  */
 
-/** Where the dialog is in the download → install → restart sequence. */
-type Phase =
-  | { kind: "checking" }
-  | { kind: "report"; check: UpdateCheck }
-  | { kind: "installing"; check: UpdateCheck; progress: UpdateProgress | null }
-  | { kind: "installed"; version: string }
-  | { kind: "failed"; check: UpdateCheck; message: string };
-
-/** A check that finds its release already installed opens on the restart
- *  prompt. Offering Install again downloaded the same release a second time. */
-function phaseFor(check: UpdateCheck): Phase {
-  return check.staged && !check.updateAvailable
-    ? { kind: "installed", version: check.staged }
-    : { kind: "report", check };
+// Update dialogs currently mounted. App toasts an install's outcome only when
+// there are none, since an open dialog already shows it.
+let mounted = 0;
+export function updateDialogOpen(): boolean {
+  return mounted > 0;
 }
 
 export default function UpdateDialog({
   initial,
   onClose,
-  onChecked,
 }: {
   /** A check that has already run, to show without asking again. */
   initial?: UpdateCheck | null;
   onClose: () => void;
-  /** Hands a fresh check back so the caller can keep its own row in step. */
-  onChecked?: (check: UpdateCheck) => void;
 }) {
   const [phase, setPhase] = useState<Phase>(initial ? phaseFor(initial) : { kind: "checking" });
   // Read when the restart is offered, not on mount: the download takes long
@@ -63,11 +55,15 @@ export default function UpdateDialog({
   // null until it arrives, so the prompt never claims "nothing is running"
   // before it knows.
   const [sessions, setSessions] = useState<number | null>(null);
-  const busy = phase.kind === "installing";
-  useModalKeys(onClose, !busy);
+  // Closable in every phase, the download included. It used to lock while
+  // downloading, and the download had no timeout, so a stalled connection left
+  // a dialog nobody could dismiss over the whole app; found in review.
+  useModalKeys(onClose);
 
-  const checkedRef = useRef(onChecked);
-  checkedRef.current = onChecked;
+  useEffect(() => {
+    mounted += 1;
+    return () => { mounted -= 1; };
+  }, []);
 
   // Bumped by "Try again", which is what re-runs the effect below. Without a
   // counter the effect's only dependency is `initial`, which does not change,
@@ -80,9 +76,7 @@ export default function UpdateDialog({
     setPhase({ kind: "checking" });
     checkForUpdate()
       .then((check) => {
-        if (!live) return;
-        setPhase(phaseFor(check));
-        checkedRef.current?.(check);
+        if (live) setPhase(phaseFor(check));
       })
       .catch((e) => {
         if (!live) return;
@@ -106,13 +100,21 @@ export default function UpdateDialog({
     return () => { live = false; };
   }, [phase.kind]);
 
-  // Download progress arrives as an event because the install command does not
-  // return until the whole thing is on disk.
   useEffect(() => {
-    const sub = listen<UpdateProgress>("update-progress", (e) => {
+    // Download progress arrives as an event because the install command does
+    // not return until the whole thing is on disk.
+    const progress = listen<UpdateProgress>("update-progress", (e) => {
       setPhase((p) => (p.kind === "installing" ? { ...p, progress: e.payload } : p));
     });
-    return () => { sub.then((un) => un()).catch(() => {}); };
+    // The backend announces an install's start and its end. A dialog that did
+    // not start the install, or was reopened on one, learns the outcome here.
+    const checked = listen<UpdateCheck>("update-checked", (e) => {
+      setPhase((p) => afterUpdateChecked(p, e.payload));
+    });
+    return () => {
+      progress.then((un) => un()).catch(() => {});
+      checked.then((un) => un()).catch(() => {});
+    };
   }, []);
 
   async function install(check: UpdateCheck) {
@@ -120,18 +122,16 @@ export default function UpdateDialog({
     try {
       const version = await installUpdate();
       setPhase({ kind: "installed", version });
-      // The backend now reports this version as staged. Hand that back so the
-      // caller's row stops offering the release that was just installed.
-      lastUpdateCheck()
-        .then((c) => { if (c) checkedRef.current?.(c); })
-        .catch(() => {});
     } catch (e) {
-      setPhase({ kind: "failed", check, message: String(e) });
+      // Refused because another dialog's install is already running: follow
+      // that one rather than report a failure that did not happen.
+      const now = await lastUpdateCheck().catch(() => null);
+      setPhase(now?.installing ? phaseFor(now) : { kind: "failed", check, message: String(e) });
     }
   }
 
   return (
-    <ModalBackdrop onBackdropClick={busy ? undefined : onClose}>
+    <ModalBackdrop onBackdropClick={onClose}>
       <div
         className="modal modal-update"
         role="dialog"
@@ -144,7 +144,7 @@ export default function UpdateDialog({
             <h3>{headline(phase)}</h3>
             <p className="modal-sub">{subhead(phase, sessions)}</p>
           </div>
-          {!busy && <button type="button" className="modal-x" onClick={onClose}>✕</button>}
+          <button type="button" className="modal-x" onClick={onClose}>✕</button>
         </div>
         <Body phase={phase} />
         <div className="modal-foot">
@@ -158,66 +158,6 @@ export default function UpdateDialog({
       </div>
     </ModalBackdrop>
   );
-}
-
-/** Stand-in for a check that never completed, so the failed state still has
- *  the shape the rest of the dialog reads. */
-const EMPTY_CHECK: UpdateCheck = {
-  current: "",
-  latest: null,
-  updateAvailable: false,
-  url: "https://github.com/TennnisAI/Agency/releases/latest",
-  notes: null,
-  installKind: "unknown",
-  canInstall: false,
-  manualHint: null,
-  staged: null,
-  error: null,
-};
-
-function headline(phase: Phase): string {
-  switch (phase.kind) {
-    case "checking": return "Checking for updates";
-    case "report":
-      if (phase.check.error) return "Couldn't check for updates";
-      return phase.check.updateAvailable ? `Agency ${phase.check.latest} is available` : "Agency is up to date";
-    case "installing": return `Downloading Agency ${phase.check.latest}`;
-    case "installed": return `Agency ${phase.version} is installed`;
-    case "failed": return "The update didn't install";
-  }
-}
-
-function subhead(phase: Phase, sessions: number | null): string {
-  switch (phase.kind) {
-    case "checking":
-      return "Asking GitHub for the latest release.";
-    case "report": {
-      const c = phase.check;
-      if (c.error) return "Agency couldn't reach the releases feed. Your network, or GitHub.";
-      if (!c.updateAvailable) return `You're running ${c.current}, which is the newest release.`;
-      if (c.canInstall) return `You're running ${c.current}. Agency can download and install this one for you.`;
-      return `You're running ${c.current}. ${installerNote(c)}`;
-    }
-    case "installing":
-      return "Agency checks the download's signature before it puts anything in place.";
-    case "installed":
-      if (sessions === null) return "Restart when it suits you.";
-      return sessions > 0
-        ? `Restart when it suits you. ${sessions} session${sessions === 1 ? "" : "s"} ${sessions === 1 ? "is" : "are"} running; they normally carry on through a restart, but a release that changes the terminal daemon will end them.`
-        : "Restart when it suits you. Nothing is running.";
-    case "failed":
-      return "Nothing was changed. You can download the release and install it yourself.";
-  }
-}
-
-/** Why the Install button is missing, in the user's own terms. */
-function installerNote(c: UpdateCheck): string {
-  switch (c.installKind) {
-    case "deb": return "This copy came from a .deb, so apt owns it and Agency must not write over it.";
-    case "rpm": return "This copy came from an .rpm, so your package manager owns it and Agency must not write over it.";
-    case "pacman": return "This copy was built from the agency-bin PKGBUILD, so pacman owns it and Agency must not write over it. Run this in packaging/aur/agency-bin in your Agency checkout.";
-    default: return "This build isn't one Agency can replace, so install the new version yourself.";
-  }
 }
 
 function Body({ phase }: { phase: Phase }) {
@@ -311,8 +251,9 @@ function Actions({
 
     case "installing":
       // No cancel: the plugin's download has no handle to stop it, and a button
-      // that only looks like it stops something is worse than none.
-      return <button type="button" className="settings-ghost-btn" disabled>Downloading…</button>;
+      // that only looks like it stops something is worse than none. Hide says
+      // what closing does; the Settings row and a toast carry the outcome.
+      return <button type="button" className="settings-ghost-btn" onClick={onClose}>Hide</button>;
 
     case "installed":
       return (

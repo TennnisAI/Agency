@@ -51,9 +51,10 @@ DOWNLOAD_BASE = "https://github.com/TennnisAI/Agency/releases/download"
 # tarball's name carries no version, which is why it can be listed literally;
 # the AppImages are formatted with the version being released.
 #
-# Only aarch64 for macOS: CI builds Apple Silicon alone (see release.yml). An
-# Intel Mac therefore finds no entry, and the updater tells it there is nothing
-# to install rather than handing it an ARM build.
+# Only aarch64 for macOS: CI builds Apple Silicon alone (see release.yml), and
+# the DMG does not run on an Intel Mac. A copy built on one by hand finds no
+# entry here, so pressing Install fails with "This release has no build for this
+# machine" (commands.rs, download_update) rather than handing it an ARM build.
 TARGETS = [
     ("darwin-aarch64", "Agency.app.tar.gz"),
     ("linux-x86_64", "appimage/Agency_{version}_amd64.AppImage"),

@@ -2472,10 +2472,10 @@ pub struct AppState {
     /// emits `update-checked` as well; the event alone would be a race
     /// nobody can see losing. In-memory: the next check re-derives it.
     last_update_check: Mutex<Option<crate::update::UpdateCheck>>,
-    /// The version `install_update` put in place this launch, which only takes
-    /// effect on restart. In-memory on purpose: the restart that applies it is
-    /// also what clears it.
-    staged_update: Mutex<Option<String>>,
+    /// The in-app install: the version it put in place this launch, whether
+    /// one is downloading, and why the last one failed. In-memory on purpose:
+    /// the restart that applies a staged version is also what clears it.
+    update_install: Mutex<crate::update::Install>,
 }
 
 /// Where the file the user has open actually is, and whose it is.
@@ -2635,7 +2635,7 @@ impl AppState {
             open_file: Arc::new(Mutex::new(None)),
             share_open_file: Arc::new(std::sync::atomic::AtomicBool::new(share_open_file)),
             last_update_check: Mutex::new(None),
-            staged_update: Mutex::new(None),
+            update_install: Mutex::new(crate::update::Install::default()),
         };
         // Rehydrate: any run the daemon still hosts is adopted as-is; the watch
         // loop (watch_snapshot) then reports live status. Nothing to spawn here —
@@ -10098,7 +10098,7 @@ impl AppState {
     /// before the first one lands.
     pub fn last_update_check(&self) -> Option<crate::update::UpdateCheck> {
         let cached = self.last_update_check.lock().unwrap().clone();
-        cached.map(|c| c.with_staged(self.staged_update().as_deref()))
+        cached.map(|c| c.with_install(&self.update_install()))
     }
 
     /// Cache a check (keeping the last good one through a failure, see
@@ -10114,13 +10114,18 @@ impl AppState {
         self.last_update_check().expect("a check was just cached")
     }
 
-    /// The version installed this launch and waiting for a restart.
-    pub fn staged_update(&self) -> Option<String> {
-        self.staged_update.lock().unwrap().clone()
+    /// The in-app install's state; see `update::Install`.
+    pub fn update_install(&self) -> crate::update::Install {
+        self.update_install.lock().unwrap().clone()
     }
 
-    pub fn set_staged_update(&self, version: String) {
-        *self.staged_update.lock().unwrap() = Some(version);
+    /// Claim the in-app install. False when one is already running.
+    pub fn begin_update_install(&self) -> bool {
+        self.update_install.lock().unwrap().begin()
+    }
+
+    pub fn finish_update_install(&self, outcome: &Result<String, String>) {
+        self.update_install.lock().unwrap().finish(outcome)
     }
 
     pub fn notif_settings(&self) -> Result<notifier::NotifSettings> {

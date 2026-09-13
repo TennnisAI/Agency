@@ -86,6 +86,10 @@ objc2-web-kit = { version = "0.3", default-features = false, features = ["std", 
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFCGTypes"] }
 objc2 = "0.6"
 block2 = "0.6"
+# statvfs, to tell whether the running .app sits on a read-only mount (the DMG,
+# or App Translocation), where the in-app updater cannot replace it (update.rs).
+# Already in the tree through tauri; named here because std has no statvfs.
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"

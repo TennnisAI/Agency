@@ -49,6 +49,19 @@ pub const CHECK_INTERVAL_SECS: i64 = 6 * 60 * 60;
 /// morning on a captive portal should not spend it retrying every quarter hour.
 pub const RETRY_BASE_SECS: i64 = 15 * 60;
 
+/// Cap on the updater's request for `latest.json`, one small file. The plugin's
+/// default is no cap at all.
+pub const MANIFEST_TIMEOUT_SECS: u64 = 30;
+
+/// Cap on the whole download, body included, which is how reqwest counts it.
+/// With no cap, a connection that stalled mid-download (a laptop that slept, a
+/// captive portal) held the install open forever, and the dialog in front of
+/// it could not be closed; found in review. The plugin offers no read timeout,
+/// so this is a total sized for a slow link to finish, not for a stall to be
+/// noticed fast. The dialog closes mid-download now, so the wait is not the
+/// user's; this is what eventually frees the install to be tried again.
+pub const DOWNLOAD_TIMEOUT_SECS: u64 = 45 * 60;
+
 /// How this copy of Agency got onto the machine, which is what decides whether
 /// Agency may replace itself or has to hand the job to whatever owns the files.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -56,6 +69,12 @@ pub const RETRY_BASE_SECS: i64 = 15 * 60;
 pub enum InstallKind {
     /// A `.app` bundle, from the DMG. The updater swaps the bundle in place.
     MacApp,
+    /// A `.app` bundle macOS will not let anything write to: opened straight
+    /// from the mounted DMG, or from the read-only App Translocation copy macOS
+    /// runs a quarantined download from. The updater's swap fails there with a
+    /// raw filesystem error, found in review; moving the app into Applications
+    /// is what fixes it, so that is what the user is told.
+    MacReadOnly,
     /// A Linux AppImage, running under its own runtime. Replaced in place.
     AppImage,
     /// dpkg/apt owns these files.
@@ -93,6 +112,8 @@ pub struct Probe<'a> {
     pub dpkg_db: bool,
     /// An rpm database is present.
     pub rpm_db: bool,
+    /// The running executable sits on a read-only mount (macOS only).
+    pub read_only: bool,
 }
 
 /// Work out which [`InstallKind`] `probe` describes.
@@ -102,10 +123,15 @@ pub fn classify(probe: &Probe) -> InstallKind {
         // outside one (`./dev.sh`, `cargo run`) is not something it can swap —
         // and must not be, or a dev build would overwrite itself with a release.
         "macos" => {
-            if probe.exe.contains(".app/Contents/MacOS/") {
-                InstallKind::MacApp
-            } else {
+            if !probe.exe.contains(".app/Contents/MacOS/") {
                 InstallKind::Unknown
+            } else if probe.read_only || probe.exe.contains("/AppTranslocation/") {
+                // Translocation is a read-only mount, so `read_only` should
+                // catch it alone; the path is the fallback for a statvfs that
+                // could not answer, which reads as writable.
+                InstallKind::MacReadOnly
+            } else {
+                InstallKind::MacApp
             }
         }
         "linux" => {
@@ -150,7 +176,28 @@ pub fn current_kind() -> InstallKind {
         // Fedora 41 and dnf5 moved the rpm database under /usr/lib/sysimage;
         // older Fedora, RHEL and openSUSE keep it at /var/lib/rpm.
         rpm_db: Path::new("/var/lib/rpm").is_dir() || Path::new("/usr/lib/sysimage/rpm").is_dir(),
+        read_only: on_read_only_mount(&exe),
     })
+}
+
+/// Whether `path` sits on a read-only mount: a DMG mounts read-only, and so
+/// does the App Translocation copy macOS runs a quarantined download from. A
+/// path statvfs cannot answer for reads as writable.
+#[cfg(target_os = "macos")]
+fn on_read_only_mount(path: &str) -> bool {
+    let Ok(c_path) = std::ffi::CString::new(path) else { return false };
+    // SAFETY: `c_path` is NUL-terminated and outlives the call, and `stat` is a
+    // plain-data out-parameter, read only after statvfs reports success.
+    unsafe {
+        let mut stat: libc::statvfs = std::mem::zeroed();
+        libc::statvfs(c_path.as_ptr(), &mut stat) == 0 && (stat.f_flag & libc::ST_RDONLY) != 0
+    }
+}
+
+/// Only the macOS updater replaces a bundle on the mount it runs from.
+#[cfg(not(target_os = "macos"))]
+fn on_read_only_mount(_path: &str) -> bool {
+    false
 }
 
 /// The command that updates a package-manager install, with the new version and
@@ -176,7 +223,10 @@ pub fn manual_hint(kind: InstallKind, latest: &str, arch: &str) -> Option<String
         // which release step 15 points at each release. It becomes
         // `yay -S agency-bin` once the AUR package is live.
         InstallKind::Pacman => Some("git pull && makepkg -si".to_string()),
-        InstallKind::MacApp | InstallKind::AppImage | InstallKind::Unknown => None,
+        InstallKind::MacApp
+        | InstallKind::MacReadOnly
+        | InstallKind::AppImage
+        | InstallKind::Unknown => None,
     }
 }
 
@@ -254,8 +304,12 @@ pub struct UpdateCheck {
     /// The command a package-manager install needs instead, ready to copy.
     pub manual_hint: Option<String>,
     /// A version already installed in place and waiting for a restart. See
-    /// [`UpdateCheck::with_staged`].
+    /// [`UpdateCheck::with_install`].
     pub staged: Option<String>,
+    /// An in-app install is downloading right now.
+    pub installing: bool,
+    /// Why the last in-app install failed, until another one starts.
+    pub install_error: Option<String>,
     /// Why the check came back empty, for the UI to show verbatim. `None` on a
     /// successful check.
     pub error: Option<String>,
@@ -273,28 +327,80 @@ impl UpdateCheck {
             can_install: false,
             manual_hint: None,
             staged: None,
+            installing: false,
+            install_error: None,
             error: Some(error),
         }
     }
 
-    /// Fold in a version that has been installed but not restarted into.
+    /// Fold in the in-app install: a version installed but not restarted into,
+    /// a download under way, and one that failed.
     ///
     /// The running binary keeps reporting the old version until the restart, so
-    /// without this every check after Install and "Restart later" said the same
-    /// release was still available: the Settings dot stayed lit, Diagnostics kept
-    /// offering "Update…", and pressing Install downloaded the whole release a
-    /// second time. A release newer than the staged one is still offered.
-    pub fn with_staged(mut self, staged: Option<&str>) -> Self {
-        let Some(staged) = staged else { return self };
-        let beyond_staged =
-            self.latest.as_deref().is_some_and(|l| agency_core::version::is_newer(l, staged));
-        if !beyond_staged {
-            self.update_available = false;
-            self.can_install = false;
-            self.manual_hint = None;
+    /// without the staged version every check after Install and "Restart later"
+    /// said the same release was still available: the Settings dot stayed lit,
+    /// Diagnostics kept offering "Update…", and pressing Install downloaded the
+    /// whole release a second time. A release newer than the staged one is still
+    /// offered. While a download runs nothing offers Install, so a dialog opened
+    /// meanwhile shows the download instead of a button the backend refuses.
+    pub fn with_install(mut self, install: &Install) -> Self {
+        if let Some(staged) = install.staged.as_deref() {
+            let beyond_staged =
+                self.latest.as_deref().is_some_and(|l| agency_core::version::is_newer(l, staged));
+            if !beyond_staged {
+                self.update_available = false;
+                self.can_install = false;
+                self.manual_hint = None;
+            }
+            self.staged = Some(staged.to_string());
         }
-        self.staged = Some(staged.to_string());
+        self.installing = install.running;
+        if install.running {
+            self.can_install = false;
+        }
+        self.install_error = install.error.clone();
         self
+    }
+}
+
+/// The in-app install as every open update dialog and the Settings row see it.
+/// Pure bookkeeping: `install_update` does the download and reports here.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Install {
+    /// A version installed in place this launch and waiting for a restart.
+    pub staged: Option<String>,
+    /// A download is under way.
+    pub running: bool,
+    /// Why the last install failed, until the next one starts.
+    pub error: Option<String>,
+}
+
+impl Install {
+    /// Claim the install for one caller. False when one is already running.
+    /// Settings and the Help menu can each hold an update dialog open, and
+    /// nothing stopped both pressing Install: two downloads writing the same
+    /// bundle. Found in review.
+    pub fn begin(&mut self) -> bool {
+        if self.running {
+            return false;
+        }
+        self.running = true;
+        self.error = None;
+        true
+    }
+
+    /// Record how the claimed install ended. A failure keeps an earlier staged
+    /// version: the download and its signature check, where installs fail,
+    /// come before anything is written.
+    pub fn finish(&mut self, outcome: &std::result::Result<String, String>) {
+        self.running = false;
+        match outcome {
+            Ok(version) => {
+                self.staged = Some(version.clone());
+                self.error = None;
+            }
+            Err(e) => self.error = Some(e.clone()),
+        }
     }
 }
 
@@ -339,6 +445,8 @@ fn check_with_arch(current: &str, kind: InstallKind, arch: &str) -> UpdateCheck 
                 notes: rel.notes,
                 install_kind: kind,
                 staged: None,
+                installing: false,
+                install_error: None,
                 error: None,
             }
         }
@@ -407,7 +515,15 @@ mod tests {
     use super::*;
 
     fn linux(exe: &str) -> Probe<'_> {
-        Probe { os: "linux", appimage: None, exe, pacman_db: false, dpkg_db: false, rpm_db: false }
+        Probe {
+            os: "linux",
+            appimage: None,
+            exe,
+            pacman_db: false,
+            dpkg_db: false,
+            rpm_db: false,
+            read_only: false,
+        }
     }
 
     #[test]
@@ -439,6 +555,7 @@ mod tests {
             pacman_db: false,
             dpkg_db: false,
             rpm_db: false,
+            read_only: false,
         };
         assert_eq!(classify(&bundled), InstallKind::MacApp);
         // ./dev.sh runs the binary straight out of target/. Letting the updater
@@ -446,6 +563,40 @@ mod tests {
         let dev = Probe { exe: "/Users/x/Agency/target/debug/Agency", ..bundled };
         assert_eq!(classify(&dev), InstallKind::Unknown);
         assert!(!InstallKind::Unknown.self_updating());
+    }
+
+    #[test]
+    fn a_mac_app_macos_will_not_let_anything_write_to_is_not_self_updating() {
+        // Opened straight from the mounted DMG.
+        let dmg = Probe {
+            os: "macos",
+            appimage: None,
+            exe: "/Volumes/Agency/Agency.app/Contents/MacOS/Agency",
+            pacman_db: false,
+            dpkg_db: false,
+            rpm_db: false,
+            read_only: true,
+        };
+        assert_eq!(classify(&dmg), InstallKind::MacReadOnly);
+        assert!(!InstallKind::MacReadOnly.self_updating());
+        assert_eq!(manual_hint(InstallKind::MacReadOnly, "0.3.0", "aarch64"), None);
+        // A quarantined download run from App Translocation, caught by its path
+        // even when statvfs could not say the mount is read-only.
+        let translocated = Probe {
+            exe:
+                "/private/var/folders/x/T/AppTranslocation/1A2B/d/Agency.app/Contents/MacOS/Agency",
+            read_only: false,
+            ..dmg
+        };
+        assert_eq!(classify(&translocated), InstallKind::MacReadOnly);
+        // /Volumes alone decides nothing: an app on a writable external drive
+        // updates like any other.
+        let external = Probe {
+            exe: "/Volumes/Work/Applications/Agency.app/Contents/MacOS/Agency",
+            read_only: false,
+            ..dmg
+        };
+        assert_eq!(classify(&external), InstallKind::MacApp);
     }
 
     #[test]
@@ -554,31 +705,68 @@ mod tests {
             can_install: true,
             manual_hint: None,
             staged: None,
+            installing: false,
+            install_error: None,
             error: None,
         }
+    }
+
+    fn staged(version: &str) -> Install {
+        Install { staged: Some(version.to_string()), ..Install::default() }
     }
 
     #[test]
     fn a_staged_release_is_not_offered_again_but_a_newer_one_is() {
         // Install, then "Restart later": the binary still says 0.2.0, and
         // without this the same 0.3.0 was offered (and downloaded) again.
-        let same = found("0.3.0").with_staged(Some("0.3.0"));
+        let same = found("0.3.0").with_install(&staged("0.3.0"));
         assert!(!same.update_available);
         assert!(!same.can_install);
         assert_eq!(same.staged.as_deref(), Some("0.3.0"));
 
-        let newer = found("0.4.0").with_staged(Some("0.3.0"));
+        let newer = found("0.4.0").with_install(&staged("0.3.0"));
         assert!(newer.update_available, "a release past the staged one is still news");
         assert!(newer.can_install);
         assert_eq!(newer.staged.as_deref(), Some("0.3.0"));
 
         // Offline after installing: the restart is still owed.
         let offline = UpdateCheck::failed("0.2.0", InstallKind::MacApp, "offline".into())
-            .with_staged(Some("0.3.0"));
+            .with_install(&staged("0.3.0"));
         assert_eq!(offline.staged.as_deref(), Some("0.3.0"));
         assert!(!offline.update_available);
 
-        assert_eq!(found("0.3.0").with_staged(None), found("0.3.0"));
+        assert_eq!(found("0.3.0").with_install(&Install::default()), found("0.3.0"));
+    }
+
+    #[test]
+    fn a_running_install_takes_the_button_away_and_refuses_a_second_claim() {
+        let mut install = Install::default();
+        assert!(install.begin());
+        assert!(!install.begin(), "two dialogs pressing Install must not start two downloads");
+        let shown = found("0.3.0").with_install(&install);
+        assert!(shown.installing);
+        assert!(!shown.can_install);
+        assert!(shown.update_available, "the release is still news until it is in place");
+
+        install.finish(&Ok("0.3.0".to_string()));
+        let shown = found("0.3.0").with_install(&install);
+        assert!(!shown.installing);
+        assert_eq!(shown.staged.as_deref(), Some("0.3.0"));
+        assert!(install.begin(), "finishing releases the claim");
+    }
+
+    #[test]
+    fn a_failed_install_is_reported_until_the_next_starts_and_keeps_what_was_staged() {
+        let mut install = staged("0.3.0");
+        assert!(install.begin());
+        install.finish(&Err("signature did not verify".to_string()));
+        let shown = found("0.4.0").with_install(&install);
+        assert_eq!(shown.install_error.as_deref(), Some("signature did not verify"));
+        assert!(shown.can_install, "a failed install can be tried again");
+        assert_eq!(shown.staged.as_deref(), Some("0.3.0"));
+
+        assert!(install.begin());
+        assert_eq!(install.error, None, "a new attempt clears the old failure");
     }
 
     #[test]

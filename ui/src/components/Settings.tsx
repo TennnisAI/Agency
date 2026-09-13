@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
+import { listen } from "@tauri-apps/api/event";
 import { appLogDir } from "@tauri-apps/api/path";
 import { revealItemInDir, openUrl } from "@tauri-apps/plugin-opener";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -325,12 +326,24 @@ export default function Settings({
     // Settings, so show that answer rather than making the row say nothing
     // until the user presses a button.
     lastUpdateCheck().then((res) => { if (res) setUpdate(res); }).catch(() => {});
+    // Every check and every install step lands here, carrying the same cached
+    // answer the Settings dot follows. The row used to show a manual check's
+    // own result instead, so an offline "Check now" said "Couldn't reach the
+    // releases feed" beside a dot still lit for the release the last good
+    // check found.
+    const sub = listen<UpdateCheck>("update-checked", (e) => setUpdate(e.payload));
+    return () => { sub.then((un) => un()).catch(() => {}); };
   }, []);
 
   async function runUpdateCheck() {
     setChecking(true);
     try {
-      setUpdate(await checkForUpdate());
+      const res = await checkForUpdate();
+      // The cached answer, which keeps the last good check through a failed
+      // one; the failure itself is said only when that answer hides it.
+      const shown = await lastUpdateCheck();
+      setUpdate(shown ?? res);
+      if (res.error && shown && !shown.error) toastError(res.error, "Couldn't reach the releases feed");
     } catch (e) {
       toastError(e, "Couldn't check for updates");
     } finally {
@@ -2240,17 +2253,27 @@ export default function Settings({
                 </div>
                 <div className="settings-notif-row">
                   <span className="settings-notif-label">
-                    {update?.staged && !update.updateAvailable
-                      ? `Agency ${update.staged} is installed`
-                      : update?.updateAvailable
-                        ? `Agency ${update.latest} is available`
-                        : update?.error
-                          ? "Couldn't reach the releases feed"
-                          : update
-                            ? "Up to date"
-                            : "Updates"}
+                    {update?.installing
+                      ? `Downloading Agency ${update.latest}`
+                      : update?.staged && !update.updateAvailable
+                        ? `Agency ${update.staged} is installed`
+                        : update?.installError && update.updateAvailable
+                          ? `Agency ${update.latest} didn't install`
+                          : update?.updateAvailable
+                            ? `Agency ${update.latest} is available`
+                            : update?.error
+                              ? "Couldn't reach the releases feed"
+                              : update
+                                ? "Up to date"
+                                : "Updates"}
                   </span>
-                  {update?.staged && !update.updateAvailable ? (
+                  {update?.installing ? (
+                    // A dialog hidden mid-download opens back onto its progress.
+                    <button
+                      className="settings-ghost-btn"
+                      onClick={() => setUpdateDialog({ initial: update })}
+                    >Show…</button>
+                  ) : update?.staged && !update.updateAvailable ? (
                     // Installed and waiting: the dialog opens on its restart
                     // prompt rather than offering the same release again.
                     <button
@@ -2364,7 +2387,6 @@ export default function Settings({
         <UpdateDialog
           initial={updateDialog.initial}
           onClose={() => setUpdateDialog(null)}
-          onChecked={setUpdate}
         />
       )}
 

@@ -114,7 +114,11 @@ fn dispatch(frame: ClientFrame, client_id: u64, registry: &Arc<Registry>, out: &
     };
     match frame {
         ClientFrame::Msg(ClientMsg::Hello { seq, .. }) => {
-            reply(ServerMsg::Hello { version: PROTOCOL_VERSION, seq });
+            reply(ServerMsg::Hello {
+                version: PROTOCOL_VERSION,
+                seq,
+                build: Some(BUILD.to_string()),
+            });
         }
         ClientFrame::Msg(ClientMsg::StartSession {
             id,

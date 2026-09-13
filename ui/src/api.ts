@@ -1739,7 +1739,14 @@ export const saveNotifSettings = (settings: NotifSettings) =>
 
 /** How this copy of Agency was installed, which decides whether it can replace
  *  itself or has to hand the job to a package manager. */
-export type InstallKind = "mac-app" | "app-image" | "deb" | "rpm" | "pacman" | "unknown";
+export type InstallKind =
+  | "mac-app"
+  | "mac-read-only"
+  | "app-image"
+  | "deb"
+  | "rpm"
+  | "pacman"
+  | "unknown";
 
 export interface UpdateCheck {
   current: string;
@@ -1759,6 +1766,10 @@ export interface UpdateCheck {
   /** A version already installed and waiting for a restart. When it is at
    *  least `latest`, `updateAvailable` and `canInstall` are false. */
   staged: string | null;
+  /** An in-app install is downloading right now. */
+  installing: boolean;
+  /** Why the last in-app install failed, until another one starts. */
+  installError: string | null;
   /** Why the check came back empty; null on success. */
   error: string | null;
 }

@@ -152,16 +152,30 @@ tests: 82 core + 54 app), `tsc --noEmit` exit 0, `vite build` exit 0.
    database. A dev build is `Unknown` and is never replaced.
 
    *Staying honest after the install.* The running binary reports the old
-   version until the restart, so `AppState` remembers the staged version and
-   `UpdateCheck::with_staged` stops offering that release again. A failed check
-   never overwrites a good cached one (`update::keep_known`). The webview has
-   no updater permission: `install_update`, with its install-kind gate, is the
-   only way in.
+   version until the restart, so `update::Install` remembers the staged
+   version and `UpdateCheck::with_install` stops offering that release again.
+   The same state refuses a second install while one runs, so two open
+   dialogs cannot start two downloads, and hands a running download to any
+   dialog opened on it: the dialog closes mid-download and the download
+   carries on, capped by `DOWNLOAD_TIMEOUT_SECS`. A failed check never
+   overwrites a good cached one (`update::keep_known`), and the Settings row
+   follows that cached answer as the dot does. The webview has no updater
+   permission: `install_update`, with its install-kind gate, is the only way
+   in. A `.app` on a read-only mount (the DMG, App Translocation) is
+   `MacReadOnly` and is told to move into Applications instead.
+
+   *The daemon after the restart.* The restart skips quit, the one thing that
+   shuts the terminal daemon down, so the daemon survives on the old release's
+   code. Its handshake reports its build (`term::protocol::BUILD`), and
+   `connect_or_spawn` replaces a daemon from another build when it hosts
+   nothing and keeps it, with a log line, when it hosts anything
+   (`client::reuse_daemon`).
 
    Help ▸ Check for Updates… (`menu.rs`, `appMenu.ts`, `paletteCommands.ts`)
    opens the same dialog Settings ▸ Diagnostics does.
    (update.rs, version.rs, lib.rs, commands.rs, state.rs, menu.rs,
-   UpdateDialog.tsx, App.tsx, Settings.tsx, scripts/updater-manifest.py,
+   term/protocol.rs, term/server.rs, term/client.rs, UpdateDialog.tsx,
+   updatePhase.ts, App.tsx, Settings.tsx, scripts/updater-manifest.py,
    release.yml, linux-packages.yml)
 5. **[done]** DB safety net. `registry::backup_before_migrations` stamps
    `PRAGMA user_version` with the encoded app version and copies `agency.db` →
@@ -272,10 +286,14 @@ tests: 82 core + 54 app), `tsc --noEmit` exit 0, `vite build` exit 0.
      *unless* the release bumps `term::protocol::PROTOCOL_VERSION`, where
      `TermClient::connect_or_spawn` replaces the daemon and its own log says
      "its sessions are lost". The dialog warns; a release that bumps the
-     protocol should say so in its notes too.
+     protocol should say so in its notes too. Without a bump, a daemon that
+     hosted sessions through the restart keeps running the old release until
+     a launch finds it idle or the user quits.
    - Intel Macs get no `darwin-x86_64` entry because CI builds Apple Silicon
-     only. They are told there is nothing to install, which is better than
-     being handed an ARM build, but it is not the same as being up to date.
+     only, and the DMG does not run on one. A copy built there by hand is
+     still offered the release, and Install then says the release has no
+     build for that machine. Better than being handed an ARM build, but not
+     the same as being up to date.
 
 ### Phase 6 — feature gaps (post-first-beta unless testers scream)
 

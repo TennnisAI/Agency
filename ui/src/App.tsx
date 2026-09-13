@@ -12,7 +12,7 @@ import Settings from "./components/Settings";
 import AgentOnboarding from "./components/AgentOnboarding";
 import CommandPalette from "./components/CommandPalette";
 import ConfirmDialog from "./components/ConfirmDialog";
-import UpdateDialog from "./components/UpdateDialog";
+import UpdateDialog, { updateDialogOpen } from "./components/UpdateDialog";
 import Resizer from "./components/Resizer";
 import Toasts from "./components/Toasts";
 import { useShortcuts } from "./hooks/useShortcuts";
@@ -327,14 +327,29 @@ function Shell() {
   // cached answer, which keeps the last good result through a failed check. The
   // dialog's own result used to set the dot as well, and an offline "Check for
   // Updates…" put it out.
+  //
+  // The update dialog closes mid-download, so an install can finish with
+  // nothing on screen to say how it went. The toast says so, and only then: an
+  // open dialog is already showing the outcome.
+  const wasInstalling = useRef(false);
   useEffect(() => {
     let cancelled = false;
     lastUpdateCheck()
       .then((res) => {
-        if (!cancelled && res?.updateAvailable) setUpdateAvailable(true);
+        if (cancelled || !res) return;
+        if (res.updateAvailable) setUpdateAvailable(true);
+        wasInstalling.current = res.installing;
       })
       .catch(() => {});
-    const sub = listen<UpdateCheck>("update-checked", (e) => setUpdateAvailable(e.payload.updateAvailable));
+    const sub = listen<UpdateCheck>("update-checked", (e) => {
+      const shown = e.payload;
+      setUpdateAvailable(shown.updateAvailable);
+      const finished = wasInstalling.current && !shown.installing;
+      wasInstalling.current = shown.installing;
+      if (!finished || updateDialogOpen()) return;
+      if (shown.installError) toastError(shown.installError, "The update didn't install");
+      else if (shown.staged) toastInfo(`Agency ${shown.staged} is installed. It takes effect when Agency restarts.`);
+    });
     return () => {
       cancelled = true;
       sub.then((un) => un()).catch(() => {});

@@ -120,7 +120,10 @@ nobody is offered the update and nothing can install it.
 One thing to watch on a release that bumps `term::protocol::PROTOCOL_VERSION`:
 agents normally survive the updater's restart, because they live in the daemon,
 but a protocol bump makes the new app replace the old daemon and lose its
-sessions. Say so in the release notes when it happens.
+sessions. Say so in the release notes when it happens. Without a bump, a daemon
+that was hosting sessions through the restart keeps running the previous
+release's code until a launch finds it idle or the user quits, so a fix that
+lives in the daemon reaches those users late.
 
 ## Bumping the version
 

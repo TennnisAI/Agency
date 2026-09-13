@@ -64,7 +64,11 @@ fn stale_reply_with_old_seq_is_discarded() {
             };
             match decode_client(&payload) {
                 Ok(ClientFrame::Msg(ClientMsg::Hello { seq, .. })) => {
-                    let m = ServerMsg::Hello { version: PROTOCOL_VERSION, seq };
+                    let m = ServerMsg::Hello {
+                        version: PROTOCOL_VERSION,
+                        seq,
+                        build: Some(agency_core::term::protocol::BUILD.to_string()),
+                    };
                     write_frame(&mut write, &encode_json(&m)).unwrap();
                 }
                 Ok(ClientFrame::Msg(ClientMsg::Status { id, seq })) => {
@@ -133,6 +137,74 @@ fn protocol_mismatch_replaces_old_daemon() {
     old.join().unwrap();
     // Don't leak the real daemon this test spawned.
     client.shutdown().unwrap();
+}
+
+/// A fake daemon on the current protocol that reports `build`, hosts
+/// `sessions` running sessions, and exits (removing its socket) on Shutdown.
+fn fake_daemon(
+    sock: &std::path::Path,
+    build: &'static str,
+    sessions: usize,
+) -> std::thread::JoinHandle<()> {
+    let listener = std::os::unix::net::UnixListener::bind(sock).unwrap();
+    let sock_srv = sock.to_path_buf();
+    std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        let mut read = stream.try_clone().unwrap();
+        let mut write = stream;
+        while let Ok(payload) = read_frame(&mut read) {
+            let reply = match decode_client(&payload) {
+                Ok(ClientFrame::Msg(ClientMsg::Hello { seq, .. })) => ServerMsg::Hello {
+                    version: PROTOCOL_VERSION,
+                    seq,
+                    build: Some(build.to_string()),
+                },
+                Ok(ClientFrame::Msg(ClientMsg::List { seq })) => ServerMsg::List {
+                    sessions: (0..sessions)
+                        .map(|i| (format!("s{i}"), SessionStatus::Running))
+                        .collect(),
+                    seq,
+                },
+                Ok(ClientFrame::Msg(ClientMsg::Shutdown)) => {
+                    drop(listener);
+                    let _ = std::fs::remove_file(&sock_srv);
+                    return;
+                }
+                _ => continue,
+            };
+            write_frame(&mut write, &encode_json(&reply)).unwrap();
+        }
+    })
+}
+
+/// The in-app updater restarts the app without quitting, so the daemon it
+/// finds is the previous release's. With nothing running in it, replace it.
+#[test]
+fn an_idle_daemon_from_another_release_is_replaced() {
+    let dir = tempfile::tempdir().unwrap();
+    let sock = dir.path().join("termd.sock");
+    let old = fake_daemon(&sock, "0.0.1", 0);
+
+    let termd = std::path::PathBuf::from(env!("CARGO_BIN_EXE_agency-termd"));
+    let client = TermClient::connect_or_spawn(sock, termd).expect("replaced the idle daemon");
+    old.join().unwrap();
+    let (_, build) = client.handshake().unwrap();
+    assert_eq!(build.as_deref(), Some(agency_core::term::protocol::BUILD));
+    client.shutdown().unwrap();
+}
+
+/// The same daemon hosting an agent is kept: replacing it would end the agent.
+#[test]
+fn a_busy_daemon_from_another_release_is_kept() {
+    let dir = tempfile::tempdir().unwrap();
+    let sock = dir.path().join("termd.sock");
+    let _old = fake_daemon(&sock, "0.0.1", 1);
+
+    let client = TermClient::connect_or_spawn(sock, std::path::PathBuf::from("/nonexistent"))
+        .expect("kept the busy daemon");
+    let (_, build) = client.handshake().unwrap();
+    assert_eq!(build.as_deref(), Some("0.0.1"));
+    assert_eq!(client.list().unwrap().len(), 1);
 }
 
 #[test]

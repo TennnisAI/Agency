@@ -788,6 +788,45 @@ mod tests {
     }
 
     #[test]
+    fn a_wide_emoji_takes_the_columns_the_pane_gives_it() {
+        // AGE-234: the pane measured ❌ and 🟡 at one column (xterm's default
+        // Unicode 6 table) while this grid and the agent measured two, so a
+        // repaint aimed past an emoji landed one column short in the pane only:
+        // "❌ Noxt yet". The pane loads the Unicode 11 table now. These are the
+        // same bytes and columns as `termOptions.test.ts` in the UI, which is
+        // the only place the two sides' widths are compared.
+        let mut e = Emulator::new(20, 4);
+        e.feed("❌ Not yet\x1b[1;6Ht\r\n🟡 Not yet\x1b[2;6Ht".as_bytes());
+        let grid = e.term.grid();
+        let row = |y: i32| -> String {
+            (0..10)
+                .map(|x| &grid[Line(y)][Column(x)])
+                .filter(|c| !c.flags.contains(Flags::WIDE_CHAR_SPACER))
+                .map(|c| c.c)
+                .collect()
+        };
+        assert_eq!([row(0), row(1)], ["❌ Not yet", "🟡 Not yet"]);
+
+        let cases = [
+            ("❌", 2),
+            ("🟡", 2),
+            ("✅", 2),
+            ("🧪", 2),
+            ("中", 2),
+            ("⚠\u{fe0f}", 1),
+            ("⏺", 1),
+            ("⎿", 1),
+            ("●", 1),
+            ("✻", 1),
+        ];
+        for (glyph, width) in cases {
+            let mut e = Emulator::new(20, 4);
+            e.feed(glyph.as_bytes());
+            assert_eq!(e.term.grid().cursor.point.column.0, width, "{glyph:?}");
+        }
+    }
+
+    #[test]
     fn a_bare_line_feed_reads_the_same_across_reads_and_resets() {
         // Nothing about this may depend on where the PTY reads happen to split,
         // and `reset` (RIS) must not change it either.

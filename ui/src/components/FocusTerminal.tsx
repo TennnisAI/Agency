@@ -11,7 +11,7 @@ import { attachRun, detachRun, resizeRun, runInput, runPreview, ensureRunActive,
   FileRoot, openTermPath } from "../api";
 import { useRuns } from "../store/runs";
 import { currentXtermTheme, minContrastRatio, paperSurface } from "../lib/themes";
-import { paneOptions } from "../lib/termOptions";
+import { createPaneTerminal } from "../lib/termOptions";
 import { initialCapture, feed } from "../lib/firstPrompt";
 import { shouldSwallowWheel, createPageScroller } from "../lib/termScroll";
 import { follow, GESTURE_MS } from "../lib/termFollow";
@@ -125,7 +125,7 @@ export default function FocusTerminal(
     // there" is not something to raise a toast over.
     const input = createInputWriter((data) => { stream.input(runId, data).catch(() => {}); });
     inputRef.current = input;
-    const term = new Terminal(paneOptions());
+    const term = createPaneTerminal();
     const fit = new FitAddon();
     const search = new SearchAddon();
     term.loadAddon(fit);

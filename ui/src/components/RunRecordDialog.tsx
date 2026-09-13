@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { RunInfo, RunConversation, readRunRecord, readRunConversation } from "../api";
 import { useModalKeys } from "../hooks/useModalKeys";
 import { fmtStamp } from "../lib/issues";
+import { restorable, restoreTitle } from "../lib/restore";
 import ModalBackdrop from "./ModalBackdrop";
 import Markdown from "./Markdown";
 
@@ -24,13 +25,24 @@ import Markdown from "./Markdown";
  * two agents' transcript formats have been read for real, so for the rest
  * this tab says it cannot see the conversation, which is a different claim
  * from there not being one.
+ *
+ * Reading the conversation is usually the moment someone decides to pick it
+ * back up, and Restore used to exist only as the ↺ on the archive row behind
+ * this dialog (AGE-235): you had to close what you were reading to find it.
+ * The footer carries the same action, gated and explained by the same
+ * `lib/restore.ts` as the row, so the two cannot disagree about a run.
  */
 export default function RunRecordDialog({
   run,
   onClose,
+  onRestore,
+  busy = false,
 }: {
   run: RunInfo;
   onClose: () => void;
+  /** Omitted where the run is not archived, and the footer goes with it. */
+  onRestore?: () => void;
+  busy?: boolean;
 }) {
   // A run archived before records existed can still have a conversation, and
   // opening it on an empty record pane would read as "nothing here".
@@ -167,6 +179,21 @@ export default function RunRecordDialog({
             </div>
           )}
         </div>
+        {onRestore && (
+          <div className="modal-foot">
+            {/* A disabled button's tooltip is easy to miss, so the one case
+                that disables it says why on the footer itself. */}
+            {!restorable(run) && <span className="run-record-note">{restoreTitle(run)}</span>}
+            <button
+              className="btn-primary"
+              title={restoreTitle(run)}
+              disabled={busy || !restorable(run)}
+              onClick={onRestore}
+            >
+              {busy ? "Restoring…" : "Restore"}
+            </button>
+          </div>
+        )}
       </div>
     </ModalBackdrop>
   );

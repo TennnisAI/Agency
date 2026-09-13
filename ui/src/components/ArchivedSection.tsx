@@ -59,16 +59,20 @@ export default function ArchivedSection() {
 
   if (!selectedProjectId) return null;
 
-  const restore = async (r: RunInfo) => {
-    if (busy) return;
+  // Resolves whether the run came back, so the record dialog knows to close
+  // on success and stay open, still readable, on failure.
+  const restore = async (r: RunInfo): Promise<boolean> => {
+    if (busy) return false;
     setBusy(true);
     try {
       const restored = await restoreRun(r.id);
       await refreshRuns();
       await load();
       setFocusedRun(restored.id);
+      return true;
     } catch (e) {
       toastError(e, "Restore failed");
+      return false;
     } finally {
       setBusy(false);
     }
@@ -177,7 +181,16 @@ export default function ArchivedSection() {
             </div>
         ))}
       {open && items.length === 0 && <div className="archived-empty">Nothing archived.</div>}
-      {reading && <RunRecordDialog run={reading} onClose={() => setReading(null)} />}
+      {reading && (
+        <RunRecordDialog
+          run={reading}
+          busy={busy}
+          onClose={() => setReading(null)}
+          onRestore={async () => {
+            if (await restore(reading)) setReading(null);
+          }}
+        />
+      )}
       {confirmDelete && (
         <ConfirmDialog
           title="Delete archived agent?"

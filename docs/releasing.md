@@ -342,7 +342,7 @@ repo.
 | `APPLE_PASSWORD` | app-specific password for that Apple ID |
 | `APPLE_TEAM_ID` | the 10-character Apple team identifier |
 | `TAURI_SIGNING_PRIVATE_KEY` | the updater's minisign private key, the whole file |
-| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | that key's password (empty string if it has none) |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | that key's password. **Leave it unset if the key has none**: GitHub will not store an empty secret, and `gh secret set --body ""` prompts for a value instead of setting one. An unset secret reaches the workflow as an empty string, which is the empty password |
 
 Export the certificate: in **Keychain Access → login → My Certificates**, select
 the Developer ID Application entry, right-click → **Export** to a `.p12` with a

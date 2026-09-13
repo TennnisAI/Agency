@@ -45,7 +45,9 @@ name: Release
 #                               is compiled into the app from tauri.conf.json,
 #                               so LOSING IT STRANDS EVERY INSTALLED CLIENT on
 #                               whatever version it is running, permanently.
-#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  that key's password ("" if none)
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  that key's password. Leave it unset when
+#                               the key has none: an unset secret reads as "",
+#                               and GitHub refuses to store an empty one.
 
 on:
   push:

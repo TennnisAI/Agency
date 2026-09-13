@@ -502,10 +502,10 @@ function Shell() {
         setTab("docs");
         window.dispatchEvent(new CustomEvent("agency:open-note", { detail: { projectId: p.id, path: target.path } }));
         break;
-      // Docs is always rooted at the project checkout, so the Files tab has to
-      // be too, or the request would be addressed to a root that isn't showing
-      // and sit in the pending slot forever. selectProject drops the run
-      // selection, which is what points the Files tab back at the checkout.
+      // A link names a project, not a worktree, so it opens in the project
+      // checkout. selectProject drops the run selection, which is what points
+      // the Files (and Docs) tab back at the checkout, and the request has to
+      // be addressed to that root or it would sit in the pending slot forever.
       case "file":
         selectProject(p);
         setTab("files");

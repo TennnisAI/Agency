@@ -1895,8 +1895,9 @@ export const openTermPath = (root: FileRoot, path: string) =>
 
 // Actual on-disk name of the project's top-level docs folder (case-insensitive
 // match), or null when the project has none.
-export const detectDocsDir = (projectId: string) =>
-  invoke<string | null>("detect_docs_dir", { projectId });
+// `root` defaults to the project's own checkout.
+export const detectDocsDir = (projectId: string, root?: FileRoot) =>
+  invoke<string | null>("detect_docs_dir", { projectId, root: root ?? null });
 
 export interface DocFile {
   // Path relative to the docs dir, "/"-separated.

@@ -14,17 +14,30 @@ import { toastError } from "../lib/toast";
  * zero index rebuilds. Mutations call `refresh` for instant feedback; the poll
  * picks up external edits (agents writing docs).
  *
+ * `root` is the working tree to read: the project's own checkout unless the
+ * caller names another. The Docs tab passes the selected agent's worktree, the
+ * same tree the Files tab shows; the issue board's link index keeps the checkout.
+ *
  * `docsDir` is undefined while detecting, null when the project has none.
  */
-export function useDocs(projectId: string | null, active: boolean) {
+export function useDocs(projectId: string | null, active: boolean, root?: FileRoot) {
+  const docsRoot: FileRoot | null = projectId ? root ?? { kind: "project", id: projectId } : null;
+  // Which corpus this is. A project and a tree together: the same project read
+  // from the checkout and from a worktree is two corpora, and a switch between
+  // them has to reset exactly like a project switch.
+  const scope = docsRoot ? `${projectId}|${docsRoot.kind}:${docsRoot.id}` : null;
   const [docsDir, setDocsDir] = useState<string | null | undefined>(undefined);
-  // Tagged with the project it was built from: the reset effect below can only
+  // Tagged with the scope it was built from: the reset effect below can only
   // clear it one commit late, and consumers that key work off the index (tab
-  // restore, the tree) must never see the outgoing project's corpus.
-  const [indexed, setIndexed] = useState<{ pid: string; index: DocsIndex } | null>(null);
-  const index = indexed !== null && indexed.pid === projectId ? indexed.index : null;
+  // restore, the tree) must never see the outgoing corpus.
+  const [indexed, setIndexed] = useState<{ scope: string; index: DocsIndex } | null>(null);
+  const index = indexed !== null && indexed.scope === scope ? indexed.index : null;
+  const scopeRef = useRef(scope);
+  scopeRef.current = scope;
   const projectRef = useRef(projectId);
   projectRef.current = projectId;
+  const rootRef = useRef(docsRoot);
+  rootRef.current = docsRoot;
   const dirRef = useRef(docsDir);
   dirRef.current = docsDir;
   // The corpus cache the stat diff runs against: bodies by path + the
@@ -48,22 +61,23 @@ export function useDocs(projectId: string | null, active: boolean) {
 
   const refresh = useCallback(async () => {
     const pid = projectRef.current;
-    if (!pid) return;
+    const root = rootRef.current;
+    const sc = scopeRef.current;
+    if (!pid || !root || !sc) return;
     try {
       let dir = dirRef.current;
       // Re-detect while absent so a docs folder created outside the app (or by
       // an agent) is picked up without leaving the tab.
       if (dir == null) {
-        dir = await detectDocsDir(pid);
-        if (projectRef.current !== pid) return;
+        dir = await detectDocsDir(pid, root);
+        if (scopeRef.current !== sc) return;
         dirRef.current = dir; // update eagerly — the state ref lags a render
         setDocsDir(dir);
         if (dir == null) return;
       }
-      const root: FileRoot = { kind: "project", id: pid };
       const seq = ++seqRef.current;
       const scan = await docsCorpusStats(root, dir);
-      if (projectRef.current !== pid || dirRef.current !== dir || seqRef.current !== seq) return;
+      if (scopeRef.current !== sc || dirRef.current !== dir || seqRef.current !== seq) return;
 
       const nextSig = new Map(scan.files.map((s) => [s.path, `${s.mtimeMs}:${s.size}`]));
       const changed: string[] = [];
@@ -83,7 +97,7 @@ export function useDocs(projectId: string | null, active: boolean) {
 
       if (changed.length > 0) {
         const files = await readDocsFiles(root, dir, changed);
-        if (projectRef.current !== pid || dirRef.current !== dir || seqRef.current !== seq) return;
+        if (scopeRef.current !== sc || dirRef.current !== dir || seqRef.current !== seq) return;
         for (const f of files) filesRef.current.set(f.path, f);
         // A changed path the read skipped (binary, vanished mid-poll) must not
         // linger with its stale body; the signature still records the attempt
@@ -103,7 +117,7 @@ export function useDocs(projectId: string | null, active: boolean) {
         console.debug(`[docs] corpus refresh: ${changed.length} read, ${removed.length} removed`);
       }
       setIndexed({
-        pid,
+        scope: sc,
         index: buildIndex([...filesRef.current.values()], scan.dirs, scan.attachments),
       });
     } catch {
@@ -119,17 +133,17 @@ export function useDocs(projectId: string | null, active: boolean) {
     dirsRef.current = [];
     attachRef.current = [];
     builtRef.current = false;
-    if (!active || !projectId) return;
+    if (!active || !scope) return;
     void refresh();
     const t = window.setInterval(refresh, 2000);
     return () => window.clearInterval(t);
-  }, [projectId, active, refresh]);
+  }, [scope, active, refresh]);
 
   const createDocsDir = useCallback(async () => {
-    const pid = projectRef.current;
-    if (!pid) return;
+    const root = rootRef.current;
+    if (!root) return;
     try {
-      await createDir({ kind: "project", id: pid }, "docs");
+      await createDir(root, "docs");
       dirRef.current = "docs";
       setDocsDir("docs");
       await refresh();

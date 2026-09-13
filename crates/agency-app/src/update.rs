@@ -17,7 +17,7 @@
 //! effect on the next launch, which the user chooses. That is what keeps an
 //! update from ever pulling the floor out from under running agents.
 //!
-//! Not every install is Agency's to replace. A `.deb`, `.rpm` or AUR package
+//! Not every install is Agency's to replace. A `.deb`, `.rpm` or pacman package
 //! belongs to the package manager that put it there, and writing over those
 //! files behind its back leaves the system lying about what is installed. For
 //! those, [`classify`] says so and [`manual_hint`] gives the user the line that
@@ -62,7 +62,8 @@ pub enum InstallKind {
     Deb,
     /// rpm/dnf/zypper owns these files.
     Rpm,
-    /// pacman owns these files — the AUR `agency-bin` package.
+    /// pacman owns these files: `agency-bin`, built from the PKGBUILD in
+    /// `packaging/aur/` until the AUR package is live.
     Pacman,
     /// Anything else: a `./dev.sh` build, a binary copied somewhere by hand.
     /// Offer the download page and nothing that writes to disk.
@@ -119,9 +120,9 @@ pub fn classify(probe: &Probe) -> InstallKind {
                 return InstallKind::Unknown;
             }
             // A machine normally runs exactly one of these. Pacman is tried
-            // first because Arch is the one that reaches Agency through a
-            // third-party recipe (the AUR `agency-bin`) rather than a file the
-            // user downloaded, so its answer is the most specific.
+            // first because an Arch box can carry a dpkg database too (dpkg is
+            // packaged for Arch, and debtap uses it), while nothing but Arch
+            // has pacman's, so its answer is the most specific.
             if probe.pacman_db {
                 InstallKind::Pacman
             } else if probe.dpkg_db {
@@ -167,9 +168,14 @@ pub fn manual_hint(kind: InstallKind, latest: &str, arch: &str) -> Option<String
             Some(format!("sudo apt install ./Agency_{latest}_{a}.deb"))
         }
         InstallKind::Rpm => Some(format!("sudo dnf install ./Agency-{latest}-1.{arch}.rpm")),
-        // The AUR package tracks the release on its own, so there is no file to
-        // fetch first: the helper does the whole thing.
-        InstallKind::Pacman => Some("yay -S agency-bin".to_string()),
+        // `agency-bin` is not on the AUR yet (README: "There is no AUR package
+        // yet"), so a pacman install was built from the in-repo PKGBUILD. This
+        // first said `yay -S agency-bin`, which fails with "target not found"
+        // for everyone it is shown to; caught in review before it shipped. The
+        // dialog says where to run it: packaging/aur/agency-bin in a checkout,
+        // which release step 15 points at each release. It becomes
+        // `yay -S agency-bin` once the AUR package is live.
+        InstallKind::Pacman => Some("git pull && makepkg -si".to_string()),
         InstallKind::MacApp | InstallKind::AppImage | InstallKind::Unknown => None,
     }
 }
@@ -247,6 +253,9 @@ pub struct UpdateCheck {
     pub can_install: bool,
     /// The command a package-manager install needs instead, ready to copy.
     pub manual_hint: Option<String>,
+    /// A version already installed in place and waiting for a restart. See
+    /// [`UpdateCheck::with_staged`].
+    pub staged: Option<String>,
     /// Why the check came back empty, for the UI to show verbatim. `None` on a
     /// successful check.
     pub error: Option<String>,
@@ -263,8 +272,40 @@ impl UpdateCheck {
             install_kind: kind,
             can_install: false,
             manual_hint: None,
+            staged: None,
             error: Some(error),
         }
+    }
+
+    /// Fold in a version that has been installed but not restarted into.
+    ///
+    /// The running binary keeps reporting the old version until the restart, so
+    /// without this every check after Install and "Restart later" said the same
+    /// release was still available: the Settings dot stayed lit, Diagnostics kept
+    /// offering "Update…", and pressing Install downloaded the whole release a
+    /// second time. A release newer than the staged one is still offered.
+    pub fn with_staged(mut self, staged: Option<&str>) -> Self {
+        let Some(staged) = staged else { return self };
+        let beyond_staged =
+            self.latest.as_deref().is_some_and(|l| agency_core::version::is_newer(l, staged));
+        if !beyond_staged {
+            self.update_available = false;
+            self.can_install = false;
+            self.manual_hint = None;
+        }
+        self.staged = Some(staged.to_string());
+        self
+    }
+}
+
+/// What to cache after a check: `next`, unless it could not reach GitHub and
+/// `prev` could. A failed check says nothing about what has been released, and
+/// letting it overwrite a good answer put the Settings dot out for as long as
+/// the network was down.
+pub fn keep_known(prev: Option<UpdateCheck>, next: UpdateCheck) -> UpdateCheck {
+    match prev {
+        Some(prev) if next.error.is_some() && prev.error.is_none() => prev,
+        _ => next,
     }
 }
 
@@ -297,6 +338,7 @@ fn check_with_arch(current: &str, kind: InstallKind, arch: &str) -> UpdateCheck 
                 url: RELEASES_PAGE.to_string(),
                 notes: rel.notes,
                 install_kind: kind,
+                staged: None,
                 error: None,
             }
         }
@@ -428,8 +470,8 @@ mod tests {
         assert_eq!(classify(&deb), InstallKind::Deb);
         let rpm = Probe { rpm_db: true, ..linux("/usr/bin/Agency") };
         assert_eq!(classify(&rpm), InstallKind::Rpm);
-        // An Arch box has a pacman db and, via the AUR package's own
-        // dependencies, may have neither of the others; pacman wins regardless.
+        // An Arch box has a pacman db and may have a dpkg one beside it (dpkg
+        // is packaged for Arch); pacman wins regardless.
         let arch = Probe { pacman_db: true, dpkg_db: true, ..linux("/usr/bin/Agency") };
         assert_eq!(classify(&arch), InstallKind::Pacman);
         for kind in [InstallKind::Deb, InstallKind::Rpm, InstallKind::Pacman] {
@@ -456,7 +498,8 @@ mod tests {
         );
         assert_eq!(
             manual_hint(InstallKind::Pacman, "0.3.0", "x86_64").as_deref(),
-            Some("yay -S agency-bin")
+            Some("git pull && makepkg -si"),
+            "agency-bin is not on the AUR yet; a yay line fails with target not found"
         );
         // An install Agency updates itself has nothing to tell the user.
         assert_eq!(manual_hint(InstallKind::MacApp, "0.3.0", "aarch64"), None);
@@ -498,5 +541,55 @@ mod tests {
         let mut c = Cadence::default();
         c.record(10_000, true);
         assert!(c.due(9_000));
+    }
+
+    fn found(latest: &str) -> UpdateCheck {
+        UpdateCheck {
+            current: "0.2.0".to_string(),
+            latest: Some(latest.to_string()),
+            update_available: true,
+            url: RELEASES_PAGE.to_string(),
+            notes: None,
+            install_kind: InstallKind::AppImage,
+            can_install: true,
+            manual_hint: None,
+            staged: None,
+            error: None,
+        }
+    }
+
+    #[test]
+    fn a_staged_release_is_not_offered_again_but_a_newer_one_is() {
+        // Install, then "Restart later": the binary still says 0.2.0, and
+        // without this the same 0.3.0 was offered (and downloaded) again.
+        let same = found("0.3.0").with_staged(Some("0.3.0"));
+        assert!(!same.update_available);
+        assert!(!same.can_install);
+        assert_eq!(same.staged.as_deref(), Some("0.3.0"));
+
+        let newer = found("0.4.0").with_staged(Some("0.3.0"));
+        assert!(newer.update_available, "a release past the staged one is still news");
+        assert!(newer.can_install);
+        assert_eq!(newer.staged.as_deref(), Some("0.3.0"));
+
+        // Offline after installing: the restart is still owed.
+        let offline = UpdateCheck::failed("0.2.0", InstallKind::MacApp, "offline".into())
+            .with_staged(Some("0.3.0"));
+        assert_eq!(offline.staged.as_deref(), Some("0.3.0"));
+        assert!(!offline.update_available);
+
+        assert_eq!(found("0.3.0").with_staged(None), found("0.3.0"));
+    }
+
+    #[test]
+    fn a_failed_check_never_replaces_a_good_one() {
+        let good = found("0.3.0");
+        let failed = UpdateCheck::failed("0.2.0", InstallKind::AppImage, "offline".into());
+        assert_eq!(keep_known(Some(good.clone()), failed.clone()), good);
+        // Nothing better to keep: the failure is the answer.
+        assert_eq!(keep_known(None, failed.clone()), failed);
+        assert_eq!(keep_known(Some(failed.clone()), failed.clone()), failed);
+        // A good answer always replaces what came before it.
+        assert_eq!(keep_known(Some(found("0.3.0")), found("0.4.0")), found("0.4.0"));
     }
 }

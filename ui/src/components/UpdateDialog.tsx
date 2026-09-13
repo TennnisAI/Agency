@@ -6,6 +6,7 @@ import {
   UpdateProgress,
   checkForUpdate,
   installUpdate,
+  lastUpdateCheck,
   restartApp,
   runningSessions,
 } from "../api";
@@ -37,6 +38,14 @@ type Phase =
   | { kind: "installed"; version: string }
   | { kind: "failed"; check: UpdateCheck; message: string };
 
+/** A check that finds its release already installed opens on the restart
+ *  prompt. Offering Install again downloaded the same release a second time. */
+function phaseFor(check: UpdateCheck): Phase {
+  return check.staged && !check.updateAvailable
+    ? { kind: "installed", version: check.staged }
+    : { kind: "report", check };
+}
+
 export default function UpdateDialog({
   initial,
   onClose,
@@ -45,15 +54,15 @@ export default function UpdateDialog({
   /** A check that has already run, to show without asking again. */
   initial?: UpdateCheck | null;
   onClose: () => void;
-  /** Hands a fresh check back so the caller can keep its own dot in step. */
+  /** Hands a fresh check back so the caller can keep its own row in step. */
   onChecked?: (check: UpdateCheck) => void;
 }) {
-  const [phase, setPhase] = useState<Phase>(
-    initial ? { kind: "report", check: initial } : { kind: "checking" },
-  );
+  const [phase, setPhase] = useState<Phase>(initial ? phaseFor(initial) : { kind: "checking" });
   // Read when the restart is offered, not on mount: the download takes long
   // enough that a count from before it would be describing a different moment.
-  const [sessions, setSessions] = useState(0);
+  // null until it arrives, so the prompt never claims "nothing is running"
+  // before it knows.
+  const [sessions, setSessions] = useState<number | null>(null);
   const busy = phase.kind === "installing";
   useModalKeys(onClose, !busy);
 
@@ -72,7 +81,7 @@ export default function UpdateDialog({
     checkForUpdate()
       .then((check) => {
         if (!live) return;
-        setPhase({ kind: "report", check });
+        setPhase(phaseFor(check));
         checkedRef.current?.(check);
       })
       .catch((e) => {
@@ -88,6 +97,15 @@ export default function UpdateDialog({
     return () => { live = false; };
   }, [initial, attempt]);
 
+  useEffect(() => {
+    if (phase.kind !== "installed") return;
+    let live = true;
+    runningSessions()
+      .then((n) => { if (live) setSessions(n); })
+      .catch(() => {});
+    return () => { live = false; };
+  }, [phase.kind]);
+
   // Download progress arrives as an event because the install command does not
   // return until the whole thing is on disk.
   useEffect(() => {
@@ -101,8 +119,12 @@ export default function UpdateDialog({
     setPhase({ kind: "installing", check, progress: null });
     try {
       const version = await installUpdate();
-      setSessions(await runningSessions().catch(() => 0));
       setPhase({ kind: "installed", version });
+      // The backend now reports this version as staged. Hand that back so the
+      // caller's row stops offering the release that was just installed.
+      lastUpdateCheck()
+        .then((c) => { if (c) checkedRef.current?.(c); })
+        .catch(() => {});
     } catch (e) {
       setPhase({ kind: "failed", check, message: String(e) });
     }
@@ -149,6 +171,7 @@ const EMPTY_CHECK: UpdateCheck = {
   installKind: "unknown",
   canInstall: false,
   manualHint: null,
+  staged: null,
   error: null,
 };
 
@@ -164,7 +187,7 @@ function headline(phase: Phase): string {
   }
 }
 
-function subhead(phase: Phase, sessions: number): string {
+function subhead(phase: Phase, sessions: number | null): string {
   switch (phase.kind) {
     case "checking":
       return "Asking GitHub for the latest release.";
@@ -178,6 +201,7 @@ function subhead(phase: Phase, sessions: number): string {
     case "installing":
       return "Agency checks the download's signature before it puts anything in place.";
     case "installed":
+      if (sessions === null) return "Restart when it suits you.";
       return sessions > 0
         ? `Restart when it suits you. ${sessions} session${sessions === 1 ? "" : "s"} ${sessions === 1 ? "is" : "are"} running; they normally carry on through a restart, but a release that changes the terminal daemon will end them.`
         : "Restart when it suits you. Nothing is running.";
@@ -191,7 +215,7 @@ function installerNote(c: UpdateCheck): string {
   switch (c.installKind) {
     case "deb": return "This copy came from a .deb, so apt owns it and Agency must not write over it.";
     case "rpm": return "This copy came from an .rpm, so your package manager owns it and Agency must not write over it.";
-    case "pacman": return "This copy came from the AUR package, so pacman owns it and Agency must not write over it.";
+    case "pacman": return "This copy was built from the agency-bin PKGBUILD, so pacman owns it and Agency must not write over it. Run this in packaging/aur/agency-bin in your Agency checkout.";
     default: return "This build isn't one Agency can replace, so install the new version yourself.";
   }
 }

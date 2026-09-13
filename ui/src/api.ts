@@ -1756,6 +1756,9 @@ export interface UpdateCheck {
   canInstall: boolean;
   /** The command a package-manager install needs instead, ready to copy. */
   manualHint: string | null;
+  /** A version already installed and waiting for a restart. When it is at
+   *  least `latest`, `updateAvailable` and `canInstall` are false. */
+  staged: string | null;
   /** Why the check came back empty; null on success. */
   error: string | null;
 }

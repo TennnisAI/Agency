@@ -147,9 +147,16 @@ tests: 82 core + 54 app), `tsc --noEmit` exit 0, `vite build` exit 0.
    *Who it is for.* `update::classify` works out how this copy was installed
    from `$APPIMAGE`, the running exe path and the package databases present.
    A `.app` bundle and an AppImage are Agency's to replace; a `.deb`, `.rpm` or
-   AUR install belongs to its package manager, and `manual_hint` gives those
+   pacman install belongs to its package manager, and `manual_hint` gives those
    the exact command instead of a button that would corrupt the package
    database. A dev build is `Unknown` and is never replaced.
+
+   *Staying honest after the install.* The running binary reports the old
+   version until the restart, so `AppState` remembers the staged version and
+   `UpdateCheck::with_staged` stops offering that release again. A failed check
+   never overwrites a good cached one (`update::keep_known`). The webview has
+   no updater permission: `install_update`, with its install-kind gate, is the
+   only way in.
 
    Help ▸ Check for Updates… (`menu.rs`, `appMenu.ts`, `paletteCommands.ts`)
    opens the same dialog Settings ▸ Diagnostics does.

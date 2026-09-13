@@ -321,6 +321,12 @@ function Shell() {
   // before this component mounted. Nothing here downloads anything; it lights
   // the dot on Settings and the user decides from there. Failures stay silent
   // by design: being offline is not something to interrupt anyone about.
+  //
+  // The event is the only thing that turns the dot off. The backend sends it
+  // after every check (manual ones too) and after an install, carrying its
+  // cached answer, which keeps the last good result through a failed check. The
+  // dialog's own result used to set the dot as well, and an offline "Check for
+  // Updates…" put it out.
   useEffect(() => {
     let cancelled = false;
     lastUpdateCheck()
@@ -328,7 +334,7 @@ function Shell() {
         if (!cancelled && res?.updateAvailable) setUpdateAvailable(true);
       })
       .catch(() => {});
-    const sub = listen<UpdateCheck>("update-available", () => setUpdateAvailable(true));
+    const sub = listen<UpdateCheck>("update-checked", (e) => setUpdateAvailable(e.payload.updateAvailable));
     return () => {
       cancelled = true;
       sub.then((un) => un()).catch(() => {});
@@ -713,7 +719,6 @@ function Shell() {
         <UpdateDialog
           initial={updateDialog.initial}
           onClose={() => setUpdateDialog(null)}
-          onChecked={(check) => setUpdateAvailable(check.updateAvailable)}
         />
       )}
       {quitPrompt !== null && (

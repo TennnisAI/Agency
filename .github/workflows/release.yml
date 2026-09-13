@@ -19,7 +19,9 @@ name: Release
 #
 # Both build jobs also emit the artifacts the in-app updater applies, signed
 # with Agency's own minisign key (TAURI_SIGNING_*, nothing to do with Apple):
-# `Agency.app.tar.gz` on macOS, a `.sig` beside each AppImage on Linux. The
+# `Agency.app.tar.gz` on macOS, a `.sig` beside each AppImage on Linux. They
+# are off in tauri.conf.json and these two builds alone turn them on, so no
+# other build needs the key (docs/releasing.md, "Updater signing key"). The
 # publish job turns those into `latest.json`, which is the file the app's
 # updater endpoint reads. Without it the app can still tell you a release
 # exists — that check reads the GitHub API directly — but pressing Install
@@ -134,7 +136,14 @@ jobs:
         # aarch64 host, and the bundle step died after a 5m39s release compile.
         # Naming the target makes the triple a stated fact rather than a
         # consequence of which prebuilt CLI the installer happened to pick.
-        run: cargo tauri build --target aarch64-apple-darwin
+        #
+        # --config turns the updater artifacts on for this build only. With
+        # them on in tauri.conf.json, every build without the key failed at the
+        # signing step: `cargo tauri build` on a laptop, release-macos.sh,
+        # release-linux.sh, and linux-packages.yml on a PR.
+        run: >-
+          cargo tauri build --target aarch64-apple-darwin
+          --config '{"bundle":{"createUpdaterArtifacts":true}}'
 
       # Tauri notarizes and staples the .app, then builds the DMG around it and
       # only signs the DMG; it never submits the disk image. So the DMG people
@@ -201,6 +210,10 @@ jobs:
 
   linux:
     uses: ./.github/workflows/linux-packages.yml
+    # The input is what lets that workflow read the updater key at all; see it
+    # there for why its other runs must not.
+    with:
+      updater-artifacts: true
     secrets: inherit
 
   publish:
@@ -234,15 +247,20 @@ jobs:
 
       # latest.json is what the app's updater endpoint reads: the version on
       # offer, and per platform the artifact's URL and its minisign signature.
-      # Asset URLs go through `releases/latest/download/` rather than the tag,
-      # for the same reason the version does not come from the tag — and
-      # because the manifest and the files it names are attached to the same
-      # release, so "latest" cannot resolve them to different builds.
+      # Asset URLs name `v<version>` from the bundle config, not `latest`: a
+      # client that read the manifest just before the next release went out
+      # would otherwise fetch the newer artifact against the older signature.
+      # The script fails on a missing platform, a missing `.sig`, or a
+      # signature from a key the app does not trust (the bundler only warns
+      # about that one). On a tag push it also checks the tag is `v<version>`;
+      # a manual run has a branch for a ref, so there is nothing to compare.
       - name: Build latest.json
+        env:
+          TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
         run: |
           python3 repo/scripts/updater-manifest.py \
             --config repo/crates/agency-app/tauri.conf.json \
-            --dist dist --out dist/latest.json
+            --dist dist --out dist/latest.json ${TAG:+--tag "$TAG"}
           cat dist/latest.json
 
       - name: Publish draft release

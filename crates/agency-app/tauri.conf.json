@@ -23,7 +23,6 @@
   },
   "bundle": {
     "active": true,
-    "createUpdaterArtifacts": true,
     "homepage": "https://getagency.dev/",
     "license": "Apache-2.0",
     "copyright": "Copyright 2026 Nicholas Counts",

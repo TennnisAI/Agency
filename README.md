@@ -54,7 +54,7 @@ automatically") and Agency makes no network calls of its own at all.
 Pressing **Install** there downloads that release, checks it against a signing
 key compiled into the app, and puts the new version in place. Restarting is a
 separate press, so an update never closes Agency over a running agent. A `.deb`,
-`.rpm` or AUR install is owned by its package manager, so the panel shows the
+`.rpm` or pacman install is owned by its package manager, so the panel shows the
 command for it instead of an Install button.
 
 ## Installing (beta)

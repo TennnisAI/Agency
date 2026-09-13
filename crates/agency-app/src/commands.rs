@@ -2429,13 +2429,15 @@ pub async fn check_for_update(app: tauri::AppHandle) -> Result<crate::update::Up
     let check = tauri::async_runtime::spawn_blocking(move || crate::update::check(&current, kind))
         .await
         .map_err(|e| e.to_string())?;
-    // Cache it the way the background thread does, so the two paths cannot
-    // leave the UI reading a stale answer from whichever ran last.
-    {
-        use tauri::Manager;
-        app.state::<AppState>().set_last_update_check(check.clone());
-    }
-    Ok(check)
+    // Cache and announce it the way the background thread does, so the two
+    // paths cannot leave the UI reading a stale answer from whichever ran last.
+    use tauri::{Emitter, Manager};
+    let state = app.state::<AppState>();
+    let shown = state.record_update_check(check.clone());
+    let _ = app.emit("update-checked", &shown);
+    // The caller gets this check's own answer, error included: it is what the
+    // dialog the user just opened has to show.
+    Ok(check.with_staged(state.staged_update().as_deref()))
 }
 
 /// The last check's result without making a request, for a frontend that has
@@ -2455,16 +2457,18 @@ pub fn last_update_check(state: State<'_, AppState>) -> Option<crate::update::Up
 /// Returns the version that was installed.
 #[tauri::command]
 pub async fn install_update(app: tauri::AppHandle) -> Result<String, String> {
-    use tauri::Emitter;
+    use tauri::{Emitter, Manager};
     use tauri_plugin_updater::UpdaterExt;
 
     let kind = crate::update::current_kind();
     if !kind.self_updating() {
         // The UI hides the button for these, so reaching here means the install
         // changed under us (an AppImage the user moved into /usr/bin) rather
-        // than a user pressing something they shouldn't.
+        // than a user pressing something they shouldn't. This check is the only
+        // gate: the webview has no updater permission of its own, so nothing
+        // reaches the plugin except through this command.
         return Err("This copy of Agency is managed by something else, so it can't \
-                    update itself. Settings, Diagnostics has the command for it."
+                    update itself. The update panel has the command for it."
             .to_string());
     }
 
@@ -2492,6 +2496,14 @@ pub async fn install_update(app: tauri::AppHandle) -> Result<String, String> {
         .map_err(|e| format!("The update could not be installed: {e}"))?;
 
     log::info!("installed update {version}; waiting for the user to restart");
+    // Until the restart the binary still reports the old version, so every
+    // later check would offer this same release again. Remember it, and tell
+    // the UI now rather than at the next check hours from now.
+    let state = app.state::<AppState>();
+    state.set_staged_update(version.clone());
+    if let Some(shown) = state.last_update_check() {
+        let _ = app.emit("update-checked", &shown);
+    }
     Ok(version)
 }
 

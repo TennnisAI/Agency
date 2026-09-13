@@ -68,8 +68,9 @@ exist until the release is published.
     under its own button.
 
     Check `latest.json` is there and names the version you are releasing. The
-    build fails rather than attaching an unsigned artifact, so its absence
-    means the whole macOS or Linux leg is missing, not just the manifest.
+    publish job fails rather than write a manifest missing a platform, holding
+    an unsigned artifact, or signed with a key the app does not trust, so a
+    draft without it means a build leg is missing, not just the manifest.
 12. Paste the `CHANGELOG.md` section into the draft and **publish the
     release**. Until you do,
     it is not `releases/latest`, which is both why the download link 404s and
@@ -87,6 +88,10 @@ exist until the release is published.
     gh api -X PATCH repos/TennnisAI/Agency/releases/<id> \
       -F draft=false -f make_latest=true -f tag_name=v<version>
     ```
+
+    The tag now matters to installs as well. `latest.json` links each
+    artifact under `releases/download/v<version>/`, so a release published
+    under any other tag is offered to everyone and then fails on Install.
 13. Now push the site commit to `main`. `deploy-site.yml` fires on the push and
     the download button starts working.
 14. Load getagency.dev/download and click the macOS button and one Linux
@@ -291,7 +296,9 @@ release .deb rather than building from source.
    ```
 
 3. Once it is live, the download page and the README stop saying there is no
-   AUR package: the Arch line becomes `yay -S agency-bin`.
+   AUR package: the Arch line becomes `yay -S agency-bin`. So does the
+   pacman line in `update::manual_hint` (and its note in `UpdateDialog.tsx`),
+   which until then tells a pacman install to rebuild from this PKGBUILD.
 
 `update.sh` writes `.SRCINFO` itself, from the PKGBUILD, because `makepkg
 --printsrcinfo` needs Arch. It knows the fields the PKGBUILD uses today, so
@@ -326,6 +333,13 @@ password go into the two `TAURI_SIGNING_*` repository secrets below, and nowhere
 else. It is unrelated to the Apple Developer ID: Apple's signature tells the
 user's Mac the app is ours, this one tells the *running app* that an update is
 ours, and they protect different moments.
+
+No local build needs the key. `bundle.createUpdaterArtifacts` is off in
+`tauri.conf.json`, and `release.yml` turns it on for its own two builds with
+`--config '{"bundle":{"createUpdaterArtifacts":true}}'`. With it on in the
+config file, every build without the key failed at the signing step, a PR
+from a fork included. `./scripts/release-linux.sh --updater-artifacts` does the
+same locally, with `TAURI_SIGNING_PRIVATE_KEY` exported.
 
 ### CI secrets
 

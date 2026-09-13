@@ -11,6 +11,9 @@
 #   ./scripts/release-linux.sh --arch both       # what a release ships
 #   ./scripts/release-linux.sh --bundles deb     # just one format
 #   ./scripts/release-linux.sh --native          # build here, no container
+#   ./scripts/release-linux.sh --updater-artifacts  # also sign the AppImage for
+#                                                # the in-app updater; needs
+#                                                # TAURI_SIGNING_PRIVATE_KEY
 #
 # Three formats cover the desktop Linux that matters, and Tauri can build all
 # three: .deb is Debian *and* Ubuntu (one package, same format), .rpm is Fedora
@@ -39,15 +42,26 @@ cd "$REPO_ROOT"
 NATIVE=0
 BUNDLES="deb,rpm,appimage"
 ARCH="host"
+UPDATER=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --native)  NATIVE=1; shift ;;
     --bundles) BUNDLES="${2:?--bundles needs a value, e.g. deb or deb,rpm}"; shift 2 ;;
     --arch)    ARCH="${2:?--arch needs one of: host, amd64, arm64, both}"; shift 2 ;;
-    -h|--help) sed -n '2,37p' "$0"; exit 0 ;;
+    --updater-artifacts) UPDATER=1; shift ;;
+    -h|--help) sed -n '2,40p' "$0"; exit 0 ;;
     *) echo "error: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
+
+# Updater artifacts are off in tauri.conf.json and only a release turns them on:
+# with them on by default, every build without the key failed at the signing
+# step. Checked before the build rather than twenty minutes into it, since the
+# CLI only finds out at the end.
+if [[ "$UPDATER" -eq 1 && -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then
+  echo "error: --updater-artifacts signs with TAURI_SIGNING_PRIVATE_KEY, which is not set." >&2
+  exit 2
+fi
 
 if [[ "$(uname -s)" != "Linux" && "$NATIVE" -eq 0 ]]; then
   # ---- Docker path -------------------------------------------------------
@@ -116,12 +130,21 @@ if [[ "$(uname -s)" != "Linux" && "$NATIVE" -eq 0 ]]; then
   # write its objects to the same target/release and evict the other one on
   # each switch.
   VOL_SUFFIX="$(printf '%s' "${PLATFORM:-host}" | tr '/' '-')"
+  # The key goes in by name (`-e VAR`, value from this environment) so it never
+  # appears in the process list, and only when asked for: the container used to
+  # receive nothing but BUNDLES, so an updater build could not sign in here.
+  UPDATER_ENV=()
+  if [[ "$UPDATER" -eq 1 ]]; then
+    UPDATER_ENV=(-e TAURI_SIGNING_PRIVATE_KEY -e TAURI_SIGNING_PRIVATE_KEY_PASSWORD)
+  fi
   docker run --rm ${PLATFORM:+--platform "$PLATFORM"} \
     -v "$STAGE:/stage:ro" \
     -v "$OUT:/out" \
     -v agency-linux-cargo:/usr/local/cargo/registry \
     -v "agency-linux-target-$VOL_SUFFIX:/work/target" \
     -e "BUNDLES=$BUNDLES" \
+    -e "UPDATER=$UPDATER" \
+    ${UPDATER_ENV[@]+"${UPDATER_ENV[@]}"} \
     "$IMAGE" bash -euo pipefail -c '
       export DEBIAN_FRONTEND=noninteractive
       # xdg-utils is not a build dependency of anything: the AppImage bundler
@@ -152,10 +175,11 @@ if [[ "$(uname -s)" != "Linux" && "$NATIVE" -eq 0 ]]; then
       # Passed as a flag, not left to the exported variable: the script sets
       # its own default before parsing arguments, so `--bundles deb` on the
       # outside used to build all three formats on the inside.
-      /work/scripts/release-linux.sh --native --bundles "$BUNDLES"
+      if [ "$UPDATER" = 1 ]; then set -- --updater-artifacts; fi
+      /work/scripts/release-linux.sh --native --bundles "$BUNDLES" "$@"
       echo "==> Copying packages out"
       find /work/target/release/bundle -maxdepth 2 -type f \
-        \( -name "*.deb" -o -name "*.AppImage" -o -name "*.rpm" \) \
+        \( -name "*.deb" -o -name "*.AppImage" -o -name "*.rpm" -o -name "*.AppImage.sig" \) \
         -exec cp -v {} /out/ \;
     '
   done
@@ -207,8 +231,12 @@ echo "==> [2/4] Building agency-termd sidecar (release)"
 # built here rather than as a separate step. Invoked through the project's own
 # pinned CLI rather than a globally installed cargo-tauri, so the version is the
 # one in ui/pnpm-lock.yaml.
-echo "==> [3/4] Building the bundles ($BUNDLES)"
-ui/node_modules/.bin/tauri build --bundles "$BUNDLES"
+UPDATER_CONFIG=()
+if [[ "$UPDATER" -eq 1 ]]; then
+  UPDATER_CONFIG=(--config '{"bundle":{"createUpdaterArtifacts":true}}')
+fi
+echo "==> [3/4] Building the bundles ($BUNDLES${UPDATER_CONFIG[*]:+, updater artifacts})"
+ui/node_modules/.bin/tauri build --bundles "$BUNDLES" ${UPDATER_CONFIG[@]+"${UPDATER_CONFIG[@]}"}
 
 echo "==> [4/4] Verifying the artifacts"
 BUNDLE_DIR="target/release/bundle"

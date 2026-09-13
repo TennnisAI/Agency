@@ -699,7 +699,7 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         use tauri::{Emitter, Manager};
         let mut cadence = crate::update::Cadence::default();
         // Before the first check, not after it: the window is still coming up
-        // for the first second or so of a launch, and an `update-available`
+        // for the first second or so of a launch, and an `update-checked`
         // emitted into no listener is an event nobody receives.
         // `last_update_check` covers the race either way; this just keeps it
         // from being the normal path.
@@ -729,10 +729,11 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                 if let Some(latest) = &check.latest {
                     log::info!("update check: running {current}, latest {latest}");
                 }
-                state.set_last_update_check(check.clone());
-                if check.update_available {
-                    let _ = update_handle.emit("update-available", &check);
-                }
+                // Every check, not only one that finds a release: a check that
+                // no longer finds one (or finds it already installed) is what
+                // puts the Settings dot back out.
+                let shown = state.record_update_check(check);
+                let _ = update_handle.emit("update-checked", &shown);
             }));
             if tick.is_err() {
                 log::error!("update check panicked; continuing");

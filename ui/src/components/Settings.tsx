@@ -2240,15 +2240,24 @@ export default function Settings({
                 </div>
                 <div className="settings-notif-row">
                   <span className="settings-notif-label">
-                    {update?.updateAvailable
-                      ? `Agency ${update.latest} is available`
-                      : update?.error
-                        ? "Couldn't reach the releases feed"
-                        : update
-                          ? "Up to date"
-                          : "Updates"}
+                    {update?.staged && !update.updateAvailable
+                      ? `Agency ${update.staged} is installed`
+                      : update?.updateAvailable
+                        ? `Agency ${update.latest} is available`
+                        : update?.error
+                          ? "Couldn't reach the releases feed"
+                          : update
+                            ? "Up to date"
+                            : "Updates"}
                   </span>
-                  {update?.updateAvailable ? (
+                  {update?.staged && !update.updateAvailable ? (
+                    // Installed and waiting: the dialog opens on its restart
+                    // prompt rather than offering the same release again.
+                    <button
+                      className="settings-ghost-btn"
+                      onClick={() => setUpdateDialog({ initial: update })}
+                    >Restart…</button>
+                  ) : update?.updateAvailable ? (
                     // Straight into the dialog on the check already in hand:
                     // asking GitHub a second time to show the same answer is a
                     // spinner for nothing.

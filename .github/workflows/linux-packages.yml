@@ -26,11 +26,11 @@ name: Linux packages
 # on any path: Linux has no platform notary, and the .deb and .rpm are
 # downloaded and installed by hand rather than from a repository with a key.
 #
-# The AppImage is the exception, and only for the in-app updater: when
-# TAURI_SIGNING_PRIVATE_KEY is present (release.yml passes it, a PR run does
-# not) the bundler writes a minisign `.sig` beside it, which the app checks
-# before it replaces itself. That signature is Agency's own and says nothing to
-# the desktop about the package's provenance.
+# The AppImage is the exception, and only for the in-app updater, and only when
+# release.yml asks for it with `updater-artifacts`: the bundler then writes a
+# minisign `.sig` beside it, which the app checks before it replaces itself.
+# That signature is Agency's own and says nothing to the desktop about the
+# package's provenance.
 
 on:
   workflow_dispatch:
@@ -47,6 +47,17 @@ on:
         type: string
         required: false
         default: "deb,rpm,appimage"
+      # Set by release.yml and nothing else. It is both what builds the updater
+      # signature and the only thing that hands this workflow the updater key.
+      # Passing the key on every run went wrong both ways: a PR from a branch of
+      # this repository receives repository secrets, so every packaging PR's
+      # AppImages came out signed with the release key and would install on any
+      # copy of Agency; a PR from a fork receives an empty key, which the CLI
+      # rejects ("failed to decode secret key") rather than skipping.
+      updater-artifacts:
+        type: boolean
+        required: false
+        default: false
   # Also on a PR that touches the packaging itself. Two reasons. It is the only
   # way to get artifacts before this file reaches the default branch, since
   # workflow_dispatch refuses to run a workflow main has never seen ("not found
@@ -130,12 +141,19 @@ jobs:
           # `--bundles ""`, which it rejects. The fallback belongs here rather than in the
           # script: an empty --bundles is a caller mistake worth reporting.
           BUNDLES: ${{ inputs.bundles || 'deb,rpm,appimage' }}
-          # Empty on a PR run, which is fine: the bundler then skips the
-          # updater signature and builds the same packages it always did.
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: ./scripts/release-linux.sh --native --bundles "$BUNDLES"
+          # All three are empty unless release.yml set `updater-artifacts` (see
+          # the input for why). `inputs` does not exist on a PR run, so the
+          # condition is false there and no secret is read at all.
+          UPDATER_ARTIFACTS: ${{ inputs.updater-artifacts && '--updater-artifacts' || '' }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ inputs.updater-artifacts && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ inputs.updater-artifacts && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
+        # $UPDATER_ARTIFACTS unquoted on purpose: empty, it must vanish rather
+        # than reach the script as an empty argument.
+        run: ./scripts/release-linux.sh --native --bundles "$BUNDLES" $UPDATER_ARTIFACTS
 
+      # The .sig only exists on a release build; on any other run the pattern
+      # matches nothing, which upload-artifact accepts because the packages
+      # themselves matched.
       - name: Upload packages
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:

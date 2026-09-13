@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { CloneProgress, RunInfo, createRun, createTerminal as createTerminalApi, getSettings, listRuns, projectTarget, rememberedModel, runScriptsLive } from "../api";
+import { launchModel } from "../lib/launchModel";
 import { loadFold, saveFold } from "../hooks/usePaneWidth";
 import { Tab, openingTab } from "../lib/projectTab";
 import { pinnedFirst } from "../lib/runstate";
@@ -179,7 +180,7 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
     // Same for the model: a shortcut spawn repeats whatever this agent last ran
     // on, so "New Agent" doesn't quietly drop back to the default model after a
     // run was deliberately started on another one.
-    const model = opts?.model !== undefined ? opts.model : await rememberedModel(agentId);
+    const model = await launchModel(opts?.model, () => rememberedModel(agentId));
     setSpawnCount((c) => c + 1);
     setSpawnProgress(null);
     try {

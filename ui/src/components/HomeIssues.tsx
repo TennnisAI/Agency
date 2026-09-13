@@ -10,9 +10,11 @@ import {
   createIssue,
   deleteIssue,
   inspectRepo,
+  rememberedModel,
   startIssueRun,
   updateIssue,
 } from "../api";
+import { launchModel } from "../lib/launchModel";
 import { projectAccent } from "../agents";
 import {
   ISSUE_STATUSES,
@@ -205,7 +207,8 @@ export default function HomeIssues({
       // the same short-circuit in useSpawnAgent.
       const spawnable = r.state === "notARepo" || (r.state === "ready" && !r.dirty);
       if (spawnable) {
-        const run = await startIssueRun(issue.id, agentId, opts?.model ?? null, opts?.base, opts?.mergeTarget);
+        const model = await launchModel(opts?.model, () => rememberedModel(agentId));
+        const run = await startIssueRun(issue.id, agentId, model, opts?.base, opts?.mergeTarget);
         onOpenRun(project, run.id);
       } else {
         setPendingSpawn({ project, issue, agentId, readiness: r, opts });
@@ -609,7 +612,8 @@ export default function HomeIssues({
             const { project, issue, agentId, opts } = pendingSpawn;
             setPendingSpawn(null);
             try {
-              const run = await startIssueRun(issue.id, agentId, opts?.model ?? null, opts?.base, opts?.mergeTarget);
+              const model = await launchModel(opts?.model, () => rememberedModel(agentId));
+              const run = await startIssueRun(issue.id, agentId, model, opts?.base, opts?.mergeTarget);
               onOpenRun(project, run.id);
             } catch (e) {
               reportFailure(e, "Couldn't start agent");

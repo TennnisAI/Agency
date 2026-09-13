@@ -81,6 +81,29 @@ export function inGitlessFolder(run: Pick<RunInfo, "worktree" | "branch">): bool
   return !run.worktree && !run.branch;
 }
 
+/**
+ * The agent's own status line for a card, or null when there is none to show.
+ *
+ * Shown only beside a live agent: the backend already drops it once the
+ * session stops, and a terminal has no agent to write one. `stale` comes from
+ * the backend, which has the busy streaks: a line the agent set before a
+ * later stretch of work it has since finished. The card dims it rather than
+ * letting it read as current. Not "set before the run went quiet", because the
+ * set_status call is itself drawn in the pane and so always precedes quiet.
+ */
+export function agentNote(
+  run: RunInfo,
+  now: number = Date.now(),
+): { text: string; title: string; stale: boolean } | null {
+  const s = run.agentStatus;
+  if (!s || run.kind !== "agent" || run.status.state !== "running") return null;
+  return {
+    text: s.text,
+    title: `Written by the agent ${fmtDur(now - s.since)} ago${s.stale ? ", before its latest work" : ""}`,
+    stale: s.stale,
+  };
+}
+
 export function runStatus(
   run: RunInfo,
   now: number = Date.now(),

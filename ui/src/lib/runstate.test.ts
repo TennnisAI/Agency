@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { RunInfo } from "../api";
-import { fmtDur, inGitlessFolder, isPinned, needsAttention, pinnedFirst, runStatus } from "./runstate";
+import {
+  agentNote,
+  fmtDur,
+  inGitlessFolder,
+  isPinned,
+  needsAttention,
+  pinnedFirst,
+  runStatus,
+} from "./runstate";
 
 /** A live agent, quiet after a turn the user drove. */
 const waitingRun = (over: Partial<RunInfo> = {}): RunInfo =>
@@ -92,6 +100,49 @@ describe("fmtDur", () => {
   it("never counts below zero, so a clock skew reads as 0s not -1s", () => {
     expect(fmtDur(-1)).toBe("0s");
     expect(fmtDur(-90_000)).toBe("0s");
+  });
+});
+
+describe("agentNote", () => {
+  const working = (over: Partial<RunInfo> = {}): RunInfo =>
+    waitingRun({
+      activity: { state: "working", since: 1_000 },
+      agentStatus: { text: "running the migration tests", since: 5_000, stale: false },
+      ...over,
+    });
+
+  it("shows the agent's line beside a live agent, with its age", () => {
+    expect(agentNote(working(), 245_000)).toEqual({
+      text: "running the migration tests",
+      title: "Written by the agent 4m ago",
+      stale: false,
+    });
+  });
+
+  it("is null when the agent has not set one", () => {
+    expect(agentNote(working({ agentStatus: null }))).toBeNull();
+  });
+
+  it("is null for a terminal or a stopped session, whatever was last set", () => {
+    expect(agentNote(working({ kind: "terminal" }))).toBeNull();
+    expect(agentNote(working({ status: { state: "exited", code: 0 } as never }))).toBeNull();
+  });
+
+  it("dims a line the backend marks stale, and says why", () => {
+    const run = working({
+      activity: { state: "waiting", since: 9_000 },
+      agentStatus: { text: "running the migration tests", since: 5_000, stale: true },
+    });
+    const note = agentNote(run, 65_000);
+    expect(note?.stale).toBe(true);
+    expect(note?.title).toBe("Written by the agent 1m ago, before its latest work");
+  });
+
+  // A line set as the agent's last act predates the pane going quiet, because
+  // the call is drawn in the pane. Only the backend flag decides.
+  it("keeps a line current after the run goes quiet unless the backend says stale", () => {
+    const run = working({ activity: { state: "waiting", since: 9_000 } });
+    expect(agentNote(run)?.stale).toBe(false);
   });
 });
 

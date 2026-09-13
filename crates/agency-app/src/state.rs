@@ -323,6 +323,264 @@ struct GitTarget {
     primary: Option<String>,
 }
 
+/// An agent's own status line, as `RunInfo` carries it.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentStatusInfo {
+    pub text: String,
+    /// Epoch ms when the agent first set this text. Setting the same line again
+    /// keeps it, so the age reads as how long the agent has been on that step.
+    pub since: i64,
+    /// The agent has gone on to a separate stretch of work since it last set
+    /// this line, and finished it, so the line is about earlier work and the
+    /// card dims it. See `activity::worked_and_went_quiet_since`.
+    pub stale: bool,
+}
+
+/// One run's stored status line, before `agent_status_info` decides what of it
+/// the card shows.
+#[derive(Debug, Clone, PartialEq)]
+struct AgentStatusEntry {
+    text: String,
+    since: i64,
+    /// Epoch ms of the last call that set this text. Staleness is measured
+    /// from here rather than `since`: setting the same line again keeps its
+    /// age but says it is still current.
+    set_at: i64,
+    /// The run's agent sessions that were running when the line was set, as
+    /// the tick found them; `None` until it has looked. The line is held only
+    /// while every one of them still runs.
+    ///
+    /// A run has one preview server and its MCP config sits in the worktree,
+    /// so every agent tab in the run (`<run>--2`) reaches the same
+    /// `set_status`, and the server has no session ids to say which one
+    /// called. Cleared off the lead session alone, a line an extra tab set
+    /// outlived that tab for as long as the lead kept running (AGE-208
+    /// review). Not knowing the writer, any agent that could have written it
+    /// stopping drops it: a line dropped early is set again by an agent still
+    /// at work, and a line kept late is one nobody is left to clear.
+    ///
+    /// The tick records these within one poll of the call, so a tab that sets
+    /// a line and stops inside that poll is not among them.
+    witnesses: Option<Vec<String>>,
+}
+
+/// The status map after one `set_status` call: the last line set wins, and an
+/// empty one removes it. Either way the witnesses are taken afresh, since the
+/// agent that called may not be the one that set the line before.
+fn apply_agent_status(
+    map: &mut HashMap<String, AgentStatusEntry>,
+    run_id: &str,
+    status: agency_core::preview::status::Status,
+    now_ms: i64,
+) {
+    use agency_core::preview::status::Status;
+    match status {
+        Status::Clear => {
+            map.remove(run_id);
+        }
+        Status::Set { text, .. } => {
+            let since = map.get(run_id).filter(|s| s.text == text).map_or(now_ms, |s| s.since);
+            map.insert(
+                run_id.to_string(),
+                AgentStatusEntry { text, since, set_at: now_ms, witnesses: None },
+            );
+        }
+    }
+}
+
+/// The run's agent sessions the daemon lists as running: its own and any
+/// extra tab, matched the way `lead_session_name` matches them, so a run
+/// script's session or another run whose id starts with this one never counts.
+fn running_agent_sessions(run_id: &str, live: &[(String, SessionStatus)]) -> Vec<String> {
+    let own = session_name(run_id);
+    let prefix = format!("{own}--");
+    live.iter()
+        .filter(|(name, status)| {
+            matches!(status, SessionStatus::Running)
+                && (*name == own
+                    || name.strip_prefix(&prefix).is_some_and(|seq| seq.parse::<u32>().is_ok()))
+        })
+        .map(|(name, _)| name.clone())
+        .collect()
+}
+
+/// The status map after one tick's session listing: a line's witnesses are
+/// recorded the first time the tick sees it, and the line goes once any of
+/// them has stopped, or at once if no agent in the run is running to have
+/// written it.
+fn retain_witnessed_status(
+    map: &mut HashMap<String, AgentStatusEntry>,
+    live: &[(String, SessionStatus)],
+) {
+    map.retain(|run_id, entry| {
+        let running = running_agent_sessions(run_id, live);
+        match &entry.witnesses {
+            None if running.is_empty() => false,
+            None => {
+                entry.witnesses = Some(running);
+                true
+            }
+            Some(witnesses) => witnesses.iter().all(|w| running.contains(w)),
+        }
+    });
+}
+
+/// What a card shows for a stored line: nothing unless the run's lead agent
+/// and every witness are running in `live`. The tick drops a line whose
+/// witness has stopped, but a board poll can land between the exit and that
+/// tick. `activity` is the run's raw bookkeeping, for staleness.
+fn agent_status_info(
+    entry: &AgentStatusEntry,
+    lead: &SessionStatus,
+    live: &[(String, SessionStatus)],
+    activity: Option<&crate::activity::ActivityEntry>,
+    now_ms: i64,
+) -> Option<AgentStatusInfo> {
+    if !matches!(lead, SessionStatus::Running) {
+        return None;
+    }
+    let running =
+        |name: &String| live.iter().any(|(n, s)| n == name && matches!(s, SessionStatus::Running));
+    if entry.witnesses.as_ref().is_some_and(|w| !w.iter().all(running)) {
+        return None;
+    }
+    let stale = activity
+        .is_some_and(|a| crate::activity::worked_and_went_quiet_since(a, entry.set_at, now_ms));
+    Some(AgentStatusInfo { text: entry.text.clone(), since: entry.since, stale })
+}
+
+#[cfg(test)]
+mod agent_status_tests {
+    use super::{
+        agent_status_info, apply_agent_status, retain_witnessed_status, running_agent_sessions,
+        AgentStatusEntry, AgentStatusInfo, SessionStatus,
+    };
+    use crate::activity::{update, WORKING_TTL_MS};
+    use agency_core::preview::status::Status;
+    use std::collections::HashMap;
+
+    fn set(text: &str) -> Status {
+        Status::Set { text: text.into(), truncated: false }
+    }
+
+    fn live(running: &[&str]) -> Vec<(String, SessionStatus)> {
+        running.iter().map(|n| (n.to_string(), SessionStatus::Running)).collect()
+    }
+
+    #[test]
+    fn the_last_line_wins_and_an_empty_one_clears() {
+        let mut map = HashMap::new();
+        apply_agent_status(&mut map, "r1", set("running tests"), 1_000);
+        apply_agent_status(&mut map, "r1", set("rewriting notifier.rs"), 2_000);
+        assert_eq!(map["r1"].text, "rewriting notifier.rs");
+        assert_eq!(map["r1"].since, 2_000);
+        apply_agent_status(&mut map, "r1", Status::Clear, 3_000);
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn setting_the_same_line_again_keeps_its_age_but_not_its_witnesses() {
+        let mut map = HashMap::new();
+        apply_agent_status(&mut map, "r1", set("waiting on pnpm install"), 1_000);
+        retain_witnessed_status(&mut map, &live(&["agency-r1"]));
+        apply_agent_status(&mut map, "r1", set("waiting on pnpm install"), 9_000);
+        assert_eq!(map["r1"].since, 1_000);
+        assert_eq!(map["r1"].set_at, 9_000);
+        assert_eq!(map["r1"].witnesses, None);
+    }
+
+    #[test]
+    fn runs_do_not_share_a_line() {
+        let mut map = HashMap::new();
+        apply_agent_status(&mut map, "r1", set("a"), 1_000);
+        apply_agent_status(&mut map, "r2", Status::Clear, 2_000);
+        assert_eq!(map["r1"].text, "a");
+    }
+
+    /// The review's case: the primary waits, a second tab sets a line, and
+    /// that tab's agent exits while the primary keeps running.
+    #[test]
+    fn a_line_goes_when_an_agent_that_could_have_written_it_stops() {
+        let mut map = HashMap::new();
+        apply_agent_status(&mut map, "r1", set("rewriting notifier.rs"), 1_000);
+        retain_witnessed_status(&mut map, &live(&["agency-r1", "agency-r1--2"]));
+        retain_witnessed_status(&mut map, &live(&["agency-r1", "agency-r1--2"]));
+        assert!(map.contains_key("r1"));
+        retain_witnessed_status(&mut map, &live(&["agency-r1"]));
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn a_tab_opened_after_the_line_does_not_hold_it() {
+        let mut map = HashMap::new();
+        apply_agent_status(&mut map, "r1", set("running the tests"), 1_000);
+        retain_witnessed_status(&mut map, &live(&["agency-r1"]));
+        retain_witnessed_status(&mut map, &live(&["agency-r1", "agency-r1--2"]));
+        retain_witnessed_status(&mut map, &live(&["agency-r1"]));
+        assert_eq!(map["r1"].witnesses, Some(vec!["agency-r1".to_string()]));
+    }
+
+    #[test]
+    fn a_line_nobody_is_running_to_have_written_goes_on_the_first_look() {
+        let mut map = HashMap::new();
+        apply_agent_status(&mut map, "r1", set("a"), 1_000);
+        retain_witnessed_status(&mut map, &[("agency-r1".into(), SessionStatus::Gone)]);
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn only_this_runs_agent_sessions_are_witnesses() {
+        let listing = live(&[
+            "agency-r1",
+            "agency-r1--2",
+            "agency-r1-b",
+            "agency-r1--x",
+            "agency-run-r1#dev",
+            "agency-shell-r1",
+        ]);
+        assert_eq!(running_agent_sessions("r1", &listing), vec!["agency-r1", "agency-r1--2"]);
+    }
+
+    #[test]
+    fn a_card_hides_a_line_whose_witness_stopped_before_the_tick() {
+        let entry = AgentStatusEntry {
+            text: "a".into(),
+            since: 1_000,
+            set_at: 1_000,
+            witnesses: Some(vec!["agency-r1".into(), "agency-r1--2".into()]),
+        };
+        let shown =
+            agent_status_info(&entry, &SessionStatus::Running, &live(&["agency-r1"]), None, 2_000);
+        assert_eq!(shown, None);
+        let unwitnessed = AgentStatusEntry { witnesses: None, ..entry };
+        assert_eq!(
+            agent_status_info(&unwitnessed, &SessionStatus::Running, &[], None, 2_000),
+            Some(AgentStatusInfo { text: "a".into(), since: 1_000, stale: false }),
+            "before the tick has looked, the lead running is enough"
+        );
+        assert_eq!(agent_status_info(&unwitnessed, &SessionStatus::Gone, &[], None, 2_000), None);
+    }
+
+    #[test]
+    fn a_line_is_stale_only_after_a_later_stretch_of_work() {
+        let entry =
+            |set_at| AgentStatusEntry { text: "a".into(), since: 0, set_at, witnesses: None };
+        let mut busy = update(None, true, 0);
+        busy = update(Some(busy), false, WORKING_TTL_MS);
+        busy = update(Some(busy), true, 30_000);
+        let quiet = 30_000 + WORKING_TTL_MS;
+        busy = update(Some(busy), false, quiet);
+        let stale = |set_at| {
+            agent_status_info(&entry(set_at), &SessionStatus::Running, &[], Some(&busy), quiet)
+                .unwrap()
+                .stale
+        };
+        assert!(stale(0), "set in the first stretch, then a second one ran");
+        assert!(!stale(29_000), "set as the second stretch began");
+    }
+}
+
 /// Result of importing an `mcp.json`: the full app-global list after the merge,
 /// plus how many servers the file contributed (so the UI can confirm the count).
 #[derive(Debug, Clone, serde::Serialize)]
@@ -346,6 +604,12 @@ pub struct RunInfo {
     /// until the first tick observes the run (~2s after spawn or app start);
     /// the UI treats a running agent without it as working.
     pub activity: Option<crate::activity::ActivityInfo>,
+    /// The one line the agent last wrote about what it is doing, through the
+    /// `set_status` tool (AGE-208). Agent-authored, so untrusted display text:
+    /// already cleaned to one short line, and the UI renders it as text, never
+    /// as markup or a link. Decoration over `activity`, never a substitute
+    /// for it. `None` unless the agent is running and has set one.
+    pub agent_status: Option<AgentStatusInfo>,
     /// Ascending order among this project's pinned runs; `None` = unpinned.
     /// Board order only: a pin never changes how a run classifies above, and
     /// nothing the agent does consumes one. Read straight off the stored
@@ -2467,6 +2731,13 @@ pub struct AppState {
     /// read is an atomic load rather than a database round trip on a mutex the
     /// notifier tick also wants.
     share_open_file: Arc<std::sync::atomic::AtomicBool>,
+    /// Run id → the line its agent last wrote about itself with `set_status`
+    /// (AGE-208). An `Arc` because each run's preview server captures it, like
+    /// `open_file` above. In-memory only, and dropped when an agent that could
+    /// have written it stops (see `AgentStatusEntry::witnesses`): the line is
+    /// about what a live process is doing, so a restarted app or a rerun agent
+    /// starts with none rather than a stale one.
+    agent_status: Arc<Mutex<HashMap<String, AgentStatusEntry>>>,
 }
 
 /// Where the file the user has open actually is, and whose it is.
@@ -2625,6 +2896,7 @@ impl AppState {
             preview_shot: std::sync::Arc::new(std::sync::OnceLock::new()),
             open_file: Arc::new(Mutex::new(None)),
             share_open_file: Arc::new(std::sync::atomic::AtomicBool::new(share_open_file)),
+            agent_status: Arc::new(Mutex::new(HashMap::new())),
         };
         // Rehydrate: any run the daemon still hosts is adopted as-is; the watch
         // loop (watch_snapshot) then reports live status. Nothing to spawn here —
@@ -3473,7 +3745,15 @@ impl AppState {
                 .is_none_or(|(id, _)| self.web_ui_ready.lock().unwrap().contains(id));
             running && agency_core::preview::serving(port) && handshake_done
         });
-        let activity = self.read_activity(run, crate::activity::now_ms());
+        let now_ms = crate::activity::now_ms();
+        let activity = self.read_activity(run, now_ms);
+        let busy = self.activity.lock().unwrap().get(&run.id).copied();
+        let agent_status = self
+            .agent_status
+            .lock()
+            .unwrap()
+            .get(&run.id)
+            .and_then(|s| agent_status_info(s, &status, live, busy.as_ref(), now_ms));
         // The extra tabs' statuses come out of the listing already in hand, so
         // listing them costs one registry read per run and no daemon call.
         let sessions = self
@@ -3502,6 +3782,7 @@ impl AppState {
             branch,
             status,
             activity,
+            agent_status,
             pin_rank: run.pin_rank,
             usage: self.usage.lock().unwrap().get(&run.id).map(|(_, u)| u.into()),
             added: stat.added,
@@ -5637,7 +5918,13 @@ impl AppState {
             let open = cell.lock().unwrap().clone();
             open_file_for(open.as_ref(), &open_run, &open_repo)
         });
-        agency_core::preview::Hooks { facts, screenshot, caps, open_file }
+        let statuses = self.agent_status.clone();
+        let set_status =
+            std::sync::Arc::new(move |status: agency_core::preview::status::Status| {
+                let mut map = statuses.lock().unwrap();
+                apply_agent_status(&mut map, &run_id, status, crate::activity::now_ms());
+            });
+        agency_core::preview::Hooks { facts, screenshot, caps, open_file, set_status }
     }
 
     /// Have this run's preview server listening on the port its emitted MCP
@@ -6575,10 +6862,25 @@ impl AppState {
         map.insert(id.to_string(), next);
     }
 
+    /// Hold each run's `set_status` line only while every agent that could have
+    /// written it still runs (see `AgentStatusEntry::witnesses`). The line said
+    /// what a process was doing; a finished, crashed or closed one is not doing
+    /// it. One daemon listing per tick, and none while no run has a line.
+    pub fn settle_agent_status(&self) {
+        if self.agent_status.lock().unwrap().is_empty() {
+            return;
+        }
+        // A failed listing says nothing about the agents, so it drops nothing:
+        // read as empty, it would wipe every line on the board.
+        let Ok(live) = self.term.read().unwrap().list() else { return };
+        retain_witnessed_status(&mut self.agent_status.lock().unwrap(), &live);
+    }
+
     /// Drop activity entries for runs no longer in the watch snapshot
     /// (archived or discarded), mirroring the notifier's own watch pruning.
     pub fn retain_activity(&self, keep: &HashSet<String>) {
         self.activity.lock().unwrap().retain(|id, _| keep.contains(id));
+        self.agent_status.lock().unwrap().retain(|id, _| keep.contains(id));
         self.usage.lock().unwrap().retain(|id, _| keep.contains(id));
         // Both of these are keyed by *session*, and a run's extra tabs
         // (`<run>--2`) never appear in the watch snapshot — so prune on the run
@@ -8651,6 +8953,10 @@ impl AppState {
             conversation.as_deref(),
         );
         let _ = self.term.read().unwrap().kill(&session_name(id));
+        // The tick drops a stopped agent's status line, but a kill and respawn
+        // inside one 2s tick never shows it a stopped agent, and the new process
+        // would inherit a line about the old one's work.
+        self.agent_status.lock().unwrap().remove(id);
         self.term.read().unwrap().start_session(
             &session_name(id),
             &worktree,

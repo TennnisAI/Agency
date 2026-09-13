@@ -108,9 +108,17 @@ fn initialize_result(params: &Value) -> Value {
             preview_console after acting instead of assuming an action worked. editor_open_file \
             says which file the user has open in front of them right now, which is what \
             \"this file\" and \"here\" mean when they say it. Whichever of the two the user has \
-            switched off is not listed.",
+            switched off is not listed. set_status goes the other way: it puts one short line \
+            about what you are doing on this run's card in Agency, so the user can see it at a \
+            glance without opening your pane.",
     })
 }
+
+/// The agent's own status line on the board (AGE-208). Behind no switch: it
+/// shows the user a line of text in Agency's own window, and reads nothing and
+/// reaches nothing, so it is served whenever this server is. Listed first so
+/// that neither switch moving changes a byte of the listing in front of it.
+pub const STATUS_TOOLS: &[&str] = &["set_status"];
 
 /// The preview half: everything that needs a page to act on.
 pub const PREVIEW_TOOLS: &[&str] = &[
@@ -128,7 +136,9 @@ pub const EDITOR_TOOLS: &[&str] = &["editor_open_file"];
 
 /// Whether `name` is a tool this server is serving right now.
 pub fn enabled(name: &str, caps: Caps) -> bool {
-    (caps.preview && PREVIEW_TOOLS.contains(&name)) || (caps.editor && EDITOR_TOOLS.contains(&name))
+    STATUS_TOOLS.contains(&name)
+        || (caps.preview && PREVIEW_TOOLS.contains(&name))
+        || (caps.editor && EDITOR_TOOLS.contains(&name))
 }
 
 /// Why a real tool is not answering, when the reason is a switch rather than a
@@ -154,6 +164,25 @@ fn switched_off_reason(name: &str) -> Option<&'static str> {
 fn tools(caps: Caps) -> Value {
     let none = json!({ "type": "object", "properties": {}, "additionalProperties": false });
     let all = json!([
+        {
+            "name": "set_status",
+            "description": "Put one short line on this run's card in Agency saying what you are \
+                doing right now, e.g. \"running the migration tests\" or \"waiting on pnpm \
+                install\". The user reads it at a glance across every run on the board, so \
+                set it when you move on to a new step and keep it to a short phrase: it is \
+                plain text, one line, cut at 80 characters, and the last one set wins. It sits \
+                beside the run's working or waiting state and does not replace it, so a line \
+                left over from finished work misleads; pass an empty string to clear it when \
+                you are done.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "text": { "type": "string", "description": "The status line, or an empty string to clear it." },
+                },
+                "required": ["text"],
+                "additionalProperties": false,
+            },
+        },
         {
             "name": "preview_console",
             "description": "Console output from the preview page since the last call to this \
@@ -331,7 +360,12 @@ mod tests {
             .iter()
             .map(|t| t["name"].as_str().unwrap())
             .collect();
-        let every: Vec<&str> = PREVIEW_TOOLS.iter().chain(EDITOR_TOOLS.iter()).copied().collect();
+        let every: Vec<&str> = STATUS_TOOLS
+            .iter()
+            .chain(PREVIEW_TOOLS.iter())
+            .chain(EDITOR_TOOLS.iter())
+            .copied()
+            .collect();
         assert_eq!(names, every);
         // Every tool must carry a schema, or some clients refuse the server.
         for t in r["result"]["tools"].as_array().unwrap() {
@@ -341,9 +375,27 @@ mod tests {
 
     #[test]
     fn a_switched_off_half_is_not_listed() {
-        assert_eq!(tool_names(Caps { preview: true, editor: false }), PREVIEW_TOOLS);
-        assert_eq!(tool_names(Caps { preview: false, editor: true }), EDITOR_TOOLS);
-        assert!(tool_names(Caps::none()).is_empty());
+        let with_status = |half: &[&str]| -> Vec<String> {
+            STATUS_TOOLS.iter().chain(half).map(|s| s.to_string()).collect()
+        };
+        assert_eq!(tool_names(Caps { preview: true, editor: false }), with_status(PREVIEW_TOOLS));
+        assert_eq!(tool_names(Caps { preview: false, editor: true }), with_status(EDITOR_TOOLS));
+    }
+
+    /// A server outlives its switches (see the app's `preview_port_this_sweep`),
+    /// and the status line is behind neither, so it keeps answering after both
+    /// have been switched off under a live agent.
+    #[test]
+    fn set_status_is_served_with_both_halves_off() {
+        assert_eq!(tool_names(Caps::none()), STATUS_TOOLS);
+        let Handled::Call { name, args, .. } = handle(
+            br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"set_status","arguments":{"text":"x"}}}"#,
+            Caps::none(),
+        ) else {
+            panic!("expected call");
+        };
+        assert_eq!(name, "set_status");
+        assert_eq!(args["text"], "x");
     }
 
     #[test]

@@ -8,6 +8,7 @@ import { removalLabel, removalsFor } from "../lib/runRemoval";
 import { usageLabel, usageTitle } from "../lib/usage";
 import { runTabs, showsTabs } from "../lib/runTabs";
 import TabCount from "./TabCount";
+import AgentNote from "./AgentNote";
 import AttentionMarker from "./AttentionMarker";
 import QueuedMarker from "./QueuedMarker";
 import OverflowMenu from "./OverflowMenu";
@@ -97,6 +98,7 @@ export default function AgentTile({ run }: { run: RunInfo }) {
           )}
         </div>
       )}
+      <AgentNote run={run} />
       <pre className="tile-preview">{preview}</pre>
       <div className="tile-foot">
         {/* Whether you have pinned it to the top of the board, then what it is

@@ -65,6 +65,15 @@ export interface RunActivity {
   since: number;
 }
 
+// An agent's own status line. `since` is epoch ms when it first set this text.
+// `stale` means the agent has since done a separate stretch of work and gone
+// quiet, so the line describes earlier work.
+export interface AgentStatus {
+  text: string;
+  since: number;
+  stale: boolean;
+}
+
 // Tokens and cost for a run, read from the agent's own transcript (see
 // agency_core::usage). `cents` is null when no record carried a price we know,
 // and `costComplete` is false when only some did, in which case the figure is
@@ -88,6 +97,11 @@ export interface RunInfo {
   branch: string;
   status: SessionStatus;
   activity: RunActivity | null;
+  // The line the agent last wrote about what it is doing, via its set_status
+  // tool (AGE-208). Agent-authored: render it as plain text, never as markup
+  // or a link. Decoration beside `activity`, never a stand-in for it. Null
+  // unless the agent is running and has set one.
+  agentStatus: AgentStatus | null;
   // Ascending order among the project's pinned runs; null = unpinned. Board
   // order only: it never changes how a run classifies above. Never null-as-in-
   // unknown the way `activity` is, because it is a stored value, not a sample.

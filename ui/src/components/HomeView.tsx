@@ -3,6 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { Issue, Project, RunInfo, RepoReadiness, addProject, inspectRepo, listIssues, listProjects, listRuns, runPreview } from "../api";
 import { projectAccent, runName } from "../agents";
 import { inGitlessFolder, isWorking, needsAttention, pinnedFirst, runStatus } from "../lib/runstate";
+import AgentNote from "./AgentNote";
 import { runTabs, showsTabs } from "../lib/runTabs";
 import TabCount from "./TabCount";
 import { useRunMenu } from "../hooks/useRunMenu";
@@ -383,6 +384,7 @@ function HomeTile({ run, onOpen, onChanged }: { run: RunInfo; onOpen: () => void
           )}
         </div>
       )}
+      <AgentNote run={run} />
       {preview && <pre className="tile-preview">{preview}</pre>}
       {/* Pin first, then status: the same foot order as the agents board. */}
       <div className="tile-foot">

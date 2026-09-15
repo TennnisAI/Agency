@@ -302,14 +302,7 @@ fn make_executable(_path: &Path) {}
 /// resolves to nothing reads as "the skill is broken".
 fn date_skill_md(resolver: &Path) -> String {
     format!(
-        "---\n\
-         name: {DATE_SKILL}\n\
-         description: Resolve a relative date expression (today, yesterday, this or last week, \
-         month, quarter or year, week/month/quarter/year to date, last N days, last N months) \
-         into exact start and end dates with a deterministic script. Use whenever a task, an \
-         issue or a query mentions a period relative to now, instead of working the calendar \
-         out by hand.\n\
-         ---\n\
+        "{frontmatter}\
          \n\
          # Date ranges\n\
          \n\
@@ -347,8 +340,29 @@ fn date_skill_md(resolver: &Path) -> String {
          a prompt can be stale.\n\
          \n\
          Agency generates this skill. Edits are replaced on the next run.\n",
+        frontmatter = frontmatter(
+            DATE_SKILL,
+            "Resolve a relative date expression (today, yesterday, this or last week, month, \
+             quarter or year, week/month/quarter/year to date, last N days, last N months) into \
+             exact start and end dates with a deterministic script. Use whenever a task, an \
+             issue or a query mentions a period relative to now, instead of working the calendar \
+             out by hand.",
+        ),
         resolver = resolver.display(),
     )
+}
+
+/// The `---` block a generated skill opens with, its description written as a
+/// double-quoted YAML scalar.
+///
+/// It was once written plain, and the workspace skill's "What this Agency
+/// workspace is: the worktree..." is not valid YAML: `: ` inside a plain scalar
+/// opens a nested mapping. Claude Code read it regardless, but pi and Copilot
+/// rejected the file ("Nested mappings are not allowed in compact mappings")
+/// and listed the skill as a conflict instead of loading it.
+fn frontmatter(name: &str, description: &str) -> String {
+    let quoted = description.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("---\nname: {name}\ndescription: \"{quoted}\"\n---\n")
 }
 
 /// `agency-workspace/SKILL.md`: the catalog of the workspace this run was
@@ -358,15 +372,7 @@ fn workspace_skill_md(ws: &Workspace, skills_rel: &Path) -> String {
     let issues = ws.repo_root.join(crate::issuefs::ISSUES_DIR);
     let mut body = String::new();
     body.push_str(&format!(
-        "---\n\
-         name: {WORKSPACE_SKILL}\n\
-         description: What this Agency workspace is: the worktree and branch this run owns, the \
-         project checkout it merges back into, the absolute path of the issue tracker, the \
-         setup, run and check commands, the AGENCY_* variables, and what happens to the work \
-         when the run ends. Use before looking for a build or test command or a place to put \
-         a file, and before deciding what to commit. To file or edit an issue, use \
-         {ISSUES_SKILL}.\n\
-         ---\n\
+        "{frontmatter}\
          \n\
          # This workspace\n\
          \n\
@@ -384,6 +390,17 @@ fn workspace_skill_md(ws: &Workspace, skills_rel: &Path) -> String {
          here, and it is untracked by git, so there is no copy in this worktree, nothing to \
          commit and nothing to merge. An edit to an issue file takes effect as soon as it is \
          written. {precedence} The `{ISSUES_SKILL}` skill has the file format.\n",
+        frontmatter = frontmatter(
+            WORKSPACE_SKILL,
+            &format!(
+                "What this Agency workspace is: the worktree and branch this run owns, the \
+                 project checkout it merges back into, the absolute path of the issue tracker, \
+                 the setup, run and check commands, the AGENCY_* variables, and what happens to \
+                 the work when the run ends. Use before looking for a build or test command or a \
+                 place to put a file, and before deciding what to commit. To file or edit an \
+                 issue, use {ISSUES_SKILL}."
+            ),
+        ),
         worktree = ws.worktree.display(),
         branch = ws.branch,
         repo_root = ws.repo_root.display(),
@@ -537,13 +554,7 @@ fn issues_skill_md(ws: &Workspace) -> String {
         format!(" Its examples use the key `AGE`; this project's is `{key}`.")
     };
     format!(
-        "---\n\
-         name: {ISSUES_SKILL}\n\
-         description: File, update or comment on this project's issues, which are tracked in \
-         Agency. Use whenever you are asked to file an issue, open or create a ticket, log or \
-         report a bug, write up a follow-up, or add something to the backlog. Those go in this \
-         tracker and not in another tracker you have tools for, unless the user names that one.\n\
-         ---\n\
+        "{frontmatter}\
          \n\
          # Issues\n\
          \n\
@@ -564,6 +575,13 @@ fn issues_skill_md(ws: &Workspace) -> String {
          \n\
          {readme}\n\
          Agency generates this skill. Edits are replaced on the next run.\n",
+        frontmatter = frontmatter(
+            ISSUES_SKILL,
+            "File, update or comment on this project's issues, which are tracked in Agency. Use \
+             whenever you are asked to file an issue, open or create a ticket, log or report a \
+             bug, write up a follow-up, or add something to the backlog. Those go in this tracker \
+             and not in another tracker you have tools for, unless the user names that one.",
+        ),
         issues = issues.display(),
         precedence = crate::briefing::PRECEDENCE,
         first = issues.join(format!("{key}-1.md")).display(),
@@ -1215,6 +1233,38 @@ mod tests {
         assert!(text.contains("This run is a loop"), "{text}");
         assert!(text.contains("`cargo test`"), "{text}");
         assert!(text.contains("5 attempts"), "{text}");
+    }
+
+    /// pi and Copilot parse frontmatter as strict YAML and drop a skill whose
+    /// description is a plain scalar containing `: `, which the workspace
+    /// skill's was. Every description is quoted, with its quotes escaped.
+    #[test]
+    fn every_description_is_a_quoted_yaml_scalar() {
+        let ws = Workspace {
+            open_file_tool: true,
+            preview_tools: true,
+            loop_check: Some(("make check".into(), 3)),
+            ..workspace()
+        };
+        for dir in [skills_dir(&ws), ws.worktree.join(".agents").join("skills")] {
+            for skill in kit(&ws, &dir) {
+                let md = skill.files.iter().find(|f| f.name == "SKILL.md").expect("a SKILL.md");
+                let head = md.contents.strip_prefix("---\n").expect("opens with frontmatter");
+                let head = &head[..head.find("\n---\n").expect("closes its frontmatter")];
+                let mut lines = head.lines();
+                assert_eq!(lines.next(), Some(format!("name: {}", skill.name).as_str()));
+                let value = lines
+                    .next()
+                    .and_then(|l| l.strip_prefix("description: \""))
+                    .and_then(|l| l.strip_suffix('"'))
+                    .unwrap_or_else(|| panic!("unquoted description in {}: {head}", skill.name));
+                assert!(!value.replace("\\\\", "").replace("\\\"", "").contains('"'), "{value}");
+                assert_eq!(lines.next(), None, "{head}");
+            }
+        }
+
+        let tricky = frontmatter("x", r#"Say "hi": C:\path"#);
+        assert_eq!(tricky, "---\nname: x\ndescription: \"Say \\\"hi\\\": C:\\\\path\"\n---\n");
     }
 
     /// House rule, and this copy is read by an agent on every run: no em

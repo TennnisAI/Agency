@@ -4,6 +4,83 @@ Notable changes in each release. The GitHub release for a version carries the
 same notes alongside the downloads; this file is so the history is readable without
 leaving the repository.
 
+## 0.2.1 (2026-09-15)
+
+Agency installs its own updates now. The rest is agents saying what they are
+working on, the Docs tab following the agent you have selected, and a fix for
+text landing in the wrong column after an emoji.
+
+macOS 11 or later, Apple Silicon. Linux with glibc 2.34 or later, x86_64 or
+arm64.
+
+**Coming from 0.2.0:** 0.2.0 can tell you this release exists but cannot
+install it, so download it by hand this once. From 0.2.1 on, updates install
+from inside the app. Running agents survive the restart; this release does not
+change the terminal protocol.
+
+### Updates
+
+- Install an update from inside the app. The update check used to run once at
+  launch and hand over a link to the releases page. It now runs at launch and
+  every six hours while Agency is open, and turning it off in Settings takes
+  effect straight away.
+- Installing never restarts Agency on its own. "Restart now" is a second press,
+  and it says how many sessions are running first.
+- Help and the command palette both carry Check for Updates….
+- A .deb, .rpm or pacman install is left to the package manager that put it
+  there.
+  Instead of an Install button, you get the exact command for your machine,
+  with the version and architecture filled in. The .app and the AppImage
+  update in place.
+- Every update is signed, and the app refuses one whose signature does not
+  verify against a key built into it.
+
+### Agents
+
+- An agent can put a one-line status on the board, so a run says what it is
+  doing and not only that it is working. The agents board and the home overview
+  show it under the branch, dimmed once the run has gone quiet. It is cleared
+  when the agent stops or is rerun.
+- Starting an issue from the board launches the agent on the model you last
+  used with it. It used to launch on the CLI's own default and forget the model
+  Agency had remembered.
+- Restore an archived run from its record dialog, not only from the icon on the
+  archive row.
+
+### Issues
+
+- Asking an agent to file an issue, a ticket or a bug files it in Agency's
+  tracker, even when the agent also has another tracker's tools, unless you name
+  that one. Claude Code never read the tracker briefing, since it does not load
+  `AGENTS.md`; Claude runs now get it through `.claude/rules/`, git-excluded
+  like the rest.
+- Hover actions on an issue row no longer squeeze the title.
+
+### Docs
+
+- The Docs tab shows the selected agent's worktree, the way Files does. It used
+  to stay on the project checkout, so an agent's edits to its docs were
+  invisible there until they merged.
+
+### Terminal
+
+- Emoji such as ❌, 🟡 and ✅ take two columns in the pane, as they do for the
+  agent. The pane counted them as one, so every redraw after an emoji landed a
+  column short and left stray letters in words ("Noxt yet").
+
+### Workspace skills
+
+- The skills Agency writes into a worktree load in pi and Copilot. Their
+  descriptions were not valid YAML, which Claude Code tolerated and the others
+  rejected as a conflict.
+
+### Site
+
+- The download page links the Linux packages, and the site says Linux is
+  supported throughout.
+- On a phone the header stays on one line, with the GitHub mark in place of the
+  arrow that used to wrap onto a second row.
+
 ## 0.2.0 (2026-09-11)
 
 Agency runs on Linux. The rest is first-run setup, which now installs what a

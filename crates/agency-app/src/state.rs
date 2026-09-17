@@ -5866,6 +5866,7 @@ impl AppState {
             // the catalog used to promise it tools that were never emitted.
             preview_tools: served && preview_tools_on(config),
             open_file_tool: served && self.shares_open_file(),
+            user_workspace: self.user_workspace_dir(),
         };
         if let Err(e) = agency_core::skills::emit_for_agent(agent, &ws) {
             log::warn!("emitting the skills kit for {agent} into {}: {e}", worktree.display());
@@ -5879,6 +5880,24 @@ impl AppState {
         // creation only: a restored worktree lost it, and an extra Claude tab
         // in a worktree cut for another agent never had Claude's copy.
         agency_core::briefing::emit_for_agent(agent, worktree, repo, issue_key);
+    }
+
+    /// The folder Agency pins as the user's workspace, when there is one to
+    /// hand an agent: created, still theirs (hiding it closes the project row),
+    /// and still on disk. A hidden workspace is one the user has taken out of
+    /// the app, and a folder that has moved is a dead path, so the kit says
+    /// nothing about a workspace rather than naming one that is not there.
+    ///
+    /// Read at dispatch, like every other fact in the kit. Public for the
+    /// tests: the three ways it answers `None` are the whole of the logic.
+    pub fn user_workspace_dir(&self) -> Option<std::path::PathBuf> {
+        match self.registry.lock().unwrap().open_workspace() {
+            Ok(ws) => ws.map(|p| p.repo_path).filter(|p| p.is_dir()),
+            Err(e) => {
+                log::warn!("reading the workspace for the skills kit: {e}");
+                None
+            }
+        }
     }
 
     /// Whether the user lets agents read the file they have open. Read on every

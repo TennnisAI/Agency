@@ -2175,6 +2175,27 @@ fn require_branch_exists(run: &agency_core::registry::Run, repo: &Path) -> Resul
     )
 }
 
+/// The branch a worktree run's row should be moved onto, if any: the one its
+/// worktree has checked out, when that is a different branch from the recorded
+/// one and not the branch the run merges into.
+///
+/// `None` keeps the row. A detached HEAD (mid-rebase, or a bisect) has no
+/// branch to follow, and one that comes back afterwards is picked up then. A
+/// worktree switched onto the merge target would turn Approve into merging a
+/// branch into itself, so that is left for the merge checks to refuse under
+/// the recorded name.
+fn branch_to_adopt(
+    recorded: &str,
+    checked_out: Option<&str>,
+    base: Option<&str>,
+) -> Option<String> {
+    let current = checked_out?;
+    if current == recorded || Some(current) == base {
+        return None;
+    }
+    Some(current.to_string())
+}
+
 /// Lowercase the prompt, keep ASCII alphanumerics, collapse every other run of
 /// characters into a single hyphen, and cap the length so branch names stay
 /// short. Falls back to "agent" when the prompt has no usable characters.
@@ -3251,8 +3272,11 @@ impl AppState {
         let Some(leaf) = branch_leaf_from_first_prompt(&run.id, first_prompt) else {
             return Ok(());
         };
-        if let Err(e) = self.rename_run_branch(id, &leaf) {
-            log::warn!("first-prompt branch rename for {id} to agent/{leaf} skipped: {e:#}");
+        // The rename keeps a name exactly as given, so the prefix every
+        // Agency-cut branch carries is spelled out here.
+        let name = format!("agent/{leaf}");
+        if let Err(e) = self.rename_run_branch(id, &name) {
+            log::warn!("first-prompt branch rename for {id} to {name} skipped: {e:#}");
         }
         Ok(())
     }
@@ -3716,15 +3740,14 @@ impl AppState {
                 }
             })
             .unwrap_or(agency_core::git::DiffStat { added: 0, deleted: 0, files: 0 });
-        // A worktree's branch is fixed for its life, so the stored name is the
-        // truth. A run in the main checkout follows whatever the user checks
-        // out there, so read it live rather than showing a stale name.
-        let branch = match (run.worktree, &wt) {
-            (false, Some(p)) => {
-                agency_core::merge::current_branch(p).unwrap_or_else(|| run.branch.clone())
-            }
-            _ => run.branch.clone(),
-        };
+        // Read live: a run in the main checkout follows whatever the user
+        // checks out there, and a worktree can be switched or renamed from its
+        // own terminal (AGE-238). The row catches up the next time a branch
+        // operation runs; the chip should not wait for that.
+        let branch = wt
+            .as_ref()
+            .and_then(|p| agency_core::merge::current_branch(p))
+            .unwrap_or_else(|| run.branch.clone());
         let gui_session = wants_web_ui(run).then(|| self.web_ui_session(run)).flatten();
         // Computed rather than stored so it can never disagree with what the
         // launch rendered — both come from the same `gui_port_for`. The config
@@ -7027,7 +7050,7 @@ impl AppState {
     /// `rev-list`, `branch --remotes --contains`): this is read while a menu is
     /// opening, and a menu that waits on the network is a menu that hangs.
     pub fn run_cleanup(&self, id: &str) -> Result<RunCleanup> {
-        let run = self.run_record(id)?;
+        let run = self.branch_run_record(id)?;
         let facts = self.branch_facts(&run);
         let base = self
             .project_repo(&run.project_id)
@@ -7774,7 +7797,7 @@ impl AppState {
         id: &str,
         on_progress: &mut dyn FnMut(agency_core::setup::CloneProgress),
     ) -> Result<()> {
-        let run = self.run_record(id)?;
+        let run = self.branch_run_record(id)?;
         let repo = self.project_repo(&run.project_id)?;
 
         // End an active loop first (best-effort): archiving spends seconds
@@ -9448,10 +9471,10 @@ impl AppState {
     /// merge targets that.
     ///
     /// Git moves first and is put back if the row will not take the new name,
-    /// so the two cannot end up disagreeing. Returns the name actually applied,
-    /// which carries the `agent/` prefix whether or not the caller typed it.
+    /// so the two cannot end up disagreeing. Returns the name actually applied:
+    /// the requested one, trimmed, with no `agent/` prefix imposed on it.
     pub fn rename_run_branch(&self, id: &str, requested: &str) -> Result<String> {
-        let run = self.run_record(id)?;
+        let run = self.branch_run_record(id)?;
         let repo = self.project_repo(&run.project_id)?;
         // Not ours to rename: this run works on whatever branch the user's own
         // checkout is on, shared with everything else they do there.
@@ -9508,32 +9531,77 @@ impl AppState {
             }
             return Err(e.context("recording the new branch name"));
         }
-        // The workspace skill states the branch the run owns, so an unrefreshed
-        // copy would have the agent name a branch that no longer exists. An
-        // archived run has no worktree to write into; emitting would recreate
-        // the directory git worktree removed.
-        let worktree = workspace_dir(&repo, &run);
+        self.refresh_workspace_skill(&run, &repo, &new);
+        Ok(new)
+    }
+
+    /// Rewrite the workspace skill after the run's branch changed name.
+    ///
+    /// The skill states the branch the run owns, so an unrefreshed copy would
+    /// have the agent name a branch that no longer exists. An archived run has
+    /// no worktree to write into; emitting would recreate the directory git
+    /// worktree removed.
+    fn refresh_workspace_skill(&self, run: &agency_core::registry::Run, repo: &Path, branch: &str) {
+        let worktree = workspace_dir(repo, run);
         if worktree.exists() {
-            let config = agency_core::config::load(&repo);
+            let config = agency_core::config::load(repo);
             self.emit_skills(
                 &run.agent,
-                &repo,
+                repo,
                 &worktree,
-                &new,
+                branch,
                 &self.issue_key_for(&run.project_id),
                 &config,
                 run.loop_config.as_ref(),
                 run.port_base,
             );
         }
-        Ok(new)
+    }
+
+    /// The run's record, repointed first at whatever branch its worktree has
+    /// checked out, for every operation that acts on the run's branch.
+    ///
+    /// AGE-238: a user renamed a run's branch with `git branch -m` in its
+    /// terminal, and Approve then refused with "this agent's branch … no longer
+    /// exists", because merge, PR and cleanup all read the name recorded at
+    /// dispatch. The worktree was sitting on the renamed branch the whole time.
+    /// Git is the truth about which branch a worktree is on, so the row follows
+    /// it rather than the other way round. Best-effort: a registry write that
+    /// fails leaves the old row, and the operation's own checks then say what
+    /// is wrong.
+    fn branch_run_record(&self, id: &str) -> Result<agency_core::registry::Run> {
+        let mut run = self.run_record(id)?;
+        if !run.worktree || run.archived_at.is_some() {
+            return Ok(run);
+        }
+        let Ok(repo) = self.project_repo(&run.project_id) else {
+            return Ok(run);
+        };
+        let worktree = workspace_dir(&repo, &run);
+        if !worktree.exists() {
+            return Ok(run);
+        }
+        let checked_out = agency_core::merge::current_branch(&worktree);
+        let base = agency_core::merge::resolve_target(run.merge_target.as_deref(), &repo).ok();
+        let Some(adopted) = branch_to_adopt(&run.branch, checked_out.as_deref(), base.as_deref())
+        else {
+            return Ok(run);
+        };
+        if let Err(e) = self.registry.lock().unwrap().set_run_branch(id, &adopted) {
+            log::warn!("run {id}: couldn't record its worktree's branch {adopted}: {e:#}");
+            return Ok(run);
+        }
+        log::info!("run {id}: worktree is on {adopted}, not {}; following it", run.branch);
+        run.branch = adopted;
+        self.refresh_workspace_skill(&run, &repo, &run.branch);
+        Ok(run)
     }
 
     /// Inspect what merging this run's branch would do, without touching the
     /// repo: which base it targets, how many commits the branch is ahead, and
     /// whether the agent's worktree still has uncommitted changes.
     pub fn merge_preview(&self, id: &str) -> anyhow::Result<MergePreview> {
-        let run = self.run_record(id)?;
+        let run = self.branch_run_record(id)?;
         let repo = self.project_repo(&run.project_id)?;
         require_own_branch(&run, &repo, "merge")?;
         require_branch_exists(&run, &repo)?;
@@ -9573,7 +9641,7 @@ impl AppState {
         id: &str,
         on_progress: &mut dyn FnMut(agency_core::setup::CloneProgress),
     ) -> anyhow::Result<agency_core::merge::MergeOutcome> {
-        let run = self.run_record(id)?;
+        let run = self.branch_run_record(id)?;
         let repo = self.project_repo(&run.project_id)?;
         require_own_branch(&run, &repo, "merge")?;
         require_branch_exists(&run, &repo)?;
@@ -9631,7 +9699,7 @@ impl AppState {
     /// progress is a dirty checkout, so a second `merge_task` could only ever
     /// report that as an error.
     pub fn merge_status(&self, id: &str) -> anyhow::Result<agency_core::merge::MergeState> {
-        let run = self.run_record(id)?;
+        let run = self.branch_run_record(id)?;
         let repo = self.project_repo(&run.project_id)?;
         require_own_branch(&run, &repo, "merge")?;
         let base = agency_core::merge::resolve_target(run.merge_target.as_deref(), &repo)?;
@@ -9654,7 +9722,7 @@ impl AppState {
         id: &str,
         on_progress: &mut dyn FnMut(agency_core::setup::CloneProgress),
     ) -> anyhow::Result<agency_core::merge::MergeOutcome> {
-        let run = self.run_record(id)?;
+        let run = self.branch_run_record(id)?;
         let repo = self.project_repo(&run.project_id)?;
         require_own_branch(&run, &repo, "merge")?;
         let base = agency_core::merge::resolve_target(run.merge_target.as_deref(), &repo)?;
@@ -9692,7 +9760,7 @@ impl AppState {
     /// more. No checkout gate: this reads and writes refs on a remote, and the
     /// project's working tree is not involved.
     pub fn delete_run_remote_branch(&self, id: &str) -> anyhow::Result<Vec<String>> {
-        let run = self.run_record(id)?;
+        let run = self.branch_run_record(id)?;
         let repo = self.project_repo(&run.project_id)?;
         require_own_branch(&run, &repo, "delete from the remote")?;
         let base = agency_core::merge::resolve_target(run.merge_target.as_deref(), &repo)?;
@@ -9710,7 +9778,7 @@ impl AppState {
         id: &str,
         on_progress: &mut dyn FnMut(agency_core::setup::CloneProgress),
     ) -> anyhow::Result<()> {
-        let run = self.run_record(id)?;
+        let run = self.branch_run_record(id)?;
         let repo = self.project_repo(&run.project_id)?;
         require_own_branch(&run, &repo, "merge")?;
         let aborted = self.repo_gates.try_with(&run.project_id, || {
@@ -9745,7 +9813,7 @@ impl AppState {
     /// from the branch's commits. Idempotent-ish: if a PR already exists for
     /// the branch, gh fails and the existing PR is returned instead.
     pub fn create_pr(&self, id: &str) -> Result<agency_core::gh::PrInfo> {
-        let run = self.run_record(id)?;
+        let run = self.branch_run_record(id)?;
         if run.kind != "agent" {
             bail!("only agent runs have a branch to open a PR for");
         }
@@ -9784,7 +9852,7 @@ impl AppState {
 
     /// The run's PR (if any) plus its check rollup, polled by the UI.
     pub fn pr_status(&self, id: &str) -> Result<PrStatus> {
-        let run = self.run_record(id)?;
+        let run = self.branch_run_record(id)?;
         // A run in the main checkout shares the user's branch; any PR open on
         // it belongs to them, not to this run.
         if !run.worktree {
@@ -10010,7 +10078,7 @@ impl AppState {
     /// The PR number for a run's branch, if a PR exists — lets the agent's
     /// Approve window deep-link into the review view.
     pub fn pr_number_for_run(&self, id: &str) -> Result<Option<u64>> {
-        let run = self.run_record(id)?;
+        let run = self.branch_run_record(id)?;
         // Same reasoning as `pr_status`: the checkout's branch is not this
         // run's, so a PR on it isn't this run's either.
         if !run.worktree {
@@ -10216,7 +10284,7 @@ impl AppState {
     /// run's. Another run's conflict describes files this agent never touched,
     /// and handing it that prompt would send it off editing someone else's work.
     fn merge_conflict_prompt(&self, id: &str) -> anyhow::Result<String> {
-        let run = self.run_record(id)?;
+        let run = self.branch_run_record(id)?;
         let repo = self.project_repo(&run.project_id)?;
         let base = agency_core::merge::resolve_target(run.merge_target.as_deref(), &repo)
             .unwrap_or_else(|_| "main".to_string());
@@ -10727,11 +10795,11 @@ fn validate_project_path(repo_path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_argv, branch_leaf_from_first_prompt, command_on_path, graphify_server, id_source,
-        id_suffix, is_auto_cut_branch, new_task_id, open_file_for, pick_port, preview_mcp_port_for,
-        preview_port_this_sweep, preview_tools_on, require_branch_exists, require_gitless_known,
-        require_own_branch, should_resume, slugify, split_session_id, validate_race, OpenFileRef,
-        RaceAttempt,
+        agent_argv, branch_leaf_from_first_prompt, branch_to_adopt, command_on_path,
+        graphify_server, id_source, id_suffix, is_auto_cut_branch, new_task_id, open_file_for,
+        pick_port, preview_mcp_port_for, preview_port_this_sweep, preview_tools_on,
+        require_branch_exists, require_gitless_known, require_own_branch, should_resume, slugify,
+        split_session_id, validate_race, OpenFileRef, RaceAttempt,
     };
     use agency_core::config::KnowledgeConfig;
     use agency_core::profile::AgentProfile;
@@ -12039,6 +12107,26 @@ mod tests {
         // No hyphen at all, and a trailing segment that is not the 4-char shape.
         assert_eq!(id_suffix("nope"), None);
         assert_eq!(id_suffix("add-a-login-page-toolong"), None);
+    }
+
+    #[test]
+    fn branch_to_adopt_follows_a_worktree_renamed_outside_agency() {
+        // AGE-238: `git branch -m` in the run's terminal.
+        assert_eq!(
+            branch_to_adopt("agent/fix-it-q3w7", Some("users/nick/branch1"), Some("main")),
+            Some("users/nick/branch1".to_string()),
+        );
+    }
+
+    #[test]
+    fn branch_to_adopt_keeps_the_row_when_there_is_nothing_better() {
+        assert_eq!(branch_to_adopt("agent/a", Some("agent/a"), Some("main")), None);
+        // Detached HEAD, mid-rebase.
+        assert_eq!(branch_to_adopt("agent/a", None, Some("main")), None);
+        // Switched onto the merge target: never merge a branch into itself.
+        assert_eq!(branch_to_adopt("agent/a", Some("main"), Some("main")), None);
+        // No resolvable target still follows a real branch.
+        assert_eq!(branch_to_adopt("agent/a", Some("agent/b"), None), Some("agent/b".into()));
     }
 
     #[test]

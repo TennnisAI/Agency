@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useDismissOnResize } from "../hooks/useDismissOnResize";
 
 // Branch picker for the agent menu. A native <select> can't be trusted here:
@@ -24,6 +24,7 @@ export default function BranchSelect({
     top?: number; bottom?: number; left?: number; right?: number; minWidth: number;
   }>({ minWidth: 0 });
   const btnRef = useRef<HTMLButtonElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
 
   const toggle = () => {
     setOpen((o) => {
@@ -64,6 +65,16 @@ export default function BranchSelect({
   // Same for a resize: the list is placed against the trigger's old rect.
   useDismissOnResize(open, () => setOpen(false));
 
+  // Show the selected row when the list opens, and only then. AGE-238: this
+  // was an inline ref callback, a new function each render, which React
+  // detaches and re-attaches every time; any re-render of the menu around it
+  // scrolled the list back to the selected branch while the user was
+  // scrolling down it.
+  useLayoutEffect(() => {
+    if (!open) return;
+    listRef.current?.querySelector<HTMLElement>("button.on")?.scrollIntoView({ block: "nearest" });
+  }, [open]);
+
   const { minWidth, ...pos } = coords;
 
   return (
@@ -81,16 +92,13 @@ export default function BranchSelect({
       {open && (
         <>
           <div className="branch-menu-backdrop" onClick={(e) => { e.stopPropagation(); setOpen(false); }} />
-          <div className="agent-menu branch-menu" style={{ position: "fixed", minWidth, ...pos }}>
+          <div ref={listRef} className="agent-menu branch-menu" style={{ position: "fixed", minWidth, ...pos }}>
             {options.map((b) => (
               <button
                 key={b}
                 type="button"
                 title={b}
                 className={b === value ? "on" : ""}
-                // Keep the selected row in view when the list is long enough to
-                // scroll, so opening the popup shows where you already are.
-                ref={b === value ? (el) => el?.scrollIntoView({ block: "nearest" }) : undefined}
                 onClick={(e) => {
                   e.stopPropagation();
                   setOpen(false);

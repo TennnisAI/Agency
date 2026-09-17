@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { AgentModelInfo, probeAgentModels } from "../api";
 import { filterModels, modelIdError, modelOptions } from "../agents";
 import { useDismissOnResize } from "../hooks/useDismissOnResize";
@@ -67,6 +67,7 @@ export default function ModelSelect({
     top?: number; bottom?: number; left?: number; right?: number; minWidth: number;
   }>({ minWidth: 0 });
   const btnRef = useRef<HTMLButtonElement>(null);
+  const optionsRef = useRef<HTMLDivElement>(null);
 
   // Escape closes this popup only, leaving the menu or dialog it opened from
   // standing — the same thing a click on the backdrop does.
@@ -109,6 +110,14 @@ export default function ModelSelect({
       .finally(() => { if (live) setListing(false); });
     return () => { live = false; };
   }, [open, agent, listCommand, projectId]);
+
+  // Show the current model when the menu opens or a probed list arrives, and
+  // not on every render: the same inline-ref snap-back as BranchSelect's
+  // (AGE-238), which dragged a scrolled list back to the selected row.
+  useLayoutEffect(() => {
+    if (!open) return;
+    optionsRef.current?.querySelector<HTMLElement>("button.on")?.scrollIntoView({ block: "nearest" });
+  }, [open, listed.length]);
 
   // Nothing to pick until we know this agent can be told a model at all: an
   // agent whose CLI takes no model flag gets no control, and neither does one
@@ -212,16 +221,13 @@ export default function ModelSelect({
             </button>
             {shown.length > 0 && <div className="agent-menu-sep" />}
             {shown.length > 0 && (
-              <div className="model-options">
+              <div ref={optionsRef} className="model-options">
                 {shown.map((m) => (
                   <button
                     key={m}
                     type="button"
                     title={m}
                     className={m === value ? "on" : ""}
-                    // Keep the current model in view when a probed list is long
-                    // enough to scroll, so opening the menu shows where you are.
-                    ref={m === value ? (el) => el?.scrollIntoView({ block: "nearest" }) : undefined}
                     onClick={(e) => { e.stopPropagation(); pick(m); }}
                   >
                     <span className="branch-select-name">{m}</span>

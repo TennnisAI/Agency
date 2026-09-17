@@ -14,33 +14,29 @@
 
 use anyhow::{bail, Result};
 
-/// The prefix every Agency-cut branch carries. `state.rs` and the PR
-/// association read it to tell our own branches from the user's, so a rename
-/// keeps it whether or not the user typed it.
-pub const AGENT_PREFIX: &str = "agent/";
-
-/// Longest accepted branch name, prefix included. Git itself only stops at the
-/// filesystem's path limit; this is about the name staying readable in a merge
-/// commit, a PR title and a `git branch` listing. The derived names are ~50.
+/// Longest accepted branch name. Git itself only stops at the filesystem's
+/// path limit; this is about the name staying readable in a merge commit, a PR
+/// title and a `git branch` listing. The derived names are ~50.
 pub const MAX_LEN: usize = 100;
 
 /// Characters git rejects outright in a ref name, plus the ones a shell or a
 /// pathspec would eat.
 const FORBIDDEN: &[char] = &['~', '^', ':', '?', '*', '[', '\\', ' ', '\t'];
 
-/// Normalize a user-typed branch name to the full `agent/<leaf>` form,
-/// rejecting anything git would not accept.
+/// Validate a user-typed branch name and return it trimmed, exactly as typed
+/// otherwise.
 ///
-/// The `agent/` prefix is optional in the input: the rename dialog prefills the
-/// whole current name, so the user usually edits the tail and leaves the prefix
-/// in place, but typing just the tail means the same thing.
+/// AGE-238: this used to prepend `agent/` to anything that lacked it, so
+/// renaming to `users/nick/branch1` produced `agent/users/nick/branch1`, which
+/// a remote enforcing a `users/<name>/…` naming rule then rejected on push. The
+/// user's name is the user's: nothing reads the prefix to recognize a run's
+/// branch (the registry row does that), so there is no reason to impose it.
 pub fn normalize(input: &str) -> Result<String> {
-    let trimmed = input.trim();
-    let leaf = trimmed.strip_prefix(AGENT_PREFIX).unwrap_or(trimmed);
-    if leaf.is_empty() {
-        bail!("a branch needs a name after '{AGENT_PREFIX}'");
+    let name = input.trim();
+    if name.is_empty() {
+        bail!("a branch needs a name");
     }
-    if let Some(bad) = leaf.chars().find(|c| FORBIDDEN.contains(c) || c.is_control()) {
+    if let Some(bad) = name.chars().find(|c| FORBIDDEN.contains(c) || c.is_control()) {
         let shown = if bad == ' ' {
             "a space".to_string()
         } else if bad.is_control() {
@@ -50,19 +46,27 @@ pub fn normalize(input: &str) -> Result<String> {
         };
         bail!("git does not allow {shown} in a branch name");
     }
-    if leaf.contains("..") {
+    if name.contains("..") {
         bail!("git does not allow '..' in a branch name");
     }
-    if leaf.contains("@{") {
+    if name.contains("@{") {
         bail!("git does not allow '@{{' in a branch name");
     }
-    if leaf == "@" {
+    if name == "@" {
         bail!("git does not allow '@' on its own as a branch name");
     }
-    if leaf.ends_with('/') || leaf.ends_with('.') {
-        bail!("a branch name can't end with '{}'", if leaf.ends_with('/') { '/' } else { '.' });
+    // `git branch` refuses both, and a leading '-' would reach `git branch -m`
+    // as an option rather than a name.
+    if name.starts_with('-') {
+        bail!("a branch name can't start with '-'");
     }
-    for part in leaf.split('/') {
+    if name == "HEAD" {
+        bail!("git does not allow 'HEAD' as a branch name");
+    }
+    if name.ends_with('/') || name.ends_with('.') {
+        bail!("a branch name can't end with '{}'", if name.ends_with('/') { '/' } else { '.' });
+    }
+    for part in name.split('/') {
         if part.is_empty() {
             bail!("a branch name can't have an empty part (two slashes in a row)");
         }
@@ -73,11 +77,10 @@ pub fn normalize(input: &str) -> Result<String> {
             bail!("no part of a branch name can end with '.lock'");
         }
     }
-    let full = format!("{AGENT_PREFIX}{leaf}");
-    if full.chars().count() > MAX_LEN {
-        bail!("that branch name is {} characters; keep it to {MAX_LEN}", full.chars().count());
+    if name.chars().count() > MAX_LEN {
+        bail!("that branch name is {} characters; keep it to {MAX_LEN}", name.chars().count());
     }
-    Ok(full)
+    Ok(name.to_string())
 }
 
 #[cfg(test)]
@@ -88,9 +91,11 @@ mod tests {
         normalize(input).unwrap_err().to_string()
     }
 
+    /// AGE-238: a name outside `agent/` is kept as typed, not prefixed.
     #[test]
-    fn adds_the_prefix_when_it_is_missing_and_keeps_it_when_it_is_there() {
-        assert_eq!(normalize("tidy-branch").unwrap(), "agent/tidy-branch");
+    fn keeps_the_name_as_typed_without_adding_a_prefix() {
+        assert_eq!(normalize("users/nick/branch1").unwrap(), "users/nick/branch1");
+        assert_eq!(normalize("tidy-branch").unwrap(), "tidy-branch");
         assert_eq!(normalize("agent/tidy-branch").unwrap(), "agent/tidy-branch");
         assert_eq!(normalize("  agent/tidy-branch \n").unwrap(), "agent/tidy-branch");
     }
@@ -103,7 +108,6 @@ mod tests {
     #[test]
     fn rejects_an_empty_name() {
         assert!(err("").contains("needs a name"));
-        assert!(err("agent/").contains("needs a name"));
         assert!(err("   ").contains("needs a name"));
     }
 
@@ -122,9 +126,12 @@ mod tests {
         assert!(err("a..b").contains(".."));
         assert!(err("a@{b").contains("@{"));
         assert!(err("@").contains("on its own"));
+        assert!(err("-oops").contains("start with '-'"));
+        assert!(err("HEAD").contains("HEAD"));
         assert!(err("trailing/").contains("end with"));
         assert!(err("trailing.").contains("end with"));
         assert!(err("two//slashes").contains("empty part"));
+        assert!(err("/leading").contains("empty part"));
         assert!(err(".hidden").contains("start with"));
         assert!(err("nested/.hidden").contains("start with"));
         assert!(err("name.lock").contains(".lock"));
@@ -133,10 +140,9 @@ mod tests {
 
     #[test]
     fn rejects_an_overlong_name() {
-        let long = "a".repeat(MAX_LEN);
+        let long = "a".repeat(MAX_LEN + 1);
         assert!(err(&long).contains(&MAX_LEN.to_string()));
-        // Exactly at the cap, prefix included, is fine.
-        let at_cap = "b".repeat(MAX_LEN - AGENT_PREFIX.len());
+        let at_cap = "b".repeat(MAX_LEN);
         assert_eq!(normalize(&at_cap).unwrap().chars().count(), MAX_LEN);
     }
 

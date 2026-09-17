@@ -3781,24 +3781,74 @@ fn renaming_a_runs_branch_moves_git_and_the_registry_together() {
     let old = info.branch.clone();
     let wt = state.worktree_path(&info.id).unwrap();
 
-    // Typed without the prefix: it comes back with one either way.
-    let applied = state.rename_run_branch(&info.id, "tidy-name").unwrap();
-    assert_eq!(applied, "agent/tidy-name");
+    // AGE-238: the name is kept as typed. A remote with a `users/<name>/…`
+    // naming rule rejected the `agent/`-prefixed name this used to produce.
+    let applied = state.rename_run_branch(&info.id, "users/nick/tidy-name").unwrap();
+    assert_eq!(applied, "users/nick/tidy-name");
 
     assert!(!agency_core::merge::branch_exists(&repo, &old));
-    assert!(agency_core::merge::branch_exists(&repo, "agent/tidy-name"));
+    assert!(agency_core::merge::branch_exists(&repo, "users/nick/tidy-name"));
+    assert!(!agency_core::merge::branch_exists(&repo, "agent/users/nick/tidy-name"));
     // The registry is what merge reads.
     let listed = state.list_runs(&project.id).unwrap();
-    assert_eq!(listed[0].branch, "agent/tidy-name");
+    assert_eq!(listed[0].branch, "users/nick/tidy-name");
     // The worktree neither moved nor came off its branch.
     assert_eq!(state.worktree_path(&info.id).unwrap(), wt);
-    assert_eq!(agency_core::merge::current_branch(&wt).as_deref(), Some("agent/tidy-name"));
+    assert_eq!(agency_core::merge::current_branch(&wt).as_deref(), Some("users/nick/tidy-name"));
     // The workspace skill states the branch the run owns; a stale copy would
     // have the agent name a branch that is gone.
     let skill = wt.join(".claude/skills/agency-workspace/SKILL.md");
     let text = std::fs::read_to_string(&skill).unwrap();
-    assert!(text.contains("agent/tidy-name"), "the workspace skill still names the old branch");
+    assert!(
+        text.contains("users/nick/tidy-name"),
+        "the workspace skill still names the old branch"
+    );
     assert!(!text.contains(&old), "the workspace skill still names the old branch");
+
+    let _ = state.discard_run(&info.id);
+}
+
+/// AGE-238: renaming the branch with git in the run's own terminal broke
+/// Approve, which refused with "no longer exists" because it read the name
+/// recorded at dispatch. The worktree was on the renamed branch the whole time,
+/// so the run follows it.
+#[test]
+fn a_branch_renamed_in_the_worktree_is_followed_by_merge_and_the_registry() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+
+    let state = common::state(&dir);
+    state
+        .register_profile(AgentProfile {
+            name: "claude".into(),
+            command: "sh".into(),
+            args: vec!["-c".into(), "sleep 3".into()],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+    let info = state.create_run(&project.id, "p", "claude", None, "HEAD", None).unwrap();
+    let old = info.branch.clone();
+    let wt = state.worktree_path(&info.id).unwrap();
+
+    assert!(Command::new("git")
+        .args(["branch", "-m", "users/nick/branch1"])
+        .current_dir(&wt)
+        .status()
+        .unwrap()
+        .success());
+    assert!(!agency_core::merge::branch_exists(&repo, &old));
+
+    let preview = state.merge_preview(&info.id).unwrap();
+    assert_eq!(preview.branch, "users/nick/branch1");
+    assert_eq!(state.list_runs(&project.id).unwrap()[0].branch, "users/nick/branch1");
+    let skill = wt.join(".claude/skills/agency-workspace/SKILL.md");
+    let text = std::fs::read_to_string(&skill).unwrap();
+    assert!(text.contains("users/nick/branch1"), "the workspace skill still names the old branch");
 
     let _ = state.discard_run(&info.id);
 }
@@ -4015,7 +4065,7 @@ fn first_prompt_leaves_a_manually_renamed_branch_alone() {
         .unwrap();
     let project = state.add_project("demo", &repo).unwrap();
     let info = state.create_run(&project.id, "", "noop", None, "HEAD", None).unwrap();
-    state.rename_run_branch(&info.id, "already-chosen").unwrap();
+    state.rename_run_branch(&info.id, "agent/already-chosen").unwrap();
 
     state.apply_first_prompt(&info.id, "fix the login page").unwrap();
 

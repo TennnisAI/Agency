@@ -610,6 +610,23 @@ impl Registry {
         }
     }
 
+    /// The pinned workspace, but only while the user has it. Hiding the
+    /// workspace closes its project row, and a folder the user has taken out of
+    /// the app is not one to send an agent writing into, so anything pointing
+    /// an agent at the workspace asks for it this way rather than through
+    /// [`Registry::get_workspace`].
+    pub fn open_workspace(&self) -> Result<Option<Project>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, repo_path, default_agent, default_provider, color, issue_key, kind
+             FROM projects WHERE kind = 'workspace' AND closed = 0",
+        )?;
+        let mut rows = stmt.query([])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(row_to_project(row)?)),
+            None => Ok(None),
+        }
+    }
+
     /// Create the pinned workspace project, or return the existing one
     /// (un-closing it if needed). The workspace is in the tracker like any
     /// project: it gets an issue key so personal/planning tasks have one too.
@@ -2629,6 +2646,28 @@ mod tests {
             reg.get_workspace().unwrap().unwrap().repo_path,
             std::path::PathBuf::from("/tmp/ws2")
         );
+    }
+
+    /// Hiding the workspace closes its project row, and `open_workspace` is
+    /// what anything pointing an agent at the folder asks (AGE-239): a folder
+    /// the user has taken out of the app is not one to send an agent writing
+    /// into.
+    #[test]
+    fn open_workspace_skips_a_hidden_one() {
+        let dir = tempdir().unwrap();
+        let reg = Registry::open(&dir.path().join("hidden.db")).unwrap();
+        assert!(reg.open_workspace().unwrap().is_none());
+
+        let ws = reg.ensure_workspace("Workspace", std::path::Path::new("/tmp/ws")).unwrap();
+        assert_eq!(reg.open_workspace().unwrap().unwrap().id, ws.id);
+
+        reg.set_project_closed(&ws.id, true).unwrap();
+        assert!(reg.open_workspace().unwrap().is_none());
+        // Still the workspace, though: hiding does not unmake it.
+        assert_eq!(reg.get_workspace().unwrap().unwrap().id, ws.id);
+
+        reg.set_project_closed(&ws.id, false).unwrap();
+        assert_eq!(reg.open_workspace().unwrap().unwrap().id, ws.id);
     }
 
     #[test]

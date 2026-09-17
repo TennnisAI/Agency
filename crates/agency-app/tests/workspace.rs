@@ -119,3 +119,32 @@ fn move_workspace_refuses_while_agent_runs_are_live() {
     let moved = state.move_workspace(&dest).unwrap();
     assert_eq!(moved.repo_path, dest);
 }
+
+/// AGE-239: the skills kit tells every dispatched agent where the user's
+/// workspace is, so "add this doc to my workspace" has a folder to mean. The
+/// fact is read at dispatch, and three things make it unsayable: no workspace,
+/// a hidden one (hiding closes the project row), and a folder that has gone.
+#[test]
+fn the_workspace_folder_is_offered_to_agents_only_while_the_user_has_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let loc = dir.path().join("Agency");
+
+    let state = common::state(&dir);
+    assert!(state.user_workspace_dir().is_none(), "no workspace yet");
+
+    let ws = state.create_workspace(&loc, false).unwrap();
+    assert_eq!(state.user_workspace_dir().as_deref(), Some(loc.as_path()));
+
+    // Hidden: the user has taken it out of the app, so no agent is sent there.
+    state.close_project(&ws.id).unwrap();
+    assert!(state.user_workspace_dir().is_none(), "hidden workspace");
+
+    // Un-hidden by re-creating it at the same folder, as Settings does.
+    state.create_workspace(&loc, false).unwrap();
+    assert_eq!(state.user_workspace_dir().as_deref(), Some(loc.as_path()));
+
+    // Moved out from under Agency: a dead path in the kit reads as the kit
+    // being wrong about everything else in it, so it is left out instead.
+    std::fs::rename(&loc, dir.path().join("elsewhere")).unwrap();
+    assert!(state.user_workspace_dir().is_none(), "folder gone");
+}

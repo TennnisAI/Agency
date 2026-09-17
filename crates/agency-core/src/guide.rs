@@ -116,6 +116,10 @@ same way you would in a code project. If the workspace uses git they work
 on a branch and you merge; if it does not, they edit the notes in place,
 and there is no Source Control tab and nothing to merge.
 
+An agent dispatched in one of your code projects is told where this folder
+is, so "add this doc to my workspace" writes the file here rather than into
+the project it is working in.
+
 The Agents tab in a note's right panel is the same set of agents, shown
 next to what you are writing. Start one with + there, switch between them
 from the picker, and use the arrow to open the current one full size in

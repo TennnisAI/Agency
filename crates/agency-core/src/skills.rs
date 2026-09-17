@@ -177,6 +177,17 @@ pub struct Workspace {
     /// The preview MCP server is attached to this run (see `crate::preview`),
     /// so the catalog tells the agent the tools exist and what they act on.
     pub preview_tools: bool,
+    /// The folder Agency pins as the user's own workspace: their notes, docs
+    /// and journal, which is what they mean by "my workspace" and is nowhere
+    /// near this worktree (AGE-239). `None` when they have not made one, have
+    /// hidden it, or its folder has gone.
+    ///
+    /// The collision with this struct's own name is the app's: a run's worktree
+    /// is a workspace in Agency too. Only one of the two is the user's, and the
+    /// emitted copy says which is which, because an agent that reads "add this
+    /// doc to my workspace" as "the checkout I am standing in" files it where
+    /// nobody will look for it again.
+    pub user_workspace: Option<std::path::PathBuf>,
     /// The user shares the file they have open in Agency (AGE-200), so the
     /// catalog says the tool for asking exists. Read at dispatch like every
     /// other fact here; the switch is the user's and they can withdraw it
@@ -371,6 +382,20 @@ fn frontmatter(name: &str, description: &str) -> String {
 fn workspace_skill_md(ws: &Workspace, skills_rel: &Path) -> String {
     let issues = ws.repo_root.join(crate::issuefs::ISSUES_DIR);
     let mut body = String::new();
+    // AGE-239. The description is what sits in the agent's skill list while
+    // the user types, so it carries their words for the folder rather than
+    // ours: a run that never loads the skill is a run that answers "add this
+    // doc to my workspace" with the worktree it is standing in. Only said when
+    // there is a workspace to say it about.
+    let user_workspace = match ws.user_workspace {
+        Some(_) => {
+            " It also says where the user's own workspace folder is, the notes, docs \
+             and journal home they mean by 'my workspace', 'my notes' or 'my vault': read it \
+             before putting a doc, a note or a writeup there, because that folder is not this \
+             worktree."
+        }
+        None => "",
+    };
     body.push_str(&format!(
         "{frontmatter}\
          \n\
@@ -397,8 +422,8 @@ fn workspace_skill_md(ws: &Workspace, skills_rel: &Path) -> String {
                  project checkout it merges back into, the absolute path of the issue tracker, \
                  the setup, run and check commands, the AGENCY_* variables, and what happens to \
                  the work when the run ends. Use before looking for a build or test command or a \
-                 place to put a file, and before deciding what to commit. To file or edit an \
-                 issue, use {ISSUES_SKILL}."
+                 place to put a file, and before deciding what to commit.{user_workspace} To file \
+                 or edit an issue, use {ISSUES_SKILL}."
             ),
         ),
         worktree = ws.worktree.display(),
@@ -408,6 +433,47 @@ fn workspace_skill_md(ws: &Workspace, skills_rel: &Path) -> String {
         issue_key = ws.issue_key,
         precedence = crate::briefing::PRECEDENCE,
     ));
+
+    // AGE-239: "add this doc to my workspace" gets typed into a run that has
+    // nothing to do with the user's notes, and every answer but one is the
+    // wrong folder. Named here in full, with what to do in it, because an
+    // agent told to go and find out where the workspace is has not been told
+    // where the workspace is.
+    if let Some(user_ws) = &ws.user_workspace {
+        if user_ws == &ws.repo_root {
+            body.push_str(&format!(
+                "\n## This project is the user's workspace\n\
+                 \n\
+                 The project this worktree was cut from is the user's workspace: the \
+                 plain-markdown vault of notes, docs and a journal that they mean by \"my \
+                 workspace\", \"my notes\" or \"my vault\". So a doc they ask to have added \
+                 to their workspace belongs in this worktree, written as markdown at its top \
+                 level unless they name a folder inside it; the journal is `journal/`. \
+                 Commit it on `{branch}` like any other work: that is what carries it into \
+                 `{root}`, which is the workspace itself.\n",
+                branch = ws.branch,
+                root = ws.repo_root.display(),
+            ));
+        } else {
+            body.push_str(&format!(
+                "\n## The user's workspace is not this one\n\
+                 \n\
+                 Agency pins one folder as the user's workspace: `{user_ws}`. It is a \
+                 plain-markdown vault of notes, docs and a journal, and it is theirs rather \
+                 than this project's. \"My workspace\", \"my notes\", \"my vault\" and \"my \
+                 journal\" all mean that folder, and so does \"add this doc to my workspace\". \
+                 This worktree is a workspace in Agency too, which is exactly why the sentence \
+                 gets answered with the wrong one.\n\
+                 \n\
+                 Write the file straight into that folder, as markdown, at its top level \
+                 unless the user names somewhere inside it; the journal is `journal/`. It is \
+                 outside this worktree, so there is nothing to commit and nothing to merge, \
+                 and the note is in Agency the moment it is written. Leave git alone in there: \
+                 the folder is the user's own and they commit what lands in it themselves.\n",
+                user_ws = user_ws.display(),
+            ));
+        }
+    }
 
     body.push_str("\n## Running the project\n\n");
     match &ws.setup_command {
@@ -898,6 +964,7 @@ mod tests {
             loop_check: None,
             port: None,
             preview_tools: false,
+            user_workspace: None,
             open_file_tool: false,
         }
     }
@@ -1224,6 +1291,58 @@ mod tests {
         }
     }
 
+    /// AGE-239: the user types "add this doc to my workspace" into a run that
+    /// has nothing to do with their notes. Both words are Agency's for two
+    /// different folders, so the catalog names the one that is theirs, in the
+    /// words they ask with, and says outright that it is not the worktree.
+    #[test]
+    fn the_catalog_names_the_users_own_workspace_folder() {
+        let ws = Workspace { user_workspace: Some("/Users/x/Agency".into()), ..workspace() };
+        let text = skill(&ws, WORKSPACE_SKILL);
+        assert!(text.contains("`/Users/x/Agency`"), "{text}");
+        for ask in ["my workspace", "my notes", "my vault", "add this doc to my workspace"] {
+            assert!(text.contains(ask), "{ask:?} missing from {text}");
+        }
+        assert!(text.contains("journal/"), "{text}");
+        // A folder outside the worktree is not part of the run's diff, and
+        // committing in the user's own checkout is not ours to do.
+        assert!(text.contains("nothing to commit and nothing to merge"), "{text}");
+        assert!(text.contains("Leave git alone in there"), "{text}");
+
+        // The description is what the agent reads while the user is typing, so
+        // the folder has to be findable from it alone.
+        let description =
+            text.lines().find(|l| l.starts_with("description: ")).expect("a description");
+        for ask in ["my workspace", "my notes", "my vault"] {
+            assert!(description.contains(ask), "{ask:?} missing from {description}");
+        }
+    }
+
+    /// The one run where the answer is the worktree: the project it was cut
+    /// from is the workspace itself, so the doc goes on the branch like any
+    /// other work and reaches the notes at merge.
+    #[test]
+    fn a_run_inside_the_workspace_is_told_the_doc_belongs_on_its_branch() {
+        let ws = Workspace { user_workspace: Some("/repo".into()), ..workspace() };
+        let text = skill(&ws, WORKSPACE_SKILL);
+        assert!(text.contains("This project is the user's workspace"), "{text}");
+        assert!(text.contains("`agent/fix-login-a3k2`"), "{text}");
+        // Not the "write into it directly" copy, which would put the file in
+        // the user's checkout while the branch it should be on goes empty.
+        assert!(!text.contains("Leave git alone in there"), "{text}");
+    }
+
+    /// No workspace (never created, hidden, or its folder gone) means no
+    /// paragraph about one: a catalog that names a folder that is not there
+    /// reads as wrong about everything else in it too.
+    #[test]
+    fn the_catalog_is_silent_when_there_is_no_workspace_to_name() {
+        let text = skill(&workspace(), WORKSPACE_SKILL);
+        assert!(!text.contains("my workspace"), "{text}");
+        assert!(!text.contains("vault"), "{text}");
+        assert!(!text.contains("journal"), "{text}");
+    }
+
     /// A looping run finishes on its check command, so the agent is told what
     /// that command is and that running it is the whole test of being done.
     #[test]
@@ -1244,6 +1363,7 @@ mod tests {
             open_file_tool: true,
             preview_tools: true,
             loop_check: Some(("make check".into(), 3)),
+            user_workspace: Some("/Users/x/Agency".into()),
             ..workspace()
         };
         for dir in [skills_dir(&ws), ws.worktree.join(".agents").join("skills")] {
@@ -1276,6 +1396,7 @@ mod tests {
             run_scripts: vec![("dev".into(), "make dev".into())],
             loop_check: Some(("make check".into(), 3)),
             port: Some(3400),
+            user_workspace: Some("/Users/x/Agency".into()),
             ..workspace()
         };
         for skill in kit(&ws, &skills_dir(&ws)) {

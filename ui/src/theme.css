@@ -59,6 +59,16 @@
 }
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; }
+/* The window itself never scrolls; every pane scrolls inside its own box.
+   Without this the document was a scroll container, and a wheel over a
+   terminal that did not consume the event chained up to it: the whole shell
+   slid up inside the window, leaving a blank band under the status bar.
+   `hidden` on html/body stops the wheel and the rubber band, `clip` on #root
+   keeps anything overflowing the shell from growing the document, and
+   main.tsx pins the scroll offset against a focus() or scrollIntoView(),
+   which `hidden` does not stop. */
+html, body { overflow: hidden; overscroll-behavior: none; }
+#root { overflow: clip; }
 body { margin: 0; background: var(--base); color: var(--text);
   font-family: var(--sans); -webkit-font-smoothing: antialiased; line-height: 1.5; }
 code, .mono { font-family: var(--mono); }

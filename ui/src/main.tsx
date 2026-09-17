@@ -12,6 +12,13 @@ applyTheme(getStoredTheme());
 // title bar's inset for the macOS traffic lights, and its own controls on Linux.
 document.documentElement.dataset.platform = PLATFORM;
 
+// The document must never scroll (see theme.css). `overflow: hidden` blocks the
+// wheel but not a programmatic scroll, and focusing an xterm's helper textarea
+// can still shift the whole shell up inside the window, so undo any offset.
+window.addEventListener("scroll", () => {
+  if (window.scrollX !== 0 || window.scrollY !== 0) window.scrollTo(0, 0);
+});
+
 // Suppress the webview's default right-click menu (Reload / Developer Tools),
 // which is irrelevant to end users. Terminals and editable text fields keep
 // their native menu so copy/paste still works there.

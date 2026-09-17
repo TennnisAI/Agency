@@ -201,7 +201,7 @@ export function useRunMenu({
         <PromptDialog
           title="Rename branch"
           body="The merge commit carries this name into the base branch's history for good, and a merged PR's branch can't be renamed after the fact. The agent, its workspace and its work stay where they are."
-          placeholder="agent/some-name"
+          placeholder="users/you/some-name"
           initial={renamingBranch.branch}
           confirmLabel="Rename"
           onConfirm={(v) => {

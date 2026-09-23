@@ -44,20 +44,70 @@ pub fn git_with(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
-    if let Some(input) = stdin {
-        // Dropped at the end of the statement, which closes the pipe: git reads
-        // until EOF.
-        child
-            .stdin
-            .take()
-            .ok_or_else(|| anyhow::anyhow!("failed to open git stdin"))?
-            .write_all(input)?;
-    }
-    let output = child.wait_with_output()?;
+    // stdin is written from its own thread while this one drains stdout and
+    // stderr. Written first, a long path list deadlocks: git prints a warning
+    // per path (`core.autocrlf` does, on every file it is handed), stderr's
+    // 64KB pipe fills, git blocks writing it, and we block writing a stdin it
+    // has stopped reading. A checkpoint of a tree with thousands of untracked
+    // files hangs that way, holding the repository's gates as it does.
+    let pipe = child.stdin.take();
+    let (output, written) = std::thread::scope(|s| {
+        let writer = stdin.zip(pipe).map(|(input, mut pipe)| {
+            // The pipe is dropped when the thread ends, which closes it: git
+            // reads until EOF.
+            s.spawn(move || pipe.write_all(input))
+        });
+        let output = child.wait_with_output();
+        let written = writer.map_or(Ok(()), |w| w.join().unwrap_or(Ok(())));
+        (output, written)
+    });
+    let output = output?;
+    // A failed git first: one that exits early stops reading, and the broken
+    // pipe that leaves the writer with says nothing about why.
     if !output.status.success() {
         bail!("git {:?} failed: {}", args, failure_detail(&output));
     }
+    written?;
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// A scratch index file in `dir`'s own git dir, for building a tree without
+/// touching the user's index: pass [`ScratchIndex::env`] to [`git_with`].
+/// Removed when dropped, with its lock file, should git have died holding it.
+///
+/// Asked for rather than assumed to be `<dir>/.git`: in a linked worktree that
+/// path is a *file* pointing elsewhere, and joining onto it would put the index
+/// somewhere that cannot be created.
+pub struct ScratchIndex {
+    pub path: std::path::PathBuf,
+    env_value: String,
+}
+
+impl ScratchIndex {
+    /// `name` starts the file's name; the process id and a counter finish it,
+    /// so two builds in flight never share one.
+    pub fn new(dir: &Path, name: &str) -> Result<ScratchIndex> {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let git_dir = git(dir, &["rev-parse", "--absolute-git-dir"])?;
+        let path =
+            Path::new(git_dir.trim()).join(format!("{name}-{}-{n}.index", std::process::id()));
+        let env_value = path.to_string_lossy().into_owned();
+        Ok(ScratchIndex { path, env_value })
+    }
+
+    pub fn env(&self) -> [(&str, &str); 1] {
+        [("GIT_INDEX_FILE", self.env_value.as_str())]
+    }
+}
+
+impl Drop for ScratchIndex {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+        let mut lock = self.path.clone().into_os_string();
+        lock.push(".lock");
+        let _ = std::fs::remove_file(lock);
+    }
 }
 
 /// What a failed git run said, wherever it said it. Not every failure is on
@@ -1490,6 +1540,33 @@ mod failure_detail_tests {
     fn leaves_a_single_line_alone() {
         assert_eq!(lead_with_conclusion("nothing to commit"), "nothing to commit");
         assert_eq!(lead_with_conclusion(""), "");
+    }
+}
+
+#[cfg(test)]
+mod git_with_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn a_full_stderr_does_not_deadlock_a_long_stdin() {
+        // Fills stderr well past a pipe buffer before reading a byte of stdin,
+        // as git does with a warning per path. Written stdin-first, both sides
+        // block for ever.
+        let d = tempdir().unwrap();
+        let alias = "alias.spew=!head -c 300000 /dev/zero >&2; wc -c";
+        let input = vec![b'x'; 1_000_000];
+        let out = git_with(d.path(), &["-c", alias, "spew"], &[], Some(&input)).unwrap();
+        assert_eq!(out.trim(), "1000000");
+    }
+
+    #[test]
+    fn a_git_that_stops_reading_reports_its_own_failure() {
+        let d = tempdir().unwrap();
+        let alias = "alias.quit=!echo gave up >&2; exit 3";
+        let input = vec![b'x'; 1_000_000];
+        let err = git_with(d.path(), &["-c", alias, "quit"], &[], Some(&input)).unwrap_err();
+        assert!(err.to_string().contains("gave up"), "{err}");
     }
 }
 

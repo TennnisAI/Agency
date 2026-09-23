@@ -28,18 +28,25 @@
 //! run-start one is the exception, since `create_run` is already off the main
 //! thread and the agent must not start before it.
 //!
-//! Two gates guard a capture: the run's, which `retire` holds while it prunes,
-//! and the workspace directory's, which a restore holds. Several runs can share
-//! one directory (every run working in the project checkout does), and a
-//! restore rewrites that directory for all of them, so any of their captures
-//! reading it halfway through would store a state that never existed.
+//! Three gates guard a capture, taken in this order. The project's checkout
+//! gate (`AppState::repo_gates`) comes first, for a run with no worktree: its
+//! directory is the checkout a merge, a pull or a branch switch moves between
+//! branches, and a snapshot taken halfway through one is half of each. Then the
+//! run's own, which `retire` holds while it prunes. Then the workspace
+//! directory's, which a restore holds. Several runs can share one directory
+//! (every run working in the project checkout does), and a restore rewrites
+//! that directory for all of them, so any of their captures reading it halfway
+//! through would store a state that never existed. A restore takes the same
+//! three in the same order, and the send queue checks the directory's before it
+//! types into a pane (see [`Checkpointer::unless_busy`]).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
-use agency_core::checkpoint::{Checkpoint, Kind};
+use agency_core::checkpoint::{Checkpoint, HashCache, Kind};
 
 use crate::activity::ActivityEntry;
 use crate::gates::KeyedGates;
@@ -63,73 +70,135 @@ pub struct Request {
     /// The run's workspace: its worktree, or the project checkout for a run
     /// without one.
     pub dir: PathBuf,
+    /// The project whose own checkout `dir` is, for a run without a worktree:
+    /// the `repo_gates` key a capture has to hold. `None` for a worktree.
+    pub checkout_of: Option<String>,
     pub kind: Kind,
+}
+
+/// What the capture thread is sent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Msg {
+    Capture(Request),
+    /// Everything queued before this for the run has been dropped, so it
+    /// need not stay retired: sent by `retire` behind its prune, carrying the
+    /// token that retirement was given.
+    Forget(String, u64),
 }
 
 /// Collapse a burst of requests into the captures worth taking: one per run and
 /// kind, in the order first asked for. A second identical request made while
-/// the first was still queued would snapshot the same files moments later.
-pub fn coalesce(batch: Vec<Request>) -> Vec<Request> {
+/// the first was still queued would snapshot the same files moments later. A
+/// `Forget` stays where it is, and a capture asked for after it is a new one.
+pub fn coalesce(batch: Vec<Msg>) -> Vec<Msg> {
     let mut seen = HashSet::new();
-    batch.into_iter().filter(|r| seen.insert((r.run_id.clone(), r.kind))).collect()
+    batch
+        .into_iter()
+        .filter(|m| match m {
+            Msg::Capture(r) => seen.insert((r.run_id.clone(), r.kind)),
+            Msg::Forget(run_id, _) => {
+                seen.retain(|(id, _)| id != run_id);
+                true
+            }
+        })
+        .collect()
+}
+
+/// What the capture thread shares with the threads that restore and prune.
+struct Shared {
+    gates: KeyedGates,
+    /// `AppState::repo_gates`, the same instance.
+    repo_gates: Arc<KeyedGates>,
+    /// Runs whose checkpoints have been pruned (archived, deleted, or never
+    /// got going), each with the token its retirement was given. A capture
+    /// still queued for one is dropped: taken after the prune, it would leave
+    /// refs behind for a run that no longer exists, which is exactly the
+    /// unbounded growth pruning is there to stop. Cleared by the `Forget` the
+    /// retirement queues behind those captures; kept for good, the set grew
+    /// with every run for the life of the app, and a run id ever issued again
+    /// would have got no checkpoints at all.
+    retired: Mutex<HashMap<String, u64>>,
+    /// Each workspace directory's [`HashCache`], so a capture rehashes only the
+    /// untracked files that changed since the last one.
+    caches: Mutex<HashMap<PathBuf, HashCache>>,
 }
 
 /// The capture thread and the gates that keep a capture out of the middle of a
 /// restore or a prune.
 pub struct Checkpointer {
-    tx: Mutex<Sender<Request>>,
-    gates: Arc<KeyedGates>,
-    /// Runs whose checkpoints have been pruned (archived, deleted, or never
-    /// got going). A capture still queued for one is dropped: taken after the
-    /// prune, it would leave refs behind for a run that no longer exists,
-    /// which is exactly the unbounded growth pruning is there to stop.
-    retired: Arc<Mutex<HashSet<String>>>,
+    tx: Sender<Msg>,
+    shared: Arc<Shared>,
+    tokens: AtomicU64,
 }
 
 impl Checkpointer {
-    pub fn new() -> Checkpointer {
+    pub fn new(repo_gates: Arc<KeyedGates>) -> Checkpointer {
         let (tx, rx) = channel();
-        let gates = Arc::new(KeyedGates::new());
-        let retired = Arc::new(Mutex::new(HashSet::new()));
-        let (worker_gates, worker_retired) = (gates.clone(), retired.clone());
-        let spawned = std::thread::Builder::new()
-            .name("checkpoints".into())
-            .spawn(move || work(rx, &worker_gates, &worker_retired));
+        let shared = Arc::new(Shared {
+            gates: KeyedGates::new(),
+            repo_gates,
+            retired: Mutex::new(HashMap::new()),
+            caches: Mutex::new(HashMap::new()),
+        });
+        let worker = shared.clone();
+        let spawned =
+            std::thread::Builder::new().name("checkpoints".into()).spawn(move || work(rx, &worker));
         if let Err(e) = spawned {
             // Requests then go nowhere; everything else still works.
             log::error!("checkpoints: could not start the capture thread: {e}");
         }
-        Checkpointer { tx: Mutex::new(tx), gates, retired }
+        Checkpointer { tx, shared, tokens: AtomicU64::new(0) }
     }
 
     /// Queue a capture. Never blocks on git.
     pub fn request(&self, req: Request) {
-        let _ = self.tx.lock().unwrap().send(req);
+        let _ = self.tx.send(Msg::Capture(req));
     }
 
     /// Take a capture now, on this thread, under the same gates as the queue.
     pub fn capture_now(&self, req: &Request) -> anyhow::Result<Option<Checkpoint>> {
-        take(&self.gates, &self.retired, req)
+        take(&self.shared, req)
     }
 
     /// Run `f` with no capture of `run_id` or of anything in `dir` in progress,
-    /// and none starting until it returns.
-    pub fn exclusive<T>(&self, run_id: &str, dir: &Path, f: impl FnOnce() -> T) -> T {
-        self.gates.with(&run_gate(run_id), || self.gates.with(&dir_gate(dir), f))
+    /// and none starting until it returns. The caller holds the checkout gate
+    /// already, when there is one (`AppState::git_mutate`). `f` is handed
+    /// `dir`'s hash cache.
+    pub fn exclusive<T>(&self, run_id: &str, dir: &Path, f: impl FnOnce(&mut HashCache) -> T) -> T {
+        self.shared.gates.with(&run_gate(run_id), || {
+            self.shared.gates.with(&dir_gate(dir), || with_cache(&self.shared, dir, f))
+        })
+    }
+
+    /// Run `f` with `dir`'s hash cache, for a read that needs no gate.
+    pub fn reading<T>(&self, dir: &Path, f: impl FnOnce(&mut HashCache) -> T) -> T {
+        with_cache(&self.shared, dir, f)
+    }
+
+    /// Run `f` unless a capture or a restore of `dir` holds it right now;
+    /// `None` if one does. For the send queue: text typed into an agent's pane
+    /// starts a turn, and a turn starting while a restore rewrites its files
+    /// ends up with neither state.
+    pub fn unless_busy<T>(&self, dir: &Path, f: impl FnOnce() -> T) -> Option<T> {
+        self.shared.gates.try_with(&dir_gate(dir), f)
     }
 
     /// Stop taking checkpoints for `run_id` and run `prune` (which deletes the
-    /// ones it has) with no capture of it in progress.
+    /// ones it has) with no capture of it in progress. Only once nothing can
+    /// ask for another: the run's row is gone or archived, or never existed.
     pub fn retire<T>(&self, run_id: &str, prune: impl FnOnce() -> T) -> T {
-        self.gates.with(&run_gate(run_id), || {
-            self.retired.lock().unwrap().insert(run_id.to_string());
+        let token = self.tokens.fetch_add(1, Ordering::Relaxed);
+        let out = self.shared.gates.with(&run_gate(run_id), || {
+            self.shared.retired.lock().unwrap().insert(run_id.to_string(), token);
             prune()
-        })
+        });
+        let _ = self.tx.send(Msg::Forget(run_id.to_string(), token));
+        out
     }
 
     /// Take checkpoints for `run_id` again: it was restored from the archive.
     pub fn revive(&self, run_id: &str) {
-        self.retired.lock().unwrap().remove(run_id);
+        self.shared.retired.lock().unwrap().remove(run_id);
     }
 }
 
@@ -141,34 +210,66 @@ fn dir_gate(dir: &Path) -> String {
     format!("dir:{}", dir.display())
 }
 
-/// One capture, under both gates: the run's first, then the directory's, the
-/// same order `exclusive` takes them in.
-fn take(
-    gates: &KeyedGates,
-    retired: &Mutex<HashSet<String>>,
-    req: &Request,
-) -> anyhow::Result<Option<Checkpoint>> {
-    gates.with(&run_gate(&req.run_id), || {
-        // Read under the gate `retire` holds while it prunes.
-        if retired.lock().unwrap().contains(&req.run_id) {
-            return Ok(None);
-        }
-        gates.with(&dir_gate(&req.dir), || {
-            agency_core::checkpoint::store::capture(&req.dir, &req.run_id, req.kind)
-        })
-    })
+/// `f` with `dir`'s cache, taken out of the map for the duration so no lock is
+/// held across git. Two users of one directory at once (a preview beside a
+/// capture) each get a working cache; the one put back last wins, and either
+/// is correct, since a hit still needs the file's stat to match.
+fn with_cache<T>(shared: &Shared, dir: &Path, f: impl FnOnce(&mut HashCache) -> T) -> T {
+    let mut cache = shared.caches.lock().unwrap().remove(dir).unwrap_or_default();
+    let out = f(&mut cache);
+    let mut caches = shared.caches.lock().unwrap();
+    // A worktree archived or discarded takes its cache with it.
+    caches.retain(|d, _| d.exists());
+    caches.insert(dir.to_path_buf(), cache);
+    out
 }
 
-fn work(rx: Receiver<Request>, gates: &KeyedGates, retired: &Mutex<HashSet<String>>) {
+/// One capture, under all three gates in the order the module notes give.
+fn take(shared: &Shared, req: &Request) -> anyhow::Result<Option<Checkpoint>> {
+    let gated = || {
+        shared.gates.with(&run_gate(&req.run_id), || {
+            // Read under the gate `retire` holds while it prunes.
+            if shared.retired.lock().unwrap().contains_key(&req.run_id) {
+                return Ok(None);
+            }
+            shared.gates.with(&dir_gate(&req.dir), || {
+                with_cache(shared, &req.dir, |cache| {
+                    agency_core::checkpoint::store::capture(&req.dir, &req.run_id, req.kind, cache)
+                })
+            })
+        })
+    };
+    match &req.checkout_of {
+        Some(project_id) => shared.repo_gates.with(project_id, gated),
+        None => gated(),
+    }
+}
+
+/// Take `run_id` off the retired list, unless it was revived and retired again
+/// since `token` was issued: that retirement has a `Forget` of its own still to
+/// come, and captures queued before it that must still be dropped.
+pub fn forget(retired: &mut HashMap<String, u64>, run_id: &str, token: u64) {
+    if retired.get(run_id) == Some(&token) {
+        retired.remove(run_id);
+    }
+}
+
+fn work(rx: Receiver<Msg>, shared: &Shared) {
     while let Ok(first) = rx.recv() {
         let mut batch = vec![first];
         batch.extend(rx.try_iter());
-        for req in coalesce(batch) {
+        for msg in coalesce(batch) {
+            let req = match msg {
+                Msg::Capture(req) => req,
+                Msg::Forget(run_id, token) => {
+                    forget(&mut shared.retired.lock().unwrap(), &run_id, token);
+                    continue;
+                }
+            };
             // catch_unwind: a panic here would end checkpoints for the rest of
             // the app's life with nothing on screen to say so.
-            let taken = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                take(gates, retired, &req)
-            }));
+            let taken =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| take(shared, &req)));
             match taken {
                 Ok(Ok(Some(cp))) => {
                     log::debug!("checkpoints: {} #{} ({:?})", req.run_id, cp.seq, req.kind)
@@ -188,8 +289,13 @@ mod tests {
     use super::*;
     use crate::activity::{update, WORKING_TTL_MS};
 
-    fn req(run: &str, kind: Kind) -> Request {
-        Request { run_id: run.into(), dir: PathBuf::from("/w"), kind }
+    fn req(run: &str, kind: Kind) -> Msg {
+        Msg::Capture(Request {
+            run_id: run.into(),
+            dir: PathBuf::from("/w"),
+            checkout_of: None,
+            kind,
+        })
     }
 
     #[test]
@@ -245,5 +351,27 @@ mod tests {
             coalesce(batch),
             vec![req("a", Kind::PromptSent), req("b", Kind::TurnEnded), req("a", Kind::TurnEnded)]
         );
+    }
+
+    #[test]
+    fn a_capture_asked_for_after_a_forget_is_a_new_one() {
+        let forget = Msg::Forget("a".into(), 1);
+        let batch = vec![
+            req("a", Kind::TurnEnded),
+            forget.clone(),
+            req("a", Kind::TurnEnded),
+            req("b", Kind::TurnEnded),
+        ];
+        assert_eq!(coalesce(batch.clone()), batch);
+    }
+
+    #[test]
+    fn a_stale_forget_leaves_a_later_retirement_alone() {
+        let mut retired = HashMap::from([("a".to_string(), 2)]);
+        forget(&mut retired, "a", 1);
+        assert!(retired.contains_key("a"), "retired again since token 1");
+        forget(&mut retired, "a", 2);
+        assert!(retired.is_empty());
+        forget(&mut retired, "b", 3);
     }
 }

@@ -24,7 +24,7 @@
 pub mod store;
 
 use serde::Serialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// The private ref namespace. Shared by every worktree of a repository (only
 /// `refs/worktree`, `refs/bisect` and `refs/rewritten` are per-worktree), which
@@ -439,6 +439,93 @@ pub fn parent_dirs(path: &str) -> Vec<String> {
     out
 }
 
+/// What a snapshot knows about an untracked file without reading it: the
+/// fields git's own stat cache compares to decide a file needs hashing again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileStat {
+    pub len: u64,
+    pub mtime_ns: i128,
+    pub ctime_ns: i128,
+    pub ino: u64,
+    pub executable: bool,
+}
+
+/// How recently before a snapshot started a file may have been modified and
+/// still have its hash kept. A file written in the same clock tick as the stat
+/// that hashed it can be written again without its mtime moving (a filesystem
+/// that keeps whole seconds does exactly that), and a hash kept then would be
+/// believed forever. git calls these entries "racily clean" and rehashes them;
+/// so does this.
+pub const RACY_NS: i128 = 2_000_000_000;
+
+/// The blob ids of one directory's untracked files, from earlier snapshots,
+/// each good for as long as the file's [`FileStat`] has not changed.
+///
+/// A snapshot's scratch index starts as a copy of the user's, which carries
+/// git's stat cache for tracked files only. Every untracked file went to
+/// `update-index --add` as a stranger and was read and hashed in full, on every
+/// Enter and every turn end: a `node_modules` nobody had put in `.gitignore`
+/// was tens of thousands of files rehashed per capture, on the one thread every
+/// run's captures share. With this, a capture hashes only what changed.
+#[derive(Debug, Clone, Default)]
+pub struct HashCache {
+    entries: HashMap<String, (FileStat, String)>,
+}
+
+impl HashCache {
+    /// The blob id `path` had when it last looked exactly like `stat`.
+    pub fn get(&self, path: &str, stat: &FileStat) -> Option<&str> {
+        self.entries.get(path).filter(|(s, _)| s == stat).map(|(_, oid)| oid.as_str())
+    }
+
+    /// Remember `oid` as `path`'s blob while it looks like `stat`, unless it
+    /// was modified within [`RACY_NS`] of `started_ns` (when the snapshot that
+    /// hashed it began); then it is forgotten and hashed again next time.
+    /// mtime alone, as git's own check is: a write always moves it, where
+    /// ctime also moves for a chmod or a restored timestamp, and is in the
+    /// stat compared for a hit anyway.
+    pub fn keep(&mut self, path: &str, stat: FileStat, oid: &str, started_ns: i128) {
+        if stat.mtime_ns + RACY_NS > started_ns {
+            self.entries.remove(path);
+        } else {
+            self.entries.insert(path.to_string(), (stat, oid.to_string()));
+        }
+    }
+
+    /// Drop every path that is not in `live`: deleted, tracked since, or ignored.
+    pub fn retain(&mut self, live: &HashSet<&str>) {
+        self.entries.retain(|p, _| live.contains(p.as_str()));
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+/// The index mode `update-index --add` would give a regular file: executable
+/// only where the repository trusts the executable bit (`core.fileMode`).
+pub fn blob_mode(executable: bool, file_mode: bool) -> &'static str {
+    if executable && file_mode {
+        "100755"
+    } else {
+        "100644"
+    }
+}
+
+/// `update-index -z --index-info` input: `<mode> SP <oid> TAB <path>`, each
+/// NUL-terminated.
+pub fn index_info<'a>(entries: impl IntoIterator<Item = (&'a str, &'a str, &'a str)>) -> Vec<u8> {
+    let mut out = Vec::new();
+    for (mode, oid, path) in entries {
+        out.extend_from_slice(format!("{mode} {oid}\t{path}\0").as_bytes());
+    }
+    out
+}
+
 /// Whether a path from a tree is safe to join onto the worktree: relative, and
 /// no `.`, `..` or empty component. git itself refuses to write such an entry,
 /// so this should never trip; it is here because the next line deletes files.
@@ -700,5 +787,66 @@ mod tests {
         for bad in ["", "/etc/passwd", "../x", "a/../b", "a//b", "./a", "a\\b"] {
             assert!(!safe_rel_path(bad), "{bad:?}");
         }
+    }
+
+    const SEC: i128 = 1_000_000_000;
+
+    fn stat(len: u64, mtime_s: i128) -> FileStat {
+        FileStat {
+            len,
+            mtime_ns: mtime_s * SEC,
+            ctime_ns: mtime_s * SEC,
+            ino: 7,
+            executable: false,
+        }
+    }
+
+    #[test]
+    fn a_cached_hash_holds_only_while_the_stat_does() {
+        let mut cache = HashCache::default();
+        cache.keep("a.txt", stat(3, 100), C1, 200 * SEC);
+        assert_eq!(cache.get("a.txt", &stat(3, 100)), Some(C1));
+        assert_eq!(cache.get("a.txt", &stat(4, 100)), None, "size moved");
+        assert_eq!(cache.get("a.txt", &stat(3, 101)), None, "mtime moved");
+        let moved = FileStat { ino: 8, ..stat(3, 100) };
+        assert_eq!(cache.get("a.txt", &moved), None, "replaced by another file");
+        assert_eq!(cache.get("b.txt", &stat(3, 100)), None);
+    }
+
+    #[test]
+    fn a_file_written_just_before_the_snapshot_is_not_cached() {
+        let mut cache = HashCache::default();
+        // Modified a second before the snapshot began: it could be written
+        // again within the same tick without its mtime moving.
+        cache.keep("a.txt", stat(3, 199), C1, 200 * SEC);
+        assert!(cache.is_empty());
+        // And a racy rehash forgets the hash it had before.
+        cache.keep("a.txt", stat(3, 100), C1, 200 * SEC);
+        cache.keep("a.txt", stat(3, 199), T1, 200 * SEC);
+        assert_eq!(cache.get("a.txt", &stat(3, 100)), None);
+    }
+
+    #[test]
+    fn retain_forgets_what_is_no_longer_untracked() {
+        let mut cache = HashCache::default();
+        cache.keep("a", stat(1, 1), C1, 100 * SEC);
+        cache.keep("b", stat(1, 1), T1, 100 * SEC);
+        cache.retain(&HashSet::from(["b"]));
+        assert_eq!(cache.len(), 1);
+        assert_eq!(cache.get("b", &stat(1, 1)), Some(T1));
+    }
+
+    #[test]
+    fn blob_modes_follow_core_filemode() {
+        assert_eq!(blob_mode(true, true), "100755");
+        assert_eq!(blob_mode(true, false), "100644");
+        assert_eq!(blob_mode(false, true), "100644");
+    }
+
+    #[test]
+    fn index_info_records_are_nul_terminated() {
+        let out = index_info([("100644", C1, "a b.txt"), ("100755", T1, "bin/x")]);
+        let want = format!("100644 {C1}\ta b.txt\0100755 {T1}\tbin/x\0");
+        assert_eq!(out, want.as_bytes());
     }
 }

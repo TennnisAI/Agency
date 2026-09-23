@@ -15,7 +15,7 @@
 //! sides saw, so deletions are distinguishable from never-having-existed
 //! without inventing a tombstone format.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -189,21 +189,10 @@ fn write_tree(repo: &Path) -> Result<String> {
         // 4b825dc… is the sha1 spelling, and a sha256 repo has a different one.
         return Ok(git(repo, &["mktree"])?.trim().to_string());
     }
-    // Asked for rather than assumed to be `<repo>/.git`: in a linked worktree
-    // that path is a *file* pointing elsewhere, and joining onto it would put
-    // the scratch index somewhere that cannot be created.
-    let git_dir = git(repo, &["rev-parse", "--absolute-git-dir"])?.trim().to_string();
-    let index: PathBuf =
-        Path::new(&git_dir).join(format!("agency-issues-index-{}", uuid::Uuid::new_v4()));
-    let index_str = index.to_string_lossy().to_string();
-    let env = [("GIT_INDEX_FILE", index_str.as_str())];
-    let run = || -> Result<String> {
-        git_env(repo, &["add", "--force", "--all", "--", issuefs::ISSUES_DIR], &env)?;
-        Ok(git_env(repo, &["write-tree"], &env)?.trim().to_string())
-    };
-    let out = run();
-    let _ = std::fs::remove_file(&index);
-    out
+    let index = crate::git::ScratchIndex::new(repo, "agency-issues")?;
+    let env = index.env();
+    git_env(repo, &["add", "--force", "--all", "--", issuefs::ISSUES_DIR], &env)?;
+    Ok(git_env(repo, &["write-tree"], &env)?.trim().to_string())
 }
 
 /// Commit a tree onto the local ref. `parents` are the commits this snapshot
@@ -739,6 +728,7 @@ fn one_pass(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
     use tempfile::tempdir;
 
     fn sh(dir: &Path, args: &[&str]) -> String {

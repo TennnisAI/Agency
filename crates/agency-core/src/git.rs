@@ -17,16 +17,43 @@ pub struct FileChange {
 
 /// Run a git command in `worktree`, returning stdout on success.
 fn git(worktree: &Path, args: &[&str]) -> Result<String> {
-    let output = Command::new("git")
+    git_with(worktree, args, &[], None)
+}
+
+/// Run git in `dir` with extra environment and, optionally, `stdin`; stdout on
+/// success. Every git call that needs either goes through here (a scratch
+/// `GIT_INDEX_FILE`, an identity, a path list on stdin), so the rules below
+/// and the error detail are the same for all of them.
+pub fn git_with(
+    dir: &Path,
+    args: &[&str],
+    env: &[(&str, &str)],
+    stdin: Option<&[u8]>,
+) -> Result<String> {
+    let mut child = Command::new("git")
         .args(args)
-        .current_dir(worktree)
+        .current_dir(dir)
         // No TTY in the app: a network command must fail fast rather than block
         // forever on a credential prompt no one can answer. When Agency is
         // launched from a terminal it *does* inherit that terminal, so without
         // this a fetch for an unauthenticated remote would sit on a hidden
         // password prompt and never return.
         .env("GIT_TERMINAL_PROMPT", "0")
-        .output()?;
+        .envs(env.iter().copied())
+        .stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    if let Some(input) = stdin {
+        // Dropped at the end of the statement, which closes the pipe: git reads
+        // until EOF.
+        child
+            .stdin
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("failed to open git stdin"))?
+            .write_all(input)?;
+    }
+    let output = child.wait_with_output()?;
     if !output.status.success() {
         bail!("git {:?} failed: {}", args, failure_detail(&output));
     }
@@ -878,23 +905,7 @@ pub fn parse_diff(diff: &str) -> FileDiff {
 }
 
 pub fn git_stdin(worktree: &Path, args: &[&str], input: &str) -> Result<()> {
-    let mut child = Command::new("git")
-        .args(args)
-        .current_dir(worktree)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    child
-        .stdin
-        .as_mut()
-        .ok_or_else(|| anyhow::anyhow!("failed to open git stdin"))?
-        .write_all(input.as_bytes())?;
-    let out = child.wait_with_output()?;
-    if !out.status.success() {
-        bail!("git {:?} failed: {}", args, String::from_utf8_lossy(&out.stderr));
-    }
-    Ok(())
+    git_with(worktree, args, &[], Some(input.as_bytes())).map(|_| ())
 }
 
 fn build_hunk_patch(file_diff: &FileDiff, hunk_index: usize) -> Result<String> {

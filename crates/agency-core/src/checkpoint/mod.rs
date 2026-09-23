@@ -24,6 +24,7 @@
 pub mod store;
 
 use serde::Serialize;
+use std::collections::HashSet;
 
 /// The private ref namespace. Shared by every worktree of a repository (only
 /// `refs/worktree`, `refs/bisect` and `refs/rewritten` are per-worktree), which
@@ -288,6 +289,10 @@ pub struct RestorePlan {
     pub remove: Vec<String>,
     /// Different or missing now: written from the target.
     pub write: Vec<String>,
+    /// The part of `write` the current snapshot has no file at. Anything on
+    /// disk there is something the snapshot left out (ignored, or too large),
+    /// so the "before restore" checkpoint does not hold it either.
+    pub added: Vec<String>,
 }
 
 impl RestorePlan {
@@ -316,7 +321,11 @@ pub fn restore_plan(changes: &[RawChange]) -> RestorePlan {
     for c in changes.iter().filter(|c| !c.touches_gitlink()) {
         match c.status {
             'D' => plan.remove.push(c.path.clone()),
-            'A' | 'M' | 'T' => plan.write.push(c.path.clone()),
+            'A' => {
+                plan.write.push(c.path.clone());
+                plan.added.push(c.path.clone());
+            }
+            'M' | 'T' => plan.write.push(c.path.clone()),
             _ => {}
         }
     }
@@ -324,20 +333,94 @@ pub fn restore_plan(changes: &[RawChange]) -> RestorePlan {
     plan
 }
 
-/// The paths a restore would overwrite that the checkpoint taken just before it
-/// could not save: untracked files over [`MAX_UNTRACKED_BYTES`] that the target
-/// has a different file at.
+/// The files a restore would destroy that the checkpoint taken just before it
+/// does not hold, given `in_the_way`: every file or symlink on disk that
+/// writing `plan.write` has to unlink. That is whatever sits at a path being
+/// written, *everything* under it when it is a directory, and any file sitting
+/// where a written path needs a parent directory. `checkout-index -f` clears
+/// all of those without asking, a whole directory included.
 ///
-/// Everything else a restore touches is in that "before restore" checkpoint,
-/// which is what makes it undoable. These are not, so the restore refuses
-/// rather than destroy them.
-pub fn unsaved_overwrites(plan: &RestorePlan, skipped: &[String]) -> Vec<String> {
-    plan.write.iter().filter(|p| skipped.contains(p)).cloned().collect()
+/// The "before restore" checkpoint holds exactly the files the restore
+/// removes, plus the ones it overwrites that the snapshot already had. Anything
+/// else in the way was never in a snapshot: an ignored file, an untracked file
+/// over [`MAX_UNTRACKED_BYTES`], or a nested repository's working files. The
+/// restore refuses rather than destroy those.
+///
+/// Observed: at a checkpoint `out` was a file; the agent then replaced it with
+/// a directory holding `out/a.txt` and an ignored `out/cache.log`. Restoring
+/// removed `a.txt`, could not remove the non-empty directory, and
+/// `checkout-index -f out` then deleted `cache.log` with it. The verify step
+/// passed, since ignored files are in no snapshot, and the file was gone for
+/// good.
+pub fn unsaved(plan: &RestorePlan, in_the_way: &[String]) -> Vec<String> {
+    fn set(v: &[String]) -> HashSet<&str> {
+        v.iter().map(String::as_str).collect()
+    }
+    let (remove, write, added) = (set(&plan.remove), set(&plan.write), set(&plan.added));
+    let saved = |p: &str| remove.contains(p) || (write.contains(p) && !added.contains(p));
+    let mut out: Vec<String> = in_the_way.iter().filter(|p| !saved(p)).cloned().collect();
+    out.sort();
+    out.dedup();
+    out
 }
 
 /// The untracked files over `cap`, from `(path, size)` pairs.
 pub fn oversized(untracked: &[(String, u64)], cap: u64) -> Vec<String> {
     untracked.iter().filter(|(_, size)| *size > cap).map(|(p, _)| p.clone()).collect()
+}
+
+/// What `ls-files -z -v -c -o --exclude-standard` says about a worktree, read
+/// in one pass instead of one listing per question.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Listing {
+    /// Untracked, not ignored: what `add` has to be handed explicitly. Nested
+    /// repositories are left out (see [`parse_listing`]).
+    pub untracked: Vec<String>,
+    /// Tracked entries marked assume-unchanged.
+    pub assume_unchanged: Vec<String>,
+    /// Tracked entries marked skip-worktree.
+    pub skip_worktree: Vec<String>,
+}
+
+/// Parse `ls-files -z -v -c -o --exclude-standard`: records of `<tag> <path>`,
+/// NUL-terminated. `?` is untracked, `S` skip-worktree, and a lower-case tag is
+/// an assume-unchanged entry.
+///
+/// The index a snapshot starts from is a copy of the user's, flag bits and
+/// all, and `add` believes both bits: a file marked assume-unchanged (the
+/// usual trick for a local config) or skip-worktree was never re-read, so an
+/// agent's edit to it reached no checkpoint and no restore could undo it. The
+/// snapshot clears the bits on its own copy, and needs to know which to clear.
+///
+/// An untracked path ending in `/` is a nested repository: git lists the
+/// directory, not its files. Those are left out of a snapshot altogether. One
+/// with no commit yet makes `git add` fail outright ("does not have a commit
+/// checked out"), which is what an agent running `git init` in a scaffold
+/// leaves behind, and one failure there ended checkpoints for the rest of the
+/// run. One with commits would only be stored as a gitlink, which a restore
+/// never touches anyway.
+pub fn parse_listing(out: &str) -> Listing {
+    let mut listing = Listing::default();
+    for record in out.split('\0') {
+        let Some((tag, path)) = record.split_once(' ') else { continue };
+        let mut chars = tag.chars();
+        let (Some(tag), None) = (chars.next(), chars.next()) else { continue };
+        if path.is_empty() {
+            continue;
+        }
+        match tag {
+            '?' if path.ends_with('/') => {}
+            '?' => listing.untracked.push(path.to_string()),
+            'S' => listing.skip_worktree.push(path.to_string()),
+            's' => {
+                listing.assume_unchanged.push(path.to_string());
+                listing.skip_worktree.push(path.to_string());
+            }
+            t if t.is_ascii_lowercase() => listing.assume_unchanged.push(path.to_string()),
+            _ => {}
+        }
+    }
+    listing
 }
 
 /// The directories above `path`, deepest first: `a/b/c.txt` gives `a/b`, `a`.
@@ -560,16 +643,42 @@ mod tests {
     }
 
     #[test]
-    fn a_restore_may_not_overwrite_what_it_could_not_save() {
+    fn a_restore_may_not_destroy_what_it_could_not_save() {
         let plan = RestorePlan {
-            remove: vec!["big.bin".into()],
-            write: vec!["data.csv".into(), "a".into()],
+            remove: vec!["out/a.txt".into()],
+            write: vec!["out".into(), "a".into(), "data.csv".into()],
+            added: vec!["out".into(), "data.csv".into()],
         };
-        let skipped = vec!["data.csv".to_string(), "big.bin".to_string()];
-        // Removing big.bin is not in question: a file only the *current* state
-        // has is removed only if the snapshot captured it, and a skipped file
-        // was not captured, so it never appears as a removal.
-        assert_eq!(unsaved_overwrites(&plan, &skipped), vec!["data.csv"]);
+        let in_the_way: Vec<String> =
+            ["out/a.txt", "out/cache.log", "a", "data.csv"].map(String::from).to_vec();
+        // `out/a.txt` is removed (saved), `a` is overwritten but the snapshot
+        // had it. `out/cache.log` is ignored and `data.csv` is where the
+        // snapshot had nothing: neither was saved.
+        assert_eq!(unsaved(&plan, &in_the_way), vec!["data.csv", "out/cache.log"]);
+        assert!(unsaved(&plan, &["out/a.txt".to_string(), "a".to_string()]).is_empty());
+    }
+
+    #[test]
+    fn plan_marks_what_the_current_files_do_not_have() {
+        let ch = |status: char, path: &str| RawChange {
+            old_mode: "100644".into(),
+            new_mode: "100644".into(),
+            status,
+            path: path.into(),
+        };
+        let plan = restore_plan(&[ch('M', "a"), ch('A', "b"), ch('T', "c")]);
+        assert_eq!(plan.added, vec!["b"]);
+    }
+
+    #[test]
+    fn listing_sorts_out_untracked_files_and_index_flags() {
+        let out =
+            "? new.txt\0? sub/\0? deep/sub/\0H a\0h local.cfg\0S sparse/x\0s both\0? with space\0";
+        let l = parse_listing(out);
+        assert_eq!(l.untracked, vec!["new.txt", "with space"], "nested repositories left out");
+        assert_eq!(l.assume_unchanged, vec!["local.cfg", "both"]);
+        assert_eq!(l.skip_worktree, vec!["sparse/x", "both"]);
+        assert_eq!(parse_listing(""), Listing::default());
     }
 
     #[test]

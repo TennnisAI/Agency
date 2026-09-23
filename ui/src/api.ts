@@ -1701,7 +1701,10 @@ export interface CheckpointPreview {
   remove: number;
   /** The branch has commits made after the checkpoint; a restore leaves them. */
   headMoved: boolean;
-  /** Files too large to save first that a restore would overwrite. Blocks it. */
+  /**
+   * Files a restore would overwrite or delete that no checkpoint can hold
+   * (ignored, too large, or in a nested repository). Blocks it.
+   */
   unsaved: string[];
 }
 

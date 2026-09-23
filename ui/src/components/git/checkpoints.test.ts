@@ -48,6 +48,13 @@ describe("restoreLines", () => {
     expect(restoreLines(p, false)[0]).toContain("data.bin");
     expect(canRestore(p)).toBe(false);
   });
+  it("names a few of many files it could not save, and counts the rest", () => {
+    const p = preview({ write: 1, unsaved: ["a.log", "b.log", "c.log", "d.log", "e.log"] });
+    const [first, second] = restoreLines(p, false);
+    expect(first).toContain("a.log, b.log, c.log and 2 more");
+    expect(first).not.toContain("d.log");
+    expect(second.startsWith("They are")).toBe(true);
+  });
   it("never uses an em dash", () => {
     const all = restoreLines(preview({ write: 2, remove: 1, headMoved: true }), true).join(" ");
     expect(all).not.toContain("—");

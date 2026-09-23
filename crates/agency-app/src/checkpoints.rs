@@ -7,8 +7,9 @@
 //!
 //! - **A turn starts** when the user presses Enter in an agent's pane
 //!   (`sendq::classify_input` says `Submitted`) or the send queue types
-//!   something in for them. A new run gets one at creation, before its agent
-//!   starts, as the state it was handed.
+//!   something in for them. A new run gets one at creation, taken on the
+//!   spot rather than queued, before its agent or setup script starts: the
+//!   state it was handed.
 //! - **A turn ends** at `activity`'s working -> quiet edge: the pane stopped
 //!   changing for `WORKING_TTL_MS`. See [`went_quiet`].
 //!
@@ -22,15 +23,23 @@
 //! (the capture runs on this thread, after the Enter has already gone through),
 //! which is why it is the one allowed to be approximate.
 //!
-//! Captures run on one background thread: `git add -A` over a large worktree
-//! takes long enough that it must not hold up a keystroke or the notifier tick.
+//! Captures run on one background thread: snapshotting a large worktree takes
+//! long enough that it must not hold up a keystroke or the notifier tick. The
+//! run-start one is the exception, since `create_run` is already off the main
+//! thread and the agent must not start before it.
+//!
+//! Two gates guard a capture: the run's, which `retire` holds while it prunes,
+//! and the workspace directory's, which a restore holds. Several runs can share
+//! one directory (every run working in the project checkout does), and a
+//! restore rewrites that directory for all of them, so any of their captures
+//! reading it halfway through would store a state that never existed.
 
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
-use agency_core::checkpoint::Kind;
+use agency_core::checkpoint::{Checkpoint, Kind};
 
 use crate::activity::ActivityEntry;
 use crate::gates::KeyedGates;
@@ -65,8 +74,8 @@ pub fn coalesce(batch: Vec<Request>) -> Vec<Request> {
     batch.into_iter().filter(|r| seen.insert((r.run_id.clone(), r.kind))).collect()
 }
 
-/// The capture thread and the per-run gate that keeps a capture out of the
-/// middle of a restore.
+/// The capture thread and the gates that keep a capture out of the middle of a
+/// restore or a prune.
 pub struct Checkpointer {
     tx: Mutex<Sender<Request>>,
     gates: Arc<KeyedGates>,
@@ -98,16 +107,21 @@ impl Checkpointer {
         let _ = self.tx.lock().unwrap().send(req);
     }
 
-    /// Run `f` with no capture of `run_id` in progress, and none starting until
-    /// it returns.
-    pub fn exclusive<T>(&self, run_id: &str, f: impl FnOnce() -> T) -> T {
-        self.gates.with(run_id, f)
+    /// Take a capture now, on this thread, under the same gates as the queue.
+    pub fn capture_now(&self, req: &Request) -> anyhow::Result<Option<Checkpoint>> {
+        take(&self.gates, &self.retired, req)
+    }
+
+    /// Run `f` with no capture of `run_id` or of anything in `dir` in progress,
+    /// and none starting until it returns.
+    pub fn exclusive<T>(&self, run_id: &str, dir: &Path, f: impl FnOnce() -> T) -> T {
+        self.gates.with(&run_gate(run_id), || self.gates.with(&dir_gate(dir), f))
     }
 
     /// Stop taking checkpoints for `run_id` and run `prune` (which deletes the
     /// ones it has) with no capture of it in progress.
     pub fn retire<T>(&self, run_id: &str, prune: impl FnOnce() -> T) -> T {
-        self.gates.with(run_id, || {
+        self.gates.with(&run_gate(run_id), || {
             self.retired.lock().unwrap().insert(run_id.to_string());
             prune()
         })
@@ -119,6 +133,32 @@ impl Checkpointer {
     }
 }
 
+fn run_gate(run_id: &str) -> String {
+    format!("run:{run_id}")
+}
+
+fn dir_gate(dir: &Path) -> String {
+    format!("dir:{}", dir.display())
+}
+
+/// One capture, under both gates: the run's first, then the directory's, the
+/// same order `exclusive` takes them in.
+fn take(
+    gates: &KeyedGates,
+    retired: &Mutex<HashSet<String>>,
+    req: &Request,
+) -> anyhow::Result<Option<Checkpoint>> {
+    gates.with(&run_gate(&req.run_id), || {
+        // Read under the gate `retire` holds while it prunes.
+        if retired.lock().unwrap().contains(&req.run_id) {
+            return Ok(None);
+        }
+        gates.with(&dir_gate(&req.dir), || {
+            agency_core::checkpoint::store::capture(&req.dir, &req.run_id, req.kind)
+        })
+    })
+}
+
 fn work(rx: Receiver<Request>, gates: &KeyedGates, retired: &Mutex<HashSet<String>>) {
     while let Ok(first) = rx.recv() {
         let mut batch = vec![first];
@@ -127,13 +167,7 @@ fn work(rx: Receiver<Request>, gates: &KeyedGates, retired: &Mutex<HashSet<Strin
             // catch_unwind: a panic here would end checkpoints for the rest of
             // the app's life with nothing on screen to say so.
             let taken = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                gates.with(&req.run_id, || {
-                    // Read under the gate `retire` holds while it prunes.
-                    if retired.lock().unwrap().contains(&req.run_id) {
-                        return Ok(None);
-                    }
-                    agency_core::checkpoint::store::capture(&req.dir, &req.run_id, req.kind)
-                })
+                take(gates, retired, &req)
             }));
             match taken {
                 Ok(Ok(Some(cp))) => {

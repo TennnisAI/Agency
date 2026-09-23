@@ -142,21 +142,12 @@ fn git(repo: &Path, args: &[&str]) -> Result<String> {
     git_env(repo, args, &[])
 }
 
-/// Every git call here goes through one place so the two environment rules hold
-/// everywhere: no terminal prompt (the app has no TTY to answer a credential
-/// question on, and a fetch that blocks on a hidden prompt never returns), and
-/// an author identity that cannot be missing.
+/// Every git call here goes through `git::git_with`, so the environment rules
+/// hold everywhere: no terminal prompt (the app has no TTY to answer a
+/// credential question on, and a fetch that blocks on a hidden prompt never
+/// returns). The identity a commit needs is passed in `env` by its caller.
 fn git_env(repo: &Path, args: &[&str], env: &[(&str, &str)]) -> Result<String> {
-    let mut cmd = Command::new("git");
-    cmd.args(args).current_dir(repo).env("GIT_TERMINAL_PROMPT", "0");
-    for (k, v) in env {
-        cmd.env(k, v);
-    }
-    let out = cmd.output()?;
-    if !out.status.success() {
-        bail!("git {:?} failed: {}", args, String::from_utf8_lossy(&out.stderr).trim());
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+    crate::git::git_with(repo, args, env, None)
 }
 
 /// A git call whose failure is an answer, not an error: "no such ref", "no

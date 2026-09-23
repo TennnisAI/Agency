@@ -3620,6 +3620,10 @@ impl AppState {
                 let _gate = self.worktree_gate.lock().unwrap();
                 let _ = WorktreeManager::new(repo.clone()).remove(&run.id);
             }
+            // The refs live in the repository, not the worktree, so they
+            // outlive it; with the run row gone below, nothing would ever
+            // prune them after this.
+            self.prune_checkpoints(&repo, &run.id);
             let reg = self.registry.lock().unwrap();
             reg.delete_run_sessions(&run.id)?;
             reg.delete_run(&run.id)?;
@@ -4039,22 +4043,34 @@ impl AppState {
             );
         }
 
-        // The workspace as the agent is handed it, taken before the agent can
-        // touch anything. A folder with no repository has no branch, and no
-        // git to checkpoint with.
+        // The workspace as the agent is handed it. Taken here, before the
+        // session below starts the setup script and the agent: queued, it
+        // waited behind any other run's capture and raced both, and the one
+        // checkpoint `over_cap` always keeps as "undo all of it" could already
+        // hold the agent's first edits. A folder with no repository has no
+        // branch, and no git to checkpoint with. Best-effort: a run whose
+        // snapshot fails still starts.
         if !workspace.branch.is_empty() {
-            self.checkpoints.request(crate::checkpoints::Request {
+            let req = crate::checkpoints::Request {
                 run_id: id.clone(),
                 dir: workspace.path.clone(),
                 kind: agency_core::checkpoint::Kind::RunStart,
-            });
+            };
+            if let Err(e) = self.checkpoints.capture_now(&req) {
+                log::warn!("checkpoints: capturing {id} at run start failed: {e:#}");
+            }
         }
+        // From here until the run row exists, a failure must take the refs
+        // with it: with no row, nothing would ever archive, discard or prune
+        // them.
 
         // Looping runs are spawned below via spawn_loop_attempt — the same
         // path the driver uses for every respawn — so there is exactly one
         // place that builds a headless attempt.
         if spec.loop_config.is_none() {
-            let env = self.agent_env(&profile, &workspace.path, &repo, &id, &id, Some(port))?;
+            let env = self
+                .agent_env(&profile, &workspace.path, &repo, &id, &id, Some(port))
+                .inspect_err(|_| self.prune_checkpoints(&repo, &id))?;
             let conversation = self.open_conversation(&profile.command, &id, &id);
             // The default flow passes "" and behaves exactly as before: the user
             // types the real prompt into the live terminal.
@@ -4140,7 +4156,11 @@ impl AppState {
         };
         {
             let reg = self.registry.lock().unwrap();
-            reg.insert_run(&run)?;
+            if let Err(e) = reg.insert_run(&run) {
+                drop(reg);
+                self.prune_checkpoints(&repo, &id);
+                return Err(e);
+            }
             // Remember the agent type so new-task shortcuts default to what
             // this project actually uses. Best-effort bookkeeping.
             let _ = reg.set_project_default_agent(spec.project_id, spec.agent);
@@ -9515,21 +9535,23 @@ impl AppState {
         agency_core::checkpoint::store::preview(&dir, &id, seq)
     }
 
-    /// Whether any agent in the run is mid-turn right now.
-    fn run_agent_working(&self, run_id: &str, now_ms: i64) -> bool {
+    /// Whether any agent working in `dir` is mid-turn right now: this run's,
+    /// and every other run's that shares it. Runs in the project checkout all
+    /// share one directory, and restoring one of them rewrites the files the
+    /// others are editing.
+    fn agent_working_in(&self, dir: &Path, now_ms: i64) -> bool {
         let working: Vec<String> = self
             .activity
             .lock()
             .unwrap()
             .iter()
-            .filter(|(session, _)| split_session_id(session).0 == run_id)
             .filter(|(_, e)| {
                 crate::activity::classify(e, false, now_ms).state
                     == crate::activity::ActivityState::Working
             })
             .map(|(session, _)| session.clone())
             .collect();
-        working.iter().any(|session| self.checkpoint_target(session).is_some())
+        working.iter().any(|session| self.checkpoint_target(session).is_some_and(|(_, d)| d == dir))
     }
 
     /// Put a run's files back to checkpoint `seq`. Files only: the branch, the
@@ -9542,14 +9564,19 @@ impl AppState {
         let (id, dir) = self.checkpoint_dir(run_id)?;
         // An agent mid-turn would go on writing into the files as they came
         // back, and the result would be neither state.
-        if self.run_agent_working(&id, crate::activity::now_ms()) {
-            bail!("the agent is still working; wait for it to finish, or stop it, then restore");
+        if self.agent_working_in(&dir, crate::activity::now_ms()) {
+            bail!(
+                "an agent working in these files is mid-turn; wait for it to finish, or stop it, \
+                 then restore"
+            );
         }
         // A run without a worktree restores into the project checkout, which a
         // merge may be moving between branches: `git_mutate` takes its gate.
+        // `exclusive` holds off every capture of the directory, not just this
+        // run's, since other runs may be working in it too.
         self.git_mutate(&id, |_| {
             self.checkpoints
-                .exclusive(&id, || agency_core::checkpoint::store::restore(&dir, &id, seq))
+                .exclusive(&id, &dir, || agency_core::checkpoint::store::restore(&dir, &id, seq))
         })
     }
 

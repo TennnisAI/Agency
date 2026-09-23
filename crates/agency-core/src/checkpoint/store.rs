@@ -14,9 +14,8 @@
 
 use super::*;
 use anyhow::{anyhow, bail, Context, Result};
-use std::io::Write;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Who a checkpoint commit says made it. Fixed, so a snapshot never borrows the
@@ -30,32 +29,13 @@ const IDENTITY: [(&str, &str); 4] = [
     ("GIT_COMMITTER_EMAIL", "checkpoints@agency.invalid"),
 ];
 
-/// Run git in `dir` with extra environment and optional stdin; stdout on
-/// success.
 fn run(dir: &Path, args: &[&str], env: &[(&str, &str)], stdin: Option<&[u8]>) -> Result<String> {
-    let mut cmd = Command::new("git");
-    cmd.args(args)
-        .current_dir(dir)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .envs(env.iter().copied())
-        .stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = cmd.spawn().context("could not run git")?;
-    if let Some(input) = stdin {
-        // Dropped at the end of the block, which closes the pipe: git reads
-        // until EOF.
-        child.stdin.take().ok_or_else(|| anyhow!("git stdin unavailable"))?.write_all(input)?;
-    }
-    let output = child.wait_with_output()?;
-    if !output.status.success() {
-        bail!(
-            "git {} failed: {}",
-            args.first().copied().unwrap_or(""),
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    crate::git::git_with(dir, args, env, stdin)
+}
+
+/// Paths as `-z --stdin` takes them: each one NUL-terminated.
+fn nul_list<'a>(paths: impl IntoIterator<Item = &'a String>) -> Vec<u8> {
+    paths.into_iter().flat_map(|p| p.bytes().chain(std::iter::once(0))).collect()
 }
 
 /// A private index file in the worktree's git dir, removed when dropped (lock
@@ -113,9 +93,16 @@ pub struct Snapshot {
 /// into a tree, without touching the user's index.
 ///
 /// The temporary index starts as a *copy* of the real one rather than `read-tree
-/// HEAD`: the copy carries git's stat cache, so `add -A` rehashes only what
-/// changed instead of every file in the tree. It gives the same tree either
-/// way, since `add -A` makes every entry match the working tree.
+/// HEAD`: the copy carries git's stat cache, so `add` rehashes only what changed
+/// instead of every file in the tree. The copy also carries the user's
+/// assume-unchanged and skip-worktree bits, which `add` would believe, so those
+/// are cleared on the copy first (see [`parse_listing`]).
+///
+/// The untracked files are walked once. `ls-files` finds them (and the flags,
+/// in the same pass), `add -u` brings the tracked entries up to date without
+/// looking for new files, and the untracked list goes to `update-index` as it
+/// is. `add -A` would have walked the whole tree for untracked files a second
+/// time, on every Enter and every turn end, on a thread every run shares.
 pub fn snapshot(dir: &Path) -> Result<Snapshot> {
     let gd = git_dir(dir)?;
     let index = TempIndex::new(&gd);
@@ -130,22 +117,39 @@ pub fn snapshot(dir: &Path) -> Result<Snapshot> {
         }
         Err(e) => return Err(e).context("could not copy the index"),
     }
-    let untracked = run(dir, &["ls-files", "-z", "-o", "--exclude-standard"], &env, None)?;
-    let sizes: Vec<(String, u64)> = untracked
-        .split('\0')
-        .filter(|p| !p.is_empty())
-        .filter_map(|p| {
-            let meta = std::fs::symlink_metadata(dir.join(p)).ok()?;
-            Some((p.to_string(), meta.len()))
-        })
+    let listing = parse_listing(&run(
+        dir,
+        &["ls-files", "-z", "-v", "-c", "-o", "--exclude-standard"],
+        &env,
+        None,
+    )?);
+    if !listing.assume_unchanged.is_empty() {
+        let paths = nul_list(&listing.assume_unchanged);
+        run(dir, &["update-index", "-z", "--no-assume-unchanged", "--stdin"], &env, Some(&paths))?;
+    }
+    // Only the ones with a file on disk. A sparse checkout's skip-worktree
+    // entries have none, and clearing their bit would snapshot every file
+    // outside the cone as deleted.
+    let present: Vec<&String> =
+        listing.skip_worktree.iter().filter(|p| dir.join(p).symlink_metadata().is_ok()).collect();
+    if !present.is_empty() {
+        let paths = nul_list(present);
+        run(dir, &["update-index", "-z", "--no-skip-worktree", "--stdin"], &env, Some(&paths))?;
+    }
+    run(dir, &["add", "-u"], &env, None)?;
+    let sizes: Vec<(String, u64)> = listing
+        .untracked
+        .iter()
+        .filter_map(|p| Some((p.clone(), std::fs::symlink_metadata(dir.join(p)).ok()?.len())))
         .collect();
     let skipped = oversized(&sizes, MAX_UNTRACKED_BYTES);
-    let excludes: Vec<String> = skipped.iter().map(|p| format!(":(exclude,literal){p}")).collect();
-    // An agent that clones something into the tree would otherwise print git's
-    // "adding embedded git repository" advice into the log on every turn.
-    let mut args = vec!["-c", "advice.addEmbeddedRepo=false", "add", "-A", "--", "."];
-    args.extend(excludes.iter().map(String::as_str));
-    run(dir, &args, &env, None)?;
+    let skip: HashSet<&str> = skipped.iter().map(String::as_str).collect();
+    let add = nul_list(sizes.iter().map(|(p, _)| p).filter(|p| !skip.contains(p.as_str())));
+    if !add.is_empty() {
+        // --remove: a file deleted since `ls-files` saw it is dropped, not an
+        // error.
+        run(dir, &["update-index", "--add", "--remove", "-z", "--stdin"], &env, Some(&add))?;
+    }
     let tree = run(dir, &["write-tree"], &env, None)?.trim().to_string();
     Ok(Snapshot { tree, head: head(dir), skipped })
 }
@@ -268,8 +272,9 @@ pub struct Preview {
     /// HEAD is not where it was when the checkpoint was taken: the branch has
     /// commits made after it, which a restore leaves where they are.
     pub head_moved: bool,
-    /// Files too large to save first that the restore would overwrite. A
-    /// restore refuses while this is non-empty.
+    /// Files in the way of the restore that no checkpoint can hold (ignored,
+    /// too large, or part of a nested repository). A restore refuses while
+    /// this is non-empty.
     pub unsaved: Vec<String>,
 }
 
@@ -282,7 +287,7 @@ pub fn preview(dir: &Path, run_id: &str, seq: u32) -> Result<Preview> {
         write: plan.write.len(),
         remove: plan.remove.len(),
         head_moved: target.head.is_some() && target.head != now.head,
-        unsaved: unsaved_overwrites(&plan, &now.skipped),
+        unsaved: unsaved(&plan, &in_the_way(dir, &plan)?),
     })
 }
 
@@ -303,9 +308,10 @@ pub struct Restored {
 /// Files only. HEAD, the branches and the index stay where they are, and the
 /// agent's conversation is not something a checkpoint holds at all. Ignored
 /// files are never touched, and neither are submodules (see
-/// [`restore_plan`]).
+/// [`restore_plan`]): a restore that would have to is refused (see
+/// [`unsaved`]).
 ///
-/// The caller must keep other captures of this run from running at the same
+/// The caller must keep every other capture of `dir` from running at the same
 /// time: the verify step reads the tree back, and a capture reading the tree
 /// halfway through would store a state that never really existed.
 pub fn restore(dir: &Path, run_id: &str, seq: u32) -> Result<Restored> {
@@ -313,12 +319,12 @@ pub fn restore(dir: &Path, run_id: &str, seq: u32) -> Result<Restored> {
     let target = find(&all, seq)?.clone();
     let before = snapshot(dir)?;
     let plan = restore_plan(&changes(dir, &before.tree, &target.tree)?);
-    let unsaved = unsaved_overwrites(&plan, &before.skipped);
+    let unsaved = unsaved(&plan, &in_the_way(dir, &plan)?);
     if !unsaved.is_empty() {
         bail!(
-            "restoring would overwrite {}, which is too large to checkpoint first; move it \
-             aside and try again",
-            unsaved.join(", ")
+            "restoring would overwrite or delete {}, which no checkpoint can hold (ignored, too \
+             large, or part of a separate repository); move it out of the workspace and try again",
+            name_some(&unsaved)
         );
     }
     // The files already match: nothing moves, so there is nothing to save.
@@ -332,45 +338,114 @@ pub fn restore(dir: &Path, run_id: &str, seq: u32) -> Result<Restored> {
     } else {
         Some(record(dir, run_id, Kind::BeforeRestore, &before, &all)?.seq)
     };
-    let applied = apply(dir, &target.tree, &plan);
-    let after = applied.and_then(|_| snapshot(dir));
-    match after {
-        Ok(snap) if snap.tree == target.tree => Ok(Restored { saved, changed: plan.len() }),
-        outcome => {
-            // Put back what was there. The files the failed pass wrote are all
-            // in `before`, so this is a restore to a tree we just made.
-            let why = match outcome {
-                Ok(snap) => {
-                    let differ = changes(dir, &snap.tree, &target.tree)
-                        .map(|c| c.into_iter().map(|c| c.path).take(5).collect::<Vec<_>>())
-                        .unwrap_or_default();
-                    format!("these did not come back as they were: {}", differ.join(", "))
-                }
-                Err(e) => format!("{e:#}"),
-            };
-            let rollback = snapshot(dir).and_then(|now| {
-                let back = restore_plan(&changes(dir, &now.tree, &before.tree)?);
-                apply(dir, &before.tree, &back)
-            });
-            match rollback {
-                Ok(()) => bail!("the restore did not complete, so your files were put back: {why}"),
-                Err(e) => bail!(
-                    "the restore did not complete ({why}), and putting the files back failed too \
-                     ({e:#}); they are saved as checkpoint {}",
-                    saved.map_or_else(|| "?".to_string(), |s| s.to_string())
-                ),
+    let why = match put(dir, &before.tree, &target.tree) {
+        Ok(()) => return Ok(Restored { saved, changed: plan.len() }),
+        Err(e) => format!("{e:#}"),
+    };
+    // Put back what was there, and check that too: the same filter or
+    // directory that stopped the restore matching can stop the rollback, and
+    // telling someone their files were put back when they were not is worse
+    // than either failure.
+    let saved = saved.map_or_else(|| "?".to_string(), |s| s.to_string());
+    match snapshot(dir).and_then(|now| put(dir, &now.tree, &before.tree)) {
+        Ok(()) => bail!("the restore did not complete, so your files were put back: {why}"),
+        Err(e) => bail!(
+            "the restore did not complete ({why}), and putting the files back did not either \
+             ({e:#}); what you had is saved as checkpoint {saved}"
+        ),
+    }
+}
+
+/// Take `dir`'s files from `now` (the tree they are known to match) to `tree`,
+/// then snapshot and check that they got there.
+fn put(dir: &Path, now: &str, tree: &str) -> Result<()> {
+    let plan = restore_plan(&changes(dir, now, tree)?);
+    apply(dir, tree, &plan)?;
+    let after = snapshot(dir)?;
+    if after.tree != tree {
+        let differ: Vec<String> =
+            changes(dir, &after.tree, tree)?.into_iter().map(|c| c.path).collect();
+        bail!("these did not come back as they were: {}", name_some(&differ));
+    }
+    Ok(())
+}
+
+/// Up to five paths for a message, and how many more there were.
+fn name_some(paths: &[String]) -> String {
+    match paths.len() {
+        0..=5 => paths.join(", "),
+        n => format!("{} and {} more", paths[..5].join(", "), n - 5),
+    }
+}
+
+/// Every file or symlink on disk that carrying out `plan` would unlink besides
+/// the removals themselves: see [`unsaved`] for why each kind matters.
+fn in_the_way(dir: &Path, plan: &RestorePlan) -> Result<Vec<String>> {
+    let mut found = Vec::new();
+    let mut parents_seen: HashSet<String> = HashSet::new();
+    for p in &plan.write {
+        if !safe_rel_path(p) {
+            bail!("refusing to touch {p:?}: not a path inside the workspace");
+        }
+        for parent in parent_dirs(p) {
+            if !parents_seen.insert(parent.clone()) {
+                // Checked already, and so was everything above it.
+                break;
+            }
+            match std::fs::symlink_metadata(dir.join(&parent)) {
+                Ok(meta) if !meta.is_dir() => found.push(parent),
+                _ => {}
             }
         }
+        match std::fs::symlink_metadata(dir.join(p)) {
+            Ok(meta) if meta.is_dir() => files_under(dir, p, &mut found)?,
+            Ok(_) => found.push(p.clone()),
+            // Nothing there, or a file where a parent should be: the loop above
+            // has that one already.
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) => {}
+            Err(e) => return Err(e).with_context(|| format!("reading {p}")),
+        }
     }
+    Ok(found)
+}
+
+/// Every file and symlink below `rel`, as worktree-relative paths. Symlinks
+/// are not followed: `checkout-index` unlinks the link, not what it points at.
+fn files_under(dir: &Path, rel: &str, out: &mut Vec<String>) -> Result<()> {
+    let entries = std::fs::read_dir(dir.join(rel)).with_context(|| format!("reading {rel}"))?;
+    for entry in entries {
+        let entry = entry?;
+        let name = entry.file_name();
+        let child = format!("{rel}/{}", name.to_string_lossy());
+        if entry.file_type()?.is_dir() {
+            files_under(dir, &child, out)?;
+        } else {
+            out.push(child);
+        }
+    }
+    Ok(())
 }
 
 /// Carry out a plan: removals first, deepest first, pruning directories they
 /// empty; then every write from `tree` in one `checkout-index`.
+///
+/// Refuses before moving anything if a write would take a file with it that
+/// the current snapshot does not hold (see [`unsaved`]). [`restore`] checks
+/// that up front so it can say so plainly; this is the guard for the rollback,
+/// whose plan is only known once the restore has failed.
 fn apply(dir: &Path, tree: &str, plan: &RestorePlan) -> Result<()> {
     for p in plan.remove.iter().chain(&plan.write) {
         if !safe_rel_path(p) {
             bail!("refusing to touch {p:?}: not a path inside the workspace");
         }
+    }
+    let unsaved = unsaved(plan, &in_the_way(dir, plan)?);
+    if !unsaved.is_empty() {
+        bail!("{} would be overwritten, and no checkpoint holds it", name_some(&unsaved));
     }
     for p in &plan.remove {
         let abs = dir.join(p);
@@ -394,9 +469,7 @@ fn apply(dir: &Path, tree: &str, plan: &RestorePlan) -> Result<()> {
     let index = TempIndex::new(&git_dir(dir)?);
     let env = index.env();
     run(dir, &["read-tree", tree], &env, None)?;
-    let paths: Vec<u8> =
-        plan.write.iter().flat_map(|p| p.bytes().chain(std::iter::once(0))).collect();
-    run(dir, &["checkout-index", "-f", "-z", "--stdin"], &env, Some(&paths))?;
+    run(dir, &["checkout-index", "-f", "-z", "--stdin"], &env, Some(&nul_list(&plan.write)))?;
     Ok(())
 }
 
@@ -574,6 +647,116 @@ mod tests {
         init(dir);
         assert!(changes(dir, "HEAD", "HEAD").is_err());
         assert!(diff(dir, "--output=/tmp/x", &"a".repeat(40), "a.txt").is_err());
+    }
+
+    #[test]
+    fn restore_refuses_to_take_an_ignored_file_with_a_directory() {
+        let d = tempdir().unwrap();
+        let dir = d.path();
+        init(dir);
+        fs::write(dir.join("out"), "a file\n").unwrap();
+        let start = capture(dir, "r", Kind::RunStart).unwrap().unwrap();
+        // The agent turns `out` into a directory, and something in it is ignored.
+        fs::remove_file(dir.join("out")).unwrap();
+        fs::create_dir(dir.join("out")).unwrap();
+        fs::write(dir.join("out/a.txt"), "tracked-ish").unwrap();
+        fs::write(dir.join("out/cache.log"), "ignored").unwrap();
+        capture(dir, "r", Kind::TurnEnded).unwrap().unwrap();
+
+        assert_eq!(preview(dir, "r", start.seq).unwrap().unsaved, vec!["out/cache.log"]);
+        let err = restore(dir, "r", start.seq).unwrap_err().to_string();
+        assert!(err.contains("out/cache.log"), "{err}");
+        assert_eq!(read(dir, "out/cache.log").as_deref(), Some("ignored"));
+        assert_eq!(read(dir, "out/a.txt").as_deref(), Some("tracked-ish"), "nothing moved");
+    }
+
+    #[test]
+    fn restore_refuses_to_replace_ignored_files() {
+        let d = tempdir().unwrap();
+        let dir = d.path();
+        init(dir);
+        fs::create_dir_all(dir.join("gen")).unwrap();
+        fs::write(dir.join("gen/x.txt"), "x").unwrap();
+        fs::write(dir.join("notes.log"), "x").unwrap();
+        git(dir, &["rm", "-q", "--cached", ".gitignore"]);
+        fs::remove_file(dir.join(".gitignore")).unwrap();
+        let start = capture(dir, "r", Kind::RunStart).unwrap().unwrap();
+        // Now `gen` is an ignored *file* where the checkpoint has a directory,
+        // and `notes.log` is ignored where the checkpoint has a file.
+        fs::remove_dir_all(dir.join("gen")).unwrap();
+        fs::write(dir.join("gen"), "ignored").unwrap();
+        fs::write(dir.join(".gitignore"), "gen\n*.log\n").unwrap();
+        capture(dir, "r", Kind::TurnEnded).unwrap().unwrap();
+        let mut unsaved = preview(dir, "r", start.seq).unwrap().unsaved;
+        unsaved.sort();
+        assert_eq!(unsaved, vec!["gen", "notes.log"]);
+        assert!(restore(dir, "r", start.seq).is_err());
+        assert_eq!(read(dir, "gen").as_deref(), Some("ignored"));
+    }
+
+    #[test]
+    fn a_nested_repository_without_a_commit_does_not_stop_checkpoints() {
+        let d = tempdir().unwrap();
+        let dir = d.path();
+        init(dir);
+        let start = capture(dir, "r", Kind::RunStart).unwrap().unwrap();
+        // What a scaffold that runs `git init` leaves: `git add -A` exits 128
+        // on it ("does not have a commit checked out").
+        fs::create_dir(dir.join("sub")).unwrap();
+        git(&dir.join("sub"), &["init", "-q"]);
+        fs::write(dir.join("sub/f.txt"), "inner").unwrap();
+        fs::write(dir.join("a.txt"), "changed\n").unwrap();
+        let cp = capture(dir, "r", Kind::TurnEnded).unwrap().expect("a.txt changed");
+        let files = git(dir, &["ls-tree", "-r", "--name-only", &cp.tree]);
+        assert!(!files.contains("sub"), "left out: {files}");
+        restore(dir, "r", start.seq).unwrap();
+        assert_eq!(read(dir, "a.txt").as_deref(), Some("one\n"));
+        assert_eq!(read(dir, "sub/f.txt").as_deref(), Some("inner"), "left alone");
+    }
+
+    #[test]
+    fn edits_to_flagged_files_are_captured_and_restored() {
+        let d = tempdir().unwrap();
+        let dir = d.path();
+        init(dir);
+        fs::write(dir.join("local.cfg"), "mine\n").unwrap();
+        fs::write(dir.join("skip.cfg"), "mine\n").unwrap();
+        git(dir, &["add", "local.cfg", "skip.cfg"]);
+        git(dir, &["commit", "-qm", "cfg"]);
+        git(dir, &["update-index", "--assume-unchanged", "local.cfg"]);
+        git(dir, &["update-index", "--skip-worktree", "skip.cfg"]);
+        let start = capture(dir, "r", Kind::RunStart).unwrap().unwrap();
+        fs::write(dir.join("local.cfg"), "agent\n").unwrap();
+        fs::write(dir.join("skip.cfg"), "agent\n").unwrap();
+        let end = capture(dir, "r", Kind::TurnEnded).unwrap().expect("both edits seen");
+        let mut got: Vec<String> =
+            changes(dir, &start.commit, &end.commit).unwrap().into_iter().map(|c| c.path).collect();
+        got.sort();
+        assert_eq!(got, vec!["local.cfg", "skip.cfg"]);
+        restore(dir, "r", start.seq).unwrap();
+        assert_eq!(read(dir, "local.cfg").as_deref(), Some("mine\n"));
+        assert_eq!(read(dir, "skip.cfg").as_deref(), Some("mine\n"));
+        // And the user's own index still has both bits.
+        let flags = git(dir, &["ls-files", "-v", "local.cfg", "skip.cfg"]);
+        assert!(flags.contains("h local.cfg") && flags.contains("S skip.cfg"), "{flags}");
+    }
+
+    #[test]
+    fn a_rollback_that_does_not_verify_says_so() {
+        // A clean filter that does not round-trip: it adds a line to whatever
+        // it reads, so a snapshot never sees what was checked out and neither
+        // the restore nor the rollback can match.
+        let d = tempdir().unwrap();
+        let dir = d.path();
+        init(dir);
+        let start = capture(dir, "r", Kind::RunStart).unwrap().unwrap();
+        fs::write(dir.join("a.txt"), "edited\n").unwrap();
+        capture(dir, "r", Kind::TurnEnded).unwrap().unwrap();
+        git(dir, &["config", "filter.drift.clean", "cat; echo drift"]);
+        fs::write(dir.join(".git/info/attributes"), "a.txt filter=drift\n").unwrap();
+        let err = restore(dir, "r", start.seq).unwrap_err().to_string();
+        assert!(err.contains("putting the files back did not either"), "{err}");
+        assert!(!err.contains("your files were put back"), "{err}");
     }
 
     #[test]

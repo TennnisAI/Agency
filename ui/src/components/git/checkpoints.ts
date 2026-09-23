@@ -30,9 +30,11 @@ const files = (n: number) => (n === 1 ? "1 file" : `${n} files`);
  */
 export function restoreLines(p: CheckpointPreview, checkout: boolean): string[] {
   if (p.unsaved.length > 0) {
+    const n = p.unsaved.length;
+    const named = n > 3 ? `${p.unsaved.slice(0, 3).join(", ")} and ${n - 3} more` : p.unsaved.join(", ");
     return [
-      `Restoring would overwrite ${p.unsaved.join(", ")}, which is too large to save first.`,
-      "Move it out of the workspace, then try again.",
+      `Restoring would overwrite or delete ${named}, which no checkpoint can hold.`,
+      `${n === 1 ? "It is" : "They are"} ignored by git, too large to save, or part of a separate repository. Move ${n === 1 ? "it" : "them"} out of the workspace, then try again.`,
     ];
   }
   if (p.write + p.remove === 0) return ["The files already match this checkpoint."];

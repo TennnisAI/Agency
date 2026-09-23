@@ -679,11 +679,12 @@ export const renameRunBranch = (id: string, branch: string) =>
 // Pin a run to the end of its project's pinned runs, or unpin it.
 export const pinRun = (id: string, pinned: boolean) =>
   invoke<void>("pin_run", { id, pinned });
-// Move a pinned run to `rank` among its project's pins: the drop of a drag on
-// the grid or the rail, planned by `planPinDrop`. Refused for a run that is not
-// pinned, so a drop never pins anything.
-export const rankPinnedRun = (id: string, rank: number) =>
-  invoke<void>("rank_pinned_run", { id, rank });
+// Drop pinned run `id` onto pinned run `over` (a drag on the grid or the rail):
+// it takes the other's place. Planned and written backend-side against every
+// pin, archived ones included; returns the `[id, rank]` pairs it wrote. Refused
+// when either run is not pinned, so a drop never pins anything.
+export const movePinnedRun = (id: string, over: string) =>
+  invoke<[string, number][]>("move_pinned_run", { id, over });
 export const listRuns = (projectId: string) => invoke<RunInfo[]>("list_runs", { projectId });
 export const runPreview = (id: string, lines: number) =>
   invoke<string>("run_preview", { id, lines });

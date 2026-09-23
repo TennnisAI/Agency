@@ -1,5 +1,4 @@
 import { RunInfo } from "../api";
-import { Ranked, planReorder } from "./issueRank";
 
 // Presentation of a run's live state, shared by every dot/label surface
 // (tiles, sidebar tree, focus rail). States for a live agent:
@@ -62,38 +61,27 @@ export function pinnedFirst(runs: RunInfo[]): RunInfo[] {
   return [...runs].sort(byPin);
 }
 
-/** The pinned runs of `runs`, in board order. */
-function pinnedOf(runs: RunInfo[]): RunInfo[] {
-  return pinnedFirst(runs).filter(isPinned);
-}
-
 /**
- * The rank writes for dropping pinned run `id` onto pinned run `overId`: the
- * dragged run takes the other's place, and the rest shift to make room. Empty
- * when the drop changes nothing, or when either run has stopped being pinned.
- *
- * A drag is carried by id, not position, and resolved against `runs` as they
- * stand at the drop. The board refreshes on a timer while the pointer is down,
- * and a pin added or removed in the meantime moves every index after it.
+ * Each pinned run's place among the pins, by id. `runs` must already be in
+ * board order, as the store keeps them (`pinnedFirst` runs on every refresh),
+ * so this is one pass rather than a sort.
  */
-export function planPinDrop(runs: RunInfo[], id: string, overId: string): Ranked[] {
-  const pinned = pinnedOf(runs);
-  const from = pinned.findIndex((r) => r.id === id);
-  const to = pinned.findIndex((r) => r.id === overId);
-  if (from < 0 || to < 0) return [];
-  return planReorder(pinned.map((r) => ({ id: r.id, rank: r.pinRank })), from, to);
+export function pinIndex(runs: RunInfo[]): Map<string, number> {
+  const index = new Map<string, number>();
+  for (const r of runs) if (isPinned(r)) index.set(r.id, index.size);
+  return index;
 }
 
 /**
  * Which side of `overId` the dragged run `id` would land on, for the drop
  * indicator: before it when dragged up the board, after it when dragged down.
- * Null over the run's own place, or anything that is not a pin.
+ * The same rule the backend's `pin_order::plan_move` lands it by. Null over
+ * the run's own place, or anything that is not a pin.
  */
-export function pinDropSide(runs: RunInfo[], id: string, overId: string): "before" | "after" | null {
-  const pinned = pinnedOf(runs);
-  const from = pinned.findIndex((r) => r.id === id);
-  const to = pinned.findIndex((r) => r.id === overId);
-  if (from < 0 || to < 0 || from === to) return null;
+export function pinDropSide(index: Map<string, number>, id: string, overId: string): "before" | "after" | null {
+  const from = index.get(id);
+  const to = index.get(overId);
+  if (from == null || to == null || from === to) return null;
   return to < from ? "before" : "after";
 }
 

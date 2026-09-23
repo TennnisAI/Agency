@@ -1,4 +1,5 @@
 use crate::notifier;
+use crate::pin_order;
 use agency_core::buildlog::Stream;
 use agency_core::cleanup::{BranchFacts, Disposal};
 use agency_core::profile::AgentProfile;
@@ -3285,7 +3286,7 @@ impl AppState {
 
     /// Pin a run to the end of its project's pinned runs, or unpin it. Ranks
     /// are fractional so a drag can land a pin between two others without
-    /// renumbering them: see [`Self::rank_pinned_run`].
+    /// renumbering them: see [`Self::move_pinned_run`].
     pub fn pin_run(&self, id: &str, pinned: bool) -> Result<()> {
         let reg = self.registry.lock().unwrap();
         if !pinned {
@@ -3296,24 +3297,22 @@ impl AppState {
         reg.set_run_pin_rank(id, Some(rank))
     }
 
-    /// Move a pinned run to `rank` among its project's pins: the drop of a
-    /// drag on the agent grid or the focus rail, which plans the ranks.
+    /// Drop pinned run `id` onto pinned run `over`, on the agent grid or the
+    /// focus rail: it takes the other's place (see [`pin_order::plan_move`]).
+    /// Returns the ranks written, so the board can show the move before its
+    /// next refresh.
     ///
-    /// Refused for a run that is not pinned. A drop writes to a list read
-    /// before the drag began, so a pin removed in the meantime (from the
-    /// sidebar tree, say) would otherwise come straight back, and a pin is the
-    /// user's to place, never ours. A non-finite rank is refused too: SQLite
-    /// stores NaN as NULL, which is an unpin by another name.
-    pub fn rank_pinned_run(&self, id: &str, rank: f64) -> Result<()> {
-        if !rank.is_finite() {
-            bail!("pin rank must be a finite number, got {rank}");
-        }
+    /// Planned and written under the one registry lock, against every pin in
+    /// the project, archived ones included. Refused when either run is not a
+    /// pin there: the drag began on an older board, and a pin removed in the
+    /// meantime (from the sidebar tree, say) must not come back.
+    pub fn move_pinned_run(&self, id: &str, over: &str) -> Result<Vec<(String, f64)>> {
         let reg = self.registry.lock().unwrap();
         let run = reg.get_run(id)?.ok_or_else(|| anyhow!("unknown run: {id}"))?;
-        if run.pin_rank.is_none() {
-            bail!("run is not pinned: {id}");
-        }
-        reg.set_run_pin_rank(id, Some(rank))
+        let plan = pin_order::plan_move(&reg.pin_ranks(&run.project_id)?, id, over)
+            .map_err(|e| anyhow!(e))?;
+        reg.set_pin_ranks(&plan)?;
+        Ok(plan)
     }
 
     pub fn add_project(&self, name: &str, repo_path: &Path) -> Result<Project> {

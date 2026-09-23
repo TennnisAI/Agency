@@ -7,8 +7,8 @@ import {
   isPinned,
   needsAttention,
   pinDropSide,
+  pinIndex,
   pinnedFirst,
-  planPinDrop,
   runStatus,
 } from "./runstate";
 
@@ -164,55 +164,28 @@ describe("pinnedFirst", () => {
   });
 });
 
-describe("planPinDrop", () => {
+describe("pinIndex", () => {
   const run = (id: string, pinRank: number | null): RunInfo =>
     ({ ...waitingRun(), id, pinRank }) as RunInfo;
-  // Pinned c, b, e in board order; a and d unpinned, listed in between.
-  const board = [run("a", null), run("b", 2), run("c", 1), run("d", null), run("e", 3)];
 
-  it("lands a pin between its new neighbours with one write", () => {
-    expect(planPinDrop(board, "e", "b")).toEqual([{ id: "e", rank: 1.5 }]);
-  });
-
-  it("goes ahead of the first pin and behind the last", () => {
-    expect(planPinDrop(board, "b", "c")).toEqual([{ id: "b", rank: 0 }]);
-    expect(planPinDrop(board, "c", "e")).toEqual([{ id: "c", rank: 4 }]);
-  });
-
-  it("writes nothing for a drop on its own place", () => {
-    expect(planPinDrop(board, "b", "b")).toEqual([]);
-  });
-
-  // The board refreshes while the pointer is down: a run unpinned from the
-  // sidebar mid-drag must not be written back, whichever end of the drag it is.
-  it("writes nothing when either end is no longer pinned", () => {
-    expect(planPinDrop(board, "a", "b")).toEqual([]);
-    expect(planPinDrop(board, "b", "d")).toEqual([]);
-    expect(planPinDrop(board, "gone", "b")).toEqual([]);
-  });
-
-  it("renumbers every pin once the gap between two has collapsed", () => {
-    const tight = [run("x", 1), run("y", 1 + 1e-7), run("z", 2)];
-    expect(planPinDrop(tight, "z", "y")).toEqual([
-      { id: "x", rank: 1 },
-      { id: "z", rank: 2 },
-      { id: "y", rank: 3 },
-    ]);
+  it("numbers the pins in board order and skips the rest", () => {
+    const board = pinnedFirst([run("a", null), run("b", 2), run("c", 1), run("d", null)]);
+    expect([...pinIndex(board)]).toEqual([["c", 0], ["b", 1]]);
   });
 });
 
 describe("pinDropSide", () => {
   const run = (id: string, pinRank: number | null): RunInfo =>
     ({ ...waitingRun(), id, pinRank }) as RunInfo;
-  const board = [run("a", 1), run("b", 2), run("c", 3), run("d", null)];
+  const index = pinIndex([run("a", 1), run("b", 2), run("c", 3), run("d", null)]);
 
   it("marks the side the dragged pin would land on", () => {
-    expect(pinDropSide(board, "c", "a")).toBe("before");
-    expect(pinDropSide(board, "a", "b")).toBe("after");
+    expect(pinDropSide(index, "c", "a")).toBe("before");
+    expect(pinDropSide(index, "a", "b")).toBe("after");
   });
 
   it("marks nothing over its own place or an unpinned run", () => {
-    expect(pinDropSide(board, "b", "b")).toBeNull();
-    expect(pinDropSide(board, "b", "d")).toBeNull();
+    expect(pinDropSide(index, "b", "b")).toBeNull();
+    expect(pinDropSide(index, "b", "d")).toBeNull();
   });
 });

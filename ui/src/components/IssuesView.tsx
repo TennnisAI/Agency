@@ -49,6 +49,7 @@ import PillSelect from "./PillSelect";
 import ProgressReadout from "./ProgressReadout";
 import Resizer from "./Resizer";
 import { toastError, toastInfo, toastSuccess } from "../lib/toast";
+import { startPointerDrag } from "../lib/pointerDrag";
 import { FindRank, registerFindTarget } from "../lib/findBus";
 
 // How narrow the list may get once the detail pane takes over the view.
@@ -681,17 +682,13 @@ export default function IssuesView({
     }
   }
 
-  // Manual reorder within a status group. Pointer-based (mousedown →
-  // 5px threshold → track → commit on mouseup), NOT HTML5 drag-and-drop:
-  // Tauri's native drag-drop layer intercepts drops at the NSView level on
-  // macOS, so an in-page HTML5 drag lifts but its drop event never fires.
+  // Manual reorder within a status group, on the shared pointer drag
+  // (lib/pointerDrag, which says why it is not HTML5 drag-and-drop).
   // The live position is a plain ref (mouse events outrun React renders);
   // `drag` state mirrors it for the seam indicator. The drop maps to a rank
   // plan (materialize / midpoint / renormalize — see lib/issueRank).
   const [drag, setDrag] = useState<{ status: IssueStatus; from: number; to: number } | null>(null);
   const dragLive = useRef<{ status: IssueStatus; from: number; to: number } | null>(null);
-  // A completed drag must not read as a click on the row it ends over.
-  const suppressClick = useRef(false);
 
   async function dropReorder(group: Issue[], from: number, to: number) {
     const plan = planReorder(group.map((i) => ({ id: i.id, rank: i.rank })), from, to);
@@ -708,7 +705,7 @@ export default function IssuesView({
     if (e.button !== 0) return;
     // Grabs must start on the row itself — not its buttons and menus.
     if ((e.target as HTMLElement).closest("button, input, textarea")) return;
-    // Retire the focused editor by hand: preventDefault below suppresses the
+    // Retire the focused editor by hand: the drag's preventDefault suppresses the
     // blur that would otherwise commit an edit in the detail pane, and the
     // click that follows swaps the pane to another issue.
     // (The description is a CodeMirror contenteditable, not a textarea.)
@@ -716,61 +713,31 @@ export default function IssuesView({
     if (focused && (focused.tagName === "TEXTAREA" || focused.tagName === "INPUT" || focused.isContentEditable)) {
       focused.blur();
     }
-    // Stop WebKit starting a text selection on the key/title — the selection
-    // begins at mousedown, long before the drag threshold; the click that
-    // selects the row is unaffected.
-    e.preventDefault();
-    const start = { x: e.clientX, y: e.clientY };
-    // Set once the 5px threshold is crossed; drives click suppression on
-    // release even after a cancel (the pointer is no longer "just clicking").
-    let started = false;
-    // Escape sets this so the drag can't silently restart on the next
-    // mousemove; the still-held button then releases as a no-op.
-    let cancelled = false;
-
-    const onMove = (ev: MouseEvent) => {
-      if (cancelled) return;
-      if (!dragLive.current) {
-        if (Math.abs(ev.clientX - start.x) + Math.abs(ev.clientY - start.y) < 5) return;
-        started = true;
-        dragLive.current = { status, from, to: from };
-        window.getSelection()?.removeAllRanges();
-      }
-      ev.preventDefault();
-      const row = (document.elementFromPoint(ev.clientX, ev.clientY) as HTMLElement | null)
-        ?.closest<HTMLElement>("[data-issue-idx]");
-      if (row && row.dataset.issueStatus === status) {
-        dragLive.current = { ...dragLive.current, to: Number(row.dataset.issueIdx) };
-      }
-      setDrag({ ...dragLive.current });
-    };
-    const onKey = (ev: KeyboardEvent) => {
-      if (ev.key !== "Escape") return;
-      cancelled = true;
-      dragLive.current = null;
-      setDrag(null);
-    };
-    const onUp = () => {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-      window.removeEventListener("keydown", onKey, true);
-      const d = dragLive.current;
-      dragLive.current = null;
-      setDrag(null);
-      if (started) {
-        // Neither a completed nor a cancelled drag may read as a click on
-        // the row the pointer ends over.
-        suppressClick.current = true;
-        window.setTimeout(() => { suppressClick.current = false; }, 0);
-      }
-      if (!d || cancelled) return;
-      const group = groupsRef.current.find((g) => g.status === d.status)?.issues ?? [];
-      dropReorder(group, d.from, d.to);
-    };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-    // Capture phase so an Escape mid-drag can't reach anything else.
-    window.addEventListener("keydown", onKey, true);
+    // The click that selects the row is unaffected by the drag's
+    // preventDefault; one that ends a drag is swallowed (lib/pointerDrag).
+    startPointerDrag(e, {
+      onStart: () => { dragLive.current = { status, from, to: from }; },
+      onMove: (ev) => {
+        const row = (document.elementFromPoint(ev.clientX, ev.clientY) as HTMLElement | null)
+          ?.closest<HTMLElement>("[data-issue-idx]");
+        if (row && row.dataset.issueStatus === status) {
+          dragLive.current = { ...dragLive.current!, to: Number(row.dataset.issueIdx) };
+        }
+        setDrag({ ...dragLive.current! });
+      },
+      onCancel: () => {
+        dragLive.current = null;
+        setDrag(null);
+      },
+      onDrop: () => {
+        const d = dragLive.current;
+        dragLive.current = null;
+        setDrag(null);
+        if (!d) return;
+        const group = groupsRef.current.find((g) => g.status === d.status)?.issues ?? [];
+        dropReorder(group, d.from, d.to);
+      },
+    });
   }
 
   async function startDefault(issue: Issue) {
@@ -1062,7 +1029,6 @@ export default function IssuesView({
                       runs={runsFor(issue)}
                       selected={issue.id === selectedId}
                       onSelect={() => {
-                        if (suppressClick.current) return;
                         setSelectedId(issue.id === selectedId ? null : issue.id);
                       }}
                       onStart={() => { startDefault(issue); }}

@@ -228,12 +228,11 @@ function RailRow({
   const tabs = runTabs(run);
   const listed = showsTabs(run, tabs);
   const open = listed && tabsOpen;
-  return (
+  const body = (
     <>
     <div
-      className={`rail-row-wrap${menuOpen ? " ctx" : ""}${open ? " tabs-open" : ""}${pinDrag?.dragging ? " dragging" : ""}${pinDrag?.over ? ` drop-${pinDrag.over}` : ""}`}
+      className={`rail-row-wrap${menuOpen ? " ctx" : ""}${open ? " tabs-open" : ""}`}
       onContextMenu={onContextMenu}
-      data-pin-run={pinDrag ? run.id : undefined}
     >
       <button
         className={`rail-row ${on ? "on" : ""}`}
@@ -281,6 +280,18 @@ function RailRow({
       </div>
     )}
     </>
+  );
+  // A pin's open tabs belong to it: dropped after the row, a run lands after
+  // them too. With the drop target on the row alone, the line was drawn
+  // between a row and its own tabs, and hovering the tabs did not count.
+  if (!pinDrag) return body;
+  return (
+    <div
+      className={`rail-pin-group${pinDrag.dragging ? " dragging" : ""}${pinDrag.over ? ` drop-${pinDrag.over}` : ""}`}
+      data-pin-run={run.id}
+    >
+      {body}
+    </div>
   );
 }
 

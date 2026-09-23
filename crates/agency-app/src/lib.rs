@@ -15,6 +15,7 @@ mod model_probe;
 mod notif_macos;
 mod notifier;
 mod pathenv;
+mod pin_order;
 mod preview_shot;
 mod resume_probe;
 mod sendq;
@@ -347,7 +348,7 @@ pub fn run() {
             commands::rename_run,
             commands::rename_run_branch,
             commands::pin_run,
-            commands::rank_pinned_run,
+            commands::move_pinned_run,
             commands::read_file_base64,
             commands::detect_docs_dir,
             commands::read_docs_corpus,

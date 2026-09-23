@@ -13,6 +13,7 @@ import Menu, { MenuEntry } from "./git/Menu";
 import PromptDialog from "./PromptDialog";
 import ConfirmDialog from "./ConfirmDialog";
 import { toastError, toastInfo } from "../lib/toast";
+import { startPointerDrag } from "../lib/pointerDrag";
 import { dirAtPoint, useFileDrop } from "../hooks/useFileDrop";
 import { dropName, isMarkdown, nameList, uniqueName } from "../lib/fileDrop";
 import { revealLabel, reveal, copyAbsPath } from "../lib/fileActions";
@@ -222,68 +223,36 @@ export default function DocsTree({
   );
 
   // ── dragging a row out to an agent ───────────────────────────────────────
-  // Pointer-based (mousedown → 5px threshold → track → commit on mouseup), NOT
-  // HTML5 drag-and-drop, for the reason the Files tree spells out: Tauri
-  // intercepts drops at the NSView level, so an in-page HTML5 drag lifts and
-  // its drop event never fires.
+  // On the shared pointer drag (lib/pointerDrag, which says why it is not
+  // HTML5 drag-and-drop).
   //
   // Only outward. This tree has no drop target of its own — notes are moved
   // through Rename — so every drag either lands on a terminal or does nothing.
 
   const [sink, setSink] = useState<PathSink | null>(null);
   const sinkLive = useRef<PathSink | null>(null);
-  // A completed drag must not read as a click on the row it started from.
-  const suppressClick = useRef(false);
 
   const onRowMouseDown = (path: string, e: React.MouseEvent) => {
     if (e.button !== 0) return;
     if ((e.target as HTMLElement).closest("button, input, textarea")) return;
-    // Suppresses the text selection WebKit would otherwise start dragging.
-    e.preventDefault();
-    const start = { x: e.clientX, y: e.clientY };
     const track = createSinkTracker();
-    let started = false;
-    let cancelled = false;
-
-    const finish = () => {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-      window.removeEventListener("keydown", onKey, true);
+    const clear = () => {
       track.clear();
       sinkLive.current = null;
       setSink(null);
     };
-    const onMove = (ev: MouseEvent) => {
-      if (cancelled) return;
-      if (!started) {
-        if (Math.abs(ev.clientX - start.x) + Math.abs(ev.clientY - start.y) < 5) return;
-        started = true;
-        window.getSelection()?.removeAllRanges();
-      }
-      ev.preventDefault();
-      sinkLive.current = track.over(ev.clientX, ev.clientY);
-      setSink(sinkLive.current);
-    };
-    const onKey = (ev: KeyboardEvent) => {
-      if (ev.key !== "Escape") return;
-      cancelled = true;
-      track.clear();
-      sinkLive.current = null;
-      setSink(null);
-    };
-    const onUp = () => {
-      const target = sinkLive.current;
-      finish();
-      if (started) {
-        suppressClick.current = true;
-        window.setTimeout(() => { suppressClick.current = false; }, 0);
-      }
-      if (target && !cancelled) void dropOnSink(target, path);
-    };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-    // Capture phase so an Escape mid-drag can't reach anything else.
-    window.addEventListener("keydown", onKey, true);
+    startPointerDrag(e, {
+      onMove: (ev) => {
+        sinkLive.current = track.over(ev.clientX, ev.clientY);
+        setSink(sinkLive.current);
+      },
+      onCancel: clear,
+      onDrop: () => {
+        const target = sinkLive.current;
+        clear();
+        if (target) void dropOnSink(target, path);
+      },
+    });
   };
 
   // Absolute, as a Finder drop would be: the agent may be sitting anywhere,
@@ -331,7 +300,7 @@ export default function DocsTree({
         <div key={sub.path} className={`tree-row dir${dropDir === sub.path ? " drop-into" : ""}`} style={pad}
           data-drop-dir={sub.path}
           onMouseDown={(e) => onRowMouseDown(sub.path, e)}
-          onClick={() => { if (!suppressClick.current) toggle(sub.path); }}
+          onClick={() => toggle(sub.path)}
           onContextMenu={(e) => openMenu(e, { path: sub.path, isDir: true })}>
           <span className="tree-twistie-slot">
             {/* Nothing to disclose in a folder with nothing in it yet (same
@@ -355,7 +324,7 @@ export default function DocsTree({
           style={pad}
           data-drop-dir={dir.path}
           onMouseDown={(e) => onRowMouseDown(note.path, e)}
-          onClick={() => { if (!suppressClick.current) onSelect(note.path); }}
+          onClick={() => onSelect(note.path)}
           onContextMenu={(e) => openMenu(e, { path: note.path, isDir: false })}>
           <span className="tree-twistie-slot" />
           <span className="tree-icon file-icon" style={{ color: "var(--sub0)" }}>
@@ -373,7 +342,7 @@ export default function DocsTree({
           style={pad}
           data-drop-dir={dir.path}
           onMouseDown={(e) => onRowMouseDown(file.path, e)}
-          onClick={() => { if (!suppressClick.current) onOpenFile(file.path); }}
+          onClick={() => onOpenFile(file.path)}
           onContextMenu={(e) => openMenu(e, { path: file.path, isDir: false })}>
           <span className="tree-twistie-slot" />
           <span className="tree-icon file-icon" style={{ color: icon.color }}>

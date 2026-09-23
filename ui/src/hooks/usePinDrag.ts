@@ -1,6 +1,7 @@
-import { useRef, useState } from "react";
-import { RunInfo, rankPinnedRun } from "../api";
-import { isPinned, pinDropSide, planPinDrop } from "../lib/runstate";
+import { useMemo, useRef, useState } from "react";
+import { RunInfo, movePinnedRun } from "../api";
+import { pinDropSide, pinIndex } from "../lib/runstate";
+import { startPointerDrag } from "../lib/pointerDrag";
 import { toastError } from "../lib/toast";
 import { useRuns } from "../store/runs";
 
@@ -14,101 +15,79 @@ export interface PinDrag {
   onGrab: (e: React.MouseEvent) => void;
 }
 
+type Target = { id: string; overId: string };
+
 /**
  * Drag-to-reorder for pinned runs (AGE-161), shared by the agent grid and the
- * focus rail. Pointer-based (mousedown on the grip, 5px threshold, track, commit
- * on mouseup), NOT HTML5 drag-and-drop: wry's drag-drop layer intercepts drops
- * at the NSView level on macOS, so an in-page HTML5 drag lifts but its drop
- * never fires. The pattern is IssuesView's.
+ * focus rail, on the shared pointer drag (`lib/pointerDrag`).
  *
  * Only pinned runs join in, and only once there are two of them to order. The
  * host marks each one's element with `data-pin-run` so the pointer can find
- * what it is over, and renders `PinGrip` with `onGrab` as the handle.
+ * what it is over, and renders `PinGrip` with `onGrab` as the handle. The drop
+ * sends the pair to the backend, which plans the ranks against every pin
+ * (archived ones too) and writes them in one transaction.
  */
 export function usePinDrag() {
-  const { runs, refreshRuns } = useRuns();
-  // Mouse handlers plan against the freshest board, not their closure's: the
-  // runs refresh on a timer while the pointer is down.
-  const runsRef = useRef(runs);
-  runsRef.current = runs;
-  const [drag, setDrag] = useState<{ id: string; overId: string } | null>(null);
+  const { runs, refreshRuns, applyPinRanks } = useRuns();
+  // Mouse events outrun renders, so the live target is a ref, and `drag`
+  // only mirrors it when the target changes. Set on every mousemove, it
+  // re-rendered the whole host (the focus view's terminals included) dozens
+  // of times a second while the pointer sat on one tile.
+  const live = useRef<Target | null>(null);
+  const [drag, setDrag] = useState<Target | null>(null);
+  const show = (next: Target | null) => {
+    live.current = next;
+    setDrag(next);
+  };
 
-  async function drop(id: string, overId: string) {
-    const plan = planPinDrop(runsRef.current, id, overId);
-    if (plan.length === 0) return;
+  async function drop(target: Target) {
     try {
-      await Promise.all(plan.map((u) => rankPinnedRun(u.id, u.rank!)));
+      // The indicator stays up until the new ranks are in the store. Cleared
+      // at mouseup, the tile snapped back to its old place for the round trip
+      // and read as a drop that had not taken.
+      applyPinRanks(await movePinnedRun(target.id, target.overId));
     } catch (e) {
       toastError(e, "Couldn't reorder pins");
+    } finally {
+      show(null);
     }
-    // After a failure too: a renumbering can land partway.
     refreshRuns();
   }
 
   function grab(id: string, e: React.MouseEvent) {
     if (e.button !== 0) return;
     // The grip sits on a card or a row that opens the run on click; the press
-    // is the drag's, not theirs. preventDefault also keeps WebKit from starting
-    // a text selection, which begins at mousedown, long before the threshold.
-    e.preventDefault();
+    // is the drag's, not theirs.
     e.stopPropagation();
-    const start = { x: e.clientX, y: e.clientY };
-    let live: { id: string; overId: string } | null = null;
-    // Escape sets this so the drag can't restart on the next mousemove; the
-    // still-held button then releases as a no-op.
-    let cancelled = false;
-
-    const onMove = (ev: MouseEvent) => {
-      if (cancelled) return;
-      if (!live) {
-        if (Math.abs(ev.clientX - start.x) + Math.abs(ev.clientY - start.y) < 5) return;
-        live = { id, overId: id };
-      }
-      ev.preventDefault();
-      const over = (document.elementFromPoint(ev.clientX, ev.clientY) as HTMLElement | null)
-        ?.closest<HTMLElement>("[data-pin-run]");
-      // Off the pins (an unpinned run, a gap in the grid) keeps the last
-      // target, so the drop lands where the indicator last showed it would.
-      if (over?.dataset.pinRun) live = { id, overId: over.dataset.pinRun };
-      setDrag(live);
-    };
-    const onKey = (ev: KeyboardEvent) => {
-      if (ev.key !== "Escape") return;
-      cancelled = true;
-      setDrag(null);
-    };
-    const onUp = () => {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-      window.removeEventListener("keydown", onKey, true);
-      setDrag(null);
-      if (!live) return;
-      // A drag that ends over its own card would otherwise click it and open
-      // the run. Swallowed for this one click only, cancelled or not.
-      const swallow = (ev: MouseEvent) => {
-        ev.stopPropagation();
-        ev.preventDefault();
-      };
-      window.addEventListener("click", swallow, true);
-      window.setTimeout(() => window.removeEventListener("click", swallow, true), 0);
-      if (!cancelled) drop(live.id, live.overId);
-    };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-    // Capture phase so an Escape mid-drag can't reach anything else.
-    window.addEventListener("keydown", onKey, true);
+    startPointerDrag(e, {
+      onStart: () => show({ id, overId: id }),
+      onMove: (ev) => {
+        const over = (document.elementFromPoint(ev.clientX, ev.clientY) as HTMLElement | null)
+          ?.closest<HTMLElement>("[data-pin-run]")?.dataset.pinRun;
+        // Off the pins (an unpinned run, a gap in the grid) keeps the last
+        // target, so the drop lands where the indicator last showed it would.
+        if (over && over !== live.current?.overId) show({ id, overId: over });
+      },
+      onCancel: () => show(null),
+      onDrop: () => {
+        const target = live.current;
+        if (!target || target.overId === target.id) return show(null);
+        void drop(target);
+      },
+    });
   }
 
-  const reorderable = runs.filter(isPinned).length >= 2;
+  const index = useMemo(() => pinIndex(runs), [runs]);
+  const reorderable = index.size >= 2;
   return {
     /** A drag is under way: the host shows the grabbing cursor throughout. */
     active: drag != null,
     /** The run's part in a drag, or undefined for a run that takes none. */
     pinDrag(run: RunInfo): PinDrag | undefined {
-      if (!reorderable || !isPinned(run)) return undefined;
+      if (!reorderable || !index.has(run.id)) return undefined;
       return {
         dragging: drag?.id === run.id,
-        over: drag ? pinDropSide(runs, drag.id, run.id) : null,
+        over: drag ? pinDropSide(index, drag.id, run.id) : null,
         onGrab: (e) => grab(run.id, e),
       };
     },

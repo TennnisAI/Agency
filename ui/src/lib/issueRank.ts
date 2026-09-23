@@ -5,8 +5,9 @@
 // midpoint can't leapfrog unranked rows; when midpoints collapse, the whole
 // group renormalizes back to whole numbers.
 //
-// Nothing here is specific to issues: pinned runs are ordered the same way
-// (`planPinDrop` in runstate.ts).
+// Pinned runs are ordered the same way, planned backend-side instead
+// (`pin_order.rs`), where the archived pins the board does not list are in
+// reach.
 
 export interface Ranked {
   id: string;

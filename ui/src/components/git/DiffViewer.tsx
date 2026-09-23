@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  FileDiff, gitParseDiff, gitCommitDiff, gitStageHunk, gitUnstageHunk,
+  FileDiff, gitParseDiff, gitCommitDiff, checkpointDiff, gitStageHunk, gitUnstageHunk,
   gitStageLines, gitUnstageLines, gitRevertLines, addReviewComment,
 } from "../../api";
 import { buildRows, type DiffRow, type Span } from "./diffModel";
@@ -8,13 +8,17 @@ import { highlightLine, langForPath } from "./highlight";
 import ImageDiff from "./ImageDiff";
 import { emptyReason, isRasterImage } from "./binary";
 
-type Mode = "working-unstaged" | "working-staged" | "commit";
+// "checkpoint" compares two workspace checkpoints: `from` to `hash`. Those
+// commits have no parents, so the "commit" mode's `git show` has nothing to
+// diff them against.
+type Mode = "working-unstaged" | "working-staged" | "commit" | "checkpoint";
 
 type Props = {
   taskId: string;
   path: string;
   mode: Mode;
   hash?: string;
+  from?: string;
   onChanged: () => void;
   onCommentAdded?: () => void;
   allowComments?: boolean;
@@ -30,7 +34,7 @@ export default function DiffViewer(props: Props) {
   if (isRasterImage(props.path)) {
     return (
       <ImageDiff taskId={props.taskId} path={props.path}
-        staged={props.mode === "working-staged"} hash={props.hash} />
+        staged={props.mode === "working-staged"} hash={props.hash} from={props.from} />
     );
   }
   return <TextDiffViewer {...props} />;
@@ -52,7 +56,7 @@ function spansToText(spans: Span[] | null): string {
 }
 
 function TextDiffViewer({
-  taskId, path, mode, hash, onChanged, onCommentAdded, allowComments = true, onRevealInFiles,
+  taskId, path, mode, hash, from, onChanged, onCommentAdded, allowComments = true, onRevealInFiles,
 }: Props) {
   const [fd, setFd] = useState<FileDiff | null>(null);
   const [rows, setRows] = useState<DiffRow[]>([]);
@@ -65,18 +69,20 @@ function TextDiffViewer({
   const [draft, setDraft] = useState("");
   const wrapRef = useRef<HTMLDivElement>(null);
   const staged = mode === "working-staged";
-  const readonly = mode === "commit";
+  const readonly = mode === "commit" || mode === "checkpoint";
 
   const load = useCallback(async () => {
     try {
-      const parsed = readonly && hash
-        ? parseInto(await gitCommitDiff(taskId, hash, path))
-        : await gitParseDiff(taskId, path, staged);
+      const parsed = mode === "checkpoint" && hash && from
+        ? parseInto(await checkpointDiff(taskId, from, hash, path))
+        : readonly && hash
+          ? parseInto(await gitCommitDiff(taskId, hash, path))
+          : await gitParseDiff(taskId, path, staged);
       setFd(parsed);
       setRows(buildRows(parsed));
       setError("");
     } catch (e) { setError(String(e)); }
-  }, [taskId, path, staged, readonly, hash]);
+  }, [taskId, path, staged, readonly, mode, hash, from]);
 
   useEffect(() => { load(); }, [load]);
 

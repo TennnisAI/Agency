@@ -161,9 +161,10 @@ piece of work; see "Not done" below.
   transcripts we can parse.~~ Done since 2026-08-23; see the addendum below.
 - **Records for the other eight agents' transcripts.** Blocked on the same
   default-deny list `usage.rs` keeps, and it should stay default-deny.
-- **Per-turn checkpoints** (AGE-140) are the neighbouring idea from the same T3
-  Code reading and are tracked separately. If they ship, a record could link the
-  turn a change arrived in.
+- **Per-turn checkpoints** (AGE-140) shipped as refs under
+  `refs/agency/checkpoints/<run>/`, and archiving prunes them (see
+  `agency_core::checkpoint`). A record that wanted to link the turn a change
+  arrived in would have to read them before that prune, in `archive_run`.
 
 ## Addendum: the conversation (AGE-152, 2026-08-23)
 

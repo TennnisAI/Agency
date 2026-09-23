@@ -1,6 +1,7 @@
 mod activity;
 mod agent_catalog;
 mod agent_diag;
+mod checkpoints;
 mod clipboard;
 mod commands;
 mod datadir;
@@ -275,6 +276,11 @@ pub fn run() {
             commands::scan_large_files,
             commands::git_commit_files,
             commands::git_commit_diff,
+            commands::checkpoint_list,
+            commands::checkpoint_files,
+            commands::checkpoint_diff,
+            commands::checkpoint_preview,
+            commands::checkpoint_restore,
             commands::git_commit_amend,
             commands::git_stage_lines,
             commands::git_unstage_lines,

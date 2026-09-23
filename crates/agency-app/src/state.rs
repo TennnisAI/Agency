@@ -2644,6 +2644,10 @@ pub struct AppState {
     /// instead; both are taken in that order (spawn gate first) wherever a path
     /// needs the two, and `drive_loops` never takes this one.
     spawn_gates: crate::gates::KeyedGates,
+    /// Per-turn workspace checkpoints (AGE-140): the capture thread, fed from
+    /// `run_input`, the send queue, `update_activity` and `create_run`. See
+    /// `crate::checkpoints` for when a turn starts and ends.
+    checkpoints: crate::checkpoints::Checkpointer,
     /// Serializes workspace creation (worktree add + branch cut). `create_run`
     /// is async so a large checkout can't freeze the UI; this replaces the
     /// main-thread serialization that previously kept concurrent creates from
@@ -2908,6 +2912,7 @@ impl AppState {
             queue_notices: Mutex::new(Vec::new()),
             repo_gates: crate::gates::KeyedGates::new(),
             spawn_gates: crate::gates::KeyedGates::new(),
+            checkpoints: crate::checkpoints::Checkpointer::new(),
             worktree_gate: Mutex::new(()),
             checks: Mutex::new(HashMap::new()),
             loop_gate: Mutex::new(()),
@@ -4034,6 +4039,17 @@ impl AppState {
             );
         }
 
+        // The workspace as the agent is handed it, taken before the agent can
+        // touch anything. A folder with no repository has no branch, and no
+        // git to checkpoint with.
+        if !workspace.branch.is_empty() {
+            self.checkpoints.request(crate::checkpoints::Request {
+                run_id: id.clone(),
+                dir: workspace.path.clone(),
+                kind: agency_core::checkpoint::Kind::RunStart,
+            });
+        }
+
         // Looping runs are spawned below via spawn_loop_attempt — the same
         // path the driver uses for every respawn — so there is exactly one
         // place that builds a headless attempt.
@@ -4066,6 +4082,7 @@ impl AppState {
                 if spec.worktree {
                     let _ = manager.remove(&id);
                 }
+                self.prune_checkpoints(&repo, &id);
                 return Err(e.into());
             }
             self.kick_web_ui(
@@ -6554,6 +6571,7 @@ impl AppState {
         if typed == crate::sendq::Typed::Submitted {
             self.input_seen.lock().unwrap().insert(id.to_string());
             self.prompted.lock().unwrap().insert(id.to_string());
+            self.request_checkpoint(id, agency_core::checkpoint::Kind::PromptSent);
         }
         self.human_input
             .lock()
@@ -6792,6 +6810,9 @@ impl AppState {
                             return None;
                         }
                         log::info!("send queue: delivered {} to {id} ({reason:?})", head.origin);
+                        // Text typed in for the user starts a turn as surely as
+                        // their own Enter does.
+                        self.request_checkpoint(id, agency_core::checkpoint::Kind::PromptSent);
                         {
                             let mut queues = self.send_queue.lock().unwrap();
                             if let Some(q) = queues.get_mut(id) {
@@ -6907,9 +6928,18 @@ impl AppState {
     /// Advance a run's busy/idle state; called by the notifier tick with its
     /// pane-changed observation.
     pub fn update_activity(&self, id: &str, pane_changed: bool, now_ms: i64) {
-        let mut map = self.activity.lock().unwrap();
-        let next = crate::activity::update(map.get(id).copied(), pane_changed, now_ms);
-        map.insert(id.to_string(), next);
+        let went_quiet = {
+            let mut map = self.activity.lock().unwrap();
+            let prev = map.get(id).copied();
+            let next = crate::activity::update(prev, pane_changed, now_ms);
+            map.insert(id.to_string(), next);
+            crate::checkpoints::went_quiet(prev.as_ref(), &next)
+        };
+        // After the activity lock is released: resolving the run reads the
+        // registry, and nothing here should hold both.
+        if went_quiet && !id.starts_with("project:") {
+            self.request_checkpoint(id, agency_core::checkpoint::Kind::TurnEnded);
+        }
     }
 
     /// Hold each run's `set_status` line only while every agent that could have
@@ -7720,6 +7750,7 @@ impl AppState {
         // record that will not delete must not strand the teardown, and the
         // run's row going is what actually removes it from the app.
         if let Ok(repo) = self.project_repo(&run.project_id) {
+            self.prune_checkpoints(&repo, &run.id);
             let path = agency_core::record::path(&repo, &run.id);
             if let Err(e) = remove_if_present(&path) {
                 log::warn!("discard_run {id}: couldn't remove the run record: {e}");
@@ -7903,6 +7934,10 @@ impl AppState {
         {
             log::warn!("archive_run {id}: couldn't write the run record: {e}");
         }
+        // An archived run has no files left to put back, so its checkpoints
+        // would only be objects the repository can never let go of. Restoring
+        // the run starts it a fresh set.
+        self.prune_checkpoints(&repo, id);
 
         // Best-effort archive cleanup script, before the worktree disappears.
         // It tears down a workspace; a run that never had one has nothing to
@@ -7944,6 +7979,7 @@ impl AppState {
     pub fn restore_run(&self, id: &str) -> Result<RunInfo> {
         let run = self.run_record(id)?;
         let repo = self.project_repo(&run.project_id)?;
+        self.checkpoints.revive(id);
         // Belt and braces: archive_run now ends loops, but rows archived
         // before that fix (or by a crash mid-archive) may still carry a live
         // loop state — which would make the driver auto-resume headless
@@ -9382,6 +9418,139 @@ impl AppState {
             Some(project_id) => self.repo_gates.with(project_id, || f(&target.path)),
             None => f(&target.path),
         }
+    }
+
+    // ── workspace checkpoints (AGE-140) ─────────────────────────────────────
+
+    /// The run behind `session` and the directory its checkpoints are taken
+    /// of, if it is one that gets them: an agent session (not a shell tab, not
+    /// a terminal run) in a live run whose project is a git repository.
+    fn checkpoint_target(&self, session: &str) -> Option<(String, PathBuf)> {
+        let (run_id, tab) = split_session_id(session);
+        let reg = self.registry.lock().unwrap();
+        let run = reg.get_run(run_id).ok()??;
+        // An empty branch is the gitless project: no git to snapshot with.
+        if run.kind != "agent" || run.branch.is_empty() || run.archived_at.is_some() {
+            return None;
+        }
+        // A shell tab's output going quiet is a command finishing, not an
+        // agent's turn, and a dev server's log would end a "turn" every time
+        // it paused.
+        if tab.is_some() && reg.get_run_session(session).ok()??.agent == SHELL_AGENT {
+            return None;
+        }
+        let repo = reg.get_project(&run.project_id).ok()??.repo_path;
+        let dir = workspace_dir(&repo, &run);
+        Some((run.id, dir))
+    }
+
+    /// Queue a checkpoint of the run behind `session`, if it gets them.
+    fn request_checkpoint(&self, session: &str, kind: agency_core::checkpoint::Kind) {
+        if let Some((run_id, dir)) = self.checkpoint_target(session) {
+            self.checkpoints.request(crate::checkpoints::Request { run_id, dir, kind });
+        }
+    }
+
+    /// Delete a run's checkpoints and take no more of them. Best-effort: refs
+    /// that survive cost disk, not correctness, and must not fail a teardown.
+    fn prune_checkpoints(&self, repo: &Path, run_id: &str) {
+        let pruned = self
+            .checkpoints
+            .retire(run_id, || agency_core::checkpoint::store::prune_run(repo, run_id));
+        match pruned {
+            Ok(0) => {}
+            Ok(n) => log::info!("checkpoints: pruned {n} for {run_id}"),
+            Err(e) => log::warn!("checkpoints: pruning {run_id} failed: {e:#}"),
+        }
+    }
+
+    /// A run's checkpoints, oldest first. Empty for a run that does not get
+    /// them (a terminal, a gitless project).
+    pub fn list_checkpoints(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<agency_core::checkpoint::Checkpoint>> {
+        match self.checkpoint_target(run_id) {
+            Some((id, dir)) => agency_core::checkpoint::store::list(&dir, &id),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    fn checkpoint_dir(&self, run_id: &str) -> Result<(String, PathBuf)> {
+        self.checkpoint_target(run_id).ok_or_else(|| anyhow!("this run has no checkpoints"))
+    }
+
+    /// The files that changed between two checkpoints, in the shape the commit
+    /// file list already renders.
+    pub fn checkpoint_files(
+        &self,
+        run_id: &str,
+        from: &str,
+        to: &str,
+    ) -> Result<Vec<agency_core::git::CommitFile>> {
+        let (_, dir) = self.checkpoint_dir(run_id)?;
+        Ok(agency_core::checkpoint::store::changes(&dir, from, to)?
+            .into_iter()
+            .map(|c| agency_core::git::CommitFile { path: c.path, status: c.status.to_string() })
+            .collect())
+    }
+
+    pub fn checkpoint_diff(
+        &self,
+        run_id: &str,
+        from: &str,
+        to: &str,
+        path: &str,
+    ) -> Result<String> {
+        let (_, dir) = self.checkpoint_dir(run_id)?;
+        agency_core::checkpoint::store::diff(&dir, from, to, path)
+    }
+
+    pub fn checkpoint_preview(
+        &self,
+        run_id: &str,
+        seq: u32,
+    ) -> Result<agency_core::checkpoint::store::Preview> {
+        let (id, dir) = self.checkpoint_dir(run_id)?;
+        agency_core::checkpoint::store::preview(&dir, &id, seq)
+    }
+
+    /// Whether any agent in the run is mid-turn right now.
+    fn run_agent_working(&self, run_id: &str, now_ms: i64) -> bool {
+        let working: Vec<String> = self
+            .activity
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(session, _)| split_session_id(session).0 == run_id)
+            .filter(|(_, e)| {
+                crate::activity::classify(e, false, now_ms).state
+                    == crate::activity::ActivityState::Working
+            })
+            .map(|(session, _)| session.clone())
+            .collect();
+        working.iter().any(|session| self.checkpoint_target(session).is_some())
+    }
+
+    /// Put a run's files back to checkpoint `seq`. Files only: the branch, the
+    /// index and the agent's conversation stay where they are.
+    pub fn restore_checkpoint(
+        &self,
+        run_id: &str,
+        seq: u32,
+    ) -> Result<agency_core::checkpoint::store::Restored> {
+        let (id, dir) = self.checkpoint_dir(run_id)?;
+        // An agent mid-turn would go on writing into the files as they came
+        // back, and the result would be neither state.
+        if self.run_agent_working(&id, crate::activity::now_ms()) {
+            bail!("the agent is still working; wait for it to finish, or stop it, then restore");
+        }
+        // A run without a worktree restores into the project checkout, which a
+        // merge may be moving between branches: `git_mutate` takes its gate.
+        self.git_mutate(&id, |_| {
+            self.checkpoints
+                .exclusive(&id, || agency_core::checkpoint::store::restore(&dir, &id, seq))
+        })
     }
 
     /// Push `token`'s branch, registering a cancel token against its worktree so

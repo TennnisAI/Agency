@@ -1616,10 +1616,12 @@ export interface BlobSides {
   new: BlobSide | null;
 }
 
-// Pass `hash` for a commit (compared against its first parent); otherwise
-// `staged` picks HEAD-vs-index or index-vs-working-tree, as in gitParseDiff.
-export const gitBlobSides = (taskId: string, path: string, staged: boolean, hash: string | null) =>
-  invoke<BlobSides>("git_blob_sides", { taskId, path, staged, hash });
+// Pass `hash` for a commit (compared against its first parent, or against
+// `from` when given: a checkpoint); otherwise `staged` picks HEAD-vs-index or
+// index-vs-working-tree, as in gitParseDiff.
+export const gitBlobSides = (
+  taskId: string, path: string, staged: boolean, hash: string | null, from: string | null = null,
+) => invoke<BlobSides>("git_blob_sides", { taskId, path, staged, hash, from });
 export const gitStageHunk = (taskId: string, path: string, hunkIndex: number) =>
   invoke<void>("git_stage_hunk", { taskId, path, hunkIndex });
 export const gitUnstageHunk = (taskId: string, path: string, hunkIndex: number) =>
@@ -1675,6 +1677,50 @@ export const gitCommitDiff = (taskId: string, hash: string, path: string) =>
   invoke<string>("git_commit_diff", { taskId, hash, path });
 export const gitCommitAmend = (taskId: string, message: string) =>
   invoke<void>("git_commit_amend", { taskId, message });
+
+/** What prompted a workspace checkpoint (AGE-140). */
+export type CheckpointKind = "runStart" | "promptSent" | "turnEnded" | "beforeRestore" | "unknown";
+
+/** A snapshot of a run's files, taken at a turn boundary. */
+export interface Checkpoint {
+  seq: number;
+  commit: string;
+  tree: string;
+  /** Unix seconds. */
+  at: number;
+  kind: CheckpointKind;
+  /** The commit HEAD was on when it was taken. */
+  head: string | null;
+}
+
+/** What restoring a checkpoint would do, read before the confirm is shown. */
+export interface CheckpointPreview {
+  /** Files that go back to the checkpoint's version. */
+  write: number;
+  /** Files created since, which the restore deletes. */
+  remove: number;
+  /** The branch has commits made after the checkpoint; a restore leaves them. */
+  headMoved: boolean;
+  /** Files too large to save first that a restore would overwrite. Blocks it. */
+  unsaved: string[];
+}
+
+export interface CheckpointRestored {
+  /** The checkpoint holding the files as they were just before the restore. */
+  saved: number | null;
+  changed: number;
+}
+
+export const checkpointList = (runId: string) =>
+  invoke<Checkpoint[]>("checkpoint_list", { runId });
+export const checkpointFiles = (runId: string, from: string, to: string) =>
+  invoke<CommitFile[]>("checkpoint_files", { runId, from, to });
+export const checkpointDiff = (runId: string, from: string, to: string, path: string) =>
+  invoke<string>("checkpoint_diff", { runId, from, to, path });
+export const checkpointPreview = (runId: string, seq: number) =>
+  invoke<CheckpointPreview>("checkpoint_preview", { runId, seq });
+export const checkpointRestore = (runId: string, seq: number) =>
+  invoke<CheckpointRestored>("checkpoint_restore", { runId, seq });
 
 export const gitCheckoutBranch = (taskId: string, name: string) =>
   invoke<void>("git_checkout_branch", { taskId, name });

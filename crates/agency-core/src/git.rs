@@ -346,12 +346,15 @@ fn untracked_diff(worktree: &Path, path: &str) -> Result<String> {
 /// Which pair of revisions a binary comparison reads. Mirrors the diff viewer's
 /// modes: the unstaged view compares the index against the file on disk, the
 /// staged view HEAD against the index, and a commit against its first parent
-/// (the side `git show` picks for a merge).
+/// (the side `git show` picks for a merge). `Between` is two named revisions,
+/// for a workspace checkpoint: those commits have no parent, so `Commit`'s
+/// `^` would find nothing on the old side.
 #[derive(Debug, Clone, PartialEq)]
 pub enum BlobMode {
     Unstaged,
     Staged,
     Commit(String),
+    Between(String, String),
 }
 
 /// One side of a binary comparison: a file's bytes at one revision. `bytes` is
@@ -378,6 +381,9 @@ pub fn blob_sides(
         BlobMode::Staged => Ok((blob_at(worktree, "HEAD", path)?, blob_at(worktree, ":0", path)?)),
         BlobMode::Commit(hash) => {
             Ok((blob_at(worktree, &format!("{hash}^"), path)?, blob_at(worktree, hash, path)?))
+        }
+        BlobMode::Between(from, to) => {
+            Ok((blob_at(worktree, from, path)?, blob_at(worktree, to, path)?))
         }
     }
 }

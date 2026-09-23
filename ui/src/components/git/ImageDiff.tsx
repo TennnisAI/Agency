@@ -13,12 +13,14 @@ type Dims = { w: number; h: number };
  * sides exist and the difference is too fine to spot side by side.
  */
 export default function ImageDiff({
-  taskId, path, staged, hash,
+  taskId, path, staged, hash, from,
 }: {
   taskId: string;
   path: string;
   staged: boolean;
   hash?: string;
+  /** With `hash`, compare against this revision instead of its parent. */
+  from?: string;
 }) {
   const [sides, setSides] = useState<BlobSides | null>(null);
   const [error, setError] = useState("");
@@ -30,11 +32,11 @@ export default function ImageDiff({
   useEffect(() => {
     let cancelled = false;
     setSides(null); setError(""); setOldDims(null); setNewDims(null);
-    gitBlobSides(taskId, path, staged, hash ?? null)
+    gitBlobSides(taskId, path, staged, hash ?? null, from ?? null)
       .then((s) => { if (!cancelled) setSides(s); })
       .catch((e) => { if (!cancelled) setError(String(e)); });
     return () => { cancelled = true; };
-  }, [taskId, path, staged, hash]);
+  }, [taskId, path, staged, hash, from]);
 
   if (error) return <div className="git-error">{error}</div>;
   if (!sides) return <div className="diff-empty">loading…</div>;

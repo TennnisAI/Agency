@@ -1,6 +1,7 @@
 pub mod branchname;
 pub mod briefing;
 pub mod buildlog;
+pub mod checkpoint;
 pub mod cleanup;
 pub mod config;
 pub mod files;

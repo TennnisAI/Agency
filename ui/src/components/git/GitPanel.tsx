@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  FileChange, BranchInfo, HistoryItem, StashEntry, CloneProgress,
+  FileChange, BranchInfo, HistoryItem, StashEntry, CloneProgress, Checkpoint,
   gitStatus, gitBranchInfo, gitStashList, gitUndoLastCommit, gitPush, gitSync, gitPullRebase,
   gitAutoFetch, cancelPush, gitPushForce, absPath,
 } from "../../api";
@@ -10,6 +10,9 @@ import ConfirmDialog from "../ConfirmDialog";
 import ChangesPanel from "./ChangesPanel";
 import HistoryPanel from "./HistoryPanel";
 import CommitDetail from "./CommitDetail";
+import CheckpointsPanel from "./CheckpointsPanel";
+import CheckpointDetail from "./CheckpointDetail";
+import { useRuns } from "../../store/runs";
 import DiffViewer from "./DiffViewer";
 import ConflictView from "./ConflictView";
 import ReviewComments from "./ReviewComments";
@@ -24,6 +27,8 @@ import { GitGroup, groupOf } from "./status";
 export type GitSelection =
   | { kind: "file"; path: string; group: GitGroup }
   | { kind: "commit"; item: HistoryItem }
+  // The diff is from `prev` to `cp`: what changed that turn.
+  | { kind: "checkpoint"; cp: Checkpoint; prev: Checkpoint | null }
   | null;
 
 type Props = {
@@ -389,7 +394,18 @@ function GitRepoPanel({
       selectedHash={selection?.kind === "commit" ? selection.item.hash : null}
       onSelectCommit={(item) => onSelect({ kind: "commit", item })} />
   );
-  const sections = <GitSections changesPanel={changesPanel} historyPanel={historyPanel} />;
+  // Checkpoints are an agent run's (AGE-140): the project checkout and a
+  // terminal have no turns to bracket.
+  const run = useRuns().runs.find((r) => r.id === taskId);
+  const checkpointRun = run?.kind === "agent" && run.branch ? run : null;
+  const checkpointsPanel = checkpointRun && (
+    <CheckpointsPanel runId={checkpointRun.id} checkout={!checkpointRun.worktree} reloadKey={historyKey}
+      selectedSeq={selection?.kind === "checkpoint" ? selection.cp.seq : null}
+      onSelect={(cp, prev) => onSelect({ kind: "checkpoint", cp, prev })} onAct={act} />
+  );
+  const sections = (
+    <GitSections changesPanel={changesPanel} checkpointsPanel={checkpointsPanel} historyPanel={historyPanel} />
+  );
 
   if (layout === "compact") {
     return (
@@ -434,6 +450,10 @@ function GitRepoPanel({
           )}
           {selection?.kind === "file" && paneGroup(selection) !== "merge" && <DiffViewer taskId={taskId} path={selection.path} mode={diffMode(paneGroup(selection))} onChanged={refresh} onCommentAdded={() => setCommentsKey((k) => k + 1)} allowComments={allowComments} onRevealInFiles={onRevealInFiles} />}
           {selection?.kind === "commit" && <CommitDetail taskId={taskId} item={selection.item} onRevealInFiles={onRevealInFiles} />}
+          {selection?.kind === "checkpoint" && (
+            <CheckpointDetail key={selection.cp.seq} runId={taskId} cp={selection.cp} prev={selection.prev}
+              checkout={!run?.worktree} onAct={act} onRevealInFiles={onRevealInFiles} />
+          )}
           {!selection && <div className="diff-empty">Select a file or commit.</div>}
         </div>
       </div>

@@ -17,20 +17,97 @@ pub struct FileChange {
 
 /// Run a git command in `worktree`, returning stdout on success.
 fn git(worktree: &Path, args: &[&str]) -> Result<String> {
-    let output = Command::new("git")
+    git_with(worktree, args, &[], None)
+}
+
+/// Run git in `dir` with extra environment and, optionally, `stdin`; stdout on
+/// success. Every git call that needs either goes through here (a scratch
+/// `GIT_INDEX_FILE`, an identity, a path list on stdin), so the rules below
+/// and the error detail are the same for all of them.
+pub fn git_with(
+    dir: &Path,
+    args: &[&str],
+    env: &[(&str, &str)],
+    stdin: Option<&[u8]>,
+) -> Result<String> {
+    let mut child = Command::new("git")
         .args(args)
-        .current_dir(worktree)
+        .current_dir(dir)
         // No TTY in the app: a network command must fail fast rather than block
         // forever on a credential prompt no one can answer. When Agency is
         // launched from a terminal it *does* inherit that terminal, so without
         // this a fetch for an unauthenticated remote would sit on a hidden
         // password prompt and never return.
         .env("GIT_TERMINAL_PROMPT", "0")
-        .output()?;
+        .envs(env.iter().copied())
+        .stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    // stdin is written from its own thread while this one drains stdout and
+    // stderr. Written first, a long path list deadlocks: git prints a warning
+    // per path (`core.autocrlf` does, on every file it is handed), stderr's
+    // 64KB pipe fills, git blocks writing it, and we block writing a stdin it
+    // has stopped reading. A checkpoint of a tree with thousands of untracked
+    // files hangs that way, holding the repository's gates as it does.
+    let pipe = child.stdin.take();
+    let (output, written) = std::thread::scope(|s| {
+        let writer = stdin.zip(pipe).map(|(input, mut pipe)| {
+            // The pipe is dropped when the thread ends, which closes it: git
+            // reads until EOF.
+            s.spawn(move || pipe.write_all(input))
+        });
+        let output = child.wait_with_output();
+        let written = writer.map_or(Ok(()), |w| w.join().unwrap_or(Ok(())));
+        (output, written)
+    });
+    let output = output?;
+    // A failed git first: one that exits early stops reading, and the broken
+    // pipe that leaves the writer with says nothing about why.
     if !output.status.success() {
         bail!("git {:?} failed: {}", args, failure_detail(&output));
     }
+    written?;
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// A scratch index file in `dir`'s own git dir, for building a tree without
+/// touching the user's index: pass [`ScratchIndex::env`] to [`git_with`].
+/// Removed when dropped, with its lock file, should git have died holding it.
+///
+/// Asked for rather than assumed to be `<dir>/.git`: in a linked worktree that
+/// path is a *file* pointing elsewhere, and joining onto it would put the index
+/// somewhere that cannot be created.
+pub struct ScratchIndex {
+    pub path: std::path::PathBuf,
+    env_value: String,
+}
+
+impl ScratchIndex {
+    /// `name` starts the file's name; the process id and a counter finish it,
+    /// so two builds in flight never share one.
+    pub fn new(dir: &Path, name: &str) -> Result<ScratchIndex> {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let git_dir = git(dir, &["rev-parse", "--absolute-git-dir"])?;
+        let path =
+            Path::new(git_dir.trim()).join(format!("{name}-{}-{n}.index", std::process::id()));
+        let env_value = path.to_string_lossy().into_owned();
+        Ok(ScratchIndex { path, env_value })
+    }
+
+    pub fn env(&self) -> [(&str, &str); 1] {
+        [("GIT_INDEX_FILE", self.env_value.as_str())]
+    }
+}
+
+impl Drop for ScratchIndex {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+        let mut lock = self.path.clone().into_os_string();
+        lock.push(".lock");
+        let _ = std::fs::remove_file(lock);
+    }
 }
 
 /// What a failed git run said, wherever it said it. Not every failure is on
@@ -346,12 +423,15 @@ fn untracked_diff(worktree: &Path, path: &str) -> Result<String> {
 /// Which pair of revisions a binary comparison reads. Mirrors the diff viewer's
 /// modes: the unstaged view compares the index against the file on disk, the
 /// staged view HEAD against the index, and a commit against its first parent
-/// (the side `git show` picks for a merge).
+/// (the side `git show` picks for a merge). `Between` is two named revisions,
+/// for a workspace checkpoint: those commits have no parent, so `Commit`'s
+/// `^` would find nothing on the old side.
 #[derive(Debug, Clone, PartialEq)]
 pub enum BlobMode {
     Unstaged,
     Staged,
     Commit(String),
+    Between(String, String),
 }
 
 /// One side of a binary comparison: a file's bytes at one revision. `bytes` is
@@ -378,6 +458,9 @@ pub fn blob_sides(
         BlobMode::Staged => Ok((blob_at(worktree, "HEAD", path)?, blob_at(worktree, ":0", path)?)),
         BlobMode::Commit(hash) => {
             Ok((blob_at(worktree, &format!("{hash}^"), path)?, blob_at(worktree, hash, path)?))
+        }
+        BlobMode::Between(from, to) => {
+            Ok((blob_at(worktree, from, path)?, blob_at(worktree, to, path)?))
         }
     }
 }
@@ -872,23 +955,7 @@ pub fn parse_diff(diff: &str) -> FileDiff {
 }
 
 pub fn git_stdin(worktree: &Path, args: &[&str], input: &str) -> Result<()> {
-    let mut child = Command::new("git")
-        .args(args)
-        .current_dir(worktree)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    child
-        .stdin
-        .as_mut()
-        .ok_or_else(|| anyhow::anyhow!("failed to open git stdin"))?
-        .write_all(input.as_bytes())?;
-    let out = child.wait_with_output()?;
-    if !out.status.success() {
-        bail!("git {:?} failed: {}", args, String::from_utf8_lossy(&out.stderr));
-    }
-    Ok(())
+    git_with(worktree, args, &[], Some(input.as_bytes())).map(|_| ())
 }
 
 fn build_hunk_patch(file_diff: &FileDiff, hunk_index: usize) -> Result<String> {
@@ -1473,6 +1540,33 @@ mod failure_detail_tests {
     fn leaves_a_single_line_alone() {
         assert_eq!(lead_with_conclusion("nothing to commit"), "nothing to commit");
         assert_eq!(lead_with_conclusion(""), "");
+    }
+}
+
+#[cfg(test)]
+mod git_with_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn a_full_stderr_does_not_deadlock_a_long_stdin() {
+        // Fills stderr well past a pipe buffer before reading a byte of stdin,
+        // as git does with a warning per path. Written stdin-first, both sides
+        // block for ever.
+        let d = tempdir().unwrap();
+        let alias = "alias.spew=!head -c 300000 /dev/zero >&2; wc -c";
+        let input = vec![b'x'; 1_000_000];
+        let out = git_with(d.path(), &["-c", alias, "spew"], &[], Some(&input)).unwrap();
+        assert_eq!(out.trim(), "1000000");
+    }
+
+    #[test]
+    fn a_git_that_stops_reading_reports_its_own_failure() {
+        let d = tempdir().unwrap();
+        let alias = "alias.quit=!echo gave up >&2; exit 3";
+        let input = vec![b'x'; 1_000_000];
+        let err = git_with(d.path(), &["-c", alias, "quit"], &[], Some(&input)).unwrap_err();
+        assert!(err.to_string().contains("gave up"), "{err}");
     }
 }
 

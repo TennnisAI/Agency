@@ -1562,8 +1562,9 @@ fn blob_side_dto(side: git::BlobSide) -> BlobSideDto {
 
 /// The two sides of a binary file's change, so the diff viewer can show an image
 /// before and after instead of "no textual changes". `hash` selects a commit
-/// (against its first parent); without one, `staged` picks HEAD-vs-index or
-/// index-vs-working-tree, matching `git_parse_diff`.
+/// (against its first parent, or against `from` when given: a checkpoint);
+/// without one, `staged` picks HEAD-vs-index or index-vs-working-tree, matching
+/// `git_parse_diff`.
 #[tauri::command]
 pub async fn git_blob_sides(
     state: State<'_, AppState>,
@@ -1571,12 +1572,21 @@ pub async fn git_blob_sides(
     path: String,
     staged: bool,
     hash: Option<String>,
+    from: Option<String>,
 ) -> Result<BlobSidesDto, String> {
     let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
-    let mode = match hash {
-        Some(h) => git::BlobMode::Commit(h),
-        None if staged => git::BlobMode::Staged,
-        None => git::BlobMode::Unstaged,
+    let mode = match (hash, from) {
+        (Some(to), Some(from)) => {
+            // Both go into a `rev:path` argument; only an object id may.
+            let is_oid = agency_core::checkpoint::is_oid;
+            if !is_oid(&from) || !is_oid(&to) {
+                return Err("checkpoints are compared by object id".into());
+            }
+            git::BlobMode::Between(from, to)
+        }
+        (Some(h), None) => git::BlobMode::Commit(h),
+        (None, _) if staged => git::BlobMode::Staged,
+        (None, _) => git::BlobMode::Unstaged,
     };
     let (old, new) = git::blob_sides(&wt, &path, &mode).map_err(|e| e.to_string())?;
     Ok(BlobSidesDto {
@@ -1703,6 +1713,58 @@ pub async fn git_commit_diff(
 ) -> Result<String, String> {
     let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
     agency_core::git::commit_diff(&wt, &hash, &path).map_err(|e| e.to_string())
+}
+
+/// A run's workspace checkpoints, oldest first (AGE-140).
+#[tauri::command]
+pub async fn checkpoint_list(
+    state: State<'_, AppState>,
+    run_id: String,
+) -> Result<Vec<agency_core::checkpoint::Checkpoint>, String> {
+    state.list_checkpoints(&run_id).map_err(|e| e.to_string())
+}
+
+/// What changed from one checkpoint to the next.
+#[tauri::command]
+pub async fn checkpoint_files(
+    state: State<'_, AppState>,
+    run_id: String,
+    from: String,
+    to: String,
+) -> Result<Vec<CommitFile>, String> {
+    state.checkpoint_files(&run_id, &from, &to).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn checkpoint_diff(
+    state: State<'_, AppState>,
+    run_id: String,
+    from: String,
+    to: String,
+    path: String,
+) -> Result<String, String> {
+    state.checkpoint_diff(&run_id, &from, &to, &path).map_err(|e| e.to_string())
+}
+
+/// What restoring a checkpoint would do, read before the confirm is shown.
+#[tauri::command]
+pub async fn checkpoint_preview(
+    state: State<'_, AppState>,
+    run_id: String,
+    seq: u32,
+) -> Result<agency_core::checkpoint::store::Preview, String> {
+    state.checkpoint_preview(&run_id, seq).map_err(|e| e.to_string())
+}
+
+/// Put a run's files back to a checkpoint. Async: it snapshots the worktree
+/// twice and writes files, which is too long to hold the main thread for.
+#[tauri::command]
+pub async fn checkpoint_restore(
+    state: State<'_, AppState>,
+    run_id: String,
+    seq: u32,
+) -> Result<agency_core::checkpoint::store::Restored, String> {
+    state.restore_checkpoint(&run_id, seq).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

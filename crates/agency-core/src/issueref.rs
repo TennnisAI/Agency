@@ -15,7 +15,7 @@
 //! sides saw, so deletions are distinguishable from never-having-existed
 //! without inventing a tombstone format.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -142,21 +142,12 @@ fn git(repo: &Path, args: &[&str]) -> Result<String> {
     git_env(repo, args, &[])
 }
 
-/// Every git call here goes through one place so the two environment rules hold
-/// everywhere: no terminal prompt (the app has no TTY to answer a credential
-/// question on, and a fetch that blocks on a hidden prompt never returns), and
-/// an author identity that cannot be missing.
+/// Every git call here goes through `git::git_with`, so the environment rules
+/// hold everywhere: no terminal prompt (the app has no TTY to answer a
+/// credential question on, and a fetch that blocks on a hidden prompt never
+/// returns). The identity a commit needs is passed in `env` by its caller.
 fn git_env(repo: &Path, args: &[&str], env: &[(&str, &str)]) -> Result<String> {
-    let mut cmd = Command::new("git");
-    cmd.args(args).current_dir(repo).env("GIT_TERMINAL_PROMPT", "0");
-    for (k, v) in env {
-        cmd.env(k, v);
-    }
-    let out = cmd.output()?;
-    if !out.status.success() {
-        bail!("git {:?} failed: {}", args, String::from_utf8_lossy(&out.stderr).trim());
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+    crate::git::git_with(repo, args, env, None)
 }
 
 /// A git call whose failure is an answer, not an error: "no such ref", "no
@@ -198,21 +189,10 @@ fn write_tree(repo: &Path) -> Result<String> {
         // 4b825dc… is the sha1 spelling, and a sha256 repo has a different one.
         return Ok(git(repo, &["mktree"])?.trim().to_string());
     }
-    // Asked for rather than assumed to be `<repo>/.git`: in a linked worktree
-    // that path is a *file* pointing elsewhere, and joining onto it would put
-    // the scratch index somewhere that cannot be created.
-    let git_dir = git(repo, &["rev-parse", "--absolute-git-dir"])?.trim().to_string();
-    let index: PathBuf =
-        Path::new(&git_dir).join(format!("agency-issues-index-{}", uuid::Uuid::new_v4()));
-    let index_str = index.to_string_lossy().to_string();
-    let env = [("GIT_INDEX_FILE", index_str.as_str())];
-    let run = || -> Result<String> {
-        git_env(repo, &["add", "--force", "--all", "--", issuefs::ISSUES_DIR], &env)?;
-        Ok(git_env(repo, &["write-tree"], &env)?.trim().to_string())
-    };
-    let out = run();
-    let _ = std::fs::remove_file(&index);
-    out
+    let index = crate::git::ScratchIndex::new(repo, "agency-issues")?;
+    let env = index.env();
+    git_env(repo, &["add", "--force", "--all", "--", issuefs::ISSUES_DIR], &env)?;
+    Ok(git_env(repo, &["write-tree"], &env)?.trim().to_string())
 }
 
 /// Commit a tree onto the local ref. `parents` are the commits this snapshot
@@ -748,6 +728,7 @@ fn one_pass(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
     use tempfile::tempdir;
 
     fn sh(dir: &Path, args: &[&str]) -> String {

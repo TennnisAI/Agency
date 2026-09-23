@@ -967,6 +967,29 @@ impl Registry {
         Ok(stmt.query_row([project_id], |row| row.get::<_, Option<f64>>(0))?)
     }
 
+    /// Every pinned run in a project as `(id, rank)`, archived runs included,
+    /// in board order. Ties break newest first, the order the board lists
+    /// runs in, so two equal ranks read the same here as they do there.
+    pub fn pin_ranks(&self, project_id: &str) -> Result<Vec<(String, f64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, pin_rank FROM runs WHERE project_id = ?1 AND pin_rank IS NOT NULL
+             ORDER BY pin_rank ASC, created_at DESC",
+        )?;
+        let rows = stmt.query_map([project_id], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Write several pin ranks at once, all or none: a renumber that lands
+    /// partway leaves the pins in an order nobody chose.
+    pub fn set_pin_ranks(&self, ranks: &[(String, f64)]) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        for (id, rank) in ranks {
+            tx.execute("UPDATE runs SET pin_rank = ?2 WHERE id = ?1", rusqlite::params![id, rank])?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Repoint a run at a renamed branch.
     ///
     /// The branch lives in two places, git and this row, and a merge reads the
@@ -2292,6 +2315,29 @@ mod tests {
         let got = reg.get_run("s1").unwrap().unwrap();
         assert!(got.pin_rank.is_none());
         assert_eq!(reg.max_pin_rank(&project_id).unwrap(), None);
+    }
+
+    /// A drag plans against every pin, so an archived one has to be listed:
+    /// its rank stays taken for when it is restored.
+    #[test]
+    fn pin_ranks_list_archived_pins_in_board_order() {
+        let dir = tempdir().unwrap();
+        let reg = Registry::open(&dir.path().join("pins.db")).unwrap();
+        let project = reg.add_project("p", std::path::Path::new("/tmp/p")).unwrap();
+        for (id, rank) in [("a", Some(2.0)), ("b", Some(1.0)), ("c", None)] {
+            let mut run = sample_run(id, None);
+            run.project_id = project.id.clone();
+            run.pin_rank = rank;
+            reg.insert_run(&run).unwrap();
+        }
+        reg.set_archived("b", Some(1)).unwrap();
+        let ids = |reg: &Registry| {
+            reg.pin_ranks(&project.id).unwrap().into_iter().map(|(id, _)| id).collect::<Vec<_>>()
+        };
+        assert_eq!(ids(&reg), ["b", "a"], "archived b listed, unpinned c not");
+
+        reg.set_pin_ranks(&[("a".into(), 0.5), ("c".into(), 3.0)]).unwrap();
+        assert_eq!(ids(&reg), ["a", "b", "c"]);
     }
 
     #[test]

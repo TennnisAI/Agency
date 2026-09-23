@@ -1,4 +1,5 @@
 use crate::notifier;
+use crate::pin_order;
 use agency_core::buildlog::Stream;
 use agency_core::cleanup::{BranchFacts, Disposal};
 use agency_core::profile::AgentProfile;
@@ -3291,10 +3292,9 @@ impl AppState {
 
     // ── pin a run on the board ─────────────────────────────────────────────
 
-    /// Pin a run to the end of its project's pinned runs, or unpin it. The
-    /// order is the order they were pinned in, and it is the user's: unpinning
-    /// and pinning again moves a run to the end. Ranks are fractional so a
-    /// drag-to-reorder can land between two of them later without renumbering.
+    /// Pin a run to the end of its project's pinned runs, or unpin it. Ranks
+    /// are fractional so a drag can land a pin between two others without
+    /// renumbering them: see [`Self::move_pinned_run`].
     pub fn pin_run(&self, id: &str, pinned: bool) -> Result<()> {
         let reg = self.registry.lock().unwrap();
         if !pinned {
@@ -3303,6 +3303,24 @@ impl AppState {
         let run = reg.get_run(id)?.ok_or_else(|| anyhow!("unknown run: {id}"))?;
         let rank = reg.max_pin_rank(&run.project_id)?.unwrap_or(0.0) + 1.0;
         reg.set_run_pin_rank(id, Some(rank))
+    }
+
+    /// Drop pinned run `id` onto pinned run `over`, on the agent grid or the
+    /// focus rail: it takes the other's place (see [`pin_order::plan_move`]).
+    /// Returns the ranks written, so the board can show the move before its
+    /// next refresh.
+    ///
+    /// Planned and written under the one registry lock, against every pin in
+    /// the project, archived ones included. Refused when either run is not a
+    /// pin there: the drag began on an older board, and a pin removed in the
+    /// meantime (from the sidebar tree, say) must not come back.
+    pub fn move_pinned_run(&self, id: &str, over: &str) -> Result<Vec<(String, f64)>> {
+        let reg = self.registry.lock().unwrap();
+        let run = reg.get_run(id)?.ok_or_else(|| anyhow!("unknown run: {id}"))?;
+        let plan = pin_order::plan_move(&reg.pin_ranks(&run.project_id)?, id, over)
+            .map_err(|e| anyhow!(e))?;
+        reg.set_pin_ranks(&plan)?;
+        Ok(plan)
     }
 
     pub fn add_project(&self, name: &str, repo_path: &Path) -> Result<Project> {

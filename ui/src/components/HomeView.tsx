@@ -262,7 +262,7 @@ export default function HomeView({
       </div>
 
       {ordered.map((p) => {
-        // Pinned runs first, in the order they were pinned; the rest running
+        // Pinned runs first, in the order the user put them; the rest running
         // first. A pin holds its place whatever the run is doing, so it is the
         // outer sort and lifecycle only orders what is left.
         const runs = pinnedFirst(

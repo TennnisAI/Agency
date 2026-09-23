@@ -15,6 +15,7 @@ import { usePaneWidth } from "../hooks/usePaneWidth";
 import { useRepoReadiness, isGitless } from "../hooks/useRepoReadiness";
 import { useFolderMissing } from "../hooks/useFolderMissing";
 import { useSpawnAgent } from "../hooks/useSpawnAgent";
+import { usePinDrag } from "../hooks/usePinDrag";
 import FilesView from "./FilesView";
 import DocsView from "./DocsView";
 import HomeView from "./HomeView";
@@ -60,6 +61,8 @@ export default function AgentsView({
   const [filesTab, setFilesTab] = useState<"files" | "map">("files");
   const [reviewPr, setReviewPr] = useState<number | null>(null);
   const reviewPane = usePaneWidth("review", 360, 280, 640);
+  // Dragging a pinned tile by its grip to reorder the pins (AGE-161).
+  const pinDrag = usePinDrag();
 
   // A project can have no repository at all: a workspace that declined git, or
   // a plain folder added as a project. Agents and terminals still run there,
@@ -363,7 +366,7 @@ export default function AgentsView({
             <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
               <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, overflow: "hidden" }}>
                 {view === "grid" && (
-                  <div className="grid">
+                  <div className={`grid${pinDrag.active ? " reordering" : ""}`}>
                     {runs.length === 0 && !spawning && (
                       <div className="board empty">
                         {gitless
@@ -371,7 +374,7 @@ export default function AgentsView({
                           : "No agents yet. Add one with \"+ Agent\"."}
                       </div>
                     )}
-                    {runs.map((r) => <AgentTile key={r.id} run={r} />)}
+                    {runs.map((r) => <AgentTile key={r.id} run={r} pinDrag={pinDrag.pinDrag(r)} />)}
                     {spawning && (
                       // Placeholder while the worktree + session are created —
                       // the real tile appears once createRun resolves. On a large

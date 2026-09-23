@@ -76,6 +76,21 @@ export function PinIcon({ size = 13, filled = false }: IconProps & { filled?: bo
   );
 }
 
+// Grab handle: two columns of three dots, the drag affordance for a pinned run.
+// Filled for the same reason as MoreIcon's dots.
+export function GripIcon({ size = 12 }: IconProps) {
+  return (
+    <svg {...base(size)} fill="currentColor" stroke="none">
+      <circle cx="9" cy="5" r="1.9" />
+      <circle cx="15" cy="5" r="1.9" />
+      <circle cx="9" cy="12" r="1.9" />
+      <circle cx="15" cy="12" r="1.9" />
+      <circle cx="9" cy="19" r="1.9" />
+      <circle cx="15" cy="19" r="1.9" />
+    </svg>
+  );
+}
+
 // Horizontal "…" affordance for an overflow menu. Dots are filled, not stroked,
 // so they stay round at 14px instead of collapsing into dashes.
 export function MoreIcon({ size = 14 }: IconProps) {

@@ -14,6 +14,7 @@ import { dropName, nameList, uniqueName } from "../lib/fileDrop";
 import { sameListing, visibleDirs } from "../lib/dirListing";
 import { Transfer, transferProblem } from "../lib/fileTransfer";
 import { toastError, toastInfo } from "../lib/toast";
+import { startPointerDrag } from "../lib/pointerDrag";
 import { revealLabel, reveal, copyAbsPath, copyRelPath, ignorePath } from "../lib/fileActions";
 import { PathSink, createSinkTracker } from "../lib/pathDrop";
 import { shortcutLabel } from "../lib/platform";
@@ -372,10 +373,8 @@ export default function FileTree({
   );
 
   // ── dragging a row onto a folder ─────────────────────────────────────────
-  // Pointer-based (mousedown → 5px threshold → track → commit on mouseup), NOT
-  // HTML5 drag-and-drop: Tauri's native drag-drop layer intercepts drops at the
-  // NSView level on macOS, so an in-page HTML5 drag lifts but its drop event
-  // never fires. Same reason the issue board reorders this way.
+  // On the shared pointer drag (lib/pointerDrag, which says why it is not
+  // HTML5 drag-and-drop), like the issue board's reorder.
   //
   // Plain drag moves and ⌥-drag copies, as in Finder. The modifier is read at
   // each move rather than at the drop, so the hint below says which one is
@@ -391,8 +390,6 @@ export default function FileTree({
   // either inside the tree or outside it.
   const [sink, setSink] = useState<PathSink | null>(null);
   const sinkLive = useRef<PathSink | null>(null);
-  // A completed drag must not read as a click on the row it started from.
-  const suppressClick = useRef(false);
 
   // A row released over a terminal: hand it the path the way a Finder drop
   // would, absolute, so it means the same thing whatever directory the agent
@@ -411,81 +408,50 @@ export default function FileTree({
     if ((e.target as HTMLElement).closest("button, input, textarea")) return;
     setCursor(entry);
     // The keyboard shortcuts live on the tree body, so a grabbed row has to
-    // bring focus with it. preventDefault below suppresses the focus WebKit
-    // would otherwise move (and the text selection it would start dragging).
+    // bring focus with it. The drag's preventDefault suppresses the focus
+    // WebKit would otherwise move (and the text selection it would start
+    // dragging).
     bodyRef.current?.focus({ preventScroll: true });
-    e.preventDefault();
-    const start = { x: e.clientX, y: e.clientY };
-    let started = false;
-    // Escape sets this so the drag can't silently restart on the next
-    // mousemove; the still-held button then releases as a no-op.
-    let cancelled = false;
-
     const track = createSinkTracker();
-
-    const onMove = (ev: MouseEvent) => {
-      if (cancelled) return;
-      if (!started) {
-        if (Math.abs(ev.clientX - start.x) + Math.abs(ev.clientY - start.y) < 5) return;
-        started = true;
-        window.getSelection()?.removeAllRanges();
-      }
-      ev.preventDefault();
-      const dir = dirAtPoint(bodyRef.current, ev.clientX, ev.clientY);
-      const mode: Transfer["mode"] = ev.altKey ? "copy" : "move";
-      dragLive.current = dir === null
-        ? null
-        : { src: entry.path, dir, mode, problem: transferProblem(entry.path, dir, mode) };
-      setDrag(dragLive.current);
-      // Only once the pointer has left the tree: inside it, the tree's own
-      // drop rules win, and a terminal underneath is not a target.
-      if (dir === null) {
-        sinkLive.current = track.over(ev.clientX, ev.clientY);
-      } else {
-        track.clear();
-        sinkLive.current = null;
-      }
-      setSink(sinkLive.current);
-    };
-    const onKey = (ev: KeyboardEvent) => {
-      if (ev.key !== "Escape") return;
-      cancelled = true;
+    const clear = () => {
       dragLive.current = null;
       sinkLive.current = null;
       track.clear();
       setDrag(null);
       setSink(null);
     };
-    const onUp = () => {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-      window.removeEventListener("keydown", onKey, true);
-      const d = dragLive.current;
-      const s = sinkLive.current;
-      dragLive.current = null;
-      sinkLive.current = null;
-      track.clear();
-      setDrag(null);
-      setSink(null);
-      if (started) {
-        // Neither a completed nor a cancelled drag may open the file or toggle
-        // the folder the pointer started on.
-        suppressClick.current = true;
-        window.setTimeout(() => { suppressClick.current = false; }, 0);
-      }
-      if (cancelled) return;
-      if (s) {
-        void dropOnSink(s, entry.path);
-        return;
-      }
-      // A refused drop is a no-op: the hint already said why while it hovered.
-      if (!d || d.problem) return;
-      void doTransfer(d.src, d.dir, d.mode);
-    };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-    // Capture phase so an Escape mid-drag can't reach anything else.
-    window.addEventListener("keydown", onKey, true);
+    startPointerDrag(e, {
+      onMove: (ev) => {
+        const dir = dirAtPoint(bodyRef.current, ev.clientX, ev.clientY);
+        const mode: Transfer["mode"] = ev.altKey ? "copy" : "move";
+        dragLive.current = dir === null
+          ? null
+          : { src: entry.path, dir, mode, problem: transferProblem(entry.path, dir, mode) };
+        setDrag(dragLive.current);
+        // Only once the pointer has left the tree: inside it, the tree's own
+        // drop rules win, and a terminal underneath is not a target.
+        if (dir === null) {
+          sinkLive.current = track.over(ev.clientX, ev.clientY);
+        } else {
+          track.clear();
+          sinkLive.current = null;
+        }
+        setSink(sinkLive.current);
+      },
+      onCancel: clear,
+      onDrop: () => {
+        const d = dragLive.current;
+        const s = sinkLive.current;
+        clear();
+        if (s) {
+          void dropOnSink(s, entry.path);
+          return;
+        }
+        // A refused drop is a no-op: the hint already said why while it hovered.
+        if (!d || d.problem) return;
+        void doTransfer(d.src, d.dir, d.mode);
+      },
+    });
   };
 
   // ⌘X/⌘C/⌘V over the tree. Bound to the body, so they only fire while it holds
@@ -589,7 +555,7 @@ export default function FileTree({
             data-path={path}
             data-drop-dir={path}
             onMouseDown={(e) => onRowMouseDown({ path, isDir: true }, e)}
-            onClick={() => { if (!suppressClick.current) toggle(path); }}
+            onClick={() => toggle(path)}
             onContextMenu={(e) => openMenu(e, { path, isDir: true })}
           >
             <span className="tree-twistie-slot">
@@ -612,7 +578,7 @@ export default function FileTree({
             data-path={path}
             data-drop-dir={dir}
             onMouseDown={(e) => onRowMouseDown({ path, isDir: false }, e)}
-            onClick={() => { if (!suppressClick.current) onSelect(path); }}
+            onClick={() => onSelect(path)}
             onContextMenu={(e) => openMenu(e, { path, isDir: false })}
           >
             <span className="tree-twistie-slot" />

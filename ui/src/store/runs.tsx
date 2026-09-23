@@ -59,6 +59,9 @@ interface RunStore {
   onScreenRunId: string | null;
   setOnScreenRun: React.Dispatch<React.SetStateAction<string | null>>;
   refreshRuns: () => Promise<void>;
+  // Show the ranks a pin drag just wrote, ahead of the refresh that confirms
+  // them. `[id, rank]` pairs, as `movePinnedRun` returns them.
+  applyPinRanks: (ranks: [string, number][]) => void;
   tab: Tab;
   setTab: (t: Tab) => void;
   createAgent: (agentId: string, opts?: SpawnOpts) => Promise<void>;
@@ -120,6 +123,13 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
   const [spawnProgress, setSpawnProgress] = useState<CloneProgress | null>(null);
   const projectRef = useRef<string | null>(null);
   projectRef.current = selectedProjectId;
+  // Each refresh takes a number, and a reply is shown only if nothing newer
+  // has been shown since. The 1.5s tick keeps a listRuns in flight much of the
+  // time, and one started before a pin drag's write could land after it and
+  // put the old order back for another tick. A local write bumps the count
+  // too, so every read begun before it is stale.
+  const runsSeq = useRef(0);
+  const runsShown = useRef(0);
   // Per-project memory of the last-viewed tab, so each project independently
   // restores where you left off. A ref (not state) because it only needs to be
   // read on project switch — the visible `tab` state drives rendering.
@@ -142,7 +152,9 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
 
   const refreshRuns = useCallback(async () => {
     const pid = projectRef.current;
+    const seq = ++runsSeq.current;
     if (!pid) {
+      runsShown.current = seq;
       setRuns([]);
       setProjectRunLive(false);
       return;
@@ -158,6 +170,8 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
       // Drop stale responses: if the selected project changed while awaiting,
       // a late reply from the old project must not overwrite the current runs.
       if (projectRef.current !== pid) return;
+      if (seq < runsShown.current) return;
+      runsShown.current = seq;
       // Ordered once, here, so a pinned run keeps its place in every surface
       // that reads the store: the grid, the focus rail, the sidebar tree.
       setRuns(pinnedFirst(next));
@@ -165,6 +179,13 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
     } catch {
       /* ignore transient errors */
     }
+  }, []);
+
+  const applyPinRanks = useCallback((ranks: [string, number][]) => {
+    if (ranks.length === 0) return;
+    runsShown.current = ++runsSeq.current;
+    const next = new Map(ranks);
+    setRuns((prev) => pinnedFirst(prev.map((r) => (next.has(r.id) ? { ...r, pinRank: next.get(r.id)! } : r))));
   }, []);
 
   const createAgent = useCallback(async (agentId: string, opts?: SpawnOpts) => {
@@ -255,7 +276,7 @@ export function RunStoreProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <Ctx.Provider
-      value={{ runs, projectRunLive, selectedProjectId, setSelectedProject, view, setView, focusedRunId, setFocusedRun, selectedRunId, sourcePanelOpen, setSourcePanelOpen, onScreenRunId, setOnScreenRun, refreshRuns, tab, setTab, createAgent, createTerminal, spawning: spawnCount > 0, spawnProgress, approveRunId, setApproveRun, pendingSessionId, setPendingSession, shownTab, setShownTab, agentViewRunId, requestAgentView }}
+      value={{ runs, projectRunLive, selectedProjectId, setSelectedProject, view, setView, focusedRunId, setFocusedRun, selectedRunId, sourcePanelOpen, setSourcePanelOpen, onScreenRunId, setOnScreenRun, refreshRuns, applyPinRanks, tab, setTab, createAgent, createTerminal, spawning: spawnCount > 0, spawnProgress, approveRunId, setApproveRun, pendingSessionId, setPendingSession, shownTab, setShownTab, agentViewRunId, requestAgentView }}
     >
       {children}
     </Ctx.Provider>

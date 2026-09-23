@@ -4221,10 +4221,10 @@ fn a_quiet_user_driven_run_reads_as_waiting_then_decays_to_idle() {
     state.discard_run(&id).unwrap();
 }
 
-/// Pinning is about placement. Order is the order they were pinned in;
-/// unpinning and pinning again moves a run to the end.
+/// Pinning is about placement. A new pin goes to the end, so pinning alone
+/// keeps the order they were pinned in; a drag is what reorders them.
 #[test]
-fn pins_number_from_one_and_reorder_by_unpin_pin() {
+fn a_new_pin_goes_to_the_end() {
     let dir = tempfile::tempdir().unwrap();
     let repo = dir.path().join("repo");
     std::fs::create_dir_all(&repo).unwrap();
@@ -4243,12 +4243,52 @@ fn pins_number_from_one_and_reorder_by_unpin_pin() {
     assert_eq!(rank(&state, &first), Some(1.0));
     assert_eq!(rank(&state, &second), Some(2.0), "pinned second, ordered second");
 
-    // Unpinning and pinning again is how a run is moved to the end.
     state.pin_run(&first, false).unwrap();
     assert_eq!(rank(&state, &first), None);
     state.pin_run(&first, true).unwrap();
-    assert_eq!(rank(&state, &first), Some(3.0));
+    assert_eq!(rank(&state, &first), Some(3.0), "pinned again, so last again");
 
     state.discard_run(&first).unwrap();
     state.discard_run(&second).unwrap();
+}
+
+/// A drop is planned where the pins are stored, against all of them. An
+/// archived pin keeps its rank for when it is restored, and a run unpinned
+/// while the drag was in flight stays unpinned: a drop never pins anything.
+#[test]
+fn a_dragged_pin_keeps_clear_of_archived_pins_and_never_pins() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let state = common::state(&dir);
+    let project = state.add_project("demo", &repo).unwrap();
+    let a = live_terminal(&state, &project.id);
+    let b = live_terminal(&state, &project.id);
+    let c = live_terminal(&state, &project.id);
+    let d = live_terminal(&state, &project.id);
+    for id in [&a, &b, &c, &d] {
+        state.pin_run(id, true).unwrap();
+    }
+    state.archive_run(&b).unwrap();
+
+    let rank = |state: &AppState, id: &str| {
+        state.list_runs(&project.id).unwrap().into_iter().find(|r| r.id == id).unwrap().pin_rank
+    };
+
+    // The board shows a, c, d. Planned from that alone, d dropped on c took
+    // the midpoint of a and c: 2.0, archived b's rank.
+    let moved = state.move_pinned_run(&d, &c).unwrap();
+    assert_eq!(moved, vec![(d.clone(), 2.5)]);
+    assert_eq!(rank(&state, &d), Some(2.5));
+
+    state.pin_run(&a, false).unwrap();
+    assert!(state.move_pinned_run(&a, &c).is_err(), "a drop never pins a run");
+    assert!(state.move_pinned_run(&c, &a).is_err(), "nor lands on one that is not a pin");
+    assert_eq!(rank(&state, &a), None);
+    assert_eq!(rank(&state, &c), Some(3.0));
+
+    for id in [&a, &c, &d] {
+        state.discard_run(id).unwrap();
+    }
 }

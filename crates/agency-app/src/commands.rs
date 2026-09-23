@@ -3013,6 +3013,18 @@ pub fn pin_run(state: State<'_, AppState>, id: String, pinned: bool) -> Result<(
     state.pin_run(&id, pinned).map_err(|e| e.to_string())
 }
 
+/// Drop pinned run `id` onto pinned run `over` (a drag on the grid or the
+/// rail), returning the `(id, rank)` pairs written. Refused when either run is
+/// not pinned.
+#[tauri::command]
+pub fn move_pinned_run(
+    state: State<'_, AppState>,
+    id: String,
+    over: String,
+) -> Result<Vec<(String, f64)>, String> {
+    state.move_pinned_run(&id, &over).map_err(|e| e.to_string())
+}
+
 /// Rename a run's branch, in git and in the registry, and return the name that
 /// was actually applied (the `agent/` prefix is kept whether or not the caller
 /// typed it). Sync, like the other single-ref git commands: it moves one ref

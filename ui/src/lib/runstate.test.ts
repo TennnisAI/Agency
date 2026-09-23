@@ -6,6 +6,8 @@ import {
   inGitlessFolder,
   isPinned,
   needsAttention,
+  pinDropSide,
+  pinIndex,
   pinnedFirst,
   runStatus,
 } from "./runstate";
@@ -159,5 +161,31 @@ describe("pinnedFirst", () => {
     const list = [run("a", null), run("b", 1)];
     pinnedFirst(list);
     expect(list.map((r) => r.id)).toEqual(["a", "b"]);
+  });
+});
+
+describe("pinIndex", () => {
+  const run = (id: string, pinRank: number | null): RunInfo =>
+    ({ ...waitingRun(), id, pinRank }) as RunInfo;
+
+  it("numbers the pins in board order and skips the rest", () => {
+    const board = pinnedFirst([run("a", null), run("b", 2), run("c", 1), run("d", null)]);
+    expect([...pinIndex(board)]).toEqual([["c", 0], ["b", 1]]);
+  });
+});
+
+describe("pinDropSide", () => {
+  const run = (id: string, pinRank: number | null): RunInfo =>
+    ({ ...waitingRun(), id, pinRank }) as RunInfo;
+  const index = pinIndex([run("a", 1), run("b", 2), run("c", 3), run("d", null)]);
+
+  it("marks the side the dragged pin would land on", () => {
+    expect(pinDropSide(index, "c", "a")).toBe("before");
+    expect(pinDropSide(index, "a", "b")).toBe("after");
+  });
+
+  it("marks nothing over its own place or an unpinned run", () => {
+    expect(pinDropSide(index, "b", "b")).toBeNull();
+    expect(pinDropSide(index, "b", "d")).toBeNull();
   });
 });

@@ -9,10 +9,11 @@ import { usageLabel, usageTitle } from "../lib/usage";
 import { runTabs, showsTabs } from "../lib/runTabs";
 import TabCount from "./TabCount";
 import AgentNote from "./AgentNote";
-import AttentionMarker from "./AttentionMarker";
+import AttentionMarker, { PinGrip } from "./AttentionMarker";
 import QueuedMarker from "./QueuedMarker";
 import OverflowMenu from "./OverflowMenu";
 import { TrashIcon, InboxIcon } from "./icons";
+import { PinDrag } from "../hooks/usePinDrag";
 
 function badgeClass(agent: string): string {
   if (agent === "claude") return "badge claude";
@@ -21,7 +22,9 @@ function badgeClass(agent: string): string {
   return "badge";
 }
 
-export default function AgentTile({ run }: { run: RunInfo }) {
+// `pinDrag` is the tile's part in reordering the pins (AGE-161): absent for an
+// unpinned run, or while there is only one pin to order.
+export default function AgentTile({ run, pinDrag }: { run: RunInfo; pinDrag?: PinDrag }) {
   const { setFocusedRun, setView, refreshRuns } = useRuns();
   const [preview, setPreview] = useState("");
   // Right-click anywhere on the card, and the dialogs its entries raise
@@ -49,10 +52,12 @@ export default function AgentTile({ run }: { run: RunInfo }) {
   const tabs = runTabs(run);
   return (
     <div
-      className={`tile${menuRunId === run.id ? " ctx" : ""}`}
+      className={`tile${menuRunId === run.id ? " ctx" : ""}${pinDrag?.dragging ? " dragging" : ""}${pinDrag?.over ? ` drop-${pinDrag.over}` : ""}`}
       onClick={() => { setFocusedRun(run.id); setView("focus"); }}
       onContextMenu={(e) => openRunMenu(e, run)}
+      data-pin-run={pinDrag ? run.id : undefined}
     >
+      {pinDrag && <PinGrip drag={pinDrag} />}
       <div className="tile-head">
         <span className={`dot ${st.cls}`} />
         <span className="tile-title">{runName(run)}</span>

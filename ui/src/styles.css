@@ -2189,6 +2189,47 @@ input.settings-notif-secs { width: 90px; flex: 0 0 auto; }
   color: var(--sub0); line-height: 0; pointer-events: none;
 }
 
+/* Reordering the pins (AGE-161). The grip sits in the left padding of a pinned
+   tile or rail row, quiet until it is hovered, so it never moves the title. It
+   only appears once there are two pins to order. The drop marks the seam the
+   dragged run will land in: the gap beside a tile (the grid flows in rows), the
+   rule above or below a rail row and its open tabs, which move with it. */
+.tile[data-pin-run],
+.rail-pin-group { position: relative; }
+.pin-grip {
+  position: absolute; display: flex; align-items: center; justify-content: center;
+  width: 12px; color: var(--o1); cursor: grab; line-height: 0;
+  opacity: 0; transition: opacity 90ms ease;
+}
+.pin-grip:hover { color: var(--text); }
+.tile > .pin-grip { top: 12px; left: 1px; height: 20px; }
+.rail-row-wrap > .pin-grip { top: 0; bottom: 0; left: 0; }
+.tile:hover > .pin-grip,
+.rail-row-wrap:hover > .pin-grip,
+.tile.dragging > .pin-grip,
+.rail-pin-group.dragging .pin-grip { opacity: 1; }
+.grid.reordering,
+.grid.reordering *,
+.rail.reordering,
+.rail.reordering * { cursor: grabbing; user-select: none; -webkit-user-select: none; }
+.tile.dragging,
+.rail-pin-group.dragging { opacity: .45; }
+.tile.drop-before::before,
+.tile.drop-after::before {
+  content: ""; position: absolute; top: 0; bottom: 0; width: 3px;
+  border-radius: 2px; background: var(--blue); pointer-events: none;
+}
+/* Centred in the grid's 14px gap. */
+.tile.drop-before::before { left: -9px; }
+.tile.drop-after::before { right: -9px; }
+.rail-pin-group.drop-before::after,
+.rail-pin-group.drop-after::after {
+  content: ""; position: absolute; left: 0; right: 0; height: 2px;
+  background: var(--blue); pointer-events: none; z-index: 1;
+}
+.rail-pin-group.drop-before::after { top: -1px; }
+.rail-pin-group.drop-after::after { bottom: -1px; }
+
 .queued-wrap { display: inline-flex; flex-shrink: 0; }
 .queued-chip {
   display: inline-flex; align-items: center; gap: 4px;

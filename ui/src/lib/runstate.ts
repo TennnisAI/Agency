@@ -41,7 +41,7 @@ export function isPinned(run: RunInfo): boolean {
 }
 
 /**
- * Board order: pinned runs first, in the order they were pinned, then
+ * Board order: pinned runs first, in the order the user put them, then
  * everything else in the order the backend sent (newest run first). A pin
  * holds its place regardless of what the run is doing, which is the whole
  * point of one — so this sorts on the pin alone and lets lifecycle ordering
@@ -59,6 +59,30 @@ function byPin(a: RunInfo, b: RunInfo): number {
 /** `list` in board order, without mutating it. */
 export function pinnedFirst(runs: RunInfo[]): RunInfo[] {
   return [...runs].sort(byPin);
+}
+
+/**
+ * Each pinned run's place among the pins, by id. `runs` must already be in
+ * board order, as the store keeps them (`pinnedFirst` runs on every refresh),
+ * so this is one pass rather than a sort.
+ */
+export function pinIndex(runs: RunInfo[]): Map<string, number> {
+  const index = new Map<string, number>();
+  for (const r of runs) if (isPinned(r)) index.set(r.id, index.size);
+  return index;
+}
+
+/**
+ * Which side of `overId` the dragged run `id` would land on, for the drop
+ * indicator: before it when dragged up the board, after it when dragged down.
+ * The same rule the backend's `pin_order::plan_move` lands it by. Null over
+ * the run's own place, or anything that is not a pin.
+ */
+export function pinDropSide(index: Map<string, number>, id: string, overId: string): "before" | "after" | null {
+  const from = index.get(id);
+  const to = index.get(overId);
+  if (from == null || to == null || from === to) return null;
+  return to < from ? "before" : "after";
 }
 
 /** A running agent actively producing output (no activity sample yet counts:

@@ -4,6 +4,9 @@
 // materializes ranks for everyone (in the current visual order) so a single
 // midpoint can't leapfrog unranked rows; when midpoints collapse, the whole
 // group renormalizes back to whole numbers.
+//
+// Nothing here is specific to issues: pinned runs are ordered the same way
+// (`planPinDrop` in runstate.ts).
 
 export interface Ranked {
   id: string;

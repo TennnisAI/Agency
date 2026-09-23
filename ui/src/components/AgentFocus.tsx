@@ -27,7 +27,8 @@ import TabCount from "./TabCount";
 import AgentAddMenu from "./AgentAddMenu";
 import QueuedMarker from "./QueuedMarker";
 import OverflowMenu from "./OverflowMenu";
-import { PinMark, pinItems } from "./AttentionMarker";
+import { PinGrip, PinMark, pinItems } from "./AttentionMarker";
+import { PinDrag, usePinDrag } from "../hooks/usePinDrag";
 import { TrashIcon, InboxIcon, TerminalIcon, PencilIcon, CheckIcon, BranchIcon } from "./icons";
 import { shortcutLabel } from "../lib/platform";
 
@@ -205,6 +206,7 @@ function RailRow({
   onRemove,
   onContextMenu,
   menuOpen,
+  pinDrag,
 }: {
   run: RunInfo;
   on: boolean;
@@ -219,6 +221,8 @@ function RailRow({
   onContextMenu: (e: React.MouseEvent) => void;
   /** This row's menu is up; its overlay has taken the pointer away. */
   menuOpen: boolean;
+  /** The row's part in reordering the pins (AGE-161); absent when it takes none. */
+  pinDrag?: PinDrag;
 }) {
   const isTerminal = run.kind === "terminal";
   const tabs = runTabs(run);
@@ -226,7 +230,11 @@ function RailRow({
   const open = listed && tabsOpen;
   return (
     <>
-    <div className={`rail-row-wrap${menuOpen ? " ctx" : ""}${open ? " tabs-open" : ""}`} onContextMenu={onContextMenu}>
+    <div
+      className={`rail-row-wrap${menuOpen ? " ctx" : ""}${open ? " tabs-open" : ""}${pinDrag?.dragging ? " dragging" : ""}${pinDrag?.over ? ` drop-${pinDrag.over}` : ""}`}
+      onContextMenu={onContextMenu}
+      data-pin-run={pinDrag ? run.id : undefined}
+    >
       <button
         className={`rail-row ${on ? "on" : ""}`}
         onClick={onSelect}
@@ -242,7 +250,9 @@ function RailRow({
         {listed && <TabCount tabs={tabs} open={open} onToggle={onToggleTabs} />}
       </button>
       {/* Sibling of the row rather than a child of it: a button inside a button
-          is invalid markup, and the row keeps its own click target intact. */}
+          is invalid markup, and the row keeps its own click target intact. The
+          grip sits over the row's left padding the same way. */}
+      {pinDrag && <PinGrip drag={pinDrag} />}
       <OverflowMenu
         buttonClass="hover-close rail-row-close"
         icon={<span aria-hidden>✕</span>}
@@ -491,6 +501,8 @@ export default function AgentFocus({
     } catch { /* ignore quota / security errors */ }
   };
   const rail = usePaneWidth("rail", 312, 220, 520);
+  // Dragging a pinned row by its grip to reorder the pins (AGE-161).
+  const pinDrag = usePinDrag();
   // Companion terminal (bottom panel) — height shared across runs, but the
   // open-state is per-run (per-worktree): keyed by the focused run id so
   // toggling one agent's terminal doesn't flip every other agent's.
@@ -606,7 +618,7 @@ export default function AgentFocus({
     <div className="focus">
       {railOpen ? (
         <>
-          <div className="rail" style={{ width: rail.width, minWidth: rail.width }}>
+          <div className={`rail${pinDrag.active ? " reordering" : ""}`} style={{ width: rail.width, minWidth: rail.width }}>
             <div className="rail-head">
               <AgentAddMenu variant="header" projectId={selectedProjectId ?? undefined} onSpawn={onSpawn ?? createAgent} onTerminal={createTerminal} gitless={gitless} />
               <span className="spacer" />
@@ -633,6 +645,7 @@ export default function AgentFocus({
                 onRemove={(action) => remove(r, action)}
                 onContextMenu={(e) => openRunMenu(e, r)}
                 menuOpen={menuRunId === r.id}
+                pinDrag={pinDrag.pinDrag(r)}
               />
             ))}
             <ArchivedSection />

@@ -3283,10 +3283,9 @@ impl AppState {
 
     // ── pin a run on the board ─────────────────────────────────────────────
 
-    /// Pin a run to the end of its project's pinned runs, or unpin it. The
-    /// order is the order they were pinned in, and it is the user's: unpinning
-    /// and pinning again moves a run to the end. Ranks are fractional so a
-    /// drag-to-reorder can land between two of them later without renumbering.
+    /// Pin a run to the end of its project's pinned runs, or unpin it. Ranks
+    /// are fractional so a drag can land a pin between two others without
+    /// renumbering them: see [`Self::rank_pinned_run`].
     pub fn pin_run(&self, id: &str, pinned: bool) -> Result<()> {
         let reg = self.registry.lock().unwrap();
         if !pinned {
@@ -3294,6 +3293,26 @@ impl AppState {
         }
         let run = reg.get_run(id)?.ok_or_else(|| anyhow!("unknown run: {id}"))?;
         let rank = reg.max_pin_rank(&run.project_id)?.unwrap_or(0.0) + 1.0;
+        reg.set_run_pin_rank(id, Some(rank))
+    }
+
+    /// Move a pinned run to `rank` among its project's pins: the drop of a
+    /// drag on the agent grid or the focus rail, which plans the ranks.
+    ///
+    /// Refused for a run that is not pinned. A drop writes to a list read
+    /// before the drag began, so a pin removed in the meantime (from the
+    /// sidebar tree, say) would otherwise come straight back, and a pin is the
+    /// user's to place, never ours. A non-finite rank is refused too: SQLite
+    /// stores NaN as NULL, which is an unpin by another name.
+    pub fn rank_pinned_run(&self, id: &str, rank: f64) -> Result<()> {
+        if !rank.is_finite() {
+            bail!("pin rank must be a finite number, got {rank}");
+        }
+        let reg = self.registry.lock().unwrap();
+        let run = reg.get_run(id)?.ok_or_else(|| anyhow!("unknown run: {id}"))?;
+        if run.pin_rank.is_none() {
+            bail!("run is not pinned: {id}");
+        }
         reg.set_run_pin_rank(id, Some(rank))
     }
 

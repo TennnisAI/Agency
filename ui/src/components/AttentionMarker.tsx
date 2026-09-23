@@ -2,8 +2,9 @@ import { RunInfo, pinRun } from "../api";
 import { isPinned } from "../lib/runstate";
 import { toastError } from "../lib/toast";
 import { MenuEntry } from "./git/Menu";
-import { PinIcon } from "./icons";
+import { GripIcon, PinIcon } from "./icons";
 import { OverflowItem } from "./OverflowMenu";
+import { PinDrag } from "../hooks/usePinDrag";
 
 // Pinning a run holds its place on the board (AGE-141, later trimmed to pin
 // alone). One write and a refresh: the rank is owned backend-side.
@@ -30,6 +31,26 @@ export function PinMark({ run }: { run: RunInfo }) {
   return (
     <span className="pin-mark" title="Pinned" aria-label="Pinned">
       <PinIcon size={11} filled />
+    </span>
+  );
+}
+
+/**
+ * The handle a pinned run is dragged by to reorder the pins (AGE-161), on its
+ * tile and its rail row. Sits in the host's left gutter, quiet until the host
+ * is hovered, so revealing it never reflows the title. Clicks on it are its
+ * own: the card or row behind it would otherwise open the run.
+ */
+export function PinGrip({ drag }: { drag: PinDrag }) {
+  return (
+    <span
+      className="pin-grip"
+      title="Drag to reorder pinned runs"
+      onMouseDown={drag.onGrab}
+      onClick={(e) => e.stopPropagation()}
+      onDoubleClick={(e) => e.stopPropagation()}
+    >
+      <GripIcon size={11} />
     </span>
   );
 }

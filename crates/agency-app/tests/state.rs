@@ -4221,8 +4221,8 @@ fn a_quiet_user_driven_run_reads_as_waiting_then_decays_to_idle() {
     state.discard_run(&id).unwrap();
 }
 
-/// Pinning is about placement. Order is the order they were pinned in;
-/// unpinning and pinning again moves a run to the end.
+/// Pinning is about placement. A new pin goes to the end, so pinning and
+/// unpinning alone keeps the order they were pinned in.
 #[test]
 fn pins_number_from_one_and_reorder_by_unpin_pin() {
     let dir = tempfile::tempdir().unwrap();
@@ -4248,6 +4248,42 @@ fn pins_number_from_one_and_reorder_by_unpin_pin() {
     assert_eq!(rank(&state, &first), None);
     state.pin_run(&first, true).unwrap();
     assert_eq!(rank(&state, &first), Some(3.0));
+
+    state.discard_run(&first).unwrap();
+    state.discard_run(&second).unwrap();
+}
+
+/// A drag lands a pin at whatever rank the UI planned, between two others if
+/// that is where it was dropped. It only ever moves a pin: a run unpinned while
+/// the drag was in flight stays unpinned.
+#[test]
+fn a_dragged_pin_takes_its_planned_rank_and_never_pins() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let state = common::state(&dir);
+    let project = state.add_project("demo", &repo).unwrap();
+    let first = live_terminal(&state, &project.id);
+    let second = live_terminal(&state, &project.id);
+
+    let rank = |state: &AppState, id: &str| {
+        state.list_runs(&project.id).unwrap().into_iter().find(|r| r.id == id).unwrap().pin_rank
+    };
+
+    state.pin_run(&first, true).unwrap();
+    state.pin_run(&second, true).unwrap();
+    state.rank_pinned_run(&second, 0.5).unwrap();
+    assert_eq!(rank(&state, &second), Some(0.5), "dragged ahead of the first pin");
+
+    // Not a rank: SQLite would store NaN as NULL, an unpin by another name.
+    assert!(state.rank_pinned_run(&second, f64::NAN).is_err());
+    assert!(state.rank_pinned_run(&second, f64::INFINITY).is_err());
+    assert_eq!(rank(&state, &second), Some(0.5));
+
+    state.pin_run(&first, false).unwrap();
+    assert!(state.rank_pinned_run(&first, 3.0).is_err(), "a drop never pins a run");
+    assert_eq!(rank(&state, &first), None);
 
     state.discard_run(&first).unwrap();
     state.discard_run(&second).unwrap();

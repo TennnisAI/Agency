@@ -683,8 +683,9 @@ function Shell() {
         projectId={selectedProjectId}
         onOpenSource={() => setTab("source")}
         // Push and Pull for the checkout act on its branch, so this has to
-        // leave the agent first: the grid is what points source control there. The
-        // run stays focused, so the Focus button goes straight back to it.
+        // leave the agent first: the grid is what points source control
+        // there. The run stays focused, so the Focus button goes straight back
+        // to it.
         onOpenCheckout={() => { setView("grid"); setTab("source"); }}
       />
       <Toasts />

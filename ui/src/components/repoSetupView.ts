@@ -59,12 +59,25 @@ export function repoSetupView(readiness: RepoReadiness, context: "add" | "spawn"
     };
   }
   if (readiness.state === "ready" && readiness.dirty) {
+    const secondaryLabel = context === "spawn" ? "Spawn anyway" : context === "add" ? "Add anyway" : null;
+    // Mid-merge, "Commit now" staged every conflicted file as resolved and
+    // committed the conflict markers. The backend refuses that commit; this
+    // stops offering it, and says why up front instead of after the click.
+    if (readiness.blocked) {
+      return {
+        kind: "dirty",
+        title: "Uncommitted changes",
+        body: `Agents work from your last commit, so they won't see your current uncommitted changes, and these can't be committed from here yet. ${readiness.blocked}`,
+        primaryLabel: "",
+        secondaryLabel,
+      };
+    }
     return {
       kind: "dirty",
       title: "Uncommitted changes",
       body: "Agents work from your last commit, so they won't see your current uncommitted changes until you commit them. Commit now?",
       primaryLabel: "Commit now",
-      secondaryLabel: context === "spawn" ? "Spawn anyway" : context === "add" ? "Add anyway" : null,
+      secondaryLabel,
     };
   }
   return { kind: "ready", title: "", body: "", primaryLabel: "", secondaryLabel: null };

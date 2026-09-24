@@ -3,7 +3,7 @@ import { RepoReadiness } from "../api";
 import { gitlessAnswer, isGitless, pathsToProbe } from "./useRepoReadiness";
 
 const readiness = (state: RepoReadiness["state"]): RepoReadiness =>
-  ({ state, stageable: false, dirty: false });
+  ({ state, stageable: false, dirty: false, blocked: null });
 
 describe("isGitless", () => {
   it("is true only for a folder with no repository", () => {

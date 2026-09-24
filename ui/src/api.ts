@@ -504,6 +504,9 @@ export type RepoReadiness = {
   state: "missing" | "notARepo" | "noCommits" | "ready";
   stageable: boolean;
   dirty: boolean;
+  // Why a dirty checkout can't be committed from the setup dialog (a merge
+  // stopped on conflicts, say), already worded for the user. Null otherwise.
+  blocked: string | null;
 };
 
 export const inspectRepo = (repoPath: string) =>
@@ -528,8 +531,10 @@ export function cloneRepo(
   if (onProgress) onProgressChannel.onmessage = onProgress;
   return invoke<string>("clone_repo", { url, parentDir, onProgress: onProgressChannel });
 }
-// Stages everything in `repoPath` and makes the initial commit. `onProgress`, if
-// given, is called as files are staged — a folder with a big tree takes a while.
+// Stages everything in `repoPath` and commits it: the initial commit on a repo
+// with none, otherwise the stray changes in the checkout, under a message naming
+// them. `onProgress`, if given, is called as files are staged — a folder with a
+// big tree takes a while.
 // `ignorePaths` are added to .gitignore instead of being committed (the large
 // files the user opted out of); folders end with a "/".
 export function commitRepo(

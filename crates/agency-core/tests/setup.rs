@@ -1,8 +1,8 @@
 use agency_core::setup::{
-    clone_destination, clone_repo, clone_repo_with_progress, folder_missing, init_repo,
-    initial_commit, initial_commit_with_progress, inside_work_tree, repo_name_from_url,
-    repo_readiness, scan_large_files, write_default_gitignore, CancelToken, CommitOptions,
-    RepoReadiness, CANCELLED, LARGE_FILE_BYTES,
+    checkout_commit_blocker, clone_destination, clone_repo, clone_repo_with_progress,
+    folder_missing, init_repo, initial_commit, initial_commit_with_progress, inside_work_tree,
+    repo_name_from_url, repo_readiness, scan_large_files, write_default_gitignore, CancelToken,
+    CommitOptions, RepoReadiness, CANCELLED, LARGE_FILE_BYTES,
 };
 use std::path::Path;
 use std::process::Command;
@@ -468,4 +468,137 @@ fn clone_repo_refuses_existing_destination() {
     std::fs::create_dir(parent.path().join(name)).unwrap();
     let url = format!("file://{}", src.path().display());
     assert!(clone_repo(&url, parent.path()).is_err());
+}
+
+fn head_subject(dir: &Path) -> String {
+    let out =
+        Command::new("git").args(["log", "-1", "--format=%s"]).current_dir(dir).output().unwrap();
+    String::from_utf8(out.stdout).unwrap().trim().to_string()
+}
+
+fn commit_count(dir: &Path) -> String {
+    let out = Command::new("git")
+        .args(["rev-list", "--count", "HEAD"])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    String::from_utf8(out.stdout).unwrap().trim().to_string()
+}
+
+// AGE-248: "Commit now" on stray changes before a spawn went through this same
+// path and landed them as "Initial commit" on a repo that already had history.
+#[test]
+fn committing_stray_changes_names_them_rather_than_initial_commit() {
+    let dir = tempfile::tempdir().unwrap();
+    init_bare_repo(dir.path());
+    std::fs::write(dir.path().join("a.txt"), "hi\n").unwrap();
+    initial_commit(dir.path(), false).unwrap();
+    assert_eq!(head_subject(dir.path()), "Initial commit");
+
+    std::fs::write(dir.path().join("a.txt"), "changed\n").unwrap();
+    std::fs::write(dir.path().join("b.txt"), "new\n").unwrap();
+    assert_eq!(repo_readiness(dir.path()), RepoReadiness::Ready { dirty: true });
+    initial_commit_with_progress(dir.path(), &CommitOptions::default(), |_| {}).unwrap();
+
+    assert_eq!(head_subject(dir.path()), "Update a.txt and b.txt");
+    assert_eq!(repo_readiness(dir.path()), RepoReadiness::Ready { dirty: false });
+}
+
+#[test]
+fn nothing_to_commit_on_an_established_repo_makes_no_empty_commit() {
+    let dir = tempfile::tempdir().unwrap();
+    init_bare_repo(dir.path());
+    std::fs::write(dir.path().join("a.txt"), "hi\n").unwrap();
+    initial_commit(dir.path(), false).unwrap();
+
+    initial_commit_with_progress(dir.path(), &CommitOptions::default(), |_| {}).unwrap();
+    assert_eq!(commit_count(dir.path()), "1");
+}
+
+fn head_sha(dir: &Path) -> String {
+    let out = Command::new("git").args(["rev-parse", "HEAD"]).current_dir(dir).output().unwrap();
+    String::from_utf8(out.stdout).unwrap().trim().to_string()
+}
+
+/// A repo stopped mid-merge with a.txt conflicted, plus a stray untracked file.
+fn conflicted_merge(dir: &Path) {
+    init_bare_repo(dir);
+    std::fs::write(dir.join("a.txt"), "base\n").unwrap();
+    git(dir, &["add", "a.txt"]);
+    git(dir, &["commit", "-q", "-m", "base"]);
+    git(dir, &["checkout", "-q", "-b", "theirs"]);
+    std::fs::write(dir.join("a.txt"), "theirs\n").unwrap();
+    git(dir, &["commit", "-q", "-am", "theirs"]);
+    git(dir, &["checkout", "-q", "-"]);
+    std::fs::write(dir.join("a.txt"), "ours\n").unwrap();
+    git(dir, &["commit", "-q", "-am", "ours"]);
+    let merge = Command::new("git").args(["merge", "-q", "theirs"]).current_dir(dir).output();
+    assert!(!merge.unwrap().status.success(), "the merge conflicts");
+    std::fs::write(dir.join("stray.txt"), "stray\n").unwrap();
+}
+
+// Seen in practice: "Commit now" on a checkout stopped mid-merge ran
+// `git add -A` and committed the conflict markers.
+#[test]
+fn committing_mid_merge_is_refused_and_changes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    conflicted_merge(dir.path());
+    let before = head_sha(dir.path());
+
+    let opts = CommitOptions { ignore_paths: vec!["big.bin".into()], ..Default::default() };
+    let err = initial_commit_with_progress(dir.path(), &opts, |_| {}).unwrap_err().to_string();
+    assert!(err.contains("A merge is in progress") && err.contains("a.txt"), "got: {err}");
+
+    assert_eq!(head_sha(dir.path()), before, "no commit");
+    let merging = Command::new("git")
+        .args(["rev-parse", "--verify", "-q", "MERGE_HEAD"])
+        .current_dir(dir.path())
+        .status()
+        .unwrap();
+    assert!(merging.success(), "the merge is still the user's to finish");
+    let unmerged = Command::new("git")
+        .args(["diff", "--name-only", "--diff-filter=U"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8(unmerged.stdout).unwrap().trim(), "a.txt", "still conflicted");
+    assert!(!dir.path().join(".gitignore").exists(), "no .gitignore written");
+}
+
+#[test]
+fn committing_over_a_conflicted_stash_pop_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    init_bare_repo(dir.path());
+    std::fs::write(dir.path().join("a.txt"), "base\n").unwrap();
+    initial_commit(dir.path(), false).unwrap();
+    std::fs::write(dir.path().join("a.txt"), "stashed\n").unwrap();
+    git(dir.path(), &["stash", "push", "-q"]);
+    std::fs::write(dir.path().join("a.txt"), "committed\n").unwrap();
+    git(dir.path(), &["commit", "-q", "-am", "committed"]);
+    let pop = Command::new("git").args(["stash", "pop", "-q"]).current_dir(dir.path()).output();
+    assert!(!pop.unwrap().status.success(), "the pop conflicts");
+    let before = head_sha(dir.path());
+
+    let err = initial_commit_with_progress(dir.path(), &CommitOptions::default(), |_| {})
+        .unwrap_err()
+        .to_string();
+    assert!(err.starts_with("a.txt still has conflicts"), "got: {err}");
+    assert_eq!(head_sha(dir.path()), before, "no commit");
+}
+
+// The setup dialog asks this first, so a dirty checkout mid-merge is never
+// offered "Commit now"; an ordinary dirty one still is.
+#[test]
+fn commit_blocker_is_asked_only_of_a_checkout_that_needs_it() {
+    let merging = tempfile::tempdir().unwrap();
+    conflicted_merge(merging.path());
+    let why = checkout_commit_blocker(merging.path()).unwrap().expect("blocked mid-merge");
+    assert!(why.contains("a.txt"), "names the conflicted file: {why}");
+
+    let dirty = tempfile::tempdir().unwrap();
+    init_bare_repo(dirty.path());
+    std::fs::write(dirty.path().join("a.txt"), "hi\n").unwrap();
+    initial_commit(dirty.path(), false).unwrap();
+    std::fs::write(dirty.path().join("a.txt"), "changed\n").unwrap();
+    assert_eq!(checkout_commit_blocker(dirty.path()).unwrap(), None);
 }

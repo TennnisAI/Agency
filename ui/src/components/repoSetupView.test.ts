@@ -14,7 +14,7 @@ describe("repoSetupView", () => {
   // must say what is wrong and offer nothing but Cancel.
   it("missing → says the folder is gone and offers no action", () => {
     for (const ctx of ["add", "spawn"] as const) {
-      const v = repoSetupView({ state: "missing", stageable: false, dirty: false }, ctx);
+      const v = repoSetupView({ state: "missing", stageable: false, dirty: false, blocked: null }, ctx);
       expect(v.kind).toBe("missing");
       expect(v.title).toMatch(/missing/i);
       expect(v.primaryLabel).toBe("");
@@ -22,42 +22,52 @@ describe("repoSetupView", () => {
     }
   });
   it("notARepo in add context → init prompt with a way past it", () => {
-    const v = repoSetupView({ state: "notARepo", stageable: false, dirty: false }, "add");
+    const v = repoSetupView({ state: "notARepo", stageable: false, dirty: false, blocked: null }, "add");
     expect(v.kind).toBe("init");
     expect(v.title).toMatch(/Set up/i);
     expect(v.secondaryLabel).toBe("Add without git");
   });
   it("notARepo in spawn context → no secondary (spawn never opens this)", () => {
-    const v = repoSetupView({ state: "notARepo", stageable: false, dirty: false }, "spawn");
+    const v = repoSetupView({ state: "notARepo", stageable: false, dirty: false, blocked: null }, "spawn");
     expect(v.kind).toBe("init");
     expect(v.secondaryLabel).toBeNull();
   });
   it("noCommits → initial commit prompt", () => {
-    const v = repoSetupView({ state: "noCommits", stageable: true, dirty: false }, "add");
+    const v = repoSetupView({ state: "noCommits", stageable: true, dirty: false, blocked: null }, "add");
     expect(v.kind).toBe("commit");
     expect(v.primaryLabel).toMatch(/initial commit/i);
   });
   // Reachable by initializing from the notARepo step and then backing out of
   // the commit: without a secondary here that folder could never be added.
   it("noCommits in add context → 'Add anyway' secondary", () => {
-    const v = repoSetupView({ state: "noCommits", stageable: true, dirty: false }, "add");
+    const v = repoSetupView({ state: "noCommits", stageable: true, dirty: false, blocked: null }, "add");
     expect(v.secondaryLabel).toBe("Add anyway");
   });
   it("noCommits in spawn context → no secondary (a worktree needs a commit)", () => {
-    const v = repoSetupView({ state: "noCommits", stageable: true, dirty: false }, "spawn");
+    const v = repoSetupView({ state: "noCommits", stageable: true, dirty: false, blocked: null }, "spawn");
     expect(v.secondaryLabel).toBeNull();
   });
   it("ready+dirty in add context → 'Add anyway' secondary", () => {
-    const v = repoSetupView({ state: "ready", stageable: false, dirty: true }, "add");
+    const v = repoSetupView({ state: "ready", stageable: false, dirty: true, blocked: null }, "add");
     expect(v.kind).toBe("dirty");
     expect(v.secondaryLabel).toBe("Add anyway");
   });
   it("ready+dirty in spawn context → 'Spawn anyway' secondary", () => {
-    const v = repoSetupView({ state: "ready", stageable: false, dirty: true }, "spawn");
+    const v = repoSetupView({ state: "ready", stageable: false, dirty: true, blocked: null }, "spawn");
     expect(v.secondaryLabel).toBe("Spawn anyway");
   });
+  it("ready+dirty mid-merge → says why and offers no commit, only the way past", () => {
+    const blocked = "A merge is in progress here. Finish or abort it first, then commit.";
+    for (const [ctx, secondary] of [["spawn", "Spawn anyway"], ["add", "Add anyway"]] as const) {
+      const v = repoSetupView({ state: "ready", stageable: false, dirty: true, blocked }, ctx);
+      expect(v.kind).toBe("dirty");
+      expect(v.body).toContain(blocked);
+      expect(v.primaryLabel).toBe("");
+      expect(v.secondaryLabel).toBe(secondary);
+    }
+  });
   it("ready+clean → kind ready (no-op)", () => {
-    const v = repoSetupView({ state: "ready", stageable: false, dirty: false }, "add");
+    const v = repoSetupView({ state: "ready", stageable: false, dirty: false, blocked: null }, "add");
     expect(v.kind).toBe("ready");
   });
 });
@@ -137,12 +147,12 @@ describe("ignoreRulesCaveat", () => {
 
 describe("repoSetupView for an existing project", () => {
   it("offers no way through without git, since the project already exists", () => {
-    const notARepo = { state: "notARepo" as const, stageable: false, dirty: false };
+    const notARepo = { state: "notARepo" as const, stageable: false, dirty: false, blocked: null };
     expect(repoSetupView(notARepo, "init").secondaryLabel).toBeNull();
     expect(repoSetupView(notARepo, "init").primaryLabel).toBe("Initialize repository");
-    const noCommits = { state: "noCommits" as const, stageable: true, dirty: false };
+    const noCommits = { state: "noCommits" as const, stageable: true, dirty: false, blocked: null };
     expect(repoSetupView(noCommits, "init").secondaryLabel).toBeNull();
-    const dirty = { state: "ready" as const, stageable: true, dirty: true };
+    const dirty = { state: "ready" as const, stageable: true, dirty: true, blocked: null };
     expect(repoSetupView(dirty, "init").secondaryLabel).toBeNull();
   });
 });

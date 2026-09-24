@@ -110,10 +110,15 @@ export function removalCopy(
   // worktree the promise to commit it first is noise that makes the list
   // longer and the decision harder.
   const dirty = cleanup?.facts.dirty ?? false;
+  // Archiving commits uncommitted work only to a branch Agency cut. On any
+  // other branch (a PR head) it is set aside, on no branch, until a restore.
+  const ownBranch = cleanup?.facts.cutBranch ?? false;
   const goes: string[] = [
     action === "archive"
       ? dirty
-        ? `Its worktree. What is uncommitted there is committed to ${branch} first.`
+        ? ownBranch
+          ? `Its worktree. What is uncommitted there is committed to ${branch} first.`
+          : "Its worktree. What is uncommitted there is set aside, on no branch, until you restore it."
         : "Its worktree."
       : dirty
         ? "Its worktree, and the uncommitted changes in it."
@@ -126,7 +131,9 @@ export function removalCopy(
   } else if (plan?.keepsBranch) {
     stays.push(`The ${branch} branch${heldClause(cleanup?.facts.commitsAhead ?? 0)}.`);
   } else if (plan?.leavesBranch) {
-    stays.push(`The ${branch} branch, which was there before this agent started.`);
+    // Not "there before this agent started": a branch switched onto in the
+    // run's terminal may have been made there, and Agency still did not cut it.
+    stays.push(`The ${branch} branch, which Agency did not create.`);
   }
   // With no plan read, nothing is said about the branch at all. The dialog
   // shows that it is still checking; a guess that reads as a promise is worse
@@ -211,6 +218,10 @@ export function mergeTidyCopy(cleanup: RunCleanup | null): MergeTidyCopy {
   // worktree always goes and the transcript is always kept, so those two are
   // safe to say about any run, and the branch is not.
   const takesBranch = !!branch && !!cleanup?.archive.deletesBranch;
+  // Delete takes everything else, but not a branch Agency did not cut, and
+  // "all of it" beside "the branch stays either way" read as a contradiction.
+  const sparesBranch = !!branch && !!cleanup?.delete.leavesBranch;
+  const allOf = sparesBranch ? `all of it but the ${branch} branch` : "all of it";
   // Default-deny: with no plan read we do not yet know whether this agent's
   // conversation is one Agency moves, so neither line claims anything about it.
   const transcript = !!cleanup?.managesTranscript;
@@ -224,7 +235,7 @@ export function mergeTidyCopy(cleanup: RunCleanup | null): MergeTidyCopy {
     },
     {
       verb: "Delete",
-      text: transcript ? "removes all of it, the transcript included" : "removes all of it",
+      text: transcript ? `removes ${allOf}, the transcript included` : `removes ${allOf}`,
     },
     { verb: "Keep", text: "leaves the agent as it is" },
   ];
@@ -239,7 +250,7 @@ export function mergeTidyCopy(cleanup: RunCleanup | null): MergeTidyCopy {
   if (branch && archive.keepsBranch && remove.deletesBranch) {
     parts.push(`Only deleting takes the ${branch} branch with it.`);
   } else if (branch && archive.leavesBranch) {
-    parts.push(`The ${branch} branch stays either way, since this agent did not create it.`);
+    parts.push(`The ${branch} branch stays either way, since Agency did not create it.`);
   } else if (takesBranch) {
     const why = safeReason(archive, base);
     if (why) parts.push(`The ${branch} branch goes either way, since it ${why}.`);

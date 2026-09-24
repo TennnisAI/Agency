@@ -113,6 +113,7 @@ fn runs_persist_list_and_delete() {
         base_commit: None,
         primary_closed_at: None,
         branch_cut: None,
+        own_branch: None,
         pin_rank: None,
     };
     {
@@ -155,6 +156,7 @@ fn list_runs_newest_first() {
             base_commit: None,
             primary_closed_at: None,
             branch_cut: None,
+            own_branch: None,
             pin_rank: None,
         })
         .unwrap();

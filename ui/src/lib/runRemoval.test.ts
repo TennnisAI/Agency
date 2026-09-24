@@ -110,12 +110,17 @@ describe("removalCopy", () => {
     for (const action of ["archive", "delete"] as const) {
       const c = removalCopy({ ...agent, branch: "feature/login" }, action, prHead);
       expect(c.goes.join(" ")).not.toContain("feature/login");
-      expect(c.stays.join(" ")).toContain(
-        "The feature/login branch, which was there before this agent started.",
-      );
+      expect(c.stays.join(" ")).toContain("The feature/login branch, which Agency did not create.");
       expect(c.stays.join(" ")).not.toContain("only copy");
       expect(c.danger).toBe(false);
     }
+  });
+
+  it("sets uncommitted work aside rather than committing it to a branch it did not create", () => {
+    const dirty = { ...prHead, facts: { ...prHead.facts, cutBranch: false, dirty: true } };
+    const c = removalCopy({ ...agent, branch: "feature/login" }, "archive", dirty);
+    expect(c.goes.join(" ")).toContain("set aside, on no branch, until you restore it");
+    expect(c.goes.join(" ")).not.toContain("committed to feature/login");
   });
 
   it("claims nothing about the branch before the plan has been read", () => {
@@ -232,8 +237,10 @@ describe("mergeTidyCopy", () => {
     const c = mergeTidyCopy(prHead);
     expect(lines(c)[0]).not.toContain("feature/login");
     expect(c.detail).toContain(
-      "The feature/login branch stays either way, since this agent did not create it.",
+      "The feature/login branch stays either way, since Agency did not create it.",
     );
+    // Delete's own line agrees: it does not claim to take "all of it".
+    expect(lines(c)[1]).toBe("Delete removes all of it but the feature/login branch, the transcript included.");
   });
 
   it("does not claim a transcript it cannot see, for the agents it cannot read", () => {

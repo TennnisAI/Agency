@@ -1,5 +1,6 @@
 use crate::notifier;
 use crate::pin_order;
+use agency_core::branchname::id_suffix;
 use agency_core::buildlog::Stream;
 use agency_core::cleanup::{BranchFacts, Disposal};
 use agency_core::profile::AgentProfile;
@@ -2082,6 +2083,70 @@ fn workspace_dir(repo: &Path, run: &agency_core::registry::Run) -> std::path::Pa
 /// `run.base` second, for a run that never named one. `None` when neither is in
 /// the repo any more — the only archive left that cannot be restored, and the
 /// only one whose Restore button is disabled.
+/// The branch Agency cut for `run` under its current name, with git's reflog
+/// asked about a row too old to say (`Run::own_branch`).
+fn own_branch<'a>(repo: &Path, run: &'a agency_core::registry::Run) -> Option<&'a str> {
+    run.own_branch(|from| agency_core::merge::renamed_from(repo, &run.branch, from))
+}
+
+/// Whether `run`'s worktree is on the branch Agency cut for it.
+fn on_own_branch(repo: &Path, run: &agency_core::registry::Run) -> bool {
+    own_branch(repo, run) == Some(run.branch.as_str())
+}
+
+/// Remove `run`'s worktree and the branches that go with it: the branch it is
+/// on when that is the run's own and `deletes_branch` says so, and anything
+/// set aside for it when the run is going for good. Every teardown goes
+/// through here, so none of them can disagree about which branch is whose.
+///
+/// AGE-246: each caller used to pick the branch itself, and the project sweep
+/// read the recorded name straight off the row, so a branch renamed in the
+/// run's terminal outlived a project delete after discard had learned to
+/// follow it. Callers pass the row from `branch_run_record`.
+///
+/// A branch of the run's own that the worktree was switched off goes too, but
+/// only when nothing on it is unique: it is in the branch the worktree is on,
+/// in the base, or on a remote. No dialog weighed it, so it is never the last
+/// copy of anything that is deleted.
+fn remove_run_worktree(
+    repo: &Path,
+    run: &agency_core::registry::Run,
+    disposal: Disposal,
+    deletes_branch: bool,
+) -> Result<()> {
+    let manager = WorktreeManager::new(repo.to_path_buf());
+    let own = own_branch(repo, run);
+    if deletes_branch {
+        manager.remove(&run.id, own.filter(|o| *o == run.branch))?;
+    } else {
+        manager.remove_keep_branch(&run.id)?;
+    }
+    if disposal == Disposal::Delete {
+        manager.drop_set_aside(&run.id);
+    }
+    let Some(left) = own.filter(|o| *o != run.branch) else { return Ok(()) };
+    if !agency_core::merge::branch_exists(repo, left) {
+        return Ok(());
+    }
+    let base = agency_core::merge::resolve_target(run.merge_target.as_deref(), repo)
+        .unwrap_or_else(|_| run.base.clone());
+    let redundant = agency_core::merge::is_merged(repo, left, &run.branch)
+        || agency_core::merge::is_merged(repo, left, &base)
+        || agency_core::merge::is_pushed(repo, left);
+    if !redundant {
+        log::info!(
+            "run {}: leaving {left}, the branch cut for it, which holds work that is \
+             nowhere else",
+            run.id
+        );
+        return Ok(());
+    }
+    if let Err(e) = agency_core::git::delete_branch(repo, left, true) {
+        log::warn!("run {}: couldn't delete {left}, the branch cut for it: {e:#}", run.id);
+    }
+    Ok(())
+}
+
 fn restore_start_point(repo: &Path, run: &agency_core::registry::Run) -> Option<String> {
     agency_core::merge::resolve_target(run.merge_target.as_deref(), repo)
         .ok()
@@ -2342,18 +2407,6 @@ fn short_suffix() -> String {
         v /= 36;
     }
     String::from_utf8_lossy(&s).into_owned()
-}
-
-/// The four-character disambiguator `new_task_id` appends. Used when a
-/// first-prompt rename rebuilds the branch leaf so the worktree dir and
-/// daemon session (which stay on the original id) keep matching the suffix.
-fn id_suffix(run_id: &str) -> Option<&str> {
-    let (_, suf) = run_id.rsplit_once('-')?;
-    if suf.len() == 4 && suf.chars().all(|c| c.is_ascii_alphanumeric()) {
-        Some(suf)
-    } else {
-        None
-    }
 }
 
 /// Whether `branch` is still the *empty-prompt* auto-cut name for `run_id`,
@@ -3734,14 +3787,19 @@ impl AppState {
             step(on_progress, "Stopping the agents", &detail);
             self.kill_run_terminals(&run.id);
             step(on_progress, "Removing the worktrees", &detail);
-            {
+            // Following the worktree, as discard does: the row can still name
+            // a branch that was renamed in the run's terminal since.
+            let run = self.branch_run_record(&run.id).unwrap_or_else(|_| run.clone());
+            // A run in the main checkout has no worktree of its own, and
+            // nothing it is on is Agency's to delete.
+            if run.kind == "agent" && run.worktree {
                 // Same mutual exclusion `create_run` takes: this command is
                 // async now (off the main thread), so nothing else serializes
                 // it against a concurrent worktree add on the same repo. Held
                 // per run, not across the sweep, so one long project deletion
                 // doesn't block every spawn for its whole duration.
                 let _gate = self.worktree_gate.lock().unwrap();
-                let _ = WorktreeManager::new(repo.clone()).remove(&run.id, run.cut_branch());
+                let _ = remove_run_worktree(&repo, &run, Disposal::Delete, true);
             }
             {
                 let reg = self.registry.lock().unwrap();
@@ -4290,6 +4348,7 @@ impl AppState {
             // Only the branch cut here is Agency's to delete at teardown; a
             // PR head checked out as it stands belongs to whoever pushed it.
             branch_cut: Some(spec.worktree && spec.existing_branch.is_none()),
+            own_branch: None,
         };
         {
             let reg = self.registry.lock().unwrap();
@@ -6469,6 +6528,7 @@ impl AppState {
             base_commit: None,
             primary_closed_at: None,
             branch_cut: None,
+            own_branch: None,
             pin_rank: None,
         };
         self.registry.lock().unwrap().insert_run(&run)?;
@@ -6689,6 +6749,7 @@ impl AppState {
             base_commit: None,
             primary_closed_at: None,
             branch_cut: None,
+            own_branch: None,
             pin_rank: None,
         };
         self.registry.lock().unwrap().insert_run(&run)?;
@@ -7307,7 +7368,8 @@ impl AppState {
         let Ok(repo) = self.project_repo(&run.project_id) else {
             return BranchFacts {
                 owns_branch: true,
-                cut_branch: run.cut_branch().is_some(),
+                // No repo to ask for a rename: the row's own answer only.
+                cut_branch: run.on_own_branch(|_| false),
                 gone: true,
                 ..BranchFacts::default()
             };
@@ -7318,7 +7380,7 @@ impl AppState {
         if !agency_core::merge::branch_exists(&repo, &run.branch) {
             return BranchFacts {
                 owns_branch: true,
-                cut_branch: run.cut_branch().is_some(),
+                cut_branch: on_own_branch(&repo, run),
                 gone: true,
                 base_exists,
                 ..BranchFacts::default()
@@ -7328,7 +7390,7 @@ impl AppState {
         let worktree = workspace_dir(&repo, run);
         BranchFacts {
             owns_branch: true,
-            cut_branch: run.cut_branch().is_some(),
+            cut_branch: on_own_branch(&repo, run),
             commits_ahead: ahead.unwrap_or(0),
             commits_known: ahead.is_some(),
             merged: agency_core::merge::is_merged(&repo, &run.branch, &base),
@@ -7680,7 +7742,10 @@ impl AppState {
         // branch that had already landed.
         let outcome = if !run.worktree {
             Outcome::NoWorkspace { branch: run.branch.clone() }
-        } else if plan.leaves_branch {
+        } else if !facts.cut_branch {
+            // Whether or not the branch is still there: one Agency did not cut
+            // was never going to be removed, and a gone one read as `Dropped`,
+            // "both removed", about a branch no teardown touched.
             Outcome::LeftInPlace
         } else if plan.keeps_branch {
             Outcome::Kept { commits: facts.commits_ahead }
@@ -7922,7 +7987,7 @@ impl AppState {
                 // async now (off the main thread), so nothing else serializes
                 // it against a concurrent worktree add on the same repo.
                 let _gate = self.worktree_gate.lock().unwrap();
-                let _ = WorktreeManager::new(repo).remove(id, run.cut_branch());
+                let _ = remove_run_worktree(&repo, &run, Disposal::Delete, true);
             }
         }
         step(on_progress, "Cleaning up", &run.branch);
@@ -8053,16 +8118,23 @@ impl AppState {
         // A worktree-less run's changes live in the user's own checkout on their
         // own branch. Nothing is about to be removed, so there is nothing to
         // preserve — and auto-committing there would sweep up their work.
+        // A branch Agency did not cut gets no commit of ours: the changes are
+        // set aside off it instead, and restore puts them back. Observed on a
+        // PR-review run, whose WIP commit landed on the contributor's PR head.
         if run.kind == "agent" && run.worktree {
             step(on_progress, "Saving uncommitted changes", &run.branch);
-            WorktreeManager::new(repo.clone())
-                .commit_all_if_dirty(
+            let manager = WorktreeManager::new(repo.clone());
+            let saved = if on_own_branch(&repo, &run) {
+                manager.commit_all_if_dirty(
                     id,
                     "WIP: uncommitted changes auto-committed by Agency on archive",
                 )
-                .map_err(|e| {
-                    anyhow!("couldn't preserve uncommitted changes before archiving: {e}")
-                })?;
+            } else {
+                manager.set_aside_uncommitted(id)
+            };
+            saved.map_err(|e| {
+                anyhow!("couldn't preserve uncommitted changes before archiving: {e}")
+            })?;
         }
 
         step(on_progress, "Stopping the agent", &run.branch);
@@ -8137,12 +8209,7 @@ impl AppState {
             // See discard_run_with_progress: async command, so the gate stands
             // in for the main-thread serialization this used to get for free.
             let _gate = self.worktree_gate.lock().unwrap();
-            let manager = WorktreeManager::new(repo.clone());
-            if plan.deletes_branch {
-                manager.remove(id, run.cut_branch())?;
-            } else {
-                manager.remove_keep_branch(id)?;
-            }
+            remove_run_worktree(&repo, &run, Disposal::Archive, plan.deletes_branch)?;
         }
         step(on_progress, "Cleaning up", &run.branch);
         self.registry.lock().unwrap().set_archived(id, Some(archived_at))?;
@@ -8198,6 +8265,17 @@ impl AppState {
             if agency_core::merge::branch_exists(&repo, &run.branch) {
                 manager.restore(id, &run.branch)?;
             } else {
+                // Only the run's own branch is Agency's to cut again. A PR
+                // head cut from the base came back with the PR's name and none
+                // of its commits, and a later delete would then have taken it.
+                if !on_own_branch(&repo, &run) {
+                    bail!(
+                        "'{}' is gone, and Agency did not create it, so it cannot cut it again; \
+                         bring the branch back (fetch it, say) and restore then. Its record is \
+                         still in the archive.",
+                        run.branch
+                    );
+                }
                 let Some(start) = restore_start_point(&repo, &run) else {
                     bail!(
                         "'{}' is gone, and so is the branch it was based on, so there is nothing \
@@ -8205,13 +8283,18 @@ impl AppState {
                         run.branch
                     );
                 };
+                // Nothing to record: only the run's own branch gets here, and
+                // the row already says it is. Written after `recreate_on`, a
+                // failed write left a worktree no retry could add again.
                 manager.recreate_on(id, &run.branch, &start)?;
-                // Whatever the branch was before, this one Agency just cut, so
-                // it is the run's to delete when the run is torn down again.
-                self.registry.lock().unwrap().set_run_branch(id, &run.branch, true)?;
             }
             if let Err(e) = manager.copy_essentials(id, &config.files.copy) {
                 log::warn!("copying essentials into restored worktree {id}: {e}");
+            }
+            // What archiving set aside rather than commit to a branch Agency
+            // did not cut. One that no longer applies is kept, not dropped.
+            if let Err(e) = manager.take_back_uncommitted(id) {
+                log::warn!("restore {id}: {e:#}");
             }
         }
         // Reallocate the port block if another active run claimed it while this
@@ -9928,8 +10011,8 @@ impl AppState {
             );
         }
         agency_core::merge::rename_branch(&repo, &run.branch, &new)?;
-        let recorded =
-            self.registry.lock().unwrap().set_run_branch(id, &new, run.cut_branch().is_some());
+        let own = own_branch(&repo, &run).map(|o| if o == run.branch { new.as_str() } else { o });
+        let recorded = self.registry.lock().unwrap().set_run_branch(id, &new, own);
         if let Err(e) = recorded {
             // Put git back rather than leave the two disagreeing: the registry
             // is what merge, PR and teardown all read, so a half-done rename
@@ -9998,20 +10081,29 @@ impl AppState {
         else {
             return Ok(run);
         };
-        // A `git branch -m` takes the recorded branch with it, so what the
-        // worktree is on now is the same branch under a new name, and Agency's
-        // to delete if it cut it. A recorded branch still in the repo means the
-        // worktree was switched onto some other branch instead, perhaps one the
-        // user already had, and a teardown must not delete that.
-        let cut =
-            run.cut_branch().is_some() && !agency_core::merge::branch_exists(&repo, &run.branch);
-        if let Err(e) = self.registry.lock().unwrap().set_run_branch(id, &adopted, cut) {
+        // Which branch is the run's own follows only a rename. `git branch -m`
+        // takes the branch along, so the new name is still the one Agency cut,
+        // and git's reflog says so. A `git switch` leaves it behind: the run's
+        // own branch is still where it was, and the one the worktree is on now
+        // may be the user's. Deciding by the recorded name having disappeared
+        // instead made a user's `feature/x` Agency's to delete once
+        // `agent/<id>` was deleted after switching to it, and forgot
+        // `agent/<id>` whenever a switch left it standing.
+        let own = own_branch(&repo, &run).map(|o| {
+            if o == run.branch && agency_core::merge::renamed_from(&repo, &adopted, o) {
+                adopted.clone()
+            } else {
+                o.to_string()
+            }
+        });
+        if let Err(e) = self.registry.lock().unwrap().set_run_branch(id, &adopted, own.as_deref()) {
             log::warn!("run {id}: couldn't record its worktree's branch {adopted}: {e:#}");
             return Ok(run);
         }
         log::info!("run {id}: worktree is on {adopted}, not {}; following it", run.branch);
+        run.branch_cut = Some(own.is_some());
+        run.own_branch = own.filter(|o| *o != adopted);
         run.branch = adopted;
-        run.branch_cut = Some(cut);
         self.refresh_workspace_skill(&run, &repo, &run.branch);
         Ok(run)
     }
@@ -11315,10 +11407,10 @@ fn validate_project_path(repo_path: &Path) -> Result<()> {
 mod tests {
     use super::{
         agent_argv, branch_leaf_from_first_prompt, branch_to_adopt, command_on_path,
-        graphify_server, id_source, id_suffix, is_auto_cut_branch, new_task_id, open_file_for,
-        pick_port, preview_mcp_port_for, preview_port_this_sweep, preview_tools_on,
-        require_branch_exists, require_gitless_known, require_own_branch, should_resume, slugify,
-        split_session_id, validate_race, OpenFileRef, RaceAttempt,
+        graphify_server, id_source, is_auto_cut_branch, new_task_id, open_file_for, pick_port,
+        preview_mcp_port_for, preview_port_this_sweep, preview_tools_on, require_branch_exists,
+        require_gitless_known, require_own_branch, should_resume, slugify, split_session_id,
+        validate_race, OpenFileRef, RaceAttempt,
     };
     use agency_core::config::KnowledgeConfig;
     use agency_core::profile::AgentProfile;
@@ -11577,6 +11669,7 @@ mod tests {
             base_commit: None,
             primary_closed_at: None,
             branch_cut: None,
+            own_branch: None,
             pin_rank: None,
         };
         assert!(super::wants_web_ui(&base));
@@ -12566,6 +12659,7 @@ mod tests {
             base_commit: None,
             primary_closed_at: None,
             branch_cut: None,
+            own_branch: None,
             pin_rank: None,
         }
     }
@@ -12677,15 +12771,6 @@ mod tests {
     fn branch_leaf_from_first_prompt_skips_the_empty_fallback() {
         assert!(branch_leaf_from_first_prompt("agent-36a2", "").is_none());
         assert!(branch_leaf_from_first_prompt("agent-36a2", "!!! ???").is_none());
-    }
-
-    #[test]
-    fn id_suffix_reads_the_four_char_disambiguator() {
-        assert_eq!(id_suffix("add-a-login-page-a3k2"), Some("a3k2"));
-        assert_eq!(id_suffix("agent-36a2"), Some("36a2"));
-        // No hyphen at all, and a trailing segment that is not the 4-char shape.
-        assert_eq!(id_suffix("nope"), None);
-        assert_eq!(id_suffix("add-a-login-page-toolong"), None);
     }
 
     #[test]
@@ -12931,6 +13016,7 @@ mod tests {
             base_commit: None,
             primary_closed_at: None,
             branch_cut: None,
+            own_branch: None,
             pin_rank: None,
         };
         assert_eq!(run.kind, "terminal");
@@ -12964,6 +13050,7 @@ mod tests {
             base_commit: None,
             primary_closed_at: None,
             branch_cut: None,
+            own_branch: None,
             pin_rank: None,
         }
     }

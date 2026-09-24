@@ -423,3 +423,43 @@ fn remove_deregisters_its_own_worktree_recorded_by_a_relative_gitdir() {
          or a later create for the same id has no name left to use"
     );
 }
+
+fn rev(dir: &std::path::Path, r: &str) -> String {
+    let out = Command::new("git").args(["rev-parse", r]).current_dir(dir).output().unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// Archiving a PR-review run with uncommitted changes committed a WIP onto
+/// the PR's own head branch. Set aside instead: the branch does not move,
+/// and restoring brings the changes back, new files included.
+#[test]
+fn set_aside_keeps_uncommitted_work_off_the_branch_and_restore_takes_it_back() {
+    let repo = init_repo();
+    let mgr = WorktreeManager::new(repo.path().to_path_buf());
+    git(repo.path(), &["branch", "their-pr"]);
+    let before = rev(repo.path(), "their-pr");
+    let wt = mgr.create_on_branch("task-5", "their-pr").unwrap();
+    std::fs::write(wt.path.join("README.md"), "edited").unwrap();
+    std::fs::write(wt.path.join("new.txt"), "new").unwrap();
+
+    assert!(mgr.set_aside_uncommitted("task-5").unwrap());
+    mgr.remove("task-5", None).unwrap();
+    assert_eq!(rev(repo.path(), "their-pr"), before, "the PR's branch did not move");
+
+    let restored = mgr.restore("task-5", "their-pr").unwrap();
+    assert!(mgr.take_back_uncommitted("task-5").unwrap());
+    assert_eq!(std::fs::read_to_string(restored.path.join("README.md")).unwrap(), "edited");
+    assert_eq!(std::fs::read_to_string(restored.path.join("new.txt")).unwrap(), "new");
+    // Taken back once: the ref is gone and a second restore finds nothing.
+    assert!(!branch_exists(repo.path(), &WorktreeManager::set_aside_ref("task-5")));
+    assert!(!mgr.take_back_uncommitted("task-5").unwrap());
+}
+
+#[test]
+fn set_aside_is_a_no_op_on_a_clean_worktree() {
+    let repo = init_repo();
+    let mgr = WorktreeManager::new(repo.path().to_path_buf());
+    mgr.create("task-6", "HEAD").unwrap();
+    assert!(!mgr.set_aside_uncommitted("task-6").unwrap());
+    assert!(!branch_exists(repo.path(), &WorktreeManager::set_aside_ref("task-6")));
+}

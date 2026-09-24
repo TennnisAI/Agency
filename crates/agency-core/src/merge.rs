@@ -250,6 +250,30 @@ pub fn rename_branch(repo: &Path, from: &str, to: &str) -> Result<()> {
     Ok(())
 }
 
+/// Whether git's own reflog shows `branch` was once called `from`: that it is
+/// the same branch under a new name, not some other branch.
+///
+/// A worktree found on a branch other than the one recorded got there by one
+/// of two moves that look identical from the outside: `git branch -m`, which
+/// takes the branch along, or `git switch`, which leaves it behind for a branch
+/// that may well be the user's own. Only the rename is evidence the new name
+/// is still the branch Agency cut, and `git branch -m` carries the reflog with
+/// it, every earlier rename included. With reflogs off there is no evidence,
+/// which reads as not renamed: a branch left in the repo, never one deleted.
+pub fn renamed_from(repo: &Path, branch: &str, from: &str) -> bool {
+    git(repo, &["reflog", "show", "--format=%gs", &format!("refs/heads/{branch}"), "--"])
+        .ok()
+        .filter(|o| o.status.success())
+        .is_some_and(|o| reflog_shows_rename(&String::from_utf8_lossy(&o.stdout), from))
+}
+
+/// The pure half of [`renamed_from`]: a line of `%gs` output that `git branch
+/// -m` writes when it moves `refs/heads/<from>`.
+fn reflog_shows_rename(reflog: &str, from: &str) -> bool {
+    let prefix = format!("Branch: renamed refs/heads/{from} to refs/heads/");
+    reflog.lines().any(|l| l.starts_with(&prefix))
+}
+
 /// Remote-tracking refs carrying `branch`'s exact name, as `origin/agent/foo`.
 ///
 /// Distinct from [`is_pushed`], which asks whether the *commits* are safe

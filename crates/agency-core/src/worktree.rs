@@ -66,6 +66,75 @@ impl WorktreeManager {
         Ok(true)
     }
 
+    /// Where [`set_aside_uncommitted`](Self::set_aside_uncommitted) keeps a
+    /// run's uncommitted work: under `refs/agency`, outside `refs/heads`, so
+    /// it is on no branch and no push carries it.
+    pub fn set_aside_ref(task_id: &str) -> String {
+        format!("refs/agency/set-aside/{task_id}")
+    }
+
+    /// Save every pending change (tracked and untracked) in the task's
+    /// worktree without committing it to the branch the worktree is on.
+    /// Returns whether there was anything to save; a clean or missing worktree
+    /// is a no-op. [`take_back_uncommitted`](Self::take_back_uncommitted)
+    /// puts it back into a restored worktree.
+    ///
+    /// For a worktree on a branch Agency did not cut, where
+    /// [`commit_all_if_dirty`](Self::commit_all_if_dirty) is not an option:
+    /// archiving a PR-review run committed "WIP: uncommitted changes
+    /// auto-committed by Agency on archive" onto the PR's own head branch,
+    /// one push away from the contributor's PR.
+    pub fn set_aside_uncommitted(&self, task_id: &str) -> Result<bool> {
+        let path = self.worktrees_root().join(task_id);
+        if !path.exists() {
+            return Ok(false);
+        }
+        let dirty = Self::git_at(&path, &["status", "--porcelain"])?;
+        if dirty.trim().is_empty() {
+            return Ok(false);
+        }
+        // Staged first, so `stash create` records new files too: it takes the
+        // index and the tracked tree, and ignores what git does not track.
+        Self::git_at(&path, &["add", "-A"])?;
+        let commit = Self::git_at(
+            &path,
+            &["stash", "create", "uncommitted changes set aside by Agency on archive"],
+        )?;
+        let commit = commit.trim();
+        if commit.is_empty() {
+            bail!("git stash create saved nothing from a worktree with changes in it");
+        }
+        self.git(&["update-ref", &Self::set_aside_ref(task_id), commit])?;
+        Ok(true)
+    }
+
+    /// Put back what [`set_aside_uncommitted`](Self::set_aside_uncommitted)
+    /// saved for this task, into its worktree, and drop the ref. Returns
+    /// whether there was anything to put back. When the changes no longer
+    /// apply cleanly the ref is kept, so they are not lost, and the error says
+    /// where they are.
+    pub fn take_back_uncommitted(&self, task_id: &str) -> Result<bool> {
+        let name = Self::set_aside_ref(task_id);
+        let Ok(commit) = self.git(&["rev-parse", "--verify", "-q", &name]) else {
+            return Ok(false);
+        };
+        let path = self.worktrees_root().join(task_id);
+        Self::git_at(&path, &["stash", "apply", commit.trim()]).map_err(|e| {
+            anyhow::anyhow!(
+                "the uncommitted changes set aside on archive did not apply, and are kept at \
+                 {name}: {e}"
+            )
+        })?;
+        self.drop_set_aside(task_id);
+        Ok(true)
+    }
+
+    /// Forget whatever was set aside for this task. Best-effort, and a no-op
+    /// when there is nothing: for a teardown that is taking the run for good.
+    pub fn drop_set_aside(&self, task_id: &str) {
+        let _ = self.git(&["update-ref", "-d", &Self::set_aside_ref(task_id)]);
+    }
+
     /// Copy repo-root paths into the task's worktree. `git worktree add` only
     /// materializes tracked files, so untracked-but-needed ones (`.env` and
     /// friends, listed under `[files] copy` in `.agency/agency.toml`) must be

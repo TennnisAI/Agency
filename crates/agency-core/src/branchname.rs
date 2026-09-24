@@ -83,9 +83,32 @@ pub fn normalize(input: &str) -> Result<String> {
     Ok(name.to_string())
 }
 
+/// The four-character disambiguator a run id ends with (`fix-login-a3k2`),
+/// which a branch Agency cut for the run keeps through a first-prompt rename
+/// (`agent/<leaf>-a3k2`). One definition for the app that writes the suffix
+/// and the registry that reads a branch's shape by it: two copies of the rule
+/// would drift, and the registry's would then delete by a stale one.
+pub fn id_suffix(run_id: &str) -> Option<&str> {
+    let (_, suf) = run_id.rsplit_once('-')?;
+    if suf.len() == 4 && suf.chars().all(|c| c.is_ascii_alphanumeric()) {
+        Some(suf)
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn id_suffix_reads_the_four_char_disambiguator() {
+        assert_eq!(id_suffix("add-a-login-page-a3k2"), Some("a3k2"));
+        assert_eq!(id_suffix("agent-36a2"), Some("36a2"));
+        // No hyphen at all, and a trailing segment that is not the 4-char shape.
+        assert_eq!(id_suffix("nope"), None);
+        assert_eq!(id_suffix("add-a-login-page-toolong"), None);
+    }
 
     fn err(input: &str) -> String {
         normalize(input).unwrap_err().to_string()

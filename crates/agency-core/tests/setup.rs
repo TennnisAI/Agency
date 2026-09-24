@@ -469,3 +469,48 @@ fn clone_repo_refuses_existing_destination() {
     let url = format!("file://{}", src.path().display());
     assert!(clone_repo(&url, parent.path()).is_err());
 }
+
+fn head_subject(dir: &Path) -> String {
+    let out =
+        Command::new("git").args(["log", "-1", "--format=%s"]).current_dir(dir).output().unwrap();
+    String::from_utf8(out.stdout).unwrap().trim().to_string()
+}
+
+fn commit_count(dir: &Path) -> String {
+    let out = Command::new("git")
+        .args(["rev-list", "--count", "HEAD"])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    String::from_utf8(out.stdout).unwrap().trim().to_string()
+}
+
+// AGE-248: "Commit now" on stray changes before a spawn went through this same
+// path and landed them as "Initial commit" on a repo that already had history.
+#[test]
+fn committing_stray_changes_names_them_rather_than_initial_commit() {
+    let dir = tempfile::tempdir().unwrap();
+    init_bare_repo(dir.path());
+    std::fs::write(dir.path().join("a.txt"), "hi\n").unwrap();
+    initial_commit(dir.path(), false).unwrap();
+    assert_eq!(head_subject(dir.path()), "Initial commit");
+
+    std::fs::write(dir.path().join("a.txt"), "changed\n").unwrap();
+    std::fs::write(dir.path().join("b.txt"), "new\n").unwrap();
+    assert_eq!(repo_readiness(dir.path()), RepoReadiness::Ready { dirty: true });
+    initial_commit_with_progress(dir.path(), &CommitOptions::default(), |_| {}).unwrap();
+
+    assert_eq!(head_subject(dir.path()), "Update a.txt and b.txt");
+    assert_eq!(repo_readiness(dir.path()), RepoReadiness::Ready { dirty: false });
+}
+
+#[test]
+fn nothing_to_commit_on_an_established_repo_makes_no_empty_commit() {
+    let dir = tempfile::tempdir().unwrap();
+    init_bare_repo(dir.path());
+    std::fs::write(dir.path().join("a.txt"), "hi\n").unwrap();
+    initial_commit(dir.path(), false).unwrap();
+
+    initial_commit_with_progress(dir.path(), &CommitOptions::default(), |_| {}).unwrap();
+    assert_eq!(commit_count(dir.path()), "1");
+}

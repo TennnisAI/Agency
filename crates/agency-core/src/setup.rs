@@ -527,8 +527,8 @@ pub struct CommitOptions {
     pub cancel: CancelToken,
 }
 
-/// Stage everything and make the initial commit. See
-/// [`initial_commit_with_progress`]; this is the no-progress convenience wrapper.
+/// Stage everything and commit it. See [`initial_commit_with_progress`]; this is
+/// the no-progress convenience wrapper.
 pub fn initial_commit(path: &Path, add_gitignore: bool) -> Result<()> {
     let opts = CommitOptions { add_gitignore, ..Default::default() };
     initial_commit_with_progress(path, &opts, |_| {})
@@ -610,10 +610,13 @@ fn clear_index_lock(path: &Path) {
     let _ = std::fs::remove_file(git_dir.join("index.lock"));
 }
 
-/// Stage everything and make the initial commit, calling `on_progress` as it
-/// goes. Optionally writes a default `.gitignore` first. Falls back to
-/// `--allow-empty` when nothing is staged (empty or fully-ignored folder), so the
-/// repo still gains a usable `HEAD`.
+/// Stage everything and commit it, calling `on_progress` as it goes. Optionally
+/// writes a default `.gitignore` first. On a repo with no commits yet this is the
+/// initial commit, and falls back to `--allow-empty` when nothing is staged
+/// (empty or fully-ignored folder), so the repo still gains a usable `HEAD`. On a
+/// repo that already has one it commits the stray changes in the checkout, under
+/// a message naming them (see [`changes_message`]), and does nothing when there
+/// is nothing to commit.
 ///
 /// Staging is the slow part: on a folder with a large tree, `git add -A` hashes
 /// every file, which is minutes of work the user was staring at a frozen window
@@ -630,11 +633,12 @@ pub fn initial_commit_with_progress(
     if opts.add_gitignore {
         write_default_gitignore(path)?;
     }
+    let has_head = matches!(git(path, &["rev-parse", "--verify", "HEAD"]), Ok((true, _)));
     if !opts.ignore_paths.is_empty() {
         append_gitignore(path, &opts.ignore_paths)?;
         // No HEAD yet → the index is ours alone, so clearing these entries can't
         // stage a deletion of something the user has committed.
-        if !matches!(git(path, &["rev-parse", "--verify", "HEAD"]), Ok((true, _))) {
+        if !has_head {
             unstage_ignored(path, &opts.ignore_paths);
         }
     }
@@ -679,16 +683,34 @@ pub fn initial_commit_with_progress(
         percent: None,
         detail: format!("{count} files"),
     });
-    // Nothing staged → empty commit so HEAD exists and worktrees can branch.
-    // Probe the index rather than trusting `count`: on an already-initialized
-    // repo the user may have staged changes that `git add -A` had nothing to add.
-    let staged =
-        Command::new("git").args(["diff", "--cached", "--quiet"]).current_dir(path).status()?;
-    let mut commit_args = vec!["commit", "-m", "Initial commit"];
-    if staged.success() {
-        // exit 0 from --quiet means no staged changes.
-        commit_args.push("--allow-empty");
-    }
+    // Probe the index rather than trusting `count`: the user may have staged
+    // changes that `git add -A` had nothing to add.
+    let mut commit_args = vec!["commit"];
+    let message = if has_head {
+        // The spawn dialog's "Commit now" on stray changes in the checkout lands
+        // here too, and committed them as "Initial commit" on top of the repo's
+        // existing history (AGE-248). Name what is being committed instead.
+        let (ok, out) = git(path, &["diff", "--cached", "--name-status", "--no-renames", "-z"])
+            .map_err(|e| git_spawn_error(e, path))?;
+        if !ok {
+            bail!("git diff --cached failed");
+        }
+        // HEAD already exists, so an empty commit would buy nothing.
+        match changes_message(&out) {
+            Some(m) => m,
+            None => return Ok(()),
+        }
+    } else {
+        // Nothing staged → empty commit so HEAD exists and worktrees can branch.
+        let staged =
+            Command::new("git").args(["diff", "--cached", "--quiet"]).current_dir(path).status()?;
+        if staged.success() {
+            // exit 0 from --quiet means no staged changes.
+            commit_args.push("--allow-empty");
+        }
+        "Initial commit".to_string()
+    };
+    commit_args.extend(["-m", message.as_str()]);
     // Last chance to honour a Cancel: staging is the slow part, so a click that
     // lands as it finishes would otherwise still produce a commit, moments after
     // the dialog closed telling the user nothing had happened. The index keeps
@@ -697,6 +719,45 @@ pub fn initial_commit_with_progress(
         bail!("{CANCELLED}");
     }
     git_checked(path, &commit_args)
+}
+
+/// Files named in a [`changes_message`] before the rest are counted.
+const MESSAGE_MAX_FILES: usize = 2;
+
+/// A commit subject for the staged changes in `name_status`, the output of
+/// `git diff --cached --name-status --no-renames -z`, or `None` when nothing is
+/// staged. The verb follows what happened to the files (all new is "Add", all
+/// gone is "Remove", anything else "Update") and the first few are named:
+/// "Update src/a.rs, b.txt and 3 more files".
+pub fn changes_message(name_status: &str) -> Option<String> {
+    let mut fields = name_status.split('\0').filter(|f| !f.is_empty());
+    let mut changes: Vec<(char, &str)> = Vec::new();
+    while let (Some(status), Some(file)) = (fields.next(), fields.next()) {
+        changes.push((status.chars().next().unwrap_or('M'), file));
+    }
+    if changes.is_empty() {
+        return None;
+    }
+    let verb = if changes.iter().all(|(s, _)| *s == 'A') {
+        "Add"
+    } else if changes.iter().all(|(s, _)| *s == 'D') {
+        "Remove"
+    } else {
+        "Update"
+    };
+    let names: Vec<&str> = changes.iter().map(|(_, f)| *f).collect();
+    let files = match names.len() {
+        1 => names[0].to_string(),
+        n if n <= MESSAGE_MAX_FILES + 1 => {
+            format!("{} and {}", names[..n - 1].join(", "), names[n - 1])
+        }
+        n => format!(
+            "{} and {} more files",
+            names[..MESSAGE_MAX_FILES].join(", "),
+            n - MESSAGE_MAX_FILES
+        ),
+    };
+    Some(format!("{verb} {files}"))
 }
 
 /// Files at least this big are worth a warning before `git add -A` hashes them
@@ -846,6 +907,21 @@ mod tests {
         );
         let denied = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
         assert!(git_spawn_error(denied, dir.path()).to_string().starts_with("could not run git: "));
+    }
+
+    #[test]
+    fn changes_message_names_what_is_staged() {
+        assert_eq!(changes_message(""), None);
+        assert_eq!(changes_message("M\0src/a.rs\0").as_deref(), Some("Update src/a.rs"));
+        assert_eq!(changes_message("A\0a\0A\0b\0").as_deref(), Some("Add a and b"));
+        assert_eq!(changes_message("D\0a\0D\0b\0D\0c\0").as_deref(), Some("Remove a, b and c"));
+        // Mixed statuses read as an update; past three, the rest are counted.
+        assert_eq!(
+            changes_message("A\0a\0D\0b\0M\0c\0M\0d\0").as_deref(),
+            Some("Update a, b and 2 more files")
+        );
+        // -z keeps a path with spaces or newlines in one field.
+        assert_eq!(changes_message("M\0my notes.md\0").as_deref(), Some("Update my notes.md"));
     }
 
     #[test]

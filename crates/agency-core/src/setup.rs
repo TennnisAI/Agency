@@ -616,7 +616,9 @@ fn clear_index_lock(path: &Path) {
 /// (empty or fully-ignored folder), so the repo still gains a usable `HEAD`. On a
 /// repo that already has one it commits the stray changes in the checkout, under
 /// a message naming them (see [`changes_message`]), and does nothing when there
-/// is nothing to commit.
+/// is nothing to commit. Refuses, changing nothing, while a merge, rebase,
+/// cherry-pick or revert is stopped partway or any file is still conflicted
+/// (see [`commit_blocker`]).
 ///
 /// Staging is the slow part: on a folder with a large tree, `git add -A` hashes
 /// every file, which is minutes of work the user was staring at a frozen window
@@ -630,6 +632,13 @@ pub fn initial_commit_with_progress(
     opts: &CommitOptions,
     mut on_progress: impl FnMut(CloneProgress),
 ) -> Result<()> {
+    // "Commit now" on a checkout stopped mid-merge ran the `git add -A` below,
+    // which marks every conflicted file resolved, and committed the conflict
+    // markers into the project's history. Refuse before touching anything,
+    // .gitignore included, so a refusal is a pure no-op.
+    if let Some(why) = commit_blocker(unfinished_operation(path), &unmerged_paths(path)?) {
+        bail!("{why}");
+    }
     if opts.add_gitignore {
         write_default_gitignore(path)?;
     }
@@ -721,8 +730,77 @@ pub fn initial_commit_with_progress(
     git_checked(path, &commit_args)
 }
 
-/// Files named in a [`changes_message`] before the rest are counted.
-const MESSAGE_MAX_FILES: usize = 2;
+/// The git operation stopped partway in the checkout at `path`, if any: the
+/// ones that leave conflicts to resolve and a commit of their own to make.
+fn unfinished_operation(path: &Path) -> Option<&'static str> {
+    // `--git-path`, not a path under `.git`: in a linked worktree `.git` is a
+    // file, and these live beside its own HEAD.
+    let exists = |name: &str| match git(path, &["rev-parse", "--git-path", name]) {
+        Ok((true, out)) => path.join(out.trim()).exists(),
+        _ => false,
+    };
+    [("MERGE_HEAD", "merge"), ("CHERRY_PICK_HEAD", "cherry-pick"), ("REVERT_HEAD", "revert")]
+        .into_iter()
+        .find(|(name, _)| exists(name))
+        .map(|(_, op)| op)
+        .or_else(|| crate::git::rebase_in_progress(path).map(|_| "rebase"))
+}
+
+/// Paths the index still holds as conflicted. A conflicted `git stash pop`
+/// leaves these with no operation in progress at all.
+fn unmerged_paths(path: &Path) -> Result<Vec<String>> {
+    let (ok, out) = git(path, &["diff", "--name-only", "--diff-filter=U", "-z"])
+        .map_err(|e| git_spawn_error(e, path))?;
+    if !ok {
+        bail!("git diff --diff-filter=U failed");
+    }
+    Ok(out.split('\0').filter(|p| !p.is_empty()).map(str::to_string).collect())
+}
+
+/// Why the checkout cannot take a commit of everything in it, or `None` when it
+/// can. `operation` is from [`unfinished_operation`], `unmerged` from
+/// [`unmerged_paths`]. Either one refuses: conflicted files would be committed
+/// with their markers in, and a merge, rebase, cherry-pick or revert is the
+/// user's to conclude, not ours to fold into a commit of stray changes.
+pub fn commit_blocker(operation: Option<&str>, unmerged: &[String]) -> Option<String> {
+    let names: Vec<&str> = unmerged.iter().map(String::as_str).collect();
+    let conflicts = match names.len() {
+        0 => None,
+        1 => Some(format!("{} still has conflicts", names[0])),
+        _ => Some(format!("{} still have conflicts", list_files(&names))),
+    };
+    match (operation, conflicts) {
+        (None, None) => None,
+        (Some(op), Some(c)) => Some(format!(
+            "A {op} is in progress here and {c}. Finish or abort the {op} first: committing now would save the conflict markers."
+        )),
+        (Some(op), None) => {
+            Some(format!("A {op} is in progress here. Finish or abort it first, then commit."))
+        }
+        (None, Some(c)) => Some(format!(
+            "{c}. Resolve them first: committing now would save the conflict markers."
+        )),
+    }
+}
+
+/// Files named in a [`list_files`] before the rest are counted. One more than
+/// this is still named in full, so the count never reads "and 1 more files".
+const NAMED_BEFORE_COUNTING: usize = 2;
+
+/// "a", "a and b", "a, b and c", "a, b and 2 more files". `names` is not empty.
+fn list_files(names: &[&str]) -> String {
+    match names.len() {
+        1 => names[0].to_string(),
+        n if n <= NAMED_BEFORE_COUNTING + 1 => {
+            format!("{} and {}", names[..n - 1].join(", "), names[n - 1])
+        }
+        n => format!(
+            "{} and {} more files",
+            names[..NAMED_BEFORE_COUNTING].join(", "),
+            n - NAMED_BEFORE_COUNTING
+        ),
+    }
+}
 
 /// A commit subject for the staged changes in `name_status`, the output of
 /// `git diff --cached --name-status --no-renames -z`, or `None` when nothing is
@@ -746,18 +824,7 @@ pub fn changes_message(name_status: &str) -> Option<String> {
         "Update"
     };
     let names: Vec<&str> = changes.iter().map(|(_, f)| *f).collect();
-    let files = match names.len() {
-        1 => names[0].to_string(),
-        n if n <= MESSAGE_MAX_FILES + 1 => {
-            format!("{} and {}", names[..n - 1].join(", "), names[n - 1])
-        }
-        n => format!(
-            "{} and {} more files",
-            names[..MESSAGE_MAX_FILES].join(", "),
-            n - MESSAGE_MAX_FILES
-        ),
-    };
-    Some(format!("{verb} {files}"))
+    Some(format!("{verb} {}", list_files(&names)))
 }
 
 /// Files at least this big are worth a warning before `git add -A` hashes them
@@ -922,6 +989,27 @@ mod tests {
         );
         // -z keeps a path with spaces or newlines in one field.
         assert_eq!(changes_message("M\0my notes.md\0").as_deref(), Some("Update my notes.md"));
+    }
+
+    #[test]
+    fn commit_blocker_refuses_unfinished_operations_and_conflicts() {
+        assert_eq!(commit_blocker(None, &[]), None);
+        let one = vec!["a.txt".to_string()];
+        let four: Vec<String> = ["a", "b", "c", "d"].map(String::from).to_vec();
+        assert_eq!(
+            commit_blocker(Some("merge"), &one).as_deref(),
+            Some("A merge is in progress here and a.txt still has conflicts. Finish or abort the merge first: committing now would save the conflict markers.")
+        );
+        // A merge whose conflicts are all resolved is still the user's to conclude.
+        assert_eq!(
+            commit_blocker(Some("rebase"), &[]).as_deref(),
+            Some("A rebase is in progress here. Finish or abort it first, then commit.")
+        );
+        // A conflicted `git stash pop` leaves conflicts with no operation.
+        assert_eq!(
+            commit_blocker(None, &four).as_deref(),
+            Some("a, b and 2 more files still have conflicts. Resolve them first: committing now would save the conflict markers.")
+        );
     }
 
     #[test]

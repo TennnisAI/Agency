@@ -9,7 +9,7 @@ import {
 } from "../api";
 import { useRuns } from "../store/runs";
 import { restorable, restoreTitle } from "../lib/restore";
-import { toastError, toastSuccess } from "../lib/toast";
+import { toastError, toastInfo, toastSuccess } from "../lib/toast";
 import ConfirmDialog from "./ConfirmDialog";
 import RunRecordDialog from "./RunRecordDialog";
 import { TrashIcon } from "./icons";
@@ -68,7 +68,8 @@ export default function ArchivedSection() {
       const restored = await restoreRun(r.id);
       await refreshRuns();
       await load();
-      setFocusedRun(restored.id);
+      setFocusedRun(restored.run.id);
+      if (restored.notice) toastInfo(restored.notice, 15000);
       return true;
     } catch (e) {
       toastError(e, "Restore failed");

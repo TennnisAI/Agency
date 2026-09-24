@@ -705,3 +705,27 @@ fn an_unpublished_branch_has_nothing_to_delete() {
         .unwrap()
         .is_empty());
 }
+
+/// AGE-246: a worktree found on another branch is the run's own only if it
+/// got there by a rename. A switch onto a branch the user already had once
+/// made that branch Agency's to delete.
+#[test]
+fn renamed_from_tells_a_rename_from_a_switch() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    run(dir.path(), &["checkout", "-q", "-b", "agent/x-ab12"]);
+    run(dir.path(), &["branch", "-m", "agent/x-ab12", "agent/fix-ab12"]);
+    run(dir.path(), &["branch", "-m", "agent/fix-ab12", "fix/pairing"]);
+    // Each rename in the chain, not only the last.
+    assert!(merge::renamed_from(dir.path(), "fix/pairing", "agent/fix-ab12"));
+    assert!(merge::renamed_from(dir.path(), "fix/pairing", "agent/x-ab12"));
+
+    run(dir.path(), &["branch", "feature/x", "main"]);
+    run(dir.path(), &["checkout", "-q", "feature/x"]);
+    assert!(!merge::renamed_from(dir.path(), "feature/x", "fix/pairing"));
+    run(dir.path(), &["checkout", "-q", "-b", "try-other"]);
+    assert!(!merge::renamed_from(dir.path(), "try-other", "feature/x"));
+    // A name that is only a prefix of the old one is not it.
+    assert!(!merge::renamed_from(dir.path(), "fix/pairing", "agent/x"));
+    assert!(!merge::renamed_from(dir.path(), "no-such-branch", "agent/x-ab12"));
+}

@@ -3853,6 +3853,146 @@ fn a_branch_renamed_in_the_worktree_is_followed_by_merge_and_the_registry() {
     let _ = state.discard_run(&info.id);
 }
 
+/// A project with one live run on a sleeping `sh` agent, for the teardown
+/// tests below: the state, the repo, the project, the run, its branch and its
+/// worktree.
+fn one_run_project(
+    dir: &tempfile::TempDir,
+) -> (common::TestState, std::path::PathBuf, String, String, String, std::path::PathBuf) {
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let state = common::state(dir);
+    state
+        .register_profile(AgentProfile {
+            name: "claude".into(),
+            command: "sh".into(),
+            args: vec!["-c".into(), "sleep 3".into()],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+    let info = state.create_run(&project.id, "p", "claude", None, "HEAD", None).unwrap();
+    let wt = state.worktree_path(&info.id).unwrap();
+    (state, repo, project.id, info.id, info.branch, wt)
+}
+
+fn git_in(dir: &Path, args: &[&str]) {
+    assert!(
+        Command::new("git").args(args).current_dir(dir).status().unwrap().success(),
+        "git {args:?}"
+    );
+}
+
+/// AGE-246: a switch onto a branch the user already had, then the run's own
+/// branch deleted, made the user's branch Agency's to delete: ownership was
+/// read off the recorded name having disappeared, which a rename and this
+/// sequence both leave behind.
+#[test]
+fn a_branch_the_worktree_was_switched_onto_is_not_deleted_with_the_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, repo, _, id, own, wt) = one_run_project(&dir);
+    git_in(&repo, &["branch", "feature/x", "main"]);
+    git_in(&wt, &["switch", "-q", "feature/x"]);
+    git_in(&repo, &["branch", "-D", &own]);
+
+    assert_eq!(state.merge_preview(&id).unwrap().branch, "feature/x", "still followed");
+    state.discard_run(&id).unwrap();
+    assert!(agency_core::merge::branch_exists(&repo, "feature/x"), "the user's branch survived");
+}
+
+/// A `git switch -c` off the run's own branch: the new branch is not proven
+/// the run's, so it stays, but the run's own is not forgotten either. It is
+/// deleted once nothing on it is unique, as it is here.
+#[test]
+fn a_switch_off_the_runs_own_branch_does_not_leave_it_behind() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, repo, _, id, own, wt) = one_run_project(&dir);
+    git_in(&wt, &["switch", "-q", "-c", "try-other"]);
+
+    assert_eq!(state.merge_preview(&id).unwrap().branch, "try-other");
+    state.discard_run(&id).unwrap();
+    assert!(!agency_core::merge::branch_exists(&repo, &own), "the run's own branch went");
+    assert!(agency_core::merge::branch_exists(&repo, "try-other"), "not proven the run's");
+}
+
+/// The project sweep read each run's branch off its row, so a branch renamed
+/// in the run's terminal since was left behind by a project delete after
+/// discard had learned to follow it.
+#[test]
+fn deleting_a_project_takes_a_branch_renamed_in_the_worktree() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, repo, project, _, _, wt) = one_run_project(&dir);
+    git_in(&wt, &["branch", "-m", "fix/pairing"]);
+
+    state.delete_project(&project).unwrap();
+    assert!(!agency_core::merge::branch_exists(&repo, "fix/pairing"), "renamed branch leaked");
+}
+
+/// Rewrite run `id`'s row as one from before `branch_cut` was recorded, the
+/// shape every run dispatched by an earlier version has.
+fn make_legacy(dir: &tempfile::TempDir, id: &str) {
+    let reg = agency_core::registry::Registry::open(&dir.path().join("agency.db")).unwrap();
+    let run = reg.get_run(id).unwrap().unwrap();
+    reg.delete_run(id).unwrap();
+    reg.insert_run(&agency_core::registry::Run { branch_cut: None, own_branch: None, ..run })
+        .unwrap();
+}
+
+/// An old row renamed by hand once, then again through Agency: ownership was
+/// asked of the reflog after `git branch -m` had moved it off the recorded
+/// name, so the row was written as not Agency's, and the branch outlived
+/// every teardown after.
+#[test]
+fn a_second_rename_of_an_old_runs_branch_keeps_it_agencys() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, repo, _, id, own, _) = one_run_project(&dir);
+    assert_eq!(own, format!("agent/{id}"), "the reflog is asked about agent/<id>");
+    state.rename_run_branch(&id, "fix/pairing").unwrap();
+    make_legacy(&dir, &id);
+
+    state.rename_run_branch(&id, "fix/other").unwrap();
+    state.discard_run(&id).unwrap();
+    assert!(!agency_core::merge::branch_exists(&repo, "fix/other"), "the run's own branch leaked");
+}
+
+/// The same, renamed the second time in the run's terminal.
+#[test]
+fn an_old_runs_branch_renamed_twice_in_the_worktree_stays_agencys() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, repo, _, id, _, wt) = one_run_project(&dir);
+    state.rename_run_branch(&id, "fix/pairing").unwrap();
+    make_legacy(&dir, &id);
+    git_in(&wt, &["branch", "-m", "fix/other"]);
+
+    assert_eq!(state.merge_preview(&id).unwrap().branch, "fix/other", "still followed");
+    state.discard_run(&id).unwrap();
+    assert!(!agency_core::merge::branch_exists(&repo, "fix/other"), "the run's own branch leaked");
+}
+
+/// An old row whose hand-renamed branch went with the archive took the reflog
+/// that vouched for it. The archive list offered Restore all the same, and
+/// the restore then refused; now both say the same, and neither says Agency
+/// did not create the branch, which it did.
+#[test]
+fn the_archive_does_not_offer_to_cut_again_a_branch_it_cannot_show_was_its_own() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, repo, project, id, _, _) = one_run_project(&dir);
+    state.rename_run_branch(&id, "fix/pairing").unwrap();
+    make_legacy(&dir, &id);
+    state.archive_run(&id).unwrap();
+    assert!(!agency_core::merge::branch_exists(&repo, "fix/pairing"), "merged, so it went");
+
+    let listed = state.list_archived_runs(&project).unwrap();
+    let archived = listed[0].archived.as_ref().unwrap();
+    assert!(!archived.cut_branch);
+    assert_eq!(archived.restore_base, None, "Restore is not offered");
+    let err = state.restore_run(&id).unwrap_err().to_string();
+    assert!(err.contains("no record of creating it"), "{err}");
+}
+
 #[test]
 fn renaming_a_branch_refuses_names_git_or_the_project_will_not_take() {
     let dir = tempfile::tempdir().unwrap();

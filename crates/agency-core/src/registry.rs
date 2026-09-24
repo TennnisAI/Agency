@@ -102,6 +102,70 @@ pub struct Run {
     /// lowest-numbered tab still open. Cleared on archive, where every extra
     /// tab goes and the run's own agent is all that can come back.
     pub primary_closed_at: Option<i64>,
+    /// Whether Agency cut a branch for this run, and so may delete it when the
+    /// run is torn down. `false` for a run started on a branch that already
+    /// existed (a PR head), which is someone else's to keep. `None` for rows
+    /// written before this was recorded; [`Run::own_branch`] works it out from
+    /// the name and git's reflog for those.
+    pub branch_cut: Option<bool>,
+    /// The branch Agency cut for this run when the worktree has since been
+    /// switched off it, so `branch` is some other branch. `None` while the
+    /// worktree is on its own branch, which is then `branch`.
+    ///
+    /// AGE-246: a `git switch -c try-other` in a run's terminal moved the row
+    /// onto `try-other`, and with only the one name recorded, `agent/<id>`
+    /// was forgotten and outlived every teardown.
+    pub own_branch: Option<String>,
+}
+
+impl Run {
+    /// The branch Agency cut for this run, under its current name, whether or
+    /// not the worktree is still on it. `renamed_from` answers, from git,
+    /// whether `branch` was once called the name it is given; it is asked only
+    /// about rows older than [`branch_cut`](Self::branch_cut).
+    ///
+    /// AGE-246: teardown deleted `agent/<id>`, a name rebuilt from the id, so
+    /// a run whose branch had been renamed to describe its work left that
+    /// branch behind on every delete and every post-merge archive. The id
+    /// name is not a safe stand-in the other way either: it is what kept a
+    /// PR-review run from deleting the PR's head branch, only because that
+    /// branch happened never to be called `agent/<id>`.
+    pub fn own_branch(&self, renamed_from: impl FnOnce(&str) -> bool) -> Option<&str> {
+        if self.kind != "agent" || !self.worktree || self.branch.is_empty() {
+            return None;
+        }
+        let cut = match self.branch_cut {
+            Some(cut) => cut,
+            None => {
+                legacy_cut_branch(&self.id, &self.branch)
+                    || renamed_from(&format!("agent/{}", self.id))
+            }
+        };
+        if !cut {
+            return None;
+        }
+        Some(self.own_branch.as_deref().unwrap_or(&self.branch))
+    }
+
+    /// Whether the branch the worktree is on, `branch`, is the one Agency cut
+    /// for this run, and so the one a teardown may delete.
+    pub fn on_own_branch(&self, renamed_from: impl FnOnce(&str) -> bool) -> bool {
+        self.own_branch(renamed_from) == Some(self.branch.as_str())
+    }
+}
+
+/// For a row older than `branch_cut`: whether `branch` has a shape only a
+/// branch Agency cut for run `id` has. That is `agent/<id>` as cut, or
+/// `agent/<leaf>-<suffix>` after a first-prompt rename (AGE-183), where the
+/// suffix is the four characters that end the id. Any other name is the run's
+/// only if git's reflog shows it was renamed from `agent/<id>`, which
+/// [`Run::own_branch`] asks separately.
+fn legacy_cut_branch(id: &str, branch: &str) -> bool {
+    if branch == format!("agent/{id}") {
+        return true;
+    }
+    let Some(suffix) = crate::branchname::id_suffix(id) else { return false };
+    branch.starts_with("agent/") && branch.ends_with(&format!("-{suffix}"))
 }
 
 /// A local issue: the tracker is per-project and agent-native — dispatching
@@ -407,6 +471,15 @@ impl Registry {
         }
         if !column_exists(&conn, "runs", "primary_closed_at")? {
             conn.execute("ALTER TABLE runs ADD COLUMN primary_closed_at INTEGER", [])?;
+        }
+        // Left NULL on existing rows: which of them Agency cut is read from the
+        // branch name and git's reflog instead (`Run::own_branch`), since
+        // nothing recorded it.
+        if !column_exists(&conn, "runs", "branch_cut")? {
+            conn.execute("ALTER TABLE runs ADD COLUMN branch_cut INTEGER", [])?;
+        }
+        if !column_exists(&conn, "runs", "own_branch")? {
+            conn.execute("ALTER TABLE runs ADD COLUMN own_branch TEXT", [])?;
         }
         if !column_exists(&conn, "projects", "issue_key")? {
             conn.execute("ALTER TABLE projects ADD COLUMN issue_key TEXT", [])?;
@@ -876,13 +949,14 @@ impl Registry {
             None => None,
         };
         self.conn.execute(
-            "INSERT INTO runs (id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, pin_rank, primary_closed_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
+            "INSERT INTO runs (id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, pin_rank, primary_closed_at, branch_cut, own_branch)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
             rusqlite::params![
                 run.id, run.project_id, run.agent, run.prompt, run.base, run.branch,
                 run.created_at, run.port_base.map(|p| p as i64), run.archived_at, run.title, run.kind,
                 run.merge_target, run.race_id, loop_config, loop_state, run.issue_id, run.worktree as i64,
-                run.model, run.base_commit, run.pin_rank, run.primary_closed_at
+                run.model, run.base_commit, run.pin_rank, run.primary_closed_at,
+                run.branch_cut.map(i64::from), run.own_branch
             ],
         )?;
         Ok(())
@@ -901,7 +975,7 @@ impl Registry {
 
     pub fn get_run(&self, id: &str) -> Result<Option<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, pin_rank, primary_closed_at FROM runs WHERE id = ?1",
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, pin_rank, primary_closed_at, branch_cut, own_branch FROM runs WHERE id = ?1",
         )?;
         let mut rows = stmt.query([id])?;
         match rows.next()? {
@@ -912,7 +986,7 @@ impl Registry {
 
     pub fn list_runs(&self, project_id: &str) -> Result<Vec<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, pin_rank, primary_closed_at
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, pin_rank, primary_closed_at, branch_cut, own_branch
              FROM runs WHERE project_id = ?1 AND archived_at IS NULL ORDER BY created_at DESC",
         )?;
         let rows = stmt.query_map([project_id], |row| Ok(row_to_run(row)))?;
@@ -925,7 +999,7 @@ impl Registry {
 
     pub fn list_archived_runs(&self, project_id: &str) -> Result<Vec<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, pin_rank, primary_closed_at
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, pin_rank, primary_closed_at, branch_cut, own_branch
              FROM runs WHERE project_id = ?1 AND archived_at IS NOT NULL ORDER BY archived_at DESC",
         )?;
         let rows = stmt.query_map([project_id], |row| Ok(row_to_run(row)))?;
@@ -996,9 +1070,15 @@ impl Registry {
     /// row: rename only the git side and the next merge targets a branch that
     /// no longer exists. Both halves belong to the one caller
     /// (`AppState::rename_run_branch`), which rolls git back if this fails.
-    pub fn set_run_branch(&self, id: &str, branch: &str) -> Result<()> {
-        self.conn
-            .execute("UPDATE runs SET branch = ?2 WHERE id = ?1", rusqlite::params![id, branch])?;
+    ///
+    /// `own` is the branch Agency cut for the run under its current name, if
+    /// it has one (see [`Run::own_branch`]). It is written with `branch` so a
+    /// row can never name one branch while vouching for another.
+    pub fn set_run_branch(&self, id: &str, branch: &str, own: Option<&str>) -> Result<()> {
+        self.conn.execute(
+            "UPDATE runs SET branch = ?2, branch_cut = ?3, own_branch = ?4 WHERE id = ?1",
+            rusqlite::params![id, branch, own.is_some() as i64, own.filter(|o| *o != branch)],
+        )?;
         Ok(())
     }
 
@@ -1469,7 +1549,7 @@ impl Registry {
     /// runs" list; also drives the last-run-abandoned rollback check).
     pub fn runs_for_issue(&self, issue_id: &str) -> Result<Vec<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, pin_rank, primary_closed_at
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, pin_rank, primary_closed_at, branch_cut, own_branch
              FROM runs WHERE issue_id = ?1 AND archived_at IS NULL ORDER BY created_at DESC",
         )?;
         let rows = stmt.query_map([issue_id], |row| Ok(row_to_run(row)))?;
@@ -1742,6 +1822,8 @@ fn row_to_run(row: &rusqlite::Row) -> Result<Run> {
         base_commit: row.get(18)?,
         pin_rank: row.get(19)?,
         primary_closed_at: row.get(20)?,
+        branch_cut: row.get::<_, Option<i64>>(21)?.map(|v| v != 0),
+        own_branch: row.get(22)?,
     })
 }
 
@@ -1896,6 +1978,8 @@ mod tests {
             model: None,
             base_commit: None,
             primary_closed_at: None,
+            branch_cut: None,
+            own_branch: None,
             pin_rank: None,
         }
     }
@@ -2029,6 +2113,101 @@ mod tests {
         let active: Vec<String> =
             reg.list_runs("proj").unwrap().into_iter().map(|r| r.id).collect();
         assert_eq!(active, vec!["x-1"]);
+    }
+
+    /// No reflog to consult: every answer below is the row's own.
+    fn no_rename(_: &str) -> bool {
+        false
+    }
+
+    /// AGE-246: the branch a teardown deletes is the run's own under its
+    /// current name, and never one it was only checked out on.
+    #[test]
+    fn own_branch_follows_the_recorded_answer() {
+        let renamed = Run {
+            branch: "agent/fix-pairing-agent-6fgy".into(),
+            branch_cut: Some(true),
+            ..sample_run("agent-6fgy", None)
+        };
+        assert_eq!(renamed.own_branch(no_rename), Some("agent/fix-pairing-agent-6fgy"));
+        assert!(renamed.on_own_branch(no_rename));
+        // A PR head, even one that happens to look like ours.
+        let pr = Run { branch_cut: Some(false), ..sample_run("review-pr-7-q3w7", None) };
+        assert_eq!(pr.own_branch(no_rename), None);
+        // Nothing of ours in git for a run in the checkout or a terminal.
+        let checkout =
+            Run { worktree: false, branch_cut: Some(true), ..sample_run("a-q3w7", None) };
+        assert_eq!(checkout.own_branch(no_rename), None);
+        let terminal = Run { kind: "terminal".into(), ..sample_run("t-q3w7", None) };
+        assert_eq!(terminal.own_branch(no_rename), None);
+    }
+
+    /// A worktree switched onto another branch: that branch is not the run's,
+    /// and the one Agency cut still is, so neither is forgotten.
+    #[test]
+    fn own_branch_survives_a_switch_off_it() {
+        let switched = Run {
+            branch: "feature/x".into(),
+            branch_cut: Some(true),
+            own_branch: Some("agent/agent-6fgy".into()),
+            ..sample_run("agent-6fgy", None)
+        };
+        assert_eq!(switched.own_branch(no_rename), Some("agent/agent-6fgy"));
+        assert!(!switched.on_own_branch(no_rename));
+    }
+
+    /// Rows from before `branch_cut` was recorded: the names Agency gives a
+    /// branch it cut count as ours, and so does any name git's reflog shows
+    /// was renamed from `agent/<id>`. Anything else is left in the repo.
+    #[test]
+    fn own_branch_reads_legacy_rows_by_name_and_reflog() {
+        let legacy = |id: &str, branch: &str| Run { branch: branch.into(), ..sample_run(id, None) };
+        // As cut, and after the first-prompt rename that broke AGE-246.
+        assert!(legacy("agent-6fgy", "agent/agent-6fgy").own_branch(no_rename).is_some());
+        assert!(legacy("agent-6fgy", "agent/hm-i-think-something-broke-6fgy")
+            .own_branch(no_rename)
+            .is_some());
+        assert!(legacy("x", "agent/x").own_branch(no_rename).is_some());
+        // A PR head, and a hand rename git has no record of.
+        assert!(legacy("review-pr-7-q3w7", "feature/login").own_branch(no_rename).is_none());
+        assert!(legacy("agent-6fgy", "agent/other-run-ab12").own_branch(no_rename).is_none());
+        assert!(legacy("agent-6fgy", "fix/pairing-6fgy").own_branch(no_rename).is_none());
+        // A hand rename (AGE-148, AGE-238) the reflog vouches for, asked
+        // about the name the branch was cut under.
+        let asked = std::cell::RefCell::new(None);
+        let hand_renamed = legacy("agent-6fgy", "fix/pairing");
+        let renamed = hand_renamed.own_branch(|from| {
+            *asked.borrow_mut() = Some(from.to_string());
+            from == "agent/agent-6fgy"
+        });
+        assert_eq!(renamed, Some("fix/pairing"));
+        assert_eq!(asked.into_inner().as_deref(), Some("agent/agent-6fgy"));
+        // A recorded answer is never second-guessed by the reflog.
+        let pr = Run { branch_cut: Some(false), ..legacy("agent-6fgy", "fix/pairing") };
+        assert_eq!(pr.own_branch(|_| true), None);
+    }
+
+    #[test]
+    fn branch_cut_survives_the_round_trip_and_moves_with_the_branch() {
+        let dir = tempdir().unwrap();
+        let reg = Registry::open(&dir.path().join("a.db")).unwrap();
+        reg.insert_run(&Run { branch_cut: Some(false), ..sample_run("r-1", None) }).unwrap();
+        reg.insert_run(&sample_run("r-2", None)).unwrap();
+        assert_eq!(reg.get_run("r-1").unwrap().unwrap().branch_cut, Some(false));
+        assert_eq!(reg.get_run("r-2").unwrap().unwrap().branch_cut, None);
+
+        reg.set_run_branch("r-2", "fix/pairing", Some("fix/pairing")).unwrap();
+        let moved = reg.get_run("r-2").unwrap().unwrap();
+        assert_eq!(moved.own_branch(no_rename), Some("fix/pairing"));
+        assert_eq!(moved.own_branch, None, "on its own branch, which `branch` already names");
+
+        reg.set_run_branch("r-2", "feature/x", Some("fix/pairing")).unwrap();
+        let switched = reg.get_run("r-2").unwrap().unwrap();
+        assert_eq!(switched.own_branch(no_rename), Some("fix/pairing"));
+        assert!(!switched.on_own_branch(no_rename));
+
+        reg.set_run_branch("r-2", "feature/x", None).unwrap();
+        assert_eq!(reg.get_run("r-2").unwrap().unwrap().own_branch(|_| true), None);
     }
 
     #[test]
@@ -2366,6 +2545,8 @@ mod tests {
             model: None,
             base_commit: None,
             primary_closed_at: None,
+            branch_cut: None,
+            own_branch: None,
             pin_rank: None,
         };
         reg.insert_run(&run).unwrap();

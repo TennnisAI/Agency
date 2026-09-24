@@ -16,6 +16,7 @@ const plan = (over: Partial<CleanupPlan>): CleanupPlan => ({
   removesWorktree: true,
   deletesBranch: false,
   keepsBranch: true,
+  leavesBranch: false,
   keepsRecord: true,
   restorable: true,
   commitsAtRisk: 0,
@@ -32,6 +33,7 @@ const cleanup = (
 ): RunCleanup => ({
   facts: {
     ownsBranch: true,
+    cutBranch: true,
     commitsAhead,
     commitsKnown: true,
     merged: false,
@@ -61,6 +63,15 @@ const merged = cleanup(
   2,
 );
 const unmerged = cleanup({}, { deletesBranch: true, keepsBranch: false, commitsAtRisk: 3 }, 3);
+// A PR head checked out for review: pushed, and not this run's to delete.
+const prHead: RunCleanup = {
+  ...cleanup(
+    { keepsBranch: false, leavesBranch: true },
+    { keepsBranch: false, leavesBranch: true },
+    2,
+  ),
+  branch: "feature/login",
+};
 
 describe("removalCopy", () => {
   it("says a merged branch goes, and why that costs nothing", () => {
@@ -93,6 +104,23 @@ describe("removalCopy", () => {
     expect(c.danger).toBe(true);
     expect(c.warning).toContain("3 commits on agent/foo");
     expect(c.warning).toContain("not on main and not on any remote");
+  });
+
+  it("leaves a branch it did not create, and says so rather than calling it safe to delete", () => {
+    for (const action of ["archive", "delete"] as const) {
+      const c = removalCopy({ ...agent, branch: "feature/login" }, action, prHead);
+      expect(c.goes.join(" ")).not.toContain("feature/login");
+      expect(c.stays.join(" ")).toContain("The feature/login branch, which Agency did not create.");
+      expect(c.stays.join(" ")).not.toContain("only copy");
+      expect(c.danger).toBe(false);
+    }
+  });
+
+  it("sets uncommitted work aside rather than committing it to a branch it did not create", () => {
+    const dirty = { ...prHead, facts: { ...prHead.facts, cutBranch: false, dirty: true } };
+    const c = removalCopy({ ...agent, branch: "feature/login" }, "archive", dirty);
+    expect(c.goes.join(" ")).toContain("set aside, on no branch, until you restore it");
+    expect(c.goes.join(" ")).not.toContain("committed to feature/login");
   });
 
   it("claims nothing about the branch before the plan has been read", () => {
@@ -203,6 +231,16 @@ describe("mergeTidyCopy", () => {
         "conversation back.",
     );
     expect(c.caveat).toBeNull();
+  });
+
+  it("does not offer to take a branch the agent did not create", () => {
+    const c = mergeTidyCopy(prHead);
+    expect(lines(c)[0]).not.toContain("feature/login");
+    expect(c.detail).toContain(
+      "The feature/login branch stays either way, since Agency did not create it.",
+    );
+    // Delete's own line agrees: it does not claim to take "all of it".
+    expect(lines(c)[1]).toBe("Delete removes all of it but the feature/login branch, the transcript included.");
   });
 
   it("does not claim a transcript it cannot see, for the agents it cannot read", () => {

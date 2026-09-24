@@ -172,6 +172,10 @@ export interface ArchivedInfo {
   // are. Null only when that branch has gone too, the one case with nothing
   // left to restore from.
   restoreBase: string | null;
+  // Agency cut this run's branch, so a restore may cut it again once it is
+  // gone. False for a PR head, and for an old run whose branch is gone with
+  // nothing left to show it was Agency's; restoreBase is then null too.
+  cutBranch: boolean;
   // There is a record to read.
   hasRecord: boolean;
   // There is a conversation to read: a transcript in a format Agency parses,
@@ -185,6 +189,9 @@ export interface ArchivedInfo {
 // the network is a dialog that hangs.
 export interface BranchFacts {
   ownsBranch: boolean;
+  // Agency cut this run's branch, so it is the run's to delete. False for a
+  // worktree on a branch that was already there, such as a PR head.
+  cutBranch: boolean;
   commitsAhead: number;
   // False when `base..branch` would not resolve, in which case commitsAhead is
   // meaningless and nothing may be treated as safe.
@@ -210,6 +217,10 @@ export interface CleanupPlan {
   removesWorktree: boolean;
   deletesBranch: boolean;
   keepsBranch: boolean;
+  // The branch stays because it was there before the run (a PR head) and is
+  // not the run's to delete, whatever it holds. Not keepsBranch, which is kept
+  // for being the only copy of work.
+  leavesBranch: boolean;
   keepsRecord: boolean;
   restorable: boolean;
   // Commits that exist nowhere but the branch about to be deleted. Zero for
@@ -715,7 +726,14 @@ export function archiveRun(id: string, onProgress?: (p: CloneProgress) => void):
   if (onProgress) onProgressChannel.onmessage = onProgress;
   return invoke<void>("archive_run", { id, onProgress: onProgressChannel });
 }
-export const restoreRun = (id: string) => invoke<RunInfo>("restore_run", { id });
+// A restored run, and what the restore could not put back (uncommitted work
+// set aside on archive that no longer applies), in words for the user. The run
+// is live either way.
+export interface RestoredRun {
+  run: RunInfo;
+  notice: string | null;
+}
+export const restoreRun = (id: string) => invoke<RestoredRun>("restore_run", { id });
 /**
  * What archiving or deleting this run would actually remove, asked of git now.
  * Read before either dialog is shown so the wording is about this branch

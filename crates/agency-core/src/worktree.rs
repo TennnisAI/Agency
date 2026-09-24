@@ -66,6 +66,90 @@ impl WorktreeManager {
         Ok(true)
     }
 
+    /// Where [`set_aside_uncommitted`](Self::set_aside_uncommitted) keeps a
+    /// run's uncommitted work: under `refs/agency`, outside `refs/heads`, so
+    /// it is on no branch and no push carries it.
+    pub fn set_aside_ref(task_id: &str) -> String {
+        format!("refs/agency/set-aside/{task_id}")
+    }
+
+    /// Save every pending change (tracked and untracked) in the task's
+    /// worktree without committing it to the branch the worktree is on.
+    /// Returns whether there was anything to save; a clean or missing worktree
+    /// is a no-op. [`take_back_uncommitted`](Self::take_back_uncommitted)
+    /// puts it back into a restored worktree.
+    ///
+    /// For a worktree on a branch Agency did not cut, where
+    /// [`commit_all_if_dirty`](Self::commit_all_if_dirty) is not an option:
+    /// archiving a PR-review run committed "WIP: uncommitted changes
+    /// auto-committed by Agency on archive" onto the PR's own head branch,
+    /// one push away from the contributor's PR.
+    pub fn set_aside_uncommitted(&self, task_id: &str) -> Result<bool> {
+        let path = self.worktrees_root().join(task_id);
+        if !path.exists() {
+            return Ok(false);
+        }
+        let dirty = Self::git_at(&path, &["status", "--porcelain"])?;
+        if dirty.trim().is_empty() {
+            return Ok(false);
+        }
+        // Staged first, so `stash create` records new files too: it takes the
+        // index and the tracked tree, and ignores what git does not track.
+        Self::git_at(&path, &["add", "-A"])?;
+        let commit = Self::git_at(
+            &path,
+            &["stash", "create", "uncommitted changes set aside by Agency on archive"],
+        )?;
+        let commit = commit.trim();
+        if commit.is_empty() {
+            bail!("git stash create saved nothing from a worktree with changes in it");
+        }
+        self.git(&["update-ref", &Self::set_aside_ref(task_id), commit])?;
+        Ok(true)
+    }
+
+    /// Put back what [`set_aside_uncommitted`](Self::set_aside_uncommitted)
+    /// saved for this task, into its freshly restored worktree, and drop the
+    /// ref. Returns whether there was anything to put back.
+    ///
+    /// All or nothing. When the changes no longer apply cleanly (the branch
+    /// moved on while the run was archived), the worktree is put back exactly
+    /// as restored, the ref is kept so nothing is lost, and the error says
+    /// where the changes are. A conflicted `stash apply` used to be left in
+    /// place: the agent resumed in a tree full of conflict markers while the
+    /// restore reported success. Call it before anything else writes into the
+    /// worktree, since undoing a failed apply cleans out untracked files.
+    pub fn take_back_uncommitted(&self, task_id: &str) -> Result<bool> {
+        let name = Self::set_aside_ref(task_id);
+        let Ok(commit) = self.git(&["rev-parse", "--verify", "-q", &name]) else {
+            return Ok(false);
+        };
+        let path = self.worktrees_root().join(task_id);
+        if let Err(e) = Self::git_at(&path, &["stash", "apply", commit.trim()]) {
+            let undone = Self::git_at(&path, &["reset", "-q", "--hard", "HEAD"])
+                .and_then(|_| Self::git_at(&path, &["clean", "-q", "-f", "-d"]));
+            if let Err(undo) = undone {
+                bail!(
+                    "the uncommitted changes set aside on archive did not apply, and are kept at \
+                     {name}; undoing the partial apply failed too, so the worktree may hold \
+                     conflict markers: {e}; {undo}"
+                );
+            }
+            bail!(
+                "the uncommitted changes set aside on archive did not apply, and are kept at \
+                 {name}: {e}"
+            );
+        }
+        self.drop_set_aside(task_id);
+        Ok(true)
+    }
+
+    /// Forget whatever was set aside for this task. Best-effort, and a no-op
+    /// when there is nothing: for a teardown that is taking the run for good.
+    pub fn drop_set_aside(&self, task_id: &str) {
+        let _ = self.git(&["update-ref", "-d", &Self::set_aside_ref(task_id)]);
+    }
+
     /// Copy repo-root paths into the task's worktree. `git worktree add` only
     /// materializes tracked files, so untracked-but-needed ones (`.env` and
     /// friends, listed under `[files] copy` in `.agency/agency.toml`) must be
@@ -442,16 +526,24 @@ impl WorktreeManager {
         let _ = std::fs::remove_dir_all(&admin);
     }
 
-    /// Remove the worktree and delete its branch. Tolerant: each git step is
-    /// best-effort so it works whether or not the worktree still exists (e.g.
-    /// discarding an already-archived run), and still deletes the branch.
-    pub fn remove(&self, task_id: &str) -> Result<()> {
+    /// Remove the worktree and delete `branch`, the run's own branch, when it
+    /// has one Agency cut (`Run::own_branch`). `None` leaves every branch
+    /// alone, for a run on a branch that was already there. Tolerant: each git
+    /// step is best-effort so it works whether or not the worktree still
+    /// exists (e.g. discarding an already-archived run), and still deletes the
+    /// branch.
+    ///
+    /// The branch is passed in, not rebuilt from the id as `agent/<id>`: that
+    /// name is gone once a run's branch is renamed, and every renamed branch
+    /// outlived its run (AGE-246).
+    pub fn remove(&self, task_id: &str, branch: Option<&str>) -> Result<()> {
         let path = self.worktrees_root().join(task_id);
         let path_str = path.to_string_lossy().to_string();
         let _ = self.git(&["worktree", "remove", &path_str, "--force"]);
         self.prune_entry(task_id);
-        let branch = Self::branch_for(task_id);
-        let _ = self.git(&["branch", "-D", &branch]);
+        if let Some(branch) = branch {
+            let _ = self.git(&["branch", "-D", branch]);
+        }
         Ok(())
     }
 
@@ -485,14 +577,21 @@ impl WorktreeManager {
         Ok(Worktree { task_id: task_id.to_string(), path, branch: branch.to_string() })
     }
 
-    /// Re-create a worktree for `task_id` on its existing branch `agent/<id>`.
-    pub fn restore(&self, task_id: &str) -> Result<Worktree> {
+    /// Re-create a worktree for `task_id` on its kept `branch`.
+    ///
+    /// The branch is the one the run records, not one derived from the id.
+    /// AGE-246: a run whose branch had been renamed to describe its work
+    /// (`agent/agent-6fgy` became `agent/hm-i-think-something-broke-…-6fgy`)
+    /// failed to restore with "fatal: invalid reference: agent/agent-6fgy",
+    /// because this rebuilt `agent/<id>` while the caller had checked that the
+    /// renamed branch was still there. A run on an existing branch (a PR head)
+    /// never had an `agent/<id>` branch at all.
+    pub fn restore(&self, task_id: &str, branch: &str) -> Result<Worktree> {
         self.ensure_excluded()?;
         let path = self.worktrees_root().join(task_id);
-        let branch = Self::branch_for(task_id);
         let path_str = path.to_string_lossy().to_string();
-        self.git(&["worktree", "add", &path_str, &branch])?;
-        Ok(Worktree { task_id: task_id.to_string(), path, branch })
+        self.git(&["worktree", "add", &path_str, branch])?;
+        Ok(Worktree { task_id: task_id.to_string(), path, branch: branch.to_string() })
     }
 
     /// Re-create a worktree for `task_id` on a *fresh* `branch` cut from

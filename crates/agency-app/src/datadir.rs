@@ -131,6 +131,8 @@ mod tests {
                 model: None,
                 base_commit: None,
                 primary_closed_at: None,
+                branch_cut: None,
+                own_branch: None,
                 pin_rank: None,
             })
             .unwrap();

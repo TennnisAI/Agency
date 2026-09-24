@@ -39,6 +39,13 @@ pub struct BranchFacts {
     /// working in the project's checkout and for every terminal: there is no
     /// branch of ours to weigh and nothing of ours on disk to remove.
     pub owns_branch: bool,
+    /// The worktree is on the branch Agency cut for the run
+    /// (`Run::on_own_branch`), so it is the run's to delete. False for a
+    /// worktree on any other branch: a PR head checked out for review, or one
+    /// the worktree was switched onto in its terminal. No teardown touches
+    /// that branch, whatever it holds, and archiving sets uncommitted work
+    /// aside rather than committing it there. Default-deny, like the rest.
+    pub cut_branch: bool,
     /// Commits on the branch that the base does not have. Meaningless unless
     /// [`commits_known`](Self::commits_known) is set.
     pub commits_ahead: usize,
@@ -81,6 +88,10 @@ pub struct CleanupPlan {
     pub deletes_branch: bool,
     /// The local branch stays, because it is the only copy of work.
     pub keeps_branch: bool,
+    /// The local branch stays, because it was there before the run and is not
+    /// the run's to delete (a PR head). Not [`keeps_branch`](Self::keeps_branch):
+    /// that one is kept for what it holds, this one whatever it holds.
+    pub leaves_branch: bool,
     /// The run's record survives, readable from Archived.
     pub keeps_record: bool,
     /// The run can be brought back with a fresh worktree afterwards.
@@ -131,12 +142,36 @@ pub fn plan(facts: &BranchFacts, disposal: Disposal) -> CleanupPlan {
             removes_worktree: false,
             deletes_branch: false,
             keeps_branch: false,
+            leaves_branch: false,
             keeps_record: disposal == Disposal::Archive,
             restorable: disposal == Disposal::Archive,
             commits_at_risk: 0,
             // The changes are in the user's own checkout, where neither verb
             // touches them, so nothing here is at risk however dirty it is.
             loses_uncommitted: false,
+            safe_because: None,
+        };
+    }
+    // A worktree on a branch Agency did not cut: the worktree goes, the
+    // branch stays. Observed on PR-review runs, whose dialog said the PR's
+    // branch "goes" once it was pushed (it always is) or was kept as "the
+    // only copy of this work", when teardown never deleted it and must not.
+    // Nothing of the branch's is at risk either way. Uncommitted work in the
+    // worktree still is on delete; archiving sets it aside, off the branch.
+    //
+    // Restorable only while the branch is there. Restore recreates a missing
+    // branch of the run's own from the base, but this one was never the
+    // run's: cut from the base, a PR head came back holding none of the PR.
+    if !facts.cut_branch {
+        return CleanupPlan {
+            removes_worktree: true,
+            deletes_branch: false,
+            keeps_branch: false,
+            leaves_branch: !facts.gone,
+            keeps_record: disposal == Disposal::Archive,
+            restorable: disposal == Disposal::Archive && !facts.gone,
+            commits_at_risk: 0,
+            loses_uncommitted: facts.dirty && disposal == Disposal::Delete,
             safe_because: None,
         };
     }
@@ -165,6 +200,7 @@ pub fn plan(facts: &BranchFacts, disposal: Disposal) -> CleanupPlan {
         removes_worktree: true,
         deletes_branch,
         keeps_branch,
+        leaves_branch: false,
         keeps_record: disposal == Disposal::Archive,
         // Restoring cuts a worktree from the kept branch — or, once the archive
         // has let that branch go, from the base the work landed on, cutting the
@@ -185,6 +221,7 @@ mod tests {
     fn agent(commits_ahead: usize) -> BranchFacts {
         BranchFacts {
             owns_branch: true,
+            cut_branch: true,
             commits_ahead,
             commits_known: true,
             base_exists: true,
@@ -316,6 +353,43 @@ mod tests {
         assert!(!p.removes_worktree && !p.deletes_branch);
         assert!(!p.keeps_record);
         assert!(!p.danger());
+    }
+
+    /// A PR head checked out for review is pushed by definition, which read
+    /// as "safe to delete" and put "The <branch> branch" under what goes.
+    #[test]
+    fn a_branch_agency_did_not_cut_is_left_alone() {
+        let pr = BranchFacts { cut_branch: false, pushed: true, ..agent(2) };
+        for disposal in [Disposal::Archive, Disposal::Delete] {
+            let p = plan(&pr, disposal);
+            assert!(p.removes_worktree, "the worktree is still ours to remove");
+            assert!(p.leaves_branch && !p.deletes_branch && !p.keeps_branch);
+            assert_eq!(p.safe_because, None);
+            assert_eq!(p.commits_at_risk, 0, "nothing of the branch's is deleted");
+        }
+        assert!(plan(&pr, Disposal::Archive).restorable);
+        // Unpushed commits on it are not at risk either: the branch stays.
+        let p = plan(&BranchFacts { cut_branch: false, ..agent(4) }, Disposal::Delete);
+        assert!(!p.danger());
+    }
+
+    #[test]
+    fn uncommitted_work_on_a_branch_agency_did_not_cut_is_still_at_risk() {
+        let facts = BranchFacts { cut_branch: false, dirty: true, ..agent(0) };
+        assert!(plan(&facts, Disposal::Delete).danger());
+        assert!(!plan(&facts, Disposal::Archive).loses_uncommitted);
+    }
+
+    /// A PR head deleted after the run started: restoring would cut a branch
+    /// of the PR's name from the base, holding none of the PR.
+    #[test]
+    fn a_branch_agency_did_not_cut_is_not_restorable_once_gone() {
+        let gone = BranchFacts { cut_branch: false, gone: true, ..agent(0) };
+        let p = plan(&gone, Disposal::Archive);
+        assert!(!p.restorable);
+        assert!(!p.leaves_branch && !p.deletes_branch && !p.keeps_branch);
+        // The run's own branch, gone, still comes back from the base.
+        assert!(plan(&BranchFacts { gone: true, ..agent(0) }, Disposal::Archive).restorable);
     }
 
     #[test]

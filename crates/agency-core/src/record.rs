@@ -132,6 +132,9 @@ pub enum Outcome {
     Dropped { commits: usize },
     /// The agent committed nothing.
     Empty,
+    /// The run's worktree was on a branch Agency did not cut (a PR head, or
+    /// one it was switched onto), which no teardown touches.
+    LeftInPlace,
     /// The run worked in the project's own checkout, so it had no worktree and
     /// no branch of its own and nothing of its was removed.
     NoWorkspace { branch: String },
@@ -328,6 +331,7 @@ fn outcome_key(o: &Outcome) -> &'static str {
         Outcome::Kept { .. } => "kept",
         Outcome::Dropped { .. } => "dropped",
         Outcome::Empty => "empty",
+        Outcome::LeftInPlace => "left-in-place",
         Outcome::NoWorkspace { .. } => "in-checkout",
     }
 }
@@ -354,6 +358,9 @@ fn outcome_sentence(o: &Outcome, branch: &str) -> String {
         Outcome::Empty => {
             format!("Nothing was committed. The worktree and the `{branch}` branch were removed.")
         }
+        Outcome::LeftInPlace => format!(
+            "The worktree was removed. Agency did not create the `{branch}` branch, so it did not touch it."
+        ),
         Outcome::NoWorkspace { branch } => format!(
             "This agent worked in the project's own checkout rather than a worktree of its own. Nothing was removed, and whatever it changed is still there on `{branch}`."
         ),
@@ -473,6 +480,15 @@ mod tests {
         // The sections that still apply to such a run are not lost with it.
         assert!(md.contains("## Cost"), "{md}");
         assert!(md.contains("## Transcript"), "{md}");
+    }
+
+    #[test]
+    fn a_branch_that_was_there_before_is_not_reported_removed() {
+        let md = render(&RunRecord { outcome: Outcome::LeftInPlace, ..sample() });
+        assert!(md.contains("outcome: left-in-place"), "{md}");
+        assert!(md.contains("did not touch it"), "{md}");
+        assert!(!md.contains("there before"), "not true of a branch switched onto: {md}");
+        assert!(!md.contains("branch were removed"), "{md}");
     }
 
     #[test]

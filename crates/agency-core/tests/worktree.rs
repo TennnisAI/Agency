@@ -43,9 +43,29 @@ fn remove_keep_branch_keeps_the_branch_then_restore_recreates_worktree() {
     assert!(branch_exists(repo.path(), "agent/task-1"), "branch kept");
 
     // Restore: worktree recreated on the same branch.
-    let restored = mgr.restore("task-1").unwrap();
+    let restored = mgr.restore("task-1", "agent/task-1").unwrap();
     assert!(restored.path.exists(), "worktree recreated");
     assert_eq!(restored.branch, "agent/task-1");
+}
+
+/// AGE-246: a run whose branch was renamed while it was live restores onto
+/// the renamed branch. Restore used to rebuild `agent/<id>` and fail with
+/// "invalid reference".
+#[test]
+fn restore_uses_the_renamed_branch() {
+    let repo = init_repo();
+    let mgr = WorktreeManager::new(repo.path().to_path_buf());
+    let wt = mgr.create("task-r", "HEAD").unwrap();
+    std::fs::write(wt.path.join("work.txt"), "done").unwrap();
+    git(&wt.path, &["add", "."]);
+    git(&wt.path, &["commit", "-q", "-m", "work"]);
+    git(repo.path(), &["branch", "-m", "agent/task-r", "agent/fix-pairing-task-r"]);
+
+    mgr.remove_keep_branch("task-r").unwrap();
+    let restored = mgr.restore("task-r", "agent/fix-pairing-task-r").unwrap();
+    assert_eq!(restored.branch, "agent/fix-pairing-task-r");
+    assert_eq!(std::fs::read_to_string(restored.path.join("work.txt")).unwrap(), "done");
+    assert!(!branch_exists(repo.path(), "agent/task-r"), "no branch cut under the old name");
 }
 
 #[test]
@@ -55,8 +75,33 @@ fn remove_after_keep_branch_deletes_the_branch_without_error() {
     mgr.create("task-2", "HEAD").unwrap();
     mgr.remove_keep_branch("task-2").unwrap();
     // Discarding an archived run: worktree already gone, but the branch must go.
-    mgr.remove("task-2").unwrap();
+    mgr.remove("task-2", Some("agent/task-2")).unwrap();
     assert!(!branch_exists(repo.path(), "agent/task-2"), "branch deleted on discard");
+}
+
+/// AGE-246: discarding a run whose branch had been renamed deleted
+/// `agent/<id>`, which was already gone, and left the renamed branch behind.
+#[test]
+fn remove_deletes_the_renamed_branch() {
+    let repo = init_repo();
+    let mgr = WorktreeManager::new(repo.path().to_path_buf());
+    mgr.create("task-3", "HEAD").unwrap();
+    git(repo.path(), &["branch", "-m", "agent/task-3", "agent/fix-pairing-task-3"]);
+    mgr.remove("task-3", Some("agent/fix-pairing-task-3")).unwrap();
+    assert!(!branch_exists(repo.path(), "agent/fix-pairing-task-3"), "renamed branch deleted");
+}
+
+/// A run on a branch that was already there (a PR head) passes no branch:
+/// its worktree goes, the branch stays for whoever pushed it.
+#[test]
+fn remove_without_a_branch_keeps_every_branch() {
+    let repo = init_repo();
+    let mgr = WorktreeManager::new(repo.path().to_path_buf());
+    git(repo.path(), &["branch", "their-pr"]);
+    let wt = mgr.create_on_branch("task-4", "their-pr").unwrap();
+    mgr.remove("task-4", None).unwrap();
+    assert!(!wt.path.exists(), "worktree removed");
+    assert!(branch_exists(repo.path(), "their-pr"), "the PR's branch is not ours to delete");
 }
 
 #[test]
@@ -89,7 +134,7 @@ fn remove_deletes_worktree() {
     let repo = init_repo();
     let mgr = WorktreeManager::new(repo.path().to_path_buf());
     let wt = mgr.create("task-1", "HEAD").unwrap();
-    mgr.remove("task-1").unwrap();
+    mgr.remove("task-1", Some("agent/task-1")).unwrap();
     assert!(!wt.path.exists());
     assert!(mgr.list().unwrap().is_empty());
 }
@@ -119,7 +164,7 @@ fn commit_all_if_dirty_preserves_work_on_the_branch() {
 
     // Archive+restore round-trip brings the work back.
     mgr.remove_keep_branch("task-wip").unwrap();
-    let restored = mgr.restore("task-wip").unwrap();
+    let restored = mgr.restore("task-wip", "agent/task-wip").unwrap();
     assert_eq!(std::fs::read_to_string(restored.path.join("untracked.txt")).unwrap(), "new");
 }
 
@@ -337,7 +382,7 @@ fn remove_deregisters_only_its_own_worktree() {
     std::fs::rename(repo.path().join("wt").join("feature"), repo.path().join("wt").join("moved"))
         .unwrap();
 
-    mgr.remove("task-1").unwrap();
+    mgr.remove("task-1", Some("agent/task-1")).unwrap();
 
     assert!(
         !repo.path().join(".git").join("worktrees").join("task-1").is_dir(),
@@ -370,11 +415,91 @@ fn remove_deregisters_its_own_worktree_recorded_by_a_relative_gitdir() {
     git(repo.path(), &["worktree", "lock", ".agency/worktrees/task-1"]);
     std::fs::remove_dir_all(repo.path().join(".agency").join("worktrees").join("task-1")).unwrap();
 
-    mgr.remove("task-1").unwrap();
+    mgr.remove("task-1", Some("agent/task-1")).unwrap();
 
     assert!(
         !admin.is_dir(),
         "a relative gitdir still names our own worktree: the entry must go, \
          or a later create for the same id has no name left to use"
     );
+}
+
+fn rev(dir: &std::path::Path, r: &str) -> String {
+    let out = Command::new("git").args(["rev-parse", r]).current_dir(dir).output().unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// Archiving a PR-review run with uncommitted changes committed a WIP onto
+/// the PR's own head branch. Set aside instead: the branch does not move,
+/// and restoring brings the changes back, new files included.
+#[test]
+fn set_aside_keeps_uncommitted_work_off_the_branch_and_restore_takes_it_back() {
+    let repo = init_repo();
+    let mgr = WorktreeManager::new(repo.path().to_path_buf());
+    git(repo.path(), &["branch", "their-pr"]);
+    let before = rev(repo.path(), "their-pr");
+    let wt = mgr.create_on_branch("task-5", "their-pr").unwrap();
+    std::fs::write(wt.path.join("README.md"), "edited").unwrap();
+    std::fs::write(wt.path.join("new.txt"), "new").unwrap();
+
+    assert!(mgr.set_aside_uncommitted("task-5").unwrap());
+    mgr.remove("task-5", None).unwrap();
+    assert_eq!(rev(repo.path(), "their-pr"), before, "the PR's branch did not move");
+
+    let restored = mgr.restore("task-5", "their-pr").unwrap();
+    assert!(mgr.take_back_uncommitted("task-5").unwrap());
+    assert_eq!(std::fs::read_to_string(restored.path.join("README.md")).unwrap(), "edited");
+    assert_eq!(std::fs::read_to_string(restored.path.join("new.txt")).unwrap(), "new");
+    // Taken back once: the ref is gone and a second restore finds nothing.
+    assert!(!branch_exists(repo.path(), &WorktreeManager::set_aside_ref("task-5")));
+    assert!(!mgr.take_back_uncommitted("task-5").unwrap());
+}
+
+/// The PR head moved on while the run was archived, over the same line. The
+/// apply conflicted and was left in place, conflict markers and all, under a
+/// restore that reported success. Now the worktree is as restored, and the
+/// changes wait at the ref.
+#[test]
+fn set_aside_that_no_longer_applies_leaves_the_worktree_clean_and_the_ref_kept() {
+    let repo = init_repo();
+    let mgr = WorktreeManager::new(repo.path().to_path_buf());
+    git(repo.path(), &["branch", "their-pr"]);
+    let wt = mgr.create_on_branch("task-7", "their-pr").unwrap();
+    std::fs::write(wt.path.join("README.md"), "ours").unwrap();
+    std::fs::write(wt.path.join("new.txt"), "new").unwrap();
+    assert!(mgr.set_aside_uncommitted("task-7").unwrap());
+    mgr.remove("task-7", None).unwrap();
+
+    // The contributor pushes a change to the same file.
+    git(repo.path(), &["checkout", "-q", "their-pr"]);
+    std::fs::write(repo.path().join("README.md"), "theirs").unwrap();
+    git(repo.path(), &["commit", "-q", "-am", "upstream"]);
+    git(repo.path(), &["checkout", "-q", "-"]);
+
+    let restored = mgr.restore("task-7", "their-pr").unwrap();
+    let err = mgr.take_back_uncommitted("task-7").unwrap_err().to_string();
+    assert!(err.contains(&WorktreeManager::set_aside_ref("task-7")), "{err}");
+    assert_eq!(std::fs::read_to_string(restored.path.join("README.md")).unwrap(), "theirs");
+    assert!(!restored.path.join("new.txt").exists(), "nothing half-applied");
+    let status = Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(&restored.path)
+        .output()
+        .unwrap();
+    assert!(status.stdout.is_empty(), "{}", String::from_utf8_lossy(&status.stdout));
+    let kept = Command::new("git")
+        .args(["rev-parse", "--verify", "-q", &WorktreeManager::set_aside_ref("task-7")])
+        .current_dir(repo.path())
+        .status()
+        .unwrap();
+    assert!(kept.success(), "the set-aside changes are kept");
+}
+
+#[test]
+fn set_aside_is_a_no_op_on_a_clean_worktree() {
+    let repo = init_repo();
+    let mgr = WorktreeManager::new(repo.path().to_path_buf());
+    mgr.create("task-6", "HEAD").unwrap();
+    assert!(!mgr.set_aside_uncommitted("task-6").unwrap());
+    assert!(!branch_exists(repo.path(), &WorktreeManager::set_aside_ref("task-6")));
 }

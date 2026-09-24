@@ -11,8 +11,8 @@ use tauri::State;
 
 use crate::state::{
     AppState, DiscardSummary, FilesConfigDto, KnowledgeConfigDto, McpImportResult,
-    MergeConflictSpawn, MergePreview, ProviderSettings, RaceAttempt, RunInfo, RunScriptConfigDto,
-    RunScriptStatusDto, RunSessionInfo,
+    MergeConflictSpawn, MergePreview, ProviderSettings, RaceAttempt, RestoredRun, RunInfo,
+    RunScriptConfigDto, RunScriptStatusDto, RunSessionInfo,
 };
 
 #[derive(Clone, Serialize)]
@@ -2306,8 +2306,8 @@ pub async fn archive_run(
 }
 
 #[tauri::command]
-pub fn restore_run(state: State<'_, AppState>, id: String) -> Result<RunInfo, String> {
-    state.restore_run(&id).map_err(|e| e.to_string())
+pub fn restore_run(state: State<'_, AppState>, id: String) -> Result<RestoredRun, String> {
+    state.restore_run_reporting(&id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

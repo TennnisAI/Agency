@@ -1,7 +1,17 @@
 import { describe, expect, it } from "vitest";
 import { RunInfo, RunSessionInfo } from "../api";
 import { PRIMARY_TAB } from "./focusTab";
-import { runTabs, showsTabs, sidePanelTab, tabCountLabel, tabLabel, tabsTitle } from "./runTabs";
+import { runStatus } from "./runstate";
+import {
+  runTabs,
+  showsTabs,
+  sidePanelTab,
+  tabCountLabel,
+  tabLabel,
+  tabsTitle,
+  waitingElsewhere,
+  waitingElsewhereLabel,
+} from "./runTabs";
 
 const session = (
   id: string,
@@ -87,6 +97,62 @@ describe("runTabs", () => {
     const extra = runTabs(r, 0).slice(1);
     expect(extra.map((t) => t.cls)).toEqual(["live", "exited", "exited", "exited"]);
     expect(extra.map((t) => t.status)).toEqual(["running", "finished", "failed", "not running"]);
+  });
+});
+
+// Clicking "1 waiting" kept a tile whose dot said "working", and nothing on the
+// tile said which of its tabs was the one asking (AGE-249).
+describe("waitingElsewhere", () => {
+  const waiting = { state: "running" } as const;
+  const elsewhere = (r: RunInfo) => waitingElsewhere(r, runTabs(r, 0), runStatus(r, 0).cls);
+
+  it("names a waiting tab behind a working first agent", () => {
+    const r = run({
+      activity: { state: "working", since: 0 },
+      sessions: [session("r1--2", "codex", waiting, { state: "waiting", since: 0 })],
+    });
+    expect(elsewhere(r).map((t) => t.label)).toEqual(["Codex · 2"]);
+    expect(waitingElsewhereLabel(elsewhere(r))).toBe("1 other tab waiting");
+  });
+
+  it("leaves out the tab the dot already shows waiting", () => {
+    const r = run({
+      sessions: [
+        session("r1--2", "codex", waiting, { state: "waiting", since: 0 }),
+        session("r1--3", "codex", waiting, { state: "waiting", since: 0 }),
+      ],
+    });
+    expect(elsewhere(r).map((t) => t.session)).toEqual(["r1--2", "r1--3"]);
+    expect(waitingElsewhereLabel(elsewhere(r))).toBe("2 other tabs waiting");
+  });
+
+  it("is nothing when only the dot's own tab is waiting", () => {
+    const r = run({ sessions: [session("r1--2", "codex", waiting, { state: "idle", since: 0 })] });
+    expect(elsewhere(r)).toEqual([]);
+    expect(waitingElsewhereLabel(elsewhere(r))).toBeNull();
+  });
+
+  // With the first tab closed the dot shows the lowest-numbered tab still
+  // running (AGE-184), which is not the first row when an earlier one exited.
+  it("takes a closed first tab's stand-in as the dot's tab", () => {
+    const r = run({
+      primaryClosed: true,
+      sessions: [
+        session("r1--2", "codex", { state: "exited", code: 0 }),
+        session("r1--3", "codex", waiting, { state: "waiting", since: 0 }),
+        session("r1--4", "codex", waiting, { state: "waiting", since: 0 }),
+      ],
+    });
+    expect(elsewhere(r).map((t) => t.session)).toEqual(["r1--4"]);
+  });
+
+  it("lists the stand-in too when the dot itself does not read waiting", () => {
+    const r = run({
+      primaryClosed: true,
+      activity: { state: "idle", since: 0 },
+      sessions: [session("r1--2", "codex", waiting, { state: "waiting", since: 0 })],
+    });
+    expect(elsewhere(r).map((t) => t.session)).toEqual(["r1--2"]);
   });
 });
 

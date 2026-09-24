@@ -8902,6 +8902,13 @@ impl AppState {
             created_at: now_secs(),
         };
         self.launch_run_session(&session.id, &run, &session.agent, prompt)?;
+        // A tab born with a prompt is mid-turn, as `create_run` holds for a run.
+        // Only a typed Enter armed a tab, so the conflict, rebase and PR agents
+        // Agency opens as tabs finished their one turn as "idle" and never
+        // reached the overview's waiting count (AGE-249).
+        if !prompt.trim().is_empty() {
+            self.prompted.lock().unwrap().insert(session.id.clone());
+        }
         self.registry.lock().unwrap().insert_run_session(&session)?;
         Ok(self.run_session_info(&session))
     }

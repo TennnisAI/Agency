@@ -74,6 +74,22 @@ export function countAgents(runs: RunInfo[], pred: (a: AgentLive) => boolean = (
 }
 
 /**
+ * What an overview project heading says it holds: its agents, every tab
+ * counted, or failing that its terminal runs.
+ *
+ * Falling back on "N terminals" whenever no agent was counted also named a
+ * workspace whose first agent was closed and whose only tabs left are
+ * terminals, which is an agent run, not a terminal one (AGE-249).
+ */
+export function projectAgentsLabel(runs: RunInfo[]): string {
+  const agents = countAgents(runs);
+  if (agents > 0) return `${agents} ${agents === 1 ? "agent" : "agents"}`;
+  const terminals = runs.filter((r) => r.kind === "terminal").length;
+  if (terminals > 0) return `${terminals} ${terminals === 1 ? "terminal" : "terminals"}`;
+  return "no agents";
+}
+
+/**
  * A run with an agent asking for the user right now, in any of its tabs.
  * What the tiles badge and the "waiting" filter keeps.
  */

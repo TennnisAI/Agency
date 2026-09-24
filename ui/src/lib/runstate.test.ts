@@ -15,6 +15,7 @@ import {
   pinDropSide,
   pinIndex,
   pinnedFirst,
+  projectAgentsLabel,
   runAgents,
   runStatus,
 } from "./runstate";
@@ -256,6 +257,30 @@ describe("runAgents", () => {
     const runs = [waitingRun(), waitingRun({ sessions: [tab(2, "waiting")] })];
     expect(countAgents(runs)).toBe(3);
     expect(countAgents(runs, agentWaiting)).toBe(3);
+  });
+});
+
+describe("projectAgentsLabel", () => {
+  it("counts every agent tab", () => {
+    expect(projectAgentsLabel([waitingRun({ sessions: [tab(2, "working")] })])).toBe("2 agents");
+    expect(projectAgentsLabel([waitingRun(), waitingRun({ kind: "terminal" })])).toBe("1 agent");
+  });
+
+  it("names a project of terminal runs by its terminals", () => {
+    const t = waitingRun({ kind: "terminal" });
+    expect(projectAgentsLabel([t])).toBe("1 terminal");
+    expect(projectAgentsLabel([t, t])).toBe("2 terminals");
+  });
+
+  // An agent run whose first tab was closed, with only terminal tabs left, is
+  // still an agent run: it used to be counted among the terminals.
+  it("does not call an agent run with only terminal tabs left a terminal", () => {
+    const r = waitingRun({ primaryClosed: true, sessions: [tab(2, null, "shell")] });
+    expect(projectAgentsLabel([r])).toBe("no agents");
+  });
+
+  it("says so when there is nothing at all", () => {
+    expect(projectAgentsLabel([])).toBe("no agents");
   });
 });
 

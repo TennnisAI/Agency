@@ -11,11 +11,13 @@ import {
   matchesRunFilter,
   parseRunFilter,
   pinnedFirst,
+  projectAgentsLabel,
   runStatus,
 } from "../lib/runstate";
 import AgentNote from "./AgentNote";
 import { runTabs, showsTabs } from "../lib/runTabs";
 import TabCount from "./TabCount";
+import WaitingTabs from "./WaitingTabs";
 import { useRunMenu } from "../hooks/useRunMenu";
 import { notifyProjectsChanged } from "../lib/projectEvents";
 import RepoSetupDialog from "./RepoSetupDialog";
@@ -346,7 +348,6 @@ export default function HomeView({
             (a, b) => Number(b.status.state === "running") - Number(a.status.state === "running"),
           ),
         );
-        const agents = countAgents(runs);
         const live = countAgents(runs, agentWorking);
         const waiting = countAgents(runs, agentWaiting);
         // A filter overrides the fold: "show me what is waiting" has to show
@@ -371,12 +372,7 @@ export default function HomeView({
                 </span>
                 <span className="home-group-name">{p.name}</span>
                 <span className="home-group-meta">
-                  {/* A project holding only terminal runs has tiles but no agents. */}
-                  {runs.length === 0
-                    ? "no agents"
-                    : agents > 0
-                      ? `${agents} agent${agents === 1 ? "" : "s"}`
-                      : `${runs.length} terminal${runs.length === 1 ? "" : "s"}`}
+                  {projectAgentsLabel(runs)}
                   {live > 0 && <span className="home-live"> · {live} working</span>}
                   {waiting > 0 && <span className="home-attn"> · {waiting} waiting</span>}
                 </span>
@@ -501,6 +497,7 @@ function HomeTile({ run, onOpen, onChanged }: { run: RunInfo; onOpen: () => void
       <div className="tile-foot">
         <AttentionMarker run={run} onChanged={onChanged} />
         <span title={st.title}>{st.text}</span>
+        <WaitingTabs run={run} tabs={tabs} dot={st.cls} />
       </div>
       {runMenu}
     </div>

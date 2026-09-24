@@ -1203,6 +1203,8 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
   font-size: 11px;
   color: var(--o0);
 }
+/* Another tab in the workspace is waiting on you, which the dot does not show. */
+.tile-foot .tabs-waiting { color: var(--awaiting); }
 .tile-close-wrap { display: flex; flex-shrink: 0; margin-left: auto; }
 .tile:hover .tile-close { opacity: 1; }
 

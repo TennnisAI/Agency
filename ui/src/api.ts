@@ -1593,6 +1593,18 @@ export interface MergeConflictSpawn {
 }
 export const spawnMergeConflictAgent = (taskId: string, agent?: string) =>
   invoke<MergeConflictSpawn>("spawn_merge_conflict_agent", { taskId, agent: agent ?? null });
+// "Fix with an agent" after a failed Rebase & Sync (AGE-245). `taskId` is the
+// git panel's token, a run or `project:<id>`; `output` is the error the panel
+// showed, which the agent's prompt quotes. A live agent in that tree gets a new
+// tab (`sessionId`); a checkout with none gets a run of its own. `queued` as
+// in MergeConflictSpawn.
+export interface SyncFixAgent {
+  run: RunInfo;
+  sessionId: string | null;
+  queued: boolean;
+}
+export const spawnSyncFixAgent = (taskId: string, agent: string, output: string) =>
+  invoke<SyncFixAgent>("spawn_sync_fix_agent", { taskId, agent, output });
 
 export interface Hunk {
   header: string;

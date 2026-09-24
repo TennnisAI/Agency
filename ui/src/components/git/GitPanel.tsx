@@ -19,6 +19,7 @@ import ReviewComments from "./ReviewComments";
 import BranchBar from "./BranchBar";
 import GitSections from "./GitSections";
 import GitOutputModal from "./GitOutputModal";
+import SyncFixDialog from "./SyncFixDialog";
 import Resizer from "../Resizer";
 import { usePaneWidth } from "../../hooks/usePaneWidth";
 import { useGitOp, gitOp, setGitOp, isCancelled } from "./ops";
@@ -84,6 +85,11 @@ function GitRepoPanel({
   // When a Sync finds the branch diverged from upstream, prompt the user to
   // rebase-and-sync rather than silently merging or failing with a raw error.
   const [divergedPrompt, setDivergedPrompt] = useState(false);
+  // The error a Rebase & Sync failed with, while it is still the one on show:
+  // it is what the "Fix with an agent" offer hands over (AGE-245). The dialog
+  // opens by itself once; after that the banner carries the offer.
+  const [syncFailure, setSyncFailure] = useState<string | null>(null);
+  const [syncFixOpen, setSyncFixOpen] = useState(false);
   // After Undo Last Commit, the undone message is restored into the commit box.
   const [restoreMessage, setRestoreMessage] = useState<{ text: string; nonce: number } | null>(null);
   const leftPane = usePaneWidth("git-full-left", 360, 300, 720);
@@ -274,13 +280,24 @@ function GitRepoPanel({
   // push. The rebase names itself in the bar (it runs before the push, so
   // `runPush`'s own phase would be a lie while it works); Cancel is live
   // throughout, and is simply a no-op until the push it can kill starts.
+  //
+  // A failure here usually leaves the branch mid-rebase on a conflict, which is
+  // the state least worth leaving the user alone in, so it offers an agent to
+  // finish the job. Not on Cancel, and not on the git-identity form: both
+  // leave no error behind to hand over.
   const rebaseAndSync = useCallback(async () => {
     setDivergedPrompt(false);
-    await runPush("Synced (rebased)", async () => {
+    setSyncFailure(null);
+    const ok = await runPush("Synced (rebased)", async () => {
       setPushProgress({ phase: "Rebasing…", percent: null, detail: "" });
       await gitPullRebase(taskId);
       setPushProgress({ phase: "Starting push…", percent: null, detail: "" });
     });
+    const failed = ok ? "" : gitOp(taskId).error;
+    if (failed) {
+      setSyncFailure(failed);
+      setSyncFixOpen(true);
+    }
   }, [runPush, taskId, setPushProgress]);
 
   const undoCommit = () => act(async () => {
@@ -358,6 +375,9 @@ function GitRepoPanel({
     errorLines.find((l) => !/failed:?$/i.test(l)) ??
     errorLines[0] ?? fullError;
   const errorHasDetail = fullError.trim() !== errorSummary;
+  // Only while the banner still shows the sync's own failure: any later action
+  // replaces the error, and the offer describes that one no longer.
+  const syncFixable = !!syncFailure && actionError === syncFailure;
   const errorBanner = fullError && (
     <div className="git-error" role="alert">
       <span className="git-error-glyph">!</span>
@@ -365,6 +385,10 @@ function GitRepoPanel({
       {errorHasDetail && (
         <button className="git-iconbtn git-error-more" title="View full output"
           onClick={() => setOutputText(fullError)}>Output</button>
+      )}
+      {syncFixable && (
+        <button className="git-iconbtn git-error-more" title="Start an agent to finish the rebase and push"
+          onClick={() => setSyncFixOpen(true)}>Fix with agent</button>
       )}
       <button className="git-iconbtn" title="Dismiss" aria-label="Dismiss error"
         onClick={() => { setGitOp(taskId, { error: "" }); setError(""); }}>✕</button>
@@ -388,6 +412,12 @@ function GitRepoPanel({
       onConfirm={rebaseAndSync}
       onCancel={() => setDivergedPrompt(false)}
     />
+  );
+  // Before the output modal in the tree, so "Output" opens on top of it.
+  const syncFixDialog = syncFixOpen && syncFixable && (
+    <SyncFixDialog taskId={taskId} summary={errorSummary} output={syncFailure ?? ""}
+      onShowOutput={errorHasDetail ? () => setOutputText(fullError) : undefined}
+      onClose={() => setSyncFixOpen(false)} />
   );
   const historyPanel = (
     <HistoryPanel taskId={taskId} base={branch?.base ?? null} reloadKey={historyKey} onAct={act}
@@ -415,6 +445,7 @@ function GitRepoPanel({
         {errorBanner}
         {sections}
         {allowComments && <ReviewComments key={commentsKey} taskId={taskId} />}
+        {syncFixDialog}
         {outputModal}
         {divergedDialog}
       </aside>
@@ -457,6 +488,7 @@ function GitRepoPanel({
           {!selection && <div className="diff-empty">Select a file or commit.</div>}
         </div>
       </div>
+      {syncFixDialog}
       {outputModal}
       {divergedDialog}
     </div>

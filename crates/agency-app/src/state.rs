@@ -787,6 +787,17 @@ pub struct PrAgentRun {
     pub session_id: Option<String>,
 }
 
+/// Where the agent sent to finish a failed Rebase & Sync landed. `session_id`
+/// is the tab it opened in an existing run, None when it got a run of its own;
+/// `queued` as in [`MergeConflictSpawn`].
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncFixAgent {
+    pub run: RunInfo,
+    pub session_id: Option<String>,
+    pub queued: bool,
+}
+
 /// Why a PR can't be merged, in the terms the user needs to act on it: which
 /// branch is stuck on which base, and the files a merge would collide in.
 ///
@@ -1014,6 +1025,97 @@ fn compose_merge_conflict(repo: &Path, branch: &str, base: &str, status: &[Strin
          merge once nothing is left unmerged.",
         repo = repo.display(),
     )
+}
+
+/// How much of git's output a sync-fix prompt quotes. A conflicted pull prints
+/// a CONFLICT line per file and a paragraph of hints after them, and the prompt
+/// can be typed into a session rather than passed as argv; the files are listed
+/// separately anyway, so the head of the output is the part worth keeping.
+const SYNC_FIX_OUTPUT_LINES: usize = 12;
+const SYNC_FIX_OUTPUT_CHARS: usize = 1200;
+
+/// What the agent sent to finish a failed Rebase & Sync is told: where it is,
+/// what Agency ran, what git said, and how far the rebase got.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SyncFailure<'a> {
+    branch: &'a str,
+    upstream: Option<&'a str>,
+    /// The failed op's error, as the git panel showed it.
+    output: &'a str,
+    /// Whether the rebase stopped partway, as opposed to never starting (a
+    /// dirty tree, a failed fetch) or finishing with the push the part that
+    /// failed.
+    rebasing: bool,
+    /// Unmerged paths in `git status --short` form.
+    status: &'a [String],
+    /// The project's own checkout rather than a worktree of the run's own.
+    checkout: bool,
+}
+
+/// The prompt for an agent sent to finish a Rebase & Sync that failed
+/// (AGE-245). Single line by construction, like [`compose_merge_conflict`]: a
+/// CLI that takes no prompt in its argv is handed this through the send queue,
+/// which submits on the first newline.
+fn compose_sync_fix(f: &SyncFailure) -> String {
+    let upstream = f.upstream.unwrap_or("its upstream");
+    let lines: Vec<&str> = f.output.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let joined = lines[..lines.len().min(SYNC_FIX_OUTPUT_LINES)].join(" | ");
+    let mut said: String = joined.chars().take(SYNC_FIX_OUTPUT_CHARS).collect();
+    if said.is_empty() {
+        said = "(no output)".to_string();
+    } else if lines.len() > SYNC_FIX_OUTPUT_LINES || said.len() < joined.len() {
+        said.push_str(" …");
+    }
+    let mut p = format!(
+        "Rebase & Sync failed on branch {branch} and I need you to finish it. Agency ran `git \
+         pull --rebase` to replay this branch's commits on top of {upstream}, then `git push`. \
+         Git said: {said}. ",
+        branch = f.branch,
+    );
+    if f.rebasing {
+        let files = if f.status.is_empty() {
+            "git reports no unmerged files, so check `git status` yourself".to_string()
+        } else if f.status.len() > MERGE_CONFLICT_FILE_CAP {
+            format!(
+                "{} and {} more (run `git status` for the full list)",
+                f.status[..MERGE_CONFLICT_FILE_CAP].join(" | "),
+                f.status.len() - MERGE_CONFLICT_FILE_CAP,
+            )
+        } else {
+            f.status.join(" | ")
+        };
+        p.push_str(&format!(
+            "The rebase stopped partway and is still in progress here. Unmerged paths: {files}. \
+             Resolve each conflict keeping both sides' intent (read enough of each file to know \
+             what the other change was for), `git add` each file you fix, and `git rebase \
+             --continue` until the rebase completes. "
+        ));
+    } else {
+        p.push_str(
+            "No rebase is in progress, so either it never started or it finished and the push is \
+             what failed. Find out which from the output and `git status`, fix the cause, and \
+             run whichever of the two steps did not complete. ",
+        );
+    }
+    if f.checkout {
+        // The same rule the PR conflict agent works under in this tree: the
+        // project checkout is where the user works, so what is uncommitted in
+        // it is theirs until they say otherwise.
+        p.push_str(
+            "This workspace is the project's own checkout, not an isolated worktree, so treat \
+             the working tree as someone else's. ",
+        );
+    }
+    p.push_str(&format!(
+        "Do not discard, reset or stash uncommitted changes to get the rebase going; if they are \
+         what is in the way, stop and ask me. Do not switch to a merge, and do not run `git \
+         rebase --abort` without telling me why. Once the branch is rebased, run the project's \
+         build or tests if it has quick ones, then `git push`. Do not force-push: after the \
+         rebase this branch's commits sit on top of {upstream}, so a plain push fast-forwards \
+         it, and if it is still rejected, stop and tell me what git says. Tell me what you had \
+         to decide."
+    ));
+    p
 }
 
 /// Socket the terminal daemon listens on, derived from the app data dir.
@@ -3997,12 +4099,19 @@ impl AppState {
         let workspace = if !spec.worktree {
             // A project folder with no repository has no branch to name, so the
             // run records none — the same shape terminals have always had. Only
-            // a real checkout that is mid-rebase or otherwise off any branch is
-            // an error, since there the branch is missing unexpectedly.
+            // a real checkout that is off any branch is an error, since there
+            // the branch is missing unexpectedly.
+            //
+            // A checkout stopped mid-rebase is on a branch in every sense but
+            // HEAD's: the rebase detached HEAD and names the branch in its own
+            // state. Refusing it meant the agent sent to finish a failed Rebase
+            // & Sync in the project checkout could not start (AGE-245), since
+            // that checkout is always mid-rebase by the time one is wanted.
             let branch = if require_gitless_known(&repo)? {
                 String::new()
             } else {
                 agency_core::merge::current_branch(&repo)
+                    .or_else(|| agency_core::git::rebase_in_progress(&repo)?.branch)
                     .ok_or_else(|| anyhow!("the project checkout is not on a branch, so an agent can't work in it directly; create a worktree instead"))?
             };
             agency_core::worktree::Worktree { task_id: id.clone(), path: repo.clone(), branch }
@@ -10493,13 +10602,113 @@ impl AppState {
         // was handed nothing" about an agent that had just been launched with
         // the conflict in its argv, and queued a second copy to be typed in on
         // top of whatever it was doing ten seconds later.
-        let queued = crate::agent_catalog::prompt_delivery(&session.agent)
-            == crate::agent_catalog::PromptDelivery::Unsupported
-            && !self.profile_places_prompt(&session.agent);
+        let queued = self.prompt_needs_queue(&session.agent);
         if queued {
             self.queue_send(&session.id, "merge conflict", prompt)?;
         }
         Ok(MergeConflictSpawn { session, queued })
+    }
+
+    /// Whether a session launched on `agent` was handed nothing in its argv, so
+    /// its opening prompt has to go through the send queue instead (see
+    /// [`Self::spawn_merge_conflict_agent`] for how that was found out).
+    fn prompt_needs_queue(&self, agent: &str) -> bool {
+        crate::agent_catalog::prompt_delivery(agent)
+            == crate::agent_catalog::PromptDelivery::Unsupported
+            && !self.profile_places_prompt(agent)
+    }
+
+    /// Start an agent on a Rebase & Sync that failed (AGE-245). `token` is the
+    /// git panel's, so this covers every tree that panel shows: a run's
+    /// worktree, and the project checkout behind a terminal or the project
+    /// itself. `output` is the error the panel showed, quoted in the prompt so
+    /// the agent starts from what git said rather than from rerunning it.
+    ///
+    /// A live agent run in that tree hosts the work as a new tab, for the same
+    /// reason a PR's does: the fix has to land on that branch, and two agents
+    /// in one tree should at least be in one strip. A checkout with no agent in
+    /// it gets one of its own, on the checked-out branch.
+    pub fn spawn_sync_fix_agent(
+        &self,
+        token: &str,
+        agent: &str,
+        output: &str,
+    ) -> Result<SyncFixAgent> {
+        let target = self.git_target(token)?;
+        let dir = target.path;
+        let project_id = self.project_of(token)?;
+        let repo = self.project_repo(&project_id)?;
+        let rebase = agency_core::git::rebase_in_progress(&dir);
+        let branch = agency_core::merge::current_branch(&dir)
+            .or_else(|| rebase.as_ref()?.branch.clone())
+            .ok_or_else(|| {
+                anyhow!("this checkout is not on a branch, so there is no sync to finish")
+            })?;
+        let upstream = agency_core::git::upstream_of(&dir, &branch);
+        let status = conflict_status(&dir);
+        let prompt = compose_sync_fix(&SyncFailure {
+            branch: &branch,
+            upstream: upstream.as_deref(),
+            output,
+            rebasing: rebase.is_some(),
+            status: &status,
+            checkout: target.primary.is_some(),
+        });
+        // The panel's own run first: on a checkout several agents can share,
+        // the one the user was looking at is the one they meant.
+        let host = {
+            let runs = self.registry.lock().unwrap().list_runs(&project_id)?;
+            let live =
+                |r: &&agency_core::registry::Run| r.kind == "agent" && r.archived_at.is_none();
+            runs.iter()
+                .filter(live)
+                .find(|r| r.id == token)
+                .or_else(|| {
+                    runs.iter().filter(live).find(|r| same_dir(&workspace_dir(&repo, r), &dir))
+                })
+                .cloned()
+        };
+        if let Some(run) = host {
+            let session = self.start_run_session(&run.id, Some(agent), &prompt)?;
+            let queued = self.prompt_needs_queue(&session.agent);
+            if queued {
+                self.queue_send(&session.id, "sync fix", prompt)?;
+            }
+            return Ok(SyncFixAgent {
+                run: self.run_info(&run),
+                session_id: Some(session.id),
+                queued,
+            });
+        }
+        // Only the checkout can be without an agent: a worktree is cut for one,
+        // and an archived run's is not somewhere to start new work.
+        if target.primary.is_none() {
+            bail!("this workspace has no live agent to open a tab in; restore it first");
+        }
+        let base =
+            agency_core::merge::resolve_target(None, &repo).unwrap_or_else(|_| "main".into());
+        let run = self.create_run_spec(
+            NewRunSpec {
+                project_id: &project_id,
+                prompt: &prompt,
+                agent,
+                model: None,
+                base: &base,
+                merge_target: None,
+                race_id: None,
+                title: Some(format!("Finish syncing {branch}")),
+                existing_branch: None,
+                loop_config: None,
+                issue_id: None,
+                worktree: false,
+            },
+            &mut |_| {},
+        )?;
+        let queued = self.prompt_needs_queue(agent);
+        if queued {
+            self.queue_send(&run.id, "sync fix", prompt)?;
+        }
+        Ok(SyncFixAgent { run, session_id: None, queued })
     }
 
     /// Whether `agent`'s profile puts the prompt in the argv itself, which is
@@ -12035,6 +12244,64 @@ mod tests {
             &["a.rs".to_string()],
         );
         assert!(p.contains("One file conflicts: a.rs."), "{p}");
+    }
+
+    fn sync_failure<'a>(output: &'a str, status: &'a [String]) -> super::SyncFailure<'a> {
+        super::SyncFailure {
+            branch: "feat/w",
+            upstream: Some("origin/feat/w"),
+            output,
+            rebasing: true,
+            status,
+            checkout: false,
+        }
+    }
+
+    #[test]
+    fn sync_fix_prompt_is_one_line_and_names_the_stopped_rebase() {
+        let status = vec!["UU src/a.rs".to_string()];
+        let out = "git pull --rebase failed:\nCONFLICT (content): Merge conflict in src/a.rs\n\n\
+                   error: could not apply 1a2b3c... add a";
+        let p = super::compose_sync_fix(&sync_failure(out, &status));
+        // Queued for a CLI that takes no argv prompt, and the queue submits on
+        // the first newline.
+        assert!(!p.contains('\n'), "{p}");
+        assert!(p.contains("on top of origin/feat/w"), "{p}");
+        assert!(p.contains("Merge conflict in src/a.rs | error: could not apply"), "{p}");
+        assert!(p.contains("Unmerged paths: UU src/a.rs."), "{p}");
+        assert!(p.contains("`git rebase --continue`"), "{p}");
+        assert!(p.contains("Do not force-push"), "{p}");
+        assert!(!p.contains("project's own checkout"), "{p}");
+    }
+
+    #[test]
+    fn sync_fix_prompt_without_a_rebase_says_to_find_which_step_failed() {
+        let f = super::SyncFailure {
+            rebasing: false,
+            upstream: None,
+            checkout: true,
+            ..sync_failure("error: cannot pull with rebase: You have unstaged changes.", &[])
+        };
+        let p = super::compose_sync_fix(&f);
+        assert!(p.contains("No rebase is in progress"), "{p}");
+        assert!(!p.contains("Unmerged paths"), "{p}");
+        assert!(p.contains("on top of its upstream"), "{p}");
+        assert!(p.contains("project's own checkout"), "{p}");
+        assert!(p.contains("stop and ask me"), "{p}");
+    }
+
+    #[test]
+    fn sync_fix_prompt_caps_long_output() {
+        let out: String = (0..40).map(|i| format!("hint: line {i}\n")).collect();
+        let p = super::compose_sync_fix(&sync_failure(&out, &[]));
+        assert!(p.contains("hint: line 11 …"), "{p}");
+        assert!(!p.contains("line 12"), "{p}");
+        let long = "x".repeat(5000);
+        let p = super::compose_sync_fix(&sync_failure(&long, &[]));
+        assert!(p.contains(&format!("{} …", "x".repeat(super::SYNC_FIX_OUTPUT_CHARS))), "{p}");
+        assert!(!p.contains(&"x".repeat(super::SYNC_FIX_OUTPUT_CHARS + 1)), "{p}");
+        let p = super::compose_sync_fix(&sync_failure("  \n ", &[]));
+        assert!(p.contains("Git said: (no output)."), "{p}");
     }
 
     #[test]

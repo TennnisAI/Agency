@@ -1526,6 +1526,19 @@ pub fn spawn_merge_conflict_agent(
     state.spawn_merge_conflict_agent(&task_id, agent.as_deref()).map_err(|e| e.to_string())
 }
 
+/// "Fix with an agent" after a failed Rebase & Sync (AGE-245): start an agent
+/// on the branch the git panel is showing, told what git said. `task_id` is
+/// the panel's token, so the project checkout is covered as well as a run.
+#[tauri::command]
+pub async fn spawn_sync_fix_agent(
+    state: State<'_, AppState>,
+    task_id: String,
+    agent: String,
+    output: String,
+) -> Result<crate::state::SyncFixAgent, String> {
+    state.spawn_sync_fix_agent(&task_id, &agent, &output).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn git_parse_diff(
     state: State<'_, AppState>,

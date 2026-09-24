@@ -30,6 +30,7 @@ import RemovalSummary, { BranchProbeNote } from "./RemovalSummary";
 import ProgressReadout from "./ProgressReadout";
 import { useRuns } from "../store/runs";
 import { useModalKeys } from "../hooks/useModalKeys";
+import { useBackdropDismiss } from "../hooks/useBackdropDismiss";
 import { useHushed } from "../lib/hushed";
 
 // Remote-tracking refs as a readable list: `origin/agent/x`, or
@@ -582,6 +583,7 @@ export default function MergeModal({
     if (!prUnknown) mergeBtn.current?.focus();
   }, [prUnknown]);
 
+  const backdrop = useBackdropDismiss(() => { if (!busy && !gitBusy && !confirmDelete) onClose(); });
   return (
     // Click-outside-to-close is off while the delete confirm is up. The confirm
     // covers this overlay now, so a click can no longer fall through to it, but
@@ -590,7 +592,7 @@ export default function MergeModal({
     // agent they had just asked to delete.
     <div
       className="settings-overlay anchor-top"
-      onClick={() => { if (!busy && !gitBusy && !confirmDelete) onClose(); }}
+      {...backdrop}
     >
       <div
         className="merge-modal"

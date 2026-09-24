@@ -4,6 +4,7 @@ import { agentLabel, nextRaceModel } from "../agents";
 import { effectiveMergeTarget } from "../lib/branchTargets";
 import { useRuns } from "../store/runs";
 import { useModalKeys } from "../hooks/useModalKeys";
+import { useBackdropDismiss } from "../hooks/useBackdropDismiss";
 import { useAgentModels } from "../hooks/useAgentModels";
 import ModelSelect from "./ModelSelect";
 
@@ -50,6 +51,7 @@ export default function RaceDialog({ onClose, issue, issueLabel }: {
   const [error, setError] = useState("");
 
   useModalKeys(onClose);
+  const backdrop = useBackdropDismiss(onClose);
 
   useEffect(() => {
     listProfiles()
@@ -122,7 +124,7 @@ export default function RaceDialog({ onClose, issue, issueLabel }: {
   }
 
   return (
-    <div className="settings-overlay" onClick={(e) => { e.stopPropagation(); onClose(); }}>
+    <div className="settings-overlay" {...backdrop} onClick={(e) => { e.stopPropagation(); backdrop.onClick(e); }}>
       <div className="merge-modal race-dialog" role="dialog" aria-modal="true" aria-label="Race agents" onClick={(e) => e.stopPropagation()}>
         <div className="settings-head">
           <h2>Race agents</h2>

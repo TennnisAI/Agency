@@ -14,6 +14,7 @@ import { DocsIndex, buildIndex } from "../lib/docsIndex";
 import { fileRootKey, requestOpenFile } from "../lib/openFile";
 import { useListNav } from "../hooks/useListNav";
 import { useModalKeys } from "../hooks/useModalKeys";
+import { useBackdropDismiss } from "../hooks/useBackdropDismiss";
 import { baseName } from "../lib/filePath";
 
 // One palette row, whatever provider it came from. Extends the fuzzy-filter
@@ -63,6 +64,7 @@ export default function CommandPalette({
   const [projects, setProjects] = useState<Project[] | null>(null);
   const [query, setQuery] = useState("");
   useModalKeys(onClose);
+  const backdrop = useBackdropDismiss(onClose);
 
   const { mode, term } = parsePaletteQuery(query);
 
@@ -389,7 +391,7 @@ export default function CommandPalette({
   })();
 
   return (
-    <div className="palette-overlay" onClick={onClose}>
+    <div className="palette-overlay" {...backdrop}>
       <div className="palette" onClick={(e) => e.stopPropagation()}>
         <input
           className="palette-input"

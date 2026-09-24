@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { DocsIndex } from "../lib/docsIndex";
 import { useListNav } from "../hooks/useListNav";
 import { useModalKeys } from "../hooks/useModalKeys";
+import { useBackdropDismiss } from "../hooks/useBackdropDismiss";
 
 interface Row {
   kind: "note" | "create";
@@ -25,6 +26,7 @@ export default function DocsQuickSwitcher({
 }) {
   const [query, setQuery] = useState("");
   useModalKeys(onClose);
+  const backdrop = useBackdropDismiss(onClose);
 
   const rows = useMemo<Row[]>(() => {
     const q = query.trim().toLowerCase();
@@ -57,7 +59,7 @@ export default function DocsQuickSwitcher({
   const { hi, setHi, onKey } = useListNav(rows.length, (i) => activate(rows[i]), query);
 
   return (
-    <div className="palette-overlay" onClick={onClose}>
+    <div className="palette-overlay" {...backdrop}>
       <div className="palette" onClick={(e) => e.stopPropagation()}>
         <input
           className="palette-input"

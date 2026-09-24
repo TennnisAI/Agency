@@ -785,20 +785,27 @@ textarea.settings-input { min-height: 64px; resize: vertical; }
 .kbd-hints { font-size: 11px; color: var(--o0); opacity: 0.75; }
 .statusbar-left { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .statusbar-git { display: flex; align-items: center; gap: 7px; min-width: 0; }
-/* The branch of whatever working tree you're in, and the unpushed count for the
-   project's checkout. Buttons, not labels: when commits are waiting for origin
-   this is the one thing on screen saying so, and it should go where Push is. */
-.statusbar-branch, .statusbar-unpushed {
-  display: inline-flex; align-items: center;
+/* The project's checkout with what it has to push and pull, then the selected
+   agent's branch. Buttons, not labels: when commits are waiting on either side
+   this is the one thing on screen saying so, and it should go where Push and
+   Pull are. */
+.statusbar-branch {
+  display: inline-flex; align-items: center; gap: 5px;
   background: none; border: none; padding: 0; cursor: pointer;
-  font-family: var(--mono); font-size: 10.5px;
+  font-family: var(--mono); font-size: 10.5px; color: var(--o0);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.statusbar-branch { color: var(--o0); }
 .statusbar-branch:hover { background: none; color: var(--text); }
-/* Commits sitting on the checkout that origin hasn't seen. */
-.statusbar-unpushed { color: var(--blue); font-weight: 600; }
-.statusbar-unpushed:hover { background: none; text-decoration: underline; }
+/* The checkout's name never gives way to the agent's branch: it is the one
+   that is always there. */
+.statusbar-checkout { flex-shrink: 0; }
+.statusbar-run { display: block; min-width: 0; }
+/* Commits on the checkout that origin hasn't seen, and the reverse. */
+.statusbar-ahead { color: var(--blue); font-weight: 600; }
+.statusbar-behind { color: var(--peach); font-weight: 600; }
+.statusbar-sync-note { opacity: .7; }
+.statusbar-checkout:hover .statusbar-ahead,
+.statusbar-checkout:hover .statusbar-behind { text-decoration: underline; }
 /* Body */
 .body { flex: 1; display: flex; min-height: 0; }
 /* Sidebar host: mounted at all times, collapsed to width 0 when hidden. The

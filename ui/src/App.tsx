@@ -682,8 +682,8 @@ function Shell() {
         runId={selectedRunId}
         projectId={selectedProjectId}
         onOpenSource={() => setTab("source")}
-        // Unpushed commits are on the checkout's branch, so this has to leave
-        // the agent first: the grid is what points source control there. The
+        // Push and Pull for the checkout act on its branch, so this has to
+        // leave the agent first: the grid is what points source control there. The
         // run stays focused, so the Focus button goes straight back to it.
         onOpenCheckout={() => { setView("grid"); setTab("source"); }}
       />

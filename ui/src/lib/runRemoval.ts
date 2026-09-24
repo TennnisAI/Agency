@@ -125,6 +125,8 @@ export function removalCopy(
     goes.push(`The ${branch} branch${safeClause(plan, base)}.`);
   } else if (plan?.keepsBranch) {
     stays.push(`The ${branch} branch${heldClause(cleanup?.facts.commitsAhead ?? 0)}.`);
+  } else if (plan?.leavesBranch) {
+    stays.push(`The ${branch} branch, which was there before this agent started.`);
   }
   // With no plan read, nothing is said about the branch at all. The dialog
   // shows that it is still checking; a guess that reads as a promise is worse
@@ -236,6 +238,8 @@ export function mergeTidyCopy(cleanup: RunCleanup | null): MergeTidyCopy {
   // exactly the drift this module exists to prevent.
   if (branch && archive.keepsBranch && remove.deletesBranch) {
     parts.push(`Only deleting takes the ${branch} branch with it.`);
+  } else if (branch && archive.leavesBranch) {
+    parts.push(`The ${branch} branch stays either way, since this agent did not create it.`);
   } else if (takesBranch) {
     const why = safeReason(archive, base);
     if (why) parts.push(`The ${branch} branch goes either way, since it ${why}.`);

@@ -7305,7 +7305,12 @@ impl AppState {
             return BranchFacts::default();
         }
         let Ok(repo) = self.project_repo(&run.project_id) else {
-            return BranchFacts { owns_branch: true, gone: true, ..BranchFacts::default() };
+            return BranchFacts {
+                owns_branch: true,
+                cut_branch: run.cut_branch().is_some(),
+                gone: true,
+                ..BranchFacts::default()
+            };
         };
         let base = agency_core::merge::resolve_target(run.merge_target.as_deref(), &repo)
             .unwrap_or_else(|_| run.base.clone());
@@ -7313,6 +7318,7 @@ impl AppState {
         if !agency_core::merge::branch_exists(&repo, &run.branch) {
             return BranchFacts {
                 owns_branch: true,
+                cut_branch: run.cut_branch().is_some(),
                 gone: true,
                 base_exists,
                 ..BranchFacts::default()
@@ -7322,6 +7328,7 @@ impl AppState {
         let worktree = workspace_dir(&repo, run);
         BranchFacts {
             owns_branch: true,
+            cut_branch: run.cut_branch().is_some(),
             commits_ahead: ahead.unwrap_or(0),
             commits_known: ahead.is_some(),
             merged: agency_core::merge::is_merged(&repo, &run.branch, &base),
@@ -7673,6 +7680,8 @@ impl AppState {
         // branch that had already landed.
         let outcome = if !run.worktree {
             Outcome::NoWorkspace { branch: run.branch.clone() }
+        } else if plan.leaves_branch {
+            Outcome::LeftInPlace
         } else if plan.keeps_branch {
             Outcome::Kept { commits: facts.commits_ahead }
         } else if facts.merged {
@@ -8197,6 +8206,9 @@ impl AppState {
                     );
                 };
                 manager.recreate_on(id, &run.branch, &start)?;
+                // Whatever the branch was before, this one Agency just cut, so
+                // it is the run's to delete when the run is torn down again.
+                self.registry.lock().unwrap().set_run_branch(id, &run.branch, true)?;
             }
             if let Err(e) = manager.copy_essentials(id, &config.files.copy) {
                 log::warn!("copying essentials into restored worktree {id}: {e}");

@@ -185,6 +185,9 @@ export interface ArchivedInfo {
 // the network is a dialog that hangs.
 export interface BranchFacts {
   ownsBranch: boolean;
+  // Agency cut this run's branch, so it is the run's to delete. False for a
+  // worktree on a branch that was already there, such as a PR head.
+  cutBranch: boolean;
   commitsAhead: number;
   // False when `base..branch` would not resolve, in which case commitsAhead is
   // meaningless and nothing may be treated as safe.
@@ -210,6 +213,10 @@ export interface CleanupPlan {
   removesWorktree: boolean;
   deletesBranch: boolean;
   keepsBranch: boolean;
+  // The branch stays because it was there before the run (a PR head) and is
+  // not the run's to delete, whatever it holds. Not keepsBranch, which is kept
+  // for being the only copy of work.
+  leavesBranch: boolean;
   keepsRecord: boolean;
   restorable: boolean;
   // Commits that exist nowhere but the branch about to be deleted. Zero for

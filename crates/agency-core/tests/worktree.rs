@@ -455,6 +455,46 @@ fn set_aside_keeps_uncommitted_work_off_the_branch_and_restore_takes_it_back() {
     assert!(!mgr.take_back_uncommitted("task-5").unwrap());
 }
 
+/// The PR head moved on while the run was archived, over the same line. The
+/// apply conflicted and was left in place, conflict markers and all, under a
+/// restore that reported success. Now the worktree is as restored, and the
+/// changes wait at the ref.
+#[test]
+fn set_aside_that_no_longer_applies_leaves_the_worktree_clean_and_the_ref_kept() {
+    let repo = init_repo();
+    let mgr = WorktreeManager::new(repo.path().to_path_buf());
+    git(repo.path(), &["branch", "their-pr"]);
+    let wt = mgr.create_on_branch("task-7", "their-pr").unwrap();
+    std::fs::write(wt.path.join("README.md"), "ours").unwrap();
+    std::fs::write(wt.path.join("new.txt"), "new").unwrap();
+    assert!(mgr.set_aside_uncommitted("task-7").unwrap());
+    mgr.remove("task-7", None).unwrap();
+
+    // The contributor pushes a change to the same file.
+    git(repo.path(), &["checkout", "-q", "their-pr"]);
+    std::fs::write(repo.path().join("README.md"), "theirs").unwrap();
+    git(repo.path(), &["commit", "-q", "-am", "upstream"]);
+    git(repo.path(), &["checkout", "-q", "-"]);
+
+    let restored = mgr.restore("task-7", "their-pr").unwrap();
+    let err = mgr.take_back_uncommitted("task-7").unwrap_err().to_string();
+    assert!(err.contains(&WorktreeManager::set_aside_ref("task-7")), "{err}");
+    assert_eq!(std::fs::read_to_string(restored.path.join("README.md")).unwrap(), "theirs");
+    assert!(!restored.path.join("new.txt").exists(), "nothing half-applied");
+    let status = Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(&restored.path)
+        .output()
+        .unwrap();
+    assert!(status.stdout.is_empty(), "{}", String::from_utf8_lossy(&status.stdout));
+    let kept = Command::new("git")
+        .args(["rev-parse", "--verify", "-q", &WorktreeManager::set_aside_ref("task-7")])
+        .current_dir(repo.path())
+        .status()
+        .unwrap();
+    assert!(kept.success(), "the set-aside changes are kept");
+}
+
 #[test]
 fn set_aside_is_a_no_op_on_a_clean_worktree() {
     let repo = init_repo();

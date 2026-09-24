@@ -473,7 +473,8 @@ impl Registry {
             conn.execute("ALTER TABLE runs ADD COLUMN primary_closed_at INTEGER", [])?;
         }
         // Left NULL on existing rows: which of them Agency cut is read from the
-        // branch name instead (`Run::cut_branch`), since nothing recorded it.
+        // branch name and git's reflog instead (`Run::own_branch`), since
+        // nothing recorded it.
         if !column_exists(&conn, "runs", "branch_cut")? {
             conn.execute("ALTER TABLE runs ADD COLUMN branch_cut INTEGER", [])?;
         }

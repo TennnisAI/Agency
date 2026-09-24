@@ -172,6 +172,10 @@ export interface ArchivedInfo {
   // are. Null only when that branch has gone too, the one case with nothing
   // left to restore from.
   restoreBase: string | null;
+  // Agency cut this run's branch, so a restore may cut it again once it is
+  // gone. False for a PR head, and for an old run whose branch is gone with
+  // nothing left to show it was Agency's; restoreBase is then null too.
+  cutBranch: boolean;
   // There is a record to read.
   hasRecord: boolean;
   // There is a conversation to read: a transcript in a format Agency parses,
@@ -717,7 +721,14 @@ export function archiveRun(id: string, onProgress?: (p: CloneProgress) => void):
   if (onProgress) onProgressChannel.onmessage = onProgress;
   return invoke<void>("archive_run", { id, onProgress: onProgressChannel });
 }
-export const restoreRun = (id: string) => invoke<RunInfo>("restore_run", { id });
+// A restored run, and what the restore could not put back (uncommitted work
+// set aside on archive that no longer applies), in words for the user. The run
+// is live either way.
+export interface RestoredRun {
+  run: RunInfo;
+  notice: string | null;
+}
+export const restoreRun = (id: string) => invoke<RestoredRun>("restore_run", { id });
 /**
  * What archiving or deleting this run would actually remove, asked of git now.
  * Read before either dialog is shown so the wording is about this branch

@@ -3931,6 +3931,68 @@ fn deleting_a_project_takes_a_branch_renamed_in_the_worktree() {
     assert!(!agency_core::merge::branch_exists(&repo, "fix/pairing"), "renamed branch leaked");
 }
 
+/// Rewrite run `id`'s row as one from before `branch_cut` was recorded, the
+/// shape every run dispatched by an earlier version has.
+fn make_legacy(dir: &tempfile::TempDir, id: &str) {
+    let reg = agency_core::registry::Registry::open(&dir.path().join("agency.db")).unwrap();
+    let run = reg.get_run(id).unwrap().unwrap();
+    reg.delete_run(id).unwrap();
+    reg.insert_run(&agency_core::registry::Run { branch_cut: None, own_branch: None, ..run })
+        .unwrap();
+}
+
+/// An old row renamed by hand once, then again through Agency: ownership was
+/// asked of the reflog after `git branch -m` had moved it off the recorded
+/// name, so the row was written as not Agency's, and the branch outlived
+/// every teardown after.
+#[test]
+fn a_second_rename_of_an_old_runs_branch_keeps_it_agencys() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, repo, _, id, own, _) = one_run_project(&dir);
+    assert_eq!(own, format!("agent/{id}"), "the reflog is asked about agent/<id>");
+    state.rename_run_branch(&id, "fix/pairing").unwrap();
+    make_legacy(&dir, &id);
+
+    state.rename_run_branch(&id, "fix/other").unwrap();
+    state.discard_run(&id).unwrap();
+    assert!(!agency_core::merge::branch_exists(&repo, "fix/other"), "the run's own branch leaked");
+}
+
+/// The same, renamed the second time in the run's terminal.
+#[test]
+fn an_old_runs_branch_renamed_twice_in_the_worktree_stays_agencys() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, repo, _, id, _, wt) = one_run_project(&dir);
+    state.rename_run_branch(&id, "fix/pairing").unwrap();
+    make_legacy(&dir, &id);
+    git_in(&wt, &["branch", "-m", "fix/other"]);
+
+    assert_eq!(state.merge_preview(&id).unwrap().branch, "fix/other", "still followed");
+    state.discard_run(&id).unwrap();
+    assert!(!agency_core::merge::branch_exists(&repo, "fix/other"), "the run's own branch leaked");
+}
+
+/// An old row whose hand-renamed branch went with the archive took the reflog
+/// that vouched for it. The archive list offered Restore all the same, and
+/// the restore then refused; now both say the same, and neither says Agency
+/// did not create the branch, which it did.
+#[test]
+fn the_archive_does_not_offer_to_cut_again_a_branch_it_cannot_show_was_its_own() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, repo, project, id, _, _) = one_run_project(&dir);
+    state.rename_run_branch(&id, "fix/pairing").unwrap();
+    make_legacy(&dir, &id);
+    state.archive_run(&id).unwrap();
+    assert!(!agency_core::merge::branch_exists(&repo, "fix/pairing"), "merged, so it went");
+
+    let listed = state.list_archived_runs(&project).unwrap();
+    let archived = listed[0].archived.as_ref().unwrap();
+    assert!(!archived.cut_branch);
+    assert_eq!(archived.restore_base, None, "Restore is not offered");
+    let err = state.restore_run(&id).unwrap_err().to_string();
+    assert!(err.contains("no record of creating it"), "{err}");
+}
+
 #[test]
 fn renaming_a_branch_refuses_names_git_or_the_project_will_not_take() {
     let dir = tempfile::tempdir().unwrap();

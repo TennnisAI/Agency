@@ -695,8 +695,16 @@ pub struct ArchivedInfo {
     /// With `branch_kept` false, the branch a restore would cut the run's
     /// branch afresh from — the base its work went into. `None` only when that
     /// branch has gone too, which is the one archive nothing can be restored
-    /// from; the list disables Restore on exactly that.
+    /// from; the list disables Restore on exactly that. Also `None` for a
+    /// branch Agency has no record of creating, which a restore does not cut
+    /// again (see `cut_branch`).
     pub restore_base: Option<String>,
+    /// Agency cut this run's branch (`Run::on_own_branch`), so a restore may
+    /// cut it again once it is gone. False for a PR head, and for a run from
+    /// before this was recorded whose branch is gone with its reflog: there is
+    /// nothing left to prove it was ours. The Restore button offered those,
+    /// and `restore_run` then refused them.
+    pub cut_branch: bool,
     /// There is a record file to read.
     pub has_record: bool,
     /// There is a conversation to read: a transcript in a format we parse,
@@ -705,6 +713,15 @@ pub struct ArchivedInfo {
     /// existed can have this and no record, which is why it is asked
     /// separately.
     pub has_conversation: bool,
+}
+
+/// A restored run, and what the restore could not put back, in words for the
+/// user. The run is live either way: a notice is not a failure.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoredRun {
+    pub run: RunInfo,
+    pub notice: Option<String>,
 }
 
 /// A run's conversation as the archive viewer renders it.
@@ -2076,13 +2093,6 @@ fn workspace_dir(repo: &Path, run: &agency_core::registry::Run) -> std::path::Pa
     }
 }
 
-/// Where a restore cuts this run's branch afresh when the branch itself is
-/// gone: the branch its work was merged into, if that is still in the repo.
-///
-/// The merge target first, since that is where the run's commits actually went;
-/// `run.base` second, for a run that never named one. `None` when neither is in
-/// the repo any more — the only archive left that cannot be restored, and the
-/// only one whose Restore button is disabled.
 /// The branch Agency cut for `run` under its current name, with git's reflog
 /// asked about a row too old to say (`Run::own_branch`).
 fn own_branch<'a>(repo: &Path, run: &'a agency_core::registry::Run) -> Option<&'a str> {
@@ -2147,6 +2157,13 @@ fn remove_run_worktree(
     Ok(())
 }
 
+/// Where a restore cuts this run's branch afresh when the branch itself is
+/// gone: the branch its work was merged into, if that is still in the repo.
+///
+/// The merge target first, since that is where the run's commits actually went;
+/// `run.base` second, for a run that never named one. `None` when neither is in
+/// the repo any more, which leaves nothing to restore from. Only the run's own
+/// branch is cut again: `list_archived_runs` and `restore_run` check that first.
 fn restore_start_point(repo: &Path, run: &agency_core::registry::Run) -> Option<String> {
     agency_core::merge::resolve_target(run.merge_target.as_deref(), repo)
         .ok()
@@ -3810,6 +3827,14 @@ impl AppState {
             // outlive it, and with the row gone nothing else would ever prune
             // them. After the row, so nothing can queue a capture behind this.
             self.prune_checkpoints(&repo, &run.id);
+        }
+        // What archiving set aside for this project's archived runs. The sweep
+        // above takes live runs only, so these refs outlived the project, with
+        // no row left in the sidebar to restore or discard them from.
+        let archived = self.registry.lock().unwrap().list_archived_runs(id)?;
+        let manager = WorktreeManager::new(repo.clone());
+        for run in &archived {
+            manager.drop_set_aside(&run.id);
         }
         step(on_progress, "Cleaning up", "");
         {
@@ -8233,7 +8258,14 @@ impl AppState {
     /// Restore an archived run: re-create its worktree on the kept branch and
     /// clear `archived_at`. The agent is not auto-started.
     pub fn restore_run(&self, id: &str) -> Result<RunInfo> {
+        self.restore_run_reporting(id).map(|r| r.run)
+    }
+
+    /// [`restore_run`](Self::restore_run), with what the restore could not put
+    /// back said to the user rather than only to the log.
+    pub fn restore_run_reporting(&self, id: &str) -> Result<RestoredRun> {
         let run = self.run_record(id)?;
+        let mut notice = None;
         let repo = self.project_repo(&run.project_id)?;
         self.checkpoints.revive(id);
         // Belt and braces: archive_run now ends loops, but rows archived
@@ -8268,11 +8300,16 @@ impl AppState {
                 // Only the run's own branch is Agency's to cut again. A PR
                 // head cut from the base came back with the PR's name and none
                 // of its commits, and a later delete would then have taken it.
+                //
+                // "Agency did not create it" was not true of a run from before
+                // that was recorded, renamed by hand: its branch, gone, took
+                // the reflog that could have vouched for it. "No record" is
+                // true of both.
                 if !on_own_branch(&repo, &run) {
                     bail!(
-                        "'{}' is gone, and Agency did not create it, so it cannot cut it again; \
-                         bring the branch back (fetch it, say) and restore then. Its record is \
-                         still in the archive.",
+                        "'{}' is gone, and Agency has no record of creating it, so it will not \
+                         cut it again; bring the branch back (fetch it, say) and restore then. \
+                         Its record is still in the archive.",
                         run.branch
                     );
                 }
@@ -8288,13 +8325,24 @@ impl AppState {
                 // failed write left a worktree no retry could add again.
                 manager.recreate_on(id, &run.branch, &start)?;
             }
-            if let Err(e) = manager.copy_essentials(id, &config.files.copy) {
-                log::warn!("copying essentials into restored worktree {id}: {e}");
-            }
             // What archiving set aside rather than commit to a branch Agency
-            // did not cut. One that no longer applies is kept, not dropped.
+            // did not cut. First, into the worktree as git made it: undoing an
+            // apply that fails cleans out untracked files, essentials included.
+            // One that no longer applies is kept, not dropped, and the user is
+            // told where: a line in the log was all a restore that quietly lost
+            // their changes used to leave behind.
             if let Err(e) = manager.take_back_uncommitted(id) {
                 log::warn!("restore {id}: {e:#}");
+                let at = WorktreeManager::set_aside_ref(id);
+                notice = Some(format!(
+                    "Your uncommitted changes from before archiving no longer apply cleanly to \
+                     {}, so the agent is back without them. They are kept at {at}; run \"git \
+                     stash apply {at}\" in its terminal to merge them by hand.",
+                    run.branch
+                ));
+            }
+            if let Err(e) = manager.copy_essentials(id, &config.files.copy) {
+                log::warn!("copying essentials into restored worktree {id}: {e}");
             }
         }
         // Reallocate the port block if another active run claimed it while this
@@ -8355,7 +8403,7 @@ impl AppState {
         // is racing it.
         self.request_checkpoint(id, agency_core::checkpoint::Kind::RunStart);
         let refreshed = self.run_record(id)?;
-        Ok(self.run_info(&refreshed))
+        Ok(RestoredRun { run: self.run_info(&refreshed), notice })
     }
 
     /// The project's archived runs, each carrying what its archive still holds.
@@ -8374,15 +8422,19 @@ impl AppState {
                 let branch_kept = repo
                     .as_ref()
                     .is_some_and(|repo| agency_core::merge::branch_exists(repo, &r.branch));
+                // No git call for a row that recorded it, which is every row
+                // written since; only an older one asks the reflog.
+                let cut_branch = repo.as_ref().is_some_and(|repo| on_own_branch(repo, r));
                 info.archived = Some(ArchivedInfo {
                     branch_kept,
                     // Only asked when it decides something: with the branch
                     // still here the restore uses it, and this is a second git
                     // call per row in a list that is drawn on every open.
                     restore_base: match (branch_kept, repo.as_ref()) {
-                        (false, Some(repo)) => restore_start_point(repo, r),
+                        (false, Some(repo)) if cut_branch => restore_start_point(repo, r),
                         _ => None,
                     },
+                    cut_branch,
                     has_record: repo
                         .as_ref()
                         .is_some_and(|repo| agency_core::record::path(repo, &r.id).exists()),
@@ -10010,9 +10062,15 @@ impl AppState {
                  branch first if the published name is the problem"
             );
         }
+        // Asked before the rename: an old row is answered from the reflog of
+        // `run.branch`, and after `git branch -m` that name has none. Asked
+        // after, a legacy run hand-renamed once was recorded as not Agency's
+        // on its second rename, for good.
+        let own =
+            own_branch(&repo, &run)
+                .map(|o| if o == run.branch { new.clone() } else { o.to_string() });
         agency_core::merge::rename_branch(&repo, &run.branch, &new)?;
-        let own = own_branch(&repo, &run).map(|o| if o == run.branch { new.as_str() } else { o });
-        let recorded = self.registry.lock().unwrap().set_run_branch(id, &new, own);
+        let recorded = self.registry.lock().unwrap().set_run_branch(id, &new, own.as_deref());
         if let Err(e) = recorded {
             // Put git back rather than leave the two disagreeing: the registry
             // is what merge, PR and teardown all read, so a half-done rename
@@ -10089,13 +10147,23 @@ impl AppState {
         // instead made a user's `feature/x` Agency's to delete once
         // `agent/<id>` was deleted after switching to it, and forgot
         // `agent/<id>` whenever a switch left it standing.
-        let own = own_branch(&repo, &run).map(|o| {
-            if o == run.branch && agency_core::merge::renamed_from(&repo, &adopted, o) {
-                adopted.clone()
-            } else {
-                o.to_string()
-            }
-        });
+        //
+        // An old row is answered from the reflog, of `adopted` as well as the
+        // recorded name: a rename in the terminal moved the reflog there, and
+        // asking only the recorded name, gone by then, recorded a legacy run
+        // hand-renamed once as not Agency's after its second rename.
+        let own = run
+            .own_branch(|from| {
+                agency_core::merge::renamed_from(&repo, &run.branch, from)
+                    || agency_core::merge::renamed_from(&repo, &adopted, from)
+            })
+            .map(|o| {
+                if o == run.branch && agency_core::merge::renamed_from(&repo, &adopted, o) {
+                    adopted.clone()
+                } else {
+                    o.to_string()
+                }
+            });
         if let Err(e) = self.registry.lock().unwrap().set_run_branch(id, &adopted, own.as_deref()) {
             log::warn!("run {id}: couldn't record its worktree's branch {adopted}: {e:#}");
             return Ok(run);

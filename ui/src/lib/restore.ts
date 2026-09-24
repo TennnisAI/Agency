@@ -12,10 +12,13 @@ import { RunInfo } from "../api";
  * conversation was rescued into the archive.
  *
  * `restoreBase` is the backend's answer to "what would we cut it from instead",
- * so there are three cases and only the last one disables anything.
+ * so there are three cases and only the last one disables anything. That last
+ * one has two causes the tooltip tells apart: the base is gone too, or the
+ * branch is one Agency has no record of creating (a PR head), which it does
+ * not cut again under that name.
  */
 export type RestoreRun = Pick<RunInfo, "worktree" | "branch"> & {
-  archived?: Pick<NonNullable<RunInfo["archived"]>, "branchKept" | "restoreBase"> | null;
+  archived?: Pick<NonNullable<RunInfo["archived"]>, "branchKept" | "restoreBase" | "cutBranch"> | null;
 };
 
 export function restorable(run: RestoreRun): boolean {
@@ -35,6 +38,9 @@ export function restoreTitle(run: RestoreRun): string {
   const base = run.archived?.restoreBase;
   if (base) {
     return `Restore: cut ${run.branch} again from ${base}, where this run's work landed, and resume the conversation in it`;
+  }
+  if (run.archived && !run.archived.cutBranch) {
+    return `Nothing to restore: ${run.branch} is gone, and Agency has no record of creating it. Bring the branch back, then restore.`;
   }
   return `Nothing to restore: ${run.branch} is gone, and so is the branch it was based on`;
 }

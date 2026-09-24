@@ -109,22 +109,37 @@ impl WorktreeManager {
     }
 
     /// Put back what [`set_aside_uncommitted`](Self::set_aside_uncommitted)
-    /// saved for this task, into its worktree, and drop the ref. Returns
-    /// whether there was anything to put back. When the changes no longer
-    /// apply cleanly the ref is kept, so they are not lost, and the error says
-    /// where they are.
+    /// saved for this task, into its freshly restored worktree, and drop the
+    /// ref. Returns whether there was anything to put back.
+    ///
+    /// All or nothing. When the changes no longer apply cleanly (the branch
+    /// moved on while the run was archived), the worktree is put back exactly
+    /// as restored, the ref is kept so nothing is lost, and the error says
+    /// where the changes are. A conflicted `stash apply` used to be left in
+    /// place: the agent resumed in a tree full of conflict markers while the
+    /// restore reported success. Call it before anything else writes into the
+    /// worktree, since undoing a failed apply cleans out untracked files.
     pub fn take_back_uncommitted(&self, task_id: &str) -> Result<bool> {
         let name = Self::set_aside_ref(task_id);
         let Ok(commit) = self.git(&["rev-parse", "--verify", "-q", &name]) else {
             return Ok(false);
         };
         let path = self.worktrees_root().join(task_id);
-        Self::git_at(&path, &["stash", "apply", commit.trim()]).map_err(|e| {
-            anyhow::anyhow!(
+        if let Err(e) = Self::git_at(&path, &["stash", "apply", commit.trim()]) {
+            let undone = Self::git_at(&path, &["reset", "-q", "--hard", "HEAD"])
+                .and_then(|_| Self::git_at(&path, &["clean", "-q", "-f", "-d"]));
+            if let Err(undo) = undone {
+                bail!(
+                    "the uncommitted changes set aside on archive did not apply, and are kept at \
+                     {name}; undoing the partial apply failed too, so the worktree may hold \
+                     conflict markers: {e}; {undo}"
+                );
+            }
+            bail!(
                 "the uncommitted changes set aside on archive did not apply, and are kept at \
                  {name}: {e}"
-            )
-        })?;
+            );
+        }
         self.drop_set_aside(task_id);
         Ok(true)
     }
@@ -512,7 +527,7 @@ impl WorktreeManager {
     }
 
     /// Remove the worktree and delete `branch`, the run's own branch, when it
-    /// has one Agency cut (`Run::cut_branch`). `None` leaves every branch
+    /// has one Agency cut (`Run::own_branch`). `None` leaves every branch
     /// alone, for a run on a branch that was already there. Tolerant: each git
     /// step is best-effort so it works whether or not the worktree still
     /// exists (e.g. discarding an already-archived run), and still deletes the

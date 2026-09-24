@@ -5,7 +5,9 @@ import {
   fmtDur,
   inGitlessFolder,
   isPinned,
+  matchesRunFilter,
   needsAttention,
+  parseRunFilter,
   pinDropSide,
   pinIndex,
   pinnedFirst,
@@ -187,5 +189,30 @@ describe("pinDropSide", () => {
   it("marks nothing over its own place or an unpinned run", () => {
     expect(pinDropSide(index, "b", "b")).toBeNull();
     expect(pinDropSide(index, "b", "d")).toBeNull();
+  });
+});
+
+describe("matchesRunFilter", () => {
+  const working = waitingRun({ activity: { state: "working", since: 0 } } as Partial<RunInfo>);
+  const waiting = waitingRun();
+  const exited = waitingRun({ status: { state: "exited", code: 0 } } as Partial<RunInfo>);
+  const terminal = waitingRun({ kind: "terminal" } as Partial<RunInfo>);
+
+  it("keeps every run under all", () => {
+    for (const r of [working, waiting, exited, terminal]) expect(matchesRunFilter(r, "all")).toBe(true);
+  });
+
+  it("keeps only the runs each header count counts", () => {
+    expect([working, waiting, exited, terminal].filter((r) => matchesRunFilter(r, "working"))).toEqual([working]);
+    expect([working, waiting, exited, terminal].filter((r) => matchesRunFilter(r, "waiting"))).toEqual([waiting]);
+  });
+});
+
+describe("parseRunFilter", () => {
+  it("reads back a stored filter and falls back to all for anything else", () => {
+    expect(parseRunFilter("working")).toBe("working");
+    expect(parseRunFilter("waiting")).toBe("waiting");
+    expect(parseRunFilter(null)).toBe("all");
+    expect(parseRunFilter("exited")).toBe("all");
   });
 });

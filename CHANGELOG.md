@@ -4,6 +4,69 @@ Notable changes in each release. The GitHub release for a version carries the
 same notes alongside the downloads; this file is so the history is readable without
 leaving the repository.
 
+## 0.2.2 (2026-09-24)
+
+Checkpoints: Agency now snapshots an agent's worktree every turn, and you can
+put the files back to any of those points. The rest is pinned runs you can
+drag into order, a status bar that always shows where your checkout stands, and
+agents that know where your workspace folder is.
+
+macOS 11 or later, Apple Silicon. Linux with glibc 2.34 or later, x86_64 or
+arm64.
+
+**Coming from 0.2.1:** install from inside the app. Running agents survive the
+restart; this release does not change the terminal protocol.
+
+### Checkpoints
+
+- Agency snapshots a run's worktree when the run is created, when you send the
+  agent a prompt, and when the agent goes quiet after working. An unchanged
+  tree stores nothing. The snapshots live under `refs/agency/checkpoints/`, so
+  your index, HEAD, branches and `git status` never move.
+- Source Control has a Checkpoints section. Each checkpoint shows what changed
+  since the one before it, and can restore the files to that point.
+- A restore saves the current files as a checkpoint first, so it can be undone.
+  It refuses while the agent is working, checks the result, and rolls back if
+  the files do not match. The agent's memory of the conversation does not go
+  back with the files, and the confirmation says so.
+- Checkpoints are pruned when a run is archived or deleted, and capped at 100
+  per run, always keeping the first. Untracked files over 50 MB are left out of
+  snapshots rather than copied into the repository.
+
+### Agents
+
+- Drag pinned runs into order, on the grid and on the rail. A pinned tile or
+  row carries a grip once there are two pins. A drop on a run that was unpinned
+  mid-drag is refused rather than pinning it again.
+- Pressing Escape to cancel a drag (pins, files, docs or issues) no longer also
+  reaches the focused terminal and interrupts the agent mid-turn.
+- Renaming a branch keeps the name as you typed it. It used to prepend
+  `agent/`, so a name like `users/me/feature` could not pass a remote's
+  naming rule. Merge, PR and cleanup follow whatever branch the worktree has
+  checked out, so a rename done with git in the terminal no longer breaks
+  Approve.
+- "Add this doc to my workspace" lands in your workspace folder. Agents only
+  knew about their own worktree, so the doc went onto a project branch. The
+  workspace skill now names your folder in the words you ask with ("my
+  workspace", "my notes", "my vault") and says it is not the worktree.
+
+### Status bar
+
+- Your checkout's branch has its own segment, always shown whichever agent is
+  selected, with how many commits it is behind and ahead of its upstream. It is
+  tinted while you have commits origin does not, as a reminder to push before
+  leaving the machine. It replaces the unpushed-count chip.
+- Focusing the window fetches, throttled, so the behind count is current when
+  you look.
+
+### Fixes
+
+- The window no longer scrolls as a whole. Scrolling over a terminal could slide
+  the entire app up inside the window and leave a blank band under the status
+  bar.
+- The branch and model pickers scroll to the selected row once when they open.
+  They used to snap back to it on every render, which undid your own scrolling.
+
 ## 0.2.1 (2026-09-15)
 
 Agency installs its own updates now. The rest is agents saying what they are

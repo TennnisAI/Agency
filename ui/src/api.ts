@@ -504,6 +504,9 @@ export type RepoReadiness = {
   state: "missing" | "notARepo" | "noCommits" | "ready";
   stageable: boolean;
   dirty: boolean;
+  // Why a dirty checkout can't be committed from the setup dialog (a merge
+  // stopped on conflicts, say), already worded for the user. Null otherwise.
+  blocked: string | null;
 };
 
 export const inspectRepo = (repoPath: string) =>

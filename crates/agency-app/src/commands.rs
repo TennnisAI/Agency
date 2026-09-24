@@ -27,17 +27,34 @@ pub struct ReadinessDto {
     pub state: String,
     pub stageable: bool,
     pub dirty: bool,
+    /// Why the dirty checkout cannot be committed from the setup dialog (a merge
+    /// stopped on conflicts, say), or `None`. Only asked of a dirty checkout,
+    /// the one case where the dialog offers "Commit now".
+    pub blocked: Option<String>,
 }
 
-fn readiness_dto(r: agency_core::setup::RepoReadiness) -> ReadinessDto {
+fn readiness_dto(r: agency_core::setup::RepoReadiness, path: &std::path::Path) -> ReadinessDto {
     use agency_core::setup::RepoReadiness::*;
+    let dto = |state: &str, stageable, dirty| ReadinessDto {
+        state: state.into(),
+        stageable,
+        dirty,
+        blocked: None,
+    };
     match r {
-        Missing => ReadinessDto { state: "missing".into(), stageable: false, dirty: false },
-        NotARepo => ReadinessDto { state: "notARepo".into(), stageable: false, dirty: false },
-        NoCommits { stageable } => {
-            ReadinessDto { state: "noCommits".into(), stageable, dirty: false }
-        }
-        Ready { dirty } => ReadinessDto { state: "ready".into(), stageable: false, dirty },
+        Missing => dto("missing", false, false),
+        NotARepo => dto("notARepo", false, false),
+        NoCommits { stageable } => dto("noCommits", stageable, false),
+        Ready { dirty } => ReadinessDto {
+            // A probe that fails leaves "Commit now" on offer: the commit runs
+            // the same check and reports the failure itself.
+            blocked: if dirty {
+                agency_core::setup::checkout_commit_blocker(path).ok().flatten()
+            } else {
+                None
+            },
+            ..dto("ready", false, dirty)
+        },
     }
 }
 
@@ -1657,7 +1674,8 @@ pub async fn inspect_repo(
     state: State<'_, AppState>,
     repo_path: String,
 ) -> Result<ReadinessDto, String> {
-    Ok(readiness_dto(state.inspect_repo(std::path::Path::new(&repo_path))))
+    let path = std::path::Path::new(&repo_path);
+    Ok(readiness_dto(state.inspect_repo(path), path))
 }
 
 /// Whether a project's folder has gone from disk. One `stat`, so the UI can

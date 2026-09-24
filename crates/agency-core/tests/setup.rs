@@ -1,8 +1,8 @@
 use agency_core::setup::{
-    clone_destination, clone_repo, clone_repo_with_progress, folder_missing, init_repo,
-    initial_commit, initial_commit_with_progress, inside_work_tree, repo_name_from_url,
-    repo_readiness, scan_large_files, write_default_gitignore, CancelToken, CommitOptions,
-    RepoReadiness, CANCELLED, LARGE_FILE_BYTES,
+    checkout_commit_blocker, clone_destination, clone_repo, clone_repo_with_progress,
+    folder_missing, init_repo, initial_commit, initial_commit_with_progress, inside_work_tree,
+    repo_name_from_url, repo_readiness, scan_large_files, write_default_gitignore, CancelToken,
+    CommitOptions, RepoReadiness, CANCELLED, LARGE_FILE_BYTES,
 };
 use std::path::Path;
 use std::process::Command;
@@ -584,4 +584,21 @@ fn committing_over_a_conflicted_stash_pop_is_refused() {
         .to_string();
     assert!(err.starts_with("a.txt still has conflicts"), "got: {err}");
     assert_eq!(head_sha(dir.path()), before, "no commit");
+}
+
+// The setup dialog asks this first, so a dirty checkout mid-merge is never
+// offered "Commit now"; an ordinary dirty one still is.
+#[test]
+fn commit_blocker_is_asked_only_of_a_checkout_that_needs_it() {
+    let merging = tempfile::tempdir().unwrap();
+    conflicted_merge(merging.path());
+    let why = checkout_commit_blocker(merging.path()).unwrap().expect("blocked mid-merge");
+    assert!(why.contains("a.txt"), "names the conflicted file: {why}");
+
+    let dirty = tempfile::tempdir().unwrap();
+    init_bare_repo(dirty.path());
+    std::fs::write(dirty.path().join("a.txt"), "hi\n").unwrap();
+    initial_commit(dirty.path(), false).unwrap();
+    std::fs::write(dirty.path().join("a.txt"), "changed\n").unwrap();
+    assert_eq!(checkout_commit_blocker(dirty.path()).unwrap(), None);
 }

@@ -636,7 +636,7 @@ pub fn initial_commit_with_progress(
     // which marks every conflicted file resolved, and committed the conflict
     // markers into the project's history. Refuse before touching anything,
     // .gitignore included, so a refusal is a pure no-op.
-    if let Some(why) = commit_blocker(unfinished_operation(path), &unmerged_paths(path)?) {
+    if let Some(why) = checkout_commit_blocker(path)? {
         bail!("{why}");
     }
     if opts.add_gitignore {
@@ -728,6 +728,13 @@ pub fn initial_commit_with_progress(
         bail!("{CANCELLED}");
     }
     git_checked(path, &commit_args)
+}
+
+/// Why the checkout at `path` cannot take a commit of everything in it right
+/// now, or `None` when it can. [`initial_commit_with_progress`] refuses on it,
+/// and the setup dialog asks it first so it never offers "Commit now" at all.
+pub fn checkout_commit_blocker(path: &Path) -> Result<Option<String>> {
+    Ok(commit_blocker(unfinished_operation(path), &unmerged_paths(path)?))
 }
 
 /// The git operation stopped partway in the checkout at `path`, if any: the

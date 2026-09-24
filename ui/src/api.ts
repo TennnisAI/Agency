@@ -884,6 +884,9 @@ export interface RunSessionInfo {
   runId: string;
   agent: string;
   status: SessionStatus;
+  // The tab's own activity, read exactly like RunInfo.activity. Null until the
+  // backend's poll has seen the tab, and for a tab that is not running.
+  activity: RunActivity | null;
 }
 
 export const startRunSession = (runId: string, agent?: string) =>

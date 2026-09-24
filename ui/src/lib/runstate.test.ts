@@ -1,16 +1,21 @@
 import { describe, expect, it } from "vitest";
-import { RunInfo } from "../api";
+import { RunActivity, RunInfo, RunSessionInfo } from "../api";
 import {
   agentNote,
+  agentWaiting,
+  agentWorking,
+  countAgents,
   fmtDur,
   inGitlessFolder,
   isPinned,
+  isWorking,
   matchesRunFilter,
   needsAttention,
   parseRunFilter,
   pinDropSide,
   pinIndex,
   pinnedFirst,
+  runAgents,
   runStatus,
 } from "./runstate";
 
@@ -21,8 +26,19 @@ const waitingRun = (over: Partial<RunInfo> = {}): RunInfo =>
     status: { state: "running" },
     activity: { state: "waiting", since: 0 },
     pinRank: null,
+    primaryClosed: false,
+    sessions: [],
     ...over,
   }) as RunInfo;
+
+/** An extra tab in run r1's workspace, up and in the given state. */
+const tab = (n: number, state: RunActivity["state"] | null, agent = "codex"): RunSessionInfo => ({
+  id: `r1--${n}`,
+  runId: "r1",
+  agent,
+  status: { state: "running" },
+  activity: state && { state, since: 0 },
+});
 
 describe("inGitlessFolder", () => {
   it("is true only for a worktree-less run with no branch", () => {
@@ -192,6 +208,57 @@ describe("pinDropSide", () => {
   });
 });
 
+// The overview counted runs, so a workspace read as whatever its first agent
+// was doing and every other tab in it went uncounted (AGE-249).
+describe("runAgents", () => {
+  it("counts every agent tab in a workspace, not just the first", () => {
+    const r = waitingRun({ sessions: [tab(2, "working"), tab(3, "waiting"), tab(4, "idle")] });
+    expect(runAgents(r)).toHaveLength(4);
+    expect(countAgents([r], agentWorking)).toBe(1);
+    expect(countAgents([r], agentWaiting)).toBe(2);
+  });
+
+  it("finds a waiting agent behind a working first one", () => {
+    const r = waitingRun({ activity: { state: "working", since: 0 }, sessions: [tab(2, "waiting")] });
+    expect(needsAttention(r)).toBe(true);
+    expect(isWorking(r)).toBe(true);
+  });
+
+  it("counts a freshly opened tab, not yet sampled, as working", () => {
+    expect(countAgents([waitingRun({ sessions: [tab(2, null)] })], agentWorking)).toBe(1);
+  });
+
+  it("does not count a terminal tab as an agent", () => {
+    const r = waitingRun({ sessions: [tab(2, "waiting", "shell")] });
+    expect(runAgents(r)).toHaveLength(1);
+  });
+
+  it("does not count a tab whose agent has stopped, whatever its last sample", () => {
+    const stopped = { ...tab(2, "waiting"), status: { state: "exited", code: 0 } } as RunSessionInfo;
+    const r = waitingRun({ activity: { state: "idle", since: 0 }, sessions: [stopped] });
+    expect(countAgents([r])).toBe(2);
+    expect(needsAttention(r)).toBe(false);
+  });
+
+  // With the first tab closed, the run's own status and activity describe the
+  // tab standing in for it (AGE-184). Counting both would count that tab twice.
+  it("counts a closed first tab's stand-in once", () => {
+    const r = waitingRun({ primaryClosed: true, sessions: [tab(2, "waiting")] });
+    expect(runAgents(r)).toHaveLength(1);
+    expect(countAgents([r], agentWaiting)).toBe(1);
+  });
+
+  it("has no agents in a terminal run", () => {
+    expect(runAgents(waitingRun({ kind: "terminal" }))).toEqual([]);
+  });
+
+  it("sums across runs", () => {
+    const runs = [waitingRun(), waitingRun({ sessions: [tab(2, "waiting")] })];
+    expect(countAgents(runs)).toBe(3);
+    expect(countAgents(runs, agentWaiting)).toBe(3);
+  });
+});
+
 describe("matchesRunFilter", () => {
   const working = waitingRun({ activity: { state: "working", since: 0 } } as Partial<RunInfo>);
   const waiting = waitingRun();
@@ -205,6 +272,12 @@ describe("matchesRunFilter", () => {
   it("keeps only the runs each header count counts", () => {
     expect([working, waiting, exited, terminal].filter((r) => matchesRunFilter(r, "working"))).toEqual([working]);
     expect([working, waiting, exited, terminal].filter((r) => matchesRunFilter(r, "waiting"))).toEqual([waiting]);
+  });
+
+  it("keeps a workspace for an agent in any of its tabs", () => {
+    const mixed = waitingRun({ activity: { state: "idle", since: 0 }, sessions: [tab(2, "working")] });
+    expect(matchesRunFilter(mixed, "working")).toBe(true);
+    expect(matchesRunFilter(mixed, "waiting")).toBe(false);
   });
 });
 

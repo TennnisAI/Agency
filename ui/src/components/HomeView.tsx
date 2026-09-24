@@ -4,10 +4,11 @@ import { Issue, Project, RunInfo, RepoReadiness, addProject, inspectRepo, listIs
 import { projectAccent, runName } from "../agents";
 import {
   RunFilter,
+  agentWaiting,
+  agentWorking,
+  countAgents,
   inGitlessFolder,
-  isWorking,
   matchesRunFilter,
-  needsAttention,
   parseRunFilter,
   pinnedFirst,
   runStatus,
@@ -227,9 +228,12 @@ export default function HomeView({
   }, [tick]);
 
   const all = projects.flatMap((p) => runsBy[p.id] ?? []);
-  const working = all.filter(isWorking).length;
+  // Every agent, not every run: a workspace's extra tabs are agents too, and
+  // counting runs reported each workspace as its first agent (AGE-249).
+  const agentCount = countAgents(all);
+  const working = countAgents(all, agentWorking);
   // The header counts what is actually asking for the user.
-  const waitingCount = all.filter(needsAttention).length;
+  const waitingCount = countAgents(all, agentWaiting);
 
   // Hold the header (and its 0/0/0 stats) until the first poll returns, so an
   // empty overview doesn't flash before real counts or the welcome hero.
@@ -301,8 +305,8 @@ export default function HomeView({
         <div className="home-stats">
           <Stat value={projects.length} label={projects.length === 1 ? "project" : "projects"} />
           <Stat
-            value={all.length}
-            label={all.length === 1 ? "agent" : "agents"}
+            value={agentCount}
+            label={agentCount === 1 ? "agent" : "agents"}
             active={filter === "all"}
             title="Show every agent"
             onClick={() => pickFilter("all")}
@@ -342,8 +346,9 @@ export default function HomeView({
             (a, b) => Number(b.status.state === "running") - Number(a.status.state === "running"),
           ),
         );
-        const live = runs.filter(isWorking).length;
-        const waiting = runs.filter(needsAttention).length;
+        const agents = countAgents(runs);
+        const live = countAgents(runs, agentWorking);
+        const waiting = countAgents(runs, agentWaiting);
         // A filter overrides the fold: "show me what is waiting" has to show
         // all of it, not just what sits in the projects left open.
         const filtering = filter !== "all";
@@ -366,7 +371,12 @@ export default function HomeView({
                 </span>
                 <span className="home-group-name">{p.name}</span>
                 <span className="home-group-meta">
-                  {runs.length === 0 ? "no agents" : `${runs.length} agent${runs.length === 1 ? "" : "s"}`}
+                  {/* A project holding only terminal runs has tiles but no agents. */}
+                  {runs.length === 0
+                    ? "no agents"
+                    : agents > 0
+                      ? `${agents} agent${agents === 1 ? "" : "s"}`
+                      : `${runs.length} terminal${runs.length === 1 ? "" : "s"}`}
                   {live > 0 && <span className="home-live"> · {live} working</span>}
                   {waiting > 0 && <span className="home-attn"> · {waiting} waiting</span>}
                 </span>

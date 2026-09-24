@@ -763,6 +763,12 @@ pub struct RunSessionInfo {
     pub run_id: String,
     pub agent: String,
     pub status: SessionStatus,
+    /// The tab's own busy/idle state, classified the same way as
+    /// `RunInfo::activity`. The notifier tick has sampled every running tab
+    /// since AGE-199, but only the send queue read it: the overview counted a
+    /// workspace with three agents as its first agent alone (AGE-249). `None`
+    /// until the tick has seen the tab, and for a tab that is not running.
+    pub activity: Option<crate::activity::ActivityInfo>,
 }
 
 /// What "Fix with a new agent" did: the tab it opened, and whether the conflict
@@ -3811,6 +3817,20 @@ impl AppState {
         entry.map(|e| crate::activity::classify(&e, turn_driven, now_ms))
     }
 
+    /// `read_activity` for one of a run's extra tabs. Keyed by the tab's own
+    /// id throughout: `run_input` marks the session that was typed into, and
+    /// the tick samples each tab's own pane. A loop only ever drives the run's
+    /// own session, so an extra tab is always the user's to drive.
+    fn read_session_activity(
+        &self,
+        session_id: &str,
+        now_ms: i64,
+    ) -> Option<crate::activity::ActivityInfo> {
+        let turn_driven = self.prompted.lock().unwrap().contains(session_id);
+        let entry = self.activity.lock().unwrap().get(session_id).copied();
+        entry.map(|e| crate::activity::classify(&e, turn_driven, now_ms))
+    }
+
     fn run_record(&self, id: &str) -> Result<agency_core::registry::Run> {
         let reg = self.registry.lock().unwrap();
         reg.get_run(id)?.ok_or_else(|| anyhow!("unknown run: {id}"))
@@ -3938,7 +3958,8 @@ impl AppState {
                     .find(|(n, _)| *n == name)
                     .map(|(_, st)| st.clone())
                     .unwrap_or(SessionStatus::Gone);
-                RunSessionInfo { id: s.id, run_id: s.run_id, agent: s.agent, status }
+                let activity = self.read_session_activity(&s.id, now_ms);
+                RunSessionInfo { id: s.id, run_id: s.run_id, agent: s.agent, status, activity }
             })
             .collect();
         RunInfo {
@@ -8974,6 +8995,7 @@ impl AppState {
             run_id: s.run_id.clone(),
             agent: s.agent.clone(),
             status,
+            activity: self.read_session_activity(&s.id, crate::activity::now_ms()),
         }
     }
 

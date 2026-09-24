@@ -3,8 +3,12 @@ import { RunInfo, RunSessionInfo } from "../api";
 import { PRIMARY_TAB } from "./focusTab";
 import { runTabs, showsTabs, sidePanelTab, tabCountLabel, tabLabel, tabsTitle } from "./runTabs";
 
-const session = (id: string, agent: string, status: RunSessionInfo["status"] = { state: "running" }) =>
-  ({ id, runId: id.split("--")[0], agent, status }) as RunSessionInfo;
+const session = (
+  id: string,
+  agent: string,
+  status: RunSessionInfo["status"] = { state: "running" },
+  activity: RunSessionInfo["activity"] = null,
+) => ({ id, runId: id.split("--")[0], agent, status, activity }) as RunSessionInfo;
 
 const run = (over: Partial<RunInfo> = {}): RunInfo =>
   ({
@@ -56,12 +60,25 @@ describe("runTabs", () => {
     expect(runTabs(run(), 0)[0].cls).toBe("awaiting");
   });
 
-  // Activity is sampled for the lead session only, so an extra tab that is up
-  // must not pulse as though someone had watched it working.
-  it("gives an extra tab a still dot from its session status alone", () => {
+  // Each tab's activity is sampled on its own (AGE-249), and the overview
+  // counts from it, so the tab's dot says the same thing the counts do.
+  it("gives an extra agent tab its own activity", () => {
     const r = run({
       sessions: [
-        session("r1--2", "codex"),
+        session("r1--2", "codex", { state: "running" }, { state: "waiting", since: 0 }),
+        session("r1--3", "codex", { state: "running" }, { state: "idle", since: 0 }),
+        session("r1--4", "codex"),
+      ],
+    });
+    const extra = runTabs(r, 0).slice(1);
+    expect(extra.map((t) => t.cls)).toEqual(["awaiting", "idle", "running"]);
+    expect(extra.map((t) => t.status)).toEqual(["waiting · 0s", "idle", "working"]);
+  });
+
+  it("gives a stopped tab, or a terminal tab, a still dot from its status alone", () => {
+    const r = run({
+      sessions: [
+        session("r1--2", "shell", { state: "running" }, { state: "waiting", since: 0 }),
         session("r1--3", "codex", { state: "exited", code: 0 }),
         session("r1--4", "codex", { state: "exited", code: 1 }),
         session("r1--5", "codex", { state: "gone" }),

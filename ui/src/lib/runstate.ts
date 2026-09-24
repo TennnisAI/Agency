@@ -1,4 +1,4 @@
-import { RunInfo } from "../api";
+import { RunActivity, RunInfo, SessionStatus } from "../api";
 
 // Presentation of a run's live state, shared by every dot/label surface
 // (tiles, sidebar tree, focus rail). States for a live agent:
@@ -23,17 +23,62 @@ export function fmtDur(ms: number): string {
   return `${Math.floor(h / 24)}d`;
 }
 
+/** One agent's live state: a run's own agent, or one of its extra tabs. */
+export interface AgentLive {
+  status: SessionStatus;
+  activity: RunActivity | null;
+}
+
 /**
- * A run that is asking for the user right now: a live agent that went quiet
- * after a turn the user drove. What the header counts and the tiles badge.
+ * Every agent in a run's workspace: its own agent unless that tab was closed,
+ * then each extra agent tab. A "New terminal" tab (the reserved "shell"
+ * profile) is not an agent, and neither is a terminal run.
  *
- * The backend's `waiting` is about the pane alone, so the other two conditions
- * are composed in here rather than there — they are the same conditions the
- * dots and labels below already key off, and a terminal or a dead session is
- * never waiting on you whatever its last sample said.
+ * The overview used to count runs, so a workspace with a working agent and a
+ * waiting one read as whatever its first agent was doing, and the second never
+ * reached the header at all (AGE-249). With the first tab closed, the run's own
+ * status and activity describe the extra tab standing in for it (AGE-184), so
+ * that tab is counted once, from its own row.
+ */
+export function runAgents(run: RunInfo): AgentLive[] {
+  if (run.kind !== "agent") return [];
+  const agents: AgentLive[] = run.primaryClosed ? [] : [{ status: run.status, activity: run.activity }];
+  for (const s of run.sessions) {
+    if (s.agent !== "shell") agents.push({ status: s.status, activity: s.activity });
+  }
+  return agents;
+}
+
+/**
+ * An agent asking for the user right now: live, and gone quiet after a turn
+ * the user drove.
+ *
+ * The backend's `waiting` is about the pane alone, so the running condition is
+ * composed in here rather than there: it is the same condition the dots and
+ * labels below already key off, and a dead session is never waiting on you
+ * whatever its last sample said.
+ */
+export function agentWaiting(a: AgentLive): boolean {
+  return a.status.state === "running" && a.activity?.state === "waiting";
+}
+
+/** A live agent actively producing output (no activity sample yet counts:
+ * a freshly spawned agent is busy starting up). */
+export function agentWorking(a: AgentLive): boolean {
+  return a.status.state === "running" && (a.activity === null || a.activity.state === "working");
+}
+
+/** How many of the agents in `runs` pass `pred`, every tab counted. */
+export function countAgents(runs: RunInfo[], pred: (a: AgentLive) => boolean = () => true): number {
+  return runs.reduce((n, r) => n + runAgents(r).filter(pred).length, 0);
+}
+
+/**
+ * A run with an agent asking for the user right now, in any of its tabs.
+ * What the tiles badge and the "waiting" filter keeps.
  */
 export function needsAttention(run: RunInfo): boolean {
-  return run.kind === "agent" && run.status.state === "running" && run.activity?.state === "waiting";
+  return runAgents(run).some(agentWaiting);
 }
 
 export function isPinned(run: RunInfo): boolean {
@@ -85,20 +130,16 @@ export function pinDropSide(index: Map<string, number>, id: string, overId: stri
   return to < from ? "before" : "after";
 }
 
-/** A running agent actively producing output (no activity sample yet counts:
- * a freshly spawned agent is busy starting up). */
+/** A run with an agent producing output, in any of its tabs. */
 export function isWorking(run: RunInfo): boolean {
-  return (
-    run.kind === "agent" &&
-    run.status.state === "running" &&
-    (run.activity === null || run.activity.state === "working")
-  );
+  return runAgents(run).some(agentWorking);
 }
 
 /**
  * What the overview's header counts filter the board down to (AGE-247). Each
- * one is the predicate its count is computed with, so clicking "3 waiting"
- * always shows exactly those three.
+ * keeps the runs holding an agent its count counted, with the same predicate,
+ * so clicking "3 waiting" shows every workspace those three are in: three
+ * tiles, or fewer when two of them share a workspace.
  */
 export type RunFilter = "all" | "working" | "waiting";
 
@@ -147,7 +188,7 @@ export function agentNote(
 }
 
 export function runStatus(
-  run: RunInfo,
+  run: Pick<RunInfo, "kind" | "status" | "activity">,
   now: number = Date.now(),
 ): { cls: string; text: string; title?: string } {
   if (run.status.state === "running") {

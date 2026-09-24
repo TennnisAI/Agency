@@ -14,6 +14,7 @@ import { agentLabel } from "../agents";
 import GhSetupHint from "./GhSetupHint";
 import { useRuns } from "../store/runs";
 import { useModalKeys } from "../hooks/useModalKeys";
+import { useBackdropDismiss } from "../hooks/useBackdropDismiss";
 import { useAgentModels } from "../hooks/useAgentModels";
 import ModelSelect from "./ModelSelect";
 
@@ -47,6 +48,7 @@ export default function GhImportDialog({
   const firstItemRef = useRef<HTMLInputElement>(null);
 
   useModalKeys(onClose);
+  const backdrop = useBackdropDismiss(onClose);
 
   // Probe gh readiness first: a missing/unauthenticated gh or remote-less
   // repo gets the guided setup, never a raw gh error dump. A caught error
@@ -118,7 +120,7 @@ export default function GhImportDialog({
   return (
     // Backdrop click closes; the panel stops propagation so clicks inside it
     // don't bubble out to the overlay's close handler.
-    <div className="settings-overlay" onClick={onClose}>
+    <div className="settings-overlay" {...backdrop}>
       <div className="merge-modal race-dialog" role="dialog" aria-modal="true" aria-label={mode === "issue" ? "Start from GitHub issue" : "Review GitHub PR"} onClick={(e) => e.stopPropagation()}>
         <div className="settings-head">
           <h2>{mode === "issue" ? "Start from GitHub issue" : "Review GitHub PR"}</h2>

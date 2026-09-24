@@ -4,6 +4,7 @@ import { agentLabel } from "../agents";
 import { effectiveMergeTarget } from "../lib/branchTargets";
 import { useRuns } from "../store/runs";
 import { useModalKeys } from "../hooks/useModalKeys";
+import { useBackdropDismiss } from "../hooks/useBackdropDismiss";
 import { useAgentModels } from "../hooks/useAgentModels";
 import ModelSelect from "./ModelSelect";
 
@@ -50,6 +51,7 @@ export default function LoopDialog({ onClose, issue, issueLabel }: {
   const [error, setError] = useState("");
 
   useModalKeys(onClose);
+  const backdrop = useBackdropDismiss(onClose);
 
   useEffect(() => {
     listProfiles()
@@ -119,7 +121,7 @@ export default function LoopDialog({ onClose, issue, issueLabel }: {
   }
 
   return (
-    <div className="settings-overlay" onClick={(e) => { e.stopPropagation(); onClose(); }}>
+    <div className="settings-overlay" {...backdrop} onClick={(e) => { e.stopPropagation(); backdrop.onClick(e); }}>
       <div className="merge-modal race-dialog" role="dialog" aria-modal="true" aria-label="Loop agent" onClick={(e) => e.stopPropagation()}>
         <div className="settings-head">
           <h2>Loop agent</h2>

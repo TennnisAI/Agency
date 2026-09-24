@@ -3,6 +3,7 @@ import { FileRoot, listFiles } from "../api";
 import { fuzzyFilter } from "../lib/fuzzy";
 import { useListNav } from "../hooks/useListNav";
 import { useModalKeys } from "../hooks/useModalKeys";
+import { useBackdropDismiss } from "../hooks/useBackdropDismiss";
 import { baseName, parentPath } from "../lib/filePath";
 import { fileIcon } from "../lib/fileIcon";
 import { FileIcon } from "./fileIcons";
@@ -23,6 +24,7 @@ export default function QuickOpen({
   const [files, setFiles] = useState<string[] | null>(null);
   const [failed, setFailed] = useState(false);
   useModalKeys(onClose);
+  const backdrop = useBackdropDismiss(onClose);
 
   useEffect(() => {
     let cancelled = false;
@@ -47,7 +49,7 @@ export default function QuickOpen({
   const { hi, setHi, onKey } = useListNav(rows.length, (i) => activate(rows[i]), query);
 
   return (
-    <div className="palette-overlay" onClick={onClose}>
+    <div className="palette-overlay" {...backdrop}>
       <div className="palette" onClick={(e) => e.stopPropagation()}>
         <input
           className="palette-input"

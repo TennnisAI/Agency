@@ -1,5 +1,6 @@
 import { ReactNode } from "react";
 import { createPortal } from "react-dom";
+import { useBackdropDismiss } from "../hooks/useBackdropDismiss";
 
 /**
  * The dimmed sheet every dialog sits on.
@@ -17,6 +18,9 @@ import { createPortal } from "react-dom";
  * React events still bubble along the component tree, so a host that stops a
  * backdrop click from reaching its own onClick (an agent tile, a rail row) goes
  * on seeing it.
+ *
+ * Only a click that both starts and ends on the sheet dismisses; see
+ * `useBackdropDismiss` for the drag-select that used to close the dialog.
  */
 export default function ModalBackdrop({
   onBackdropClick,
@@ -26,8 +30,9 @@ export default function ModalBackdrop({
   onBackdropClick?: () => void;
   children: ReactNode;
 }) {
+  const dismiss = useBackdropDismiss(onBackdropClick);
   return createPortal(
-    <div className="modal-backdrop" onClick={(e) => { e.stopPropagation(); onBackdropClick?.(); }}>
+    <div className="modal-backdrop" {...dismiss} onClick={(e) => { e.stopPropagation(); dismiss.onClick(e); }}>
       {children}
     </div>,
     document.body,

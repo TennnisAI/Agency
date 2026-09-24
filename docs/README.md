@@ -34,6 +34,9 @@ browser with `support.js` beside it).
 - [`agent-state.md`](agent-state.md) — taking a run's state from the agent's
   own lifecycle hooks instead of a pane-content hash, and splitting today's
   `waiting` into `blocked` and `done`. Draft, AGE-206; nothing in it is built.
+- [`scheduled-runs.md`](scheduled-runs.md) — recurring runs on a machine that
+  sleeps and gets quit: what a missed firing does, what a firing produces, and
+  why a firing is a loop run. Draft, AGE-237; nothing in it is built.
 - [`run-teardown.md`](run-teardown.md) — what archiving and deleting an agent
   actually remove, why that is decided from the branch rather than from the
   verb, and the record a finished run leaves behind (shipped, AGE-149).

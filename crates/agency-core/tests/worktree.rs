@@ -75,8 +75,33 @@ fn remove_after_keep_branch_deletes_the_branch_without_error() {
     mgr.create("task-2", "HEAD").unwrap();
     mgr.remove_keep_branch("task-2").unwrap();
     // Discarding an archived run: worktree already gone, but the branch must go.
-    mgr.remove("task-2").unwrap();
+    mgr.remove("task-2", Some("agent/task-2")).unwrap();
     assert!(!branch_exists(repo.path(), "agent/task-2"), "branch deleted on discard");
+}
+
+/// AGE-246: discarding a run whose branch had been renamed deleted
+/// `agent/<id>`, which was already gone, and left the renamed branch behind.
+#[test]
+fn remove_deletes_the_renamed_branch() {
+    let repo = init_repo();
+    let mgr = WorktreeManager::new(repo.path().to_path_buf());
+    mgr.create("task-3", "HEAD").unwrap();
+    git(repo.path(), &["branch", "-m", "agent/task-3", "agent/fix-pairing-task-3"]);
+    mgr.remove("task-3", Some("agent/fix-pairing-task-3")).unwrap();
+    assert!(!branch_exists(repo.path(), "agent/fix-pairing-task-3"), "renamed branch deleted");
+}
+
+/// A run on a branch that was already there (a PR head) passes no branch:
+/// its worktree goes, the branch stays for whoever pushed it.
+#[test]
+fn remove_without_a_branch_keeps_every_branch() {
+    let repo = init_repo();
+    let mgr = WorktreeManager::new(repo.path().to_path_buf());
+    git(repo.path(), &["branch", "their-pr"]);
+    let wt = mgr.create_on_branch("task-4", "their-pr").unwrap();
+    mgr.remove("task-4", None).unwrap();
+    assert!(!wt.path.exists(), "worktree removed");
+    assert!(branch_exists(repo.path(), "their-pr"), "the PR's branch is not ours to delete");
 }
 
 #[test]
@@ -109,7 +134,7 @@ fn remove_deletes_worktree() {
     let repo = init_repo();
     let mgr = WorktreeManager::new(repo.path().to_path_buf());
     let wt = mgr.create("task-1", "HEAD").unwrap();
-    mgr.remove("task-1").unwrap();
+    mgr.remove("task-1", Some("agent/task-1")).unwrap();
     assert!(!wt.path.exists());
     assert!(mgr.list().unwrap().is_empty());
 }
@@ -357,7 +382,7 @@ fn remove_deregisters_only_its_own_worktree() {
     std::fs::rename(repo.path().join("wt").join("feature"), repo.path().join("wt").join("moved"))
         .unwrap();
 
-    mgr.remove("task-1").unwrap();
+    mgr.remove("task-1", Some("agent/task-1")).unwrap();
 
     assert!(
         !repo.path().join(".git").join("worktrees").join("task-1").is_dir(),
@@ -390,7 +415,7 @@ fn remove_deregisters_its_own_worktree_recorded_by_a_relative_gitdir() {
     git(repo.path(), &["worktree", "lock", ".agency/worktrees/task-1"]);
     std::fs::remove_dir_all(repo.path().join(".agency").join("worktrees").join("task-1")).unwrap();
 
-    mgr.remove("task-1").unwrap();
+    mgr.remove("task-1", Some("agent/task-1")).unwrap();
 
     assert!(
         !admin.is_dir(),

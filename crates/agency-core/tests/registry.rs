@@ -112,6 +112,7 @@ fn runs_persist_list_and_delete() {
         model: None,
         base_commit: None,
         primary_closed_at: None,
+        branch_cut: None,
         pin_rank: None,
     };
     {
@@ -153,6 +154,7 @@ fn list_runs_newest_first() {
             model: None,
             base_commit: None,
             primary_closed_at: None,
+            branch_cut: None,
             pin_rank: None,
         })
         .unwrap();

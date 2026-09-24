@@ -3741,7 +3741,7 @@ impl AppState {
                 // per run, not across the sweep, so one long project deletion
                 // doesn't block every spawn for its whole duration.
                 let _gate = self.worktree_gate.lock().unwrap();
-                let _ = WorktreeManager::new(repo.clone()).remove(&run.id);
+                let _ = WorktreeManager::new(repo.clone()).remove(&run.id, run.cut_branch());
             }
             {
                 let reg = self.registry.lock().unwrap();
@@ -4229,7 +4229,8 @@ impl AppState {
                 // Nothing was cut for a run in the main checkout, and `remove`
                 // would delete the branch the user is sitting on.
                 if spec.worktree {
-                    let _ = manager.remove(&id);
+                    let cut = spec.existing_branch.is_none().then_some(workspace.branch.as_str());
+                    let _ = manager.remove(&id, cut);
                 }
                 self.prune_checkpoints(&repo, &id);
                 return Err(e.into());
@@ -4286,6 +4287,9 @@ impl AppState {
             base_commit: spec.worktree.then(|| agency_core::merge::rev(&repo, spec.base)).flatten(),
             pin_rank: None,
             primary_closed_at: None,
+            // Only the branch cut here is Agency's to delete at teardown; a
+            // PR head checked out as it stands belongs to whoever pushed it.
+            branch_cut: Some(spec.worktree && spec.existing_branch.is_none()),
         };
         {
             let reg = self.registry.lock().unwrap();
@@ -6464,6 +6468,7 @@ impl AppState {
             model: None,
             base_commit: None,
             primary_closed_at: None,
+            branch_cut: None,
             pin_rank: None,
         };
         self.registry.lock().unwrap().insert_run(&run)?;
@@ -6683,6 +6688,7 @@ impl AppState {
             model: None,
             base_commit: None,
             primary_closed_at: None,
+            branch_cut: None,
             pin_rank: None,
         };
         self.registry.lock().unwrap().insert_run(&run)?;
@@ -7880,7 +7886,9 @@ impl AppState {
     ) -> Result<()> {
         self.attaches.lock().unwrap().remove(id);
         self.forget_session_state(id);
-        let run = self.run_record(id)?;
+        // Following the worktree, as archive does: the branch deleted below is
+        // the one it is on, including after a `git branch -m` in its terminal.
+        let run = self.branch_run_record(id)?;
         step(on_progress, "Stopping the agent", &run.branch);
         // End an active loop first (best-effort): once delete_run removes the
         // row, nothing could ever stop a session the driver respawned into
@@ -7905,7 +7913,7 @@ impl AppState {
                 // async now (off the main thread), so nothing else serializes
                 // it against a concurrent worktree add on the same repo.
                 let _gate = self.worktree_gate.lock().unwrap();
-                let _ = WorktreeManager::new(repo).remove(id);
+                let _ = WorktreeManager::new(repo).remove(id, run.cut_branch());
             }
         }
         step(on_progress, "Cleaning up", &run.branch);
@@ -8122,7 +8130,7 @@ impl AppState {
             let _gate = self.worktree_gate.lock().unwrap();
             let manager = WorktreeManager::new(repo.clone());
             if plan.deletes_branch {
-                manager.remove(id)?;
+                manager.remove(id, run.cut_branch())?;
             } else {
                 manager.remove_keep_branch(id)?;
             }
@@ -9908,7 +9916,8 @@ impl AppState {
             );
         }
         agency_core::merge::rename_branch(&repo, &run.branch, &new)?;
-        let recorded = self.registry.lock().unwrap().set_run_branch(id, &new);
+        let recorded =
+            self.registry.lock().unwrap().set_run_branch(id, &new, run.cut_branch().is_some());
         if let Err(e) = recorded {
             // Put git back rather than leave the two disagreeing: the registry
             // is what merge, PR and teardown all read, so a half-done rename
@@ -9977,12 +9986,20 @@ impl AppState {
         else {
             return Ok(run);
         };
-        if let Err(e) = self.registry.lock().unwrap().set_run_branch(id, &adopted) {
+        // A `git branch -m` takes the recorded branch with it, so what the
+        // worktree is on now is the same branch under a new name, and Agency's
+        // to delete if it cut it. A recorded branch still in the repo means the
+        // worktree was switched onto some other branch instead, perhaps one the
+        // user already had, and a teardown must not delete that.
+        let cut =
+            run.cut_branch().is_some() && !agency_core::merge::branch_exists(&repo, &run.branch);
+        if let Err(e) = self.registry.lock().unwrap().set_run_branch(id, &adopted, cut) {
             log::warn!("run {id}: couldn't record its worktree's branch {adopted}: {e:#}");
             return Ok(run);
         }
         log::info!("run {id}: worktree is on {adopted}, not {}; following it", run.branch);
         run.branch = adopted;
+        run.branch_cut = Some(cut);
         self.refresh_workspace_skill(&run, &repo, &run.branch);
         Ok(run)
     }
@@ -11547,6 +11564,7 @@ mod tests {
             model: None,
             base_commit: None,
             primary_closed_at: None,
+            branch_cut: None,
             pin_rank: None,
         };
         assert!(super::wants_web_ui(&base));
@@ -12535,6 +12553,7 @@ mod tests {
             model: None,
             base_commit: None,
             primary_closed_at: None,
+            branch_cut: None,
             pin_rank: None,
         }
     }
@@ -12899,6 +12918,7 @@ mod tests {
             model: None,
             base_commit: None,
             primary_closed_at: None,
+            branch_cut: None,
             pin_rank: None,
         };
         assert_eq!(run.kind, "terminal");
@@ -12931,6 +12951,7 @@ mod tests {
             model: None,
             base_commit: None,
             primary_closed_at: None,
+            branch_cut: None,
             pin_rank: None,
         }
     }

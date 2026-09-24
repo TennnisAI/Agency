@@ -442,16 +442,24 @@ impl WorktreeManager {
         let _ = std::fs::remove_dir_all(&admin);
     }
 
-    /// Remove the worktree and delete its branch. Tolerant: each git step is
-    /// best-effort so it works whether or not the worktree still exists (e.g.
-    /// discarding an already-archived run), and still deletes the branch.
-    pub fn remove(&self, task_id: &str) -> Result<()> {
+    /// Remove the worktree and delete `branch`, the run's own branch, when it
+    /// has one Agency cut (`Run::cut_branch`). `None` leaves every branch
+    /// alone, for a run on a branch that was already there. Tolerant: each git
+    /// step is best-effort so it works whether or not the worktree still
+    /// exists (e.g. discarding an already-archived run), and still deletes the
+    /// branch.
+    ///
+    /// The branch is passed in, not rebuilt from the id as `agent/<id>`: that
+    /// name is gone once a run's branch is renamed, and every renamed branch
+    /// outlived its run (AGE-246).
+    pub fn remove(&self, task_id: &str, branch: Option<&str>) -> Result<()> {
         let path = self.worktrees_root().join(task_id);
         let path_str = path.to_string_lossy().to_string();
         let _ = self.git(&["worktree", "remove", &path_str, "--force"]);
         self.prune_entry(task_id);
-        let branch = Self::branch_for(task_id);
-        let _ = self.git(&["branch", "-D", &branch]);
+        if let Some(branch) = branch {
+            let _ = self.git(&["branch", "-D", branch]);
+        }
         Ok(())
     }
 

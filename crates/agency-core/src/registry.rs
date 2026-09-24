@@ -102,6 +102,48 @@ pub struct Run {
     /// lowest-numbered tab still open. Cleared on archive, where every extra
     /// tab goes and the run's own agent is all that can come back.
     pub primary_closed_at: Option<i64>,
+    /// Whether Agency cut `branch` for this run, and so may delete it when the
+    /// run is torn down. `false` for a run started on a branch that already
+    /// existed (a PR head), which is someone else's to keep. `None` for rows
+    /// written before this was recorded; [`Run::cut_branch`] reads the name
+    /// for those.
+    pub branch_cut: Option<bool>,
+}
+
+impl Run {
+    /// The branch a teardown may delete along with this run's worktree: its
+    /// own, cut by Agency, under whatever name it has now.
+    ///
+    /// AGE-246: teardown deleted `agent/<id>`, a name rebuilt from the id, so
+    /// a run whose branch had been renamed to describe its work left that
+    /// branch behind on every delete and every post-merge archive. The id
+    /// name is not a safe stand-in the other way either: it is what kept a
+    /// PR-review run from deleting the PR's head branch, only because that
+    /// branch happened never to be called `agent/<id>`.
+    pub fn cut_branch(&self) -> Option<&str> {
+        if self.kind != "agent" || !self.worktree || self.branch.is_empty() {
+            return None;
+        }
+        let cut = self.branch_cut.unwrap_or_else(|| legacy_cut_branch(&self.id, &self.branch));
+        cut.then_some(self.branch.as_str())
+    }
+}
+
+/// For a row older than `branch_cut`: whether `branch` has a shape only a
+/// branch Agency cut for run `id` has. That is `agent/<id>` as cut, or
+/// `agent/<leaf>-<suffix>` after a first-prompt rename (AGE-183), where the
+/// suffix is the four characters that end the id. A branch renamed by hand to
+/// anything else reads as not ours, so it is left in the repo rather than
+/// deleted on a guess.
+fn legacy_cut_branch(id: &str, branch: &str) -> bool {
+    if branch == format!("agent/{id}") {
+        return true;
+    }
+    let Some((_, suffix)) = id.rsplit_once('-') else { return false };
+    suffix.len() == 4
+        && suffix.chars().all(|c| c.is_ascii_alphanumeric())
+        && branch.starts_with("agent/")
+        && branch.ends_with(&format!("-{suffix}"))
 }
 
 /// A local issue: the tracker is per-project and agent-native — dispatching
@@ -407,6 +449,11 @@ impl Registry {
         }
         if !column_exists(&conn, "runs", "primary_closed_at")? {
             conn.execute("ALTER TABLE runs ADD COLUMN primary_closed_at INTEGER", [])?;
+        }
+        // Left NULL on existing rows: which of them Agency cut is read from the
+        // branch name instead (`Run::cut_branch`), since nothing recorded it.
+        if !column_exists(&conn, "runs", "branch_cut")? {
+            conn.execute("ALTER TABLE runs ADD COLUMN branch_cut INTEGER", [])?;
         }
         if !column_exists(&conn, "projects", "issue_key")? {
             conn.execute("ALTER TABLE projects ADD COLUMN issue_key TEXT", [])?;
@@ -876,13 +923,14 @@ impl Registry {
             None => None,
         };
         self.conn.execute(
-            "INSERT INTO runs (id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, pin_rank, primary_closed_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
+            "INSERT INTO runs (id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, pin_rank, primary_closed_at, branch_cut)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
             rusqlite::params![
                 run.id, run.project_id, run.agent, run.prompt, run.base, run.branch,
                 run.created_at, run.port_base.map(|p| p as i64), run.archived_at, run.title, run.kind,
                 run.merge_target, run.race_id, loop_config, loop_state, run.issue_id, run.worktree as i64,
-                run.model, run.base_commit, run.pin_rank, run.primary_closed_at
+                run.model, run.base_commit, run.pin_rank, run.primary_closed_at,
+                run.branch_cut.map(i64::from)
             ],
         )?;
         Ok(())
@@ -901,7 +949,7 @@ impl Registry {
 
     pub fn get_run(&self, id: &str) -> Result<Option<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, pin_rank, primary_closed_at FROM runs WHERE id = ?1",
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, pin_rank, primary_closed_at, branch_cut FROM runs WHERE id = ?1",
         )?;
         let mut rows = stmt.query([id])?;
         match rows.next()? {
@@ -912,7 +960,7 @@ impl Registry {
 
     pub fn list_runs(&self, project_id: &str) -> Result<Vec<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, pin_rank, primary_closed_at
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, pin_rank, primary_closed_at, branch_cut
              FROM runs WHERE project_id = ?1 AND archived_at IS NULL ORDER BY created_at DESC",
         )?;
         let rows = stmt.query_map([project_id], |row| Ok(row_to_run(row)))?;
@@ -925,7 +973,7 @@ impl Registry {
 
     pub fn list_archived_runs(&self, project_id: &str) -> Result<Vec<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, pin_rank, primary_closed_at
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, pin_rank, primary_closed_at, branch_cut
              FROM runs WHERE project_id = ?1 AND archived_at IS NOT NULL ORDER BY archived_at DESC",
         )?;
         let rows = stmt.query_map([project_id], |row| Ok(row_to_run(row)))?;
@@ -996,9 +1044,14 @@ impl Registry {
     /// row: rename only the git side and the next merge targets a branch that
     /// no longer exists. Both halves belong to the one caller
     /// (`AppState::rename_run_branch`), which rolls git back if this fails.
-    pub fn set_run_branch(&self, id: &str, branch: &str) -> Result<()> {
-        self.conn
-            .execute("UPDATE runs SET branch = ?2 WHERE id = ?1", rusqlite::params![id, branch])?;
+    /// Point the run at `branch`, recording with it whether Agency cut that
+    /// branch (see [`Run::branch_cut`]). The two are written together so a row
+    /// can never name one branch while vouching for another.
+    pub fn set_run_branch(&self, id: &str, branch: &str, cut: bool) -> Result<()> {
+        self.conn.execute(
+            "UPDATE runs SET branch = ?2, branch_cut = ?3 WHERE id = ?1",
+            rusqlite::params![id, branch, cut as i64],
+        )?;
         Ok(())
     }
 
@@ -1469,7 +1522,7 @@ impl Registry {
     /// runs" list; also drives the last-run-abandoned rollback check).
     pub fn runs_for_issue(&self, issue_id: &str) -> Result<Vec<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, pin_rank, primary_closed_at
+            "SELECT id, project_id, agent, prompt, base, branch, created_at, port_base, archived_at, title, kind, merge_target, race_id, loop_config, loop_state, issue_id, worktree, model, base_commit, pin_rank, primary_closed_at, branch_cut
              FROM runs WHERE issue_id = ?1 AND archived_at IS NULL ORDER BY created_at DESC",
         )?;
         let rows = stmt.query_map([issue_id], |row| Ok(row_to_run(row)))?;
@@ -1742,6 +1795,7 @@ fn row_to_run(row: &rusqlite::Row) -> Result<Run> {
         base_commit: row.get(18)?,
         pin_rank: row.get(19)?,
         primary_closed_at: row.get(20)?,
+        branch_cut: row.get::<_, Option<i64>>(21)?.map(|v| v != 0),
     })
 }
 
@@ -1896,6 +1950,7 @@ mod tests {
             model: None,
             base_commit: None,
             primary_closed_at: None,
+            branch_cut: None,
             pin_rank: None,
         }
     }
@@ -2029,6 +2084,58 @@ mod tests {
         let active: Vec<String> =
             reg.list_runs("proj").unwrap().into_iter().map(|r| r.id).collect();
         assert_eq!(active, vec!["x-1"]);
+    }
+
+    /// AGE-246: the branch a teardown deletes is the run's own under its
+    /// current name, and never one it was only checked out on.
+    #[test]
+    fn cut_branch_follows_the_recorded_answer() {
+        let renamed = Run {
+            branch: "agent/fix-pairing-agent-6fgy".into(),
+            branch_cut: Some(true),
+            ..sample_run("agent-6fgy", None)
+        };
+        assert_eq!(renamed.cut_branch(), Some("agent/fix-pairing-agent-6fgy"));
+        // A PR head, even one that happens to look like ours.
+        let pr = Run { branch_cut: Some(false), ..sample_run("review-pr-7-q3w7", None) };
+        assert_eq!(pr.cut_branch(), None);
+        // Nothing of ours in git for a run in the checkout or a terminal.
+        let checkout =
+            Run { worktree: false, branch_cut: Some(true), ..sample_run("a-q3w7", None) };
+        assert_eq!(checkout.cut_branch(), None);
+        let terminal = Run { kind: "terminal".into(), ..sample_run("t-q3w7", None) };
+        assert_eq!(terminal.cut_branch(), None);
+    }
+
+    /// Rows from before `branch_cut` was recorded: the names Agency gives a
+    /// branch it cut count as ours, anything else is left in the repo.
+    #[test]
+    fn cut_branch_reads_legacy_rows_by_name() {
+        let legacy = |id: &str, branch: &str| Run { branch: branch.into(), ..sample_run(id, None) };
+        // As cut, and after the first-prompt rename that broke AGE-246.
+        assert!(legacy("agent-6fgy", "agent/agent-6fgy").cut_branch().is_some());
+        assert!(legacy("agent-6fgy", "agent/hm-i-think-something-broke-6fgy")
+            .cut_branch()
+            .is_some());
+        assert!(legacy("x", "agent/x").cut_branch().is_some());
+        // A PR head, and a hand rename to a name of the user's choosing.
+        assert!(legacy("review-pr-7-q3w7", "feature/login").cut_branch().is_none());
+        assert!(legacy("agent-6fgy", "agent/other-run-ab12").cut_branch().is_none());
+        assert!(legacy("agent-6fgy", "fix/pairing-6fgy").cut_branch().is_none());
+    }
+
+    #[test]
+    fn branch_cut_survives_the_round_trip_and_moves_with_the_branch() {
+        let dir = tempdir().unwrap();
+        let reg = Registry::open(&dir.path().join("a.db")).unwrap();
+        reg.insert_run(&Run { branch_cut: Some(false), ..sample_run("r-1", None) }).unwrap();
+        reg.insert_run(&sample_run("r-2", None)).unwrap();
+        assert_eq!(reg.get_run("r-1").unwrap().unwrap().branch_cut, Some(false));
+        assert_eq!(reg.get_run("r-2").unwrap().unwrap().branch_cut, None);
+
+        reg.set_run_branch("r-2", "fix/pairing", true).unwrap();
+        let moved = reg.get_run("r-2").unwrap().unwrap();
+        assert_eq!(moved.cut_branch(), Some("fix/pairing"));
     }
 
     #[test]
@@ -2366,6 +2473,7 @@ mod tests {
             model: None,
             base_commit: None,
             primary_closed_at: None,
+            branch_cut: None,
             pin_rank: None,
         };
         reg.insert_run(&run).unwrap();

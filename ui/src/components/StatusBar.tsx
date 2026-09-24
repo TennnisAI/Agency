@@ -85,8 +85,12 @@ export default function StatusBar({
           )}
         </span>
       </span>
-      <span className="statusbar-right">
+      {/* Centred, apart from both the selection's branch and the hints, so it
+          reads as its own standing fact rather than part of either. */}
+      <span className="statusbar-mid">
         {checkout && <CheckoutSegment status={checkout} onOpen={onOpenCheckout} />}
+      </span>
+      <span className="statusbar-right">
         <span className="kbd-hints">
           {shortcutLabel("⌘N")} new · {shortcutLabel("⌘D")} source · {shortcutLabel("⌘↵")} approve · {shortcutLabel("⌘,")} settings
         </span>

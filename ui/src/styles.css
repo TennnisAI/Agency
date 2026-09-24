@@ -783,7 +783,9 @@ textarea.settings-input { min-height: 64px; resize: vertical; }
   color: var(--o1);
 }
 .kbd-hints { font-size: 11px; color: var(--o0); opacity: 0.75; }
-.statusbar-left { display: flex; align-items: center; gap: 12px; min-width: 0; }
+/* Left and right take equal shares of what is left over, so the checkout in
+   the middle sits at the bar's true centre however long either side is. */
+.statusbar-left { display: flex; align-items: center; gap: 12px; flex: 1 1 0; min-width: 0; }
 .statusbar-git { display: flex; align-items: center; gap: 7px; min-width: 0; }
 /* The branch of whatever working tree you're in. A button, not a label: it
    goes to Source Control for that tree. */
@@ -794,7 +796,11 @@ textarea.settings-input { min-height: 64px; resize: vertical; }
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .statusbar-branch:hover { background: none; color: var(--text); }
-.statusbar-right { display: flex; align-items: center; gap: 14px; flex-shrink: 0; }
+.statusbar-mid { display: flex; justify-content: center; flex: 0 0 auto; padding: 0 12px; }
+.statusbar-right {
+  display: flex; align-items: center; justify-content: flex-end; flex: 1 1 0; min-width: 0;
+  white-space: nowrap; overflow: hidden;
+}
 /* The project checkout and its push/pull counts, always on show. A button
    because it goes where Push and Pull are. */
 .statusbar-checkout {

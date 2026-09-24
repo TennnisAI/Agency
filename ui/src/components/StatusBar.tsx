@@ -1,12 +1,7 @@
 import { useEffect, useState } from "react";
-import { gitBranchInfo, projectTarget, runBranches } from "../api";
+import { gitAutoFetch, gitBranchInfo, projectTarget, runBranches } from "../api";
+import { CheckoutStatus, checkoutStatus, checkoutStatusTooltip } from "../lib/checkoutStatus";
 import { shortcutLabel } from "../lib/platform";
-
-// What the project's own checkout looks like from here: the branch you have
-// checked out, and how many commits on it origin hasn't seen. The count is the
-// standing answer to "did I push that merge?" (AGE-64) — it is shown whichever
-// working tree you happen to be standing in.
-type Checkout = { branch: string; unpushed: number };
 
 export default function StatusBar({
   projectName,
@@ -24,11 +19,11 @@ export default function StatusBar({
   // checkout when nothing is).
   onOpenSource: () => void;
   // Source Control for the project's checkout specifically: from inside an
-  // agent, this is the way out to the branch the unpushed commits are on.
+  // agent, this is the way out to the branch Push and Pull act on.
   onOpenCheckout: () => void;
 }) {
   const [run, setRun] = useState<{ branch: string; base: string } | null>(null);
-  const [checkout, setCheckout] = useState<Checkout | null>(null);
+  const [checkout, setCheckout] = useState<CheckoutStatus | null>(null);
 
   useEffect(() => {
     setRun(null);
@@ -47,11 +42,7 @@ export default function StatusBar({
     if (!projectId) return;
     let alive = true;
     const load = () => gitBranchInfo(projectTarget(projectId))
-      .then((b) => {
-        // Counted only against a real upstream: with none, git's "ahead" is
-        // measured from the fork point and says nothing about origin.
-        if (alive) setCheckout({ branch: b.branch, unpushed: b.upstream ? b.ahead : 0 });
-      })
+      .then((b) => { if (alive) setCheckout(checkoutStatus(b)); })
       // A project without git (the workspace can decline it) simply has no
       // branch to report.
       .catch(() => { if (alive) setCheckout(null); });
@@ -60,10 +51,22 @@ export default function StatusBar({
     return () => { alive = false; clearInterval(id); };
   }, [projectId]);
 
+  // The poll above re-reads local refs only, so the incoming count is whatever
+  // it was at the last fetch. The background sweep runs every five minutes;
+  // this asks for a fresher one when the window comes back, which is when the
+  // bar is about to be read. Throttled and silent backend-side, as it is for
+  // Source Control.
+  useEffect(() => {
+    if (!projectId) return;
+    const fetchNow = () => { gitAutoFetch(projectTarget(projectId)).catch(() => {}); };
+    fetchNow();
+    window.addEventListener("focus", fetchNow);
+    return () => window.removeEventListener("focus", fetchNow);
+  }, [projectId]);
+
   // In a run, the run's own branches; in the grid, the checkout's branch.
   const branch = runId ? run?.branch ?? "" : checkout?.branch ?? "";
   const base = runId ? run?.base ?? "" : "";
-  const unpushed = checkout?.unpushed ?? 0;
   return (
     <footer className="statusbar">
       <span className="statusbar-left">
@@ -80,22 +83,54 @@ export default function StatusBar({
               ⎇ {branch}{base && base !== branch ? ` → ${base}` : ""}
             </button>
           )}
-          {unpushed > 0 && checkout && (
-            <button
-              className="statusbar-unpushed"
-              title={`${unpushed} commit${unpushed === 1 ? "" : "s"} on ${checkout.branch} that origin doesn't have. Opens Source Control for your checkout, where Push is.`}
-              onClick={onOpenCheckout}
-            >
-              {/* Named only when it isn't the branch already on show, so a
-                  merged-but-unpushed base is never mistaken for the agent's. */}
-              {runId ? `${checkout.branch} ` : ""}{unpushed}↑
-            </button>
-          )}
         </span>
       </span>
-      <span className="kbd-hints">
-        {shortcutLabel("⌘N")} new · {shortcutLabel("⌘D")} source · {shortcutLabel("⌘↵")} approve · {shortcutLabel("⌘,")} settings
+      {/* Centred, apart from both the selection's branch and the hints, so it
+          reads as its own standing fact rather than part of either. */}
+      <span className="statusbar-mid">
+        {checkout && <CheckoutSegment status={checkout} onOpen={onOpenCheckout} />}
+      </span>
+      <span className="statusbar-right">
+        <span className="kbd-hints">
+          {shortcutLabel("⌘N")} new · {shortcutLabel("⌘D")} source · {shortcutLabel("⌘↵")} approve · {shortcutLabel("⌘,")} settings
+        </span>
       </span>
     </footer>
+  );
+}
+
+/**
+ * The project checkout's branch and what it has to push and pull, shown at all
+ * times and in the same spot, whichever agent is selected (AGE-240). Working
+ * mostly in agent worktrees, the checkout is out of sight: merges land on it and
+ * sit unpushed, and switching to another computer means doing the work twice.
+ * This is the standing reminder, so it is a separate segment rather than a
+ * variant of the branch on the left, which follows the selection.
+ */
+function CheckoutSegment({ status, onOpen }: { status: CheckoutStatus; onOpen: () => void }) {
+  const unpushed = status.kind === "tracked" && status.ahead > 0;
+  return (
+    <button
+      className={`statusbar-checkout${unpushed ? " unpushed" : ""}`}
+      title={checkoutStatusTooltip(status)}
+      onClick={onOpen}
+    >
+      <span className="statusbar-checkout-label">checkout</span>
+      <span className="statusbar-checkout-branch">⎇ {status.branch}</span>
+      <CheckoutCounts status={status} />
+    </button>
+  );
+}
+
+function CheckoutCounts({ status }: { status: CheckoutStatus }) {
+  if (status.kind === "local") return <span className="statusbar-sync-note">no remote</span>;
+  if (status.kind === "unpublished") return <span className="statusbar-sync-note">unpublished</span>;
+  const { ahead, behind } = status;
+  if (ahead === 0 && behind === 0) return <span className="statusbar-sync-note">✓</span>;
+  return (
+    <>
+      {behind > 0 && <span className="statusbar-behind">{behind}↓</span>}
+      {ahead > 0 && <span className="statusbar-ahead">{ahead}↑</span>}
+    </>
   );
 }

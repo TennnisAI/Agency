@@ -485,14 +485,21 @@ impl WorktreeManager {
         Ok(Worktree { task_id: task_id.to_string(), path, branch: branch.to_string() })
     }
 
-    /// Re-create a worktree for `task_id` on its existing branch `agent/<id>`.
-    pub fn restore(&self, task_id: &str) -> Result<Worktree> {
+    /// Re-create a worktree for `task_id` on its kept `branch`.
+    ///
+    /// The branch is the one the run records, not one derived from the id.
+    /// AGE-246: a run whose branch had been renamed to describe its work
+    /// (`agent/agent-6fgy` became `agent/hm-i-think-something-broke-…-6fgy`)
+    /// failed to restore with "fatal: invalid reference: agent/agent-6fgy",
+    /// because this rebuilt `agent/<id>` while the caller had checked that the
+    /// renamed branch was still there. A run on an existing branch (a PR head)
+    /// never had an `agent/<id>` branch at all.
+    pub fn restore(&self, task_id: &str, branch: &str) -> Result<Worktree> {
         self.ensure_excluded()?;
         let path = self.worktrees_root().join(task_id);
-        let branch = Self::branch_for(task_id);
         let path_str = path.to_string_lossy().to_string();
-        self.git(&["worktree", "add", &path_str, &branch])?;
-        Ok(Worktree { task_id: task_id.to_string(), path, branch })
+        self.git(&["worktree", "add", &path_str, branch])?;
+        Ok(Worktree { task_id: task_id.to_string(), path, branch: branch.to_string() })
     }
 
     /// Re-create a worktree for `task_id` on a *fresh* `branch` cut from

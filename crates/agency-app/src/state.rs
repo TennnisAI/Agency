@@ -8179,7 +8179,7 @@ impl AppState {
             // conversation into the worktree that comes back at the same path:
             // the run resumes where it left off, on top of what it merged.
             if agency_core::merge::branch_exists(&repo, &run.branch) {
-                manager.restore(id)?;
+                manager.restore(id, &run.branch)?;
             } else {
                 let Some(start) = restore_start_point(&repo, &run) else {
                     bail!(

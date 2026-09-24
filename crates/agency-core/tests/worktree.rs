@@ -43,9 +43,29 @@ fn remove_keep_branch_keeps_the_branch_then_restore_recreates_worktree() {
     assert!(branch_exists(repo.path(), "agent/task-1"), "branch kept");
 
     // Restore: worktree recreated on the same branch.
-    let restored = mgr.restore("task-1").unwrap();
+    let restored = mgr.restore("task-1", "agent/task-1").unwrap();
     assert!(restored.path.exists(), "worktree recreated");
     assert_eq!(restored.branch, "agent/task-1");
+}
+
+/// AGE-246: a run whose branch was renamed while it was live restores onto
+/// the renamed branch. Restore used to rebuild `agent/<id>` and fail with
+/// "invalid reference".
+#[test]
+fn restore_uses_the_renamed_branch() {
+    let repo = init_repo();
+    let mgr = WorktreeManager::new(repo.path().to_path_buf());
+    let wt = mgr.create("task-r", "HEAD").unwrap();
+    std::fs::write(wt.path.join("work.txt"), "done").unwrap();
+    git(&wt.path, &["add", "."]);
+    git(&wt.path, &["commit", "-q", "-m", "work"]);
+    git(repo.path(), &["branch", "-m", "agent/task-r", "agent/fix-pairing-task-r"]);
+
+    mgr.remove_keep_branch("task-r").unwrap();
+    let restored = mgr.restore("task-r", "agent/fix-pairing-task-r").unwrap();
+    assert_eq!(restored.branch, "agent/fix-pairing-task-r");
+    assert_eq!(std::fs::read_to_string(restored.path.join("work.txt")).unwrap(), "done");
+    assert!(!branch_exists(repo.path(), "agent/task-r"), "no branch cut under the old name");
 }
 
 #[test]
@@ -119,7 +139,7 @@ fn commit_all_if_dirty_preserves_work_on_the_branch() {
 
     // Archive+restore round-trip brings the work back.
     mgr.remove_keep_branch("task-wip").unwrap();
-    let restored = mgr.restore("task-wip").unwrap();
+    let restored = mgr.restore("task-wip", "agent/task-wip").unwrap();
     assert_eq!(std::fs::read_to_string(restored.path.join("untracked.txt")).unwrap(), "new");
 }
 

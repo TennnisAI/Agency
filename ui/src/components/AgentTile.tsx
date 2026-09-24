@@ -8,6 +8,7 @@ import { removalLabel, removalsFor } from "../lib/runRemoval";
 import { usageLabel, usageTitle } from "../lib/usage";
 import { runTabs, showsTabs } from "../lib/runTabs";
 import TabCount from "./TabCount";
+import WaitingTabs from "./WaitingTabs";
 import AgentNote from "./AgentNote";
 import AttentionMarker, { PinGrip } from "./AttentionMarker";
 import QueuedMarker from "./QueuedMarker";
@@ -112,6 +113,7 @@ export default function AgentTile({ run, pinDrag }: { run: RunInfo; pinDrag?: Pi
             the queued marker came and went. */}
         <AttentionMarker run={run} onChanged={refreshRuns} />
         <span title={st.title}>{st.text}</span>
+        <WaitingTabs run={run} tabs={tabs} dot={st.cls} />
         {/* Same register as the status beside it: what the agent is doing, and
             what it has not been handed yet. */}
         <QueuedMarker run={run} />

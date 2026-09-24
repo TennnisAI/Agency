@@ -1,10 +1,24 @@
 import { describe, expect, it } from "vitest";
 import { RunInfo, RunSessionInfo } from "../api";
 import { PRIMARY_TAB } from "./focusTab";
-import { runTabs, showsTabs, sidePanelTab, tabCountLabel, tabLabel, tabsTitle } from "./runTabs";
+import { runStatus } from "./runstate";
+import {
+  runTabs,
+  showsTabs,
+  sidePanelTab,
+  tabCountLabel,
+  tabLabel,
+  tabsTitle,
+  waitingElsewhere,
+  waitingElsewhereLabel,
+} from "./runTabs";
 
-const session = (id: string, agent: string, status: RunSessionInfo["status"] = { state: "running" }) =>
-  ({ id, runId: id.split("--")[0], agent, status }) as RunSessionInfo;
+const session = (
+  id: string,
+  agent: string,
+  status: RunSessionInfo["status"] = { state: "running" },
+  activity: RunSessionInfo["activity"] = null,
+) => ({ id, runId: id.split("--")[0], agent, status, activity }) as RunSessionInfo;
 
 const run = (over: Partial<RunInfo> = {}): RunInfo =>
   ({
@@ -56,12 +70,25 @@ describe("runTabs", () => {
     expect(runTabs(run(), 0)[0].cls).toBe("awaiting");
   });
 
-  // Activity is sampled for the lead session only, so an extra tab that is up
-  // must not pulse as though someone had watched it working.
-  it("gives an extra tab a still dot from its session status alone", () => {
+  // Each tab's activity is sampled on its own (AGE-249), and the overview
+  // counts from it, so the tab's dot says the same thing the counts do.
+  it("gives an extra agent tab its own activity", () => {
     const r = run({
       sessions: [
-        session("r1--2", "codex"),
+        session("r1--2", "codex", { state: "running" }, { state: "waiting", since: 0 }),
+        session("r1--3", "codex", { state: "running" }, { state: "idle", since: 0 }),
+        session("r1--4", "codex"),
+      ],
+    });
+    const extra = runTabs(r, 0).slice(1);
+    expect(extra.map((t) => t.cls)).toEqual(["awaiting", "idle", "running"]);
+    expect(extra.map((t) => t.status)).toEqual(["waiting · 0s", "idle", "working"]);
+  });
+
+  it("gives a stopped tab, or a terminal tab, a still dot from its status alone", () => {
+    const r = run({
+      sessions: [
+        session("r1--2", "shell", { state: "running" }, { state: "waiting", since: 0 }),
         session("r1--3", "codex", { state: "exited", code: 0 }),
         session("r1--4", "codex", { state: "exited", code: 1 }),
         session("r1--5", "codex", { state: "gone" }),
@@ -70,6 +97,62 @@ describe("runTabs", () => {
     const extra = runTabs(r, 0).slice(1);
     expect(extra.map((t) => t.cls)).toEqual(["live", "exited", "exited", "exited"]);
     expect(extra.map((t) => t.status)).toEqual(["running", "finished", "failed", "not running"]);
+  });
+});
+
+// Clicking "1 waiting" kept a tile whose dot said "working", and nothing on the
+// tile said which of its tabs was the one asking (AGE-249).
+describe("waitingElsewhere", () => {
+  const waiting = { state: "running" } as const;
+  const elsewhere = (r: RunInfo) => waitingElsewhere(r, runTabs(r, 0), runStatus(r, 0).cls);
+
+  it("names a waiting tab behind a working first agent", () => {
+    const r = run({
+      activity: { state: "working", since: 0 },
+      sessions: [session("r1--2", "codex", waiting, { state: "waiting", since: 0 })],
+    });
+    expect(elsewhere(r).map((t) => t.label)).toEqual(["Codex · 2"]);
+    expect(waitingElsewhereLabel(elsewhere(r))).toBe("1 other tab waiting");
+  });
+
+  it("leaves out the tab the dot already shows waiting", () => {
+    const r = run({
+      sessions: [
+        session("r1--2", "codex", waiting, { state: "waiting", since: 0 }),
+        session("r1--3", "codex", waiting, { state: "waiting", since: 0 }),
+      ],
+    });
+    expect(elsewhere(r).map((t) => t.session)).toEqual(["r1--2", "r1--3"]);
+    expect(waitingElsewhereLabel(elsewhere(r))).toBe("2 other tabs waiting");
+  });
+
+  it("is nothing when only the dot's own tab is waiting", () => {
+    const r = run({ sessions: [session("r1--2", "codex", waiting, { state: "idle", since: 0 })] });
+    expect(elsewhere(r)).toEqual([]);
+    expect(waitingElsewhereLabel(elsewhere(r))).toBeNull();
+  });
+
+  // With the first tab closed the dot shows the lowest-numbered tab still
+  // running (AGE-184), which is not the first row when an earlier one exited.
+  it("takes a closed first tab's stand-in as the dot's tab", () => {
+    const r = run({
+      primaryClosed: true,
+      sessions: [
+        session("r1--2", "codex", { state: "exited", code: 0 }),
+        session("r1--3", "codex", waiting, { state: "waiting", since: 0 }),
+        session("r1--4", "codex", waiting, { state: "waiting", since: 0 }),
+      ],
+    });
+    expect(elsewhere(r).map((t) => t.session)).toEqual(["r1--4"]);
+  });
+
+  it("lists the stand-in too when the dot itself does not read waiting", () => {
+    const r = run({
+      primaryClosed: true,
+      activity: { state: "idle", since: 0 },
+      sessions: [session("r1--2", "codex", waiting, { state: "waiting", since: 0 })],
+    });
+    expect(elsewhere(r).map((t) => t.session)).toEqual(["r1--2"]);
   });
 });
 

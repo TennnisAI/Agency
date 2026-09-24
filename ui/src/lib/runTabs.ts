@@ -1,4 +1,4 @@
-import type { RunInfo, SessionStatus } from "../api";
+import type { RunInfo, RunSessionInfo } from "../api";
 import { agentLabel } from "../agents";
 import { PRIMARY_TAB } from "./focusTab";
 import { runStatus } from "./runstate";
@@ -38,12 +38,17 @@ export function tabLabel(agent: string, session: string, primary: boolean): stri
   return agent === "shell" ? `≳ terminal · ${n}` : `${agentLabel(agent)} · ${n}`;
 }
 
-// An extra tab's dot. Activity (working, waiting, idle) is sampled for a run's
-// lead session only, so an extra agent that is up is "live": lit but still.
-// That says it is running and nothing about whether it is busy, which is all
-// anyone has measured. The pulse would claim output nobody has seen.
-function sessionDot(status: SessionStatus): { cls: string; text: string } {
-  if (status.state === "running") return { cls: "live", text: "running" };
+// An extra tab's dot. A running agent tab reads exactly like the run's own
+// agent: the backend samples each tab's activity (AGE-249), and the overview's
+// counts are made from it, so a dot that said less would contradict them. A
+// "New terminal" tab is a shell, which is never waiting on you, so it is "live":
+// lit but still, like a terminal run's plain "running".
+function sessionDot(s: RunSessionInfo, now: number): { cls: string; text: string } {
+  const status = s.status;
+  if (status.state === "running") {
+    if (s.agent === "shell") return { cls: "live", text: "running" };
+    return runStatus({ kind: "agent", status, activity: s.activity }, now);
+  }
   if (status.state === "exited") {
     return { cls: "exited", text: status.code === 0 ? "finished" : "failed" };
   }
@@ -70,7 +75,7 @@ export function runTabs(run: RunInfo, now: number = Date.now()): RunTab[] {
     });
   }
   for (const s of run.sessions) {
-    const st = sessionDot(s.status);
+    const st = sessionDot(s, now);
     tabs.push({
       panel: s.id,
       session: s.id,
@@ -100,6 +105,30 @@ export function tabCountLabel(n: number): string {
 /** What the count stands for, named, for its title. */
 export function tabsTitle(tabs: RunTab[]): string {
   return `${tabCountLabel(tabs.length)} in this workspace: ${tabs.map((t) => t.label).join(", ")}`;
+}
+
+/**
+ * The tabs waiting on you that a tile's own dot does not show. The "waiting"
+ * filter keeps a workspace for any tab in it (AGE-249), so clicking "1 waiting"
+ * could bring up a tile whose dot said "working" and nothing on it said which
+ * tab was the one asking.
+ *
+ * `dot` is the class of the tile's own dot, `runStatus(run).cls`. It shows the
+ * first tab, or once that was closed the lowest-numbered one still running
+ * (AGE-184). It accounts for that tab only when it reads waiting itself;
+ * otherwise every waiting tab is listed, the dot's own included.
+ */
+export function waitingElsewhere(run: Pick<RunInfo, "primaryClosed">, tabs: RunTab[], dot: string): RunTab[] {
+  const waiting = tabs.filter((t) => t.cls === "awaiting");
+  if (dot !== "awaiting") return waiting;
+  const shown = run.primaryClosed ? tabs.find((t) => t.cls !== "exited") : tabs[0];
+  return waiting.filter((t) => t !== shown);
+}
+
+/** "1 other tab waiting", for the foot of a tile, or null when there are none. */
+export function waitingElsewhereLabel(tabs: RunTab[]): string | null {
+  if (tabs.length === 0) return null;
+  return `${tabs.length} other ${tabs.length === 1 ? "tab" : "tabs"} waiting`;
 }
 
 /**

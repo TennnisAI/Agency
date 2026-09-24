@@ -1432,6 +1432,48 @@ pub fn pull_rebase(worktree: &Path) -> Result<()> {
     Ok(())
 }
 
+/// A rebase that stopped partway in `worktree`: on a conflict, or on an `edit`
+/// step. `branch` is the branch being rebased, `None` for a detached HEAD.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RebaseInProgress {
+    pub branch: Option<String>,
+}
+
+/// Whether a rebase is stopped partway in `worktree`, and on which branch.
+///
+/// Mid-rebase HEAD is detached, so `symbolic-ref` says "no branch" about a
+/// worktree whose branch is exactly the thing being fixed; the name is in the
+/// rebase's own state directory. `--git-path`, not a path under `.git`: in a
+/// linked worktree `.git` is a file, and the state lives beside its own HEAD.
+pub fn rebase_in_progress(worktree: &Path) -> Option<RebaseInProgress> {
+    for dir in ["rebase-merge", "rebase-apply"] {
+        let Ok(out) = git(worktree, &["rev-parse", "--git-path", dir]) else { continue };
+        let state = worktree.join(out.trim());
+        // rebase-apply is `git am`'s directory too; only a rebase leaves
+        // `rebasing` in it.
+        if !state.is_dir() || (dir == "rebase-apply" && !state.join("rebasing").exists()) {
+            continue;
+        }
+        let branch = std::fs::read_to_string(state.join("head-name"))
+            .ok()
+            .and_then(|s| s.trim().strip_prefix("refs/heads/").map(str::to_string));
+        return Some(RebaseInProgress { branch });
+    }
+    None
+}
+
+/// The upstream `branch` tracks (`origin/main`), if it has one. By name rather
+/// than `@{u}`, which resolves against HEAD and so has no answer mid-rebase.
+pub fn upstream_of(worktree: &Path, branch: &str) -> Option<String> {
+    git(
+        worktree,
+        &["rev-parse", "--abbrev-ref", "--symbolic-full-name", &format!("{branch}@{{u}}")],
+    )
+    .ok()
+    .map(|s| s.trim().to_string())
+    .filter(|s| !s.is_empty())
+}
+
 /// Force-push the current branch. `--force-with-lease` so a remote updated by
 /// someone else since the last fetch is never clobbered silently. See
 /// [`push_force_with_progress`]; this is the no-progress, no-cancel wrapper.

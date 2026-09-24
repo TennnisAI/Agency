@@ -1047,3 +1047,50 @@ fn diff_reports_an_untracked_binary_file_as_binary() {
     assert!(d.contains("Binary files /dev/null and b/blob.bin differ"), "{d}");
     assert!(parse_diff(&d).hunks.is_empty(), "no text lines: {d}");
 }
+
+/// A Rebase & Sync that stops on a conflict leaves HEAD detached, so the
+/// branch the agent sent to finish it works on has to come from the rebase's
+/// own state (AGE-245), and so does its upstream.
+#[test]
+fn rebase_in_progress_names_the_branch_a_stopped_pull_rebase_detached() {
+    let (_keep, _remote, clone) = clone_with_upstream();
+    let branch = git::branch_info(&clone).unwrap().branch;
+    assert_eq!(git::rebase_in_progress(&clone), None);
+
+    // Origin gets one edit to tracked.txt, the local branch a different one.
+    commit_file(&clone, "tracked.txt", "theirs\n", "theirs");
+    git::push(&clone).unwrap();
+    run(&clone, &["reset", "-q", "--hard", "HEAD~1"]);
+    commit_file(&clone, "tracked.txt", "ours\n", "ours");
+
+    assert!(git::pull_rebase(&clone).is_err(), "the edits conflict");
+    let state = git::rebase_in_progress(&clone).expect("the rebase stopped partway");
+    assert_eq!(state.branch.as_deref(), Some(branch.as_str()));
+    assert_eq!(
+        git::upstream_of(&clone, &branch).as_deref(),
+        Some(format!("origin/{branch}").as_str())
+    );
+
+    run(&clone, &["rebase", "--abort"]);
+    assert_eq!(git::rebase_in_progress(&clone), None);
+}
+
+/// A linked worktree keeps its rebase state beside its own HEAD, not under a
+/// `.git` directory (its `.git` is a file), which is where agents' runs live.
+#[test]
+fn rebase_in_progress_finds_a_linked_worktrees_rebase() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    // Outside the checkout, so the checkout's `add -A` doesn't pick it up.
+    let wt_parent = tempfile::tempdir().unwrap();
+    let wt = wt_parent.path().join("wt");
+    run(dir.path(), &["worktree", "add", "-q", "-b", "feat", wt.to_str().unwrap()]);
+    commit_file(&wt, "tracked.txt", "feat\n", "feat");
+    commit_file(dir.path(), "tracked.txt", "main\n", "main");
+
+    let base = git::branch_info(dir.path()).unwrap().branch;
+    let rebase = Command::new("git").args(["rebase", "-q", &base]).current_dir(&wt).output();
+    assert!(!rebase.unwrap().status.success(), "the edits conflict");
+    assert_eq!(git::rebase_in_progress(&wt).and_then(|s| s.branch).as_deref(), Some("feat"));
+    assert_eq!(git::rebase_in_progress(dir.path()), None, "the main checkout is not rebasing");
+}

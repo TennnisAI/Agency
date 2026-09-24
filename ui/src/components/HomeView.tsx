@@ -2,7 +2,16 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Issue, Project, RunInfo, RepoReadiness, addProject, inspectRepo, listIssues, listProjects, listRuns, runPreview } from "../api";
 import { projectAccent, runName } from "../agents";
-import { inGitlessFolder, isWorking, needsAttention, pinnedFirst, runStatus } from "../lib/runstate";
+import {
+  RunFilter,
+  inGitlessFolder,
+  isWorking,
+  matchesRunFilter,
+  needsAttention,
+  parseRunFilter,
+  pinnedFirst,
+  runStatus,
+} from "../lib/runstate";
 import AgentNote from "./AgentNote";
 import { runTabs, showsTabs } from "../lib/runTabs";
 import TabCount from "./TabCount";
@@ -29,6 +38,28 @@ function saveFolded(folded: Set<string>) {
     localStorage.setItem(FOLD_KEY, JSON.stringify([...folded]));
   } catch {
     /* quota/security errors: fold state just won't persist */
+  }
+}
+
+// The header filter lives in sessionStorage, not localStorage: opening a tile
+// unmounts this view, and a filter that reset on the way back would undo
+// itself every time it was used. Across a restart it would only hide agents
+// behind a choice the user no longer remembers making.
+const FILTER_KEY = "home:filter";
+
+function loadFilter(): RunFilter {
+  try {
+    return parseRunFilter(sessionStorage.getItem(FILTER_KEY));
+  } catch {
+    return "all";
+  }
+}
+
+function saveFilter(filter: RunFilter) {
+  try {
+    sessionStorage.setItem(FILTER_KEY, filter);
+  } catch {
+    /* storage unavailable: the filter just won't survive navigation */
   }
 }
 
@@ -89,6 +120,7 @@ export default function HomeView({
   const [loaded, setLoaded] = useState(false);
   // Folded project ids persist across sessions so a big workspace stays tidy.
   const [folded, setFolded] = useState<Set<string>>(loadFolded);
+  const [filter, setFilterState] = useState<RunFilter>(loadFilter);
   const [addError, setAddError] = useState("");
   const [setup, setSetup] = useState<{ path: string; name: string; readiness: RepoReadiness } | null>(null);
   const [cloning, setCloning] = useState(false);
@@ -142,6 +174,14 @@ export default function HomeView({
     } catch (e) {
       setAddError(String(e));
     }
+  }
+
+  // Clicking the active count again clears it, so every filter has an exit
+  // right where it was chosen.
+  function pickFilter(next: RunFilter) {
+    const f = next === filter ? "all" : next;
+    setFilterState(f);
+    saveFilter(f);
   }
 
   function toggleFold(id: string) {
@@ -245,6 +285,11 @@ export default function HomeView({
     const rb = (runsBy[b.id] ?? []).filter((r) => r.status.state === "running").length;
     return rb - ra || a.name.localeCompare(b.name);
   });
+  // Under a filter, a project with nothing matching drops out entirely rather
+  // than leaving an empty header behind.
+  const shown = all.filter((r) => matchesRunFilter(r, filter));
+  const shownProjects =
+    filter === "all" ? ordered : ordered.filter((p) => (runsBy[p.id] ?? []).some((r) => matchesRunFilter(r, filter)));
 
   return (
     <div className="home">
@@ -255,13 +300,40 @@ export default function HomeView({
         </div>
         <div className="home-stats">
           <Stat value={projects.length} label={projects.length === 1 ? "project" : "projects"} />
-          <Stat value={all.length} label={all.length === 1 ? "agent" : "agents"} />
-          <Stat value={working} label="working" accent={working > 0} />
-          <Stat value={waitingCount} label="waiting" warn={waitingCount > 0} />
+          <Stat
+            value={all.length}
+            label={all.length === 1 ? "agent" : "agents"}
+            active={filter === "all"}
+            title="Show every agent"
+            onClick={() => pickFilter("all")}
+          />
+          <Stat
+            value={working}
+            label="working"
+            accent={working > 0}
+            active={filter === "working"}
+            title={filter === "working" ? "Show every agent" : "Show only working agents"}
+            onClick={() => pickFilter("working")}
+          />
+          <Stat
+            value={waitingCount}
+            label="waiting"
+            warn={waitingCount > 0}
+            active={filter === "waiting"}
+            title={filter === "waiting" ? "Show every agent" : "Show only agents waiting on you"}
+            onClick={() => pickFilter("waiting")}
+          />
         </div>
       </div>
 
-      {ordered.map((p) => {
+      {filter !== "all" && shown.length === 0 && (
+        <div className="home-filter-empty">
+          {filter === "working" ? "No agents are working right now." : "No agents are waiting on you."}{" "}
+          <button className="home-filter-clear" onClick={() => pickFilter("all")}>Show all agents</button>
+        </div>
+      )}
+
+      {shownProjects.map((p) => {
         // Pinned runs first, in the order the user put them; the rest running
         // first. A pin holds its place whatever the run is doing, so it is the
         // outer sort and lifecycle only orders what is left.
@@ -272,13 +344,18 @@ export default function HomeView({
         );
         const live = runs.filter(isWorking).length;
         const waiting = runs.filter(needsAttention).length;
-        const isFolded = folded.has(p.id);
+        // A filter overrides the fold: "show me what is waiting" has to show
+        // all of it, not just what sits in the projects left open.
+        const filtering = filter !== "all";
+        const isFolded = !filtering && folded.has(p.id);
+        const tiles = runs.filter((r) => matchesRunFilter(r, filter));
         return (
           <section key={p.id} className="home-group">
             <div className="home-group-head">
               <button
                 className="home-fold"
-                title={isFolded ? "Expand project" : "Collapse project"}
+                title={filtering ? "Clear the filter to collapse projects" : isFolded ? "Expand project" : "Collapse project"}
+                disabled={filtering}
                 onClick={() => toggleFold(p.id)}
               >
                 {isFolded ? "▸" : "▾"}
@@ -296,9 +373,9 @@ export default function HomeView({
                 <span className="home-group-open">open →</span>
               </button>
             </div>
-            {!isFolded && runs.length > 0 && (
+            {!isFolded && tiles.length > 0 && (
               <div className="grid home-grid">
-                {runs.map((r) => (
+                {tiles.map((r) => (
                   <HomeTile key={r.id} run={r} onOpen={() => onOpenRun(p, r.id)} onChanged={tick} />
                 ))}
               </div>
@@ -310,11 +387,35 @@ export default function HomeView({
   );
 }
 
-export function Stat({ value, label, accent, warn }: { value: number; label: string; accent?: boolean; warn?: boolean }) {
-  return (
-    <span className={`home-stat ${accent ? "accent" : ""} ${warn ? "warn" : ""}`}>
+// A count, or with `onClick` a count that filters the board to what it counts.
+export function Stat({
+  value,
+  label,
+  accent,
+  warn,
+  active,
+  title,
+  onClick,
+}: {
+  value: number;
+  label: string;
+  accent?: boolean;
+  warn?: boolean;
+  active?: boolean;
+  title?: string;
+  onClick?: () => void;
+}) {
+  const cls = `home-stat ${accent ? "accent" : ""} ${warn ? "warn" : ""}`;
+  const body = (
+    <>
       <span className="home-stat-n">{value}</span> {label}
-    </span>
+    </>
+  );
+  if (!onClick) return <span className={cls}>{body}</span>;
+  return (
+    <button className={`${cls} home-stat-btn${active ? " active" : ""}`} aria-pressed={active} title={title} onClick={onClick}>
+      {body}
+    </button>
   );
 }
 

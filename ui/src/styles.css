@@ -2563,6 +2563,23 @@ input, textarea, code,
 .home-stat-n { font-family: var(--mono); font-size: 15px; font-weight: 600; color: var(--sub1); }
 .home-stat.accent .home-stat-n { color: var(--running); }
 .home-stat.warn .home-stat-n { color: var(--awaiting); }
+/* The agent counts double as the board's filter (AGE-247). The chosen one
+   sits in a pill, "agents" included, so the filter in force is never
+   invisible and the counts read as choices before anyone hovers them. */
+.home-stat-btn {
+  background: transparent; border: none; border-radius: 6px;
+  font-family: var(--sans); padding: 3px 7px; margin: -3px -7px; cursor: pointer;
+}
+.home-stat-btn:hover { background: var(--s0); color: var(--text); }
+.home-stat-btn.active { background: var(--s1); color: var(--text); }
+.home-filter-empty { font-size: 12.5px; color: var(--o1); }
+.home-filter-clear {
+  background: none; border: none; padding: 0; font: inherit; color: var(--o0);
+  text-decoration: underline; text-underline-offset: 2px; cursor: pointer;
+}
+.home-filter-clear:hover { color: var(--text); }
+.home-fold:disabled { opacity: .35; cursor: default; }
+.home-fold:disabled:hover { background: transparent; color: var(--o0); }
 .home-group { display: flex; flex-direction: column; gap: 10px; }
 .home-group-head { display: flex; align-items: center; gap: 2px; margin: 0 -8px; }
 .home-fold {

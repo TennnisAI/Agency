@@ -96,6 +96,24 @@ export function isWorking(run: RunInfo): boolean {
 }
 
 /**
+ * What the overview's header counts filter the board down to (AGE-247). Each
+ * one is the predicate its count is computed with, so clicking "3 waiting"
+ * always shows exactly those three.
+ */
+export type RunFilter = "all" | "working" | "waiting";
+
+export function matchesRunFilter(run: RunInfo, filter: RunFilter): boolean {
+  if (filter === "working") return isWorking(run);
+  if (filter === "waiting") return needsAttention(run);
+  return true;
+}
+
+/** A stored filter, read back through an allowlist: anything else is "all". */
+export function parseRunFilter(raw: string | null): RunFilter {
+  return raw === "working" || raw === "waiting" ? raw : "all";
+}
+
+/**
  * An agent working in a project folder that has no git repository. It has no
  * branch to name and no diff to count, so the tiles show neither. A worktree
  * run always has a branch, and a run in a real checkout reports the live one,

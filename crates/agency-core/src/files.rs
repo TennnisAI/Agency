@@ -561,8 +561,8 @@ pub struct Imported {
     pub left_out_git: bool,
 }
 
-/// Caps on a dropped folder, checked by a stat-only walk before anything is
-/// written. A drop is one careless gesture away from being a home directory,
+/// Caps on a drop, checked before anything is written (for a folder, by a
+/// stat-only walk). The bytes cap is the only one on a lone file. A drop is one careless gesture away from being a home directory,
 /// and the copy would otherwise run until the disk filled, leaving the user a
 /// half-copied tree in their repo.
 const MAX_IMPORT_BYTES: u64 = 500_000_000;
@@ -575,14 +575,15 @@ const MAX_IMPORT_ENTRIES: usize = 20_000;
 ///
 /// A folder is copied whole, with the same symlink rule as [`copy_path`]
 /// (links are recreated, never followed), less any `.git` (see
-/// [`Imported::left_out_git`]). Each file in it is held to `import_file`'s
-/// per-file cap, so wrapping a file in a folder is not a way around it. It
-/// lands all or nothing: the destination is created fresh, and a copy that
-/// fails partway is removed rather than left half there.
+/// [`Imported::left_out_git`]). A file, alone or in a folder, is streamed
+/// rather than read whole, so a drop answers to one cap, [`MAX_IMPORT_BYTES`],
+/// and not to the 25 MB one `import_file` needs for holding a file in memory.
+/// Either lands all or nothing: the destination is created fresh, and a copy
+/// that fails partway is removed rather than left half there.
 pub fn import_path(root: &Path, src: &Path, rel: &str) -> Result<Imported> {
     let meta = std::fs::metadata(src).map_err(|e| anyhow!("cannot read {}: {e}", src.display()))?;
     if !meta.is_dir() {
-        import_file(root, src, rel)?;
+        import_one_file(root, src, rel, &meta)?;
         return Ok(Imported { folder: false, left_out_git: false });
     }
     let dst = resolve_within(root, rel)?;
@@ -607,6 +608,39 @@ pub fn import_path(root: &Path, src: &Path, rel: &str) -> Result<Imported> {
         return Err(e);
     }
     Ok(Imported { folder: true, left_out_git })
+}
+
+/// A lone dropped file, streamed in under the folder cap. `meta` is the
+/// source's, links followed, as [`import_path`] read it.
+fn import_one_file(root: &Path, src: &Path, rel: &str, meta: &std::fs::Metadata) -> Result<()> {
+    // Checked on the followed metadata, before `open`: a named pipe would
+    // block the open with no writer to end it.
+    if !meta.is_file() {
+        bail!("not a file: {}", src.display());
+    }
+    if meta.len() > MAX_IMPORT_BYTES {
+        bail!("file too large: more than {} MB", MAX_IMPORT_BYTES / 1_000_000);
+    }
+    let dst = resolve_within(root, rel)?;
+    let mut from =
+        std::fs::File::open(src).map_err(|e| anyhow!("cannot read {}: {e}", src.display()))?;
+    let mut to = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&dst)
+        .map_err(|e| anyhow!("cannot create {rel}: {e}"))?;
+    if let Err(e) = std::io::copy(&mut from, &mut to) {
+        drop(to);
+        // `create_new` above means this is only ever the file this call made.
+        if let Err(cleanup) = std::fs::remove_file(&dst) {
+            bail!(
+                "cannot copy {}: {e}; the partial copy at {rel} could not be removed: {cleanup}",
+                src.display()
+            );
+        }
+        bail!("cannot copy {}: {e}", src.display());
+    }
+    Ok(())
 }
 
 /// Names never copied in from a dropped folder, at any depth. `.git` is a
@@ -645,14 +679,6 @@ fn survey_import(dir: &Path) -> Result<bool> {
             if meta.is_dir() {
                 stack.push(path);
             } else if meta.is_file() {
-                if meta.len() > MAX_BINARY_BYTES {
-                    bail!(
-                        "file too large: {} is {} MB, and the limit for one file is {} MB",
-                        path.display(),
-                        meta.len() / 1_000_000,
-                        MAX_BINARY_BYTES / 1_000_000
-                    );
-                }
                 bytes += meta.len();
                 if bytes > MAX_IMPORT_BYTES {
                     bail!("folder too large: more than {} MB", MAX_IMPORT_BYTES / 1_000_000);
@@ -1528,26 +1554,40 @@ mod import_tests {
     }
 
     #[test]
-    fn import_path_holds_each_file_and_the_whole_folder_to_a_cap() {
+    fn import_path_holds_a_drop_to_one_cap_file_or_folder() {
         let root_dir = tempdir().unwrap();
         let root = root_dir.path();
-        // Sparse, so the test costs no disk: only the length is ever read
-        // before the refusal.
+        // Sparse, so the refusals cost no disk: only the length is read before
+        // them.
         let sized = |path: &Path, len: u64| {
             std::fs::File::create(path).unwrap().set_len(len).unwrap();
         };
-
-        // One file past the single-file cap, which a drop of that file alone
-        // would hit, is not let in by wrapping it in a folder.
         let outside = tempdir().unwrap();
+
+        // Past `import_file`'s in-memory cap, which issue attachments keep, but
+        // not the drop's: it comes in alone and inside a folder alike.
+        let big = outside.path().join("big.mov");
+        sized(&big, MAX_BINARY_BYTES + 1);
+        assert!(import_file(root, &big, "attached.mov").is_err());
+        assert_eq!(
+            import_path(root, &big, "big.mov").unwrap(),
+            Imported { folder: false, left_out_git: false }
+        );
+        assert_eq!(std::fs::metadata(root.join("big.mov")).unwrap().len(), MAX_BINARY_BYTES + 1);
         let one = outside.path().join("one");
         std::fs::create_dir(&one).unwrap();
         sized(&one.join("big.mov"), MAX_BINARY_BYTES + 1);
-        let err = import_path(root, &one, "one").unwrap_err();
-        assert!(err.to_string().contains("big.mov"), "{err}");
-        assert!(!root.join("one").exists());
+        import_path(root, &one, "one").unwrap();
+        assert!(root.join("one/big.mov").is_file());
 
-        // Every file under that cap, the folder over its own.
+        // Past the drop's cap: a file alone...
+        let huge = outside.path().join("huge.bin");
+        sized(&huge, MAX_IMPORT_BYTES + 1);
+        let err = import_path(root, &huge, "huge.bin").unwrap_err();
+        assert!(err.to_string().contains("too large"), "{err}");
+        assert!(!root.join("huge.bin").exists());
+
+        // ...and a folder whose files are each well under it.
         let many = outside.path().join("many");
         std::fs::create_dir(&many).unwrap();
         for i in 0..=(MAX_IMPORT_BYTES / MAX_BINARY_BYTES) {
@@ -1556,6 +1596,17 @@ mod import_tests {
         let err = import_path(root, &many, "many").unwrap_err();
         assert!(err.to_string().contains("folder too large"), "{err}");
         assert!(!root.join("many").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn import_path_refuses_a_lone_named_pipe() {
+        let outside = tempdir().unwrap();
+        let pipe = outside.path().join("p");
+        assert!(std::process::Command::new("mkfifo").arg(&pipe).status().unwrap().success());
+        let root_dir = tempdir().unwrap();
+        assert!(import_path(root_dir.path(), &pipe, "p").is_err());
+        assert!(!root_dir.path().join("p").exists());
     }
 }
 

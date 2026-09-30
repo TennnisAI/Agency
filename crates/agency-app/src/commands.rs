@@ -3245,8 +3245,8 @@ pub fn import_file(
 
 /// Copy a file or a whole folder from outside the root into it (refuses to
 /// clobber). Used by the Files and Docs trees for a Finder drop, which can be
-/// either. Async, where `import_file` is not: a folder can run to 500 MB and
-/// 20,000 entries, and a sync command runs on the main thread, so the copy
+/// either. Async, where `import_file` is not: a drop can run to 500 MB and a
+/// folder to 20,000 entries, and a sync command runs on the main thread, so the copy
 /// froze the window for as long as it took.
 #[tauri::command]
 pub async fn import_path(

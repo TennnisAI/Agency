@@ -1,7 +1,7 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import {
-  BackendSearchHit, DirEntry, FileRoot, absPath, listDir, searchFiles,
-  createFile, createDir, copyPath, importPath, renamePath, trashPath,
+  BackendSearchHit, DirEntry, FileRoot, Imported, absPath, listDir, searchFiles,
+  createFile, createDir, copyPath, droppedFolders, importPath, renamePath, trashPath,
 } from "../api";
 import { ancestorDirs, joinPath, parentPath, baseName } from "../lib/filePath";
 import { fileIcon } from "../lib/fileIcon";
@@ -10,7 +10,7 @@ import Menu, { MenuEntry } from "./git/Menu";
 import PromptDialog from "./PromptDialog";
 import ConfirmDialog from "./ConfirmDialog";
 import { dirAtPoint, useFileDrop } from "../hooks/useFileDrop";
-import { dropName, nameList, uniqueName } from "../lib/fileDrop";
+import { dropName, leftOutGitNote, nameList, uniqueName } from "../lib/fileDrop";
 import { parseOpenDirs, sameListing, visibleDirs } from "../lib/dirListing";
 import { Transfer, transferProblem } from "../lib/fileTransfer";
 import { toastError, toastInfo } from "../lib/toast";
@@ -331,7 +331,7 @@ export default forwardRef<FileTreeHandle, {
       // Real names on disk, not the tree's cache: pasting into a folder nobody
       // has expanded still has to be renamed around what is already in it.
       const existing = await listDir(root, dir).catch(() => [] as DirEntry[]);
-      const name = uniqueName(new Set(existing.map((e) => e.name.toLowerCase())), want);
+      const name = uniqueName(new Set(existing.map((e) => e.name.toLowerCase())), want, isDir);
       const dest = joinPath(dir, name);
       if (mode === "move") await renamePath(root, src, dest);
       else await copyPath(root, src, dest);
@@ -383,28 +383,32 @@ export default forwardRef<FileTreeHandle, {
       // with an unloaded sibling still has to be renamed around.
       const existing = await listDir(root, dir).catch(() => [] as DirEntry[]);
       const taken = new Set(existing.map((e) => e.name.toLowerCase()));
+      const isDir = await droppedFolders(paths).catch(() => paths.map(() => false));
       const renamed: string[] = [];
       const added: string[] = [];
       const files: string[] = [];
-      for (const src of paths) {
+      const gitless: string[] = [];
+      for (const [i, src] of paths.entries()) {
         const want = dropName(src);
-        const name = uniqueName(taken, want);
-        let kind: "file" | "folder";
+        const name = uniqueName(taken, want, isDir[i]);
+        let imported: Imported;
         try {
-          kind = await importPath(root, src, joinPath(dir, name));
+          imported = await importPath(root, src, joinPath(dir, name));
         } catch (e) {
           toastError(e, `Couldn't add ${want}`);
           continue;
         }
         taken.add(name.toLowerCase());
         added.push(joinPath(dir, name));
-        if (kind === "file") files.push(joinPath(dir, name));
+        if (!imported.folder) files.push(joinPath(dir, name));
+        if (imported.leftOutGit) gitless.push(name);
         if (name !== want) renamed.push(name);
       }
       if (added.length === 0) return;
       if (dir !== "") expand(dir);
       await loadDir(dir);
       if (renamed.length > 0) toastInfo(`Renamed to keep what was there: ${nameList(renamed)}`);
+      if (gitless.length > 0) toastInfo(leftOutGitNote(gitless));
       // One file is an "open this" gesture; a batch is not, and stealing the
       // editor for an arbitrary member of it would be noise. A folder has
       // nothing to open; its row appearing is the answer.

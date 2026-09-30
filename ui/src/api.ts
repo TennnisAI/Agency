@@ -2141,10 +2141,19 @@ export const writeFileBase64 = (root: FileRoot, relPath: string, b64: string) =>
 export const importFile = (root: FileRoot, srcPath: string, relPath: string) =>
   invoke<void>("import_file", { root, srcPath, relPath });
 
-// importFile, but a folder is copied in whole. For drops onto the Files and
-// Docs trees, where Finder hands over folders as readily as files.
+// importFile, but a folder is copied in whole, less any .git (`leftOutGit`
+// says one was there). For drops onto the Files and Docs trees, where Finder
+// hands over folders as readily as files.
+export interface Imported {
+  folder: boolean;
+  leftOutGit: boolean;
+}
 export const importPath = (root: FileRoot, srcPath: string, relPath: string) =>
-  invoke<"file" | "folder">("import_path", { root, srcPath, relPath });
+  invoke<Imported>("import_path", { root, srcPath, relPath });
+
+// Which of a drop's paths are folders, so each can be given a free name before
+// it is imported (a folder's name has no extension to number in front of).
+export const droppedFolders = (paths: string[]) => invoke<boolean[]>("dropped_folders", { paths });
 
 // The whole system clipboard as text (every pasteboard item, newline-joined).
 // The webview's own copy of a paste is not trustworthy — see lib/clipboard.ts.

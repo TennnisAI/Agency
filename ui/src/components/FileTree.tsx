@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import {
   BackendSearchHit, DirEntry, FileRoot, absPath, listDir, searchFiles,
   createFile, createDir, copyPath, importFile, renamePath, trashPath,
@@ -11,7 +11,7 @@ import PromptDialog from "./PromptDialog";
 import ConfirmDialog from "./ConfirmDialog";
 import { dirAtPoint, useFileDrop } from "../hooks/useFileDrop";
 import { dropName, nameList, uniqueName } from "../lib/fileDrop";
-import { sameListing, visibleDirs } from "../lib/dirListing";
+import { parseOpenDirs, sameListing, visibleDirs } from "../lib/dirListing";
 import { Transfer, transferProblem } from "../lib/fileTransfer";
 import { toastError, toastInfo } from "../lib/toast";
 import { startPointerDrag } from "../lib/pointerDrag";
@@ -49,9 +49,31 @@ function Twistie({ open }: { open: boolean }) {
   );
 }
 
-export default function FileTree({
-  root, selected, revealTarget, query, onQuery, onSelect, onOpenHit, onRenamed, onDeleted,
-}: {
+/** What the rest of the Files tab can ask of the tree. */
+export interface FileTreeHandle {
+  /**
+   * Open a file's context menu at a point, the same menu its row carries.
+   * `lead` goes first, for items that belong to where it was opened from (an
+   * editor tab's Close).
+   */
+  showFileMenu: (x: number, y: number, path: string, lead?: MenuEntry[]) => void;
+}
+
+// Expanded folders, per tree, so leaving the Files tab (which unmounts it) and
+// coming back finds them as they were.
+const openDirsKey = (rootKey: string) => `files:open:${rootKey}`;
+
+function loadOpenDirs(rootKey: string): Set<string> {
+  try {
+    return parseOpenDirs(localStorage.getItem(openDirsKey(rootKey)));
+  } catch {
+    return new Set();
+  }
+}
+
+const NO_DIRS: Set<string> = new Set();
+
+export default forwardRef<FileTreeHandle, {
   root: FileRoot;
   selected: string | null;
   /**
@@ -68,11 +90,23 @@ export default function FileTree({
   onOpenHit: (path: string, line: number) => void;
   onRenamed: (from: string, to: string) => void;
   onDeleted: (path: string) => void;
-}) {
+}>(function FileTree({
+  root, selected, revealTarget, query, onQuery, onSelect, onOpenHit, onRenamed, onDeleted,
+}, ref) {
+  const rootKey = `${root.kind}:${root.id}`;
   // Centralized tree state keyed by dir path ("" = root). Lifting it out of the
   // rows lets a mutation refresh exactly the affected directory.
   const [cache, setCache] = useState<Map<string, DirEntry[]>>(new Map());
-  const [open, setOpen] = useState<Set<string>>(new Set());
+  // The expanded folders travel with the root they belong to, the way the
+  // Files tab's own tab state does, so the save below can never write one
+  // root's folders under another's key in the render between a root switch
+  // and its reload.
+  const [openState, setOpenState] = useState(() => ({ key: rootKey, dirs: loadOpenDirs(rootKey) }));
+  const open = openState.key === rootKey ? openState.dirs : NO_DIRS;
+  const setOpen = (next: Set<string> | ((s: Set<string>) => Set<string>)) =>
+    setOpenState((o) => (o.key !== rootKey
+      ? o
+      : { key: o.key, dirs: typeof next === "function" ? next(o.dirs) : next }));
   const [errors, setErrors] = useState<Map<string, string>>(new Map());
   const [rootError, setRootError] = useState("");
   const [dialog, setDialog] = useState<Dialog | null>(null);
@@ -86,7 +120,6 @@ export default function FileTree({
   // happens to be open in the editor.
   const [cursor, setCursor] = useState<Entry | null>(null);
 
-  const rootKey = `${root.kind}:${root.id}`;
   // The scrolling tree body: the drop target below, and what a reveal scrolls.
   const bodyRef = useRef<HTMLDivElement>(null);
   // The reveal walk below runs in a promise chain, where `cache` would be
@@ -165,15 +198,25 @@ export default function FileTree({
 
   // Re-root whenever the FileRoot changes (focused agent ↔ project main).
   useEffect(() => {
+    const dirs = loadOpenDirs(rootKey);
     setCache(new Map());
-    setOpen(new Set());
+    setOpenState({ key: rootKey, dirs });
     setErrors(new Map());
     setRootError("");
     setCursor(null);
     setClip(null);
     loadDir("");
+    // A folder deleted since just fails to list; nothing renders it, since
+    // its parent's listing no longer holds it.
+    dirs.forEach((d) => { void loadDir(d); });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rootKey]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(openDirsKey(openState.key), JSON.stringify([...openState.dirs]));
+    } catch { /* storage unavailable */ }
+  }, [openState]);
 
   const toggle = (path: string) => {
     setOpen((s) => {
@@ -481,6 +524,10 @@ export default function FileTree({
   const openMenu = (e: React.MouseEvent, entry: Entry | null) => {
     e.preventDefault();
     e.stopPropagation();
+    menuAt(e.clientX, e.clientY, entry);
+  };
+
+  const menuAt = (x: number, y: number, entry: Entry | null, lead: MenuEntry[] = []) => {
     setCursor(entry);
     const dir = containerOf(entry);
     // Pasting is offered even when it can't be done, greyed out — the reason it
@@ -493,6 +540,8 @@ export default function FileTree({
       onClick: () => doPaste(dir),
     };
     const items: MenuEntry[] = [
+      ...lead,
+      ...(lead.length > 0 ? [{ kind: "separator" as const }] : []),
       { label: "New File…", onClick: () => setDialog({ kind: "newFile", dir }) },
       { label: "New Folder…", onClick: () => setDialog({ kind: "newFolder", dir }) },
     ];
@@ -520,8 +569,12 @@ export default function FileTree({
         { label: revealLabel, onClick: () => reveal(root, "") },
       );
     }
-    setMenu({ x: e.clientX, y: e.clientY, items });
+    setMenu({ x, y, items });
   };
+
+  useImperativeHandle(ref, () => ({
+    showFileMenu: (x, y, path, lead) => menuAt(x, y, { path, isDir: false }, lead),
+  }));
 
   // Recursively emit the visible rows for a directory's contents.
   const renderDir = (dir: string, depth: number): React.ReactNode[] => {
@@ -760,7 +813,7 @@ export default function FileTree({
       )}
     </>
   );
-}
+});
 
 /** A directory as the drop hint names it: the root is "/". */
 const dirLabel = (dir: string) => (dir ? `${dir}/` : "/");

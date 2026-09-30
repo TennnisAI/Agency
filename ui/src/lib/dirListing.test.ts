@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DirEntry } from "../api";
-import { sameListing, visibleDirs } from "./dirListing";
+import { parseOpenDirs, sameListing, visibleDirs } from "./dirListing";
 
 const file = (name: string): DirEntry => ({ name, isDir: false, hasChildren: false });
 const dir = (name: string, hasChildren = false): DirEntry => ({ name, isDir: true, hasChildren });
@@ -48,5 +48,18 @@ describe("visibleDirs", () => {
 
   it("ignores an expanded folder that has not been listed yet", () => {
     expect(visibleDirs(new Map(), new Set(["src"]))).toEqual([""]);
+  });
+});
+
+describe("parseOpenDirs", () => {
+  it("reads back what was stored", () => {
+    expect(parseOpenDirs(JSON.stringify(["src", "src/lib"]))).toEqual(new Set(["src", "src/lib"]));
+  });
+
+  it("treats anything malformed as nothing expanded", () => {
+    expect(parseOpenDirs(null).size).toBe(0);
+    expect(parseOpenDirs("{not json").size).toBe(0);
+    expect(parseOpenDirs(JSON.stringify({ src: true })).size).toBe(0);
+    expect(parseOpenDirs(JSON.stringify(["src", 3, "", null]))).toEqual(new Set(["src"]));
   });
 });

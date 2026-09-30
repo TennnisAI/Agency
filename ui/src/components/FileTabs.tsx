@@ -4,12 +4,12 @@ import { baseName, parentPath } from "../lib/filePath";
 /**
  * The editor tab strip, shared by the Files and Docs tabs. Duplicate labels get
  * their parent folder as a dimmed suffix; dirty tabs show a dot; middle-click or
- * the hover × closes. When tabs overflow, arrow buttons appear at the ends (VS
+ * the hover × closes; right-click opens the owner's menu for the file. When tabs overflow, arrow buttons appear at the ends (VS
  * Code-style); the strip also scrolls with the wheel/trackpad and keeps the
  * active tab in view.
  */
 export default function FileTabs({
-  open, active, dirty, onActivate, onClose, labelFor = baseName,
+  open, active, dirty, onActivate, onClose, onMenu, labelFor = baseName,
 }: {
   open: string[];
   active: string | null;
@@ -17,6 +17,8 @@ export default function FileTabs({
   dirty?: Set<string>;
   onActivate: (path: string) => void;
   onClose: (path: string) => void;
+  /** Right-click on a tab, at the pointer. Omitted, the tab has no menu. */
+  onMenu?: (path: string, x: number, y: number) => void;
   /** Tab caption for a path; defaults to the basename (Docs passes note titles). */
   labelFor?: (path: string) => string;
 }) {
@@ -104,6 +106,7 @@ export default function FileTabs({
               title={p}
               onClick={() => onActivate(p)}
               onAuxClick={(e) => { if (e.button === 1) { e.preventDefault(); onClose(p); } }}
+              onContextMenu={onMenu && ((e) => { e.preventDefault(); onMenu(p, e.clientX, e.clientY); })}
             >
               <span className="file-tab-name">{name}</span>
               {(counts.get(name) ?? 0) > 1 && (

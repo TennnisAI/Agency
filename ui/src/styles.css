@@ -1614,6 +1614,11 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
   --find-current: color-mix(in srgb, var(--peach) 48%, transparent);
   --find-current-edge: color-mix(in srgb, var(--peach) 75%, transparent);
 }
+/* The same paint over the rendered markdown preview (lib/domFind.ts). */
+.dom-find-match { background: var(--find-match); border-radius: 2px; }
+.dom-find-match.dom-find-current {
+  background: var(--find-current); outline: 1px solid var(--find-current-edge);
+}
 
 .diff-empty { color: var(--o0); font-size: 12px; padding: 4px 0; }
 
@@ -3898,25 +3903,30 @@ input, textarea, code,
 .md-live .lp-em { font-style: italic; }
 .md-live .lp-strong { font-weight: 700; }
 .md-live .lp-strike { text-decoration: line-through; color: var(--sub0); }
-/* Code (and callout) backgrounds live on ::before pseudo-elements at
-   z-index -3 so drawSelection's selection layer (z-index -1 in the scroller's
-   stacking context) paints ABOVE them — a plain background on the span/line
-   is in-flow and would occlude the selection (the "can't see selection over
-   code" bug; WebKit also paints native ::selection behind such backgrounds,
-   which is why drawSelection + layered backgrounds is the only working combo). */
+/* Block backgrounds (code blocks, callouts) live on ::before pseudo-elements
+   at z-index -3 so drawSelection's selection layer (z-index -1 in the
+   scroller's stacking context) paints ABOVE them: a plain background on the
+   line is in-flow and would occlude the selection (the "can't see selection
+   over code" bug; WebKit also paints native ::selection behind such
+   backgrounds, which is why drawSelection + layered backgrounds is the only
+   working combo for a block).
+   Inline chips cannot do the same. An absolutely positioned ::before resolves
+   against the box bounding the FIRST and LAST fragment of a wrapped inline, so
+   a code span or ==highlight== that wrapped drew one rectangle spanning both
+   lines, as wide as the last line only, over the text between: in the narrow
+   issue pane nearly every long highlight wrapped. So a chip paints a real
+   background cloned onto each line, and the selection over it is repainted
+   by the .lp-sel marks in livePreview.ts, which sit inside the chip. */
 .md-live .lp-code {
   font-family: var(--mono); font-size: 0.88em;
-  padding: 1px 2px; position: relative;
+  padding: 1px 2px; background: var(--crust); border-radius: 4px;
+  -webkit-box-decoration-break: clone; box-decoration-break: clone;
 }
-.md-live .lp-code::before {
-  content: ""; position: absolute; inset: 0; z-index: -3;
-  background: var(--crust); border-radius: 4px;
+.md-live .lp-highlight {
+  padding: 1px 1px; background: color-mix(in srgb, var(--yellow) 30%, transparent); border-radius: 3px;
+  -webkit-box-decoration-break: clone; box-decoration-break: clone;
 }
-.md-live .lp-highlight { position: relative; padding: 1px 1px; }
-.md-live .lp-highlight::before {
-  content: ""; position: absolute; inset: 0; z-index: -3;
-  background: color-mix(in srgb, var(--yellow) 30%, transparent); border-radius: 3px;
-}
+.md-live :is(.lp-code, .lp-highlight) .lp-sel { background: var(--s1); }
 /* Fenced code blocks (AGE-106). Two things are going on:
    — The background bleeds out by --lp-gut, the editor's own content padding
      (declared beside that padding in each host's CM theme). drawSelection
@@ -4011,23 +4021,17 @@ input, textarea, code,
 /* The body keeps the prose color: revealing the raw rows must not look like
    the text changed weight, only that the chrome went away. */
 .md-live .lp-table th { background: var(--mantle); font-weight: 650; }
-/* Chips in a cell paint a real background instead of the prose rule's
-   pseudo-element. An absolutely positioned ::before resolves against the box
-   bounding the FIRST and LAST fragment of a wrapped inline, so a code span
-   broken over two lines in a narrow column drew one tall rectangle as wide as
-   its last line only, sitting behind the first line's text. Cloning the
-   background gives every line its own chip. The z-index layering the prose
-   rule needs buys nothing here: a cell paints its own opaque background, and
-   a selection that reaches the table covers the widget whole. */
-.md-live .lp-table :is(.lp-code, .lp-highlight, .lp-tag)::before { content: none; }
-.md-live .lp-table :is(.lp-code, .lp-highlight, .lp-tag) {
+/* Tags in a cell paint a real background instead of the prose rule's
+   pseudo-element, for the reason the inline chips above do: a ::before over a
+   wrapped inline is one rectangle across its first and last line. (Code and
+   highlights already paint this way everywhere.) The z-index layering the
+   prose rule needs buys nothing here: a cell paints its own opaque background,
+   and a selection that reaches the table covers the widget whole. */
+.md-live .lp-table .lp-tag::before { content: none; }
+.md-live .lp-table .lp-tag {
   -webkit-box-decoration-break: clone; box-decoration-break: clone;
+  background: var(--s1); border-radius: 999px;
 }
-.md-live .lp-table .lp-code { background: var(--crust); border-radius: 4px; }
-.md-live .lp-table .lp-highlight {
-  background: color-mix(in srgb, var(--yellow) 30%, transparent); border-radius: 3px;
-}
-.md-live .lp-table .lp-tag { background: var(--s1); border-radius: 999px; }
 .md-live .lp-table-raw { font-family: var(--mono); font-size: 0.88em; }
 
 /* Frontmatter properties card (fmEditor.ts): an editable block widget that

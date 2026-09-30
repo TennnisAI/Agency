@@ -8,6 +8,8 @@ import { FileRoot, FileStat, readFile, readFileBase64, statFile, writeFile } fro
 import { loadLanguage } from "../lib/cmLanguage";
 import { editorChromeTheme, editorHighlight } from "../lib/cmTheme";
 import { cmFindEngine, cmFindExtensions } from "../lib/cmFind";
+import { domFindEngine } from "../lib/domFind";
+import { FindEngine } from "../lib/find";
 import { FindRank } from "../lib/findBus";
 import { useFind } from "../hooks/useFind";
 import { getWordWrap } from "../lib/editorPrefs";
@@ -69,7 +71,11 @@ const FileEditor = forwardRef<FileEditorHandle, {
   root: FileRoot;
   path: string;
   onDirtyChange?: (dirty: boolean) => void;
-}>(function FileEditor({ root, path, onDirtyChange }, ref) {
+  /** Open on the rendered preview rather than the code (md/html/svg only). */
+  preview?: boolean;
+  /** The Code / Preview toggle moved, so the owner can remember it. */
+  onPreviewChange?: (preview: boolean) => void;
+}>(function FileEditor({ root, path, onDirtyChange, preview, onPreviewChange }, ref) {
   const hostRef = useRef<HTMLDivElement>(null);
   // The whole pane, so the find bar counts as part of this surface when ⌘F
   // works out which one holds focus.
@@ -108,6 +114,12 @@ const FileEditor = forwardRef<FileEditorHandle, {
   // markdown, and the frame/image source (a data: URL) for html and svg.
   const [previewing, setPreviewing] = useState(false);
   const [previewContent, setPreviewContent] = useState("");
+  // Read once the file has loaded: the preview renders from the live doc, so
+  // it cannot be shown before there is one.
+  const wantPreview = useRef(preview ?? false);
+  wantPreview.current = preview ?? false;
+  const onPreviewRef = useRef(onPreviewChange);
+  onPreviewRef.current = onPreviewChange;
   // The rendered markdown itself, for Select all.
   const mdRef = useRef<HTMLDivElement>(null);
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuEntry[] } | null>(null);
@@ -116,16 +128,39 @@ const FileEditor = forwardRef<FileEditorHandle, {
 
   const vk = viewKind(path);
 
-  // ⌘F / Edit ▸ Find, over whichever view is live in this tab.
-  const findEngine = useMemo(() => cmFindEngine(() => viewRef.current), []);
+  // ⌘F / Edit ▸ Find, over whichever view is live in this tab: the code, or
+  // the rendered markdown. The markdown preview used to switch ⌘F off along
+  // with the html and svg ones, so a rendered README could not be searched
+  // without flipping back to the source.
+  const previewingRef = useRef(previewing);
+  previewingRef.current = previewing;
+  const findEngine = useMemo<FindEngine>(() => {
+    const code = cmFindEngine(() => viewRef.current);
+    const doc = domFindEngine(() => mdRef.current);
+    const pick = () => (previewingRef.current ? doc : code);
+    return {
+      sync: (q) => pick().sync(q),
+      recount: (q) => pick().recount(q),
+      step: (q, back) => pick().step(q, back),
+      replaceOne: (q) => pick().replaceOne(q),
+      replaceAll: (q) => pick().replaceAll(q),
+      selectedText: () => pick().selectedText(),
+      refocus: () => pick().refocus(),
+      dismiss: () => pick().dismiss(),
+    };
+  }, []);
+  const searchesPreview = previewing && vk.kind === "text" && vk.preview === "md";
   const { bar: findBar, onContentChange } = useFind({
     host: wrapRefEl,
     engine: findEngine,
-    canReplace: true,
+    canReplace: !searchesPreview,
     rank: FindRank.editor,
-    // Images, PDFs, media and the rendered preview have no text buffer to
-    // search — ⌘F should reach past them, not open a bar over nothing.
-    enabled: vk.kind === "text" && !previewing,
+    // Images, PDFs, media and the html/svg previews (a sandboxed frame and an
+    // image) have no text we can reach, so ⌘F should reach past them, not
+    // open a bar over nothing.
+    enabled: vk.kind === "text" && (!previewing || searchesPreview),
+    // Switching between code and preview is a different text to search.
+    resetKey: previewing ? "preview" : "code",
   });
   const onFindContentChange = useRef(onContentChange);
   onFindContentChange.current = onContentChange;
@@ -317,6 +352,7 @@ const FileEditor = forwardRef<FileEditorHandle, {
       const view = new EditorView({ state, parent: host });
       viewRef.current = view;
       if (stashed !== null) markDirtyRef.current(true);
+      if (wantPreview.current && vk.kind === "text" && vk.preview !== null) showPreviewRef.current();
       // The first line lets shebang scripts (scripts/deploy, no extension)
       // resolve. Guarded on the live view so a fast tab switch can't drop a
       // stale grammar into the next file's editor.
@@ -354,7 +390,7 @@ const FileEditor = forwardRef<FileEditorHandle, {
   }, []);
 
   // Render the preview from the live editor doc (unsaved edits included).
-  function showPreview() {
+  function renderPreview() {
     const doc = viewRef.current?.state.doc.toString() ?? "";
     if (vk.kind === "text" && vk.preview === "md") {
       setPreviewContent(renderMarkdown(doc, { labelFences: true }));
@@ -369,6 +405,25 @@ const FileEditor = forwardRef<FileEditorHandle, {
     }
     setPreviewing(true);
   }
+  const showPreviewRef = useRef(renderPreview);
+  showPreviewRef.current = renderPreview;
+
+  // Each toggle clears the side being left first: the bar closes on the
+  // switch, and match paint left in a hidden editor would reappear with no bar
+  // to press Escape in.
+  const showPreview = () => {
+    findEngine.dismiss();
+    renderPreview();
+    onPreviewRef.current?.(true);
+  };
+  const showCode = () => {
+    findEngine.dismiss();
+    setPreviewing(false);
+    onPreviewRef.current?.(false);
+  };
+
+  // A re-render replaces the preview's DOM, and with it the match marks.
+  useEffect(() => { onContentChange(); }, [previewContent, onContentChange]);
 
   // ── Markdown preview right-click menu ────────────────────────────────────
   // The rendered preview is read-only, so this is the clipboard menu a
@@ -417,7 +472,7 @@ const FileEditor = forwardRef<FileEditorHandle, {
       { label: "Copy", hint: shortcutLabel("⌘C"), disabled: !selected, onClick: () => void copyText(selected, "Couldn't copy") },
       { label: "Select all", onClick: selectAllPreview },
       { kind: "separator" },
-      { label: "Show source", onClick: () => setPreviewing(false) },
+      { label: "Show source", onClick: showCode },
     );
     setMenu({ x: e.clientX, y: e.clientY, items });
   };
@@ -433,7 +488,7 @@ const FileEditor = forwardRef<FileEditorHandle, {
         <span className="spacer" style={{ flex: 1 }} />
         {previewable && status === "ready" && (
           <div className="seg seg-mini">
-            <button className={previewing ? "" : "on"} onClick={() => setPreviewing(false)}>Code</button>
+            <button className={previewing ? "" : "on"} onClick={showCode}>Code</button>
             <button className={previewing ? "on" : ""} onClick={showPreview}>Preview</button>
           </div>
         )}

@@ -2141,6 +2141,11 @@ export const writeFileBase64 = (root: FileRoot, relPath: string, b64: string) =>
 export const importFile = (root: FileRoot, srcPath: string, relPath: string) =>
   invoke<void>("import_file", { root, srcPath, relPath });
 
+// importFile, but a folder is copied in whole. For drops onto the Files and
+// Docs trees, where Finder hands over folders as readily as files.
+export const importPath = (root: FileRoot, srcPath: string, relPath: string) =>
+  invoke<"file" | "folder">("import_path", { root, srcPath, relPath });
+
 // The whole system clipboard as text (every pasteboard item, newline-joined).
 // The webview's own copy of a paste is not trustworthy — see lib/clipboard.ts.
 export const readClipboardText = () => invoke<string | null>("read_clipboard_text");

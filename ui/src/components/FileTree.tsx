@@ -1,7 +1,7 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import {
   BackendSearchHit, DirEntry, FileRoot, absPath, listDir, searchFiles,
-  createFile, createDir, copyPath, importFile, renamePath, trashPath,
+  createFile, createDir, copyPath, importPath, renamePath, trashPath,
 } from "../api";
 import { ancestorDirs, joinPath, parentPath, baseName } from "../lib/filePath";
 import { fileIcon } from "../lib/fileIcon";
@@ -365,8 +365,9 @@ export default forwardRef<FileTreeHandle, {
   };
 
   // ── dropping in from Finder ───────────────────────────────────────────────
-  // Files land in the folder under the cursor (blank space below the rows is
-  // the root). Copies, never moves: the original stays where the user had it.
+  // Files and folders land in the folder under the cursor (blank space below
+  // the rows is the root). Copies, never moves: the original stays where the
+  // user had it.
 
   const [importing, setImporting] = useState(false);
   // The drop listener is installed once, so it would otherwise read `importing`
@@ -384,17 +385,20 @@ export default forwardRef<FileTreeHandle, {
       const taken = new Set(existing.map((e) => e.name.toLowerCase()));
       const renamed: string[] = [];
       const added: string[] = [];
+      const files: string[] = [];
       for (const src of paths) {
         const want = dropName(src);
         const name = uniqueName(taken, want);
+        let kind: "file" | "folder";
         try {
-          await importFile(root, src, joinPath(dir, name));
+          kind = await importPath(root, src, joinPath(dir, name));
         } catch (e) {
           toastError(e, `Couldn't add ${want}`);
           continue;
         }
         taken.add(name.toLowerCase());
         added.push(joinPath(dir, name));
+        if (kind === "file") files.push(joinPath(dir, name));
         if (name !== want) renamed.push(name);
       }
       if (added.length === 0) return;
@@ -402,8 +406,9 @@ export default forwardRef<FileTreeHandle, {
       await loadDir(dir);
       if (renamed.length > 0) toastInfo(`Renamed to keep what was there: ${nameList(renamed)}`);
       // One file is an "open this" gesture; a batch is not, and stealing the
-      // editor for an arbitrary member of it would be noise.
-      if (added.length === 1) onSelect(added[0]);
+      // editor for an arbitrary member of it would be noise. A folder has
+      // nothing to open; its row appearing is the answer.
+      if (added.length === 1 && files.length === 1) onSelect(files[0]);
     } finally {
       importingRef.current = false;
       setImporting(false);

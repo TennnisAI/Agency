@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  DirEntry, FileRoot, absPath, createFile, createDir, importFile, listDir, renamePath, searchFiles,
+  DirEntry, FileRoot, absPath, createFile, createDir, importPath, listDir, renamePath, searchFiles,
   trashPath, writeFile,
 } from "../api";
 import { DocsIndex, SearchHit, fmFilterPaths, mergeBodyHits, searchDocs, searchLocal, stripExt } from "../lib/docsIndex";
@@ -182,20 +182,25 @@ export default function DocsTree({
       const renamed: string[] = [];
       const notes: string[] = [];
       const files: string[] = [];
+      let folders = 0;
       for (const src of paths) {
         const want = dropName(src);
         const name = uniqueName(taken, want);
+        let kind: "file" | "folder";
         try {
-          await importFile(root, src, toRepo(joinPath(dir, name)));
+          kind = await importPath(root, src, toRepo(joinPath(dir, name)));
         } catch (e) {
           toastError(e, `Couldn't add ${want}`);
           continue;
         }
         taken.add(name.toLowerCase());
-        (isMarkdown(name) ? notes : files).push(joinPath(dir, name));
+        // A folder is neither a note to open nor an attachment to link: the
+        // notes inside it are picked up by the refresh like any others.
+        if (kind === "folder") folders++;
+        else (isMarkdown(name) ? notes : files).push(joinPath(dir, name));
         if (name !== want) renamed.push(name);
       }
-      if (notes.length === 0 && files.length === 0) return;
+      if (notes.length === 0 && files.length === 0 && folders === 0) return;
       if (dir !== "") setOpen((s) => new Set(s).add(dir));
       await refresh();
       if (renamed.length > 0) toastInfo(`Renamed to keep what was there: ${nameList(renamed)}`);
@@ -209,7 +214,7 @@ export default function DocsTree({
       // One note is an "open this" gesture; a batch is not. An attachment is
       // never one — it opens in another tab, so a drop would yank the user out
       // of the note they are writing.
-      if (notes.length === 1 && files.length === 0) onSelect(notes[0]);
+      if (notes.length === 1 && files.length === 0 && folders === 0) onSelect(notes[0]);
       if (files.length > 0) onAttached(files);
     } finally {
       importingRef.current = false;

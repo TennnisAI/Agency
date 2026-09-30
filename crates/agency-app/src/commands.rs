@@ -3243,6 +3243,21 @@ pub fn import_file(
         .map_err(|e| e.to_string())
 }
 
+/// Copy a file or a whole folder from outside the root into it (refuses to
+/// clobber). Used by the Files and Docs trees for a Finder drop, which can be
+/// either.
+#[tauri::command]
+pub fn import_path(
+    state: State<'_, AppState>,
+    root: FileRoot,
+    src_path: String,
+    rel_path: String,
+) -> Result<agency_core::files::Imported, String> {
+    let base = resolve_root(&state, &root)?;
+    agency_core::files::import_path(&base, std::path::Path::new(&src_path), &rel_path)
+        .map_err(|e| e.to_string())
+}
+
 /// Raw file bytes as base64, for the file browser's image/PDF previews.
 #[tauri::command]
 pub async fn read_file_base64(

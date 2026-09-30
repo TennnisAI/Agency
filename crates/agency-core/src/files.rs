@@ -541,6 +541,93 @@ pub fn import_file(root: &Path, src: &Path, rel: &str) -> Result<()> {
     write_file_bytes(root, rel, &bytes)
 }
 
+/// What [`import_path`] brought in, so the tree can treat a folder as a folder
+/// rather than as one more attachment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Imported {
+    File,
+    Folder,
+}
+
+/// Caps on a dropped folder, checked by a stat-only walk before anything is
+/// written. A drop is one careless gesture away from being a home directory,
+/// and the copy would otherwise run until the disk filled, leaving the user a
+/// half-copied tree in their repo.
+const MAX_IMPORT_BYTES: u64 = 500_000_000;
+const MAX_IMPORT_ENTRIES: usize = 20_000;
+
+/// [`import_file`], plus folders: the Files and Docs trees' half of dropping
+/// in from Finder, where a folder is as reasonable a thing to drag as a file.
+/// Issue attachments stay on `import_file`, since a folder is not something a
+/// note can link to.
+///
+/// A folder is copied whole, with the same symlink rule as [`copy_path`]
+/// (links are recreated, never followed). It lands all or nothing: the
+/// destination is created fresh, and a copy that fails partway is removed
+/// rather than left half there.
+pub fn import_path(root: &Path, src: &Path, rel: &str) -> Result<Imported> {
+    let meta = std::fs::metadata(src).map_err(|e| anyhow!("cannot read {}: {e}", src.display()))?;
+    if !meta.is_dir() {
+        import_file(root, src, rel)?;
+        return Ok(Imported::File);
+    }
+    let dst = resolve_within(root, rel)?;
+    if dst.symlink_metadata().is_ok() {
+        bail!("destination already exists: {rel}");
+    }
+    // Dropping a folder of the open repo onto one of its own subfolders: the
+    // copy would walk into the tree it is still writing.
+    let real_src = src.canonicalize().map_err(|e| anyhow!("cannot read {}: {e}", src.display()))?;
+    let parent = dst.parent().ok_or_else(|| anyhow!("path has no parent: {rel}"))?;
+    if parent.canonicalize()?.starts_with(&real_src) {
+        bail!("can't add a folder inside itself");
+    }
+    check_import_size(&real_src)?;
+    std::fs::create_dir(&dst).map_err(|e| anyhow!("cannot create {rel}: {e}"))?;
+    let copied = (|| -> Result<()> {
+        for entry in std::fs::read_dir(&real_src)? {
+            let entry = entry?;
+            copy_tree(&entry.path(), &dst.join(entry.file_name()))?;
+        }
+        Ok(())
+    })();
+    if let Err(e) = copied {
+        // Only ever the tree this call just created: `create_dir` above fails
+        // on anything that was already there.
+        let _ = std::fs::remove_dir_all(&dst);
+        bail!("cannot copy {}: {e}", src.display());
+    }
+    Ok(Imported::Folder)
+}
+
+/// Walk `dir` as [`copy_tree`] will (symlinks counted, never followed) and
+/// refuse it if it is past either import cap.
+fn check_import_size(dir: &Path) -> Result<()> {
+    let mut bytes: u64 = 0;
+    let mut entries: usize = 0;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for entry in std::fs::read_dir(&d)? {
+            let entry = entry?;
+            entries += 1;
+            if entries > MAX_IMPORT_ENTRIES {
+                bail!("folder too large: more than {MAX_IMPORT_ENTRIES} items");
+            }
+            let meta = entry.path().symlink_metadata()?;
+            if meta.is_dir() {
+                stack.push(entry.path());
+            } else if meta.is_file() {
+                bytes += meta.len();
+                if bytes > MAX_IMPORT_BYTES {
+                    bail!("folder too large: more than {} MB", MAX_IMPORT_BYTES / 1_000_000);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DocFile {
@@ -1242,6 +1329,73 @@ mod import_tests {
         // A source that isn't there reports rather than creating an empty file.
         assert!(import_file(root, &outside.path().join("nope.png"), "nope.png").is_err());
         assert!(!root.join("nope.png").exists());
+    }
+
+    #[test]
+    fn import_path_copies_a_folder_whole() {
+        let outside = tempdir().unwrap();
+        let src = outside.path().join("assets");
+        std::fs::create_dir_all(src.join("icons")).unwrap();
+        std::fs::write(src.join("a.txt"), b"a").unwrap();
+        std::fs::write(src.join("icons/b.svg"), b"<svg/>").unwrap();
+        std::fs::create_dir(src.join("empty")).unwrap();
+
+        let root_dir = tempdir().unwrap();
+        let root = root_dir.path();
+        assert_eq!(import_path(root, &src, "assets").unwrap(), Imported::Folder);
+        assert_eq!(std::fs::read(root.join("assets/a.txt")).unwrap(), b"a");
+        assert_eq!(std::fs::read(root.join("assets/icons/b.svg")).unwrap(), b"<svg/>");
+        assert!(root.join("assets/empty").is_dir());
+
+        // No clobbering a folder any more than a file.
+        assert!(import_path(root, &src, "assets").is_err());
+        // And a file still comes in as a file.
+        let file = outside.path().join("n.md");
+        std::fs::write(&file, b"# n").unwrap();
+        assert_eq!(import_path(root, &file, "n.md").unwrap(), Imported::File);
+    }
+
+    #[test]
+    fn import_path_refuses_a_folder_into_its_own_subtree() {
+        let root_dir = tempdir().unwrap();
+        let root = root_dir.path();
+        std::fs::create_dir_all(root.join("src/sub")).unwrap();
+        std::fs::write(root.join("src/x.rs"), b"x").unwrap();
+
+        let err = import_path(root, &root.join("src"), "src/sub/src").unwrap_err();
+        assert!(err.to_string().contains("inside itself"), "{err}");
+        assert!(!root.join("src/sub/src").exists());
+        // Beside itself is fine.
+        import_path(root, &root.join("src"), "src 2").unwrap();
+        assert!(root.join("src 2/x.rs").is_file());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn import_path_recreates_links_and_leaves_nothing_on_failure() {
+        let outside = tempdir().unwrap();
+        let src = outside.path().join("d");
+        std::fs::create_dir(&src).unwrap();
+        std::fs::write(src.join("f"), b"f").unwrap();
+        std::os::unix::fs::symlink("f", src.join("link")).unwrap();
+
+        let root_dir = tempdir().unwrap();
+        let root = root_dir.path();
+        import_path(root, &src, "d").unwrap();
+        assert_eq!(std::fs::read_link(root.join("d/link")).unwrap(), Path::new("f"));
+
+        // An unreadable subfolder fails the copy; what was written is removed.
+        // Root ignores permissions, so there is nothing to observe there.
+        use std::os::unix::fs::PermissionsExt;
+        let locked = src.join("locked");
+        std::fs::create_dir(&locked).unwrap();
+        std::fs::write(locked.join("g"), b"g").unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read_dir(&locked).is_err() {
+            assert!(import_path(root, &src, "d2").is_err());
+            assert!(!root.join("d2").exists());
+        }
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 }
 

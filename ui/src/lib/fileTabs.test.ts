@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   MAX_TABS, TabState, activateTab, closeTab, deserializeTabs, emptyTabs, openTab,
-  removeTab, renameTab, serializeTabs, setDirtyTab,
+  removeTab, renameTab, serializeTabs, setDirtyTab, setPreviewTab,
 } from "./fileTabs";
 
 const openMany = (paths: string[]): TabState =>
@@ -123,5 +123,26 @@ describe("serialize / deserialize", () => {
     expect(deserializeTabs("not json").open).toEqual([]);
     expect(deserializeTabs('{"open": "nope"}').open).toEqual([]);
     expect(deserializeTabs('{"open": ["a"], "active": "ghost"}').active).toBeNull();
+  });
+});
+
+describe("preview", () => {
+  it("follows a tab through rename, close and a round trip through storage", () => {
+    let s = setPreviewTab(openMany(["docs/a.md", "b.md"]), "docs/a.md", true);
+    expect(deserializeTabs(serializeTabs(s)).preview).toEqual(new Set(["docs/a.md"]));
+    s = renameTab(s, "docs", "notes");
+    expect(s.preview).toEqual(new Set(["notes/a.md"]));
+    s = closeTab(s, "notes/a.md");
+    expect(s.preview.size).toBe(0);
+  });
+
+  it("is never set on a tab that is not open, and drops a stored path that is not", () => {
+    expect(setPreviewTab(emptyTabs(), "a.md", true).preview.size).toBe(0);
+    const raw = JSON.stringify({ open: ["a.md"], active: "a.md", preview: ["a.md", "gone.md", 3] });
+    expect(deserializeTabs(raw).preview).toEqual(new Set(["a.md"]));
+  });
+
+  it("reads tabs stored before preview was remembered", () => {
+    expect(deserializeTabs(JSON.stringify({ open: ["a.md"], active: "a.md" })).preview.size).toBe(0);
   });
 });

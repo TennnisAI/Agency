@@ -1,4 +1,4 @@
-import { EditorState, Extension, Facet, Range, RangeSet } from "@codemirror/state";
+import { EditorState, Extension, Facet, Prec, Range, RangeSet } from "@codemirror/state";
 import {
   Decoration, DecorationSet, EditorView, ViewPlugin, ViewUpdate, WidgetType,
 } from "@codemirror/view";
@@ -890,5 +890,30 @@ const livePreviewPlugin = ViewPlugin.fromClass(LivePreviewPlugin, {
   eventHandlers: { mousedown: handleMouse },
 });
 
+// The selection, as marks inside the text it covers. drawSelection paints its
+// layer BELOW the text, so an inline code or ==highlight== chip, whose
+// background is on the span itself (see .lp-code in styles.css), hides the
+// selection behind it. The chip's background has to be on the span: on a
+// ::before it is one rectangle over the first and last line of a chip that
+// wraps, drawn across the lines between. The selection's own paint for chip
+// text lives on these marks, innermost (highest precedence), so it is drawn
+// over the chip. Outside chips the marks have no style and the layer shows.
+const selMark = Decoration.mark({ class: "lp-sel" });
+
+const selectionMarks = Prec.highest(ViewPlugin.fromClass(
+  class {
+    decorations: DecorationSet;
+    constructor(view: EditorView) { this.decorations = this.build(view); }
+    update(u: ViewUpdate) {
+      if (u.selectionSet || u.docChanged) this.decorations = this.build(u.view);
+    }
+    build(view: EditorView): DecorationSet {
+      const ranges = view.state.selection.ranges.filter((r) => !r.empty);
+      return Decoration.set(ranges.map((r) => selMark.range(r.from, r.to)));
+    }
+  },
+  { decorations: (v) => v.decorations },
+));
+
 /** The full live-preview extension bundle (decorations + clicks). */
-export const livePreview: Extension = [livePreviewPlugin];
+export const livePreview: Extension = [livePreviewPlugin, selectionMarks];

@@ -220,9 +220,29 @@ export default forwardRef<MarkdownEditorHandle, {
     setMenu({ x: e.clientX, y: e.clientY });
   };
 
+  // The box is taller than the editor's text (a short description in a pane
+  // with room to spare), and CodeMirror only answers clicks on the text
+  // itself: a click anywhere else in the box did nothing, so starting to type
+  // meant finding the first line. A click on the empty part lands the caret on
+  // the nearest line, or after the last one when it is below the text.
+  const onEmptyMouseDown = (e: React.MouseEvent) => {
+    const view = viewRef.current;
+    if (!view || e.button !== 0) return;
+    // Only the empty chrome: the text, widgets and tooltips inside the editor
+    // handle their own clicks.
+    if (e.target !== hostRef.current && e.target !== view.dom && e.target !== view.scrollDOM) return;
+    e.preventDefault();
+    const below = e.clientY > view.contentDOM.getBoundingClientRect().bottom;
+    const pos = below
+      ? view.state.doc.length
+      : view.posAtCoords({ x: e.clientX, y: e.clientY }, false);
+    view.dispatch({ selection: { anchor: pos } });
+    view.focus();
+  };
+
   return (
     <>
-      <div ref={hostRef} className={className} onContextMenu={openMenu} />
+      <div ref={hostRef} className={className} onMouseDown={onEmptyMouseDown} onContextMenu={openMenu} />
       {menu && viewRef.current && (
         <Menu x={menu.x} y={menu.y} items={markdownMenuItems(viewRef.current)} onClose={() => setMenu(null)} />
       )}

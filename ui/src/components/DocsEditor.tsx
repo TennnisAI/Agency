@@ -260,9 +260,10 @@ export default forwardRef<DocsEditorHandle, {
         extensions: [
           history(),
           // drawSelection paints selection on a layer at z-index -1, below
-          // in-flow content — so decoration backgrounds (.lp-code, .lp-codeblock,
-          // .lp-callout) MUST live on ::before pseudo-elements at z-index -3
-          // (see styles.css) or they occlude the selection. The native
+          // in-flow content — so block backgrounds (.lp-codeblock, .lp-callout)
+          // MUST live on ::before pseudo-elements at z-index -3 (see styles.css)
+          // or they occlude the selection; inline chips (.lp-code) repaint the
+          // selection over themselves instead (livePreview.ts). The native
           // ::selection is no alternative: WebKit paints it behind element
           // backgrounds entirely (verified in Safari).
           drawSelection(),

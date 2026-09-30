@@ -39,3 +39,19 @@ export function visibleDirs(cache: Map<string, DirEntry[]>, open: Set<string>): 
   walk("");
   return out;
 }
+
+/**
+ * The expanded folders stored for a tree, read back defensively: anything that
+ * is not a list of strings is an empty tree, never a crash on the Files tab.
+ * Leaving for another tab unmounts the tree, and before this was stored every
+ * folder came back collapsed.
+ */
+export function parseOpenDirs(raw: string | null): Set<string> {
+  if (!raw) return new Set();
+  try {
+    const v: unknown = JSON.parse(raw);
+    return new Set(Array.isArray(v) ? v.filter((d): d is string => typeof d === "string" && d !== "") : []);
+  } catch {
+    return new Set();
+  }
+}

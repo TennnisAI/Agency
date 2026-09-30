@@ -3,7 +3,7 @@ import { FileRoot, Project } from "../api";
 import Resizer from "./Resizer";
 import { usePaneWidth } from "../hooks/usePaneWidth";
 import { useReportOpenFile } from "../hooks/useOpenFile";
-import FileTree from "./FileTree";
+import FileTree, { FileTreeHandle } from "./FileTree";
 import FileTabs from "./FileTabs";
 import FileEditor, { FileEditorHandle } from "./FileEditor";
 import AgentSidePanel from "./AgentSidePanel";
@@ -11,7 +11,7 @@ import CheckoutBar from "./CheckoutBar";
 import ConfirmDialog from "./ConfirmDialog";
 import {
   TabState, closeTab, deserializeTabs, emptyTabs, openTab, removeTab, renameTab,
-  retargetPath, serializeTabs, setDirtyTab,
+  retargetPath, serializeTabs, setDirtyTab, setPreviewTab,
 } from "../lib/fileTabs";
 import { bufferKey, dropBuffer, hasBuffer, stashBuffer, takeBuffer } from "../lib/editorBuffers";
 import { consumePendingOpen, onOpenFile, type OpenFileRequest } from "../lib/openFile";
@@ -55,6 +55,9 @@ export default function FilesView({ root, project, agentsOpen, onOpenCheckout }:
   const [revealTarget, setRevealTarget] = useState<{ path: string; nonce: number } | null>(null);
   const [confirmClose, setConfirmClose] = useState<string | null>(null);
   const editorRefs = useRef(new Map<string, FileEditorHandle | null>());
+  // The tree owns the file menu (and the rename and delete dialogs behind it),
+  // so a right-click on a tab asks the tree to show it.
+  const treeRef = useRef<FileTreeHandle>(null);
   const rootKey = root ? `${root.kind}:${root.id}` : null;
 
   // What this render works with: never another root's tabs (the frame between
@@ -235,6 +238,7 @@ export default function FilesView({ root, project, agentsOpen, onOpenCheckout }:
       <div className="files-body">
         <div className="files-tree" style={{ width: treePane.width }}>
           <FileTree
+            ref={treeRef}
             root={root}
             selected={tabs.active}
             revealTarget={revealTarget}
@@ -255,6 +259,9 @@ export default function FilesView({ root, project, agentsOpen, onOpenCheckout }:
               dirty={tabs.dirty}
               onActivate={(p) => openAtLine(p)}
               onClose={requestClose}
+              onMenu={(p, x, y) => treeRef.current?.showFileMenu(x, y, p, [
+                { label: "Close", onClick: () => requestClose(p) },
+              ])}
             />
           )}
           {tabs.open.filter((p) => warm.has(p)).map((p) => (
@@ -268,6 +275,8 @@ export default function FilesView({ root, project, agentsOpen, onOpenCheckout }:
                 root={root}
                 path={p}
                 onDirtyChange={(d) => updateTabs((s) => setDirtyTab(s, p, d))}
+                preview={tabs.preview.has(p)}
+                onPreviewChange={(on) => updateTabs((s) => setPreviewTab(s, p, on))}
               />
             </div>
           ))}

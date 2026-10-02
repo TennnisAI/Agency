@@ -1777,6 +1777,15 @@ export const gitDeleteBranch = (taskId: string, name: string, force: boolean) =>
 export const gitListBranches = (taskId: string) =>
   invoke<ProjectBranches>("git_list_branches", { taskId });
 export const gitPullRebase = (taskId: string) => invoke<void>("git_pull_rebase", { taskId });
+// Where a sign-in for this run's origin goes: its scheme and host, and the
+// username its URL carries. null when origin isn't an HTTP(S) remote.
+export type GitAuthTarget = { base: string; username: string | null };
+export const gitAuthTarget = (taskId: string) =>
+  invoke<GitAuthTarget | null>("git_auth_target", { taskId });
+// Tries the credential against origin, then keeps it for this session and hands
+// it to git's own credential helpers. Rejects when the remote turns it down.
+export const gitSignIn = (taskId: string, username: string, password: string) =>
+  invoke<void>("git_sign_in", { taskId, username, password });
 // Force-pushes the current branch (with lease), streaming git's progress like
 // gitPush: a force push after a rebase re-uploads the whole branch. cancelPush
 // stops this one too.

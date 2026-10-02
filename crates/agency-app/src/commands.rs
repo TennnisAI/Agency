@@ -619,6 +619,32 @@ pub async fn git_sync(
         .map_err(|e| e.to_string())
 }
 
+// What the sign-in prompt asks for when a push, pull or fetch is turned away
+// for want of a credential: `None` when origin isn't an HTTP(S) remote, where a
+// password can't help and the failure stays in the banner. async: it shells
+// out to git, which must never run on the main thread.
+#[tauri::command]
+pub async fn git_auth_target(
+    state: State<'_, AppState>,
+    task_id: String,
+) -> Result<Option<agency_core::gitauth::AuthTarget>, String> {
+    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
+    Ok(agency_core::gitauth::target(&wt))
+}
+
+// Checks the credential against origin, then keeps it for the action the panel
+// retries next. async: it round-trips the network.
+#[tauri::command]
+pub async fn git_sign_in(
+    state: State<'_, AppState>,
+    task_id: String,
+    username: String,
+    password: String,
+) -> Result<(), String> {
+    let wt = state.git_root(&task_id).map_err(|e| e.to_string())?;
+    agency_core::gitauth::sign_in(&wt, username.trim(), &password).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn git_set_remote(
     state: State<'_, AppState>,

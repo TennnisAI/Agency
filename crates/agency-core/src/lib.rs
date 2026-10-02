@@ -7,6 +7,7 @@ pub mod config;
 pub mod files;
 pub mod gh;
 pub mod git;
+pub mod gitauth;
 pub mod graphview;
 pub mod guide;
 pub mod issuefs;

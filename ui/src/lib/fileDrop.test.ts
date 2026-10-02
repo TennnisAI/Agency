@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { dropName, isMarkdown, nameList, splitExt, uniqueName } from "./fileDrop";
+import { dropName, isMarkdown, leftOutGitNote, nameList, splitExt, uniqueName } from "./fileDrop";
 
 describe("dropName", () => {
   it("takes the last segment, either separator", () => {
@@ -53,6 +53,13 @@ describe("uniqueName", () => {
   it("appends to extensionless names", () => {
     expect(uniqueName(taken("README"), "README")).toBe("README 2");
   });
+
+  it("numbers a folder at the end, dots and all", () => {
+    expect(uniqueName(taken("v1.2"), "v1.2", true)).toBe("v1.2 2");
+    expect(uniqueName(taken("v1.2", "v1.2 2"), "v1.2", true)).toBe("v1.2 3");
+    // Without the flag it is read as a file with an extension.
+    expect(uniqueName(taken("v1.2"), "v1.2")).toBe("v1 2.2");
+  });
 });
 
 describe("nameList", () => {
@@ -62,5 +69,13 @@ describe("nameList", () => {
 
   it("counts the tail of a long one", () => {
     expect(nameList(["a", "b", "c", "d", "e"])).toBe("a, b, c and 2 more");
+  });
+});
+
+describe("leftOutGitNote", () => {
+  it("names the folders and says why", () => {
+    expect(leftOutGitNote(["app", "lib"])).toBe(
+      "Left out the .git in app, lib. Copied in, it would make a repository inside this one.",
+    );
   });
 });

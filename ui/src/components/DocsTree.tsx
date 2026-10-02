@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  DirEntry, FileRoot, absPath, createFile, createDir, importFile, listDir, renamePath, searchFiles,
-  trashPath, writeFile,
+  DirEntry, FileRoot, Imported, absPath, createFile, createDir, droppedFolders, importPath, listDir,
+  renamePath, searchFiles, trashPath, writeFile,
 } from "../api";
 import { DocsIndex, SearchHit, fmFilterPaths, mergeBodyHits, searchDocs, searchLocal, stripExt } from "../lib/docsIndex";
 import { parseDocsQuery } from "../lib/docsQuery";
@@ -15,7 +15,7 @@ import ConfirmDialog from "./ConfirmDialog";
 import { toastError, toastInfo } from "../lib/toast";
 import { startPointerDrag } from "../lib/pointerDrag";
 import { dirAtPoint, useFileDrop } from "../hooks/useFileDrop";
-import { dropName, isMarkdown, nameList, uniqueName } from "../lib/fileDrop";
+import { dropName, isMarkdown, leftOutGitNote, nameList, uniqueName } from "../lib/fileDrop";
 import { revealLabel, reveal, copyAbsPath } from "../lib/fileActions";
 import { PathSink, createSinkTracker } from "../lib/pathDrop";
 
@@ -179,37 +179,47 @@ export default function DocsTree({
       // collision.
       const existing = await listDir(root, toRepo(dir)).catch(() => [] as DirEntry[]);
       const taken = new Set(existing.map((e) => e.name.toLowerCase()));
+      const isDir = await droppedFolders(paths).catch(() => paths.map(() => false));
       const renamed: string[] = [];
       const notes: string[] = [];
       const files: string[] = [];
-      for (const src of paths) {
+      const folders: string[] = [];
+      const gitless: string[] = [];
+      for (const [i, src] of paths.entries()) {
         const want = dropName(src);
-        const name = uniqueName(taken, want);
+        const name = uniqueName(taken, want, isDir[i]);
+        let imported: Imported;
         try {
-          await importFile(root, src, toRepo(joinPath(dir, name)));
+          imported = await importPath(root, src, toRepo(joinPath(dir, name)));
         } catch (e) {
           toastError(e, `Couldn't add ${want}`);
           continue;
         }
         taken.add(name.toLowerCase());
-        (isMarkdown(name) ? notes : files).push(joinPath(dir, name));
+        // A folder is neither a note to open nor an attachment to link: the
+        // notes inside it are picked up by the refresh like any others.
+        if (imported.folder) folders.push(joinPath(dir, name));
+        else (isMarkdown(name) ? notes : files).push(joinPath(dir, name));
+        if (imported.leftOutGit) gitless.push(name);
         if (name !== want) renamed.push(name);
       }
-      if (notes.length === 0 && files.length === 0) return;
+      if (notes.length === 0 && files.length === 0 && folders.length === 0) return;
       if (dir !== "") setOpen((s) => new Set(s).add(dir));
       await refresh();
       if (renamed.length > 0) toastInfo(`Renamed to keep what was there: ${nameList(renamed)}`);
+      if (gitless.length > 0) toastInfo(leftOutGitNote(gitless));
       // The corpus scan leaves non-markdown dotfiles out (`.DS_Store` as a row
-      // is nobody's attachment), so one that just landed has no row to appear
-      // in. Said out loud, because the file is on disk either way.
-      const hidden = files.map(baseName).filter((n) => n.startsWith("."));
+      // is nobody's attachment), and hidden folders out entirely, so one that
+      // just landed has no row to appear in. Said out loud, because it is on
+      // disk either way.
+      const hidden = [...files, ...folders].map(baseName).filter((n) => n.startsWith("."));
       if (hidden.length > 0) {
         toastInfo(`${nameList(hidden)} landed in the folder, but the tree doesn't list dotfiles. Use the Files tab.`);
       }
       // One note is an "open this" gesture; a batch is not. An attachment is
       // never one — it opens in another tab, so a drop would yank the user out
       // of the note they are writing.
-      if (notes.length === 1 && files.length === 0) onSelect(notes[0]);
+      if (notes.length === 1 && files.length === 0 && folders.length === 0) onSelect(notes[0]);
       if (files.length > 0) onAttached(files);
     } finally {
       importingRef.current = false;

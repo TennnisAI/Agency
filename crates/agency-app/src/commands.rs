@@ -3269,6 +3269,37 @@ pub fn import_file(
         .map_err(|e| e.to_string())
 }
 
+/// Copy a file or a whole folder from outside the root into it (refuses to
+/// clobber). Used by the Files and Docs trees for a Finder drop, which can be
+/// either. Async, where `import_file` is not: a drop can run to 500 MB and a
+/// folder to 20,000 entries, and a sync command runs on the main thread, so the copy
+/// froze the window for as long as it took.
+#[tauri::command]
+pub async fn import_path(
+    state: State<'_, AppState>,
+    root: FileRoot,
+    src_path: String,
+    rel_path: String,
+) -> Result<agency_core::files::Imported, String> {
+    let base = resolve_root(&state, &root)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        agency_core::files::import_path(&base, std::path::Path::new(&src_path), &rel_path)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
+}
+
+/// Which of a Finder drop's paths are folders (following links, as the import
+/// does), so the tree can pick a free name for each before importing it: a
+/// folder has no extension to number in front of, and "v1.2" colliding should
+/// become "v1.2 2", not "v1 2.2". Anything unreadable reports false and is left
+/// for the import to refuse with a reason.
+#[tauri::command]
+pub fn dropped_folders(paths: Vec<String>) -> Vec<bool> {
+    paths.iter().map(|p| std::fs::metadata(p).is_ok_and(|m| m.is_dir())).collect()
+}
+
 /// Raw file bytes as base64, for the file browser's image/PDF previews.
 #[tauri::command]
 pub async fn read_file_base64(

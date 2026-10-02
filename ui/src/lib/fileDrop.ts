@@ -24,16 +24,26 @@ export const isMarkdown = (name: string) => /\.(md|markdown)$/i.test(name);
  * " 3"… before the extension (the same shape Finder uses for a copy). The
  * comparison is case-insensitive because macOS filesystems are: importing
  * "Notes.md" next to "notes.md" would be refused, not accepted as a second file.
+ * A folder has no extension, so its number goes on the end: "v1.2" becomes
+ * "v1.2 2", as Finder names it, not "v1 2.2".
  */
-export function uniqueName(taken: Set<string>, name: string): string {
+export function uniqueName(taken: Set<string>, name: string, isDir = false): string {
   const has = (n: string) => taken.has(n.toLowerCase());
   if (!has(name)) return name;
-  const [stem, ext] = splitExt(name);
+  const [stem, ext] = isDir ? [name, ""] : splitExt(name);
   for (let n = 2; ; n++) {
     const candidate = `${stem} ${n}${ext}`;
     if (!has(candidate)) return candidate;
   }
 }
+
+/**
+ * What to tell the user when a dropped folder came in without its `.git`. Said
+ * at all because the copy is then not the whole folder; said this way because
+ * the reason is the part they would not guess.
+ */
+export const leftOutGitNote = (names: string[]) =>
+  `Left out the .git in ${nameList(names)}. Copied in, it would make a repository inside this one.`;
 
 /** Fold a list of names into one clause, naming a few and counting the rest. */
 export function nameList(names: string[], max = 3): string {

@@ -286,6 +286,13 @@ fn copy_tree(src: &Path, dst: &Path) -> Result<()> {
         return copy_symlink(src, dst);
     }
     if !meta.is_dir() {
+        // A named pipe, socket or device. `fs::copy` opens its source with a
+        // blocking `open`, and on a FIFO with no writer that was still blocked
+        // 3 s later, with the command holding the main thread: the app froze
+        // for good. Nothing a user copies into a repo is one of these.
+        if !meta.is_file() {
+            bail!("not a regular file: {}", src.display());
+        }
         std::fs::copy(src, dst)?;
         return Ok(());
     }
@@ -539,6 +546,179 @@ pub fn import_file(root: &Path, src: &Path, rel: &str) -> Result<()> {
     }
     let bytes = std::fs::read(src).map_err(|e| anyhow!("cannot read {}: {e}", src.display()))?;
     write_file_bytes(root, rel, &bytes)
+}
+
+/// What [`import_path`] brought in, so the tree can treat a folder as a folder
+/// rather than as one more attachment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Imported {
+    pub folder: bool,
+    /// A `.git` inside the folder was left behind. Copied, it makes the folder a
+    /// repository inside the user's, which `git add` records as a gitlink with
+    /// no `.gitmodules`: a submodule nobody can fetch, in the next PR. The tree
+    /// says so, because the copy is then not the whole folder.
+    pub left_out_git: bool,
+}
+
+/// Caps on a drop, checked before anything is written (for a folder, by a
+/// stat-only walk). The bytes cap is the only one on a lone file. A drop is one careless gesture away from being a home directory,
+/// and the copy would otherwise run until the disk filled, leaving the user a
+/// half-copied tree in their repo.
+const MAX_IMPORT_BYTES: u64 = 500_000_000;
+const MAX_IMPORT_ENTRIES: usize = 20_000;
+
+/// [`import_file`], plus folders: the Files and Docs trees' half of dropping
+/// in from Finder, where a folder is as reasonable a thing to drag as a file.
+/// Issue attachments stay on `import_file`, since a folder is not something a
+/// note can link to.
+///
+/// A folder is copied whole, with the same symlink rule as [`copy_path`]
+/// (links are recreated, never followed), less any `.git` (see
+/// [`Imported::left_out_git`]). A file, alone or in a folder, is streamed
+/// rather than read whole, so a drop answers to one cap, [`MAX_IMPORT_BYTES`],
+/// and not to the 25 MB one `import_file` needs for holding a file in memory.
+/// Either lands all or nothing: the destination is created fresh, and a copy
+/// that fails partway is removed rather than left half there.
+pub fn import_path(root: &Path, src: &Path, rel: &str) -> Result<Imported> {
+    let meta = std::fs::metadata(src).map_err(|e| anyhow!("cannot read {}: {e}", src.display()))?;
+    if !meta.is_dir() {
+        import_one_file(root, src, rel, &meta)?;
+        return Ok(Imported { folder: false, left_out_git: false });
+    }
+    let dst = resolve_within(root, rel)?;
+    if dst.symlink_metadata().is_ok() {
+        bail!("destination already exists: {rel}");
+    }
+    // Dropping a folder of the open repo onto one of its own subfolders: the
+    // copy would walk into the tree it is still writing.
+    let real_src = src.canonicalize().map_err(|e| anyhow!("cannot read {}: {e}", src.display()))?;
+    let parent = dst.parent().ok_or_else(|| anyhow!("path has no parent: {rel}"))?;
+    if parent.canonicalize()?.starts_with(&real_src) {
+        bail!("can't add a folder inside itself");
+    }
+    let left_out_git = survey_import(&real_src)?;
+    std::fs::create_dir(&dst).map_err(|e| anyhow!("cannot create {rel}: {e}"))?;
+    if let Err(e) = copy_import_contents(&real_src, &dst) {
+        // Only ever the tree this call just created: `create_dir` above fails
+        // on anything that was already there.
+        if let Err(cleanup) = std::fs::remove_dir_all(&dst) {
+            bail!("{e}; the partial copy at {rel} could not be removed: {cleanup}");
+        }
+        return Err(e);
+    }
+    Ok(Imported { folder: true, left_out_git })
+}
+
+/// A lone dropped file, streamed in under the folder cap. `meta` is the
+/// source's, links followed, as [`import_path`] read it.
+fn import_one_file(root: &Path, src: &Path, rel: &str, meta: &std::fs::Metadata) -> Result<()> {
+    // Checked on the followed metadata, before `open`: a named pipe would
+    // block the open with no writer to end it.
+    if !meta.is_file() {
+        bail!("not a file: {}", src.display());
+    }
+    if meta.len() > MAX_IMPORT_BYTES {
+        bail!("file too large: more than {} MB", MAX_IMPORT_BYTES / 1_000_000);
+    }
+    let dst = resolve_within(root, rel)?;
+    let mut from =
+        std::fs::File::open(src).map_err(|e| anyhow!("cannot read {}: {e}", src.display()))?;
+    let mut to = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&dst)
+        .map_err(|e| anyhow!("cannot create {rel}: {e}"))?;
+    if let Err(e) = std::io::copy(&mut from, &mut to) {
+        drop(to);
+        // `create_new` above means this is only ever the file this call made.
+        if let Err(cleanup) = std::fs::remove_file(&dst) {
+            bail!(
+                "cannot copy {}: {e}; the partial copy at {rel} could not be removed: {cleanup}",
+                src.display()
+            );
+        }
+        bail!("cannot copy {}: {e}", src.display());
+    }
+    Ok(())
+}
+
+/// Names never copied in from a dropped folder, at any depth. `.git` is a
+/// folder in a clone and a file in a linked worktree or a submodule; either
+/// makes git treat the copy as an embedded repository.
+fn left_out_of_import(name: &std::ffi::OsStr) -> bool {
+    name == ".git"
+}
+
+/// Walk `dir` as [`copy_import_contents`] will (stat only, symlinks counted and
+/// never followed) and refuse it, before anything is written, if it is past a
+/// cap or holds something that cannot be copied. Returns whether it held a
+/// `.git` that the copy will leave out.
+fn survey_import(dir: &Path) -> Result<bool> {
+    let mut bytes: u64 = 0;
+    let mut entries: usize = 0;
+    let mut left_out_git = false;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let listing =
+            std::fs::read_dir(&d).map_err(|e| anyhow!("cannot read {}: {e}", d.display()))?;
+        for entry in listing {
+            let entry = entry.map_err(|e| anyhow!("cannot read {}: {e}", d.display()))?;
+            if left_out_of_import(&entry.file_name()) {
+                left_out_git = true;
+                continue;
+            }
+            entries += 1;
+            if entries > MAX_IMPORT_ENTRIES {
+                bail!("folder too large: more than {MAX_IMPORT_ENTRIES} items");
+            }
+            let path = entry.path();
+            let meta = path
+                .symlink_metadata()
+                .map_err(|e| anyhow!("cannot read {}: {e}", path.display()))?;
+            if meta.is_dir() {
+                stack.push(path);
+            } else if meta.is_file() {
+                bytes += meta.len();
+                if bytes > MAX_IMPORT_BYTES {
+                    bail!("folder too large: more than {} MB", MAX_IMPORT_BYTES / 1_000_000);
+                }
+            } else if !meta.file_type().is_symlink() {
+                // Said here, before anything is written; `copy_tree` refuses it
+                // too, for a pipe that appears between this walk and the copy.
+                bail!("not a regular file: {}", path.display());
+            }
+        }
+    }
+    Ok(left_out_git)
+}
+
+/// Copy what is inside `src` into the existing folder `dst`, entry by entry
+/// through [`copy_tree`], less anything [`left_out_of_import`] names. Errors
+/// name the entry that failed, since a drop can hold thousands and a bare
+/// "Permission denied" says nothing about which.
+fn copy_import_contents(src: &Path, dst: &Path) -> Result<()> {
+    let listing =
+        std::fs::read_dir(src).map_err(|e| anyhow!("cannot read {}: {e}", src.display()))?;
+    for entry in listing {
+        let entry = entry.map_err(|e| anyhow!("cannot read {}: {e}", src.display()))?;
+        let name = entry.file_name();
+        if left_out_of_import(&name) {
+            continue;
+        }
+        let (from, to) = (entry.path(), dst.join(&name));
+        // `file_type` does not follow links, so a link to a folder goes to
+        // `copy_tree` and is recreated rather than walked.
+        let is_dir =
+            entry.file_type().map_err(|e| anyhow!("cannot read {}: {e}", from.display()))?.is_dir();
+        if is_dir {
+            std::fs::create_dir(&to).map_err(|e| anyhow!("cannot copy {}: {e}", from.display()))?;
+            copy_import_contents(&from, &to)?;
+        } else {
+            copy_tree(&from, &to).map_err(|e| anyhow!("cannot copy {}: {e}", from.display()))?;
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1242,6 +1422,191 @@ mod import_tests {
         // A source that isn't there reports rather than creating an empty file.
         assert!(import_file(root, &outside.path().join("nope.png"), "nope.png").is_err());
         assert!(!root.join("nope.png").exists());
+    }
+
+    #[test]
+    fn import_path_copies_a_folder_whole() {
+        let outside = tempdir().unwrap();
+        let src = outside.path().join("assets");
+        std::fs::create_dir_all(src.join("icons")).unwrap();
+        std::fs::write(src.join("a.txt"), b"a").unwrap();
+        std::fs::write(src.join("icons/b.svg"), b"<svg/>").unwrap();
+        std::fs::create_dir(src.join("empty")).unwrap();
+
+        let root_dir = tempdir().unwrap();
+        let root = root_dir.path();
+        assert_eq!(
+            import_path(root, &src, "assets").unwrap(),
+            Imported { folder: true, left_out_git: false }
+        );
+        assert_eq!(std::fs::read(root.join("assets/a.txt")).unwrap(), b"a");
+        assert_eq!(std::fs::read(root.join("assets/icons/b.svg")).unwrap(), b"<svg/>");
+        assert!(root.join("assets/empty").is_dir());
+
+        // No clobbering a folder any more than a file.
+        assert!(import_path(root, &src, "assets").is_err());
+        // And a file still comes in as a file.
+        let file = outside.path().join("n.md");
+        std::fs::write(&file, b"# n").unwrap();
+        assert_eq!(
+            import_path(root, &file, "n.md").unwrap(),
+            Imported { folder: false, left_out_git: false }
+        );
+    }
+
+    #[test]
+    fn import_path_refuses_a_folder_into_its_own_subtree() {
+        let root_dir = tempdir().unwrap();
+        let root = root_dir.path();
+        std::fs::create_dir_all(root.join("src/sub")).unwrap();
+        std::fs::write(root.join("src/x.rs"), b"x").unwrap();
+
+        let err = import_path(root, &root.join("src"), "src/sub/src").unwrap_err();
+        assert!(err.to_string().contains("inside itself"), "{err}");
+        assert!(!root.join("src/sub/src").exists());
+        // Beside itself is fine.
+        import_path(root, &root.join("src"), "src 2").unwrap();
+        assert!(root.join("src 2/x.rs").is_file());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn import_path_recreates_links_and_leaves_nothing_on_failure() {
+        let outside = tempdir().unwrap();
+        let src = outside.path().join("d");
+        std::fs::create_dir(&src).unwrap();
+        std::fs::write(src.join("f"), b"f").unwrap();
+        std::os::unix::fs::symlink("f", src.join("link")).unwrap();
+
+        let root_dir = tempdir().unwrap();
+        let root = root_dir.path();
+        import_path(root, &src, "d").unwrap();
+        assert_eq!(std::fs::read_link(root.join("d/link")).unwrap(), Path::new("f"));
+
+        // An unreadable file fails the copy itself, after `d2` and whatever was
+        // listed before it are written; what was written is removed. A file,
+        // not a folder: the stat-only walk before the copy can size a locked
+        // file but not list a locked folder, so a locked folder is refused
+        // before anything is written and never reaches the cleanup at all.
+        // Root ignores permissions, so there is nothing to observe there.
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::create_dir(src.join("sub")).unwrap();
+        std::fs::write(src.join("sub/g"), b"g").unwrap();
+        let locked = src.join("sub/locked");
+        std::fs::write(&locked, b"secret").unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::File::open(&locked).is_err() {
+            let err = import_path(root, &src, "d2").unwrap_err();
+            assert!(err.to_string().contains("sub/locked"), "names the entry: {err}");
+            assert!(!root.join("d2").exists());
+        }
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644)).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn import_path_refuses_a_named_pipe_before_writing_anything() {
+        let outside = tempdir().unwrap();
+        let src = outside.path().join("d");
+        std::fs::create_dir(&src).unwrap();
+        std::fs::write(src.join("f"), b"f").unwrap();
+        let pipe = src.join("p");
+        assert!(std::process::Command::new("mkfifo").arg(&pipe).status().unwrap().success());
+
+        let root_dir = tempdir().unwrap();
+        let root = root_dir.path();
+        let err = import_path(root, &src, "d").unwrap_err();
+        assert!(err.to_string().contains("not a regular file"), "{err}");
+        assert!(!root.join("d").exists());
+        // `copy_path` goes through `copy_tree`, which refuses it as well.
+        std::fs::create_dir(root.join("in")).unwrap();
+        assert!(std::process::Command::new("mkfifo")
+            .arg(root.join("in/p"))
+            .status()
+            .unwrap()
+            .success());
+        assert!(copy_path(root, "in", "out").is_err());
+    }
+
+    #[test]
+    fn import_path_leaves_git_out_at_any_depth_and_says_so() {
+        let outside = tempdir().unwrap();
+        let src = outside.path().join("clone");
+        std::fs::create_dir_all(src.join(".git/objects")).unwrap();
+        std::fs::write(src.join(".git/HEAD"), b"ref: refs/heads/main").unwrap();
+        std::fs::create_dir(src.join("vendored")).unwrap();
+        // A submodule's `.git` is a file pointing at the gitdir.
+        std::fs::write(src.join("vendored/.git"), b"gitdir: ../.git/modules/v").unwrap();
+        std::fs::write(src.join("vendored/lib.rs"), b"fn f() {}").unwrap();
+        std::fs::write(src.join(".gitignore"), b"target/").unwrap();
+
+        let root_dir = tempdir().unwrap();
+        let root = root_dir.path();
+        assert_eq!(
+            import_path(root, &src, "clone").unwrap(),
+            Imported { folder: true, left_out_git: true }
+        );
+        assert!(!root.join("clone/.git").exists());
+        assert!(!root.join("clone/vendored/.git").exists());
+        assert!(root.join("clone/vendored/lib.rs").is_file());
+        // Only `.git` itself: its neighbours keep their dots.
+        assert!(root.join("clone/.gitignore").is_file());
+    }
+
+    #[test]
+    fn import_path_holds_a_drop_to_one_cap_file_or_folder() {
+        let root_dir = tempdir().unwrap();
+        let root = root_dir.path();
+        // Sparse, so the refusals cost no disk: only the length is read before
+        // them.
+        let sized = |path: &Path, len: u64| {
+            std::fs::File::create(path).unwrap().set_len(len).unwrap();
+        };
+        let outside = tempdir().unwrap();
+
+        // Past `import_file`'s in-memory cap, which issue attachments keep, but
+        // not the drop's: it comes in alone and inside a folder alike.
+        let big = outside.path().join("big.mov");
+        sized(&big, MAX_BINARY_BYTES + 1);
+        assert!(import_file(root, &big, "attached.mov").is_err());
+        assert_eq!(
+            import_path(root, &big, "big.mov").unwrap(),
+            Imported { folder: false, left_out_git: false }
+        );
+        assert_eq!(std::fs::metadata(root.join("big.mov")).unwrap().len(), MAX_BINARY_BYTES + 1);
+        let one = outside.path().join("one");
+        std::fs::create_dir(&one).unwrap();
+        sized(&one.join("big.mov"), MAX_BINARY_BYTES + 1);
+        import_path(root, &one, "one").unwrap();
+        assert!(root.join("one/big.mov").is_file());
+
+        // Past the drop's cap: a file alone...
+        let huge = outside.path().join("huge.bin");
+        sized(&huge, MAX_IMPORT_BYTES + 1);
+        let err = import_path(root, &huge, "huge.bin").unwrap_err();
+        assert!(err.to_string().contains("too large"), "{err}");
+        assert!(!root.join("huge.bin").exists());
+
+        // ...and a folder whose files are each well under it.
+        let many = outside.path().join("many");
+        std::fs::create_dir(&many).unwrap();
+        for i in 0..=(MAX_IMPORT_BYTES / MAX_BINARY_BYTES) {
+            sized(&many.join(format!("{i}.bin")), MAX_BINARY_BYTES);
+        }
+        let err = import_path(root, &many, "many").unwrap_err();
+        assert!(err.to_string().contains("folder too large"), "{err}");
+        assert!(!root.join("many").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn import_path_refuses_a_lone_named_pipe() {
+        let outside = tempdir().unwrap();
+        let pipe = outside.path().join("p");
+        assert!(std::process::Command::new("mkfifo").arg(&pipe).status().unwrap().success());
+        let root_dir = tempdir().unwrap();
+        assert!(import_path(root_dir.path(), &pipe, "p").is_err());
+        assert!(!root_dir.path().join("p").exists());
     }
 }
 

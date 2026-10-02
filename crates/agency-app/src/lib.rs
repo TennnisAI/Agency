@@ -370,6 +370,8 @@ pub fn run() {
             commands::list_files,
             commands::write_file_base64,
             commands::import_file,
+            commands::import_path,
+            commands::dropped_folders,
             commands::confirm_quit,
             commands::request_quit,
             commands::agent_installed,

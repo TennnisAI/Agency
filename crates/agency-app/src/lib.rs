@@ -163,6 +163,8 @@ pub fn run() {
             commands::git_commit,
             commands::git_push,
             commands::git_sync,
+            commands::git_auth_target,
+            commands::git_sign_in,
             commands::git_fetch,
             commands::git_auto_fetch,
             commands::git_pull,

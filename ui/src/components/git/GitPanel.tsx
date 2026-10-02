@@ -2,9 +2,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   FileChange, BranchInfo, HistoryItem, StashEntry, CloneProgress, Checkpoint,
   gitStatus, gitBranchInfo, gitStashList, gitUndoLastCommit, gitPush, gitSync, gitPullRebase,
-  gitAutoFetch, cancelPush, gitPushForce, absPath,
+  gitAutoFetch, cancelPush, gitPushForce, absPath, gitAuthTarget, GitAuthTarget,
 } from "../../api";
 import { toastSuccess } from "../../lib/toast";
+import { needsGitCredentials, promptedUsername } from "../../lib/gitCredentials";
 import { GIT_IDENTITY_CANCELLED_EVENT, GIT_IDENTITY_SET_EVENT, needsGitIdentity, offerGitIdentity } from "../../lib/gitIdentity";
 import ConfirmDialog from "../ConfirmDialog";
 import ChangesPanel from "./ChangesPanel";
@@ -20,6 +21,7 @@ import BranchBar from "./BranchBar";
 import GitSections from "./GitSections";
 import GitOutputModal from "./GitOutputModal";
 import SyncFixDialog from "./SyncFixDialog";
+import GitSignInPrompt from "./GitSignInPrompt";
 import Resizer from "../Resizer";
 import { usePaneWidth } from "../../hooks/usePaneWidth";
 import { useGitOp, gitOp, setGitOp, isCancelled } from "./ops";
@@ -152,11 +154,52 @@ function GitRepoPanel({
   // after the user fills in name + email runs the same commit.
   const retryRef = useRef<{ fn: () => Promise<unknown>; label?: string } | null>(null);
 
+  // The sign-in prompt, while one is up. `resolve` settles the action waiting
+  // on it: true to run it again, false to let the original error stand.
+  const [signIn, setSignIn] = useState<{
+    target: GitAuthTarget;
+    username: string | null;
+    resolve: (signedIn: boolean) => void;
+  } | null>(null);
+  const signInRef = useRef(signIn);
+  signInRef.current = signIn;
+  // A panel that unmounts (another project selected) must not leave the
+  // action it was holding busy forever.
+  useEffect(() => () => signInRef.current?.resolve(false), []);
+
+  // An expired token made Sync fail with "could not read Password … terminal
+  // prompts disabled", a banner with no way forward. Ask for the credential
+  // instead; resolves true once the user has signed in, false when they
+  // dismiss the prompt or origin isn't a remote a password can help with.
+  const askSignIn = useCallback(async (err: unknown): Promise<boolean> => {
+    const target = await gitAuthTarget(taskId).catch(() => null);
+    if (!target) return false;
+    return new Promise<boolean>((resolve) => {
+      setSignIn({
+        target,
+        username: promptedUsername(err),
+        resolve: (signedIn) => { setSignIn(null); resolve(signedIn); },
+      });
+    });
+  }, [taskId]);
+
   const act = useCallback(async (fn: () => Promise<unknown>, label?: string): Promise<boolean> => {
     setGitOp(taskId, { busy: true, error: "" });
     let ok = false;
     try {
-      await fn();
+      // Run again for as long as a sign-in clears the way: the action is
+      // still busy while the prompt is up, so nothing else starts under it.
+      for (;;) {
+        try {
+          await fn();
+          break;
+        } catch (e) {
+          if (!needsGitCredentials(e)) throw e;
+          // The bar would otherwise go on naming the step that was turned away.
+          setGitOp(taskId, { progress: null });
+          if (!(await askSignIn(e))) throw e;
+        }
+      }
       ok = true;
       if (label) toastSuccess(label);
     } catch (e) {
@@ -181,7 +224,7 @@ function GitRepoPanel({
     // New/changed commits: reload the history graph (it doesn't poll).
     setHistoryKey((k) => k + 1);
     return ok;
-  }, [refresh, taskId]);
+  }, [askSignIn, refresh, taskId]);
 
   // Replay the failed commit once the identity is saved for this worktree;
   // on cancel, drop it and say why the commit did not happen. The retry must
@@ -246,8 +289,11 @@ function GitRepoPanel({
     setPushProgress({ phase: "Starting push…", percent: null, detail: "" });
     // No label on `act`: a cancelled push must not toast "Pushed", so the toast
     // waits until the outcome is known.
+    // `act` runs this again after a sign-in, and by then the commit before a
+    // Commit & Push has landed: a second one fails with "nothing to commit".
+    let beforeDone = !before;
     const ok = await act(async () => {
-      if (before) await before();
+      if (!beforeDone) { await before?.(); beforeDone = true; }
       await (force ? gitPushForce : gitPush)(taskId, setPushProgress);
     });
     setPushProgress(null);
@@ -413,6 +459,10 @@ function GitRepoPanel({
       onCancel={() => setDivergedPrompt(false)}
     />
   );
+  const signInPrompt = signIn && (
+    <GitSignInPrompt taskId={taskId} target={signIn.target} username={signIn.username}
+      onSignedIn={() => signIn.resolve(true)} onCancel={() => signIn.resolve(false)} />
+  );
   // Before the output modal in the tree, so "Output" opens on top of it.
   const syncFixDialog = syncFixOpen && syncFixable && (
     <SyncFixDialog taskId={taskId} summary={errorSummary} output={syncFailure ?? ""}
@@ -448,6 +498,7 @@ function GitRepoPanel({
         {syncFixDialog}
         {outputModal}
         {divergedDialog}
+        {signInPrompt}
       </aside>
     );
   }
@@ -491,6 +542,7 @@ function GitRepoPanel({
       {syncFixDialog}
       {outputModal}
       {divergedDialog}
+      {signInPrompt}
     </div>
   );
 }

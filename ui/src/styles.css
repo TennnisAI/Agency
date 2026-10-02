@@ -4616,3 +4616,8 @@ input, textarea, code,
 .map-sym-edges { margin: 0 0 4px; }
 .map-empty { max-width: 420px; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 10px; }
 .map-empty p { margin: 0; }
+
+/* The git sign-in prompt: a quick input across the top of the window. */
+.git-signin-title{color:var(--text);font-size:12px;padding:10px 14px 8px;border-bottom:1px solid var(--line)}
+.git-signin .palette-input:disabled{opacity:.6}
+.git-signin-error{color:var(--red);font-size:12px;padding:7px 14px;border-top:1px solid var(--line)}

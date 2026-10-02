@@ -20,6 +20,14 @@ fn git(worktree: &Path, args: &[&str]) -> Result<String> {
     git_with(worktree, args, &[], None)
 }
 
+/// [`git`] for a command that talks to the remote: it carries the credential
+/// signed in this session, if any (see [`crate::gitauth`]).
+fn git_net(worktree: &Path, args: &[&str]) -> Result<String> {
+    let env = crate::gitauth::env_for(worktree);
+    let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    git_with(worktree, args, &env, None)
+}
+
 /// Run git in `dir` with extra environment and, optionally, `stdin`; stdout on
 /// success. Every git call that needs either goes through here (a scratch
 /// `GIT_INDEX_FILE`, an identity, a path list on stdin), so the rules below
@@ -585,10 +593,10 @@ pub fn fetch_branch(repo: &Path, branch: &str) -> Result<()> {
     // and we already have it locally, so there's nothing to pull it into. Update
     // the remote-tracking ref only so ahead/behind stays accurate, and stop.
     if branch_checked_out(repo, branch) {
-        let _ = git(repo, &["fetch", "origin", branch]);
+        let _ = git_net(repo, &["fetch", "origin", branch]);
         return Ok(());
     }
-    git(repo, &["fetch", "origin", &format!("{branch}:{branch}")])?;
+    git_net(repo, &["fetch", "origin", &format!("{branch}:{branch}")])?;
     Ok(())
 }
 
@@ -600,7 +608,7 @@ pub fn push(worktree: &Path) -> Result<()> {
 /// checking it out — used to open a PR from an existing branch in the project
 /// repo. git's stderr is carried on failure so the UI can show the real reason.
 pub fn push_branch(repo: &Path, branch: &str) -> Result<()> {
-    git(repo, &["push", "-u", "origin", branch])?;
+    git_net(repo, &["push", "-u", "origin", branch])?;
     Ok(())
 }
 
@@ -657,7 +665,8 @@ fn push_streaming(
         .arg(&branch)
         .current_dir(worktree)
         // No TTY in the app: fail fast rather than blocking on a credential prompt.
-        .env("GIT_TERMINAL_PROMPT", "0");
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .envs(crate::gitauth::env_for(worktree));
     let (ok, stderr) = crate::setup::run_clone_streaming(cmd, cancel, on_progress)?;
     // Checked before `ok`: a killed git exits non-zero carrying its own error
     // text, and showing that would put a push failure in front of the user who
@@ -733,6 +742,7 @@ fn git_capped(worktree: &Path, args: &[&str], limit: Duration) -> Result<String>
         .args(args)
         .current_dir(worktree)
         .env("GIT_TERMINAL_PROMPT", "0")
+        .envs(crate::gitauth::env_for(worktree))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -782,7 +792,7 @@ fn git_capped(worktree: &Path, args: &[&str], limit: Duration) -> Result<String>
 /// branch that has diverged fails loudly rather than silently creating a merge
 /// commit the user never asked for.
 pub fn pull(worktree: &Path) -> Result<()> {
-    git(worktree, &["pull", "--ff-only"])?;
+    git_net(worktree, &["pull", "--ff-only"])?;
     Ok(())
 }
 
@@ -1428,7 +1438,7 @@ pub fn delete_branch(worktree: &Path, name: &str, force: bool) -> Result<()> {
 
 /// Pull with rebase — the diverged-branch alternative to the ff-only `pull`.
 pub fn pull_rebase(worktree: &Path) -> Result<()> {
-    git(worktree, &["pull", "--rebase"])?;
+    git_net(worktree, &["pull", "--rebase"])?;
     Ok(())
 }
 

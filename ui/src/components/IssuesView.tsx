@@ -36,6 +36,9 @@ import {
   seedingRisk,
   stepSelection,
 } from "../lib/issues";
+import {
+  IssueDraft, NEW_DRAFT, closeOutcome, draftExtras, draftWaiting, issuesDraftKey, loadDraft, saveDraft,
+} from "../lib/issueDraft";
 import { autoSchedules, shouldSayKeyMismatch } from "../lib/autoSync";
 import { ConflictReport, conflictReports } from "../lib/syncConflicts";
 import { notifyProjectsChanged } from "../lib/projectEvents";
@@ -44,6 +47,7 @@ import { loadFold, saveFold, usePaneWidth } from "../hooks/usePaneWidth";
 import { useRepoReadiness, isGitless } from "../hooks/useRepoReadiness";
 import IssueRow from "./IssueRow";
 import IssueDetail from "./IssueDetail";
+import IssueComposer from "./IssueComposer";
 import ConfirmDialog from "./ConfirmDialog";
 import PillSelect from "./PillSelect";
 import ProgressReadout from "./ProgressReadout";
@@ -63,9 +67,9 @@ const SIDEBAR_MAX = 460;
 const AUTO_SYNC_MS = 2 * 60 * 1000;
 
 // The project's issue board: a status-grouped list (Linear's default view),
-// quick capture on top, detail pane on the right. Dispatching an issue to an
-// agent goes through `onStartIssue`, which runs the same installed/readiness
-// checks as the "+ Agent" flow.
+// a + on top that opens the new-issue composer, detail pane on the right.
+// Dispatching an issue to an agent goes through `onStartIssue`, which runs the
+// same installed/readiness checks as the "+ Agent" flow.
 export default function IssuesView({
   project,
   onStartIssue,
@@ -82,7 +86,6 @@ export default function IssuesView({
   // the folder), but racing or looping it needs branches, so those hide.
   const { readiness } = useRepoReadiness(project);
   const gitless = isGitless(readiness);
-  const [quick, setQuick] = useState("");
   const [selectedId, setSelectedIdState] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<Issue | null>(null);
   // Backlog sharing. `syncOn` is null until the config lands, so the button
@@ -122,9 +125,22 @@ export default function IssuesView({
   );
   // Any status group folds; done/cancelled are the ones that start folded.
   const [collapsed, setCollapsed] = useState<Set<IssueStatus>>(() => new Set(DEFAULT_COLLAPSED));
-  // Quick-add rests as a + button and expands into an inline input on demand.
-  const [quickOpen, setQuickOpen] = useState(false);
-  const quickRef = useRef<HTMLInputElement>(null);
+  // The issue being written in the composer, if any. Held in storage rather
+  // than only here, because this component unmounts on every tab switch and
+  // the draft has to be waiting when the user comes back (AGE-255).
+  // Held with the key it was read under, so the render that switches projects
+  // reads the incoming project's draft rather than showing the outgoing one.
+  const draftKey = issuesDraftKey(project.id);
+  const [draftState, setDraftState] = useState(() => ({ key: draftKey, draft: readDraft(draftKey) }));
+  const draft = draftState.key === draftKey ? draftState.draft : readDraft(draftKey);
+  const [savingDraft, setSavingDraft] = useState(false);
+  // A save that lands after a project switch clears its own project's stored
+  // draft, and must leave the one now on screen alone.
+  const draftKeyRef = useRef(draftKey);
+  draftKeyRef.current = draftKey;
+  const composing = draft?.open === true;
+  const composingRef = useRef(composing);
+  composingRef.current = composing;
   // Search and filters. Same controls as the cross-project home board, and
   // they live only for this visit — a hidden filter left over from last time
   // reads as a broken board.
@@ -142,7 +158,8 @@ export default function IssuesView({
   // a ref, the way the mouse handlers read the current grouping.
   const stepRef = useRef<(back: boolean) => void>(() => {});
   useEffect(() => registerFindTarget({
-    host: () => searchRef.current,
+    // Not while the composer covers the board: the field is behind it.
+    host: () => (composingRef.current ? null : searchRef.current),
     open: () => {
       searchRef.current?.focus();
       searchRef.current?.select();
@@ -236,17 +253,16 @@ export default function IssuesView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [issues, project.id, selectedKey]);
 
-  useEffect(() => { setSelectedIdState(null); setQuick(""); setQuickOpen(false); clearFilters(); }, [project.id]);
-  useEffect(() => { if (quickOpen) quickRef.current?.focus(); }, [quickOpen]);
+  useEffect(() => { setSelectedIdState(null); clearFilters(); }, [project.id]);
 
-  // The palette's "New Issue" lands here: open quick-add on tab activation.
+  // The palette's "New Issue" lands here: open the composer on tab activation.
   useEffect(() => {
     if (tab !== "issues") return;
     if (sessionStorage.getItem(PENDING_QUICKADD_KEY)) {
       sessionStorage.removeItem(PENDING_QUICKADD_KEY);
-      setQuickOpen(true);
-      quickRef.current?.focus();
+      openComposer();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
 
   // An issue clicked on the home overview arrives via sessionStorage (project
@@ -649,16 +665,60 @@ export default function IssuesView({
     }
   }
 
-  async function add(status: "todo" | "backlog") {
-    const title = quick.trim();
-    if (!title) return;
-    setQuick("");
+  // Every change to the draft is written through at once: there is no later
+  // moment to save it in, since the board can be unmounted between keystrokes.
+  function setDraft(next: IssueDraft | null, key = draftKey) {
+    writeDraft(key, next);
+    if (key === draftKeyRef.current) setDraftState({ key, draft: next });
+  }
+
+  // A draft already in progress is picked up where it was left, not replaced.
+  function openComposer() {
+    setDraft({ ...(draft ?? NEW_DRAFT), open: true });
+  }
+
+  async function saveComposer() {
+    const d = draft;
+    const title = d?.title.trim();
+    if (!d || !title || savingDraft) return;
+    const key = draftKey;
+    setSavingDraft(true);
     try {
-      const issue = await createIssue(project.id, title, "", status);
+      const issue = await createIssue(project.id, title, d.body, d.status);
+      // The issue exists now, so the draft is spent whatever happens to the
+      // properties below: kept, a second Save would file it twice.
+      setDraft(null, key);
+      const extras = draftExtras(d);
+      if (extras) {
+        try {
+          await updateIssue(issue.id, extras);
+        } catch (e) {
+          toastError(e, `Created ${issueLabel(project, issue)}, but couldn't set its priority or dates`);
+        }
+      }
       await refresh();
-      setSelectedId(issue.id);
+      if (key === draftKeyRef.current) setSelectedId(issue.id);
     } catch (e) {
       toastError(e, "Couldn't create issue");
+    } finally {
+      setSavingDraft(false);
+    }
+  }
+
+  // Closing saves, the way the detail pane's edits do. A draft with nothing to
+  // call it yet is put away for the + to bring back instead.
+  function closeComposer() {
+    if (!draft) return;
+    switch (closeOutcome(draft)) {
+      case "create":
+        void saveComposer();
+        return;
+      case "keep":
+        setDraft({ ...draft, open: false });
+        toastInfo("Draft kept. It needs a title to be saved; press + to finish it.");
+        return;
+      case "discard":
+        setDraft(null);
     }
   }
 
@@ -759,10 +819,11 @@ export default function IssuesView({
       const t = e.target as HTMLElement;
       if (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable) return;
       if (e.metaKey || e.ctrlKey || e.altKey) return;
+      // The composer covers the board, so the board's keys are off under it.
+      if (composing) return;
       if (e.key === "c") {
         e.preventDefault();
-        setQuickOpen(true);
-        quickRef.current?.focus();
+        openComposer();
       } else if (e.key === "/") {
         e.preventDefault();
         searchRef.current?.focus();
@@ -786,7 +847,7 @@ export default function IssuesView({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, visible, selectedId, selected]);
+  }, [tab, visible, selectedId, selected, composing, draft]);
 
   // The list only compresses while there is a detail pane to give the room to.
   const wide = expanded && selected != null;
@@ -796,6 +857,8 @@ export default function IssuesView({
   // minutes, which is the unrequested change the quiet pass exists to avoid. A
   // press during a quiet pass is queued, not swallowed; see `runSync`.
   const busySync = syncing && !quietSync;
+  // A draft put away for later, which the + offers to pick back up.
+  const waiting = !composing && draftWaiting(draft);
   // The row an automatic conflict prompt offers to open: the first one it names
   // that is still on the board. A merge can report a conflict on an issue this
   // side then deletes, so the lookup can come back empty.
@@ -816,42 +879,21 @@ export default function IssuesView({
   return (
     <div className={`issues-wrap${wide ? " expanded" : ""}`}>
       <div className="issues-main" style={wide ? { width: sidebar.width, flex: "0 0 auto" } : undefined}>
-        <div className={`issues-quickadd${quickOpen ? " open" : ""}`}>
+        <div className="issues-quickadd">
           <button
-            className="quickadd-toggle"
-            title={quickOpen ? "Close" : "Add an issue (c)"}
-            // Keep the press from blurring the input first — the blur handler
-            // would collapse the box and this click would re-open it.
-            onMouseDown={(e) => e.preventDefault()}
-            onClick={() => {
-              if (quickOpen) {
-                setQuick("");
-                setQuickOpen(false);
-                quickRef.current?.blur();
-              } else {
-                setQuickOpen(true);
-              }
-            }}
+            className={`quickadd-toggle${waiting ? " has-draft" : ""}`}
+            title={waiting ? "Finish your draft issue (c)" : "New issue (c)"}
+            onClick={openComposer}
           >
             +
           </button>
-          <input
-            ref={quickRef}
-            className="quickadd-input"
-            placeholder="Add an issue…  (Enter → Todo, Shift+Enter → Backlog)"
-            value={quick}
-            tabIndex={quickOpen ? 0 : -1}
-            onChange={(e) => setQuick(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") add(e.shiftKey ? "backlog" : "todo");
-              if (e.key === "Escape") {
-                setQuick("");
-                setQuickOpen(false);
-                (e.target as HTMLInputElement).blur();
-              }
-            }}
-            onBlur={() => { if (!quick.trim()) setQuickOpen(false); }}
-          />
+          {waiting && (
+            // A draft put away without a title: said beside the +, or the only
+            // trace of it would be a dot nobody knows the meaning of.
+            <button className="quickadd-draft" title="Finish your draft issue (c)" onClick={openComposer}>
+              {draft?.title.trim() || "Untitled draft"}
+            </button>
+          )}
         </div>
         {issues.length > 0 && (
           // Compressed to a sidebar there is no room for the pills, so the bar
@@ -945,9 +987,9 @@ export default function IssuesView({
         {loaded && issues.length === 0 ? (
           <div className="board empty issues-empty">
             <button
-              className="quickadd-toggle big"
-              title="Add an issue (c)"
-              onClick={() => setQuickOpen(true)}
+              className={`quickadd-toggle big${waiting ? " has-draft" : ""}`}
+              title={waiting ? "Finish your draft issue (c)" : "New issue (c)"}
+              onClick={openComposer}
             >
               +
             </button>
@@ -1101,6 +1143,23 @@ export default function IssuesView({
           />
         </>
       )}
+      {draft?.open && (
+        <IssueComposer
+          // Per project, so a switch opens the other draft fresh rather than
+          // handing it the outgoing one's editor.
+          key={project.id}
+          draft={draft}
+          root={fileRoot}
+          index={ownDocs.index}
+          cross={cross}
+          saving={savingDraft}
+          onChange={(next) => setDraft(next)}
+          onSave={() => { void saveComposer(); }}
+          onDiscard={() => setDraft(null)}
+          onClose={closeComposer}
+          onFollowLink={followLink}
+        />
+      )}
       {seed && (
         // The one question a merge cannot answer for itself. Before the first
         // sync each machine numbered its issues from its own counter, so the
@@ -1184,4 +1243,21 @@ export default function IssuesView({
       )}
     </div>
   );
+}
+
+// The stored draft, through the same storage guard as the pane prefs.
+function readDraft(key: string): IssueDraft | null {
+  try {
+    return typeof localStorage === "undefined" ? null : loadDraft(localStorage, key);
+  } catch {
+    return null;
+  }
+}
+
+function writeDraft(key: string, draft: IssueDraft | null): void {
+  try {
+    if (typeof localStorage !== "undefined") saveDraft(localStorage, key, draft);
+  } catch {
+    /* storage unavailable */
+  }
 }

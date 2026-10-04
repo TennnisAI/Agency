@@ -41,7 +41,7 @@ const MENU_PAD = 10;
 //
 // `bare` drops the label from the pill's own text, for the expanded layout's
 // meta rail where the row already carries it ("Due    ◷ Aug 1").
-function DateProp({
+export function DateProp({
   glyph,
   label,
   value,
@@ -432,10 +432,16 @@ export default function IssueDetail({
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     let disposed = false;
+    // The rect alone is not enough: the new-issue composer covers the board,
+    // pane included, and a file dropped on the composer would otherwise be
+    // attached to whichever issue happened to be open underneath it.
     const hit = (pos: { x: number; y: number }) => {
-      const r = asideRef.current?.getBoundingClientRect();
-      if (!r) return false;
-      return pos.x >= r.left && pos.x <= r.right && pos.y >= r.top && pos.y <= r.bottom;
+      const el = asideRef.current;
+      const r = el?.getBoundingClientRect();
+      if (!el || !r) return false;
+      if (pos.x < r.left || pos.x > r.right || pos.y < r.top || pos.y > r.bottom) return false;
+      const top = document.elementFromPoint(pos.x, pos.y);
+      return top === null || el.contains(top);
     };
     getCurrentWebview()
       .onDragDropEvent((event) => {

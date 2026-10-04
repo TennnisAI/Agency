@@ -685,8 +685,14 @@ function Shell() {
         // Push and Pull for the checkout act on its branch, so this has to
         // leave the agent first: the grid is what points source control
         // there. The run stays focused, so the Focus button goes straight back
-        // to it.
-        onOpenCheckout={() => { setView("grid"); setTab("source"); }}
+        // to it. It always lands on Changes (AGE-250): Source Control
+        // remembered the Pull Requests sub-view from the last visit, so the
+        // button opened a PR list instead of the checkout it names.
+        onOpenCheckout={() => {
+          setView("grid");
+          setTab("source");
+          window.dispatchEvent(new CustomEvent("agency:open-changes"));
+        }}
       />
       <Toasts />
       <ToolInstallHost />

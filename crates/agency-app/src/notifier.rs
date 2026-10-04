@@ -1,3 +1,4 @@
+use crate::activity::ActivityState;
 use agency_core::term::SessionStatus;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -7,8 +8,14 @@ use std::collections::BTreeMap;
 pub struct NotifSettings {
     #[serde(default = "d_true")]
     pub agent_finished: bool,
+    /// "Agent finished a turn". Named for the pane heuristic it was first
+    /// fired from; kept so saved settings keep loading.
     #[serde(default = "d_true")]
     pub agent_idle: bool,
+    /// "Agent needs you": a permission dialog or a question it cannot go on
+    /// without (AGE-206). Only an agent whose hooks report it can fire this.
+    #[serde(default = "d_true")]
+    pub agent_blocked: bool,
     #[serde(default = "d_true")]
     pub run_crashed: bool,
     #[serde(default = "d_true")]
@@ -40,6 +47,7 @@ impl Default for NotifSettings {
         NotifSettings {
             agent_finished: true,
             agent_idle: true,
+            agent_blocked: true,
             run_crashed: true,
             merge_attention: true,
             loop_events: true,
@@ -74,6 +82,10 @@ pub struct RunSnapshot {
     /// only nudge after a turn the user actually started — never for a fresh
     /// agent sitting at its opening prompt, and never more than once per turn.
     pub user_input_pending: bool,
+    /// What the agent's own hooks say it is doing, when they say anything
+    /// (AGE-206). `None` is an agent without hooks, or one whose report has
+    /// lapsed, and leaves the turn-finished nudge to the pane.
+    pub reported: Option<ActivityState>,
 }
 
 #[derive(Clone)]
@@ -83,6 +95,7 @@ pub struct RunWatch {
     pub pane_hash: u64,
     pub quiet_since_tick: u64,
     pub idle_fired: bool,
+    pub reported: Option<ActivityState>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,7 +103,10 @@ pub enum NotifyKind {
     Finished,
     /// The named run script went from running to a non-zero exit.
     RunCrashed(String),
+    /// The agent finished a turn.
     Idle,
+    /// The agent stopped on a permission dialog or a question.
+    Blocked,
 }
 
 /// Pure edge detector. Given the previous watch state (if any) and a fresh
@@ -131,17 +147,39 @@ pub fn step(
         }
     }
 
-    // Idle latch.
     let agent_running = matches!(snap.agent, SessionStatus::Running);
     let mut idle_fired = prev.map(|p| p.idle_fired).unwrap_or(false);
-    if !agent_running || pane_changed {
+    // Reported edges (AGE-206). The agent said it, so there is no quiet spell
+    // to wait out and no input gate to pass: `Stop` only fires on a turn's
+    // end. Blocked fires for a loop attempt too. Loops suppress per-attempt
+    // events because the loop recovers from them on its own, and a dialog is
+    // the one thing it cannot recover from.
+    let was = prev.and_then(|p| p.reported);
+    if agent_running && snap.reported != was {
+        match snap.reported {
+            Some(ActivityState::Blocked) => events.push(NotifyKind::Blocked),
+            Some(ActivityState::Done) if !snap.is_loop => {
+                events.push(NotifyKind::Idle);
+                idle_fired = true;
+            }
+            _ => {}
+        }
+    }
+
+    // Idle latch, from the pane, for an agent with nothing reported.
+    if !agent_running || (pane_changed && snap.reported.is_none()) {
         idle_fired = false;
     }
     // Idle only fires once the user has given this run input — a fresh agent
     // sitting at its opening prompt has `user_input_pending == false`, so it is
     // never flagged as "waiting for input". The flag is cleared by the caller
     // when the notification fires, so each turn nudges at most once.
-    if agent_running && !idle_fired && snap.user_input_pending && !snap.is_loop {
+    if agent_running
+        && snap.reported.is_none()
+        && !idle_fired
+        && snap.user_input_pending
+        && !snap.is_loop
+    {
         let quiet_ticks = now_tick.saturating_sub(quiet_since_tick);
         if quiet_ticks.saturating_mul(poll_secs) >= idle_secs {
             events.push(NotifyKind::Idle);
@@ -155,6 +193,7 @@ pub fn step(
         pane_hash: snap.pane_hash,
         quiet_since_tick,
         idle_fired,
+        reported: snap.reported,
     };
     // Terminals are tracked (so a later promotion to notifying would have
     // history) but never produce events.
@@ -218,12 +257,15 @@ pub fn opens_notified_run(
 /// Notification (title, body) for an event about the run labelled `label`.
 pub fn message(kind: &NotifyKind, label: &str) -> (String, String) {
     match kind {
-        NotifyKind::Finished => ("Agent exited".to_string(), format!("{label} — done")),
+        NotifyKind::Finished => ("Agent exited".to_string(), format!("{label}: done")),
         NotifyKind::RunCrashed(script) => {
-            ("Run script crashed".to_string(), format!("{label} — \"{script}\" exited"))
+            ("Run script crashed".to_string(), format!("{label}: \"{script}\" exited"))
         }
         NotifyKind::Idle => {
-            ("Agent finished a turn".to_string(), format!("{label} — ready for you"))
+            ("Agent finished a turn".to_string(), format!("{label}: ready for you"))
+        }
+        NotifyKind::Blocked => {
+            ("Agent needs you".to_string(), format!("{label}: waiting on your answer"))
         }
     }
 }
@@ -253,6 +295,7 @@ mod tests {
             run_scripts: one(run_script),
             pane_hash,
             user_input_pending,
+            reported: None,
         }
     }
     /// A one-script project, under the name the tests refer to.
@@ -388,6 +431,7 @@ mod tests {
             run_scripts: one(SessionStatus::Gone),
             pane_hash: hash,
             user_input_pending: true,
+            reported: None,
         };
         // Exit edge: running -> exited must stay silent for terminals.
         let (w, _) = step(None, &term(running(), 1), 0, 2, 30);
@@ -414,6 +458,7 @@ mod tests {
             run_scripts: one(run_script),
             pane_hash: hash,
             user_input_pending: true,
+            reported: None,
         };
         // Attempt exit (running -> exited) must not toast.
         let (w, _) = step(None, &lsnap(running(), running(), 1), 0, 2, 30);
@@ -450,6 +495,7 @@ mod tests {
             run_scripts: BTreeMap::from([("dev".into(), dev), ("build".into(), build)]),
             pane_hash: 1,
             user_input_pending: true,
+            reported: None,
         };
         let (w, _) = step(None, &two(running(), running()), 0, 2, 30);
         // The build fails while the dev server keeps serving: one toast, named.
@@ -465,6 +511,94 @@ mod tests {
         };
         let (_w, ev) = step(Some(&w), &gone, 3, 2, 30);
         assert!(ev.is_empty());
+    }
+
+    fn reporting(reported: Option<ActivityState>, hash: u64, is_loop: bool) -> RunSnapshot {
+        RunSnapshot { is_loop, reported, ..snap_input(running(), SessionStatus::Gone, hash, false) }
+    }
+
+    #[test]
+    fn a_reported_block_notifies_once_on_its_edge() {
+        let blocked = Some(ActivityState::Blocked);
+        let (w, ev) = step(None, &reporting(Some(ActivityState::Working), 1, false), 0, 2, 30);
+        assert!(ev.is_empty());
+        let (w, ev) = step(Some(&w), &reporting(blocked, 2, false), 1, 2, 30);
+        assert_eq!(ev, vec![NotifyKind::Blocked]);
+        // Still blocked, pane quiet or not: the edge already fired.
+        let (w, ev) = step(Some(&w), &reporting(blocked, 2, false), 2, 2, 30);
+        assert!(ev.is_empty());
+        let (_w, ev) = step(Some(&w), &reporting(blocked, 3, false), 3, 2, 30);
+        assert!(ev.is_empty());
+    }
+
+    /// The turn-finished nudge comes from `Stop`, not from thirty quiet
+    /// seconds, and it needs no input gate: the hook only fires on a turn.
+    #[test]
+    fn a_reported_done_is_the_turn_finished_nudge() {
+        let (w, _) = step(None, &reporting(Some(ActivityState::Working), 1, false), 0, 2, 30);
+        let (w, ev) = step(Some(&w), &reporting(Some(ActivityState::Done), 1, false), 1, 2, 30);
+        assert_eq!(ev, vec![NotifyKind::Idle]);
+        let mut w = w;
+        for t in 2..=40 {
+            let (nw, ev) =
+                step(Some(&w), &reporting(Some(ActivityState::Done), 1, false), t, 2, 30);
+            w = nw;
+            assert!(ev.is_empty(), "one nudge per turn (tick {t})");
+        }
+    }
+
+    #[test]
+    fn while_reported_the_pane_never_nudges() {
+        let working = |hash| RunSnapshot {
+            user_input_pending: true,
+            ..reporting(Some(ActivityState::Working), hash, false)
+        };
+        let (mut w, _) = step(None, &working(1), 0, 2, 30);
+        for t in 1..=40 {
+            let (nw, ev) = step(Some(&w), &working(1), t, 2, 30);
+            w = nw;
+            assert!(ev.is_empty(), "a quiet pane under a report is not a turn ending");
+        }
+    }
+
+    #[test]
+    fn a_loop_attempt_that_blocks_still_notifies() {
+        let (w, _) = step(None, &reporting(Some(ActivityState::Working), 1, true), 0, 2, 30);
+        let (w, ev) = step(Some(&w), &reporting(Some(ActivityState::Done), 1, true), 1, 2, 30);
+        assert!(ev.is_empty(), "attempts finishing are the loop's own business");
+        let (_w, ev) = step(Some(&w), &reporting(Some(ActivityState::Blocked), 1, true), 2, 2, 30);
+        assert_eq!(ev, vec![NotifyKind::Blocked]);
+    }
+
+    #[test]
+    fn a_dead_agent_reports_nothing() {
+        let (w, _) = step(None, &reporting(Some(ActivityState::Working), 1, false), 0, 2, 30);
+        let dead =
+            RunSnapshot { agent: exited(0), ..reporting(Some(ActivityState::Blocked), 1, false) };
+        let (_w, ev) = step(Some(&w), &dead, 1, 2, 30);
+        assert_eq!(ev, vec![NotifyKind::Finished]);
+    }
+
+    #[test]
+    fn settings_saved_before_blocked_existed_load_with_it_on() {
+        let s: NotifSettings = serde_json::from_str(r#"{"agentIdle":false}"#).unwrap();
+        assert!(s.agent_blocked);
+        assert!(!s.agent_idle);
+    }
+
+    #[test]
+    fn notification_copy_has_no_em_dashes() {
+        let kinds = [
+            NotifyKind::Finished,
+            NotifyKind::RunCrashed("dev".into()),
+            NotifyKind::Idle,
+            NotifyKind::Blocked,
+        ];
+        for k in kinds {
+            let (title, body) = message(&k, "claude: fix");
+            assert!(!title.contains('\u{2014}') && !body.contains('\u{2014}'), "{k:?}");
+        }
+        assert_eq!(message(&NotifyKind::Blocked, "claude: fix").0, "Agent needs you");
     }
 
     #[test]

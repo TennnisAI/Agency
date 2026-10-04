@@ -553,6 +553,7 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                             crate::notifier::NotifyKind::Finished => settings.agent_finished,
                             crate::notifier::NotifyKind::RunCrashed(_) => settings.run_crashed,
                             crate::notifier::NotifyKind::Idle => settings.agent_idle,
+                            crate::notifier::NotifyKind::Blocked => settings.agent_blocked,
                         };
                         let suppressed = crate::notifier::suppressed(
                             &settings,

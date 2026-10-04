@@ -1,41 +1,44 @@
 # Design: agent state from the agent's own hooks
 
-Status: **draft for discussion** (2026-09-08, AGE-206). Nothing here is built.
-Scope: replace the pane-diff guess in `activity.rs` with state the agent
-reports about itself, and split today's `waiting` into `blocked` and `done`.
+Status: **phases 1 and 2 built** (AGE-206, 2026-10-04) for Claude Code. Drafted
+2026-09-08; the sections below record what was built, and where the build
+departed from the draft, why. Phases 3 and 4 are still open.
 
-## What is true today
+Scope: take a run's state from what the agent reports about itself where it
+can, keep the pane-diff heuristic in `activity.rs` as the fallback, and split
+the old `waiting` into `blocked` and `done`.
 
-`activity.rs` derives a run's state from exactly one bit per tick: did the
+## What was true before
+
+`activity.rs` derived a run's state from exactly one bit per tick: did the
 pane's content hash change since the last notifier poll. `notifier.rs` computes
 that bit (`RunSnapshot::pane_hash`) while capturing panes for its own edge
 detection, and `state.rs::read_activity` classifies from it on read.
 
-Three states come out, and the quality drops sharply across them:
+Three states came out, and the quality dropped sharply across them:
 
-- **working** — the pane changed inside `WORKING_TTL_MS` (10s). This one is
+- **working**: the pane changed inside `WORKING_TTL_MS` (10s). This one is
   sound. Agents redraw constantly while they work: spinners, streaming tokens,
   tool output.
-- **waiting** — quiet, but a user-driven turn is in flight (`turn_driven`).
-- **idle** — quiet with no turn in flight, or `waiting` that has sat unattended
-  for `WAITING_MAX_MS` (30 minutes) and decayed.
+- **waiting**: quiet, but a user-driven turn is in flight (`turn_driven`).
+- **idle**: quiet with no turn in flight, or `waiting` that has sat unattended
+  for 30 minutes and decayed.
 
-`waiting` is the problem. It is one label over two situations that call for
+`waiting` was the problem. It was one label over two situations that call for
 opposite responses:
 
 - the agent hit a permission prompt and *cannot proceed* until you answer it;
 - the agent finished its turn and is *done*, waiting for you to read the diff.
 
 Both render as a quiet pane. A hash diff cannot tell them apart, and neither
-can any refinement of a hash diff. On the all-projects overview — 18 projects,
-12 agents in the README screenshot — that is the difference between the two
+can any refinement of a hash diff. On the all-projects overview (18 projects,
+12 agents in the README screenshot) that is the difference between the two
 runs that are burning wall-clock waiting on a keystroke and the ten that are
-not. `ui/src/lib/runstate.ts::needsAttention` currently flags both as needing
-attention, so the badge means "something happened here, maybe", and a badge
-that vague trains you to ignore it.
+not. `needsAttention` flagged both, so the badge meant "something happened
+here, maybe", and a badge that vague trains you to ignore it.
 
-`idle` is worse than a guess: it is a decay timer. A blocked agent that you
-ignore for half an hour is still blocked, but Agency stops saying so.
+`idle` was worse than a guess: it was a decay timer. A blocked agent that you
+ignore for half an hour is still blocked, but Agency stopped saying so.
 
 ## The gap this closes
 
@@ -43,14 +46,14 @@ Coding agents already publish their own lifecycle. Claude Code has fired hooks
 for permission prompts, turn completion and prompt submission for a long time;
 Gemini CLI shipped roughly twelve lifecycle events with hooks on by default
 from v0.26.0; OpenCode, Copilot CLI and Cursor have their own hook or plugin
-event systems. Agency has never asked any of them, and has been reconstructing
+event systems. Agency had never asked any of them, and had been reconstructing
 from pixels a fact the agent would have told us.
 
 Prior art in this space (a self-hosted terminal multiplexer built for agent
 fleets, read 2026-09-08) settles this with a two-tier authority model: an
 installed, actively-reporting integration is authoritative for state and
 session identity, and screen reading is the fallback only for agents that have
-no integration. It carries four states — idle, working, blocked, done — and
+no integration. It carries four states (idle, working, blocked, done) and
 rolls the strongest one up from pane to tab to workspace. That model is right,
 and the reasoning is not subtle: a reported fact beats an inferred one, and the
 inference is still needed because the coverage is never complete.
@@ -62,8 +65,8 @@ inference is still needed because the coverage is never complete.
 - `blocked` is a first-class state, distinguishable from `done`, for every
   agent whose CLI will tell us.
 - Reported state outranks inferred state while the report is live.
-- The pane-diff heuristic survives untouched as the fallback, so an agent with
-  no hooks (Codex, today) and a plain shell run are no worse off than now.
+- The pane-diff heuristic survives as the fallback, so an agent with no hooks
+  (Codex, today) and a plain shell run are no worse off than before.
 - No new dependency, no new daemon, no new port, no file the user did not
   already have Agency writing into their worktree.
 - Nothing here can slow down, block, or fail an agent's turn.
@@ -73,10 +76,37 @@ inference is still needed because the coverage is never complete.
 - Screen-based detection rules richer than a content hash. That is AGE-207 and
   is the *other* tier; this design only has to leave room for it.
 - Reading the agent's transcript for state. `usage.rs` already reads
-  transcripts for token accounting, and they lag: the docs say
-  `transcript_path` is written asynchronously and may be behind. State needs to
-  be live.
+  transcripts for token accounting, and they lag: `transcript_path` is written
+  asynchronously and may be behind. State needs to be live.
 - Anything that reports state off this machine (AGE-211, AGE-212).
+
+## What the binary actually does
+
+The draft was written against the hooks reference. Before building, every
+claim it relied on was checked against Claude Code **2.1.289**, in `-p` mode
+and in an interactive session in tmux, with an `http` hook on each event
+pointed at a listener that logged what arrived. Four of the draft's
+assumptions did not survive.
+
+| observation | consequence |
+| --- | --- |
+| `PermissionRequest` fires the instant a permission dialog appears, and also for an `AskUserQuestion` question. `Notification` with `permission_prompt` fires about **six seconds later**. | `PermissionRequest` is the `blocked` signal. `permission_prompt` is not subscribed: an answer given inside those six seconds would race it and put a working agent back to `blocked`. |
+| Answering **"No"** to a permission dialog, or pressing **Esc** on it, fires **nothing**. No `Stop`, no `PostToolUseFailure`, no `Notification`. | The draft said a refusal fires `Stop`. It does not, so a reported `blocked` cannot rely on the next event to end it. See *Lapse*. |
+| `SessionStart` never fires an `http` hook, interactive or not. | The draft's plan to capture `session_id` from it for AGE-210 does not work. Every other event carries `session_id`, so the id is still there to take; nothing stores it yet. |
+| `async: true` is accepted on an `http` hook but **not honoured**: a listener that slept 1.5s held the tool call for 1.5s. | The draft hoped `async` would remove the timeout concern. It does not. The server answers before it does anything else, and the 2s timeout bounds a wedged app. |
+| With nothing listening, the post costs nothing (loopback refuses at once), but the agent prints `PreToolUse:Bash hook error ... ECONNREFUSED` into its transcript on every tool call. A non-2xx answer prints the same kind of error. | The draft's reason to emit no hooks without a server (two seconds per tool call) was wrong; the real reason is the noise. The route answers 204 to everything, including a report it drops. |
+| `PostToolUseFailure` replaces `PostToolUse` when a tool fails. | Subscribed, as `working`. |
+| `Stop` is followed by `SubagentStop` from an internal subagent, carrying `agent_id`. | Not subscribed, and any body with an `agent_id` is dropped at the parse. |
+| `Notification` with `idle_prompt` fires about 60s after `Stop`. | Subscribed, as `done`. It is also what lands after an Esc that left no other report. |
+| `SessionEnd` fires on `/clear` as well as on exit. | Mapped to `idle`: after `/clear` the session is fresh. |
+| Header values interpolate `$VAR` for names in `allowedEnvVars`; an unset variable becomes an empty string. | The session id rides in a header (see *Transport*). |
+| No hook fires before the user accepts the folder-trust dialog for a new directory. | Nothing to do; a worktree under a trusted repo inherits the trust. |
+
+Two things were not verified and stay open: what fires under
+`bypassPermissions` (starting a session in that mode shows a warning the user
+has to accept, and accepting it is written to their global settings, which is
+not Agency's to do on their behalf), and whether an MCP elicitation dialog
+fires `PermissionRequest` the way `AskUserQuestion` does.
 
 ## The state model
 
@@ -85,276 +115,264 @@ Four states replace three:
 | state | meaning | who can produce it |
 | --- | --- | --- |
 | `working` | producing output, or inside a tool call | reports and heuristic |
-| `blocked` | stopped on a permission prompt or a question, cannot proceed | reports only |
+| `blocked` | stopped on a permission dialog or a question, cannot proceed | reports only |
 | `done` | finished a turn, waiting for the user to look | reports; heuristic approximates it |
 | `idle` | nothing in flight; a fresh run nobody has prompted | reports and heuristic |
 
-`waiting` disappears from the wire. Under the heuristic alone, what is `waiting`
-today becomes `done` — it is the better of the two readings, because
-`turn_driven` already means the user started a turn, and it makes the fallback
-strictly a coarser version of the reported model rather than a different one.
+`waiting` is gone from the wire. Under the heuristic alone, what was `waiting`
+is now `done`, because `turn_driven` already means the user started a turn,
+and it makes the fallback strictly a coarser version of the reported model
+rather than a different one.
 
-The 30-minute decay to `idle` goes away for reported states. A decay timer was
-only ever a hedge against not knowing; once the agent tells us it is blocked,
-it stays blocked until it tells us otherwise. The timer stays for heuristic
-`done`, where the hedge is still warranted.
+`ActivityInfo` carries `reported: bool` beside the state. The draft did not
+have it, and it turned out to matter for honesty: a heuristic `done` is "quiet
+after your turn", which may really be a permission prompt from an agent that
+cannot say so. The board labels a reported `done` as "done" and a guessed one
+as "waiting", with a tooltip that says the agent does not report which.
+
+The 30-minute decay to `idle` applies to the guessed `done` only. A decay timer
+was only ever a hedge against not knowing; once the agent says it is done, it
+stays done until it says otherwise.
 
 Ranking, strongest first: `blocked` > `done` > `working` > `idle`. That order
 is what AGE-213 rolls up to a project row, and what AGE-215 sorts by.
 
 ## Where the reports come from
 
-Claude Code first, because it is the default agent, has the richest hook set,
-and — critically — supports an **HTTP hook type**, which removes the entire
-question of writing a shell script into the user's worktree and hoping `jq` is
-on the PATH.
+Claude Code only, in this change, because it is the default agent and it has
+an `http` hook type: the agent posts straight at the server, with no shell
+script written into the user's worktree and no `jq` assumed on the PATH.
 
-Verified against the hooks reference on 2026-09-08:
+The subscribed events, in `state_hooks.rs::CLAUDE_EVENTS`, with the mapping in
+`preview/report.rs`:
 
-| hook event | matcher | what it means for us |
+| hook event | matcher | state |
 | --- | --- | --- |
-| `UserPromptSubmit` | none | turn started → `working` |
-| `PreToolUse` | `*` | still working |
-| `PostToolUse` | `*` | still working |
-| `Notification` | `permission_prompt` | **`blocked`** |
+| `UserPromptSubmit` | none | `working` |
+| `PreToolUse` | `*` | `working` |
+| `PostToolUse` | `*` | `working` |
+| `PostToolUseFailure` | `*` | `working` |
+| `PermissionRequest` | `*` | **`blocked`** |
 | `Notification` | `idle_prompt` | `done` |
-| `Stop` | none | turn finished → `done` |
-| `SessionStart` | `startup\|resume` | `idle`, and carries `session_id` |
-| `SessionEnd` | none | session over |
+| `Stop` | none | `done` |
+| `SessionEnd` | none | `idle` |
 
-`Notification` taking a matcher on `notification_type` is the whole design.
-`permission_prompt` is not a heuristic for "blocked"; it *is* blocked, named by
-the agent at the moment it happens.
+The parse is default-deny: the event and notification type are matched against
+exact values, and anything else is ignored rather than guessed at. Only
+`hook_event_name`, `notification_type` and `agent_id` are read. The payload
+also carries `tool_input` (the agent's actual commands and file contents) and
+`transcript_path`; none of that is kept.
 
-Two payload details matter:
-
-- Every event carries `session_id`, `cwd`, `transcript_path` and
-  `permission_mode`. `session_id` is the session identity AGE-210 needs for
-  resume, arriving free with the state work — worth capturing from
-  `SessionStart` even before anything consumes it.
-- Subagent events carry `agent_id` and `agent_type`. **Discard any report that
-  has `agent_id`.** A run whose agent spawns four subagents would otherwise
-  flicker through their turn boundaries; the run's state is the main agent's
-  state.
-
-Per-agent coverage is a table to be built the way `skills.rs` built its
-directory table: against live binaries with the version pinned in the comment,
-never against documentation alone. `skills.rs` documents a case where the docs
-claimed a directory the binary did not read. Assume the same here. Codex is the
-known gap — no user-facing hooks as of this writing — and is exactly what
-AGE-207 exists to cover.
+Per-agent coverage beyond Claude Code is a table to be built the way
+`skills.rs` built its directory table: against live binaries with the version
+pinned in the comment, never against documentation alone. This change is the
+precedent for why: four of the draft's documented assumptions were wrong.
 
 ## Transport
 
-The receiving end already exists. `preview/` runs a per-run server bound to
-`127.0.0.1` on the last port of the run's port block, loopback only, serving
-`/__agency__/…` control routes alongside the proxied dev server. Adding one
-route is a small change to a server that already has the shape.
+The receiving end is the run's existing server in `preview/`, bound to
+`127.0.0.1` on the last port of the run's port block. One route was added:
 
 ```
 POST /__agency__/state
-Authorization: Bearer $AGENCY_RUN_TOKEN
-{ "hook_event_name": "Notification", "notification_type": "permission_prompt",
-  "session_id": "...", "cwd": "/…/worktrees/agent-aso3", ... }
+X-Agency-Session: <run id, or <run>--<n> for an extra tab>
+{ "hook_event_name": "PermissionRequest", "tool_name": "Bash", ... }
 ```
 
-The emitted `.claude/settings.local.json` block is then, per hook:
+The emitted block in `.claude/settings.local.json` is, per event:
 
 ```json
 { "type": "http",
-  "url": "http://127.0.0.1:5231/__agency__/state",
+  "url": "http://127.0.0.1:5249/__agency__/state",
   "timeout": 2,
-  "headers": { "Authorization": "Bearer $AGENCY_RUN_TOKEN" },
-  "allowedEnvVars": ["AGENCY_RUN_TOKEN"] }
+  "headers": { "X-Agency-Session": "$AGENCY_SESSION_ID" },
+  "allowedEnvVars": ["AGENCY_SESSION_ID"] }
 ```
 
-Three consequences to design against:
+`agent_env`, the one builder all five launch paths go through, sets
+`AGENCY_SESSION_ID` to the session being launched.
 
-- **The hook must never stall the agent.** A hook that times out is cancelled
-  and its output discarded, and on these events no decision is applied, so the
-  agent proceeds — but it proceeds *after* the timeout. On `PreToolUse` that
-  cost lands on every tool call. Hence `timeout: 2`, and the server answers
-  `204` immediately having done nothing but enqueue. Whether the `http` hook
-  type accepts `async: true` (documented under command hooks) needs checking
-  against a live binary; if it does, use it and drop the timeout concern
-  entirely. If a run's server is not listening, two seconds per tool call is
-  unacceptable, so **emit no hooks unless the server for that run is up**.
-- **`Caps` needs a third member.** Today `Caps::none()` is documented as "the
-  state in which no server should be listening", and the server only runs when
-  the preview or editor capability is on. State reporting wants the server up
-  for any run with a hook-capable agent, so `Caps { preview, editor, state }`
-  and the lifetime rule becomes "any cap on". The state cap is on when we
-  emitted hooks for that run, which keeps the two facts from drifting apart.
-- **The token is per run.** `scripts.rs::script_env` already builds the
-  `AGENCY_*` set that reaches the agent through `StartSession { env }`; add
-  `AGENCY_RUN_TOKEN`, a random per-run value, alongside `AGENCY_PORT`. Do not
-  key on `cwd` alone: it identifies the worktree, and several runs can share a
-  worktree (see `run-teardown.md`, AGE-184). The token identifies the run; the
-  `cwd` is a cross-check, and a mismatch is dropped and logged.
+**A session header, not a per-run token.** The draft proposed
+`AGENCY_RUN_TOKEN`, a random per-run secret, as the authentication. What
+actually needed solving was identity: every tab of a run shares the worktree,
+and so the settings file and the URL, and only the session id says which tab
+is reporting. The port already identifies the run, and a session of another
+run posting there is dropped. A `claude` the user starts by hand in the
+worktree has the variable unset, sends an empty header, and is ignored. A
+token would also have had to survive an app restart, since the agent's
+environment is fixed at spawn and outlives the server, which means persisting
+a secret per run. Against what threat? Browsers are already kept out by the
+server's origin check, and any local process that can reach loopback can
+already call `set_status` on the same server. That was not worth a stored
+secret.
+
+**The route always answers 204, before doing anything.** Claude Code waits on
+every post, and prints a hook error for any non-2xx answer.
+
+**`Caps` has a third member, `state`.** A server now runs while preview tools,
+open-file sharing, *or* state hooks want it. `state` is on for a run whose
+worktree carries our hooks, read off the file by `state_hooks::emitted` on each
+sweep rather than remembered. That is what keeps the listener up across an app
+restart: an agent that survived in the daemon read its hooks at startup and
+posts to its port whether anything listens or not.
+
+**The state cap starts a server; it does not add an MCP entry.** The draft
+assumed the cap would also give every run the `agency-preview` server and its
+`set_status` tool. It does not, deliberately. Claude Code asks the user to
+approve a server it finds in a workspace's `.mcp.json`, so emitting one to
+every Claude run would put an approval prompt in front of runs that have none
+today. The hooks need the server listening, not the agent connected to it.
+`state.rs` keeps the two questions apart: `preview_mcp_port_for` decides the
+MCP entry, `server_port_for` decides the listener.
 
 ## Emission
 
-`mcp.rs::emit_for_agent` is the pattern to copy, not to extend — it emits MCP
-servers, and hooks are a different payload with the same three rules:
+`state_hooks.rs` follows `mcp.rs::emit_for_agent`'s three rules:
 
-1. **Merge, never replace.** `upsert_json` semantics: our block goes in by a
-   reserved key, the user's own hooks are left exactly as they are. Claude Code
-   merges hooks across settings levels, so ours coexisting with theirs is the
-   supported case, not a workaround.
-2. **A tracked file is the repo's own; leave it alone.** `mcp.rs::tracked` and
-   `skills.rs` both skip on this test. Same test here. The natural target is
-   `.claude/settings.local.json`, which is the local-override slot and is
-   conventionally untracked, but "conventionally" is not "verified" and the
-   check is two lines.
-3. **Exclude what we write.** `ensure_exclude_pattern`, anchored
-   (`/.claude/settings.local.json`), for the reason AGE-115 recorded: the one
-   worktree file drop without an exclude was the one that ended up staged by an
-   agent's `git add -A` and merged into the project.
+1. **Merge, never replace.** Our groups are recognised by their URL (any
+   loopback port, path `/__agency__/state`), stripped, and re-added at the
+   current port. The user's own hooks, matcher groups and every other key are
+   left exactly as they were. A group the user shares with one of ours keeps
+   the user's entry.
+2. **A tracked file is the repo's own; leave it alone.** Same `tracked` test as
+   `mcp.rs`.
+3. **Exclude what we write.** `/.claude/settings.local.json`, anchored, for
+   the reason AGE-115 recorded.
 
-The exclusion in `mcp.rs` for user-scope OAuth servers has no analogue here.
-Hooks are workspace-scoped by nature.
+One rule more than `mcp.rs`'s `upsert_json`, which starts over from `{}` when a
+file does not parse: **a file that does not parse is left alone.** Claude Code
+writes to `settings.local.json` itself (a "don't ask again" answer is saved
+there as a permission rule), so starting it over would throw away the user's
+permissions. The write goes through `issuefs::atomic_write`.
+
+Hooks are written only once the run's server is up, and taken out when it
+cannot be, so a stale block never produces the transcript noise above. The
+launch path (`prepare_state_hooks`, called from `agent_env`) starts the server
+itself, writes the hooks at whatever port actually bound, and clears the
+session's last report: a new process is not what the old one reported, and
+`SessionStart` will not fire to say so. The project's own checkout is never
+written into, the same rule as MCP config.
 
 ## The transition function
 
-`activity.rs` stays pure, per the house style it is already one of the models
-for. The report is another input to the same fold, not a side channel:
+`activity.rs` stays pure. A report is another input to the same fold:
 
 ```rust
-pub struct Report {
-    pub state: ActivityState,
-    pub at_ms: i64,
-    /// Highest hook-protocol version the reporter used, so a stale emitted
-    /// block can be recognised rather than misread.
-    pub proto: u8,
-}
+pub struct Report { pub state: ActivityState, pub since_ms: i64, pub at_ms: i64 }
 
-pub fn update(
-    prev: Option<ActivityEntry>,
-    pane_changed: bool,
-    report: Option<Report>,
-    now_ms: i64,
-) -> ActivityEntry;
-
-pub fn classify(
-    entry: &ActivityEntry,
-    turn_driven: bool,
-    agent_running: bool,
-    now_ms: i64,
-) -> ActivityInfo;
+pub fn update(prev: Option<ActivityEntry>, pane_changed: bool, now_ms: i64) -> ActivityEntry;
+pub fn reported(prev: Option<ActivityEntry>, state: ActivityState, now_ms: i64) -> ActivityEntry;
+pub fn answered(entry: ActivityEntry) -> ActivityEntry;
+pub fn classify(entry: &ActivityEntry, turn_driven: bool, now_ms: i64) -> ActivityInfo;
 ```
 
-The app owns the impure half: the HTTP handler parses, authenticates and drops
-subagent events, then hands `update` a `Report`. The map in `state.rs:2287`
-gains the last report per run and stays in-memory, which is right — a forgotten
-run showing `idle` is the correct answer after a restart.
+`ActivityEntry` carries the last report beside the pane bookkeeping, in the
+same in-memory map, keyed by session. The server's report hook writes into it;
+the notifier tick writes the pane half. The draft's `proto` field is not
+there: the emitted block is recognised by URL, so a stale one is replaced on
+the next launch rather than needing a version to be told apart.
 
-**Authority and lapse.** Reports win while they are live, with the lapse rule
-turning on which state it is:
+**Authority and lapse.**
 
-- `blocked`, `done` and `idle` are *resting* states. They are supposed to
-  persist with no further events, and the pane is quiet in all three, so there
-  is nothing for the heuristic to disagree with. They persist indefinitely.
-- `working` is *heartbeat-backed*. `PreToolUse` and `PostToolUse` fire
-  repeatedly through a turn, so a reported `working` with no event inside
-  `REPORT_WORKING_TTL` is suspect — the agent was killed mid-turn, or crashed,
-  or the emitted block is stale. It lapses back to the heuristic, which will
-  correctly read a quiet pane.
-- Any reported state lapses when the session is no longer
-  `SessionStatus::Running`. A dead process is not blocked; it is gone. This is
-  why `classify` takes `agent_running` — the fact lives in the snapshot the
-  notifier already has.
-
-Blocked never gets stuck in practice: the user answers the prompt in the pane,
-the tool runs, `PostToolUse` fires, and the run is `working` again. If they
-refuse instead, `Stop` fires and it is `done`. Both edges are already on the
-list above, which is the check that the list is complete.
+- `blocked`, `done` and `idle` are *resting* states. They persist with no
+  further events, and they outrank the pane: an agent redrawing as its turn
+  ends, or the user typing at the prompt afterwards, does not make a finished
+  turn `working`.
+- `working` is *heartbeat-backed*. The tool hooks fire all through a turn, and
+  an Esc mid-turn ends it with no `Stop`, so a `working` with no report inside
+  `REPORT_WORKING_TTL_MS` (10s) falls back to the pane, exactly as if nothing
+  had been reported. The pane is right about working, so this costs nothing: a
+  long tool call still animates a spinner. (Not "counting the turn as driven":
+  a headless loop attempt draws nothing while its model thinks, and that would
+  read every pause between its tool calls as a finished turn.)
+- `blocked` ends on the user's keystroke. Because a refusal fires nothing, any
+  key that can answer a dialog (`sendq::answers_a_prompt`: Enter, a printable
+  key, a lone Esc, Ctrl-C) clears a reported `blocked` and hands the session
+  back to the pane. An approval then reports `working` within a moment; a
+  refusal leaves the pane to read a quiet prompt as a guessed `done`, until
+  `idle_prompt` reports `done` for real. `classify_input` could not be reused
+  for this, since it files a lone Esc under "nothing typed" on purpose.
+- A dead process is neither blocked nor done. The draft had `classify` take
+  `agent_running`; it turned out every consumer (the UI, the notifier, the send
+  queue) already composes the session's status first, so the fact did not need
+  to enter the fold.
 
 ## What changes around it
 
-**`notifier.rs`.** `NotifyKind::Idle` ("Agent finished a turn") is today fired
-from quiet-pane timing gated on `user_input_pending`. It splits: `Blocked` when
-a run enters that state, `Done` on turn completion. Both become edges on the
-reported state rather than on a quiet-tick count, which removes `idle_secs`
-from the reported path. `step()` stays a pure edge detector; `RunSnapshot`
-gains the state. `NotifSettings` gains `agent_blocked`, defaulting on, and
-`agent_idle` is renamed with a serde alias so saved settings keep loading —
-`only_when_watching` already sets that precedent.
+**`sendq.rs`.** The send queue types review comments, failing checks and merge
+conflicts into a session once it is quiet, and appends them anyway after
+`MAX_HOLD_MS`. A blocked session is quiet. An Enter that reached an
+`AskUserQuestion` question picked its first option while this was being
+verified, and the first option of a permission dialog is "Yes". So a blocked
+session now holds the queue **with no timeout**: a queued message must never
+approve a command the user did not see.
 
-`suppressed()` needs no change and should not get one. Its reasoning ("the only
-run we stay quiet about is the one the user is watching right now") is
-independent of how the state was derived, and it is better than the
-active-tab suppression the comparable tool does.
+**`notifier.rs`.** `RunSnapshot` and `RunWatch` carry the reported state of the
+tab speaking for the run, and `step()` fires on its edges: `Blocked` ("Agent
+needs you", "`{label}`: waiting on your answer") on entering `blocked`, and the
+existing turn-finished notification on entering `done`. While a report is
+live, the quiet-pane timer does not fire, so `idle_secs` only governs agents
+without hooks. `NotifSettings` gains `agent_blocked`, default on, and old saved
+settings load with it on. `agent_idle` keeps its name: renaming a key for
+tidiness is churn in every saved settings file, and the label already says
+"Agent finished a turn". The other notification bodies lost their em dashes on
+the way past.
 
-Notification copy, avoiding em dashes per the house rules:
+The loop question from the draft is answered yes: a loop attempt that blocks
+notifies. Loops suppress per-attempt events because the loop recovers from them
+on its own, and a dialog is the one thing it cannot recover from.
 
-- blocked: "Agent needs you", "`{label}`: waiting on a permission prompt"
-- done: "Agent finished a turn", "`{label}`: ready for you"
+`suppressed()` is unchanged. Its reasoning (stay quiet about the one run the
+user is watching) is independent of how the state was derived.
 
-**The UI.** `runstate.ts` is the whole of the change: `needsAttention` keys on
-`"waiting"` at line 36 and becomes `blocked || done` with different weight;
-`runStatus` and `HomeView`'s `waitingCount` follow; `IssueRow`'s activity dot
-gains a fourth class. `ActivityState` serializes camelCase and `"waiting"` will
-simply stop appearing, so the TS union must be updated in the same change or
-the board silently renders nothing for the new states.
+**The UI.** `RunActivity` is `"working" | "blocked" | "done" | "idle"` plus
+`reported`. `runStatus` gives `blocked` its own red, glowing dot and
+"blocked · 2m"; `done` keeps the amber dot as "done" when reported and
+"waiting" when guessed. The overview header counts `blocked` and `waiting`
+separately, each with its own filter, and a project row says "N blocked". An
+issue row's activity dot turns red when a linked agent is blocked.
+`needsAttention` is `blocked || done`.
 
 ## Privacy and trust
-
-Three things to hold onto:
 
 - **The payloads stay on the machine.** The hook posts to `127.0.0.1` on a port
   the run already owns. Nothing here is a network call in the sense the README
   makes a claim about, and nothing here changes that claim.
-- **Do not store what we do not need.** Hook payloads carry `tool_input`, which
-  is the agent's actual commands and file contents, and `transcript_path`. We
-  need `hook_event_name`, `notification_type`, `session_id` and `cwd`. Parse
-  those and drop the rest at the door, rather than
-  keeping a payload we then have to be careful with. This is the same instinct
-  the comparable tool showed in defaulting its scrollback replay to off because
-  terminal output contains secrets.
-- **Default-deny on what we accept.** The house rule for anything imported or
-  shared. `hook_event_name` and `notification_type` are matched against an
-  allowlist of exact values; an unrecognised event is ignored, not guessed at.
+- **Do not store what we do not need.** Three fields are read; the rest of the
+  body, including the tool input, is never kept.
+- **Default-deny on what we accept.** Exact event and notification-type values.
   A denylist here would quietly mis-state a run the first time an agent adds an
   event.
 
 ## Phasing
 
-1. **Claude Code end to end.** The `state` cap and the `/__agency__/state`
-   route, the per-run token, emission into `.claude/settings.local.json` with
-   merge/tracked/exclude, `Report` threaded through `activity.rs`, the four
-   states on the wire, `runstate.ts` updated. One agent, working `blocked`.
-2. **`notifier.rs`.** Blocked and Done as edges on reported state; settings and
-   copy.
-3. **The rest of the catalog.** Per-agent hook tables verified against live
-   binaries, one agent per change, each landing with its own test the way
-   `skills.rs` rows do.
-4. **The roll-up and the sort** (AGE-213, AGE-215), which are only worth
-   building on top of a state that is real.
+1. **Claude Code end to end.** Built: the `state` cap and route, the session
+   header, emission with merge/tracked/exclude, the report in `activity.rs`,
+   four states on the wire, the UI.
+2. **`notifier.rs`.** Built: `Blocked` and turn-finished as edges on reported
+   state, the setting, the copy.
+3. **The rest of the catalog.** Open. Per-agent hook tables verified against
+   live binaries, one agent per change, each landing with its own test. For
+   an agent whose hooks can only run a command, that means a shell hook, and a
+   decision about writing a script into the worktree that this change avoided.
+4. **The roll-up and the sort** (AGE-213, AGE-215). Open, and now unblocked.
 
-AGE-207 (declarative screen rules) does not block phase 1. AGE-208
-(agent-authored status) landed first, and not from hooks: a hook's `tool_name`
-says "Bash", not what the command is for, so the line comes from the agent
-itself through a `set_status` tool on the same per-run server, rendered as
-plain text under the run's state. The server only runs today while the preview
-or editor half is on, so the `state` cap proposed above is also what would give
-every run that tool. AGE-209's `wait(run_id)` is gated on
-phase 1: a blocking wait is only as trustworthy as the state it waits on.
+AGE-207 (declarative screen rules) is the tier for agents phase 3 cannot
+reach. AGE-208 (agent-authored status) landed first, on the same server.
+AGE-209's `wait(run_id)` was gated on phase 1 and no longer is.
 
 ## Open questions
 
-- Does the `http` hook type accept `async: true`? If so most of the timeout
-  reasoning above evaporates. Needs a live binary, not the docs.
-- What happens to hooks under `--dangerously-skip-permissions` and the
-  `bypassPermissions` permission mode? `permission_prompt` presumably never
-  fires, which is correct (nothing is blocked) but should be confirmed rather
-  than assumed. `permission_mode` is in every payload, so we can at least
-  record which mode a run is in.
-- The agent CLI may be upgraded under a long-lived run, changing hook payloads
-  mid-flight. The `proto` field covers our end; theirs is unversioned.
-- Loop runs (`looper.rs`) suppress per-attempt notifications by design. Does a
-  loop attempt that blocks on a permission prompt deserve a notification? It is
-  arguably the one thing a loop cannot recover from on its own, which suggests
-  yes, and suggests it is the only per-attempt event that should escape the
-  suppression.
+- What fires under `bypassPermissions` and `--dangerously-skip-permissions`?
+  `PermissionRequest` presumably never does, which is correct, but it could not
+  be confirmed without accepting a warning on the user's behalf.
+- Does an MCP elicitation dialog fire `PermissionRequest`? If it fires only a
+  `Notification` with `elicitation_dialog`, it needs adding to the allowlist.
+- After an Esc on a permission dialog, the pane guesses `done` for up to 60s
+  before `idle_prompt` reports it. The turn-finished notification can then
+  fire for a turn the user ended themselves, a minute after they did, unless
+  they are still watching that run.
+- `session_id` arrives on every event but `SessionStart`, and AGE-210 wants it.
+  Nothing stores it yet.
 - Does a `blocked` run still count toward a project's "working" roll-up for the
   purposes of the tray icon, or is blocked strictly stronger there too?

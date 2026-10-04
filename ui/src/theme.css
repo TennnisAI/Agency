@@ -49,7 +49,7 @@
   --sans:'Geist',ui-sans-serif,system-ui,-apple-system,'Segoe UI',sans-serif;
   --mono:'JetBrains Mono',ui-monospace,'SF Mono',Menlo,monospace;
   /* semantic */
-  --running:var(--green); --awaiting:var(--yellow); --review:var(--blue);
+  --running:var(--green); --awaiting:var(--yellow); --blocked:var(--red); --review:var(--blue);
   --exited:var(--o0); --crashed:var(--red);
   --agent-claude:var(--peach); --agent-pi:var(--teal); --agent-hermes:var(--mauve);
   /* dims (handoff §06) */

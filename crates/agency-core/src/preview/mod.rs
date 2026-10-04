@@ -31,6 +31,12 @@
 //! server serving only that, which is why the gate is "either", not "preview".
 //! Both are read per request, so revoking one mid-run takes it away mid-run.
 //!
+//! A third reason to listen has no tools at all: the run's agent posting its
+//! own lifecycle hooks to `/__agency__/state` (AGE-206, [`report`] and
+//! [`crate::state_hooks`]). That one is not a switch the user holds. It is on
+//! for as long as the worktree carries the hooks that post here, since an
+//! agent that read them at startup posts whether anything listens or not.
+//!
 //! The server keeps the name `agency-preview` now that it serves more than the
 //! preview. Renaming it would orphan the entry in every worktree already
 //! emitted and break the permission rules users have written against the tool
@@ -38,6 +44,7 @@
 
 mod http;
 pub(crate) mod proxy;
+pub mod report;
 mod rpc;
 pub mod status;
 
@@ -115,7 +122,7 @@ pub struct Facts {
 /// cached: both are switches the user holds while a run is going, and a tool
 /// the user has just revoked has to stop being listed and stop answering.
 ///
-/// A server runs while *either* is on. Neither being on is the case that never
+/// A server runs while *any* is on. None being on is the case that never
 /// starts one at all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Caps {
@@ -124,16 +131,20 @@ pub struct Caps {
     pub preview: bool,
     /// `editor_open_file`: the user turned on sharing the file they have open.
     pub editor: bool,
+    /// The run's worktree carries state hooks that post to this server. No
+    /// tools: the route it answers is `/__agency__/state`, which the agent's
+    /// hooks call, not its MCP client.
+    pub state: bool,
 }
 
 impl Caps {
     /// Nothing to serve — the state in which no server should be listening.
     pub fn none() -> Caps {
-        Caps { preview: false, editor: false }
+        Caps { preview: false, editor: false, state: false }
     }
 
     pub fn any(&self) -> bool {
-        self.preview || self.editor
+        self.preview || self.editor || self.state
     }
 }
 
@@ -186,9 +197,10 @@ pub enum OpenFocus {
 /// What the embedding app provides: fresh facts for guidance, the native pixel
 /// screenshot of the preview pane (which only the app, owner of the window, can
 /// take — see the app crate's preview_shot), which tool groups are switched on,
-/// and what the user is looking at. `set_status` is the one hook that goes the
-/// other way: the agent's own status line, already cleaned by
-/// [`status::clean`], for the app to put on the board.
+/// and what the user is looking at. `set_status` and `report` are the two
+/// hooks that go the other way: the agent's own status line, already cleaned by
+/// [`status::clean`], and the state its lifecycle hooks report, with the Agency
+/// session that reported it, for the app to put on the board.
 #[derive(Clone)]
 pub struct Hooks {
     pub facts: Arc<dyn Fn() -> Facts + Send + Sync>,
@@ -196,6 +208,7 @@ pub struct Hooks {
     pub caps: Arc<dyn Fn() -> Caps + Send + Sync>,
     pub open_file: Arc<dyn Fn() -> OpenFocus + Send + Sync>,
     pub set_status: Arc<dyn Fn(status::Status) + Send + Sync>,
+    pub report: Arc<dyn Fn(&str, report::Reported) + Send + Sync>,
 }
 
 /// One console line reported by the bridge.
@@ -645,6 +658,19 @@ fn control(stream: &mut TcpStream, req: &http::Request, ctx: &Ctx) {
             let _ =
                 http::write_response(stream, 405, "Method Not Allowed", &[("allow", "POST")], b"");
         }
+        // A lifecycle hook. Always 204, and before anything else: Claude Code
+        // waits on every post (`async` is not honoured on an `http` hook), and
+        // prints a "hook error" into the agent's transcript for any answer
+        // that is not 2xx (2.1.289), so a report we drop is dropped quietly.
+        // No session header is a `claude` the user started themselves in this
+        // worktree, which is not Agency's to report on.
+        ("POST", crate::state_hooks::STATE_PATH) => {
+            let _ = http::write_response(stream, 204, "No Content", &[], b"");
+            let session = req.header(crate::state_hooks::SESSION_HEADER).unwrap_or("").trim();
+            if let (false, Some(state)) = (session.is_empty(), report::parse(&req.body)) {
+                (ctx.hooks.report)(session, state);
+            }
+        }
         ("GET", "/__agency__/bridge.js") => {
             let _ = http::write_response(
                 stream,
@@ -862,7 +888,12 @@ mod tests {
     use std::io::{Read, Write};
 
     fn hooks(script: Option<(&str, &str)>, shot: Result<Vec<u8>, &str>) -> Hooks {
-        with_open_file(script, shot, Caps { preview: true, editor: true }, OpenFocus::Nothing)
+        with_open_file(
+            script,
+            shot,
+            Caps { preview: true, editor: true, state: false },
+            OpenFocus::Nothing,
+        )
     }
 
     fn with_open_file(
@@ -879,6 +910,7 @@ mod tests {
             caps: Arc::new(move || caps),
             open_file: Arc::new(move || open.clone()),
             set_status: Arc::new(|_| {}),
+            report: Arc::new(|_, _| {}),
         }
     }
 
@@ -1050,11 +1082,42 @@ mod tests {
     }
 
     #[test]
+    fn a_hook_report_reaches_the_app_with_its_session_and_always_gets_204() {
+        let seen: Arc<Mutex<Vec<(String, report::Reported)>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let hooks = Hooks {
+            report: Arc::new(move |sid, r| sink.lock().unwrap().push((sid.to_string(), r))),
+            ..with_open_file(None, Err("n/a"), Caps::none(), OpenFocus::Nothing)
+        };
+        let srv = start(hooks);
+        let path = crate::state_hooks::STATE_PATH;
+        let body = |event: &str| json!({ "hook_event_name": event, "tool_input": {} }).to_string();
+        let send = |b: &str, sid: Option<&str>| {
+            let headers: Vec<(&str, &str)> =
+                sid.map(|s| vec![("X-Agency-Session", s)]).unwrap_or_default();
+            request(srv.port(), "POST", path, b, &headers)
+        };
+        assert_eq!(send(&body("PermissionRequest"), Some("fix-a1--2")), (204, String::new()));
+        // A `claude` the user started by hand: the variable is unset, the
+        // header arrives empty.
+        assert_eq!(send(&body("Stop"), Some("")).0, 204);
+        assert_eq!(send(&body("Stop"), None).0, 204);
+        // Dropped at the parse, still 204: anything else prints a hook error
+        // into the agent's transcript.
+        assert_eq!(send(&body("SubagentStop"), Some("fix-a1")).0, 204);
+        assert_eq!(send("garbage", Some("fix-a1")).0, 204);
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![("fix-a1--2".to_string(), report::Reported::Blocked)]
+        );
+    }
+
+    #[test]
     fn editor_open_file_answers_from_the_hook() {
         let srv = start(with_open_file(
             None,
             Err("n/a"),
-            Caps { preview: false, editor: true },
+            Caps { preview: false, editor: true, state: false },
             OpenFocus::File(OpenFile {
                 rel_path: "docs/plan.md".into(),
                 abs_path: "/w/run-1/docs/plan.md".into(),
@@ -1080,7 +1143,7 @@ mod tests {
         let srv = start(with_open_file(
             None,
             Err("n/a"),
-            Caps { preview: false, editor: true },
+            Caps { preview: false, editor: true, state: false },
             OpenFocus::File(OpenFile {
                 rel_path: "docs/plan.md".into(),
                 abs_path: "/repo/docs/plan.md".into(),
@@ -1100,7 +1163,7 @@ mod tests {
         let srv = start(with_open_file(
             None,
             Err("n/a"),
-            Caps { preview: false, editor: true },
+            Caps { preview: false, editor: true, state: false },
             OpenFocus::Nothing,
         ));
         let text = tool_call(srv.port(), "editor_open_file", json!({}))["result"]["content"][0]

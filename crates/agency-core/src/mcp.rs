@@ -246,7 +246,7 @@ fn exclude_pattern(segments: &[&str]) -> String {
 /// Whether git tracks `rel` in this worktree. A tracked config is the repo's
 /// own; see [`crate::briefing`] and [`crate::skills`], which skip on the same
 /// test.
-fn tracked(worktree: &Path, rel: &str) -> bool {
+pub(crate) fn tracked(worktree: &Path, rel: &str) -> bool {
     std::process::Command::new("git")
         .args(["ls-files", "--", rel])
         .current_dir(worktree)

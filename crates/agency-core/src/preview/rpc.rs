@@ -310,7 +310,7 @@ pub fn tool_image(id: Value, base64_png: &str, caption: &str) -> Value {
 mod tests {
     use super::*;
 
-    const ALL: Caps = Caps { preview: true, editor: true };
+    const ALL: Caps = Caps { preview: true, editor: true, state: false };
 
     fn call(body: &str) -> Handled {
         handle(body.as_bytes(), ALL)
@@ -378,8 +378,14 @@ mod tests {
         let with_status = |half: &[&str]| -> Vec<String> {
             STATUS_TOOLS.iter().chain(half).map(|s| s.to_string()).collect()
         };
-        assert_eq!(tool_names(Caps { preview: true, editor: false }), with_status(PREVIEW_TOOLS));
-        assert_eq!(tool_names(Caps { preview: false, editor: true }), with_status(EDITOR_TOOLS));
+        assert_eq!(
+            tool_names(Caps { preview: true, editor: false, state: false }),
+            with_status(PREVIEW_TOOLS)
+        );
+        assert_eq!(
+            tool_names(Caps { preview: false, editor: true, state: false }),
+            with_status(EDITOR_TOOLS)
+        );
     }
 
     /// A server outlives its switches (see the app's `preview_port_this_sweep`),
@@ -408,7 +414,7 @@ mod tests {
         };
         let Handled::Response(half) = handle(
             br#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
-            Caps { preview: true, editor: false },
+            Caps { preview: true, editor: false, state: false },
         ) else {
             panic!("expected response");
         };
@@ -421,7 +427,7 @@ mod tests {
     fn a_switched_off_tool_says_so_instead_of_denying_it_exists() {
         let Handled::Response(r) = handle(
             br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"editor_open_file"}}"#,
-            Caps { preview: true, editor: false },
+            Caps { preview: true, editor: false, state: false },
         ) else {
             panic!("expected response");
         };
@@ -431,7 +437,7 @@ mod tests {
 
         let Handled::Response(r) = handle(
             br##"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"preview_click","arguments":{"selector":"#go"}}}"##,
-            Caps { preview: false, editor: true },
+            Caps { preview: false, editor: true, state: false },
         ) else {
             panic!("expected response");
         };

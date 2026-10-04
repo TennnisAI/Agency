@@ -2490,10 +2490,19 @@ fn preview_tools_on(config: &agency_core::config::AgencyConfig) -> bool {
 }
 
 /// What a run in this project would serve an agent: the two switches behind
-/// the MCP server's two halves. One function so the port that gets emitted and
-/// the tools that answer on it can never disagree about what is on.
-fn run_caps(preview_tools: bool, share_open_file: bool) -> agency_core::preview::Caps {
-    agency_core::preview::Caps { preview: preview_tools, editor: share_open_file }
+/// the MCP server's two halves, and whether the run's worktree carries state
+/// hooks that post to it (AGE-206). One function so the port that gets emitted
+/// and the tools that answer on it can never disagree about what is on.
+fn run_caps(
+    preview_tools: bool,
+    share_open_file: bool,
+    reports_state: bool,
+) -> agency_core::preview::Caps {
+    agency_core::preview::Caps {
+        preview: preview_tools,
+        editor: share_open_file,
+        state: reports_state,
+    }
 }
 
 /// The config half of a run's `Caps`, cached. `serves_preview()` reads it,
@@ -2528,21 +2537,40 @@ impl PreviewToolsCache {
     }
 }
 
-/// The port a run's MCP server binds — the last of the run's port block — or
-/// `None` when the run gets no server at all: nothing to serve, no port block,
-/// or a block too small to hold a second port beside the app's.
+/// The port the `agency-preview` entry in a run's MCP config names — the last
+/// of the run's port block — or `None` when the run's agent is handed no MCP
+/// server: no tools to serve, no port block, or a block too small to hold a
+/// second port beside the app's.
 ///
-/// "Nothing to serve" is both halves being off: no preview tools *and* no
-/// open-file sharing. A project with no web run script still gets a server
-/// while the user shares the file they have open, which is the whole point of
-/// that switch — it is the projects that are not web apps where "which file are
-/// you looking at" is most of the context.
+/// "No tools" is both halves being off: no preview tools *and* no open-file
+/// sharing. A project with no web run script still gets a server while the
+/// user shares the file they have open, which is the whole point of that
+/// switch — it is the projects that are not web apps where "which file are you
+/// looking at" is most of the context.
+///
+/// The state hooks are deliberately not a reason to emit the entry. Claude
+/// Code asks the user to approve a server it finds in a workspace's `.mcp.json`
+/// before using it, so emitting one to every Claude run would put a prompt in
+/// front of runs that have none today. The hooks need the server listening,
+/// not the agent connected to it; [`server_port_for`] is the wider question.
 fn preview_mcp_port_for(
     config: &agency_core::config::AgencyConfig,
     port_base: Option<u16>,
     share_open_file: bool,
 ) -> Option<u16> {
-    if !run_caps(preview_tools_on(config), share_open_file).any() {
+    server_port_for(config, port_base, share_open_file, false)
+}
+
+/// The port a run's server binds, or `None` when it should not run: the MCP
+/// entry's reasons ([`preview_mcp_port_for`]), or state hooks in the worktree
+/// that post to it.
+fn server_port_for(
+    config: &agency_core::config::AgencyConfig,
+    port_base: Option<u16>,
+    share_open_file: bool,
+    reports_state: bool,
+) -> Option<u16> {
+    if !run_caps(preview_tools_on(config), share_open_file, reports_state).any() {
         return None;
     }
     agency_core::preview::mcp_port(port_base?, config.ports.block_size)
@@ -2564,9 +2592,10 @@ fn preview_port_this_sweep(
     config: &agency_core::config::AgencyConfig,
     port_base: Option<u16>,
     share_open_file: bool,
+    reports_state: bool,
     already_serving: bool,
 ) -> Option<u16> {
-    match preview_mcp_port_for(config, port_base, share_open_file) {
+    match server_port_for(config, port_base, share_open_file, reports_state) {
         Some(port) => Some(port),
         None if already_serving => {
             agency_core::preview::mcp_port(port_base?, config.ports.block_size)
@@ -2765,10 +2794,13 @@ pub struct AppState {
     /// Run ids that have received user input since their last "waiting for input"
     /// notification. Drives idle-notification gating (see `notifier::step`).
     input_seen: Mutex<HashSet<String>>,
-    /// Per-run busy/idle state, written by the notifier tick from its pane-hash
-    /// diff and read into `RunInfo` (see `crate::activity`). In-memory only:
-    /// it re-derives within one tick of an app start.
-    activity: Mutex<HashMap<String, crate::activity::ActivityEntry>>,
+    /// Per-session activity state, written by the notifier tick from its
+    /// pane-hash diff and by each run's server as the agent's hooks report
+    /// (AGE-206), and read into `RunInfo` (see `crate::activity`). Keyed by
+    /// session: a run's own id, or `<run>--<n>` for an extra tab. In-memory
+    /// only: the pane half re-derives within one tick of an app start, and a
+    /// report is about a moment, so the next one replaces what was lost.
+    activity: Arc<Mutex<HashMap<String, crate::activity::ActivityEntry>>>,
     /// Per-run token and cost accounting, read from the agent's own transcript
     /// by the notifier tick. The cache carries the per-file stamps that keep
     /// the re-read nearly free; the `Usage` beside it is the directory total
@@ -3085,7 +3117,7 @@ impl AppState {
             merge_origins: Mutex::new(HashMap::new()),
             ui: Mutex::new(UiState { focused: true, active_run: None, pending_open: None }),
             input_seen: Mutex::new(HashSet::new()),
-            activity: Mutex::new(HashMap::new()),
+            activity: Arc::new(Mutex::new(HashMap::new())),
             usage: Mutex::new(HashMap::new()),
             prompted: Mutex::new(HashSet::new()),
             web_ui_ready: Arc::new(Mutex::new(HashSet::new())),
@@ -4258,7 +4290,7 @@ impl AppState {
             // The agent's MCP client connects while its CLI boots, so the
             // preview server must already be listening when the session
             // spawns below — the 2s sweep would be a race.
-            self.ensure_preview_server(&id, &repo, Some(port), &config);
+            self.ensure_preview_server(&id, &repo, Some(port), &config, false);
             self.emit_skills(
                 spec.agent,
                 &repo,
@@ -6206,7 +6238,12 @@ impl AppState {
     /// command), screenshots via whatever the app shell installed, and the two
     /// live reads that make the tools honest about the moment they are called
     /// — which halves are switched on, and what the user has open.
-    fn preview_hooks(&self, run_id: &str, repo: &Path) -> agency_core::preview::Hooks {
+    fn preview_hooks(
+        &self,
+        run_id: &str,
+        repo: &Path,
+        reports_state: bool,
+    ) -> agency_core::preview::Hooks {
         let repo = repo.to_path_buf();
         let facts_repo = repo.clone();
         let facts = std::sync::Arc::new(move || {
@@ -6231,8 +6268,11 @@ impl AppState {
         });
         let tools = PreviewToolsCache { repo: repo.clone(), cell: Mutex::new(None) };
         let share = self.share_open_file.clone();
+        // `state` is fixed for the server's life: it is not a switch the user
+        // holds, and nothing reads it per request. The route it stands for
+        // answers whatever it says, since only our own hooks post there.
         let caps = std::sync::Arc::new(move || {
-            run_caps(tools.get(), share.load(std::sync::atomic::Ordering::SeqCst))
+            run_caps(tools.get(), share.load(std::sync::atomic::Ordering::SeqCst), reports_state)
         });
         // Reads the cell, not the app state: a server outlives nothing here,
         // but capturing `self` would tie every run's server to its lifetime.
@@ -6248,12 +6288,28 @@ impl AppState {
             open_file_for(open.as_ref(), &open_run, &open_repo)
         });
         let statuses = self.agent_status.clone();
+        let status_run = run_id.clone();
         let set_status =
             std::sync::Arc::new(move |status: agency_core::preview::status::Status| {
                 let mut map = statuses.lock().unwrap();
-                apply_agent_status(&mut map, &run_id, status, crate::activity::now_ms());
+                apply_agent_status(&mut map, &status_run, status, crate::activity::now_ms());
             });
-        agency_core::preview::Hooks { facts, screenshot, caps, open_file, set_status }
+        let activity = self.activity.clone();
+        let report = std::sync::Arc::new(
+            move |session: &str, state: agency_core::preview::report::Reported| {
+                // The port is this run's and the header names the tab. A
+                // session of some other run posting here is a settings file
+                // copied between worktrees, and is not this run's to report.
+                if split_session_id(session).0 != run_id {
+                    return;
+                }
+                let mut map = activity.lock().unwrap();
+                let prev = map.get(session).copied();
+                let next = crate::activity::reported(prev, state.into(), crate::activity::now_ms());
+                map.insert(session.to_string(), next);
+            },
+        );
+        agency_core::preview::Hooks { facts, screenshot, caps, open_file, set_status, report }
     }
 
     /// Have this run's preview server listening on the port its emitted MCP
@@ -6265,8 +6321,10 @@ impl AppState {
         repo: &Path,
         port_base: Option<u16>,
         config: &agency_core::config::AgencyConfig,
+        reports_state: bool,
     ) {
-        let Some(bind) = preview_mcp_port_for(config, port_base, self.shares_open_file()) else {
+        let shares = self.shares_open_file();
+        let Some(bind) = server_port_for(config, port_base, shares, reports_state) else {
             return;
         };
         let Some(app_port) = port_base else { return };
@@ -6278,7 +6336,7 @@ impl AppState {
         match agency_core::preview::PreviewServer::start(
             bind,
             app_port,
-            self.preview_hooks(run_id, repo),
+            self.preview_hooks(run_id, repo, reports_state),
         ) {
             Ok(srv) => {
                 servers.insert(run_id.to_string(), srv);
@@ -6304,30 +6362,37 @@ impl AppState {
     /// take effect within ~2s without every one of those paths owning
     /// teardown.
     pub fn sync_preview_servers(&self) {
-        let runs: Vec<(String, PathBuf, Option<u16>)> = {
+        let runs: Vec<(String, PathBuf, Option<u16>, PathBuf)> = {
             let reg = self.registry.lock().unwrap();
             let Ok(projects) = reg.list_projects() else { return };
             projects
                 .iter()
                 .filter_map(|p| reg.list_runs(&p.id).ok().map(|runs| (p.repo_path.clone(), runs)))
                 .flat_map(|(repo, runs)| {
-                    runs.into_iter()
-                        .filter(|r| r.worktree && r.kind == "agent")
-                        .map(move |r| (r.id, repo.clone(), r.port_base))
+                    runs.into_iter().filter(|r| r.worktree && r.kind == "agent").map(move |r| {
+                        let worktree = workspace_dir(&repo, &r);
+                        (r.id, repo.clone(), r.port_base, worktree)
+                    })
                 })
                 .collect()
         };
-        let mut desired: HashMap<String, (PathBuf, Option<u16>, u16)> = HashMap::new();
+        let mut desired: HashMap<String, (PathBuf, Option<u16>, u16, bool)> = HashMap::new();
         let shares = self.shares_open_file();
         // Snapshot rather than lock per run: `config::load` below is a file
         // read, and the preview map is what the notifier and every tool call
         // contend on.
         let serving: HashSet<String> = self.preview.lock().unwrap().keys().cloned().collect();
-        for (id, repo, port_base) in runs {
+        for (id, repo, port_base, worktree) in runs {
             let config = agency_core::config::load(&repo);
             let has_server = serving.contains(&id);
-            if let Some(bind) = preview_port_this_sweep(&config, port_base, shares, has_server) {
-                desired.insert(id, (repo, port_base, bind));
+            // Read off the worktree, not remembered: an agent that survived an
+            // app restart in the daemon read these hooks when it started, and
+            // posts to this port whether anything listens or not.
+            let reports = agency_core::state_hooks::emitted(&worktree);
+            if let Some(bind) =
+                preview_port_this_sweep(&config, port_base, shares, reports, has_server)
+            {
+                desired.insert(id, (repo, port_base, bind, reports));
             }
         }
         // Stop the no-longer-wanted before starting anything, so a port freed
@@ -6342,12 +6407,12 @@ impl AppState {
         self.preview.lock().unwrap().retain(|id, srv| {
             desired
                 .get(id)
-                .is_some_and(|(_, pb, bind)| srv.port() == *bind && Some(srv.app_port()) == *pb)
+                .is_some_and(|(_, pb, bind, _)| srv.port() == *bind && Some(srv.app_port()) == *pb)
                 || srv.age() < Duration::from_secs(15)
         });
         self.preview_rects.lock().unwrap().retain(|id, _| desired.contains_key(id));
         self.preview_failures.lock().unwrap().retain(|id, _| desired.contains_key(id));
-        for (id, (repo, port_base, _)) in desired {
+        for (id, (repo, port_base, _, reports)) in desired {
             let recently_failed = self
                 .preview_failures
                 .lock()
@@ -6361,7 +6426,7 @@ impl AppState {
             // A no-op for a run kept only because it already has a server:
             // `ensure_preview_server` asks the switches, so the sweep keeps
             // such a server alive without ever starting a fresh one.
-            self.ensure_preview_server(&id, &repo, port_base, &config);
+            self.ensure_preview_server(&id, &repo, port_base, &config, reports);
         }
     }
 
@@ -6845,6 +6910,11 @@ impl AppState {
             .entry(id.to_string())
             .or_default()
             .observe(typed, crate::activity::now_ms());
+        if crate::sendq::answers_a_prompt(data) {
+            if let Some(e) = self.activity.lock().unwrap().get_mut(id) {
+                *e = crate::activity::answered(*e);
+            }
+        }
         Ok(())
     }
 
@@ -7135,18 +7205,16 @@ impl AppState {
         );
         // No activity entry means the notifier has never seen this run — a
         // session spawned seconds ago. Unknown reads as working, which holds.
-        // `turn_driven` never reaches the Working arm of `classify`, so what it
-        // is passed here doesn't matter.
-        let working = self
+        // `turn_driven` only decides between done and idle, neither of which
+        // holds anything, so what it is passed here doesn't matter.
+        let state = self
             .activity
             .lock()
             .unwrap()
             .get(id)
-            .map(|e| {
-                crate::activity::classify(e, false, now_ms).state
-                    == crate::activity::ActivityState::Working
-            })
-            .unwrap_or(true);
+            .map(|e| crate::activity::classify(e, false, now_ms).state);
+        let working = state.is_none_or(|s| s == crate::activity::ActivityState::Working);
+        let blocked = state == Some(crate::activity::ActivityState::Blocked);
         let human = self.human_input.lock().unwrap().get(id).copied();
         let mut draft = human.is_some_and(|h| h.draft);
         // One-directional by construction: the pane is read only when a draft
@@ -7170,6 +7238,7 @@ impl AppState {
             now_ms,
             session_running,
             working,
+            blocked,
             last_key_ms: human.map(|h| h.last_key_ms),
             draft,
         }
@@ -7478,6 +7547,11 @@ impl AppState {
         let mut env = self.provider_env()?;
         env.extend(profile.env.iter().cloned());
         env.extend(agency_core::scripts::script_env(worktree, repo, run_id, port));
+        // Here rather than at each launch site for the reason the pin below is:
+        // every launch passes through, so none can start an agent whose hooks
+        // point nowhere, or whose reports cannot say which tab they are from.
+        self.prepare_state_hooks(profile, worktree, repo, run_id, session, port);
+        env.push((agency_core::state_hooks::SESSION_ENV.to_string(), session.to_string()));
         // The daemon inherited this process's PATH when it was spawned at
         // startup; an agent installed since then may live in a directory
         // adopted after that (pathenv::adopt_new_dirs), so the session gets
@@ -7493,6 +7567,45 @@ impl AppState {
             session,
         ));
         Ok(env)
+    }
+
+    /// Have the run's server listening and the worktree's state hooks pointed
+    /// at it, for a launch of `session` (AGE-206). Best-effort, like the rest of
+    /// what is written into a worktree at launch: a run whose hooks cannot be
+    /// written falls back to the pane, which is where every run was before.
+    ///
+    /// The hooks are only written once the server is up, and are taken out
+    /// when it cannot be: Claude Code prints a hook error into the transcript
+    /// on every tool call whose post is refused.
+    fn prepare_state_hooks(
+        &self,
+        profile: &AgentProfile,
+        worktree: &Path,
+        repo: &Path,
+        run_id: &str,
+        session: &str,
+        port: Option<u16>,
+    ) {
+        // A new process. What the last one reported is not about this one, and
+        // nothing would replace it before the first prompt: `SessionStart` does
+        // not fire an `http` hook.
+        if let Some(e) = self.activity.lock().unwrap().get_mut(session) {
+            e.report = None;
+        }
+        // The project's own checkout is the user's, and nothing is written into
+        // it at launch; see `emit_mcp`'s caller.
+        let command = recipe_command(profile);
+        if worktree == repo || !agency_core::state_hooks::agent_supported(&command) {
+            return;
+        }
+        let config = agency_core::config::load(repo);
+        self.ensure_preview_server(run_id, repo, port, &config, true);
+        let listening = self.preview.lock().unwrap().get(run_id).map(|s| s.port());
+        if let Err(e) =
+            agency_core::state_hooks::emit_for_agent(&command, worktree, repo, listening)
+        {
+            log::warn!("writing state hooks into {}: {e}", worktree.display());
+        }
     }
 
     /// Mint the conversation a fresh launch of `session` will open, and record
@@ -11291,6 +11404,7 @@ impl AppState {
                 agent: SessionStatus::Gone,
                 pane_hash: 0,
                 user_input_pending: false,
+                reported: None,
             });
             let runs = self.registry.lock().unwrap().list_runs(&proj.id)?;
             for run in runs {
@@ -11320,6 +11434,16 @@ impl AppState {
                 // on a session nobody can type into any more.
                 let typed_into = lead.strip_prefix("agency-").unwrap_or(&lead);
                 let user_input_pending = self.input_seen.lock().unwrap().contains(typed_into);
+                // The same tab's report: whichever agent is speaking for the
+                // run is the one whose dialog the user would be answering.
+                let reported = self
+                    .activity
+                    .lock()
+                    .unwrap()
+                    .get(typed_into)
+                    .map(|e| crate::activity::classify(e, false, crate::activity::now_ms()))
+                    .filter(|a| a.reported)
+                    .map(|a| a.state);
                 // Any run with a loop config, active OR terminal: suppression
                 // must not depend on when the driver persists the terminal
                 // transition, or the final attempt's exit edge (which lands on
@@ -11336,6 +11460,7 @@ impl AppState {
                     run_scripts,
                     pane_hash,
                     user_input_pending,
+                    reported,
                 });
             }
         }
@@ -11506,8 +11631,8 @@ mod tests {
         agent_argv, branch_leaf_from_first_prompt, branch_to_adopt, command_on_path,
         graphify_server, id_source, is_auto_cut_branch, new_task_id, open_file_for, pick_port,
         preview_mcp_port_for, preview_port_this_sweep, preview_tools_on, require_branch_exists,
-        require_gitless_known, require_own_branch, should_resume, slugify, split_session_id,
-        validate_race, OpenFileRef, RaceAttempt,
+        require_gitless_known, require_own_branch, server_port_for, should_resume, slugify,
+        split_session_id, validate_race, OpenFileRef, RaceAttempt,
     };
     use agency_core::config::KnowledgeConfig;
     use agency_core::profile::AgentProfile;
@@ -11570,13 +11695,26 @@ mod tests {
         let config = AgencyConfig::default(); // No web run script: preview half off.
 
         // Sharing on is the only reason this run has a server at all.
-        assert_eq!(preview_port_this_sweep(&config, Some(5240), true, false), Some(5249));
+        assert_eq!(preview_port_this_sweep(&config, Some(5240), true, false, false), Some(5249));
         // Sharing off, and it has one: it keeps the port it was emitted with.
-        assert_eq!(preview_port_this_sweep(&config, Some(5240), false, true), Some(5249));
+        assert_eq!(preview_port_this_sweep(&config, Some(5240), false, false, true), Some(5249));
         // Sharing off and no server: still nothing to start.
-        assert_eq!(preview_port_this_sweep(&config, Some(5240), false, false), None);
+        assert_eq!(preview_port_this_sweep(&config, Some(5240), false, false, false), None);
         // Nowhere to bind is nowhere to bind, server or not.
-        assert_eq!(preview_port_this_sweep(&config, None, false, true), None);
+        assert_eq!(preview_port_this_sweep(&config, None, false, false, true), None);
+    }
+
+    /// State hooks keep a run's server listening and nothing more (AGE-206):
+    /// the agent's MCP config does not gain an entry it would have to approve.
+    #[test]
+    fn state_hooks_earn_a_server_but_not_an_mcp_entry() {
+        use agency_core::config::AgencyConfig;
+        let config = AgencyConfig::default(); // No web script, sharing off.
+        assert_eq!(server_port_for(&config, Some(5240), false, true), Some(5249));
+        assert_eq!(server_port_for(&config, Some(5240), false, false), None);
+        assert_eq!(preview_mcp_port_for(&config, Some(5240), false), None);
+        assert_eq!(preview_port_this_sweep(&config, Some(5240), false, true, false), Some(5249));
+        assert_eq!(server_port_for(&config, None, false, true), None, "nowhere to bind");
     }
 
     /// The rule that decides what a run's agent hears about the user's screen.

@@ -232,6 +232,7 @@ export default function Settings({
   const [notif, setNotif] = useState<NotifSettings>({
     agentFinished: true,
     agentIdle: true,
+    agentBlocked: true,
     runCrashed: true,
     mergeAttention: true,
     loopEvents: true,
@@ -1407,6 +1408,11 @@ export default function Settings({
               <SectionHead id="notifications" projectName={projectName} />
               <div className="settings-group-card">
                 {([
+                  [
+                    "agentBlocked",
+                    "Agent needs you",
+                    "A permission prompt or a question it can't go on without. Only agents that report their own state can say this; today that is Claude Code.",
+                  ],
                   ["agentIdle", "Agent finished a turn"],
                   ["agentFinished", "Agent exited"],
                   ["runCrashed", "Run script crashed"],

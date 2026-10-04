@@ -157,10 +157,6 @@ export default forwardRef<MarkdownEditorHandle, {
           get notePath() { return live.current.path; },
         }),
         EditorView.domEventHandlers({
-          blur: (_e, v) => {
-            live.current.onBlur?.(v.state.doc.toString());
-            return false;
-          },
           paste: (e, v) => {
             const files = [...(e.clipboardData?.files ?? [])].filter((f) => f.type.startsWith("image/"));
             if (files.length === 0 || !live.current.onPasteFiles) return false;
@@ -225,6 +221,17 @@ export default forwardRef<MarkdownEditorHandle, {
   // itself: a click anywhere else in the box did nothing, so starting to type
   // meant finding the first line. A click on the empty part lands the caret on
   // the nearest line, or after the last one when it is below the text.
+  // Commit when focus leaves the description, which is not the same as the
+  // editor's own blur: a table cell is edited by an editor of its own nested
+  // inside this one, so stepping into a cell blurs the outer editor, and
+  // leaving the description from a cell never blurs it at all.
+  const onFocusOut = (e: React.FocusEvent) => {
+    const view = viewRef.current;
+    if (!view) return;
+    if (e.relatedTarget instanceof Node && hostRef.current?.contains(e.relatedTarget)) return;
+    live.current.onBlur?.(view.state.doc.toString());
+  };
+
   const onEmptyMouseDown = (e: React.MouseEvent) => {
     const view = viewRef.current;
     if (!view || e.button !== 0) return;
@@ -242,7 +249,8 @@ export default forwardRef<MarkdownEditorHandle, {
 
   return (
     <>
-      <div ref={hostRef} className={className} onMouseDown={onEmptyMouseDown} onContextMenu={openMenu} />
+      <div ref={hostRef} className={className} onMouseDown={onEmptyMouseDown} onBlur={onFocusOut}
+        onContextMenu={openMenu} />
       {menu && viewRef.current && (
         <Menu x={menu.x} y={menu.y} items={markdownMenuItems(viewRef.current)} onClose={() => setMenu(null)} />
       )}

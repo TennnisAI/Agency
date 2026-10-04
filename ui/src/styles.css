@@ -3998,11 +3998,12 @@ input, textarea, code,
   display: inline-block; width: 100%; height: 0;
   border-top: 1px solid var(--line); vertical-align: middle;
 }
-/* GFM tables (AGE-107). A block widget (mdTable.ts) draws the real <table>;
-   clicking a cell, or arrowing into the range, takes it away and leaves the
-   raw rows in .lp-table-raw so the pipes line up as columns while you edit.
-   The wrap scrolls on its own: a wide table must not make the whole note
-   scroll sideways. */
+/* GFM tables (AGE-107). A block widget (mdTable.ts) draws the real <table>,
+   and it stays drawn while you work in it: the cell being edited holds an
+   editor of its own (AGE-254). .lp-table-raw is for the tables the widget
+   cannot draw, nested in a quote or a list, whose pipes line up as columns
+   while revealed. The wrap scrolls on its own: a wide table must not make the
+   whole note scroll sideways. */
 .md-live .lp-table-wrap { margin: 3px 0 10px; overflow-x: auto; }
 .md-live .lp-table { border-collapse: collapse; font-size: 0.94em; }
 /* The cells opt out of the editor's own wrapping. CodeMirror's
@@ -4033,6 +4034,25 @@ input, textarea, code,
   background: var(--s1); border-radius: 999px;
 }
 .md-live .lp-table-raw { font-family: var(--mono); font-size: 0.88em; }
+/* The cell being edited: its raw text, in an editor nested in the note's. The
+   note editor's theme reaches it too (CodeMirror themes are descendant rules),
+   so its centred, padded content column is undone here; and it wraps the way
+   a rendered cell does, by word, for the column-width reason above. */
+.md-live .lp-table :is(th, td).editing { box-shadow: inset 0 0 0 1.5px var(--blue); }
+.md-live .lp-table .cm-editor { background: transparent; font: inherit; color: inherit; }
+.md-live .lp-table .cm-editor.cm-focused { outline: none; }
+.md-live .lp-table .cm-scroller { font-family: inherit; line-height: inherit; overflow: visible; }
+.md-live .lp-table .cm-content {
+  max-width: none; margin: 0; padding: 0; min-height: 1em;
+  font-family: inherit; line-height: inherit;
+  word-break: normal; overflow-wrap: normal;
+}
+.md-live .lp-table .cm-line { padding: 0; }
+/* A selection running across the table covers it whole. */
+.md-live .lp-table-wrap.selected .lp-table :is(th, td) { background: var(--s1); }
+/* While the note's selection sits inside a cell, the cell's editor draws it;
+   the note editor's own layers would paint it across the whole table. */
+.md-live .cm-editor.lp-in-cell > .cm-scroller > :is(.cm-selectionLayer, .cm-cursorLayer) { display: none; }
 
 /* Frontmatter properties card (fmEditor.ts): an editable block widget that
    replaces the raw fences in the note's flow. Inputs are quiet until

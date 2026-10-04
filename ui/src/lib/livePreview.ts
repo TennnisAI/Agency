@@ -741,19 +741,19 @@ class LivePreviewPlugin {
               return; // descend: nested language highlighting still applies
             }
             case "Table": {
-              // Rendering belongs to the block widget in mdTable.ts. When the
-              // caret is inside, that widget steps aside and these dress the
-              // raw rows it leaves behind: monospace so the pipes line up as
-              // columns while they are being edited.
+              // A top-level table is the block widget's in mdTable.ts, which
+              // stays drawn while its cells are edited; these decorations
+              // land under it and show nothing. They are for the tables it
+              // cannot draw, nested in a quote or a list item: monospace while
+              // revealed, so the pipes line up as columns.
               if (revealed(node.from, node.to)) {
                 eachLine(node.from, node.to, (lf) => addLineClass(lf, "lp-table-raw"));
               }
               return; // descend: cells hold ordinary inline markdown
             }
             case "TableDelimiter": {
-              // Only while revealed. Otherwise the widget covers them, and a
-              // table nested in a blockquote (which gets no widget) reads
-              // better with its pipes at full strength.
+              // Only while revealed: a table nested in a blockquote (which
+              // gets no widget) reads better with its pipes at full strength.
               if (revealed(node.from, node.to)) decos.push(markDim.range(node.from, node.to));
               return;
             }

@@ -8,7 +8,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { attachRun, detachRun, resizeRun, runInput, runPreview, ensureRunActive,
   attachRunScript, detachRunScript, resizeRunScript, runScriptInput, runScriptPreview,
   attachShell, detachShell, resizeShell, shellInput, shellPreview, startShell,
-  FileRoot, openTermPath } from "../api";
+  FileRoot, openTermPath, popOut } from "../api";
 import { useRuns } from "../store/runs";
 import { currentXtermTheme, minContrastRatio, paperSurface } from "../lib/themes";
 import { createPaneTerminal } from "../lib/termOptions";
@@ -27,6 +27,8 @@ import { focusReport } from "../lib/terminalFocus";
 import { pathsToInput, registerPathSink } from "../lib/pathDrop";
 import { unlistenQuietly } from "../lib/unlisten";
 import { toastError } from "../lib/toast";
+import { IN_POPOUT } from "../lib/windowRole";
+import { baseName } from "../lib/filePath";
 
 export interface TerminalStream {
   attach(id: string, cols: number, rows: number, onBytes: (b: Uint8Array) => void): Promise<void>;
@@ -107,8 +109,8 @@ export default function FocusTerminal(
     : selectedProjectId
       ? { kind: "project", id: selectedProjectId }
       : null;
-  const linkCtx = useRef({ filesRoot, setTab });
-  linkCtx.current = { filesRoot, setTab };
+  const linkCtx = useRef({ filesRoot, setTab, selectedProjectId });
+  linkCtx.current = { filesRoot, setTab, selectedProjectId };
   const isAgentPane = stream === agentStream;
   useEffect(() => {
     if (!isAgentPane) return;
@@ -144,6 +146,14 @@ export default function FocusTerminal(
         // A file inside the root opens in the app; a directory, or anything
         // living outside it, belongs to the OS.
         if (hit?.relPath && !hit.isDir) {
+          // A popped-out agent has no Files tab beside it (AGE-252), so the
+          // file gets a window of its own too.
+          const projectId = linkCtx.current.selectedProjectId;
+          if (IN_POPOUT && projectId) {
+            popOut({ kind: "file", projectId, root, path: hit.relPath }, baseName(hit.relPath))
+              .catch((e) => toastError(e, "Couldn't open a new window"));
+            return;
+          }
           linkCtx.current.setTab("files");
           requestOpenFile({ rootKey: fileRootKey(root), path: hit.relPath, line });
           return;

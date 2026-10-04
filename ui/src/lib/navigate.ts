@@ -11,7 +11,10 @@ export type NavTarget =
   // that is the root the Files tab is showing.
   | { kind: "file"; projectId: string; path: string }
   | { kind: "issue"; projectId: string; issueId: string }
-  | { kind: "run"; projectId: string; runId: string };
+  | { kind: "run"; projectId: string; runId: string }
+  // Approve & merge, asked for from a popped-out agent (AGE-252). The merge
+  // window lives in the main window's Agents view, so the popout hands it here.
+  | { kind: "approve"; projectId: string; runId: string };
 
 export const NAVIGATE_EVENT = "agency:navigate";
 

@@ -1,5 +1,6 @@
 import { invoke, Channel } from "@tauri-apps/api/core";
 import { b64ToBytes } from "./b64";
+import type { PopoutEntry, PopoutTarget } from "./lib/popout";
 
 // NOTE: Project comes from agency_core (snake_case serde field names).
 export interface Project {
@@ -2167,3 +2168,21 @@ export const droppedFolders = (paths: string[]) => invoke<boolean[]>("dropped_fo
 // The whole system clipboard as text (every pasteboard item, newline-joined).
 // The webview's own copy of a paste is not trustworthy — see lib/clipboard.ts.
 export const readClipboardText = () => invoke<string | null>("read_clipboard_text");
+
+// ── Popped-out windows (AGE-252; see lib/popout and popout.rs) ──────────────
+
+/** Open `target` in a window of its own (or focus the one it has); returns the window's label. */
+export const popOut = (target: PopoutTarget, title: string, draft: string | null = null) =>
+  invoke<string>("pop_out", { target, title, draft });
+/** What this popout window shows, taking any unsaved edits handed over with it. */
+export const popoutSelf = () =>
+  invoke<{ target: PopoutTarget; draft: string | null } | null>("popout_self");
+export const listPopouts = () => invoke<PopoutEntry[]>("list_popouts");
+/** Put a popped-out item back in the main window and close its window. */
+export const reattachPopout = (label: string, draft: string | null, show: boolean) =>
+  invoke<void>("reattach_popout", { label, draft, show });
+/** Ask a popout to hand its item back (the main window's "Bring back"). */
+export const requestReattach = (label: string) => invoke<void>("request_reattach", { label });
+export const focusPopout = (label: string) => invoke<void>("focus_popout", { label });
+/** Hand the main window a navigation a popout can't serve itself, and raise it. */
+export const navigateMain = (target: unknown) => invoke<void>("navigate_main", { target });

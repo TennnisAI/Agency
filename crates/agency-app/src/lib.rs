@@ -17,6 +17,7 @@ mod notif_macos;
 mod notifier;
 mod pathenv;
 mod pin_order;
+mod popout;
 mod preview_shot;
 mod resume_probe;
 mod sendq;
@@ -90,7 +91,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .manage(installer::Installs::default());
+        .manage(installer::Installs::default())
+        .manage(popout::Registry::default());
     // The native menu bar is macOS's (and, for now, Windows's). On Linux it
     // would be a GTK strip inside the window, under the window manager's own
     // title bar and above Agency's: three bars before any content. The Linux
@@ -101,13 +103,21 @@ pub fn run() {
     let builder =
         builder.menu(|app| menu::build(app)).on_menu_event(|app, event| menu::on_event(app, event));
     builder
-        .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+        .on_window_event(|window, event| match event {
+            // A popped-out window closes for real (AGE-252): its own close
+            // handler hands the item back to the main window first.
+            tauri::WindowEvent::CloseRequested { .. } if popout::is_popout(window.label()) => {}
+            tauri::WindowEvent::CloseRequested { api, .. } => {
                 // Don't quit — retreat to the menu bar. Quit happens only via the
                 // tray "Quit Agency" item (Task 13).
                 api.prevent_close();
                 let _ = window.hide();
             }
+            tauri::WindowEvent::Destroyed if popout::is_popout(window.label()) => {
+                use tauri::Manager as _;
+                popout::on_destroyed(window.app_handle(), window.label());
+            }
+            _ => {}
         })
         .setup(|app| {
             if let Err(e) = setup_app(app) {
@@ -126,6 +136,13 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             clipboard::read_clipboard_text,
+            popout::pop_out,
+            popout::popout_self,
+            popout::list_popouts,
+            popout::reattach_popout,
+            popout::request_reattach,
+            popout::focus_popout,
+            popout::navigate_main,
             commands::list_projects,
             commands::add_project,
             commands::get_workspace,

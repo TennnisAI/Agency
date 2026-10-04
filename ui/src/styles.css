@@ -4621,3 +4621,35 @@ input, textarea, code,
 .git-signin-title{color:var(--text);font-size:12px;padding:10px 14px 8px;border-bottom:1px solid var(--line)}
 .git-signin .palette-input:disabled{opacity:.6}
 .git-signin-error{color:var(--red);font-size:12px;padding:7px 14px;border-top:1px solid var(--line)}
+
+/* ── Popped-out windows (AGE-252) ───────────────────────────────
+   A second window holding one agent, file or note. Its title bar is the main
+   window's, minus the search box: the item's name on the left, and the way
+   back to the main window on the right. */
+.popout-bar .titlebar-left { min-width: 0; }
+.popout-title {
+  font-size: 12.5px; font-weight: 600; color: var(--sub0);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.popout-back {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: none; border: 1px solid var(--s1); border-radius: 6px;
+  padding: 3px 9px; color: var(--sub0); font: inherit; font-size: 12px; cursor: pointer;
+}
+.popout-back:hover { background: var(--s0); color: var(--text); }
+:root[data-platform="linux"] .popout-back { margin-right: 6px; }
+.popout-body { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--base); }
+.popout-editor { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+
+/* What the main window shows in a popped-out item's place. */
+.popped-out {
+  flex: 1; min-height: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 8px; padding: 24px; text-align: center; color: var(--o0);
+}
+.popped-out-glyph { color: var(--o1); margin-bottom: 4px; }
+.popped-out-glyph svg { width: 22px; height: 22px; }
+.popped-out-title { color: var(--text); font-size: 13px; font-weight: 600; }
+.popped-out-sub { font-size: 12px; }
+.popped-out-actions { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; justify-content: center; }
+.popped-out.compact { padding: 16px 12px; }

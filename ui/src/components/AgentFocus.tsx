@@ -4,7 +4,7 @@ import { useRuns, SpawnOpts } from "../store/runs";
 import {
   listProfiles, AgentProfile,
   listRunSessions, startRunSession, closeRunSession, reopenRunAgent, RunSessionInfo,
-  RunInfo, SessionStatus, stopLoop, listIssues, listProjects, ensureRunActive,
+  RunInfo, SessionStatus, stopLoop, listIssues, listProjects, ensureRunActive, popOut,
 } from "../api";
 import { Removal, removalLabel, removalsFor } from "../lib/runRemoval";
 import { issueLabel } from "../lib/issues";
@@ -31,6 +31,9 @@ import { PinGrip, PinMark, pinItems } from "./AttentionMarker";
 import { PinDrag, usePinDrag } from "../hooks/usePinDrag";
 import { TrashIcon, InboxIcon, TerminalIcon, PencilIcon, CheckIcon, BranchIcon } from "./icons";
 import { shortcutLabel } from "../lib/platform";
+import { findPopout } from "../lib/popout";
+import { usePopouts } from "../hooks/usePopouts";
+import PoppedOut, { PopOutGlyph } from "./PoppedOut";
 
 const SHELL_MIN = 120;
 const SHELL_MAX = 640;
@@ -301,11 +304,16 @@ function RailRow({
 export default function AgentFocus({
   onSpawn,
   gitless = false,
+  solo = false,
 }: {
   onSpawn?: (agentId: string, opts?: SpawnOpts) => void;
   // The project folder has no git repository, so the rail's add menu hides
   // everything that needs a branch (see AgentAddMenu).
   gitless?: boolean;
+  // The focused run alone, in a window of its own (AGE-252): no rail, since
+  // that window shows one agent and nothing else, and no pop-out button, since
+  // it is already out. The window's own title bar carries the way back.
+  solo?: boolean;
 }) {
   const { runs, focusedRunId, setFocusedRun, refreshRuns, createAgent, createTerminal, selectedProjectId, pendingSessionId, setPendingSession, agentViewRunId, requestAgentView, setApproveRun, setShownTab } = useRuns();
   // The rail's right-click menu, and the dialogs its entries raise: renaming a
@@ -598,6 +606,23 @@ export default function AgentFocus({
   const panelIsShell =
     termId != null && sessions.some((s) => s.id === termId && s.agent === "shell");
 
+  // In a window of its own (AGE-252)? Then this pane is only the way to it:
+  // two windows on one terminal would each resize it to their own width.
+  const popouts = usePopouts();
+  const poppedOut = !solo && focused
+    ? findPopout(popouts, { kind: "run", projectId: focused.projectId, runId: focused.id })
+    : null;
+  const popOutFocused = () => {
+    if (!focused) return;
+    popOut({ kind: "run", projectId: focused.projectId, runId: focused.id }, runListLabel(focused))
+      .catch((e) => toastError(e, "Couldn't open a new window"));
+  };
+  const popOutButton = !solo && (
+    <button className="head-icon-btn" title="Open in a new window" aria-label="Open in a new window" onClick={popOutFocused}>
+      <PopOutGlyph />
+    </button>
+  );
+
   // Issue chip (one-stop Phase 7): a run dispatched from an issue links back
   // to it in the header. One-shot lookup on focus change — the label needs
   // the project's issue key and the issue's seq, neither of which rides on
@@ -627,7 +652,7 @@ export default function AgentFocus({
 
   return (
     <div className="focus">
-      {railOpen ? (
+      {solo ? null : railOpen ? (
         <>
           <div className={`rail${pinDrag.active ? " reordering" : ""}`} style={{ width: rail.width, minWidth: rail.width }}>
             <div className="rail-head">
@@ -671,13 +696,16 @@ export default function AgentFocus({
       )}
 
       <div className="focus-main">
-        {focused ? (
+        {focused && poppedOut ? (
+          <PoppedOut entry={poppedOut} what={focused.kind === "terminal" ? "This terminal" : "This agent"} />
+        ) : focused ? (
           focused.kind === "terminal" ? (
             <>
               <div className="focus-head">
                 <span className="badge">terminal</span>
                 <span className="focus-name" title={focused.title || "terminal"}>{focused.title || "terminal"}</span>
                 <span className="spacer" />
+                {popOutButton}
                 <OverflowMenu
                   items={[
                     { label: "Rename terminal", icon: <PencilIcon />, onSelect: () => rename(focused) },
@@ -726,6 +754,7 @@ export default function AgentFocus({
                   <QueuedMarker run={focused} />
                 </div>
                 <span className="spacer" />
+                {popOutButton}
                 {panel !== RUN_TAB && (
                   <button
                     className={`head-icon-btn ${shellOpen ? "on" : ""}`}

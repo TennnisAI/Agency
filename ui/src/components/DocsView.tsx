@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { FileRoot, Project, createFile, openTermPath, writeFile } from "../api";
+import { FileRoot, Project, createFile, openTermPath, popOut, writeFile } from "../api";
 import { SearchHit, stripExt } from "../lib/docsIndex";
 import { buildLinkIndex, mentionsOf, noteId, resolveTarget } from "../lib/links";
 import { requestNavigate } from "../lib/navigate";
@@ -26,6 +26,9 @@ import { baseName, joinPath } from "../lib/filePath";
 import { adjacentDailyPath, isDailyNotePath } from "../lib/dailyNote";
 import { recordActivation } from "../lib/recency";
 import { terminalHasFocus } from "../lib/terminalFocus";
+import { findPopout } from "../lib/popout";
+import { usePopouts } from "../hooks/usePopouts";
+import PoppedOut, { PopOutGlyph } from "./PoppedOut";
 
 // Tab memory is per working tree, like the Files tab's. The project checkout
 // keeps the bare project id it has always had, since the handoff below is
@@ -349,6 +352,15 @@ export default function DocsView({ project, root, onOpenCheckout, onOpenFile }: 
   const noteLabel = (path: string) =>
     index?.docs.get(path)?.title ?? stripExt(baseName(path));
 
+  // A note in a window of its own (AGE-252). Saved first, so the new window
+  // reads what was just typed rather than what the last autosave caught.
+  const popouts = usePopouts();
+  const popOutNote = async (path: string) => {
+    await editorRefs.current.get(path)?.flush().catch(() => {});
+    popOut({ kind: "note", projectId: project.id, root, path }, noteLabel(path))
+      .catch((e) => toastError(e, "Couldn't open a new window"));
+  };
+
   if (docsDir === undefined) {
     return <div className="board empty">loading…</div>;
   }
@@ -406,34 +418,42 @@ export default function DocsView({ project, root, onOpenCheckout, onOpenFile }: 
               onClose={closeNote}
             />
           )}
-          {tabs.open.filter((p) => warm.has(p)).map((p) => (
-            <div
-              key={`${viewKey}:${p}`}
-              className="files-editor-pane"
-              style={{ display: p === tabs.active ? "flex" : "none" }}
-            >
-              <DocsEditor
-                ref={(h) => { if (h) editorRefs.current.set(p, h); else editorRefs.current.delete(p); }}
-                root={root}
-                docsDir={docsDir}
-                path={p}
-                diskText={index?.docs.get(p)?.text}
-                index={index}
-                cross={cross}
-                onSaved={() => void refresh()}
-                onNavigate={navigate}
-                onTagClick={(tag) => setQuery(tag.startsWith("#") ? tag : `#${tag}`)}
-                onFilter={(k, v) => setQuery(v ? (/\s/.test(v) ? `${k}:"${v}"` : `${k}:${v}`) : `${k}:`)}
-                sideOpen={sideOpen}
-                onToggleSide={() => setSideOpen((o) => !o)}
-                daily={index && isDailyNotePath(p) ? {
-                  prev: adjacentDailyPath(index.docs.keys(), p, "prev"),
-                  next: adjacentDailyPath(index.docs.keys(), p, "next"),
-                  onOpen: openNote,
-                } : null}
-              />
-            </div>
-          ))}
+          {tabs.open.filter((p) => warm.has(p)).map((p) => {
+            const out = findPopout(popouts, { kind: "note", projectId: project.id, root, path: p });
+            return (
+              <div
+                key={`${viewKey}:${p}`}
+                className="files-editor-pane"
+                style={{ display: p === tabs.active ? "flex" : "none" }}
+              >
+                {out ? (
+                  <PoppedOut entry={out} what={`"${noteLabel(p)}"`} />
+                ) : (
+                  <DocsEditor
+                    ref={(h) => { if (h) editorRefs.current.set(p, h); else editorRefs.current.delete(p); }}
+                    root={root}
+                    docsDir={docsDir}
+                    path={p}
+                    diskText={index?.docs.get(p)?.text}
+                    index={index}
+                    cross={cross}
+                    onSaved={() => void refresh()}
+                    onNavigate={navigate}
+                    onTagClick={(tag) => setQuery(tag.startsWith("#") ? tag : `#${tag}`)}
+                    onFilter={(k, v) => setQuery(v ? (/\s/.test(v) ? `${k}:"${v}"` : `${k}:${v}`) : `${k}:`)}
+                    sideOpen={sideOpen}
+                    onToggleSide={() => setSideOpen((o) => !o)}
+                    windowAction={{ label: "Open in a new window", glyph: <PopOutGlyph />, onClick: () => void popOutNote(p) }}
+                    daily={index && isDailyNotePath(p) ? {
+                      prev: adjacentDailyPath(index.docs.keys(), p, "prev"),
+                      next: adjacentDailyPath(index.docs.keys(), p, "next"),
+                      onOpen: openNote,
+                    } : null}
+                  />
+                )}
+              </div>
+            );
+          })}
           {!tabs.active && <div className="diff-empty">Select or create a note.</div>}
         </div>
         {sideOpen && (selected || sideTab === "agents") && (

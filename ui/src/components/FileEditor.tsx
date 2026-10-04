@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
+import { ReactNode, forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { Compartment, EditorState } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { basicSetup } from "codemirror";
@@ -65,6 +65,19 @@ export interface FileEditorHandle {
    * without it the unmount stash would resurrect the discarded edits.
    */
   discard: () => void;
+  /**
+   * The unsaved doc, or null when the editor is clean. What travels with the
+   * file when it moves to a window of its own and back (AGE-252): each window
+   * has its own buffer stash, so the stash alone would leave the edits behind.
+   */
+  unsaved: () => string | null;
+}
+
+/** A header button for the window this file is in (AGE-252): pop out, or put back. */
+export interface WindowAction {
+  label: string;
+  glyph: ReactNode;
+  onClick: () => void;
 }
 
 const FileEditor = forwardRef<FileEditorHandle, {
@@ -75,7 +88,8 @@ const FileEditor = forwardRef<FileEditorHandle, {
   preview?: boolean;
   /** The Code / Preview toggle moved, so the owner can remember it. */
   onPreviewChange?: (preview: boolean) => void;
-}>(function FileEditor({ root, path, onDirtyChange, preview, onPreviewChange }, ref) {
+  windowAction?: WindowAction;
+}>(function FileEditor({ root, path, onDirtyChange, preview, onPreviewChange, windowAction }, ref) {
   const hostRef = useRef<HTMLDivElement>(null);
   // The whole pane, so the find bar counts as part of this surface when ⌘F
   // works out which one holds focus.
@@ -290,6 +304,7 @@ const FileEditor = forwardRef<FileEditorHandle, {
     discard: () => {
       dirtyRef.current = false;
     },
+    unsaved: () => (dirtyRef.current && viewRef.current ? viewRef.current.state.doc.toString() : null),
   }));
 
   useEffect(() => {
@@ -503,6 +518,12 @@ const FileEditor = forwardRef<FileEditorHandle, {
               <SaveGlyph />
             </button>
           </>
+        )}
+        {windowAction && (
+          <button className="file-editor-btn" title={windowAction.label} aria-label={windowAction.label}
+            onClick={windowAction.onClick}>
+            {windowAction.glyph}
+          </button>
         )}
       </div>
       {status === "loading" && <div className="diff-empty">loading…</div>}

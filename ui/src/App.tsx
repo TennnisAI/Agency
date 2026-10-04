@@ -35,6 +35,8 @@ import PreviewKeeper from "./components/PreviewKeeper";
 import RepoSetupDialog from "./components/RepoSetupDialog";
 import RunRemoveDialog from "./components/RunRemoveDialog";
 import { PROJECTS_CHANGED_EVENT } from "./lib/projectEvents";
+import { PopoutTarget, Reattached } from "./lib/popout";
+import { bufferKey, stashBuffer } from "./lib/editorBuffers";
 
 const REPO_URL = "https://github.com/TennnisAI/Agency";
 
@@ -527,6 +529,10 @@ function Shell() {
       case "run":
         openRun(p, target.runId);
         break;
+      case "approve":
+        openRun(p, target.runId);
+        setPendingApprove(target.runId);
+        break;
       case "note":
         try { localStorage.setItem(`docs:last:${p.id}`, target.path); } catch { /* storage unavailable */ }
         selectProject(p);
@@ -546,6 +552,51 @@ function Shell() {
   }
   const navRef = useRef(onNavigate);
   navRef.current = onNavigate;
+
+  // Approve asked for from a popped-out agent, held until that run is the
+  // focused one. Setting it straight away lost it whenever the focus moved
+  // with it: AgentFocus clears the approval on every focus change, and its
+  // effect runs after this handler and before any of Shell's.
+  const [pendingApprove, setPendingApprove] = useState<string | null>(null);
+  useEffect(() => {
+    if (!pendingApprove || focusedRunId !== pendingApprove) return;
+    setPendingApprove(null);
+    setApproveRun(pendingApprove);
+  }, [pendingApprove, focusedRunId, setApproveRun]);
+
+  // An item back from its own window (AGE-252), shown where it lives. A file
+  // or note in an agent's worktree is reached through that agent: the Files
+  // and Docs tabs follow the focused run, so focusing it is what points them
+  // at the right tree.
+  async function showReattached(target: PopoutTarget) {
+    const p = (await listProjects().catch(() => [])).find((x) => x.id === target.projectId);
+    if (!p) return;
+    if (target.kind === "run") {
+      openRun(p, target.runId);
+      return;
+    }
+    const tab = target.kind === "file" ? "files" : "docs";
+    if (target.kind === "note") {
+      // The Docs tab restores to this stamp when it mounts (see DocsView).
+      const viewKey = target.root.kind === "project" ? p.id : `${p.id}:run:${target.root.id}`;
+      try { localStorage.setItem(`docs:last:${viewKey}`, target.path); } catch { /* storage unavailable */ }
+    }
+    setShowSettings(false);
+    setProject(p);
+    setSelectedProject(p.id);
+    if (target.root.kind === "run") {
+      setFocusedRun(target.root.id);
+      setView("focus");
+    }
+    setTab(tab);
+    if (target.kind === "file") {
+      requestOpenFile({ rootKey: fileRootKey(target.root), path: target.path });
+    } else if (target.root.kind === "project") {
+      window.dispatchEvent(new CustomEvent("agency:open-note", { detail: { projectId: p.id, path: target.path } }));
+    }
+  }
+  const reattachedRef = useRef(showReattached);
+  reattachedRef.current = showReattached;
 
   // The selected project's row is a copy taken when it was clicked, and every
   // panel renders against it. A row that changes underneath (a sync adopting
@@ -576,6 +627,17 @@ function Shell() {
         const p = (await listProjects().catch(() => [])).find((x) => x.id === e.payload.projectId);
         if (p) openRun(p, e.payload.runId);
       }),
+      // A popped-out item coming home (AGE-252). Its unsaved edits go into
+      // the buffer stash before anything remounts, so the editor that takes
+      // the placeholder's place opens on them rather than on the disk copy.
+      listen<Reattached>("popout-reattached", (e) => {
+        const { target, draft, show } = e.payload;
+        if (target.kind === "file" && draft !== null) stashBuffer(bufferKey(target.root, target.path), draft);
+        if (show) void reattachedRef.current(target);
+      }),
+      // Something a popout can't show itself: a wikilink, an issue chip,
+      // Approve. The router only acts on the kinds it knows.
+      listen<NavTarget>("popout-navigate", (e) => { void navRef.current(e.payload); }),
       listen<string>("tray-open-project", async (e) => {
         const p = (await listProjects().catch(() => [])).find((x) => x.id === e.payload);
         if (p) selectProject(p);

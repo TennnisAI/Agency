@@ -18,6 +18,7 @@ import { joinPath } from "../lib/filePath";
 import { formatCommand, toggleInline } from "../lib/mdFormat";
 import { minimalReplacement } from "../lib/textEdit";
 import Menu from "./git/Menu";
+import type { WindowAction } from "./FileEditor";
 import { caretToPointer, markdownMenuItems } from "./mdMenu";
 
 export interface DocsEditorHandle {
@@ -76,11 +77,14 @@ export default forwardRef<DocsEditorHandle, {
   onTagClick: (tag: string) => void;
   onFilter: (key: string, value: string) => void; // properties card filter glyph
   sideOpen: boolean;
-  onToggleSide: () => void;
+  // Absent where there is no side panel to toggle (a note in a window of its own).
+  onToggleSide?: () => void;
+  // Pop the note out into a window of its own, or put it back (AGE-252).
+  windowAction?: WindowAction;
   // Journal notes get prev/next-day navigation; null hides the buttons. Targets
   // are the nearest *existing* daily notes (navigation never creates files).
   daily?: { prev: string | null; next: string | null; onOpen: (path: string) => void } | null;
-}>(function DocsEditor({ root, docsDir, path, diskText, index, cross, onSaved, onNavigate, onTagClick, onFilter, sideOpen, onToggleSide, daily }, ref) {
+}>(function DocsEditor({ root, docsDir, path, diskText, index, cross, onSaved, onNavigate, onTagClick, onFilter, sideOpen, onToggleSide, windowAction, daily }, ref) {
   const hostRef = useRef<HTMLDivElement>(null);
   // The whole column, not just the editor host: ⌘F resolution asks which
   // surface holds focus, and the find bar has to count as part of this one.
@@ -416,13 +420,21 @@ export default forwardRef<DocsEditorHandle, {
         <span className={`docs-save-state ${saveState}`}>
           {saveState === "clean" ? "saved" : saveState === "saving" ? "saving…" : "editing…"}
         </span>
-        <button
-          className={`file-editor-btn${sideOpen ? " on" : ""}`}
-          title={sideOpen ? "Hide side panel" : "Show side panel (outline, backlinks, agents)"}
-          onClick={onToggleSide}
-        >
-          <PanelGlyph />
-        </button>
+        {windowAction && (
+          <button className="file-editor-btn" title={windowAction.label} aria-label={windowAction.label}
+            onClick={windowAction.onClick}>
+            {windowAction.glyph}
+          </button>
+        )}
+        {onToggleSide && (
+          <button
+            className={`file-editor-btn${sideOpen ? " on" : ""}`}
+            title={sideOpen ? "Hide side panel" : "Show side panel (outline, backlinks, agents)"}
+            onClick={onToggleSide}
+          >
+            <PanelGlyph />
+          </button>
+        )}
       </div>
       {status === "loading" && <div className="diff-empty">loading…</div>}
       {status === "error" && <div className="git-error">{errorMsg}</div>}

@@ -132,8 +132,17 @@ export default function AgentsView({
   // Where the Docs / Files checkout bar goes when clicked: Source Control on
   // the tree it names. Both tabs are rooted at whatever source control already
   // targets (all three follow the run selection, and a run without a worktree
-  // resolves to the checkout either way), so the tab is the whole move.
-  const openCheckout = () => setTab("source");
+  // resolves to the checkout either way), so the tab is the whole move, plus
+  // Changes: left on Pull Requests from the last visit, a checkout button
+  // opened a PR list instead of the checkout (AGE-250).
+  const openCheckout = () => { setSrcTab("changes"); setTab("source"); };
+  // The status bar's checkout segment lives in App, outside this view's state,
+  // so it asks for Changes by event.
+  useEffect(() => {
+    const fn = () => setSrcTab("changes");
+    window.addEventListener("agency:open-changes", fn);
+    return () => window.removeEventListener("agency:open-changes", fn);
+  }, []);
 
   // ⌘P quick-open, everywhere except the Docs tab — DocsView owns ⌘P there
   // (its note switcher) and is only mounted on that tab, so exactly one

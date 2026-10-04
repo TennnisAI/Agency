@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Compartment, EditorState } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { basicSetup } from "codemirror";
@@ -15,6 +15,7 @@ import { useFind } from "../hooks/useFind";
 import { getWordWrap } from "../lib/editorPrefs";
 import { bufferKey, dropBuffer, stashBuffer, takeBuffer } from "../lib/editorBuffers";
 import { mayHaveChanged, minimalChange } from "../lib/diskSync";
+import { editorScroll, isMeasurable, previewScroll, trackEditorScroll } from "../lib/scrollMemory";
 import { isExternalHref, onMarkdownLinkClick, renderMarkdown } from "../lib/mdHtml";
 import { toastError } from "../lib/toast";
 import ConfirmDialog from "./ConfirmDialog";
@@ -120,8 +121,9 @@ const FileEditor = forwardRef<FileEditorHandle, {
   wantPreview.current = preview ?? false;
   const onPreviewRef = useRef(onPreviewChange);
   onPreviewRef.current = onPreviewChange;
-  // The rendered markdown itself, for Select all.
+  // The rendered markdown itself, for Select all, and the pane that scrolls it.
   const mdRef = useRef<HTMLDivElement>(null);
+  const mdScrollRef = useRef<HTMLDivElement>(null);
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuEntry[] } | null>(null);
   // Guards the destructive revert behind a confirmation when there are edits.
   const [confirmRevert, setConfirmRevert] = useState(false);
@@ -349,8 +351,13 @@ const FileEditor = forwardRef<FileEditorHandle, {
           }),
         ],
       });
-      const view = new EditorView({ state, parent: host });
+      // Back where the reader left this file, if they have been here this
+      // session (AGE-253). CodeMirror holds the target until the host is laid
+      // out, so the `display: none` it mounts under does not lose it.
+      const key = bufferKey(root, path);
+      const view = new EditorView({ state, parent: host, scrollTo: editorScroll.recall(key) ?? undefined });
       viewRef.current = view;
+      trackEditorScroll(view, key);
       if (stashed !== null) markDirtyRef.current(true);
       if (wantPreview.current && vk.kind === "text" && vk.preview !== null) showPreviewRef.current();
       // The first line lets shebang scripts (scripts/deploy, no extension)
@@ -421,6 +428,15 @@ const FileEditor = forwardRef<FileEditorHandle, {
     setPreviewing(false);
     onPreviewRef.current?.(false);
   };
+
+  // The rendered markdown is rebuilt on every switch to it, so it would open at
+  // the top each time: put it back where it was read to (AGE-253).
+  useLayoutEffect(() => {
+    const el = mdScrollRef.current;
+    if (!el || !previewing || !previewContent || status !== "ready") return;
+    el.scrollTop = previewScroll.recall(bufferKey(root, path)) ?? 0;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [previewing, previewContent, status]);
 
   // A re-render replaces the preview's DOM, and with it the match marks.
   useEffect(() => { onContentChange(); }, [previewContent, onContentChange]);
@@ -546,7 +562,15 @@ const FileEditor = forwardRef<FileEditorHandle, {
               // "Open Frame in New Window", which the sandbox then refuses to
               // act on. That is AGE-156. DOMPurify plus the app CSP are the
               // same two guards the PR comment bodies rely on (lib/mdHtml).
-              <div className="file-preview-doc" onContextMenu={openPreviewMenu}>
+              <div
+                ref={mdScrollRef}
+                className="file-preview-doc"
+                onContextMenu={openPreviewMenu}
+                onScroll={(e) => {
+                  const el = e.currentTarget;
+                  if (isMeasurable(el)) previewScroll.remember(bufferKey(root, path), el.scrollTop);
+                }}
+              >
                 <div
                   ref={mdRef}
                   className="file-preview-md"

@@ -17,6 +17,8 @@ import { markdownTables } from "../lib/mdTable";
 import { joinPath } from "../lib/filePath";
 import { formatCommand, toggleInline } from "../lib/mdFormat";
 import { minimalReplacement } from "../lib/textEdit";
+import { bufferKey } from "../lib/editorBuffers";
+import { editorScroll, trackEditorScroll } from "../lib/scrollMemory";
 import Menu from "./git/Menu";
 import { caretToPointer, markdownMenuItems } from "./mdMenu";
 
@@ -322,7 +324,13 @@ export default forwardRef<DocsEditorHandle, {
           }),
         ],
       });
-      viewRef.current = new EditorView({ state, parent: host });
+      // Back where the reader left this note, if they have been here this
+      // session (AGE-253). CodeMirror holds the target until the host is laid
+      // out, so the `display: none` it mounts under does not lose it.
+      const key = bufferKey(root, repoRel);
+      const view = new EditorView({ state, parent: host, scrollTo: editorScroll.recall(key) ?? undefined });
+      viewRef.current = view;
+      trackEditorScroll(view, key);
     }).catch((e) => {
       if (cancelled) return;
       setErrorMsg(String(e));

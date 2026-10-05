@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { FileRoot, Project } from "../api";
+import { FileRoot, Project, focusPopout, popOut } from "../api";
 import Resizer from "./Resizer";
 import { usePaneWidth } from "../hooks/usePaneWidth";
 import { useReportOpenFile } from "../hooks/useOpenFile";
@@ -18,6 +18,10 @@ import { consumePendingOpen, onOpenFile, type OpenFileRequest } from "../lib/ope
 import { baseName } from "../lib/filePath";
 import { recordActivation } from "../lib/recency";
 import { terminalHasFocus } from "../lib/terminalFocus";
+import { PopoutTarget, findPopout } from "../lib/popout";
+import { usePopouts } from "../hooks/usePopouts";
+import { toastError } from "../lib/toast";
+import PoppedOut, { PopOutGlyph } from "./PoppedOut";
 
 const tabsKey = (root: FileRoot) => `files:tabs:${root.kind}:${root.id}`;
 
@@ -213,6 +217,42 @@ export default function FilesView({ root, project, agentsOpen, onOpenCheckout }:
     setWarm((w) => new Set([...w].map((p) => retargetPath(p, from, to))));
   };
 
+  // A file in a window of its own (AGE-252). Unsaved edits go with it: the
+  // stash they would otherwise land in belongs to this window, and the new one
+  // starts with its own.
+  const popouts = usePopouts();
+  const fileTarget = (path: string): PopoutTarget | null =>
+    root ? { kind: "file", projectId, root, path } : null;
+  const popOutFile = (path: string) => {
+    const target = fileTarget(path);
+    if (!root || !target) return;
+    // Already out, perhaps as a note in Docs: show that window. Asking for a
+    // new one would hand the backend a draft it ignores for an existing
+    // window, and the success path below would then drop it from here too.
+    const out = findPopout(popouts, target);
+    if (out) {
+      focusPopout(out.label).catch(() => {});
+      return;
+    }
+    const editor = editorRefs.current.get(path);
+    const key = bufferKey(root, path);
+    // A cold tab has no editor, but may have a stash from an earlier visit.
+    const draft = editor ? editor.unsaved() : takeBuffer(key);
+    popOut(target, baseName(path), draft)
+      .then(() => {
+        if (draft === null) return;
+        // The edits are the other window's now: this one must not stash them
+        // again as the editor makes way for the placeholder.
+        editor?.discard();
+        dropBuffer(key);
+        updateTabs((s) => setDirtyTab(s, path, false));
+      })
+      .catch((e) => {
+        if (!editor && draft !== null) stashBuffer(key, draft);
+        toastError(e, "Couldn't open a new window");
+      });
+  };
+
   const onDeleted = (path: string) => {
     if (root) {
       for (const p of tabsRef.current.open) {
@@ -260,26 +300,35 @@ export default function FilesView({ root, project, agentsOpen, onOpenCheckout }:
               onActivate={(p) => openAtLine(p)}
               onClose={requestClose}
               onMenu={(p, x, y) => treeRef.current?.showFileMenu(x, y, p, [
+                { label: "Open in new window", onClick: () => popOutFile(p) },
                 { label: "Close", onClick: () => requestClose(p) },
               ])}
             />
           )}
-          {tabs.open.filter((p) => warm.has(p)).map((p) => (
-            <div
-              key={`${rootKey}:${p}`}
-              className="files-editor-pane"
-              style={{ display: p === tabs.active ? "flex" : "none" }}
-            >
-              <FileEditor
-                ref={(h) => { editorRefs.current.set(p, h); }}
-                root={root}
-                path={p}
-                onDirtyChange={(d) => updateTabs((s) => setDirtyTab(s, p, d))}
-                preview={tabs.preview.has(p)}
-                onPreviewChange={(on) => updateTabs((s) => setPreviewTab(s, p, on))}
-              />
-            </div>
-          ))}
+          {tabs.open.filter((p) => warm.has(p)).map((p) => {
+            const out = findPopout(popouts, { kind: "file", projectId, root, path: p });
+            return (
+              <div
+                key={`${rootKey}:${p}`}
+                className="files-editor-pane"
+                style={{ display: p === tabs.active ? "flex" : "none" }}
+              >
+                {out ? (
+                  <PoppedOut entry={out} what={baseName(p)} />
+                ) : (
+                  <FileEditor
+                    ref={(h) => { editorRefs.current.set(p, h); }}
+                    root={root}
+                    path={p}
+                    onDirtyChange={(d) => updateTabs((s) => setDirtyTab(s, p, d))}
+                    preview={tabs.preview.has(p)}
+                    onPreviewChange={(on) => updateTabs((s) => setPreviewTab(s, p, on))}
+                    windowAction={{ label: "Open in a new window", glyph: <PopOutGlyph />, onClick: () => popOutFile(p) }}
+                  />
+                )}
+              </div>
+            );
+          })}
           {!tabs.active && <div className="diff-empty">Select a file to view.</div>}
         </div>
         {agentsOpen && (

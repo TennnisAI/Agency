@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { FileRoot, Project, createFile, openTermPath, writeFile } from "../api";
+import { FileRoot, Project, createFile, openTermPath, popOut, writeFile } from "../api";
 import { SearchHit, stripExt } from "../lib/docsIndex";
 import { buildLinkIndex, mentionsOf, noteId, resolveTarget } from "../lib/links";
 import { requestNavigate } from "../lib/navigate";
@@ -26,6 +26,9 @@ import { baseName, joinPath } from "../lib/filePath";
 import { adjacentDailyPath, isDailyNotePath } from "../lib/dailyNote";
 import { recordActivation } from "../lib/recency";
 import { terminalHasFocus } from "../lib/terminalFocus";
+import { findPopout } from "../lib/popout";
+import { usePopouts } from "../hooks/usePopouts";
+import PoppedOut, { PopOutGlyph } from "./PoppedOut";
 
 // Tab memory is per working tree, like the Files tab's. The project checkout
 // keeps the bare project id it has always had, since the handoff below is
@@ -237,19 +240,21 @@ export default function DocsView({ project, root, onOpenCheckout, onOpenFile }: 
   const onCheckout = root.kind === "project";
   useEffect(() => {
     const onOpen = (e: Event) => {
-      const d = (e as CustomEvent<{ projectId: string; path: string }>).detail;
+      const d = (e as CustomEvent<{ projectId: string; path: string; root?: FileRoot }>).detail;
       if (!d || d.projectId !== project.id) return;
-      // Every sender selects the project before dispatching, which drops the
-      // run selection, so the note is meant for the checkout. A worktree view
+      // A sender without a root selected the project, which drops the run
+      // selection, so the note is meant for the checkout. A worktree view
       // still mounted for that one frame would open it among the worktree's
       // tabs; it leaves it to the checkout's restore, which reads the stamp.
-      if (!onCheckout) return;
+      // A sender with one (a popped-out note, AGE-252) means that tree only.
+      const mine = d.root ? d.root.kind === root.kind && d.root.id === root.id : onCheckout;
+      if (!mine) return;
       void refreshRef.current().then(() => openRef.current(d.path));
     };
     window.addEventListener("agency:open-note", onOpen);
     return () => window.removeEventListener("agency:open-note", onOpen);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [project.id, onCheckout]);
+  }, [project.id, onCheckout, root.kind, root.id]);
 
   // A wikilink pointed at a note that doesn't exist; confirm before creating.
   const [pendingCreate, setPendingCreate] = useState<string | null>(null);
@@ -349,6 +354,16 @@ export default function DocsView({ project, root, onOpenCheckout, onOpenFile }: 
   const noteLabel = (path: string) =>
     index?.docs.get(path)?.title ?? stripExt(baseName(path));
 
+  // A note in a window of its own (AGE-252). Saved first, so the new window
+  // reads what was just typed rather than what the last autosave caught.
+  const popouts = usePopouts();
+  const popOutNote = async (path: string) => {
+    if (docsDir == null) return;
+    await editorRefs.current.get(path)?.flush().catch(() => {});
+    popOut({ kind: "note", projectId: project.id, root, docsDir, path }, noteLabel(path))
+      .catch((e) => toastError(e, "Couldn't open a new window"));
+  };
+
   if (docsDir === undefined) {
     return <div className="board empty">loading…</div>;
   }
@@ -406,34 +421,43 @@ export default function DocsView({ project, root, onOpenCheckout, onOpenFile }: 
               onClose={closeNote}
             />
           )}
-          {tabs.open.filter((p) => warm.has(p)).map((p) => (
-            <div
-              key={`${viewKey}:${p}`}
-              className="files-editor-pane"
-              style={{ display: p === tabs.active ? "flex" : "none" }}
-            >
-              <DocsEditor
-                ref={(h) => { if (h) editorRefs.current.set(p, h); else editorRefs.current.delete(p); }}
-                root={root}
-                docsDir={docsDir}
-                path={p}
-                diskText={index?.docs.get(p)?.text}
-                index={index}
-                cross={cross}
-                onSaved={() => void refresh()}
-                onNavigate={navigate}
-                onTagClick={(tag) => setQuery(tag.startsWith("#") ? tag : `#${tag}`)}
-                onFilter={(k, v) => setQuery(v ? (/\s/.test(v) ? `${k}:"${v}"` : `${k}:${v}`) : `${k}:`)}
-                sideOpen={sideOpen}
-                onToggleSide={() => setSideOpen((o) => !o)}
-                daily={index && isDailyNotePath(p) ? {
-                  prev: adjacentDailyPath(index.docs.keys(), p, "prev"),
-                  next: adjacentDailyPath(index.docs.keys(), p, "next"),
-                  onOpen: openNote,
-                } : null}
-              />
-            </div>
-          ))}
+          {tabs.open.filter((p) => warm.has(p)).map((p) => {
+            // Out as a note, or as the same file from the Files tab.
+            const out = findPopout(popouts, { kind: "note", projectId: project.id, root, docsDir, path: p });
+            return (
+              <div
+                key={`${viewKey}:${p}`}
+                className="files-editor-pane"
+                style={{ display: p === tabs.active ? "flex" : "none" }}
+              >
+                {out ? (
+                  <PoppedOut entry={out} what={`"${noteLabel(p)}"`} />
+                ) : (
+                  <DocsEditor
+                    ref={(h) => { if (h) editorRefs.current.set(p, h); else editorRefs.current.delete(p); }}
+                    root={root}
+                    docsDir={docsDir}
+                    path={p}
+                    diskText={index?.docs.get(p)?.text}
+                    index={index}
+                    cross={cross}
+                    onSaved={() => void refresh()}
+                    onNavigate={navigate}
+                    onTagClick={(tag) => setQuery(tag.startsWith("#") ? tag : `#${tag}`)}
+                    onFilter={(k, v) => setQuery(v ? (/\s/.test(v) ? `${k}:"${v}"` : `${k}:${v}`) : `${k}:`)}
+                    sideOpen={sideOpen}
+                    onToggleSide={() => setSideOpen((o) => !o)}
+                    windowAction={{ label: "Open in a new window", glyph: <PopOutGlyph />, onClick: () => void popOutNote(p) }}
+                    daily={index && isDailyNotePath(p) ? {
+                      prev: adjacentDailyPath(index.docs.keys(), p, "prev"),
+                      next: adjacentDailyPath(index.docs.keys(), p, "next"),
+                      onOpen: openNote,
+                    } : null}
+                  />
+                )}
+              </div>
+            );
+          })}
           {!tabs.active && <div className="diff-empty">Select or create a note.</div>}
         </div>
         {sideOpen && (selected || sideTab === "agents") && (

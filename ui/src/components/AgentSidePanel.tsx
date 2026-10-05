@@ -11,6 +11,9 @@ import { useFirstPromptCapture } from "../hooks/useFirstPromptCapture";
 import { useSpawnAgent } from "../hooks/useSpawnAgent";
 import AgentAddMenu from "./AgentAddMenu";
 import FocusTerminal from "./FocusTerminal";
+import PoppedOut from "./PoppedOut";
+import { usePopouts } from "../hooks/usePopouts";
+import { popoutForSession } from "../lib/popout";
 
 /**
  * Agents and terminals in a side panel, so a note (or a file) can be edited
@@ -27,7 +30,8 @@ import FocusTerminal from "./FocusTerminal";
  *
  * Only one copy of this ever mounts at a time (the host views are rendered
  * exclusively by tab), so its terminal never competes with the Agents tab's for
- * the same session.
+ * the same session. Nor with a popped-out window's (AGE-252): an agent that is
+ * out shows the way to its window here instead of a terminal.
  */
 export default function AgentSidePanel({ project }: { project: Project }) {
   const {
@@ -49,6 +53,8 @@ export default function AgentSidePanel({ project }: { project: Project }) {
       : typeof localStorage !== "undefined" ? loadFocusTab(localStorage, focused.id) : PRIMARY_TAB
     : null;
   const tab = focused ? sidePanelTab(focused, shownPanel) : null;
+  const popouts = usePopouts();
+  const poppedOut = tab ? popoutForSession(popouts, tab.session) : null;
   // Picker menu, anchored in viewport coordinates so the panel's own overflow
   // can't clip it (same trick as AgentAddMenu).
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -183,7 +189,9 @@ export default function AgentSidePanel({ project }: { project: Project }) {
 
       {error && <div className="git-error">{error}</div>}
 
-      {focused && tab ? (
+      {focused && tab && poppedOut ? (
+        <PoppedOut entry={poppedOut} what={focused.kind === "terminal" ? "This terminal" : "This agent"} compact />
+      ) : focused && tab ? (
         <>
           {focused.kind === "agent" && (
             <div className="agent-side-sub">

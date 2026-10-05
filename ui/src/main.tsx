@@ -1,6 +1,8 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
+import PopoutApp from "./PopoutApp";
+import { IN_POPOUT } from "./lib/windowRole";
 import { applyTheme, getStoredTheme } from "./lib/themes";
 import { toastError } from "./lib/toast";
 import { PLATFORM } from "./lib/platform";
@@ -125,7 +127,9 @@ class RootErrorBoundary extends React.Component<
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <RootErrorBoundary>
-      <App />
+      {/* One bundle, two kinds of window: the app, or one item popped out of
+          it into a window of its own (AGE-252). */}
+      {IN_POPOUT ? <PopoutApp /> : <App />}
     </RootErrorBoundary>
   </React.StrictMode>,
 );

@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
 use tauri::State;
 
+use crate::popout::Stream;
+
 use crate::state::{
     AppState, DiscardSummary, FilesConfigDto, KnowledgeConfigDto, McpImportResult,
     MergeConflictSpawn, MergePreview, ProviderSettings, RaceAttempt, RestoredRun, RunInfo,
@@ -430,7 +432,9 @@ pub async fn run_preview(
 
 #[tauri::command]
 pub fn attach_run(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
+    reg: State<'_, crate::popout::Registry>,
     id: String,
     cols: u16,
     rows: u16,
@@ -445,12 +449,23 @@ pub fn attach_run(
         .attach_run(&id, cols.max(1), rows.max(1), move |bytes| {
             let _ = on_chunk.send(TerminalChunk { b64: STANDARD.encode(&bytes) });
         })
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    reg.owners.lock().unwrap().attached(Stream::Agent(id), webview.label());
+    Ok(())
 }
 
+// Only from the window holding the attach: see `popout::Owners`, which is what
+// keeps a popped-out agent handed back to the main window from going blank there.
 #[tauri::command]
-pub fn detach_run(state: State<'_, AppState>, id: String) {
-    state.detach_run(&id);
+pub fn detach_run(
+    webview: tauri::Webview,
+    state: State<'_, AppState>,
+    reg: State<'_, crate::popout::Registry>,
+    id: String,
+) {
+    if reg.owners.lock().unwrap().detach(&Stream::Agent(id.clone()), webview.label()) {
+        state.detach_run(&id);
+    }
 }
 
 #[tauri::command]
@@ -2159,10 +2174,21 @@ pub async fn preview_targets(
 /// leaves). Feeds the crop of the native preview screenshot.
 #[tauri::command]
 pub fn set_preview_rect(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
+    reg: State<'_, crate::popout::Registry>,
     run_id: String,
     rect: Option<crate::state::PreviewRect>,
 ) -> Result<(), String> {
+    // The pane belongs to the window that reported it, and a clear only counts
+    // from that window: see `popout::Stream::Preview`.
+    let pane = Stream::Preview(run_id.clone());
+    let mut owners = reg.owners.lock().unwrap();
+    match rect {
+        Some(_) => owners.attached(pane, webview.label()),
+        None if !owners.detach(&pane, webview.label()) => return Ok(()),
+        None => {}
+    }
     state.set_preview_rect(&run_id, rect);
     Ok(())
 }
@@ -2179,7 +2205,9 @@ pub async fn run_script_preview(
 
 #[tauri::command]
 pub fn attach_run_script(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
+    reg: State<'_, crate::popout::Registry>,
     target: String,
     script: String,
     cols: u16,
@@ -2191,12 +2219,23 @@ pub fn attach_run_script(
         .attach_run_script(&target, &script, cols.max(1), rows.max(1), move |bytes| {
             let _ = on_chunk.send(TerminalChunk { b64: STANDARD.encode(&bytes) });
         })
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    reg.owners.lock().unwrap().attached(Stream::Script { target, script }, webview.label());
+    Ok(())
 }
 
 #[tauri::command]
-pub fn detach_run_script(state: State<'_, AppState>, target: String, script: String) {
-    state.detach_run_script(&target, &script);
+pub fn detach_run_script(
+    webview: tauri::Webview,
+    state: State<'_, AppState>,
+    reg: State<'_, crate::popout::Registry>,
+    target: String,
+    script: String,
+) {
+    let stream = Stream::Script { target: target.clone(), script: script.clone() };
+    if reg.owners.lock().unwrap().detach(&stream, webview.label()) {
+        state.detach_run_script(&target, &script);
+    }
 }
 
 #[tauri::command]
@@ -2248,7 +2287,9 @@ pub async fn shell_preview(
 
 #[tauri::command]
 pub fn attach_shell(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
+    reg: State<'_, crate::popout::Registry>,
     id: String,
     cols: u16,
     rows: u16,
@@ -2259,12 +2300,21 @@ pub fn attach_shell(
         .attach_shell(&id, cols.max(1), rows.max(1), move |bytes| {
             let _ = on_chunk.send(TerminalChunk { b64: STANDARD.encode(&bytes) });
         })
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    reg.owners.lock().unwrap().attached(Stream::Shell(id), webview.label());
+    Ok(())
 }
 
 #[tauri::command]
-pub fn detach_shell(state: State<'_, AppState>, id: String) {
-    state.detach_shell(&id);
+pub fn detach_shell(
+    webview: tauri::Webview,
+    state: State<'_, AppState>,
+    reg: State<'_, crate::popout::Registry>,
+    id: String,
+) {
+    if reg.owners.lock().unwrap().detach(&Stream::Shell(id.clone()), webview.label()) {
+        state.detach_shell(&id);
+    }
 }
 
 #[tauri::command]
@@ -2524,10 +2574,16 @@ fn start_install(
 #[tauri::command]
 pub fn set_ui_state(
     app: tauri::AppHandle,
+    webview: tauri::Webview,
     state: State<'_, AppState>,
+    reg: State<'_, crate::popout::Registry>,
     focused: bool,
     active_run: Option<String>,
 ) {
+    // Each window reports for itself, and the backend sees the summary: see
+    // `popout::Watching` for what one shared pair cost once there were two.
+    let (focused, active_run) =
+        reg.watching.lock().unwrap().report(webview.label(), focused, active_run);
     // Coming back to the app opens the run whose notification arrived while
     // the user was away, via the same event the tray menu uses. A notification
     // posted while they were already here is left alone: only a click on it

@@ -36,19 +36,29 @@ fn take(handle: &tauri::AppHandle, run_id: &str) -> Result<Vec<u8>, String> {
     if rect.width < 16.0 || rect.height < 16.0 {
         return Err(NOT_ON_SCREEN.to_string());
     }
-    shoot(handle, rect)
+    // The window showing the pane: a popped-out agent's Run tab is in its own
+    // window (AGE-252), and the rect is in that window's coordinates.
+    let label = handle
+        .try_state::<crate::popout::Registry>()
+        .and_then(|reg| {
+            let owners = reg.owners.lock().unwrap();
+            owners.owner(&crate::popout::Stream::Preview(run_id.to_string())).map(str::to_string)
+        })
+        .unwrap_or_else(|| crate::popout::MAIN.to_string());
+    shoot(handle, &label, rect)
 }
 
 /// Ask WKWebView for a snapshot of `rect`, on the main thread, and wait here
 /// (an MCP worker thread) for the completion handler.
 #[cfg(target_os = "macos")]
-fn shoot(handle: &tauri::AppHandle, rect: PreviewRect) -> Result<Vec<u8>, String> {
+fn shoot(handle: &tauri::AppHandle, label: &str, rect: PreviewRect) -> Result<Vec<u8>, String> {
     use tauri::Manager;
     let (tx, rx) = std::sync::mpsc::channel::<Result<Vec<u8>, String>>();
     let handle2 = handle.clone();
+    let label = label.to_string();
     handle
         .run_on_main_thread(move || {
-            let Some(window) = handle2.get_webview_window("main") else {
+            let Some(window) = handle2.get_webview_window(&label) else {
                 let _ = tx.send(Err("the app window is gone".to_string()));
                 return;
             };
@@ -71,7 +81,7 @@ fn shoot(handle: &tauri::AppHandle, rect: PreviewRect) -> Result<Vec<u8>, String
 }
 
 #[cfg(not(target_os = "macos"))]
-fn shoot(_handle: &tauri::AppHandle, _rect: PreviewRect) -> Result<Vec<u8>, String> {
+fn shoot(_handle: &tauri::AppHandle, _label: &str, _rect: PreviewRect) -> Result<Vec<u8>, String> {
     Err("preview screenshots are only implemented on macOS; preview_snapshot works everywhere"
         .to_string())
 }

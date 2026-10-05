@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { PreviewTarget, previewTargets } from "../api";
 import { isPreviewVisible, subscribePreviewHosts } from "../lib/previewHost";
+import { usePopouts } from "../hooks/usePopouts";
+import { popoutForSession } from "../lib/popout";
 
 // Keeps a dispatched agent's preview alive when nobody is looking at it.
 //
@@ -16,7 +18,15 @@ import { isPreviewVisible, subscribePreviewHosts } from "../lib/previewHost";
 // When a RunPanel starts showing a run's preview it registers in previewHost
 // and the hidden copy unmounts; the two coexist for at most a beat, and the
 // server treats whichever page said hello last as the live one.
-export default function PreviewKeeper() {
+//
+// Each window keeps its own: the visible set is per page, so the main window
+// cannot see a Run tab open in a popped-out agent's window (AGE-252). It used
+// to keep a hidden copy anyway, alongside the popout's visible one, and after
+// any full reload of the app under preview the agent's tools drove whichever
+// copy said hello last, half the time the one nobody could see. So the main
+// window leaves popped-out runs alone, and a popout keeps its own run's page
+// (`only`) by the same rule the main window keeps everyone else's.
+export default function PreviewKeeper({ only }: { only?: string } = {}) {
   const [targets, setTargets] = useState<PreviewTarget[]>([]);
   // Bumped by the previewHost registry so visibility changes re-render.
   const [, setEpoch] = useState(0);
@@ -41,7 +51,10 @@ export default function PreviewKeeper() {
     return () => { live = false; clearInterval(iv); };
   }, []);
 
-  const hosted = targets.filter((t) => t.active && !isPreviewVisible(t.runId));
+  const popouts = usePopouts();
+  const mine = (runId: string) =>
+    only !== undefined ? runId === only : !popoutForSession(popouts, runId);
+  const hosted = targets.filter((t) => t.active && mine(t.runId) && !isPreviewVisible(t.runId));
   if (!hosted.length) return null;
   return (
     <>

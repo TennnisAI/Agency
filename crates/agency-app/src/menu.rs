@@ -228,13 +228,28 @@ pub fn on_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
         return;
     }
 
+    // Find belongs to the window the user is typing in. A popped-out file,
+    // note or agent has a find bar of its own (AGE-252), and surfacing the main
+    // window for it would open the bar behind the window that asked.
+    if matches!(action, "find" | "replace" | "find-next" | "find-prev") {
+        let popout = app
+            .webview_windows()
+            .into_values()
+            .find(|w| crate::popout::is_popout(w.label()) && w.is_focused().unwrap_or(false));
+        if let Some(w) = popout {
+            let _ = app.emit_to(w.label(), "menu", action);
+            return;
+        }
+    }
+
     // Every remaining action drives the UI, so surface the window first (it may
-    // be hidden in the menu bar) before telling the frontend what to do.
-    if let Some(w) = app.get_webview_window("main") {
+    // be hidden in the menu bar) before telling the frontend what to do. Only
+    // the main window: a popout listens for Find and nothing else.
+    if let Some(w) = app.get_webview_window(crate::popout::MAIN) {
         let _ = w.show();
         let _ = w.set_focus();
     }
-    let _ = app.emit("menu", action);
+    let _ = app.emit_to(crate::popout::MAIN, "menu", action);
 }
 
 /// Enable/disable the context-dependent items to match the frontend selection:

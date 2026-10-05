@@ -4,14 +4,20 @@
 // palette and tray use. DOM events, not props, because the sources sit five
 // layers under Shell (same pattern as agency:open-note / agency:add-project).
 
+import type { FileRoot } from "../api";
+
 export type NavTarget =
-  | { kind: "note"; projectId: string; path: string }
+  // `root` is the tree the note is in; absent means the project checkout.
+  | { kind: "note"; projectId: string; path: string; root?: FileRoot }
   // A file the Docs editor can't open — an attachment row in the Docs tree.
   // `path` is relative to the project's checkout, not to the docs dir, because
   // that is the root the Files tab is showing.
   | { kind: "file"; projectId: string; path: string }
   | { kind: "issue"; projectId: string; issueId: string }
-  | { kind: "run"; projectId: string; runId: string };
+  | { kind: "run"; projectId: string; runId: string }
+  // Approve & merge, asked for from a popped-out agent (AGE-252). The merge
+  // window lives in the main window's Agents view, so the popout hands it here.
+  | { kind: "approve"; projectId: string; runId: string };
 
 export const NAVIGATE_EVENT = "agency:navigate";
 

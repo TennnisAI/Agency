@@ -10,7 +10,10 @@ export default function WaitingTabs({ run, tabs, dot }: { run: RunInfo; tabs: Ru
   const label = waitingElsewhereLabel(waiting);
   if (!label) return null;
   return (
-    <span className="tabs-waiting" title={`Waiting on you: ${waiting.map((t) => t.label).join(", ")}`}>
+    <span
+      className={`tabs-waiting${waiting.some((t) => t.cls === "blocked") ? " blocked" : ""}`}
+      title={`Waiting on you: ${waiting.map((t) => `${t.label} (${t.cls === "blocked" ? "blocked" : "waiting"})`).join(", ")}`}
+    >
       {label}
     </span>
   );

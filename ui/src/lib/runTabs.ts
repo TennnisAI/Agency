@@ -126,10 +126,19 @@ export function waitingElsewhere(run: Pick<RunInfo, "primaryClosed">, tabs: RunT
   return waiting.filter((t) => t !== shown);
 }
 
-/** "1 other tab waiting", for the foot of a tile, or null when there are none. */
+/**
+ * "1 other tab waiting", for the foot of a tile, or null when there are none.
+ * Blocked tabs are named as blocked, the way the overview counts them apart:
+ * one stopped on a dialog is not one whose turn is over.
+ */
 export function waitingElsewhereLabel(tabs: RunTab[]): string | null {
   if (tabs.length === 0) return null;
-  return `${tabs.length} other ${tabs.length === 1 ? "tab" : "tabs"} waiting`;
+  const blocked = tabs.filter((t) => t.cls === "blocked").length;
+  const waiting = tabs.length - blocked;
+  const other = (n: number) => `${n} other ${n === 1 ? "tab" : "tabs"}`;
+  if (blocked === 0) return `${other(waiting)} waiting`;
+  if (waiting === 0) return `${other(blocked)} blocked`;
+  return `${other(tabs.length)}: ${blocked} blocked, ${waiting} waiting`;
 }
 
 /**

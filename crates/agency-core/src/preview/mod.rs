@@ -122,8 +122,9 @@ pub struct Facts {
 /// cached: both are switches the user holds while a run is going, and a tool
 /// the user has just revoked has to stop being listed and stop answering.
 ///
-/// A server runs while *any* is on. None being on is the case that never
-/// starts one at all.
+/// A server runs while *either* is on. The state hooks are a third reason to
+/// listen, but they serve no tool, so they are the app's to weigh and not a
+/// half of this (see the module docs).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Caps {
     /// The preview tools: this project has a web run script and `[preview]
@@ -131,20 +132,16 @@ pub struct Caps {
     pub preview: bool,
     /// `editor_open_file`: the user turned on sharing the file they have open.
     pub editor: bool,
-    /// The run's worktree carries state hooks that post to this server. No
-    /// tools: the route it answers is `/__agency__/state`, which the agent's
-    /// hooks call, not its MCP client.
-    pub state: bool,
 }
 
 impl Caps {
     /// Nothing to serve — the state in which no server should be listening.
     pub fn none() -> Caps {
-        Caps { preview: false, editor: false, state: false }
+        Caps { preview: false, editor: false }
     }
 
     pub fn any(&self) -> bool {
-        self.preview || self.editor || self.state
+        self.preview || self.editor
     }
 }
 
@@ -208,7 +205,7 @@ pub struct Hooks {
     pub caps: Arc<dyn Fn() -> Caps + Send + Sync>,
     pub open_file: Arc<dyn Fn() -> OpenFocus + Send + Sync>,
     pub set_status: Arc<dyn Fn(status::Status) + Send + Sync>,
-    pub report: Arc<dyn Fn(&str, report::Reported) + Send + Sync>,
+    pub report: Arc<dyn Fn(&str, report::Event) + Send + Sync>,
 }
 
 /// One console line reported by the bridge.
@@ -667,8 +664,8 @@ fn control(stream: &mut TcpStream, req: &http::Request, ctx: &Ctx) {
         ("POST", crate::state_hooks::STATE_PATH) => {
             let _ = http::write_response(stream, 204, "No Content", &[], b"");
             let session = req.header(crate::state_hooks::SESSION_HEADER).unwrap_or("").trim();
-            if let (false, Some(state)) = (session.is_empty(), report::parse(&req.body)) {
-                (ctx.hooks.report)(session, state);
+            if let (false, Some(ev)) = (session.is_empty(), report::parse(&req.body)) {
+                (ctx.hooks.report)(session, ev);
             }
         }
         ("GET", "/__agency__/bridge.js") => {
@@ -888,12 +885,7 @@ mod tests {
     use std::io::{Read, Write};
 
     fn hooks(script: Option<(&str, &str)>, shot: Result<Vec<u8>, &str>) -> Hooks {
-        with_open_file(
-            script,
-            shot,
-            Caps { preview: true, editor: true, state: false },
-            OpenFocus::Nothing,
-        )
+        with_open_file(script, shot, Caps { preview: true, editor: true }, OpenFocus::Nothing)
     }
 
     fn with_open_file(
@@ -1086,7 +1078,9 @@ mod tests {
         let seen: Arc<Mutex<Vec<(String, report::Reported)>>> = Arc::new(Mutex::new(Vec::new()));
         let sink = seen.clone();
         let hooks = Hooks {
-            report: Arc::new(move |sid, r| sink.lock().unwrap().push((sid.to_string(), r))),
+            report: Arc::new(move |sid, ev: report::Event| {
+                sink.lock().unwrap().push((sid.to_string(), ev.state))
+            }),
             ..with_open_file(None, Err("n/a"), Caps::none(), OpenFocus::Nothing)
         };
         let srv = start(hooks);
@@ -1117,7 +1111,7 @@ mod tests {
         let srv = start(with_open_file(
             None,
             Err("n/a"),
-            Caps { preview: false, editor: true, state: false },
+            Caps { preview: false, editor: true },
             OpenFocus::File(OpenFile {
                 rel_path: "docs/plan.md".into(),
                 abs_path: "/w/run-1/docs/plan.md".into(),
@@ -1143,7 +1137,7 @@ mod tests {
         let srv = start(with_open_file(
             None,
             Err("n/a"),
-            Caps { preview: false, editor: true, state: false },
+            Caps { preview: false, editor: true },
             OpenFocus::File(OpenFile {
                 rel_path: "docs/plan.md".into(),
                 abs_path: "/repo/docs/plan.md".into(),
@@ -1163,7 +1157,7 @@ mod tests {
         let srv = start(with_open_file(
             None,
             Err("n/a"),
-            Caps { preview: false, editor: true, state: false },
+            Caps { preview: false, editor: true },
             OpenFocus::Nothing,
         ));
         let text = tool_call(srv.port(), "editor_open_file", json!({}))["result"]["content"][0]

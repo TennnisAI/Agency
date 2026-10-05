@@ -17,7 +17,7 @@
 //!   really be blocked, and the board says so. The guess decays to idle after
 //!   [`DONE_MAX_MS`] so a long-ignored run doesn't wear an attention badge
 //!   forever; a reported one does not, since the agent said so and nothing has
-//!   changed.
+//!   changed. Unless the pane says something has: see [`drawing_unreported`].
 //! - **idle** — nothing in flight: a fresh agent nobody has prompted, a session
 //!   that ended or was cleared, or a guessed `done` the user let lapse.
 //!
@@ -63,6 +63,9 @@ pub struct ActivityEntry {
     pub working: bool,
     /// The last thing the agent's own hooks said, if it has any.
     pub report: Option<Report>,
+    /// The user's last keystroke into this session, which explains a pane
+    /// change that no report does: see [`drawing_unreported`].
+    pub last_key_ms: Option<i64>,
 }
 
 /// One session's last report, from its lifecycle hooks.
@@ -74,6 +77,9 @@ pub struct Report {
     pub since_ms: i64,
     /// The latest report, which for `working` is the heartbeat.
     pub at_ms: i64,
+    /// For `blocked`: the user has since pressed a key that can answer the
+    /// dialog. See [`answered`].
+    pub answered: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -85,17 +91,12 @@ pub enum ActivityState {
     Idle,
 }
 
-impl From<agency_core::preview::report::Reported> for ActivityState {
-    fn from(r: agency_core::preview::report::Reported) -> ActivityState {
-        use agency_core::preview::report::Reported;
-        match r {
-            Reported::Working => ActivityState::Working,
-            Reported::Blocked => ActivityState::Blocked,
-            Reported::Done => ActivityState::Done,
-            Reported::Idle => ActivityState::Idle,
-        }
-    }
-}
+/// How long after a report or a keystroke the pane may keep changing on that
+/// account alone. The agent redraws as its turn ends and the user's typing
+/// echoes, and both land within a tick or two; a pane still changing a full
+/// [`WORKING_TTL_MS`] past either is the agent drawing something it never
+/// reported.
+pub const EXPLAINED_MS: i64 = WORKING_TTL_MS;
 
 /// What the UI sees on `RunInfo`: the state plus when it began, so elapsed
 /// time is computable client-side without further round-trips.
@@ -120,38 +121,114 @@ pub fn update(prev: Option<ActivityEntry>, pane_changed: bool, now_ms: i64) -> A
     let working = now_ms - last_change_ms < WORKING_TTL_MS;
     // An idle→working edge anchors the new busy streak at the change itself.
     let busy_since_ms = if working && !p.working { last_change_ms } else { p.busy_since_ms };
-    ActivityEntry { last_change_ms, busy_since_ms, working, report: p.report }
+    ActivityEntry { last_change_ms, busy_since_ms, working, ..p }
 }
 
 fn fresh(now_ms: i64) -> ActivityEntry {
-    ActivityEntry { last_change_ms: now_ms, busy_since_ms: now_ms, working: true, report: None }
+    ActivityEntry {
+        last_change_ms: now_ms,
+        busy_since_ms: now_ms,
+        working: true,
+        report: None,
+        last_key_ms: None,
+    }
 }
 
 /// Fold in one report from the session's hooks. A report can beat the
 /// notifier's first look at a session, so it may start the entry.
 pub fn reported(prev: Option<ActivityEntry>, state: ActivityState, now_ms: i64) -> ActivityEntry {
     let mut e = prev.unwrap_or_else(|| fresh(now_ms));
+    // A dialog after one the user answered is a new dialog, not the same one.
     let since_ms = match e.report {
-        Some(r) if r.state == state => r.since_ms,
+        Some(r) if r.state == state && !r.answered => r.since_ms,
         _ => now_ms,
     };
-    e.report = Some(Report { state, since_ms, at_ms: now_ms });
+    e.report = Some(Report { state, since_ms, at_ms: now_ms, answered: false });
     e
 }
 
+/// Fold in what one hook post said. Everything but `idle_prompt` names its
+/// state outright; that one is "at the input box", and what it means depends
+/// on what came before it.
+pub fn apply(
+    prev: Option<ActivityEntry>,
+    said: agency_core::preview::report::Reported,
+    now_ms: i64,
+) -> ActivityEntry {
+    use agency_core::preview::report::Reported;
+    let state = match said {
+        Reported::Working => ActivityState::Working,
+        Reported::Blocked => ActivityState::Blocked,
+        Reported::Done => ActivityState::Done,
+        Reported::Idle => ActivityState::Idle,
+        Reported::AtPrompt => match prev.and_then(|e| e.report) {
+            // A turn that ended with no `Stop`: an Esc mid-turn, or a dialog
+            // the user refused, neither of which fires anything.
+            Some(r) if r.state == ActivityState::Working => ActivityState::Done,
+            Some(r) if r.state == ActivityState::Blocked && r.answered => ActivityState::Done,
+            // Already done, still blocked on an unanswered dialog, or idle.
+            Some(r) => r.state,
+            // Nothing reported since launch: no turn has run, so nothing has
+            // finished. `idle_prompt` was mapped straight to done here, and a
+            // fresh agent nobody had prompted would have badged and notified
+            // as a finished turn a minute after it opened.
+            None => ActivityState::Idle,
+        },
+    };
+    reported(prev, state, now_ms)
+}
+
 /// The user pressed a key that can answer a prompt (see
-/// `sendq::answers_a_prompt`), which ends a reported `blocked`.
+/// `sendq::answers_a_prompt`) while the agent was blocked.
 ///
 /// Answering "No" to a Claude Code permission dialog, or pressing Esc on it,
-/// fires no hook at all (2.1.289), so without this the run would read blocked
-/// until the agent's next turn. Approving fires `PostToolUse` soon after, which
-/// says `working` on its own; this only decides what is shown in between, and
-/// the pane's answer is the right one for that.
+/// fires no hook at all (2.1.289), so the board would otherwise read blocked
+/// until the agent's next turn. Once answered, the board shows the pane's
+/// answer, which is the right one for the moment in between.
+///
+/// The report itself stays blocked, and [`awaiting_answer`] still says so. A
+/// key that can answer a dialog is not proof that it did: Enter on the first
+/// of two `AskUserQuestion` questions moves to the second, which fires no new
+/// hook, and a key the dialog ignores looks the same from here. Clearing the
+/// report on the key lifted the send queue's hold with the second question
+/// still on screen, and the queued message's Enter picked its first option.
 pub fn answered(entry: ActivityEntry) -> ActivityEntry {
     match entry.report {
-        Some(r) if r.state == ActivityState::Blocked => ActivityEntry { report: None, ..entry },
+        Some(r) if r.state == ActivityState::Blocked => {
+            ActivityEntry { report: Some(Report { answered: true, ..r }), ..entry }
+        }
         _ => entry,
     }
+}
+
+/// The user typed into the session at `now_ms`.
+pub fn keyed(entry: ActivityEntry, now_ms: i64) -> ActivityEntry {
+    ActivityEntry { last_key_ms: Some(now_ms), ..entry }
+}
+
+/// Whether the agent's last report is a dialog no hook has said is gone.
+/// What the send queue holds on: unlike the board, it cannot take the pane's
+/// word once a key was pressed (see [`answered`]). A refused dialog is let go
+/// by the `idle_prompt` that follows it about a minute later (see [`apply`]),
+/// and anything the agent does next reports on its own.
+pub fn awaiting_answer(entry: &ActivityEntry) -> bool {
+    entry.report.is_some_and(|r| r.state == ActivityState::Blocked)
+}
+
+/// Whether the pane has kept changing well past the last report and the last
+/// keystroke: the agent is doing something its hooks did not report.
+///
+/// A resting report has no expiry, and nothing but another report moved it.
+/// `/compact` fires `PreCompact`, which is not subscribed, and a post can be
+/// lost (the server at its connection cap, a hook timing out), so a run read
+/// `done` through a minute of compaction and the send queue typed into it.
+/// The pane changing is not enough on its own, because the agent redraws as
+/// its turn ends and the user's typing echoes; both are explained by
+/// something we saw, and only the change that outlasts them both is not.
+pub fn drawing_unreported(entry: &ActivityEntry, report: &Report, now_ms: i64) -> bool {
+    let explained = entry.last_key_ms.map_or(report.at_ms, |k| k.max(report.at_ms));
+    now_ms - entry.last_change_ms < WORKING_TTL_MS
+        && entry.last_change_ms - explained >= EXPLAINED_MS
 }
 
 /// Classify a run's current state from its bookkeeping. `turn_driven` says a
@@ -163,7 +240,16 @@ pub fn answered(entry: ActivityEntry) -> ActivityEntry {
 /// surface that shows this already checks the session's status first.
 pub fn classify(entry: &ActivityEntry, turn_driven: bool, now_ms: i64) -> ActivityInfo {
     match entry.report {
+        Some(r) if r.state == ActivityState::Blocked && !r.answered => {
+            ActivityInfo { state: r.state, since: r.since_ms, reported: true }
+        }
+        // The user answered (or seemed to): the pane says what happened next.
+        Some(r) if r.state == ActivityState::Blocked => from_pane(entry, turn_driven, now_ms),
         Some(r) if r.state != ActivityState::Working => {
+            if drawing_unreported(entry, &r, now_ms) {
+                let since = entry.last_key_ms.map_or(r.at_ms, |k| k.max(r.at_ms));
+                return ActivityInfo { state: ActivityState::Working, since, reported: false };
+            }
             ActivityInfo { state: r.state, since: r.since_ms, reported: true }
         }
         Some(r) if now_ms - r.at_ms < REPORT_WORKING_TTL_MS => {
@@ -218,6 +304,7 @@ pub fn worked_and_went_quiet_since(entry: &ActivityEntry, at_ms: i64, now_ms: i6
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agency_core::preview::report::Reported;
 
     fn state(e: &ActivityEntry, turn_driven: bool, now: i64) -> ActivityState {
         classify(e, turn_driven, now).state
@@ -402,17 +489,110 @@ mod tests {
 
     /// "No" and Esc on a permission dialog fire nothing (Claude Code 2.1.289).
     #[test]
-    fn answering_ends_blocked_and_only_blocked() {
+    fn answering_hands_the_board_to_the_pane_and_only_for_blocked() {
         let mut e = update(None, true, 0);
         e = reported(Some(e), ActivityState::Blocked, 1_000);
         let after = answered(e);
-        assert_eq!(after.report, None);
         let after = update(Some(after), true, 2_000); // the dialog closes
         assert_eq!(state(&after, true, 2_000), ActivityState::Working);
         assert_eq!(state(&after, true, 2_000 + WORKING_TTL_MS), ActivityState::Done);
+        assert!(!classify(&after, true, 2_000).reported);
         // A key typed at a finished turn is the next prompt being written.
         let done = reported(Some(e), ActivityState::Done, 3_000);
         assert_eq!(answered(done), done);
+    }
+
+    /// Enter on the first of two `AskUserQuestion` questions: the second is on
+    /// screen, and no hook says so. The board may guess; the queue may not.
+    #[test]
+    fn an_answered_dialog_still_holds_until_a_hook_lets_it_go() {
+        let e = reported(None, ActivityState::Blocked, 1_000);
+        let e = answered(e);
+        let quiet = update(Some(e), false, 1_000 + WORKING_TTL_MS * 6);
+        assert!(awaiting_answer(&quiet), "nothing said the dialog is gone");
+        assert_ne!(state(&quiet, false, 1_000 + WORKING_TTL_MS * 6), ActivityState::Blocked);
+        // Approved: the tool runs and says so.
+        assert!(!awaiting_answer(&reported(Some(quiet), ActivityState::Working, 70_000)));
+        // Refused: the minute-late `idle_prompt` ends the turn.
+        let refused = apply(Some(quiet), Reported::AtPrompt, 70_000);
+        assert!(!awaiting_answer(&refused));
+        assert_eq!(state(&refused, false, 70_000), ActivityState::Done);
+    }
+
+    #[test]
+    fn a_dialog_after_an_answered_one_is_new() {
+        let e = reported(None, ActivityState::Blocked, 1_000);
+        let e = reported(Some(answered(e)), ActivityState::Blocked, 5_000);
+        let r = e.report.unwrap();
+        assert_eq!((r.since_ms, r.answered), (5_000, false));
+        assert_eq!(state(&e, false, 5_000), ActivityState::Blocked);
+    }
+
+    #[test]
+    fn idle_prompt_ends_a_turn_only_after_one() {
+        // Never prompted: a minute at the input box is not a finished turn.
+        let fresh = apply(None, Reported::AtPrompt, 60_000);
+        assert_eq!(state(&fresh, true, 60_000), ActivityState::Idle);
+        let cleared = apply(Some(reported(None, ActivityState::Idle, 0)), Reported::AtPrompt, 1);
+        assert_eq!(state(&cleared, true, 1), ActivityState::Idle);
+        // Esc mid-turn: no `Stop`, and this is what says the turn is over.
+        let esc =
+            apply(Some(reported(None, ActivityState::Working, 0)), Reported::AtPrompt, 70_000);
+        assert_eq!(classify(&esc, false, 70_000).state, ActivityState::Done);
+        assert_eq!(esc.report.unwrap().since_ms, 70_000);
+        // After `Stop`, the same turn: the time it ended is kept.
+        let stop = apply(Some(reported(None, ActivityState::Done, 5)), Reported::AtPrompt, 60_005);
+        assert_eq!(stop.report.unwrap().since_ms, 5);
+        // An unanswered dialog is not let go by it.
+        let blocked = reported(None, ActivityState::Blocked, 0);
+        assert!(awaiting_answer(&apply(Some(blocked), Reported::AtPrompt, 60_000)));
+    }
+
+    /// `/compact` after a turn: no subscribed hook fires, and the pane
+    /// animates for a minute with nobody typing.
+    #[test]
+    fn a_pane_that_outlasts_every_explanation_is_working() {
+        let mut e = reported(None, ActivityState::Done, 0);
+        e = keyed(e, 20_000); // `/compact`, Enter
+        for t in (22_000..=60_000).step_by(2_000) {
+            e = update(Some(e), true, t);
+        }
+        let info = classify(&e, false, 60_000);
+        assert_eq!(
+            (info.state, info.since, info.reported),
+            (ActivityState::Working, 20_000, false)
+        );
+        // Compaction over: the report is back, unchanged.
+        let quiet = update(Some(e), false, 60_000 + WORKING_TTL_MS);
+        let info = classify(&quiet, false, 60_000 + WORKING_TTL_MS);
+        assert_eq!((info.state, info.since, info.reported), (ActivityState::Done, 0, true));
+    }
+
+    /// The other side of the same rule: the user writing their next prompt, a
+    /// key every few seconds for a minute, changes the pane the whole time.
+    #[test]
+    fn typing_at_a_finished_turn_keeps_it_finished() {
+        let mut e = reported(None, ActivityState::Done, 0);
+        for t in (2_000..=60_000).step_by(2_000) {
+            e = keyed(e, t - 500);
+            e = update(Some(e), true, t);
+            assert_eq!(state(&e, false, t), ActivityState::Done, "t={t}");
+        }
+        // And the redraw as a turn ends is the report's own.
+        let mut e = reported(None, ActivityState::Done, 0);
+        e = update(Some(e), true, 2_000);
+        assert_eq!(state(&e, false, 2_000), ActivityState::Done);
+    }
+
+    /// Blocked has no pane override: a dialog redraws as the user moves its
+    /// selection, and that is not the agent working.
+    #[test]
+    fn a_dialog_is_never_overruled_by_the_pane() {
+        let mut e = reported(None, ActivityState::Blocked, 0);
+        for t in (2_000..=60_000).step_by(2_000) {
+            e = update(Some(e), true, t);
+        }
+        assert_eq!(state(&e, false, 60_000), ActivityState::Blocked);
     }
 
     #[test]
@@ -424,11 +604,15 @@ mod tests {
     }
 
     #[test]
-    fn hook_reports_map_one_to_one() {
-        use agency_core::preview::report::Reported;
-        assert_eq!(ActivityState::from(Reported::Working), ActivityState::Working);
-        assert_eq!(ActivityState::from(Reported::Blocked), ActivityState::Blocked);
-        assert_eq!(ActivityState::from(Reported::Done), ActivityState::Done);
-        assert_eq!(ActivityState::from(Reported::Idle), ActivityState::Idle);
+    fn every_hook_report_but_idle_prompt_names_its_state() {
+        for (said, want) in [
+            (Reported::Working, ActivityState::Working),
+            (Reported::Blocked, ActivityState::Blocked),
+            (Reported::Done, ActivityState::Done),
+            (Reported::Idle, ActivityState::Idle),
+        ] {
+            let prev = reported(None, ActivityState::Working, 0);
+            assert_eq!(apply(Some(prev), said, 1).report.unwrap().state, want, "{said:?}");
+        }
     }
 }

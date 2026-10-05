@@ -85,7 +85,16 @@ pub struct RunSnapshot {
     /// What the agent's own hooks say it is doing, when they say anything
     /// (AGE-206). `None` is an agent without hooks, or one whose report has
     /// lapsed, and leaves the turn-finished nudge to the pane.
-    pub reported: Option<ActivityState>,
+    pub reported: Option<Said>,
+}
+
+/// One reported state and when the agent entered it. The time is what tells
+/// two turns apart: a turn that starts and ends between two ticks reads
+/// `done` on both, and only `since_ms` moved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Said {
+    pub state: ActivityState,
+    pub since_ms: i64,
 }
 
 #[derive(Clone)]
@@ -95,7 +104,9 @@ pub struct RunWatch {
     pub pane_hash: u64,
     pub quiet_since_tick: u64,
     pub idle_fired: bool,
-    pub reported: Option<ActivityState>,
+    pub reported: Option<Said>,
+    /// The reported `done` last acted on, by when it began.
+    pub done_seen: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -149,17 +160,35 @@ pub fn step(
 
     let agent_running = matches!(snap.agent, SessionStatus::Running);
     let mut idle_fired = prev.map(|p| p.idle_fired).unwrap_or(false);
+    let mut done_seen = prev.and_then(|p| p.done_seen);
     // Reported edges (AGE-206). The agent said it, so there is no quiet spell
-    // to wait out and no input gate to pass: `Stop` only fires on a turn's
-    // end. Blocked fires for a loop attempt too. Loops suppress per-attempt
-    // events because the loop recovers from them on its own, and a dialog is
-    // the one thing it cannot recover from.
+    // to wait out and no input gate to pass: a reported `done` only follows a
+    // turn (see `activity::apply`). Blocked fires for a loop attempt too.
+    // Loops suppress per-attempt events because the loop recovers from them
+    // on its own, and a dialog is the one thing it cannot recover from.
+    //
+    // Edges are by `since`, not by state: comparing states tick to tick missed
+    // a turn that went done, working, done inside one 2s tick, and the pane
+    // fallback is off while a report stands, so nothing said it finished.
     let was = prev.and_then(|p| p.reported);
-    if agent_running && snap.reported != was {
+    if agent_running {
         match snap.reported {
-            Some(ActivityState::Blocked) => events.push(NotifyKind::Blocked),
-            Some(ActivityState::Done) if !snap.is_loop => {
-                events.push(NotifyKind::Idle);
+            // A turn in flight: whatever ends it is a new end.
+            Some(s) if s.state == ActivityState::Working => idle_fired = false,
+            Some(s) if s.state == ActivityState::Blocked && was != Some(s) => {
+                events.push(NotifyKind::Blocked);
+            }
+            Some(s) if s.state == ActivityState::Done && done_seen != Some(s.since_ms) => {
+                done_seen = Some(s.since_ms);
+                // Back from no report at all, the pane may have nudged for
+                // this turn already. Esc mid-turn sends no `Stop`, the report
+                // lapses, the pane goes quiet and nudges, and the
+                // `idle_prompt` a minute later reports the same turn done:
+                // nudging again was two banners for one turn.
+                let pane_nudged = was.is_none() && idle_fired;
+                if !snap.is_loop && !pane_nudged {
+                    events.push(NotifyKind::Idle);
+                }
                 idle_fired = true;
             }
             _ => {}
@@ -194,6 +223,7 @@ pub fn step(
         quiet_since_tick,
         idle_fired,
         reported: snap.reported,
+        done_seen,
     };
     // Terminals are tracked (so a later promotion to notifying would have
     // history) but never produce events.
@@ -514,7 +544,69 @@ mod tests {
     }
 
     fn reporting(reported: Option<ActivityState>, hash: u64, is_loop: bool) -> RunSnapshot {
+        let reported = reported.map(|state| Said { state, since_ms: 0 });
         RunSnapshot { is_loop, reported, ..snap_input(running(), SessionStatus::Gone, hash, false) }
+    }
+
+    fn said(state: ActivityState, since_ms: i64, hash: u64) -> RunSnapshot {
+        RunSnapshot {
+            reported: Some(Said { state, since_ms }),
+            ..snap_input(running(), SessionStatus::Gone, hash, false)
+        }
+    }
+
+    /// A short answer: `UserPromptSubmit` and `Stop` both land between two
+    /// ticks, and both ticks read done.
+    #[test]
+    fn a_turn_inside_one_tick_still_notifies() {
+        let (w, ev) = step(None, &said(ActivityState::Done, 1_000, 1), 0, 2, 30);
+        assert_eq!(ev, vec![NotifyKind::Idle]);
+        let (w, ev) = step(Some(&w), &said(ActivityState::Done, 1_000, 1), 1, 2, 30);
+        assert!(ev.is_empty(), "the same turn");
+        let (_w, ev) = step(Some(&w), &said(ActivityState::Done, 2_500, 2), 2, 2, 30);
+        assert_eq!(ev, vec![NotifyKind::Idle], "a new turn, unseen in between");
+    }
+
+    /// Esc mid-turn: no `Stop`, so the report lapses and the pane nudges; the
+    /// `idle_prompt` a minute later reports the same turn done.
+    #[test]
+    fn a_turn_the_pane_already_announced_is_not_announced_again() {
+        let input = |s: RunSnapshot| RunSnapshot { user_input_pending: true, ..s };
+        let (mut w, _) = step(None, &input(said(ActivityState::Working, 0, 1)), 0, 2, 30);
+        let mut fired = Vec::new();
+        for t in 1..=20 {
+            let (nw, ev) =
+                step(Some(&w), &input(snap_input(running(), running(), 2, true)), t, 2, 30);
+            w = nw;
+            fired.extend(ev);
+        }
+        assert_eq!(fired, vec![NotifyKind::Idle], "the pane's nudge");
+        let (_w, ev) = step(Some(&w), &said(ActivityState::Done, 60_000, 2), 21, 2, 30);
+        assert!(ev.is_empty(), "{ev:?}");
+    }
+
+    /// `/compact` after a turn: the pane overrules the report while it
+    /// animates, and the same `done` comes back after.
+    #[test]
+    fn a_done_that_comes_back_is_not_a_new_turn() {
+        let (w, ev) = step(None, &said(ActivityState::Done, 1_000, 1), 0, 2, 30);
+        assert_eq!(ev, vec![NotifyKind::Idle]);
+        let (mut w, _) = step(Some(&w), &snap_input(running(), running(), 2, true), 1, 2, 30);
+        for t in 2..=10 {
+            let (nw, ev) = step(Some(&w), &snap_input(running(), running(), t, true), t, 2, 30);
+            w = nw;
+            assert!(ev.is_empty());
+        }
+        let (_w, ev) = step(Some(&w), &said(ActivityState::Done, 1_000, 10), 11, 2, 30);
+        assert!(ev.is_empty(), "{ev:?}");
+    }
+
+    #[test]
+    fn a_second_dialog_is_a_second_notification() {
+        let (w, ev) = step(None, &said(ActivityState::Blocked, 1_000, 1), 0, 2, 30);
+        assert_eq!(ev, vec![NotifyKind::Blocked]);
+        let (_w, ev) = step(Some(&w), &said(ActivityState::Blocked, 3_000, 1), 1, 2, 30);
+        assert_eq!(ev, vec![NotifyKind::Blocked]);
     }
 
     #[test]

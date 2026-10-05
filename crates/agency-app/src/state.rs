@@ -1197,6 +1197,11 @@ fn pane_hash(pane: &str) -> u64 {
     std::hash::Hasher::finish(&hasher)
 }
 
+/// How long after a launch writes a run's state hooks the sweep leaves them
+/// be with no agent session to show for it: the hooks go in before the
+/// session is spawned.
+const HOOKS_ARMING: Duration = Duration::from_secs(30);
+
 /// The daemon session that speaks for a run: its status dot, the notifier's
 /// busy/idle watch, and the default target for text Agency types in.
 ///
@@ -2490,19 +2495,10 @@ fn preview_tools_on(config: &agency_core::config::AgencyConfig) -> bool {
 }
 
 /// What a run in this project would serve an agent: the two switches behind
-/// the MCP server's two halves, and whether the run's worktree carries state
-/// hooks that post to it (AGE-206). One function so the port that gets emitted
-/// and the tools that answer on it can never disagree about what is on.
-fn run_caps(
-    preview_tools: bool,
-    share_open_file: bool,
-    reports_state: bool,
-) -> agency_core::preview::Caps {
-    agency_core::preview::Caps {
-        preview: preview_tools,
-        editor: share_open_file,
-        state: reports_state,
-    }
+/// the MCP server's two halves. One function so the port that gets emitted and
+/// the tools that answer on it can never disagree about what is on.
+fn run_caps(preview_tools: bool, share_open_file: bool) -> agency_core::preview::Caps {
+    agency_core::preview::Caps { preview: preview_tools, editor: share_open_file }
 }
 
 /// The config half of a run's `Caps`, cached. `serves_preview()` reads it,
@@ -2570,7 +2566,7 @@ fn server_port_for(
     share_open_file: bool,
     reports_state: bool,
 ) -> Option<u16> {
-    if !run_caps(preview_tools_on(config), share_open_file, reports_state).any() {
+    if !run_caps(preview_tools_on(config), share_open_file).any() && !reports_state {
         return None;
     }
     agency_core::preview::mcp_port(port_base?, config.ports.block_size)
@@ -2588,6 +2584,11 @@ fn server_port_for(
 /// a hard server failure in most CLIs, instead of the "editor_open_file is
 /// switched off ... ask them to turn it on" text written for exactly that case.
 /// A server outlives its switches and dies with its run.
+///
+/// `already_serving` is a server an MCP entry may name (`AppState::mcp_named`).
+/// One up only for the state hooks has no MCP client to strand, and keeping
+/// every such server for the life of its run kept a thread and a port up for
+/// every Claude run that had ever launched.
 fn preview_port_this_sweep(
     config: &agency_core::config::AgencyConfig,
     port_base: Option<u16>,
@@ -2801,6 +2802,21 @@ pub struct AppState {
     /// only: the pane half re-derives within one tick of an app start, and a
     /// report is about a moment, so the next one replaces what was lost.
     activity: Arc<Mutex<HashMap<String, crate::activity::ActivityEntry>>>,
+    /// Per session, the agent conversation its state reports are taken from
+    /// (see `agency_core::preview::report::admit`). Cleared at each launch.
+    report_pins: Arc<Mutex<HashMap<String, String>>>,
+    /// Runs whose state hooks were written for a launch, and when. The sweep
+    /// takes a dead run's hooks out, and a launch writes them before its
+    /// session exists, so a sweep in between must not read that as dead.
+    hooks_armed: Mutex<HashMap<String, Instant>>,
+    /// Whether each worktree's settings carry our hooks, keyed by the file's
+    /// size and mtime, so the 2s sweep stats it rather than parsing it.
+    hooks_seen: Mutex<HashMap<PathBuf, (u64, std::time::SystemTime, bool)>>,
+    /// Runs whose server an agent's MCP config may name: it was up while the
+    /// tools were on. Only these outlive their reason to run (see
+    /// `preview_port_this_sweep`); one up for state hooks alone has no client
+    /// to strand, and stops with the agent that posts to it.
+    mcp_named: Mutex<HashSet<String>>,
     /// Per-run token and cost accounting, read from the agent's own transcript
     /// by the notifier tick. The cache carries the per-file stamps that keep
     /// the re-read nearly free; the `Usage` beside it is the directory total
@@ -3118,6 +3134,10 @@ impl AppState {
             ui: Mutex::new(UiState { focused: true, active_run: None, pending_open: None }),
             input_seen: Mutex::new(HashSet::new()),
             activity: Arc::new(Mutex::new(HashMap::new())),
+            report_pins: Arc::new(Mutex::new(HashMap::new())),
+            hooks_armed: Mutex::new(HashMap::new()),
+            hooks_seen: Mutex::new(HashMap::new()),
+            mcp_named: Mutex::new(HashSet::new()),
             usage: Mutex::new(HashMap::new()),
             prompted: Mutex::new(HashSet::new()),
             web_ui_ready: Arc::new(Mutex::new(HashSet::new())),
@@ -3919,17 +3939,37 @@ impl AppState {
 
     /// The live read of one run's derived activity state, or `None` until the
     /// notifier's poll has observed it.
+    ///
+    /// Read off whichever tab speaks for the run, which is a stand-in once the
+    /// run's own tab is closed (AGE-184). The run's own entry keeps getting the
+    /// stand-in's pane from the tick, but its reports land under the tab's own
+    /// id, so reading the run's entry showed a stand-in stopped on a dialog as
+    /// a guessed "waiting" that said the agent does not report its state.
     fn read_activity(
         &self,
         run: &agency_core::registry::Run,
+        live: &[(String, SessionStatus)],
         now_ms: i64,
     ) -> Option<crate::activity::ActivityInfo> {
+        let lead = lead_session_name(run, live);
+        let session = lead.strip_prefix("agency-").unwrap_or(&lead);
         // Loops drive themselves — a quiet attempt isn't waiting on the user,
         // so it classifies as idle at most.
-        let turn_driven =
-            run.loop_config.is_none() && self.prompted.lock().unwrap().contains(&run.id);
-        let entry = self.activity.lock().unwrap().get(&run.id).copied();
-        entry.map(|e| crate::activity::classify(&e, turn_driven, now_ms))
+        let turn_driven = run.loop_config.is_none() && {
+            let prompted = self.prompted.lock().unwrap();
+            prompted.contains(&run.id) || prompted.contains(session)
+        };
+        let entry = self.activity.lock().unwrap().get(session).copied();
+        let info = entry.map(|e| crate::activity::classify(&e, turn_driven, now_ms))?;
+        // Nor is a loop attempt that says its turn is over: the loop acts on
+        // that itself, and the notifier already stays quiet about it.
+        if run.loop_config.is_some() && info.state == crate::activity::ActivityState::Done {
+            return Some(crate::activity::ActivityInfo {
+                state: crate::activity::ActivityState::Idle,
+                ..info
+            });
+        }
+        Some(info)
     }
 
     /// `read_activity` for one of a run's extra tabs. Keyed by the tab's own
@@ -4049,7 +4089,7 @@ impl AppState {
             running && agency_core::preview::serving(port) && handshake_done
         });
         let now_ms = crate::activity::now_ms();
-        let activity = self.read_activity(run, now_ms);
+        let activity = self.read_activity(run, live, now_ms);
         let busy = self.activity.lock().unwrap().get(&run.id).copied();
         let agent_status = self
             .agent_status
@@ -6238,12 +6278,7 @@ impl AppState {
     /// command), screenshots via whatever the app shell installed, and the two
     /// live reads that make the tools honest about the moment they are called
     /// — which halves are switched on, and what the user has open.
-    fn preview_hooks(
-        &self,
-        run_id: &str,
-        repo: &Path,
-        reports_state: bool,
-    ) -> agency_core::preview::Hooks {
+    fn preview_hooks(&self, run_id: &str, repo: &Path) -> agency_core::preview::Hooks {
         let repo = repo.to_path_buf();
         let facts_repo = repo.clone();
         let facts = std::sync::Arc::new(move || {
@@ -6268,11 +6303,8 @@ impl AppState {
         });
         let tools = PreviewToolsCache { repo: repo.clone(), cell: Mutex::new(None) };
         let share = self.share_open_file.clone();
-        // `state` is fixed for the server's life: it is not a switch the user
-        // holds, and nothing reads it per request. The route it stands for
-        // answers whatever it says, since only our own hooks post there.
         let caps = std::sync::Arc::new(move || {
-            run_caps(tools.get(), share.load(std::sync::atomic::Ordering::SeqCst), reports_state)
+            run_caps(tools.get(), share.load(std::sync::atomic::Ordering::SeqCst))
         });
         // Reads the cell, not the app state: a server outlives nothing here,
         // but capturing `self` would tie every run's server to its lifetime.
@@ -6295,20 +6327,33 @@ impl AppState {
                 apply_agent_status(&mut map, &status_run, status, crate::activity::now_ms());
             });
         let activity = self.activity.clone();
-        let report = std::sync::Arc::new(
-            move |session: &str, state: agency_core::preview::report::Reported| {
+        let pins = self.report_pins.clone();
+        let report =
+            std::sync::Arc::new(move |session: &str, ev: agency_core::preview::report::Event| {
                 // The port is this run's and the header names the tab. A
                 // session of some other run posting here is a settings file
                 // copied between worktrees, and is not this run's to report.
                 if split_session_id(session).0 != run_id {
                     return;
                 }
+                // And the tab's own agent, not a `claude` it started: see
+                // `report::admit`.
+                {
+                    let mut pins = pins.lock().unwrap();
+                    let mut pin = pins.remove(session);
+                    let admitted = agency_core::preview::report::admit(&mut pin, &ev);
+                    if let Some(pin) = pin {
+                        pins.insert(session.to_string(), pin);
+                    }
+                    if !admitted {
+                        return;
+                    }
+                }
                 let mut map = activity.lock().unwrap();
                 let prev = map.get(session).copied();
-                let next = crate::activity::reported(prev, state.into(), crate::activity::now_ms());
+                let next = crate::activity::apply(prev, ev.state, crate::activity::now_ms());
                 map.insert(session.to_string(), next);
-            },
-        );
+            });
         agency_core::preview::Hooks { facts, screenshot, caps, open_file, set_status, report }
     }
 
@@ -6328,18 +6373,26 @@ impl AppState {
             return;
         };
         let Some(app_port) = port_base else { return };
+        let names = preview_mcp_port_for(config, port_base, shares).is_some();
         let mut servers = self.preview.lock().unwrap();
         if servers.get(run_id).is_some_and(|s| s.port() == bind && s.app_port() == app_port) {
+            if names {
+                self.mcp_named.lock().unwrap().insert(run_id.to_string());
+            }
             return;
         }
         servers.remove(run_id);
+        self.mcp_named.lock().unwrap().remove(run_id);
         match agency_core::preview::PreviewServer::start(
             bind,
             app_port,
-            self.preview_hooks(run_id, repo, reports_state),
+            self.preview_hooks(run_id, repo),
         ) {
             Ok(srv) => {
                 servers.insert(run_id.to_string(), srv);
+                if names {
+                    self.mcp_named.lock().unwrap().insert(run_id.to_string());
+                }
                 self.preview_failures.lock().unwrap().remove(run_id);
             }
             Err(e) => {
@@ -6354,6 +6407,26 @@ impl AppState {
                 }
             }
         }
+    }
+
+    /// `state_hooks::emitted`, re-read only when the settings file changes.
+    /// The sweep asks for every worktree run every 2s, and the answer only
+    /// moves when a launch or this sweep writes the file.
+    fn hooks_emitted(&self, worktree: &Path) -> bool {
+        let path = agency_core::state_hooks::settings_path(worktree);
+        let Ok(meta) = std::fs::metadata(&path) else {
+            self.hooks_seen.lock().unwrap().remove(worktree);
+            return false;
+        };
+        let stamp = (meta.len(), meta.modified().unwrap_or(std::time::UNIX_EPOCH));
+        if let Some(&(len, at, on)) = self.hooks_seen.lock().unwrap().get(worktree) {
+            if (len, at) == stamp {
+                return on;
+            }
+        }
+        let on = agency_core::state_hooks::emitted(worktree);
+        self.hooks_seen.lock().unwrap().insert(worktree.to_path_buf(), (stamp.0, stamp.1, on));
+        on
     }
 
     /// Converge the preview servers on what the registry and each project's
@@ -6381,14 +6454,44 @@ impl AppState {
         // Snapshot rather than lock per run: `config::load` below is a file
         // read, and the preview map is what the notifier and every tool call
         // contend on.
-        let serving: HashSet<String> = self.preview.lock().unwrap().keys().cloned().collect();
+        let serving: HashSet<String> = {
+            let named = self.mcp_named.lock().unwrap();
+            self.preview.lock().unwrap().keys().filter(|id| named.contains(*id)).cloned().collect()
+        };
+        // A failed listing says nothing about the agents, so it reads as all
+        // of them alive: taken as none, it would strip every run's hooks.
+        let live = self.term.read().unwrap().list().ok();
+        self.hooks_armed.lock().unwrap().retain(|_, at| at.elapsed() < HOOKS_ARMING);
+        let worktrees: HashSet<PathBuf> = runs.iter().map(|(_, _, _, w)| w.clone()).collect();
+        self.hooks_seen.lock().unwrap().retain(|w, _| worktrees.contains(w));
         for (id, repo, port_base, worktree) in runs {
             let config = agency_core::config::load(&repo);
             let has_server = serving.contains(&id);
             // Read off the worktree, not remembered: an agent that survived an
             // app restart in the daemon read these hooks when it started, and
             // posts to this port whether anything listens or not.
-            let reports = agency_core::state_hooks::emitted(&worktree);
+            let hooked = self.hooks_emitted(&worktree);
+            let alive = live.as_ref().is_none_or(|l| !running_agent_sessions(&id, l).is_empty());
+            let arming = self.hooks_armed.lock().unwrap().contains_key(&id);
+            if hooked && !alive && !arming {
+                // Nothing left to post, and a `claude` the user starts by hand
+                // in this worktree would print a refused-connection hook error
+                // on every tool call once the server below stops. The next
+                // launch writes them again.
+                let took_out = agency_core::state_hooks::withdraw(&worktree, &repo)
+                    .inspect_err(|e| {
+                        log::warn!("taking state hooks out of {}: {e}", worktree.display())
+                    })
+                    .unwrap_or(false);
+                // A file it may not write (tracked, say) is read as clean until
+                // it changes, or every sweep would try again with a `git` call.
+                if !took_out {
+                    if let Some(seen) = self.hooks_seen.lock().unwrap().get_mut(&worktree) {
+                        seen.2 = false;
+                    }
+                }
+            }
+            let reports = hooked && (alive || arming);
             if let Some(bind) =
                 preview_port_this_sweep(&config, port_base, shares, reports, has_server)
             {
@@ -6410,6 +6513,10 @@ impl AppState {
                 .is_some_and(|(_, pb, bind, _)| srv.port() == *bind && Some(srv.app_port()) == *pb)
                 || srv.age() < Duration::from_secs(15)
         });
+        {
+            let up = self.preview.lock().unwrap();
+            self.mcp_named.lock().unwrap().retain(|id| up.contains_key(id));
+        }
         self.preview_rects.lock().unwrap().retain(|id, _| desired.contains_key(id));
         self.preview_failures.lock().unwrap().retain(|id, _| desired.contains_key(id));
         for (id, (repo, port_base, _, reports)) in desired {
@@ -6910,9 +7017,14 @@ impl AppState {
             .entry(id.to_string())
             .or_default()
             .observe(typed, crate::activity::now_ms());
-        if crate::sendq::answers_a_prompt(data) {
+        // A key explains the pane changing (see `activity::drawing_unreported`).
+        // Not a mouse or focus report: hovering the pane streams those, and
+        // would explain away an agent compacting under the pointer.
+        let answers = crate::sendq::answers_a_prompt(data);
+        if typed != crate::sendq::Typed::Nothing || answers {
             if let Some(e) = self.activity.lock().unwrap().get_mut(id) {
-                *e = crate::activity::answered(*e);
+                let keyed = crate::activity::keyed(*e, crate::activity::now_ms());
+                *e = if answers { crate::activity::answered(keyed) } else { keyed };
             }
         }
         Ok(())
@@ -7207,14 +7319,14 @@ impl AppState {
         // session spawned seconds ago. Unknown reads as working, which holds.
         // `turn_driven` only decides between done and idle, neither of which
         // holds anything, so what it is passed here doesn't matter.
-        let state = self
-            .activity
-            .lock()
-            .unwrap()
-            .get(id)
-            .map(|e| crate::activity::classify(e, false, now_ms).state);
-        let working = state.is_none_or(|s| s == crate::activity::ActivityState::Working);
-        let blocked = state == Some(crate::activity::ActivityState::Blocked);
+        // Blocked is the report, not the board's reading of it: a key that may
+        // have answered the dialog hands the board to the pane, and the queue
+        // keeps holding until a hook says the dialog is gone.
+        let read = self.activity.lock().unwrap().get(id).map(|e| {
+            (crate::activity::classify(e, false, now_ms).state, crate::activity::awaiting_answer(e))
+        });
+        let working = read.is_none_or(|(s, _)| s == crate::activity::ActivityState::Working);
+        let blocked = read.is_some_and(|(_, b)| b);
         let human = self.human_input.lock().unwrap().get(id).copied();
         let mut draft = human.is_some_and(|h| h.draft);
         // One-directional by construction: the pane is read only when a draft
@@ -7248,6 +7360,14 @@ impl AppState {
     /// session that is being torn down. Anything still queued for it is dropped
     /// with it: there will be no pty to type it into.
     fn forget_session_state(&self, id: &str) {
+        // What its agent last reported goes with it. A run's own entry outlives
+        // its tab (the tick keeps sampling the stand-in into it), and a dialog
+        // left on screen as the tab closed would otherwise notify for the run
+        // as blocked behind whichever tab now speaks for it.
+        if let Some(e) = self.activity.lock().unwrap().get_mut(id) {
+            e.report = None;
+        }
+        self.report_pins.lock().unwrap().remove(id);
         self.input_seen.lock().unwrap().remove(id);
         self.prompted.lock().unwrap().remove(id);
         self.human_input.lock().unwrap().remove(id);
@@ -7314,6 +7434,7 @@ impl AppState {
         // throw away the keystroke history of every open tab.
         let kept_run = |id: &str| keep.contains(split_session_id(id).0);
         self.human_input.lock().unwrap().retain(|id, _| kept_run(id));
+        self.report_pins.lock().unwrap().retain(|id, _| kept_run(id));
         // A run that has left the board (archived, discarded) has no session to
         // type into, so anything still queued for it goes with it — including
         // the stored copy, or it would come back at the next launch for a run
@@ -7592,6 +7713,7 @@ impl AppState {
         if let Some(e) = self.activity.lock().unwrap().get_mut(session) {
             e.report = None;
         }
+        self.report_pins.lock().unwrap().remove(session);
         // The project's own checkout is the user's, and nothing is written into
         // it at launch; see `emit_mcp`'s caller.
         let command = recipe_command(profile);
@@ -7599,6 +7721,7 @@ impl AppState {
             return;
         }
         let config = agency_core::config::load(repo);
+        self.hooks_armed.lock().unwrap().insert(run_id.to_string(), Instant::now());
         self.ensure_preview_server(run_id, repo, port, &config, true);
         let listening = self.preview.lock().unwrap().get(run_id).map(|s| s.port());
         if let Err(e) =
@@ -11364,6 +11487,34 @@ impl AppState {
             .collect()
     }
 
+    /// What a run's agents report, for the notifier: the lead tab's report,
+    /// unless some other tab of the run is stopped on a dialog. A finished turn
+    /// is the lead's to announce, but a dialog in any tab holds that tab's
+    /// agent until the user answers it, and reading the lead alone meant an
+    /// extra Claude tab's permission prompt never said "Agent needs you".
+    fn run_reported(&self, run_id: &str, lead: &str) -> Option<notifier::Said> {
+        use crate::activity::ActivityState;
+        let now_ms = crate::activity::now_ms();
+        let map = self.activity.lock().unwrap();
+        let said = |id: &str| {
+            map.get(id)
+                .map(|e| crate::activity::classify(e, false, now_ms))
+                .filter(|a| a.reported)
+                .map(|a| notifier::Said { state: a.state, since_ms: a.since })
+        };
+        let of_lead = said(lead);
+        if of_lead.is_some_and(|s| s.state == ActivityState::Blocked) {
+            return of_lead;
+        }
+        let blocked_elsewhere = map
+            .keys()
+            .filter(|id| id.as_str() != lead && split_session_id(id).0 == run_id)
+            .filter_map(|id| said(id))
+            .filter(|s| s.state == ActivityState::Blocked)
+            .min_by_key(|s| s.since_ms);
+        blocked_elsewhere.or(of_lead)
+    }
+
     /// Snapshot every non-archived run across all projects for the watcher:
     /// agent + run-script session status and a hash of the agent pane (for idle).
     pub fn watch_snapshot(&self) -> Result<Vec<notifier::RunSnapshot>> {
@@ -11434,16 +11585,7 @@ impl AppState {
                 // on a session nobody can type into any more.
                 let typed_into = lead.strip_prefix("agency-").unwrap_or(&lead);
                 let user_input_pending = self.input_seen.lock().unwrap().contains(typed_into);
-                // The same tab's report: whichever agent is speaking for the
-                // run is the one whose dialog the user would be answering.
-                let reported = self
-                    .activity
-                    .lock()
-                    .unwrap()
-                    .get(typed_into)
-                    .map(|e| crate::activity::classify(e, false, crate::activity::now_ms()))
-                    .filter(|a| a.reported)
-                    .map(|a| a.state);
+                let reported = self.run_reported(&run.id, typed_into);
                 // Any run with a loop config, active OR terminal: suppression
                 // must not depend on when the driver persists the terminal
                 // transition, or the final attempt's exit edge (which lands on

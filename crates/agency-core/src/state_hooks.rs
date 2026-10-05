@@ -89,6 +89,42 @@ fn hook_entry(port: u16) -> Value {
     })
 }
 
+/// The matcher group Agency writes for one event.
+fn our_group(matcher: Option<&str>, port: u16) -> Value {
+    let mut group = json!({ "hooks": [hook_entry(port)] });
+    if let Some(m) = matcher {
+        group["matcher"] = json!(m);
+    }
+    group
+}
+
+/// Whether the settings already hold exactly the hooks we would write for
+/// `port`, wherever in each event's list they sit. Taking ours out and putting
+/// them back appends them, so without this a user's own group after ours read
+/// as a change, and every launch rewrote a file Claude Code itself writes to.
+fn already_current(root: &Value, port: u16) -> bool {
+    let Some(events) = root.get("hooks").and_then(Value::as_object) else { return false };
+    let mut found = Vec::new();
+    for (event, groups) in events {
+        let Some(groups) = groups.as_array() else { return false };
+        for g in groups {
+            let holds_ours =
+                g.get("hooks").and_then(Value::as_array).is_some_and(|hs| hs.iter().any(is_ours));
+            if !holds_ours {
+                continue;
+            }
+            let Some((_, matcher)) = CLAUDE_EVENTS.iter().find(|(e, _)| e == event) else {
+                return false;
+            };
+            if *g != our_group(*matcher, port) || found.contains(event) {
+                return false;
+            }
+            found.push(event.clone());
+        }
+    }
+    found.len() == CLAUDE_EVENTS.len()
+}
+
 /// Whether one hook entry is one of ours, on any port: a run whose port block
 /// moved leaves the old port's entries behind, and they have to be recognised
 /// to be replaced.
@@ -115,11 +151,14 @@ pub fn merged(existing: Option<&str>, port: Option<u16>) -> Option<Value> {
             _ => return None,
         },
     };
-    let before = root.clone();
-    let obj = root.as_object_mut()?;
-    if !obj.get("hooks").is_none_or(Value::is_object) {
+    if !root.get("hooks").is_none_or(Value::is_object) {
         return None;
     }
+    if port.is_some_and(|p| already_current(&root, p)) {
+        return None;
+    }
+    let before = root.clone();
+    let obj = root.as_object_mut()?;
     if let Some(events) = obj.get_mut("hooks").and_then(Value::as_object_mut) {
         for groups in events.values_mut() {
             let Some(groups) = groups.as_array_mut() else { continue };
@@ -148,12 +187,8 @@ pub fn merged(existing: Option<&str>, port: Option<u16>) -> Option<Value> {
         let events = events.as_object_mut()?;
         for (event, matcher) in CLAUDE_EVENTS {
             let groups = events.entry(event.to_string()).or_insert_with(|| json!([]));
-            let Some(groups) = groups.as_array_mut() else { return None };
-            let mut group = json!({ "hooks": [hook_entry(port)] });
-            if let Some(m) = matcher {
-                group["matcher"] = json!(m);
-            }
-            groups.push(group);
+            let groups = groups.as_array_mut()?;
+            groups.push(our_group(*matcher, port));
         }
     }
     let left_empty = |v: Option<&Value>| v.and_then(Value::as_object).is_some_and(|h| h.is_empty());
@@ -163,14 +198,19 @@ pub fn merged(existing: Option<&str>, port: Option<u16>) -> Option<Value> {
     (root != before).then_some(root)
 }
 
+/// The settings file the hooks are written into.
+pub fn settings_path(worktree: &Path) -> std::path::PathBuf {
+    CLAUDE_SETTINGS.iter().fold(worktree.to_path_buf(), |p, s| p.join(s))
+}
+
 /// Whether the worktree's settings already carry our hooks. This is what keeps
 /// a run's server up across an app restart: an agent still running in the
 /// daemon read these hooks when it started, and posts to its port whether
 /// anything listens there or not.
 pub fn emitted(worktree: &Path) -> bool {
-    let path = CLAUDE_SETTINGS.iter().fold(worktree.to_path_buf(), |p, s| p.join(s));
-    let Some(root) =
-        std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok())
+    let Some(root) = std::fs::read_to_string(settings_path(worktree))
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
     else {
         return false;
     };
@@ -198,12 +238,22 @@ pub fn emit_for_agent(
     if !agent_supported(recipe_command) {
         return Ok(false);
     }
+    write(worktree, repo_root, port)
+}
+
+/// Take our hooks out of the worktree, whichever agent they were written for:
+/// for a run whose agents are all gone, so nothing is left to post to them.
+pub fn withdraw(worktree: &Path, repo_root: &Path) -> Result<bool> {
+    write(worktree, repo_root, None)
+}
+
+fn write(worktree: &Path, repo_root: &Path, port: Option<u16>) -> Result<bool> {
     let rel = CLAUDE_SETTINGS.join("/");
     if crate::mcp::tracked(worktree, &rel) {
         log::info!("{rel} is tracked in {}: not writing state hooks into it", worktree.display());
         return Ok(false);
     }
-    let path = CLAUDE_SETTINGS.iter().fold(worktree.to_path_buf(), |p, s| p.join(s));
+    let path = settings_path(worktree);
     let existing = std::fs::read_to_string(&path).ok();
     if existing.is_none() && port.is_none() {
         return Ok(false);
@@ -300,6 +350,33 @@ mod tests {
     }
 
     #[test]
+    fn a_users_group_after_ours_is_not_a_change() {
+        let mut v = merged(None, Some(5249)).unwrap();
+        v["hooks"]["Stop"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({ "hooks": [{ "type": "command", "command": "say done" }] }));
+        assert_eq!(merged(Some(&v.to_string()), Some(5249)), None, "nothing to rewrite");
+        // A port move still rewrites, and keeps the user's group.
+        let moved = merged(Some(&v.to_string()), Some(5259)).unwrap();
+        assert_eq!(moved["hooks"]["Stop"][0]["hooks"][0]["command"], "say done");
+        assert!(ours_in(&moved).iter().all(|(_, _, url)| url.contains(":5259/")));
+    }
+
+    #[test]
+    fn a_hand_edited_hook_of_ours_is_put_right() {
+        let mut v = merged(None, Some(5249)).unwrap();
+        v["hooks"]["Stop"][0]["hooks"][0]["timeout"] = json!(30);
+        let fixed = merged(Some(&v.to_string()), Some(5249)).unwrap();
+        assert_eq!(fixed["hooks"]["Stop"][0]["hooks"][0]["timeout"], 2);
+        // One event dropped by hand comes back.
+        let mut v = merged(None, Some(5249)).unwrap();
+        v["hooks"].as_object_mut().unwrap().remove("SessionEnd");
+        let fixed = merged(Some(&v.to_string()), Some(5249)).unwrap();
+        assert_eq!(ours_in(&fixed).len(), CLAUDE_EVENTS.len());
+    }
+
+    #[test]
     fn taking_them_out_leaves_only_what_the_user_had() {
         let theirs = json!({
             "permissions": { "allow": [] },
@@ -364,8 +441,9 @@ mod tests {
         let exclude = std::fs::read_to_string(repo.join(".git/info/exclude")).unwrap();
         assert!(exclude.lines().any(|l| l == "/.claude/settings.local.json"), "{exclude}");
         assert!(!emit_for_agent("claude", repo, repo, Some(5249)).unwrap(), "no rewrite");
-        assert!(emit_for_agent("claude", repo, repo, None).unwrap());
+        assert!(withdraw(repo, repo).unwrap());
         assert!(!emitted(repo));
+        assert!(!withdraw(repo, repo).unwrap(), "nothing left to take out");
         assert!(!emit_for_agent("codex", repo, repo, Some(5249)).unwrap());
     }
 

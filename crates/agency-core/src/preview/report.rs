@@ -19,39 +19,79 @@ pub enum Reported {
     Blocked,
     /// The turn is over and the result is waiting for the user.
     Done,
+    /// Sitting at the input box with nothing in flight (`idle_prompt`). Not a
+    /// state on its own: it is a turn ending only after a turn, which is the
+    /// app's to know (see `activity::apply` there). Read as `Done` outright, a
+    /// fresh agent nobody had prompted would announce a finished turn.
+    AtPrompt,
     /// No session in flight: it ended, or was cleared.
     Idle,
+}
+
+/// One hook post: the state it reports, and which of the agent's own sessions
+/// sent it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Event {
+    pub state: Reported,
+    /// Claude Code's `session_id`. The Agency session header cannot tell a
+    /// tab's agent from a `claude` that agent started through its Bash tool,
+    /// since the child inherits the variable the header is built from; this
+    /// can, and the app pins each tab to the first one it hears from.
+    pub conversation: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct Body {
     hook_event_name: Option<String>,
     notification_type: Option<String>,
+    session_id: Option<String>,
     /// Set on events from a subagent. A run's state is its main agent's: four
     /// subagents finishing would otherwise read as four turns ending.
     agent_id: Option<serde_json::Value>,
 }
 
-/// The state a Claude Code hook body reports, or `None` for a body that says
+/// What a Claude Code hook body reports, or `None` for a body that says
 /// nothing we act on. See `state_hooks::CLAUDE_EVENTS` for what each event was
 /// verified to mean.
-pub fn parse(body: &[u8]) -> Option<Reported> {
+pub fn parse(body: &[u8]) -> Option<Event> {
     let b: Body = serde_json::from_slice(body).ok()?;
     if b.agent_id.is_some_and(|v| !v.is_null()) {
         return None;
     }
-    match b.hook_event_name.as_deref()? {
+    let state = match b.hook_event_name.as_deref()? {
         "UserPromptSubmit" | "PreToolUse" | "PostToolUse" | "PostToolUseFailure" => {
-            Some(Reported::Working)
+            Reported::Working
         }
-        "PermissionRequest" => Some(Reported::Blocked),
-        "Stop" => Some(Reported::Done),
+        "PermissionRequest" => Reported::Blocked,
+        "Stop" => Reported::Done,
         "Notification" if b.notification_type.as_deref() == Some("idle_prompt") => {
-            Some(Reported::Done)
+            Reported::AtPrompt
         }
-        "SessionEnd" => Some(Reported::Idle),
-        _ => None,
+        "SessionEnd" => Reported::Idle,
+        _ => return None,
+    };
+    Some(Event { state, conversation: b.session_id.filter(|s| !s.is_empty()) })
+}
+
+/// Whether a report from `ev` speaks for the tab whose pinned conversation is
+/// `pin`, updating the pin. Pure, so the rule is tested without a server.
+///
+/// The first conversation a tab hears from is its agent: a child `claude` can
+/// only start through one of the agent's own tool calls, which posts first.
+/// Another conversation is a child, and is ignored; without this, a `claude -p`
+/// the agent ran through Bash posted `Stop` and `SessionEnd` under the tab's
+/// header, and the tab read done and then idle in the middle of its own tool
+/// call. The pinned conversation ending (`/clear` or exit) frees the pin for
+/// whatever comes next, which after `/clear` is the same process under a new
+/// id. A body with no id at all is admitted and pins nothing.
+pub fn admit(pin: &mut Option<String>, ev: &Event) -> bool {
+    let Some(id) = ev.conversation.as_deref() else { return true };
+    match pin.as_deref() {
+        Some(p) if p != id => return false,
+        _ => {}
     }
+    *pin = (ev.state != Reported::Idle).then(|| id.to_string());
+    true
 }
 
 #[cfg(test)]
@@ -60,7 +100,7 @@ mod tests {
     use serde_json::json;
 
     fn of(v: serde_json::Value) -> Option<Reported> {
-        parse(v.to_string().as_bytes())
+        parse(v.to_string().as_bytes()).map(|e| e.state)
     }
 
     #[test]
@@ -92,13 +132,15 @@ mod tests {
             "permission_suggestions": [],
             "transcript_path": "/x.jsonl",
         });
-        assert_eq!(of(body), Some(Reported::Blocked));
+        let ev = parse(body.to_string().as_bytes()).unwrap();
+        assert_eq!(ev.state, Reported::Blocked);
+        assert_eq!(ev.conversation.as_deref(), Some("8049a1fc-49e5-4aee-a635-e918a53ca5de"));
     }
 
     #[test]
     fn only_the_idle_notification_counts() {
         let n = |t: &str| of(json!({ "hook_event_name": "Notification", "notification_type": t }));
-        assert_eq!(n("idle_prompt"), Some(Reported::Done));
+        assert_eq!(n("idle_prompt"), Some(Reported::AtPrompt));
         // Arrives about six seconds after PermissionRequest, and would race an
         // answer given inside them.
         assert_eq!(n("permission_prompt"), None);
@@ -122,5 +164,41 @@ mod tests {
         assert_eq!(of(json!({})), None);
         assert_eq!(parse(b"not json"), None);
         assert_eq!(of(json!({ "hook_event_name": 3 })), None);
+    }
+
+    fn ev(state: Reported, conversation: &str) -> Event {
+        Event { state, conversation: Some(conversation.to_string()) }
+    }
+
+    #[test]
+    fn a_child_claude_never_speaks_for_its_parents_tab() {
+        let mut pin = None;
+        assert!(admit(&mut pin, &ev(Reported::Working, "parent")));
+        // The agent runs `claude -p` through Bash. The child inherits the
+        // session variable, and reports its whole life under the same header.
+        for s in [Reported::Working, Reported::Done, Reported::Idle] {
+            assert!(!admit(&mut pin, &ev(s, "child")), "{s:?}");
+        }
+        assert_eq!(pin.as_deref(), Some("parent"), "the child's end frees nothing");
+        assert!(admit(&mut pin, &ev(Reported::Done, "parent")));
+    }
+
+    #[test]
+    fn the_pinned_conversation_ending_lets_the_next_one_in() {
+        let mut pin = None;
+        assert!(admit(&mut pin, &ev(Reported::Done, "before-clear")));
+        assert!(admit(&mut pin, &ev(Reported::Idle, "before-clear")));
+        assert_eq!(pin, None);
+        assert!(admit(&mut pin, &ev(Reported::Working, "after-clear")));
+        assert!(!admit(&mut pin, &ev(Reported::Working, "before-clear")));
+    }
+
+    #[test]
+    fn a_body_without_a_conversation_is_admitted_and_pins_nothing() {
+        let mut pin = None;
+        assert!(admit(&mut pin, &Event { state: Reported::Working, conversation: None }));
+        assert_eq!(pin, None);
+        let blank = parse(br#"{"hook_event_name":"Stop","session_id":""}"#).unwrap();
+        assert_eq!(blank.conversation, None);
     }
 }

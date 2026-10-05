@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { Issue, IssuePatch, IssueStatus, RunInfo } from "../api";
 import { ISSUE_STATUSES, PRIORITY_LABELS, STATUS_COLORS, STATUS_LABELS, fmtDate, isOverdue, matchRanges } from "../lib/issues";
 import { dateStamp } from "../lib/dailyNote";
-import { isBlocked } from "../lib/runstate";
+import { agentBlocked, countAgents } from "../lib/runstate";
 import { useDismissOnResize } from "../hooks/useDismissOnResize";
 import { useMenuAnchor } from "../hooks/useMenuAnchor";
 import { SpawnOpts } from "../store/runs";
@@ -53,7 +53,9 @@ export function StatusDot({ status }: { status: IssueStatus }) {
 // running, else quiet. Nothing linked = nothing shown.
 function runActivity(runs: RunInfo[]): { cls: string; title: string } | null {
   if (runs.length === 0) return null;
-  const blocked = runs.filter(isBlocked).length;
+  // Agents, not runs: a workspace with two tabs stopped on a dialog is two
+  // answers owed, and the title says "agents".
+  const blocked = countAgents(runs, agentBlocked);
   if (blocked > 0) {
     return { cls: "blocked", title: `${blocked} agent${blocked === 1 ? "" : "s"} blocked on your answer` };
   }

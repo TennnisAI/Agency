@@ -92,12 +92,12 @@ assumptions did not survive.
 | --- | --- |
 | `PermissionRequest` fires the instant a permission dialog appears, and also for an `AskUserQuestion` question. `Notification` with `permission_prompt` fires about **six seconds later**. | `PermissionRequest` is the `blocked` signal. `permission_prompt` is not subscribed: an answer given inside those six seconds would race it and put a working agent back to `blocked`. |
 | Answering **"No"** to a permission dialog, or pressing **Esc** on it, fires **nothing**. No `Stop`, no `PostToolUseFailure`, no `Notification`. | The draft said a refusal fires `Stop`. It does not, so a reported `blocked` cannot rely on the next event to end it. See *Lapse*. |
-| `SessionStart` never fires an `http` hook, interactive or not. | The draft's plan to capture `session_id` from it for AGE-210 does not work. Every other event carries `session_id`, so the id is still there to take; nothing stores it yet. |
+| `SessionStart` never fires an `http` hook, interactive or not. | The draft's plan to capture `session_id` from it for AGE-210 does not work. Every other event carries `session_id`, so the id is still there to take. The app now reads it to pin each tab to its own agent (see *Identity*), in memory only. |
 | `async: true` is accepted on an `http` hook but **not honoured**: a listener that slept 1.5s held the tool call for 1.5s. | The draft hoped `async` would remove the timeout concern. It does not. The server answers before it does anything else, and the 2s timeout bounds a wedged app. |
 | With nothing listening, the post costs nothing (loopback refuses at once), but the agent prints `PreToolUse:Bash hook error ... ECONNREFUSED` into its transcript on every tool call. A non-2xx answer prints the same kind of error. | The draft's reason to emit no hooks without a server (two seconds per tool call) was wrong; the real reason is the noise. The route answers 204 to everything, including a report it drops. |
 | `PostToolUseFailure` replaces `PostToolUse` when a tool fails. | Subscribed, as `working`. |
 | `Stop` is followed by `SubagentStop` from an internal subagent, carrying `agent_id`. | Not subscribed, and any body with an `agent_id` is dropped at the parse. |
-| `Notification` with `idle_prompt` fires about 60s after `Stop`. | Subscribed, as `done`. It is also what lands after an Esc that left no other report. |
+| `Notification` with `idle_prompt` fires about 60s after `Stop`. | Subscribed, as "at the prompt", which is `done` only after a turn the hooks saw (see *Authority and lapse*). It is also what lands after an Esc, or a refused dialog, that left no other report. |
 | `SessionEnd` fires on `/clear` as well as on exit. | Mapped to `idle`: after `/clear` the session is fresh. |
 | Header values interpolate `$VAR` for names in `allowedEnvVars`; an unset variable becomes an empty string. | The session id rides in a header (see *Transport*). |
 | No hook fires before the user accepts the folder-trust dialog for a new directory. | Nothing to do; a worktree under a trusted repo inherits the trust. |
@@ -153,7 +153,7 @@ The subscribed events, in `state_hooks.rs::CLAUDE_EVENTS`, with the mapping in
 | `PostToolUse` | `*` | `working` |
 | `PostToolUseFailure` | `*` | `working` |
 | `PermissionRequest` | `*` | **`blocked`** |
-| `Notification` | `idle_prompt` | `done` |
+| `Notification` | `idle_prompt` | `done` after a turn, else unchanged or `idle` |
 | `Stop` | none | `done` |
 | `SessionEnd` | none | `idle` |
 
@@ -206,15 +206,33 @@ server's origin check, and any local process that can reach loopback can
 already call `set_status` on the same server. That was not worth a stored
 secret.
 
+**Identity.** The header names the tab, but it cannot tell the tab's agent
+from a `claude` that agent starts through its Bash tool: the child inherits
+`AGENCY_SESSION_ID`, reads the same settings file, and posts `Stop` and
+`SessionEnd` under the parent's header in the middle of the parent's tool call.
+So each tab is pinned to the first Claude `session_id` it hears from
+(`report::admit`), which is always the parent, since a child can only start
+from one of the parent's tool calls and that posts first. Reports from any
+other `session_id` are dropped. The pinned conversation ending frees the pin,
+which is how `/clear` (a new id from the same process) gets back in. A launch
+clears the tab's pin with its report.
+
 **The route always answers 204, before doing anything.** Claude Code waits on
 every post, and prints a hook error for any non-2xx answer.
 
-**`Caps` has a third member, `state`.** A server now runs while preview tools,
-open-file sharing, *or* state hooks want it. `state` is on for a run whose
-worktree carries our hooks, read off the file by `state_hooks::emitted` on each
-sweep rather than remembered. That is what keeps the listener up across an app
-restart: an agent that survived in the daemon read its hooks at startup and
-posts to its port whether anything listens or not.
+**The hooks are a reason to listen, and not a `Caps` member.** A server runs
+while preview tools, open-file sharing, *or* state hooks want it, but `Caps` is
+what the MCP route answers from, and the state route never read it, so the
+third reason is weighed in `state.rs::server_port_for` alone. It holds for a
+run whose worktree carries our hooks *and* has an agent tab running, read off
+the file on each sweep rather than remembered (re-parsed only when the file's
+size or mtime moves). That is what keeps the listener up across an app restart:
+an agent that survived in the daemon read its hooks at startup and posts to its
+port whether anything listens or not. Once no agent tab runs, the sweep takes
+the hooks back out and the server stops with them, unless an MCP entry may name
+it (`mcp_named`), which keeps the old rule that such a server outlives its
+switches. Keeping every hooks-only server for the life of its run kept a thread
+and a port up for every Claude run that had ever launched.
 
 **The state cap starts a server; it does not add an MCP entry.** The draft
 assumed the cap would also give every run the `agency-preview` server and its
@@ -233,7 +251,9 @@ MCP entry, `server_port_for` decides the listener.
    loopback port, path `/__agency__/state`), stripped, and re-added at the
    current port. The user's own hooks, matcher groups and every other key are
    left exactly as they were. A group the user shares with one of ours keeps
-   the user's entry.
+   the user's entry. Hooks already exactly as we would write them are left
+   where they are: re-adding appends, so a user's group after ours otherwise
+   read as a change and every launch rewrote the file.
 2. **A tracked file is the repo's own; leave it alone.** Same `tracked` test as
    `mcp.rs`.
 3. **Exclude what we write.** `/.claude/settings.local.json`, anchored, for
@@ -251,18 +271,23 @@ launch path (`prepare_state_hooks`, called from `agent_env`) starts the server
 itself, writes the hooks at whatever port actually bound, and clears the
 session's last report: a new process is not what the old one reported, and
 `SessionStart` will not fire to say so. The project's own checkout is never
-written into, the same rule as MCP config.
+written into, the same rule as MCP config. The sweep leaves freshly written
+hooks alone for `HOOKS_ARMING` (30s), since they go in before the session they
+are for exists.
 
 ## The transition function
 
 `activity.rs` stays pure. A report is another input to the same fold:
 
 ```rust
-pub struct Report { pub state: ActivityState, pub since_ms: i64, pub at_ms: i64 }
+pub struct Report { pub state: ActivityState, pub since_ms: i64, pub at_ms: i64, pub answered: bool }
 
 pub fn update(prev: Option<ActivityEntry>, pane_changed: bool, now_ms: i64) -> ActivityEntry;
+pub fn apply(prev: Option<ActivityEntry>, said: Reported, now_ms: i64) -> ActivityEntry;
 pub fn reported(prev: Option<ActivityEntry>, state: ActivityState, now_ms: i64) -> ActivityEntry;
 pub fn answered(entry: ActivityEntry) -> ActivityEntry;
+pub fn keyed(entry: ActivityEntry, now_ms: i64) -> ActivityEntry;
+pub fn awaiting_answer(entry: &ActivityEntry) -> bool;
 pub fn classify(entry: &ActivityEntry, turn_driven: bool, now_ms: i64) -> ActivityInfo;
 ```
 
@@ -278,6 +303,20 @@ the next launch rather than needing a version to be told apart.
   further events, and they outrank the pane: an agent redrawing as its turn
   ends, or the user typing at the prompt afterwards, does not make a finished
   turn `working`.
+- Except when the pane outlasts every explanation. `done` and `idle` give way
+  to the pane's `working` (unreported) once the pane is still changing a full
+  `EXPLAINED_MS` (10s) after both the last report and the user's last
+  keystroke (`keyed`, from `run_input`; mouse and focus reports do not count).
+  `/compact` fires only `PreCompact`, which is not subscribed, and a post can be
+  lost, and without this a minute of compaction read `done` and the send queue
+  typed into it. `blocked` has no such override: a dialog redraws as the user
+  moves its selection.
+- `idle_prompt` is not a state of its own (`Reported::AtPrompt`). After a
+  `working` that never got its `Stop`, or a dialog the user answered, it is the
+  turn ending: `done`. After `done`, `idle` or an unanswered dialog it changes
+  nothing. With nothing reported since launch it is `idle`: no turn has run, so
+  none has finished, and mapping it straight to `done` would have badged and
+  notified a fresh agent nobody had prompted.
 - `working` is *heartbeat-backed*. The tool hooks fire all through a turn, and
   an Esc mid-turn ends it with no `Stop`, so a `working` with no report inside
   `REPORT_WORKING_TTL_MS` (10s) falls back to the pane, exactly as if nothing
@@ -285,13 +324,18 @@ the next launch rather than needing a version to be told apart.
   long tool call still animates a spinner. (Not "counting the turn as driven":
   a headless loop attempt draws nothing while its model thinks, and that would
   read every pause between its tool calls as a finished turn.)
-- `blocked` ends on the user's keystroke. Because a refusal fires nothing, any
-  key that can answer a dialog (`sendq::answers_a_prompt`: Enter, a printable
-  key, a lone Esc, Ctrl-C) clears a reported `blocked` and hands the session
-  back to the pane. An approval then reports `working` within a moment; a
-  refusal leaves the pane to read a quiet prompt as a guessed `done`, until
-  `idle_prompt` reports `done` for real. `classify_input` could not be reused
-  for this, since it files a lone Esc under "nothing typed" on purpose.
+- On the board, `blocked` ends on the user's keystroke. Because a refusal fires
+  nothing, any key that can answer a dialog (`sendq::answers_a_prompt`: Enter,
+  a printable key, a lone Esc, Ctrl-C) marks a reported `blocked` answered and
+  hands the board back to the pane. An approval then reports `working` within a
+  moment; a refusal leaves the pane to read a quiet prompt as a guessed `done`,
+  until `idle_prompt` reports `done` for real. `classify_input` could not be
+  reused for this, since it files a lone Esc under "nothing typed" on purpose.
+- In the send queue it does not (`awaiting_answer`). A key that can answer a
+  dialog is not proof it did: Enter on the first of two `AskUserQuestion`
+  questions moves to the second, which fires no new hook. Clearing the report
+  on the key let the queue type into the second question. The queue holds on an
+  answered dialog until a hook moves the report on.
 - A dead process is neither blocked nor done. The draft had `classify` take
   `agent_running`; it turned out every consumer (the UI, the notifier, the send
   queue) already composes the session's status first, so the fact did not need
@@ -305,12 +349,18 @@ conflicts into a session once it is quiet, and appends them anyway after
 `AskUserQuestion` question picked its first option while this was being
 verified, and the first option of a permission dialog is "Yes". So a blocked
 session now holds the queue **with no timeout**: a queued message must never
-approve a command the user did not see.
+approve a command the user did not see. It holds until a hook says the dialog
+is gone, not until the user presses a key at it (see above); a refused dialog
+is let go by the `idle_prompt` about a minute later.
 
 **`notifier.rs`.** `RunSnapshot` and `RunWatch` carry the reported state of the
-tab speaking for the run, and `step()` fires on its edges: `Blocked` ("Agent
+tab speaking for the run, or of any tab of it stopped on a dialog, with when the
+agent entered it (`Said`). `step()` fires on its edges: `Blocked` ("Agent
 needs you", "`{label}`: waiting on your answer") on entering `blocked`, and the
-existing turn-finished notification on entering `done`. While a report is
+existing turn-finished notification on entering `done`. An edge is a new
+`since`, not a new state: a turn that started and ended inside one 2s tick read
+`done` on both ticks. A `done` arriving after no report at all is skipped when
+the pane already nudged for that turn (an Esc, then `idle_prompt`). While a report is
 live, the quiet-pane timer does not fire, so `idle_secs` only governs agents
 without hooks. `NotifSettings` gains `agent_blocked`, default on, and old saved
 settings load with it on. `agent_idle` keeps its name: renaming a key for
@@ -370,9 +420,13 @@ AGE-209's `wait(run_id)` was gated on phase 1 and no longer is.
   `Notification` with `elicitation_dialog`, it needs adding to the allowlist.
 - After an Esc on a permission dialog, the pane guesses `done` for up to 60s
   before `idle_prompt` reports it. The turn-finished notification can then
-  fire for a turn the user ended themselves, a minute after they did, unless
-  they are still watching that run.
+  fire for a turn the user ended themselves, after `idle_secs`, unless they are
+  still watching that run. It fires once: the `idle_prompt` that follows does
+  not fire it again.
 - `session_id` arrives on every event but `SessionStart`, and AGE-210 wants it.
-  Nothing stores it yet.
+  It is pinned per tab in memory (see *Identity*) and not persisted.
+- Does `idle_prompt` fire while an `AskUserQuestion` question or a permission
+  dialog is on screen? If it does, an answered dialog that is still showing
+  would be let go by it. Not verified.
 - Does a `blocked` run still count toward a project's "working" roll-up for the
   purposes of the tray icon, or is blocked strictly stronger there too?

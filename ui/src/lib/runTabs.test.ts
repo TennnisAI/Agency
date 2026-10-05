@@ -154,6 +154,19 @@ describe("waitingElsewhere", () => {
     });
     expect(elsewhere(r).map((t) => t.session)).toEqual(["r1--2"]);
   });
+
+  it("names a blocked tab as blocked, not waiting", () => {
+    const blocked = { state: "blocked", since: 0, reported: true } as const;
+    const done = { state: "done", since: 0, reported: false } as const;
+    const working = { state: "working", since: 0, reported: false } as const;
+    const one = run({ activity: working, sessions: [session("r1--2", "claude", waiting, blocked)] });
+    expect(waitingElsewhereLabel(elsewhere(one))).toBe("1 other tab blocked");
+    const both = run({
+      activity: working,
+      sessions: [session("r1--2", "claude", waiting, blocked), session("r1--3", "codex", waiting, done)],
+    });
+    expect(waitingElsewhereLabel(elsewhere(both))).toBe("2 other tabs: 1 blocked, 1 waiting");
+  });
 });
 
 describe("tab labels", () => {

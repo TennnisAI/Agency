@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { listPopouts, reattachPopout, requestReattach } from "../api";
+import { listPopouts, requestReattach } from "../api";
 import { PopoutEntry } from "../lib/popout";
 import { IS_TAURI } from "../lib/platform";
 import { unlistenQuietly } from "../lib/unlisten";
@@ -45,13 +45,10 @@ export function usePopouts(): PopoutEntry[] {
 
 /**
  * The main window's "Bring back". The popout hands the item back itself,
- * because it holds what has to come with it (a file's unsaved edits). A popout
- * that never answers (its page failed to load) is closed from here instead, so
- * the button cannot be a dead end.
+ * because it holds what has to come with it (a file's unsaved edits). One
+ * whose page never loaded is brought back by the backend instead, so the
+ * button cannot be a dead end (see `request_reattach` in popout.rs).
  */
 export function bringBack(label: string) {
   requestReattach(label).catch(() => {});
-  window.setTimeout(() => {
-    if (list.some((e) => e.label === label)) reattachPopout(label, null, true).catch(() => {});
-  }, 2000);
 }

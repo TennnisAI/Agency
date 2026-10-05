@@ -7,6 +7,7 @@ import FileEditor, { FileEditorHandle } from "./components/FileEditor";
 import DocsEditor, { DocsEditorHandle } from "./components/DocsEditor";
 import WindowControls from "./components/WindowControls";
 import Toasts from "./components/Toasts";
+import PreviewKeeper from "./components/PreviewKeeper";
 import { ReattachGlyph } from "./components/PoppedOut";
 import { listRuns, navigateMain, popoutSelf, reattachPopout, setUiState } from "./api";
 import { runListLabel } from "./agents";
@@ -221,26 +222,39 @@ function PopoutRun({
     requestNavigate({ kind: "approve", projectId: target.projectId, runId: approveRunId });
   }, [approveRunId, setApproveRun, target.projectId]);
 
-  // Notifications stay quiet about the agent on screen in the focused window
-  // (see App.tsx). This window reports only when it gains or loses focus: an
-  // unfocused popout reporting would tell the backend the app had lost focus
-  // while the user was working in the main window.
+  useReportWatching(onScreenRunId);
+
+  if (found === false) {
+    return <div className="board empty">This agent is no longer in Agency.</div>;
+  }
+  if (!run) return <div className="app-loading"><span className="spinner" /></div>;
+  return (
+    <>
+      <AgentFocus solo />
+      {/* This run's preview page while its Run tab is closed: the main
+          window leaves a popped-out run's to this window (see PreviewKeeper). */}
+      <PreviewKeeper only={target.runId} />
+    </>
+  );
+}
+
+/**
+ * Tell the backend whether this window has focus and which run it has on
+ * screen, as the main window does (App.tsx). Each window's report is kept
+ * apart and summarised there (`popout::Watching`), so this one reporting while
+ * it sits behind the main window cannot unfocus the app or unwatch a run.
+ */
+function useReportWatching(run: string | null) {
   useEffect(() => {
-    const report = () => setUiState(document.hasFocus(), onScreenRunId).catch(() => {});
-    if (document.hasFocus()) report();
+    const report = () => setUiState(document.hasFocus(), run).catch(() => {});
+    report();
     window.addEventListener("focus", report);
     window.addEventListener("blur", report);
     return () => {
       window.removeEventListener("focus", report);
       window.removeEventListener("blur", report);
     };
-  }, [onScreenRunId]);
-
-  if (found === false) {
-    return <div className="board empty">This agent is no longer in Agency.</div>;
-  }
-  if (!run) return <div className="app-loading"><span className="spinner" /></div>;
-  return <AgentFocus solo />;
+  }, [run]);
 }
 
 function PopoutFile({
@@ -253,6 +267,7 @@ function PopoutFile({
   collect: Collect;
 }) {
   const editor = useRef<FileEditorHandle>(null);
+  useReportWatching(null);
   // The main window's unsaved edits, put where the editor looks for them on
   // mount. In an initializer so it lands before the editor's first read.
   useState(() => {
@@ -284,6 +299,7 @@ function PopoutNote({
   const { docsDir, index, refresh } = useDocs(target.projectId, true, target.root);
   const { cross } = useCrossRefs(true);
   const editor = useRef<DocsEditorHandle>(null);
+  useReportWatching(null);
   collect.current = async () => {
     await editor.current?.flush();
     return null;
@@ -298,8 +314,10 @@ function PopoutNote({
   const navigate = (to: string) => {
     const res = resolveTarget(index, cross, to);
     switch (res.kind) {
+      // In this note's own tree: a worktree's note links to the worktree's
+      // copy, which may be the only one there is.
       case "note":
-        requestNavigate({ kind: "note", projectId: target.projectId, path: res.path });
+        requestNavigate({ kind: "note", projectId: target.projectId, path: res.path, root: target.root });
         return;
       case "issue":
         requestNavigate({ kind: "issue", projectId: res.ref.project.id, issueId: res.ref.issue.id });

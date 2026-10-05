@@ -533,7 +533,14 @@ function Shell() {
         openRun(p, target.runId);
         setPendingApprove(target.runId);
         break;
+      // A note in an agent's worktree (a wikilink from a popped-out note there)
+      // opens in that worktree. Sent to the checkout, a note the agent wrote
+      // opened as one that does not exist.
       case "note":
+        if (target.root?.kind === "run") {
+          showInTree(p, "note", target.root, target.path);
+          break;
+        }
         try { localStorage.setItem(`docs:last:${p.id}`, target.path); } catch { /* storage unavailable */ }
         selectProject(p);
         setTab("docs");
@@ -575,29 +582,33 @@ function Shell() {
       openRun(p, target.runId);
       return;
     }
-    const tab = target.kind === "file" ? "files" : "docs";
-    if (target.kind === "note") {
-      // The Docs tab restores to this stamp when it mounts (see DocsView).
-      const viewKey = target.root.kind === "project" ? p.id : `${p.id}:run:${target.root.id}`;
-      try { localStorage.setItem(`docs:last:${viewKey}`, target.path); } catch { /* storage unavailable */ }
-    }
-    setShowSettings(false);
-    setProject(p);
-    setSelectedProject(p.id);
-    if (target.root.kind === "run") {
-      setFocusedRun(target.root.id);
-      setView("focus");
-    }
-    setTab(tab);
-    if (target.kind === "file") {
-      requestOpenFile({ rootKey: fileRootKey(target.root), path: target.path });
-    } else if (target.root.kind === "project") {
-      window.dispatchEvent(new CustomEvent("agency:open-note", { detail: { projectId: p.id, path: target.path } }));
-    }
+    showInTree(p, target.kind, target.root, target.path);
   }
   const reattachedRef = useRef(showReattached);
   reattachedRef.current = showReattached;
 
+  /** Open a file (Files) or a note (Docs) in the tree it lives in. */
+  function showInTree(p: Project, kind: "file" | "note", root: FileRoot, path: string) {
+    if (kind === "note") {
+      // The Docs tab restores to this stamp when it mounts (see DocsView).
+      const viewKey = root.kind === "project" ? p.id : `${p.id}:run:${root.id}`;
+      try { localStorage.setItem(`docs:last:${viewKey}`, path); } catch { /* storage unavailable */ }
+    }
+    setShowSettings(false);
+    setProject(p);
+    setSelectedProject(p.id);
+    if (root.kind === "run") {
+      setFocusedRun(root.id);
+      setView("focus");
+    }
+    setTab(kind === "file" ? "files" : "docs");
+    if (kind === "file") {
+      requestOpenFile({ rootKey: fileRootKey(root), path });
+    } else {
+      // For a Docs view already mounted on this tree; a fresh one reads the stamp.
+      window.dispatchEvent(new CustomEvent("agency:open-note", { detail: { projectId: p.id, path, root } }));
+    }
+  }
   // The selected project's row is a copy taken when it was clicked, and every
   // panel renders against it. A row that changes underneath (a sync adopting
   // the shared backlog's issue key, Settings renaming it) has to be re-read,

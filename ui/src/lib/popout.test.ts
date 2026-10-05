@@ -4,8 +4,8 @@ import { PopoutEntry, PopoutTarget, findPopout, isPopoutLabel, popoutForSession,
 const run = (runId: string): PopoutTarget => ({ kind: "run", projectId: "p1", runId });
 const file = (path: string, root: "project" | "run" = "project"): PopoutTarget =>
   ({ kind: "file", projectId: "p1", root: { kind: root, id: root === "run" ? "r1" : "p1" }, path });
-const note = (path: string): PopoutTarget =>
-  ({ kind: "note", projectId: "p1", root: { kind: "project", id: "p1" }, path });
+const note = (path: string, docsDir = ""): PopoutTarget =>
+  ({ kind: "note", projectId: "p1", root: { kind: "project", id: "p1" }, docsDir, path });
 
 describe("popout targets", () => {
   it("match on what they show, not on how they were reached", () => {
@@ -14,8 +14,12 @@ describe("popout targets", () => {
     expect(sameTarget(file("a.ts"), file("a.ts"))).toBe(true);
     // The same path in a worktree is a different file from the checkout's.
     expect(sameTarget(file("a.ts"), file("a.ts", "run"))).toBe(false);
-    // A note and a file never match, even at one path.
-    expect(sameTarget(file("a.md"), note("a.md"))).toBe(false);
+    // A note is the file at its docs folder's path, and nothing else.
+    expect(sameTarget(file("docs/a.md"), note("a.md", "docs"))).toBe(true);
+    expect(sameTarget(file("a.md"), note("a.md"))).toBe(true);
+    expect(sameTarget(file("a.md"), note("a.md", "docs"))).toBe(false);
+    expect(sameTarget(file("docs/a.md", "run"), note("a.md", "docs"))).toBe(false);
+    expect(sameTarget(run("a.md"), file("a.md"))).toBe(false);
   });
 
   it("find the window an item is in", () => {

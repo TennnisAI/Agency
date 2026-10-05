@@ -4,8 +4,11 @@
 // palette and tray use. DOM events, not props, because the sources sit five
 // layers under Shell (same pattern as agency:open-note / agency:add-project).
 
+import type { FileRoot } from "../api";
+
 export type NavTarget =
-  | { kind: "note"; projectId: string; path: string }
+  // `root` is the tree the note is in; absent means the project checkout.
+  | { kind: "note"; projectId: string; path: string; root?: FileRoot }
   // A file the Docs editor can't open — an attachment row in the Docs tree.
   // `path` is relative to the project's checkout, not to the docs dir, because
   // that is the root the Files tab is showing.

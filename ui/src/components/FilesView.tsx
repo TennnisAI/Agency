@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { FileRoot, Project, popOut } from "../api";
+import { FileRoot, Project, focusPopout, popOut } from "../api";
 import Resizer from "./Resizer";
 import { usePaneWidth } from "../hooks/usePaneWidth";
 import { useReportOpenFile } from "../hooks/useOpenFile";
@@ -226,6 +226,14 @@ export default function FilesView({ root, project, agentsOpen, onOpenCheckout }:
   const popOutFile = (path: string) => {
     const target = fileTarget(path);
     if (!root || !target) return;
+    // Already out, perhaps as a note in Docs: show that window. Asking for a
+    // new one would hand the backend a draft it ignores for an existing
+    // window, and the success path below would then drop it from here too.
+    const out = findPopout(popouts, target);
+    if (out) {
+      focusPopout(out.label).catch(() => {});
+      return;
+    }
     const editor = editorRefs.current.get(path);
     const key = bufferKey(root, path);
     // A cold tab has no editor, but may have a stash from an earlier visit.

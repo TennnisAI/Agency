@@ -49,9 +49,10 @@ pub enum Target {
     /// A file in the Files tab, by its path relative to `root`.
     #[serde(rename_all = "camelCase")]
     File { project_id: String, root: Root, path: String },
-    /// A note in the Docs tab, by its path relative to the docs folder.
+    /// A note in the Docs tab, by its path relative to the docs folder, which
+    /// is itself relative to `root` ("" when the root is the docs folder).
     #[serde(rename_all = "camelCase")]
-    Note { project_id: String, root: Root, path: String },
+    Note { project_id: String, root: Root, docs_dir: String, path: String },
 }
 
 const MAX_ID: usize = 128;
@@ -97,7 +98,8 @@ impl Target {
                     return Err("not a valid agent to pop out".into());
                 }
             }
-            Target::File { project_id, root, path } | Target::Note { project_id, root, path } => {
+            Target::File { project_id, root, path }
+            | Target::Note { project_id, root, path, .. } => {
                 if !valid_id(project_id) {
                     return Err("not a valid project to pop out from".into());
                 }
@@ -107,7 +109,44 @@ impl Target {
                 }
             }
         }
+        if let Target::Note { docs_dir, .. } = self {
+            if !docs_dir.is_empty() && !valid_rel_path(docs_dir) {
+                return Err(format!("not a docs folder that can be popped out: {docs_dir:?}"));
+            }
+        }
         Ok(())
+    }
+
+    /// Whether two targets put the same thing on screen. A run is its id. A
+    /// file and a note are one file when they share a root and a path from it:
+    /// a note is a markdown file in the docs folder, and the Files tab can
+    /// open it too. Without this, popping a note out and then the same file
+    /// from the Files tab gave two windows editing one file.
+    pub fn same_place(&self, other: &Target) -> bool {
+        match (self, other) {
+            (Target::Run { run_id: a, .. }, Target::Run { run_id: b, .. }) => a == b,
+            (Target::Run { .. }, _) | (_, Target::Run { .. }) => false,
+            _ => self.root() == other.root() && self.root_path() == other.root_path(),
+        }
+    }
+
+    fn root(&self) -> Option<&Root> {
+        match self {
+            Target::Run { .. } => None,
+            Target::File { root, .. } | Target::Note { root, .. } => Some(root),
+        }
+    }
+
+    /// The path from the root: a note's sits under the docs folder.
+    fn root_path(&self) -> Option<String> {
+        match self {
+            Target::Run { .. } => None,
+            Target::File { path, .. } => Some(path.clone()),
+            Target::Note { docs_dir, path, .. } if docs_dir.is_empty() => Some(path.clone()),
+            Target::Note { docs_dir, path, .. } => {
+                Some(format!("{}/{path}", docs_dir.trim_end_matches('/')))
+            }
+        }
     }
 
     /// The window label for this target. Deterministic, so popping out
@@ -180,6 +219,18 @@ pub struct Reattached {
 struct Entry {
     target: Target,
     draft: Option<String>,
+    /// The window's page has asked what it shows, so it is running and
+    /// listening for "Bring back". Until then only this side can hand the item
+    /// back, and the draft is still here to hand back with it.
+    greeted: bool,
+}
+
+/// A popout's entry, removed: what goes back to the main window.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Closed {
+    pub target: Target,
+    /// The draft the window never collected (it never loaded), if any.
+    pub draft: Option<String>,
 }
 
 /// The open popouts, by window label.
@@ -199,22 +250,29 @@ pub struct Opened {
 
 impl Popouts {
     pub fn open(&mut self, target: Target, draft: Option<String>) -> Opened {
-        let label = target.label();
-        if self.open.contains_key(&label) {
-            return Opened { label, fresh: false };
+        if let Some((label, _)) = self.open.iter().find(|(_, e)| e.target.same_place(&target)) {
+            return Opened { label: label.clone(), fresh: false };
         }
-        self.open.insert(label.clone(), Entry { target, draft });
+        let label = target.label();
+        self.open.insert(label.clone(), Entry { target, draft, greeted: false });
         Opened { label, fresh: true }
     }
 
     /// The window's target, taking the draft with it.
     pub fn hello(&mut self, label: &str) -> Option<Hello> {
         let e = self.open.get_mut(label)?;
+        e.greeted = true;
         Some(Hello { target: e.target.clone(), draft: e.draft.take() })
     }
 
-    pub fn close(&mut self, label: &str) -> Option<Target> {
-        self.open.remove(label).map(|e| e.target)
+    /// Whether the window has loaded and asked what it shows. None when the
+    /// label is not open.
+    pub fn greeted(&self, label: &str) -> Option<bool> {
+        self.open.get(label).map(|e| e.greeted)
+    }
+
+    pub fn close(&mut self, label: &str) -> Option<Closed> {
+        self.open.remove(label).map(|e| Closed { target: e.target, draft: e.draft })
     }
 
     pub fn list(&self) -> Vec<Listed> {
@@ -290,11 +348,66 @@ impl Owners {
     }
 }
 
-/// Managed state: the popouts and the terminal owners, each behind its lock.
+/// What each window last said about the user's attention: whether its page has
+/// focus, and the run whose pane it has on screen.
+///
+/// The backend's notion of "watching" was one `(focused, run)` pair, written by
+/// whichever window spoke last. With a popout that is two writers racing. The
+/// main window reports on every change of its on-screen run, focused or not,
+/// so it overwrote the popout's run with its own and the agent the user was
+/// watching in the popout notified. And switching windows sends the old
+/// window's blur and the new one's focus from two pages, in either order: the
+/// blur landing last left the app looking unfocused while the user was in it.
+/// So each window reports its own pair, and the backend sees the summary.
+#[derive(Default)]
+pub struct Watching {
+    by_window: HashMap<String, (bool, Option<String>)>,
+    /// The window most recently reported focused. Its run is the one on screen
+    /// while no page has focus (a native menu or a banner blurred it): the
+    /// window has not gone anywhere.
+    last_focused: Option<String>,
+}
+
+impl Watching {
+    pub fn report(
+        &mut self,
+        window: &str,
+        focused: bool,
+        run: Option<String>,
+    ) -> (bool, Option<String>) {
+        if focused {
+            self.last_focused = Some(window.to_string());
+        }
+        self.by_window.insert(window.to_string(), (focused, run));
+        self.summary()
+    }
+
+    /// A window that went away: it holds no focus and shows no run.
+    pub fn forget(&mut self, window: &str) -> (bool, Option<String>) {
+        self.by_window.remove(window);
+        if self.last_focused.as_deref() == Some(window) {
+            self.last_focused = None;
+        }
+        self.summary()
+    }
+
+    /// Focused if any window is. The run is the focused window's, else the
+    /// last focused one's, else the main window's.
+    pub fn summary(&self) -> (bool, Option<String>) {
+        let focused = self.by_window.iter().find(|(_, (f, _))| *f).map(|(w, _)| w.as_str());
+        let showing = focused.or(self.last_focused.as_deref()).unwrap_or(MAIN);
+        let run = self.by_window.get(showing).and_then(|(_, r)| r.clone());
+        (focused.is_some(), run)
+    }
+}
+
+/// Managed state: the popouts, the terminal owners and each window's report of
+/// what it shows, each behind its lock.
 #[derive(Default)]
 pub struct Registry {
     pub popouts: Mutex<Popouts>,
     pub owners: Mutex<Owners>,
+    pub watching: Mutex<Watching>,
 }
 
 pub fn is_popout(label: &str) -> bool {
@@ -363,39 +476,53 @@ pub fn reattach_popout(
     draft: Option<String>,
     show: bool,
 ) {
-    let target = reg.popouts.lock().unwrap().close(&label);
-    if let Some(target) = target {
+    hand_back(&app, &reg, &label, draft, show);
+}
+
+/// Close `label`'s entry, send its item to the main window with `draft` (or
+/// the draft the window never collected), and destroy the window.
+fn hand_back(app: &AppHandle, reg: &Registry, label: &str, draft: Option<String>, show: bool) {
+    let closed = reg.popouts.lock().unwrap().close(label);
+    if let Some(Closed { target, draft: uncollected }) = closed {
+        let draft = draft.or(uncollected);
         let _ = app.emit_to(
             MAIN,
             "popout-reattached",
-            Reattached { label: label.clone(), target, draft, show },
+            Reattached { label: label.to_string(), target, draft, show },
         );
         if show {
-            crate::tray::show_main(&app);
+            crate::tray::show_main(app);
         }
-        announce(&app);
+        announce(app);
     }
     // `destroy`, not `close`: close asks the window's own close handler, which
     // in a popout is the thing that called this.
-    if let Some(w) = app.get_webview_window(&label).filter(|_| is_popout(&label)) {
+    if let Some(w) = app.get_webview_window(label).filter(|_| is_popout(label)) {
         let _ = w.destroy();
     }
 }
 
-/// The main window's "Bring back" button. The popout does the handing back
-/// itself, because it holds what has to come with it (a file's unsaved edits);
-/// this only asks it to. The frontend falls back to `reattach_popout` if the
-/// popout never answers.
+/// The main window's "Bring back" button. A popout whose page is running does
+/// the handing back itself, because it holds what has to come with it (a
+/// file's unsaved edits); this only asks it to. One whose page never loaded
+/// cannot answer, and is handed back from here with the draft it never
+/// collected.
+///
+/// This used to be a timer in the main window: no answer in two seconds, and
+/// it closed the popout itself, with no draft. A popout that was merely slow
+/// (a throttled, minimized window) lost its unsaved edits silently, its own
+/// answer arriving to find the entry already gone.
 #[tauri::command]
 pub fn request_reattach(app: AppHandle, reg: State<'_, Registry>, label: String) {
     if !is_popout(&label) {
         return;
     }
     let alive = app.get_webview_window(&label).is_some();
-    if alive {
+    let greeted = reg.popouts.lock().unwrap().greeted(&label).unwrap_or(false);
+    if alive && greeted {
         let _ = app.emit_to(label.as_str(), "popout-reattach-request", ());
-    } else if reg.popouts.lock().unwrap().close(&label).is_some() {
-        announce(&app);
+    } else {
+        hand_back(&app, &reg, &label, None, true);
     }
 }
 
@@ -424,13 +551,18 @@ fn focus(app: &AppHandle, label: &str) {
     }
 }
 
-/// A popout window is gone (closed, or crashed). Forget it, and drop the
-/// terminal attaches it never got to detach.
+/// A popout window is gone (closed, or crashed) without handing its item back.
+/// Send the item home quietly, drop the terminal attaches it never got to
+/// detach, and stop counting it as a window the user might be watching.
 pub fn on_destroyed(app: &AppHandle, label: &str) {
     let Some(reg) = app.try_state::<Registry>() else { return };
-    let was_open = reg.popouts.lock().unwrap().close(label).is_some();
+    let closed = reg.popouts.lock().unwrap().close(label);
     let streams = reg.owners.lock().unwrap().release(label);
+    let (focused, run) = reg.watching.lock().unwrap().forget(label);
     if let Some(state) = app.try_state::<crate::state::AppState>() {
+        // Forgetting a window only ever takes focus away, so this is never a
+        // return to the app and has no notification to open.
+        let _ = state.set_ui_state(focused, run);
         for s in streams {
             match s {
                 Stream::Agent(id) => state.detach_run(&id),
@@ -440,7 +572,12 @@ pub fn on_destroyed(app: &AppHandle, label: &str) {
             }
         }
     }
-    if was_open {
+    if let Some(Closed { target, draft }) = closed {
+        let _ = app.emit_to(
+            MAIN,
+            "popout-reattached",
+            Reattached { label: label.to_string(), target, draft, show: false },
+        );
         announce(app);
     }
 }
@@ -457,6 +594,15 @@ mod tests {
         Target::File {
             project_id: "p1".into(),
             root: Root::Project { id: "p1".into() },
+            path: path.into(),
+        }
+    }
+
+    fn note(docs_dir: &str, path: &str) -> Target {
+        Target::Note {
+            project_id: "p1".into(),
+            root: Root::Project { id: "p1".into() },
+            docs_dir: docs_dir.into(),
             path: path.into(),
         }
     }
@@ -513,6 +659,33 @@ mod tests {
         assert!(file("a\0b").validate().is_err());
         // A name that merely contains dots is a name.
         assert!(file("a/..b/c..").validate().is_ok());
+        // A note's docs folder is held to the same rule, and "" is the root.
+        assert!(note("", "a.md").validate().is_ok());
+        assert!(note("docs/notes", "a.md").validate().is_ok());
+        assert!(note("../docs", "a.md").validate().is_err());
+        assert!(note("/docs", "a.md").validate().is_err());
+    }
+
+    #[test]
+    fn a_note_and_the_file_it_is_are_one_window() {
+        let mut p = Popouts::default();
+        let first = p.open(note("docs", "Plan.md"), None);
+        assert!(first.fresh);
+        // The same file from the Files tab finds the note's window.
+        assert_eq!(p.open(file("docs/Plan.md"), None), Opened { label: first.label, fresh: false });
+        assert!(note("docs/", "Plan.md").same_place(&file("docs/Plan.md")));
+        assert!(note("", "Plan.md").same_place(&file("Plan.md")));
+        assert!(!note("docs", "Plan.md").same_place(&file("Plan.md")));
+        // Another tree's copy is another file.
+        let in_run = Target::File {
+            project_id: "p1".into(),
+            root: Root::Run { id: "r1".into() },
+            path: "docs/Plan.md".into(),
+        };
+        assert!(!note("docs", "Plan.md").same_place(&in_run));
+        // A run is never a file, and is itself whatever project it is reached from.
+        assert!(!run("r1").same_place(&file("r1")));
+        assert!(run("r1").same_place(&Target::Run { project_id: "p2".into(), run_id: "r1".into() }));
     }
 
     #[test]
@@ -528,11 +701,7 @@ mod tests {
         };
         assert_ne!(file("a.rs").label(), in_run.label());
         // A note and a file at the same path are different windows too.
-        let note = Target::Note {
-            project_id: "p1".into(),
-            root: Root::Project { id: "p1".into() },
-            path: "a.rs".into(),
-        };
+        let note = note("", "a.rs");
         assert_ne!(file("a.rs").label(), note.label());
         assert!(a.starts_with(LABEL_PREFIX));
         assert!(a.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'));
@@ -575,9 +744,65 @@ mod tests {
         let mut p = Popouts::default();
         let o = p.open(run("r1"), None);
         assert_eq!(p.list(), vec![Listed { label: o.label.clone(), target: run("r1") }]);
-        assert_eq!(p.close(&o.label), Some(run("r1")));
+        assert_eq!(p.close(&o.label), Some(Closed { target: run("r1"), draft: None }));
         assert_eq!(p.close(&o.label), None);
         assert!(p.list().is_empty());
+    }
+
+    #[test]
+    fn a_window_that_never_loaded_hands_back_the_draft_it_never_took() {
+        let mut p = Popouts::default();
+        let o = p.open(file("a.rs"), Some("unsaved".into()));
+        // Not loaded yet: only the main window can bring it back, and the
+        // edits are still here to go with it.
+        assert_eq!(p.greeted(&o.label), Some(false));
+        assert_eq!(p.close(&o.label).unwrap().draft.as_deref(), Some("unsaved"));
+
+        let o = p.open(file("a.rs"), Some("unsaved".into()));
+        p.hello(&o.label);
+        // Loaded: the window holds the edits now, and answers for itself.
+        assert_eq!(p.greeted(&o.label), Some(true));
+        assert_eq!(p.close(&o.label).unwrap().draft, None);
+        assert_eq!(p.greeted(&o.label), None);
+    }
+
+    #[test]
+    fn the_window_in_front_decides_which_run_is_watched() {
+        let mut w = Watching::default();
+        w.report(MAIN, true, Some("main-run".into()));
+        // The user moves to a popout. Its focus lands; the main window's blur
+        // has not yet.
+        assert_eq!(w.report("popout-1", true, Some("out-run".into())).0, true);
+        // The main window's blur, and a change of its on-screen run while it
+        // sits behind: neither takes the popout's run off the watched one.
+        w.report(MAIN, false, Some("main-run".into()));
+        assert_eq!(w.report(MAIN, false, Some("other".into())), (true, Some("out-run".into())));
+    }
+
+    #[test]
+    fn a_blur_landing_after_the_next_focus_does_not_unfocus_the_app() {
+        let mut w = Watching::default();
+        w.report("popout-1", true, Some("out-run".into()));
+        // Back to the main window: its focus first, the popout's blur second.
+        w.report(MAIN, true, Some("main-run".into()));
+        assert_eq!(
+            w.report("popout-1", false, Some("out-run".into())),
+            (true, Some("main-run".into()))
+        );
+    }
+
+    #[test]
+    fn with_no_page_focused_the_last_focused_window_is_still_on_screen() {
+        let mut w = Watching::default();
+        w.report(MAIN, false, Some("main-run".into()));
+        w.report("popout-1", true, Some("out-run".into()));
+        // A native menu blurs the popout's page; the popout is still in front.
+        assert_eq!(
+            w.report("popout-1", false, Some("out-run".into())),
+            (false, Some("out-run".into()))
+        );
+        // The popout closes: the main window is what is left.
+        assert_eq!(w.forget("popout-1"), (false, Some("main-run".into())));
     }
 
     #[test]

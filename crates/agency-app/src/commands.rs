@@ -2574,10 +2574,16 @@ fn start_install(
 #[tauri::command]
 pub fn set_ui_state(
     app: tauri::AppHandle,
+    webview: tauri::Webview,
     state: State<'_, AppState>,
+    reg: State<'_, crate::popout::Registry>,
     focused: bool,
     active_run: Option<String>,
 ) {
+    // Each window reports for itself, and the backend sees the summary: see
+    // `popout::Watching` for what one shared pair cost once there were two.
+    let (focused, active_run) =
+        reg.watching.lock().unwrap().report(webview.label(), focused, active_run);
     // Coming back to the app opens the run whose notification arrived while
     // the user was away, via the same event the tray menu uses. A notification
     // posted while they were already here is left alone: only a click on it

@@ -240,19 +240,21 @@ export default function DocsView({ project, root, onOpenCheckout, onOpenFile }: 
   const onCheckout = root.kind === "project";
   useEffect(() => {
     const onOpen = (e: Event) => {
-      const d = (e as CustomEvent<{ projectId: string; path: string }>).detail;
+      const d = (e as CustomEvent<{ projectId: string; path: string; root?: FileRoot }>).detail;
       if (!d || d.projectId !== project.id) return;
-      // Every sender selects the project before dispatching, which drops the
-      // run selection, so the note is meant for the checkout. A worktree view
+      // A sender without a root selected the project, which drops the run
+      // selection, so the note is meant for the checkout. A worktree view
       // still mounted for that one frame would open it among the worktree's
       // tabs; it leaves it to the checkout's restore, which reads the stamp.
-      if (!onCheckout) return;
+      // A sender with one (a popped-out note, AGE-252) means that tree only.
+      const mine = d.root ? d.root.kind === root.kind && d.root.id === root.id : onCheckout;
+      if (!mine) return;
       void refreshRef.current().then(() => openRef.current(d.path));
     };
     window.addEventListener("agency:open-note", onOpen);
     return () => window.removeEventListener("agency:open-note", onOpen);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [project.id, onCheckout]);
+  }, [project.id, onCheckout, root.kind, root.id]);
 
   // A wikilink pointed at a note that doesn't exist; confirm before creating.
   const [pendingCreate, setPendingCreate] = useState<string | null>(null);
@@ -356,8 +358,9 @@ export default function DocsView({ project, root, onOpenCheckout, onOpenFile }: 
   // reads what was just typed rather than what the last autosave caught.
   const popouts = usePopouts();
   const popOutNote = async (path: string) => {
+    if (docsDir == null) return;
     await editorRefs.current.get(path)?.flush().catch(() => {});
-    popOut({ kind: "note", projectId: project.id, root, path }, noteLabel(path))
+    popOut({ kind: "note", projectId: project.id, root, docsDir, path }, noteLabel(path))
       .catch((e) => toastError(e, "Couldn't open a new window"));
   };
 
@@ -419,7 +422,8 @@ export default function DocsView({ project, root, onOpenCheckout, onOpenFile }: 
             />
           )}
           {tabs.open.filter((p) => warm.has(p)).map((p) => {
-            const out = findPopout(popouts, { kind: "note", projectId: project.id, root, path: p });
+            // Out as a note, or as the same file from the Files tab.
+            const out = findPopout(popouts, { kind: "note", projectId: project.id, root, docsDir, path: p });
             return (
               <div
                 key={`${viewKey}:${p}`}

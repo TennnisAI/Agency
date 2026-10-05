@@ -5,6 +5,7 @@
 // One window shows a popped-out item at a time. While it is out, the main
 // window draws a placeholder where the item would be, with a way to bring it
 // back, so two windows never edit one file or fight over one terminal's size.
+import { joinPath } from "./filePath";
 
 export type PopoutRoot = { kind: "run"; id: string } | { kind: "project"; id: string };
 
@@ -12,8 +13,9 @@ export type PopoutTarget =
   | { kind: "run"; projectId: string; runId: string }
   // `path` is relative to `root`, as the Files tab holds it.
   | { kind: "file"; projectId: string; root: PopoutRoot; path: string }
-  // `path` is relative to the docs folder, as the Docs tab holds it.
-  | { kind: "note"; projectId: string; root: PopoutRoot; path: string };
+  // `path` is relative to the docs folder, as the Docs tab holds it, and
+  // `docsDir` is that folder's path from `root` ("" when they are one).
+  | { kind: "note"; projectId: string; root: PopoutRoot; docsDir: string; path: string };
 
 export interface PopoutEntry {
   label: string;
@@ -38,11 +40,21 @@ export const isPopoutLabel = (label: string | null | undefined): boolean =>
 
 const sameRoot = (a: PopoutRoot, b: PopoutRoot) => a.kind === b.kind && a.id === b.id;
 
+/** A file's or a note's path from its root: a note's sits under the docs folder. */
+const rootPath = (t: Exclude<PopoutTarget, { kind: "run" }>) =>
+  t.kind === "note" ? joinPath(t.docsDir.replace(/\/+$/, ""), t.path) : t.path;
+
+/**
+ * Whether two targets put the same thing on screen. A note is a markdown file
+ * the Files tab can open too, so a note and a file at one path from one root
+ * are one item: either being out puts the other's pane behind a placeholder.
+ * Mirrors `Target::same_place` in popout.rs, which keeps it to one window.
+ */
 export function sameTarget(a: PopoutTarget, b: PopoutTarget): boolean {
-  if (a.kind === "run" && b.kind === "run") return a.runId === b.runId;
-  if (a.kind === "file" && b.kind === "file") return sameRoot(a.root, b.root) && a.path === b.path;
-  if (a.kind === "note" && b.kind === "note") return sameRoot(a.root, b.root) && a.path === b.path;
-  return false;
+  if (a.kind === "run" || b.kind === "run") {
+    return a.kind === "run" && b.kind === "run" && a.runId === b.runId;
+  }
+  return sameRoot(a.root, b.root) && rootPath(a) === rootPath(b);
 }
 
 /** The popout showing `target`, if it is out. */

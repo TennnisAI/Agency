@@ -12,8 +12,11 @@ fn run(dir: &Path, args: &[&str]) {
     );
 }
 
+/// Pinned to `main` because the squash-merge test checks out `origin/main`. Xcode's
+/// git defaults to `main` and the CI runner's to `master`, so it passed locally and
+/// failed on CI with "'origin/main' is not a commit".
 fn init_repo(dir: &Path) {
-    run(dir, &["init", "-q"]);
+    run(dir, &["init", "-q", "-b", "main"]);
     run(dir, &["config", "user.email", "t@e.com"]);
     run(dir, &["config", "user.name", "T"]);
     std::fs::write(dir.join("tracked.txt"), "one\n").unwrap();

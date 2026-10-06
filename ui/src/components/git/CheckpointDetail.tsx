@@ -57,7 +57,8 @@ export default function CheckpointDetail({ runId, cp, prev, checkout, onAct, onR
       {error && <div className="git-error">{error}</div>}
       {prev && files && files.length > 0 && (
         <div className="git-commitdetail-body">
-          <ChangedFiles files={files} selected={path} onSelect={setPath} />
+          <ChangedFiles taskId={runId} files={files} selected={path} onSelect={setPath}
+            onRevealInFiles={onRevealInFiles} />
           <div className="git-commitdetail-diff">
             {path ? (
               <DiffViewer key={path} taskId={runId} path={path} mode="checkpoint" from={prev.commit}

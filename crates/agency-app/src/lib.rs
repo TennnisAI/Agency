@@ -582,13 +582,14 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                 watches.retain(|id, _| seen.contains(id));
                 // Every agent tab, not just the lead in the snapshots above,
                 // can have written a run's status line.
-                state.settle_agent_status();
+                let live = state.live_sessions();
+                state.settle_agent_status(live.as_deref());
                 // The run's extra agent tabs, which the loop above does not
                 // reach: no notification of their own (the run is the thing
                 // notifications are about), but the same busy/idle
                 // bookkeeping, because the send queue below decides against it
                 // for whichever tab the user handed a prompt to (AGE-199).
-                for (id, hash) in state.extra_session_panes() {
+                for (id, hash) in state.extra_session_panes(live.as_deref().unwrap_or_default()) {
                     let changed = tab_panes.get(&id).is_none_or(|h| *h != hash);
                     tab_panes.insert(id.clone(), hash);
                     state.update_activity(&id, changed, now_ms);
@@ -618,7 +619,7 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                 // Preview MCP servers converge here too: archive, discard,
                 // restore and config edits all land within one tick, and a
                 // server that failed to bind retries on its own cadence.
-                state.sync_preview_servers();
+                state.sync_preview_servers_in(live.as_deref());
             }));
             if tick_result.is_err() {
                 log::error!("notifier tick panicked; continuing");

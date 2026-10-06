@@ -33,6 +33,16 @@ pub const STATE_PATH: &str = "/__agency__/state";
 /// the worktree has the variable unset, sends an empty header, and is ignored.
 pub const SESSION_ENV: &str = "AGENCY_SESSION_ID";
 pub const SESSION_HEADER: &str = "x-agency-session";
+/// The secret a post has to carry for the server to act on it, handed to the
+/// agent in its environment and never written into the worktree. The route
+/// shares an origin with the app the preview proxies, and the session header
+/// alone is a run id, which is in the worktree's path: any script on the
+/// previewed page could post a dialog that holds the send queue for good, or a
+/// `Stop` that clears a real one.
+pub const TOKEN_ENV: &str = "AGENCY_STATE_TOKEN";
+pub const TOKEN_HEADER: &str = "x-agency-token";
+/// Where [`token`] keeps the secret, under the app's data directory.
+const TOKEN_FILE: &str = "state-token";
 
 /// Where Claude Code reads workspace-local settings.
 const CLAUDE_SETTINGS: &[&str] = &[".claude", "settings.local.json"];
@@ -53,8 +63,8 @@ const CLAUDE_SETTINGS: &[&str] = &[".claude", "settings.local.json"];
 /// - `SessionEnd` fires on `/clear` as well as on exit.
 /// - `SessionStart` never fires an `http` hook, so it is not here.
 /// - `SubagentStop` fires after `Stop` for an internal subagent, carrying an
-///   `agent_id`. It is not subscribed, and anything with an `agent_id` is
-///   dropped at the parse.
+///   `agent_id`. It is not subscribed. A subagent's other events carry the
+///   same `agent_id`, and the parse keeps only its tool calls and dialogs.
 const CLAUDE_EVENTS: &[(&str, Option<&str>)] = &[
     ("UserPromptSubmit", None),
     ("PreToolUse", Some("*")),
@@ -84,9 +94,44 @@ fn hook_entry(port: u16) -> Value {
         "type": "http",
         "url": format!("http://127.0.0.1:{port}{STATE_PATH}"),
         "timeout": TIMEOUT_SECS,
-        "headers": { "X-Agency-Session": format!("${SESSION_ENV}") },
-        "allowedEnvVars": [SESSION_ENV],
+        "headers": {
+            "X-Agency-Session": format!("${SESSION_ENV}"),
+            "X-Agency-Token": format!("${TOKEN_ENV}"),
+        },
+        "allowedEnvVars": [SESSION_ENV, TOKEN_ENV],
     })
+}
+
+/// The install's state-hook secret, made on first use and kept in `data_dir`.
+///
+/// Kept rather than minted per start: an agent that survives an app restart in
+/// the daemon goes on posting the token it was launched with. A directory we
+/// cannot keep it in gets a token for this start alone, which costs those
+/// agents their reports after a restart and nothing else.
+pub fn token(data_dir: &Path) -> String {
+    let path = data_dir.join(TOKEN_FILE);
+    if let Ok(t) = std::fs::read_to_string(&path) {
+        let t = t.trim();
+        if !t.is_empty() {
+            return t.to_string();
+        }
+    }
+    let fresh = uuid::Uuid::new_v4().simple().to_string();
+    let kept = crate::issuefs::atomic_write(&path, &format!("{fresh}\n")).and_then(|()| {
+        use std::os::unix::fs::PermissionsExt;
+        Ok(std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?)
+    });
+    if let Err(e) = kept {
+        log::warn!("keeping the state-hook token in {}: {e}", path.display());
+    }
+    fresh
+}
+
+/// Whether `given` is the token, in time that does not depend on where the two
+/// first differ.
+pub fn token_matches(given: &str, token: &str) -> bool {
+    given.len() == token.len()
+        && given.bytes().zip(token.bytes()).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0
 }
 
 /// The matcher group Agency writes for one event.
@@ -254,7 +299,18 @@ fn write(worktree: &Path, repo_root: &Path, port: Option<u16>) -> Result<bool> {
         return Ok(false);
     }
     let path = settings_path(worktree);
-    let existing = std::fs::read_to_string(&path).ok();
+    // Only a missing file is an absent one. Read as absent, a file we could
+    // not read (not ours to read, or holding a byte that is not UTF-8) was
+    // merged from `{}`, and the swap below replaced the user's permission
+    // rules and hooks with ours alone.
+    let existing = match std::fs::read_to_string(&path) {
+        Ok(text) => Some(text),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => {
+            return Err(anyhow::Error::new(e)
+                .context(format!("reading {}: leaving it alone", path.display())))
+        }
+    };
     if existing.is_none() && port.is_none() {
         return Ok(false);
     }
@@ -318,7 +374,8 @@ mod tests {
         let h = &v["hooks"]["Stop"][0]["hooks"][0];
         assert_eq!(h["type"], "http");
         assert_eq!(h["headers"]["X-Agency-Session"], "$AGENCY_SESSION_ID");
-        assert_eq!(h["allowedEnvVars"], json!(["AGENCY_SESSION_ID"]));
+        assert_eq!(h["headers"]["X-Agency-Token"], "$AGENCY_STATE_TOKEN");
+        assert_eq!(h["allowedEnvVars"], json!(["AGENCY_SESSION_ID", "AGENCY_STATE_TOKEN"]));
         assert_eq!(h["timeout"], 2);
     }
 
@@ -463,6 +520,34 @@ mod tests {
             std::fs::read_to_string(repo.join(".claude/settings.local.json")).unwrap(),
             "{}\n"
         );
+    }
+
+    #[test]
+    fn the_token_is_kept_across_starts_and_compared_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        let t = token(dir.path());
+        assert_eq!(t.len(), 32);
+        assert_eq!(token(dir.path()), t, "an agent from the last start still matches");
+        let mode = std::fs::metadata(dir.path().join(TOKEN_FILE)).unwrap().permissions();
+        assert_eq!(std::os::unix::fs::PermissionsExt::mode(&mode) & 0o777, 0o600);
+        assert!(token_matches(&t, &t));
+        assert!(!token_matches("", &t));
+        assert!(!token_matches(&t[..31], &t));
+        assert!(!token_matches(&format!("{}x", &t[..31]), &t));
+    }
+
+    #[test]
+    fn a_settings_file_that_is_not_utf8_is_never_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        std::process::Command::new("git").args(["init", "-q"]).current_dir(repo).status().unwrap();
+        std::fs::create_dir_all(repo.join(".claude")).unwrap();
+        let path = repo.join(".claude/settings.local.json");
+        let original = b"{\"permissions\":{\"allow\":[\"Bash(\xff)\"]}}\n".to_vec();
+        std::fs::write(&path, &original).unwrap();
+        assert!(emit_for_agent("claude", repo, repo, Some(5249)).is_err());
+        assert!(withdraw(repo, repo).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
     }
 
     #[test]

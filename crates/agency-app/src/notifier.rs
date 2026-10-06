@@ -86,6 +86,13 @@ pub struct RunSnapshot {
     /// (AGE-206). `None` is an agent without hooks, or one whose report has
     /// lapsed, and leaves the turn-finished nudge to the pane.
     pub reported: Option<Said>,
+    /// When each of the run's tabs that is stopped on a dialog stopped, the
+    /// lead's included. Apart from `reported`, which is the lead's alone: a
+    /// dialog in any tab holds that tab's agent until the user answers it, but
+    /// a finished turn is the lead's to announce. Folded into one, the earliest
+    /// dialog stood for them all, so a second tab's dialog changed nothing and
+    /// never notified, and the lead's own `done` was hidden behind it.
+    pub blocked: Vec<i64>,
 }
 
 /// One reported state and when the agent entered it. The time is what tells
@@ -107,6 +114,8 @@ pub struct RunWatch {
     pub reported: Option<Said>,
     /// The reported `done` last acted on, by when it began.
     pub done_seen: Option<i64>,
+    /// The dialogs standing at the last tick, by when each began.
+    pub blocked: Vec<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -172,12 +181,15 @@ pub fn step(
     // fallback is off while a report stands, so nothing said it finished.
     let was = prev.and_then(|p| p.reported);
     if agent_running {
+        // Any dialog not standing last tick, in any tab: one banner however
+        // many appeared at once.
+        let had = prev.map_or(&[][..], |p| &p.blocked[..]);
+        if snap.blocked.iter().any(|s| !had.contains(s)) {
+            events.push(NotifyKind::Blocked);
+        }
         match snap.reported {
             // A turn in flight: whatever ends it is a new end.
             Some(s) if s.state == ActivityState::Working => idle_fired = false,
-            Some(s) if s.state == ActivityState::Blocked && was != Some(s) => {
-                events.push(NotifyKind::Blocked);
-            }
             Some(s) if s.state == ActivityState::Done && done_seen != Some(s.since_ms) => {
                 done_seen = Some(s.since_ms);
                 // Back from no report at all, the pane may have nudged for
@@ -224,6 +236,7 @@ pub fn step(
         idle_fired,
         reported: snap.reported,
         done_seen,
+        blocked: snap.blocked.clone(),
     };
     // Terminals are tracked (so a later promotion to notifying would have
     // history) but never produce events.
@@ -326,6 +339,7 @@ mod tests {
             pane_hash,
             user_input_pending,
             reported: None,
+            blocked: vec![],
         }
     }
     /// A one-script project, under the name the tests refer to.
@@ -462,6 +476,7 @@ mod tests {
             pane_hash: hash,
             user_input_pending: true,
             reported: None,
+            blocked: vec![],
         };
         // Exit edge: running -> exited must stay silent for terminals.
         let (w, _) = step(None, &term(running(), 1), 0, 2, 30);
@@ -489,6 +504,7 @@ mod tests {
             pane_hash: hash,
             user_input_pending: true,
             reported: None,
+            blocked: vec![],
         };
         // Attempt exit (running -> exited) must not toast.
         let (w, _) = step(None, &lsnap(running(), running(), 1), 0, 2, 30);
@@ -526,6 +542,7 @@ mod tests {
             pane_hash: 1,
             user_input_pending: true,
             reported: None,
+            blocked: vec![],
         };
         let (w, _) = step(None, &two(running(), running()), 0, 2, 30);
         // The build fails while the dev server keeps serving: one toast, named.
@@ -544,13 +561,20 @@ mod tests {
     }
 
     fn reporting(reported: Option<ActivityState>, hash: u64, is_loop: bool) -> RunSnapshot {
+        let blocked = if reported == Some(ActivityState::Blocked) { vec![0] } else { vec![] };
         let reported = reported.map(|state| Said { state, since_ms: 0 });
-        RunSnapshot { is_loop, reported, ..snap_input(running(), SessionStatus::Gone, hash, false) }
+        RunSnapshot {
+            is_loop,
+            reported,
+            blocked,
+            ..snap_input(running(), SessionStatus::Gone, hash, false)
+        }
     }
 
     fn said(state: ActivityState, since_ms: i64, hash: u64) -> RunSnapshot {
         RunSnapshot {
             reported: Some(Said { state, since_ms }),
+            blocked: if state == ActivityState::Blocked { vec![since_ms] } else { vec![] },
             ..snap_input(running(), SessionStatus::Gone, hash, false)
         }
     }
@@ -607,6 +631,30 @@ mod tests {
         assert_eq!(ev, vec![NotifyKind::Blocked]);
         let (_w, ev) = step(Some(&w), &said(ActivityState::Blocked, 3_000, 1), 1, 2, 30);
         assert_eq!(ev, vec![NotifyKind::Blocked]);
+    }
+
+    /// One tab's dialog standing, then another tab's: each is a banner, and
+    /// answering the second does not announce the first again.
+    #[test]
+    fn a_dialog_in_another_tab_is_its_own_notification() {
+        let with =
+            |blocked: Vec<i64>| RunSnapshot { blocked, ..said(ActivityState::Working, 0, 1) };
+        let (w, ev) = step(None, &with(vec![1_000]), 0, 2, 30);
+        assert_eq!(ev, vec![NotifyKind::Blocked]);
+        let (w, ev) = step(Some(&w), &with(vec![1_000, 30_000]), 1, 2, 30);
+        assert_eq!(ev, vec![NotifyKind::Blocked], "the second tab");
+        let (_w, ev) = step(Some(&w), &with(vec![1_000]), 2, 2, 30);
+        assert!(ev.is_empty(), "{ev:?}");
+    }
+
+    /// The lead finishing its turn while an extra tab sits on a dialog.
+    #[test]
+    fn a_dialog_elsewhere_does_not_hide_the_leads_finished_turn() {
+        let lead = |state, since| RunSnapshot { blocked: vec![1_000], ..said(state, since, 1) };
+        let (w, ev) = step(None, &lead(ActivityState::Working, 500), 0, 2, 30);
+        assert_eq!(ev, vec![NotifyKind::Blocked]);
+        let (_w, ev) = step(Some(&w), &lead(ActivityState::Done, 5_000), 1, 2, 30);
+        assert_eq!(ev, vec![NotifyKind::Idle]);
     }
 
     #[test]

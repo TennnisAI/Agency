@@ -96,7 +96,7 @@ assumptions did not survive.
 | `async: true` is accepted on an `http` hook but **not honoured**: a listener that slept 1.5s held the tool call for 1.5s. | The draft hoped `async` would remove the timeout concern. It does not. The server answers before it does anything else, and the 2s timeout bounds a wedged app. |
 | With nothing listening, the post costs nothing (loopback refuses at once), but the agent prints `PreToolUse:Bash hook error ... ECONNREFUSED` into its transcript on every tool call. A non-2xx answer prints the same kind of error. | The draft's reason to emit no hooks without a server (two seconds per tool call) was wrong; the real reason is the noise. The route answers 204 to everything, including a report it drops. |
 | `PostToolUseFailure` replaces `PostToolUse` when a tool fails. | Subscribed, as `working`. |
-| `Stop` is followed by `SubagentStop` from an internal subagent, carrying `agent_id`. | Not subscribed, and any body with an `agent_id` is dropped at the parse. |
+| `Stop` is followed by `SubagentStop` from an internal subagent, carrying `agent_id`. | Not subscribed. A subagent's other events carry its `agent_id` too, and the parse keeps only its tool calls (`working`) and its dialogs (`blocked`): a subagent ending is not the run's turn ending, but its permission dialog is the run's to answer. Dropping all of them once meant a subagent's dialog never read `blocked`. |
 | `Notification` with `idle_prompt` fires about 60s after `Stop`. | Subscribed, as "at the prompt", which is `done` only after a turn the hooks saw (see *Authority and lapse*). It is also what lands after an Esc, or a refused dialog, that left no other report. |
 | `SessionEnd` fires on `/clear` as well as on exit. | Mapped to `idle`: after `/clear` the session is fresh. |
 | Header values interpolate `$VAR` for names in `allowedEnvVars`; an unset variable becomes an empty string. | The session id rides in a header (see *Transport*). |
@@ -176,6 +176,7 @@ The receiving end is the run's existing server in `preview/`, bound to
 ```
 POST /__agency__/state
 X-Agency-Session: <run id, or <run>--<n> for an extra tab>
+X-Agency-Token: <the install's state-hook secret>
 { "hook_event_name": "PermissionRequest", "tool_name": "Bash", ... }
 ```
 
@@ -185,26 +186,37 @@ The emitted block in `.claude/settings.local.json` is, per event:
 { "type": "http",
   "url": "http://127.0.0.1:5249/__agency__/state",
   "timeout": 2,
-  "headers": { "X-Agency-Session": "$AGENCY_SESSION_ID" },
-  "allowedEnvVars": ["AGENCY_SESSION_ID"] }
+  "headers": { "X-Agency-Session": "$AGENCY_SESSION_ID",
+               "X-Agency-Token": "$AGENCY_STATE_TOKEN" },
+  "allowedEnvVars": ["AGENCY_SESSION_ID", "AGENCY_STATE_TOKEN"] }
 ```
 
 `agent_env`, the one builder all five launch paths go through, sets
-`AGENCY_SESSION_ID` to the session being launched.
+`AGENCY_SESSION_ID` to the session being launched and `AGENCY_STATE_TOKEN` to
+the token, for an agent whose hooks Agency writes and no other. Set for every
+agent, a `claude` that a Codex tab ran through its shell inherited the Codex
+tab's id, pinned that tab and left it reading done.
 
-**A session header, not a per-run token.** The draft proposed
-`AGENCY_RUN_TOKEN`, a random per-run secret, as the authentication. What
-actually needed solving was identity: every tab of a run shares the worktree,
-and so the settings file and the URL, and only the session id says which tab
-is reporting. The port already identifies the run, and a session of another
-run posting there is dropped. A `claude` the user starts by hand in the
-worktree has the variable unset, sends an empty header, and is ignored. A
-token would also have had to survive an app restart, since the agent's
-environment is fixed at spawn and outlives the server, which means persisting
-a secret per run. Against what threat? Browsers are already kept out by the
-server's origin check, and any local process that can reach loopback can
-already call `set_status` on the same server. That was not worth a stored
-secret.
+**A session header for identity, and a token as well.** Every tab of a run
+shares the worktree, and so the settings file and the URL, and only the session
+id says which tab is reporting. The port already identifies the run, and a
+session of another run posting there is dropped. A `claude` the user starts by
+hand in the worktree has the variable unset, sends an empty header, and is
+ignored.
+
+The first version stopped there, reasoning that the server's origin check kept
+browsers out. It does not keep out the one page that matters: the origin check
+passes loopback origins, and the previewed app is served from this very server.
+Any script on that page, or any dependency it loads, could post a dialog that
+holds the send queue for good (`blocked` has no timeout), or a `Stop` that
+clears a real one, knowing only a run id. So a post also has to carry
+`X-Agency-Token`, one random secret per install kept in the app's data
+directory (`state_hooks::token`, mode 0600). It lives in the agent's
+environment and never in the worktree, where the page cannot read it. It is
+kept rather than minted per start because an agent that survives an app
+restart goes on posting the token it was launched with. The route also drops
+any post carrying `Origin` or `Sec-Fetch-Site`: a browser puts `Origin` on every
+POST, and the hook client puts it on none.
 
 **Identity.** The header names the tab, but it cannot tell the tab's agent
 from a `claude` that agent starts through its Bash tool: the child inherits
@@ -306,7 +318,11 @@ the next launch rather than needing a version to be told apart.
 - Except when the pane outlasts every explanation. `done` and `idle` give way
   to the pane's `working` (unreported) once the pane is still changing a full
   `EXPLAINED_MS` (10s) after both the last report and the user's last
-  keystroke (`keyed`, from `run_input`; mouse and focus reports do not count).
+  keystroke (`keyed`, from `run_input`; mouse and focus reports do not count),
+  and has gone on changing every tick for `DRAWING_SUSTAINED_MS` (4s) past
+  that. One redraw is not drawing: a window resize, or a font or theme change,
+  reflows the captured pane once, and without the second rule each flipped a
+  finished turn to `working` for ten seconds and held the send queue.
   `/compact` fires only `PreCompact`, which is not subscribed, and a post can be
   lost, and without this a minute of compaction read `done` and the send queue
   typed into it. `blocked` has no such override: a dialog redraws as the user
@@ -354,10 +370,14 @@ is gone, not until the user presses a key at it (see above); a refused dialog
 is let go by the `idle_prompt` about a minute later.
 
 **`notifier.rs`.** `RunSnapshot` and `RunWatch` carry the reported state of the
-tab speaking for the run, or of any tab of it stopped on a dialog, with when the
-agent entered it (`Said`). `step()` fires on its edges: `Blocked` ("Agent
-needs you", "`{label}`: waiting on your answer") on entering `blocked`, and the
-existing turn-finished notification on entering `done`. An edge is a new
+tab speaking for the run, with when the agent entered it (`Said`), and apart
+from it when each of the run's tabs stopped on a dialog stopped (`blocked`).
+`step()` fires `Blocked` ("Agent needs you", "`{label}`: waiting on your
+answer") when a dialog appears that was not standing at the last tick, in any
+tab, and the existing turn-finished notification when the lead enters `done`.
+The two were one field at first, holding the earliest dialog in place of the
+lead's state: a second tab's dialog changed nothing and never notified, and the
+lead's finished turn was hidden behind it. An edge is a new
 `since`, not a new state: a turn that started and ended inside one 2s tick read
 `done` on both ticks. A `done` arriving after no report at all is skipped when
 the pane already nudged for that turn (an Esc, then `idle_prompt`). While a report is

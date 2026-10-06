@@ -979,7 +979,7 @@ fn extra_session_panes_cover_the_tabs_the_run_snapshot_misses() {
 
     let mut seen = false;
     for _ in 0..150 {
-        let panes = state.extra_session_panes();
+        let panes = state.extra_session_panes(&state.live_sessions().unwrap_or_default());
         if panes.iter().any(|(id, _)| *id == tab.id) {
             // The run's own session is the run snapshot's job; listing it here
             // too would have two observers writing one entry.
@@ -4365,12 +4365,13 @@ fn a_quiet_user_driven_run_reads_as_done_then_decays_to_idle() {
 
 /// POST one hook body to a run's server the way Claude Code's `http` hook
 /// does, and return the status line's code.
-fn post_hook(port: u16, session: &str, body: &str) -> u16 {
+fn post_hook(port: u16, session: &str, token: &str, body: &str) -> u16 {
     use std::io::{Read, Write};
     let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
     let req = format!(
         "POST /__agency__/state HTTP/1.1\r\nhost: 127.0.0.1\r\nx-agency-session: {session}\r\n\
-         content-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+         x-agency-token: {token}\r\ncontent-type: application/json\r\n\
+         content-length: {}\r\n\r\n{body}",
         body.len()
     );
     s.write_all(req.as_bytes()).unwrap();
@@ -4400,7 +4401,8 @@ fn a_claude_run_reports_blocked_through_its_own_server() {
     let claude = bin.join("claude");
     std::fs::write(
         &claude,
-        "#!/bin/sh\nprintf %s \"$AGENCY_SESSION_ID\" > \"$AGENCY_WORKSPACE_PATH/.session-id\"\nexec sleep 30\n",
+        "#!/bin/sh\nprintf %s \"$AGENCY_STATE_TOKEN\" > \"$AGENCY_WORKSPACE_PATH/.token\"\n\
+         printf %s \"$AGENCY_SESSION_ID\" > \"$AGENCY_WORKSPACE_PATH/.session-id\"\nexec sleep 30\n",
     )
     .unwrap();
     {
@@ -4441,24 +4443,34 @@ fn a_claude_run_reports_blocked_through_its_own_server() {
         std::thread::sleep(std::time::Duration::from_millis(40));
     }
     assert_eq!(std::fs::read_to_string(wt.join(".session-id")).unwrap(), id);
+    // And handed the token its posts are taken on, which no settings file holds.
+    let token = std::fs::read_to_string(wt.join(".token")).unwrap();
+    assert_eq!(token.len(), 32, "{token:?}");
+    assert!(!std::fs::read_to_string(wt.join(".claude/settings.local.json"))
+        .unwrap()
+        .contains(&token));
 
     let activity = |s: &AppState| {
         s.list_runs(&project.id).unwrap().into_iter().find(|r| r.id == id).unwrap().activity
     };
     let event = |name: &str| format!(r#"{{"hook_event_name":"{name}","tool_input":{{}}}}"#);
-    assert_eq!(post_hook(port, &id, &event("PermissionRequest")), 204);
+    assert_eq!(post_hook(port, &id, &token, &event("PermissionRequest")), 204);
     let a = activity(&state).unwrap();
     assert_eq!((a.state, a.reported), (ActivityState::Blocked, true));
 
     // Another run's session posting here is not this run's report.
-    assert_eq!(post_hook(port, "some-other-run", &event("Stop")), 204);
+    assert_eq!(post_hook(port, "some-other-run", &token, &event("Stop")), 204);
+    assert_eq!(activity(&state).unwrap().state, ActivityState::Blocked);
+    // Nor is a post without the token, which is all a page on the preview's
+    // origin could send.
+    assert_eq!(post_hook(port, &id, "", &event("Stop")), 204);
     assert_eq!(activity(&state).unwrap().state, ActivityState::Blocked);
 
     // Esc on the dialog fires no hook; the keystroke is what ends blocked.
     state.run_input(&id, b"\x1b").unwrap();
     assert!(!activity(&state).unwrap().reported, "back on the pane");
 
-    assert_eq!(post_hook(port, &id, &event("Stop")), 204);
+    assert_eq!(post_hook(port, &id, &token, &event("Stop")), 204);
     let a = activity(&state).unwrap();
     assert_eq!((a.state, a.reported), (ActivityState::Done, true));
 

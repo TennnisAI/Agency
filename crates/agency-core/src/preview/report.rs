@@ -38,6 +38,8 @@ pub struct Event {
     /// since the child inherits the variable the header is built from; this
     /// can, and the app pins each tab to the first one it hears from.
     pub conversation: Option<String>,
+    /// Sent by a subagent (the Task tool) rather than the main agent.
+    pub subagent: bool,
 }
 
 #[derive(Deserialize)]
@@ -45,8 +47,7 @@ struct Body {
     hook_event_name: Option<String>,
     notification_type: Option<String>,
     session_id: Option<String>,
-    /// Set on events from a subagent. A run's state is its main agent's: four
-    /// subagents finishing would otherwise read as four turns ending.
+    /// Set on events from a subagent.
     agent_id: Option<serde_json::Value>,
 }
 
@@ -55,9 +56,7 @@ struct Body {
 /// verified to mean.
 pub fn parse(body: &[u8]) -> Option<Event> {
     let b: Body = serde_json::from_slice(body).ok()?;
-    if b.agent_id.is_some_and(|v| !v.is_null()) {
-        return None;
-    }
+    let subagent = b.agent_id.is_some_and(|v| !v.is_null());
     let state = match b.hook_event_name.as_deref()? {
         "UserPromptSubmit" | "PreToolUse" | "PostToolUse" | "PostToolUseFailure" => {
             Reported::Working
@@ -70,7 +69,15 @@ pub fn parse(body: &[u8]) -> Option<Event> {
         "SessionEnd" => Reported::Idle,
         _ => return None,
     };
-    Some(Event { state, conversation: b.session_id.filter(|s| !s.is_empty()) })
+    // A subagent's turn ending is not the run's: four of them finishing would
+    // read as four turns ending. Its tool calls and its dialogs are the run's,
+    // though. Every subagent post was dropped here once, and a permission
+    // dialog a subagent raised never read blocked: the report lapsed, the
+    // quiet pane read done, and a queued message's Enter approved the command.
+    if subagent && !matches!(state, Reported::Working | Reported::Blocked) {
+        return None;
+    }
+    Some(Event { state, conversation: b.session_id.filter(|s| !s.is_empty()), subagent })
 }
 
 /// Whether a report from `ev` speaks for the tab whose pinned conversation is
@@ -149,11 +156,24 @@ mod tests {
     }
 
     #[test]
-    fn a_subagent_never_speaks_for_the_run() {
-        let body = json!({ "hook_event_name": "Stop", "agent_id": "ad32eb3b97e43b23c" });
-        assert_eq!(of(body), None);
+    fn a_subagent_never_ends_the_runs_turn() {
+        let sub =
+            |event: &str| json!({ "hook_event_name": event, "agent_id": "ad32eb3b97e43b23c" });
+        assert_eq!(of(sub("Stop")), None);
+        assert_eq!(of(sub("SessionEnd")), None);
         let main = json!({ "hook_event_name": "Stop", "agent_id": null });
         assert_eq!(of(main), Some(Reported::Done), "a null agent_id is the main agent");
+    }
+
+    #[test]
+    fn a_subagents_work_and_dialogs_are_the_runs() {
+        let sub = |event: &str| {
+            parse(json!({ "hook_event_name": event, "agent_id": "a1" }).to_string().as_bytes())
+        };
+        let blocked = sub("PermissionRequest").unwrap();
+        assert_eq!((blocked.state, blocked.subagent), (Reported::Blocked, true));
+        assert_eq!(sub("PostToolUse").unwrap().state, Reported::Working);
+        assert!(!parse(br#"{"hook_event_name":"Stop"}"#).unwrap().subagent);
     }
 
     #[test]
@@ -167,7 +187,7 @@ mod tests {
     }
 
     fn ev(state: Reported, conversation: &str) -> Event {
-        Event { state, conversation: Some(conversation.to_string()) }
+        Event { state, conversation: Some(conversation.to_string()), subagent: false }
     }
 
     #[test]
@@ -196,7 +216,8 @@ mod tests {
     #[test]
     fn a_body_without_a_conversation_is_admitted_and_pins_nothing() {
         let mut pin = None;
-        assert!(admit(&mut pin, &Event { state: Reported::Working, conversation: None }));
+        let ev = Event { state: Reported::Working, conversation: None, subagent: false };
+        assert!(admit(&mut pin, &ev));
         assert_eq!(pin, None);
         let blank = parse(br#"{"hook_event_name":"Stop","session_id":""}"#).unwrap();
         assert_eq!(blank.conversation, None);

@@ -2810,8 +2810,10 @@ pub struct AppState {
     /// session exists, so a sweep in between must not read that as dead.
     hooks_armed: Mutex<HashMap<String, Instant>>,
     /// Whether each worktree's settings carry our hooks, keyed by the file's
-    /// size and mtime, so the 2s sweep stats it rather than parsing it.
-    hooks_seen: Mutex<HashMap<PathBuf, (u64, std::time::SystemTime, bool)>>,
+    /// stamp, so the 2s sweep stats it rather than parsing it.
+    hooks_seen: Mutex<HashMap<PathBuf, (agency_core::usage::FileStamp, bool)>>,
+    /// What a state-hook post has to carry (see `agency_core::state_hooks::token`).
+    state_token: Arc<str>,
     /// Runs whose server an agent's MCP config may name: it was up while the
     /// tools were on. Only these outlive their reason to run (see
     /// `preview_port_this_sweep`); one up for state hooks alone has no client
@@ -3137,6 +3139,7 @@ impl AppState {
             report_pins: Arc::new(Mutex::new(HashMap::new())),
             hooks_armed: Mutex::new(HashMap::new()),
             hooks_seen: Mutex::new(HashMap::new()),
+            state_token: Arc::from(agency_core::state_hooks::token(data_dir)),
             mcp_named: Mutex::new(HashSet::new()),
             usage: Mutex::new(HashMap::new()),
             prompted: Mutex::new(HashSet::new()),
@@ -6351,10 +6354,19 @@ impl AppState {
                 }
                 let mut map = activity.lock().unwrap();
                 let prev = map.get(session).copied();
-                let next = crate::activity::apply(prev, ev.state, crate::activity::now_ms());
+                let next = crate::activity::apply_event(prev, &ev, crate::activity::now_ms());
                 map.insert(session.to_string(), next);
             });
-        agency_core::preview::Hooks { facts, screenshot, caps, open_file, set_status, report }
+        let state_token = self.state_token.clone();
+        agency_core::preview::Hooks {
+            facts,
+            screenshot,
+            caps,
+            open_file,
+            set_status,
+            report,
+            state_token,
+        }
     }
 
     /// Have this run's preview server listening on the port its emitted MCP
@@ -6418,14 +6430,14 @@ impl AppState {
             self.hooks_seen.lock().unwrap().remove(worktree);
             return false;
         };
-        let stamp = (meta.len(), meta.modified().unwrap_or(std::time::UNIX_EPOCH));
-        if let Some(&(len, at, on)) = self.hooks_seen.lock().unwrap().get(worktree) {
-            if (len, at) == stamp {
-                return on;
+        let stamp = agency_core::usage::FileStamp::of(&meta);
+        if let Some((seen, on)) = self.hooks_seen.lock().unwrap().get(worktree) {
+            if *seen == stamp {
+                return *on;
             }
         }
         let on = agency_core::state_hooks::emitted(worktree);
-        self.hooks_seen.lock().unwrap().insert(worktree.to_path_buf(), (stamp.0, stamp.1, on));
+        self.hooks_seen.lock().unwrap().insert(worktree.to_path_buf(), (stamp, on));
         on
     }
 
@@ -6435,6 +6447,13 @@ impl AppState {
     /// take effect within ~2s without every one of those paths owning
     /// teardown.
     pub fn sync_preview_servers(&self) {
+        let live = self.live_sessions();
+        self.sync_preview_servers_in(live.as_deref());
+    }
+
+    /// `sync_preview_servers` against a listing the caller already has (the
+    /// notifier tick's).
+    pub fn sync_preview_servers_in(&self, live: Option<&[(String, SessionStatus)]>) {
         let runs: Vec<(String, PathBuf, Option<u16>, PathBuf)> = {
             let reg = self.registry.lock().unwrap();
             let Ok(projects) = reg.list_projects() else { return };
@@ -6453,14 +6472,15 @@ impl AppState {
         let shares = self.shares_open_file();
         // Snapshot rather than lock per run: `config::load` below is a file
         // read, and the preview map is what the notifier and every tool call
-        // contend on.
+        // contend on. `preview` before `mcp_named`, the order
+        // `ensure_preview_server` takes them in: this snapshot took them the
+        // other way round, and a launch landing on the sweep deadlocked the
+        // notifier thread and the launch command against each other.
         let serving: HashSet<String> = {
+            let up = self.preview.lock().unwrap();
             let named = self.mcp_named.lock().unwrap();
-            self.preview.lock().unwrap().keys().filter(|id| named.contains(*id)).cloned().collect()
+            up.keys().filter(|id| named.contains(*id)).cloned().collect()
         };
-        // A failed listing says nothing about the agents, so it reads as all
-        // of them alive: taken as none, it would strip every run's hooks.
-        let live = self.term.read().unwrap().list().ok();
         self.hooks_armed.lock().unwrap().retain(|_, at| at.elapsed() < HOOKS_ARMING);
         let worktrees: HashSet<PathBuf> = runs.iter().map(|(_, _, _, w)| w.clone()).collect();
         self.hooks_seen.lock().unwrap().retain(|w, _| worktrees.contains(w));
@@ -6471,7 +6491,9 @@ impl AppState {
             // app restart in the daemon read these hooks when it started, and
             // posts to this port whether anything listens or not.
             let hooked = self.hooks_emitted(&worktree);
-            let alive = live.as_ref().is_none_or(|l| !running_agent_sessions(&id, l).is_empty());
+            // A failed listing says nothing about the agents, so it reads as all
+            // of them alive: taken as none, it would strip every run's hooks.
+            let alive = live.is_none_or(|l| !running_agent_sessions(&id, l).is_empty());
             let arming = self.hooks_armed.lock().unwrap().contains_key(&id);
             if hooked && !alive && !arming {
                 // Nothing left to post, and a `claude` the user starts by hand
@@ -6487,7 +6509,7 @@ impl AppState {
                 // it changes, or every sweep would try again with a `git` call.
                 if !took_out {
                     if let Some(seen) = self.hooks_seen.lock().unwrap().get_mut(&worktree) {
-                        seen.2 = false;
+                        seen.1 = false;
                     }
                 }
             }
@@ -7411,15 +7433,20 @@ impl AppState {
     /// Hold each run's `set_status` line only while every agent that could have
     /// written it still runs (see `AgentStatusEntry::witnesses`). The line said
     /// what a process was doing; a finished, crashed or closed one is not doing
-    /// it. One daemon listing per tick, and none while no run has a line.
-    pub fn settle_agent_status(&self) {
-        if self.agent_status.lock().unwrap().is_empty() {
-            return;
-        }
+    /// it. Against the tick's listing (see `live_sessions`).
+    pub fn settle_agent_status(&self, live: Option<&[(String, SessionStatus)]>) {
         // A failed listing says nothing about the agents, so it drops nothing:
         // read as empty, it would wipe every line on the board.
-        let Ok(live) = self.term.read().unwrap().list() else { return };
-        retain_witnessed_status(&mut self.agent_status.lock().unwrap(), &live);
+        let Some(live) = live else { return };
+        retain_witnessed_status(&mut self.agent_status.lock().unwrap(), live);
+    }
+
+    /// The daemon's session listing, once for the whole notifier tick: the
+    /// status lines, the extra tabs and the preview sweep each asked for their
+    /// own, and the sweep's made it four round-trips a tick for the same
+    /// answer. `None` is a listing that failed, which says nothing.
+    pub fn live_sessions(&self) -> Option<Vec<(String, SessionStatus)>> {
+        self.term.read().unwrap().list().ok()
     }
 
     /// Drop activity entries for runs no longer in the watch snapshot
@@ -7671,8 +7698,16 @@ impl AppState {
         // Here rather than at each launch site for the reason the pin below is:
         // every launch passes through, so none can start an agent whose hooks
         // point nowhere, or whose reports cannot say which tab they are from.
-        self.prepare_state_hooks(profile, worktree, repo, run_id, session, port);
-        env.push((agency_core::state_hooks::SESSION_ENV.to_string(), session.to_string()));
+        //
+        // Only an agent whose hooks we write is told its session. A `claude`
+        // that a Codex tab ran through its shell inherited the variable, posted
+        // under the Codex tab's id, pinned that tab's conversation and left it
+        // reading done.
+        if self.prepare_state_hooks(profile, worktree, repo, run_id, session, port) {
+            use agency_core::state_hooks::{SESSION_ENV, TOKEN_ENV};
+            env.push((SESSION_ENV.to_string(), session.to_string()));
+            env.push((TOKEN_ENV.to_string(), self.state_token.to_string()));
+        }
         // The daemon inherited this process's PATH when it was spawned at
         // startup; an agent installed since then may live in a directory
         // adopted after that (pathenv::adopt_new_dirs), so the session gets
@@ -7698,6 +7733,9 @@ impl AppState {
     /// The hooks are only written once the server is up, and are taken out
     /// when it cannot be: Claude Code prints a hook error into the transcript
     /// on every tool call whose post is refused.
+    ///
+    /// Whether the agent is one Agency writes hooks for, in a worktree, and
+    /// so one that should be told its session.
     fn prepare_state_hooks(
         &self,
         profile: &AgentProfile,
@@ -7706,7 +7744,7 @@ impl AppState {
         run_id: &str,
         session: &str,
         port: Option<u16>,
-    ) {
+    ) -> bool {
         // A new process. What the last one reported is not about this one, and
         // nothing would replace it before the first prompt: `SessionStart` does
         // not fire an `http` hook.
@@ -7718,7 +7756,7 @@ impl AppState {
         // it at launch; see `emit_mcp`'s caller.
         let command = recipe_command(profile);
         if worktree == repo || !agency_core::state_hooks::agent_supported(&command) {
-            return;
+            return false;
         }
         let config = agency_core::config::load(repo);
         self.hooks_armed.lock().unwrap().insert(run_id.to_string(), Instant::now());
@@ -7729,6 +7767,7 @@ impl AppState {
         {
             log::warn!("writing state hooks into {}: {e}", worktree.display());
         }
+        true
     }
 
     /// Mint the conversation a fresh launch of `session` will open, and record
@@ -11468,8 +11507,7 @@ impl AppState {
     /// Read from the daemon's own listing rather than the registry: a tab is a
     /// session here only if it is actually running, which is the same thing
     /// the drain is about to ask about.
-    pub fn extra_session_panes(&self) -> Vec<(String, u64)> {
-        let live = self.term.read().unwrap().list().unwrap_or_default();
+    pub fn extra_session_panes(&self, live: &[(String, SessionStatus)]) -> Vec<(String, u64)> {
         live.iter()
             .filter(|(_, status)| matches!(status, SessionStatus::Running))
             .filter_map(|(name, _)| {
@@ -11487,12 +11525,13 @@ impl AppState {
             .collect()
     }
 
-    /// What a run's agents report, for the notifier: the lead tab's report,
-    /// unless some other tab of the run is stopped on a dialog. A finished turn
-    /// is the lead's to announce, but a dialog in any tab holds that tab's
-    /// agent until the user answers it, and reading the lead alone meant an
-    /// extra Claude tab's permission prompt never said "Agent needs you".
-    fn run_reported(&self, run_id: &str, lead: &str) -> Option<notifier::Said> {
+    /// What a run's agents report, for the notifier: the lead tab's own
+    /// report, and when each tab stopped on a dialog stopped, the lead's
+    /// included. A finished turn is the lead's to announce, but a dialog in
+    /// any tab holds that tab's agent until the user answers it, and reading
+    /// the lead alone meant an extra Claude tab's permission prompt never said
+    /// "Agent needs you". See `notifier::RunSnapshot::blocked`.
+    fn run_reported(&self, run_id: &str, lead: &str) -> (Option<notifier::Said>, Vec<i64>) {
         use crate::activity::ActivityState;
         let now_ms = crate::activity::now_ms();
         let map = self.activity.lock().unwrap();
@@ -11502,17 +11541,15 @@ impl AppState {
                 .filter(|a| a.reported)
                 .map(|a| notifier::Said { state: a.state, since_ms: a.since })
         };
-        let of_lead = said(lead);
-        if of_lead.is_some_and(|s| s.state == ActivityState::Blocked) {
-            return of_lead;
-        }
-        let blocked_elsewhere = map
+        let mut blocked: Vec<i64> = map
             .keys()
-            .filter(|id| id.as_str() != lead && split_session_id(id).0 == run_id)
+            .filter(|id| split_session_id(id).0 == run_id)
             .filter_map(|id| said(id))
             .filter(|s| s.state == ActivityState::Blocked)
-            .min_by_key(|s| s.since_ms);
-        blocked_elsewhere.or(of_lead)
+            .map(|s| s.since_ms)
+            .collect();
+        blocked.sort_unstable();
+        (said(lead), blocked)
     }
 
     /// Snapshot every non-archived run across all projects for the watcher:
@@ -11556,6 +11593,7 @@ impl AppState {
                 pane_hash: 0,
                 user_input_pending: false,
                 reported: None,
+                blocked: vec![],
             });
             let runs = self.registry.lock().unwrap().list_runs(&proj.id)?;
             for run in runs {
@@ -11585,7 +11623,7 @@ impl AppState {
                 // on a session nobody can type into any more.
                 let typed_into = lead.strip_prefix("agency-").unwrap_or(&lead);
                 let user_input_pending = self.input_seen.lock().unwrap().contains(typed_into);
-                let reported = self.run_reported(&run.id, typed_into);
+                let (reported, blocked) = self.run_reported(&run.id, typed_into);
                 // Any run with a loop config, active OR terminal: suppression
                 // must not depend on when the driver persists the terminal
                 // transition, or the final attempt's exit edge (which lands on
@@ -11603,6 +11641,7 @@ impl AppState {
                     pane_hash,
                     user_input_pending,
                     reported,
+                    blocked,
                 });
             }
         }

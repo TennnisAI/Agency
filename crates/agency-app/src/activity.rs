@@ -54,6 +54,11 @@ pub fn now_ms() -> i64 {
 pub struct ActivityEntry {
     /// Last time the pane content changed.
     pub last_change_ms: i64,
+    /// The first change of the current run of changes on consecutive ticks
+    /// (see [`DRAWING_GAP_MS`]): how long the pane has been drawing without a
+    /// pause, which a busy streak cannot say, since one change keeps a streak
+    /// alive for [`WORKING_TTL_MS`].
+    pub drawing_since_ms: i64,
     /// When the current busy streak began (meaningful only while working).
     pub busy_since_ms: i64,
     /// Whether the run was within [`WORKING_TTL_MS`] at the last tick; only
@@ -98,6 +103,18 @@ pub enum ActivityState {
 /// reported.
 pub const EXPLAINED_MS: i64 = WORKING_TTL_MS;
 
+/// The longest gap between two pane changes that still counts them as one
+/// stretch of drawing: a 2s tick and some slack for a slow one, but not two.
+pub const DRAWING_GAP_MS: i64 = 3_500;
+
+/// How long the pane has to keep drawing, every tick, past what explains it
+/// before it overrules a resting report. One redraw is not the agent working:
+/// a window resize reflows the captured pane, and so does a font or theme
+/// change. Each read as unreported `working` for ten seconds after a turn
+/// ended, held the send queue and dropped the notifier back to the pane.
+/// Compaction animates every tick for as long as it runs.
+pub const DRAWING_SUSTAINED_MS: i64 = 4_000;
+
 /// What the UI sees on `RunInfo`: the state plus when it began, so elapsed
 /// time is computable client-side without further round-trips.
 #[derive(Debug, Clone, Copy, serde::Serialize)]
@@ -121,13 +138,19 @@ pub fn update(prev: Option<ActivityEntry>, pane_changed: bool, now_ms: i64) -> A
     let working = now_ms - last_change_ms < WORKING_TTL_MS;
     // An idle→working edge anchors the new busy streak at the change itself.
     let busy_since_ms = if working && !p.working { last_change_ms } else { p.busy_since_ms };
-    ActivityEntry { last_change_ms, busy_since_ms, working, ..p }
+    let drawing_since_ms = if pane_changed && now_ms - p.last_change_ms > DRAWING_GAP_MS {
+        now_ms
+    } else {
+        p.drawing_since_ms
+    };
+    ActivityEntry { last_change_ms, busy_since_ms, drawing_since_ms, working, ..p }
 }
 
 fn fresh(now_ms: i64) -> ActivityEntry {
     ActivityEntry {
         last_change_ms: now_ms,
         busy_since_ms: now_ms,
+        drawing_since_ms: now_ms,
         working: true,
         report: None,
         last_key_ms: None,
@@ -178,6 +201,33 @@ pub fn apply(
     reported(prev, state, now_ms)
 }
 
+/// Fold in one hook post, from the main agent or a subagent.
+///
+/// A subagent's tool call does not end a dialog standing in the run. Subagents
+/// run side by side: one stops on a permission dialog while another goes on
+/// calling tools, and its `working` replaced the `blocked` and lifted the send
+/// queue's hold with the dialog still on screen. The dialog's own subagent
+/// reporting its next tool call cannot be told apart from that, so the
+/// dialog is let go the way a refused one is: the main agent's next report,
+/// or a key that can answer it (see [`answered`]).
+pub fn apply_event(
+    prev: Option<ActivityEntry>,
+    ev: &agency_core::preview::report::Event,
+    now_ms: i64,
+) -> ActivityEntry {
+    use agency_core::preview::report::Reported;
+    match prev {
+        Some(e)
+            if ev.subagent
+                && ev.state == Reported::Working
+                && e.report.is_some_and(|r| r.state == ActivityState::Blocked) =>
+        {
+            e
+        }
+        _ => apply(prev, ev.state, now_ms),
+    }
+}
+
 /// The user pressed a key that can answer a prompt (see
 /// `sendq::answers_a_prompt`) while the agent was blocked.
 ///
@@ -216,7 +266,8 @@ pub fn awaiting_answer(entry: &ActivityEntry) -> bool {
 }
 
 /// Whether the pane has kept changing well past the last report and the last
-/// keystroke: the agent is doing something its hooks did not report.
+/// keystroke, tick after tick: the agent is doing something its hooks did not
+/// report.
 ///
 /// A resting report has no expiry, and nothing but another report moved it.
 /// `/compact` fires `PreCompact`, which is not subscribed, and a post can be
@@ -224,11 +275,13 @@ pub fn awaiting_answer(entry: &ActivityEntry) -> bool {
 /// `done` through a minute of compaction and the send queue typed into it.
 /// The pane changing is not enough on its own, because the agent redraws as
 /// its turn ends and the user's typing echoes; both are explained by
-/// something we saw, and only the change that outlasts them both is not.
+/// something we saw, and only the change that outlasts them both is not. Nor
+/// is a change that outlasts them once: see [`DRAWING_SUSTAINED_MS`].
 pub fn drawing_unreported(entry: &ActivityEntry, report: &Report, now_ms: i64) -> bool {
     let explained = entry.last_key_ms.map_or(report.at_ms, |k| k.max(report.at_ms));
+    let unexplained_from = entry.drawing_since_ms.max(explained + EXPLAINED_MS);
     now_ms - entry.last_change_ms < WORKING_TTL_MS
-        && entry.last_change_ms - explained >= EXPLAINED_MS
+        && entry.last_change_ms - unexplained_from >= DRAWING_SUSTAINED_MS
 }
 
 /// Classify a run's current state from its bookkeeping. `turn_driven` says a
@@ -568,6 +621,27 @@ mod tests {
         assert_eq!((info.state, info.since, info.reported), (ActivityState::Done, 0, true));
     }
 
+    /// A window resize a minute after the turn ended reflows the pane once, or
+    /// over two ticks while the user drags. Nothing is drawing.
+    #[test]
+    fn a_redraw_nobody_made_does_not_unfinish_a_turn() {
+        let mut e = reported(None, ActivityState::Done, 0);
+        e = update(Some(e), false, 2_000);
+        for t in [60_000, 62_000] {
+            e = update(Some(e), true, t);
+            assert_eq!(classify(&e, false, t).state, ActivityState::Done, "t={t}");
+        }
+        for t in [64_000, 66_000, 80_000] {
+            e = update(Some(e), false, t);
+            assert_eq!(classify(&e, false, t).state, ActivityState::Done, "t={t}");
+        }
+        // Two separate resizes are two redraws, not one stretch of drawing.
+        for t in [90_000, 94_000, 98_000] {
+            e = update(Some(e), true, t);
+            assert_eq!(classify(&e, false, t).state, ActivityState::Done, "t={t}");
+        }
+    }
+
     /// The other side of the same rule: the user writing their next prompt, a
     /// key every few seconds for a minute, changes the pane the whole time.
     #[test]
@@ -593,6 +667,22 @@ mod tests {
             e = update(Some(e), true, t);
         }
         assert_eq!(state(&e, false, 60_000), ActivityState::Blocked);
+    }
+
+    #[test]
+    fn a_subagent_working_on_does_not_end_anothers_dialog() {
+        use agency_core::preview::report::Event;
+        let ev = |state, subagent| Event { state, conversation: None, subagent };
+        let e = apply_event(None, &ev(Reported::Blocked, true), 1_000);
+        assert!(awaiting_answer(&e));
+        let e = apply_event(Some(e), &ev(Reported::Working, true), 2_000);
+        assert!(awaiting_answer(&e), "a sibling subagent's tool call");
+        assert_eq!(state(&e, false, 2_000), ActivityState::Blocked);
+        let e = apply_event(Some(e), &ev(Reported::Working, false), 3_000);
+        assert!(!awaiting_answer(&e), "the main agent going on is the dialog gone");
+        // With no dialog up, a subagent's tool call is the run working.
+        let e = apply_event(Some(e), &ev(Reported::Working, true), 4_000);
+        assert_eq!(e.report.unwrap().at_ms, 4_000);
     }
 
     #[test]

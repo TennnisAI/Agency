@@ -473,6 +473,20 @@ pub struct FileStamp {
     pub mtime_ms: i64,
 }
 
+impl FileStamp {
+    pub fn of(meta: &std::fs::Metadata) -> FileStamp {
+        FileStamp {
+            len: meta.len(),
+            mtime_ms: meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0),
+        }
+    }
+}
+
 /// Cached per-directory accounting. Transcripts are append-only and a busy
 /// worktree accumulates megabytes of them, so re-reading every file on a 2s
 /// poll would be wasteful. A file is re-read only when its length or mtime
@@ -495,15 +509,7 @@ impl UsageCache {
         let mut present: Vec<PathBuf> = Vec::new();
         for path in transcripts(dir) {
             let Ok(meta) = std::fs::metadata(&path) else { continue };
-            let stamp = FileStamp {
-                len: meta.len(),
-                mtime_ms: meta
-                    .modified()
-                    .ok()
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|d| d.as_millis() as i64)
-                    .unwrap_or(0),
-            };
+            let stamp = FileStamp::of(&meta);
             present.push(path.clone());
 
             let unchanged = self.files.get(&path).is_some_and(|(s, _)| *s == stamp);

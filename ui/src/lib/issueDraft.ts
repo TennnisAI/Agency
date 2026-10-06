@@ -108,3 +108,67 @@ export function draftExtras(draft: IssueDraft): IssuePatch | null {
   if (draft.scheduled) p.scheduled = draft.scheduled;
   return Object.keys(p).length > 0 ? p : null;
 }
+
+type DraftStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
+
+// Every project's draft, and which of them are being saved, shared by every
+// mount of the board. Neither can live in the board's state. The board stays
+// mounted across a project switch, so a save that finished on project A while
+// B was showing cleared A's stored draft but not the copy in state, and going
+// back to A offered the filed issue to be saved again. It also unmounts on a
+// tab switch, so a board remounted mid-save forgot the save was running and
+// let Save file the issue twice.
+export interface DraftStore {
+  get(key: string): IssueDraft | null;
+  set(key: string, draft: IssueDraft | null): void;
+  saving(key: string): boolean;
+  setSaving(key: string, on: boolean): void;
+  subscribe(notify: () => void): () => void;
+}
+
+// `storage` is a getter, and may return null or throw, because the webview's
+// storage can be missing or refuse access; the drafts then live in memory only.
+export function createDraftStore(storage: () => DraftStorage | null): DraftStore {
+  // Parsed once per key, so a snapshot is the same object until it changes.
+  const cache = new Map<string, IssueDraft | null>();
+  const inFlight = new Set<string>();
+  const listeners = new Set<() => void>();
+  const notify = () => listeners.forEach((l) => l());
+  return {
+    get(key) {
+      if (!cache.has(key)) {
+        let draft: IssueDraft | null = null;
+        try {
+          const s = storage();
+          if (s) draft = loadDraft(s, key);
+        } catch {
+          /* storage unavailable */
+        }
+        cache.set(key, draft);
+      }
+      return cache.get(key) ?? null;
+    },
+    set(key, draft) {
+      cache.set(key, draft);
+      try {
+        const s = storage();
+        if (s) saveDraft(s, key, draft);
+      } catch {
+        /* storage unavailable */
+      }
+      notify();
+    },
+    saving: (key) => inFlight.has(key),
+    setSaving(key, on) {
+      if (on) inFlight.add(key);
+      else inFlight.delete(key);
+      notify();
+    },
+    subscribe(l) {
+      listeners.add(l);
+      return () => {
+        listeners.delete(l);
+      };
+    },
+  };
+}

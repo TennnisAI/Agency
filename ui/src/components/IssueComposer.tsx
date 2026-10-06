@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { FileRoot } from "../api";
 import { CrossRefs } from "../lib/links";
 import { DocsIndex } from "../lib/docsIndex";
-import { IssueDraft } from "../lib/issueDraft";
+import { IssueDraft, closeOutcome, draftWaiting } from "../lib/issueDraft";
 import { ISSUE_STATUSES, PRIORITY_LABELS, STATUS_LABELS } from "../lib/issues";
 import { ISSUES_DIR } from "../lib/attachments";
 import { MenuCoords, anchorMenu } from "../lib/menuAnchor";
@@ -11,6 +11,7 @@ import { useModalKeys } from "../hooks/useModalKeys";
 import { PriorityGlyph, StatusDot } from "./IssueRow";
 import { DateProp } from "./IssueDetail";
 import MarkdownEditor, { MarkdownEditorHandle } from "./MarkdownEditor";
+import ConfirmDialog from "./ConfirmDialog";
 
 // Same anchoring numbers as the detail pane's property menus.
 const MENU_W = 220;
@@ -53,6 +54,7 @@ export default function IssueComposer({
   const [coords, setCoords] = useState<MenuCoords>({ top: 0, left: 0 });
   const statusRef = useRef<HTMLButtonElement>(null);
   const priorityRef = useRef<HTMLButtonElement>(null);
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
   const canSave = draft.title.trim() !== "" && !saving;
 
   // The editor reports keystrokes through a callback it captured once, so the
@@ -193,12 +195,16 @@ export default function IssueComposer({
             className="btn-secondary"
             title="Throw this draft away"
             disabled={saving}
-            onClick={onDiscard}
+            // Asked first once anything is typed: Discard sits by itself in
+            // the corner, and one click there threw away a whole description.
+            onClick={() => (draftWaiting(draft) ? setConfirmDiscard(true) : onDiscard())}
           >
             Discard
           </button>
+          {/* Esc files the issue once it has a title. Said here, because the
+              ✕'s tooltip was the only place that told anyone. */}
           <span className="issue-composer-hint">
-            The draft waits here while you work elsewhere.
+            {ESC_HINT[closeOutcome(draft)]} The draft waits here while you work elsewhere.
           </span>
           <div className="spacer" />
           <button
@@ -230,6 +236,22 @@ export default function IssueComposer({
           </div>
         </>
       )}
+      {confirmDiscard && (
+        <ConfirmDialog
+          title="Discard this draft?"
+          body="The title and description you have written are thrown away. This can't be undone."
+          confirmLabel="Discard"
+          danger
+          onConfirm={() => { setConfirmDiscard(false); onDiscard(); }}
+          onCancel={() => setConfirmDiscard(false)}
+        />
+      )}
     </div>
   );
 }
+
+const ESC_HINT = {
+  create: "Esc saves and closes.",
+  keep: "Esc puts the draft away for later.",
+  discard: "Esc closes.",
+} as const;

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   CloneProgress, FileRoot, Issue, IssuePatch, IssueStatus, IssueSyncMode, Project,
   addIssueComment, createIssue, deleteIssue, deleteIssueComment, getIssueSyncConfig, getWorkspace,
@@ -37,7 +37,7 @@ import {
   stepSelection,
 } from "../lib/issues";
 import {
-  IssueDraft, NEW_DRAFT, closeOutcome, draftExtras, draftWaiting, issuesDraftKey, loadDraft, saveDraft,
+  IssueDraft, NEW_DRAFT, closeOutcome, createDraftStore, draftExtras, draftWaiting, issuesDraftKey,
 } from "../lib/issueDraft";
 import { autoSchedules, shouldSayKeyMismatch } from "../lib/autoSync";
 import { ConflictReport, conflictReports } from "../lib/syncConflicts";
@@ -65,6 +65,9 @@ const SIDEBAR_MAX = 460;
 // rather than history, and long enough that a day at the board is a couple of
 // hundred passes rather than a couple of thousand.
 const AUTO_SYNC_MS = 2 * 60 * 1000;
+
+// New-issue drafts, one per project, for every mount of the board.
+const issueDrafts = createDraftStore(() => (typeof localStorage === "undefined" ? null : localStorage));
 
 // The project's issue board: a status-grouped list (Linear's default view),
 // a + on top that opens the new-issue composer, detail pane on the right.
@@ -125,15 +128,13 @@ export default function IssuesView({
   );
   // Any status group folds; done/cancelled are the ones that start folded.
   const [collapsed, setCollapsed] = useState<Set<IssueStatus>>(() => new Set(DEFAULT_COLLAPSED));
-  // The issue being written in the composer, if any. Held in storage rather
-  // than only here, because this component unmounts on every tab switch and
-  // the draft has to be waiting when the user comes back (AGE-255).
-  // Held with the key it was read under, so the render that switches projects
-  // reads the incoming project's draft rather than showing the outgoing one.
+  // The issue being written in the composer, if any, and whether it is being
+  // saved. Both live in `issueDrafts` rather than here, because this component
+  // unmounts on every tab switch and the draft has to be waiting when the user
+  // comes back (AGE-255); see `createDraftStore` for what state here broke.
   const draftKey = issuesDraftKey(project.id);
-  const [draftState, setDraftState] = useState(() => ({ key: draftKey, draft: readDraft(draftKey) }));
-  const draft = draftState.key === draftKey ? draftState.draft : readDraft(draftKey);
-  const [savingDraft, setSavingDraft] = useState(false);
+  const draft = useSyncExternalStore(issueDrafts.subscribe, () => issueDrafts.get(draftKey));
+  const savingDraft = useSyncExternalStore(issueDrafts.subscribe, () => issueDrafts.saving(draftKey));
   // A save that lands after a project switch clears its own project's stored
   // draft, and must leave the one now on screen alone.
   const draftKeyRef = useRef(draftKey);
@@ -668,8 +669,7 @@ export default function IssuesView({
   // Every change to the draft is written through at once: there is no later
   // moment to save it in, since the board can be unmounted between keystrokes.
   function setDraft(next: IssueDraft | null, key = draftKey) {
-    writeDraft(key, next);
-    if (key === draftKeyRef.current) setDraftState({ key, draft: next });
+    issueDrafts.set(key, next);
   }
 
   // A draft already in progress is picked up where it was left, not replaced.
@@ -680,9 +680,9 @@ export default function IssuesView({
   async function saveComposer() {
     const d = draft;
     const title = d?.title.trim();
-    if (!d || !title || savingDraft) return;
     const key = draftKey;
-    setSavingDraft(true);
+    if (!d || !title || issueDrafts.saving(key)) return;
+    issueDrafts.setSaving(key, true);
     try {
       const issue = await createIssue(project.id, title, d.body, d.status);
       // The issue exists now, so the draft is spent whatever happens to the
@@ -701,7 +701,7 @@ export default function IssuesView({
     } catch (e) {
       toastError(e, "Couldn't create issue");
     } finally {
-      setSavingDraft(false);
+      issueDrafts.setSaving(key, false);
     }
   }
 
@@ -1243,21 +1243,4 @@ export default function IssuesView({
       )}
     </div>
   );
-}
-
-// The stored draft, through the same storage guard as the pane prefs.
-function readDraft(key: string): IssueDraft | null {
-  try {
-    return typeof localStorage === "undefined" ? null : loadDraft(localStorage, key);
-  } catch {
-    return null;
-  }
-}
-
-function writeDraft(key: string, draft: IssueDraft | null): void {
-  try {
-    if (typeof localStorage !== "undefined") saveDraft(localStorage, key, draft);
-  } catch {
-    /* storage unavailable */
-  }
 }

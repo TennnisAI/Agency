@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  NEW_DRAFT, closeOutcome, draftExtras, draftWaiting, issuesDraftKey, loadDraft, parseDraft, saveDraft,
+  NEW_DRAFT, closeOutcome, createDraftStore, draftExtras, draftWaiting, issuesDraftKey, loadDraft, parseDraft,
+  saveDraft,
 } from "./issueDraft";
 
 function memStorage() {
@@ -65,5 +66,52 @@ describe("issue drafts", () => {
     expect(draftExtras({ ...NEW_DRAFT, priority: 2, scheduled: "2026-10-05" })).toEqual({
       priority: 2, scheduled: "2026-10-05",
     });
+  });
+
+  it("hands every reader the same draft, and tells them when it changes", () => {
+    const s = memStorage();
+    const draft = { ...NEW_DRAFT, title: "Stored" };
+    saveDraft(s, issuesDraftKey("p1"), draft);
+    const store = createDraftStore(() => s);
+    const a = store.get(issuesDraftKey("p1"));
+    expect(a).toEqual(draft);
+    expect(store.get(issuesDraftKey("p1"))).toBe(a);
+    let heard = 0;
+    const off = store.subscribe(() => { heard++; });
+    store.set(issuesDraftKey("p1"), null);
+    expect(store.get(issuesDraftKey("p1"))).toBeNull();
+    expect(s.m.size).toBe(0);
+    expect(heard).toBe(1);
+    off();
+    store.set(issuesDraftKey("p1"), draft);
+    expect(heard).toBe(1);
+  });
+
+  it("sees a save that lands while another project is showing", () => {
+    const store = createDraftStore(() => memStorage());
+    const a = issuesDraftKey("a");
+    store.set(a, { ...NEW_DRAFT, title: "Filed" });
+    store.set(issuesDraftKey("b"), { ...NEW_DRAFT, title: "Other" });
+    // The save on A finishes after the board moved to B.
+    store.set(a, null);
+    expect(store.get(a)).toBeNull();
+  });
+
+  it("tracks a save in flight per project", () => {
+    const store = createDraftStore(() => null);
+    store.setSaving("a", true);
+    expect(store.saving("a")).toBe(true);
+    expect(store.saving("b")).toBe(false);
+    store.setSaving("a", false);
+    expect(store.saving("a")).toBe(false);
+  });
+
+  it("keeps drafts in memory when storage refuses access", () => {
+    const store = createDraftStore(() => {
+      throw new Error("SecurityError");
+    });
+    expect(store.get("k")).toBeNull();
+    store.set("k", { ...NEW_DRAFT, title: "Kept" });
+    expect(store.get("k")?.title).toBe("Kept");
   });
 });

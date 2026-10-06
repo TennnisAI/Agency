@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { pushModal, topModal } from "./modalStack";
+import { escapeCloses, pushModal, topModal } from "./modalStack";
 
 describe("modalStack", () => {
   it("only the last-registered modal is on top", () => {
@@ -32,5 +32,12 @@ describe("modalStack", () => {
     popA();
     popA();
     expect(topModal()).toBeNull();
+  });
+
+  it("leaves an Escape that something inside the modal already handled", () => {
+    expect(escapeCloses({ key: "Escape", defaultPrevented: false })).toBe(true);
+    // CodeMirror closing its completion list: handled, but still bubbling.
+    expect(escapeCloses({ key: "Escape", defaultPrevented: true })).toBe(false);
+    expect(escapeCloses({ key: "Enter", defaultPrevented: false })).toBe(false);
   });
 });

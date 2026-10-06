@@ -11,12 +11,18 @@ import {
   blockState, clearFormatting, insertConstruct, setHeading,
   toggleInline, toggleList, toggleQuote,
 } from "../lib/mdFormat";
+import {
+  cellSafeAtSelection, editTable, menuState, openCellEditor, prepareCell, tableCellToPointer, TableEdit,
+  tableEdits,
+} from "../lib/mdTable";
 import type { MenuEntry } from "./git/Menu";
 import { shortcutLabel } from "../lib/platform";
 
 /** Run a formatting transform against the view, then hand focus back. */
 function apply(view: EditorView, f: (state: EditorState) => TransactionSpec | null) {
   return () => {
+    // A cell its row does not have yet goes in now, under the command.
+    prepareCell(view);
     const spec = f(view.state);
     if (spec) view.dispatch(spec);
     view.focus();
@@ -41,7 +47,14 @@ async function pasteClipboard(view: EditorView) {
   try {
     // Not navigator.clipboard: on a multi-item clipboard the webview's own
     // reader can only see the first item (see lib/clipboard.ts).
-    const text = await clipboardText();
+    const raw = await clipboardText();
+    // Into a table cell, through the cell's own editor, which keeps a pipe or
+    // a line break from splitting the row whatever text is around it.
+    const cell = openCellEditor(view);
+    if (cell && raw) {
+      cell.dispatch(cell.state.replaceSelection(raw), { userEvent: "input.paste" });
+    }
+    const text = cell ? "" : cellSafeAtSelection(view.state, raw);
     if (text) {
       const sel = view.state.selection.main;
       view.dispatch({
@@ -62,51 +75,74 @@ async function pasteClipboard(view: EditorView) {
  * capture the state they were built from.
  */
 export function markdownMenuItems(view: EditorView): MenuEntry[] {
-  const block = blockState(view.state);
+  // The state the commands will see: a missing cell already put in.
+  const state = menuState(view);
+  const block = blockState(state);
   const hasSelection = !view.state.selection.main.empty;
+  // In a table cell, the paragraph commands and block inserts would rewrite
+  // the table's own line and break it; the table's commands take their place.
+  const table = tableEdits(state);
+  const tableItem = (label: string, edit: TableEdit): MenuEntry => ({
+    label, disabled: !table?.has(edit), onClick: apply(view, (s) => editTable(s, edit)),
+  });
   const heading = (level: number): MenuEntry => ({
     label: `Heading ${level}`,
     checked: block.heading === level,
     onClick: apply(view, (s) => setHeading(s, level)),
   });
+  const format: MenuEntry = {
+    kind: "submenu", label: "Format", items: [
+      // No shortcut hints: ⌘B is the native menu's Toggle Sidebar
+      // accelerator, and macOS gives the menu bar the key first.
+      { label: "Bold", onClick: apply(view, (s) => toggleInline(s, "bold")) },
+      { label: "Italic", onClick: apply(view, (s) => toggleInline(s, "italic")) },
+      { label: "Strikethrough", onClick: apply(view, (s) => toggleInline(s, "strike")) },
+      { label: "Highlight", onClick: apply(view, (s) => toggleInline(s, "highlight")) },
+      { kind: "separator" },
+      { label: "Code", onClick: apply(view, (s) => toggleInline(s, "code")) },
+      { kind: "separator" },
+      { label: "Clear formatting", onClick: apply(view, clearFormatting) },
+    ],
+  };
+  const tableMenu: MenuEntry = {
+    kind: "submenu", label: "Table", items: [
+      tableItem("Add row above", "rowAbove"),
+      tableItem("Add row below", "rowBelow"),
+      { kind: "separator" },
+      tableItem("Add column before", "colBefore"),
+      tableItem("Add column after", "colAfter"),
+      { kind: "separator" },
+      tableItem("Delete row", "deleteRow"),
+      tableItem("Delete column", "deleteCol"),
+    ],
+  };
+  const paragraph: MenuEntry = {
+    kind: "submenu", label: "Paragraph", items: [
+      { label: "Bullet list", checked: block.list === "bullet", onClick: apply(view, (s) => toggleList(s, "bullet")) },
+      { label: "Numbered list", checked: block.list === "ordered", onClick: apply(view, (s) => toggleList(s, "ordered")) },
+      { label: "Task list", checked: block.list === "task", onClick: apply(view, (s) => toggleList(s, "task")) },
+      { kind: "separator" },
+      ...[1, 2, 3, 4, 5, 6].map(heading),
+      { label: "Body", checked: block.heading === 0, onClick: apply(view, (s) => setHeading(s, 0)) },
+      { kind: "separator" },
+      { label: "Quote", checked: block.quote, onClick: apply(view, toggleQuote) },
+    ],
+  };
+  const inlineInserts: MenuEntry[] = [
+    { label: "Wikilink", onClick: apply(view, (s) => insertConstruct(s, "wikilink")) },
+    { label: "Link", onClick: apply(view, (s) => insertConstruct(s, "link")) },
+  ];
+  const blockInserts: MenuEntry[] = [
+    { kind: "separator" },
+    { label: "Table", onClick: apply(view, (s) => insertConstruct(s, "table")) },
+    { label: "Callout", onClick: apply(view, (s) => insertConstruct(s, "callout")) },
+    { label: "Horizontal rule", onClick: apply(view, (s) => insertConstruct(s, "rule")) },
+    { label: "Code block", onClick: apply(view, (s) => insertConstruct(s, "codeblock")) },
+  ];
   return [
-    {
-      kind: "submenu", label: "Format", items: [
-        // No shortcut hints: ⌘B is the native menu's Toggle Sidebar
-        // accelerator, and macOS gives the menu bar the key first.
-        { label: "Bold", onClick: apply(view, (s) => toggleInline(s, "bold")) },
-        { label: "Italic", onClick: apply(view, (s) => toggleInline(s, "italic")) },
-        { label: "Strikethrough", onClick: apply(view, (s) => toggleInline(s, "strike")) },
-        { label: "Highlight", onClick: apply(view, (s) => toggleInline(s, "highlight")) },
-        { kind: "separator" },
-        { label: "Code", onClick: apply(view, (s) => toggleInline(s, "code")) },
-        { kind: "separator" },
-        { label: "Clear formatting", onClick: apply(view, clearFormatting) },
-      ],
-    },
-    {
-      kind: "submenu", label: "Paragraph", items: [
-        { label: "Bullet list", checked: block.list === "bullet", onClick: apply(view, (s) => toggleList(s, "bullet")) },
-        { label: "Numbered list", checked: block.list === "ordered", onClick: apply(view, (s) => toggleList(s, "ordered")) },
-        { label: "Task list", checked: block.list === "task", onClick: apply(view, (s) => toggleList(s, "task")) },
-        { kind: "separator" },
-        ...[1, 2, 3, 4, 5, 6].map(heading),
-        { label: "Body", checked: block.heading === 0, onClick: apply(view, (s) => setHeading(s, 0)) },
-        { kind: "separator" },
-        { label: "Quote", checked: block.quote, onClick: apply(view, toggleQuote) },
-      ],
-    },
-    {
-      kind: "submenu", label: "Insert", items: [
-        { label: "Wikilink", onClick: apply(view, (s) => insertConstruct(s, "wikilink")) },
-        { label: "Link", onClick: apply(view, (s) => insertConstruct(s, "link")) },
-        { kind: "separator" },
-        { label: "Table", onClick: apply(view, (s) => insertConstruct(s, "table")) },
-        { label: "Callout", onClick: apply(view, (s) => insertConstruct(s, "callout")) },
-        { label: "Horizontal rule", onClick: apply(view, (s) => insertConstruct(s, "rule")) },
-        { label: "Code block", onClick: apply(view, (s) => insertConstruct(s, "codeblock")) },
-      ],
-    },
+    format,
+    table ? tableMenu : paragraph,
+    { kind: "submenu", label: "Insert", items: table ? inlineInserts : [...inlineInserts, ...blockInserts] },
     { kind: "separator" },
     { label: "Cut", hint: shortcutLabel("⌘X"), disabled: !hasSelection, onClick: () => void copySelection(view, true) },
     { label: "Copy", hint: shortcutLabel("⌘C"), disabled: !hasSelection, onClick: () => void copySelection(view, false) },
@@ -126,6 +162,9 @@ export function markdownMenuItems(view: EditorView): MenuEntry[] {
  * selection happened to be. A right-click *inside* the selection keeps it.
  */
 export function caretToPointer(view: EditorView, x: number, y: number) {
+  // A rendered table covers its text, so the main editor has no caret
+  // position under the pointer there; the cell under it takes the caret.
+  if (tableCellToPointer(view, x, y)) return;
   const pos = view.posAtCoords({ x, y });
   const sel = view.state.selection.main;
   if (pos !== null && (pos < sel.from || pos > sel.to)) {

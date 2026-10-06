@@ -8,6 +8,7 @@ import { DocsIndex } from "../lib/docsIndex";
 import { runName } from "../agents";
 import { ISSUE_STATUSES, PRIORITY_LABELS, STATUS_LABELS, fmtDate, fmtStamp, isOverdue } from "../lib/issues";
 import { ISSUES_DIR, Attachment, insertAttachment, parseAttachments, removeAttachment } from "../lib/attachments";
+import { cellSafe } from "../lib/mdTable";
 import { Attached, attachBlob, attachPath } from "../lib/issueAttach";
 import { dateStamp } from "../lib/dailyNote";
 import { MenuCoords, anchorMenu } from "../lib/menuAnchor";
@@ -381,7 +382,7 @@ export default function IssueDetail({
   // Failures are reported per file; the ones that landed still get written.
   const runAttach = async (
     jobs: Array<() => Promise<Attached>>,
-    at: { from: number; to: number; text: string } | null,
+    at: { from: number; to: number; text: string; cell?: boolean } | null,
   ) => {
     if (jobs.length === 0 || attachingRef.current) return;
     attachingRef.current = true;
@@ -402,7 +403,9 @@ export default function IssueDetail({
       // written; otherwise they point into text that has moved, so fall back
       // to appending rather than splicing mid-word.
       if (at && at.text === cur) {
-        const next = insertAttachment(cur, at.from, at.to, md);
+        // In a table cell the links go on one line, or the row would split.
+        const links = at.cell ? cellSafe(md, cur.slice(cur.lastIndexOf("\n", at.from - 1) + 1, at.from)) : md;
+        const next = insertAttachment(cur, at.from, at.to, links);
         saveBody(next.body, next.cursor);
       } else {
         // Appended attachments start their own paragraph at the end.

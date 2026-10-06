@@ -12,7 +12,9 @@ import { cmFindExtensions } from "../lib/cmFind";
 import {
   docsCompletion, docsHighlight, docsMarkdown, docsNavFacet, livePreview,
 } from "../lib/livePreview";
-import { markdownTables } from "../lib/mdTable";
+import { imagePaste } from "../lib/imagePaste";
+import { exitLinesOnly, markdownTables, selectionInCell, writtenText } from "../lib/mdTable";
+import { minimalReplacement } from "../lib/textEdit";
 import { useLiveFacets } from "../hooks/useLiveFacets";
 import { formatCommand, toggleInline } from "../lib/mdFormat";
 import Menu from "./git/Menu";
@@ -72,8 +74,10 @@ export default forwardRef<MarkdownEditorHandle, {
   onBlur?: (text: string) => void;
   onNavigate: (target: string, heading: string | null) => void;
   onTagClick: (tag: string) => void;
-  /** Files pasted onto the editor, with where they were dropped in the text. */
-  onPasteFiles?: (files: File[], at: { from: number; to: number; text: string }) => void;
+  /** Files pasted onto the editor, with where they were dropped in the text.
+   *  `cell` is set when that is inside a table cell, where the links have to
+   *  stay on one line. */
+  onPasteFiles?: (files: File[], at: { from: number; to: number; text: string; cell: boolean }) => void;
 }>(function MarkdownEditor({
   className, value, placeholder, root, dir, path, index, cross,
   onChange, onBlur, onNavigate, onTagClick, onPasteFiles,
@@ -112,7 +116,7 @@ export default forwardRef<MarkdownEditorHandle, {
         return;
       }
       view.dispatch({
-        changes: { from: 0, to: cur.length, insert: text },
+        changes: minimalReplacement(cur, text) ?? [],
         ...(caret !== undefined ? { selection: { anchor: Math.min(caret, text.length) } } : {}),
         // A rewrite from outside isn't the user's edit to take back: undoing an
         // attachment insert would drop the link and strand the file on disk.
@@ -156,19 +160,13 @@ export default forwardRef<MarkdownEditorHandle, {
           get docsDir() { return live.current.dir; },
           get notePath() { return live.current.path; },
         }),
-        EditorView.domEventHandlers({
-          blur: (_e, v) => {
-            live.current.onBlur?.(v.state.doc.toString());
-            return false;
-          },
-          paste: (e, v) => {
-            const files = [...(e.clipboardData?.files ?? [])].filter((f) => f.type.startsWith("image/"));
-            if (files.length === 0 || !live.current.onPasteFiles) return false;
-            e.preventDefault();
-            const sel = v.state.selection.main;
-            live.current.onPasteFiles(files, { from: sel.from, to: sel.to, text: v.state.doc.toString() });
-            return true;
-          },
+        imagePaste((v, files) => {
+          if (!live.current.onPasteFiles) return false;
+          const sel = v.state.selection.main;
+          live.current.onPasteFiles(files, {
+            from: sel.from, to: sel.to, text: v.state.doc.toString(), cell: selectionInCell(v.state),
+          });
+          return true;
         }),
         keymap.of([
           // preventDefault keeps WebKit's own rich-text commands off the
@@ -180,7 +178,8 @@ export default forwardRef<MarkdownEditorHandle, {
           ...historyKeymap,
         ]),
         EditorView.updateListener.of((u) => {
-          if (!u.docChanged) return;
+          // Blank lines made to arrow out of a table by are not an edit.
+          if (!u.docChanged || u.transactions.every(exitLinesOnly)) return;
           const text = u.state.doc.toString();
           valueRef.current = text;
           live.current.onChange(text);
@@ -199,7 +198,9 @@ export default forwardRef<MarkdownEditorHandle, {
 
   // Follow a rewrite from outside (an attachment spliced in, a link removed).
   // Compared against the live document, so a keystroke that hasn't reached the
-  // caller's state yet is never clobbered.
+  // caller's state yet is never clobbered. Only what differs is replaced: a
+  // whole-document replace mapped every position to its start, which closed
+  // a table cell being edited and dropped the caret at the top.
   useEffect(() => {
     const view = viewRef.current;
     if (!view || value === valueRef.current) return;
@@ -207,7 +208,7 @@ export default forwardRef<MarkdownEditorHandle, {
     valueRef.current = value;
     if (cur === value) return;
     view.dispatch({
-      changes: { from: 0, to: cur.length, insert: value },
+      changes: minimalReplacement(cur, value) ?? [],
       annotations: Transaction.addToHistory.of(false),
     });
   }, [value]);
@@ -225,6 +226,17 @@ export default forwardRef<MarkdownEditorHandle, {
   // itself: a click anywhere else in the box did nothing, so starting to type
   // meant finding the first line. A click on the empty part lands the caret on
   // the nearest line, or after the last one when it is below the text.
+  // Commit when focus leaves the description, which is not the same as the
+  // editor's own blur: a table cell is edited by an editor of its own nested
+  // inside this one, so stepping into a cell blurs the outer editor, and
+  // leaving the description from a cell never blurs it at all.
+  const onFocusOut = (e: React.FocusEvent) => {
+    const view = viewRef.current;
+    if (!view) return;
+    if (e.relatedTarget instanceof Node && hostRef.current?.contains(e.relatedTarget)) return;
+    live.current.onBlur?.(writtenText(view.state));
+  };
+
   const onEmptyMouseDown = (e: React.MouseEvent) => {
     const view = viewRef.current;
     if (!view || e.button !== 0) return;
@@ -236,13 +248,19 @@ export default forwardRef<MarkdownEditorHandle, {
     const pos = below
       ? view.state.doc.length
       : view.posAtCoords({ x: e.clientX, y: e.clientY }, false);
-    view.dispatch({ selection: { anchor: pos } });
+    // Focused first, and as a pointer selection, the way a click on the text
+    // is: a click under a description that ends in a table is how to get
+    // below it, and a table only reads a caret at its end as one leaving it
+    // when it came from the pointer, in an editor that has focus. Dispatched
+    // the other way round, the click opened the table's first cell.
     view.focus();
+    view.dispatch({ selection: { anchor: pos }, userEvent: "select.pointer" });
   };
 
   return (
     <>
-      <div ref={hostRef} className={className} onMouseDown={onEmptyMouseDown} onContextMenu={openMenu} />
+      <div ref={hostRef} className={className} onMouseDown={onEmptyMouseDown} onBlur={onFocusOut}
+        onContextMenu={openMenu} />
       {menu && viewRef.current && (
         <Menu x={menu.x} y={menu.y} items={markdownMenuItems(viewRef.current)} onClose={() => setMenu(null)} />
       )}

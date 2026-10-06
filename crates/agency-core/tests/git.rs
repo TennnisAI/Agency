@@ -603,6 +603,18 @@ fn fetch_branch_updates_local_from_origin_without_checkout() {
         .output()
         .unwrap();
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "later");
+
+    // It tracks origin's copy, so a worktree on it offers Sync, not a Publish
+    // that promises to create a remote branch the PR already lives on.
+    assert_eq!(
+        git::upstream_of(&clone, "feat/remote-work").as_deref(),
+        Some("origin/feat/remote-work")
+    );
+    let wt = clone_parent.path().join("wt");
+    run(&clone, &["worktree", "add", "-q", wt.to_str().unwrap(), "feat/remote-work"]);
+    let info = git::branch_info(&wt).unwrap();
+    assert_eq!(info.upstream.as_deref(), Some("origin/feat/remote-work"));
+    assert_eq!(info.ahead, 0);
 }
 
 /// A local clone of a bare remote, checked out on the remote's default branch
@@ -657,6 +669,68 @@ fn branch_info_ahead_excludes_the_default_branchs_unpushed_commits() {
 
     // The shared checkout still reports its own backlog against origin.
     assert_eq!(git::branch_info(&clone).unwrap().ahead, 2);
+}
+
+/// An agent worktree on `agent/pr` with two commits, published, so it tracks
+/// `origin/agent/pr`. Returns (`_keep`, clone, worktree).
+fn published_branch() -> (Vec<tempfile::TempDir>, std::path::PathBuf, std::path::PathBuf) {
+    let (keep, _remote, clone) = clone_with_upstream();
+    let wt = clone.parent().unwrap().join("pr");
+    run(&clone, &["worktree", "add", "-q", "-b", "agent/pr", wt.to_str().unwrap()]);
+    commit_file(&wt, "a.txt", "a", "pr work 1");
+    commit_file(&wt, "b.txt", "b", "pr work 2");
+    git::push(&wt).unwrap();
+    assert_eq!(git::branch_info(&wt).unwrap().ahead, 0);
+    (keep, clone, wt)
+}
+
+/// What merging the PR on the forge does to the clone: the base branch moves
+/// on origin (the local default branch does not), and the head branch is
+/// deleted, which a pruning fetch carries down as a gone upstream.
+fn merge_on_origin_and_delete(clone: &Path, merged: &str) {
+    run(clone, &["push", "-q", "origin", &format!("{merged}:refs/heads/main")]);
+    run(clone, &["push", "-q", "origin", "--delete", "agent/pr"]);
+    git::fetch(clone).unwrap();
+}
+
+/// A merged PR whose head branch was deleted showed "Publish ↑4" and "4 ahead
+/// of the base branch": its commits are in origin/main, but not in the local
+/// main that "ahead" was measured from.
+#[test]
+fn branch_info_does_not_count_merged_commits_once_the_branch_is_deleted() {
+    let (_keep, clone, wt) = published_branch();
+    merge_on_origin_and_delete(&clone, "agent/pr");
+
+    let info = git::branch_info(&wt).unwrap();
+    assert!(info.upstream.is_none(), "the upstream is gone");
+    assert_eq!(info.ahead, 0, "both commits are on origin/main");
+}
+
+/// A squash merge lands the work under a new hash, so only its content shows
+/// it was merged.
+#[test]
+fn branch_info_does_not_count_squash_merged_commits() {
+    let (_keep, clone, wt) = published_branch();
+    run(&clone, &["checkout", "-q", "-b", "squash", "origin/main"]);
+    run(&clone, &["merge", "-q", "--squash", "agent/pr"]);
+    run(&clone, &["commit", "-q", "-m", "pr (#1)"]);
+    run(&clone, &["checkout", "-q", "main"]);
+    merge_on_origin_and_delete(&clone, "squash");
+
+    assert_eq!(git::branch_info(&wt).unwrap().ahead, 0);
+}
+
+/// The other side of the two tests above: a deleted remote branch is not proof
+/// of a merge. Work origin does not have stays counted, so Publish stays.
+#[test]
+fn branch_info_still_counts_unmerged_work_when_the_branch_is_deleted() {
+    let (_keep, clone, wt) = published_branch();
+    run(&clone, &["push", "-q", "origin", "--delete", "agent/pr"]);
+    git::fetch(&clone).unwrap();
+
+    let info = git::branch_info(&wt).unwrap();
+    assert!(info.upstream.is_none());
+    assert_eq!(info.ahead, 2);
 }
 
 /// Which tree holds a branch, not just whether one does. A review that cannot

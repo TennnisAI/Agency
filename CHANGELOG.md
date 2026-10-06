@@ -4,6 +4,123 @@ Notable changes in each release. The GitHub release for a version carries the
 same notes alongside the downloads; this file is so the history is readable without
 leaving the repository.
 
+## 0.2.3 (2026-10-06)
+
+Agency can now tell a Claude Code agent stopped on a permission prompt from one
+that has finished, because it asks the agent's own hooks instead of guessing
+from the screen. The rest is popping an agent, file or note into a window of
+its own, an issue composer that keeps its draft, tables you edit in place,
+folders dropped from Finder, and a run of fixes to branches, restores and
+merges.
+
+macOS 11 or later, Apple Silicon. Linux with glibc 2.34 or later, x86_64 or
+arm64.
+
+**Coming from 0.2.2:** install from inside the app. Running agents survive the
+restart; this release does not change the terminal protocol. A Claude Code
+agent reports its state through hooks from its next launch, so one that
+survives the restart keeps the old screen-reading guess until then.
+
+### Agent state
+
+- Claude Code agents report what they are doing through their own lifecycle
+  hooks: working, blocked on a permission prompt, done with their turn, or
+  idle. A quiet terminal used to read the same whether the agent was waiting
+  for your permission or had finished.
+- Blocked has its own badge, overview count, filter and notification, loop
+  attempts included. A blocked agent holds its send queue until the prompt is
+  answered.
+- The hooks are merged into the worktree's `.claude/settings.local.json` and
+  excluded from git. A copy of that file that is tracked, or that does not
+  parse, is left alone. They post to the run's own loopback server, with a
+  per-install token, and a post from a page in the browser is dropped.
+- Other agents keep the screen-reading heuristic. What it used to call
+  "waiting" is now a guessed "done", and the board labels it as a guess.
+- Tabs Agency opens with a prompt can read "waiting", and a tile says when
+  another of its tabs is waiting.
+- Click an agent count in the overview to filter by it. The overview now counts
+  every agent tab, not only the first in each workspace.
+
+### Windows
+
+- Pop an agent, a file or a note out into a window of its own, from the button
+  in its header or "Open in new window" on a file tab. The popout has "Bring
+  back", and the main window holds a placeholder with "Show window" and "Bring
+  back here". Closing the popout sends the item home.
+- An item shows in one window at a time, so two windows never edit one file or
+  resize one terminal. A file's unsaved edits travel with it both ways.
+
+### Issues
+
+- The + (and c, and New Issue in the palette) opens a composer with the title,
+  description, status, priority and dates together. It used to file the issue
+  on Enter from a one-line title, with everything else set afterwards. The
+  draft is saved as you type, so leaving the tab no longer loses it. Closing
+  saves once there is a title; otherwise the draft waits behind the +.
+- A file dropped on the composer is no longer attached to the issue open
+  beneath it.
+- A click anywhere in an issue description's box starts editing, not only a
+  click on its text.
+
+### Docs and files
+
+- Tables in notes are edited in place. The table stays drawn while you type in
+  a cell, where it used to turn back into raw pipes under the pointer. Tab,
+  Enter and the arrow keys move between cells, and the right-click menu has
+  row and column commands.
+- Drop a folder from Finder onto the Files or Docs tree. It is copied whole, off
+  the main thread, up to 500 MB. A `.git` inside it is left out and the tree
+  says so; pipes and other special files are refused before anything is
+  written. Files dropped on either tree are no longer capped at 25 MB. Issue
+  attachments still are.
+- A doc or file keeps its scroll place when you switch to another view and
+  back.
+- Expanded folders and each tab's Code or Preview mode survive leaving the
+  Files tab, and a restart.
+- Cmd-F searches the rendered markdown preview. Right-clicking a file tab opens
+  that file's menu, with Close first, and right-clicking a file in a commit
+  from history opens its menu too.
+- Inline code and highlights that wrap paint one chip per line.
+
+### Git
+
+- A Rebase & Sync that fails offers "Fix with an agent". Its prompt quotes
+  git's output, names the unmerged files, and asks the agent to finish the
+  rebase and push without force-pushing, merging or discarding uncommitted
+  work. Agents can now start in a checkout stopped mid-rebase.
+- When a remote turns down the saved credential, the git panel asks for a
+  username and password, checks them against origin, keeps them for the
+  session and retries. It used to fail with "terminal prompts disabled" and no
+  way forward. Commit & Push does not commit twice on the retry.
+- "Commit now" in the setup dialog refuses a checkout stopped mid-merge,
+  rebase, cherry-pick or revert, or with a file still conflicted, and says why
+  in place of the button. It used to commit the conflict markers. On a repo
+  with history it names the files it commits rather than calling it "Initial
+  commit", and skips an empty commit.
+- A PR checked out for review tracks its remote branch, so it offers Sync
+  rather than Publish. A merged PR whose branch was deleted, squash and rebase
+  merges included, no longer reads as unpublished work.
+- The checkout button opens Changes, not the last Source Control sub-view.
+
+### Runs and branches
+
+- Teardown deletes a run's branch under its current name, so a renamed branch
+  no longer outlives its run. A run whose worktree was switched onto another
+  branch in its terminal still has its own branch deleted.
+- A branch Agency did not cut, such as a PR head, is left in place, and the
+  teardown dialog, merge window and archive record say so. Archiving such a
+  run sets uncommitted work aside rather than committing it onto that branch.
+- Restore puts an archived run back on its recorded branch. A run whose branch
+  was renamed, or that started on an existing branch, used to fail with
+  "invalid reference". Restore now says what it could not put back.
+
+### Fixes
+
+- Selecting a field's text in a dialog and dragging past its edge no longer
+  closes the dialog.
+- A dropped or pasted folder is numbered like a folder ("v1.2 2", not
+  "v1 2.2").
+
 ## 0.2.2 (2026-09-24)
 
 Checkpoints: Agency now snapshots an agent's worktree every turn, and you can

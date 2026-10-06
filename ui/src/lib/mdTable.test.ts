@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { EditorState, Text } from "@codemirror/state";
+import { history, undoDepth } from "@codemirror/commands";
 import { docsMarkdown } from "./livePreview";
 import {
-  cellAt, cellOf, cellSafe, cellSafeAtSelection, editTable, exitBelow, formatTable, padRow, parseAlign,
-  TableEdit, tableEdits, tableEntry, tableModelAt, TableModel,
+  cellAt, cellInput, cellOf, cellRepairs, cellSafe, cellSafeAtSelection, editTable, endsEscaped,
+  escapedPipeAt, exitBelow, exitLines, exitLinesOnly, exitSpec, formatTable, markdownTables, padRow,
+  parseAlign, TableEdit, tableEdits, tableEntry, tableModelAt, TableModel, writtenText,
 } from "./mdTable";
 
 function model(doc: string, pos = 0): TableModel | null {
@@ -192,6 +194,15 @@ describe("tableEntry", () => {
       .toEqual({ kind: "leave", exit: { anchor: m.from - 1 } });
   });
 
+  it("leaves a table whose last row has no closing pipe for a click under it", () => {
+    const open = "| h |\n|---|\n| 1"; // the click lands on the last cell's text
+    const state = EditorState.create({ doc: open, extensions: [docsMarkdown()] });
+    const t = tableModelAt(state, 0)!;
+    expect(tableEntry(t, state.doc, t.to, t.to, 0, true)?.kind).toBe("leave");
+    // From the keyboard, the same position is that cell.
+    expect(tableEntry(t, state.doc, t.to, t.to, 0, false)?.kind).toBe("cell");
+  });
+
   it("leaves a range across the table's structure alone", () => {
     expect(tableEntry(m, text, doc.indexOf("a"), doc.indexOf("2"), null, false)).toBe(null);
   });
@@ -239,6 +250,13 @@ describe("cellSafe", () => {
   it("leaves a pipe already escaped, in the text or just before it", () => {
     expect(cellSafe("a\\|b", "")).toBe("a\\|b");
     expect(cellSafe("|", "\\")).toBe("|");
+  });
+
+  it("pairs backslashes the way the table parser does", () => {
+    // "\\" is an escaped backslash, so the pipe after it is bare.
+    expect(cellSafe("|", "a\\\\")).toBe("\\|");
+    expect(cellSafe("|", "a\\\\\\")).toBe("|");
+    expect(cellSafe("\\\\|", "")).toBe("\\\\\\|");
   });
 
   it("turns line breaks into spaces", () => {
@@ -340,8 +358,130 @@ describe("padRow", () => {
     expect(state.update(padRow(state, m, 1)!).state.doc.line(3).text).toBe("1 |  |");
   });
 
+  it("closes a row that ends in an escaped pipe", () => {
+    const state = stateAt("| a | b |\n|---|---|\n| x \\|^");
+    const spec = padRow(state, tableModelAt(state, 0)!, 1)!;
+    const next = state.update(spec).state;
+    expect(next.doc.line(3).text).toBe("| x \\| |  |");
+    expect(grid(next.doc.toString())).toEqual([["a", "b"], ["x \\|", ""]]);
+  });
+
   it("leaves a full row alone", () => {
     const state = stateAt("| a |\n|---|\n| 1 |^");
     expect(padRow(state, tableModelAt(state, 0)!, 1)).toBe(null);
+  });
+});
+
+describe("endsEscaped", () => {
+  it("is true for an unpaired trailing backslash only", () => {
+    expect(endsEscaped("a\\")).toBe(true);
+    expect(endsEscaped("a\\\\")).toBe(false);
+    expect(endsEscaped("a\\\\\\")).toBe(true);
+    expect(endsEscaped("a")).toBe(false);
+    expect(endsEscaped("")).toBe(false);
+  });
+});
+
+describe("cellRepairs", () => {
+  it("escapes bare pipes and flattens line breaks, counting a CRLF once", () => {
+    expect(cellRepairs("a|b\r\nc")).toEqual([
+      { from: 1, to: 1, insert: "\\" },
+      { from: 3, to: 5, insert: " " },
+    ]);
+  });
+
+  it("finds nothing in text a cell can hold", () => {
+    expect(cellRepairs("a \\| b [[x\\|y]]")).toEqual([]);
+  });
+});
+
+describe("cellInput", () => {
+  const cell = (doc: string, caret: number) =>
+    EditorState.create({ doc, selection: { anchor: caret }, extensions: [cellInput] });
+
+  it("puts back the escape a backspace took from a pipe, caret in front of it", () => {
+    const state = cell("a \\| b", 3).update({ changes: { from: 2, to: 3 }, selection: { anchor: 2 } }).state;
+    expect(state.doc.toString()).toBe("a \\| b");
+    expect(state.selection.main.head).toBe(2);
+  });
+
+  it("re-escapes a pipe a typed backslash would free", () => {
+    const state = cell("a\\|", 1).update({ changes: { from: 1, insert: "\\" }, selection: { anchor: 2 } }).state;
+    expect(state.doc.toString()).toBe("a\\\\\\|");
+    expect(state.selection.main.head).toBe(2);
+  });
+
+  it("escapes a typed pipe, caret after it", () => {
+    const state = cell("ab", 1).update({ changes: { from: 1, insert: "|" }, selection: { anchor: 2 } }).state;
+    expect(state.doc.toString()).toBe("a\\|b");
+    expect(state.selection.main.head).toBe(3);
+  });
+});
+
+describe("exitLines", () => {
+  const doc = "| h |\n|---|\n| 1 |";
+  const start = () => EditorState.create({ doc, extensions: [docsMarkdown(), markdownTables, history()] });
+  const leave = (state: EditorState) => state.update(exitSpec(exitBelow(state.doc, tableModelAt(state, 0)!))).state;
+
+  it("adds lines to leave a table that ends the note by, outside the history", () => {
+    const state = leave(start());
+    expect(state.doc.toString()).toBe(doc + "\n\n");
+    expect(state.selection.main.head).toBe(doc.length + 2);
+    expect(state.field(exitLines)).toEqual({ from: doc.length, to: doc.length + 2 });
+    expect(undoDepth(state)).toBe(0);
+  });
+
+  it("takes them back out when the caret leaves them unused", () => {
+    const state = leave(start()).update({ selection: { anchor: 2 } }).state;
+    expect(state.doc.toString()).toBe(doc);
+    expect(state.selection.main.head).toBe(2);
+    expect(state.field(exitLines)).toBe(null);
+    expect(undoDepth(state)).toBe(0);
+  });
+
+  it("keeps them once something is written there", () => {
+    let state = leave(start());
+    state = state.update({ changes: { from: state.doc.length, insert: "x" }, selection: { anchor: state.doc.length + 1 } }).state;
+    state = state.update({ selection: { anchor: 2 } }).state;
+    expect(state.doc.toString()).toBe(doc + "\n\nx");
+    expect(state.field(exitLines)).toBe(null);
+  });
+
+  it("leaves them out of the note as written, and marks their transactions", () => {
+    const s0 = start();
+    const tr = s0.update(exitSpec(exitBelow(s0.doc, tableModelAt(s0, 0)!)));
+    expect(exitLinesOnly(tr)).toBe(true);
+    expect(writtenText(tr.state)).toBe(doc);
+    const back = tr.state.update({ selection: { anchor: 2 } });
+    expect(exitLinesOnly(back)).toBe(true);
+    expect(exitLinesOnly(s0.update({ changes: { from: 0, insert: "x" } }))).toBe(false);
+  });
+
+  it("keeps them while the caret moves between them", () => {
+    const state = leave(start()).update({ selection: { anchor: doc.length + 1 } }).state;
+    expect(state.doc.toString()).toBe(doc + "\n\n");
+  });
+});
+
+describe("escapedPipeAt", () => {
+  const t = "a \\| b"; // a, space, backslash, pipe, space, b
+
+  it("takes the pair a Backspace after it would split", () => {
+    expect(escapedPipeAt(t, 4, -1)).toEqual({ from: 2, to: 4 });
+  });
+
+  it("takes the pair a Delete before it would split", () => {
+    expect(escapedPipeAt(t, 2, 1)).toEqual({ from: 2, to: 4 });
+  });
+
+  it("takes the pair from between its halves, either way", () => {
+    expect(escapedPipeAt(t, 3, -1)).toEqual({ from: 2, to: 4 });
+    expect(escapedPipeAt(t, 3, 1)).toEqual({ from: 2, to: 4 });
+  });
+
+  it("leaves ordinary text, and a backslash that is itself escaped, alone", () => {
+    expect(escapedPipeAt(t, 1, -1)).toBe(null);
+    expect(escapedPipeAt(t, 5, -1)).toBe(null);
+    expect(escapedPipeAt("\\\\x", 2, -1)).toBe(null);
   });
 });

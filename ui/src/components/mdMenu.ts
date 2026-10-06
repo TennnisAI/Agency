@@ -11,13 +11,18 @@ import {
   blockState, clearFormatting, insertConstruct, setHeading,
   toggleInline, toggleList, toggleQuote,
 } from "../lib/mdFormat";
-import { cellSafeAtSelection, editTable, tableCellToPointer, TableEdit, tableEdits } from "../lib/mdTable";
+import {
+  cellSafeAtSelection, editTable, menuState, openCellEditor, prepareCell, tableCellToPointer, TableEdit,
+  tableEdits,
+} from "../lib/mdTable";
 import type { MenuEntry } from "./git/Menu";
 import { shortcutLabel } from "../lib/platform";
 
 /** Run a formatting transform against the view, then hand focus back. */
 function apply(view: EditorView, f: (state: EditorState) => TransactionSpec | null) {
   return () => {
+    // A cell its row does not have yet goes in now, under the command.
+    prepareCell(view);
     const spec = f(view.state);
     if (spec) view.dispatch(spec);
     view.focus();
@@ -42,8 +47,14 @@ async function pasteClipboard(view: EditorView) {
   try {
     // Not navigator.clipboard: on a multi-item clipboard the webview's own
     // reader can only see the first item (see lib/clipboard.ts).
-    // Pasted into a table cell, a pipe or a line break would split the row.
-    const text = cellSafeAtSelection(view.state, await clipboardText());
+    const raw = await clipboardText();
+    // Into a table cell, through the cell's own editor, which keeps a pipe or
+    // a line break from splitting the row whatever text is around it.
+    const cell = openCellEditor(view);
+    if (cell && raw) {
+      cell.dispatch(cell.state.replaceSelection(raw), { userEvent: "input.paste" });
+    }
+    const text = cell ? "" : cellSafeAtSelection(view.state, raw);
     if (text) {
       const sel = view.state.selection.main;
       view.dispatch({
@@ -64,11 +75,13 @@ async function pasteClipboard(view: EditorView) {
  * capture the state they were built from.
  */
 export function markdownMenuItems(view: EditorView): MenuEntry[] {
-  const block = blockState(view.state);
+  // The state the commands will see: a missing cell already put in.
+  const state = menuState(view);
+  const block = blockState(state);
   const hasSelection = !view.state.selection.main.empty;
   // In a table cell, the paragraph commands and block inserts would rewrite
   // the table's own line and break it; the table's commands take their place.
-  const table = tableEdits(view.state);
+  const table = tableEdits(state);
   const tableItem = (label: string, edit: TableEdit): MenuEntry => ({
     label, disabled: !table?.has(edit), onClick: apply(view, (s) => editTable(s, edit)),
   });

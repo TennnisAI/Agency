@@ -13,7 +13,8 @@ import { CrossRefs } from "../lib/links";
 import { docsCompletion, docsHighlight, docsMarkdown, docsNavFacet, livePreview, DocsNav } from "../lib/livePreview";
 import { useLiveFacets } from "../hooks/useLiveFacets";
 import { frontmatterEditor, requestAddProperty } from "../lib/fmEditor";
-import { markdownTables } from "../lib/mdTable";
+import { imagePaste } from "../lib/imagePaste";
+import { exitLinesOnly, markdownTables, writtenText } from "../lib/mdTable";
 import { joinPath } from "../lib/filePath";
 import { formatCommand, toggleInline } from "../lib/mdFormat";
 import { minimalReplacement } from "../lib/textEdit";
@@ -235,7 +236,7 @@ export default forwardRef<DocsEditorHandle, {
       save.current = async () => {
         const view = viewRef.current;
         if (!view || saveStateRef.current === "clean") return;
-        const text = view.state.doc.toString();
+        const text = writtenText(view.state);
         if (text === savedTextRef.current) {
           setSaveState("clean");
           return;
@@ -246,7 +247,7 @@ export default forwardRef<DocsEditorHandle, {
           savedTextRef.current = text;
           // Only mark clean if no further edits arrived while the write was
           // in flight; the update listener flips state back to dirty if so.
-          if (viewRef.current?.state.doc.toString() === text) setSaveState("clean");
+          if (viewRef.current && writtenText(viewRef.current.state) === text) setSaveState("clean");
           onSavedRef.current();
         } catch (e) {
           setSaveState("dirty");
@@ -289,14 +290,9 @@ export default forwardRef<DocsEditorHandle, {
           }),
           frontmatterEditor,
           markdownTables,
-          EditorView.domEventHandlers({
-            paste: (e, v) => {
-              const file = [...(e.clipboardData?.files ?? [])].find((f) => f.type.startsWith("image/"));
-              if (!file) return false;
-              e.preventDefault();
-              void pasteImageRef.current(file, v);
-              return true;
-            },
+          imagePaste((v, files) => {
+            void pasteImageRef.current(files[0], v);
+            return true;
           }),
           keymap.of([
             { key: "Mod-s", preventDefault: true, run: () => { void flushRef.current(); return true; } },
@@ -311,7 +307,9 @@ export default forwardRef<DocsEditorHandle, {
             ...historyKeymap,
           ]),
           EditorView.updateListener.of((u) => {
-            if (!u.docChanged) return;
+            // Blank lines made to arrow out of a table by are not an edit:
+            // nothing to save until something is written on them.
+            if (!u.docChanged || u.transactions.every(exitLinesOnly)) return;
             onFindContentChange.current();
             setSaveState((s) => (s === "saving" ? s : "dirty"));
             if (timerRef.current !== null) window.clearTimeout(timerRef.current);

@@ -14,8 +14,8 @@
 // fmEditor.ts is a field.
 
 import {
-  Annotation, EditorSelection, EditorState, Extension, Prec, Range, StateField, Text, Transaction,
-  TransactionSpec,
+  Annotation, ChangeSpec, EditorSelection, EditorState, Extension, Prec, Range, StateEffect, StateField,
+  Text, Transaction, TransactionSpec,
 } from "@codemirror/state";
 import {
   Decoration, DecorationSet, EditorView, ViewPlugin, ViewUpdate, WidgetType, drawSelection,
@@ -30,6 +30,7 @@ import {
   crossRefsFacet, docsCompletion, docsHighlight, docsIndexFacet, docsMarkdown, DocsNav,
   docsNavFacet, livePreview, TAG_RE,
 } from "./livePreview";
+import { pasteImages } from "./imagePaste";
 import { minimalReplacement } from "./textEdit";
 
 // @lezer/common is not a direct dependency (pnpm's strict layout would not
@@ -192,25 +193,84 @@ export function cellAt(model: TableModel, from: number, to = from): CellRef | nu
   return null;
 }
 
-/** Text bound for a cell: one line, and no pipe that would end the cell
- *  early. `before` is the character in front of where it goes. */
-export function cellSafe(text: string, before: string): string {
-  let out = "";
-  let prev = before;
-  for (const ch of text.replace(/\r\n?/g, "\n")) {
-    const c = ch === "\n" ? " " : ch === "|" && prev !== "\\" ? "\\|" : ch;
-    out += c;
-    prev = c[c.length - 1];
+/** True when `text` ends in an unpaired backslash, which escapes whatever
+ *  comes after it. */
+export function endsEscaped(text: string): boolean {
+  let run = 0;
+  for (let i = text.length - 1; i >= 0 && text[i] === "\\"; i--) run++;
+  return run % 2 === 1;
+}
+
+export interface CellRepair {
+  from: number;
+  to: number;
+  insert: string;
+}
+
+/**
+ * The edits that make `text` fit in one cell: a space for each line break, and
+ * a backslash in front of each pipe that would end the cell. Backslashes pair
+ * up the way the table parser reads them, so the pipe in `\\|` is bare: the
+ * first backslash escapes the second. `escaped` says whether the text in front
+ * of `text` leaves its first character escaped.
+ */
+export function cellRepairs(text: string, escaped = false): CellRepair[] {
+  const out: CellRepair[] = [];
+  let esc = escaped;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === "\n" || ch === "\r") {
+      const to = ch === "\r" && text[i + 1] === "\n" ? i + 2 : i + 1;
+      out.push({ from: i, to, insert: " " });
+      i = to - 1;
+      esc = false;
+      continue;
+    }
+    if (ch === "|" && !esc) out.push({ from: i, to: i, insert: "\\" });
+    esc = !esc && ch === "\\";
   }
   return out;
+}
+
+/**
+ * The escaped pipe ("\|") a Backspace (`dir` -1) or a Delete (1) at `pos` in
+ * a cell's text would cut in half, as the range to delete whole. A caret
+ * between the backslash and the pipe takes both either way.
+ *
+ * Deleting just the backslash left a bare pipe, which a cell cannot hold, so
+ * the cell's input filter put the escape straight back: Backspace there only
+ * moved the caret, and Delete did nothing at all.
+ */
+export function escapedPipeAt(text: string, pos: number, dir: 1 | -1): { from: number; to: number } | null {
+  const pipeAt = (i: number) => text[i] === "|" && text[i - 1] === "\\" && endsEscaped(text.slice(0, i));
+  if (pipeAt(pos)) return { from: pos - 1, to: pos + 1 };
+  if (dir < 0 && pos >= 2 && pipeAt(pos - 1)) return { from: pos - 2, to: pos };
+  if (dir > 0 && pipeAt(pos + 1)) return { from: pos, to: pos + 2 };
+  return null;
+}
+
+/** Text bound for a cell: one line, and no pipe that would end the cell
+ *  early. `before` is the cell's text in front of where it goes. */
+export function cellSafe(text: string, before = ""): string {
+  let out = "";
+  let pos = 0;
+  for (const r of cellRepairs(text, endsEscaped(before))) {
+    out += text.slice(pos, r.from) + r.insert;
+    pos = r.to;
+  }
+  return out + text.slice(pos);
+}
+
+/** True when the main selection sits inside one table cell. */
+export function selectionInCell(state: EditorState): boolean {
+  return selectedCell(state) !== null;
 }
 
 /** `text` made safe for wherever the selection is, when that is in a cell. */
 export function cellSafeAtSelection(state: EditorState, text: string): string {
   const sel = state.selection.main;
-  const model = tableNear(state, sel.from);
-  if (!model || !cellAt(model, sel.from, sel.to)) return text;
-  return cellSafe(text, sel.from > 0 ? state.sliceDoc(sel.from - 1, sel.from) : "");
+  if (!selectionInCell(state)) return text;
+  return cellSafe(text, state.sliceDoc(state.doc.lineAt(sel.from).from, sel.from));
 }
 
 /**
@@ -261,6 +321,15 @@ export function tableEntry(
   const from = Math.min(anchor, head);
   const to = Math.max(anchor, head);
   if (from < model.from || to > model.to) return null;
+  if (pointer && anchor === head) {
+    // A click in the margin beside the table, at its last line or its first,
+    // or under a table that ends the note: the way to the end of it. Before
+    // the cells, because a row with no closing pipe ends on its last cell's
+    // text, and a click below the table opened that cell instead.
+    if (head === model.to) return { kind: "leave", exit: exitBelow(doc, model) };
+    const above = head === model.from && exitAbove(model);
+    if (above) return { kind: "leave", exit: above };
+  }
   const ref = cellAt(model, from, to);
   if (ref) {
     const cell = cellOf(model, ref)!;
@@ -269,13 +338,6 @@ export function tableEntry(
   }
   // A range across the table's structure stays the main editor's.
   if (anchor !== head) return null;
-  if (pointer) {
-    // A click in the margin beside the table, at its last line or its first.
-    // Below a table that ends the note, this is the way to the end of it.
-    if (head === model.to) return { kind: "leave", exit: exitBelow(doc, model) };
-    const above = head === model.from && exitAbove(model);
-    if (above) return { kind: "leave", exit: above };
-  }
   const rows = gridRows(model);
   const at = (row: number, col: number, end: boolean): TableEntry => {
     const cell = rows[row].cells[col];
@@ -436,8 +498,11 @@ export function editTable(state: EditorState, edit: TableEdit): TransactionSpec 
 export function padRow(state: EditorState, model: TableModel, row: number): TransactionSpec | null {
   const r = gridRows(model)[row];
   if (!r || r.cells.length >= model.cols) return null;
-  const text = state.sliceDoc(r.from, r.to);
-  const insert = (text.trimEnd().endsWith("|") ? "" : " |") + "  |".repeat(model.cols - r.cells.length);
+  // A row ending in an escaped pipe ("| a \|") has no closing pipe yet: that
+  // one is the cell's text.
+  const text = state.sliceDoc(r.from, r.to).trimEnd();
+  const closed = text.endsWith("|") && !endsEscaped(text.slice(0, -1));
+  const insert = (closed ? "" : " |") + "  |".repeat(model.cols - r.cells.length);
   return { changes: { from: r.to, insert }, userEvent: "input" };
 }
 
@@ -584,26 +649,22 @@ const fromMain = Annotation.define<true>();
 /** The cell being edited in each main editor, if any. One at a time. */
 const sessions = new WeakMap<EditorView, CellSession>();
 
-/** Pipes and line breaks typed or pasted into a cell would split it or end
- *  the table, so they go in as "\|" and a space. */
-const cellInput = EditorState.transactionFilter.of((tr) => {
+/**
+ * Pipes and line breaks typed or pasted into a cell would split it or end the
+ * table, so they go in as "\|" and a space.
+ *
+ * The whole cell is checked after each edit, not just the text it inserts. A
+ * deletion inserts nothing, and backspacing the backslash out of "a \| b" left
+ * a bare pipe that split the cell: every later column moved one to the right
+ * and the last one fell off the drawn table. A backslash typed in front of
+ * "\|" did the same, by pairing with the escape. The repair puts the escape
+ * back, which leaves the caret in front of it.
+ */
+export const cellInput = EditorState.transactionFilter.of((tr) => {
   if (!tr.docChanged || tr.annotation(fromMain)) return tr;
-  let dirty = false;
-  const specs: { from: number; to: number; insert: string }[] = [];
-  tr.changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
-    const text = inserted.toString();
-    const safe = cellSafe(text, fromA > 0 ? tr.startState.sliceDoc(fromA - 1, fromA) : "");
-    if (safe !== text) dirty = true;
-    specs.push({ from: fromA, to: toA, insert: safe });
-  });
-  if (!dirty) return tr;
-  const changes = tr.startState.changes(specs);
-  return {
-    changes,
-    selection: tr.startState.selection.map(changes, 1),
-    userEvent: tr.annotation(Transaction.userEvent),
-    scrollIntoView: tr.scrollIntoView,
-  };
+  const repairs = cellRepairs(tr.newDoc.toString());
+  if (repairs.length === 0) return tr;
+  return [tr, { changes: repairs, sequential: true }];
 });
 
 /** The rendered table starting at `from`, among the main editor's blocks. */
@@ -644,6 +705,11 @@ class CellSession {
   td: HTMLElement;
   /** Where the cell's content starts in the main document. */
   base: number;
+  /** The cell is one a short row does not have yet. Its row is padded out
+   *  when something is written in it, not when it is opened: arrowing or
+   *  clicking through a ragged table used to pad every row it passed, an
+   *  edit to save and an undo step for a keypress that wrote nothing. */
+  missing: boolean;
   ended = false;
 
   constructor(
@@ -651,14 +717,15 @@ class CellSession {
     td: HTMLElement,
     public tableFrom: number,
     public ref: CellRef,
-    content: TableCell,
+    content: TableCell | null,
     anchor: number,
     head: number,
   ) {
     this.td = td;
-    this.base = content.from;
-    const text = main.state.sliceDoc(content.from, content.to);
-    const clamp = (p: number) => Math.min(text.length, Math.max(0, p - content.from));
+    this.missing = content === null;
+    this.base = content ? content.from : -1;
+    const text = content ? main.state.sliceDoc(content.from, content.to) : "";
+    const clamp = (p: number) => (content ? Math.min(text.length, Math.max(0, p - content.from)) : 0);
     td.replaceChildren();
     td.classList.add("editing");
     this.cell = new EditorView({
@@ -696,6 +763,8 @@ class CellSession {
         { key: "ArrowDown", run: () => this.vertical(1) },
         { key: "ArrowLeft", run: () => this.horizontal(-1) },
         { key: "ArrowRight", run: () => this.horizontal(1) },
+        { key: "Backspace", run: () => this.deletePipe(-1) },
+        { key: "Delete", run: () => this.deletePipe(1) },
         // The history is the main editor's: the cell's edits are its edits.
         { key: "Mod-z", run: () => undo(main), preventDefault: true },
         { key: "Mod-Shift-z", run: () => redo(main), preventDefault: true },
@@ -708,11 +777,20 @@ class CellSession {
       Prec.lowest(EditorView.domEventHandlers({
         keydown: (e) => {
           if (!(e.metaKey || e.ctrlKey) || e.altKey) return false;
-          if (!["s", "b", "i"].includes(e.key.toLowerCase())) return false;
+          const key = e.key.toLowerCase();
+          if (!["s", "b", "i"].includes(key)) return false;
+          // A format key writes marks into the cell, so the cell has to exist.
+          if (key !== "s" && !this.materialize()) return false;
           return runScopeHandlers(main, e, "editor");
         },
       })),
       EditorView.domEventHandlers({
+        // Images are the editor's to save and link; the main selection follows
+        // this one, so the link lands in the cell.
+        paste: (e) => {
+          if (!this.materialize()) return false;
+          return pasteImages(e, main);
+        },
         // Edit ▸ Undo is the native menu item, which reaches a focused editor
         // as a history input event rather than a key. This editor keeps no
         // history, so left alone WebKit would undo its DOM edits under it.
@@ -740,10 +818,68 @@ class CellSession {
     return model && model.from === this.tableFrom ? model : null;
   }
 
+  /** The row padding that gives a missing cell its place in the note, and
+   *  where the cell's content will start once it is applied. */
+  private padding(): { changes: ChangeSpec; base: number } | null {
+    const model = this.model();
+    const pad = model && padRow(this.main.state, model, this.ref.row);
+    if (!pad?.changes) return null;
+    const padded = this.main.state.update({ changes: pad.changes }).state;
+    const grown = tableModelAt(padded, this.tableFrom);
+    const cell = grown && cellOf(grown, this.ref);
+    return cell ? { changes: pad.changes, base: cell.from } : null;
+  }
+
+  /** The main state as it will be once a missing cell is put in, selection
+   *  and all. Null when the cell is not missing, or cannot be put in. */
+  prospect(): EditorState | null {
+    if (!this.missing) return null;
+    const pad = this.padding();
+    if (!pad) return null;
+    const sel = this.cell.state.selection.main;
+    return this.main.state.update({
+      changes: pad.changes,
+      selection: EditorSelection.single(pad.base + sel.anchor, pad.base + sel.head),
+    }).state;
+  }
+
+  /** Put a missing cell into the note now, for a command about to act on the
+   *  main selection there. False when it cannot be. */
+  materialize(): boolean {
+    if (!this.missing) return true;
+    const pad = this.padding();
+    if (!pad) return false;
+    this.missing = false;
+    this.base = pad.base;
+    const sel = this.cell.state.selection.main;
+    this.main.dispatch({
+      changes: pad.changes,
+      selection: EditorSelection.single(pad.base + sel.anchor, pad.base + sel.head),
+      annotations: [fromCell.of(true), Transaction.userEvent.of("input")],
+    });
+    return true;
+  }
+
   /** Replay the cell editor's transactions into the main document. */
   private toMain(trs: readonly Transaction[]) {
     for (const tr of trs) {
       if (tr.annotation(fromMain) || (!tr.docChanged && !tr.selection)) continue;
+      // Until something is written, a missing cell has no place in the note
+      // for the main selection to follow it to.
+      let pad: ChangeSpec | null = null;
+      if (this.missing) {
+        if (!tr.docChanged) continue;
+        const padding = this.padding();
+        if (!padding) {
+          // Nowhere to put it: close the cell rather than hold text the note
+          // does not have.
+          queueMicrotask(() => this.end());
+          return;
+        }
+        pad = padding.changes;
+        this.missing = false;
+        this.base = padding.base;
+      }
       const base = this.base;
       const changes: { from: number; to: number; insert: string }[] = [];
       tr.changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
@@ -756,26 +892,43 @@ class CellSession {
       // closed it and left the raw row under the caret.
       let event = tr.annotation(Transaction.userEvent);
       if (event?.startsWith("select.pointer")) event = "select";
-      this.main.dispatch({
+      const edit: TransactionSpec = {
         changes,
         selection: EditorSelection.single(base + sel.anchor, base + sel.head),
         annotations: [
           fromCell.of(true),
           ...(event ? [Transaction.userEvent.of(event)] : []),
         ],
-      });
+        sequential: pad !== null,
+      };
+      // A cell ending in a lone backslash escapes what follows it, and in a
+      // cell written tight against its closing pipe ("|a|") that is the pipe:
+      // the cell ran on into the next one. A space between them keeps the
+      // pipe a pipe, and sits outside the cell's text.
+      const end = base + tr.startState.doc.length;
+      const before = pad ? this.main.state.update({ changes: pad }).state : this.main.state;
+      const guard = endsEscaped(tr.newDoc.toString()) && before.sliceDoc(end, end + 1) === "|"
+        ? [{ changes: { from: base + tr.newDoc.length, insert: " " }, sequential: true }]
+        : [];
+      this.main.dispatch(...(pad ? [{ changes: pad }] : []), edit, ...guard);
     }
   }
 
   /** Follow a main-editor update the cell editor did not make. */
   followMain(u: ViewUpdate) {
-    if (u.docChanged) this.tableFrom = u.changes.mapPos(this.tableFrom, -1);
+    // Forward past text inserted right at the table's first line (a rewrite
+    // from outside adding a paragraph above it). A change that replaces the
+    // table from its start maps to that start either way.
+    if (u.docChanged) this.tableFrom = u.changes.mapPos(this.tableFrom, 1);
     if (u.transactions.every((tr) => tr.annotation(fromCell))) return;
     if (!u.docChanged && !u.selectionSet) return;
     const model = this.model();
     const sel = u.state.selection.main;
     const ref = model && cellAt(model, sel.from, sel.to);
-    if (model && ref && sameRef(ref, this.ref)) {
+    // A change from outside that leaves a missing cell still missing, and the
+    // main selection where it was parked, leaves the cell open.
+    if (this.missing && model && !cellOf(model, this.ref) && !u.selectionSet) return;
+    if (!this.missing && model && ref && sameRef(ref, this.ref)) {
       const cell = cellOf(model, ref)!;
       this.base = cell.from;
       const edit = minimalReplacement(this.cell.state.doc.toString(), u.state.sliceDoc(cell.from, cell.to));
@@ -912,6 +1065,20 @@ class CellSession {
     return this.goTo({ row, col: this.ref.col }, dir > 0 ? "start" : "end");
   }
 
+  /** Backspace or Delete at an escaped pipe takes the backslash and the pipe
+   *  together, the one character the rendered cell shows. */
+  private deletePipe(dir: 1 | -1): boolean {
+    const sel = this.cell.state.selection.main;
+    if (!sel.empty) return false;
+    const range = escapedPipeAt(this.cell.state.doc.toString(), sel.head, dir);
+    if (!range) return false;
+    this.cell.dispatch({
+      changes: range, selection: { anchor: range.from },
+      userEvent: dir < 0 ? "delete.backward" : "delete.forward", scrollIntoView: true,
+    });
+    return true;
+  }
+
   /** Left and right cross into the neighbouring cell from the cell's ends. */
   private horizontal(dir: 1 | -1): boolean {
     const sel = this.cell.state.selection.main;
@@ -927,11 +1094,19 @@ class CellSession {
   }
 }
 
-const exitSpec = (exit: TableExit): TransactionSpec => ({
-  ...(exit.insert ? { changes: { from: exit.insert.from, insert: exit.insert.text } } : {}),
-  selection: { anchor: exit.anchor },
-  scrollIntoView: true,
-});
+export const exitSpec = (exit: TableExit): TransactionSpec => {
+  const spec: TransactionSpec = { selection: { anchor: exit.anchor }, scrollIntoView: true };
+  if (!exit.insert) return spec;
+  const { from, text } = exit.insert;
+  // Lines made for the caret to leave by, not written: no undo step, and
+  // taken out again if the caret leaves them unused (exitLines).
+  return {
+    ...spec,
+    changes: { from, insert: text },
+    effects: setExitLines.of({ from, to: from + text.length }),
+    annotations: Transaction.addToHistory.of(false),
+  };
+};
 
 /**
  * Open a cell editor on `ref`, or move the open one's selection when it is
@@ -942,18 +1117,15 @@ function open(
   main: EditorView, model: TableModel, ref: CellRef,
   place: "start" | "end" | "all", anchor?: number, head?: number,
 ): CellSession | null {
-  let cell = cellOf(model, ref);
+  // A short row has no cell in this column yet. It is edited all the same,
+  // and the row is padded out once something is written in it; until then
+  // the main selection waits at the end of the row.
+  const row = gridRows(model)[ref.row];
+  if (!row || ref.col >= model.cols) return null;
+  const cell = cellOf(model, ref);
   if (!cell) {
-    // A short row has no cell to edit in this column yet: give it one.
-    const pad = padRow(main.state, model, ref.row);
-    if (!pad) return null;
-    main.dispatch(pad);
-    const grown = tableModelAt(main.state, model.from);
-    cell = grown && cellOf(grown, ref);
-    if (!grown || !cell) return null;
-    model = grown;
-  }
-  if (anchor === undefined) {
+    anchor = head = row.to;
+  } else if (anchor === undefined) {
     anchor = place === "end" ? cell.to : cell.from;
     head = place === "all" ? cell.to : anchor;
   }
@@ -961,6 +1133,10 @@ function open(
   const current = sessions.get(main);
   if (current && !current.ended && current.tableFrom === model.from && sameRef(current.ref, ref)
     && current.td.isConnected) {
+    if (current.missing) {
+      current.cell.focus();
+      return current;
+    }
     const len = current.cell.state.doc.length;
     const off = (p: number) => Math.min(len, Math.max(0, p - current.base));
     current.cell.dispatch({ selection: EditorSelection.single(off(anchor), off(head)) });
@@ -1041,6 +1217,32 @@ export function tableCellToPointer(view: EditorView, x: number, y: number): bool
   const session = open(view, model, refOf(cellEl), "end");
   if (session) session.cell.dispatch({ selection: { anchor: session.cell.posAtCoords({ x, y }, false) } });
   return true;
+}
+
+/**
+ * The state a menu over `view` describes. While the open cell is one its row
+ * does not have yet, that is the note with the row padded out and the
+ * selection in the new cell, which is what the menu's commands will act on
+ * (see prepareCell); the note itself is left alone until one of them runs.
+ * Right-clicking such a cell used to pad its row at once, whatever was
+ * picked from the menu after, including nothing.
+ */
+export function menuState(view: EditorView): EditorState {
+  const session = sessions.get(view);
+  return (session && !session.ended && session.prospect()) || view.state;
+}
+
+/** Put the open cell into the note if its row does not have it yet, for a
+ *  command about to act on the main selection there. */
+export function prepareCell(view: EditorView) {
+  const session = sessions.get(view);
+  if (session && !session.ended) session.materialize();
+}
+
+/** The editor of the cell open in `view`, if one is. */
+export function openCellEditor(view: EditorView): EditorView | null {
+  const session = sessions.get(view);
+  return session && !session.ended ? session.cell : null;
 }
 
 /**
@@ -1326,6 +1528,66 @@ const tableField = StateField.define<TableState>({
   ],
 });
 
+// ── Lines made to leave a table by ───────────────────────────────────────────
+
+interface LineRange {
+  from: number;
+  to: number;
+}
+
+const setExitLines = StateEffect.define<LineRange | null>();
+
+/**
+ * The blank lines added under a table that ends the note, for as long as
+ * nothing has been written on them. A note has no position below its last
+ * line, so leaving such a table downward has to make one; but arrowing out of
+ * it, or clicking under it, then edited the note, which autosaved the change
+ * for a keypress that wrote nothing. Lines left unused are taken back out.
+ */
+export const exitLines = StateField.define<LineRange | null>({
+  create: () => null,
+  update(value, tr) {
+    for (const e of tr.effects) if (e.is(setExitLines)) return e.value;
+    if (!value || !tr.docChanged) return value;
+    // Anything written on them makes them the user's. An insertion right at
+    // their start is the table's last cell growing, not that.
+    let touched = false;
+    tr.changes.iterChangedRanges((fromA, toA) => {
+      if (toA > value.from && fromA <= value.to) touched = true;
+    });
+    return touched ? null : { from: tr.changes.mapPos(value.from, 1), to: tr.changes.mapPos(value.to, -1) };
+  },
+});
+
+/** True for a transaction that only adds or takes out exit lines: nothing
+ *  the user wrote, so nothing to save or report as a change. */
+export function exitLinesOnly(tr: Transaction): boolean {
+  return tr.effects.some((e) => e.is(setExitLines));
+}
+
+/** The note as written: the document without exit lines nobody has used.
+ *  Saving them saved a change to a note the user had only arrowed through. */
+export function writtenText(state: EditorState): string {
+  const lines = state.field(exitLines, false);
+  const doc = state.doc;
+  return lines ? doc.sliceString(0, lines.from) + doc.sliceString(lines.to) : doc.toString();
+}
+
+/** Takes the unused exit lines out when a selection change leaves them. */
+const dropExitLines = EditorState.transactionFilter.of((tr) => {
+  const lines = tr.startState.field(exitLines, false);
+  if (!lines || tr.docChanged || !tr.selection) return tr;
+  if (tr.selection.ranges.every((r) => r.from >= lines.from && r.to <= lines.to)) return tr;
+  return [tr, {
+    changes: { from: lines.from, to: lines.to },
+    effects: setExitLines.of(null),
+    // The transaction was a selection change only, so this keeps it out of
+    // the history whole: the lines never went in.
+    annotations: Transaction.addToHistory.of(false),
+    sequential: true,
+  }];
+});
+
 /**
  * Rendered GFM tables for the docs note editor and the issue description,
  * edited a cell at a time without leaving the rendered view.
@@ -1335,4 +1597,4 @@ const tableField = StateField.define<TableState>({
  * is what cellFocus hands on to the first or last cell. Atomic ranges would hop
  * the whole table. (Up and down hop it regardless; tableKeys handles those.)
  */
-export const markdownTables: Extension = [tableField, cellFocus, tableKeys];
+export const markdownTables: Extension = [tableField, exitLines, dropExitLines, cellFocus, tableKeys];

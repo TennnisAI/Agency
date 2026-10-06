@@ -3180,10 +3180,9 @@ input, textarea, code,
 .merge-modal.race-dialog { width: 480px; }
 
 /* ── issues (the local per-project tracker) ──────────────────────────────── */
-.issues-wrap { flex: 1; display: flex; min-height: 0; }
+.issues-wrap { flex: 1; display: flex; min-height: 0; position: relative; /* anchors the composer */ }
 .issues-main { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
-/* Quick capture rests as a + button; clicking swings it 45° (to an ×) and
-   the input unfolds beside it — no box, just a hairline underline. */
+/* New issues start from a + button, which opens the composer below. */
 .issues-quickadd { padding: 12px 16px 4px; display: flex; align-items: center; gap: 8px; }
 .quickadd-toggle {
   width: 26px; height: 26px; border-radius: 50%; flex-shrink: 0;
@@ -3193,21 +3192,6 @@ input, textarea, code,
   transition: transform .18s ease, background .15s ease, color .15s ease;
 }
 .quickadd-toggle:hover { background: var(--s0); color: var(--text); }
-.issues-quickadd.open .quickadd-toggle { transform: rotate(45deg); }
-.quickadd-input {
-  flex: 1; min-width: 0; max-width: 0; opacity: 0; pointer-events: none;
-  background: transparent; border: 0; border-radius: 0;
-  border-bottom: 1px solid transparent;
-  color: var(--text); font-family: var(--sans); font-size: 13px;
-  padding: 4px 2px 5px; outline: none;
-  transition: max-width .25s ease, opacity .18s ease, border-color .15s ease;
-}
-.issues-quickadd.open .quickadd-input {
-  max-width: 720px; opacity: 1; pointer-events: auto;
-  border-bottom-color: var(--s1);
-}
-.quickadd-input:focus { border-bottom-color: var(--o1); }
-.quickadd-input::placeholder { color: var(--o0); }
 /* Empty board: the + is the hero, centered above the hint. */
 .issues-empty { gap: 12px; }
 /* The conflict list inside the automatic-sync prompt: a modal body, so it
@@ -3219,7 +3203,59 @@ input, textarea, code,
    second read as the more important of the two. */
 .issues-empty-actions { display: flex; gap: 8px; align-items: center; }
 .quickadd-toggle.big { width: 36px; height: 36px; font-size: 19px; }
-/* Search + filters, one row under quick capture. The bar itself is the shared
+/* A draft put away without a title: a dot on the +, and its name beside it. */
+.quickadd-toggle.has-draft { position: relative; border-color: var(--blue); color: var(--blue); }
+.quickadd-toggle.has-draft::after {
+  content: ""; position: absolute; top: -1px; right: -1px; width: 7px; height: 7px;
+  border-radius: 50%; background: var(--blue); box-shadow: 0 0 0 2px var(--base);
+}
+.quickadd-draft {
+  min-width: 0; max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  background: transparent; border: 0; padding: 2px 4px; cursor: pointer;
+  color: var(--sub0); font-family: var(--sans); font-size: 12.5px; font-style: italic;
+}
+.quickadd-draft:hover { color: var(--text); }
+/* The new-issue composer (AGE-255). It covers the Issues tab and only the
+   Issues tab: the scrim is the board's own, not the window's, so the sidebar
+   and the other tabs stay live and the draft waits here when they are used. */
+.issue-composer-scrim {
+  position: absolute; inset: 0; z-index: 20;
+  display: flex; align-items: flex-start; justify-content: center;
+  padding: 28px 24px; box-sizing: border-box;
+  /* No backdrop-filter: it would make the scrim the containing block for the
+     fixed-position property menus and date picker inside it, and they are
+     placed in window coordinates. */
+  background: var(--overlay);
+}
+.issue-composer {
+  width: 760px; max-width: 100%; max-height: 100%;
+  display: flex; flex-direction: column;
+  background: var(--mantle); border: 1px solid var(--s1); border-radius: 15px;
+  box-shadow: 0 24px 64px var(--shadow);
+}
+.issue-composer-head {
+  display: flex; align-items: center; gap: 8px; flex-shrink: 0;
+  padding: 10px 12px 10px 18px; border-bottom: 1px solid var(--line);
+}
+.issue-composer-head .spacer { flex: 1; }
+.issue-composer-heading { font-size: 12px; font-weight: 600; color: var(--o1); }
+.issue-composer-main {
+  flex: 1; min-height: 0; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 10px; padding: 14px 18px 16px;
+}
+/* The description takes the room the card has, and scrolls inside it. */
+.issue-composer-body.issue-detail-body { min-height: 220px; }
+.issue-composer-foot {
+  display: flex; align-items: center; gap: 12px; flex-shrink: 0;
+  padding: 12px 18px; border-top: 1px solid var(--line);
+  background: var(--crust); border-radius: 0 0 15px 15px;
+}
+.issue-composer-foot .spacer { flex: 1; }
+.issue-composer-hint { font-size: 11.5px; color: var(--o0); }
+/* A disabled .btn-primary (the composer's Save, before there is a title): the
+   shared disabled rule dims it, but its own hover would still light it up. */
+.btn-primary:disabled:hover { background: var(--blue); }
+/* Search + filters, one row under the + button. The bar itself is the shared
    .issues-filterbar (same as the cross-project board, so both boards read the
    same); only the gutter changes, to line up with the rows below. */
 .issues-filterbar.issues-toolbar { padding: 0 16px; margin: 2px 0 0; }

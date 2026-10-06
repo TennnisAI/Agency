@@ -204,8 +204,8 @@ export function todayIssues(issues: Issue[], today: string): Issue[] {
 // list loads (project selection resets tab state, so props can't carry it).
 export const PENDING_ISSUE_KEY = "issues:pending-select";
 
-// Same handoff trick for the palette's "New Issue": the Issues tab focuses
-// quick-add when this flag is waiting.
+// Same handoff trick for the palette's "New Issue": the Issues tab opens the
+// new-issue composer when this flag is waiting.
 export const PENDING_QUICKADD_KEY = "issues:focus-quickadd";
 
 // The board remembers per project whether the detail pane is expanded (the

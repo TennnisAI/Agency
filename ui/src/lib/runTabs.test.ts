@@ -26,7 +26,7 @@ const run = (over: Partial<RunInfo> = {}): RunInfo =>
     kind: "agent",
     agent: "claude",
     status: { state: "running" },
-    activity: { state: "waiting", since: 0 },
+    activity: { state: "done", since: 0, reported: false },
     primaryClosed: false,
     sessions: [],
     ...over,
@@ -75,8 +75,8 @@ describe("runTabs", () => {
   it("gives an extra agent tab its own activity", () => {
     const r = run({
       sessions: [
-        session("r1--2", "codex", { state: "running" }, { state: "waiting", since: 0 }),
-        session("r1--3", "codex", { state: "running" }, { state: "idle", since: 0 }),
+        session("r1--2", "codex", { state: "running" }, { state: "done", since: 0, reported: false }),
+        session("r1--3", "codex", { state: "running" }, { state: "idle", since: 0, reported: false }),
         session("r1--4", "codex"),
       ],
     });
@@ -88,7 +88,7 @@ describe("runTabs", () => {
   it("gives a stopped tab, or a terminal tab, a still dot from its status alone", () => {
     const r = run({
       sessions: [
-        session("r1--2", "shell", { state: "running" }, { state: "waiting", since: 0 }),
+        session("r1--2", "shell", { state: "running" }, { state: "done", since: 0, reported: false }),
         session("r1--3", "codex", { state: "exited", code: 0 }),
         session("r1--4", "codex", { state: "exited", code: 1 }),
         session("r1--5", "codex", { state: "gone" }),
@@ -108,8 +108,8 @@ describe("waitingElsewhere", () => {
 
   it("names a waiting tab behind a working first agent", () => {
     const r = run({
-      activity: { state: "working", since: 0 },
-      sessions: [session("r1--2", "codex", waiting, { state: "waiting", since: 0 })],
+      activity: { state: "working", since: 0, reported: false },
+      sessions: [session("r1--2", "codex", waiting, { state: "done", since: 0, reported: false })],
     });
     expect(elsewhere(r).map((t) => t.label)).toEqual(["Codex · 2"]);
     expect(waitingElsewhereLabel(elsewhere(r))).toBe("1 other tab waiting");
@@ -118,8 +118,8 @@ describe("waitingElsewhere", () => {
   it("leaves out the tab the dot already shows waiting", () => {
     const r = run({
       sessions: [
-        session("r1--2", "codex", waiting, { state: "waiting", since: 0 }),
-        session("r1--3", "codex", waiting, { state: "waiting", since: 0 }),
+        session("r1--2", "codex", waiting, { state: "done", since: 0, reported: false }),
+        session("r1--3", "codex", waiting, { state: "done", since: 0, reported: false }),
       ],
     });
     expect(elsewhere(r).map((t) => t.session)).toEqual(["r1--2", "r1--3"]);
@@ -127,7 +127,7 @@ describe("waitingElsewhere", () => {
   });
 
   it("is nothing when only the dot's own tab is waiting", () => {
-    const r = run({ sessions: [session("r1--2", "codex", waiting, { state: "idle", since: 0 })] });
+    const r = run({ sessions: [session("r1--2", "codex", waiting, { state: "idle", since: 0, reported: false })] });
     expect(elsewhere(r)).toEqual([]);
     expect(waitingElsewhereLabel(elsewhere(r))).toBeNull();
   });
@@ -139,8 +139,8 @@ describe("waitingElsewhere", () => {
       primaryClosed: true,
       sessions: [
         session("r1--2", "codex", { state: "exited", code: 0 }),
-        session("r1--3", "codex", waiting, { state: "waiting", since: 0 }),
-        session("r1--4", "codex", waiting, { state: "waiting", since: 0 }),
+        session("r1--3", "codex", waiting, { state: "done", since: 0, reported: false }),
+        session("r1--4", "codex", waiting, { state: "done", since: 0, reported: false }),
       ],
     });
     expect(elsewhere(r).map((t) => t.session)).toEqual(["r1--4"]);
@@ -149,10 +149,23 @@ describe("waitingElsewhere", () => {
   it("lists the stand-in too when the dot itself does not read waiting", () => {
     const r = run({
       primaryClosed: true,
-      activity: { state: "idle", since: 0 },
-      sessions: [session("r1--2", "codex", waiting, { state: "waiting", since: 0 })],
+      activity: { state: "idle", since: 0, reported: false },
+      sessions: [session("r1--2", "codex", waiting, { state: "done", since: 0, reported: false })],
     });
     expect(elsewhere(r).map((t) => t.session)).toEqual(["r1--2"]);
+  });
+
+  it("names a blocked tab as blocked, not waiting", () => {
+    const blocked = { state: "blocked", since: 0, reported: true } as const;
+    const done = { state: "done", since: 0, reported: false } as const;
+    const working = { state: "working", since: 0, reported: false } as const;
+    const one = run({ activity: working, sessions: [session("r1--2", "claude", waiting, blocked)] });
+    expect(waitingElsewhereLabel(elsewhere(one))).toBe("1 other tab blocked");
+    const both = run({
+      activity: working,
+      sessions: [session("r1--2", "claude", waiting, blocked), session("r1--3", "codex", waiting, done)],
+    });
+    expect(waitingElsewhereLabel(elsewhere(both))).toBe("2 other tabs: 1 blocked, 1 waiting");
   });
 });
 

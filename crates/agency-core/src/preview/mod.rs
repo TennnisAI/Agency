@@ -31,6 +31,12 @@
 //! server serving only that, which is why the gate is "either", not "preview".
 //! Both are read per request, so revoking one mid-run takes it away mid-run.
 //!
+//! A third reason to listen has no tools at all: the run's agent posting its
+//! own lifecycle hooks to `/__agency__/state` (AGE-206, [`report`] and
+//! [`crate::state_hooks`]). That one is not a switch the user holds. It is on
+//! for as long as the worktree carries the hooks that post here, since an
+//! agent that read them at startup posts whether anything listens or not.
+//!
 //! The server keeps the name `agency-preview` now that it serves more than the
 //! preview. Renaming it would orphan the entry in every worktree already
 //! emitted and break the permission rules users have written against the tool
@@ -38,6 +44,7 @@
 
 mod http;
 pub(crate) mod proxy;
+pub mod report;
 mod rpc;
 pub mod status;
 
@@ -115,8 +122,9 @@ pub struct Facts {
 /// cached: both are switches the user holds while a run is going, and a tool
 /// the user has just revoked has to stop being listed and stop answering.
 ///
-/// A server runs while *either* is on. Neither being on is the case that never
-/// starts one at all.
+/// A server runs while *either* is on. The state hooks are a third reason to
+/// listen, but they serve no tool, so they are the app's to weigh and not a
+/// half of this (see the module docs).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Caps {
     /// The preview tools: this project has a web run script and `[preview]
@@ -186,9 +194,10 @@ pub enum OpenFocus {
 /// What the embedding app provides: fresh facts for guidance, the native pixel
 /// screenshot of the preview pane (which only the app, owner of the window, can
 /// take — see the app crate's preview_shot), which tool groups are switched on,
-/// and what the user is looking at. `set_status` is the one hook that goes the
-/// other way: the agent's own status line, already cleaned by
-/// [`status::clean`], for the app to put on the board.
+/// and what the user is looking at. `set_status` and `report` are the two
+/// hooks that go the other way: the agent's own status line, already cleaned by
+/// [`status::clean`], and the state its lifecycle hooks report, with the Agency
+/// session that reported it, for the app to put on the board.
 #[derive(Clone)]
 pub struct Hooks {
     pub facts: Arc<dyn Fn() -> Facts + Send + Sync>,
@@ -196,6 +205,10 @@ pub struct Hooks {
     pub caps: Arc<dyn Fn() -> Caps + Send + Sync>,
     pub open_file: Arc<dyn Fn() -> OpenFocus + Send + Sync>,
     pub set_status: Arc<dyn Fn(status::Status) + Send + Sync>,
+    pub report: Arc<dyn Fn(&str, report::Event) + Send + Sync>,
+    /// What a `report` post has to carry in [`crate::state_hooks::TOKEN_HEADER`]
+    /// (see [`crate::state_hooks::token`]).
+    pub state_token: Arc<str>,
 }
 
 /// One console line reported by the bridge.
@@ -627,7 +640,40 @@ fn handle_conn(mut stream: TcpStream, ctx: &Ctx) {
     }
 }
 
+/// A lifecycle hook. Always 204, and before anything else: Claude Code waits
+/// on every post (`async` is not honoured on an `http` hook), and prints a
+/// "hook error" into the agent's transcript for any answer that is not 2xx
+/// (2.1.289), so a report we drop is dropped quietly.
+///
+/// No session header is a `claude` the user started themselves in this
+/// worktree, which is not Agency's to report on. No token, or a request a
+/// browser made, is a page on the preview's own origin posting here, which is
+/// nobody's report: a script on the previewed page reached this route
+/// same-origin with nothing but a run id. A browser puts `Origin` on every
+/// POST, and the agent's hook client puts it on none.
+fn state_report(stream: &mut TcpStream, req: &http::Request, ctx: &Ctx) {
+    let _ = http::write_response(stream, 204, "No Content", &[], b"");
+    if req.header("origin").is_some() || req.header("sec-fetch-site").is_some() {
+        return;
+    }
+    let token = req.header(crate::state_hooks::TOKEN_HEADER).unwrap_or("").trim();
+    if !crate::state_hooks::token_matches(token, &ctx.hooks.state_token) {
+        return;
+    }
+    let session = req.header(crate::state_hooks::SESSION_HEADER).unwrap_or("").trim();
+    if let (false, Some(ev)) = (session.is_empty(), report::parse(&req.body)) {
+        (ctx.hooks.report)(session, ev);
+    }
+}
+
 fn control(stream: &mut TcpStream, req: &http::Request, ctx: &Ctx) {
+    // Ahead of the parse below: a `PostToolUse` body carries the tool's whole
+    // output, a file read or a build log, and every tool call posts one that
+    // the agent waits on. Built into a `Value` first, each was parsed twice.
+    if req.method == "POST" && req.path() == crate::state_hooks::STATE_PATH {
+        state_report(stream, req, ctx);
+        return;
+    }
     let body: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
     let str_at = |k: &str| body.get(k).and_then(Value::as_str).map(str::to_string);
     match (req.method.as_str(), req.path()) {
@@ -879,8 +925,12 @@ mod tests {
             caps: Arc::new(move || caps),
             open_file: Arc::new(move || open.clone()),
             set_status: Arc::new(|_| {}),
+            report: Arc::new(|_, _| {}),
+            state_token: Arc::from(TOKEN),
         }
     }
+
+    const TOKEN: &str = "0123456789abcdef0123456789abcdef";
 
     /// Raw HTTP client good enough for our own server.
     fn post(port: u16, path: &str, body: &str) -> (u16, String) {
@@ -1046,6 +1096,52 @@ mod tests {
                 status::Status::Set { text: "running the tests".into(), truncated: false },
                 status::Status::Clear,
             ]
+        );
+    }
+
+    #[test]
+    fn a_hook_report_reaches_the_app_with_its_session_and_always_gets_204() {
+        let seen: Arc<Mutex<Vec<(String, report::Reported)>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let hooks = Hooks {
+            report: Arc::new(move |sid, ev: report::Event| {
+                sink.lock().unwrap().push((sid.to_string(), ev.state))
+            }),
+            ..with_open_file(None, Err("n/a"), Caps::none(), OpenFocus::Nothing)
+        };
+        let srv = start(hooks);
+        let path = crate::state_hooks::STATE_PATH;
+        let body = |event: &str| json!({ "hook_event_name": event, "tool_input": {} }).to_string();
+        let send = |b: &str, sid: Option<&str>| {
+            let mut headers: Vec<(&str, &str)> = vec![("X-Agency-Token", TOKEN)];
+            headers.extend(sid.map(|s| ("X-Agency-Session", s)));
+            request(srv.port(), "POST", path, b, &headers)
+        };
+        assert_eq!(send(&body("PermissionRequest"), Some("fix-a1--2")), (204, String::new()));
+        // A `claude` the user started by hand: the variable is unset, the
+        // header arrives empty.
+        assert_eq!(send(&body("Stop"), Some("")).0, 204);
+        assert_eq!(send(&body("Stop"), None).0, 204);
+        // Dropped at the parse, still 204: anything else prints a hook error
+        // into the agent's transcript.
+        assert_eq!(send(&body("SubagentStop"), Some("fix-a1")).0, 204);
+        assert_eq!(send("garbage", Some("fix-a1")).0, 204);
+        // The previewed page, same-origin, knowing the run id but not the
+        // token; and the same post with a token, from a browser.
+        let forged = |extra: &[(&str, &str)]| {
+            let mut headers = vec![("X-Agency-Session", "fix-a1")];
+            headers.extend_from_slice(extra);
+            request(srv.port(), "POST", path, &body("Stop"), &headers).0
+        };
+        assert_eq!(forged(&[]), 204);
+        assert_eq!(forged(&[("X-Agency-Token", "0123456789abcdef0123456789abcdee")]), 204);
+        let port = srv.port().to_string();
+        let origin = format!("http://127.0.0.1:{port}");
+        assert_eq!(forged(&[("X-Agency-Token", TOKEN), ("Origin", &origin)]), 204);
+        assert_eq!(forged(&[("X-Agency-Token", TOKEN), ("Sec-Fetch-Site", "same-origin")]), 204);
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![("fix-a1--2".to_string(), report::Reported::Blocked)]
         );
     }
 

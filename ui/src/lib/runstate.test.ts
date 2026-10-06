@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { RunActivity, RunInfo, RunSessionInfo } from "../api";
 import {
+  agentBlocked,
   agentNote,
   agentWaiting,
   agentWorking,
@@ -25,7 +26,7 @@ const waitingRun = (over: Partial<RunInfo> = {}): RunInfo =>
   ({
     kind: "agent",
     status: { state: "running" },
-    activity: { state: "waiting", since: 0 },
+    activity: { state: "done", since: 0, reported: false },
     pinRank: null,
     primaryClosed: false,
     sessions: [],
@@ -38,7 +39,7 @@ const tab = (n: number, state: RunActivity["state"] | null, agent = "codex"): Ru
   runId: "r1",
   agent,
   status: { state: "running" },
-  activity: state && { state, since: 0 },
+  activity: state && { state, since: 0, reported: false },
 });
 
 describe("inGitlessFolder", () => {
@@ -70,12 +71,52 @@ describe("needsAttention", () => {
   });
 
   it("is false while the agent is working, and before the first sample", () => {
-    expect(needsAttention(waitingRun({ activity: { state: "working", since: 0 } }))).toBe(false);
+    expect(needsAttention(waitingRun({ activity: { state: "working", since: 0, reported: false } }))).toBe(false);
     expect(needsAttention(waitingRun({ activity: null }))).toBe(false);
   });
 
   it("stays true when the run is pinned: a pin is placement, not suppression", () => {
     expect(needsAttention(waitingRun({ pinRank: 1 }))).toBe(true);
+  });
+});
+
+describe("blocked and done", () => {
+  const blocked = (over: Partial<RunInfo> = {}) =>
+    waitingRun({ activity: { state: "blocked", since: 0, reported: true }, ...over });
+
+  it("badges blocked apart from done", () => {
+    const st = runStatus(blocked(), 120_000);
+    expect(st.cls).toBe("blocked");
+    expect(st.text).toBe("blocked · 2m");
+    expect(st.title).not.toMatch(/\u2014/);
+  });
+
+  it("calls a reported end of turn done, and a guessed one waiting", () => {
+    const said = runStatus(waitingRun({ activity: { state: "done", since: 0, reported: true } }), 60_000);
+    expect(said.text).toBe("done · 1m");
+    const guessed = runStatus(waitingRun(), 60_000);
+    expect(guessed.text).toBe("waiting · 1m");
+    expect(guessed.title).toMatch(/doesn't report/);
+    expect(said.cls).toBe(guessed.cls);
+  });
+
+  it("needs attention either way, and counts apart", () => {
+    expect(needsAttention(blocked())).toBe(true);
+    const runs = [blocked(), waitingRun()];
+    expect(countAgents(runs, agentBlocked)).toBe(1);
+    expect(countAgents(runs, agentWaiting)).toBe(1);
+  });
+
+  it("is never blocked once the agent is gone", () => {
+    expect(needsAttention(blocked({ status: { state: "exited", code: 0 } as never }))).toBe(false);
+    expect(runStatus(blocked({ status: { state: "exited", code: 0 } as never })).cls).toBe("exited");
+  });
+
+  it("filters to blocked alone, and reads the stored filter back", () => {
+    expect(matchesRunFilter(blocked(), "blocked")).toBe(true);
+    expect(matchesRunFilter(waitingRun(), "blocked")).toBe(false);
+    expect(matchesRunFilter(blocked(), "waiting")).toBe(false);
+    expect(parseRunFilter("blocked")).toBe("blocked");
   });
 });
 
@@ -93,7 +134,7 @@ describe("runStatus", () => {
   });
 
   it("drops the timer for an idle run, so nothing counts forever", () => {
-    const st = runStatus(waitingRun({ activity: { state: "idle", since: 0 } }), 3_600_000);
+    const st = runStatus(waitingRun({ activity: { state: "idle", since: 0, reported: false } }), 3_600_000);
     expect(st.cls).toBe("idle");
     expect(st.text).not.toMatch(/·/);
   });
@@ -127,7 +168,7 @@ describe("fmtDur", () => {
 describe("agentNote", () => {
   const working = (over: Partial<RunInfo> = {}): RunInfo =>
     waitingRun({
-      activity: { state: "working", since: 1_000 },
+      activity: { state: "working", since: 1_000, reported: false },
       agentStatus: { text: "running the migration tests", since: 5_000, stale: false },
       ...over,
     });
@@ -151,7 +192,7 @@ describe("agentNote", () => {
 
   it("dims a line the backend marks stale, and says why", () => {
     const run = working({
-      activity: { state: "waiting", since: 9_000 },
+      activity: { state: "done", since: 9_000, reported: false },
       agentStatus: { text: "running the migration tests", since: 5_000, stale: true },
     });
     const note = agentNote(run, 65_000);
@@ -162,7 +203,7 @@ describe("agentNote", () => {
   // A line set as the agent's last act predates the pane going quiet, because
   // the call is drawn in the pane. Only the backend flag decides.
   it("keeps a line current after the run goes quiet unless the backend says stale", () => {
-    const run = working({ activity: { state: "waiting", since: 9_000 } });
+    const run = working({ activity: { state: "done", since: 9_000, reported: false } });
     expect(agentNote(run)?.stale).toBe(false);
   });
 });
@@ -213,14 +254,14 @@ describe("pinDropSide", () => {
 // was doing and every other tab in it went uncounted (AGE-249).
 describe("runAgents", () => {
   it("counts every agent tab in a workspace, not just the first", () => {
-    const r = waitingRun({ sessions: [tab(2, "working"), tab(3, "waiting"), tab(4, "idle")] });
+    const r = waitingRun({ sessions: [tab(2, "working"), tab(3, "done"), tab(4, "idle")] });
     expect(runAgents(r)).toHaveLength(4);
     expect(countAgents([r], agentWorking)).toBe(1);
     expect(countAgents([r], agentWaiting)).toBe(2);
   });
 
   it("finds a waiting agent behind a working first one", () => {
-    const r = waitingRun({ activity: { state: "working", since: 0 }, sessions: [tab(2, "waiting")] });
+    const r = waitingRun({ activity: { state: "working", since: 0, reported: false }, sessions: [tab(2, "done")] });
     expect(needsAttention(r)).toBe(true);
     expect(isWorking(r)).toBe(true);
   });
@@ -230,13 +271,13 @@ describe("runAgents", () => {
   });
 
   it("does not count a terminal tab as an agent", () => {
-    const r = waitingRun({ sessions: [tab(2, "waiting", "shell")] });
+    const r = waitingRun({ sessions: [tab(2, "done", "shell")] });
     expect(runAgents(r)).toHaveLength(1);
   });
 
   it("does not count a tab whose agent has stopped, whatever its last sample", () => {
-    const stopped = { ...tab(2, "waiting"), status: { state: "exited", code: 0 } } as RunSessionInfo;
-    const r = waitingRun({ activity: { state: "idle", since: 0 }, sessions: [stopped] });
+    const stopped = { ...tab(2, "done"), status: { state: "exited", code: 0 } } as RunSessionInfo;
+    const r = waitingRun({ activity: { state: "idle", since: 0, reported: false }, sessions: [stopped] });
     expect(countAgents([r])).toBe(2);
     expect(needsAttention(r)).toBe(false);
   });
@@ -244,7 +285,7 @@ describe("runAgents", () => {
   // With the first tab closed, the run's own status and activity describe the
   // tab standing in for it (AGE-184). Counting both would count that tab twice.
   it("counts a closed first tab's stand-in once", () => {
-    const r = waitingRun({ primaryClosed: true, sessions: [tab(2, "waiting")] });
+    const r = waitingRun({ primaryClosed: true, sessions: [tab(2, "done")] });
     expect(runAgents(r)).toHaveLength(1);
     expect(countAgents([r], agentWaiting)).toBe(1);
   });
@@ -254,7 +295,7 @@ describe("runAgents", () => {
   });
 
   it("sums across runs", () => {
-    const runs = [waitingRun(), waitingRun({ sessions: [tab(2, "waiting")] })];
+    const runs = [waitingRun(), waitingRun({ sessions: [tab(2, "done")] })];
     expect(countAgents(runs)).toBe(3);
     expect(countAgents(runs, agentWaiting)).toBe(3);
   });
@@ -285,7 +326,7 @@ describe("projectAgentsLabel", () => {
 });
 
 describe("matchesRunFilter", () => {
-  const working = waitingRun({ activity: { state: "working", since: 0 } } as Partial<RunInfo>);
+  const working = waitingRun({ activity: { state: "working", since: 0, reported: false } } as Partial<RunInfo>);
   const waiting = waitingRun();
   const exited = waitingRun({ status: { state: "exited", code: 0 } } as Partial<RunInfo>);
   const terminal = waitingRun({ kind: "terminal" } as Partial<RunInfo>);
@@ -300,7 +341,7 @@ describe("matchesRunFilter", () => {
   });
 
   it("keeps a workspace for an agent in any of its tabs", () => {
-    const mixed = waitingRun({ activity: { state: "idle", since: 0 }, sessions: [tab(2, "working")] });
+    const mixed = waitingRun({ activity: { state: "idle", since: 0, reported: false }, sessions: [tab(2, "working")] });
     expect(matchesRunFilter(mixed, "working")).toBe(true);
     expect(matchesRunFilter(mixed, "waiting")).toBe(false);
   });

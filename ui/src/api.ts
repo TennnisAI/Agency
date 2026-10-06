@@ -54,16 +54,19 @@ export interface LoopState {
   updatedAt: number;
 }
 
-// Live activity signal derived from pane output (camelCase serde, see
-// agency_app::activity). "working" = output recently; "waiting" = quiet after
-// a user-driven turn (finished, or blocked on input); "idle" = quiet with no
-// turn in flight (never prompted, or waited too long). A waiting run decays to
-// idle after ~30m so an urgent badge does not climb forever. `since` is epoch
-// ms when the current state began. Null until the backend's first 2s poll
-// observes the run.
+// What an agent is doing (camelCase serde, see agency_app::activity). Taken
+// from the agent's own lifecycle hooks where it has them (Claude Code), and
+// from its pane otherwise. "working" = mid-turn; "blocked" = stopped on a
+// permission dialog or a question, which only a reporting agent can say;
+// "done" = its turn is over; "idle" = nothing in flight. `reported` is false
+// when the pane is the source, and a pane can only guess "done" (quiet after a
+// turn the user drove), which may really be a dialog: the board says so, and
+// the guess decays to idle after ~30m. `since` is epoch ms when the current
+// state began. Null until the backend first observes the run.
 export interface RunActivity {
-  state: "working" | "waiting" | "idle";
+  state: "working" | "blocked" | "done" | "idle";
   since: number;
+  reported: boolean;
 }
 
 // An agent's own status line. `since` is epoch ms when it first set this text.
@@ -1834,6 +1837,7 @@ export const gitRevertLines = (taskId: string, path: string, hunkIndex: number, 
 export interface NotifSettings {
   agentFinished: boolean;
   agentIdle: boolean;
+  agentBlocked: boolean;
   runCrashed: boolean;
   mergeAttention: boolean;
   loopEvents: boolean;

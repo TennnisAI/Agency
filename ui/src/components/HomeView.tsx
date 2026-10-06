@@ -4,6 +4,7 @@ import { Issue, Project, RunInfo, RepoReadiness, addProject, inspectRepo, listIs
 import { projectAccent, runName } from "../agents";
 import {
   RunFilter,
+  agentBlocked,
   agentWaiting,
   agentWorking,
   countAgents,
@@ -234,7 +235,10 @@ export default function HomeView({
   // counting runs reported each workspace as its first agent (AGE-249).
   const agentCount = countAgents(all);
   const working = countAgents(all, agentWorking);
-  // The header counts what is actually asking for the user.
+  // The header counts what is actually asking for the user, the two kinds
+  // apart: an agent that can't go on without an answer, and one whose turn is
+  // over and waiting to be looked at.
+  const blockedCount = countAgents(all, agentBlocked);
   const waitingCount = countAgents(all, agentWaiting);
 
   // Hold the header (and its 0/0/0 stats) until the first poll returns, so an
@@ -322,6 +326,14 @@ export default function HomeView({
             onClick={() => pickFilter("working")}
           />
           <Stat
+            value={blockedCount}
+            label="blocked"
+            alarm={blockedCount > 0}
+            active={filter === "blocked"}
+            title={filter === "blocked" ? "Show every agent" : "Show only agents blocked on your answer"}
+            onClick={() => pickFilter("blocked")}
+          />
+          <Stat
             value={waitingCount}
             label="waiting"
             warn={waitingCount > 0}
@@ -334,7 +346,11 @@ export default function HomeView({
 
       {filter !== "all" && shown.length === 0 && (
         <div className="home-filter-empty">
-          {filter === "working" ? "No agents are working right now." : "No agents are waiting on you."}{" "}
+          {filter === "working"
+            ? "No agents are working right now."
+            : filter === "blocked"
+              ? "No agents are blocked on you."
+              : "No agents are waiting on you."}{" "}
           <button className="home-filter-clear" onClick={() => pickFilter("all")}>Show all agents</button>
         </div>
       )}
@@ -349,6 +365,7 @@ export default function HomeView({
           ),
         );
         const live = countAgents(runs, agentWorking);
+        const blocked = countAgents(runs, agentBlocked);
         const waiting = countAgents(runs, agentWaiting);
         // A filter overrides the fold: "show me what is waiting" has to show
         // all of it, not just what sits in the projects left open.
@@ -374,6 +391,7 @@ export default function HomeView({
                 <span className="home-group-meta">
                   {projectAgentsLabel(runs)}
                   {live > 0 && <span className="home-live"> · {live} working</span>}
+                  {blocked > 0 && <span className="home-blocked"> · {blocked} blocked</span>}
                   {waiting > 0 && <span className="home-attn"> · {waiting} waiting</span>}
                 </span>
                 <span className="home-group-open">open →</span>
@@ -399,6 +417,7 @@ export function Stat({
   label,
   accent,
   warn,
+  alarm,
   active,
   title,
   onClick,
@@ -407,11 +426,12 @@ export function Stat({
   label: string;
   accent?: boolean;
   warn?: boolean;
+  alarm?: boolean;
   active?: boolean;
   title?: string;
   onClick?: () => void;
 }) {
-  const cls = `home-stat ${accent ? "accent" : ""} ${warn ? "warn" : ""}`;
+  const cls = `home-stat ${accent ? "accent" : ""} ${warn ? "warn" : ""} ${alarm ? "alarm" : ""}`;
   const body = (
     <>
       <span className="home-stat-n">{value}</span> {label}

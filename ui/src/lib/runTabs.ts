@@ -115,20 +115,30 @@ export function tabsTitle(tabs: RunTab[]): string {
  *
  * `dot` is the class of the tile's own dot, `runStatus(run).cls`. It shows the
  * first tab, or once that was closed the lowest-numbered one still running
- * (AGE-184). It accounts for that tab only when it reads waiting itself;
- * otherwise every waiting tab is listed, the dot's own included.
+ * (AGE-184). It accounts for that tab only when it reads waiting or blocked
+ * itself; otherwise every such tab is listed, the dot's own included.
  */
 export function waitingElsewhere(run: Pick<RunInfo, "primaryClosed">, tabs: RunTab[], dot: string): RunTab[] {
-  const waiting = tabs.filter((t) => t.cls === "awaiting");
-  if (dot !== "awaiting") return waiting;
+  const asking = (cls: string) => cls === "awaiting" || cls === "blocked";
+  const waiting = tabs.filter((t) => asking(t.cls));
+  if (!asking(dot)) return waiting;
   const shown = run.primaryClosed ? tabs.find((t) => t.cls !== "exited") : tabs[0];
   return waiting.filter((t) => t !== shown);
 }
 
-/** "1 other tab waiting", for the foot of a tile, or null when there are none. */
+/**
+ * "1 other tab waiting", for the foot of a tile, or null when there are none.
+ * Blocked tabs are named as blocked, the way the overview counts them apart:
+ * one stopped on a dialog is not one whose turn is over.
+ */
 export function waitingElsewhereLabel(tabs: RunTab[]): string | null {
   if (tabs.length === 0) return null;
-  return `${tabs.length} other ${tabs.length === 1 ? "tab" : "tabs"} waiting`;
+  const blocked = tabs.filter((t) => t.cls === "blocked").length;
+  const waiting = tabs.length - blocked;
+  const other = (n: number) => `${n} other ${n === 1 ? "tab" : "tabs"}`;
+  if (blocked === 0) return `${other(waiting)} waiting`;
+  if (waiting === 0) return `${other(blocked)} blocked`;
+  return `${other(tabs.length)}: ${blocked} blocked, ${waiting} waiting`;
 }
 
 /**

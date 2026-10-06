@@ -131,6 +131,9 @@ pub struct Observation {
     pub session_running: bool,
     /// `activity::classify` says the pane is `Working` — the agent is mid-turn.
     pub working: bool,
+    /// The agent's own hooks say it is stopped on a permission dialog or a
+    /// question (AGE-206). See [`decide`] for why this one never times out.
+    pub blocked: bool,
     /// Epoch ms of the human's last keystroke in this session, if any.
     pub last_key_ms: Option<i64>,
     /// The human has typed something they have not submitted. Set by keystroke
@@ -145,6 +148,8 @@ pub enum HoldReason {
     EchoGrace,
     /// The agent is mid-turn.
     Working,
+    /// The agent is waiting on the user's answer to a dialog.
+    Blocked,
     /// Something unsent is on the prompt line.
     Draft,
 }
@@ -189,6 +194,15 @@ pub enum Decision {
 pub fn decide(head: &Queued, obs: &Observation) -> Decision {
     if !obs.session_running {
         return Decision::Discard(DiscardReason::SessionGone);
+    }
+    // Ahead of the timeout, which would otherwise type into the dialog. A
+    // dialog takes keys as answers: an Enter that reached an `AskUserQuestion`
+    // question picked its first option (Claude Code 2.1.289, seen while
+    // verifying AGE-206), and the first option of a permission dialog is
+    // "Yes". A queued message's Enter would approve a command the user never
+    // saw, which is the one thing this queue must never do on their behalf.
+    if obs.blocked {
+        return Decision::Hold(HoldReason::Blocked);
     }
     if let Some(key_ms) = obs.last_key_ms {
         if obs.now_ms.saturating_sub(key_ms) < ECHO_GRACE_MS {
@@ -330,6 +344,18 @@ pub fn classify_input(data: &[u8]) -> Typed {
     } else {
         Typed::Nothing
     }
+}
+
+/// Whether one write from the pane can answer a dialog the agent is blocked on:
+/// Enter, a printable key (numbered choices, y and n), a lone Esc, or Ctrl-C.
+/// Arrow keys only move a dialog's selection, and mouse and focus reports are
+/// not the user pressing anything.
+///
+/// Wider than [`classify_input`], which files a lone Esc under `Nothing` on
+/// purpose (it does not edit the prompt line). Esc is how a permission dialog
+/// is refused, and a refusal fires no hook (`activity::answered`).
+pub fn answers_a_prompt(data: &[u8]) -> bool {
+    data == [0x1b] || data.contains(&0x03) || classify_input(data) != Typed::Nothing
 }
 
 /// Index just past the escape sequence starting at `start`.
@@ -614,6 +640,7 @@ mod tests {
             now_ms,
             session_running: true,
             working: false,
+            blocked: false,
             last_key_ms: None,
             draft: false,
         }
@@ -628,6 +655,25 @@ mod tests {
     fn a_working_agent_holds_the_message() {
         let obs = Observation { working: true, ..clear(1_000) };
         assert_eq!(decide(&msg(0), &obs), Decision::Hold(HoldReason::Working));
+    }
+
+    #[test]
+    fn a_blocked_agent_holds_past_the_timeout() {
+        let obs = Observation { blocked: true, ..clear(MAX_HOLD_MS * 10) };
+        assert_eq!(decide(&msg(0), &obs), Decision::Hold(HoldReason::Blocked));
+        let gone = Observation { session_running: false, ..obs };
+        assert_eq!(decide(&msg(0), &gone), Decision::Discard(DiscardReason::SessionGone));
+    }
+
+    #[test]
+    fn what_answers_a_dialog() {
+        for yes in [&b"\r"[..], b"1", b"n", b"\x1b", b"\x03"] {
+            assert!(answers_a_prompt(yes), "{yes:?}");
+        }
+        // Arrows, a mouse report over the pane, a focus event.
+        for no in [&b"\x1b[A"[..], b"\x1b[B", b"\x1b[M !!", b"\x1b[I", b""] {
+            assert!(!answers_a_prompt(no), "{no:?}");
+        }
     }
 
     #[test]

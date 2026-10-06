@@ -979,7 +979,7 @@ fn extra_session_panes_cover_the_tabs_the_run_snapshot_misses() {
 
     let mut seen = false;
     for _ in 0..150 {
-        let panes = state.extra_session_panes();
+        let panes = state.extra_session_panes(&state.live_sessions().unwrap_or_default());
         if panes.iter().any(|(id, _)| *id == tab.id) {
             // The run's own session is the run snapshot's job; listing it here
             // too would have two observers writing one entry.
@@ -4325,9 +4325,9 @@ fn first_prompt_keeps_the_title_when_the_branch_rename_is_refused() {
 /// `update_activity` writes the pane observation, `list_runs` classifies it,
 /// and the tile reads the answer off `RunInfo`. Unit tests cover
 /// `activity::classify` itself; this covers the wiring around it, including
-/// the `prompted` set that separates "waiting on you" from plain idle.
+/// the `prompted` set that separates a guessed "done" from plain idle.
 #[test]
-fn a_quiet_user_driven_run_reads_as_waiting_then_decays_to_idle() {
+fn a_quiet_user_driven_run_reads_as_done_then_decays_to_idle() {
     let dir = tempfile::tempdir().unwrap();
     let repo = dir.path().join("repo");
     std::fs::create_dir_all(&repo).unwrap();
@@ -4343,15 +4343,17 @@ fn a_quiet_user_driven_run_reads_as_waiting_then_decays_to_idle() {
     // Nothing has observed the pane yet, so there is no sample to classify.
     assert!(activity(&state).is_none(), "unobserved: no activity yet");
 
-    // Quiet past the working TTL, but nobody drove a turn: idle, not waiting.
+    // Quiet past the working TTL, but nobody drove a turn: idle, not done.
     mark_quiet_since(&state, &id, now_ms() - 60_000);
     assert_eq!(activity(&state).unwrap().state, ActivityState::Idle, "never prompted");
 
     // A turn the user drove. The same quiet pane now means the run finished or
-    // is blocked on input, which is the state the board badges.
+    // is blocked on input, and with nothing reported the board cannot say
+    // which: it reads as a guessed done.
     state.run_input(&id, b"\r").unwrap();
     mark_quiet_since(&state, &id, now_ms() - 60_000);
-    assert_eq!(activity(&state).unwrap().state, ActivityState::Waiting, "waiting on the user");
+    let a = activity(&state).unwrap();
+    assert_eq!((a.state, a.reported), (ActivityState::Done, false), "quiet after a turn");
 
     // Past the decay window an urgent badge stops being signal, so it lapses
     // back to idle even though the turn was driven.
@@ -4359,6 +4361,121 @@ fn a_quiet_user_driven_run_reads_as_waiting_then_decays_to_idle() {
     assert_eq!(activity(&state).unwrap().state, ActivityState::Idle, "decayed");
 
     state.discard_run(&id).unwrap();
+}
+
+/// POST one hook body to a run's server the way Claude Code's `http` hook
+/// does, and return the status line's code.
+fn post_hook(port: u16, session: &str, token: &str, body: &str) -> u16 {
+    use std::io::{Read, Write};
+    let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    let req = format!(
+        "POST /__agency__/state HTTP/1.1\r\nhost: 127.0.0.1\r\nx-agency-session: {session}\r\n\
+         x-agency-token: {token}\r\ncontent-type: application/json\r\n\
+         content-length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    s.write_all(req.as_bytes()).unwrap();
+    let mut out = String::new();
+    s.read_to_string(&mut out).unwrap();
+    out.split_whitespace().nth(1).and_then(|c| c.parse().ok()).unwrap_or(0)
+}
+
+/// The whole trip a report takes (AGE-206): a launch writes the hooks into the
+/// worktree and hands the agent its session id, the run's server takes the
+/// post, and the board reads the state back off `RunInfo`. The agent is a
+/// stand-in named `claude`, which is what makes the catalog treat it as
+/// Claude Code.
+#[test]
+fn a_claude_run_reports_blocked_through_its_own_server() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    // A port block nothing else on the machine is likely to be using: the
+    // server binds its last port for real.
+    let base = 41_000 + (std::process::id() % 500) as u16 * 20;
+    std::fs::create_dir_all(repo.join(".agency")).unwrap();
+    std::fs::write(repo.join(".agency/agency.toml"), format!("[ports]\nbase = {base}\n")).unwrap();
+    let bin = dir.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let claude = bin.join("claude");
+    std::fs::write(
+        &claude,
+        "#!/bin/sh\nprintf %s \"$AGENCY_STATE_TOKEN\" > \"$AGENCY_WORKSPACE_PATH/.token\"\n\
+         printf %s \"$AGENCY_SESSION_ID\" > \"$AGENCY_WORKSPACE_PATH/.session-id\"\nexec sleep 30\n",
+    )
+    .unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let state = common::state(&dir);
+    state
+        .register_profile(AgentProfile {
+            name: "claude-stand-in".into(),
+            command: claude.to_string_lossy().into_owned(),
+            args: vec![],
+            env: vec![],
+            resume_args: None,
+            loop_args: None,
+        })
+        .unwrap();
+    let project = state.add_project("demo", &repo).unwrap();
+    let info = state.create_run(&project.id, "", "claude-stand-in", None, "HEAD", None).unwrap();
+    let id = info.id.clone();
+    let wt = state.worktree_path(&id).unwrap();
+
+    // The hooks name the server's port, and the server is up on it.
+    let settings: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(wt.join(".claude/settings.local.json")).unwrap(),
+    )
+    .unwrap();
+    let url = settings["hooks"]["PermissionRequest"][0]["hooks"][0]["url"].as_str().unwrap();
+    let port: u16 = url
+        .trim_start_matches("http://127.0.0.1:")
+        .trim_end_matches("/__agency__/state")
+        .parse()
+        .unwrap();
+    assert!(agency_core::preview::serving(port), "{url}");
+    // And the agent was told which session it is.
+    let start = std::time::Instant::now();
+    while !wt.join(".session-id").exists() && start.elapsed() < std::time::Duration::from_secs(5) {
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    assert_eq!(std::fs::read_to_string(wt.join(".session-id")).unwrap(), id);
+    // And handed the token its posts are taken on, which no settings file holds.
+    let token = std::fs::read_to_string(wt.join(".token")).unwrap();
+    assert_eq!(token.len(), 32, "{token:?}");
+    assert!(!std::fs::read_to_string(wt.join(".claude/settings.local.json"))
+        .unwrap()
+        .contains(&token));
+
+    let activity = |s: &AppState| {
+        s.list_runs(&project.id).unwrap().into_iter().find(|r| r.id == id).unwrap().activity
+    };
+    let event = |name: &str| format!(r#"{{"hook_event_name":"{name}","tool_input":{{}}}}"#);
+    assert_eq!(post_hook(port, &id, &token, &event("PermissionRequest")), 204);
+    let a = activity(&state).unwrap();
+    assert_eq!((a.state, a.reported), (ActivityState::Blocked, true));
+
+    // Another run's session posting here is not this run's report.
+    assert_eq!(post_hook(port, "some-other-run", &token, &event("Stop")), 204);
+    assert_eq!(activity(&state).unwrap().state, ActivityState::Blocked);
+    // Nor is a post without the token, which is all a page on the preview's
+    // origin could send.
+    assert_eq!(post_hook(port, &id, "", &event("Stop")), 204);
+    assert_eq!(activity(&state).unwrap().state, ActivityState::Blocked);
+
+    // Esc on the dialog fires no hook; the keystroke is what ends blocked.
+    state.run_input(&id, b"\x1b").unwrap();
+    assert!(!activity(&state).unwrap().reported, "back on the pane");
+
+    assert_eq!(post_hook(port, &id, &token, &event("Stop")), 204);
+    let a = activity(&state).unwrap();
+    assert_eq!((a.state, a.reported), (ActivityState::Done, true));
+
+    state.discard_run(&id).unwrap();
+    session_gone_or_cleanup(&state, &id);
 }
 
 /// Pinning is about placement. A new pin goes to the end, so pinning alone

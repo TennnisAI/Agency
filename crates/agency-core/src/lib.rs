@@ -27,6 +27,7 @@ pub mod search;
 pub mod sessionstore;
 pub mod setup;
 pub mod skills;
+pub mod state_hooks;
 pub mod supervisor;
 pub mod term;
 pub mod title;

@@ -2,10 +2,14 @@ import { RunActivity, RunInfo, SessionStatus } from "../api";
 
 // Presentation of a run's live state, shared by every dot/label surface
 // (tiles, sidebar tree, focus rail). States for a live agent:
-//   working — pulsing green: the pane changed recently
-//   waiting — amber: quiet after a user-driven turn (finished or needs input)
+//   working — pulsing green: mid-turn
+//   blocked — red, glowing: stopped on a permission prompt or a question. Only
+//             an agent that reports its own state can be here (AGE-206)
+//   done    — amber: its turn is over. Said by the agent ("done"), or guessed
+//             from a quiet pane after a turn you drove ("waiting"), which may
+//             really be a prompt, and the label does not pretend otherwise
 //   idle    — dim green: alive but no turn in flight (never prompted, or the
-//             wait lapsed), shown without a timer so nothing counts forever
+//             guess lapsed), shown without a timer so nothing counts forever
 //   exited  — gray: finished / failed / session ended
 // Terminals keep plain running/ended: a quiet shell isn't "waiting on you".
 //
@@ -50,16 +54,23 @@ export function runAgents(run: RunInfo): AgentLive[] {
 }
 
 /**
- * An agent asking for the user right now: live, and gone quiet after a turn
- * the user drove.
+ * An agent whose turn is over and waiting for you to look: live, and done,
+ * whether it said so or its pane went quiet after a turn you drove.
  *
- * The backend's `waiting` is about the pane alone, so the running condition is
- * composed in here rather than there: it is the same condition the dots and
- * labels below already key off, and a dead session is never waiting on you
- * whatever its last sample said.
+ * The backend's activity says nothing about the process, so the running
+ * condition is composed in here rather than there: it is the same condition
+ * the dots and labels below already key off, and a dead session is never
+ * waiting on you whatever its last sample said.
  */
 export function agentWaiting(a: AgentLive): boolean {
-  return a.status.state === "running" && a.activity?.state === "waiting";
+  return a.status.state === "running" && a.activity?.state === "done";
+}
+
+/** A live agent stopped on a permission prompt or a question: it cannot go on
+ * until you answer. Kept apart from `agentWaiting` because the two want
+ * opposite things from you, and the overview counts them separately. */
+export function agentBlocked(a: AgentLive): boolean {
+  return a.status.state === "running" && a.activity?.state === "blocked";
 }
 
 /** A live agent actively producing output (no activity sample yet counts:
@@ -90,11 +101,16 @@ export function projectAgentsLabel(runs: RunInfo[]): string {
 }
 
 /**
- * A run with an agent asking for the user right now, in any of its tabs.
- * What the tiles badge and the "waiting" filter keeps.
+ * A run with an agent asking for the user right now, in any of its tabs:
+ * blocked on an answer, or done and waiting to be looked at.
  */
 export function needsAttention(run: RunInfo): boolean {
-  return runAgents(run).some(agentWaiting);
+  return runAgents(run).some((a) => agentBlocked(a) || agentWaiting(a));
+}
+
+/** A run with an agent blocked on an answer, in any of its tabs. */
+export function isBlocked(run: RunInfo): boolean {
+  return runAgents(run).some(agentBlocked);
 }
 
 export function isPinned(run: RunInfo): boolean {
@@ -157,17 +173,18 @@ export function isWorking(run: RunInfo): boolean {
  * so clicking "3 waiting" shows every workspace those three are in: three
  * tiles, or fewer when two of them share a workspace.
  */
-export type RunFilter = "all" | "working" | "waiting";
+export type RunFilter = "all" | "working" | "blocked" | "waiting";
 
 export function matchesRunFilter(run: RunInfo, filter: RunFilter): boolean {
   if (filter === "working") return isWorking(run);
-  if (filter === "waiting") return needsAttention(run);
+  if (filter === "blocked") return isBlocked(run);
+  if (filter === "waiting") return runAgents(run).some(agentWaiting);
   return true;
 }
 
 /** A stored filter, read back through an allowlist: anything else is "all". */
 export function parseRunFilter(raw: string | null): RunFilter {
-  return raw === "working" || raw === "waiting" ? raw : "all";
+  return raw === "working" || raw === "blocked" || raw === "waiting" ? raw : "all";
 }
 
 /**
@@ -210,12 +227,23 @@ export function runStatus(
   if (run.status.state === "running") {
     if (run.kind === "terminal") return { cls: "running", text: "running" };
     const a = run.activity;
-    if (a?.state === "waiting") {
+    if (a?.state === "blocked") {
       return {
-        cls: "awaiting",
-        text: `waiting · ${fmtDur(now - a.since)}`,
-        title: "The agent finished a turn or needs input. Waiting on you.",
+        cls: "blocked",
+        text: `blocked · ${fmtDur(now - a.since)}`,
+        title: "Stopped on a permission prompt or a question. It can't go on until you answer.",
       };
+    }
+    if (a?.state === "done") {
+      // Only the agent can say its turn is over. A quiet pane after your turn
+      // might be a prompt instead, and the label says what is known.
+      return a.reported
+        ? { cls: "awaiting", text: `done · ${fmtDur(now - a.since)}`, title: "Finished its turn. Ready for you." }
+        : {
+            cls: "awaiting",
+            text: `waiting · ${fmtDur(now - a.since)}`,
+            title: "Quiet after your turn: it finished, or it needs input. This agent doesn't report which.",
+          };
     }
     if (a?.state === "idle") {
       return { cls: "idle", text: "idle", title: "No turn in flight. Send the agent a message." };

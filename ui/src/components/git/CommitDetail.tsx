@@ -31,7 +31,8 @@ export default function CommitDetail({ taskId, item, onRevealInFiles }: {
       </div>
       {error && <div className="git-error">{error}</div>}
       <div className="git-commitdetail-body">
-        <ChangedFiles files={files} selected={path} onSelect={setPath} />
+        <ChangedFiles taskId={taskId} files={files} selected={path} onSelect={setPath}
+          onRevealInFiles={onRevealInFiles} />
         <div className="git-commitdetail-diff">
           {path ? <DiffViewer taskId={taskId} path={path} mode="commit" hash={item.hash} onChanged={() => {}} onRevealInFiles={onRevealInFiles} />
                 : <div className="diff-empty">Select a file.</div>}

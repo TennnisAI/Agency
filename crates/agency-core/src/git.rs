@@ -594,10 +594,28 @@ pub fn fetch_branch(repo: &Path, branch: &str) -> Result<()> {
     // the remote-tracking ref only so ahead/behind stays accurate, and stop.
     if branch_checked_out(repo, branch) {
         let _ = git_net(repo, &["fetch", "origin", branch]);
-        return Ok(());
+    } else {
+        git_net(repo, &["fetch", "origin", &format!("{branch}:{branch}")])?;
     }
-    git_net(repo, &["fetch", "origin", &format!("{branch}:{branch}")])?;
+    track_origin(repo, branch);
     Ok(())
+}
+
+/// Make `branch` track `origin/<branch>` when it tracks nothing that exists.
+///
+/// A `<branch>:<branch>` fetch creates the local branch with no tracking
+/// config, so a PR checked out for an agent review showed "Publish ↑N", whose
+/// title promises a *new* `origin/<branch>`, on a branch the PR already lives
+/// on. With an upstream it shows Sync, and counts against the real remote.
+fn track_origin(repo: &Path, branch: &str) {
+    if upstream_of(repo, branch).is_some() {
+        return;
+    }
+    let remote = format!("refs/remotes/origin/{branch}");
+    if git(repo, &["rev-parse", "--verify", "--quiet", &remote]).is_err() {
+        return;
+    }
+    let _ = git(repo, &["branch", "--set-upstream-to", &format!("origin/{branch}"), branch]);
 }
 
 pub fn push(worktree: &Path) -> Result<()> {
@@ -1117,11 +1135,23 @@ pub fn branch_info(worktree: &Path) -> Result<BranchInfo> {
             ahead = p.next().and_then(|s| s.parse().ok()).unwrap_or(0);
         }
     } else if let Some(base) = &base {
-        // No upstream yet: "ahead" means the commits this branch adds on top of
-        // its base — the work Publish would put on a new remote branch. Lets the
-        // UI hide Publish when there is nothing to publish.
-        if let Ok(count) = git(worktree, &["rev-list", "--count", &format!("{base}..HEAD")]) {
+        // No upstream: "ahead" means the commits this branch adds on top of its
+        // base that origin does not already have, the work Publish would put on
+        // a new remote branch. Lets the UI hide Publish when there is nothing
+        // to publish.
+        //
+        // "Origin does not already have" is load-bearing. A merged PR whose
+        // head branch was deleted loses its upstream at the next pruning fetch,
+        // and measured against the local default branch (which a fetch never
+        // moves) its 4 merged commits read as "Publish ↑4": unpublished work,
+        // on a worktree the user was about to clean up.
+        if let Ok(count) =
+            git(worktree, &["rev-list", "--count", "HEAD", "--not", base, "--remotes=origin"])
+        {
             ahead = count.trim().parse().unwrap_or(0);
+        }
+        if ahead > 0 && upstream_gone(worktree, &branch) && merged_on_origin(worktree) {
+            ahead = 0;
         }
     } else {
         // No upstream and nothing to measure against: a repo with no `origin`
@@ -1139,6 +1169,39 @@ pub fn branch_info(worktree: &Path) -> Result<BranchInfo> {
     // linked worktree `.git` is a file and MERGE_HEAD lives beside its own HEAD.
     let merging = git(worktree, &["rev-parse", "--verify", "--quiet", "MERGE_HEAD"]).is_ok();
     Ok(BranchInfo { branch, upstream, ahead, behind, base, has_remote, merging })
+}
+
+/// Whether `branch` is configured to track a remote branch that no longer
+/// exists: what `git branch -vv` shows as `[gone]`, almost always a PR head
+/// branch deleted on merge.
+fn upstream_gone(worktree: &Path, branch: &str) -> bool {
+    git(worktree, &["config", "--get", &format!("branch.{branch}.merge")]).is_ok()
+        && upstream_of(worktree, branch).is_none()
+}
+
+/// Whether HEAD's changes are already in origin's default branch, by content
+/// rather than by commit: merging HEAD into it would change nothing.
+///
+/// A squash or rebase merge lands a PR's work under new hashes, so the
+/// `--remotes` exclusion in [`branch_info`] cannot see it and the merged
+/// commits still read as unpublished. A conflict, an old git without
+/// `merge-tree --write-tree`, or no default branch on origin all answer false,
+/// which keeps the commits counted: the safe direction for a count the user
+/// reads before deleting a worktree.
+fn merged_on_origin(worktree: &Path) -> bool {
+    let Some(target) = ["origin/HEAD", "origin/main", "origin/master"]
+        .into_iter()
+        .find(|r| git(worktree, &["rev-parse", "--verify", "--quiet", r]).is_ok())
+    else {
+        return false;
+    };
+    let Ok(merged) = git(worktree, &["merge-tree", "--write-tree", target, "HEAD"]) else {
+        return false;
+    };
+    let Ok(tree) = git(worktree, &["rev-parse", &format!("{target}^{{tree}}")]) else {
+        return false;
+    };
+    merged.lines().next().map(str::trim) == Some(tree.trim())
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

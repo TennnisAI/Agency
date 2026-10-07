@@ -74,6 +74,9 @@
   /* Control heights: compact (row and card actions, chips), standard
      (buttons, headers, compact inputs), form fields and hero actions. */
   --ctl-sm:24px; --ctl-md:28px; --ctl-lg:32px;
+  /* List rows: dense (file trees, git files, nested tabs, outlines, search
+     hits) and primary (projects, tasks, an issue's agents). */
+  --row-sm:24px; --row-md:28px;
   /* Elevation: popovers and menus, and modals (the handoff's one big shadow).
      The inset hairline is the lit top edge that makes a surface read as
      raised rather than as a darker rectangle. */

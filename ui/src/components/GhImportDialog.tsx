@@ -135,7 +135,7 @@ export default function GhImportDialog({
         {readiness === "error" ? (
           <div className="pr-setup">
             <p className="merge-note">Couldn't check GitHub CLI status.</p>
-            <button onClick={probeReadiness}>Retry</button>
+            <button className="btn-primary" onClick={probeReadiness}>Retry</button>
           </div>
         ) : readiness !== null && readiness !== "ready" ? (
           <GhSetupHint readiness={readiness} onLeave={onClose} />
@@ -192,7 +192,7 @@ export default function GhImportDialog({
               )}
             </div>
             <div className="git-actions">
-              <button disabled={picked === null || busy} onClick={create}>
+              <button className="btn-primary" disabled={picked === null || busy} onClick={create}>
                 {busy ? "Creating…" : "Create agent"}
               </button>
               <button className="ghost" onClick={onClose}>Cancel</button>

@@ -32,7 +32,7 @@ import { ContractIcon, ExpandIcon } from "./icons";
 // priority label comes near its 300px max), one button's height, and the
 // menu's own padding.
 const MENU_W = 220;
-const MENU_ROW_H = 33;
+const MENU_ROW_H = 28; // --ctl-md; menu items were 33px before the shared menu row
 const MENU_PAD = 10;
 
 // A date as a quiet property pill: reads as text ("◷ Due Aug 1"), the click

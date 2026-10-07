@@ -53,6 +53,9 @@
   --exited:var(--o0); --crashed:var(--red);
   --agent-claude:var(--peach); --agent-pi:var(--teal); --agent-hermes:var(--mauve);
   /* dims (handoff §06) */
+  /* --head-h: a pane's top header, level with the content header beside it.
+     --bar-h: every toolbar inside a pane, so stacked bars line up across columns. */
+  --head-h:46px; --bar-h:34px;
   --titlebar-h:40px; --statusbar-h:27px; --sidebar-w:266px; --focus-rail-w:312px;
   /* legacy aliases (keep old var(--x, #fallback) usages theme-aware) */
   --muted:var(--sub0); --panel:var(--mantle); --fg:var(--text); --border:var(--s0);

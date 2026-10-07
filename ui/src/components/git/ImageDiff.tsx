@@ -39,10 +39,10 @@ export default function ImageDiff({
   }, [taskId, path, staged, hash, from]);
 
   if (error) return <div className="git-error">{error}</div>;
-  if (!sides) return <div className="diff-empty">loading…</div>;
+  if (!sides) return <div className="board empty"><span className="spinner" />Loading…</div>;
 
   const { old: before, new: after } = sides;
-  if (!before && !after) return <div className="diff-empty">This image is not in either version.</div>;
+  if (!before && !after) return <div className="board empty">This image is not in either version.</div>;
 
   const url = (b64: string) => `data:${sides.mime};base64,${b64}`;
   // A mode-only change (chmod) leaves the bytes alone, so say so rather than

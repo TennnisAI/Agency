@@ -74,7 +74,7 @@ function Lightbox({ root, a, onClose }: { root: FileRoot; a: Attachment; onClose
         {url ? (
           <img className="lightbox-img" src={url} alt={a.alt || a.name} />
         ) : (
-          <div className="diff-empty">{url === null ? "loading…" : "File not found."}</div>
+          <div className="diff-empty">{url === null ? "Loading…" : "File not found."}</div>
         )}
       </div>
     </div>

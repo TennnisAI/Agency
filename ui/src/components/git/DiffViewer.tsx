@@ -184,7 +184,7 @@ function TextDiffViewer({
   }
 
   if (error) return <div className="git-error">{error}</div>;
-  if (!fd) return <div className="diff-empty">loading…</div>;
+  if (!fd) return <div className="board empty"><span className="spinner" />Loading…</div>;
   if (rows.length === 0) return <div className="diff-empty">{emptyReason(fd.header)}</div>;
 
   return (

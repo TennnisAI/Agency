@@ -339,7 +339,14 @@ button > .btn-ico:not(:only-child) { margin-right: 4px; }
 
 /* Board */
 .board { flex: 1; display: flex; flex-direction: column; padding: 16px; gap: 12px; }
-.board.empty { align-items: center; justify-content: center; color: var(--o0); }
+/* A pane with nothing in it yet: centred, at body size. It named no size, and
+   body names none either, so every placeholder ("Select an agent from the
+   rail.") came out at the browser's 16px, the largest type in the app. */
+.board.empty {
+  align-items: center; justify-content: center; gap: 10px;
+  color: var(--o1); font-size: var(--fs-md); line-height: 1.5; text-align: center;
+}
+.board.empty > .spinner { width: 14px; height: 14px; }
 /* The project name in a header that has nothing else in it (the missing-folder
    screen). Reads as a label, not a tab. */
 .content-head-name { font-size: var(--fs-md); color: var(--o1); padding: 0 4px; }
@@ -1065,8 +1072,8 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
   flex-wrap: nowrap;
   gap: 8px;
   padding: 0 14px;
-  height: 46px;
-  min-height: 46px;
+  height: var(--head-h);
+  min-height: var(--head-h);
   border-bottom: 1px solid var(--line);
   background: var(--mantle);
   flex-shrink: 0;
@@ -1278,13 +1285,16 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
 .tile-spawning .clone-progress-track { width: 100%; margin-top: 8px; }
 .tile-spawning .clone-progress-detail { margin-top: 4px; }
 
-/* Source control wrap */
+/* The Docs, Files and Source tabs run edge to edge, like Issues and the agent
+   view. A 16px inset with no frame left their bars stopping short of the
+   window, so these tabs read as a box floating in the page. The map draws its
+   own rounded frame, so it keeps the margin. */
 .source-wrap {
   flex: 1;
   display: flex;
-  padding: 16px;
   overflow: hidden;
 }
+.source-wrap > .map { margin: 16px; }
 
 
 /* Row actions (new-task footer) */
@@ -1504,8 +1514,8 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
   flex-wrap: nowrap;
   gap: 8px;
   padding: 0 12px 0 14px;
-  height: 46px;
-  min-height: 46px;
+  height: var(--head-h);
+  min-height: var(--head-h);
   border-bottom: 1px solid var(--line);
   background: var(--mantle);
   flex-shrink: 0;
@@ -1599,7 +1609,7 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
 .find-bar {
   /* Below the editor's own head bar, not over it — the path, the save state
      and the side-panel toggle all live up there and stay clickable. */
-  position: absolute; top: 34px; right: 14px; z-index: 12;
+  position: absolute; top: var(--bar-h); right: 14px; z-index: 12;
   display: flex; flex-direction: column; gap: 5px;
   background: var(--mantle); border: 1px solid var(--s1); border-radius: var(--r-lg);
   padding: 6px 8px; box-shadow: var(--shadow-pop);
@@ -4796,3 +4806,40 @@ input, textarea, code,
   display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
   min-width: 22px; height: 22px; padding: 0 4px; border-radius: var(--r-sm);
 }
+
+/* Rows ease their hover fill like the buttons do; snapping between fills while
+   the pointer runs down a list is what made it read as flicker. */
+:is(.tree-row, .tree-child, .tree-tab, .rail-tab, .issue-row, .git-row, .git-checkpoint-row,
+  .git-commitrow, .file-tab, .session-tab, .docs-outline-row, .docs-backlink-row,
+  .docs-search-hit, .files-search-file, .files-search-line, .pr-list-row, .palette-row,
+  .settings-nav-item, .home-group-title, .task-row, .map-row) {
+  transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+
+/* ── Bar heights ─────────────────────────────────────────────────────────
+   Only the content and agent headers ever named a height. Every other bar
+   took its padding plus its tallest child, so panes side by side drew their
+   hairlines at different heights: in the Files tab the three columns' top
+   bars were 43, 29 and 39px, the agent rail's head was 47 beside the agent
+   header's 46, and the compact git panel's branch bar was 33. Two heights now,
+   with the vertical padding taken out so the height is the one that holds. */
+.tree-head, .rail-head, .git-panel.compact .git-branchbar, .issue-detail.expanded .issue-detail-head {
+  height: var(--head-h); min-height: var(--head-h); flex-shrink: 0;
+  padding-top: 0; padding-bottom: 0;
+}
+/* The project tree's head gets the hairline the content header carries, so
+   one rule runs across the window under both. */
+.tree-head { border-bottom: 1px solid var(--line); padding: 0 8px; }
+.docs-search, .file-tabs-wrap, .agent-side-head, .agent-side-sub, .docs-side-tabs,
+.files-root-label, .file-editor-bar, .docs-editor-head, .session-tabs, .git-branchbar,
+.git-section-head, .diff-toolbar, .pr-list-head, .focus-gui-head, .focus-shell-head,
+.run-scripts, .run-controls {
+  height: var(--bar-h); min-height: var(--bar-h); flex-shrink: 0;
+  padding-top: 0; padding-bottom: 0;
+}
+.docs-search { display: flex; align-items: center; }
+.agent-side-sub { align-items: center; }
+/* The progress strip rides the bottom edge of the bar above it rather than
+   taking 2px of its own, which put everything under it out of line with the
+   column beside it. */
+.git-progress { margin-top: -2px; z-index: 1; }

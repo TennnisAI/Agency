@@ -292,15 +292,16 @@ button:disabled { opacity: .45; cursor: default; }
 /* Agent add menu (Task 9) */
 .agent-add { position: relative; display: inline-flex; }
 .agent-menu-backdrop { position: fixed; inset: 0; z-index: 40; }
-.agent-menu { z-index: 41; background: var(--mantle); border: 1px solid var(--s1); border-radius: var(--r-lg); box-shadow: var(--shadow-pop); padding: 6px; min-width: 220px; max-width: 300px; display: flex; flex-direction: column; }
+/* Surface, padding and item sizing are the shared menu rules under "Menus and
+   popovers"; this sets only what is the agent menu's own. */
+.agent-menu { z-index: 41; min-width: 220px; max-width: 300px; display: flex; flex-direction: column; }
 /* A menu is placed above or below its trigger, whichever it fits in (see
    useMenuAnchor), and one taller than the window fits in neither: flipping it up
    would only move the clipped end from the bottom of the screen to the top,
    where the agent names are. Capped and scrolled, it always fits somewhere. */
 .agent-menu { max-height: calc(100vh - 16px); overflow-y: auto; }
-.agent-menu button { background: transparent; border: none; color: var(--text); text-align: left; padding: 8px 10px; border-radius: var(--r-sm); cursor: pointer; font-family: var(--sans); font-size: var(--fs-md); }
-.agent-menu button:hover { background: var(--s0); }
-.agent-menu-sep { height: 1px; background: var(--line); margin: 4px 2px; }
+.agent-menu button { background: transparent; border: none; color: var(--text); text-align: left; cursor: pointer; }
+.agent-menu-sep { height: 1px; background: var(--line); }
 /* Agent row: the name starts the agent, the chip beside it says which model it
    will start on. The name takes the slack so the chip stays hard right, and
    `min-width: 0` is what lets a long model id clip instead of widening the
@@ -4777,8 +4778,7 @@ input, textarea, code,
   border-radius: var(--r-sm); font-size: var(--fs-md); font-weight: 400; line-height: 16px;
 }
 :is(.agent-menu, .git-menu, .settings-menu) button:hover:not(:disabled) { background: var(--s0); }
-.date-picker :is(.date-cell, .ghost), .agent-menu .branch-reset { min-height: 0; }
-.agent-menu .model-chip { min-height: 0; padding: 2px 8px; border-radius: var(--r-full); font-size: var(--fs-xs); }
+.date-picker :is(.date-cell, .ghost), .agent-menu :is(.branch-reset, .model-chip) { min-height: 0; }
 .ctx-sep, .agent-menu-sep { margin: 4px 4px; }
 @keyframes pop-in {
   from { opacity: 0; transform: translateY(-2px) scale(.985); }

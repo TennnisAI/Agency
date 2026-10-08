@@ -6,12 +6,12 @@ body:
     attributes:
       value: |
         Thanks for the report. The version and log excerpt below are what make
-        a report actionable — both are one click away in **Settings ▸ Diagnostics**.
+        a report actionable — both are one click away in **Settings ▸ About**.
   - type: input
     id: version
     attributes:
       label: Agency version
-      description: Shown in Settings ▸ Diagnostics.
+      description: Shown in Settings ▸ About.
       placeholder: "0.1.1"
     validations:
       required: true
@@ -34,7 +34,7 @@ body:
     attributes:
       label: Log excerpt
       description: |
-        Settings ▸ Diagnostics ▸ "Open logs", then paste the lines from around
+        Settings ▸ About ▸ "Open logs", then paste the lines from around
         when it went wrong. Skim it first — logs can include repo paths and
         branch names from your machine.
       render: text

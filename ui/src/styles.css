@@ -926,7 +926,7 @@ button.eyebrow-link:hover { background: var(--s0); color: var(--text); }
 .tree-settings:hover { background: var(--s0); color: var(--text); }
 .tree-settings-gear { font-size: var(--fs-lg); line-height: 1; }
 /* Quiet "an update is available" marker on the Settings button. Deliberately
-   just a dot — the version and download link live in Settings ▸ Diagnostics. */
+   just a dot — the version and download link live in Settings ▸ About. */
 .tree-settings-dot {
   width: 6px; height: 6px; margin-left: auto; border-radius: 50%;
   background: var(--blue); flex: none;

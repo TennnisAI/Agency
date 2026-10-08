@@ -45,7 +45,7 @@ latest release tag and compares it to the running version, on launch and every
 six hours after that while the app is open. It sends no identifiers, and the
 check itself downloads nothing. If a newer version exists, Agency dots the
 Settings button; Help ▸ Check for Updates… opens the panel that offers it. Turn
-the automatic check off in Settings ▸ Diagnostics ("Check for updates
+the automatic check off in Settings ▸ About ("Check for updates
 automatically") and Agency makes no network calls of its own at all.
 
 Pressing **Install** there downloads that release, checks it against a signing
@@ -137,7 +137,7 @@ notifications on Linux, so the click does not take you to the run it was about.
 
 ### Reporting problems
 
-Settings ▸ Diagnostics has your exact version, an "Open logs" button, and a link
+Settings ▸ About has your exact version, an "Open logs" button, and a link
 to file an issue. Attaching the log makes a bug report far easier to act on.
 
 ## Integrations

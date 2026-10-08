@@ -76,7 +76,6 @@ import { resendOpenFile } from "../hooks/useOpenFile";
 import { setWorkspaceHidden, workspaceHidden } from "../lib/workspacePref";
 import { HUSHABLE, HushId, isHushed, setHushed } from "../lib/hushed";
 import { FindRank, registerFindTarget } from "../lib/findBus";
-import { shortcutLabel } from "../lib/platform";
 import {
   ExtraTerms,
   GROUPS,
@@ -302,9 +301,9 @@ export default function Settings({
   // newline-separated text of the explicit copy list.
   const [files, setFiles] = useState<FilesConfig | null>(null);
   const [filesDraft, setFilesDraft] = useState("");
-  // App version for the Diagnostics section; empty until the Tauri call lands.
+  // App version for the About section; empty until the Tauri call lands.
   const [version, setVersion] = useState("");
-  // Per-agent CLI facts (path, version, install method) for the Diagnostics
+  // Per-agent CLI facts (path, version, install method) for the About
   // section. Loaded in its own effect because the backend runs each CLI's
   // `--version`, which takes a second or two; rows appear when it answers.
   const [cliInfo, setCliInfo] = useState<AgentCliInfo[]>([]);
@@ -939,7 +938,6 @@ export default function Settings({
     return (
       <FormDialog
         title={editing ? `Edit ${agentLabel(editing)}` : "New agent profile"}
-        subtitle="How Agency launches this coding agent in a worktree."
         submitLabel={editing ? "Save changes" : "Create profile"}
         submitDisabled={!draft.name.trim() || !draft.command.trim()}
         onSubmit={addProfile}
@@ -947,7 +945,7 @@ export default function Settings({
       >
         <Field
           label="Name"
-          hint="What this agent is called in Agency's menus. Also its id, so keep it short and unique."
+          hint="Also its id, so keep it short and unique."
         >
           <input
             className="settings-input"
@@ -959,7 +957,7 @@ export default function Settings({
         </Field>
         <Field
           label="Command"
-          hint={<>The executable Agency runs. It has to be on your <code>PATH</code>.</>}
+          hint={<>Must be on your <code>PATH</code>.</>}
         >
           <input
             className="settings-input mono"
@@ -971,7 +969,7 @@ export default function Settings({
         <Field
           label="Arguments"
           optional
-          hint={<>Passed every time this agent starts. <code>{"{{prompt}}"}</code> is replaced with the task text.</>}
+          hint={<><code>{"{{prompt}}"}</code> is replaced with the task text.</>}
         >
           <input
             className="settings-input mono"
@@ -983,7 +981,7 @@ export default function Settings({
         <Field
           label="Resume arguments"
           optional
-          hint="Added after the arguments above when reopening an existing session, in place of the prompt. Leave empty if this CLI has no resume flag. Agents whose conversations Agency can name come back to their own either way, so emptying this won't start them fresh. To take that over, name the conversation yourself in the arguments above (--session-id, --resume, --continue) and Agency stands down."
+          hint="Used in place of the prompt when reopening a session."
         >
           <input
             className="settings-input mono"
@@ -995,7 +993,7 @@ export default function Settings({
         <Field
           label="Loop arguments"
           optional
-          hint="The headless, one-shot invocation used by Loop agent, where the agent runs unattended and exits. Leave empty if this agent can't do that."
+          hint="The headless, one-shot invocation Loop agent runs."
         >
           <input
             className="settings-input mono"
@@ -1007,7 +1005,7 @@ export default function Settings({
         <Field
           label="Environment variables"
           optional
-          hint={<>Added to the agent's environment, one <code>KEY=VALUE</code> per line.</>}
+          hint={<>One <code>KEY=VALUE</code> per line.</>}
         >
           <textarea
             className="settings-input mono"
@@ -1199,11 +1197,11 @@ export default function Settings({
       mcp: mcpServers.map((s) => s.name).join(" "),
       backlog: projectName ?? "",
       knowledge: projectName ?? "",
-      // Diagnostics is a per-agent list of CLI versions and update commands, so
+      // About carries a per-agent list of CLI versions and update commands, so
       // "claude version" is a question it answers and used to find nothing: the
       // section's own label says neither word, and the agents' names are not
       // static (this is whatever is installed on this machine).
-      diagnostics: cliInfo.map((c) => agentLabel(c.agent)).join(" "),
+      about: cliInfo.map((c) => agentLabel(c.agent)).join(" "),
       files: projectName ?? "",
     }),
     [profiles, mcpServers, projectName, cliInfo],
@@ -1259,7 +1257,7 @@ export default function Settings({
   return (
     <main className="settings-page" ref={pageRef}>
       {/* The section rail. It stands where the project tree does one pane over,
-          and for the same reason: thirteen sections on one scroll is a page you
+          and for the same reason: a dozen sections on one scroll is a page you
           read top to bottom looking for something, not one you navigate. */}
       <div className="settings-rail">
         <button className="settings-back" onClick={onClose}>← Back</button>
@@ -1297,7 +1295,7 @@ export default function Settings({
                     data-active={!matched && s.id === active}
                     // data-active is the styling hook and says nothing to a
                     // screen reader; aria-current is what announces which of
-                    // the thirteen is the one on screen.
+                    // the twelve is the one on screen.
                     aria-current={!matched && s.id === active ? "true" : undefined}
                     onClick={() => pickSection(s.id)}
                   >
@@ -1313,10 +1311,7 @@ export default function Settings({
         <div className="settings-inner">
           {error && <div className="git-error">{error}</div>}
           {matched?.size === 0 && (
-            <p className="settings-no-match">
-              No settings match "{query.trim()}". Search by feature, by an agent's name, or by
-              the name of an MCP server.
-            </p>
+            <p className="settings-no-match">No settings match "{query.trim()}".</p>
           )}
 
           {visible("appearance") && (
@@ -1354,7 +1349,7 @@ export default function Settings({
                   <Toggle checked={wordWrap} onChange={pickWordWrap} />
                 </div>
                 <div className="settings-notif-row">
-                  <span className="settings-notif-label">Let agents see the file you have open</span>
+                  <span className="settings-notif-label">Share the open file's path with agents</span>
                   <Toggle
                     checked={settings.shareOpenFile}
                     onChange={(next) => {
@@ -1368,27 +1363,12 @@ export default function Settings({
                   />
                 </div>
               </div>
-              <p className="settings-section-hint">
-                Off by default. On, an agent can ask Agency which file or note you
-                have in focus, so "fix this file" means the one in front of you. It
-                learns the path, never the contents, and only agents working in the
-                same project as the file.
-              </p>
-              <p className="settings-section-hint">
-                Agents pick the tool up when they start, and only agents with their
-                own worktree: that is the one place Agency writes an agent's tool
-                config. Switching this off stops it answering right away.
-              </p>
             </section>
           )}
 
           {visible("messages") && (
             <section className="settings-section">
               <SectionHead id="messages" projectName={projectName} />
-              <p className="settings-section-hint">
-                Explanations you can switch off once you know the workflow, and switch back on here.
-                Warnings about work that can't be recovered always show.
-              </p>
               <div className="settings-group-card">
                 {HUSHABLE.map((h) => (
                   <div key={h.id} className="settings-notif-row">
@@ -1492,19 +1472,6 @@ export default function Settings({
                   />
                 </div>
               </div>
-              <p className="settings-section-hint">
-                A default model belongs to one agent, so that row appears once you
-                have chosen a default agent above; on Auto each agent keeps the
-                model it last ran on. Every menu that starts an agent still offers
-                the full list, and starting one on another model moves that agent's
-                default there.
-              </p>
-              <p className="settings-section-hint">
-                Off means new agents work in the project checkout, on the branch you
-                have open, with no branch of their own to merge. This sets how the
-                add-agent menu starts; the Own worktree box there still decides each
-                spawn. Races, loops and issue dispatch always take a worktree.
-              </p>
               <div className="settings-card-list">
                 {profiles.map((p) => (
                   <div key={p.name} className="settings-profile-card">
@@ -1537,8 +1504,7 @@ export default function Settings({
               {catalog.some((e) => e.enabled && !e.acceptsPrompt) && (
                 <p className="settings-section-hint">
                   {catalog.filter((e) => e.enabled && !e.acceptsPrompt).map((e) => agentLabel(e.id)).join(", ")}{" "}
-                  take no opening prompt on the command line, so a dispatched issue or review starts
-                  them promptless in the worktree and the ask has to go into their terminal by hand.
+                  can't take a prompt at launch. Dispatched tasks start them without one.
                 </p>
               )}
               <div className="settings-add-row">
@@ -1571,22 +1537,10 @@ export default function Settings({
           {visible("mcp") && (
             <section className="settings-section">
               <SectionHead id="mcp" projectName={projectName} />
-              <p className="settings-section-hint">
-                Emitted into each agent workspace, in the agent's native config format (
-                {catalog.filter((e) => e.supportsMcp).map((e) => agentLabel(e.id)).join(", ") ||
-                  "Claude Code, Copilot CLI, Cursor, OpenCode"}
-                ). Copilot is handed its file on the command line, since it waits for folder trust
-                before reading workspace config on its own.
-                Servers that need an OAuth sign-in can't live in workspace config; use{" "}
-                <b>Authenticate</b> to register one with an agent's own CLI instead. That agent then
-                reads it from its user config, and Agency keeps emitting it for the others. Projects
-                can add their own via <code>[mcp.servers]</code> in <code>.agency/agency.toml</code>;
-                project entries win on name conflicts.
-              </p>
               {catalog.some((e) => e.enabled && !e.supportsMcp) && (
                 <p className="settings-section-hint">
                   {catalog.filter((e) => e.enabled && !e.supportsMcp).map((e) => agentLabel(e.id)).join(", ")}{" "}
-                  manage MCP servers in their own global config and won't see the servers below.
+                  manage MCP servers in their own config and won't see these.
                 </p>
               )}
               <div className="settings-card-list">
@@ -1718,11 +1672,8 @@ export default function Settings({
             <section className="settings-section">
               <SectionHead id="localModel" projectName={projectName} />
               <p className="settings-section-hint">
-                Sets <code>OPENAI_BASE_URL</code> and a placeholder <code>OPENAI_API_KEY</code> in
-                every agent session, run script and terminal Agency opens, so OpenAI-protocol tools
-                reach a server on this machine instead of OpenAI. Agents with their own login (Claude,
-                Codex, …) ignore it. It also becomes a model the knowledge graph can build on. Blank is
-                the default and sets neither variable; start the server before you rely on it.
+                Sets <code>OPENAI_BASE_URL</code> in every agent, run script and terminal. Leave
+                blank to turn off.
               </p>
               <div className="settings-providers">
                 <div className="settings-provider-card">
@@ -1749,16 +1700,9 @@ export default function Settings({
           {visible("backlog") && (
             <section className="settings-section">
               <SectionHead id="backlog" projectName={projectName} />
-              <p className="settings-section-hint">
-                Shares this project's issues through its git remote, so the same backlog is on every
-                machine you work from, and on your team's if you have one. Issues travel on a ref of
-                their own that is never checked out, so nothing lands in a branch, in a diff or in a
-                pull request. Status, priority and attachments all travel. Sync by hand from the
-                issues view, or turn on automatic sync below.
-              </p>
               {!projectId ? (
                 <div className="settings-group-card">
-                  <span className="settings-notif-label">Pick a project in the sidebar to configure its backlog.</span>
+                  <span className="settings-notif-label">Select a project first.</span>
                 </div>
               ) : backlog ? (
                 <div className="settings-group-card">
@@ -1784,24 +1728,10 @@ export default function Settings({
                       Rename
                     </button>
                   </div>
-                  {/* The whole reason this is editable. The key is derived from
-                      the project name and shifted off any key already in use,
-                      so a second checkout of one repo lands on a different key
-                      than the backlog it is about to sync with, and then hides
-                      every issue in it. */}
-                  <p className="settings-section-hint">
-                    Numbers issues in this project, as in <code>{backlogKey || "AGE"}-14</code>, and
-                    names their files. A shared backlog has a key of its own: if this one does not
-                    match it, the issues sync but stay off the board. Changing it renames this
-                    project's issue files and the links between them. Links to them from other
-                    projects and from notes keep the old key.
-                  </p>
                   {backlog.keySharedWith.length > 0 && (
                     <p className="settings-section-hint">
                       {backlog.keySharedWith.join(", ")} also use{backlog.keySharedWith.length === 1 ? "s" : ""}{" "}
-                      <code>{backlog.issueKey}</code>. That is what you want for two checkouts of one
-                      repo sharing a backlog; otherwise a <code>[[{backlog.issueKey}-14]]</code> link
-                      can only reach one of them.
+                      <code>{backlog.issueKey}</code>.
                     </p>
                   )}
                   <div className="settings-notif-row">
@@ -1815,7 +1745,7 @@ export default function Settings({
                   </div>
                   {backlog.remotes.length === 0 ? (
                     <p className="settings-section-hint">
-                      This project has no git remote, so there is nowhere to share a backlog to yet.
+                      This project has no git remote to share to.
                     </p>
                   ) : (
                     backlog.sync && (
@@ -1857,7 +1787,7 @@ export default function Settings({
                             the case this repo is in: public code, private backlog. */}
                         <p className="settings-section-hint">
                           Anyone who can read <code>{backlogRemote || "this remote"}</code> can read the
-                          backlog. If the repository is public, point this at a private remote instead.
+                          backlog.
                         </p>
                         <div className="settings-notif-row">
                           <span className="settings-notif-label">Sync automatically</span>
@@ -1866,31 +1796,14 @@ export default function Settings({
                             onChange={(next) => persistBacklog({ auto: next })}
                           />
                         </div>
-                        {/* What it costs and when it interrupts, both stated: a
-                            pass is two network round-trips, and the merge
-                            decides a contested field by itself. Someone turning
-                            this on is agreeing to both. */}
-                        <p className="settings-section-hint">
-                          Runs a pass when you open this backlog, then every couple of minutes while
-                          it is on screen, so a teammate moving an issue to In progress turns up here
-                          without your asking. It stays quiet unless the merge had to decide
-                          something: when you have both changed the same field of the same issue, the
-                          later edit wins, and you get told which issues that happened to.
-                        </p>
                       </>
                     )
                   )}
                   {backlog.fromRepo && (
                     <p className="settings-section-hint">
-                      This project's <code>agency.toml</code> asks for a shared backlog, so anyone who
-                      clones it gets this on by default. Turning it off here only affects this machine.
+                      On by default from this repo's <code>agency.toml</code>.
                     </p>
                   )}
-                  <p className="settings-section-hint">
-                    Saved to this machine only (<code>.agency/agency.local.toml</code>). To share the
-                    choice with the repository, commit <code>[issues] sync = true</code> into{" "}
-                    <code>.agency/agency.toml</code>.
-                  </p>
                 </div>
               ) : null}
             </section>
@@ -1900,18 +1813,11 @@ export default function Settings({
             <section className="settings-section">
               <SectionHead id="knowledge" projectName={projectName} />
               <p className="settings-section-hint">
-                Builds a graphify code-knowledge graph for this project and exposes it to every agent as an
-                MCP server, rebuilding after each clean merge. Agents only get the server once a graph
-                exists, and the first one is built when you ask for it. Saved to this machine only
-                (<code>.agency/agency.local.toml</code>), not shared with the team. Needs the{" "}
-                <code>graphify</code> / <code>uv</code> tooling on your <code>PATH</code>. Code is
-                indexed locally; your docs are read by whichever model you pick below, and nothing
-                runs until you build. A first build of a large project takes minutes; its output
-                appears here while it runs, and you can stop it.
+                Builds a graphify graph of this project and serves it to agents over MCP.
               </p>
               {!projectId ? (
                 <div className="settings-group-card">
-                  <span className="settings-notif-label">Pick a project in the sidebar to configure its knowledge graph.</span>
+                  <span className="settings-notif-label">Select a project first.</span>
                 </div>
               ) : kg ? (
                 <div className="settings-group-card">
@@ -1931,14 +1837,9 @@ export default function Settings({
                       {(!kg.serve_installed || !kg.build_installed || !!kg.last_build_error) && (
                         <div className="settings-kg-warn">
                           <div>
-                            {!kg.serve_installed && !kg.build_installed
-                              ? "The serve and build commands aren't on your PATH. The graph is enabled but will be skipped until the tooling is installed."
-                              : !kg.serve_installed
-                              ? "The serve command isn't on your PATH. The graph is enabled but will be skipped until the tooling is installed."
-                              : !kg.build_installed
-                              ? "The build command isn't on your PATH. The graph is enabled but will be skipped until the tooling is installed."
-                              : "A build can also fail on a package an older install of the tooling is missing."}{" "}
-                            Agency can install it for you in a terminal:
+                            {!kg.serve_installed || !kg.build_installed
+                              ? "The graphify tooling isn't on your PATH."
+                              : "An older install of the tooling can fail the build. Reinstall it:"}
                           </div>
                           <pre className="install-cmd">{kg.install_command}</pre>
                           <div className="settings-kg-actions">
@@ -1956,19 +1857,19 @@ export default function Settings({
                         <div className={kg.graph_built && !kg.last_build_error ? "settings-kg-note" : "settings-kg-warn"}>
                           {kg.building
                             ? kg.graph_built
-                              ? `Rebuilding the graph, ${fmtDur((kg.build_elapsed_secs ?? 0) * 1000)} so far. Agents keep using the graph that is already there until this one finishes.`
-                              : `Building the graph, ${fmtDur((kg.build_elapsed_secs ?? 0) * 1000)} so far. Agents started after it finishes will get the knowledge-graph server.`
+                              ? `Rebuilding, ${fmtDur((kg.build_elapsed_secs ?? 0) * 1000)} so far.`
+                              : `Building, ${fmtDur((kg.build_elapsed_secs ?? 0) * 1000)} so far.`
                             : kg.last_build_error
-                            ? `The last graph build failed${buildTook(kg)}: ${kg.last_build_error}`
+                            ? `Build failed${buildTook(kg)}: ${kg.last_build_error}`
                             : kg.last_build_stopped
-                            ? `You stopped the last build${buildTook(kg)}. Agents keep using whatever graph was built before it.`
+                            ? `Build stopped${buildTook(kg)}.`
                             : kg.graph_built
-                            ? `Graph built at ${kg.graph_path}, and kept out of git.${
+                            ? `Built at ${kg.graph_path}${
                                 kg.last_build_secs === null
                                   ? ""
-                                  : ` The last build took ${fmtDur(kg.last_build_secs * 1000)}.`
-                              }`
-                            : "No graph has been built yet, so agents get no knowledge-graph server. Build one to start using it."}
+                                  : ` in ${fmtDur(kg.last_build_secs * 1000)}`
+                              }.`
+                            : "No graph built yet."}
                         </div>
                       )}
                       {/* The build's own output, which is the only thing that says
@@ -2046,18 +1947,7 @@ export default function Settings({
                       <div className="settings-kg-cost">
                         {pickedBackend
                           ? pickedBackend.note
-                          : "This build command was written by hand, so the picker leaves it alone. Clear it to go back to a listed model."}
-                      </div>
-                      {/* What size of model this actually needs, which is the
-                          question the picker raises and used to leave unanswered.
-                          Stated once rather than per backend, because it is a fact
-                          about the job and not about the vendor. */}
-                      <div className="settings-kg-cost">
-                        The model only reads docs, papers and images. Code is indexed locally by
-                        tree-sitter, so this is a strict-format extraction job rather than a reasoning
-                        one, and a light model is the right default. Reach for a heavier one when the
-                        substance of the project is in its prose, or when you have edited the build
-                        command to run deep mode.
+                          : "Custom build command. Clear it to pick a listed model."}
                       </div>
                       {/* A command saved before the model was part of this choice.
                           It leaves the model to the CLI, which answered on the
@@ -2066,9 +1956,7 @@ export default function Settings({
                           picking a model above is what fixes it. */}
                       {pickedBackend?.id === "claude-cli" && !kg.build_model && (
                         <div className="settings-kg-warn">
-                          This build names no model, so it runs on whatever claude defaults to. Pick
-                          one above. A build reads every file in the project, and a large model can
-                          spend a whole usage window on a single build.
+                          No model set, so the build runs on claude's default. Pick one above.
                         </div>
                       )}
                       {/* The only build nobody presses. It runs the command above
@@ -2129,22 +2017,19 @@ export default function Settings({
             <section className="settings-section">
               <SectionHead id="files" projectName={projectName} />
               <p className="settings-section-hint">
-                Files copied into every new agent worktree. Git worktrees only contain
-                committed files, so untracked essentials (local certs, service-account
-                keys) must be listed here to reach agents. Untracked{" "}
-                <code>.env</code> / <code>.env.*</code> files in the repo root are copied
-                automatically. Saved to this machine only (<code>.agency/agency.local.toml</code>).
+                Untracked files to copy into each new worktree. Root <code>.env</code> files are
+                copied automatically.
               </p>
               {!projectId ? (
                 <div className="settings-group-card">
-                  <span className="settings-notif-label">Pick a project in the sidebar to configure its worktree files.</span>
+                  <span className="settings-notif-label">Select a project first.</span>
                 </div>
               ) : files ? (
                 <div className="settings-group-card">
                   {files.detectedEnv.length > 0 && (
                     <div className="settings-notif-row">
                       <span className="settings-notif-label">
-                        Auto-copied env files:{" "}
+                        Auto-copied:{" "}
                         {files.detectedEnv.map((f) => <code key={f} className="settings-meta-val">{f}</code>)}
                       </span>
                     </div>
@@ -2153,7 +2038,7 @@ export default function Settings({
                     <label className="settings-field-key">Files to copy</label>
                     <textarea
                       className="settings-input"
-                      placeholder={"One repo-relative path per line, e.g.\nconfig/service-account.json\ncerts/dev.pem"}
+                      placeholder={"config/service-account.json\ncerts/dev.pem"}
                       value={filesDraft}
                       onChange={(e) => setFilesDraft(e.target.value)}
                     />
@@ -2169,16 +2054,9 @@ export default function Settings({
           {visible("workspace") && (
             <section className="settings-section">
               <SectionHead id="workspace" projectName={projectName} />
-              <p className="settings-section-hint">
-                Your home for journaling, planning, and cross-project notes: plain
-                markdown files on disk. <kbd>{shortcutLabel("⌘⇧D")}</kbd> opens today's journal note.
-              </p>
               <div className="settings-group-card">
                 <div className="settings-notif-row">
-                  <span className="settings-notif-label">
-                    Show the workspace
-                    {wsOff && " (currently hidden; nothing on disk was deleted)"}
-                  </span>
+                  <span className="settings-notif-label">Show the workspace</span>
                   <Toggle checked={!wsOff} onChange={(on) => { void toggleWorkspaceVisible(on); }} />
                 </div>
                 {!wsOff && (workspace ? (
@@ -2209,9 +2087,7 @@ export default function Settings({
                     {wsMissing && (
                       <div className="settings-notif-row">
                         <span className="settings-notif-label">
-                          This folder isn't there. It may have been moved or renamed, or it may
-                          be on a disk that isn't connected. Nothing has been lost: point Agency
-                          at it again and your journal, notes and issues come back with it.
+                          This folder is missing. Locate it to reconnect.
                         </span>
                         <button
                           className="settings-save"
@@ -2222,9 +2098,7 @@ export default function Settings({
                     {wsGitless && !wsMissing && (
                       <div className="settings-notif-row">
                         <span className="settings-notif-label">
-                          Git is off, so agents work directly in the folder: no branches,
-                          no Source Control, nothing to merge. Initialize a repository to
-                          give each one its own branch; nothing is ever pushed anywhere.
+                          Git is off. Agents work directly in the folder.
                         </span>
                         <button className="settings-save" onClick={enableWorkspaceGit}>Enable git</button>
                       </div>
@@ -2233,8 +2107,8 @@ export default function Settings({
                 ) : (
                   <div className="settings-notif-row">
                     <span className="settings-notif-label">
-                      Not created yet. By default it will live at{" "}
-                      <code className="settings-meta-val">{wsDefault || "~/Agency"}</code>.
+                      Not created yet:{" "}
+                      <code className="settings-meta-val">{wsDefault || "~/Agency"}</code>
                     </span>
                     <button
                       className="settings-save"
@@ -2249,9 +2123,9 @@ export default function Settings({
             </section>
           )}
 
-          {visible("diagnostics") && (
+          {visible("about") && (
             <section className="settings-section">
-              <SectionHead id="diagnostics" projectName={projectName} />
+              <SectionHead id="about" projectName={projectName} />
               <div className="settings-group-card">
                 <div className="settings-notif-row">
                   <span className="settings-notif-label">Version</span>
@@ -2304,60 +2178,6 @@ export default function Settings({
                   <span className="settings-notif-label">Check for updates automatically</span>
                   <Toggle checked={autoCheck} onChange={pickAutoCheck} />
                 </div>
-                {/* Facts about each agent's CLI, with no staleness verdict: the
-                    vendors' own update banners already carry that with real data
-                    (AGE-146). The copy offer exists because the right update
-                    command depends on how the CLI was installed, which the user
-                    often does not remember and the resolved path does. */}
-                {cliInfo.map((c) => {
-                  const cmd = updateCommand(c);
-                  return (
-                    <div key={c.agent} className="settings-notif-row">
-                      <span className="settings-notif-label" title={c.path ?? undefined}>
-                        {agentLabel(c.agent)}
-                        {c.version ? <> <code className="settings-meta-val">{c.version}</code></> : null}
-                      </span>
-                      {cmd ? (
-                        <button
-                          className="settings-ghost-btn"
-                          title={cmd}
-                          onClick={() => {
-                            navigator.clipboard.writeText(cmd)
-                              .then(() => toastSuccess(`Copied: ${cmd}`))
-                              .catch(() => {});
-                          }}
-                        >Copy update command</button>
-                      ) : !c.path ? (
-                        <span className="settings-notif-label">Not found on PATH</span>
-                      ) : null}
-                    </div>
-                  );
-                })}
-                <div className="settings-notif-row">
-                  <span className="settings-notif-label">Log files</span>
-                  <button className="settings-ghost-btn" onClick={openLogs}>Open logs</button>
-                </div>
-                <div className="settings-notif-row">
-                  <span className="settings-notif-label">Report an issue</span>
-                  <button
-                    className="settings-ghost-btn"
-                    onClick={() => { openUrl("https://github.com/TennnisAI/Agency/issues/new").catch(() => {}); }}
-                  >Open GitHub issues</button>
-                </div>
-              </div>
-              <p className="settings-section-hint">
-                Agent versions are read from the CLIs on your machine, and each
-                update command matches how that CLI was installed: npm, Homebrew,
-                or the vendor's own installer. Agency never updates an agent
-                itself.
-              </p>
-            </section>
-          )}
-
-          {visible("about") && (
-            <section className="settings-section">
-              <SectionHead id="about" projectName={projectName} />
-              <div className="settings-group-card">
                 <div className="settings-notif-row">
                   <span className="settings-notif-label">Licence</span>
                   <span className="settings-notif-label">Apache-2.0</span>
@@ -2375,14 +2195,51 @@ export default function Settings({
                     onClick={() => { openUrl("https://github.com/TennnisAI/Agency").catch(() => {}); }}
                   >Open GitHub</button>
                 </div>
+                <div className="settings-notif-row">
+                  <span className="settings-notif-label">Report an issue</span>
+                  <button
+                    className="settings-ghost-btn"
+                    onClick={() => { openUrl("https://github.com/TennnisAI/Agency/issues/new").catch(() => {}); }}
+                  >Open GitHub issues</button>
+                </div>
+                <div className="settings-notif-row">
+                  <span className="settings-notif-label">Log files</span>
+                  <button className="settings-ghost-btn" onClick={openLogs}>Open logs</button>
+                </div>
               </div>
-              <p className="settings-section-hint">
-                Agency is built on Rust crates, JavaScript packages and two
-                typefaces other people wrote. The notices list every one of them
-                and the licence it comes under. The coding agents are not in that
-                list: they are separate programs you install yourself, under their
-                own licences.
-              </p>
+              {/* Facts about each agent's CLI, with no staleness verdict: the
+                  vendors' own update banners already carry that with real data
+                  (AGE-146). The copy offer exists because the right update
+                  command depends on how the CLI was installed, which the user
+                  often does not remember and the resolved path does. */}
+              {cliInfo.length > 0 && (
+                <div className="settings-group-card">
+                  {cliInfo.map((c) => {
+                    const cmd = updateCommand(c);
+                    return (
+                      <div key={c.agent} className="settings-notif-row">
+                        <span className="settings-notif-label" title={c.path ?? undefined}>
+                          {agentLabel(c.agent)}
+                          {c.version ? <> <code className="settings-meta-val">{c.version}</code></> : null}
+                        </span>
+                        {cmd ? (
+                          <button
+                            className="settings-ghost-btn"
+                            title={cmd}
+                            onClick={() => {
+                              navigator.clipboard.writeText(cmd)
+                                .then(() => toastSuccess(`Copied: ${cmd}`))
+                                .catch(() => {});
+                            }}
+                          >Copy update command</button>
+                        ) : !c.path ? (
+                          <span className="settings-notif-label">Not found on PATH</span>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </section>
           )}
         </div>
@@ -2401,7 +2258,6 @@ export default function Settings({
       {mcpFormOpen && (
         <FormDialog
           title={mcpEditing ? `Edit ${mcpEditing}` : "New MCP server"}
-          subtitle="A tool server Agency writes into every agent workspace."
           submitLabel={mcpEditing ? "Save changes" : "Add server"}
           submitDisabled={
             !mcpDraft.name.trim() ||
@@ -2412,7 +2268,7 @@ export default function Settings({
         >
           {/* Name and transport share a row: the transport picker decides which
               fields follow, so it belongs beside the name, not buried below. */}
-          <Field label="Server name" hint="Identifies the server in each agent's config file.">
+          <Field label="Server name">
             <div className="mcp-name-row">
               <input
                 className="settings-input"
@@ -2440,7 +2296,7 @@ export default function Settings({
           {mcpDraft.transport === "stdio" ? (
             <>
               <div className="field-split">
-                <Field label="Command" hint="The executable Agency tells the agent to run.">
+                <Field label="Command">
                   <input
                     className="settings-input mono"
                     placeholder="npx"
@@ -2448,7 +2304,7 @@ export default function Settings({
                     onChange={(e) => setMcpDraft({ ...mcpDraft, command: e.target.value })}
                   />
                 </Field>
-                <Field label="Arguments" optional hint="Space separated, passed to the command.">
+                <Field label="Arguments" optional hint="Space separated.">
                   <input
                     className="settings-input mono"
                     placeholder="-y @modelcontextprotocol/server-github"
@@ -2457,7 +2313,7 @@ export default function Settings({
                   />
                 </Field>
               </div>
-              <Field label="Environment variables" optional hint="Added to the server's environment.">
+              <Field label="Environment variables" optional>
                 <KeyValueRows
                   pairs={mcpDraft.env}
                   onChange={(env) => setMcpDraft({ ...mcpDraft, env })}
@@ -2488,7 +2344,7 @@ export default function Settings({
                   onChange={(e) => setMcpDraft({ ...mcpDraft, url: e.target.value })}
                 />
               </Field>
-              <Field label="Headers" optional hint="Sent with every request to the server.">
+              <Field label="Headers" optional>
                 <KeyValueRows
                   pairs={mcpDraft.headers}
                   onChange={(headers) => setMcpDraft({ ...mcpDraft, headers })}
@@ -2498,8 +2354,7 @@ export default function Settings({
                 />
               </Field>
               <p className="settings-section-hint">
-                Signing in with OAuth instead of a header? Add the server, then use{" "}
-                <b>Authenticate</b> on its card to register it with an agent's own CLI.
+                For OAuth, add the server, then use <b>Authenticate</b> on its card.
               </p>
             </>
           )}

@@ -21,7 +21,7 @@ import ModalBackdrop from "./ModalBackdrop";
  * applies it.
  *
  * Opened by Help ▸ Check for Updates…, by the command palette, and by the
- * Settings ▸ Diagnostics row. Opening it with no `initial` runs a fresh check;
+ * Settings ▸ About row. Opening it with no `initial` runs a fresh check;
  * opening it from a check that has already happened shows that answer and does
  * not ask GitHub again.
  *

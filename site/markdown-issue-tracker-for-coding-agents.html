@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>A markdown issue tracker your coding agents can work from · Agency</title>
+<meta name="description" content="Keep issues as one markdown file per issue, then tell your agents where the folder is and how to edit it. The file format, the status rules, and how Agency does it.">
+<link rel="canonical" href="https://getagency.dev/markdown-issue-tracker-for-coding-agents">
+<meta property="og:title" content="A markdown issue tracker your coding agents can work from · Agency">
+<meta property="og:description" content="Keep issues as one markdown file per issue, then tell your agents where the folder is and how to edit it. The file format, the status rules, and how Agency does it.">
+<meta property="og:url" content="https://getagency.dev/markdown-issue-tracker-for-coding-agents">
+<meta property="og:type" content="article">
+<link rel="icon" href="/assets/img/agency-icon.svg" type="image/svg+xml">
+<link rel="icon" href="/assets/img/agency-icon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="/assets/img/agency-icon-180.png">
+<link rel="preload" href="/assets/fonts/geist-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/assets/css/site.css">
+<script>
+(function () {
+  try {
+    var t = localStorage.getItem('theme');
+    if (t === 'light' || t === 'dark') {
+      document.documentElement.setAttribute('data-theme', t);
+    }
+  } catch (e) {}
+})();
+</script>
+<script type="application/ld+json">
+{
+ "@context": "https://schema.org",
+ "@type": "Article",
+ "headline": "A markdown issue tracker your coding agents can work from",
+ "description": "Keep issues as one markdown file per issue, then tell your agents where the folder is and how to edit it. The file format, the status rules, and how Agency does it.",
+ "datePublished": "2026-10-08",
+ "dateModified": "2026-10-08",
+ "url": "https://getagency.dev/markdown-issue-tracker-for-coding-agents",
+ "author": {
+  "@type": "Organization",
+  "name": "Tennnis",
+  "url": "https://tennnis.no"
+ },
+ "publisher": {
+  "@type": "Organization",
+  "name": "Tennnis",
+  "url": "https://tennnis.no"
+ },
+ "about": {
+  "@type": "SoftwareApplication",
+  "name": "Agency",
+  "url": "https://getagency.dev/"
+ }
+}
+</script>
+</head>
+<body>
+
+<header class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="/" aria-label="Agency home">
+      <svg viewBox="14 8 72 82" fill="none" aria-hidden="true">
+        <path d="M22 84 L50 24 L78 84" stroke="var(--blue)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+        <rect x="36" y="55" width="20" height="7.5" rx="3.75" fill="var(--blue)" fill-opacity="0.55"/>
+        <rect x="44" y="67" width="20" height="7.5" rx="3.75" fill="var(--blue)"/>
+        <circle cx="50" cy="22" r="7.5" fill="var(--base)" stroke="var(--blue)" stroke-width="3.4"/>
+      </svg>
+      Agency
+    </a>
+    <nav class="nav-links" aria-label="Site">
+      <a href="/download">Download</a>
+      <a href="/privacy">Privacy</a>
+      <a class="gh-link" href="https://github.com/TennnisAI/Agency"><span class="gh-label">GitHub</span><svg class="gh-mark" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.012 8.012 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg></a>
+      <button class="theme-toggle" id="theme-toggle" aria-label="Toggle color theme">&#x25D0;&#xFE0E;</button>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+<article class="page guide">
+  <div class="wrap">
+    <p class="meta guide-date">Updated <time datetime="2026-10-08">8 October 2026</time></p>
+    <h1 class="display">A markdown issue tracker your coding agents can work from</h1>
+    <p class="lead">Keep each issue as one markdown file in a folder, with the status and
+    priority in a few lines of frontmatter at the top. An agent can then read the backlog,
+    change a status, comment on an issue and file a follow-up using nothing but file
+    access, which every coding agent already has.</p>
+    <p>This page shows the file format and the rules that keep it safe to edit, whether or
+    not you use Agency. Further down it says what Agency does with the same files, and one
+    thing about them that is not what you might expect. Disclosure: Agency is ours, and
+    this site is its home.</p>
+
+    <h2>Why agents cannot work from your tracker</h2>
+    <p>A hosted tracker lives behind a login and an API. An agent in a terminal does not
+    see it unless you wire up a connector, and even then it works through a handful of
+    tool calls rather than reading the backlog the way it reads code. A folder of markdown
+    files has no such gap: the agent lists the folder, opens a file and edits it, the same
+    as any source file.</p>
+
+    <h2>The file format</h2>
+    <p>This is the format Agency uses for its own backlog (the project's
+    <code>.agency/issues/README.md</code>, as of October 2026). One file per issue, named
+    for its key, with the title as the H1:</p>
+<pre class="dl-cmd"><code>---
+key: AGE-14
+uid: 8fbc9e2a-3d41-4c7e-9a10-5b6d2f8e04c3
+status: in_progress        # backlog|todo|in_progress|in_review|done|cancelled
+priority: 2                # 0-4
+created: 2026-07-27T09:30:00Z
+updated: 2026-07-27T14:02:00Z
+---
+# Issue title
+
+Body markdown, wikilinks allowed.
+
+## Sam · 2026-07-27T15:10:00Z
+
+A comment.</code></pre>
+    <ul class="points">
+      <li><strong>Change status</strong> by editing <code>status:</code>. Closing an issue
+      is <code>status: done</code>.</li>
+      <li><strong>File an issue</strong> by adding <code>&lt;KEY&gt;-&lt;n&gt;.md</code>
+      with the next unused number for the key. Numbers are never reused or renumbered,
+      even after a deletion, so a reference to <code>AGE-14</code> keeps meaning the same
+      issue.</li>
+      <li><strong>Comment</strong> by appending a <code>## &lt;author&gt; · &lt;UTC
+      RFC3339&gt;</code> section to the end of the file. The description is everything
+      between the H1 and the first heading of that shape, so a comment never overwrites
+      it.</li>
+      <li><strong>Link issues</strong> with <code>links: AGE-12, LBH-3</code>. Links are
+      undirected: the other issue gets the link too.</li>
+      <li><strong>Attach files</strong> under <code>assets/</code> and reference them by
+      relative link, such as <code>![](assets/AGE-14-shot.png)</code>, so the same link
+      works in any markdown editor.</li>
+      <li><strong>Timestamps</strong> are UTC RFC3339, and <code>updated</code> is bumped
+      on every edit.</li>
+    </ul>
+    <p>The <code>uid</code> is written by the app. It identifies the issue if the folder
+    is ever copied somewhere the numbering is not shared, so you do not copy one between
+    issues or edit it. Agency reads frontmatter strictly: a file whose <code>key</code>
+    does not match its name, or whose <code>status</code> is not one of the six, is
+    skipped rather than guessed at.</p>
+
+    <h2>Set it up by hand</h2>
+    <ol class="steps">
+      <li>
+        <h3>Make the folder and one file</h3>
+        <p>Create <code>issues/</code> (or <code>.agency/issues/</code>, the path Agency
+        uses) and add <code>PRJ-1.md</code> with the frontmatter above. Pick a short key
+        for the project and keep it.</p>
+      </li>
+      <li>
+        <h3>Tell the agent where it is</h3>
+        <p>An agent only knows what is in its context. Put the absolute path of the folder
+        and the rules above into the file your agent reads at start, such as
+        <code>CLAUDE.md</code> or <code>AGENTS.md</code>, and say outright that "file an
+        issue" means this folder. If you have a hosted tracker connected as well, an
+        agent asked to file an issue will otherwise pick whichever it sees first.</p>
+      </li>
+      <li>
+        <h3>Decide who owns the numbers</h3>
+        <p>"Next unused number" is a race if two agents file at once. With one writer it
+        is fine. With several, give the numbering to a script, or accept an occasional
+        collision and renumber by hand.</p>
+      </li>
+    </ol>
+
+    <h2>What Agency does with the same files</h2>
+    <p>Agency is a free, open-source desktop app for macOS and Linux that runs coding
+    agents each in its own git worktree. Its issue board is an index over these files: the
+    files are the tracker, and editing one by hand or from an agent updates the board. It
+    adds three things.</p>
+    <h3>It moves the status for you</h3>
+    <p>When an issue is linked to a run, Agency changes <code>status:</code> at each step,
+    always forward and never into or out of <code>cancelled</code>:</p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th scope="col">Event</th><th scope="col">Issue status becomes</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>You dispatch a run (or a race) from the issue</td><td><code>in_progress</code></td></tr>
+          <tr><td>You open a pull request from the run</td><td><code>in_review</code></td></tr>
+          <tr><td>You merge the run</td><td><code>done</code></td></tr>
+          <tr><td>The issue's last run is discarded or archived while the issue is <code>in_progress</code> or <code>in_review</code></td><td><code>todo</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>An issue you already set to <code>done</code> stays <code>done</code> when a later
+    run merges, and one you cancelled stays cancelled.</p>
+    <h3>It tells the agent how to file</h3>
+    <p>Each run gets the absolute path of the tracker and the format, as a generated
+    skill named <code>agency-issues</code> and, for Claude Code, a rules file at
+    <code>.claude/rules/agency-issues.md</code> in the run's worktree (excluded from git so
+    it never appears in a diff). The rules file says the folder is in the project's
+    checkout and not in the worktree, that it is untracked, and to read the folder's
+    <code>README.md</code> before filing a follow-up, commenting or changing a status. The
+    wording also says that a bare "issue" means this tracker, because a run once filed an
+    issue in a hosted tracker whose tools were in its context.</p>
+    <p>So a follow-up is one new file. An agent finishing AGE-260 and spotting a loose end
+    writes the next free number, say <code>AGE-301.md</code>, without a <code>uid</code>:</p>
+<pre class="dl-cmd"><code>---
+key: AGE-301
+status: todo
+priority: 2
+created: 2026-10-08T09:41:00Z
+updated: 2026-10-08T09:41:00Z
+links: AGE-260
+---
+# Handle an empty issues folder in the board
+
+Found while working AGE-260: ...</code></pre>
+    <p>Agency picks the file up, writes the <code>uid</code> in, and the issue appears on
+    the board.</p>
+    <h3>It can sync the folder without committing it</h3>
+    <p>See the next section.</p>
+
+    <h2>Is it versioned next to the code?</h2>
+    <p>Not in Agency's case, and it is worth being plain about it. Agency's
+    <code>.agency/issues/</code> is <strong>untracked by git</strong>. There is one copy,
+    in the project's own checkout, and every agent worktree reads and edits that same copy
+    by absolute path. An edit takes effect when it is written; nothing is committed or
+    merged.</p>
+    <p>Agency used to track the files. It stopped because the app rewrites issue state in
+    the main checkout on every dispatch and every merge, which kept that checkout
+    permanently dirty (a merge refuses to start on a dirty checkout) and put the same
+    frontmatter lines on both sides of every agent merge. A project that already tracked
+    them gets a one-time commit, "Stop tracking issue files", and the files stay on
+    disk.</p>
+    <p>What is true instead:</p>
+    <ul class="points">
+      <li>The files are plain markdown on your disk. You can back them up, grep them, or
+      commit them yourself if you accept the dirty-checkout cost.</li>
+      <li>You do not get <code>git log</code> or <code>git blame</code> on an issue through
+      the project's branches.</li>
+      <li>Moving them between machines or teammates is a setting. Agency can sync the
+      whole folder over a git ref of its own, <code>refs/agency/issues</code>, which is
+      never checked out and never appears on a branch or in a diff. Syncing is configured
+      per project, and the automatic trigger is opt-in per machine; otherwise you press
+      Sync.</li>
+    </ul>
+    <p>If versioned history in the project's own branches is what you want, the by-hand
+    setup above gives you that: track the folder, and keep one writer at a time.</p>
+
+    <h2>Who should not use it</h2>
+    <p>Teams that need cross-project reporting, assignees, notifications, an audit trail or
+    a public form for customers to file bugs are better served by a hosted tracker. Agency's
+    tracker is a file folder with a board on top, built for the person dispatching agents.
+    Agency also runs on macOS and Linux only; on Windows or an Intel Mac, use the by-hand
+    setup.</p>
+
+    <h2>Questions</h2>
+    <h3>Can an agent edit an issue while I have it open in the app?</h3>
+    <p>Yes. The board follows the files, and a change on disk shows up there. The
+    folder's rule is that an edit takes effect as soon as it is written.</p>
+    <h3>What stops an agent breaking the format?</h3>
+    <p>The frontmatter is parsed strictly: a malformed file is skipped, not guessed at. That
+    is why the agent is handed the format up front. Unknown frontmatter keys are kept as
+    they are when the app rewrites a file.</p>
+    <h3>Do the agents have to be Claude Code?</h3>
+    <p>No. The format needs only file access. The generated rules file is a Claude Code
+    mechanism, so with another agent you point it at the folder yourself, as in the
+    by-hand steps.</p>
+    <p>For running the agents themselves, see
+    <a href="/run-coding-agents-in-parallel">how to run coding agents in parallel</a>.</p>
+
+    <div class="guide-cta">
+      <a class="btn" href="/download">Download Agency for macOS and Linux</a>
+      <a class="btn btn-ghost" href="/run-coding-agents-in-parallel">Run agents in parallel</a>
+    </div>
+  </div>
+</article>
+
+</main>
+
+<footer class="footer">
+  <div class="wrap footer-inner">
+    <a class="brand" href="/" aria-label="Agency home">
+      <svg viewBox="14 8 72 82" fill="none" aria-hidden="true">
+        <path d="M22 84 L50 24 L78 84" stroke="var(--blue)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+        <rect x="36" y="55" width="20" height="7.5" rx="3.75" fill="var(--blue)" fill-opacity="0.55"/>
+        <rect x="44" y="67" width="20" height="7.5" rx="3.75" fill="var(--blue)"/>
+        <circle cx="50" cy="22" r="7.5" fill="var(--base)" stroke="var(--blue)" stroke-width="3.4"/>
+      </svg>
+      Agency
+    </a>
+    <nav class="footer-links" aria-label="Footer">
+      <a href="/download">Download</a>
+      <a href="/run-coding-agents-in-parallel">Guide</a>
+      <a href="/supported-coding-agent-clis">Agents</a>
+      <a href="/run-coding-agents-in-parallel-on-linux">Linux</a>
+      <a href="/privacy">Privacy</a>
+      <a class="gh-link" href="https://github.com/TennnisAI/Agency"><span class="gh-label">GitHub</span><svg class="gh-mark" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.012 8.012 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg></a>
+    </nav>
+    <p class="footer-fine">Brought to you by <a href="https://tennnis.no">Tennnis&#8202;&#x2197;&#xFE0E;</a></p>
+  </div>
+</footer>
+
+<script src="/assets/js/site.js" defer></script>
+
+</body>
+</html>

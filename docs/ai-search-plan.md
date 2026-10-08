@@ -62,6 +62,13 @@ sentences and names no rival.
 | The agents Agency supports | "run Kimi Code, Crush or Pi in parallel" | One short section per built-in CLI, with how Agency detects and installs it |
 | Choosing a tool to run agents in parallel | "best tool to run coding agents in parallel" | The criteria (isolation, licence, platforms, privacy, which agents), with no rivals named; links out to the directories that do name them |
 
+All seven were written on 8 October 2026 (AGE-256 to AGE-262) and are linked
+from the guide's "Going further" list. Two gaps remain. The race page has no
+real race to show, because a race's losing branches are deleted and only the
+winner's merge survives in history, so it needs one recorded on purpose. And
+the choosing page has nowhere to link out to until Agency is listed in the
+directories below.
+
 Write fewer, better pages. A dozen thin near-duplicates read as spam to engines
 and to people.
 

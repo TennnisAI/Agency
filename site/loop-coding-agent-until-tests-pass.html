@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How to make a coding agent keep going until the tests pass · Agency</title>
+<meta name="description" content="Run the agent in a loop with a fresh session each attempt, check the tests between attempts, and cap attempts and time. A safe bash loop first, then what caps and review add.">
+<link rel="canonical" href="https://getagency.dev/loop-coding-agent-until-tests-pass">
+<meta property="og:title" content="How to make a coding agent keep going until the tests pass · Agency">
+<meta property="og:description" content="Run the agent in a loop with a fresh session each attempt, check the tests between attempts, and cap attempts and time. A safe bash loop first, then what caps and review add.">
+<meta property="og:url" content="https://getagency.dev/loop-coding-agent-until-tests-pass">
+<meta property="og:type" content="article">
+<link rel="icon" href="/assets/img/agency-icon.svg" type="image/svg+xml">
+<link rel="icon" href="/assets/img/agency-icon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="/assets/img/agency-icon-180.png">
+<link rel="preload" href="/assets/fonts/geist-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/assets/css/site.css">
+<script>
+(function () {
+  try {
+    var t = localStorage.getItem('theme');
+    if (t === 'light' || t === 'dark') {
+      document.documentElement.setAttribute('data-theme', t);
+    }
+  } catch (e) {}
+})();
+</script>
+<script type="application/ld+json">
+{
+ "@context": "https://schema.org",
+ "@type": "Article",
+ "headline": "How to make a coding agent keep going until the tests pass",
+ "description": "Run the agent in a loop with a fresh session each attempt, check the tests between attempts, and cap attempts and time. A safe bash loop first, then what caps and review add.",
+ "datePublished": "2026-10-08",
+ "dateModified": "2026-10-08",
+ "url": "https://getagency.dev/loop-coding-agent-until-tests-pass",
+ "author": {
+  "@type": "Organization",
+  "name": "Tennnis",
+  "url": "https://tennnis.no"
+ },
+ "publisher": {
+  "@type": "Organization",
+  "name": "Tennnis",
+  "url": "https://tennnis.no"
+ },
+ "about": {
+  "@type": "SoftwareApplication",
+  "name": "Agency",
+  "url": "https://getagency.dev/"
+ }
+}
+</script>
+</head>
+<body>
+
+<header class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="/" aria-label="Agency home">
+      <svg viewBox="14 8 72 82" fill="none" aria-hidden="true">
+        <path d="M22 84 L50 24 L78 84" stroke="var(--blue)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+        <rect x="36" y="55" width="20" height="7.5" rx="3.75" fill="var(--blue)" fill-opacity="0.55"/>
+        <rect x="44" y="67" width="20" height="7.5" rx="3.75" fill="var(--blue)"/>
+        <circle cx="50" cy="22" r="7.5" fill="var(--base)" stroke="var(--blue)" stroke-width="3.4"/>
+      </svg>
+      Agency
+    </a>
+    <nav class="nav-links" aria-label="Site">
+      <a href="/download">Download</a>
+      <a href="/privacy">Privacy</a>
+      <a class="gh-link" href="https://github.com/TennnisAI/Agency"><span class="gh-label">GitHub</span><svg class="gh-mark" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.012 8.012 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg></a>
+      <button class="theme-toggle" id="theme-toggle" aria-label="Toggle color theme">&#x25D0;&#xFE0E;</button>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+<article class="page guide">
+  <div class="wrap">
+    <p class="meta guide-date">Updated <time datetime="2026-10-08">8 October 2026</time></p>
+    <h1 class="display">How to make a coding agent keep going until the tests pass</h1>
+    <p class="lead">Run the agent headless, once per attempt, in a shell loop. After each
+    attempt run your test command, stop when it exits 0, and stop anyway after a fixed
+    number of attempts so a bad prompt cannot run all night. Each attempt starts a fresh
+    session, so the files on disk are the agent's only memory.</p>
+    <p>This page gives you that loop in bash, then says what hard caps and a review step add
+    on top of it, then shows where Agency does those parts for you. Disclosure: Agency is
+    ours, and this site is its home.</p>
+
+    <h2>Why a loop works, and where it goes wrong</h2>
+    <p>An interactive agent session does not exit when the task is done: it idles at its
+    prompt, waiting for you. Most agent CLIs also have a headless one-shot mode that does
+    the work and exits (for example <code>claude -p "&lt;prompt&gt;"</code> and
+    <code>codex exec "&lt;prompt&gt;"</code>). A loop calls that mode again and again with
+    the same prompt, and the agent picks up where the last attempt stopped by reading the
+    repository.</p>
+    <p>Two things decide whether this is useful. The first is the check: a command that
+    exits 0 only when the work is really done, such as your test suite, a linter or a
+    build. An agent saying it is finished is not a check. The second is a limit, because a
+    loop that never passes its check spends money until you notice.</p>
+
+    <h2>The loop by hand</h2>
+    <p>Do this on a branch or in a git worktree, not in a checkout with work you care about:
+    the loop commits after every attempt. Put the task in a file called
+    <code>PROMPT.md</code>, and tell the agent to read and update a progress note, because
+    a fresh session remembers nothing else.</p>
+    <ol class="steps">
+      <li>
+        <h3>Write one prompt that works on a fresh session</h3>
+        <p>The same text is sent every attempt, so it has to say where to look. A shape that
+        works:</p>
+<pre class="dl-cmd"><code>Read PROGRESS.md if it exists. Pick the single most important unfinished
+piece of: make the failing tests in tests/ pass. Implement it, run the tests,
+commit with a clear message, and append one line to PROGRESS.md describing
+what you did.</code></pre>
+      </li>
+      <li>
+        <h3>Loop with an attempt cap and timeouts</h3>
+        <p>Save this as <code>loop.sh</code>. It runs at most 10 attempts, gives the agent
+        30 minutes per attempt and the tests 10 minutes per check, and commits whatever the
+        agent left behind so each attempt is a visible step in <code>git log</code>. Swap
+        <code>npm test</code> for your own check. The <code>--permission-mode acceptEdits</code>
+        flag lets Claude Code edit files without asking; read the permissions section below
+        before you copy it.</p>
+<pre class="dl-cmd"><code>#!/usr/bin/env bash
+set -u
+max=10
+for attempt in $(seq 1 "$max"); do
+  echo "attempt $attempt of $max"
+  timeout 1800 claude -p "$(cat PROMPT.md)" --permission-mode acceptEdits \
+    || echo "agent exited nonzero"
+  if [ -n "$(git status --porcelain)" ]; then
+    git add -A && git commit -qm "wip: loop attempt $attempt"
+  fi
+  if timeout 600 npm test; then
+    echo "tests pass on attempt $attempt"
+    exit 0
+  fi
+done
+echo "gave up after $max attempts, tests still failing"
+exit 1</code></pre>
+        <p><code>timeout</code> is part of GNU coreutils. It is on Linux already; on macOS
+        install coreutils with Homebrew and use <code>gtimeout</code>.</p>
+      </li>
+      <li>
+        <h3>Run it, then read the diff</h3>
+<pre class="dl-cmd"><code>bash loop.sh
+git log --oneline main..HEAD
+git diff main...HEAD</code></pre>
+        <p>A green check means the tests pass, not that the change is good. An agent can
+        make a test pass by weakening the test. Read the diff before you merge.</p>
+      </li>
+    </ol>
+
+    <h2>What the bash version does not give you</h2>
+    <ul class="points">
+      <li>A cap on total time or spend. Ten attempts of 30 minutes is five hours, and the
+      script has no idea how many tokens they used</li>
+      <li>A reason when it stops. "Gave up" could mean the prompt is wrong, the tests are
+      flaky, or the agent crashed on a bad flag ten times in a row</li>
+      <li>Crash detection. If the agent exits nonzero every time, the loop burns all its
+      attempts on a problem the agent never got to touch</li>
+      <li>A way to see progress without staring at a terminal, or an alert when it ends</li>
+      <li>A review step. The loop's output is a branch, and merging it is still manual</li>
+    </ul>
+
+    <h2>Which limits to set</h2>
+    <p>Set all three if you can: attempts, wall-clock time and tokens. Attempts alone is
+    not enough, because an attempt has no fixed size. One can take ten minutes, another
+    three hours. Whichever limit you use, check it between attempts rather than killing an
+    attempt midway: a half-finished edit is worse than a late stop. Ten attempts is a
+    reasonable starting point for a task you would otherwise leave running overnight; if it
+    needs more, the prompt usually needs to be better first.</p>
+
+    <h2>Permissions: a loop has no one to approve prompts</h2>
+    <p>A headless attempt cannot stop and ask you. If the agent hits a permission prompt it
+    cannot answer, the attempt dies or hangs, so loops need the agent's own non-interactive
+    permission flags, such as <code>--permission-mode acceptEdits</code> for Claude Code.
+    Choose them deliberately, and run the loop in a worktree or branch so the damage a wrong
+    edit can do stays in one place.</p>
+
+    <h2>Doing the same with Agency</h2>
+    <p>Agency is a free, open-source desktop app for macOS and Linux. Its Loop agent dialog
+    takes a prompt, an agent, a "done when" command and the limits, and runs the loop above
+    in a run's own worktree and branch. As of October 2026 the numbers are:</p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th scope="col">Part of the loop</th><th scope="col">By hand</th><th scope="col">In Agency</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Each attempt</td><td><code>claude -p</code> in a loop</td><td>A fresh headless session in the run's worktree, same prompt every time; output streams into the run's terminal</td></tr>
+          <tr><td>The check</td><td><code>timeout 600 npm test</code></td><td>Your "done when" command, run through your shell in the worktree; exit 0 ends the loop. It times out after 600 seconds, and a timeout counts as a failed check</td></tr>
+          <tr><td>Attempt cap</td><td><code>max=10</code></td><td>Default 10, between 1 and 100</td></tr>
+          <tr><td>Time cap</td><td>Per-attempt <code>timeout</code> only</td><td>Optional, in minutes, from 1 minute to 1 week; off unless you set it</td></tr>
+          <tr><td>Token cap</td><td>None</td><td>Optional, from 1,000 to 1 billion tokens, read from the agent's own transcript; off unless you set it</td></tr>
+          <tr><td>Crashes</td><td>Not detected</td><td>Three nonzero agent exits in a row stall the loop, and crashed attempts do not use up the attempt count</td></tr>
+          <tr><td>Commits between attempts</td><td><code>git commit</code> in the script</td><td>Leftover changes are committed as <code>wip: loop attempt N</code></td></tr>
+          <tr><td>Progress</td><td>Terminal output</td><td>A strip showing <code>attempt 3/10 · running</code> or <code>checking</code>, a Stop loop button that keeps the worktree and its commits, and a desktop notification when the loop completes or stalls</td></tr>
+          <tr><td>Review and merge</td><td><code>git diff</code>, <code>git merge</code></td><td>The loop ends on a branch; the diff review and merge are the same as for any run, and nothing merges automatically</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>The four reasons a loop stalls</h3>
+    <p>A stalled loop says why, so you know whether to raise a cap, fix a flag or rewrite
+    the prompt:</p>
+    <ul class="points">
+      <li><strong>Attempt cap:</strong> the check was still failing after the last allowed
+      attempt. Usually a prompt or task problem</li>
+      <li><strong>Agent failed repeatedly:</strong> three crashes in a row, which usually
+      means a bad flag, an expired login or a rate limit</li>
+      <li><strong>Time cap hit:</strong> the wall-clock limit you set ran out</li>
+      <li><strong>Token cap hit:</strong> the token total reached the limit you set</li>
+    </ul>
+    <p>Caps are checked only when the loop would start another attempt, so a running attempt
+    is never killed, and a cap can trip no earlier than the next attempt boundary. A
+    finished attempt always gets its check: if the tests pass, the loop completes even if a
+    cap has just been passed. The token cap needs a transcript Agency can read; for an agent
+    whose transcript it cannot read, the token cap never trips rather than guessing.</p>
+
+    <h3>The permission gate stays visible</h3>
+    <p>Agency does not turn on autonomy for you behind your back. The headless recipe for
+    each agent is a profile setting you can read and change under Settings, as "Loop
+    arguments". As of October 2026 the built-in recipes carry these permission flags:
+    Claude Code gets <code>--permission-mode acceptEdits</code>, Codex gets
+    <code>--full-auto</code> and GitHub Copilot CLI gets <code>--allow-all-tools</code>.
+    The others run with their plain headless command. Those flags are what let an
+    unattended attempt run at all, and each attempt runs in the run's own worktree, so a
+    bad edit lands on a branch you review rather than on your main checkout.</p>
+    <p><strong>Who should not use it:</strong> anyone on Windows or an Intel Mac, which
+    Agency does not support yet, and anyone whose loop already works as the bash script
+    above and who does not need a time or token cap. Agents without a headless one-shot
+    mode cannot loop in Agency at all.</p>
+
+    <h2>Questions</h2>
+    <h3>What if I do not have a test command?</h3>
+    <p>Leave the "done when" field empty and Agency runs exactly the number of attempts you
+    set, without checking anything. It labels this as fixed iterations, which suits tasks
+    such as "find and fix one lint warning". It is not verified completion.</p>
+    <h3>Why a fresh session for each attempt?</h3>
+    <p>A long session fills its context with old output and starts to lose the thread. A
+    fresh session per attempt avoids that, and the repository, the git log and your progress
+    file carry the state instead.</p>
+    <h3>Can I loop an agent and also race several agents?</h3>
+    <p>Yes, as separate runs. A race sends one prompt to several agents so you can keep the
+    best branch; a loop pushes one agent toward a passing check. See
+    <a href="/run-coding-agents-in-parallel">how to run coding agents in parallel</a> for
+    the worktree side.</p>
+
+    <div class="guide-cta">
+      <a class="btn" href="/download">Download Agency for macOS and Linux</a>
+      <a class="btn btn-ghost" href="/">What Agency does</a>
+    </div>
+  </div>
+</article>
+
+</main>
+
+<footer class="footer">
+  <div class="wrap footer-inner">
+    <a class="brand" href="/" aria-label="Agency home">
+      <svg viewBox="14 8 72 82" fill="none" aria-hidden="true">
+        <path d="M22 84 L50 24 L78 84" stroke="var(--blue)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+        <rect x="36" y="55" width="20" height="7.5" rx="3.75" fill="var(--blue)" fill-opacity="0.55"/>
+        <rect x="44" y="67" width="20" height="7.5" rx="3.75" fill="var(--blue)"/>
+        <circle cx="50" cy="22" r="7.5" fill="var(--base)" stroke="var(--blue)" stroke-width="3.4"/>
+      </svg>
+      Agency
+    </a>
+    <nav class="footer-links" aria-label="Footer">
+      <a href="/download">Download</a>
+      <a href="/run-coding-agents-in-parallel">Guide</a>
+      <a href="/supported-coding-agent-clis">Agents</a>
+      <a href="/run-coding-agents-in-parallel-on-linux">Linux</a>
+      <a href="/privacy">Privacy</a>
+      <a class="gh-link" href="https://github.com/TennnisAI/Agency"><span class="gh-label">GitHub</span><svg class="gh-mark" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.012 8.012 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg></a>
+    </nav>
+    <p class="footer-fine">Brought to you by <a href="https://tennnis.no">Tennnis&#8202;&#x2197;&#xFE0E;</a></p>
+  </div>
+</footer>
+
+<script src="/assets/js/site.js" defer></script>
+
+</body>
+</html>

@@ -4,6 +4,13 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url><loc>https://getagency.dev/</loc><lastmod>2026-10-07</lastmod></url>
   <url><loc>https://getagency.dev/download</loc><lastmod>2026-10-07</lastmod></url>
-  <url><loc>https://getagency.dev/run-coding-agents-in-parallel</loc><lastmod>2026-10-07</lastmod></url>
+  <url><loc>https://getagency.dev/run-coding-agents-in-parallel</loc><lastmod>2026-10-08</lastmod></url>
+  <url><loc>https://getagency.dev/git-worktrees-for-ai-coding-agents</loc><lastmod>2026-10-08</lastmod></url>
+  <url><loc>https://getagency.dev/run-coding-agents-in-parallel-on-linux</loc><lastmod>2026-10-08</lastmod></url>
+  <url><loc>https://getagency.dev/race-coding-agents-on-one-prompt</loc><lastmod>2026-10-08</lastmod></url>
+  <url><loc>https://getagency.dev/loop-coding-agent-until-tests-pass</loc><lastmod>2026-10-08</lastmod></url>
+  <url><loc>https://getagency.dev/markdown-issue-tracker-for-coding-agents</loc><lastmod>2026-10-08</lastmod></url>
+  <url><loc>https://getagency.dev/supported-coding-agent-clis</loc><lastmod>2026-10-08</lastmod></url>
+  <url><loc>https://getagency.dev/choosing-a-tool-to-run-coding-agents-in-parallel</loc><lastmod>2026-10-08</lastmod></url>
   <url><loc>https://getagency.dev/privacy</loc><lastmod>2026-09-13</lastmod></url>
 </urlset>

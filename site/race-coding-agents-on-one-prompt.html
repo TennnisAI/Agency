@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How to race several coding agents on one prompt · Agency</title>
+<meta name="description" content="Send one prompt to several coding agents, each in its own git worktree, then diff the attempts and keep the best one. Commands by hand, then how Agency's race does it.">
+<link rel="canonical" href="https://getagency.dev/race-coding-agents-on-one-prompt">
+<meta property="og:title" content="How to race several coding agents on one prompt · Agency">
+<meta property="og:description" content="Send one prompt to several coding agents, each in its own git worktree, then diff the attempts and keep the best one. Commands by hand, then how Agency's race does it.">
+<meta property="og:url" content="https://getagency.dev/race-coding-agents-on-one-prompt">
+<meta property="og:type" content="article">
+<link rel="icon" href="/assets/img/agency-icon.svg" type="image/svg+xml">
+<link rel="icon" href="/assets/img/agency-icon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="/assets/img/agency-icon-180.png">
+<link rel="preload" href="/assets/fonts/geist-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/assets/css/site.css">
+<script>
+(function () {
+  try {
+    var t = localStorage.getItem('theme');
+    if (t === 'light' || t === 'dark') {
+      document.documentElement.setAttribute('data-theme', t);
+    }
+  } catch (e) {}
+})();
+</script>
+<script type="application/ld+json">
+{
+ "@context": "https://schema.org",
+ "@type": "Article",
+ "headline": "How to race several coding agents on one prompt",
+ "description": "Send one prompt to several coding agents, each in its own git worktree, then diff the attempts and keep the best one. Commands by hand, then how Agency's race does it.",
+ "datePublished": "2026-10-08",
+ "dateModified": "2026-10-08",
+ "url": "https://getagency.dev/race-coding-agents-on-one-prompt",
+ "author": {
+  "@type": "Organization",
+  "name": "Tennnis",
+  "url": "https://tennnis.no"
+ },
+ "publisher": {
+  "@type": "Organization",
+  "name": "Tennnis",
+  "url": "https://tennnis.no"
+ },
+ "about": {
+  "@type": "SoftwareApplication",
+  "name": "Agency",
+  "url": "https://getagency.dev/"
+ }
+}
+</script>
+</head>
+<body>
+
+<header class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="/" aria-label="Agency home">
+      <svg viewBox="14 8 72 82" fill="none" aria-hidden="true">
+        <path d="M22 84 L50 24 L78 84" stroke="var(--blue)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+        <rect x="36" y="55" width="20" height="7.5" rx="3.75" fill="var(--blue)" fill-opacity="0.55"/>
+        <rect x="44" y="67" width="20" height="7.5" rx="3.75" fill="var(--blue)"/>
+        <circle cx="50" cy="22" r="7.5" fill="var(--base)" stroke="var(--blue)" stroke-width="3.4"/>
+      </svg>
+      Agency
+    </a>
+    <nav class="nav-links" aria-label="Site">
+      <a href="/download">Download</a>
+      <a href="/privacy">Privacy</a>
+      <a class="gh-link" href="https://github.com/TennnisAI/Agency"><span class="gh-label">GitHub</span><svg class="gh-mark" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.012 8.012 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg></a>
+      <button class="theme-toggle" id="theme-toggle" aria-label="Toggle color theme">&#x25D0;&#xFE0E;</button>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+
+<article class="page guide">
+  <div class="wrap">
+    <p class="meta guide-date">Updated <time datetime="2026-10-08">8 October 2026</time></p>
+    <h1 class="display">How to race several coding agents on one prompt</h1>
+    <p class="lead">Write the prompt once, give every attempt its own git worktree and branch
+    cut from the same commit, start one agent in each with that same prompt, then compare the
+    diffs and merge the one you like. Delete the rest. Because the starting point and the
+    prompt are identical, the only thing that differs is the agent, or the model it runs on.</p>
+    <p>This is how you compare agents on your own code instead of on someone else's
+    benchmark. You can do it by hand with git, and this page shows how. Further down it
+    shows what Agency's race does for you. Disclosure: Agency is ours, and this site is its
+    home.</p>
+
+    <h2>Why race instead of picking one agent</h2>
+    <p>Two agents given the same task rarely produce the same change. One edits three files
+    and one edits eight; one adds a test and one does not. You find that out only by
+    reading both. A race makes the comparison cheap enough to do on a real task: you pay
+    for a few attempts in parallel and read the diffs side by side, instead of running one
+    attempt, disliking it, and starting over.</p>
+
+    <h2>Race agents by hand</h2>
+    <p>The commands assume a repository called <code>myapp</code> with a
+    <code>main</code> branch, and three attempts: Claude Code, Codex and Gemini CLI.</p>
+    <ol class="steps">
+      <li>
+        <h3>Cut one worktree per attempt from the same commit</h3>
+        <p>Run these from inside <code>myapp</code>. Naming the same start point for all
+        three is what makes the race fair.</p>
+<pre class="dl-cmd"><code>git worktree add -b race/claude ../myapp-claude main
+git worktree add -b race/codex ../myapp-codex main
+git worktree add -b race/gemini ../myapp-gemini main</code></pre>
+      </li>
+      <li>
+        <h3>Set each one up the same way</h3>
+        <p>A worktree is a fresh checkout, so install dependencies and copy untracked files
+        such as <code>.env</code> into each. If one attempt starts with a working
+        environment and another does not, you are comparing setup, not agents.</p>
+      </li>
+      <li>
+        <h3>Send the same prompt to each agent</h3>
+        <p>Save the prompt to a file so every attempt gets exactly the same words. In tmux,
+        each agent gets a window, and you paste the prompt into each:</p>
+<pre class="dl-cmd"><code>tmux new-session -d -s race -c "$PWD/../myapp-claude" claude
+tmux new-window -t race -c "$PWD/../myapp-codex" codex
+tmux new-window -t race -c "$PWD/../myapp-gemini" gemini
+tmux attach -t race</code></pre>
+        <p>Most agent CLIs also accept the prompt as an argument when they start, which
+        removes the pasting. Check each CLI's own help, because the flag differs.</p>
+      </li>
+      <li>
+        <h3>Compare what each one changed</h3>
+        <p>When an agent says it is done, read its change against the commit it started
+        from. Start with the size, then read the diffs:</p>
+<pre class="dl-cmd"><code>git diff --stat main...race/claude
+git diff --stat main...race/codex
+git diff main...race/claude</code></pre>
+        <p>Run the same test command in each worktree too. A diff that reads well and
+        fails the tests has not won.</p>
+      </li>
+      <li>
+        <h3>Merge the winner and delete the others</h3>
+<pre class="dl-cmd"><code>git merge race/claude
+git worktree remove --force ../myapp-codex
+git worktree remove --force ../myapp-gemini
+git worktree remove ../myapp-claude
+git branch -D race/codex race/gemini
+git branch -d race/claude</code></pre>
+        <p><code>--force</code> and <code>-D</code> are there because the losing attempts
+        have uncommitted or unmerged work that git will not discard otherwise. That is
+        the point of the step, but check the diffs first.</p>
+      </li>
+    </ol>
+
+    <h2>What to look at when you pick a winner</h2>
+    <ul class="points">
+      <li>Whether the tests pass in that worktree, not whether the agent says they do</li>
+      <li>How much it changed: a smaller diff that does the job is easier to review and to revert</li>
+      <li>Whether it touched files the task never needed</li>
+      <li>Whether it followed the conventions around the code it edited</li>
+    </ul>
+    <p>You can also take pieces from more than one attempt. Merge the best one, then
+    <code>git cherry-pick</code> a commit or copy a hunk from another.</p>
+
+    <h2>What gets hard by hand</h2>
+    <ul class="points">
+      <li>Three worktrees, three installs and three windows for one question</li>
+      <li>Pasting the same prompt three times without it drifting</li>
+      <li>Telling which attempt has finished and which is waiting on you</li>
+      <li>Remembering which branch belongs to which agent when you come back to it</li>
+      <li>Removing the losing worktrees and branches without removing the winner's</li>
+    </ul>
+
+    <h2>Doing the same with Agency's race</h2>
+    <p>Agency is a free, open-source desktop app for macOS and Linux that runs agent CLIs
+    in real terminals, each in its own worktree. Its race is the steps above behind one
+    dialog. Open the add-agent menu in a project and choose <strong>Race agents</strong>.</p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th scope="col">Step</th><th scope="col">By hand</th><th scope="col">In Agency</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Same prompt</td><td>Paste it into each agent</td><td>Type it once; it is sent to every attempt at launch</td></tr>
+          <tr><td>Same start point</td><td><code>git worktree add</code> from one commit</td><td>Pick the branch to start from; each attempt gets its own worktree and an <code>agent/</code> branch</td></tr>
+          <tr><td>Which agents</td><td>One window per CLI</td><td>Tick two or more agents; the first two are preselected</td></tr>
+          <tr><td>Models</td><td>Each CLI's own flag</td><td>A model per attempt, and <strong>+ model</strong> adds a second attempt for the same agent on another model</td></tr>
+          <tr><td>Watch</td><td>Check each tmux window</td><td>The attempts open side by side in the agents grid, each marked with a race badge</td></tr>
+          <tr><td>Compare</td><td><code>git diff</code> per branch</td><td>Each attempt is an ordinary run with its own diff</td></tr>
+          <tr><td>Keep one</td><td>Merge, then remove worktrees and branches</td><td>Merge the winner; the dialog offers to archive and delete the losing attempts with it, or to keep them</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>A race needs at least two attempts, and it needs a git repository, because every
+    attempt is a branch. For a project that is a plain folder, the race option is hidden.
+    You can also start a race from an issue, so the issue's text is the prompt.</p>
+    <p><strong>An honest note on evidence:</strong> as of 8 October 2026 this page has no
+    race from our own history to show you. Agency's own repository has merged more than 200
+    <code>agent/</code> branches, but a merge commit names only the winning branch, and the
+    losing attempts are usually deleted after it. Nothing left in the history says which
+    merges came out of a race. We would rather say that than invent a scoreboard.</p>
+    <p><strong>Who should not use it:</strong> anyone on Windows or an Intel Mac, which
+    Agency does not support yet, and anyone who only ever needs one agent on a task. Racing
+    multiplies usage, since every attempt spends its own plan or API tokens, so reserve it
+    for work where the choice matters. The by-hand steps above are enough if you race
+    twice a month.</p>
+
+    <h2>Questions</h2>
+    <h3>Does racing cost more?</h3>
+    <p>Yes, roughly in proportion to the number of attempts, because each agent does the
+    full task and bills against its own plan or API key. Race the tasks that are hard to
+    specify or costly to get wrong, not the ones you could review in a minute.</p>
+    <h3>Can I race one agent against itself?</h3>
+    <p>Yes, on different models, as long as the agent's CLI can be told a model at launch.
+    In Agency this is the <strong>+ model</strong> button on an agent that is ticked in the
+    race dialog. By hand, pass each CLI's own model flag in its window.</p>
+    <h3>Can I race on top of work I have not merged?</h3>
+    <p>Start the attempts from whichever branch holds that work. By hand, replace
+    <code>main</code> in the <code>git worktree add</code> commands; in Agency, change the
+    branch the dialog starts from.</p>
+    <p>New to worktrees? Start with the guide to
+    <a href="/run-coding-agents-in-parallel">running coding agents in parallel</a>.</p>
+
+    <div class="guide-cta">
+      <a class="btn" href="/download">Download Agency for macOS and Linux</a>
+      <a class="btn btn-ghost" href="/run-coding-agents-in-parallel">Run agents in parallel</a>
+    </div>
+  </div>
+</article>
+
+</main>
+
+<footer class="footer">
+  <div class="wrap footer-inner">
+    <a class="brand" href="/" aria-label="Agency home">
+      <svg viewBox="14 8 72 82" fill="none" aria-hidden="true">
+        <path d="M22 84 L50 24 L78 84" stroke="var(--blue)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+        <rect x="36" y="55" width="20" height="7.5" rx="3.75" fill="var(--blue)" fill-opacity="0.55"/>
+        <rect x="44" y="67" width="20" height="7.5" rx="3.75" fill="var(--blue)"/>
+        <circle cx="50" cy="22" r="7.5" fill="var(--base)" stroke="var(--blue)" stroke-width="3.4"/>
+      </svg>
+      Agency
+    </a>
+    <nav class="footer-links" aria-label="Footer">
+      <a href="/download">Download</a>
+      <a href="/run-coding-agents-in-parallel">Guide</a>
+      <a href="/supported-coding-agent-clis">Agents</a>
+      <a href="/run-coding-agents-in-parallel-on-linux">Linux</a>
+      <a href="/privacy">Privacy</a>
+      <a class="gh-link" href="https://github.com/TennnisAI/Agency"><span class="gh-label">GitHub</span><svg class="gh-mark" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.012 8.012 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg></a>
+    </nav>
+    <p class="footer-fine">Brought to you by <a href="https://tennnis.no">Tennnis&#8202;&#x2197;&#xFE0E;</a></p>
+  </div>
+</footer>
+
+<script src="/assets/js/site.js" defer></script>
+
+</body>
+</html>

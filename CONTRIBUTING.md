@@ -8,7 +8,7 @@ Thanks for your interest. A few honest expectations up front:
   `docs/porting.md` catalogs what a Windows port would touch, but there is no
   Windows build to test against.
 - **Bug reports are the most valuable contribution.** The bug template asks for
-  your version and a log excerpt (both in Settings ▸ Diagnostics) — with those,
+  your version and a log excerpt (both in Settings ▸ About) — with those,
   most reports are actionable; without them, most aren't.
 
 ## Pull requests

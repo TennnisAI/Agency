@@ -96,7 +96,7 @@ describe("matchSections", () => {
   });
 
   it("drops connectors, which every section would otherwise have to contain", () => {
-    expect(matchSections("check for updates")).toEqual(new Set(["diagnostics"]));
+    expect(matchSections("check for updates")).toEqual(new Set(["about"]));
     expect(matchSections("word wrap in the file viewer")).toEqual(new Set(["editor"]));
   });
 
@@ -142,8 +142,15 @@ describe("matchSections", () => {
   });
 
   it("finds an agent's CLI version, which only the running app can name", () => {
-    expect(matchSections("claude version")).toEqual(new Set(["diagnostics"]));
-    expect(matchSections("claude version", { diagnostics: "Claude Code Codex" }))
-      .toEqual(new Set(["diagnostics"]));
+    expect(matchSections("claude version")).toEqual(new Set(["about"]));
+    expect(matchSections("claude version", { about: "Claude Code Codex" }))
+      .toEqual(new Set(["about"]));
+  });
+
+  // Diagnostics was folded into About; the old name is still how people who
+  // knew it look for the version and logs.
+  it("finds the version under About, and by the old Diagnostics name", () => {
+    expect(matchSections("diagnostics")).toEqual(new Set(["about"]));
+    expect(matchSections("version")).toEqual(new Set(["about"]));
   });
 });

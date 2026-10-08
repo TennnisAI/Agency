@@ -588,10 +588,8 @@ pub fn knowledge_backends(probe: &BackendProbe) -> Vec<KnowledgeBackend> {
         out.push(KnowledgeBackend {
             id: CLAUDE_CLI.to_string(),
             label: "Claude Code".to_string(),
-            note: "Runs the claude CLI you already have, billed to your Claude plan rather than \
-                   an API key. Your docs go to Anthropic. A build reads every file in the \
-                   project, so the model is the cost: a large one can spend a whole usage \
-                   window on a single build."
+            note: "Billed to your Claude plan. Your docs go to Anthropic. A large model can \
+                   spend a whole usage window on one build."
                 .to_string(),
             default_model: CLAUDE_CLI_DEFAULT_MODEL.to_string(),
         });
@@ -601,10 +599,7 @@ pub fn knowledge_backends(probe: &BackendProbe) -> Vec<KnowledgeBackend> {
             out.push(KnowledgeBackend {
                 id: id.to_string(),
                 label: label.to_string(),
-                note: format!(
-                    "Uses the {env} from the environment Agency started in. Your docs go to \
-                     {vendor}, billed to that key."
-                ),
+                note: format!("Uses {env}. Your docs go to {vendor}, billed to that key."),
                 default_model: model.to_string(),
             });
         }
@@ -613,10 +608,9 @@ pub fn knowledge_backends(probe: &BackendProbe) -> Vec<KnowledgeBackend> {
         out.push(KnowledgeBackend {
             id: "ollama".to_string(),
             label: "Ollama".to_string(),
-            note: "Runs the model on this machine. Nothing is sent anywhere and nothing is \
-                   billed. Name a model you have pulled, and not a small one: below about 14b \
-                   the answers come back as prose or half-formed JSON, and those chunks are \
-                   retried and then dropped from the graph."
+            // Below about 14b the answers come back as prose or half-formed JSON,
+            // and those chunks are retried and then dropped from the graph.
+            note: "Runs on this machine, unbilled. Use a pulled model of about 14b or larger."
                 .to_string(),
             // 14b and not 7b because graphify's own ollama warning says so:
             // "model too small for JSON instruction following - try a larger
@@ -628,19 +622,14 @@ pub fn knowledge_backends(probe: &BackendProbe) -> Vec<KnowledgeBackend> {
         out.push(KnowledgeBackend {
             id: LOCAL_MODEL.to_string(),
             label: "Local model".to_string(),
-            note: format!(
-                "Sends your docs to {url}, the local server from settings. Nothing leaves your \
-                 machine. Name the model it serves, and start it before you build."
-            ),
+            note: format!("Sends your docs to {url}. Start the server before you build."),
             default_model: String::new(),
         });
     }
     out.push(KnowledgeBackend {
         id: CODE_ONLY.to_string(),
         label: "No LLM".to_string(),
-        note: "Indexes code only, with tree-sitter, on this machine. Docs, papers and images are \
-               skipped. Costs nothing and sends nothing."
-            .to_string(),
+        note: "Indexes code only, on this machine. Docs and images are skipped.".to_string(),
         default_model: String::new(),
     });
     out

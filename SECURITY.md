@@ -13,7 +13,7 @@ maintainer.
 If you would rather not use GitHub, or you cannot, email
 **hello@tennnis.no** instead.
 
-Please include the app version (Settings ▸ Diagnostics), what you found, and
+Please include the app version (Settings ▸ About), what you found, and
 how to reproduce it. You'll get an acknowledgement as soon as the report is
 read — this is a solo project, so triage is best-effort, but security reports
 jump the queue.
@@ -22,7 +22,7 @@ jump the queue.
 
 - Agency's own code makes exactly one network request: the launch-time update
   check against GitHub's public releases API, which can be turned off in
-  Settings ▸ Diagnostics. Anything else talking to the network is the agent
+  Settings ▸ About. Anything else talking to the network is the agent
   CLI or git you invoked.
 - Agency injects no cloud credentials. Agent CLIs manage their own
   authentication; Agency inherits your shell environment when spawning them.

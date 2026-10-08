@@ -27,7 +27,7 @@ export const SECTION_IDS = [
   "appearance", "editor", "messages", "notifications",
   "agents", "mcp", "localModel",
   "backlog", "knowledge", "files",
-  "workspace", "diagnostics", "about",
+  "workspace", "about",
 ] as const;
 
 export type GroupId = (typeof GROUP_IDS)[number];
@@ -91,14 +91,15 @@ export const SECTIONS: Section[] = [
     terms: "copy env certs keys secrets untracked service account" },
   { id: "workspace", label: "Workspace", group: "app",
     terms: "journal notes daily weekly planning folder location move switch git hide markdown" },
-  { id: "diagnostics", label: "Diagnostics", group: "app",
+  { id: "about", label: "About", group: "app",
+    // "diagnostics" because this section absorbed the Diagnostics one, and
+    // anyone who learned the old name, or read an older README or issue
+    // template, still searches for it.
     // "privacy" and "network" because the launch update check is the one
     // setting in the app those words point at. The agents' own names are not
     // here: this section lists whichever CLIs are on *this* machine, so they
     // arrive as extra terms.
-    terms: "version update upgrade release logs report bug github check launch path cli privacy telemetry analytics network npm homebrew brew installer" },
-  { id: "about", label: "About", group: "app",
-    terms: "licence license apache third party notices source code credits" },
+    terms: "diagnostics version update upgrade release logs report bug github check launch path cli privacy telemetry analytics network npm homebrew brew installer licence license apache third party notices source code credits" },
 ];
 
 export const SECTION_BY_ID = Object.fromEntries(SECTIONS.map((s) => [s.id, s])) as Record<SectionId, Section>;

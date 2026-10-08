@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Git worktrees for AI coding agents · Agency</title>
+<meta name="description" content="Give each coding agent its own git worktree and branch so they stop overwriting each other. What a worktree does not copy (dependencies, .env), how to clean up, and what Agency automates.">
+<link rel="canonical" href="https://getagency.dev/git-worktrees-for-ai-coding-agents">
+<meta property="og:title" content="Git worktrees for AI coding agents · Agency">
+<meta property="og:description" content="Give each coding agent its own git worktree and branch so they stop overwriting each other. What a worktree does not copy (dependencies, .env), how to clean up, and what Agency automates.">
+<meta property="og:url" content="https://getagency.dev/git-worktrees-for-ai-coding-agents">
+<meta property="og:type" content="article">
+<link rel="icon" href="/assets/img/agency-icon.svg" type="image/svg+xml">
+<link rel="icon" href="/assets/img/agency-icon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="/assets/img/agency-icon-180.png">
+<link rel="preload" href="/assets/fonts/geist-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/assets/css/site.css">
+<script>
+(function () {
+  try {
+    var t = localStorage.getItem('theme');
+    if (t === 'light' || t === 'dark') {
+      document.documentElement.setAttribute('data-theme', t);
+    }
+  } catch (e) {}
+})();
+</script>
+<script type="application/ld+json">
+{
+ "@context": "https://schema.org",
+ "@type": "Article",
+ "headline": "Git worktrees for AI coding agents",
+ "description": "Give each coding agent its own git worktree and branch so they stop overwriting each other. What a worktree does not copy (dependencies, .env), how to clean up, and what Agency automates.",
+ "datePublished": "2026-10-08",
+ "dateModified": "2026-10-08",
+ "url": "https://getagency.dev/git-worktrees-for-ai-coding-agents",
+ "author": {
+  "@type": "Organization",
+  "name": "Tennnis",
+  "url": "https://tennnis.no"
+ },
+ "publisher": {
+  "@type": "Organization",
+  "name": "Tennnis",
+  "url": "https://tennnis.no"
+ },
+ "about": {
+  "@type": "SoftwareApplication",
+  "name": "Agency",
+  "url": "https://getagency.dev/"
+ }
+}
+</script>
+</head>
+<body>
+
+<header class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="/" aria-label="Agency home">
+      <svg viewBox="14 8 72 82" fill="none" aria-hidden="true">
+        <path d="M22 84 L50 24 L78 84" stroke="var(--blue)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+        <rect x="36" y="55" width="20" height="7.5" rx="3.75" fill="var(--blue)" fill-opacity="0.55"/>
+        <rect x="44" y="67" width="20" height="7.5" rx="3.75" fill="var(--blue)"/>
+        <circle cx="50" cy="22" r="7.5" fill="var(--base)" stroke="var(--blue)" stroke-width="3.4"/>
+      </svg>
+      Agency
+    </a>
+    <nav class="nav-links" aria-label="Site">
+      <a href="/download">Download</a>
+      <a href="/privacy">Privacy</a>
+      <a class="gh-link" href="https://github.com/TennnisAI/Agency"><span class="gh-label">GitHub</span><svg class="gh-mark" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.012 8.012 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg></a>
+      <button class="theme-toggle" id="theme-toggle" aria-label="Toggle color theme">&#x25D0;&#xFE0E;</button>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+<article class="page guide">
+  <div class="wrap">
+    <p class="meta guide-date">Updated <time datetime="2026-10-08">8 October 2026</time></p>
+    <h1 class="display">Git worktrees for AI coding agents</h1>
+    <p class="lead">Give each agent its own git worktree: a second checkout of your
+    repository, in its own folder, on its own branch. Two agents can then edit the same
+    project at once without overwriting each other, because they never share a file on
+    disk. A worktree is a fresh checkout, though, so it starts without your installed
+    dependencies and without untracked files such as <code>.env</code>, and it stays on
+    disk until you remove it.</p>
+    <p>This page covers the commands, then the three parts that bite. For running several
+    agents end to end, see <a href="/run-coding-agents-in-parallel">how to run coding agents
+    in parallel</a>. Disclosure: Agency, the app mentioned below, is ours, and this site is
+    its home.</p>
+
+    <h2>How do you use git worktrees with Claude Code or Codex?</h2>
+    <p>Make the worktree, then start the agent inside it. The agent sees an ordinary
+    folder, so any agent CLI works. These commands run from inside a repository called
+    <code>myapp</code>:</p>
+<pre class="dl-cmd"><code>git worktree add -b agent/fix-login ../myapp-fix-login main
+cd ../myapp-fix-login
+claude</code></pre>
+    <p>The first line creates the folder <code>../myapp-fix-login</code> and a new branch
+    <code>agent/fix-login</code> cut from <code>main</code>. Start Codex, Gemini CLI or any
+    other agent in the same way. Claude Code can also make the worktree itself:
+    <code>claude --worktree fix-login</code> creates one under
+    <code>.claude/worktrees/fix-login</code>
+    (<a href="https://code.claude.com/docs/en/worktrees">its documentation</a>).</p>
+    <p>Two commands help you keep track:</p>
+<pre class="dl-cmd"><code>git worktree list
+git worktree prune</code></pre>
+    <p><code>list</code> shows every worktree with its folder and branch.
+    <code>prune</code> forgets worktrees whose folders you deleted by hand.</p>
+
+    <h2>What a worktree shares and what it does not</h2>
+    <p>All worktrees of a repository share one history, so a commit made in one is visible
+    from the others, and they share the same objects, so a second worktree does not copy the
+    repository. Git also refuses to check out one branch in two worktrees at once, which is
+    what keeps two agents from committing onto the same branch.</p>
+    <p>Each worktree has its own working files, and that is the part that surprises people.
+    Git materializes only the files it tracks. Anything ignored or untracked stays behind in
+    the original folder.</p>
+
+    <h2>Dependencies are per worktree</h2>
+    <p><code>node_modules</code>, virtual environments and build output are not tracked, so a
+    new worktree has none of them. An agent that starts there runs its tests, finds nothing
+    installed, and either fails or starts installing on its own. Install before the agent
+    starts:</p>
+<pre class="dl-cmd"><code>cd ../myapp-fix-login
+pnpm install</code></pre>
+    <p>The cost is real on a large project: every worktree holds its own installed copy, so
+    disk use grows with the number of agents. A package manager that keeps one shared
+    store and links from it makes the installs quick and small. Build output and dev servers
+    are per worktree as well, so two worktrees that both start a server on port 3000 collide.
+    Give each one its own port.</p>
+
+    <h2>Untracked files like .env are not copied</h2>
+    <p>A <code>.env</code> file is usually ignored by git for good reason, which means
+    <code>git worktree add</code> leaves it out. The agent then starts without its
+    credentials or local settings and fails in ways that look like bugs in your code. Copy
+    what the project needs into each worktree:</p>
+<pre class="dl-cmd"><code>cp .env ../myapp-fix-login/.env</code></pre>
+    <p>Copy, do not link, if the agent might edit the file. A later change to the original
+    does not reach a worktree that already has its own copy. And think before you copy a
+    secret into a folder an agent runs in: the agent can read everything in it.</p>
+
+    <h2>Clean up when you are done</h2>
+    <p>A finished worktree costs a full checkout, and its branch stays in the repository
+    until you delete it. Merge what you want to keep, then remove both:</p>
+<pre class="dl-cmd"><code>git merge agent/fix-login
+git worktree remove ../myapp-fix-login
+git branch -d agent/fix-login</code></pre>
+    <p><code>git worktree remove</code> refuses to run when the worktree has uncommitted
+    changes or untracked files; add <code>--force</code> only after you have looked at what
+    would be lost. <code>git branch -d</code> refuses to delete a branch that is not merged,
+    which is the check you want: <code>-D</code> deletes the branch and its unmerged commits
+    stay reachable only through the reflog for a while.</p>
+    <p>Abandoned runs are the usual leak. Run <code>git worktree list</code> now and then,
+    and remove the ones you no longer need.</p>
+
+    <h2>Keep the worktrees out of your diffs</h2>
+    <p>If you create worktrees inside the repository, which is convenient, git reports them
+    as untracked content in the main checkout, and they turn up in every <code>git status</code>.
+    Either create them next to the repository, as above, or add the folder to
+    <code>.git/info/exclude</code>, which is your own ignore list and is not committed.</p>
+
+    <h2>What Agency does for each of these</h2>
+    <p>Agency is a free, open-source desktop app for macOS and Linux that runs agent CLIs
+    in real terminals, one worktree per run. As of October 2026 it handles the parts above
+    like this, checked against its source.</p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th scope="col">Part</th><th scope="col">By hand</th><th scope="col">In Agency</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Create the worktree</td><td><code>git worktree add -b</code></td><td>Runs <code>git worktree add</code> for you under <code>.agency/worktrees/&lt;id&gt;</code> in the project, on a branch named <code>agent/&lt;id&gt;</code>; you can rename the branch while the run is local</td></tr>
+          <tr><td>Dependencies</td><td>Install in each folder</td><td>A <code>setup</code> script in <code>.agency/agency.toml</code> runs before the agent starts, and the agent starts only if it succeeds</td></tr>
+          <tr><td>Untracked files</td><td><code>cp</code> each one</td><td>Copies any <code>.env</code> or <code>.env.*</code> that git does not track from the project root, plus paths you list under <code>[files] copy</code></td></tr>
+          <tr><td>Keep it out of diffs</td><td>Edit <code>.git/info/exclude</code></td><td>Adds <code>.agency/worktrees/</code>, <code>.agency/agency.local.toml</code>, <code>.agency/issues/</code> and <code>.agency/records/</code> to <code>.git/info/exclude</code>; <code>.agency/agency.toml</code> stays visible so you can commit it</td></tr>
+          <tr><td>Clean up</td><td><code>worktree remove</code>, <code>branch -d</code></td><td>Archive or delete a run; archive removes the worktree and keeps a markdown record</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The setup script and the copy list look like this in <code>.agency/agency.toml</code>:</p>
+<pre class="dl-cmd"><code>[scripts]
+setup = "pnpm install"
+
+[files]
+copy = [".env", "config/certs"]</code></pre>
+    <p>Copying skips paths that do not exist, that are absolute, or that climb out of the
+    project with <code>..</code>. Directories copy recursively. Files are copied when the
+    worktree is created or restored, so a later edit to the project's <code>.env</code> does
+    not follow.</p>
+    <p>On cleanup, Agency decides whether a branch is safe to delete by asking git, locally
+    and without the network: the branch is merged into the base, every commit is on some
+    remote branch, or it has no commits of its own. If the branch is none of those, archiving
+    keeps the branch so the run can be restored. If the worktree has uncommitted changes,
+    nothing is treated as safe and the dialog says so before you confirm. Before any of it
+    is removed, Agency writes a record of the run (prompt, commits, how it ended) to
+    <code>.agency/records/</code> as a markdown file you can read without the app.</p>
+    <p><strong>Who should not use it:</strong> anyone on Windows or an Intel Mac, which
+    Agency does not support yet, and anyone running one or two agents who is happy with the
+    commands above. They are all you need there.</p>
+
+    <h2>Questions</h2>
+    <h3>Can two agents work on the same branch in two worktrees?</h3>
+    <p>No. Git refuses to check out one branch in two worktrees. Give each agent its own
+    branch and merge them afterwards.</p>
+    <h3>Why does my agent say a command or package is missing in a new worktree?</h3>
+    <p>Dependencies are not tracked, so the new folder has none. Install them in that
+    worktree before the agent starts.</p>
+    <h3>Do worktrees take a lot of disk space?</h3>
+    <p>Not for history, which is shared. The cost is each worktree's checked-out files plus
+    its own dependencies and build output, so it grows with project size and agent count.</p>
+    <h3>Where does the agent's own history go when I delete a worktree?</h3>
+    <p>That depends on the agent. Some CLIs file their conversations under the folder's
+    path, so removing the folder strands them. If you want to resume a conversation later,
+    keep the worktree until you are sure.</p>
+
+    <div class="guide-cta">
+      <a class="btn" href="/download">Download Agency for macOS and Linux</a>
+      <a class="btn btn-ghost" href="/run-coding-agents-in-parallel">Run agents in parallel</a>
+    </div>
+  </div>
+</article>
+
+</main>
+
+<footer class="footer">
+  <div class="wrap footer-inner">
+    <a class="brand" href="/" aria-label="Agency home">
+      <svg viewBox="14 8 72 82" fill="none" aria-hidden="true">
+        <path d="M22 84 L50 24 L78 84" stroke="var(--blue)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+        <rect x="36" y="55" width="20" height="7.5" rx="3.75" fill="var(--blue)" fill-opacity="0.55"/>
+        <rect x="44" y="67" width="20" height="7.5" rx="3.75" fill="var(--blue)"/>
+        <circle cx="50" cy="22" r="7.5" fill="var(--base)" stroke="var(--blue)" stroke-width="3.4"/>
+      </svg>
+      Agency
+    </a>
+    <nav class="footer-links" aria-label="Footer">
+      <a href="/download">Download</a>
+      <a href="/run-coding-agents-in-parallel">Guide</a>
+      <a href="/supported-coding-agent-clis">Agents</a>
+      <a href="/run-coding-agents-in-parallel-on-linux">Linux</a>
+      <a href="/privacy">Privacy</a>
+      <a class="gh-link" href="https://github.com/TennnisAI/Agency"><span class="gh-label">GitHub</span><svg class="gh-mark" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.012 8.012 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg></a>
+    </nav>
+    <p class="footer-fine">Brought to you by <a href="https://tennnis.no">Tennnis&#8202;&#x2197;&#xFE0E;</a></p>
+  </div>
+</footer>
+
+<script src="/assets/js/site.js" defer></script>
+
+</body>
+</html>
